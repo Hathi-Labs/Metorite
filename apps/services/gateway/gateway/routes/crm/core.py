@@ -1875,6 +1875,100 @@ async def set_deal_contacts_from_source(
     return len(contacts), int(removed.rowcount or 0)
 
 
+# ── The generic record store (WS-53 CRM-Q6a, migration 251) ────────────────
+
+#: A provider module API name: a letter, then letters, digits and ``_``. The
+#: name reaches only a bound parameter, and the check keeps junk out of the key.
+_MODULE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+
+#: The columns that the module door writes. The caller passes no column name.
+MODULE_RECORD_COLUMNS: tuple[str, ...] = (
+    "name", "owner_email", "fields", "ext_url", "ext_created_at", "ext_modified_at",
+)
+
+_UPSERT_MODULE_RECORD_SQL = (
+    "INSERT INTO crm_module_records (module, ext_source, ext_id, name, "
+    "owner_email, fields, ext_url, ext_created_at, ext_modified_at) VALUES "
+    "(:module, :ext_source, :ext_id, :name, :owner_email, CAST(:fields AS jsonb), "
+    ":ext_url, :ext_created_at, :ext_modified_at) "
+    "ON CONFLICT (organization_id, ext_source, module, ext_id) DO UPDATE SET "
+    "name = EXCLUDED.name, owner_email = EXCLUDED.owner_email, "
+    "fields = EXCLUDED.fields, ext_url = EXCLUDED.ext_url, "
+    "ext_created_at = EXCLUDED.ext_created_at, "
+    "ext_modified_at = EXCLUDED.ext_modified_at, updated_at = now() "
+    # A replay of the same record changes nothing, not even updated_at.
+    "WHERE (crm_module_records.name, crm_module_records.owner_email, "
+    "crm_module_records.fields, crm_module_records.ext_url, "
+    "crm_module_records.ext_created_at, crm_module_records.ext_modified_at) "
+    "IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.owner_email, EXCLUDED.fields, "
+    "EXCLUDED.ext_url, EXCLUDED.ext_created_at, EXCLUDED.ext_modified_at) "
+    "RETURNING id"
+)
+
+
+def _module_key(ext_source: str, module: str) -> None:
+    if not ext_source:
+        raise ValueError("module records: 'ext_source' is required")
+    if not _MODULE_NAME.match(module or ""):
+        raise ValueError(f"module records: {module!r} is not a module API name")
+
+
+async def upsert_module_records_from_source(
+    db: Any, ext_source: str, module: str, ext_id: str, values: dict[str, Any],
+) -> bool:
+    """Write one record of a generic module, keyed on
+    ``(organization_id, ext_source, module, ext_id)`` (WS-53 CRM-Q6a).
+
+    The fifth door of the mirror write path, beside :func:`upsert_from_source`,
+    with the same fence (``tests/unit/test_crm_upsert_from_source_fence.py``
+    refuses its name outside ``gateway/crm_sync/``). No native writer of
+    ``crm_module_records`` exists. The table has no ``zoho_id`` column, so this
+    door sets none.
+
+    *values* holds only :data:`MODULE_RECORD_COLUMNS`. A key outside them is a
+    ``ValueError``, so a column name never comes from the caller. The tenant
+    comes from the column DEFAULT that the bound session sets.
+
+    Returns True when a row was written, and False for a replay that changed
+    nothing.
+    """
+    _module_key(ext_source, module)
+    if not ext_id:
+        raise ValueError("module records: 'ext_id' is required")
+    unknown = sorted(set(values) - set(MODULE_RECORD_COLUMNS))
+    if unknown:
+        raise ValueError(f"module records: {unknown} are not columns this door writes")
+    params = {column: values.get(column) for column in MODULE_RECORD_COLUMNS}
+    params["fields"] = json.dumps(params["fields"] or {}, default=str)
+    row = (await db.execute(text(_UPSERT_MODULE_RECORD_SQL), {
+        **params, "module": module, "ext_source": ext_source, "ext_id": str(ext_id),
+    })).first()
+    return row is not None
+
+
+async def delete_module_records_from_source(
+    db: Any, ext_source: str, module: str, ext_ids: Sequence[str],
+) -> int:
+    """Delete the generic records that a provider deleted. Returns how many went.
+
+    The sixth door of the mirror write path (WS-53 CRM-Q6a), with the same
+    fence as :func:`delete_from_source`. It matches the module, ``ext_source``
+    and ``ext_id``, and the tenant policy binds the organization.
+    """
+    _module_key(ext_source, module)
+    ids = sorted({str(i) for i in ext_ids if i})
+    if not ids:
+        return 0
+    result = await db.execute(
+        text(
+            "DELETE FROM crm_module_records WHERE ext_source = :ext_source "
+            "AND module = :module AND ext_id = ANY(CAST(:ext_ids AS text[]))"
+        ),
+        {"ext_source": ext_source, "module": module, "ext_ids": ids},
+    )
+    return int(result.rowcount or 0)
+
+
 async def load_by_zoho_id(db: Any, table: str, zoho_id: str) -> Any | None:
     """The native row a Zoho record already maps to, if there is one."""
     return (await db.execute(
