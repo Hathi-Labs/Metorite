@@ -89,6 +89,32 @@ describe("the BFF Zoho OAuth callback", () => {
     expect(res.headers.get("location")).toBe("/crm?connect_error=access_denied");
   });
 
+  it("passes on each Location the gateway callback can send (CRM-X0 review P1-1)", async () => {
+    // Read from the gateway's own module, so a Location there that this
+    // route would refuse fails here, and not in front of an admin.
+    const gateway = readFileSync(
+      new URL(
+        "../../../../../../../../../apps/services/gateway/gateway/routes/crm/connection.py",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const constant = (name: string) => {
+      const m = gateway.match(new RegExp(`^${name} = "([^"]+)"`, "m"));
+      expect(m, name).not.toBeNull();
+      return m![1];
+    };
+    for (const location of [
+      constant("RETURN_OK"),
+      constant("RETURN_DIFFERENT_ORG"),
+      `${constant("RETURN_FAILED")}org_unreadable`,
+    ]) {
+      stubGateway(redirectTo(location));
+      const res = await callback("code=c&state=s");
+      expect(res.headers.get("location"), location).toBe(location);
+    }
+  });
+
   it("turns an absolute or foreign Location into the generic failure", async () => {
     for (const location of [
       "https://evil.example/crm?connected=zoho",

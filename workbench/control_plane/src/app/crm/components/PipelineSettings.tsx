@@ -84,17 +84,15 @@ export default function PipelineSettings({
   onReorderLostReasons,
   setup,
   access,
-  connection,
   pipelines = null,
   showAdminCards = false,
   readOnly = false,
 }: {
   /** Mirror mode: Zoho owns the stages, and the gateway refuses a write. */
   readOnly?: boolean;
-  /** The Setup, Access and Connection cards of an admin, in this order. */
+  /** The Setup hub (it holds the connection, CRM-X0) and the Access card of an admin, in this order. */
   setup?: React.ReactNode;
   access?: React.ReactNode;
-  connection?: React.ReactNode;
   /** The deal pipelines (CRM-Q2). `null` while the gateway has no such route. */
   pipelines?: DealPipeline[] | null;
   /** The Fields and Sync health cards are for an admin. */
@@ -128,7 +126,6 @@ export default function PipelineSettings({
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
       {setup}
       {access}
-      {connection}
       {readOnly ? (
         <>
           <PipelineSections

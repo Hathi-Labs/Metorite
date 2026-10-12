@@ -157,7 +157,13 @@ def _registry_row(conn: store.Connection, user: UserContext) -> Row:
         owning_app=app,
         scope=conn.scope_kind,
         owner=(conn.member_email if not org_scope else conn.connected_by) or None,
-        status=conn.status,
+        # CRM-X0: `needs_reset` is the CRM's own state. The console has one
+        # word for "an admin must act in the app". Its link opens the CRM,
+        # and the CRM's banner leads to the setup hub and the start over.
+        status=(
+            store.STATUS_NEEDS_RECONNECT if conn.status == store.STATUS_NEEDS_RESET
+            else conn.status
+        ),
         last_sync_at=_iso(conn.last_sync_at),
         last_error=store.safe_error_code(conn.last_error) if conn.last_error else None,
         setup_href=_SETUP_HREF[app],
