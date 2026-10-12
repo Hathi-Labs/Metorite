@@ -1,6 +1,10 @@
 # External agent access — Metorite as an MCP server
 
-**Status: DECIDED (D97, 2026-10-10). EA-1 and EA-2a are BUILT and dark (2026-10-11), and EA-2a has had fix round 1. EA-1 is the three tables, the token store and the `agent_access_enabled` flag, default OFF. EA-2a is the authorization server core: the edge unit `apps/services/agent_edge` (not deployed) and the gateway route `/agent-access`. EA-2b and EA-3 to EA-11 are not built.**
+**Status: DECIDED (D97, 2026-10-10). Updated 2026-10-11. EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`). EA-3 is next, and EA-2b and EA-3 to EA-11 are not built.**
+
+**EA-3, 2026-10-11.** The spec audit of EA-3 gave NO-GO. The engineering decisions EA3-1 to EA3-8 (§6.1) answer it. EA-3 now splits into EA-3a (the gateway) and EA-3b (the edge), with EA-3c as a later follow-up.
+
+**What is built.** EA-1 is the three tables, the token store and the `agent_access_enabled` flag, default OFF. EA-2a is the authorization server core: the edge unit `apps/services/agent_edge` (not deployed) and the gateway route `/agent-access`.
 
 Written 2026-10-10 from a read-only survey of the tree at commit `f62f2bb16`. Every anchor below came from that survey. Re-verify each one at dispatch (work_plan.md §1, item 4).
 
@@ -64,23 +68,27 @@ Source: `github.com/personalagentproxy/proxy` (MIT, early). It is a self-hosted 
 
 The survey found **no** inbound MCP server, no token issuer and no member-level access token in the tree. Every `oauth` and `mcp` hit is a client or an internal secret.
 
+The anchors below were read again on 2026-10-11, at commit `0bd098f18`, for the EA-3 audit. Re-read them at dispatch.
+
 | Need | Existing seam | Anchor |
 |---|---|---|
-| Member identity at the gateway | `get_current_user`, then `resolve_access` and `resolve_identity` | `packages/acb_auth/acb_auth/deps.py:410`, `access.py:1087`, `access.py:1247` |
-| Acting as a member from a service | `headersActingAs`, and the `skill_projects` client | `workbench/control_plane/src/lib/gateway.ts:142`, `apps/skills/skill-projects/skill_projects/client.py` |
+| Member identity at the gateway | `get_current_user`, then `resolve_access` and `resolve_identity` | `packages/acb_auth/acb_auth/deps.py:425`, `access.py:1087`, `access.py:1249` |
+| The matched route template | `_route_template` | `acb_auth/deps.py:679` |
+| Acting as a member from a service | `headersActingAs`, and the `skill_projects` client | `workbench/control_plane/src/lib/gateway.ts:142`, `apps/skills/skill-projects/skill_projects/client.py:135` |
 | Tenant binding for row-level security | `bind_tenant`, then `tenant_session` | `acb_common/db.py:210`, `acb_common/db.py:248` |
-| Member access ceiling | `EffectiveAccess.intersect` ("an agent acting for a member must never exceed them") | `acb_auth/permissions.py` near line 350 |
-| Project and task visibility | `resolve_visibility`, `load_visible_project`, `task_visibility_clause` | `gateway/routes/projects/core.py:1198`, `:1334`, `:1573` |
+| Member access ceiling | `EffectiveAccess.intersect` ("an agent acting for a member must never exceed them") | `acb_auth/permissions.py:375` |
+| Project and task visibility | `resolve_visibility`, `load_visible_project`, `task_visibility_clause` | `gateway/routes/projects/core.py:1203`, `:1339`, `:1578` |
 | A tool allowlist with a coverage fence | the `skill_projects` manifest, classes A, B, C and X | `apps/skills/skill-projects/skill_projects/manifest.py`, `tests/unit/test_projects_chat_coverage.py` |
-| MCP tool hints | `read_only`, `destructive`, `idempotent`, `open_world` | `packages/acb_skills/acb_skills/tool_annotations.py` |
-| Provenance stamp | `X-Actor-Via`, stored in `pm_activities.meta.via` | `gateway/routes/projects/core.py:75-98` |
+| MCP tool hints | `read_only`, `destructive`, `idempotent`, `open_world` | `packages/acb_skills/acb_skills/tool_annotations.py`. The edge tools do **not** go into its `TOOL_ANNOTATIONS`. They carry their own annotations (§9.5) |
+| Provenance stamp | `X-Actor-Via`, stored in `pm_activities.meta.via` | `gateway/routes/projects/core.py:75-98`, `ACTOR_VIA_PATTERN` at `:79` |
 | Audit write | `acb_audit.record` | `packages/acb_audit/acb_audit/log.py` |
-| Optimistic concurrency | `If-Match` on `PATCH /projects/tasks/{id}` | `gateway/routes/projects/tasks.py:479` |
+| Optimistic concurrency | `If-Match` on `PATCH /projects/tasks/{id}` | `gateway/routes/projects/tasks.py:483`. The token is `updated_at` (`core.py:1755`) |
+| The public routes of the gateway | `PUBLIC_ROUTES` | `gateway/main.py:644` |
 
 **Gaps. Each one becomes a slice:**
 
 1. No token store, no client registry, no consent page and no `/.well-known` metadata.
-2. The gateway trusts the internal bearer plus `X-User-Email`. Any process that holds that bearer can act as anyone. See §10.
+2. The gateway trusts the internal bearer plus `X-User-Email`. Any process that holds that bearer can act as anyone. So the edge holds no bearer, and it signs each call instead. See §10.1.
 3. No per-project write role exists. Anyone who can see a project can write its tasks. A "read-only agent" must come from the connection ceiling, not from the grants.
 4. `POST /projects/nodes/{id}/grants` needs only visibility of the project (`tree.py:1309`). That is a hazard for an outside agent, so the edge never exposes it.
 5. `pm_tasks.source` has no `mcp` value, and `pm_tasks` has no pull request or commit field. `pm_task_links` links a task to a task only.
@@ -96,11 +104,15 @@ external agent (Claude, ChatGPT, a coding agent)
         ▼
   mcp.metorite.com        the MCP edge  (resource server)
         │  1. validate the token, audience and expiry
-        │  2. load the connection, check member and org are live
-        │  3. check scope, pins, rate limit
-        │  4. call the gateway as that member
+        │  2. load the connection, compute the effective scopes
+        │  3. check the scope of the tool, the rate limit
+        │  4. call the gateway on loopback with a signed request (§10.1)
         ▼
-  gateway  /projects/*  /memory/*  ...      (unchanged routes, unchanged RLS)
+  gateway  branch 0 of get_current_user: check the signature, read the
+        │  connection, resolve the member, attach the agent scope
+        ▼
+  /projects/* and /auth/me GET routes   (unchanged routes, RLS, and a
+                                          narrower Visibility for an agent)
 ```
 
 The consent page is part of the control plane, because only the control plane holds the member's NextAuth session.
@@ -112,31 +124,45 @@ agent ──token──────▶ authorization server endpoint ──▶ o
 
 ### 5.1 Where the edge runs (D-EA-2)
 
-**Recommended: a separate small unit named for its job, with its own systemd sandbox** (box_hardening.md BH-2 shape). It holds the internal bearer, so a bug there is an impersonation bug. A narrow unit has a small blast radius, and it keeps `/mcp` traffic off the main gateway process.
+**Recommended: a separate small unit named for its job, with its own systemd sandbox** (box_hardening.md BH-2 shape). It holds the database DSN and the signing key of §10.1. It holds **no** internal bearer (EA3-1). A narrow unit has a small blast radius, and it keeps `/mcp` traffic off the main gateway process.
 
-**Alternative: a router inside the gateway.** It needs no second bearer holder. It also puts public, hostile traffic in the process that serves every member. The route would join `PUBLIC_ROUTES` (`main.py:625`) and authenticate itself.
+**Alternative: a router inside the gateway.** It needs no signing key. It also puts public, hostile traffic in the process that serves every member. The route would join `PUBLIC_ROUTES` (`main.py:644`) and authenticate itself.
 
-The tool code is the same in both. Both call the existing routes with the same member headers that `skill_projects` uses. So the choice is a deploy choice, and it does not block EA-1 to EA-3.
+D-EA-2 chose the separate unit. The edge calls the gateway over HTTP on loopback, at the Setting `agent_edge_gateway_url` (default `http://127.0.0.1:8080`). That address is the one the Caddy block of `api.metorite.com` proxies to (`deploy/hostinger/caddy/Caddyfile:51`).
 
 ### 5.2 The host (D-EA-1)
 
 **Recommended:** the edge lives on its own host, `mcp.metorite.com`. No session cookie is ever sent there. The consent page stays on `app.metorite.com`. The canonical resource identifier is `https://mcp.metorite.com/mcp`. A DNS record is an owner gate (work_plan.md §6).
 
-### 5.3 Protocol facts (as of the MCP specification dated 2026-07-28)
+### 5.3 Protocol facts, and the revision each one came from
 
-Re-read the spec at build time. It moves fast. These are the points that bind us.
+Re-read the pinned text at build time. It moves fast. EA-3 accepts the revisions `2025-06-18` and `2025-11-25`. It assumes `2025-03-26` only when a request after `initialize` has no `MCP-Protocol-Version` header.
 
-- The server **must** publish OAuth 2.0 Protected Resource Metadata (RFC 9728). A 401 carries a `WWW-Authenticate` header with `resource_metadata`.
-- The authorization server **must** publish RFC 8414 metadata or OpenID discovery.
-- A client registers by one of three ways, in this order of preference: Client ID Metadata Document, pre-registration, or Dynamic Client Registration. The spec now marks Dynamic Client Registration as deprecated and kept for older servers.
-- The client **must** send the `resource` parameter (RFC 8707) in the authorization request and in the token request. The server **must** accept only a token issued for its own resource.
-- PKCE is required. The server must not accept a token in a query string. The server must never pass a token on to another service ("no token passthrough").
-- The server returns **403** with `error="insufficient_scope"` and the needed `scope` when a call needs more. It sends all needed scopes in one challenge.
-- The authorization response should carry `iss` (RFC 9207). We send it.
-- The tool list **may** differ by authorization. It **must not** differ by connection state. The list is stateless. No MCP session holds state for us.
-- A tool failure that the model can fix returns `isError: true` with text. A malformed request returns a protocol error.
-- A tool may return `structuredContent` that matches an `outputSchema`. It should also return the same JSON as text.
-- A server **must** validate inputs, check access, limit the rate and sanitize outputs.
+The table names the first revision that carries each rule. The tests of EA-3b pin the behaviour, not the citation. §9.6 is the full wire contract.
+
+**What EA-3 builds.**
+
+| Rule | First revision |
+|---|---|
+| One endpoint that answers a POST with `application/json`. The server may send no `Mcp-Session-Id` | 2025-03-26 (Streamable HTTP) |
+| The tool annotations `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` | 2025-03-26 |
+| The server validates `Origin`, and answers 403 to an origin that it does not allow | 2025-03-26. The 2025-11-25 text adds the 403 |
+| No JSON-RPC batch | 2025-06-18 removed batches |
+| The `MCP-Protocol-Version` header on each request after `initialize`. No header means `2025-03-26`. A value the server does not support gets 400 | 2025-06-18 |
+| A tool `title`, an `outputSchema`, and `structuredContent` with the same JSON in a text block | 2025-06-18 |
+| RFC 9728 metadata, and a 401 whose `WWW-Authenticate` carries `resource_metadata` | 2025-06-18 |
+| The RFC 8707 `resource`, an audience check, and no token passthrough | 2025-06-18 |
+| A 403 with `error="insufficient_scope"` and the needed `scope` in the challenge | 2025-11-25 |
+| A tool input that fails validation is a tool error with `isError: true`, not a protocol error | 2025-11-25 |
+
+**What EA-2a already built.** PKCE with S256 only, no token in a query string, RFC 8414 metadata, `iss` in the redirect (RFC 9207), and Client ID Metadata Documents. Its fence is `tests/unit/test_agent_oauth_server.py`.
+
+**What came from the 2026-07-28 text only.** The owner-side research of 2026-10-10 read it at `modelcontextprotocol.io/specification/latest`. No copy of that text is in the tree. EA-3 builds no rule that exists only in it.
+
+- The 2026-07-28 revision is real, and its wire shape differs. A request is stateless and carries required `_meta` fields, and a result carries a `resultType`. EA-3c accepts that revision after a copy of its text is in the tree (§15).
+- It prefers Client ID Metadata Documents, and it marks Dynamic Client Registration as deprecated.
+- It says that the tool list may differ by authorization and must not differ by connection state. EA-3 keeps this, because the older revisions allow it. The list varies only by scope.
+- A server must validate inputs, check access, limit the rate and sanitize outputs. EA-3, EA-7 and §9.4 cover these.
 
 ### 5.4 Where members and admins manage it: the Integrations app (D-EA-9, recommended)
 
@@ -174,8 +200,11 @@ The owner suggested on 2026-10-11 that the Integrations app should list inbound 
 - **Authorize page** at `https://app.metorite.com/connect/authorize`. EA-4 builds it.
 - **Store:** `packages/acb_auth/acb_auth/agent_tokens.py`. It follows `acb_auth/email_otp.py`.
 - **Authenticated half:** `apps/services/gateway/gateway/routes/agent_access.py`, prefix `/agent-access`, behind default-deny.
-- **Edge unit:** a new uv member `apps/services/agent_edge/`. EA-3 adds `/mcp` to it.
-- **Flag:** a `Settings` field `agent_access_enabled`, default false, which reads `AGENT_ACCESS_ENABLED`.
+- **Edge unit:** a new uv member `apps/services/agent_edge/`. EA-3b adds `/mcp` to it, in `agent_edge/mcp.py`, `tools.py`, `bearer.py`, `gateway_client.py` and `cursor.py`.
+- **Signing:** `packages/acb_auth/acb_auth/agent_signing.py` (EA-3a). It holds the one canonical string and the one HMAC of §10.1. The edge signs with it, and the gateway checks with it.
+- **Allowlist:** `MCP_ROUTES` in `packages/acb_auth/acb_auth/agent_oauth.py` (EA-3a, §9.5). The edge client and branch 0 of the gateway both read it.
+- **Flag:** a `Settings` field `agent_access_enabled`, default false, which reads `AGENT_ACCESS_ENABLED`. The edge and the gateway read the same flag through `agent_oauth.enabled()`.
+- **EA-3 Settings:** `agent_edge_signing_key` and `agent_edge_signing_key_previous`, both default empty. `agent_edge_gateway_url`, default `http://127.0.0.1:8080`. §10.1 gives their rules.
 - **Do not touch:** `routes/oauth.py` (a different OAuth client, retired by WS-54), `routes/integrations.py`, `integration_connections`, `outbound_guard.py`, `nav.ts` and `launch_surface.md`. Reuse `outbound_guard.py` and never edit it. Do not name a new module `oauth.py`.
 - **Lifetimes** are `Settings` defaults, so a test can assert them.
   - Access token: 3600 seconds.
@@ -192,7 +221,7 @@ The owner accepted every default below in chat on 2026-10-10, with the words "go
 | # | Question | Accepted | Why |
 |---|---|---|---|
 | D-EA-1 | The edge host | `mcp.metorite.com` | No session cookie reaches it. §5.2 |
-| D-EA-2 | Edge in its own unit, or a gateway router | Own unit | Smaller blast radius for the internal bearer. §5.1 |
+| D-EA-2 | Edge in its own unit, or a gateway router | Own unit | Smaller blast radius for the internal bearer. §5.1. Since EA3-1 the edge holds a signing key, and no bearer |
 | D-EA-3 | Authorization server: a vetted library inside our code, or a hosted OAuth server | Library inside our code | We already own the member session and the tenant tables. A second identity system is a second seam |
 | D-EA-4 | May a connection reach the member's personal projects | **No by default.** The consent page offers an opt-in box, off | Personal projects are private to one member. A wrong default leaks private work |
 | D-EA-5 | A personal access token for headless agents (CI, a server) | Not in version 1 | An interactive OAuth flow covers Claude Code and desktop clients. A token is a long-lived secret and needs its own review |
@@ -201,6 +230,21 @@ The owner accepted every default below in chat on 2026-10-10, with the words "go
 | D-EA-8 | Who may connect | An organization admin switches the feature on. Then any member may connect, unless the admin restricts clients to an allow list | Default OFF keeps a new tenant safe |
 | D-EA-9 | Where members and admins manage connections | **Recommended, not yet decided.** The Integrations app (WS-54) lists inbound agents and outbound services in one list. The two stores stay apart. §5.4 | The owner suggested it on 2026-10-11. One place to see and revoke every connection |
 
+### 6.1 The engineering decisions of the EA-3 audit (EA3-1 to EA3-8, 2026-10-11)
+
+A spec audit of EA-3 on 2026-10-11 gave NO-GO. The spec had no testable done-when for the authority rule or the signed header, and it left design choices open. The orchestrator took the eight engineering decisions below on the same day. None of them is a product or pricing call, and none re-opens D-EA-1 to D-EA-9. This spec writes each one into the section that it names, as a rule.
+
+| # | Decision | Where |
+|---|---|---|
+| EA3-1 | The signed header, design B. The edge holds no internal bearer and sends no member header. An HMAC is its only credential, and the gateway checks it in a new branch 0 of `get_current_user` | §10.1 |
+| EA3-2 | A stateless `/mcp` endpoint that answers in JSON only, written by hand in the edge. The `mcp` SDK server is not used. Revisions `2025-06-18` and `2025-11-25`. EA-3c adds `2026-07-28` | §5.3, §9.6 |
+| EA3-3 | The gateway checks the seat on every call. The edge checks the audience and computes the effective scopes | §7.1 |
+| EA3-4 | Pins, the personal opt-out and the seal narrow the Projects visibility seam itself, never an edge filter | §7.3 |
+| EA3-5 | The seven read tools, each with its route, its seam and its output shape | §9.1, §9.4 |
+| EA3-6 | `MCP_ROUTES` in `agent_oauth.py` is the allowlist, with the fence `test_mcp_edge_coverage.py`. The `skill_projects` manifest stays untouched | §9.5 |
+| EA3-7 | EA-3 splits into EA-3a, EA-3b and EA-3c. No migration. No stamp of `last_used_at` | §15 |
+| EA3-8 | The acceptance criteria D1 to D16 and the verification commands | §15.2, §15.1 |
+
 ## 7. The connection model
 
 A **connection** is one agent client that one member has authorized in one organization.
@@ -208,32 +252,70 @@ A **connection** is one agent client that one member has authorized in one organ
 | Field | Meaning |
 |---|---|
 | `id` | Opaque id of the connection |
-| `organization_id`, `member_email` | Bound at consent. Never read from a request. The edge re-checks membership on every call |
+| `organization_id`, `member_email` | Bound at consent. Never read from a request. The gateway re-checks the membership on every call (§7.1) |
 | `client_id`, `client_name`, `client_origin` | Who the agent is. The origin comes from the verified metadata document, not from a self-reported name |
 | `scopes` | The ceiling. See §8 |
 | `pinned_projects` | Optional list of project ids. Empty means every project the member sees |
 | `include_personal` | Opt-in flag from D-EA-4. Default false |
-| `created_at`, `last_used_at`, `expires_at`, `revoked_at` | Lifecycle. A connection expires after 90 days of no use (proposed) |
+| `created_at`, `last_used_at`, `expires_at`, `revoked_at` | Lifecycle. A connection expires after 90 days of no use. `last_used_at` records the last token issue. EA-3 does not stamp it on a tool call (EA3-7) |
 
 ### 7.1 The authority rule
 
-On every call the edge computes the following, and it never caches the result for longer than the gateway's own 60 second access cache.
+The rule is `member's live access ∩ effective scopes ∩ agent scope`. A scope never adds access. A removed grant never waits for a token refresh. The edge does the token steps and the gateway does the member steps, on every call. Neither one keeps a result for longer than the gateway's own 60 second access cache.
 
-1. The token is valid, unexpired, unrevoked, and its audience is this edge.
-2. The member is still in the organization and still holds a seat. If not, answer 401.
-3. The tool's required scope is in `connection.scopes`. If not, answer 403 `insufficient_scope`.
-4. The gateway route runs as the member. Row-level security and the visibility closure then decide what the member sees.
-5. If the connection has pins, the edge checks that the target project is in the pins or below one. If not, answer with the same text as "not found".
-6. If a record is not visible, the answer is "not found". It is never "forbidden". This is rule R5.
+**At the edge (EA-3b), for each `/mcp` request:**
 
-The result is `member's live access ∩ scopes ∩ pins`. A scope never adds access. A removed grant never waits for a token refresh.
+1. Read the bearer token. Call `agent_tokens.lookup_token` with the kind `access`. No live token gives 401.
+2. Check that `lookup.resource` equals `agent_oauth.resource()`. `lookup_token` does not check the audience, so the edge must. Another audience gives 401.
+3. Read the connection row in the same transaction as the lookup. EA-3a extends `_CONNECTION_LIVE_SQL` (`agent_tokens.py:357`) to return `scopes`, `pinned_projects`, `include_personal` and `client_origin`.
+4. Compute the effective scopes: the token scope intersected with the connection scopes. `projects:write` covers `projects:read`.
+5. Check that the effective scopes hold the scope of the tool. If not, answer 403 `insufficient_scope` (§9.6).
+6. Call the gateway with a signed request (§10.1). A gateway 401 becomes an MCP 401.
+
+**At the gateway (EA-3a), in branch 0 of `get_current_user`:** the seven steps of §10.1. Its steps 5 and 6 are the seat check. "Seat" means that `resolve_access` returns `is_active` true, and that the member holds an active membership in the organization of the connection.
+
+**Why the gateway checks the seat, and not the edge.** The edge may not import the Console seat reader (`tests/unit/test_console_dependency_boundary.py`). The edge may not bind a tenant (`tests/unit/test_agent_oauth_server.py:766`). The gateway already resolves both on every request.
+
+**Not found is the one answer.** If a record is not visible, the answer is "not found", and never "forbidden". A record that a pin hides gets the same text as a record that does not exist (§9.1). This is rule R5.
 
 ### 7.2 What a connection cannot do
 
 - It cannot create or widen another connection.
 - It cannot write a grant, a role, a seat or a setting.
 - It cannot see a sealed tree (D63). It cannot see a personal project unless `include_personal` is true.
-- It cannot call a route that the manifest does not list.
+- It cannot call a route that `MCP_ROUTES` does not list (§9.5).
+
+### 7.3 The agent scope narrows the visibility seam itself (EA3-4)
+
+The Projects visibility seam itself enforces the pins, the personal opt-out and the seal. The edge never filters rows for them. An edge filter would miss the second arm of `task_visibility_clause` (`core.py:1578`). That arm matches a task by its assignee and never reads the project. So without this rule a list would return three kinds of task that the agent must not see:
+
+- an assigned task in a project outside the pins,
+- an assigned task in a personal tree, when `include_personal` is false,
+- a D63 hand-over task, which stays visible to its assignee in a sealed tree (`seal.py:25-35`).
+
+**The shape.**
+
+1. `UserContext` (`acb_auth/roles.py:44`) gains `agent: AgentScope | None = None`. `AgentScope` is a frozen dataclass in `roles.py`. It holds `connection_id`, `pinned_projects` (a tuple of ids), `include_personal` and `actor_via`.
+2. Branch 0 attaches the scope last, with `dataclasses.replace`, after `_with_resolved_access` returns. No other constructor of `UserContext` has to carry it.
+3. `Visibility` (`core.py:1140`) gains `agent: AgentScope | None = None`. `resolve_visibility` (`core.py:1203`) copies `user.agent` into it. `resolve_visibility_for` (`core.py:1247`) does not, because it resolves another person.
+4. `Visibility.project_clause` and `task_visibility_clause` add one `AND` over both arms, and in the `unrestricted` form too. The project column must be in this set:
+
+```
+SELECT id FROM pm_projects
+ WHERE organization_id = CAST(:vis_org AS uuid)
+   AND sealed_at IS NULL
+   [AND personal_owner IS NULL]           -- when include_personal is false
+   [AND id IN (<recursive pin closure>)]  -- when pinned_projects is not empty
+```
+
+5. The pin closure starts at the pinned ids in `:vis_org` and walks `parent_project_id` down. `Visibility.params` adds `vis_pins` only when the scope has pins.
+6. Use a positive `IN`. Never use `NOT IN`, because one NULL row turns `NOT IN` into "no rows match".
+
+**Facts this rests on.** `personal_owner` is set at every depth of a personal tree (`personal.py:538-547`). A seal stamps every node of the tree (`seal.py:18-23`, `:134-156`). So a check on the task's own project is enough, and the clause needs no walk up the tree.
+
+**When `agent` is None, the SQL is byte-identical to today.** A golden test fences it (D3 of §15.2). The hand-over tasks of D63 stay HIDDEN from an agent, even when its member is the assignee.
+
+**What the edge never sends.** `include_triage`, `include_archived`, `archived_only` and `watching`. So an agent sees no triage-parked task and no archived task.
 
 ## 8. Scopes
 
@@ -248,26 +330,47 @@ Scopes are coarse on purpose. A member must be able to read the consent page in 
 
 `projects:write` includes `projects:read`. The server must treat a broader scope as covering a narrower one.
 
+`whoami` needs a live token and no resource scope. Its declared scope is `None`, which means "any live token" (§9.5).
+
 Every future scope needs a spec amendment. The MCP spec says a client must treat the scope in a challenge as authoritative. We therefore challenge with the exact scope a tool needs.
 
 ## 9. The tool surface
 
 Tool names use letters, digits and underscores. Descriptions are written for a model: they say what the tool does, when to use it, and what it returns. The voice contract in `agent_writing_voice.md` binds the text a tool returns to a human, and not the schema.
 
-### 9.1 Reads (class A, `readOnlyHint: true`)
+### 9.1 Reads (class A, `readOnlyHint: true`) — the EA-3 inventory (EA3-5)
 
-| Tool | Input | Returns |
-|---|---|---|
-| `whoami` | none | The member, the organization, the connection scopes and pins, and the server time |
-| `list_projects` | `parent_id?`, `text?`, `limit`, `cursor` | Projects the connection may see, with `id`, `name`, `path` and `task_counts` |
-| `get_project` | `project_id` | Fields, statuses, task types, tags and custom field definitions |
-| `list_tasks` | `project_id?`, `status?`, `type?`, `tag?`, `assignee?`, `text?`, `updated_since?`, `limit`, `cursor` | A page of tasks with `id`, `key`, `title`, `status`, `assignees`, `due_at`, `version` |
-| `get_task` | `task_id` | The full task, its description, references, relations and a `version` |
-| `get_task_timeline` | `task_id`, `kind?`, `limit`, `cursor` | Comments and events |
-| `search_tasks` | `query`, `project_id?`, `limit` | Ranked hits across the visible tasks |
-| `get_company_context` | `topics?` | The D-EA-6 context as structured text |
+EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_ROUTES`. Each route reads through the visibility seam that the row names, so the agent scope of §7.3 applies.
 
-Each list tool pages with an opaque cursor, caps `limit` at 100, and returns `nextCursor`. A list never returns a task outside the member's visibility. The tool uses `task_visibility_clause`, as the REST route does.
+| Tool | Scope | Input | Gateway route, and its visibility seam | Returns |
+|---|---|---|---|---|
+| `whoami` | `None` (any live token) | none | `GET /auth/me` (`routes/admin/me.py:157`, router at `:26`), plus the connection row of §7.1 step 3 | The member's email, the organization id, the effective scopes, the pins, `include_personal` and the server time |
+| `list_projects` | `projects:read` | `parent_id?`, `text?`, `limit`, `cursor` | `GET /projects/tree` (`tree.py:253`), through `Visibility.project_clause`. The route takes no parameter. The edge flattens the tree, filters by `parent_id` and `text`, and pages it, after the gateway narrowed the rows | `id`, `name`, `path` (the names from the root down), `parent_id` and `task_counts` (`tasks`, `done`, `cancelled`) |
+| `get_project` | `projects:read` | `project_id` | Five reads, each through `load_visible_project`: `GET /projects/nodes/{project_id}` (`tree.py:395`), and its `/statuses` (`admin.py:155`), `/types` (`admin.py:914`), `/fields` (`custom_fields.py:385`) and `/tags` (`tags.py:316`) | The project fields, its statuses (`id`, `name`, `category`), task types, custom field definitions and tags |
+| `list_tasks` | `projects:read` | `project_id?`, `status_id?`, `tag?`, `assignee?`, `text?`, `limit` (1 to 100, default 50), `cursor` | `GET /projects/tasks` (`tasks.py:180`), through `task_visibility_clause`. `tag` maps to `tags`, `text` maps to `q`, and `limit` and `cursor` map to `page_size` and `page` | A page of tasks with `id`, `task_number`, `title`, `status`, `assignees`, `due_at` and `version`, plus `total` and `nextCursor` |
+| `get_task` | `projects:read` | `task_id` | `GET /projects/tasks/{task_id}` (`tasks.py:335`) and `GET /projects/tasks/{task_id}/relations` (`relations.py:193`), each through `load_visible_task` | The full task with its `description`, `status`, `assignees`, subtasks, links and `version` |
+| `get_task_timeline` | `projects:read` | `task_id`, `kind?` (`all`, `comments` or `events`, default `all`), `limit` (1 to 100, default 50), `cursor` | `GET /projects/tasks/{task_id}/timeline` (`activities.py:158`), through `load_visible_task`. `kind` and the `Page` parameters pass through | Comments and events, newest first, plus `total` and `nextCursor` |
+| `search_tasks` | `projects:read` | `query`, `limit` (1 to 50, default 50) | `GET /projects/search` (`search.py:227`), through `task_visibility_clause`. `query` maps to `q`. The route caps the hits at `MAX_HITS`, 50 (`search.py:99`), and has no pages | Ranked hits with `id`, `task_number`, `title`, `project_id`, `project_name`, `status` and `due_at`, plus `truncated` |
+
+**Rules for every tool.**
+
+- **No `type`, no `updated_since`, no `project_id` on search.** No route accepts them, so EA-3 drops them.
+- **`task_number`, not `key`.** A task returns its `task_number` until EA-6 decides the key format (§11).
+- **`version` is `updated_at`.** It is the token that `If-Match` compares (`core.py:1755`). EA-6 sends it back.
+- **`status` is an object with `id` and `name`.** For `list_tasks` and `get_task`, the edge reads `/statuses` once for each distinct project on the page, inside one tool call, and keeps no cache. A task that reaches the member only as its assignee has a project the member cannot open. Its status `name` is then null.
+- **References move to EA-6.** EA-3 returns none, because `pm_task_refs` does not exist yet.
+- **The edge drops the `task_count` of each tag in `get_project`.** That count covers every task of the root (`tags.py:339-344`), and the visibility seam does not narrow it.
+- **One not-found text.** Any gateway 404 becomes `isError: true` with the text `Project not found.` or `Task not found.`. The text is the same whether the record does not exist, a pin hides it, or the member cannot see it.
+
+**Pages.** Each list tool caps `limit` at 100 and returns `nextCursor` while more rows exist. `search_tasks` caps at 50 and returns `truncated` in its place.
+
+**The opaque cursor.** A cursor is `<payload>.<tag>`. `<payload>` is the base64url form of a JSON object with four keys: `page`, `size`, `filter` and `connection`. `filter` is the hex SHA-256 of the sorted-key JSON of every input except `limit` and `cursor`. `<tag>` is the base64url HMAC-SHA256 of `<payload>`. Its key is the HMAC-SHA256 of `agent_edge_signing_key` over the label `cursor-v1`.
+
+**A bad cursor.** A cursor fixes the page size, so the edge ignores a `limit` sent with a cursor. A cursor with a bad tag, another filter or another connection gives `isError: true`. A key rotation ends every open cursor in the same way, and the agent lists again.
+
+**Offset pages can skip or repeat a row.** The routes page by offset. A task that changes between two calls can move across a page boundary. Each list tool description says so.
+
+`get_company_context` is not in EA-3. EA-5 adds it, with the `context:read` scope (§13).
 
 ### 9.2 Writes (class B, undoable, and class C, hard to undo)
 
@@ -296,32 +399,157 @@ A resource read uses the same authority rule as a tool call.
 
 A task title, a description and a comment come from other people. An outside agent reads them. A hostile comment can tell the agent to leak data. We cannot stop that inside the agent. We reduce the damage as follows:
 
-- A result wraps free text in a field named `untrusted_text`, and the tool description says the agent must not follow instructions found there.
+- **The shape (EA-3).** Every free-text field comes back as an object, `{"untrusted_text": "<string>"}`, and never as a bare string. The free-text fields are titles, descriptions and comment bodies. They are also the names of projects, statuses, task types, tags and custom fields. A null stays null.
+- **The description.** Each tool description says that the agent must not follow instructions found inside an `untrusted_text` value.
 - A write tool never accepts a project id or a member that the agent found only in free text. It accepts ids that came from a prior structured result.
 - The consent page says that the data goes to the client's provider.
 
-### 9.5 The allowlist is a manifest, and a fence enforces it
+### 9.5 The allowlist is `MCP_ROUTES`, and a fence enforces it (EA3-6)
 
-The edge does **not** invent a second route list. It extends the `skill_projects` manifest with one more column: `mcp: expose | exclude`. The proposed fence is `tests/unit/test_mcp_edge_coverage.py`. It fails when:
+**The home.** `MCP_ROUTES` is a frozenset of `(method, template)` pairs in `packages/acb_auth/acb_auth/agent_oauth.py`. The edge client reads it before it sends a request. Branch 0 of the gateway reads it before it resolves a member (§10.1, step 3). EA-3 lists twelve pairs, all `GET`:
 
-- A Projects route has no decision.
-- A route marked class C or X is marked `expose`.
-- A tool lacks a `required_scope`, an annotation, or an `outputSchema`.
-- A tool accepts a field that the matching route does not accept.
+- `/auth/me`
+- `/projects/tree`
+- `/projects/nodes/{project_id}`, with its `/statuses`, `/types`, `/fields` and `/tags`
+- `/projects/tasks`, `/projects/tasks/{task_id}`, with its `/relations` and `/timeline`
+- `/projects/search`
+
+**What stays untouched.** Do not edit `apps/skills/skill-projects/skill_projects/manifest.py`. Do not edit `tests/unit/test_projects_chat_coverage.py` or `tests/unit/test_projects_field_parity.py`. Do not put the edge tools into `TOOL_ANNOTATIONS` of `acb_skills`. Exclusion is the default: branch 0 refuses every route that `MCP_ROUTES` does not list.
+
+**The tool record.** Each tool in `agent_edge/tools.py` declares `name`, `title`, `required_scope`, `inputSchema`, `outputSchema`, `annotations` and its routes. `required_scope` is a scope string, or `None` for "any live token". The annotations are `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`.
+
+**The fence.** `tests/unit/test_mcp_edge_coverage.py` fails when any of these rules breaks:
+
+1. Each pair in `MCP_ROUTES` is a route that the gateway serves, and its method is `GET`.
+2. Each pair is class A in `MANIFEST`, or it is a named exception. EA-3 has one exception, `GET /auth/me`. No class B, C or X route appears.
+3. Each tool declares a `required_scope` key, the four annotations, an `inputSchema` and an `outputSchema`.
+4. Each tool input maps to a parameter of its route. The fence reads the parameters from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does. The tool record declares each map, such as `text` to `q`.
 
 This is R7. The rule names its fence.
 
+### 9.6 The `/mcp` wire contract (EA3-2)
+
+**Written by hand.** The edge holds a stateless `/mcp` endpoint that answers in JSON only, about 300 lines. It handles `initialize`, `ping`, `tools/list` and `tools/call`.
+
+**Not the SDK server.** Do not use the server of the `mcp` SDK. The package `mcp` 1.30.0 is in `uv.lock` only as a dependency of the orchestrator. Its server refuses any `MCP-Protocol-Version` later than `2025-11-25`. The SDK may serve as a client in tests.
+
+**The transport.**
+
+1. One `POST /mcp`. Each answer is `application/json`. The edge ignores the `Accept` header.
+2. The edge never sends `Mcp-Session-Id`.
+3. `GET /mcp` and `DELETE /mcp` answer 405.
+4. A notification, or a JSON-RPC response that a client posts, gets 202 with no body.
+5. A JSON-RPC batch gets HTTP 400 with the error `-32600`. A body that is not JSON gets HTTP 400 with `-32700`.
+6. When `Origin` is present, it must equal the origin of `agent_oauth.issuer()`. Any other origin gets 403.
+
+**The version.**
+
+1. `initialize` answers with the client's `protocolVersion` when it is `2025-06-18` or `2025-11-25`. For any other value it answers `2025-11-25`.
+2. Each request after `initialize` carries `MCP-Protocol-Version`. No header means `2025-03-26`. The edge accepts `2025-06-18` and `2025-11-25`. Any other value gets 400.
+3. `2026-07-28` gets 400 in EA-3. EA-3c adds it.
+
+**Authorization errors.**
+
+1. A request with no token, or with a token that fails §7.1 steps 1 or 2, gets 401. The header is `WWW-Authenticate: Bearer resource_metadata="<issuer>/.well-known/oauth-protected-resource/mcp"`. When the request sent a token, the header also carries `error="invalid_token"`.
+2. A gateway 401 gets the same MCP 401, with `error="invalid_token"`.
+3. A `tools/call` of a known tool that the effective scopes do not cover gets 403. The header is `WWW-Authenticate: Bearer error="insufficient_scope", scope="projects:read", resource_metadata="..."`.
+
+**Tools.**
+
+1. `tools/list` returns the tools whose `required_scope` the effective scopes cover. The list varies only by scope.
+2. A result carries `structuredContent` that matches the `outputSchema`, and one text block with the same JSON.
+3. A failure that the model can fix returns `isError: true` with a text. These are such failures: an input that fails the `inputSchema`, and a gateway 404 or 422. A bad cursor is one too. So is a gateway 5xx, or no answer within 10 seconds, and its text says to try again.
+4. An unknown tool gets the JSON-RPC error `-32602`. An unknown method gets `-32601`. Both answer with HTTP 200.
+
 ## 10. Security
 
-### 10.1 The internal bearer is the sharpest edge
+### 10.1 The signed request replaces the internal bearer (EA3-1)
 
-The gateway trusts `Authorization: Bearer <internal token>` plus `X-User-Email`. The edge must hold that bearer. So the edge **can** act as any member. Five controls hold it down:
+**The sharpest edge.** The gateway trusts `Authorization: Bearer <internal token>` plus `X-User-Email` (branch 1a, `deps.py:480`). Any holder of that bearer can act as any member.
 
-1. The edge sets `X-User-Email` only from the connection row. It never copies a header from the request.
-2. The gateway adds a rule. A request with `X-Actor-Via: mcp:*` must also carry a second header that only the edge signs. The header holds an HMAC over the member, the connection id and a timestamp. The gateway checks the signature and a 60 second window. This limits what a stolen bearer can do.
-3. The edge unit runs in its own sandbox, with no read access to `.env` beyond its own variables.
-4. The caddy vhost strips `X-User-Email`, `X-User-Role` and `X-Actor-Via` from public requests. The survey found that the Caddyfile did not do this on 2026-08-03. Confirm the current state first. This is an owner gate (HANDOFF).
-5. Before the edge goes live, a check proves that `GATEWAY_INTERNAL_TOKEN` is provisioned. The survey found that it can fall back to the LLM key.
+**Why the edge holds no bearer.** The first draft gave the edge that bearer plus an HMAC header for `mcp:*` calls. That control did not limit a stolen bearer. A thief leaves out `X-Actor-Via` and uses branch 1a. So the edge holds **no** bearer, and an HMAC is its only credential.
+
+**What the edge sends.** The edge calls the gateway at `agent_edge_gateway_url` (default `http://127.0.0.1:8080`). It sends no `Authorization` header and no `X-User-Email`. It sends four headers:
+
+| Header | Value |
+|---|---|
+| `X-Agent-Connection` | `<organization uuid>.<connection uuid>`, from the token lookup |
+| `X-Agent-Timestamp` | The Unix time in whole seconds |
+| `X-Actor-Via` | `mcp:<slug>`, the value of `agent_oauth.actor_via_for(client_origin)` |
+| `X-Agent-Signature` | `v1,<kid>,<hex>` |
+
+**The signed string.** `agent_signing.py` builds it, once, for both sides. The signature is the lower-case hex HMAC-SHA256 of these lines, joined by `\n`, with the UTF-8 bytes of the key:
+
+```
+v1
+<timestamp>
+<organization uuid>
+<connection uuid>
+<X-Actor-Via value>
+<METHOD, upper case>
+<path>?<sorted query>
+<hex SHA-256 of the body>
+```
+
+- The path is the URL path as sent. The gateway reads it from `request.url.path`.
+- The query is its pairs, sorted by key and then by value, and encoded with `urllib.parse.urlencode`. The gateway parses `request.url.query` with `keep_blank_values=True` and encodes it again the same way. With no pairs, the line is the path alone, with no `?`.
+- A GET has an empty body, so its hash is the SHA-256 of zero bytes.
+
+**The keys.**
+
+- Two Settings hold them: `agent_edge_signing_key` and `agent_edge_signing_key_previous`. Each one must be at least 32 bytes.
+- The gateway refuses a key equal to `GATEWAY_INTERNAL_TOKEN` or to `LITELLM_MASTER_KEY`. It treats a refused or a short key as unset.
+- The `kid` is the first 8 hex characters of the SHA-256 of the key. The gateway picks the key whose `kid` matches. The edge signs with `agent_edge_signing_key` only.
+
+**Rotation.**
+
+1. On the gateway, put the old key in `agent_edge_signing_key_previous` and the new key in `agent_edge_signing_key`.
+2. Restart the gateway.
+3. Set the new key on the edge, and restart the edge.
+4. Clear `agent_edge_signing_key_previous` on the gateway, and restart the gateway.
+
+**Provisioning.** To set the key on both units is an `env-write` act. D97 makes it an owner gate, and it is part of EA-10 (HANDOFF H-301). Until then the feature is inert, because branch 0 refuses every request while no key is set.
+
+**Branch 0 of `get_current_user` (EA-3a).** `get_current_user` (`deps.py:425`) gains a keyword parameter `request: Request = None`. FastAPI injects it.
+
+**The callers that send no request.** The ten direct callers in three test files pass no request, and they keep working. They are in `test_service_identity_and_webhook_auth.py`, `test_tenant_request_binding.py` and `test_usage_attribution.py`. When no request arrives, branch 0 does not run. That covers those callers, and a WebSocket route, where FastAPI injects no `Request`.
+
+**The trigger.** Branch 0 runs before branch 1 when the request carries any header whose name starts with `X-Agent-`. It also runs when `X-Actor-Via`, after strip and lower case, starts with `mcp:`.
+
+**The seven steps.** Any failure returns the anonymous context with `NO_ACCESS`, so default-deny answers 401.
+
+1. The flag `agent_access_enabled` is on, and a usable key is set.
+2. The `kid` names a usable key, and `hmac.compare_digest` matches the signature. The timestamp is within 60 seconds of the gateway clock, before or after.
+3. The method is `GET`. The pair of the method and `_route_template(request)` (`deps.py:679`) is in `MCP_ROUTES`.
+4. A new function in `agent_tokens.py` reads the connection by its id. It reuses `_session` and `_BIND_SQL`, and it binds the signed organization. The connection must be live: not revoked, and not past `expires_at`.
+5. The member email comes from that row, never from a header. Branch 0 then calls `_with_resolved_access` with that email.
+6. The resolved organization must equal the signed organization, and `access.is_active` must be true.
+7. `X-Actor-Via` must equal `agent_oauth.actor_via_for(client_origin)` for that row, and match `ACTOR_VIA_PATTERN`.
+
+On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind_session_member`, because no route in `MCP_ROUTES` calls a model.
+
+**`actor_via_for`.** EA-3a adds it to `agent_oauth.py`. It returns `mcp:` plus the lower-case ASCII host of the origin, with no scheme and no port. When that value does not match `ACTOR_VIA_PATTERN`, it returns `mcp:` plus the first 16 hex characters of the SHA-256 of the origin. An empty `client_origin` fails step 7.
+
+**One copy of the pattern.** `acb_auth` may not import the gateway. So `ACTOR_VIA_PATTERN` moves to `agent_oauth.py`, and `core.py:79` imports it from there. One copy stays.
+
+**Never a fall-through.** Branch 0 never falls through to branch 1a, 1b or 2. These all fail with 401:
+
+- an `mcp:*` request that carries a valid internal bearer and `X-User-Email`,
+- the same request with `GATEWAY_TRUST_UNVERIFIED_SSO_HEADERS=1`,
+- the same request on a box where the internal token falls back to the LLM key.
+
+**Replay.** A replay inside the 60 second window repeats an identical GET, and it changes nothing. A write needs more. EA-6 must add a nonce before any write route joins `MCP_ROUTES`.
+
+**The HMAC is the boundary.** The Caddy block of `api.metorite.com` proxies every request to the gateway with no header strip (`deploy/hostinger/caddy/Caddyfile:47-51`). So branch 0 is reachable from the internet. Only the HMAC stands between a stranger and the identity of an agent.
+
+**No `guard-write`.** `plan-guard.mjs` protects no file in `acb_auth`. Its protected paths are `.env` files, `deploy/`, the guard itself and `settings.json`. So branch 0 needs no `guard-write` grant. It needs the adversarial review of EA-11.
+
+**The other controls.**
+
+1. The edge never copies a header from the client request into a gateway request. The gateway reads the member from the connection row.
+2. The edge unit runs in its own sandbox, with no read access to `.env` beyond its own variables. EA-10 builds the sandbox.
+3. The Caddy block of `api.metorite.com` strips `X-User-Email`, `X-User-Role` and `X-Actor-Via` from public requests. On 2026-10-11 it does not. The change edits `deploy/`, so it is an owner gate, and H-301 carries it.
+4. Before the edge goes live, a check proves that `GATEWAY_INTERNAL_TOKEN` is provisioned. The edge no longer holds the bearer, and EA-10 still needs this proof. The gateway itself falls back to the LLM key when that token is unset (`deps.py:110-134`).
 
 ### 10.2 Threat table
 
@@ -330,14 +558,16 @@ The gateway trusts `Authorization: Bearer <internal token>` plus `X-User-Email`.
 | Stolen access token | Opaque token. Short life (proposed 1 hour). Bound to one resource. Revocable at once |
 | Stolen refresh token | Rotation on every use. A reused token revokes the whole connection |
 | Token for another service replayed here | Audience check on `resource`. The edge refuses any other token |
-| The edge replays a client token to the gateway | Never. The edge calls the gateway with its own credential and the member headers. It never forwards the client token |
+| The edge replays a client token to the gateway | Never. The edge calls the gateway with the signed headers of §10.1 only. It never forwards the client token, and it sends no member header |
+| A stolen signing key | The thief can act only as a member who holds a live connection, because the gateway reads the member from that row. It reaches only the GET routes of `MCP_ROUTES`. A rotation (§10.1) ends it |
+| A holder of the internal bearer forges an `mcp:*` stamp | Branch 0 refuses the request, and never falls through to branch 1a (§10.1) |
 | Consent phishing (a fake client with a trusted name) | Show the verified origin from the client metadata. Show the redirect host. An admin may restrict to an allow list (D-EA-8) |
 | Open registration abuse | Client ID Metadata Documents need a fetch with a size, time and address limit (no private addresses). Dynamic registration is rate limited and expires unused clients after one day |
 | Confused deputy | One consent per client and per member. State and PKCE are required. `iss` is checked by the client, and we send it |
 | A write by a read-only connection | Scope check before the call, and the fence in §9.5 |
-| Over-reading by a broad grant | Pins, the personal-project opt-in, a 100-row cap, and a per-connection quota |
+| Over-reading by a broad grant | Pins and the personal-project opt-in, inside the visibility seam (§7.3). A 100-row cap, and a per-connection quota |
 | Prompt injection from a task text | §9.4 |
-| Cross-tenant read | The edge never takes the organization from the request. The gateway binds the tenant from the member (R5, R11). Fence: EA-9 |
+| Cross-tenant read | The edge never takes the organization from the request. The gateway binds the tenant from the member (R5, R11), and branch 0 checks it against the signed organization. Fence: EA-9 |
 | Runaway agent loop | Rate limits, and an idempotency key on create |
 
 ### 10.3 Tenancy of the new tables
@@ -375,14 +605,14 @@ A pull request, a commit and a branch are structured facts. A comment hides them
 - The migration is an expand-only change (R6). Take the number at build time (R1). The next free number is **not** named here.
 - The task detail screen shows the references. That is a Projects UI slice. See EA-6.
 
-**A human-readable task key.** A commit message or a pull request title should carry the task key, so a person can read the link. `get_task` returns `key`. The survey did not confirm the key format, so EA-6 must read `pm_tasks.task_number` and the project key rules first.
+**A human-readable task key.** A commit message or a pull request title should carry the task key, so a person can read the link. Until EA-6, `get_task` returns `task_number` and no `key` (§9.1). The survey did not confirm the key format, so EA-6 must read `pm_tasks.task_number` and the project key rules first.
 
 ## 12. The coding-agent scenario, end to end
 
 Project 7 holds the backlog. The member connects Claude Code once. The steps below show the calls.
 
 1. **Connect.** The member runs the client's "add MCP server" command with `https://mcp.metorite.com/mcp`. A browser opens on `app.metorite.com/connect/authorize`. The member signs in, picks `projects:read`, `projects:write` and `offline_access`, pins project 7, and approves.
-2. **Find work.** The agent calls `list_tasks` with `project_id=7`, `type=coding`, `status=todo`. It reads one task with `get_task` and notes the `version`.
+2. **Find work.** The agent calls `list_tasks` with `project_id=7` and the `status_id` of the "To do" lane. It reads one task with `get_task` and notes the `version`.
 3. **Start.** The agent calls `claim_task`. The member becomes the assignee. The status moves to "in progress". The timeline reads "moved by <member> through mcp:claude-code".
 4. **Work.** The agent works in its own checkout. Metorite sees none of it.
 5. **Report.** The agent calls `add_task_reference` for the branch, then for each pull request. It calls `add_comment` with a short summary.
@@ -417,27 +647,75 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-1 | **BUILT 2026-10-11, dark.** **Tables and token store.** One expand-only migration: `agent_connection` (tenant-scoped), `agent_token` (RLS-exempt, with a `kind` of `access`, `refresh` or `code`) and `agent_client` (RLS-exempt). A store module in `packages/acb_auth/acb_auth/agent_tokens.py`. The module keeps only the SHA-256 of a random opaque token. Rotation uses one `UPDATE ... WHERE used_at IS NULL RETURNING`. No grace window | `tests/unit/test_agent_connection_tokens.py` runs on a real database **as the non-privileged role, on the promoted catalog**. It proves: a lookup by hash works with no tenant bound and returns the connection id and the organization id. An unbound read of `agent_connection` returns zero rows. A reused refresh token revokes the connection and every token of it. A code works once. Two concurrent refreshes revoke the connection | AGENT-SAFE |
 | EA-2a | **BUILT 2026-10-11, dark.** **Authorization server core, backend only.** The public half runs in the edge unit `apps/services/agent_edge/`: the metadata documents, `token` and `revoke`. The authenticated half is `apps/services/gateway/gateway/routes/agent_access.py` under `/agent-access`: validate an authorize request, then approve it and mint a code. It also holds the CIMD fetch, through `outbound_guard.py` | `tests/unit/test_agent_oauth_server.py` runs in process and proves each of these. The two metadata documents carry `issuer`, `authorization_endpoint`, `token_endpoint`, `revocation_endpoint`, `code_challenge_methods_supported` of `["S256"]`, `client_id_metadata_document_supported`, `resource` and `authorization_servers`. The server refuses an authorize request with no PKCE or with `plain`. It refuses a token request with a wrong verifier, resource, redirect URI or client. That refusal spends nothing, because the code spend matches all four values (fix round 1). It refuses a code used twice and a token in a query string. The redirect carries `iss`. A CIMD URL that resolves to a private address, a body over the cap or a slow host is refused. `revoke` answers 200 for an unknown token. With the flag OFF every new route answers 404. `tests/unit/test_default_deny_auth.py` stays green | AGENT-SAFE |
 | EA-2b | **Dynamic client registration.** A fallback for clients with no CIMD support. A Postgres counter on the row limits it, as `186_auth_email_otp_token.sql` does for the one-time code. Unused clients expire after one day | The test shows the limit, the expiry and a 404 with the flag OFF | AGENT-SAFE |
-| EA-3 | **The edge, read tools.** `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline`, `search_tasks`. The authority rule of §7.1. The signed header of §10.1, control 2, lands here, with the gateway check | A test shows a member sees the same tasks over MCP as in the REST route. A removed grant removes the task on the next call | AGENT-SAFE |
+| EA-3a | **The gateway half of the read tools.** Branch 0 in `acb_auth/deps.py` (§10.1). `UserContext.agent` and `AgentScope` in `roles.py`, and the `Visibility` narrowing in `gateway/routes/projects/core.py` (§7.3). The new `packages/acb_auth/acb_auth/agent_signing.py`. `MCP_ROUTES`, `actor_via_for` and `ACTOR_VIA_PATTERN` in `agent_oauth.py` (§9.5). The connection read in `agent_tokens.py`, and the wider `_CONNECTION_LIVE_SQL` (§7.1). The three Settings of §5.5. No migration: migration 248 already holds `scopes`, `pinned_projects`, `include_personal` and `client_origin`. It ships dark. Its merge deploys it live but inert, because no current caller sends `X-Agent-*` or `mcp:*`. The audit checked `skill_projects` (`client.py:135`) and the workbench | D1, D2, D3, D4 and D14 (the gateway 401) of §15.2. D15 rules 1 and 2 | AGENT-SAFE |
+| EA-3b | **The edge half of the read tools.** `agent_edge/mcp.py`, `tools.py`, `bearer.py`, `gateway_client.py` and `cursor.py`. The seven tools of §9.1, on the wire contract of §9.6. It ships dark. EA-3b does not stamp `last_used_at` | D5 to D13, D14 (the MCP 401), D15 rules 3 and 4, and D16 of §15.2 | AGENT-SAFE |
+| EA-3c | **Accept the 2026-07-28 revision, after a copy of its text is in the tree.** Its requests are stateless with required `_meta` fields, and its results carry a `resultType` (§5.3) | A test with the pinned text shows a `2026-07-28` client can list and call each tool. EA-11 repeats it with a real client | AGENT-SAFE |
 | EA-4 | **Consent and admin.** The consent page, the Connected agents list in the Integrations app (§5.4), the org switch, the client allow list, revoke. The consent page checks `Origin` and uses a `SameSite` session. It never answers approve with a 3xx. `check` mints a one-time consent ticket, and `approve` must present it, so an approval cannot skip the screen. The redirect URI rules move from a deny list to the forms of RFC 8252: `https`, loopback `http` with any port (§7.3) and a reverse-DNS private-use scheme. EA-4 or EA-2b makes that change | A revoked connection gets 401 on the next call. A suspended member gets 401. A cross-site approve and an approve with no ticket are refused | AGENT-SAFE |
 | EA-5 | **Company context.** `get_company_context` and the three resources, after D-EA-6 is answered | The result holds no data that the member could not read in the app | AGENT-SAFE |
 | EA-6 | **References and write tools.** The `pm_task_refs` migration, the `mcp` source, the write tools, the Projects UI for references | The coding scenario of §12 passes end to end on a real database. A stale version is refused | AGENT-SAFE |
 | EA-7 | **Limits.** A per-connection and per-member limiter on the tenant-prefixed Redis wrapper. A 100-row cap | A test shows the 429 and the `Retry-After` value | AGENT-SAFE |
 | EA-8 | **Audit.** One `acb_audit.record` row per call, with `organization_id` set on the event. An admin read route and view | A denied call writes a row. The admin view lists calls by connection | AGENT-SAFE |
-| EA-9 | **Fences.** `test_mcp_edge_coverage.py`, a tenant fence, a "no client header reaches the gateway" fence, a "no token forwarded" fence | Each fence fails when a mutation breaks its rule (verified red first) | AGENT-SAFE |
-| EA-10 | **Deploy.** The unit file, the Caddy block, the DNS record, the Caddy header strip, the proof that `GATEWAY_INTERNAL_TOKEN` is provisioned (§10.1, control 5), the flag | The flag turns ON for one test organization. The evidence is the deployed SHA and a real client round trip | OWNER-GATE |
+| EA-9 | **Fences.** A tenant fence, a "no client header reaches the gateway" fence, a "no token forwarded" fence. `test_mcp_edge_coverage.py` lands earlier, in EA-3 (D15) | Each fence fails when a mutation breaks its rule (verified red first) | AGENT-SAFE |
+| EA-10 | **Deploy.** The unit file, the Caddy block, the DNS record, the Caddy header strip (§10.1, other control 3), the proof that `GATEWAY_INTERNAL_TOKEN` is provisioned (§10.1, other control 4), `agent_edge_signing_key` on both units and `agent_edge_gateway_url` on the edge (H-301), the flag | The flag turns ON for one test organization. The evidence is the deployed SHA and a real client round trip | OWNER-GATE |
 | EA-11 | **Hardening review.** An adversarial review of §10, then a second pass with a real outside client | Both reviews are recorded in this file | AGENT-SAFE |
 
-Order: EA-0, then EA-1 and EA-2, then EA-3, EA-4 and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-6 and EA-5 can run in parallel after EA-3.
+Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b, then EA-4 and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-6 and EA-5 can run in parallel after EA-3b. EA-3c runs when a copy of the 2026-07-28 text is in the tree.
 
-### 15.1 Verification commands (proposed names, created by the slices)
+### 15.1 Verification commands
 
-- `uv run pytest tests/unit/test_agent_connection_tokens.py`
-- `uv run pytest tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_authority.py`
-- `uv run pytest tests/unit/test_tenant_coverage.py` (must stay green, with the exempt entries named)
-- `bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)"` before every R8 run
-- `npx @modelcontextprotocol/inspector` against the edge, for the conformance run of EA-2
+The EA-3 slices create four test files: `tests/unit/test_mcp_edge_protocol.py`, `test_mcp_edge_signing.py`, `test_mcp_edge_coverage.py` and `test_mcp_edge_authority.py`.
 
-Name each test file in the PR that creates it. Name the files you mean when you run pytest. Do not run `tests/unit/` as a directory.
+**The R8 database.** Run `eval "$(bash scripts/dev_db.sh --export)"`, or export the DSN of a private container. The shared scratch database holds rows from other branches. Use one private pgvector container for each R8 run, and never run two R8 runs at once.
+
+**The new suites, with the EA-1 and EA-2a fences:**
+
+```
+uv run pytest tests/unit/test_mcp_edge_protocol.py tests/unit/test_mcp_edge_signing.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_authority.py tests/unit/test_agent_oauth_server.py tests/unit/test_agent_connection_tokens.py -v -rs
+```
+
+**The suites that must stay green unchanged (D3):**
+
+```
+uv run pytest tests/unit/test_default_deny_auth.py tests/unit/test_service_identity_and_webhook_auth.py tests/unit/test_tenant_request_binding.py tests/unit/test_usage_attribution.py tests/unit/test_identity_pool_timeout.py tests/unit/test_route_template_prefixes.py tests/unit/test_projects_actor_via.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_field_parity.py tests/unit/test_projects_routes.py tests/unit/test_projects_search_r8.py tests/unit/test_projects_agent_grants.py tests/unit/test_db_engine_seam.py tests/unit/test_console_dependency_boundary.py tests/unit/test_tenant_coverage.py -rs
+```
+
+**Lint and types:**
+
+```
+uv run ruff check apps/services/agent_edge packages/acb_auth packages/acb_common apps/services/gateway/gateway/routes/projects/core.py tests/unit/test_mcp_edge_*.py
+uv run mypy apps/services/agent_edge packages/acb_auth/acb_auth/agent_signing.py
+```
+
+**Conformance.** Run `npx @modelcontextprotocol/inspector` against the edge.
+
+Every file in the two pytest lines existed on 2026-10-11, except the four new ones. With `-rs`, a skipped R8 test shows its reason. A skip is not a pass. Name the files you mean when you run pytest. Do not run `tests/unit/` as a directory.
+
+### 15.2 EA-3 acceptance (EA3-8)
+
+Each line is one test, or one set of tests. The parentheses name the slice that proves it.
+
+- **D1** (EA-3a). A valid signature, a live connection and an active member resolve to that member, with the agent scope attached.
+- **D2** (EA-3a). Each of these gets 401:
+  - the flag off, the key unset, a key under 32 bytes,
+  - a bad signature, a wrong `kid`, a timestamp more than 60 seconds off,
+  - a revoked or expired connection, a connection of another organization,
+  - a suspended member, a member who moved to another organization,
+  - a method other than GET, a route outside `MCP_ROUTES`,
+  - `mcp:*` with no signature, `mcp:*` with a bearer and `X-User-Email`, `GATEWAY_TRUST_UNVERIFIED_SSO_HEADERS=1`, the LLM-key fallback.
+- **D3** (EA-3a). The existing auth suites of §15.1 pass unchanged. When `agent` is None, the clause strings are byte-identical to the strings of today, by a golden test.
+- **D4** (EA-3a). A pin, the personal opt-out and the seal each hide their target on both arms of `task_visibility_clause`. A get answers 404, and the `total` of a list leaves the target out. An R8 test proves it on a real database.
+- **D5** (EA-3b). With the flag off, `/mcp` answers 404.
+- **D6** (EA-3b). The 401 headers are exactly as §9.6 says.
+- **D7** (EA-3b). The 403 headers are exactly as §9.6 says, and `tools/list` changes with the scope.
+- **D8** (EA-3b). The version, session, 405, 202, `-32600`, `-32601` and `-32602` rules of §9.6 hold.
+- **D9** (EA-3b). `structuredContent` validates against its `outputSchema`, and a text block holds the same JSON. The not-found text is the same for every cause.
+- **D10** (EA-3b). `limit` is at most 100, and at most 50 for `search_tasks`. A list returns `nextCursor` while more rows exist. A tampered cursor returns `isError: true`.
+- **D11** (EA-3b). No request of the edge carries `include_triage`, `include_archived`, `archived_only` or `watching`.
+- **D12** (EA-3b). Every free-text field arrives in the `untrusted_text` shape of §9.4.
+- **D13** (EA-3b, R8). A member sees the same tasks over MCP as over `GET /projects/tasks`. The test runs once with `include_personal` true and no pins, then once with each narrowing. A second R8 test removes a grant, and the task is gone on the next call.
+- **D14** (EA-3a and EA-3b). A revoked connection and a suspended member each get 401 on the next call. EA-3a proves the gateway 401, and EA-3b proves the MCP 401. The admin member routes clear the 60 second access cache (`invalidate_for` in `routes/admin/members.py`), so a suspension takes effect on the next call. A suspension by another path takes effect within 60 seconds.
+- **D15** (EA-3a rules 1 and 2, EA-3b rules 3 and 4). `test_mcp_edge_coverage.py` passes. Each of its four rules was red first under a named mutation.
+- **D16** (EA-3b). No request of the edge carries a bearer or `X-User-Email`.
 
 ## 16. Shell manifest (R9)
 
@@ -447,17 +725,20 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 
 ## 17. Open risks
 
-- The MCP specification moves. The 2026-07-28 text removed the session and added input-required results. Pin the version in code and re-read it at EA-2.
+- The MCP specification moves. EA-3 accepts only `2025-06-18` and `2025-11-25` (§5.3). A client that speaks only `2026-07-28` cannot connect until EA-3c. EA-11 must test with real clients.
 - A client may speak only an older revision, or only Dynamic Client Registration. EA-2 supports both, and its test list names the clients we test. The list is not written yet.
 - Dynamic Client Registration and metadata fetches are open to abuse. The limits in §10.2 are proposals.
-- The signed-header rule in §10.1 changes the gateway auth path. It needs `guard-write` grants and an adversarial review. It is the riskiest change in this spec.
+- Branch 0 of §10.1 changes the gateway auth path. It is the riskiest change in this spec. It needs the adversarial review of EA-11. It needs no `guard-write` grant, because `plan-guard.mjs` protects no file in `acb_auth`.
+- Branch 0 is reachable from the internet, because the Caddy block of `api.metorite.com` strips no header. The HMAC is the boundary. The edge calls the gateway on loopback, so EA-10 can also strip `X-Agent-*` at Caddy. EA-10 decides that.
+- A replay inside the 60 second window repeats an identical GET and changes nothing. A write tool needs a nonce, so EA-6 must add one first.
+- The edge allows only the origin of the issuer in `Origin` (§9.6). A client that runs in a browser on another origin gets 403. EA-11 checks the real clients.
 - Data that an agent reads goes to its provider. That is the customer's choice, and it is not a Metorite sub-processor. The terms page must say so. This is an owner and legal point (work_plan.md WS-37).
 - The company context is thin today (D-EA-6).
 - A connection has no absolute maximum life. A thief who rotates a stolen refresh token at least once in 30 days keeps the connection alive until somebody revokes it. Proposal: an absolute cap, for example 365 days from `created_at`, as a `Settings` default. EA-4 decides it. EA-1 and EA-2a do not build it.
 - The consent routes of EA-2a trust the session alone. A cross-site request could drive `approve` while a member is signed in. EA-4 closes this with an `Origin` check, a `SameSite` session, no 3xx from approve and a one-time consent ticket from `check` (§15 EA-4).
 - For a private-use scheme, `redirect_host` shows the URI authority as if it were a web host. A client can list `x-evil://claude.ai/cb`, and the consent screen then shows `claude.ai`, although the browser gives the code to the native app that claims `x-evil`. EA-4 must show the scheme with the authority for every scheme other than http and https.
 - The redirect URI rules of EA-2a are a deny list of dangerous schemes. A deny list is never complete. EA-4 or EA-2b moves them to the RFC 8252 forms.
-- D-EA-2 says the edge unit has a smaller blast radius. That is true only after the EA-10 sandbox. The edge holds the database DSN, and EA-3 adds the internal bearer. Without the sandbox, a bug in the edge reaches as far as a bug in the gateway.
+- D-EA-2 says the edge unit has a smaller blast radius. That is true only after the EA-10 sandbox. The edge holds the database DSN, and EA-3 adds the signing key, not the internal bearer. A thief with the key can act as any member who holds a live connection, on the GET routes of `MCP_ROUTES` (§10.2). A thief with the DSN reaches the database directly.
 
 ## 18. Changelog
 
@@ -487,3 +768,11 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **No control character.** The edge answers `invalid_request` to a control character in a form field, and the gateway answers 422. Before, a NUL reached Postgres and gave a 500.
   - **Recorded for later.** §15 EA-4 and §17 now carry the consent page rules, the RFC 8252 redirect forms and the limit of the D-EA-2 claim.
 - 2026-10-11 — The branch moved onto the current `main`. The CRM work of WS-53 took the migration number that EA-1 had used. So the EA-1 migration took the next free number at build time (R1), and this spec still names no number. The four `generated/` phase files are the files of `main` plus the `agent_connection` block, and each now counts 152 tables. The `EXEMPT` map still holds 15 entries, and `main` added none.
+- 2026-10-11 — EA-1 and EA-2a merged in #884 (commit `898cfbc89`).
+- 2026-10-11 — The spec audit of EA-3 gave NO-GO. The spec had no testable done-when for the authority rule or the signed header, and it left design choices open. The orchestrator took eight engineering decisions, EA3-1 to EA3-8 (§6.1). This change writes them in. No code changed.
+  - **The signed request (§10.1).** The edge holds no internal bearer and sends no member header. A new branch 0 of `get_current_user` checks an HMAC, reads the connection and resolves the member. It never falls through to branch 1. The old design did not limit a stolen bearer. The claim that this needs `guard-write` was wrong, and is gone.
+  - **The authority rule (§7.1) and the agent scope (§7.3).** The gateway checks the seat on every call. Pins, the personal opt-out and the seal narrow the visibility seam itself, on both arms of `task_visibility_clause`.
+  - **The tools (§9.1, §9.4, §9.6).** Exactly seven read tools, each with its route and seam. `type`, `updated_since`, `key` and references leave EA-3. The `untrusted_text` shape and the wire contract are now rules.
+  - **The allowlist (§9.5).** `MCP_ROUTES` in `agent_oauth.py`, with the fence `test_mcp_edge_coverage.py`. The `skill_projects` manifest stays untouched.
+  - **The slices (§15).** EA-3 splits into EA-3a, EA-3b and EA-3c, with the acceptance D1 to D16 (§15.2) and the commands of §15.1. EA-3 needs no migration and does not stamp `last_used_at`.
+  - **Other fixes.** §5.3 names the revision of each protocol rule. §4 carries anchors read again at `0bd098f18`. §5.1, §10.2 and §17 drop the internal bearer from the edge.
