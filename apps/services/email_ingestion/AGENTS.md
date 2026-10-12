@@ -52,6 +52,12 @@ All providers implement the `BaseEmailProvider` abstract interface:
   once with the sum of the folder counts, or with `None`. Gmail pages one
   list of all mail (contract 12).
 - `get_attachment()`
+- `get_inline_images(id, max_count, max_bytes)` — the parts of one message with a
+  Content-ID, for the `cid:` pictures of the reading pane (WS-17,
+  `email_app_master_plan.md` §16.6). Outlook lists the parts with base properties
+  only, so Graph sends no bytes of a real file, then reads each inline or image part.
+  Gmail reads the tree once and never opens an attached mail. The default of the base
+  class gives none, so IMAP gives none.
 
 ## Key Contracts
 

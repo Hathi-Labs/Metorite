@@ -16558,6 +16558,8 @@ migration, and no flag.
 
 **Status: 🔨 BUILT on branch `email-message-actions-dark`, not merged (2026-10-10). Review
 fix rounds 1 to 3 are in.** UI only. No migration, no flag and no gateway change.
+§16.6 (2026-10-13) adds a gateway route for the inline pictures, and its own status line
+says where that fix stands.
 
 The owner asked for two changes on 2026-10-10. This section records them, and a fix of
 "Loading message…".
@@ -16761,6 +16763,84 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
 - **A patch can hide a change from another device.** `messagePatches` lives for the page.
   If another device changes a message that this pane changed, the pane shows its own
   change until a reload.
+
+### 16.6 Inline pictures in the body (2026-10-13)
+
+**Status: 🔨 BUILT on branch `email-inline-images`, not merged (2026-10-13).** No migration
+and no flag. A WS-17 bug fix, and it needed no spec audit.
+
+**The report.** The owner's screenshot showed the reading pane in dark mode. A broken
+picture with the alt text "image.png" sat between the text and the sign-off. The owner saw
+it on mail from many senders, on Outlook mailboxes.
+
+**The cause.** A mail names a picture of its own MIME tree with `<img src="cid:...">`. No
+hop of the path could show it, and the path never worked. It is not a regression of
+EM-T17 or of #894.
+
+1. **Ingest.** `outlook._outlook_attachments` skips each part that Graph marks
+   `isInline`, so no `email_attachments` row holds it. That is correct for the file list.
+2. **The pane.** `sanitizeEmailHtml` kept the `cid:` URL, because DOMPurify allows the
+   scheme. But a browser cannot fetch `cid:`, and the frame's CSP was `img-src data:`.
+3. **The gateway.** No route served an inline part.
+
+**Evidence from production** (read-only, 2026-10-13):
+
+- 4,355 of 11,134 stored Microsoft bodies hold `cid:`, in the three organizations that
+  have mail. In the largest, 3,950 bodies hold `src="cid:`.
+- A body holds 10 such pictures at the median, 46 at p90 and 165 at most. Many of them
+  name one signature logo again.
+- The gateway log of two days shows no request for an inline part at all. The browser
+  never asked, so the failure made no log line.
+
+**The fix.**
+
+1. **The provider contract.** `BaseEmailProvider.get_inline_images` gives the parts with a
+   Content-ID, in the form of `normalize_content_id`. IMAP gives none.
+   - Outlook lists the parts with the base properties only, so Graph sends no bytes of a
+     real file. Then it reads each `isInline` or `image/*` file part, four at a time.
+   - Gmail reads the tree once, and never opens an attached mail.
+2. **The route.** `GET /email/messages/{id}/inline?cid=...`, in
+   `transport/inline_images.py`.
+   - The owner read runs first, with the predicate of the HTML route. A message of
+     another member is 404, before any cache read.
+   - The organization comes from the session and the member from `user.email`.
+   - Tenant Redis keeps each picture and the list of names for one hour, by the row id.
+   - One provider read serves all the requests of one message that arrive together.
+   - No session is open across the provider call. A 429 answers 503 with `Retry-After`.
+3. **Only a picture goes out.** The type comes from the first bytes, and SVG and HTML are
+   never served. Each answer carries `nosniff` and a CSP of `default-src 'none'; sandbox`.
+4. **The pane.** `lib/inlineImages.ts` writes `cid:X` as a RELATIVE URL of the route. The
+   frame's CSP adds that one path of our origin, with no trailing slash.
+   - The URL must be relative. `BLOCKED_REMOTE_CSS` drops the re-invert of a picture whose
+     `src` starts with `http`, so an absolute URL draws the picture inverted in dark mode.
+   - An inline picture is part of the mail, so the remote gate does not hold it, and
+     "Show images" is not needed for it. The gate still holds each remote picture.
+   - Each reading surface passes its message id: the single email, the thread, the
+     preview and the chat card.
+
+**Fences.**
+
+- `tests/unit/test_email_inline_images.py`: the Outlook and Gmail reads, the sniff, the
+  route, and the owner check on a real database (R8).
+- `src/app/email/lib/inlineImages.test.ts`: the rewrite, the relative URL and the CSP.
+- `e2e/email-inline-images.spec.ts`: a real PNG loads in a real frame, with
+  `naturalWidth` above 0, in the tokens, invert and original looks, and after "Show images".
+  In the invert look the picture keeps its re-invert, and the remote logo stays refused.
+- Red first: with the client of `main`, each of the four e2e tests fails, and the pane
+  shows the alt text "image.png" as in the report.
+- Mutations, each killed: no owner predicate, no shared provider read, a trusted declared
+  type, no cached list of names, a list read that pulls bytes, a Gmail walk into an
+  attached mail, a failure that is not kept, and no `max_count`. On the client: no
+  rewrite, an absolute URL, and a CSP with no inline path.
+
+**Recorded risks.**
+
+- A `cid:` inside a CSS `url()` stays unresolved. The pane rewrites `src`, `poster` and
+  `background` only.
+- A message that is not a stored row, such as a provider search hit, gets 404. Its
+  pictures show the alt text, as before.
+- The first open of a message with many pictures makes one Graph read for each part.
+  The cache and the browser cache then serve it for one hour.
 
 ## 17. Email AI context: the whole conversation, chosen by Jev, and no stall (2026-10-12)
 
