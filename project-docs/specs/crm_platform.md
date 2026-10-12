@@ -30,6 +30,8 @@
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12).
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
+>
+> **Built later:** CRM-Q6a, the generic record store (2026-10-12, migration 251). See §18.7.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -1235,7 +1237,7 @@ section is that contract. It splits the two tickets into four slices.
 
 | Slice | Gate | Builds | Waits for |
 |---|---|---|---|
-| **CRM-Q6a** | AGENT-SAFE | The generic record store, its door, discovery of the other modules, the new scopes, and the sync. No UI and no new route | CRM-Q5 merged |
+| **CRM-Q6a** ✅ built 2026-10-12 | AGENT-SAFE | The generic record store, its door, discovery of the other modules, the new scopes, and the sync. No UI and no new route | CRM-Q5 merged |
 | **CRM-Q6b** | AGENT-SAFE | The read-only routes, the rail rows and the generic record page | CRM-Q6a merged. Start it after CRM-Q8 merges too, because both edit `CrmRail.tsx` and `page.tsx`. That is a merge order, not a contract |
 | **CRM-Q7a** | AGENT-SAFE | The rule table, the Field map card, approve and reject, and the sync that applies approved rules. No model call | CRM-Q6a merged |
 | **CRM-Q7b** | AGENT-SAFE | The proposer: one routed model call over metadata | CRM-Q7a merged |
@@ -1243,7 +1245,7 @@ section is that contract. It splits the two tickets into four slices.
 The new Zoho consent is the owner's act (§12). The build is not. Each slice
 takes the next free migration number at build time (R1).
 
-#### CRM-Q6a: the generic record store
+#### CRM-Q6a: the generic record store (✅ built 2026-10-12)
 
 **The table.** `crm_module_records` holds one row for each record of a module
 that has no table of its own.
@@ -1352,6 +1354,37 @@ each of these on a real database:
 8. A run that stops at the reserve continues in the next run, with no
    duplicate row.
 9. `GET /crm/sync/health` lists each module with `zoho_count` and `ours`.
+
+**Built as (2026-10-12).**
+
+- Migration 251 adds `crm_module_records`, with the tenant key, FORCE row
+  level security and one policy with USING and WITH CHECK.
+- Discovery marks a generic module `mirrored` only when the connection holds
+  its read scope. A module that waits for its scope keeps `scope` in the
+  profile. The sync counts it as unavailable and makes no call for it.
+- Discovery reads the fields of each mirrored module, at 1 credit each. It
+  writes them to `crm_field_defs` as `module:<ApiName>`. A lookup keeps its
+  target in `options` as `{"lookup_module": ...}`. The profile keeps the
+  `display_field` of each module.
+- The sync reads each module after the CRM-Q5 steps, with the cursor
+  `zoho:module:<ApiName>` and the deleted list. The deleted list of a module
+  starts before its first read.
+- The reconcile never walks a generic module, because the table has no
+  `ext_seen_at`. Its deletes come from the deleted list only.
+- The sync reads the count of each module once in 24 hours. The cursor row
+  `zoho:module_counts` keeps it, so an incremental run also reports
+  `zoho_count`.
+- The two doors are `upsert_module_records_from_source` and
+  `delete_module_records_from_source`. A replay that changes nothing writes
+  nothing.
+- The profile now marks Tasks as a known module, so Sync health shows Tasks
+  as mirrored.
+- ⚠️ The eleven new scopes need a new consent (§12). Until the owner connects
+  Zoho again, each module shows as unavailable and the run stays `ok`.
+- Fences: `tests/unit/test_crm_module_records_r8.py`,
+  `tests/unit/test_crm_module_records.py`,
+  `tests/unit/test_crm_upsert_from_source_fence.py` and
+  `tests/unit/test_crm_mirror_readonly.py`.
 
 #### CRM-Q6b: the views
 
