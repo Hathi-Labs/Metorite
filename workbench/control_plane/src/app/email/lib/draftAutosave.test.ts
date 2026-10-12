@@ -145,7 +145,9 @@ const popOutDefaults = () => between(popOut(), "openCompose({", "});");
 /** The hand-over of the pop-out, which runs when the drain settles. */
 const popOutHandOver = () => between(popOut(), "const handOver: Promise<DraftHandOver> = drained.then(() => {", "openCompose({");
 /** The open of ComposePanel: a new session each time the window opens. */
-const composeOpen = () => between(compose, "if (!open) return;", "}, [open]);");
+// EM-T17 PR-A2: the closed branch of that effect now resets the AI round,
+// so the open starts after it.
+const composeOpen = () => between(compose, "    setTo(defaultTo);", "}, [open]);");
 /** The apply of the hand-over in the open of ComposePanel. */
 const handOverApply = () =>
   between(composeOpen(), "autosave.after(handOver, ({ draftId, draftHasFile }) => {", "staleDraftsRef.current = [];");
@@ -646,7 +648,11 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
   });
 
   it("flushes on the close of the inline reply, and on a new reply", () => {
-    expect(detail).toMatch(/onClick=\{\(\) => \{\s*autosave\.flush\(\);\s*setReplyMode\(null\);\s*\}\}/);
+    // EM-T17 PR-A2: the X close also ends the AI round of the reply.
+    // `detail` is code only, so no comment sits between the calls.
+    expect(detail).toMatch(
+      /onClick=\{\(\) => \{\s*autosave\.flush\(\);\s*setReplyMode\(null\);\s*ai\.reset\(\);\s*\}\}/,
+    );
     const start = between(detail, "const startReply = (", "const switchReplyMode");
     comesBefore(start, "autosave.flush();", "draftIdRef.current = null;");
   });

@@ -13,6 +13,9 @@
 // The suite runs in `environment: "node"`, so the run lives in the pure
 // `runDraftRound` and the hook only wires React state to it.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { composeAssistStream, DraftStreamError, type ComposeAssistArgs } from "./api";
@@ -498,5 +501,33 @@ describe("email-draft-split-data-line (verifier finding 3)", () => {
       composeAssistStream(ARGS, { onDelta: (_k, t) => deltas.push(t) }),
     ).resolves.toEqual({ draft: "Split", skipped: undefined });
     expect(deltas).toEqual(["Hel"]);
+  });
+});
+
+describe("email-draft-composers-end-the-round (fix round 2)", () => {
+  // The panes stay mounted, so the hook's unmount abort never runs there. The
+  // behaviour is fenced in `e2e/email-draft-switch.spec.ts`. This source check
+  // runs in every vitest run.
+  const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf-8");
+  const span = (src: string, from: string, to: string) => {
+    const a = src.indexOf(from);
+    const b = src.indexOf(to, a + from.length);
+    expect(a, `missing: ${from}`).toBeGreaterThanOrEqual(0);
+    expect(b, `missing: ${to}`).toBeGreaterThan(a);
+    return src.slice(a, b);
+  };
+  const detail = read("../components/EmailDetail.tsx");
+  const compose = read("../components/ComposePanel.tsx");
+
+  it("EmailDetail resets the AI round on a mail switch", () => {
+    expect(span(detail, "// Fetch full content whenever the selected email changes.", "}, [email?.id]);")).toContain("ai.reset();");
+  });
+
+  it("EmailDetail resets the AI round on a new reply", () => {
+    expect(span(detail, "const startReply = (", "const switchReplyMode")).toContain("ai.reset();");
+  });
+
+  it("ComposePanel resets the AI round when it closes", () => {
+    expect(span(compose, "if (!open) {", "return;")).toContain("ai.reset();");
   });
 });
