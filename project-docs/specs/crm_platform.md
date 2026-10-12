@@ -34,6 +34,8 @@
 > **Built later:** CRM-Q6a, the generic record store (2026-10-12, migration 251). See §18.7.
 >
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
+>
+> **Built from §20:** CRM-C2, one board (2026-10-13, §20.5).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -2965,6 +2967,31 @@ native HTML5 drag.
 ```bash
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app/crm src/app/projects src/app/tasks
 ```
+
+**Built as (2026-10-13, branch `crm-c2`).**
+
+- `src/components/board/` holds `Board.tsx`, `BoardColumn.tsx` and
+  `StageChip.tsx`. `Board` takes `scroll="own"` (My Tasks, the CRM) or
+  `scroll="parent"` (Projects, where the canvas scrolls).
+- `BoardColumn` has the props of item 2. It also has five more:
+  `addLabel`, `overlay` (the refused-drop layer), `as` (`ul` for Projects),
+  the drag handlers, and `hidden`. CRM-C3 wires `hidden`, which draws a
+  muted "Hidden" word beside the chip.
+- `BoardHeaderCell` in `BoardColumn.tsx` draws the Projects swimlane head
+  row. Each head has the lane width and padding, so its chip stands over
+  the chip of a lane.
+- The chip uses the `chip` slot of the hue. For a coloured hue that slot is
+  `soft` plus `text`. For gray it is `bg-secondary text-muted-foreground`.
+- A lane with an icon (won, lost, on hold) shows the icon in the place of
+  the dot. `stageIcon` in `board.ts` holds the three names.
+- `stageAccent` passes no index. So an open stage with no keyword in its
+  name is gray on every surface. A lane that the board hides changes the
+  colour of no other lane.
+- `RecordList`, `Reports`, `StatusPill` and the settings dot do not know the
+  mode. They pass `null`, so they read the stored colour, as they did
+  before. In Mirror mode they draw a won stage gray while the board draws it
+  green. CRM-C3 owns the Mirror colour and can close that gap.
+- `TaskCardShell` has a new `overdue` prop, for the red edge of CRM-X3.
 
 ### 20.6 CRM-C3: Stages and statuses you can shape, in both modes
 
