@@ -128,8 +128,8 @@ async def test_a_copilot_agent_gets_no_registry_server(monkeypatch, flag, caplog
     skipped = [e for e in logs if e["event"] == "mcp.copilot_registry_skipped"]
     assert skipped == [{"event": "mcp.copilot_registry_skipped", "name": "srv-a",
                         "log_level": "info"}]
-    sql, binds = spy.statements[0]
-    assert "organization_id = :org" in sql and binds == {"org": ORG_A}
+    # IN-4: the one registry read, for the run's org only.
+    assert spy.statements == [("servers_for_org", {"org": ORG_A})]
     text = logged_text(logs, caplog)
     assert SENTINEL not in text and "169.254" not in text
 
