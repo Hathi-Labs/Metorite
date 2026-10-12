@@ -775,6 +775,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 statuses={statusesFor(listEntity)}
                 onLoadMore={() => void store.loadMore()}
                 loadingMore={store.loadingMore}
+                hasMore={store.hasMore}
                 sort={view.sort}
                 direction={view.dir}
                 onSort={(key) => go(applySort(view, key))}

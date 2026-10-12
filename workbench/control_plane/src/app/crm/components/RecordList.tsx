@@ -108,6 +108,7 @@ export default function RecordList({
   statuses = [],
   onLoadMore,
   loadingMore = false,
+  hasMore = true,
 }: {
   entity: EntitySlug;
   rows: Row[];
@@ -132,6 +133,8 @@ export default function RecordList({
   onLoadMore?: () => void;
   /** The next page is being read. */
   loadingMore?: boolean;
+  /** False once a page came back short or empty: the list has ended. */
+  hasMore?: boolean;
 }) {
   const columns = COLUMNS[entity];
   // The choice is per entity and lives in this browser. The state re-seats
@@ -241,7 +244,7 @@ export default function RecordList({
             Nothing matches this view.
           </p>
         )}
-        {!loading && onLoadMore && rows.length > 0 && rows.length < total && (
+        {!loading && onLoadMore && hasMore && rows.length > 0 && rows.length < total && (
           <div className="flex justify-center p-3">
             <Button variant="secondary" size="sm" loading={loadingMore} onClick={onLoadMore}>
               Load more

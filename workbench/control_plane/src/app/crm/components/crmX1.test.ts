@@ -195,6 +195,110 @@ describe("Load more in the store", () => {
   });
 });
 
+describe("review round 1: the end of the list, and the depth after a write", () => {
+  beforeEach(() => {
+    listRecords.mockReset();
+    useCrmStore.setState({
+      rows: [],
+      total: 0,
+      page: 1,
+      hasMore: true,
+      loadingMore: false,
+      lastView: null,
+    });
+  });
+
+  it("stops offering more when a page comes back short, though a row moved", async () => {
+    // A sync moved one row between the reads: page 2 repeats r50, and holds 49.
+    listRecords.mockResolvedValueOnce({ rows: rows(1, 50), total: 100 });
+    await useCrmStore.getState().loadList("contacts", view());
+    expect(useCrmStore.getState().hasMore).toBe(true);
+    listRecords.mockResolvedValueOnce({ rows: rows(50, 98), total: 100 });
+    await useCrmStore.getState().loadMore();
+    const state = useCrmStore.getState();
+    expect(state.rows).toHaveLength(98);
+    expect(state.rows.length).toBeLessThan(state.total);
+    expect(state.hasMore).toBe(false);
+  });
+
+  it("stops offering more when a page comes back empty", async () => {
+    listRecords.mockResolvedValueOnce({ rows: rows(1, 50), total: 101 });
+    await useCrmStore.getState().loadList("contacts", view());
+    listRecords.mockResolvedValueOnce({ rows: [{ id: "r50" }, ...rows(51, 99)], total: 101 });
+    await useCrmStore.getState().loadMore();
+    expect(useCrmStore.getState().hasMore).toBe(true);
+    listRecords.mockResolvedValueOnce({ rows: [], total: 101 });
+    await useCrmStore.getState().loadMore();
+    expect(useCrmStore.getState().hasMore).toBe(false);
+  });
+
+  it("knows a first page that is short is the whole list", async () => {
+    listRecords.mockResolvedValueOnce({ rows: rows(1, 7), total: 8 });
+    await useCrmStore.getState().loadList("contacts", view());
+    expect(useCrmStore.getState().hasMore).toBe(false);
+  });
+
+  it("re-reads as many rows as were on screen after a write", async () => {
+    listRecords.mockResolvedValue({ rows: rows(1, 50), total: 300 });
+    await useCrmStore.getState().loadList("contacts", view());
+    await useCrmStore.getState().loadMore();
+    expect(useCrmStore.getState().page).toBe(2);
+
+    listRecords.mockResolvedValueOnce({ rows: rows(1, 100), total: 300 });
+    await useCrmStore.getState().refreshCollection();
+    expect(listRecords.mock.calls.at(-1)?.[1]).toMatchObject({ page: 1, page_size: 100 });
+    const state = useCrmStore.getState();
+    expect(state.rows).toHaveLength(100);
+    expect(state.page).toBe(2);
+    expect(state.hasMore).toBe(true);
+  });
+
+  it("caps the re-read at the largest page, and keeps the next page in step", async () => {
+    listRecords.mockResolvedValue({ rows: rows(1, 50), total: 300 });
+    await useCrmStore.getState().loadList("contacts", view());
+    await useCrmStore.getState().loadMore();
+    await useCrmStore.getState().loadMore();
+    await useCrmStore.getState().loadMore();
+    expect(useCrmStore.getState().page).toBe(4);
+
+    listRecords.mockResolvedValueOnce({ rows: rows(1, 100), total: 300 });
+    await useCrmStore.getState().refreshCollection();
+    expect(listRecords.mock.calls.at(-1)?.[1]).toMatchObject({ page: 1, page_size: 100 });
+    expect(useCrmStore.getState().page).toBe(2);
+    listRecords.mockResolvedValueOnce({ rows: rows(101, 150), total: 300 });
+    await useCrmStore.getState().loadMore();
+    expect(listRecords.mock.calls.at(-1)?.[1]).toMatchObject({ page: 3, page_size: 50 });
+  });
+
+  it("starts again at page 1 when the view changes", async () => {
+    listRecords.mockResolvedValue({ rows: rows(1, 50), total: 300 });
+    await useCrmStore.getState().loadList("contacts", view());
+    await useCrmStore.getState().loadMore();
+    await useCrmStore.getState().loadList("contacts", view({ q: "other" }));
+    expect(listRecords.mock.calls.at(-1)?.[1]).toMatchObject({ page: 1, page_size: 50 });
+    expect(useCrmStore.getState().page).toBe(1);
+  });
+
+  it("hides Load more when the store says the list ended", () => {
+    const html = renderToStaticMarkup(
+      createElement(RecordList, {
+        entity: "deals",
+        rows: rows(1, 98),
+        total: 100,
+        loading: false,
+        sort: null,
+        direction: "desc",
+        onSort: noop,
+        onOpen: noop,
+        onLoadMore: noop,
+        hasMore: false,
+      }),
+    );
+    expect(html).toContain("98 of 100");
+    expect(html).not.toContain("Load more");
+  });
+});
+
 describe("the search box (done-when 9, scope item 1)", () => {
   const bar = (over: Record<string, unknown> = {}) =>
     renderToStaticMarkup(

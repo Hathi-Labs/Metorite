@@ -330,3 +330,35 @@ async def test_the_stage_name_reaches_the_list_the_board_and_the_csv(ns, app_eng
         table = list(csv.reader(io.StringIO(res.text.lstrip("﻿"))))
         assert header in table[0], table[0]
         assert table[1][table[0].index(header)] == name
+
+
+# ── Review round 1: a phone matches on its digits ──────────────────────────
+
+async def test_a_phone_matches_on_its_digits_whatever_the_separators(ns, app_engine) -> None:  # noqa: F811
+    """"98450 12345" finds "+91-98450-12345". The text match of done-when 2
+    still works, the digits are a second bound parameter, and a query with
+    fewer than four digits does not use them."""
+    tag = str(uuid.uuid4().int)[:4]
+    a, b = ns.org_a, ns.org_b
+    await _native(ns, a)
+    await _native(ns, b)
+    stored = f"+91-98{tag}-12345"
+    typed = f"98{tag} 12345"
+    await _make(ns, a, "/crm/contacts", {"first_name": "Dashes", "phone": stored})
+    await _make(ns, a, "/crm/contacts", {"first_name": "Mob", "mobile": f"(0) 77{tag} 99"})
+    await _make(ns, a, "/crm/leads", {"lead_name": "Dotted", "mobile": f"98.{tag}.12345"})
+    await _make(ns, a, "/crm/organizations", {"name": "Slash Co", "phone": f"98/{tag}/12345"})
+    await _make(ns, b, "/crm/contacts", {"first_name": "Bee", "phone": stored})
+
+    def names(rows: list[dict], key: str) -> list[str]:
+        return sorted(r[key] for r in rows)
+
+    q = typed.replace(" ", "%20")
+    assert names(await _rows(ns, a, f"/crm/contacts?q={q}"), "first_name") == ["Dashes"]
+    assert names(await _rows(ns, a, f"/crm/contacts?q=77-{tag}-99"), "first_name") == ["Mob"]
+    assert names(await _rows(ns, a, f"/crm/leads?q={q}"), "lead_name") == ["Dotted"]
+    assert names(await _rows(ns, a, f"/crm/organizations?q={q}"), "name") == ["Slash Co"]
+    # The other tenant holds the same number, and finds only its own row.
+    assert names(await _rows(ns, b, f"/crm/contacts?q={q}"), "first_name") == ["Bee"]
+    # Three digits are too few to match on digits alone.
+    assert await _rows(ns, a, "/crm/contacts?q=9-1-2") == []

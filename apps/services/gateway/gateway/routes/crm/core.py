@@ -450,6 +450,10 @@ class Entity:
     #: the bound ``:q`` (WS-53 CRM-X1). :func:`list_contract` adds each one to
     #: the OR group of :attr:`search`. Never caller text.
     search_sql: tuple[str, ...] = ()
+    #: Phone columns that ``?q=`` also matches on their digits alone, so
+    #: "98450 12345" finds "+91-98450-12345" (CRM-X1 review round 1). Each
+    #: name is a constant of this module, never caller text.
+    phone_search: tuple[str, ...] = ()
     #: The statuses table this entity's ``status_id`` points at, if any.
     status_table: str | None = None
     #: Leads only: default lists hide converted rows (§3.3). ``?include_converted``
@@ -494,6 +498,7 @@ ORGANIZATIONS = Entity(
     sorts={"name": "name", "owner_email": "owner_email", **_TIMESTAMP_SORTS},
     default_sort="last_activity_at",
     search=("name", "email", "website", "phone"),
+    phone_search=("phone",),
     cascades=(("crm_activities", "company_id"),),
     # Zoho calls an organization an Account — the one place that rename lives.
     zoho_module="Accounts",
@@ -514,6 +519,7 @@ CONTACTS = Entity(
     },
     default_sort="last_activity_at",
     search=("first_name", "last_name", "email", "phone", "mobile"),
+    phone_search=("phone", "mobile"),
     cascades=(
         ("crm_activities", "contact_id"),
         ("crm_deal_contacts", "contact_id"),
@@ -537,6 +543,7 @@ LEADS = Entity(
     },
     default_sort="created_at",
     search=("lead_name", "email", "organization_name", "phone", "mobile"),
+    phone_search=("phone", "mobile"),
     status_table="crm_lead_statuses",
     hides_converted=True,
     cascades=(("crm_activities", "lead_id"),),
@@ -740,6 +747,10 @@ def lead_name_is_derived(values: dict[str, Any]) -> bool:
 
 DIRECTIONS: dict[str, str] = {"asc": "ASC", "desc": "DESC"}
 
+#: The fewest digits a query needs before a phone matches on digits alone.
+#: Fewer would match nearly every number.
+MIN_PHONE_DIGITS = 4
+
 
 @dataclass(frozen=True)
 class ListQuery:
@@ -804,10 +815,18 @@ def list_contract(
 
     if q and (entity.search or entity.search_sql):
         params["q"] = f"%{q.strip()}%"
-        matches = " OR ".join(
-            (*(f"{col} ILIKE :q" for col in entity.search), *entity.search_sql),
-        )
-        clauses.append(f"({matches})")
+        terms = [*(f"{col} ILIKE :q" for col in entity.search), *entity.search_sql]
+        digits = "".join(ch for ch in q if ch.isascii() and ch.isdigit())
+        if entity.phone_search and len(digits) >= MIN_PHONE_DIGITS:
+            # The digits are their own bound parameter. The column names are
+            # constants of the entity. No index serves this, and none is
+            # needed at the size of one tenant's CRM.
+            params["q_digits"] = f"%{digits}%"
+            terms += [
+                f"regexp_replace({col}, '\\D', '', 'g') LIKE :q_digits"
+                for col in entity.phone_search
+            ]
+        clauses.append(f"({' OR '.join(terms)})")
     if status_id:
         if not entity.status_table:
             # Contacts and organizations have no pipeline. Ignoring the filter

@@ -22,6 +22,9 @@ export function hasPipeline(entity: EntitySlug): boolean {
 
 export const MAX_PAGE_SIZE = 100;
 
+/** The rows of one list page, and of each "Load more" (CRM-X1). */
+export const LIST_PAGE_SIZE = 50;
+
 export type ListQuery = {
   q?: string;
   sort?: string;
@@ -84,7 +87,7 @@ export function listQuery(
   entity: EntitySlug,
   view: CrmView,
   page = 1,
-  pageSize = 50
+  pageSize = LIST_PAGE_SIZE
 ): ListQuery {
   const query: ListQuery = {
     page,
