@@ -283,7 +283,15 @@ def tool_json_schema(fn: Any) -> dict[str, Any]:
     Both runtimes build their tool schema from the callable's signature +
     docstring, so rendering the same shape here prices what the model context
     actually pays per tool.
+
+    A MAF ``FunctionTool`` already holds the schema that MAF sends, so it is
+    priced by that schema. Its signature and docstring are the ones of the
+    ``FunctionTool`` class, which the model never sees. The MCP tools of a run
+    are such objects (WS-8c item 24, ``orchestrator._maf_mcp``).
     """
+    spec = _maf_function_schema(fn)
+    if spec is not None:
+        return spec
     name = getattr(fn, "__name__", None) or getattr(fn, "name", str(fn))
     doc = inspect.getdoc(fn) or ""
     props: dict[str, Any] = {}
@@ -314,6 +322,21 @@ def tool_json_schema(fn: Any) -> dict[str, Any]:
             },
         },
     }
+
+
+def _maf_function_schema(fn: Any) -> dict[str, Any] | None:
+    """The schema of a MAF ``FunctionTool``, as MAF sends it, or None."""
+    try:
+        from agent_framework import FunctionTool
+    except ImportError:  # pragma: no cover — MAF is a dependency
+        return None
+    if not isinstance(fn, FunctionTool):
+        return None
+    try:
+        spec = fn.to_json_schema_spec()
+    except Exception:  # a pricing helper, never a failure
+        return None
+    return spec if isinstance(spec, dict) else None
 
 
 def _hidden_params(fn: Any) -> frozenset[str]:
