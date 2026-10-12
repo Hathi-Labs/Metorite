@@ -1129,11 +1129,20 @@ def qualify(order_by: str, prefix: str) -> str:
     return ", ".join(f"{prefix}.{term.strip()}" for term in order_by.split(","))
 
 
-async def run_list(db: Any, entity: Entity, query: ListQuery) -> ListResponse:
-    """Execute a :class:`ListQuery` and return the ``{rows, total}`` shape."""
-    total = (await db.execute(
-        text(f"SELECT count(*) FROM {entity.table}{query.where}"), query.params,
-    )).scalar() or 0
+async def run_list(
+    db: Any, entity: Entity, query: ListQuery, *, rows_only: bool = False,
+) -> ListResponse:
+    """Execute a :class:`ListQuery` and return the ``{rows, total}`` shape.
+
+    ``rows_only`` is for the shell's search (WS-53 CRM-X2, §19.10). It reads
+    the page and nothing else: no count, no provider link and no next
+    activity, because the command bar has 1.5 seconds for every app. Then
+    ``total`` is the count of the rows on the page.
+    """
+    if not rows_only:
+        total = (await db.execute(
+            text(f"SELECT count(*) FROM {entity.table}{query.where}"), query.params,
+        )).scalar() or 0
     inner = (
         f"SELECT * FROM {entity.table}{query.where} "
         f"ORDER BY {query.order_by} LIMIT :limit OFFSET :offset"
@@ -1143,6 +1152,8 @@ async def run_list(db: Any, entity: Entity, query: ListQuery) -> ListResponse:
         {**query.params, "limit": query.limit, "offset": query.offset},
     )).fetchall()
     wired = [row_to_dict(r, entity.model) for r in rows]
+    if rows_only:
+        return ListResponse(rows=wired, total=len(wired))
     await attach_ext_urls(db, entity.table, wired)
     await attach_next_activity(db, entity, wired)
     return ListResponse(rows=wired, total=int(total))
