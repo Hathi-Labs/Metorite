@@ -855,6 +855,10 @@ the steps out, and the model could repeat a side effect. Now:
 - The closing instruction is always whole (`_cap_keeping`).
 - A note with no added message is byte for byte the note of `main`.
 
+Round 3 adds three mutants, and all three are killed: steer quotes placed
+before the step budget, a cap that cuts the closing instruction, and an
+added message that is not cut at 120 characters.
+
 **The fallbacks.**
 
 | The server answers | The client does |
