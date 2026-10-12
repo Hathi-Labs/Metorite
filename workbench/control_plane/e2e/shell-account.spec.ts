@@ -261,6 +261,54 @@ test.describe("the top-right account widget", () => {
     await expect(page.locator("h2[data-type='error']", { hasText: "Couldn't sign out" })).toHaveCount(0);
   });
 
+  // Review of 2026-10-12, P2: Escape closed the menu, the cover was its
+  // child, and the cover came down mid-switch. The cover is a Modal held by
+  // BarAccount now: it takes the focus, keeps it, and nothing dismisses it.
+  for (const [what, button] of [
+    ["a switch", /Vijay Raghav Varada/],
+    ["a sign-out", "Sign out"],
+  ] as const) {
+    test(`during ${what} held by the server, Escape, Tab and a click leave the cover up`, async ({ page }) => {
+      await flags(page);
+      await stub(page);
+      let release = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      // Registered last, so it wins over the stub's route.
+      await page.route("**/api/accounts/switch", async (r) => {
+        await held;
+        await r.fulfill({ status: 409, contentType: "application/json", body: "{}" });
+      });
+      await page.goto("/settings/appearance");
+      await trigger(page).click();
+      const pick = typeof button === "string" ? menu(page).getByRole("button", { name: button, exact: true }) : menu(page).getByRole("button", { name: button });
+      await pick.click();
+      const cover = page.locator("[data-switching-cover]");
+      await expect(cover).toBeVisible();
+      const inCover = () =>
+        page.evaluate(() => {
+          const popup = document.querySelector("[data-switching-cover]")?.closest("[role='dialog']");
+          return !!popup && popup.contains(document.activeElement);
+        });
+      // The cover takes the focus.
+      await expect.poll(inCover).toBe(true);
+      await page.keyboard.press("Escape");
+      await page.keyboard.press("Escape");
+      await expect(cover).toBeVisible();
+      // The menu under it stays open, so nothing unmounted. By structure:
+      // the Modal marks the page under it `aria-hidden`, so `getByRole`
+      // cannot see the menu.
+      await expect(widget(page).locator("[role='dialog'][aria-label='Account']")).toBeAttached();
+      // Tab never reaches the page under it.
+      for (let i = 0; i < 4; i++) {
+        await page.keyboard.press("Tab");
+        expect(await inCover()).toBe(true);
+      }
+      await page.mouse.click(700, 500);
+      await expect(cover).toBeVisible();
+      release();
+    });
+  }
+
   test("Escape closes it and gives the focus back; a click outside closes it", async ({ page }) => {
     await flags(page);
     await stub(page);

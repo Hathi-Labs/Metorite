@@ -161,10 +161,34 @@ describe("the account menu holds account acts only", () => {
     const src = code(read("components/AccountSwitcher.tsx"));
     const body = src.slice(src.indexOf("export function BarAccountMenu"), src.indexOf("export function DrawerAccountHeader"));
     expect(body).toMatch(/if \(others\.length === 0\) await signOutAll\(\);/);
-    // The cover stays up while the page leaves (review of 2026-10-12, P2).
-    expect(body).toMatch(/\{leaving && !switching && <SwitchingCover email=\{null\} message="Signing out…" \/>\}/);
+    // The cover goes up as the sign-out starts (review of 2026-10-12, P2).
+    expect(body).toMatch(/setLeaving\(true\);\s*setCover\(\{ email: null, message: "Signing out…" \}\);/);
     expect(body).toMatch(/signOutThis\(active\.email, others\[0\]\)/);
     expect(body).toMatch(/onClick=\{\(\) => void pick\(o\)\}/);
+  });
+
+  // Review of 2026-10-12, P2: Escape closed the menu, and the cover was its
+  // child, so the cover came down mid-sign-out.
+  it("the cover lives in BarAccount, outside the menu, and the menu stays open under it", () => {
+    const src = code(read("components/AccountSwitcher.tsx"));
+    const bar = src.slice(src.indexOf("export function BarAccount()"), src.indexOf("export function BarAccountMenu"));
+    expect(bar).toMatch(/useDismiss\(open && !cover, close, rootRef, escape\);/);
+    expect(bar).toMatch(/onCover=\{setCover\}/);
+    // After the menu's closing `)}`, so the menu's unmount cannot take it.
+    expect(bar).toMatch(/\)\}\s*\{cover && <SwitchingCover email=\{cover\.email\} message=\{cover\.message\} \/>\}\s*<\/div>/);
+  });
+
+  it("the cover is a Modal that nothing dismisses, and every menu leaves it alone", () => {
+    const src = code(read("components/AccountSwitcher.tsx"));
+    const cover = src.slice(src.indexOf("export function SwitchingCover"), src.indexOf("const NO_DISMISS"));
+    // `Modal` traps and takes the focus, and marks the page under it.
+    expect(cover).toMatch(/<Modal open onClose=\{NO_DISMISS\} label=\{text\} showClose=\{false\}/);
+    expect(cover).toContain('data-switching-cover=""');
+    expect(src).toMatch(/const NO_DISMISS = \(\) => \{\};/);
+    expect(cover).not.toMatch(/fixed inset-0/);
+    const dismiss = code(read("hooks/useDismiss.ts"));
+    expect(dismiss).toMatch(/if \(coverUp\(\)\) return;/);
+    expect(dismiss).toMatch(/e\.key === "Escape" && !coverUp\(\)/);
   });
 });
 

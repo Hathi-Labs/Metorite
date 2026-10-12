@@ -26,6 +26,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
 import ThemeToggle from "@/components/ThemeToggle";
 import { useAccess } from "@/components/AccessProvider";
 import { BrandMark, useOrgBranding } from "@/components/OrgBrandLockup";
@@ -83,20 +84,25 @@ export function useAccounts(withOrgs = false) {
  * error when the account is no longer signed in. The menu and the phone's
  * organization block share it, so the two switch the same way.
  */
-function useSwitchAccount(onChanged: () => void) {
+function useSwitchAccount(onChanged: () => void, onCover?: (cover: Cover | null) => void) {
   const [switching, setSwitching] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pick = async (o: OtherAccount) => {
     setError(null);
     setSwitching(o.email);
+    onCover?.({ email: o.email });
     if (!(await switchTo(o.slot))) {
       setSwitching(null);
+      onCover?.(null);
       setError(`${o.email} is no longer signed in here. Add it again.`);
       onChanged();
     }
   };
   return { switching, error, pick };
 }
+
+/** What the cover says: a switch to an email, or a sentence of its own. */
+type Cover = { email: string | null; message?: string };
 
 function initial(name: string | null | undefined, email: string): string {
   return (name?.trim() || email).charAt(0).toUpperCase();
@@ -125,30 +131,42 @@ function Avatar({ email, name, size = "md" }: { email: string; name?: string | n
 /**
  * "Switching to …" over the whole page, until the reload lands. With no
  * email, it covers the read of the accounts that an org-aware link makes
- * first (`components/OrgLinkGate.tsx`).
+ * first (`components/OrgLinkGate.tsx`). `message` says something else, such
+ * as "Signing out…".
+ *
+ * ⚠️ **It is a `Modal` that cannot be dismissed** (review of 2026-10-12).
+ * The page under it belongs to an account the cookie may no longer name, so
+ * nothing on it may take a key or a click while the page leaves. `Modal`
+ * traps the focus, takes it, and marks the page under it. `onClose` does
+ * nothing, so Escape and an outside press leave it up. `data-switching-cover`
+ * tells `useDismiss` to leave every menu open meanwhile, so no menu can
+ * unmount the cover it holds. This is the one cover for every switch and
+ * sign-out. Fences: `shellAccount.test.ts` and `e2e/shell-account.spec.ts`.
  */
 export function SwitchingCover({ email, message }: { email: string | null; message?: string }) {
+  const text = message ?? (email ? `Switching to ${email}` : "Opening the link…");
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="fixed inset-0 z-[90] flex flex-col items-center justify-center gap-3 bg-background/85 backdrop-blur-sm"
-    >
-      <Icon name="Loader2" size={22} className="animate-spin text-muted-foreground" />
-      <p className="text-sm text-muted-foreground">
-        {message ? (
-          message
-        ) : email ? (
-          <>
-            Switching to <span className="font-medium text-foreground">{email}</span>
-          </>
-        ) : (
-          "Opening the link…"
-        )}
-      </p>
-    </div>
+    <Modal open onClose={NO_DISMISS} label={text} showClose={false} layer="alert" size="sm">
+      <div data-switching-cover="" role="status" aria-live="polite" className="flex flex-col items-center gap-3 px-6 py-8">
+        <Icon name="Loader2" size={22} className="animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">
+          {message ? (
+            message
+          ) : email ? (
+            <>
+              Switching to <span className="font-medium text-foreground">{email}</span>
+            </>
+          ) : (
+            "Opening the link…"
+          )}
+        </p>
+      </div>
+    </Modal>
   );
 }
+
+/** The cover's `onClose`: it stays up until the page leaves. */
+const NO_DISMISS = () => {};
 
 /**
  * The menu body. The active account first, with its organization, then the
@@ -441,7 +459,11 @@ export function BarAccount() {
     setOpen(false);
     rootRef.current?.querySelector<HTMLButtonElement>("button[data-account-trigger]")?.focus();
   };
-  useDismiss(open, close, rootRef, escape);
+  // The cover lives HERE, not in the menu, so closing the menu can never
+  // take it down (review of 2026-10-12). While it is up, the menu ignores
+  // Escape and an outside press.
+  const [cover, setCover] = useState<Cover | null>(null);
+  useDismiss(open && !cover, close, rootRef, escape);
   const active = accounts.active;
   // The avatar's place, held while nobody is known yet, so nothing moves.
   if (!active) return <span aria-hidden data-shell-account="" className="h-7 w-7 shrink-0" />;
@@ -479,9 +501,10 @@ export function BarAccount() {
           aria-label="Account"
           className="absolute right-0 top-full z-[60] mt-2 max-h-[calc(100vh-4rem)] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-md border border-border bg-card shadow-md"
         >
-          <BarAccountMenu accounts={accounts} orgName={orgName} onChanged={() => void reload(true)} />
+          <BarAccountMenu accounts={accounts} orgName={orgName} onChanged={() => void reload(true)} onCover={setCover} />
         </div>
       )}
+      {cover && <SwitchingCover email={cover.email} message={cover.message} />}
     </div>
   );
 }
@@ -500,12 +523,20 @@ export function BarAccountMenu({
   accounts,
   orgName,
   onChanged,
+  onCover,
 }: {
   accounts: Accounts;
   orgName: string;
   onChanged: () => void;
+  /**
+   * Raises and lowers the cover, which `BarAccount` holds, outside this menu.
+   * Absent (a test render), the menu holds its own.
+   */
+  onCover?: (cover: Cover | null) => void;
 }) {
-  const { switching, error, pick } = useSwitchAccount(onChanged);
+  const [ownCover, setOwnCover] = useState<Cover | null>(null);
+  const setCover = onCover ?? setOwnCover;
+  const { error, pick } = useSwitchAccount(onChanged, setCover);
   const [leaving, setLeaving] = useState(false);
   const active = accounts.active;
   if (!active) return null;
@@ -517,11 +548,13 @@ export function BarAccountMenu({
   // cover stays. Only a throw keeps this tab here, and then it comes down.
   const signOut = async () => {
     setLeaving(true);
+    setCover({ email: null, message: "Signing out…" });
     try {
       if (others.length === 0) await signOutAll();
       else if ((await signOutThis(active.email, others[0])) === "all") onChanged();
     } catch {
       setLeaving(false);
+      setCover(null);
       onChanged();
     }
   };
@@ -605,8 +638,8 @@ export function BarAccountMenu({
           </Button>
         )}
       </div>
-      {switching && <SwitchingCover email={switching} />}
-      {leaving && !switching && <SwitchingCover email={null} message="Signing out…" />}
+      {/* Only a test render, with no `BarAccount` above, draws it here. */}
+      {!onCover && ownCover && <SwitchingCover email={ownCover.email} message={ownCover.message} />}
     </div>
   );
 }

@@ -41,7 +41,7 @@ import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
 import { DrawerAccountFoot, DrawerAccountHeader } from "@/components/AccountSwitcher";
-import { useAccountTabSync } from "@/lib/accountSwitch";
+import { clearSignOutNotice, useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 import { ActivityControl, ActivityHost } from "@/lib/shell/ActivityControl";
@@ -129,6 +129,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // cookie under this one. This reloads the tab, so it never writes as an
   // account it does not show (`lib/accountSwitch.ts`).
   useAccountTabSync(signedInAs);
+  // A signed-in shell means any "we signed out of all accounts" notice is
+  // over, shown or not. Without this, a member who left `/signin` early kept
+  // the flag, and a later `/signin?add=1` told them a false story (review of
+  // 2026-10-12). The sign-in pages are chromeless, so they keep it.
+  const inShell = !isChromeless(pathname ?? "");
+  useEffect(() => {
+    if (signedInAs && inShell) clearSignOutNotice();
+  }, [signedInAs, inShell]);
   // The chat caches follow the same rule (PR #652): one namespace per account.
   // `useChatScope` binds the member's namespace, and a switch deletes nothing.
   // `useChatSignOutClear` clears the namespace of an account that signed out,

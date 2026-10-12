@@ -146,8 +146,11 @@ export async function removeAccount(slot: number): Promise<boolean> {
   return (await act("remove", { slot })).ok;
 }
 
-/** What `signOutThis` did: this account alone, or every account. */
-export type SignOutResult = "one" | "all";
+/**
+ * What `signOutThis` did: this account alone, every account, or a reload as
+ * the account the cookie names after the fallback itself failed.
+ */
+export type SignOutResult = "one" | "all" | "reload";
 
 /**
  * The words of the fallback, shown on `/signin` after the full sign-out
@@ -159,10 +162,17 @@ export const SIGN_OUT_ALL_NOTICE =
 export const SIGN_OUT_NOTICE_KEY = "cc-signout-notice";
 /** How long the notice must be on screen before a reload stops showing it. */
 export const NOTICE_SEEN_MS = 3_000;
+/**
+ * The flag's whole life. The fallback reaches `/signin` in a second or two,
+ * so an older flag is left over from a sign-out that never showed it, and it
+ * must not tell a later `/signin?add=1` a false story (review of 2026-10-12).
+ */
+export const NOTICE_MAX_AGE_MS = 60_000;
 
-function markSignOutNotice(): void {
+function markSignOutNotice(now: number = Date.now()): void {
   try {
-    sessionStorage.setItem(SIGN_OUT_NOTICE_KEY, "all");
+    // The time it was set, so a stale flag can be told apart.
+    sessionStorage.setItem(SIGN_OUT_NOTICE_KEY, String(now));
   } catch {
     /* no storage: the sign-out still runs, with no notice */
   }
@@ -173,9 +183,18 @@ function markSignOutNotice(): void {
  * of the page after the first read (Fast Refresh in dev, a hydration retry)
  * would lose it. `clearSignOutNotice` ends it.
  */
-export function peekSignOutNotice(): string | null {
+export function peekSignOutNotice(now: number = Date.now()): string | null {
   try {
-    return sessionStorage.getItem(SIGN_OUT_NOTICE_KEY) === null ? null : SIGN_OUT_ALL_NOTICE;
+    const raw = sessionStorage.getItem(SIGN_OUT_NOTICE_KEY);
+    if (raw === null) return null;
+    const at = Number(raw);
+    // Not a time (the "all" of the first version), from the future, or older
+    // than its life: a leftover. Clear it and show nothing.
+    if (!Number.isFinite(at) || at > now || now - at > NOTICE_MAX_AGE_MS) {
+      sessionStorage.removeItem(SIGN_OUT_NOTICE_KEY);
+      return null;
+    }
+    return SIGN_OUT_ALL_NOTICE;
   } catch {
     return null;
   }
@@ -232,6 +251,9 @@ export async function signOutThis(
   // This tab leaves, by one path or the other. Its own channel listener must
   // not start a second navigation (see `switchTo`).
   leaving = true;
+  // True once the server swapped the cookie to `next`. From then on this tab
+  // must never stay on the leaving account's page.
+  let switched = false;
   const fallBack = async (): Promise<SignOutResult> => {
     markSignOutNotice();
     await all();
@@ -245,6 +267,7 @@ export async function signOutThis(
       return await fallBack();
     }
     if (!res.ok) return await fallBack();
+    switched = true;
     let email: string | undefined;
     try {
       ({ email } = (await res.json()) as { email?: string });
@@ -266,8 +289,19 @@ export async function signOutThis(
     go("/");
     return "one";
   } catch (e) {
-    // Only the fallback itself can throw here. This tab stays, so it must
-    // hear the other tabs again.
+    // Only the fallback itself can throw here. Its notice was never shown,
+    // so it must not wait for a later `/signin` (review of 2026-10-12).
+    clearSignOutNotice();
+    if (switched) {
+      // ⚠️ The cookie already names `next`. Staying on this page would let a
+      // later write go as `next` under the leaving account's screen, so load
+      // `/` as the account the cookie names. The leaving account may still
+      // sit in a slot, and the menu there lists it with its remove control.
+      go("/");
+      return "reload";
+    }
+    // No switch: the cookie still names this account, so this tab stays and
+    // must hear the other tabs again.
     leaving = false;
     throw e;
   }

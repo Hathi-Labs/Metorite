@@ -16,6 +16,8 @@ import {
   SIGN_OUT_ALL_NOTICE,
   clearSignOutNotice,
   peekSignOutNotice,
+  NOTICE_MAX_AGE_MS,
+  SIGN_OUT_NOTICE_KEY,
 } from "./accountSwitch";
 import { clearAccountNamespaces } from "./sessions";
 
@@ -314,14 +316,59 @@ describe("sign out of this account only", () => {
     expect(read("app/signin/SignInForm.tsx")).toMatch(/<SignOutNotice \/>/);
   });
 
-  it("if the fallback itself throws, this tab hears the other tabs again", async () => {
+  it("if the fallback itself throws before any switch, this tab stays, hears the other tabs, and keeps no notice", async () => {
     server({ switch: [status(409)] });
+    const go = vi.fn();
     await expect(
-      signOutThis("a@one.test", { slot: 2 }, vi.fn(), async () => {
+      signOutThis("a@one.test", { slot: 2 }, go, async () => {
         throw new Error("sign-out failed");
       }),
     ).rejects.toThrow("sign-out failed");
     expect(shouldReloadFor("a@one.test", "b@two.test")).toBe(true);
+    // The cookie still names this account, so the page is right to stay.
+    expect(go).not.toHaveBeenCalled();
+    // (b) The notice was never shown, so no later /signin may show it.
+    expect(peekSignOutNotice()).toBeNull();
+  });
+
+  // Review of 2026-10-12, P2: a good switch, two removes that throw, then a
+  // sign-out that throws (next-auth on /api/auth/csrf). The cookie names the
+  // next account, so the tab must not stay on the leaving account's page.
+  it("if the fallback throws AFTER a good switch, the page loads / as the account the cookie names", async () => {
+    server({ switch: [ok()], remove: ["throw", "throw"] });
+    const go = vi.fn();
+    const result = await signOutThis("a@one.test", { slot: 2 }, go, async () => {
+      throw new Error("csrf failed");
+    });
+    expect(result).toBe("reload");
+    expect(go).toHaveBeenCalledWith("/");
+    expect(peekSignOutNotice()).toBeNull();
+    // Still leaving: its own channel must not start a second navigation.
+    expect(shouldReloadFor("a@one.test", "b@two.test")).toBe(false);
+  });
+
+  // Review of 2026-10-12, P2 (a): a flag the sign-in page never showed must
+  // not tell a later /signin?add=1 that every account signed out.
+  it("a notice flag older than its life is ignored and cleared", async () => {
+    server({ switch: [status(409)] });
+    const t0 = Date.now();
+    await signOutThis("a@one.test", { slot: 2 }, vi.fn(), async () => {});
+    expect(peekSignOutNotice(t0 + 1_000)).toBe(SIGN_OUT_ALL_NOTICE);
+    expect(peekSignOutNotice(t0 + NOTICE_MAX_AGE_MS + 5_000)).toBeNull();
+    // Cleared, not only hidden: a later read in time shows nothing either.
+    expect(peekSignOutNotice(t0 + 1_000)).toBeNull();
+  });
+
+  it("a flag that is not a time is a leftover, and is cleared", () => {
+    sessionStorage.setItem(SIGN_OUT_NOTICE_KEY, "all");
+    expect(peekSignOutNotice()).toBeNull();
+    expect(sessionStorage.getItem(SIGN_OUT_NOTICE_KEY)).toBeNull();
+  });
+
+  it("the signed-in shell ends the notice, and the chromeless sign-in pages keep it", () => {
+    const shell = read("components/AppShell.tsx").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(shell).toMatch(/const inShell = !isChromeless\(pathname \?\? ""\);/);
+    expect(shell).toMatch(/if \(signedInAs && inShell\) clearSignOutNotice\(\);/);
   });
 });
 
