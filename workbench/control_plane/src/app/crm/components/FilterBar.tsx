@@ -281,8 +281,11 @@ export default function FilterBar({
  *
  * `data-page-filter` lets the shell reach it: `/` focuses it, and "Show all in
  * …" fills it (`src/lib/shell/pageFilter.ts`).
+ *
+ * The list of a generic Zoho module uses it too (CRM-Q6b, `ModuleList.tsx`),
+ * so the CRM has one search box.
  */
-function SearchBox({
+export function SearchBox({
   label,
   value,
   onCommit,

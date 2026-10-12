@@ -1188,7 +1188,9 @@ describe("the headless substrate is wrapped, not imported", () => {
     "app/crm/components/MoveModal.tsx",
     "app/crm/components/PipelineSettings.tsx",
     "app/crm/components/QuickCreateModal.tsx",
-    "app/crm/components/RecordSheet.tsx",
+    // CRM-Q6b: both record pages draw their drawer through ONE frame, so the
+    // frame is what imports Modal (the `ManagerFrame` rule above).
+    "app/crm/components/RecordShell.tsx",
   ];
 
   it("the converted /projects dialogs do not grow an overlay back by hand", () => {

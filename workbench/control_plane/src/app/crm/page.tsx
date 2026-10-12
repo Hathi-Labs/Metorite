@@ -53,6 +53,11 @@ import QuickCreateModal from "./components/QuickCreateModal";
 import RecordList from "./components/RecordList";
 import Reports from "./components/Reports";
 import RecordSheet from "./components/RecordSheet";
+import ModuleList from "./components/ModuleList";
+import ModuleRecordSheet from "./components/ModuleRecordSheet";
+import { moduleLabel, type ModuleLink } from "./lib/modules";
+import { openModuleRecord, selectModule } from "./lib/urlState";
+import { useModules } from "./lib/useCrmMode";
 import * as api from "./lib/api";
 import { CrmError } from "./lib/api";
 import {
@@ -163,6 +168,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   );
 
   const store = useCrmStore();
+  // The mirrored generic Zoho modules, for the rail (CRM-Q6b). Native: none.
+  const { modules } = useModules(ctx.mode === "mirror");
+  /** The Refresh button of a module list reads page 1 again. */
+  const [moduleReload, setModuleReload] = useState(0);
   const { isMobile } = useViewMode();
   // The deal pipelines (CRM-Q3). Null until read, and null when the gateway
   // has no pipelines route: then there is one implicit pipeline and no picker.
@@ -318,6 +327,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     // from, so its re-read is the same call the page makes on mount.
     else if (view.tab === "settings") void store.loadVocabulary();
     else if (view.tab === "reports") void store.loadReports(loadView);
+    else if (view.tab === "module") setModuleReload((n) => n + 1);
     else if (listEntity) void store.loadList(listEntity, loadView);
   }
   const statusesFor = (entity: EntitySlug | null): Status[] =>
@@ -407,6 +417,20 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     onShareView: (saved) => void changeView(saved, { shared: !saved.shared }),
     onDeleteView: setDeletingView,
   };
+
+  /** The rail rows of the generic modules (CRM-Q6b), and where a lookup opens. */
+  const railModules = {
+    modules,
+    active: view.tab === "module" ? (view.module ?? null) : null,
+    onSelect: (module: string) => {
+      go(selectModule(view, module));
+      if (isMobile) closeDrawer();
+    },
+  };
+  function openLink(link: ModuleLink): void {
+    if (link.kind === "record") openAlone(openRecord(view, PARAM_FOR[link.entity], link.id));
+    else openAlone(openModuleRecord(view, link.module, link.id));
+  }
 
   const chips = listEntity
     ? chipsFor(listEntity, statusesFor(listEntity), view)
@@ -517,7 +541,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           ? "Setup, access, pipelines and statuses"
           : view.tab === "reports"
             ? "Forecast, funnel, win rate and who is carrying what"
-            : // A list view names itself. With the rail folded, the four
+            : view.tab === "module"
+              ? moduleLabel(modules, view.module)
+              : // A list view names itself. With the rail folded, the four
               // lists share one layout, and this line is all that tells
               // Deals from Contacts.
               viewLabel(view.tab);
@@ -542,7 +568,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // the quick-create entry the old header held, at the bar's size.
   // In Mirror mode a record is made in Zoho, so the verb is gone (spec §3.3).
   const actions =
-    mayCreate && view.tab !== "settings" && view.tab !== "reports" ? (
+    mayCreate && view.tab !== "settings" && view.tab !== "reports" && view.tab !== "module" ? (
       <Button
         variant="secondary"
         size="sm"
@@ -682,13 +708,15 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               onClick={() =>
                 openDrawer(
                   <nav aria-label="CRM views" className="p-2">
-                    <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} />
+                    <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} modules={railModules} />
                   </nav>
                 )
               }
               className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
             >
-              <span className="truncate">{viewLabel(view.tab)}</span>
+              <span className="truncate">
+                {view.tab === "module" ? moduleLabel(modules, view.module) : viewLabel(view.tab)}
+              </span>
               <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
             </button>
           ) : (
@@ -709,7 +737,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             aria-label="CRM views"
             className={`w-56 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
           >
-            <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} />
+            <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} modules={railModules} />
           </nav>
         ) : null}
 
@@ -799,6 +827,16 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 go(openRecord(view, param, id));
               }}
               onCreate={mayCreate ? () => setCreating(view.tab === "leads" ? "leads" : "deals") : undefined}
+            />
+          ) : view.tab === "module" && view.module ? (
+            // A generic Zoho module (CRM-Q6b): the shared list, read only.
+            <ModuleList
+              module={view.module}
+              label={moduleLabel(modules, view.module)}
+              view={view}
+              onChange={go}
+              onOpen={(id) => openAlone(openModuleRecord(view, view.module!, id))}
+              reloadToken={moduleReload}
             />
           ) : view.tab === "reports" ? (
             <Reports reports={store.reports} loading={store.loading} />
@@ -958,6 +996,19 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           related={store.related}
           onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
           onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
+        />
+      )}
+
+      {view.moduleRecord && (
+        // A generic record (CRM-Q6b), on the same record page shell.
+        <ModuleRecordSheet
+          module={view.moduleRecord.module}
+          id={view.moduleRecord.id}
+          tab={view.recordTab ?? "overview"}
+          // A tab replaces the URL, so Back still closes the sheet (#914 idiom).
+          onTab={(tab) => replaceView(viewHref(selectRecordTab(view, tab)))}
+          onClose={() => go(closeRecord(view))}
+          onOpenLink={openLink}
         />
       )}
 
