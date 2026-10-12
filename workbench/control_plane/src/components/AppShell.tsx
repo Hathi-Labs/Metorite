@@ -391,8 +391,10 @@ function BarBrand() {
       </div>
       {/* 24px tall, one line: a 44px bar has no room for the sidebar's stack.
           176px is the zone less the control's column, the gap and the padding.
-          The customer's logo alone: our comet is at the bar's right end
-          (owner, 2026-10-11). The Settings previews read the same `BAR_LOCKUP`. */}
+          The customer's logo alone (owner, 2026-10-11). Our comet is the
+          sidebar's foot since 2026-10-12 (`MetoriteFoot.tsx`), and the bar's
+          right end is the account. The Settings previews read the same
+          `BAR_LOCKUP`. */}
       <div className="ml-2 min-w-0">
         <OrgBrandLockup fallbackCaption="Control Plane" {...BAR_LOCKUP} />
       </div>

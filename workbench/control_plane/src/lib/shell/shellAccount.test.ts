@@ -160,7 +160,9 @@ describe("the account menu holds account acts only", () => {
   it("signs this account out with signOutThis, and all of them with signOutAll", () => {
     const src = code(read("components/AccountSwitcher.tsx"));
     const body = src.slice(src.indexOf("export function BarAccountMenu"), src.indexOf("export function DrawerAccountHeader"));
-    expect(body).toMatch(/others\.length === 0\)\s*\{\s*await signOutAll\(\)/);
+    expect(body).toMatch(/if \(others\.length === 0\) await signOutAll\(\);/);
+    // The cover stays up while the page leaves (review of 2026-10-12, P2).
+    expect(body).toMatch(/\{leaving && !switching && <SwitchingCover email=\{null\} message="Signing out…" \/>\}/);
     expect(body).toMatch(/signOutThis\(active\.email, others\[0\]\)/);
     expect(body).toMatch(/onClick=\{\(\) => void pick\(o\)\}/);
   });
@@ -176,6 +178,14 @@ describe("the sidebar foot is the Metorite menu, with the shell bar on", () => {
     expect(sidebar).toMatch(/\{!barOn && !shellNav && !accounts\.enabled && !collapsed && \(/);
   });
 
+  it("with the shell nav off, the menu repeats none of the rail's own account rows", () => {
+    // The classic rail lists My Profile and Appearance itself, so the old
+    // foot took `you` only with the nav on. The Metorite foot keeps that rule.
+    expect(sidebar).toMatch(/<MetoriteFoot [^>]*sections=\{shellNav \? sections : \[\]\}[^>]*layout=\{shellNav\}/);
+    const rows = metoriteMenu([], { layout: false }).flatMap((g) => g.items);
+    expect(rows).toEqual([{ kind: "colour-mode" }]);
+  });
+
   it("the foot names no account act", () => {
     const foot = code(read("components/MetoriteFoot.tsx"));
     expect(foot).not.toMatch(/accountSwitch|AccountSwitcher|switchTo|addAccount|signOut|removeAccount|useAccounts/);
@@ -185,10 +195,13 @@ describe("the sidebar foot is the Metorite menu, with the shell bar on", () => {
     const sections = visibleSections(PANES.map((p) => p.feature).filter((f): f is string => !!f), true);
     const open = renderToStaticMarkup(createElement(MetoriteFoot, { collapsed: false, sections, layout: true }));
     const folded = renderToStaticMarkup(createElement(MetoriteFoot, { collapsed: true, sections, layout: true }));
+    // The tip only when folded, where no word shows (review of 2026-10-12).
+    // Open, a `title` would repeat the visible word as the description.
+    expect(folded).toContain('title="Metorite"');
+    expect(open).not.toContain("title=");
     for (const html of [open, folded]) {
       expect(html.match(/<button\b/g) ?? []).toHaveLength(1);
       expect(html).toContain('aria-label="Metorite settings"');
-      expect(html).toContain('title="Metorite"');
       expect(html).toMatch(/<svg[^>]*width="20" height="20"[^>]*data-metorite-mark=""/);
     }
     expect(text(open)).toBe("Metorite");

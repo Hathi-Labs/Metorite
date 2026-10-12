@@ -493,7 +493,10 @@ export default function Sidebar() {
           (`BarAccount`), and the foot is our comet, which opens the Metorite
           menu (owner, 2026-10-12). The classic frame keeps its account foot. */}
       {barOn ? (
-        <MetoriteFoot collapsed={collapsed} sections={sections} layout={shellNav} />
+        // With the shell nav off, this rail already lists My Profile and
+        // Appearance, so the menu gets none of the account rows (the rule the
+        // old foot kept with `you`). It keeps the colour mode.
+        <MetoriteFoot collapsed={collapsed} sections={shellNav ? sections : []} layout={shellNav} />
       ) : (
         <SidebarAccountFooter
           collapsed={collapsed}

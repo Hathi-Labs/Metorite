@@ -127,7 +127,7 @@ function Avatar({ email, name, size = "md" }: { email: string; name?: string | n
  * email, it covers the read of the accounts that an org-aware link makes
  * first (`components/OrgLinkGate.tsx`).
  */
-export function SwitchingCover({ email }: { email: string | null }) {
+export function SwitchingCover({ email, message }: { email: string | null; message?: string }) {
   return (
     <div
       role="status"
@@ -136,7 +136,9 @@ export function SwitchingCover({ email }: { email: string | null }) {
     >
       <Icon name="Loader2" size={22} className="animate-spin text-muted-foreground" />
       <p className="text-sm text-muted-foreground">
-        {email ? (
+        {message ? (
+          message
+        ) : email ? (
           <>
             Switching to <span className="font-medium text-foreground">{email}</span>
           </>
@@ -430,8 +432,9 @@ export function BarAccount() {
   const orgName = access.organization?.display_name?.trim() || access.organization?.slug?.trim() || "";
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  // The React Compiler keeps these two stable. A manual `useCallback` here
-  // made it skip the whole component (react-hooks/preserve-manual-memoization).
+  // Plain functions, so `useDismiss` binds its two listeners again on each
+  // render while the menu is open, which costs nothing here. A `useCallback`
+  // tripped the lint rule react-hooks/preserve-manual-memoization.
   const close = () => setOpen(false);
   // Escape gives the focus back to the trigger, as a menu button does.
   const escape = () => {
@@ -509,13 +512,15 @@ export function BarAccountMenu({
   const others = accounts.enabled ? accounts.others.filter((o) => o.email.toLowerCase() !== active.email.toLowerCase()) : [];
   const row = "w-full gap-3 px-3 py-2 text-[13px]";
 
+  // The cover stays up while the page leaves, so this tab cannot act as
+  // either account in between. Each good path ends in a navigation, so the
+  // cover stays. Only a throw keeps this tab here, and then it comes down.
   const signOut = async () => {
     setLeaving(true);
-    if (others.length === 0) {
-      await signOutAll();
-      return;
-    }
-    if (!(await signOutThis(active.email, others[0]))) {
+    try {
+      if (others.length === 0) await signOutAll();
+      else if ((await signOutThis(active.email, others[0])) === "all") onChanged();
+    } catch {
       setLeaving(false);
       onChanged();
     }
@@ -601,6 +606,7 @@ export function BarAccountMenu({
         )}
       </div>
       {switching && <SwitchingCover email={switching} />}
+      {leaving && !switching && <SwitchingCover email={null} message="Signing out…" />}
     </div>
   );
 }

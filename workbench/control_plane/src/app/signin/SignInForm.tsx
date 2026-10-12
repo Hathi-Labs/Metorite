@@ -7,6 +7,7 @@ import { Suspense, useState } from "react";
 import type { ConfiguredProvider } from "@/authPosture";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import SignOutNotice from "@/components/SignOutNotice";
 import { OTP_EMAIL_STORAGE_KEY, canonicalOtpIdentifier } from "@/lib/emailOtp";
 
 import { signInErrorMessage } from "./errorCopy";
@@ -161,6 +162,8 @@ export default function SignInForm({
       }
     >
       <Form providers={providers} />
+      {/* A sign-out that had to end every account says so here. */}
+      <SignOutNotice />
     </Suspense>
   );
 }

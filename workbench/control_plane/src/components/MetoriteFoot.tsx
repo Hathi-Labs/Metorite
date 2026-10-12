@@ -58,7 +58,11 @@ export default function MetoriteFoot({
   layout,
 }: {
   collapsed: boolean;
-  /** The member's `visibleSections`, the one input of the rows. */
+  /**
+   * The member's `visibleSections`, the one input of the rows. The sidebar
+   * passes none with the shell nav off, because its own list then holds
+   * My Profile and Appearance already.
+   */
   sections: readonly NavSection[];
   /** "Change my layout" shows only while the shell nav is on (NS-7). */
   layout: boolean;
@@ -98,7 +102,9 @@ export default function MetoriteFoot({
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-label="Metorite settings"
-          title="Metorite"
+          // The tip only where no word shows. Open, the word "Metorite" is
+          // in view, and a `title` would repeat it as the description.
+          title={collapsed ? "Metorite" : undefined}
           className={`cc-link flex items-center rounded-lg text-left hover:bg-sidebar-accent tech-transition ${
             collapsed ? "justify-center p-2.5" : "w-full gap-2.5 px-3 py-2"
           }`}

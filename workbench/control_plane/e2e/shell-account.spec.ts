@@ -50,7 +50,7 @@ const THREE = {
 const OFF = { enabled: false };
 
 /** One router, on purpose (`org-branding.spec.ts` says why). */
-async function stub(page: Page, accounts: unknown = THREE, calls: string[] = []) {
+async function stub(page: Page, accounts: unknown = THREE, calls: string[] = [], refuse: Record<string, number> = {}) {
   await page.route("**/api/**", async (route: Route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -62,6 +62,9 @@ async function stub(page: Page, accounts: unknown = THREE, calls: string[] = [])
     if (path === "/api/accounts") return json(accounts);
     if (path.startsWith("/api/accounts/")) {
       calls.push(`${path} ${req.postData() ?? ""}`);
+      const refused = refuse[path.split("/").pop() ?? ""];
+      if (refused) return route.fulfill({ status: refused, contentType: "application/json", body: "{}" });
+      if (path.endsWith("/signout-all")) return json({ ok: true, emails: ["vjvarada@hathilabs.com"] });
       return json({ ok: true, email: "vjvarada@fracktal.in" });
     }
     if (path === "/api/auth/me/shell") {
@@ -74,16 +77,32 @@ async function stub(page: Page, accounts: unknown = THREE, calls: string[] = [])
 }
 
 /** The shell flags, as production runs them, plus any extra keys. */
-async function flags(page: Page, opts: { bar?: boolean; nav?: boolean; extra?: Record<string, string>; scale?: string } = {}) {
+async function flags(page: Page, opts: { bar?: boolean; nav?: boolean; extra?: Record<string, string> } = {}) {
   await page.addInitScript(
-    ({ bar, nav, extra, scale }) => {
+    ({ bar, nav, extra }) => {
       if (bar) localStorage.setItem("cc-shell-bar", "1");
       if (nav) localStorage.setItem("cc-shell-nav", "1");
       for (const [k, v] of Object.entries(extra)) localStorage.setItem(k, v);
-      if (scale) document.documentElement.style.setProperty("--ui-scale", scale);
     },
-    { bar: opts.bar ?? true, nav: opts.nav ?? true, extra: opts.extra ?? {}, scale: opts.scale ?? "" },
+    { bar: opts.bar ?? true, nav: opts.nav ?? true, extra: opts.extra ?? {} },
   );
+}
+
+/** The root font size each density gives, as `globals.css` computes it. */
+const ROOT_PX: Record<string, string> = { "0.875": "14px", "1": "16px", "1.125": "18px" };
+const rootPx = (page: Page) => page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
+
+/**
+ * Set the density AFTER the page loads. ⚠️ An `addInitScript` value does not
+ * hold: the appearance store writes `--ui-scale` again when it hydrates
+ * (`lib/theme/store.ts`), so every "scale" of the first version measured
+ * scale 1 (verifier, 2026-10-12). The poll proves the scale took.
+ */
+async function setScale(page: Page, scale: string) {
+  await page.evaluate((v) => document.documentElement.style.setProperty("--ui-scale", v), scale);
+  await expect.poll(() => rootPx(page)).toBe(ROOT_PX[scale]);
+  // Let the layout settle at the new size.
+  await page.waitForTimeout(150);
 }
 
 const bar = (page: Page) => page.locator("[data-shell-bar]");
@@ -212,6 +231,36 @@ test.describe("the top-right account widget", () => {
     expect(calls).toEqual(['/api/accounts/switch {"slot":2}', '/api/accounts/remove {"slot":2}']);
   });
 
+  // ⚠️ Fails CLOSED (review of 2026-10-12, P1). A remove that fails twice
+  // must not land on / with the leaving account one click away.
+  test("Sign out fails closed: a remove that fails twice signs out of every account, and says so", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, THREE, calls, { remove: 500 });
+    await page.goto("/settings/appearance");
+    await trigger(page).click();
+    await menu(page).getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.waitForURL((u) => u.pathname === "/signin");
+    expect(calls).toEqual([
+      '/api/accounts/switch {"slot":2}',
+      '/api/accounts/remove {"slot":2}',
+      '/api/accounts/remove {"slot":2}',
+      "/api/accounts/signout-all ",
+    ]);
+    // The one Toast channel. Addressed by structure: Base UI marks the
+    // visible toast `aria-hidden`, so `getByRole` cannot see it
+    // (`components/ui/Toast.tsx`), and an announcer copies the words.
+    const notice = page.locator("h2[data-type='error']", {
+      hasText: "Couldn't sign out of that account alone, so we signed out of all accounts on this browser.",
+    });
+    await expect(notice).toBeVisible();
+    // Once: after it has been on screen, a reload shows no notice.
+    await page.waitForTimeout(3_500);
+    await page.reload();
+    await expect(page.getByRole("button").first()).toBeVisible();
+    await expect(page.locator("h2[data-type='error']", { hasText: "Couldn't sign out" })).toHaveCount(0);
+  });
+
   test("Escape closes it and gives the focus back; a click outside closes it", async ({ page }) => {
     await flags(page);
     await stub(page);
@@ -238,10 +287,12 @@ test.describe("the widget never crowds the bell", () => {
       for (const scale of ["1", "0.875", "1.125"]) {
         test(`${width}px, bell ${dock ? "on" : "off"}, scale ${scale}`, async ({ page }) => {
           await page.setViewportSize({ width, height: 800 });
-          await flags(page, { extra: dock ? { "cc-shell-dock": "1" } : {}, scale });
+          await flags(page, { extra: dock ? { "cc-shell-dock": "1" } : {} });
           await stub(page);
           await page.goto("/settings/appearance");
           await expect(trigger(page)).toBeVisible();
+          await expect(aside(page).locator("nav a").first()).toBeVisible();
+          await setScale(page, scale);
           const group = bar(page).locator(":scope > div").last();
           await expect(group.locator(":scope > *")).toHaveCount(dock ? 3 : 2);
           const first = await box(group.locator(":scope > *").first());
@@ -256,6 +307,8 @@ test.describe("the widget never crowds the bell", () => {
           );
           for (let i = 1; i < xs.length; i++) expect(xs[i][0]).toBeGreaterThanOrEqual(xs[i - 1][1] - 0.5);
           expect(xs[xs.length - 1][1]).toBeLessThanOrEqual(width);
+          // The scale held for the whole measure.
+          expect(await rootPx(page)).toBe(ROOT_PX[scale]);
         });
       }
     }
@@ -270,7 +323,8 @@ test.describe("the sidebar foot is the Metorite menu", () => {
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(metorite(page)).toBeVisible();
-    await expect(metorite(page)).toHaveAttribute("title", "Metorite");
+    // Open, the word is in view, so there is no tip to repeat it.
+    await expect(metorite(page)).not.toHaveAttribute("title");
     await expect(metorite(page)).toContainText("Metorite");
     const comet = await box(metorite(page).locator("svg[data-metorite-mark]"));
     expect(Math.round(comet.height)).toBe(20);
@@ -368,11 +422,12 @@ test.describe("the sidebar foot is the Metorite menu", () => {
 
   for (const scale of ["1", "0.875", "1.125"]) {
     test(`folded: the comet alone, on the rail's icon column (scale ${scale})`, async ({ page }) => {
-      await flags(page, { extra: { "cc-sidebar-collapsed": "1" }, scale });
+      await flags(page, { extra: { "cc-sidebar-collapsed": "1" } });
       await stub(page);
       await page.goto("/settings/appearance");
       await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
       await expect(aside(page).locator("nav a").first()).toBeVisible();
+      await setScale(page, scale);
       await expect(metorite(page)).toBeVisible();
       await expect(metorite(page)).toHaveText("");
       await expect(metorite(page)).toHaveAttribute("title", "Metorite");
@@ -388,6 +443,7 @@ test.describe("the sidebar foot is the Metorite menu", () => {
         );
       expect(icons.length).toBeGreaterThan(2);
       for (const c of icons) expect(Math.abs(c - comet), `an icon at ${c} vs the comet at ${comet}`).toBeLessThanOrEqual(1);
+      expect(await rootPx(page)).toBe(ROOT_PX[scale]);
       // No account foot in the folded rail.
       await expect(aside(page).getByRole("button", { name: /^Accounts:/ })).toHaveCount(0);
       await expect(aside(page).locator("[data-current-account]")).toHaveCount(0);
@@ -419,10 +475,14 @@ test.describe("the other frames", () => {
     await expect(trigger(page)).toBeVisible();
     await expect(metorite(page)).toBeVisible();
     await expect(aside(page).getByRole("button", { name: /^Accounts:/ })).toHaveCount(0);
-    // No layout question without the shell nav, so no row for it.
+    // No layout question without the shell nav, so no row for it. The rail
+    // itself lists My Profile and Appearance then, so the menu repeats
+    // neither, and keeps the colour mode.
+    await expect(aside(page).getByRole("link", { name: "My Profile" })).toBeVisible();
     await metorite(page).click();
     await expect(metoriteMenu(page).getByRole("button", { name: "Change my layout" })).toHaveCount(0);
-    await expect(metoriteMenu(page).getByRole("link", { name: "My Profile" })).toBeVisible();
+    await expect(metoriteMenu(page).getByRole("link")).toHaveCount(0);
+    await expect(metoriteMenu(page).getByRole("button", { name: /^(Light|Dark) mode$/ })).toBeVisible();
   });
 });
 
