@@ -155,6 +155,9 @@ QUESTION_TEXT_MAX = 1000
 OPTION_LABEL_MAX = 100
 #: The longest option description the card keeps.
 OPTION_DESCRIPTION_MAX = 200
+#: The marks a cut text drops at its end, before the ellipsis: a space,
+#: a comma and the like, and the en and em dashes (by code, not as glyphs).
+_CUT_MARKS = " ,;:.-" + chr(0x2013) + chr(0x2014)
 #: The mark at the end of a cut text.
 ELLIPSIS = "…"
 
@@ -174,12 +177,14 @@ def clip_words(text: str, limit: int) -> str:
     room = max(limit - len(ELLIPSIS), 0)
     head = t[:room]
     cut = head.rstrip()
+    # The limit fell inside a word: go back to the space before it. Do so
+    # only when that keeps most of the text, because a space near the start
+    # would throw away almost all of it.
+    inside_word = not t[room].isspace() and not head[-1:].isspace()
     space = cut.rfind(" ")
-    # Cut at the word only when that keeps most of the text: a space near
-    # the start would throw away almost all of it.
-    if space >= room // 2:
+    if inside_word and space >= room // 2:
         cut = cut[:space]
-    cut = cut.rstrip(" ,;:.-–—")
+    cut = cut.rstrip(_CUT_MARKS)
     return f"{cut}{ELLIPSIS}"
 
 

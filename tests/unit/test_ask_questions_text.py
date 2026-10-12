@@ -53,6 +53,12 @@ def test_a_long_text_is_cut_at_a_word_with_an_ellipsis() -> None:
     assert not body.endswith(" ")
 
 
+def test_a_limit_at_the_end_of_a_word_keeps_that_word() -> None:
+    """Mutation caught: the cut always goes back to the space before."""
+    assert clip_words("alpha beta gamma delta", 12) == "alpha beta" + ELLIPSIS
+    assert clip_words("alpha beta gamma delta", 17) == "alpha beta gamma" + ELLIPSIS
+
+
 def test_one_long_token_is_cut_at_the_limit_with_the_mark() -> None:
     out = clip_words("x" * 300, 50)
     assert out == "x" * 49 + ELLIPSIS
