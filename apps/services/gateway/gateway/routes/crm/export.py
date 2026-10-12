@@ -149,16 +149,20 @@ MAX_EXPORT_ROWS = 10_000
 COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "deals": (
         ("name", "Deal"),
+        ("status_name", "Stage"),
         ("organization_name", "Company"),
         ("amount", "Amount"),
         ("expected_close_date", "Closing"),
         ("owner_email", "Owner"),
+        ("last_activity_at", "Last touched"),
     ),
     "leads": (
         ("lead_name", "Lead"),
+        ("status_name", "Status"),
         ("organization_name", "Company"),
         ("email", "Email"),
         ("owner_email", "Owner"),
+        ("last_activity_at", "Last touched"),
         ("converted_deal_id", "Converted"),
     ),
     "contacts": (
@@ -167,12 +171,14 @@ COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("email", "Email"),
         ("phone", "Phone"),
         ("owner_email", "Owner"),
+        ("last_activity_at", "Last touched"),
     ),
     "organizations": (
         ("name", "Company"),
         ("industry", "Industry"),
         ("phone", "Phone"),
         ("owner_email", "Owner"),
+        ("last_activity_at", "Last touched"),
     ),
 }
 

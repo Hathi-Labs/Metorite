@@ -287,6 +287,10 @@ def busy(promoted):  # noqa: F811
         # Seventeen plain overdue tasks, so the cap of 15 cuts the list.
         # Inserted newest deadline first, so creation order is no help.
         plain = [make(f"Plain {d}", d, todo, 200 + d) for d in range(1, 18)]
+        # Seventeen unread notifications, so the bell's own count is past the
+        # cap too (`totals`, navigation_shell.md §3.2c).
+        for _ in range(17):
+            _notification(c, org=org, recipient=BUSY, task=plain[0], actor="lead@x.test")
     out["expected_tasks"] = [reopened, waiting, *[plain[d - 1] for d in range(17, 4, -1)]]
 
     box = _account(p.admin_engine, org=org, owner=BUSY, default=True)
@@ -471,6 +475,18 @@ class TestTheLensDueRead:
         answer = await _needs(promoted, monkeypatch, _member(BUSY))
         mail = [i["id"] for i in answer["items"] if i["app"] == "email"]
         assert mail == busy["expected_mail"]
+
+    async def test_each_count_past_the_cap_is_true_or_marked_a_floor(
+        self, promoted, busy, monkeypatch,  # noqa: F811
+    ):
+        # 19 due tasks, 17 threads and 17 unread notifications. Each list
+        # stops at 15. Email and Projects send their apps' own counts. The
+        # lens read has no count, so Tasks says 15 and is marked a floor.
+        answer = await _needs(promoted, monkeypatch, _member(BUSY))
+        assert answer["sources"] == SOURCES
+        assert answer["totals"] == {"tasks": shell.PER_APP, "projects": 17, "email": 17}
+        assert answer["capped"] == ["tasks"]
+        assert len([i for i in answer["items"] if i["app"] == "email"]) == shell.PER_APP
 
 
 @pytest.fixture(scope="module")

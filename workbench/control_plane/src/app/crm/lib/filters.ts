@@ -22,6 +22,9 @@ export function hasPipeline(entity: EntitySlug): boolean {
 
 export const MAX_PAGE_SIZE = 100;
 
+/** The rows of one list page, and of each "Load more" (CRM-X1). */
+export const LIST_PAGE_SIZE = 50;
+
 export type ListQuery = {
   q?: string;
   sort?: string;
@@ -86,7 +89,7 @@ export function listQuery(
   entity: EntitySlug,
   view: CrmView,
   page = 1,
-  pageSize = 50
+  pageSize = LIST_PAGE_SIZE
 ): ListQuery {
   const query: ListQuery = {
     page,
@@ -105,6 +108,25 @@ export function listQuery(
     query.dir = view.dir;
   }
   return query;
+}
+
+/**
+ * The rows on screen, then the rows of the next page that are not on screen
+ * (CRM-X1 "Load more").
+ *
+ * A record can move up between two reads, for example when somebody touches
+ * it, and then it shows on both pages. The row already on screen stays, and
+ * the copy on the next page is dropped. Pure, so the vitest setup tests it.
+ */
+export function appendPage<T extends { id?: unknown }>(shown: readonly T[], next: readonly T[]): T[] {
+  const seen = new Set(shown.map((row) => String(row.id)));
+  const added = next.filter((row) => {
+    const id = String(row.id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return [...shown, ...added];
 }
 
 /**

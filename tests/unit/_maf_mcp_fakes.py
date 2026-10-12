@@ -1,9 +1,10 @@
 """Shared fakes for the WS-8c fences (MCP servers on a native MAF agent).
 
-* :class:`RegistrySpy` replaces ``acb_graph.get_session`` for the registry
-  read of ``_tool_injection._inject_mcp_servers``. It records each statement
-  and its binds, and answers the rows of the org that the binds name. So a
-  test proves both "the run read no row" and "the filter named the org".
+* :class:`RegistrySpy` replaces ``gateway.connections.mcp.servers_for_org``,
+  the one registry read of ``_tool_injection._inject_mcp_servers`` (WS-54
+  IN-4). It records each call and its org, and answers the servers of that
+  org. So a test proves both "the run read nothing" and "the read named the
+  org".
 * :func:`native_agent` builds a real MAF ``Agent`` that never reaches a model.
 * :class:`CopilotStub` has the one field the Copilot path writes.
 * :func:`local_mcp_server` runs a real streamable-HTTP MCP server on
@@ -22,66 +23,67 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-#: The columns of ``_tool_injection._MCP_ROWS_SQL``, in order.
-COLUMNS = ("name", "transport", "url", "headers", "agent_scope")
-
-
 def row(name: str, *, org: str, transport: str = "http-sse",
         url: str = "https://mcp.example.com/mcp",
         headers: dict[str, str] | None = None,
         scope: list[str] | None = None) -> dict[str, Any]:
-    """One ``mcp_servers`` row, with its org."""
+    """One registered MCP server, with its org."""
     return {
         "org": org, "name": name, "transport": transport, "url": url,
         "headers": headers or {}, "agent_scope": scope or ["*"],
     }
 
 
+#: The one reader call that the spy records, with the org it was given.
+READ = "servers_for_org"
+
+
 @dataclass
 class RegistrySpy:
-    """A fake ``get_session`` over a list of rows of several orgs."""
+    """A fake ``gateway.connections.mcp.servers_for_org`` over several orgs.
+
+    WS-54 IN-4 moved the servers into the connection registry, and the
+    orchestrator reads them through that one function. The spy answers the
+    servers of the org that the call names, and records each call. The R8
+    half (``tests/unit/test_mcp_registry_r8.py``) proves the real reader.
+    """
 
     rows: list[dict[str, Any]] = field(default_factory=list)
     statements: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     def install(self, monkeypatch: Any) -> RegistrySpy:
-        import acb_graph
+        from gateway.connections import mcp
 
-        monkeypatch.setattr(acb_graph, "get_session", self._session)
+        monkeypatch.setattr(mcp, READ, self._servers_for_org)
         return self
 
-    @contextlib.contextmanager
-    def _session(self) -> Iterator[Any]:
-        spy = self
+    async def _servers_for_org(self, org: str) -> list[Any]:
+        from gateway.connections.mcp import StoredServer
 
-        class _Result:
-            def __init__(self, rows: list[tuple[Any, ...]]) -> None:
-                self._rows = rows
-
-            def fetchall(self) -> list[tuple[Any, ...]]:
-                return self._rows
-
-        class _Session:
-            def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
-                sql = str(stmt)
-                binds = dict(params or {})
-                if "mcp_servers" not in sql:
-                    # Another read of the run (skill settings, for example).
-                    return _Result([])
-                spy.statements.append((sql, binds))
-                org = binds.get("org")
-                if "organization_id = :org" not in sql:
-                    # An unfiltered read answers every org: that is the leak.
-                    picked = spy.rows
-                else:
-                    picked = [r for r in spy.rows if r["org"] == org]
-                return _Result([tuple(r[c] for c in COLUMNS) for r in picked])
-
-        yield _Session()
+        self.statements.append((READ, {"org": org}))
+        return [
+            StoredServer(
+                name=r["name"], label=r["name"], description="",
+                transport=r["transport"], url=r["url"],
+                agent_scope=tuple(r["agent_scope"]), enabled=True,
+                header_names=tuple(sorted(r["headers"])), headers=dict(r["headers"]),
+            )
+            for r in self.rows if r["org"] == org
+        ]
 
     @property
     def reads(self) -> int:
         return len(self.statements)
+
+
+def refuse_registry(monkeypatch: Any, message: str) -> None:
+    """Make every MCP registry call fail, for a path that must not reach it."""
+    from gateway.connections import mcp
+
+    def _refuse(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError(message)
+
+    monkeypatch.setattr(mcp, "tenant_session", _refuse)
 
 
 def native_agent(name: str = "probe") -> Any:

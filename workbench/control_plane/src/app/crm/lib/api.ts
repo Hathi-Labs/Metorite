@@ -14,6 +14,7 @@ import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type { FieldDef } from "./fields";
+import type { CrmOwner } from "./filterBar";
 import type { SavedView, SavedViewBody } from "./savedViews";
 import type { SyncHealth } from "./syncHealth";
 import type { RecordCounts, ResetThen } from "./setup";
@@ -155,6 +156,13 @@ export function deleteRecord(
 /** What each custom field of one entity means. Read only. */
 export function listFields(entity: EntitySlug): Promise<FieldDef[]> {
   return call<FieldDef[]>(`/fields/${entity}`);
+}
+
+// ── The owner filter (CRM-X1) ─────────────────────────────────────────────
+
+/** Each active member, and each record owner who is not a member. */
+export async function listOwners(): Promise<CrmOwner[]> {
+  return (await call<{ owners: CrmOwner[] }>("/owners")).owners;
 }
 
 // ── The CSV export (WS-26i-export) ────────────────────────────────────────

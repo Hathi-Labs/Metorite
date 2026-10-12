@@ -30,9 +30,11 @@ approvals  ``feature:approvals`` ``action_broker.read_pending``: the queue
                                  first, 50 rows at most (NS-3 slice C).
 projects   ``feature:projects``  ``projects.notifications.list_notifications``,
                                  unread only.
-email      ``feature:email``     ``email.transport.accounts.list_accounts``,
+email      ``feature:email``     ``email.transport.accounts.feed_mailboxes``,
                                  then ``email.digest.needs_reply_threads``
-                                 for each mailbox, the longest wait first.
+                                 for each mailbox, the longest wait first,
+                                 and ``needs_reply_count`` for a mailbox
+                                 whose list reached the cap.
 =========  ====================  ==========================================
 
 ⚠️ **Only an org admin gets approval rows** (owner decision, 2026-10-10).
@@ -117,6 +119,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -165,6 +168,22 @@ NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
 Item = dict[str, Any]
 
 
+@dataclass(frozen=True)
+class Found:
+    """What one provider found: its rows, and how many need the member.
+
+    ``total`` is the true count when the app's read already knows it (the
+    Projects bell's unread count, a mailbox's Needs-reply count). Else it is
+    the rows found. ``capped`` says that ``total`` is a floor: the read
+    stopped at ``PER_APP``, so the source holds ``total`` OR MORE. The
+    sidebar then prints "15+" (``navigation_shell.md`` §3.2c).
+    """
+
+    rows: list[Item]
+    total: int
+    capped: bool
+
+
 def _instant(value: Any) -> datetime | None:
     """A stored time as an aware datetime, or None. A naive one is UTC."""
     if value is None or value == "":
@@ -197,17 +216,18 @@ def _item(*, id: str, app: str, kind: str, title: Any, detail: Any, href: str,
 # ── My Tasks: due today and overdue, through the lens ───────────────────────
 
 
-async def _tasks(user: UserContext) -> list[Item]:
+async def _tasks(user: UserContext) -> Found:
     from gateway.routes.projects.personal import my_due_tasks
 
     # One bounded read: due before the member's tomorrow, in the member's
     # zone, the oldest deadline first, at most PER_APP rows.
     answer = await my_due_tasks(user, limit=PER_APP)
     now = datetime.now(UTC)
+    found = answer.get("rows") or []
 
     overdue: list[Item] = []
     due_today: list[Item] = []
-    for task in answer.get("rows") or []:
+    for task in found:
         due = _instant(task.get("due_at"))
         if due is None or task.get("completed_at"):
             continue
@@ -225,7 +245,10 @@ async def _tasks(user: UserContext) -> list[Item]:
             href=f"/projects?task={quote(task_id)}", at=due,
             act="done", act_ref=task_id,
         ))
-    return (_sort(overdue) + _sort(due_today))[:PER_APP]
+    rows = (_sort(overdue) + _sort(due_today))[:PER_APP]
+    # The lens read stops at PER_APP and runs no count, so a full read is a
+    # floor: the member has this many due tasks or more.
+    return Found(rows, len(rows), capped=len(found) >= PER_APP)
 
 
 # ── Projects: unread notifications, through the bell's read ─────────────────
@@ -252,7 +275,7 @@ def _sentence(row: dict[str, Any]) -> str:
     return f"{_who(row.get('actor'))} {verb} {task}"
 
 
-async def _projects(user: UserContext) -> list[Item]:
+async def _projects(user: UserContext) -> Found:
     from gateway.routes.projects.core import Page
     from gateway.routes.projects.notifications import list_notifications
 
@@ -268,7 +291,13 @@ async def _projects(user: UserContext) -> list[Item]:
             href=f"/projects?task={quote(task_id)}", at=row.get("created_at"),
             act="read", act_ref=note_id,
         ))
-    return _sort(out)[:PER_APP]
+    rows = _sort(out)[:PER_APP]
+    # The bell's read counts the unread rows already, with the same
+    # visibility clause, so the true number costs no query of our own.
+    unread = (answer.get("unread") or {}).get("total")
+    if isinstance(unread, int) and not isinstance(unread, bool):
+        return Found(rows, max(unread, len(rows)), capped=False)
+    return Found(rows, len(rows), capped=len(answer.get("rows") or []) >= PER_APP)
 
 
 # ── Email: needs reply, for each mailbox the member owns ────────────────────
@@ -279,15 +308,17 @@ def _email_href(message_id: str, account_id: str) -> str:
     return "/email?" + urlencode({"email": message_id.lower(), "account": account_id.lower()})
 
 
-async def _email(user: UserContext) -> list[Item]:
-    from gateway.routes.email.digest import needs_reply_threads
-    from gateway.routes.email.transport.accounts import list_accounts
+async def _email(user: UserContext) -> Found:
+    from gateway.routes.email.digest import needs_reply_count, needs_reply_threads
+    from gateway.routes.email.transport.accounts import feed_mailboxes
 
-    accounts = await list_accounts(user=user)
+    # The light read: the ids and the pool flag, and no unread count.
+    accounts = await feed_mailboxes(user)
     out: list[Item] = []
     asked = failed = 0
-    for account in accounts:
-        row = account if isinstance(account, dict) else account.model_dump()
+    total = 0
+    capped = False
+    for row in accounts:
         if not row.get("in_all_inboxes", True):
             continue  # D-EM-30, see the module note
         account_id = str(row["id"])
@@ -304,6 +335,23 @@ async def _email(user: UserContext) -> list[Item]:
                 extra={"provider": "email", "error": type(exc).__name__},
             )
             continue
+        shown = [t for t in threads if t.get("message_id")]
+        if len(threads) >= PER_APP:
+            # The list reached the cap. The digest's own count says the real
+            # number, through one indexed COUNT on this mailbox.
+            try:
+                total += max(len(shown), await asyncio.wait_for(
+                    needs_reply_count(user, account_id), MAILBOX_TIMEOUT_S,
+                ))
+            except Exception as exc:
+                capped = True
+                total += len(shown)
+                logger.warning(
+                    "shell.needs mailbox count failed",
+                    extra={"provider": "email", "error": type(exc).__name__},
+                )
+        else:
+            total += len(shown)
         for thread in threads:
             if not thread.get("message_id"):
                 continue  # nothing to open
@@ -317,7 +365,9 @@ async def _email(user: UserContext) -> list[Item]:
             ))
     if asked and failed == asked:
         raise RuntimeError("every mailbox failed")
-    return _sort(out)[:PER_APP]
+    rows = _sort(out)[:PER_APP]
+    # A mailbox that failed costs its rows, so the total can only be a floor.
+    return Found(rows, max(total, len(rows)), capped=capped or failed > 0)
 
 
 # ── Approvals: the pending actions of the member's organization ─────────────
@@ -380,7 +430,7 @@ def _proposer(actor: Any) -> str:
     return _who(raw)
 
 
-async def _approvals(user: UserContext) -> list[Item]:
+async def _approvals(user: UserContext) -> Found:
     import action_broker
 
     # The broker's bounded read of the queue, which raises on a database
@@ -396,13 +446,14 @@ async def _approvals(user: UserContext) -> list[Item]:
             title=_action_title(row), detail=f"Proposed by {_proposer(row.get('actor'))}",
             href="/approvals", at=row.get("created_at"),
         ))
-    return _sort(out)[:PER_APP]
+    # The queue read stops at PER_APP and runs no count.
+    return Found(_sort(out)[:PER_APP], len(out[:PER_APP]), capped=len(rows) >= PER_APP)
 
 
 #: source → (the feature its app's router demands, the provider). The order
 #: here is the order the providers run in, not the order of the feed.
 #: Approvals runs LAST (the module note).
-PROVIDERS: dict[str, tuple[str, Callable[[UserContext], Awaitable[list[Item]]]]] = {
+PROVIDERS: dict[str, tuple[str, Callable[[UserContext], Awaitable[Found]]]] = {
     "tasks": ("projects", _tasks),
     "projects": ("projects", _projects),
     "email": ("email", _email),
@@ -440,6 +491,8 @@ async def shell_needs(
 
     items: list[Item] = []
     sources: dict[str, str] = {}
+    totals: dict[str, int] = {}
+    capped: list[str] = []
     loop = asyncio.get_running_loop()
     deadline = loop.time() + TOTAL_BUDGET_S
     for key, (feature, provider) in PROVIDERS.items():
@@ -454,7 +507,7 @@ async def shell_needs(
             sources[key] = "failed"
             continue
         try:
-            rows = await asyncio.wait_for(provider(user), min(PROVIDER_TIMEOUT_S, left))
+            found = await asyncio.wait_for(provider(user), min(PROVIDER_TIMEOUT_S, left))
         except TimeoutError:
             logger.info("shell.needs provider timed out", extra={"provider": key})
             sources[key] = "failed"
@@ -470,9 +523,18 @@ async def shell_needs(
             sources[key] = "failed"
             continue
         sources[key] = "ok"
-        items.extend(rows[:PER_APP])
+        items.extend(found.rows[:PER_APP])
+        totals[key] = max(found.total, len(found.rows[:PER_APP]))
+        if found.capped:
+            capped.append(key)
 
-    return {**_fit(items, size), "sources": sources}
+    # ``totals`` is how many need the member in each source that answered:
+    # the true count where the app's read knows it, else the rows found.
+    # ``capped`` names the sources whose total is a floor (the read stopped
+    # at PER_APP). The sidebar reads both, because the cut to ``size`` can
+    # drop one app's rows from ``items`` entirely (the replies sort last).
+    # A source that failed or is absent has no entry in either.
+    return {**_fit(items, size), "totals": totals, "capped": capped, "sources": sources}
 
 
 def _fit(items: list[Item], size: int) -> dict[str, Any]:
