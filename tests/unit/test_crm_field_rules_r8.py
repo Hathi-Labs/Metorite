@@ -613,9 +613,11 @@ async def test_a_profile_with_no_layout_list_is_read_again_at_once(fr) -> None:
     discovery no fixed column can take a rule, so the next run reads it."""
     p, a, _b = fr
     await _imported(p, p.org_a, a)
+    # The hash changes too, as it does for a profile that an older build wrote.
     with p.admin_engine.begin() as c:
         c.execute(text("UPDATE crm_source_profiles SET profile = profile - 'layout_fields' "
-                       "- 'custom_field_types' WHERE organization_id = CAST(:o AS uuid)"),
+                       "- 'custom_field_types', profile_hash = 'before-q7a' "
+                       "WHERE organization_id = CAST(:o AS uuid)"),
                   {"o": p.org_a})
     closed = await _post(p.org_a, "Custom_Industry", "industry")
     assert closed.status_code == 422
