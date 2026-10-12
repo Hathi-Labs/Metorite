@@ -88,6 +88,7 @@ from orchestrator._copilot_session import (
 # paths + external importers (tests, tool-addendum eval) keep resolving.
 from orchestrator._tool_injection import (
     _apply_own_tool_scope,
+    _drop_mirror_record_writes,
     _build_injected_tools_addendum,
     _count_agent_tools,
     _log_agent_tools_resolved,
@@ -1191,6 +1192,8 @@ async def _run_sub_agent_streaming(
                 loaded.config.get("own_tool_scope") or None
                 if hasattr(loaded, "config") else None,
             )
+            # CRM-C7: no CRM record write in Mirror mode, read as the member.
+            await _drop_mirror_record_writes(agents, no_egress=_sub_no_egress)
             _sub_own_tools = _count_agent_tools(agents)  # WS-8o
             _inject_agent_tools(
                 agents,
@@ -3110,6 +3113,8 @@ async def _run_agent_inner(
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
+            # CRM-C7: no CRM record write in Mirror mode, read as the member.
+            await _drop_mirror_record_writes(agents, no_egress=_no_egress)
             _own_tools = _count_agent_tools(agents)  # WS-8o
             _inject_agent_tools(
                 agents,
@@ -3960,6 +3965,10 @@ async def run_agent_stream(
             )
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
+            )
+            # CRM-C7: no CRM record write in Mirror mode, read as the member.
+            await _drop_mirror_record_writes(
+                agents, no_egress=_stream_no_egress,
             )
             _own_tools = _count_agent_tools(agents)  # WS-8o
             _inject_agent_tools(

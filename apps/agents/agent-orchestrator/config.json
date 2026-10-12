@@ -28,6 +28,18 @@
     "query_history",
     "recall_timeline",
     "remember",
-    "emit_generative_ui"
+    "emit_generative_ui",
+    "crm_list_records",
+    "crm_get_record",
+    "crm_list_fields",
+    "crm_list_pipelines",
+    "crm_deal_contacts",
+    "crm_list_owners",
+    "crm_report",
+    "crm_aggregate",
+    "crm_stage_dwell",
+    "crm_list_modules",
+    "crm_list_module_records",
+    "crm_get_module_record"
   ]
 }

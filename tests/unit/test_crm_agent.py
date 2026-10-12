@@ -45,6 +45,7 @@ import ast
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -65,12 +66,24 @@ from tests.unit._crm_agent_fakes import (
 
 _M = load_agent_module()
 
+# WS-53 CRM-C7: the shared read tools live in ``acb_skills.crm_tools`` and
+# speak through its own transport, so a fake gateway patches both modules.
+import acb_skills.crm_tools as _T  # noqa: E402
+
 _ID = str(uuid4())
 _STATUS_ID = str(uuid4())
 
 
 def _fake_gateway(monkeypatch, responder, *, user: str | None = "sales@fracktal.in"):
-    return fake_gateway(_M, monkeypatch, responder, user=user)
+    """Both transports share ONE call list, in the order the calls happen."""
+    calls = fake_gateway(_M, monkeypatch, responder, user=user)
+    monkeypatch.setattr(
+        _T, "httpx",
+        SimpleNamespace(AsyncClient=lambda **_kw: FakeClient(calls, responder)),
+    )
+    if user is not None:
+        monkeypatch.setattr(_T, "_current_user_email", lambda: user)
+    return calls
 
 
 # ── 1. Registration — both halves, or the agent never loads ──────────────────
@@ -154,7 +167,7 @@ def test_build_agents_constructs_one_native_maf_agent() -> None:
     assert getattr(agent, "_permission_handler", None) is None
     tools = (agent.default_options or {}).get("tools")
     assert tools, "built with no tools"
-    assert len(tools) == len(_M._TOOLS) == 8
+    assert len(tools) == len(_M._TOOLS) == 8 + len(_T.CRM_TOOLS)
 
 
 def test_the_advertised_description_does_not_still_say_read_only() -> None:
@@ -181,7 +194,8 @@ def test_register_agent_tools_maps_names() -> None:
     assert set(reg) == {
         "search_crm", "get_pipeline", "get_record", "get_timeline",
         "create_lead", "update_deal_status", "log_activity", "convert_lead",
-    }
+    } | set(_T.CRM_TOOL_NAMES)
+    assert all(reg[n] is getattr(_T, n) for n in _T.CRM_TOOL_NAMES)
     assert reg["search_crm"] is _M.search_crm
 
 
@@ -203,6 +217,8 @@ def _responder(call: dict) -> Any:
     if path == "/crm/statuses/deal":
         return _STATUSES
     if path == "/crm/lost-reasons":
+        return []
+    if path in ("/crm/pipelines", "/crm/modules") or path.startswith("/crm/fields/"):
         return []
     if path.endswith("/convert"):
         return {"lead": {"id": _ID}, "deal": {"id": _ID, "name": "Acme AMC"}}
@@ -233,6 +249,19 @@ _INVOCATIONS: dict[str, Any] = {
     "update_deal_status": lambda: _M.update_deal_status(_ID, "Negotiation"),
     "log_activity": lambda: _M.log_activity("deals", _ID, "note", "Called them"),
     "convert_lead": lambda: _M.convert_lead(_ID, deal_name="Acme AMC"),
+    # CRM-C7: the shared read tools, one call each.
+    "crm_list_records": lambda: _T.crm_list_records("deals", q="acme"),
+    "crm_get_record": lambda: _T.crm_get_record("deals", _ID),
+    "crm_list_fields": lambda: _T.crm_list_fields("deals"),
+    "crm_list_pipelines": lambda: _T.crm_list_pipelines(),
+    "crm_deal_contacts": lambda: _T.crm_deal_contacts(_ID),
+    "crm_list_owners": lambda: _T.crm_list_owners(),
+    "crm_report": lambda: _T.crm_report("pipeline"),
+    "crm_aggregate": lambda: _T.crm_aggregate("deals", "status"),
+    "crm_stage_dwell": lambda: _T.crm_stage_dwell(),
+    "crm_list_modules": lambda: _T.crm_list_modules(),
+    "crm_list_module_records": lambda: _T.crm_list_module_records("Products"),
+    "crm_get_module_record": lambda: _T.crm_get_module_record("Products", _ID),
 }
 
 
@@ -400,7 +429,7 @@ async def test_search_page_size_is_capped_below_the_kernels_own_cap(
     Clamping here keeps the tool honest instead of relaying an error."""
     calls = _fake_gateway(monkeypatch, _responder)
     await _M.search_crm("acme", entity="leads", limit=10_000)
-    assert calls[0]["params"]["page_size"] == 25
+    assert calls[0]["params"]["page_size"] == 50
 
 
 async def test_search_renders_rows_with_the_ids_a_follow_up_needs(
@@ -867,6 +896,186 @@ async def test_a_gateway_refusal_is_relayed_not_swallowed(monkeypatch) -> None:
     assert "403" in str(exc.value)
     assert "Feature 'crm' not enabled" in str(exc.value)
     assert len(calls) == 1
+
+
+# ── 4b. The shared read tools (WS-53 CRM-C7, crm_platform.md §20.10) ────────
+
+#: Each shared tool → the route it must read. Enumerated over CRM_TOOLS, so a
+#: thirteenth tool with no row here fails the first test below.
+_SHARED_ROUTES: dict[str, str] = {
+    "crm_list_records": "/crm/deals",
+    "crm_get_record": f"/crm/deals/{_ID}",
+    "crm_list_fields": "/crm/fields/deals",
+    "crm_list_pipelines": "/crm/pipelines",
+    "crm_deal_contacts": f"/crm/deals/{_ID}/contacts",
+    "crm_list_owners": "/crm/owners",
+    "crm_report": "/crm/reports/pipeline",
+    "crm_aggregate": "/crm/aggregate",
+    "crm_stage_dwell": "/crm/aggregate/stage-dwell",
+    "crm_list_modules": "/crm/modules",
+    "crm_list_module_records": "/crm/modules/Products/records",
+    "crm_get_module_record": f"/crm/modules/Products/records/{_ID}",
+}
+
+
+def test_the_route_table_covers_every_shared_tool() -> None:
+    assert set(_SHARED_ROUTES) == set(_T.CRM_TOOL_NAMES)
+
+
+@pytest.mark.parametrize("tool", sorted(_SHARED_ROUTES), ids=sorted(_SHARED_ROUTES))
+async def test_each_shared_tool_reads_its_route_as_the_member(
+    tool: str, monkeypatch,
+) -> None:
+    """Done-when 1: the route, the verb and the member headers, per tool."""
+    calls = _fake_gateway(monkeypatch, _responder, user="sales@fracktal.in")
+    answer = await _INVOCATIONS[tool]()
+    assert isinstance(answer, str) and answer
+    assert _SHARED_ROUTES[tool] in [c["path"] for c in calls]
+    for call in calls:
+        assert call["method"] == "GET"
+        assert call["headers"].get("X-User-Email") == "sales@fracktal.in"
+        assert call["headers"].get("Authorization", "").startswith("Bearer ")
+
+
+def test_every_shared_tool_is_an_annotated_read() -> None:
+    """Read only, and ``open_world=False`` stated, so H-236 keeps them."""
+    annotations = pytest.importorskip("acb_skills.tool_annotations")
+    for fn in _T.CRM_TOOLS:
+        hints = annotations.TOOL_ANNOTATIONS[fn.__name__]
+        assert hints["read_only"] is True and hints["destructive"] is False
+        assert hints["open_world"] is False
+        assert fn.__tool_risk__ is hints
+        assert inspect.iscoroutinefunction(fn) and (fn.__doc__ or "").strip()
+
+
+async def test_a_record_answer_shows_labels_not_raw_keys(monkeypatch) -> None:
+    """Done-when 1: a custom key and a picklist value read as their labels."""
+    record = {
+        "id": _ID, "name": "Acme AMC", "expected_close_date": "2026-11-01",
+        "custom": {"cf_region_x1": "s", "cf_tags_x2": ["a", "b"]},
+    }
+    fields = [
+        {"key": "cf_region_x1", "label": "Sales region", "type": "picklist",
+         "options": [{"label": "South", "value": "s"}]},
+        {"key": "cf_tags_x2", "label": "Tags", "type": "multiselect",
+         "options": [{"label": "Alpha", "value": "a"}, {"label": "Beta", "value": "b"}]},
+    ]
+
+    def _answer(call: dict) -> Any:
+        return fields if call["path"].startswith("/crm/fields/") else record
+
+    _fake_gateway(monkeypatch, _answer)
+    out = await _T.crm_get_record("deal", _ID)
+    assert "Sales region: South" in out
+    assert "Tags: Alpha, Beta" in out
+    assert "Expected close date: 2026-11-01" in out
+    assert "cf_region_x1" not in out and "cf_tags_x2" not in out
+
+
+async def test_a_long_list_holds_fifty_rows_and_says_more(monkeypatch) -> None:
+    """D1: 50 rows at most, and the next page is named."""
+    rows = [{"id": str(uuid4()), "name": f"Deal {i}"} for i in range(50)]
+    calls = _fake_gateway(monkeypatch, lambda _c: {"rows": rows, "total": 120})
+    out = await _T.crm_list_records("deals", page_size=500)
+    assert calls[0]["params"]["page_size"] == 50
+    assert out.count("\n- ") == 50
+    assert out.rstrip().endswith("More: call again with page=2.")
+    last = await _T.crm_list_records("deals", page=3, page_size=50)
+    assert "More:" not in last
+
+
+async def test_a_status_name_becomes_the_status_id(monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, _responder)
+    await _T.crm_list_records("deals", status="negotiation", owner="me")
+    listed = next(c for c in calls if c["path"] == "/crm/deals")
+    assert listed["params"]["status_id"] == _STATUS_ID
+    assert listed["params"]["owner"] == "me"
+
+
+async def test_the_aggregate_sends_the_filters_of_the_list(monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, _responder)
+    await _T.crm_aggregate(
+        "deals", "owner", measure="weighted", close_from="2026-10-01",
+        custom={"cf_region": "South"},
+    )
+    params = calls[-1]["params"]
+    assert calls[-1]["path"] == "/crm/aggregate"
+    assert (params["entity"], params["group_by"], params["measure"]) == (
+        "deals", "owner", "weighted",
+    )
+    assert params["close_from"] == "2026-10-01"
+    assert params["custom.cf_region"] == "South"
+    assert "_status" not in params
+
+
+def _refusing(status: int, detail: Any) -> type[FakeClient]:
+    class _Refusing(FakeClient):
+        async def request(self, method: str, url: str, **kwargs: Any):
+            self._calls.append({"method": method, "url": url})
+            return FakeResponse({"detail": detail}, status)
+    return _Refusing
+
+
+@pytest.mark.parametrize(("status", "detail", "expected"), [
+    (404, "Not Found", "The CRM is off for this organization"),
+    (403, "Forbidden: an admin of your organization has not given you access "
+          "to the CRM.", "The CRM is not open to you."),
+    (403, "Feature 'crm' not enabled", "The CRM is not open to you."),
+])
+async def test_a_refusal_is_the_answer(status, detail, expected, monkeypatch) -> None:
+    """D3: the kill switch (404) and the access rule (403) read apart."""
+    calls: list[dict] = []
+    monkeypatch.setattr(_T, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_kw: _refusing(status, detail)(calls, None)))
+    monkeypatch.setattr(_T, "_current_user_email", lambda: "sales@fracktal.in")
+    for fn in (_T.crm_list_pipelines, _T.crm_stage_dwell):
+        assert expected in await fn()
+    assert len(calls) == 2
+
+
+async def test_a_missing_record_is_not_read_as_the_crm_off(monkeypatch) -> None:
+    """A 404 that names the record is an error, not the kill switch."""
+    monkeypatch.setattr(_T, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_kw: _refusing(404, "Deal not found")([], None)))
+    monkeypatch.setattr(_T, "_current_user_email", lambda: "sales@fracktal.in")
+    with pytest.raises(RuntimeError, match="Deal not found"):
+        await _T.crm_get_record("deals", _ID)
+
+
+async def test_mirror_dwell_relays_the_reason(monkeypatch) -> None:
+    """D9: Mirror mode has no stage log, and the tool says so."""
+    reason = "This CRM mirrors Zoho, and the sync records no stage changes."
+    _fake_gateway(monkeypatch, lambda _c: {
+        "stages": [], "overdue": [], "overdue_total": 0, "reason": reason,
+    })
+    assert await _T.crm_stage_dwell() == reason
+
+
+#: The names a /crm path in ``crm_tools`` may interpolate, each bound to a
+#: validator's result: the entity, an id, a module name, a report kind, and a
+#: status vocabulary from a fixed map.
+_SHARED_VALIDATED = frozenset({"slug", "record", "mod", "report", "vocab"})
+
+
+def test_the_shared_tools_bound_every_path_segment() -> None:
+    source = Path(_T.__file__).read_text(encoding="utf-8")
+    assert _crm_path_offenders(source, _SHARED_VALIDATED) == []
+
+
+@pytest.mark.parametrize("bad", ["../admin", "Products/../../x", "1abc", ""])
+async def test_a_bad_module_name_never_reaches_the_gateway(bad, monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, _responder)
+    with pytest.raises(RuntimeError, match="Invalid module name"):
+        await _T.crm_list_module_records(bad)
+    with pytest.raises(RuntimeError, match="Unknown report"):
+        await _T.crm_report("../../admin")
+    assert calls == []
+
+
+async def test_the_shared_mode_reader_reads_the_member_route(monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, lambda _c: {"mode": "mirror"})
+    assert await _T.crm_mode() == "mirror"
+    assert [c["path"] for c in calls] == ["/crm/mode"]
 
 
 # ── 5. WhatsApp: "crm" is parse-only, and the test says so ───────────────────
