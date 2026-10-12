@@ -308,7 +308,9 @@ describe("the accent shape", () => {
 
   it("keeps the tag chip classes byte-identical", () => {
     // `chipClass` in app/projects/lib/tags.ts returned exactly these.
-    expect(statusAccent({ color: "gray" }).chip).toBe("bg-secondary text-muted-foreground");
+    // ⚠️ CHANGED ON PURPOSE, 2026-10-13 (WS-53 CRM-C2 review). The gray ink
+    // was `text-muted-foreground`, 4.33 : 1 on `--secondary` in light mode.
+    expect(statusAccent({ color: "gray" }).chip).toBe("bg-secondary text-secondary-foreground");
     expect(statusAccent({ color: "red" }).chip).toBe("bg-destructive/10 text-destructive");
     expect(statusAccent({ color: "amber" }).chip).toBe("bg-warning/10 text-warning");
     expect(statusAccent({ color: "green" }).chip).toBe("bg-success/10 text-success");

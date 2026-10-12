@@ -95,7 +95,12 @@ const ACCENTS: Record<AccentHue, StatusAccent> = {
     bar: "border-l-muted-foreground/40",
     // Deliberately not `soft`+`text`: a tag chip sits on a card and needs a
     // solid-enough fill to read as a chip, which `bg-muted/40` does not give.
-    chip: "bg-secondary text-muted-foreground",
+    //
+    // ⚠️ The ink is `secondary-foreground`, the partner of the fill (WS-53
+    // CRM-C2 review). It was `text-muted-foreground`, which measures 4.33 : 1
+    // on `--secondary` in light mode, under AA. `contrast.test.ts` measures
+    // the pair this slot uses, for every hue, and fails an unmeasured one.
+    chip: "bg-secondary text-secondary-foreground",
   },
   red: {
     dot: "bg-destructive",
