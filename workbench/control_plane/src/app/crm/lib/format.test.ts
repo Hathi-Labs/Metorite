@@ -150,6 +150,18 @@ describe("dueDay, for a member in UTC+05:30", () => {
     expect(dueDay(call, true, now)).toBe(0);
   });
 
+  it("reads a task's due date in UTC, so a member west of UTC sees the same day", () => {
+    // 00:00 UTC on 12 Oct is 19:00 on 11 Oct in Bogota (UTC-05:00, no DST).
+    // Read as a local date, the task would be overdue on the day it is due.
+    process.env.TZ = "America/Bogota";
+    try {
+      expect(new Date(dueToday).getTimezoneOffset()).toBe(300);
+      expect(dueDay(dueToday, true, new Date("2026-10-12T15:00:00Z"))).toBe(0); // 10:00, 12 Oct
+    } finally {
+      process.env.TZ = "Asia/Kolkata";
+    }
+  });
+
   it("gives null for no date and for a bad one", () => {
     expect(dueDay(null, true, new Date())).toBeNull();
     expect(dueDay(undefined, false, new Date())).toBeNull();

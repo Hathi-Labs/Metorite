@@ -129,25 +129,42 @@ export function filterTimeline(entries: TimelineEntry[], kind: TimelineFilter): 
   return entries.filter((entry) => entryKind(entry) === kind);
 }
 
-/** When an open activity is next due, or null when it is no next step. */
+/** An instant as milliseconds, or NaN for no date and for a bad one. */
+function ms(value: string | null | undefined): number {
+  return value ? Date.parse(value) : Number.NaN;
+}
+
+/**
+ * The sort key of an activity that is a next step, or null when it is not one.
+ *
+ * ⚠️ The same rule as `NEXT_ACTIVITY_SQL` in `routes/crm/core.py` (CRM-X3,
+ * `crm_platform.md` section 19.7), clause by clause, so the Overview tab and
+ * the card chip never disagree:
+ *
+ * - `completed_at IS NULL`;
+ * - `type = 'task' AND due_at IS NOT NULL`, or
+ *   `type IN ('call', 'meeting') AND occurred_at > now()`;
+ * - the key is `COALESCE(due_at, occurred_at)`.
+ *
+ * No branch reads `ext_source`: a Zoho task and a native task count alike.
+ * The cases of section 19.7 in `timeline.test.ts` hold it.
+ */
 function nextAt(activity: Activity, now: Date): number | null {
   if (activity.completed_at) return null;
-  if (activity.type === "task") {
-    const due = activity.due_at ? Date.parse(activity.due_at) : Number.NaN;
-    return Number.isNaN(due) ? null : due;
-  }
-  if (activity.type === "call" || activity.type === "meeting") {
-    const at = activity.occurred_at ? Date.parse(activity.occurred_at) : Number.NaN;
-    return !Number.isNaN(at) && at > now.getTime() ? at : null;
-  }
-  return null;
+  const isTask = activity.type === "task" && !Number.isNaN(ms(activity.due_at));
+  const isComing =
+    (activity.type === "call" || activity.type === "meeting") &&
+    ms(activity.occurred_at) > now.getTime();
+  if (!isTask && !isComing) return null;
+  const key = Number.isNaN(ms(activity.due_at)) ? ms(activity.occurred_at) : ms(activity.due_at);
+  return Number.isNaN(key) ? null : key;
 }
 
 /**
  * The next open activities of this record, soonest first, for the Overview
- * tab. The rule is the one of section 19.7 (`NEXT_ACTIVITY_SQL`): an open
- * task with a due date, or a call or a meeting still to come. A tie goes to
- * the smaller id. An inherited entry of the lead is history, not a next step.
+ * tab, by the rule of `nextAt`. A tie goes to the smaller id, compared as the
+ * SQL compares it (ordinal, not by locale). An inherited entry of the lead is
+ * history, not a next step: the SQL reads `deal_id` only.
  */
 export function nextOpenActivities(
   entries: TimelineEntry[],
@@ -156,9 +173,9 @@ export function nextOpenActivities(
 ): TimelineEntry[] {
   return entries
     .filter((entry) => entry.origin !== "lead" && timelineBranch(entry) === "activity")
-    .map((entry) => ({ entry, at: nextAt(entry.activity!, now) }))
-    .filter((row): row is { entry: TimelineEntry; at: number } => row.at !== null)
-    .sort((a, b) => a.at - b.at || a.entry.activity!.id.localeCompare(b.entry.activity!.id))
+    .map((entry) => ({ entry, id: entry.activity!.id, at: nextAt(entry.activity!, now) }))
+    .filter((row): row is { entry: TimelineEntry; id: string; at: number } => row.at !== null)
+    .sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .slice(0, limit)
     .map((row) => row.entry);
 }

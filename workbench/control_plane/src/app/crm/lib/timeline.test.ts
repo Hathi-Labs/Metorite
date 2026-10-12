@@ -233,3 +233,44 @@ describe("the next open activities of the Overview tab (CRM-X4 item 2)", () => {
     ]);
   });
 });
+
+// The cases of CRM-X3 (crm_platform.md section 19.7, done-when 1 to 4), so
+// this rule and `NEXT_ACTIVITY_SQL` cannot drift.
+describe("the next activity, by the rule of NEXT_ACTIVITY_SQL", () => {
+  const now = new Date("2026-10-12T06:00:00Z");
+  const first = (stream: TimelineEntry[]) => nextOpenActivities(stream, now, 1)[0]?.activity?.id ?? null;
+
+  it("1: an open task due yesterday beats one due tomorrow and a completed one", () => {
+    expect(
+      first([
+        act("tomorrow", { type: "task", due_at: "2026-10-13T00:00:00Z" }),
+        act("done", { type: "task", due_at: "2026-10-01T00:00:00Z", completed_at: "2026-10-02T00:00:00Z" }),
+        act("yesterday", { type: "task", due_at: "2026-10-11T00:00:00Z" }),
+      ]),
+    ).toBe("yesterday");
+  });
+
+  it("2: a future meeting before every task due date wins, and a past one does not count", () => {
+    const tasks = [act("task", { type: "task", due_at: "2026-10-14T00:00:00Z" })];
+    expect(first([...tasks, act("meet", { type: "meeting", occurred_at: "2026-10-13T05:00:00Z" })])).toBe("meet");
+    expect(first([...tasks, act("old", { type: "meeting", occurred_at: "2026-10-11T05:00:00Z" })])).toBe("task");
+  });
+
+  it("3: a Zoho task and a native task both count, with no branch on the source", () => {
+    expect(first([act("zoho", { type: "task", due_at: "2026-10-14T00:00:00Z", ext_source: "zoho" })])).toBe("zoho");
+    expect(first([act("native", { type: "task", due_at: "2026-10-14T00:00:00Z", ext_source: null })])).toBe("native");
+  });
+
+  it("4: a record with only an undated task has none", () => {
+    expect(first([act("undated", { type: "task", due_at: null })])).toBeNull();
+  });
+
+  it("orders by COALESCE(due_at, occurred_at), and a tie goes to the smaller id", () => {
+    const call = act("call", { type: "call", occurred_at: "2026-10-20T00:00:00Z", due_at: "2026-10-12T09:00:00Z" });
+    const task = act("task", { type: "task", due_at: "2026-10-13T00:00:00Z" });
+    expect(first([task, call])).toBe("call");
+    const b = act("b", { type: "task", due_at: "2026-10-13T00:00:00Z" });
+    const a = act("a", { type: "task", due_at: "2026-10-13T00:00:00Z" });
+    expect(first([b, a])).toBe("a");
+  });
+});
