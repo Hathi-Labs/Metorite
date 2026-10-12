@@ -7,6 +7,11 @@
  * header, the same padding, the same error line. The app owns what goes
  * inside it. The header names the card and its source app (§4.4 bullet 3),
  * and it may carry one link on the right.
+ *
+ * My Day's feed cards use the same frame (`my_day_feed.md` §4.2, MD-1b).
+ * `FeedCard` passes an `eyebrow`, its source line above the heading, and a
+ * `titleHref`, so the headline is the door to the entity. It passes no
+ * `icon`, because the app's icon sits in the source line.
  */
 import Link from "next/link";
 
@@ -20,17 +25,24 @@ export function HomeCard({
   icon,
   source,
   link,
+  eyebrow,
+  titleHref,
   footer,
   className = "",
   testId,
   children,
 }: {
   title: string;
-  icon: string;
+  /** The card's icon beside the title. A feed card puts it in its eyebrow. */
+  icon?: string;
   /** The app the card reads, printed muted beside the title. */
   source?: string;
   /** One quiet link in the header, such as "Plan my day". */
   link?: { href: string; label: string };
+  /** One muted line above the title: a feed card's source line (§4.2). */
+  eyebrow?: React.ReactNode;
+  /** The title links here: the door to the entity (§4.2 item 7). */
+  titleHref?: string;
   footer?: React.ReactNode;
   className?: string;
   testId?: string;
@@ -44,11 +56,18 @@ export function HomeCard({
       data-home-card=""
       className={`min-w-0 rounded-xl border border-border bg-card ${className}`}
     >
-      <header className="flex items-center gap-2 px-4 pt-3.5 pb-2">
-        <Icon name={icon} size={15} className="shrink-0 text-muted-foreground" />
+      {eyebrow ? <div className="px-4 pt-3 text-xs text-muted-foreground">{eyebrow}</div> : null}
+      <header className={`flex items-center gap-2 px-4 pb-2 ${eyebrow ? "pt-1" : "pt-3.5"}`}>
+        {icon ? <Icon name={icon} size={15} className="shrink-0 text-muted-foreground" /> : null}
         {/* `tabIndex={-1}`: focus lands here when the card's last row leaves. */}
         <h2 id={headingId} tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
-          {title}
+          {titleHref ? (
+            <Link href={titleHref} className="rounded-sm hover:underline underline-offset-2">
+              {title}
+            </Link>
+          ) : (
+            title
+          )}
         </h2>
         {source ? <span className="truncate text-xs text-muted-foreground">{source}</span> : null}
         {link ? (
@@ -118,9 +137,14 @@ export function focusTarget<T>(acts: readonly T[], from: T, heading: T | null): 
  */
 export function moveFocusAfterLeave(from: HTMLElement | null): void {
   if (!from || typeof document === "undefined" || document.activeElement !== from) return;
-  const card = from.closest("[data-home-card], [data-needs-panel]");
+  // My Day's feed (MD-1b): an act can take its whole card away, so the scope
+  // is the feed, and an act marked `data-leaves-card` skips its own card.
+  const card = from.closest("[data-feed]") ?? from.closest("[data-home-card], [data-needs-panel]");
   if (!card) return;
-  const acts = [...card.querySelectorAll<HTMLElement>("[data-row-act]")];
+  const own = from.hasAttribute("data-leaves-card") ? from.closest("[data-home-card]") : null;
+  const acts = [...card.querySelectorAll<HTMLElement>("[data-row-act]")].filter(
+    (a) => a === from || !own?.contains(a),
+  );
   const target = focusTarget(acts, from, card.querySelector<HTMLElement>("h2, [data-leave-focus]"));
   // After React has taken the row out.
   requestAnimationFrame(() => target?.focus());
