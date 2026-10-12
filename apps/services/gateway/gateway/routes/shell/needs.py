@@ -111,6 +111,16 @@ either, for the reason above.
 
 The answer is plain words: a row says what it is, where it opens, and
 nothing else. An id travels only inside ``id``, ``href`` and ``act_ref``.
+
+**One registry, two views** (``my_day_feed.md`` §4.4, WS-57 MD-1a).
+``REGISTRY`` holds every provider once. Each entry names its source, its
+features, the admin test, the kinds it gives, and whether it serves the
+needs view. ``PROVIDERS`` is the needs subset, in the order above, and
+``GET /shell/needs`` runs only that subset. ``GET /shell/feed``
+(``feed.py``) runs the same subset first, on the same budget, and then the
+feed-only providers. A provider gives its needs rows AND a thunk for its
+feed signals. The needs route never calls the thunk, so the needs answer
+runs no feed code. Fence: ``tests/unit/test_shell_feed.py::TestOneRegistry``.
 """
 
 from __future__ import annotations
@@ -119,12 +129,14 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import quote, urlencode
+from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
+from acb_common.priority import task_cell
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.personal import NOT_NOW_DISPOSITIONS
 from gateway.routes.shell.intent import ADMIN_PERMISSION
@@ -166,6 +178,45 @@ NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
                 "notification": True, "needs_reply": False}
 
 Item = dict[str, Any]
+Act = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Signal:
+    """One fact about one entity, for the feed (``my_day_feed.md`` §4.1).
+
+    ``signal_id`` is the identity of the ENTITY, never of the kind:
+    ``tasks:<task id>``, ``email:<account id>:<thread id>``,
+    ``approvals:<id>`` or ``calendar:<local date>``. So two kinds about one
+    task share one id, and the feed folds them into one card (§4.5).
+    ``facts`` holds typed values only. The feed's templates and its rank
+    read nothing else. Each time is an aware ISO text, or None.
+    """
+
+    signal_id: str
+    app: str
+    kind: str
+    entity: dict[str, Any]
+    title: str
+    facts: dict[str, Any]
+    href: str
+    acts: tuple[Act, ...]
+    at: str | None = None
+    urgent_at: str | None = None
+    expires_at: str | None = None
+
+
+def tap(act_id: str, label: str, act: str, act_ref: str) -> Act:
+    """An act that runs in the card (§11.1). In MD-1 only ``done`` and
+    ``read`` are taps, and each runs through its owning app's route."""
+    return {"id": act_id, "label": label, "class": "A", "way": "tap",
+            "act": act, "act_ref": act_ref}
+
+
+def link(act_id: str, label: str, href: str, cls: str = "A") -> Act:
+    """An act that opens the owning app (§11.1, way ``open``). Every A* act
+    is a link until MD-8."""
+    return {"id": act_id, "label": label, "class": cls, "way": "open", "href": href}
 
 
 @dataclass(frozen=True)
@@ -177,11 +228,17 @@ class Found:
     the rows found. ``capped`` says that ``total`` is a floor: the read
     stopped at ``PER_APP``, so the source holds ``total`` OR MORE. The
     sidebar then prints "15+" (``navigation_shell.md`` §3.2c).
+
+    ``signals`` builds the feed signals from the same rows. Only the feed
+    calls it, so a needs answer runs no feed code. ``zone`` is the member's
+    zone when the app's read reports it.
     """
 
     rows: list[Item]
     total: int
     capped: bool
+    signals: Callable[[], list[Signal]] | None = None
+    zone: str | None = None
 
 
 def _now() -> datetime:
@@ -237,6 +294,7 @@ async def _tasks(user: UserContext) -> Found:
 
     overdue: list[Item] = []
     due_today: list[Item] = []
+    kept: list[tuple[str, dict[str, Any]]] = []
     for task in found:
         due = _instant(task.get("due_at"))
         if due is None or task.get("completed_at"):
@@ -249,6 +307,7 @@ async def _tasks(user: UserContext) -> Found:
             # The read holds nothing due after the member's today.
             kind, bucket = "due_today", due_today
         task_id = str(task["id"])
+        kept.append((kind, task))
         bucket.append(_item(
             id=f"tasks:{task_id}", app="tasks", kind=kind,
             title=task.get("title"), detail=task.get("project_name"),
@@ -256,9 +315,66 @@ async def _tasks(user: UserContext) -> Found:
             act="done", act_ref=task_id,
         ))
     rows = (_sort(overdue) + _sort(due_today))[:PER_APP]
+    zone = answer.get("timezone")
+
+    def signals() -> list[Signal]:
+        return _task_signals(kept, zone, answer.get("today"))
+
     # The lens read stops at PER_APP and runs no count, so a full read is a
     # floor: the member has this many due tasks or more.
-    return Found(rows, len(rows), capped=len(found) >= PER_APP)
+    return Found(rows, len(rows), capped=len(found) >= PER_APP,
+                 signals=signals, zone=zone)
+
+
+def task_href(task_id: str) -> str:
+    """The task deep link (``app/projects/lib/card.ts`` ``taskDeepLink``)."""
+    return f"/projects?task={quote(task_id)}"
+
+
+def task_entity(task_id: str, title: Any) -> dict[str, Any]:
+    return {"type": "task", "id": task_id, "label": str(title or "").strip() or "(untitled)"}
+
+
+def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
+                  today: Any) -> list[Signal]:
+    """The feed signals of the due rows: one for each task, keyed on it.
+
+    ``days_late`` counts the member's own dates, in the zone the lens read
+    reports. ``priority`` is the D78 level, from the one server matrix
+    (``acb_common.priority.task_cell``), and the old-path weight reads it.
+    """
+    try:
+        tz = ZoneInfo(str(zone or "UTC"))
+    except (ValueError, OSError):
+        tz = ZoneInfo("UTC")  # an unknown zone reads as UTC, as the lens does
+    try:
+        local_today = date.fromisoformat(str(today))
+    except ValueError:
+        local_today = datetime.now(UTC).astimezone(tz).date()
+    out: list[Signal] = []
+    for kind, task in kept[:PER_APP]:
+        task_id = str(task["id"])
+        due = _instant(task.get("due_at"))
+        facts: dict[str, Any] = {
+            "due_at": _iso(due),
+            "priority": task_cell(task),
+            "project": task.get("project_name"),
+        }
+        acts: list[Act] = [tap("done", "Done", "done", task_id)]
+        if kind == "overdue":
+            late = (local_today - due.astimezone(tz).date()).days if due else 0
+            facts["days_late"] = max(0, late)
+            acts.append(link("move-tomorrow", "Move to tomorrow", task_href(task_id)))
+        else:
+            acts.append(link("block-time", "Block time", "/calendar"))
+        out.append(Signal(
+            signal_id=f"tasks:{task_id}", app="tasks", kind=kind,
+            entity=task_entity(task_id, task.get("title")),
+            title=task_entity(task_id, task.get("title"))["label"],
+            facts=facts, href=task_href(task_id), acts=tuple(acts),
+            at=_iso(due), urgent_at=_iso(due),
+        ))
+    return out
 
 
 # ── Projects: unread notifications, through the bell's read ─────────────────
@@ -302,12 +418,46 @@ async def _projects(user: UserContext) -> Found:
             act="read", act_ref=note_id,
         ))
     rows = _sort(out)[:PER_APP]
+    notes = list((answer.get("rows") or [])[:PER_APP])
+
+    def signals() -> list[Signal]:
+        return _note_signals(notes)
+
     # The bell's read counts the unread rows already, with the same
     # visibility clause, so the true number costs no query of our own.
     unread = (answer.get("unread") or {}).get("total")
     if isinstance(unread, int) and not isinstance(unread, bool):
-        return Found(rows, max(unread, len(rows)), capped=False)
-    return Found(rows, len(rows), capped=len(answer.get("rows") or []) >= PER_APP)
+        return Found(rows, max(unread, len(rows)), capped=False, signals=signals)
+    return Found(rows, len(rows), capped=len(answer.get("rows") or []) >= PER_APP,
+                 signals=signals)
+
+
+def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
+    """The feed signals of the unread notifications, the newest first.
+
+    ⚠️ **In the feed a notification keys on its TASK**, ``tasks:<task id>``,
+    so it folds into the task's one card (``my_day_feed.md`` §4.1). Its
+    ``read`` act still carries the notification id. The needs view keeps
+    its own id, ``projects:<notification id>``.
+    """
+    newest = sorted(notes, key=lambda r: _instant(r.get("created_at"))
+                    or datetime.min.replace(tzinfo=UTC), reverse=True)
+    out: list[Signal] = []
+    for row in newest:
+        note_id, task_id = str(row["id"]), str(row["task_id"])
+        entity = task_entity(task_id, row.get("task_title"))
+        out.append(Signal(
+            signal_id=f"tasks:{task_id}", app="projects", kind="notification",
+            entity=entity, title=entity["label"],
+            facts={"notification": str(row.get("kind") or ""), "who": _who(row.get("actor")),
+                   "excerpt": row.get("excerpt"), "note_id": note_id,
+                   "at": _iso(row.get("created_at"))},
+            href=task_href(task_id),
+            acts=(tap("read", "Mark read", "read", note_id),
+                  link("open", "Open", task_href(task_id))),
+            at=_iso(row.get("created_at")),
+        ))
+    return out
 
 
 # ── Email: needs reply, for each mailbox the member owns ────────────────────
@@ -376,8 +526,29 @@ async def _email(user: UserContext) -> Found:
     if asked and failed == asked:
         raise RuntimeError("every mailbox failed")
     rows = _sort(out)[:PER_APP]
+
+    def signals() -> list[Signal]:
+        return [_thread_signal(row) for row in rows]
+
     # A mailbox that failed costs its rows, so the total can only be a floor.
-    return Found(rows, max(total, len(rows)), capped=capped or failed > 0)
+    return Found(rows, max(total, len(rows)), capped=capped or failed > 0,
+                 signals=signals)
+
+
+def _thread_signal(row: Item) -> Signal:
+    """A needs-reply row as a feed signal. It keeps the row's id,
+    ``email:<account id>:<thread id>``, and its link."""
+    _, account_id, thread_id = row["id"].split(":", 2)
+    detail = row.get("detail") or ""
+    who = detail[len("From "):] if detail.startswith("From ") else None
+    return Signal(
+        signal_id=row["id"], app="email", kind="needs_reply",
+        entity={"type": "thread", "id": thread_id, "label": row["title"]},
+        title=row["title"],
+        facts={"who": who, "waiting_since": row.get("at"), "account": account_id},
+        href=row["href"], acts=(link("open-thread", "Open thread", row["href"]),),
+        at=row.get("at"),
+    )
 
 
 # ── Approvals: the pending actions of the member's organization ─────────────
@@ -456,21 +627,104 @@ async def _approvals(user: UserContext) -> Found:
             title=_action_title(row), detail=f"Proposed by {_proposer(row.get('actor'))}",
             href="/approvals", at=row.get("created_at"),
         ))
+    shown = _sort(out)[:PER_APP]
+    actions = {str(r["id"]): str(r.get("action") or "") for r in rows}
+
+    def signals() -> list[Signal]:
+        return [Signal(
+            signal_id=item["id"], app="approvals", kind="approval",
+            entity={"type": "action", "id": item["id"].split(":", 1)[1],
+                    "label": item["title"]},
+            title=item["title"],
+            facts={"action": actions.get(item["id"].split(":", 1)[1], ""),
+                   "proposer": (item["detail"] or "")[len("Proposed by "):]},
+            href="/approvals",
+            # Class C: to approve is an outward write, so it always opens
+            # the app (§11.4). The member reads the proposal there first.
+            acts=(link("open-approvals", "Open Approvals", "/approvals", cls="C"),),
+            at=item.get("at"),
+        ) for item in shown]
+
     # The queue read stops at PER_APP and runs no count.
-    return Found(_sort(out)[:PER_APP], len(out[:PER_APP]), capped=len(rows) >= PER_APP)
+    return Found(shown, len(out[:PER_APP]), capped=len(rows) >= PER_APP,
+                 signals=signals)
 
 
-#: source → (the feature its app's router demands, the provider). The order
-#: here is the order the providers run in, not the order of the feed.
-#: Approvals runs LAST (the module note).
+# ── The one registry (``my_day_feed.md`` §4.4) ─────────────────────────────
+
+
+@dataclass(frozen=True)
+class Provider:
+    """One entry of the registry.
+
+    ``features`` are the gates the app's routers demand: the member must
+    hold each one. ``admin`` adds the admin test (``ADMIN_PERMISSION``).
+    ``kinds`` are the kinds the provider may give. ``needs`` says if it
+    serves the needs view of ``GET /shell/needs``, and a needs provider may
+    give only the kinds of ``KIND_ORDER``.
+    """
+
+    source: str
+    features: tuple[str, ...]
+    run: Callable[[UserContext], Awaitable[Found]]
+    kinds: frozenset[str]
+    admin: bool = False
+    needs: bool = True
+
+    def held_by(self, user: UserContext) -> bool:
+        """The gate the app's router would have applied (the module note)."""
+        if not all(user.has_permission(f"feature:{f}") for f in self.features):
+            return False
+        return not self.admin or user.has_permission(ADMIN_PERMISSION)
+
+
+#: Every provider, once, by source. The order is the order they run in.
+REGISTRY: dict[str, Provider] = {}
+
+
+def register(provider: Provider) -> Provider:
+    """Add one provider. A second entry for a source is a defect, and a
+    needs provider that names a kind outside ``KIND_ORDER`` is one too."""
+    if provider.source in REGISTRY:
+        raise ValueError(f"the provider {provider.source!r} registers twice")
+    if not provider.features or not provider.kinds:
+        raise ValueError(f"the provider {provider.source!r} names no feature or no kind")
+    if provider.needs and not provider.kinds <= KIND_ORDER.keys():
+        raise ValueError(
+            f"the needs provider {provider.source!r} gives a kind outside KIND_ORDER: "
+            f"{sorted(provider.kinds - KIND_ORDER.keys())}")
+    if provider.needs and any(not p.needs for p in REGISTRY.values()):
+        raise ValueError("a needs provider must register before every feed-only one")
+    REGISTRY[provider.source] = provider
+    return provider
+
+
+# Approvals runs LAST of the needs providers (the module note).
+register(Provider("tasks", ("projects",), _tasks, frozenset({"overdue", "due_today"})))
+register(Provider("projects", ("projects",), _projects, frozenset({"notification"})))
+register(Provider("email", ("email",), _email, frozenset({"needs_reply"})))
+register(Provider("approvals", ("approvals",), _approvals, frozenset({"approval"}),
+                  admin=True))
+
+
+def needs_providers() -> list[Provider]:
+    """The needs subset, in the order it runs."""
+    return [p for p in REGISTRY.values() if p.needs]
+
+
+def feed_only_providers() -> list[Provider]:
+    """The providers that serve the feed only. They run after the needs ones."""
+    return [p for p in REGISTRY.values() if not p.needs]
+
+
+#: source → (the feature its app's router demands, the provider), for the
+#: needs view. A view of ``REGISTRY``, kept by name for its readers. The
+#: order here is the order the providers run in, not the order of the feed.
 PROVIDERS: dict[str, tuple[str, Callable[[UserContext], Awaitable[Found]]]] = {
-    "tasks": ("projects", _tasks),
-    "projects": ("projects", _projects),
-    "email": ("email", _email),
-    "approvals": ("approvals", _approvals),
+    p.source: (p.features[0], p.run) for p in needs_providers()
 }
 #: The sources that also demand the admin test (owner decision, 2026-10-10).
-ADMIN_SOURCES = frozenset({"approvals"})
+ADMIN_SOURCES = frozenset(p.source for p in REGISTRY.values() if p.admin)
 
 
 def _sort(items: list[Item]) -> list[Item]:
@@ -498,53 +752,83 @@ async def shell_needs(
     if not user.email:
         raise HTTPException(status_code=401, detail="Authentication required")
     size = max(1, min(int(limit), MAX_LIMIT))
+    return needs_answer(await needs_run(user), size)
 
-    items: list[Item] = []
-    sources: dict[str, str] = {}
-    totals: dict[str, int] = {}
-    capped: list[str] = []
+
+@dataclass
+class Run:
+    """One run of some providers: the needs rows and what each source did."""
+
+    items: list[Item] = field(default_factory=list)
+    sources: dict[str, str] = field(default_factory=dict)
+    totals: dict[str, int] = field(default_factory=dict)
+    capped: list[str] = field(default_factory=list)
+    #: What each source that read ``ok`` found, by source.
+    found: dict[str, Found] = field(default_factory=dict)
+
+
+async def needs_run(user: UserContext) -> Run:
+    """The needs providers, in today's order, on today's budget. The needs
+    route and the feed both call this, so they make one run of each."""
+    return await run_providers(user, needs_providers(), budget_s=TOTAL_BUDGET_S,
+                               timeout_s=PROVIDER_TIMEOUT_S, event="shell.needs")
+
+
+async def run_providers(user: UserContext, providers: list[Provider], *,
+                        budget_s: float, timeout_s: float, event: str) -> Run:
+    """Run ``providers`` one after another, each inside what is left of
+    ``budget_s``. A provider the member does not hold reads ``absent``. One
+    that fails, refuses or runs out of time reads ``failed``, and never
+    fails the run."""
+    run = Run()
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + TOTAL_BUDGET_S
-    for key, (feature, provider) in PROVIDERS.items():
-        # The gate the app's router would have applied (see the module note).
-        if not user.has_permission(f"feature:{feature}") or (
-            key in ADMIN_SOURCES and not user.has_permission(ADMIN_PERMISSION)
-        ):
-            sources[key] = "absent"
+    deadline = loop.time() + budget_s
+    for provider in providers:
+        key = provider.source
+        if not provider.held_by(user):
+            run.sources[key] = "absent"
             continue
         left = deadline - loop.time()
         if left <= 0.05:
-            sources[key] = "failed"
+            run.sources[key] = "failed"
             continue
         try:
-            found = await asyncio.wait_for(provider(user), min(PROVIDER_TIMEOUT_S, left))
+            found = await asyncio.wait_for(provider.run(user), min(timeout_s, left))
         except TimeoutError:
-            logger.info("shell.needs provider timed out", extra={"provider": key})
-            sources[key] = "failed"
+            logger.info(f"{event} provider timed out", extra={"provider": key})
+            run.sources[key] = "failed"
             continue
         except Exception as exc:
             # The error's TYPE only. A database error's text can carry the
             # query's parameters, which hold the member's address. An app's
             # own refusal (HTTPException) lands here too.
             logger.warning(
-                "shell.needs provider failed",
+                f"{event} provider failed",
                 extra={"provider": key, "error": type(exc).__name__},
             )
-            sources[key] = "failed"
+            run.sources[key] = "failed"
             continue
-        sources[key] = "ok"
-        items.extend(found.rows[:PER_APP])
-        totals[key] = max(found.total, len(found.rows[:PER_APP]))
+        run.sources[key] = "ok"
+        run.found[key] = found
+        run.items.extend(found.rows[:PER_APP])
+        run.totals[key] = max(found.total, len(found.rows[:PER_APP]))
         if found.capped:
-            capped.append(key)
+            run.capped.append(key)
+    return run
 
-    # ``totals`` is how many need the member in each source that answered:
-    # the true count where the app's read knows it, else the rows found.
-    # ``capped`` names the sources whose total is a floor (the read stopped
-    # at PER_APP). The sidebar reads both, because the cut to ``size`` can
-    # drop one app's rows from ``items`` entirely (the replies sort last).
-    # A source that failed or is absent has no entry in either.
-    return {**_fit(items, size), "totals": totals, "capped": capped, "sources": sources}
+
+def needs_answer(run: Run, size: int) -> dict[str, Any]:
+    """The answer of ``GET /shell/needs`` for one run (§7.2 contract).
+
+    ``totals`` is how many need the member in each source that answered:
+    the true count where the app's read knows it, else the rows found.
+    ``capped`` names the sources whose total is a floor (the read stopped
+    at PER_APP). The sidebar reads both, because the cut to ``size`` can
+    drop one app's rows from ``items`` entirely (the replies sort last).
+    A source that failed or is absent has no entry in either.
+    """
+    return {**_fit(run.items, size), "totals": run.totals, "capped": run.capped,
+            "sources": run.sources}
 
 
 def _fit(items: list[Item], size: int) -> dict[str, Any]:
