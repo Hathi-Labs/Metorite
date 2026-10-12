@@ -4,7 +4,14 @@ Spec: ``project-docs/specs/integrations_console.md`` §3.6.3 to §3.6.6 and
 §3.6.11, rows O4, O5 and O12.
 
 Mutation table (each mutation is made by hand, and the named test must fail).
-This table is committed BEFORE the code, so it names the fence first.
+This table was committed BEFORE the code, so it named the fence first.
+
+**Result, 2026-10-13: 13 of 13 killed.** M3 survived the first run. The
+tenant prefix of the Redis key is a second wall, so a state of org A found no
+pending flow in org B. The test now plants one in org B, so only the org of
+the state can stop the callback. M12 needed the same kind of repair: the
+pending flow also names the member, so the test now checks that the refused
+call did not take the flow.
 
 | # | Mutation | Test that fails |
 |---|---|---|
