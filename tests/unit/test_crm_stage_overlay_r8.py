@@ -40,8 +40,8 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
 
+from tests.unit.test_crm_pipelines_r8 import Q1Zoho
 from tests.unit.test_crm_sync_engine_r8 import (  # noqa: F401  (ns is a fixture)
-    ZohoTenant,
     _assert_non_priv,
     _connect,
     _q,
@@ -73,11 +73,17 @@ def _stages() -> list[dict[str, Any]]:
     ]
 
 
-class C3Zoho(ZohoTenant):
-    """The fake Zoho of ``test_crm_sync_engine_r8``, with picklist ids."""
+class C3Zoho(Q1Zoho):
+    """The fake Zoho of ``test_crm_pipelines_r8``, with picklist ids.
+
+    It answers the discovery reads, so a run stores a source profile and the
+    24-hour discovery cadence applies. It lists no pipeline, so no stage
+    arrives from a pipeline.
+    """
 
     def __init__(self, tag: str, api_host: str, accounts_host: str) -> None:
         super().__init__(tag, api_host, accounts_host)
+        self.pipelines = {"pipeline": []}
         self.stages = _stages()
         self.lead_statuses: list[dict[str, Any]] = [
             {"id": "L1", "actual_value": "Fresh", "sequence_number": 1},
@@ -684,3 +690,104 @@ def test_the_overlay_migration_is_found_by_content() -> None:
         and "ADD COLUMN IF NOT EXISTS ui_probability" in p.read_text(encoding="utf-8")
     ]
     assert len(found) == 1, found
+
+
+# ── Review round 1 ───────────────────────────────────────────────────────────
+
+
+async def test_an_incremental_run_reads_the_picklists_on_the_discovery_cadence(c3) -> None:
+    """P1: most runs are incremental, so the picklist read rides on discovery.
+
+    Fracktal's stage rows have no Zoho id yet. Inside 24 hours an incremental
+    run reads no picklist. Past `DISCOVERY_EVERY` it reads both, sets the
+    Zoho id, and takes the Zoho order and probability.
+    """
+    from gateway.crm_sync import engine
+
+    _deal(c3.a, "d1", 1, Stage="Qualify")
+    c3.a.add("Leads", "l1", 2, Last_Name="Lead", Lead_Status="Fresh")
+    await _sync(c3, c3.org_a, c3.a)
+    with c3.p.admin_engine.begin() as c:
+        for table in ("crm_deal_statuses", "crm_lead_statuses"):
+            c.execute(text(f"UPDATE {table} SET ext_id = NULL "
+                           "WHERE organization_id = CAST(:o AS uuid)"), {"o": c3.org_a})
+    c3.a.stages[0].update(sequence_number=2, probability=15)
+    c3.a.stages[1].update(sequence_number=1)
+
+    quiet = await engine.run_org(c3.org_a)
+    assert (quiet.status, quiet.kind) == ("ok", "incremental")
+    rows = _deal_rows(c3.p, c3.org_a)
+    assert rows["Qualify"].ext_id is None and rows["Qualify"].position == 0
+
+    with c3.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_source_profiles SET fetched_at = now() - interval '25 hours' "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": c3.org_a})
+    due = await engine.run_org(c3.org_a)
+    assert (due.status, due.kind) == ("ok", "incremental")
+    rows = _deal_rows(c3.p, c3.org_a)
+    assert {n: rows[n].ext_id for n in ("Qualify", "Propose", "Won It", "Gone")} == {
+        "Qualify": "S1", "Propose": "S2", "Won It": "S3", "Gone": "S4"}
+    assert (rows["Qualify"].position, rows["Qualify"].probability) == (1, 15)
+    assert rows["Propose"].position == 0
+    leads = _lead_rows(c3.p, c3.org_a)
+    assert (leads["Fresh"].ext_id, leads["Contacted"].ext_id) == ("L1", "L2")
+
+
+@pytest.mark.parametrize("first", ["S1", "S2"])
+async def test_two_values_that_trade_names_keep_their_rows(c3, first) -> None:
+    """Zoho swaps the names of two values. Each row keeps its id, its overlay
+    and its deals, whichever value the picklist lists first."""
+    _deal(c3.a, "d1", 1, Stage="Qualify")
+    _deal(c3.a, "d2", 2, Stage="Propose")
+    await _sync(c3, c3.org_a, c3.a)
+    before = _deal_rows(c3.p, c3.org_a)
+    row1, row2 = str(before["Qualify"].id), str(before["Propose"].id)
+    assert (await _req(_admin(c3.org_a), "PATCH", f"/crm/statuses/deal/{row1}",
+                       {"ui_probability": 33})).status_code == 200
+    c3.a.stages[0]["actual_value"] = "Propose"
+    c3.a.stages[1]["actual_value"] = "Qualify"
+    if first == "S2":
+        c3.a.stages[0]["sequence_number"], c3.a.stages[1]["sequence_number"] = 2, 1
+    await _picklist_run(c3, c3.org_a, c3.a)
+    rows = _deal_rows(c3.p, c3.org_a)
+    assert (str(rows["Propose"].id), rows["Propose"].ext_id) == (row1, "S1")
+    assert (str(rows["Qualify"].id), rows["Qualify"].ext_id) == (row2, "S2")
+    assert rows["Propose"].ui_probability == 33
+    assert not [n for n in rows if "[" in n], rows  # no row keeps a parked name
+    assert _deal_status(c3.p, c3.org_a, "d1") == row1
+    assert _deal_status(c3.p, c3.org_a, "d2") == row2
+
+
+async def test_the_visibility_rules_judge_the_state_after_the_write(c3) -> None:
+    """P2: the payload over the stored row, on a create and on a PATCH."""
+    ids = _native(c3.p, c3.org_a)
+    admin = _admin(c3.org_a)
+
+    async def patch(key: str, body: dict, kind: str = "deal") -> int:
+        return (await _req(admin, "PATCH", f"/crm/statuses/{kind}/{ids[key]}",
+                           body)).status_code
+
+    assert await patch("next", {"hidden": True}) == 200
+    assert await patch("next", {"is_default": True}) == 422  # a hidden default
+    assert await patch("working", {"hidden": True}, "lead") == 200
+    assert await patch("working", {"is_default": True}, "lead") == 422
+    assert await patch("won", {"type": "open"}) == 422  # the only visible won
+    assert await patch("lost", {"type": "open", "probability": 0}) == 422
+    assert await patch("won", {"hidden": True}) == 422
+    created = await _req(admin, "POST", "/crm/statuses/deal",
+                         {"name": "Hidden default", "hidden": True, "is_default": True})
+    assert created.status_code == 422, created.text
+    # A second visible won stage frees the first one.
+    second = await _req(admin, "POST", "/crm/statuses/deal",
+                        {"name": "Won too", "type": "won", "probability": 100})
+    assert second.status_code == 201, second.text
+    assert await patch("won", {"type": "open", "probability": 100}) == 200
+    r = await _req(admin, "PATCH", f"/crm/statuses/deal/{second.json()['id']}",
+                   {"hidden": True})
+    assert r.status_code == 422, r.text  # it is now the only visible won stage
+    # A hidden won stage does not count as the visible one.
+    assert await patch("won", {"type": "won", "probability": 100, "hidden": True}) == 200
+    r = await _req(admin, "PATCH", f"/crm/statuses/deal/{second.json()['id']}",
+                   {"hidden": True})
+    assert r.status_code == 422, r.text

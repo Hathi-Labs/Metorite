@@ -3241,8 +3241,11 @@ partial unique indexes of the table above.
   422. A `DELETE` on `/order` would meet `DELETE /statuses/{kind}/{status_id}`.
 - **The colour.** `ui_color` must be a short colour name, else 422. The
   Native `color` keeps its rules.
-- **Native hide.** The rule of item 15 binds in Native mode only. The lead
-  rule refuses the default lead status.
+- **Native hide.** The rule of item 15 binds in Native mode only. It judges
+  the state after the write, on a create and on a PATCH: the payload over the
+  stored row. A hidden row cannot be the default, for a stage or a lead
+  status. A write that hides or retypes the only visible `won` or `lost`
+  stage gets 422.
 - **Two values that trade names.** The spec names the merge for a name row
   with no `ext_id`. When the name row holds the `ext_id` of another value,
   the sync renames it to `<name> [<ext_id>]`. Its own value names it again
@@ -3255,7 +3258,10 @@ partial unique indexes of the table above.
   draws chips that it does not build. `QuickCreateModal.tsx` has no status
   picker, so it needs no change, and `page.tsx` is not changed.
 - **The order of a hidden lane.** `orderLanes` puts it last in its group.
-  `visibleLanes` shows it only with records. The Leads board runs both.
+  `visibleLanes` shows it only with records.
+- **The Leads board has no groups by type.** It sorts by the effective
+  `position`, with a hidden or a gone status last. So a lost lead status
+  stays where Zoho puts it.
 - **The Mirror editor.** `PipelineSettings.tsx` reads `orderStatuses` and
   `resetStatusOrder` from the store, because the page wiring is CRM-C1's.
   The Native drag keeps its PATCH of each moved row.
@@ -3263,10 +3269,11 @@ partial unique indexes of the table above.
   `KanbanBoard.tsx` and `BoardColumn.tsx`) and the `stageAccent` rule of item
   16 (done when 14). C2 owns those files, so this branch rebases on C2 and
   adds them after C2 merges.
-- **A gap that this slice does not close.** The sync reads the picklist only
-  in an import or a reconcile (`engine._execute`). So a Zoho reorder or a
-  Zoho probability reaches the mirror at the next reconcile, not at the next
-  incremental run.
+- **When the sync reads the picklists.** An import and a reconcile read them
+  with the field definitions. Every other run reads the Stage and Lead_Status
+  picklists when discovery is due (`_discovery_due`, once in 24 hours). So a
+  Zoho reorder, a Zoho probability and the Zoho id of each value reach the
+  mirror within a day, with no wait for a reconcile.
 
 **Verification.**
 

@@ -1691,11 +1691,18 @@ _FIELD_DEF_SQL = (
 )
 
 
-async def _field_defs(ctx: _Ctx) -> None:
-    """The custom fields of each entity, so the UI knows what ``custom`` holds."""
+async def _field_defs(
+    ctx: _Ctx, entities: tuple[str, ...] = FIELD_DEF_ENTITIES, *,
+    statuses_only: bool = False,
+) -> None:
+    """The custom fields of each entity, so the UI knows what ``custom`` holds.
+
+    ``statuses_only`` reads the Stage and Lead_Status picklists and writes no
+    field definition (CRM-C3, the discovery cadence in :func:`_execute`).
+    """
     import json
 
-    for entity in FIELD_DEF_ENTITIES:
+    for entity in entities:
         try:
             definitions = await ctx.call(lambda s, e=entity: s.list_field_defs(e))
         except (NotConnected, Stopped):
@@ -1710,6 +1717,8 @@ async def _field_defs(ctx: _Ctx) -> None:
         async with ctx.page() as db:
             if entity in _STATUS_FIELDS:
                 await _mirror_statuses(ctx, db, entity, definitions)
+            if statuses_only:
+                continue
             for position, definition in enumerate(definitions):
                 mapped = ctx.mapping.map_field_def(entity, definition, position)
                 if mapped is None:
@@ -2183,6 +2192,14 @@ async def _execute(ctx: _Ctx) -> None:
             await _estimate(ctx)
     if ctx.kind in (runs.KIND_IMPORT, runs.KIND_RECONCILE):
         await _field_defs(ctx)
+    elif _discovery_due(ctx):
+        # CRM-C3 (crm_platform.md §20.6 item 7): the Stage and Lead_Status
+        # picklists on the discovery cadence too, in every run kind. Most
+        # runs are incremental, and a reconcile can stop on its budget, so
+        # without this a Zoho reorder, a Zoho probability and the Zoho id of
+        # each value would wait for a reconcile that may not come. Two calls
+        # once in 24 hours. Read before `_discover`, which makes it not due.
+        await _field_defs(ctx, tuple(_STATUS_FIELDS), statuses_only=True)
     # After the stages are mirrored, so a pipeline stage that the picklist did
     # not list is appended and a listed one keeps its place. Before the records,
     # so a deal finds its pipeline.

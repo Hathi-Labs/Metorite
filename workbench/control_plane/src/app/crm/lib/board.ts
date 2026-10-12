@@ -200,16 +200,21 @@ export type LeadLane = Omit<PipelineLane, "rows"> & {
  * `total` is the count of the WHOLE status. `rows` is one page of it, as on the
  * deals board. A status with no page reads as an empty lane.
  *
- * CRM-C3: the Leads board takes the key of `orderLanes`. A lead status has no
- * probability, so the effective `position` decides, and the gateway already
- * folds the admin order into it. A hidden status shows only with leads in it.
+ * CRM-C3: the Leads board keeps the order of the statuses, with no groups by
+ * type, so "Junk Lead" stays where Zoho puts it. The effective `position`
+ * decides, and the gateway already folds the admin order into it: the
+ * `ui_position` after an admin order, else the source order. A hidden status,
+ * and one that Zoho no longer lists, goes last and shows only with leads in it.
  */
 export function toLeadLanes(
   statuses: readonly Status[],
   pages: Readonly<Record<string, { rows: Lead[]; total: number } | undefined>>,
 ): LeadLane[] {
   const lanes = [...statuses]
-    .sort((a, b) => a.position - b.position)
+    .sort(
+      (a, b) =>
+        Number(isRetired(a)) - Number(isRetired(b)) || a.position - b.position
+    )
     .map((status) => {
       const page = pages[status.id];
       return {
@@ -221,7 +226,7 @@ export function toLeadLanes(
         tone: statusTone(status),
       };
     });
-  return visibleLanes(orderLanes(lanes, null), true);
+  return visibleLanes(lanes, true);
 }
 
 /** The leads board as it should look the instant a card is dropped. */

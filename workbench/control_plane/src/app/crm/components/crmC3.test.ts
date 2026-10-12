@@ -133,6 +133,24 @@ describe("a hidden lane on a board", () => {
     });
     expect(lanes.map((l) => l.status.id)).toEqual(["Fresh", "Working", "Parked"]);
   });
+
+  it("keeps the Leads board in Zoho order with no overlay: no groups by type", () => {
+    // Fracktal's Lead Status list, in Zoho order. A lost or won status stays
+    // where Zoho puts it. The deal board groups by type, and leads do not.
+    const zoho = [
+      status("Not Contacted", { position: 0, probability: null }),
+      status("Junk Lead", { position: 1, type: "lost", probability: null }),
+      status("Contacted", { position: 2, probability: null }),
+      status("Lost Lead", { position: 3, type: "lost", probability: null }),
+      status("Not Qualified", { position: 4, type: "lost", probability: null }),
+      status("Pre-Qualified", { position: 5, type: "won", probability: null }),
+      status("Contact in Future", { position: 6, probability: null }),
+    ];
+    const shuffled = [zoho[4], zoho[0], zoho[6], zoho[2], zoho[5], zoho[1], zoho[3]];
+    expect(toLeadLanes(shuffled, {}).map((l) => l.status.id)).toEqual(
+      zoho.map((s) => s.id)
+    );
+  });
 });
 
 // ── Done when 18: the Mirror editor and both resets ──────────────────────

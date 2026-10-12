@@ -370,34 +370,62 @@ def _validate_status(
         )
 
 
-async def _check_hide(db: Any, kind: str, table: str, row: Any) -> None:
+#: The fields whose change can take a row out of the pickers, or make a
+#: hidden row the one that each new record lands in.
+VISIBILITY_FIELDS: frozenset[str] = frozenset({"hidden", "is_default", "type"})
+
+
+async def _check_visibility(
+    db: Any, kind: str, table: str, values: dict[str, Any], row: Any = None,
+) -> None:
     """Native mode: some rows must stay in the pickers (CRM-C3, item 15).
 
-    The default stage and the default lead status hold each new record, so a
-    hide of one is a 422. A deal stage that is the only visible ``won`` or
-    ``lost`` stage is the one way to close a deal, so a hide of it is a 422 too.
+    It judges the state AFTER the write: the payload over the stored row. So
+    ``{"hidden": true}`` on the default, ``{"is_default": true}`` on a hidden
+    row and ``{"type": "open"}`` on the only visible ``won`` stage are each
+    one 422, on a create and on a PATCH.
+
+    * A hidden row can never be the default. The default holds each new
+      record, and no picker would offer it.
+    * A deal stage that is the only visible ``won`` or ``lost`` stage is the
+      one way to close a deal as won or lost. A write that hides it or
+      retypes it is a 422.
     """
-    if bool(getattr(row, "is_default", False)):
+    if not (VISIBILITY_FIELDS & values.keys()):
+        return
+    hidden = bool(_effective(values, row, "hidden", False))
+    if hidden and bool(_effective(values, row, "is_default", False)):
         raise HTTPException(
             status_code=422,
-            detail="The default status holds each new record. Make another the "
-                   "default before you hide this one.",
+            detail=(
+                "A hidden status cannot be the default, because the default "
+                "holds each new record. Make another the default first."
+            ),
         )
-    kind_of = getattr(row, "type", None)
-    if kind != "deal" or kind_of not in CLAMPED_PROBABILITY:
+    if kind != "deal" or row is None:
+        return
+    was_type = getattr(row, "type", None)
+    was_visible = not bool(getattr(row, "hidden", False))
+    new_type = _effective(values, row, "type", "open")
+    if not was_visible or was_type not in CLAMPED_PROBABILITY:
+        return
+    if not hidden and new_type == was_type:
         return
     others = (await db.execute(
         text(
             f"SELECT count(*) FROM {table} WHERE type = :type "
             "AND NOT hidden AND id <> CAST(:id AS uuid)"
         ),
-        {"type": kind_of, "id": str(row.id)},
+        {"type": was_type, "id": str(row.id)},
     )).scalar() or 0
     if not int(others):
         raise HTTPException(
             status_code=422,
-            detail=f"This is the only '{kind_of}' stage. A deal cannot close as "
-                   f"{kind_of} without it, so it stays in the pickers.",
+            detail=(
+                f"This is the only visible '{was_type}' stage. A deal cannot "
+                f"close as {was_type} without it, so it stays visible and keeps "
+                "its type."
+            ),
         )
 
 
@@ -428,7 +456,9 @@ async def create_status(
         raise HTTPException(status_code=422, detail="A status needs a name.")
     values.setdefault("type", "open")
     async with _tenant_session() as db:
-        await _check_mode(db, table, values)
+        mirror = await _check_mode(db, table, values)
+        if not mirror:
+            await _check_visibility(db, kind, table, values)
         if values.get("position") is None:
             values["position"] = await _next_position(db, table)
         row = await insert_row(db, table, values)
@@ -530,8 +560,8 @@ async def patch_status(
         mirror = await _check_mode(db, table, values)
         _validate_status(kind, values, existing=row)
         _validate_overlay(values)
-        if values.get("hidden") and not mirror:
-            await _check_hide(db, kind, table, row)
+        if not mirror:
+            await _check_visibility(db, kind, table, values, row)
         if values:
             await update_row(db, table, status_id, values, touch=False)
         return status_wire(await read_status(db, table, status_id) or row)
