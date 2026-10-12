@@ -116,8 +116,8 @@ def test_a_missing_agent_contributes_nothing(monkeypatch) -> None:
         raise RuntimeError("no such agent")
 
     monkeypatch.setattr("acb_skills.call_agent", boom, raising=False)
-    label, body = asyncio.run(cc._ask_agent("crm", "crm-assistant", "q"))
-    assert (label, body) == ("crm", "")
+    label, body = asyncio.run(cc._ask_agent("tasks", "task-manager", "q"))
+    assert (label, body) == ("tasks", "")
 
 
 def test_an_agent_saying_NONE_is_dropped(monkeypatch) -> None:
@@ -150,6 +150,18 @@ def test_agent_queries_ask_the_registered_agents() -> None:
     for _label, _agent, prompt in cc._AGENT_QUERIES:
         assert "{people}" in prompt, "query must be scoped to the attendees"
         assert "NONE" in prompt, "must define the empty answer"
+
+
+def test_the_copilot_fan_out_names_no_crm_agent() -> None:
+    """WS-53 CRM-C7: ``call_agent`` here runs with no member, and a CRM tool
+    refuses such a run. A CRM row would put a refusal in the prompt."""
+    rows = [(label, agent) for label, agent, _p in cc._AGENT_QUERIES]
+    rows += list(cc._CONSULT_AGENTS)
+    assert rows, "the fan-out lost every row"
+    for label, agent in rows:
+        assert "crm" not in label.lower(), (label, agent)
+        assert "crm" not in agent.lower(), (label, agent)
+        assert "sales" not in agent.lower(), (label, agent)
 
 
 # ── cache ────────────────────────────────────────────────────────────────────
