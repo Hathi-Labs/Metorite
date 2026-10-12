@@ -29,7 +29,9 @@ and 11, the audit rules E-B1 to E-B3, and the known limit EM-G4a-f2 of
   not the last sets the position to the ``id`` of its last record. A rate
   limit after a finished page keeps the finished pages, sets
   ``rate_limited``, and backs the loop off. A held fetch holds the cursor at
-  the end of the page before its page.
+  the end of the page before its page. Fix round 1: a full read ends at the
+  larger of the last record id and the ``historyId`` of the FIRST answer,
+  and a later page fetches again an id that an earlier page fetched.
 
 These tests use ``httpx.MockTransport``, because an ``AsyncMock`` client skips
 the auth flow of the client seam. The provider makes no ``authenticate``
@@ -364,16 +366,21 @@ async def test_history_reads_every_page(fake: _Gmail) -> None:
     assert fake.requests("/profile") == []
 
 
-async def test_the_new_cursor_is_the_id_of_the_last_answer(fake: _Gmail) -> None:
-    """M6. The cursor is the ``historyId`` of the LAST page. The id of the
-    first page would read the changes of the later pages again."""
+async def test_the_new_cursor_is_the_id_of_the_answer_of_a_one_page_read(
+        fake: _Gmail) -> None:
+    """M6, as amended by EM-G4b-f1 fix round 1 (D-G4b-f1-4). A read of one
+    page ends at the ``historyId`` of its answer, as before. A read of three
+    pages with no record ends at the ``historyId`` of the FIRST answer, never
+    of the last: the later id can be past a change that no page carried."""
+    fake.history = [_ok({"historyId": "130", "history": []})]
+    one_page = await _provider().sync_messages(history_id="100")
     fake.history = [_pages({"historyId": "110", "history": []},
                            {"historyId": "120", "history": []},
                            {"historyId": "130", "history": []})]
+    three_pages = await _provider().sync_messages(history_id="100")
 
-    result = await _provider().sync_messages(history_id="100")
-
-    assert result.new_history_id == "130"
+    assert one_page.new_history_id == "130"
+    assert three_pages.new_history_id == "110"
 
 
 # ── item 3: the label events ────────────────────────────────────────────────
@@ -588,29 +595,62 @@ async def test_a_rate_limit_inside_a_page_drops_the_fetches_of_that_page(
     assert result.rate_limited is True
 
 
-async def test_a_message_that_two_pages_name_is_fetched_once(
-        fake: _Gmail) -> None:
-    """Scope item 2. Page 1 adds m1 and page 2 changes its labels. The read
-    fetches m1 once, on page 1. A message that page 1 deletes gets one
-    marker, and page 2 does not fetch it."""
+async def test_a_later_page_fetches_again_a_message_that_an_earlier_page_fetched(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """Fix round 1 (a), the amendment of scope item 2. Page 1 adds m1, and
+    page 2 removes INBOX and UNREAD from it and stars it. The read lasts
+    minutes, so the events of page 2 can be newer than the fetch of page 1.
+    m1 is fetched again on page 2, once although page 2 names it two times,
+    and the upsert ends at the newer state. A message that page 1 deleted
+    gets one marker and no fetch."""
     pages = [{"historyId": MAILBOX_ID, "history": [
                  _record("101", **_added("m1")), _record("102", **_deleted("d1"))]},
              {"historyId": MAILBOX_ID, "history": [
-                 _record("125", **_labels_event("labelsAdded", "m1", "STARRED")),
-                 _record("126", **_labels_event("labelsAdded", "d1", "STARRED")),
-                 _record("127", **_deleted("d1"))]}]
+                 _record("125", **_labels_event(
+                     "labelsRemoved", "m1", "INBOX", "UNREAD")),
+                 _record("126", **_labels_event("labelsAdded", "m1", "STARRED")),
+                 _record("127", **_labels_event("labelsAdded", "d1", "STARRED")),
+                 _record("128", **_deleted("d1"))]}]
     fake.history = [_pages(*pages)]
-    _serve(fake, "m1")
+    fake.message("m1", _ok(_message("m1", "INBOX", "UNREAD")),
+                 _ok(_message("m1", "STARRED")))
 
-    result = await _provider().sync_messages(history_id="100")
+    res = await cycle.run(_row(last_history_id="100"))
 
-    assert fake.requests("/messages/m1") == [{"format": ["full"]}]
-    assert fake.first("/messages/m1") < [
-        i for i, (_, p, _) in enumerate(fake.seen) if p == "/history"][1]
+    assert "error" not in res, res
+    history = [i for i, (_, p, _) in enumerate(fake.seen) if p == "/history"]
+    fetches = [i for i, (_, p, _) in enumerate(fake.seen) if p == "/messages/m1"]
+    assert len(fetches) == 2
+    assert fetches[0] < history[1] < fetches[1]
     assert fake.requests("/messages/d1") == []
-    assert [(m.provider_message_id, m.subject) for m in result.messages] == [
-        ("d1", "[DELETED]"), ("m1", "About m1")]
-    assert result.new_history_id == MAILBOX_ID
+    assert [(m.folder, m.is_read, m.is_starred) for m in cycle.upserts
+            if m.provider_message_id == "m1"] == [
+        ("inbox", False, False), ("archive", True, True)]
+    # One marker of d1 writes two statements: the draft delete and the move
+    # to TRASH.
+    assert len([p for _, p in cycle.log if p.get("provider_id") == "d1"]) == 2
+
+
+@pytest.mark.parametrize(("last_record", "end"), [
+    ("150", "150"), ("80", "100")], ids=["a_record_past_the_first_answer",
+                                        "no_record_past_the_first_answer"])
+async def test_the_end_of_a_long_read_is_never_past_the_first_answer(
+        fake: _Gmail, last_record: str, end: str) -> None:
+    """Fix round 1 (b), the amendment of D-G4b-f1-4. Page 1 answers
+    ``historyId`` 100 and the last page answers 200. A change between the
+    two reads that no page carried can sit between them, so the cursor must
+    not reach 200. It ends at the larger of the first answer and the last
+    record that the read saw."""
+    fake.history = [_pages(
+        {"historyId": "100", "history": [_record("60", **_added("m1")),
+                                         _record("70")]},
+        {"historyId": "200", "history": [_record(last_record, **_added("m2"))]})]
+    _serve(fake, "m1", "m2")
+
+    result = await _provider().sync_messages(history_id="50")
+
+    assert result.new_history_id == end
+    assert _ids(result) == ["m1", "m2"]
 
 
 async def test_a_stale_cursor_on_a_later_page_keeps_the_finished_pages(
@@ -1369,8 +1409,10 @@ class TestTheCursorOnARealDatabase:
             assert _stored_rows(p.admin_engine, account) == {"m1": ("inbox", False)}
 
             # 2. Two pages from the stored cursor.
+            # Each answer carries the mailbox id of its time (GM-17), so the
+            # read ends at the id of the first answer (fix round 1).
             fake.history = [_pages(
-                {"historyId": "510", "history": [
+                {"historyId": "520", "history": [
                     _labels_event("labelsRemoved", "m1", "INBOX", "UNREAD")]},
                 {"historyId": "520", "history": [_added("m2")]})]
             fake.message("m1", _ok(_message("m1")))

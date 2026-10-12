@@ -497,19 +497,38 @@ def _transient(exc: BaseException) -> bool:
 
 
 def _page_end(records: list[dict[str, Any]], position: str) -> str:
-    """The position at the end of one finished page that is not the last
-    page (WS-17 EM-G4b-f1, D-G4b-f1-4).
+    """The position at the end of one finished page (WS-17 EM-G4b-f1,
+    D-G4b-f1-4).
 
     It is the ``id`` of the last history record of the page, never the
     ``historyId`` of the answer. Gmail gives the ``historyId`` of the whole
     mailbox in each answer, so that id is past the records of the later
     pages, and a cursor set to it loses them (GM-17). A page with no record
-    id keeps *position*, so the next read starts earlier, never later."""
+    id keeps *position*, so the next read starts earlier, never later. The
+    end of the last page goes through ``_read_end`` too."""
     for record in reversed(records):
         record_id = str(record.get("id") or "")
         if _is_history_id(record_id):
             return record_id
     return position
+
+
+def _read_end(last_record: str, first_answer: Any) -> str:
+    """The cursor at the end of a full read (EM-G4b-f1 fix round 1, the
+    amendment of D-G4b-f1-4).
+
+    It is the larger of *last_record*, the ``id`` of the last record that
+    the read saw, and *first_answer*, the ``historyId`` of the FIRST answer.
+    Each page fetches before the next page is read, so a read can last
+    minutes. The ``historyId`` of the last answer is the mailbox id at that
+    later time, and it can be past a change that no page carried. So the
+    cursor never goes past the first answer, unless a record of the read
+    is past it. A read of one page ends at the ``historyId`` of its answer,
+    as before, because no record is past it."""
+    first = str(first_answer or "")
+    if not _is_history_id(first):
+        return last_record
+    return max(last_record, first, key=int)
 
 
 def _cursor_after_read(
@@ -2196,16 +2215,21 @@ class GmailProvider(BaseEmailProvider):
         return resp.json()
 
     async def _apply_history_page(
-        self, records: list[dict[str, Any]], fetched: set[str],
-        marked: set[str], result: SyncResult,
+        self, records: list[dict[str, Any]], marked: set[str],
+        result: SyncResult,
     ) -> list[str]:
         """Put one history page into *result*: its ``[DELETED]`` markers,
         then its fetches (EM-G4b-f1 scope items 1 and 2).
 
-        A message id that an earlier page fetched is not fetched again, and
-        an id that an earlier page marked gets no second marker. A message
-        that Gmail deleted has nothing to fetch. Returns the ids whose fetch
-        a later cycle can fix (``_fetch_into``)."""
+        An id that one page names two times is fetched once. An id that an
+        EARLIER page fetched is fetched again when a later page names it
+        (fix round 1, the amendment of scope item 2). The read can last
+        minutes, so the later event can be newer than the earlier fetch, and
+        a skip leaves the read mark or the folder of the row stale. The later
+        fetch comes later in ``messages``, so the upsert keeps the newer
+        state. An id that an earlier page marked gets no second marker and
+        no fetch, because Gmail deleted it. Returns the ids whose fetch a
+        later cycle can fix (``_fetch_into``)."""
         fetch: dict[str, None] = {}
         deleted: dict[str, None] = {}
         _collect_history(records, fetch, deleted)
@@ -2214,9 +2238,7 @@ class GmailProvider(BaseEmailProvider):
             result.messages.append(_deleted_marker(mid))
         marked.update(markers)
         result.messages_synced += len(markers)
-        ids = [mid for mid in fetch
-               if mid not in deleted and mid not in marked and mid not in fetched]
-        fetched.update(ids)
+        ids = [mid for mid in fetch if mid not in deleted and mid not in marked]
         return await self._fetch_into(ids, result)
 
     async def _history_sync(
@@ -2227,9 +2249,10 @@ class GmailProvider(BaseEmailProvider):
         EM-G4a-f2, EM-G4b-f1).
 
         Each page fetches its messages before the loop reads the next page
-        (D-G4b-f1-1). So each finished page moves ``position``: the ``id``
-        of its last history record, or the ``historyId`` of the last answer
-        on the last page (D-G4b-f1-4).
+        (D-G4b-f1-1). So each finished page moves ``position`` to the ``id``
+        of its last history record. After the last page, the cursor is the
+        larger of that id and the ``historyId`` of the FIRST answer
+        (``_read_end``, D-G4b-f1-4 as amended in fix round 1).
 
         * A fetch that a later cycle can fix holds the cursor at the end of
           the page before its page. The read goes on (D-G4b-f1-5).
@@ -2248,10 +2271,10 @@ class GmailProvider(BaseEmailProvider):
                                   "maxResults": max_results,
                                   "historyTypes": _HISTORY_TYPES}
         result = SyncResult()
-        fetched: set[str] = set()
         marked: set[str] = set()
         failed: list[str] = []
         position = start
+        first_answer: Any = None
         hold_at: str | None = None
         pages = 0
         while True:
@@ -2259,9 +2282,11 @@ class GmailProvider(BaseEmailProvider):
                     len(result.errors))
             try:
                 data = await self._history_page(client, params)
+                if not pages:
+                    first_answer = data.get("historyId")
                 records = data.get("history") or []
                 page_failed = await self._apply_history_page(
-                    records, fetched, marked, result)
+                    records, marked, result)
             except _StaleCursor:
                 return await self._recover_stale_cursor(
                     max_results, since, catch_up, result)
@@ -2278,11 +2303,11 @@ class GmailProvider(BaseEmailProvider):
             if page_failed and hold_at is None:
                 hold_at = position
             failed.extend(page_failed)
+            position = _page_end(records, position)
             token = data.get("nextPageToken")
             if not token:
-                position = str(data.get("historyId") or position)
+                position = _read_end(position, first_answer)
                 break
-            position = _page_end(records, position)
             params["pageToken"] = token
         result.new_history_id = _cursor_after_read(
             position if hold_at is None else hold_at, position, held_cycles,
