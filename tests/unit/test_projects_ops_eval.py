@@ -293,11 +293,11 @@ def test_a_harness_built_after_midnight_keeps_the_modules_today(
 ) -> None:
     # `clock_moved_on` runs first, so the harness is built at the moved clock.
     # The harness must still grade against DS: a second load is the bug.
-    assert harness.dataset is DS
     other = D.weekday_name(DS.today + timedelta(days=1))
     steps = [*S.steps_for("PO-2", DS)[:-1], ("text", f"It repeats every week on {other}.")]
     assert _failed(_run(harness, "PO-2", steps)) == {"answer_names_the_day"}
     assert _failed(_run(harness, "PO-2", S.steps_for("PO-2", DS))) == set()
+    assert harness.dataset is DS
 
 
 def _po4(ids: list[str], due: str, answer: str = "Moved.") -> list[Any]:
