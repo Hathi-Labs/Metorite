@@ -807,6 +807,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                   consumeDraft();
                 }}
                 autoSend={chat.sendable}
+                assistantName={agent === ASSISTANT_AGENT ? ASSISTANT_NAME : undefined}
                 onAutoSendConsumed={consumeAsk}
               />
             ) : (

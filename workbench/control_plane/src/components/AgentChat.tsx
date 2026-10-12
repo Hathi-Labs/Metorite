@@ -267,6 +267,12 @@ interface AgentChatProps {
   autoSend?: { seq: number; text: string } | null;
   onAutoSendConsumed?: (seq: number) => void;
   /**
+   * D99: the one assistant's name, "Metorite". The member talks to one
+   * assistant and never picks an agent, so with this set the chat shows the
+   * name in place of the agent's, and it offers no agent switch.
+   */
+  assistantName?: string;
+  /**
    * The server refused this SESSION on send (another org, or a room the member
    * is not in). Return true to take the turn: no error card is drawn, and the
    * parent opens a new chat. Pass it ONLY for a session restored from storage
@@ -304,6 +310,7 @@ export default function AgentChat({
   onPendingInputConsumed,
   autoSend,
   onAutoSendConsumed,
+  assistantName,
   onSessionRefused,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
@@ -367,12 +374,14 @@ export default function AgentChat({
   // The member chooses no effort and no agent for a covered agent (owner,
   // 2026-10-07, amendment of D90 §5 and §7). UI flag off: both as today.
   // Computed before the memos below, which read `modelPlan`.
-  const controls = composerControls({
+  const routed = composerControls({
     uiOn: tierUi,
     agentsKnown,
     entry: coverageEntry,
     isOrchestrator,
   });
+  // D99: the one assistant offers no agent switch.
+  const controls = assistantName ? { ...routed, showAgentSwitch: false } : routed;
 
   // Fetch the unified model list (Copilot SDK + LiteLLM) once the picker is
   // live. UI flag off: on mount, as before.
@@ -456,7 +465,7 @@ export default function AgentChat({
   const agentRuntime: string = currentAgentEntry?.agent_runtime ?? "maf";
   // Friendly display name (alias) for UI labels only — dispatch, localStorage
   // and routing keep using the canonical `currentAgentName`.
-  const currentAgentLabel = currentAgentEntry?.display_name || currentAgentName;
+  const currentAgentLabel = assistantName || currentAgentEntry?.display_name || currentAgentName;
   // Assigned pixel-art avatars (name → libraryId) for the agent switcher/header.
   const agentAvatars = useAgentAvatars();
 

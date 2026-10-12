@@ -169,7 +169,7 @@ export function ChatBar() {
   };
 
   return (
-    <div data-chat-bar="desktop" className="shrink-0 border-t border-border bg-card px-4 py-2">
+    <div data-chat-bar-row="desktop" className="shrink-0 border-t border-border bg-card px-4 py-2">
       <form
         role="search"
         aria-label={`Ask ${ASSISTANT_NAME}`}
@@ -237,7 +237,7 @@ export function PhoneChatBar() {
   }, [open]);
   if (open) return null;
   return (
-    <div data-chat-bar="phone" className="chat-bar-phone fixed inset-x-0 z-40 px-3 pb-1.5">
+    <div data-chat-bar-row="phone" className="chat-bar-phone fixed inset-x-0 z-40 px-3 pb-1.5">
       <div className="flex items-center gap-2">
         <button
           type="button"
