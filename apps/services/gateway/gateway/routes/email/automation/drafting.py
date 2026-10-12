@@ -53,6 +53,7 @@ from gateway.routes.email.core import (
 from gateway.routes.email.quoting import split_quoted_text
 from gateway.routes.email.signature import (
     append_signature_text,
+    sign_html,
     strip_signature_text,
 )
 from gateway.routes.email.transport.send import (
@@ -2718,6 +2719,35 @@ async def _html_to_keep(
     return (html, HTML_KEPT) if html.strip() else (None, HTML_NONE)
 
 
+#: The reason of the 409 when the send cannot read the HTML of a Gmail draft.
+HTML_UNAVAILABLE = "html_unavailable"
+
+
+async def _gmail_signed_html(
+    db: Any, provider: Any, req: DraftSendRequest, provider_message_id: str,
+    signature: str, text_html: str | None,
+) -> str | None:
+    """The HTML of a signed send of a Gmail draft.
+
+    WS-17 EM-G3a-f7 PR-C1b (D-G3a-f7-6, -6a, -7, -10, -11 and -11a). The HTML
+    of the draft comes from ``_html_to_keep``: from the row, else from Gmail,
+    inside the session of the route. ``sign_html`` signs it once, above the
+    quote. With no HTML anywhere, the send keeps ``text_html``, the HTML that
+    ``build_signed_bodies(signature, body_text, None)`` made, as main does.
+    A failed read with ``allow_text_only`` False answers 409 before any
+    write. With True, or with None (a client before PR-C2 and the assistant
+    tool), the send keeps ``text_html``: the HTML that main derives from the
+    text. The HTML and the inline images of the draft go."""
+    kept, state = await _html_to_keep(
+        db, provider, req.account_id, req.draft_id, provider_message_id)
+    if kept:
+        return sign_html(signature, kept)
+    if state == HTML_LOST and req.allow_text_only is False:
+        raise HTTPException(status_code=409,
+                            detail={"reason": HTML_UNAVAILABLE})
+    return text_html
+
+
 @router.put("/drafts")
 async def upsert_draft(
     req: DraftUpsertRequest,
@@ -2867,6 +2897,11 @@ class DraftSendRequest(BaseModel):
     # The email assistant sends what its card showed. None (the UI, and an
     # older agent) checks nothing, as before.
     expect: DraftExpect | None = None
+    # EM-G3a-f7 (D-G3a-f7-11a). A Gmail signed send whose HTML read fails:
+    # False answers 409. True sends the HTML that main derives from the text.
+    # None, which is each client before PR-C2 and the assistant tool, does
+    # the same, as main does.
+    allow_text_only: bool | None = None
 
 
 #: The answer when the row no longer holds the recipients of the card.
@@ -3010,6 +3045,13 @@ async def send_draft_endpoint(
             if signature.strip():
                 send_text, send_html = build_signed_bodies(
                     signature, drow.body_text or "", None)
+                # A Gmail draft keeps its HTML and its inline images, and
+                # the signature goes into that HTML (EM-G3a-f7 PR-C1b). Each
+                # other provider signs as on main.
+                if _is_gmail(provider):
+                    send_html = await _gmail_signed_html(
+                        db, provider, req, drow.provider_message_id,
+                        signature, send_html)
                 try:
                     # A Gmail draft whose files make the signed mail too
                     # large answers 413 (EM-G3c-1 item 7).
