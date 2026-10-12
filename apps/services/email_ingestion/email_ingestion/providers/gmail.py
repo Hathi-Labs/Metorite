@@ -33,6 +33,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from ..persist import MAX_BODY_HTML_BYTES, MAX_BODY_TEXT_BYTES
 from .app_credentials import OAuthApp, token_fields
 from .base import (
     Attachment,
@@ -1001,6 +1002,15 @@ GMAIL_MAIL_MAX_BYTES = 36_700_160
 #: larger mail goes to the upload URI.
 GMAIL_PLAIN_MAX_BYTES = 1_048_576
 
+#: The most bytes of one body part that ``get_message`` fetches by
+#: ``attachmentId`` (WS-17 EM-G2-f1, §12.3.12.3). It is two times the larger
+#: storage cap of ``persist``, so 4 MiB today. Each stored body and each
+#: gateway read cuts a body at that cap, so a larger part buys nothing that
+#: is kept. The cap bounds the memory of acb-gateway: each label event
+#: fetches a message again, and the import runs 10 fetches at once. A larger
+#: part gets no fetch, and its body stays empty.
+GMAIL_FILL_MAX_BYTES = 2 * max(MAX_BODY_TEXT_BYTES, MAX_BODY_HTML_BYTES)
+
 
 class GmailMailTooLarge(ProviderMailTooLarge):
     """Gmail cannot take this mail (EM-G3c item 6).
@@ -1134,6 +1144,20 @@ class GmailProvider(BaseEmailProvider):
         logger.warning(
             "gmail.body_part_failed message_id=%s part_id=%s error=%s "
             "status=%s", message_id, part_id, type(exc).__name__, status)
+
+    def _record_body_part_too_large(
+        self, message_id: Any, part_id: Any, size: int,
+    ) -> None:
+        """Log and count one body part over ``GMAIL_FILL_MAX_BYTES`` that the
+        fill does not fetch (WS-17 EM-G2-f1, review P2). The record names the
+        message id, the part id and the size, and never a subject or an
+        address."""
+        self.fetch_failures.append(
+            f"gmail.body_part_too_large id={message_id} part={part_id} "
+            f"size={size}")
+        logger.warning(
+            "gmail.body_part_too_large message_id=%s part_id=%s size=%d",
+            message_id, part_id, size)
 
     async def _refresh_access_token(self) -> None:
         """Refresh the OAuth access token using the refresh token."""
@@ -1324,33 +1348,51 @@ class GmailProvider(BaseEmailProvider):
     async def _fill_attachment_bodies(
         self, client: httpx.AsyncClient, raw: dict[str, Any],
     ) -> None:
-        """Fetch each body part that Gmail sent by ``attachmentId`` (WS-17
+        """Fetch the body parts that Gmail sent by ``attachmentId`` (WS-17
         EM-G2-f1, ``email_app_master_plan.md`` §12.3.12.3).
 
         Gmail can leave a large ``text/plain`` or ``text/html`` part out of
         ``format=full``. The part then has ``body.attachmentId`` and no
         ``body.data``, and the parse gives an empty body. This step runs one
-        ``users.messages.attachments.get`` for each such part, in order, and
-        writes the base64url answer into ``body.data``. The parse then decodes
-        it with the charset of the part (D-G2-f1-4). The parse stays
-        synchronous (D-G2-f1-1).
+        ``users.messages.attachments.get`` for such a part, and writes the
+        base64url answer into ``body.data``. The parse then decodes it with
+        the charset of the part (D-G2-f1-4). The parse stays synchronous
+        (D-G2-f1-1).
 
         The walk skips each file and each part below a file, as
-        ``_gmail_bodies`` does, so a file never gets a fetch (D-G2-f1-3). A
-        message with no such part makes no request. A failed fetch leaves
+        ``_gmail_bodies`` does, so a file never gets a fetch (D-G2-f1-3).
+
+        Two bounds keep the memory of acb-gateway small (review P2,
+        D-G2-f1-7). Only the FIRST part of each type that holds data or an
+        ``attachmentId`` is a candidate, because the parse reads only that
+        part. So one message gets two fetches at most. A candidate over
+        ``GMAIL_FILL_MAX_BYTES`` gets no fetch. It logs
+        ``gmail.body_part_too_large`` and leaves one record, and its body
+        stays empty.
+
+        A message with no such part makes no request. A failed fetch leaves
         that body empty and one record (D-G2-f1-5). A rate limit whose tries
         are spent raises (D-G2-f1-6)."""
         payload = raw.get("payload") or {}
+        seen: set[str] = set()
         for part in _iter_gmail_parts(
                 payload, descend=lambda p: not _gmail_part_is_file(p)):
             if _gmail_part_is_file(part):
                 continue
-            if str(part.get("mimeType", "")).lower() not in (
-                    "text/plain", "text/html"):
+            mime = str(part.get("mimeType", "")).lower()
+            if mime not in ("text/plain", "text/html") or mime in seen:
                 continue
             body = part.get("body") or {}
             attachment_id = body.get("attachmentId")
-            if not attachment_id or body.get("data"):
+            if not attachment_id and not body.get("data"):
+                continue
+            seen.add(mime)
+            if body.get("data"):
+                continue
+            size = int(body.get("size") or 0)
+            if size > GMAIL_FILL_MAX_BYTES:
+                self._record_body_part_too_large(
+                    raw.get("id"), part.get("partId"), size)
                 continue
             try:
                 resp = await client.get(

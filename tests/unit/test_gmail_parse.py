@@ -70,10 +70,12 @@ from unittest.mock import AsyncMock
 import email_ingestion.providers.gmail as gmail_mod
 import httpx
 import pytest
+from email_ingestion.persist import MAX_BODY_HTML_BYTES, MAX_BODY_TEXT_BYTES
 from email_ingestion.providers.app_credentials import OAuthApp
 from email_ingestion.providers.base import EmailAddress, EmailMessage
 from email_ingestion.providers.gmail import (
     GMAIL_ARCHIVE_QUERY,
+    GMAIL_FILL_MAX_BYTES,
     GMAIL_MAX_TRIES,
     GmailProvider,
     GmailRateLimited,
@@ -743,3 +745,61 @@ async def test_a_rate_limit_on_the_body_part_fetch_raises(wire: _Wire) -> None:
 
     assert wire.attachment_gets() == [part_path] * GMAIL_MAX_TRIES
     assert p.fetch_failures == []
+
+
+async def test_only_the_first_body_part_of_each_type_is_fetched(
+        wire: _Wire) -> None:
+    """Review P2, D-G2-f1-7, mutation M5. The parse reads only the first
+    ``text/html`` part, so a second large part by ``attachmentId`` gets no
+    fetch. One message gets two fetches at most, so a few large mails
+    cannot hold their parts in the memory of acb-gateway several times."""
+    raw = _fixture("j_text_part_by_attachment_id.json")
+    raw["payload"]["parts"].insert(1, {
+        "partId": "2", "mimeType": "text/html", "filename": "",
+        "headers": [{"name": "Content-Type",
+                     "value": 'text/html; charset="UTF-8"'}],
+        "body": {"attachmentId": "ANGjdJ_fixture_second_html",
+                 "size": 3_000_000}})
+    mid = raw["id"]
+    wire.on(f"/messages/{mid}", _json(raw))
+    first = f"/messages/{mid}/attachments/{_J_HTML_PART}"
+    wire.on(first, _part_answer(_J_HTML.encode()))
+    wire.on(f"/messages/{mid}/attachments/ANGjdJ_fixture_second_html",
+            _part_answer(b"<p>The second part.</p>"))
+
+    msg = await _wired_provider().get_message(mid)
+
+    assert wire.attachment_gets() == [first]
+    assert msg.body_html == _J_HTML
+
+
+async def test_a_body_part_over_the_cap_is_not_fetched(
+        wire: _Wire, caplog: pytest.LogCaptureFixture) -> None:
+    """Review P2, D-G2-f1-7, mutation M6. A part over
+    ``GMAIL_FILL_MAX_BYTES`` gets no fetch. It logs
+    ``gmail.body_part_too_large`` and leaves one record, and its body stays
+    empty. The text body still parses. The cap comes from the storage caps
+    of ``persist``, and it is above both of them."""
+    storage_cap = max(MAX_BODY_TEXT_BYTES, MAX_BODY_HTML_BYTES)
+    assert storage_cap * 2 == GMAIL_FILL_MAX_BYTES == 4 * 1024 * 1024
+    raw = _fixture("j_text_part_by_attachment_id.json")
+    size = GMAIL_FILL_MAX_BYTES + 1
+    raw["payload"]["parts"][0]["parts"][1]["body"]["size"] = size
+    mid = raw["id"]
+    wire.on(f"/messages/{mid}", _json(raw))
+    wire.on(f"/messages/{mid}/attachments/{_J_HTML_PART}",
+            _part_answer(_J_HTML.encode()))
+    p = _wired_provider()
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        msg = await p.get_message(mid)
+
+    assert wire.attachment_gets() == []
+    assert msg.body_html is None
+    assert msg.body_text.startswith("Hi Asha,")
+    assert p.fetch_failures == [
+        f"gmail.body_part_too_large id={mid} part=0.1 size={size}"]
+    logged = [r.getMessage() for r in caplog.records
+              if r.getMessage().startswith("gmail.body_part_too_large")]
+    assert logged == [f"gmail.body_part_too_large message_id={mid} "
+                      f"part_id=0.1 size={size}"]
