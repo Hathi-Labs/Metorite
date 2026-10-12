@@ -463,6 +463,26 @@ async def return_unconsumed(thread_id: str) -> int:
     return given
 
 
+async def give_back(thread_id: str, signals: list[dict[str, Any]]) -> int:
+    """Put taken steers back in the durable store, under their own ids.
+
+    The route takes the stored steers at ENGAGE, before its last refusals
+    (another member's run, a supersede race). A refusal there starts no
+    run, so the steers go back and the next ENGAGE replays them (review of
+    #920). Returns the count given back. Never raises.
+    """
+    given = 0
+    for s in signals or []:
+        try:
+            if str(s.get("text") or "").strip() and await persist_signal(thread_id, dict(s)):
+                given += 1
+        except Exception:  # noqa: BLE001
+            continue
+    if given:
+        _log.info("steer.given_back_after_refusal", thread_id=thread_id[:12], count=given)
+    return given
+
+
 async def end_of_run(thread_id: str) -> int:
     """The run's last cleanup, after its steer applier is gone.
 
@@ -539,15 +559,23 @@ def without_replayed(
 
     The chat sends each steered message as a user turn of the history, and
     the replay puts the same words in the run's message. Each signal drops
-    at most ONE user turn with its exact words, the latest one, so the model
-    reads each steer once. Pure, and the input list is not changed.
+    at most ONE user turn with its exact words, so the model reads each steer
+    once. Pure, and the input list is not changed.
+
+    Only the user turns AFTER the last assistant turn count (review of
+    #920). A steer bubble sits there. An older turn with the same short
+    words ("yes", "go ahead") is the member's real context, and it stays.
     """
     out = list(history or [])
+    last_reply = max(
+        (i for i, m in enumerate(out) if isinstance(m, dict) and m.get("role") == "assistant"),
+        default=-1,
+    )
     for s in signals:
         words = str(s.get("text") or "").strip()
         if not words:
             continue
-        for i in range(len(out) - 1, -1, -1):
+        for i in range(len(out) - 1, last_reply, -1):
             m = out[i]
             if (
                 isinstance(m, dict) and m.get("role") == "user"

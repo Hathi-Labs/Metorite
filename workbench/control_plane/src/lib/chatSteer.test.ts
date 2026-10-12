@@ -33,7 +33,9 @@ import MessageBubble from "@/components/MessageBubble";
 import { getSessionState, setSessionState, type ChatMessage } from "@/lib/chatStore";
 import {
   STEERED,
+  FOLLOW_UP_TRIES,
   followUpDue,
+  followUpRetryDelay,
   isSteered,
   lastNonSteer,
   primaryAction,
@@ -269,11 +271,30 @@ describe("the hook", () => {
   });
 
   it("a steer that started a run follows that response, in place of its bubble", () => {
-    expect(hook).toMatch(/if \(out\.kind === "started"\) \{\s*void sendMessage\(content, \{\s*heldId: out\.bubbleId,\s*adopt: \{ response: out\.response, controller: out\.controller \},/);
+    expect(hook).toMatch(/if \(out\.kind === "started"\) \{\s*void sendMessage\(content, \{\s*heldId: out\.bubbleId,\s*adopt: \{ response: out\.response, controller: out\.controller, assistantId: replyId \},/);
     expect(hook).toContain("const res = adopt ? adopt.response : await fetch(\"/api/agent/chat\", {");
     // A follow-up draws no user bubble, and names itself to the server.
     expect(hook).toContain("...(followUp ? [] : [userMsg]),");
     expect(hook).toContain("...(followUp ? { steerFollowUp: true } : {}),");
+  });
+
+  it("any steer owes a follow-up, and one that met a live run asks again (review of #920)", () => {
+    // A plain send that the gateway steered: another member's run in a room.
+    expect(hook).toMatch(/if \(outcome\.steered\) \{\s*followUpTries\.current\.delete\(threadId\);\s*setSessionState\(threadId, \(prev\) => \(\{ \.\.\.prev, steerOwed: true \}\)\);/);
+    expect(hook).toMatch(/else if \(followUp && outcome\.reason === "run_in_flight"\)/);
+    expect(hook).toContain("const wait = followUpRetryDelay(tries);");
+    expect(followUpRetryDelay(1)).toBe(2000);
+    expect(followUpRetryDelay(2)).toBe(4000);
+    expect(followUpRetryDelay(6)).toBe(30_000);
+    expect(followUpRetryDelay(FOLLOW_UP_TRIES)).toBe(30_000);
+    expect(followUpRetryDelay(FOLLOW_UP_TRIES + 1)).toBeNull();
+    expect(followUpRetryDelay(0)).toBeNull();
+  });
+
+  it("a steer that started a run keeps one id for its reply row", () => {
+    expect(hook).toContain("assistantMessageId: replyId,");
+    expect(hook).toContain("adopt: { response: out.response, controller: out.controller, assistantId: replyId },");
+    expect(hook).toContain("const assistantId = adopt?.assistantId ?? nanoid();");
   });
 
   it("the BFF forwards the follow-up on the gateway path only", () => {

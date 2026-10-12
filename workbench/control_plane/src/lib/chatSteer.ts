@@ -242,6 +242,21 @@ export async function sendSteer(args: {
   return { kind: "refused", notice: refusalNotice(res.status, body) };
 }
 
+/** How many times a follow-up asks again while a run still goes on. */
+export const FOLLOW_UP_TRIES = 20;
+
+/**
+ * The wait before follow-up try `attempt` (1-based), or null when it must
+ * stop. A follow-up meets `run_in_flight` when the stream ended before the
+ * owner marked the run done. It also meets it when another member's run,
+ * which this tab steered, still goes on (review of #920). The wait doubles
+ * from 2 s to 30 s, so 20 tries cover about nine minutes. Each try is one 202.
+ */
+export function followUpRetryDelay(attempt: number): number | null {
+  if (attempt < 1 || attempt > FOLLOW_UP_TRIES) return null;
+  return Math.min(2000 * 2 ** (attempt - 1), 30_000);
+}
+
 /**
  * Should the hook ask for the follow-up now? Once, after the run it steered
  * has ended: no stream, no recovery, no update outage, and the gateway path.

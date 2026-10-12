@@ -224,7 +224,7 @@ export interface SendOptions {
   /** A steer that the server answered with a stream: it started a new run
    *  (`lib/chatSteer.ts`). The send follows THIS response, under THIS
    *  controller, and fetches nothing. Use with `heldId`, the steer's bubble. */
-  adopt?: { response: Response; controller: AbortController };
+  adopt?: { response: Response; controller: AbortController; assistantId?: string };
 }
 
 /** What a held edit keeps: its target and its answer. It keeps no bubble,

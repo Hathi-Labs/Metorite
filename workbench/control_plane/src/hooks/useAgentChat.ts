@@ -49,7 +49,7 @@ import {
   type SendOptions,
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
-import { followUpDue, sendSteer, type SteerOutcome } from "@/lib/chatSteer";
+import { followUpDue, followUpRetryDelay, sendSteer, type SteerOutcome } from "@/lib/chatSteer";
 import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
@@ -207,6 +207,8 @@ export function useAgentChat({
   const onSessionRefusedRef = useRef(onSessionRefused);
   useEffect(() => { onSessionRefusedRef.current = onSessionRefused; }, [onSessionRefused]);
   const onRunCappedRef = useRef(onRunCapped);
+  // The follow-up tries that met a run still going, per thread.
+  const followUpTries = useRef(new Map<string, number>());
   useEffect(() => { onRunCappedRef.current = onRunCapped; }, [onRunCapped]);
 
   // Keep latest values in refs so sendMessage always uses current values
@@ -355,7 +357,9 @@ export function useAgentChat({
           // send the run cap refuses leaves no row behind.
           ...(!supersedes && !followUp && modeRef.current === "copilot" ? { awaitingServer: true } : {}),
         };
-      const assistantId = nanoid();
+      // A steer that started a run named its assistant row already, so the
+      // live bubble and the saved row keep one id (review of #920).
+      const assistantId = adopt?.assistantId ?? nanoid();
       const assistantMsg: ChatMessage = {
         id: assistantId, role: "assistant", content: "", timestamp: turnTs + 1,
         streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true,
@@ -542,7 +546,27 @@ export function useAgentChat({
           const outcome = (await res.json().catch(() => ({}))) as {
             steered?: boolean;
             pendingReplay?: boolean;
+            reason?: string;
           };
+          // Any steer owes a follow-up, also one this tab sent as a plain
+          // send because it saw no run: another member's run in a room, or a
+          // second tab. A follow-up that met a run still going asks again,
+          // with a growing wait (review of #920, `lib/chatSteer.ts`).
+          if (outcome.steered) {
+            followUpTries.current.delete(threadId);
+            setSessionState(threadId, (prev) => ({ ...prev, steerOwed: true }));
+          } else if (followUp && outcome.reason === "run_in_flight") {
+            const tries = (followUpTries.current.get(threadId) ?? 0) + 1;
+            followUpTries.current.set(threadId, tries);
+            const wait = followUpRetryDelay(tries);
+            if (wait !== null) {
+              setTimeout(() => {
+                setSessionState(threadId, (prev) => ({ ...prev, steerOwed: true }));
+              }, wait);
+            }
+          } else if (followUp) {
+            followUpTries.current.delete(threadId);
+          }
           // No stream comes for this send, so our placeholder goes. A steer
           // keeps the user's message, attributed. A steer the run has not
           // taken yet marks the turn pending, so a repeat of the same words
@@ -768,6 +792,8 @@ export function useAgentChat({
   // going. If the run had ended, the server starts a new one, and this
   // follows its stream as a normal turn, in place of the steer's bubble.
   const steerMessage = useCallback(async (content: string): Promise<SteerOutcome> => {
+    // One id for the reply row, whether the steer folds in or starts a run.
+    const replyId = nanoid();
     const out = await sendSteer({
       threadId,
       text: content,
@@ -782,7 +808,7 @@ export function useAgentChat({
         ...chatModelField(modelRef.current),
         context: systemContextRef.current ?? undefined,
         thinkMode: thinkModeRef.current ?? "auto",
-        assistantMessageId: nanoid(),
+        assistantMessageId: replyId,
         userMessageId,
         userMessageTs,
       }),
@@ -790,7 +816,7 @@ export function useAgentChat({
     if (out.kind === "started") {
       void sendMessage(content, {
         heldId: out.bubbleId,
-        adopt: { response: out.response, controller: out.controller },
+        adopt: { response: out.response, controller: out.controller, assistantId: replyId },
       });
     }
     return out;

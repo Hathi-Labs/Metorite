@@ -24,6 +24,7 @@ import json
 import os
 import re
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -341,6 +342,14 @@ def _run_kind_for_source(source: str) -> str:
     )
 
 
+#: The steers that this request's ENGAGE took from the durable store. The
+#: route reads it after a refusal and gives them back (review of #920). A
+#: context variable, so ``_apply_turn_decision`` keeps its signature.
+_TAKEN_STEERS: "ContextVar[list[dict[str, Any]] | None]" = ContextVar(
+    "agent_taken_steers", default=None,
+)
+
+
 async def _apply_turn_decision(
     decision: "TurnDecision",
     req: AgentRunRequest,
@@ -372,6 +381,9 @@ async def _apply_turn_decision(
     if decision.route is Route.ENGAGE:
         if thread_id:
             pending = await take_pending_steers(thread_id)
+            _taken = _TAKEN_STEERS.get()
+            if _taken is not None:
+                _taken.extend(pending)
             replayed = format_replayed(pending)
             if replayed:
                 _log.info(
@@ -2626,9 +2638,19 @@ async def run_agent_stream_endpoint(
     if _room_event is not None:
         await publish_room_event(req.thread_id or "", _room_event)
 
+    _taken_steers: list[dict[str, Any]] = []
+    _TAKEN_STEERS.set(_taken_steers)
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
+
+    async def _give_back_taken() -> None:
+        # A refusal after ENGAGE starts no run: the steers it took go back.
+        if _taken_steers and req.thread_id:
+            from orchestrator.steer import give_back  # noqa: PLC0415
+
+            await give_back(req.thread_id, list(_taken_steers))
+            _taken_steers.clear()
     if _steered is not None:
         # WS-51 S4: a steer is stored for the live run (#797), and the
         # member's words show on a reload too, as their own turn. The spec
@@ -2931,6 +2953,7 @@ async def run_agent_stream_endpoint(
     except HTTPException:
         # The run will not start, so its cap reservation goes too.
         await _release_cap_slot()
+        await _give_back_taken()
         raise
 
     # Edit, step 3: every refusal is behind us, so the old turn and its
@@ -2950,6 +2973,7 @@ async def run_agent_stream_endpoint(
             )
         except _EditRefused as _refused:
             await _release_cap_slot()
+            await _give_back_taken()
             raise HTTPException(
                 status_code=_refused.status, detail=_refused.detail(),
             ) from None
@@ -3049,6 +3073,7 @@ async def run_agent_stream_endpoint(
                 agent=agent_name, thread_id=thread_id[:12],
             )
             await _release_cap_slot()
+            await _give_back_taken()
             yield "data: " + json.dumps({
                 "type": "RUN_ERROR",
                 "message": (

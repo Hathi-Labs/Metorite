@@ -807,6 +807,17 @@ cleared the buffer. Now three steps answer it:
 A Stop asks for no follow-up. A steer that the stopped run never read stays
 in the store, and the next message replays it through ENGAGE.
 
+**Review of #920.** Four rules close the gaps the review found:
+
+- Any 202 with `steered: true` owes a follow-up. That covers a plain send
+  that the gateway steered, for example into another member's run in a room.
+- A follow-up that meets `run_in_flight` asks again. The wait doubles from
+  2 s to 30 s, for 20 tries (`followUpRetryDelay`).
+- A refusal after ENGAGE (another member's run, a supersede race) gives the
+  taken steers back to the store (`steer.give_back`).
+- `without_replayed` drops only user turns after the last assistant turn. An
+  older turn with the same short words stays.
+
 **The fallbacks.**
 
 | The server answers | The client does |
@@ -827,11 +838,12 @@ in the store, and the next message replays it through ENGAGE.
 | `tests/unit/test_chat_prompt_saved_at_start.py` | R8: the steered row carries the `steered` mark in Postgres |
 | `e2e/chat-steer.spec.ts` | The browser: the stream goes on, the words show as added, the follow-up answer draws below the steer, and Stop and Esc halt the run |
 
-**Mutation record (2026-10-12).** Nine mutants, nine killed: the client
+**Mutation record (2026-10-12).** Eleven mutants, eleven killed: the client
 stops on send, the client enqueues, the button ignores the box, no give-back
 at the terminal event, a give-back that saves nothing, no follow-up gate, a
-replay that keeps the history copy, no follow-up from the hook, and a
-steered row with no mark.
+replay that keeps the history copy, no follow-up from the hook, a steered
+row with no mark, no give-back after a refusal, and a replay that matches an
+older turn.
 
 **Known limits.**
 
@@ -839,6 +851,10 @@ steered row with no mark.
   stays in the store for 30 minutes, and the next message replays it.
 - The steer bubble sits below the reply it joins, in time order. That is
   also the order of a reload.
+- The follow-up gate reads a stale `cc:active` of a dead owner as
+  `run_in_flight`. It does not run the dead-run recovery of
+  `_route_incoming_turn`. The steer stays stored, and the next message
+  replays it.
 
 ---
 

@@ -481,3 +481,15 @@ def test_a_replayed_steer_is_not_also_a_history_turn():
     assert len(history) == 3, "the input list is not changed"
     # Words that match no turn change nothing.
     assert steer.without_replayed(history, [{"text": "other"}]) == history
+
+
+def test_the_replay_keeps_an_older_turn_with_the_same_words():
+    """Review of #920: only the turns after the last reply can be the steer
+    bubble. The member's earlier "yes" is real context and stays."""
+    history = [
+        {"role": "user", "content": "yes"},
+        {"role": "assistant", "content": "Done."},
+        {"role": "user", "content": "Plan the next one"},
+        {"role": "assistant", "content": "Here it is."},
+    ]
+    assert steer.without_replayed(history, [{"text": "yes"}]) == history

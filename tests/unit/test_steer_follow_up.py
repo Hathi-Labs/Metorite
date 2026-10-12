@@ -283,3 +283,24 @@ def test_a_follow_up_while_a_run_goes_on_starts_nothing(world):
     assert world.calls == []
     # The steer stays stored for the next ENGAGE.
     assert asyncio.run(steer.has_pending_steers("t-busy")) is True
+
+
+def test_a_refusal_after_engage_gives_the_steers_back(world, monkeypatch):
+    """Review of #920: the follow-up took the steers, then another member's
+    run took the thread. The 409 starts no run, so the steers go back."""
+    from fastapi import HTTPException
+    from gateway.routes import agent
+
+    asyncio.run(steer.persist_signal("t-race", steer.make_signal(
+        thread_id="t-race", author=_ALICE, text="and the owner",
+    )))
+
+    async def _busy(*_a, **_k):
+        raise HTTPException(status_code=409, detail={"error": "run_in_progress"})
+
+    monkeypatch.setattr(agent, "_refuse_if_another_run_is_active", _busy)
+    code, _ = _post(_body("t-race", "", followup=True))
+    assert code == 409
+    assert world.calls.count("run") == 0
+    pending = asyncio.run(steer.take_pending_steers("t-race"))
+    assert [p["text"] for p in pending] == ["and the owner"], "the steer must not be lost"
