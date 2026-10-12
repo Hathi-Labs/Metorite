@@ -1088,8 +1088,16 @@ class FakeProjectsDB:
         term = like_to_regex(str(args.get("term") or ""))
         prefix = like_to_regex(str(args.get("prefix") or ""))
         number = args.get("number")
-        where = statement.split("END AS rank", 1)[-1]
-        texted = "t.description ILIKE :term" in where
+        where = statement.split("END AS rank", 1)[-1].split("ORDER BY", 1)[0]
+        # The text arm, word by word (2026-10-13): for each bound `q_w<i>`,
+        # the COLUMNS the WHERE tests it against, read off the statement. A
+        # route that drops the description from the arm drops it here too.
+        word_columns: dict[str, list[str]] = {}
+        for column, param in _ILIKE.findall(where):
+            if param.startswith("q_w"):
+                word_columns.setdefault(param, []).append(column)
+        words = {p: like_to_regex(str(args.get(p) or "")) for p in word_columns}
+        texted = bool(word_columns)
         exact = "t.task_number = CAST(:number AS bigint)" in where
         scoped = "pm_project_grants" in statement
         visible = self.visible_project_ids(
@@ -1147,15 +1155,37 @@ class FakeProjectsDB:
             # D-PM-31: the text arm and the exact arm are alternatives, and
             # each is honoured only when the WHERE carries it. A route that
             # sent a number query through the text arm goes red here.
-            worded = texted and (term.match(title) or term.match(body))
+            text_of = {"title": title, "description": body}
+            worded = texted and all(
+                any(words[p].match(text_of.get(c, "")) for c in columns)
+                for p, columns in word_columns.items()
+            )
             if not (worded or (exact and numbered)):
                 continue
             rank = (
                 0 if numbered
                 else 1 if prefix.match(title)
                 else 2 if term.match(title)
-                else 3
+                else 3 if words and all(w.match(title) for w in words.values())
+                else 4 if term.match(body)
+                else 5
             )
+            # The snippet window, the SQL's way: the first needle the
+            # description holds, `lead` characters back, `window` long.
+            snippet: dict[str, Any] = {}
+            if "snippet_raw" in statement and rank >= int(args.get("description_rank") or 99):
+                lowered = body.lower()
+                for needle in args.get("needles") or []:
+                    at = lowered.find(str(needle).lower()) + 1
+                    if at > 0:
+                        start = max(at - int(args.get("snippet_lead") or 0), 1)
+                        window = int(args.get("snippet_window") or 0)
+                        snippet = {
+                            "snippet_from": start,
+                            "snippet_raw": body[start - 1:start - 1 + window],
+                            "description_length": len(body),
+                        }
+                        break
             project = projects.get(str(task.get("project_id")), {})
             status = statuses.get(str(task.get("status_id")), {})
             found.append(SimpleNamespace(
@@ -1164,6 +1194,7 @@ class FakeProjectsDB:
                 status_name=status.get("name"),
                 category=status.get("category"),
                 rank=rank,
+                **snippet,
             ))
 
         # The tie-break is read off the statement, not assumed: `rank` alone
@@ -2287,11 +2318,18 @@ class FakeProjectsDB:
         ilike = _ILIKE.findall(top)
         if ilike:
             seen = True
-            needle = str(args.get(ilike[0][1]) or "").strip("%").lower()
-            rows = [
-                r for r in rows
-                if any(needle in str(r.get(c) or "").lower() for c, _ in ilike)
-            ]
+            # One group per bound parameter: a row must match EVERY parameter
+            # in at least one of the columns that parameter is tested against
+            # (`filters.text_match_clause` binds one per word, 2026-10-13).
+            groups: dict[str, list[str]] = {}
+            for column, param in ilike:
+                groups.setdefault(param, []).append(column)
+            for param, columns in groups.items():
+                needle = str(args.get(param) or "").strip("%").lower()
+                rows = [
+                    r for r in rows
+                    if any(needle in str(r.get(c) or "").lower() for c in columns)
+                ]
         if re.search(r"\bAND\s+is_default\b", top, re.I):
             seen = True
             rows = [r for r in rows if r.get("is_default")]

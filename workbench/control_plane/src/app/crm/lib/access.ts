@@ -36,6 +36,9 @@ export const CRM_OFF_TITLE = "The CRM is not turned on for your organization yet
 /** The toast of the `new-lead` job when the form cannot open. */
 export const NEW_LEAD_MIRROR = "New leads come from Zoho in this organization.";
 
+/** The toast of the `new-deal` job when the form cannot open (CRM-X2). */
+export const NEW_DEAL_MIRROR = "New deals come from Zoho in this organization.";
+
 /**
  * The words of the CRM access rule 403 (`routes/crm/access.py::_forbidden`).
  * The feature gate answers 403 too, with a "missing permission" message.

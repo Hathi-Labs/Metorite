@@ -159,6 +159,25 @@ def is_db_timeout(exc: BaseException) -> bool:
     return False
 
 
+def is_db_outage(exc: BaseException) -> bool:
+    """True when ``exc``, from a block that does ONLY database I/O, means the
+    database could not be reached (WS-55 EA-3a, 2026-10-12).
+
+    :func:`is_db_unavailable` or :func:`is_db_timeout`, or an ``OSError``
+    anywhere in the cause chain (``ConnectionRefusedError`` included).
+    asyncpg raises the bare socket error when a connect fails.
+
+    ⚠️ Like :func:`is_db_timeout`, call this ONLY on an exception from a block
+    that does nothing but database I/O: an ``OSError`` from a file or an HTTP
+    client is not the database. Two callers: branch 0 of
+    ``acb_auth.deps.get_current_user`` (the connection read) and
+    ``acb_auth.access.resolve_access`` (the role read). The ONE list.
+    """
+    if is_db_unavailable(exc) or is_db_timeout(exc):
+        return True
+    return any(isinstance(e, OSError) for e in _chain(exc))
+
+
 def mark(now: float | None = None) -> None:
     """Record that the database refused a connection just now."""
     global _busy_until
