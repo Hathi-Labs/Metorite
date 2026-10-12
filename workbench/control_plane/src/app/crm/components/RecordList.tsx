@@ -33,7 +33,7 @@ import {
   type FieldDef,
 } from "../lib/fields";
 import FieldValue from "./FieldValue";
-import { statusTone } from "../lib/board";
+import { stageAccent } from "../lib/board";
 import { COLUMNS } from "../lib/columns";
 import { SORTS } from "../lib/filters";
 import { money, shortDate, shortEmail } from "../lib/format";
@@ -66,15 +66,17 @@ const RENDERERS: Record<string, (row: Row, ctx: CellContext) => React.ReactNode>
   expected_close_date: (r) => shortDate(r.expected_close_date as string | null),
   owner_email: (r) => shortEmail(r.owner_email as string | null),
   first_name: (r) => `${text(r, "first_name")} ${r.last_name ?? ""}`.trim(),
-  // CRM-X1: the stage by name, with the dot of `statusTone`, the one stage
-  // tone of the CRM. A stage the vocabulary does not hold draws a muted dot.
+  // CRM-X1: the stage by name, with the dot of `stageAccent`, the one stage
+  // colour of the CRM. A stage the vocabulary does not hold draws a muted dot.
+  // The list does not know the mode, so it passes null and reads the stored
+  // colour (CRM-C2).
   status_name: (r, ctx) => {
     if (!r.status_name) return "—";
     const status = ctx.statuses.find((s) => s.id === r.status_id);
     return (
       <span className="inline-flex items-center gap-1.5">
         <span
-          className={`h-1.5 w-1.5 shrink-0 rounded-full ${status ? statusTone(status) : "bg-muted-foreground"}`}
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${status ? stageAccent(status, null).dot : "bg-muted-foreground"}`}
         />
         {String(r.status_name)}
       </span>

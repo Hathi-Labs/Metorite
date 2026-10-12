@@ -813,6 +813,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               hiddenEmpty={view.tab === "leads" ? 0 : store.lanes.length - dealLanes.length}
               loading={store.loading}
               readOnly={ctx.mode === "mirror"}
+              // CRM-C2: the lane colour reads the mode, and the card of the
+              // open record wears the cursor ring.
+              mode={ctx.mode}
+              cursorId={view.record?.id ?? null}
               onMove={
                 view.tab === "leads"
                   ? (move, target) => void moveCard("leads", move, target)

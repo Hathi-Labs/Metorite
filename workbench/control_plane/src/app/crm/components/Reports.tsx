@@ -25,7 +25,7 @@
  */
 
 import Icon from "@/components/Icon";
-import { statusTone } from "../lib/board";
+import { stageAccent } from "../lib/board";
 import { compactMoney, money, shortDate } from "../lib/format";
 import {
   byWeight,
@@ -143,7 +143,7 @@ function Forecast({ reports }: { reports: CrmReports }) {
           {ordered.map((stage, index) => (
             <li key={stage.status.id} className="flex items-center gap-3">
               <span
-                className={`h-2 w-2 shrink-0 rounded-full ${statusTone(stage.status)}`}
+                className={`h-2 w-2 shrink-0 rounded-full ${stageAccent(stage.status, null).dot}`}
                 aria-hidden
               />
               <span className="w-36 shrink-0 truncate text-xs text-foreground">
@@ -200,7 +200,7 @@ function Funnel({ reports }: { reports: CrmReports }) {
               <li key={stage.status.id}>
                 <div className="flex items-center gap-3">
                   <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${statusTone(stage.status)}`}
+                    className={`h-2 w-2 shrink-0 rounded-full ${stageAccent(stage.status, null).dot}`}
                     aria-hidden
                   />
                   <span className="w-36 shrink-0 truncate text-xs text-foreground">

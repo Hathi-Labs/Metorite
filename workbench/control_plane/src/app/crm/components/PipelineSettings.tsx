@@ -33,12 +33,12 @@ import Checkbox from "@/components/ui/Checkbox";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Input } from "@/components/ui/Input";
 import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
+import { ACCENT_HUES } from "@/lib/statusAccent";
 import { useState } from "react";
 import {
   REQUIREABLE_FIELD_LABELS,
   REQUIREABLE_FIELDS,
-  statusTone,
-  TONE_COLORS,
+  stageAccent,
 } from "../lib/board";
 import { showPicker } from "../lib/pipelines";
 import {
@@ -62,7 +62,7 @@ import type {
 const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"];
 
 /** The two pickers of a status row, as `SelectButton` options (CRM-U2). */
-const COLOR_OPTIONS: SelectOption[] = TONE_COLORS.map((color) => ({
+const COLOR_OPTIONS: SelectOption[] = ACCENT_HUES.map((color) => ({
   value: color,
   label: color,
 }));
@@ -404,7 +404,7 @@ function StatusRow({
       >
         <Icon name="GripVertical" className="w-4 h-4" />
       </span>
-      <span className={`w-2 h-2 shrink-0 rounded-full ${statusTone(draft)}`} />
+      <span className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, null).dot}`} />
 
       <Input
         inputSize="sm"
