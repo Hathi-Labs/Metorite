@@ -12811,9 +12811,10 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** 📝 Specified 2026-10-12, not built. Re-specified twice on 2026-10-12: after the first
-re-audit (E1, C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The
-measure below widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
+**Status.** 🔨 PR-C1a built, not merged (2026-10-12, branch `gmail-c1a-save`). PR-C1b and PR-C2
+are not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
+C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
+widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
 
 **Gate.** 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2). No migration, no flag.
 

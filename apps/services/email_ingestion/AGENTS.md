@@ -263,6 +263,15 @@ All providers implement the `BaseEmailProvider` abstract interface:
       opens an attached mail into its parts in `format=full`. Do not walk
       into a `message/*` part. It is one file, and the builder puts it in
       as a mail part (review round 2).
+    - **The inline parts of a draft (WS-17 EM-G3a-f7, PR-C1a).**
+      `_draft_files` returns the files and the inline parts. An inline part
+      has a `Content-ID` and no `attachment` disposition. The read finds it
+      at any depth, but never inside an attached mail, and it is never a
+      file. `_build_gmail_mail` takes `inline_parts`, and it puts back only
+      the parts whose cid `body_html` names, inside `multipart/related`.
+      With no `body_html`, no inline part goes back. So a text save drops
+      the image, and no plain file `layout.png` appears. Fence:
+      `tests/unit/test_gmail_send_and_drafts.py`.
 
 12. **The Gmail import (WS-17 EM-G5a).** `GmailProvider.import_batches`
     pages one `messages.list` of all mail. Do not put back a list for each

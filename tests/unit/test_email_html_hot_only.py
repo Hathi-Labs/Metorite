@@ -388,8 +388,8 @@ ALLOWED_HTML_WRITERS: dict[tuple[str, str], str] = {
     (f"{_ROUTES}/core.py", "hydrate_message_body"): "writer 4, the drafter's hydrate",
     (f"{_INGESTION}/html_tier.py", "<module>"): "the cold-safe term itself",
     (f"{_ROUTES}/automation/drafting.py", "_upsert_local_draft"):
-        "a draft row, received_at = now(), so always hot. Its SQL names no "
-        "body_html today",
+        "a draft row, received_at = now(), so always hot. It stores no HTML. "
+        "Its one body_html term is the NULL of clear_html (EM-G3a-f7, D-G3a-f7-8)",
 }
 #: The writers that must write the cold-safe term, and only it.
 TERM_WRITERS = frozenset({
