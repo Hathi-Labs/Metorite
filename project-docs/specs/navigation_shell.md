@@ -736,6 +736,12 @@ the top. The risk is a third view of the same tasks, so each app gets one job.
 **No second ritual.** Calendar has `StartupRitual`. The first open of My Day
 each day offers that ritual. My Day does not copy it.
 
+**What goes into the feed lives in `my_day_feed.md` (WS-57, PROPOSED
+2026-10-13).** That spec owns the signals, the cards, the order, the life of
+a card and the AI that prepares one. Its §11 proposes acts beyond the three
+in the table above. Until the owner takes them, the table above binds. This
+spec keeps the page frame, the bell, the manifest and the flags.
+
 ### 4.4 Cards
 
 An app declares its cards in its manifest (§5.1). Each card names the
