@@ -12,15 +12,9 @@ import { ClarifyPanel } from "./ClarifyPanel";
 // Focused overlay for processing an inbox item. Bound to the store's selected
 // item: store.clarify advances the selection to the next inbox item, so the
 // modal walks the inbox automatically and closes when it hits zero.
-//
-// Premium touch: single-key shortcuts blitz through the obvious items without
-// touching the mouse — t trash · s someday · r reference · 2 do-now — each
-// files the current item and jumps to the next. (Disabled while typing in a
-// field so the next-action input still works.)
 export function ClarifyModal() {
   const open = useTaskStore((s) => s.clarifyModalOpen);
   const close = useTaskStore((s) => s.closeClarify);
-  const clarify = useTaskStore((s) => s.clarify);
   const skip = useTaskStore((s) => s.skipToNextInbox);
   const selectedItemId = useTaskStore((s) => s.selectedItemId);
   const items = useTaskStore((s) => s.items);
@@ -80,7 +74,7 @@ export function ClarifyModal() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [active, item, clarify, close, skip]);
+  }, [active, item, close, skip]);
 
   if (!active || !item) return null;
 
