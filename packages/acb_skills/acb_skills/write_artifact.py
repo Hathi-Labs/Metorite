@@ -1490,6 +1490,15 @@ GENUI_NO_CARD_TEXT = (
 )
 
 
+def _genui_card_refused(spec: dict) -> bool:
+    """True for a blocking card in a run that cannot show a card."""
+    if not spec.get("hitl"):
+        return False
+    from acb_skills.ask_tools import cards_refused
+
+    return cards_refused()
+
+
 async def emit_generative_ui(ui: str) -> dict:
     """Draw a card in the chat: a template, a component tree, React or HTML.
 
@@ -1546,11 +1555,8 @@ async def emit_generative_ui(ui: str) -> dict:
     # cannot show a card (WhatsApp, or a stream that does not declare
     # ``shows_cards=True``) would wait an hour, so it is refused at once
     # (review of PR #897). Fence: tests/unit/test_maf_mcp_confirm.py.
-    if spec.get("hitl"):
-        from acb_skills.ask_tools import cards_refused
-
-        if cards_refused():
-            return {"ok": False, "error": GENUI_NO_CARD_TEXT}
+    if _genui_card_refused(spec):
+        return {"ok": False, "error": GENUI_NO_CARD_TEXT}
     # The catalog on demand: a template with no data, an unknown or empty
     # template name, or a code mode with no code asks for its guide. Nothing
     # is parked or pushed for it.
