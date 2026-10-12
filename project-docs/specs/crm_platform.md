@@ -826,6 +826,7 @@ These acts are the owner's. An agent writes the runbook and stops.
 | Pick Fracktal's mode | Fracktal is customer zero (D36) | Q4 |
 | Promote `/crm` from `preview` to `live` | §6.0 C3, H-21 | CRM-L2 |
 | Turn on write-back for any org | An outward write to a customer's system of record | CRM-Z9 |
+| Connect Fracktal's Zoho again, to give the new read scopes. CRM-Q5 adds Tasks, and CRM-Q6a adds the other modules. One consent after CRM-Q6a covers both | A third party's data (§3a rule 3) | CRM-Q5, CRM-Q6a (§18.7) |
 
 ---
 
@@ -936,6 +937,11 @@ uv run pytest tests/unit/test_crm_routes.py tests/unit/test_crm_pipeline.py \
 # The mirror
 uv run pytest tests/unit/test_crm_sources_no_global_creds.py tests/unit/test_crm_mirror_readonly.py
 
+# The adaptive mirror (§18.7): CRM-Q6a, CRM-Q6b, CRM-Q7a and CRM-Q7b
+uv run pytest tests/unit/test_crm_module_records_r8.py tests/unit/test_crm_modules_routes_r8.py \
+  tests/unit/test_crm_field_rules_r8.py tests/unit/test_crm_field_map_ai.py \
+  tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_internal_ai_is_routed.py
+
 # The shell
 uv run pytest tests/unit/test_shell_intent.py
 
@@ -964,6 +970,9 @@ Then run the `visual-review` skill on `/crm` (§8.4).
 | The CRM adds no hand-rolled control | `conformance.test.ts` baselines | Existing (CRM-U2) |
 | The CRM jobs agree on both sides | `test_shell_intent.py::TestOneJobList` | Existing (CRM-L1) |
 | The live list agrees with the spec | `nav.test.ts` | Existing (CRM-L2) |
+| Only the sync writes a generic module record, and org B reads none of org A's | `test_crm_module_records_r8.py`, `test_crm_mirror_readonly.py`, `test_crm_upsert_from_source_fence.py` | New (CRM-Q6a), R8 |
+| A field rule never overwrites a column of the fixed map, and only an admin decides one | `test_crm_field_rules_r8.py` | New (CRM-Q7a), R8 |
+| The field-map model call reads no record value, and goes through the Router | `test_crm_field_map_ai.py`, `test_internal_ai_is_routed.py` | New (CRM-Q7b) |
 
 ---
 
@@ -1210,3 +1219,272 @@ gateway logged no error and no request for the groups list. The most likely
 cause is a browser tab that stayed open across several deploys and held old
 script files. CRM-Q3 replaces that view. If it happens again, capture the
 browser console and the network tab.
+
+### 18.7 CRM-Q6 and CRM-Q7: the build contract (2026-10-12)
+
+The §18.5 rows for CRM-Q6 and CRM-Q7 are one line each. The spec audit of
+2026-10-12 found no data shape, no "done when", no fence and no gate. This
+section is that contract. It splits the two tickets into four slices.
+
+| Slice | Gate | Builds | Waits for |
+|---|---|---|---|
+| **CRM-Q6a** | AGENT-SAFE | The generic record store, its door, discovery of the other modules, the new scopes, and the sync. No UI and no new route | CRM-Q5 merged |
+| **CRM-Q6b** | AGENT-SAFE | The read-only routes, the rail rows and the generic record page | CRM-Q6a and CRM-Q8 merged |
+| **CRM-Q7a** | AGENT-SAFE | The rule table, the Field map card, approve and reject, and the sync that applies approved rules. No model call | CRM-Q6a merged |
+| **CRM-Q7b** | AGENT-SAFE | The proposer: one routed model call over metadata | CRM-Q7a merged |
+
+The new Zoho consent is the owner's act (§12). The build is not. Each slice
+takes the next free migration number at build time (R1).
+
+#### CRM-Q6a: the generic record store
+
+**The table.** `crm_module_records` holds one row for each record of a module
+that has no table of its own.
+
+| Column | Type | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `organization_id` | UUID NOT NULL | Inline FK to `organizations` with CASCADE, the shape of migration 247 |
+| `module` | TEXT NOT NULL | The provider's module API name, for example `Products` or `Install_Base` |
+| `ext_source` | TEXT NOT NULL | `zoho` |
+| `ext_id` | TEXT NOT NULL | The provider's record id |
+| `name` | TEXT | The display name, from the module's main name field |
+| `owner_email` | TEXT | The owner, mapped the way `map_record` maps it for the known modules |
+| `fields` | JSONB NOT NULL DEFAULT `'{}'` | Each field value, keyed the way `custom` is keyed |
+| `ext_url` | TEXT | The deep link (CRM-Q1) |
+| `ext_created_at`, `ext_modified_at` | TIMESTAMPTZ | The provider's times |
+| `created_at`, `updated_at` | TIMESTAMPTZ NOT NULL DEFAULT `now()` | |
+
+- `UNIQUE (organization_id, ext_source, module, ext_id)`, and an index on
+  `(organization_id, module, ext_modified_at DESC)`.
+- FORCE ROW LEVEL SECURITY, with a policy that has USING and WITH CHECK, the
+  shape of migration 243.
+- The table joins `test_tenancy_boundary.py`, `test_tenant_coverage.py`, the
+  org purge list, and the four generated tenancy files.
+- No native writer exists. Only the sync writes this table.
+
+**The field definitions.** Discovery writes the fields of each module into
+`crm_field_defs` with `entity = 'module:<ApiName>'`, for example
+`module:Products`. The four known entities keep `lead`, `contact`, `company`
+and `deal`. `crm_field_defs.entity` is free text, so this needs no schema
+change.
+
+**Lookups.** A lookup value stays in `fields` as Zoho sends it, `{id, name}`.
+The field definition names its target module. CRM-Q6b resolves the link when
+it reads the record. CRM-Q6a adds no link table.
+
+**Which modules.** Discovery already reads `GET /settings/modules`. The sync
+mirrors a module when all of these are true:
+
+- `api_supported` is true.
+- `generated_type` is `default` or `custom`. A `linking` module and a subform
+  are never mirrored.
+- The module is not one of the known modules of §18.3 step 2.
+- The connection has the module's read scope.
+
+The order is `Products`, `Quotes`, `Sales_Orders`, `Purchase_Orders`,
+`Invoices`, `Vendors`, `Price_Books`, `Cases`, `Solutions` and `Campaigns`. The custom modules
+follow, in alphabetical order. The sync mirrors 25 modules at most. Sync health
+lists each other module as "not mirrored".
+
+**The scopes.** CRM-Q6a adds one read scope for each standard module above to
+`ZOHO_READ_SCOPES` (`routes/crm/connection.py`). It also adds
+`ZohoCRM.modules.custom.READ`.
+
+⚠️ Before the build, check each scope name against Zoho's published scope
+list. Zoho refuses the WHOLE consent for one unknown scope, and then no org can
+connect.
+
+**The door.** Add `upsert_module_records_from_source` and
+`delete_module_records_from_source` to `routes/crm/core.py`, beside
+`upsert_from_source`.
+
+- Both names join `NAMES` in `tests/unit/test_crm_upsert_from_source_fence.py`.
+- `crm_module_records` joins `_TABLES` in `tests/unit/test_crm_mirror_readonly.py`.
+- The door sets no `zoho_id`, because the generic table has no such column.
+
+**The sync.**
+
+- Each module has its own cursor row, `zoho:module:<ApiName>`.
+- The read is the same incremental read on `Modified_Time`, with the same
+  deleted list.
+- The modules run after the known entities and after the CRM-Q5 steps.
+- The step stops with 20 credits left, as the roles step does. The next run
+  continues, so a large first import spans runs.
+- A scope error, a 400 or a 500 on one module marks that module unavailable,
+  with the CRM-Q5 rule. A plain HTTP 401 still fails the run.
+- Each module reports under its own key, `module:<ApiName>`, in
+  `crm_sync_runs.counts`.
+- Sync health computes `ours` for each module key from `crm_module_records`.
+
+**Done when.** One R8 suite, `tests/unit/test_crm_module_records_r8.py`, shows
+each of these on a real database:
+
+1. A fake Zoho has 2 Products and 1 record of a custom module `Install_Base`.
+   After a sync, `crm_module_records` holds 3 rows, keyed by
+   `(org, 'zoho', module, ext_id)`.
+2. `crm_field_defs` holds the fields under `module:Products` and
+   `module:Install_Base`.
+3. A second sync with no change adds no row.
+4. A changed Zoho record updates `fields` and `ext_modified_at`. A deleted
+   record goes.
+5. Org B reads none of org A's rows through the app role.
+6. A scope error on one module marks only that module unavailable. The other
+   modules sync, and the run status is `ok`.
+7. A linking module and a subform never get a row.
+8. A run that stops at the reserve continues in the next run, with no
+   duplicate row.
+9. `GET /crm/sync/health` lists each module with `zoho_count` and `ours`.
+
+#### CRM-Q6b: the views
+
+- `GET /crm/modules` returns the mirrored generic modules of the latest
+  profile: `api_name`, the plural label, and the row count. A Native org gets
+  an empty list.
+- `GET /crm/modules/{module}/records` takes `q` (on `name`), `sort` and the
+  page params of the other lists. A module that the profile does not mirror
+  gives 404.
+- `GET /crm/modules/{module}/records/{id}` returns one record. Its fields use
+  the CRM-Q4 rules from `crm_field_defs`.
+- A lookup becomes a link:
+  - to the record page of a known record, when the target is a known module.
+  - to the generic record page, when the target module is mirrored.
+  - otherwise, to plain text.
+- "Open in Zoho" uses `ext_url`. Every route is read only, and the routes use
+  the CRM access rule.
+- The rail shows one row for each module, in the profile order, under the
+  known modules (§18.4). The group does not show when the org has no module.
+- The routes go in a new file, `routes/crm/modules.py`.
+
+**Done when.**
+
+- `tests/unit/test_crm_modules_routes_r8.py` shows the org isolation, the 404
+  for an unknown module, the empty list for a Native org, and the lookup links.
+- A vitest file shows that the rail rows follow the profile.
+- The look gate of CLAUDE.md §4 passes: light mode, compact density, a changed
+  accent, and the neighbouring Deals list.
+
+#### CRM-Q7a: the rule table and the Field map
+
+**The table.** `crm_field_rules` holds one row for each field of a known
+entity that an admin decided, or that the assistant proposed.
+
+| Column | Type | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `organization_id` | UUID NOT NULL | Inline FK with CASCADE |
+| `ext_source` | TEXT NOT NULL | `zoho` |
+| `entity` | TEXT NOT NULL | `lead`, `contact`, `company` or `deal` |
+| `field_api_name` | TEXT NOT NULL | The provider's field API name |
+| `field_type` | TEXT NOT NULL | The provider's type when the rule was made |
+| `target_column` | TEXT | The column the value goes to |
+| `status` | TEXT NOT NULL | `proposed`, `approved`, `rejected` or `stale` |
+| `proposed_by` | TEXT NOT NULL | `ai` or `admin` |
+| `confidence` | NUMERIC | 0 to 1. Only for `ai` |
+| `reason` | TEXT | One sentence, 140 characters at most |
+| `decided_by`, `decided_at` | TEXT, TIMESTAMPTZ | The admin who approved or rejected it |
+| `created_at`, `updated_at` | TIMESTAMPTZ NOT NULL DEFAULT `now()` | |
+
+`UNIQUE (organization_id, ext_source, entity, field_api_name)`. FORCE ROW LEVEL
+SECURITY, as for `crm_module_records`. CRM-Q7 covers the four known entities
+only. A generic module keeps every field in `fields`.
+
+**The legal targets.** `FIELD_RULE_TARGETS` in `crm_sources/zoho/mapping.py`
+lists, for each entity, the columns that the fixed map never writes, without the
+system columns. Each target has a type. A rule is legal only when its target is
+in that list and the types agree:
+
+| Provider type | Column type |
+|---|---|
+| text, textarea, picklist, email, phone, website | TEXT |
+| integer, double, currency, percent | NUMERIC or INT |
+| date | DATE |
+| datetime | TIMESTAMPTZ |
+| boolean | BOOLEAN |
+
+The routes refuse any other rule with 422. So the fixed rules always win, and
+no rule can overwrite a column that the fixed map fills.
+
+**The Field map card.** It is in CRM settings, for an admin, in Mirror mode
+only.
+
+- It lists, for each entity, the fields that go to `custom` today.
+- It shows each proposal with its target, its confidence and its reason.
+- An admin can approve or reject a proposal. An admin can also pick a target
+  by hand, which makes a rule with `proposed_by = 'admin'`.
+- Routes: `GET /crm/field-rules?entity=`, `POST /crm/field-rules` and
+  `PATCH /crm/field-rules/{id}`. Only an admin calls them.
+
+**What an approved rule does.**
+
+- The sync's `map_record` applies each approved rule after the fixed rules.
+  The value also stays in `custom`, so a later reject loses nothing.
+- On approval, a one-time backfill copies `custom ->> field_api_name` into the
+  column for the existing rows. It reads no Zoho data, so it costs no credit.
+  It goes through a new fenced door, `apply_field_rule_from_source`, in batches
+  of 500 rows.
+- On reject of an approved rule, the same door sets the column back to NULL on
+  the mirrored rows.
+
+**When the profile changes.** Discovery checks each approved rule against the
+new profile version. A rule goes `stale` when its field is gone, or when the
+new type disagrees with the target. The sync stops applying a stale rule. The
+Field map shows it, and an admin decides again.
+
+**Done when.** `tests/unit/test_crm_field_rules_r8.py` shows each of these:
+
+1. An approved rule makes the next sync write the column.
+2. The approval backfills the existing rows, with no Zoho call.
+3. A rule on a column of the fixed map gives 422. A type mismatch gives 422.
+4. A member who is not an admin gets 403.
+5. Org B sees none of org A's rules.
+6. A type change in the profile makes the rule `stale`, and the sync stops
+   applying it.
+7. Two syncs of the same data give the same rows.
+8. A reject clears the column and keeps the value in `custom`.
+
+#### CRM-Q7b: the proposer
+
+**When it runs.** Only when an admin presses "Suggest mappings" on the Field
+map. Nothing calls the model in the background. One entity is one call. When
+proposals already exist for the current profile version, the route returns
+them and calls no model.
+
+**What it reads.** The input is metadata only. For one entity it holds:
+
+- the fields that go to `custom`, each with its API name, label and type.
+- up to 20 picklist option labels for each field, each cut to 60 characters.
+- the legal targets of `FIELD_RULE_TARGETS`, with their types.
+
+It never holds a record value. The prompt builder takes `crm_field_defs` rows
+and the target list as its only arguments.
+
+**How it calls the model.**
+
+- It uses `acb_llm.context.acompletion_with_fallback(model="tier-fast",
+  feature="crm.field_map", ...)`. The pattern is at
+  `routes/email/automation/actions.py:321`.
+- `test_internal_ai_is_routed.py` already fences that route.
+- Bind the run context (the org and the member) before the call. The H-171
+  meter reads both from it.
+- Do not use `tier-decide`, because its residency is open (D75).
+
+**What it writes.**
+
+- The answer is a JSON list of `{field_api_name, target_column, confidence,
+  reason}`.
+- The server drops an item when its field was not in the input, its target is
+  not legal, or its types disagree.
+- Each item that stays becomes a `proposed` row. The proposer never writes
+  `approved`.
+- A model error or a bad answer gives a short message, and writes no row.
+
+**Done when.** `tests/unit/test_crm_field_map_ai.py` shows each of these:
+
+1. A test seeds records that hold a canary value. It captures the model call,
+   and the canary is not in the input.
+2. An illegal target, a type mismatch and an unknown field are dropped.
+3. No proposal is ever `approved`.
+4. The call goes through `acompletion_with_fallback` with
+   `feature="crm.field_map"`, and with the org bound.
+5. A second press for the same profile version makes no model call.
