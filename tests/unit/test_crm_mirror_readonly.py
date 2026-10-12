@@ -466,6 +466,9 @@ _RAW_ALLOW = {
     # from a route fails here.
     "core.py::upsert_module_records_from_source",
     "core.py::delete_module_records_from_source",
+    # CRM-C3: the merge of two stage rows after a Zoho rename. The seventh
+    # door. Only files under `crm_sync/` may name it, by the same name fence.
+    "core.py::merge_status_from_source",
     "core.py::insert_row", "core.py::update_row",
     # The legacy importer, the sync and the stage repair refuse Mirror mode.
     "import_zoho.py", "sync_zoho.py",
@@ -576,3 +579,109 @@ async def test_the_legacy_zoho_routes_refuse_mirror_mode(
         r = await _call(ns, admin, "POST", "/crm/import/zoho", body)
         assert r.status_code == 409, r.text
         assert r.json()["detail"]["code"] == "mirror_mode_legacy_import"
+
+
+# ── CRM-C3: the overlay columns (crm_platform.md §20.6) ─────────────────────
+
+_GATEWAY = _CRM.parents[1]
+
+#: The overlay columns of each settings table, as §20.6 item 1 names them. The
+#: admin door writes them, in Mirror mode too. The sync never writes them.
+_OVERLAY = {
+    "crm_deal_statuses": frozenset({
+        "hidden", "ui_position", "ui_probability", "ui_color", "max_dwell_days",
+    }),
+    "crm_lead_statuses": frozenset({"hidden", "ui_position", "ui_color"}),
+    "crm_lost_reasons": frozenset({"hidden"}),
+}
+
+#: Each overlay column, and `color`, which the sync never writes either
+#: (§20.6 item 7).
+_OVERLAY_WORDS = re.compile(
+    r"\b(" + "|".join(sorted({c for cs in _OVERLAY.values() for c in cs} | {"color"}))
+    + r")\b",
+)
+
+
+def test_the_overlay_columns_are_exactly_these() -> None:
+    """CRM-C3 done when 15: one map, named exactly."""
+    from gateway.routes.crm import core
+
+    assert {t: frozenset(cs) for t, cs in core.MIRROR_OVERLAY_COLUMNS.items()} == _OVERLAY
+
+
+def _sql_strings(source: str) -> list[tuple[int, str]]:
+    """``(line, text)`` of each module-level ``str`` constant, and of each literal
+    argument of a ``text()`` call, in *source*.
+
+    A Python NAME is out of scope: ``crm_sync/engine.py`` uses ``hidden`` as a
+    local name for an offset-paged module, and that is not SQL.
+    """
+    tree = ast.parse(source)
+    found: list[tuple[int, str]] = []
+    for node in tree.body:
+        value = getattr(node, "value", None)
+        if isinstance(node, ast.Assign | ast.AnnAssign) and value is not None:
+            for sub in ast.walk(value):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    found.append((sub.lineno, sub.value))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if name != "text":
+            continue
+        for arg in node.args:
+            for sub in ast.walk(arg):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    found.append((sub.lineno, sub.value))
+    return found
+
+
+def _overlay_sql(roots: tuple[Path, ...]) -> list[str]:
+    """``path:line: word`` for each SQL string under *roots* that names an
+    overlay column or ``color``."""
+    bad: list[str] = []
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            for line, value in _sql_strings(path.read_text(encoding="utf-8-sig")):
+                for match in _OVERLAY_WORDS.finditer(value):
+                    bad.append(f"{path.name}:{line}: {match.group(1)}")
+    return bad
+
+
+def test_no_sql_of_the_sync_names_an_overlay_column() -> None:
+    """CRM-C3 done when 15: the sync and the connector never write the overlay."""
+    roots = (_GATEWAY / "crm_sync", _GATEWAY / "crm_sources")
+    assert all(r.is_dir() for r in roots)
+    assert _overlay_sql(roots) == []
+
+
+def test_the_scan_reads_the_routes_too() -> None:
+    """The same scan finds the overlay in ``routes/crm/``, so it reads SQL."""
+    found = _overlay_sql((_CRM,))
+    assert any(f.startswith("core.py:") and "ui_position" in f for f in found), found
+    assert any(f.startswith("admin.py:") and "ui_position" in f for f in found), found
+
+
+def test_the_overlay_scan_proves_itself(tmp_path: Path) -> None:
+    """CRM-C3 done when 16: a planted literal that names ``ui_position``."""
+    nl = chr(10)
+    (tmp_path / "planted.py").write_text(
+        "_SQL = 'UPDATE crm_deal_statuses SET ui_position = :p'" + nl,
+        encoding="utf-8",
+    )
+    assert _overlay_sql((tmp_path,)) == ["planted.py:1: ui_position"]
+    (tmp_path / "planted.py").write_text(
+        "async def go(db):" + nl
+        + "    await db.execute(text(f'UPDATE {t} SET ui_color = :c'))" + nl,
+        encoding="utf-8",
+    )
+    assert _overlay_sql((tmp_path,)) == ["planted.py:2: ui_color"]
+    # A Python name is not SQL.
+    (tmp_path / "planted.py").write_text(
+        "def go():" + nl + "    hidden = True" + nl + "    return hidden" + nl,
+        encoding="utf-8",
+    )
+    assert _overlay_sql((tmp_path,)) == []

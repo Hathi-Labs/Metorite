@@ -379,6 +379,15 @@ class ActivityModel(MirrorFields):
 
 
 class StatusModel(BaseModel):
+    """A stage or a lead status on the wire.
+
+    ``position``, ``probability`` and ``color`` carry the EFFECTIVE value
+    (WS-53 CRM-C3, ``crm_platform.md`` §20.6 item 5): the overlay value when an
+    admin set one, else the source value. So each reader of the old shape gets
+    the effective value with no change. The ``source_*`` and ``ui_*`` fields
+    serve the settings grid and the lane order.
+    """
+
     id: str
     name: str
     color: str = "gray"
@@ -398,12 +407,34 @@ class StatusModel(BaseModel):
     #: Deal statuses only (WS-53 CRM-Q2) — the forecast category as the provider
     #: names it ("Pipeline", "Closed Won"). ``None`` for a native stage.
     forecast_category: str | None = None
+    #: CRM-C3: the values the source gave — Zoho in Mirror mode, the admin in
+    #: Native mode. ``source_probability`` is ``None`` on a lead status.
+    source_position: int = 0
+    source_probability: int | None = None
+    source_color: str = "gray"
+    #: CRM-C3: the overlay as stored. ``None`` means "not set", so the source
+    #: value applies. ``ui_probability`` is ``None`` on a lead status.
+    ui_position: int | None = None
+    ui_probability: int | None = None
+    ui_color: str | None = None
+    #: CRM-C3: no picker offers a hidden row, except as the current value.
+    hidden: bool = False
+    #: CRM-C3: when the Zoho picklist stopped listing the value, else ``None``.
+    source_gone_at: datetime | None = None
+    #: CRM-C3: the id of the Zoho picklist value, else ``None``.
+    ext_id: str | None = None
+    #: CRM-C3: True when a row of this kind has ``ui_position``, so an admin
+    #: order applies to the lanes.
+    admin_order: bool = False
 
 
 class LostReasonModel(BaseModel):
     id: str
     label: str
     position: int = 0
+    #: CRM-C3: no picker offers a hidden reason. The only overlay column of a
+    #: lost reason, so a Mirror admin may set it.
+    hidden: bool = False
 
 
 class ListResponse(BaseModel):
@@ -672,14 +703,17 @@ def status_wire(row: Any) -> StatusModel:
     projection is how one of them quietly stops reporting ``probability``,
     which is the number every forecast surface reads.
     """
+    color = getattr(row, "color", "gray") or "gray"
+    position = int(getattr(row, "position", 0) or 0)
+    probability = getattr(row, "probability", None)
     return StatusModel(
         id=str(row.id),
         name=row.name,
-        color=getattr(row, "color", "gray") or "gray",
-        position=int(getattr(row, "position", 0) or 0),
+        color=color,
+        position=position,
         type=getattr(row, "type", "open"),
         is_default=bool(getattr(row, "is_default", False)),
-        probability=getattr(row, "probability", None),
+        probability=probability,
         # `or []` covers both a lead-status row (no such column) and the window
         # R6 opens on deploy, where the running code meets a table that has not
         # got the column yet. Copied rather than aliased so a caller cannot
@@ -687,7 +721,84 @@ def status_wire(row: Any) -> StatusModel:
         required_fields=list(getattr(row, "required_fields", None) or []),
         max_dwell_days=getattr(row, "max_dwell_days", None),
         forecast_category=getattr(row, "forecast_category", None),
+        # CRM-C3. A row read with ``SELECT *`` (a ``RETURNING *``, a test fake)
+        # has no ``source_*`` column, and its own columns ARE the source.
+        source_position=int(getattr(row, "source_position", position) or 0),
+        source_probability=getattr(row, "source_probability", probability),
+        source_color=getattr(row, "source_color", color) or "gray",
+        ui_position=getattr(row, "ui_position", None),
+        ui_probability=getattr(row, "ui_probability", None),
+        ui_color=getattr(row, "ui_color", None),
+        hidden=bool(getattr(row, "hidden", False)),
+        source_gone_at=getattr(row, "source_gone_at", None),
+        ext_id=getattr(row, "ext_id", None),
+        admin_order=bool(getattr(row, "admin_order", False)),
     )
+
+
+#: Where the rows with no ``ui_position`` sort once an admin ordered a kind
+#: (CRM-C3, §20.6 item 12): after each ordered row, in source order. The order
+#: route writes ``ui_position`` from 0 up, so the two ranges never meet.
+ADMIN_ORDER_TAIL = 1_000_000
+
+
+def _effective_columns(table: str, *, deal: bool) -> str:
+    """The SELECT list of one status table, over the alias ``s``."""
+    # A scalar subquery with no WHERE: row level security binds it to the
+    # tenant, and it reads the whole kind even when the outer read is a subset.
+    ordered = f"(SELECT bool_or(o.ui_position IS NOT NULL) FROM {table} o)"
+    columns = [
+        "s.id", "s.name", "s.type", "s.is_default", "s.hidden", "s.ext_id",
+        "s.source_gone_at", "s.ui_position", "s.ui_color",
+        "s.position AS source_position", "s.color AS source_color",
+        f"COALESCE({ordered}, false) AS admin_order",
+        f"CASE WHEN s.ui_position IS NOT NULL THEN s.ui_position "
+        f"WHEN {ordered} THEN {ADMIN_ORDER_TAIL} + s.position "
+        "ELSE s.position END AS position",
+        "COALESCE(s.ui_color, s.color) AS color",
+    ]
+    if deal:
+        columns += [
+            "s.required_fields", "s.max_dwell_days", "s.forecast_category",
+            "s.ui_probability", "s.probability AS source_probability",
+            "COALESCE(s.ui_probability, s.probability) AS probability",
+        ]
+    return ", ".join(columns)
+
+
+#: The ONE SELECT list of the effective and the source values of a status
+#: (WS-53 CRM-C3, ``crm_platform.md`` §20.6 item 6). A read names its table
+#: ``s``. No route computes an effective value on its own: the lanes of
+#: ``GET /crm/pipeline``, the reports, ``GET /crm/pipelines`` and
+#: ``GET /crm/statuses/{kind}`` all read this list, and :func:`status_wire`
+#: maps it. ``ORDER BY position`` then sorts by the effective position, because
+#: an ORDER BY name matches an output column first.
+EFFECTIVE_STATUS_COLUMNS: dict[str, str] = {
+    "crm_deal_statuses": _effective_columns("crm_deal_statuses", deal=True),
+    "crm_lead_statuses": _effective_columns("crm_lead_statuses", deal=False),
+}
+
+
+async def read_statuses(db: Any, table: str) -> list[Any]:
+    """Each row of one status table, with the effective values, in lane order."""
+    return list((await db.execute(
+        text(
+            f"SELECT {EFFECTIVE_STATUS_COLUMNS[table]} FROM {table} s "
+            "ORDER BY position, name"
+        ),
+        {},
+    )).fetchall())
+
+
+async def read_status(db: Any, table: str, status_id: str) -> Any | None:
+    """One row of a status table, with the effective values, or ``None``."""
+    return (await db.execute(
+        text(
+            f"SELECT {EFFECTIVE_STATUS_COLUMNS[table]} FROM {table} s "
+            "WHERE s.id = CAST(:id AS uuid)"
+        ),
+        {"id": str(status_id)},
+    )).fetchone()
 
 
 def actor(user: Any) -> str:
@@ -1421,15 +1532,17 @@ NOT_NULL_DEFAULTED: dict[str, frozenset[str]] = {
     "crm_contacts": frozenset({"source"}),
     "crm_leads": frozenset({"source"}),
     "crm_deals": frozenset({"source", "currency", "status_changed_at"}),
-    "crm_lead_statuses": frozenset({"color", "is_default"}),
+    # CRM-C3 (migration 255): `hidden` on the three settings tables. An admin
+    # PATCHes it from the settings grid, in both modes.
+    "crm_lead_statuses": frozenset({"color", "is_default", "hidden"}),
     # `required_fields` arrives by ALTER in the WS-26h migration rather than in
     # 144's CREATE TABLE, and it is here for the same reason the others are: the
     # settings grid PATCHes it, so an explicit `null` is a request a client can
     # actually make and must answer 422 rather than a driver 500.
     "crm_deal_statuses": frozenset({
-        "color", "is_default", "probability", "required_fields",
+        "color", "is_default", "probability", "required_fields", "hidden",
     }),
-    "crm_lost_reasons": frozenset({"position"}),
+    "crm_lost_reasons": frozenset({"position", "hidden"}),
     "crm_deal_contacts": frozenset({"is_primary"}),
     # Platform-written only (pipeline.apply_status_transition), and named here
     # anyway: the map is keyed by table, so a table left out is silently
@@ -1541,6 +1654,21 @@ MIRROR_SETTINGS_TABLES: frozenset[str] = frozenset({
     "crm_pipelines", "crm_pipeline_stages",
 })
 
+#: The Metorite-only columns of each settings table (WS-53 CRM-C3, migration
+#: 255, ``crm_platform.md`` §20.6 item 1). In Mirror mode an admin may write
+#: these and no other column. The sync never writes them, and no Zoho write
+#: reads them (D95: one store, two writers, fenced doors).
+#: ``max_dwell_days`` is here because UX-Q5 lets a Mirror admin set it (§19.4).
+#: Fence: ``tests/unit/test_crm_mirror_readonly.py`` names this map exactly, and
+#: its SQL scan refuses each of these names in ``crm_sync/`` and ``crm_sources/``.
+MIRROR_OVERLAY_COLUMNS: dict[str, frozenset[str]] = {
+    "crm_deal_statuses": frozenset({
+        "hidden", "ui_position", "ui_probability", "ui_color", "max_dwell_days",
+    }),
+    "crm_lead_statuses": frozenset({"hidden", "ui_position", "ui_color"}),
+    "crm_lost_reasons": frozenset({"hidden"}),
+}
+
 #: ``ext_source`` value → the name a person reads.
 SOURCE_LABELS: dict[str, str] = {"zoho": "Zoho"}
 
@@ -1596,7 +1724,8 @@ async def assert_writable(
 
     * a write to a row with ``ext_source`` set: 409 ``mirrored_record``;
     * a new lead, deal, contact or company: 409 ``mirror_mode_create``;
-    * a write to pipeline settings: 409 ``mirror_mode_settings``;
+    * a write to pipeline settings: 409 ``mirror_mode_settings``, except an
+      edit whose every column is in :data:`MIRROR_OVERLAY_COLUMNS` (CRM-C3);
     * an activity with ``ext_source`` NULL passes (§3.3).
 
     The sync's ``upsert_from_source`` is the only bypass. It never calls this.
@@ -1609,6 +1738,11 @@ async def assert_writable(
     if not guarded or not await is_mirror_mode(db, organization_id):
         return
     if table in MIRROR_SETTINGS_TABLES:
+        # The overlay is Metorite-only, so a Mirror admin may edit it. A create
+        # or a delete is never an overlay edit, and neither is an empty edit.
+        overlay = MIRROR_OVERLAY_COLUMNS.get(table, frozenset())
+        if fields and not creating and set(fields) <= overlay:
+            return
         raise _conflict(
             "mirror_mode_settings",
             "The stages, pipelines and lost reasons come from Zoho. Change them in Zoho.",
@@ -1914,6 +2048,90 @@ async def set_deal_contacts_from_source(
             {"d": deal_id, "c": str(contact_id), "role": role},
         )
     return len(contacts), int(removed.rowcount or 0)
+
+
+#: A status table → (the record table that points at it, the ``crm_views``
+#: entity whose ``status`` filter holds its ids). Two entries, written out, so
+#: the merge never names a table that a caller chose.
+STATUS_REFERENCES: dict[str, tuple[str, str]] = {
+    "crm_deal_statuses": ("crm_deals", "deals"),
+    "crm_lead_statuses": ("crm_leads", "leads"),
+}
+
+
+async def merge_status_from_source(
+    db: Any, table: str, keep_id: str, drop_id: str, name: str,
+) -> None:
+    """Fold one stage row into another, then give the kept row its new name.
+
+    The seventh door of the mirror write path (WS-53 CRM-C3, ``crm_platform.md``
+    §20.6 item 8). Only ``gateway/crm_sync/`` may name it
+    (``tests/unit/test_crm_upsert_from_source_fence.py``).
+
+    The case: a record pull reads a stage name that Zoho renamed before the
+    picklist read. It inserts a row under the new name with no ``ext_id``. The
+    picklist read then finds the row that holds the ``ext_id`` under the old
+    name. A rename would break the unique name of the org. So:
+
+    * *keep_id* is the row with the ``ext_id``. It holds the overlay, so it
+      stays.
+    * Each deal or lead, each pipeline membership and each saved view that
+      names *drop_id* moves to *keep_id*. A pipeline that holds both rows
+      keeps one membership, at the place of *keep_id*.
+    * ``crm_status_changes`` stores names, not ids, so it needs no change.
+    * The *drop_id* row goes, and the kept row takes *name*.
+
+    It takes no savepoint and catches nothing. The caller runs it inside one
+    transaction, and a failed statement fails the caller's step.
+    """
+    try:
+        records, view_entity = STATUS_REFERENCES[table]
+    except KeyError:
+        raise ValueError(
+            f"merge_status_from_source: {table!r} is not a status table "
+            f"(allowed: {sorted(STATUS_REFERENCES)})"
+        ) from None
+    keep, drop = str(keep_id), str(drop_id)
+    if keep == drop:
+        raise ValueError("merge_status_from_source: the two rows are one row")
+    ids = {"keep": keep, "drop": drop}
+    await db.execute(
+        text(
+            f"UPDATE {records} SET status_id = CAST(:keep AS uuid) "
+            "WHERE status_id = CAST(:drop AS uuid)"
+        ),
+        ids,
+    )
+    if table == "crm_deal_statuses":
+        await db.execute(
+            text(
+                "DELETE FROM crm_pipeline_stages ps "
+                "WHERE ps.status_id = CAST(:drop AS uuid) AND EXISTS ("
+                "SELECT 1 FROM crm_pipeline_stages k WHERE k.pipeline_id = "
+                "ps.pipeline_id AND k.status_id = CAST(:keep AS uuid))"
+            ),
+            ids,
+        )
+        await db.execute(
+            text(
+                "UPDATE crm_pipeline_stages SET status_id = CAST(:keep AS uuid) "
+                "WHERE status_id = CAST(:drop AS uuid)"
+            ),
+            ids,
+        )
+    await db.execute(
+        text(
+            "UPDATE crm_views SET filters = jsonb_set(filters, '{status}', "
+            "to_jsonb(CAST(:keep AS text))) "
+            "WHERE entity = :entity AND filters->>'status' = :drop"
+        ),
+        {**ids, "entity": view_entity},
+    )
+    await db.execute(text(f"DELETE FROM {table} WHERE id = CAST(:drop AS uuid)"), ids)
+    await db.execute(
+        text(f"UPDATE {table} SET name = :name WHERE id = CAST(:keep AS uuid)"),
+        {"keep": keep, "name": name},
+    )
 
 
 # ── The generic record store (WS-53 CRM-Q6a, migration 251) ────────────────
