@@ -3958,12 +3958,16 @@ async def run_agent_stream(
             # no_egress run gets none. WS-8c: the org is the gateway's
             # server-side stamp (never the payload), a native agent's servers
             # pass the run's grant check, and the finally closes them.
+            # H-299: an MCP tool that can change data waits for a member's
+            # card. A run with no member (no authority) or a batch run has
+            # nobody to answer it, so such a tool is refused there.
             for _a in agents if not _stream_no_egress else []:
                 await _inject_mcp_servers(
                     _a, agent_name,
                     organization_id=organization_id,
                     is_authorized=_authorizer,
                     opened=_mcp_opened,
+                    member_present=_authorizer is not None and not _batch_thread,
                 )
 
             # Per-session workspace override (Custom Apps builder sessions):

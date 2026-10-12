@@ -353,6 +353,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
     autosave.flush();
     replySessionRef.current += 1;
     replyHasFileRef.current = false;
+    // The pane stays mounted across a switch, so the AI round of the mail
+    // before ends here, and so does a delete or an archive of the open mail.
+    // Else its draft lands in the next reply (EM-T17).
+    ai.reset();
     if (!email) {
       setDetail(null);
       setThread(null);
@@ -678,6 +682,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setForwardUnsure(false);
     setAiOpen(false);
     setAiInstruction("");
+    // A new reply ends the AI round of the reply before (EM-T17).
+    ai.reset();
     // HTML-only mail (e.g. Outlook) has no bodyText — fall back to the snippet.
     const quoteSrc = src.bodyText || src.snippet || "";
     // The editable box starts with just the SIGNATURE (Gmail-style — it's part
@@ -1073,6 +1079,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // flush here would make two drafts (EM-G3c-2 review rounds 1 and 2).
     const drained = autosave.drain(session);
     setReplyMode(null);
+    // The inline reply closes, so its AI round ends (EM-T17).
+    ai.reset();
     // The draft of the reply goes to the full composer when the drain
     // settles. The composer opens now, so a New in that gap cannot take the
     // composer first (EM-G3c-3 item 6, EM-G3c-2-f8).
@@ -1577,6 +1585,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   // (EM-G3c-2 item 11).
                   autosave.flush();
                   setReplyMode(null);
+                  // The reply closes, so its AI round ends (EM-T17).
+                  ai.reset();
                 }}
               >
                 <AppIcon name="X" size={14} />
@@ -1742,6 +1752,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 revisions={ai.revisions}
                 activeRevision={ai.activeRevision}
                 elapsedMs={ai.elapsedMs}
+                notice={ai.notice}
+                onStop={ai.stop}
                 onRun={runAiDraft}
                 onRestore={(id) => ai.restore(id)}
                 onClose={() => setAiOpen(false)}

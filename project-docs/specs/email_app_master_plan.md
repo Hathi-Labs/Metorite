@@ -30,7 +30,7 @@
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
-> 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs.
+> 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -636,7 +636,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
 | **EM-T15** | 🟢 AGENT-SAFE | ✅ **MERGED #759 (`cc0e5ba4d`, 2026-10-09).** **No member chooses the tier of an email AI task (D-EM-61).** The three model rows leave the AI settings. The backend reads no stored choice, and the agent tool loses its two tier arguments. No migration and no flag. The columns and the request fields stay for one release (R6). See §10.4.16. | See §10.4.16. |
 | **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09 (D-EM-62).** ✅ PR-0 MERGED (#783). ✅ **PR-A MERGED (#793), dark behind `EMAIL_TRIAGE_ONCE_PER_CYCLE`.** 🔨 **PR-B BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-prb`), dark behind `EMAIL_STATUS_SKIPS_RULE_MATCH`.** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
-| **EM-T17** | 🟢 AGENT-SAFE build · `enforcement-flip` for `EMAIL_CONTEXT_SELECT` and `email.context_select` on a live box · 🔴 OWNER-GATE if the `decide` state ever holds a body | 📝 **SPECIFIED 2026-10-12 (D-EM-63), not built.** **The AI context of a conversation is chosen, not cut, and drafting never hangs.** Seven PRs: PR-A, PR-A1 and PR-A2 (no stall, no flag), PR-B (the selector seam and the fixed fallback), PR-C (`decide` chooses the earlier bodies), PR-D (the model asks for more) and PR-E (insights across inboxes). No migration. See §17. | See §17.8. |
+| **EM-T17** | 🟢 AGENT-SAFE build · `enforcement-flip` for `EMAIL_CONTEXT_SELECT` and `email.context_select` on a live box · 🔴 OWNER-GATE if the `decide` state ever holds a body | 📝 **SPECIFIED 2026-10-12 (D-EM-63).** 🔨 **PR-A built, not merged** (branch `email-stall-pra`, no flag, no migration). **The AI context of a conversation is chosen, not cut, and drafting never hangs.** Seven PRs: PR-A, PR-A1 and PR-A2 (no stall, no flag), PR-B (the selector seam and the fixed fallback), PR-C (`decide` chooses the earlier bodies), PR-D (the model asks for more) and PR-E (insights across inboxes). No migration. See §17. | See §17.8. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -15651,10 +15651,17 @@ or replying to messages but also when the email AI assistant generates insights 
 inboxes, intelligently incorporating relevant body content.
 ```
 
-**Status.** 📝 SPECIFIED 2026-10-12, not built. The spec audit of 2026-10-12 returned
+**Status.** 📝 SPECIFIED 2026-10-12. 🔨 PR-A is built, not merged (branch `email-stall-pra`).
+The spec audit of 2026-10-12 returned
 GO-NARROWED, and its edits D1 to D14 are in this section. The re-audit of 2026-10-12
 returned GO-NARROWED, and its edits E1 to E6 are in this section too. Slice **EM-T17** has
 seven PRs (§17.7).
+
+✅ **PR-A2 is MERGED** as #893 (`0bd098f18`, 2026-10-12). The composer
+has a Stop button and the bound `CLIENT_TOTAL_MS`. An abort never falls back to
+`composeAssist`, and a typed error keeps the preview. The reply path sends the `context`
+`done` event (A7). The fences are `useDraftSession.test.ts` and
+`tests/unit/test_email_draft_no_stall.py`.
 
 No migration. Each behaviour that changes the context of a model ships dark. The stall bounds
 of PR-A and PR-A2 ship with no flag, because they bound a live defect (as EM-T9 did).
@@ -16315,6 +16322,10 @@ than the base finds. After each merge, check the box: the deployed SHA, and one
 - **`shadow` costs one more call.** In `shadow`, each long thread pays one `decide` call
   and keeps the fallback. Run `shadow` for one week at most. `bound_s` on `shadow` keeps the
   added wait at `CONTEXT_DECIDE_BOUND_S` (4 s) or less.
+- **Follow-up of PR-A2: an edit on a streamed preview is lost on Stop.** Stop gives back the
+  text that the member had before the round, so an edit on top of the preview goes. The fix
+  compares the body with the last write of the round, and that needs a body getter in each
+  composer. It is not built.
 
 ### 17.12 Owner questions
 
