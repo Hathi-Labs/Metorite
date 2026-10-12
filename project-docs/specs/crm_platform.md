@@ -27,7 +27,7 @@
 > CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
 > (2026-10-12, migration 247). The other slices are not built yet.
 >
-> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12).
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -1164,7 +1164,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q5** | Data that the mirror loses: converted leads (`converted=both`), Zoho Tasks, and deal contact roles | P0 |
 | **CRM-Q6** | The generic record store and its views. Products and Quotes first, then each custom module | P0 |
 | **CRM-Q7** | The AI mapping assistant and CRM settings → Field map | P0 |
-| **CRM-Q8** | Filters on pipeline, stage, owner, source, dates and custom picklists. Saved views (`crm_views`) | P0 |
+| **CRM-Q8** | ✅ built 2026-10-12. Built as: migration 250 adds `crm_views`. The list routes and `GET /crm/pipeline` take `owner` (or `me`), `source`, the created, updated and close date ranges, and `custom.<key>=<value>` or `custom.<key>.in=a,b`. A custom key that `crm_field_defs` does not list gives 422. The export takes the same parameters. `GET`, `POST`, `PATCH` and `DELETE /crm/views` save a view of the filters, sort, columns, layout and pipeline. A view is private to its owner, and only an admin shares it. A view works in Mirror mode. Saved views nest under each entity in the rail, `?view=` opens one, and the column choice moves into the view while one is active. Filters on a board and a list use one filter bar. This also builds CRM-S2 | P0 |
 | **CRM-Q9** | Sync health: the Zoho count against ours, skipped records, unsupported modules, last error | P0 |
 | **CRM-Q10** | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
 | **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
@@ -1177,7 +1177,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 - The record page draws each custom field from its definition: the label, the order, and only visible fields. The rules for each type are in `src/app/crm/lib/fields.ts`. A key with no definition keeps its humanised key. In Mirror mode the fields stay read only.
 - A URL becomes a link only for an http or https address, with `rel="noopener noreferrer"`. Any other value stays text.
 - The Fields card on CRM settings lists the fields of each entity. It says "Fields come from Zoho." in Mirror mode and "Field editing comes later." in Native mode. It has no editor. CRM-S6 builds the editor.
-- Each list has a Columns control. A member picks up to 5 custom fields. The browser keeps the choice for each entity in local storage. Saved views on the server stay with CRM-Q8.
+- Each list has a Columns control. A member picks up to 5 custom fields. The browser keeps the choice for each entity in local storage. While a saved view is active, the view holds the choice (CRM-Q8).
 
 **CRM-Q3 built as (2026-10-12).**
 
