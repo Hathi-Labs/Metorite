@@ -16,6 +16,7 @@ from acb_auth import UserContext, get_current_user
 from acb_llm.context import StreamTimeout
 from acb_llm.voice import voice_prompt
 from email_ingestion.llm_cap import automation_job, llm_slot
+from email_ingestion.persist import TRUNCATION_MARKER
 from email_ingestion.providers.base import (
     ProviderAttachmentFailed,
     ProviderMailTooLarge,
@@ -33,6 +34,7 @@ from gateway.routes.email.automation.identity import (
     sender_scope,
 )
 from gateway.routes.email.core import (
+    BODY_FETCH_TIMEOUT_S,
     BodyFetch,
     _account_scope,
     _assert_account_owner,
@@ -2693,13 +2695,21 @@ async def _html_to_keep(
     the draft HTML comes from Gmail through ``get_message_body``. The read
     runs inside the session of the route. A failed read answers ``lost``, so
     the save sends the text only. A read with no HTML answers ``none``. The
-    log names the class of the error only, never a subject or an address."""
+    log names the class of the error only, never a subject or an address.
+
+    Review round 1: the sync cuts a large body and ends it with
+    ``TRUNCATION_MARKER``. A cut row HTML counts as absent, or the save
+    would write the cut HTML back into Gmail and drop each cid after the
+    cut. The read waits ``BODY_FETCH_TIMEOUT_S`` at most, and a timeout
+    answers ``lost``."""
     row = (await db.execute(text(_DRAFT_HTML_SQL),
                             {"id": draft_id, "aid": account_id})).fetchone()
-    if row is not None and (row.body_html or "").strip():
-        return row.body_html, HTML_KEPT
+    stored = (row.body_html or "") if row is not None else ""
+    if stored.strip() and not stored.endswith(TRUNCATION_MARKER):
+        return stored, HTML_KEPT
     try:
-        message = await provider.get_message_body(provider_message_id)
+        message = await asyncio.wait_for(
+            provider.get_message_body(provider_message_id), BODY_FETCH_TIMEOUT_S)
     except Exception as exc:  # a failed read never fails the save
         _log.warning("email.draft_html_read_failed",
                      error=type(exc).__name__)

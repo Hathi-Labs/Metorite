@@ -28,6 +28,7 @@ Run (real Postgres)::
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -41,6 +42,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_auth.roles import UserContext, UserRole
+from email_ingestion.persist import TRUNCATION_MARKER
 from email_ingestion.providers.gmail import GmailProvider
 from email_ingestion.providers.outlook import OutlookProvider
 from gateway.routes.email.automation import drafting
@@ -261,6 +263,48 @@ async def test_a_failed_html_read_saves_text_and_answers_lost(gmail, monkeypatch
     assert saved["html"] == drafting.HTML_LOST == "lost"
     assert _shape(_sent(m)) == "text/plain"
     assert _row(m.admin, local).body_text.startswith(TEXT)
+
+
+async def test_a_cut_row_html_reads_gmail(gmail):
+    """Review round 1, P2. The sync cuts a large body and ends it with
+    ``TRUNCATION_MARKER``. Such a row HTML counts as absent, so the save
+    reads the whole HTML from Gmail. The cut HTML never goes back into
+    Gmail, and the image after the cut stays."""
+    m = gmail
+    cut = STORED_HTML[:20] + TRUNCATION_MARKER
+    local = _gmail_draft(m, cut)
+
+    saved = await _save(m, draft_id=local, to=[RAVI], subject="New layout",
+                        body=TEXT, keep_html=True)
+
+    assert saved["html"] == "kept"
+    assert _full_reads(m.fake, "m-c") == 1
+    msg = _sent(m)
+    assert _shape(msg) == _RELATED
+    html = msg.get_payload()[0].get_payload()[1].get_payload(decode=True).decode()
+    assert TRUNCATION_MARKER not in html
+    assert f'src="cid:{CID}"' in html
+
+
+async def test_a_slow_html_read_answers_lost(gmail, monkeypatch):
+    """Review round 1, P3. The Gmail read waits ``BODY_FETCH_TIMEOUT_S`` at
+    most. A read past it answers ``lost``, and the save sends the text."""
+    m = gmail
+    local = _gmail_draft(m, None)
+    real_read = GmailProvider.get_message_body
+
+    async def _slow(self: GmailProvider, mid: str) -> Any:
+        await asyncio.sleep(1.0)
+        return await real_read(self, mid)
+
+    monkeypatch.setattr(GmailProvider, "get_message_body", _slow)
+    monkeypatch.setattr(drafting, "BODY_FETCH_TIMEOUT_S", 0.05)
+
+    saved = await _save(m, draft_id=local, to=[RAVI], subject="New layout",
+                        body=TEXT, keep_html=True)
+
+    assert saved["html"] == "lost"
+    assert _shape(_sent(m)) == "text/plain"
 
 
 async def test_a_keep_html_save_with_no_html_anywhere_answers_none(gmail):

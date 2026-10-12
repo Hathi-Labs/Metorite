@@ -797,8 +797,10 @@ def _inline_parts(part: Message) -> Iterator[Message]:
         yield part
 
 
-#: A ``cid:`` reference in HTML, up to the end of its attribute value.
-_CID_REFERENCE = re.compile(r"""cid:([^"'\s<>)]+)""", re.IGNORECASE)
+#: A ``cid:`` reference in HTML, up to the end of its attribute value. A
+#: comma ends it too, so each entry of ``srcset="cid:a,cid:b 2x"`` counts. A
+#: Content-ID holds no comma, and a cid URL encodes one as ``%2C``.
+_CID_REFERENCE = re.compile(r"""cid:([^"'\s<>),]+)""", re.IGNORECASE)
 
 
 def _named_cids(body_html: str) -> set[str]:

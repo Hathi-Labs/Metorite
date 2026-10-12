@@ -1203,6 +1203,30 @@ async def test_an_inline_part_goes_back_only_when_the_html_names_it(
     assert _attached(msg) == []
 
 
+@pytest.mark.parametrize("html, named", [
+    ('<img srcset="cid:a,cid:b 2x">', {"a", "b"}),
+    ('<img srcset="cid:a 1x, cid:B 2x">', {"a", "b"}),
+    ('<img src="cid:a%40x.test">', {"a@x.test"}),
+], ids=["srcset-no-space", "srcset-with-space", "escaped"])
+def test_each_cid_of_a_srcset_counts(html: str, named: set[str]) -> None:
+    """Review round 1, P3. A comma ends a cid, so each entry of a
+    ``srcset`` names its own cid."""
+    assert gmail_mod._named_cids(html) == named
+
+
+async def test_a_cid_named_in_a_srcset_keeps_its_inline_image(
+        fake: _Gmail) -> None:
+    """Review round 1, P3. The HTML names the image in the first entry of a
+    ``srcset`` only. The update still puts the image back."""
+    fake.add_raw_draft("r-c", "m-c", _gmail_web_draft(), thread="t-c")
+
+    await _provider().update_draft(
+        "m-c", to=[RAVI], body_text="v2",
+        body_html=f'<p><img srcset="cid:{CID},cid:other 2x"></p>')
+
+    assert _shape(_decode(fake.saved[-1]["message"]["raw"])) == _RELATED
+
+
 # ── R8: the local draft row (items 6 and 8, E-A2, E-A5) ─────────────────────
 
 
