@@ -940,7 +940,12 @@ uv run pytest tests/unit/test_crm_sources_no_global_creds.py tests/unit/test_crm
 # The adaptive mirror (§18.7): CRM-Q6a, CRM-Q6b, CRM-Q7a and CRM-Q7b
 uv run pytest tests/unit/test_crm_module_records_r8.py tests/unit/test_crm_modules_routes_r8.py \
   tests/unit/test_crm_field_rules_r8.py tests/unit/test_crm_field_map_ai.py \
-  tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_internal_ai_is_routed.py
+  tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_internal_ai_is_routed.py \
+  tests/unit/test_crm_mirror_readonly.py tests/unit/test_tenancy_boundary.py \
+  tests/unit/test_tenant_coverage.py tests/unit/test_org_purge_tenant.py \
+  tests/unit/test_crm_sync_health_r8.py
+uv run ruff check apps/services/gateway/gateway/routes/crm apps/services/gateway/gateway/crm_sync \
+  apps/services/gateway/gateway/crm_sources
 
 # The shell
 uv run pytest tests/unit/test_shell_intent.py
@@ -1229,7 +1234,7 @@ section is that contract. It splits the two tickets into four slices.
 | Slice | Gate | Builds | Waits for |
 |---|---|---|---|
 | **CRM-Q6a** | AGENT-SAFE | The generic record store, its door, discovery of the other modules, the new scopes, and the sync. No UI and no new route | CRM-Q5 merged |
-| **CRM-Q6b** | AGENT-SAFE | The read-only routes, the rail rows and the generic record page | CRM-Q6a and CRM-Q8 merged |
+| **CRM-Q6b** | AGENT-SAFE | The read-only routes, the rail rows and the generic record page | CRM-Q6a merged. Start it after CRM-Q8 merges too, because both edit `CrmRail.tsx` and `page.tsx`. That is a merge order, not a contract |
 | **CRM-Q7a** | AGENT-SAFE | The rule table, the Field map card, approve and reject, and the sync that applies approved rules. No model call | CRM-Q6a merged |
 | **CRM-Q7b** | AGENT-SAFE | The proposer: one routed model call over metadata | CRM-Q7a merged |
 
@@ -1244,11 +1249,11 @@ that has no table of its own.
 | Column | Type | Note |
 |---|---|---|
 | `id` | UUID PK | |
-| `organization_id` | UUID NOT NULL | Inline FK to `organizations` with CASCADE, the shape of migration 247 |
+| `organization_id` | UUID NOT NULL | Inline `REFERENCES organization (id) ON DELETE CASCADE`, the shape of migration 247 |
 | `module` | TEXT NOT NULL | The provider's module API name, for example `Products` or `Install_Base` |
 | `ext_source` | TEXT NOT NULL | `zoho` |
 | `ext_id` | TEXT NOT NULL | The provider's record id |
-| `name` | TEXT | The display name, from the module's main name field |
+| `name` | TEXT | The value of the field that has `display_field: true` in the module's field definitions. With no such field, `name` is NULL |
 | `owner_email` | TEXT | The owner, mapped the way `map_record` maps it for the known modules |
 | `fields` | JSONB NOT NULL DEFAULT `'{}'` | Each field value, keyed the way `custom` is keyed |
 | `ext_url` | TEXT | The deep link (CRM-Q1) |
@@ -1280,7 +1285,13 @@ mirrors a module when all of these are true:
 - `generated_type` is `default` or `custom`. A `linking` module and a subform
   are never mirrored.
 - The module is not one of the known modules of §18.3 step 2.
+- The module is one of the ten standard modules below, or its
+  `generated_type` is `custom`. No other module is mirrored.
 - The connection has the module's read scope.
+
+Discovery sets `mirrored: true` on the row of each selected module in the
+profile. Today `_module_rows` in `mapping.py` sets it from `MIRRORED_MODULES`
+only, so CRM-Q6a widens that rule.
 
 The order is `Products`, `Quotes`, `Sales_Orders`, `Purchase_Orders`,
 `Invoices`, `Vendors`, `Price_Books`, `Cases`, `Solutions` and `Campaigns`. The custom modules
@@ -1288,8 +1299,10 @@ follow, in alphabetical order. The sync mirrors 25 modules at most. Sync health
 lists each other module as "not mirrored".
 
 **The scopes.** CRM-Q6a adds one read scope for each standard module above to
-`ZOHO_READ_SCOPES` (`routes/crm/connection.py`). It also adds
-`ZohoCRM.modules.custom.READ`.
+`ZOHO_READ_SCOPES` (`routes/crm/connection.py`). The name is
+`ZohoCRM.modules.<api_name>.READ`, with the API name in lower case and with no
+underscore. An example is `ZohoCRM.modules.salesorders.READ`. A custom module
+uses `ZohoCRM.modules.custom.READ`.
 
 ⚠️ Before the build, check each scope name against Zoho's published scope
 list. Zoho refuses the WHOLE consent for one unknown scope, and then no org can
@@ -1315,6 +1328,8 @@ connect.
   with the CRM-Q5 rule. A plain HTTP 401 still fails the run.
 - Each module reports under its own key, `module:<ApiName>`, in
   `crm_sync_runs.counts`.
+- The estimate also counts each mirrored module under `module:<ApiName>`,
+  because Sync health reads `zoho_count` from the estimate.
 - Sync health computes `ours` for each module key from `crm_module_records`.
 
 **Done when.** One R8 suite, `tests/unit/test_crm_module_records_r8.py`, shows
@@ -1372,11 +1387,12 @@ entity that an admin decided, or that the assistant proposed.
 | Column | Type | Note |
 |---|---|---|
 | `id` | UUID PK | |
-| `organization_id` | UUID NOT NULL | Inline FK with CASCADE |
+| `organization_id` | UUID NOT NULL | Inline `REFERENCES organization (id) ON DELETE CASCADE` |
 | `ext_source` | TEXT NOT NULL | `zoho` |
 | `entity` | TEXT NOT NULL | `lead`, `contact`, `company` or `deal` |
 | `field_api_name` | TEXT NOT NULL | The provider's field API name |
-| `field_type` | TEXT NOT NULL | The provider's type when the rule was made |
+| `field_type` | TEXT NOT NULL | The `crm_field_defs.type` word when the rule was made, for example `select` |
+| `profile_version` | INT NOT NULL | The `crm_source_profiles.version` that the rule was made from |
 | `target_column` | TEXT | The column the value goes to |
 | `status` | TEXT NOT NULL | `proposed`, `approved`, `rejected` or `stale` |
 | `proposed_by` | TEXT NOT NULL | `ai` or `admin` |
@@ -1390,20 +1406,48 @@ SECURITY, as for `crm_module_records`. CRM-Q7 covers the four known entities
 only. A generic module keeps every field in `fields`.
 
 **The legal targets.** `FIELD_RULE_TARGETS` in `crm_sources/zoho/mapping.py`
-lists, for each entity, the columns that the fixed map never writes, without the
-system columns. Each target has a type. A rule is legal only when its target is
-in that list and the types agree:
+holds exactly the columns of the two tables below, and no other column.
 
-| Provider type | Column type |
+The first kind is a **free column**, which the fixed map never writes:
+
+| Entity | Column | Type |
+|---|---|---|
+| company | `linkedin_url` | TEXT |
+| contact | `linkedin_url` | TEXT |
+| lead | `lost_note` | TEXT |
+| deal | `lost_note` | TEXT |
+
+The second kind is a **fixed column that the org leaves empty**. The fixed map
+fills each one from one standard Zoho field, shown in brackets. A rule may
+target such a column only when the org's latest profile has no row for that
+standard field in `crm_field_defs`, or has the row with `visible = false`.
+While that rule is approved, the rule's value wins on that column.
+
+| Entity | Column (standard Zoho field) | Type |
+|---|---|---|
+| company | `website` (Website), `industry` (Industry), `phone` (Phone), `email` (Email), `description` (Description) | TEXT |
+| company | `no_of_employees` (Employees) | INT |
+| company | `annual_revenue` (Annual_Revenue) | NUMERIC |
+| contact | `email` (Email), `phone` (Phone), `mobile` (Mobile), `title` (Title), `description` (Description) | TEXT |
+| lead | `website` (Website), `industry` (Industry), `email` (Email), `phone` (Phone), `mobile` (Mobile), `lead_source` (Lead_Source), `organization_name` (Company), `description` (Description) | TEXT |
+| lead | `no_of_employees` (No_of_Employees) | INT |
+| lead | `annual_revenue` (Annual_Revenue) | NUMERIC |
+| deal | `next_step` (Next_Step), `description` (Description) | TEXT |
+| deal | `expected_close_date` (Closing_Date) | DATE |
+| deal | `probability` (Probability) | INT |
+
+A rule is legal only when the `field_type` agrees with the column type:
+
+| `field_type` | Column type |
 |---|---|
-| text, textarea, picklist, email, phone, website | TEXT |
-| integer, double, currency, percent | NUMERIC or INT |
-| date | DATE |
-| datetime | TIMESTAMPTZ |
-| boolean | BOOLEAN |
+| `text`, `textarea`, `email`, `phone`, `url`, `select` | TEXT |
+| `number`, `currency` | NUMERIC or INT |
+| `date` | DATE |
+| `datetime` | TIMESTAMPTZ |
+| `multiselect`, `lookup` | None. A rule cannot target a column |
 
-The routes refuse any other rule with 422. So the fixed rules always win, and
-no rule can overwrite a column that the fixed map fills.
+The routes refuse any other rule with 422. So a rule never overwrites a value
+that the fixed map takes from a field that the org uses.
 
 **The Field map card.** It is in CRM settings, for an admin, in Mirror mode
 only.
@@ -1419,23 +1463,38 @@ only.
 
 - The sync's `map_record` applies each approved rule after the fixed rules.
   The value also stays in `custom`, so a later reject loses nothing.
-- On approval, a one-time backfill copies `custom ->> field_api_name` into the
-  column for the existing rows. It reads no Zoho data, so it costs no credit.
-  It goes through a new fenced door, `apply_field_rule_from_source`, in batches
-  of 500 rows.
-- On reject of an approved rule, the same door sets the column back to NULL on
-  the mirrored rows.
+- The routes write no CRM record. Approve and reject only set `status`.
+- The next sync run, in `gateway/crm_sync/`, does the backfill before it reads
+  Zoho. It copies `custom ->> field_api_name` into the column for the existing
+  rows, in batches of 500. It reads no Zoho data, so it costs no credit.
+- After a reject of an approved rule, the next run sets the column back to NULL
+  on the mirrored rows.
+- Both writes go through a new door, `apply_field_rule_from_source`, in
+  `routes/crm/core.py`. Its name joins `NAMES` in
+  `tests/unit/test_crm_upsert_from_source_fence.py`.
+- `map_record` and the backfill coerce each value with the helpers of
+  `mapping.py`: `text_value`, `number`, `integer`, `day` and `instant`. A value
+  that does not coerce writes NULL.
 
 **When the profile changes.** Discovery checks each approved rule against the
-new profile version. A rule goes `stale` when its field is gone, or when the
-new type disagrees with the target. The sync stops applying a stale rule. The
-Field map shows it, and an admin decides again.
+new profile version. A rule goes `stale` in three cases:
+
+- its field is gone.
+- the new `field_type` disagrees with the target.
+- its target is a fixed column, and the standard field of that column is back
+  and visible.
+
+The sync stops applying a stale rule. The Field map shows it, and an admin
+decides again.
 
 **Done when.** `tests/unit/test_crm_field_rules_r8.py` shows each of these:
 
 1. An approved rule makes the next sync write the column.
-2. The approval backfills the existing rows, with no Zoho call.
-3. A rule on a column of the fixed map gives 422. A type mismatch gives 422.
+2. The next run after the approval backfills the existing rows, with no Zoho
+   call. A value that does not coerce gives NULL, and the run still succeeds.
+3. A rule on a fixed column whose standard field the org uses gives 422. A type
+   mismatch gives 422. A rule on the same column, with the standard field gone
+   from the profile, is legal.
 4. A member who is not an admin gets 403.
 5. Org B sees none of org A's rules.
 6. A type change in the profile makes the rule `stale`, and the sync stops
