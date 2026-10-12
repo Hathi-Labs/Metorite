@@ -22,12 +22,19 @@ The facts that the tasks lean on:
 Today is the member's own date in :data:`TIMEZONE`. Since WS-46 P7 the tools
 take today from ``GET /projects/my/today``, which the stub answers with this
 zone and this date. In the evening in India, that date is a day ahead of UTC.
+
+There is ONE clock: :func:`member_today` reads it once, and :func:`load`
+stamps the result on the dataset. The scripted steps, the stub and the
+checkers all read ``Dataset.today`` and never the clock. So a caller loads
+the dataset ONCE and hands that one object to every part of a run. Two
+loads on either side of midnight in India (18:30 UTC) disagree about the
+day, and a check then grades one day's steps against the other day.
 """
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 #: A fixed namespace, so every id is the same on every run.
@@ -154,10 +161,23 @@ def _lanes(project: str, *rows: tuple[str, str]) -> tuple[Lane, ...]:
     return tuple(Lane(ident("lane", project, name), name, category) for name, category in rows)
 
 
+def _now() -> datetime:
+    """The one clock of the eval. A test replaces it to fix the instant."""
+    return datetime.now(UTC)
+
+
+def member_today(now: datetime | None = None) -> date:
+    """The member's date at *now* (default: the clock), in :data:`TIMEZONE`.
+
+    The zone is always :data:`TIMEZONE`. It is never UTC and never the zone
+    of the machine, because ``GET /projects/my/today`` answers that zone.
+    """
+    return (now or _now()).astimezone(ZoneInfo(TIMEZONE)).date()
+
+
 def load(today: date | None = None) -> Dataset:
-    """The dataset for *today* (default: the member's date now, in
-    :data:`TIMEZONE`)."""
-    day = today or datetime.now(ZoneInfo(TIMEZONE)).date()
+    """The dataset for *today* (default: :func:`member_today`)."""
+    day = today or member_today()
 
     def due(offset: int | None) -> date | None:
         return None if offset is None else day + timedelta(days=offset)

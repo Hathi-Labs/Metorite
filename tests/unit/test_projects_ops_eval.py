@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,11 @@ from evals.projects_ops import stub_api
 from evals.projects_ops import tasks as T
 from evals.projects_ops.scripted import tool
 
+#: The ONE dataset of this module, so the ONE "today". Every harness takes it,
+#: and no fixture loads a second one. Collection can end before midnight in
+#: India (18:30 UTC) and a test can run after it. A second load then answers
+#: the next day, and PO-2 grades one day's steps against the other day.
+#: CI failed that way on 2026-10-12 at 18:41 UTC.
 DS = D.load()
 LAUNCH = DS.project("Launch")
 
@@ -89,11 +94,15 @@ def test_the_stub_lists_the_overdue_tasks_of_the_dataset() -> None:
 def test_a_bulk_write_changes_each_task_and_records_the_body() -> None:
     stub = stub_api.OpsStub(DS)
     ids = [DS.task(2).id, DS.task(3).id]
+    # Relative to today and on no task, so the write changes both on any day.
+    # A fixed date was the due date of #3 on 2026-10-13 and of #2 on 10-15.
+    due = (DS.today + timedelta(days=30)).isoformat()
+    assert all(t.due is None or t.due.isoformat() != due for t in DS.tasks)
     status, body = stub.handle("POST", "/projects/tasks/bulk", T.MEMBER,
-                               {"task_ids": ids, "patch": {"due_at": "2026-10-12"}})
+                               {"task_ids": ids, "patch": {"due_at": due}})
     assert status == 200 and body["applied"] == 2
-    assert stub.tasks[ids[0]]["due_at"] == "2026-10-12"
-    assert stub.requests[-1].body == {"task_ids": ids, "patch": {"due_at": "2026-10-12"}}
+    assert stub.tasks[ids[0]]["due_at"] == due
+    assert stub.requests[-1].body == {"task_ids": ids, "patch": {"due_at": due}}
 
 
 @pytest.mark.parametrize("today, monday", [
@@ -131,7 +140,7 @@ def test_the_task_selector() -> None:
 def harness(tmp_path: Path):
     from orchestrator import executor
 
-    with R.make_harness(D.load(), DS.organization_id, tmp_path / "state",
+    with R.make_harness(DS, DS.organization_id, tmp_path / "state",
                         tier="tier-balanced", scripted_mode=True, covered=False) as h:
         yield h
     executor._RUN_QUEUES.clear()
@@ -142,7 +151,7 @@ def harness(tmp_path: Path):
 def covered_harness(tmp_path: Path):
     from orchestrator import executor
 
-    with R.make_harness(D.load(), DS.organization_id, tmp_path / "state",
+    with R.make_harness(DS, DS.organization_id, tmp_path / "state",
                         tier="tier-balanced", scripted_mode=True, covered=True) as h:
         yield h
     executor._RUN_QUEUES.clear()
@@ -244,6 +253,51 @@ def test_po2_an_answer_that_names_another_day_fails(harness: R.OpsHarness) -> No
     other = D.weekday_name(DS.today + timedelta(days=1))
     steps = [*S.steps_for("PO-2", DS)[:-1], ("text", f"It repeats every week on {other}.")]
     assert _failed(_run(harness, "PO-2", steps)) == {"answer_names_the_day"}
+
+
+# ── the one clock: today is the member's date in Asia/Kolkata, read once ──
+
+#: 18:45 UTC is 00:15 the next day in India. 06:00 UTC is the same day.
+_AFTER_IST_MIDNIGHT = time(18, 45, tzinfo=UTC)
+_BEFORE_IST_MIDNIGHT = time(6, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("instant, today", [
+    (datetime(2026, 10, 12, 18, 45, tzinfo=UTC), date(2026, 10, 13)),  # the CI failure
+    (datetime(2026, 10, 12, 18, 29, tzinfo=UTC), date(2026, 10, 12)),
+    (datetime(2026, 10, 12, 6, 0, tzinfo=UTC), date(2026, 10, 12)),
+])
+def test_today_is_the_members_date_in_india_not_utc(instant: datetime, today: date) -> None:
+    assert D.member_today(instant) == today
+    assert D.load(D.member_today(instant)).today == today
+
+
+def test_load_reads_the_one_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(D, "_now", lambda: datetime(2026, 10, 12, 18, 45, tzinfo=UTC))
+    assert D.load().today == date(2026, 10, 13)
+
+
+@pytest.fixture(params=[(_AFTER_IST_MIDNIGHT, 1), (_BEFORE_IST_MIDNIGHT, 0)],
+                ids=["after-ist-midnight", "before-ist-midnight"])
+def clock_moved_on(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Move the clock to 18:45 or 06:00 UTC on DS's date, BEFORE the harness
+    fixture runs. At 18:45 the member's date is already the next day."""
+    at, days_ahead = request.param
+    instant = datetime.combine(DS.today, at)
+    monkeypatch.setattr(D, "_now", lambda: instant)
+    assert D.member_today() == DS.today + timedelta(days=days_ahead)
+
+
+def test_a_harness_built_after_midnight_keeps_the_modules_today(
+    clock_moved_on: None, harness: R.OpsHarness,
+) -> None:
+    # `clock_moved_on` runs first, so the harness is built at the moved clock.
+    # The harness must still grade against DS: a second load is the bug.
+    assert harness.dataset is DS
+    other = D.weekday_name(DS.today + timedelta(days=1))
+    steps = [*S.steps_for("PO-2", DS)[:-1], ("text", f"It repeats every week on {other}.")]
+    assert _failed(_run(harness, "PO-2", steps)) == {"answer_names_the_day"}
+    assert _failed(_run(harness, "PO-2", S.steps_for("PO-2", DS))) == set()
 
 
 def _po4(ids: list[str], due: str, answer: str = "Moved.") -> list[Any]:
