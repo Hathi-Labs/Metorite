@@ -7,6 +7,7 @@
 // Spec: project-docs/specs/crm_app.md §5 surface 1.
 
 import type { CrmMode } from "./connect";
+import { isRetired, visibleLanes } from "./emptyStages";
 import { stageAgeDays } from "./format";
 import type { Deal, Lead, Pipeline, PipelineLane, Status, StatusType } from "./types";
 
@@ -95,15 +96,35 @@ function comparePlaces(
 }
 
 /**
+ * The admin order of a Mirror kind (WS-53 CRM-C3, §20.6 item 12). The key is
+ * `(ui_position IS NULL, ui_position, source position)`: each ordered row by
+ * its `ui_position`, then each row with none, in Zoho order. The order route
+ * writes `ui_position` on every row, so only a stage that Zoho adds later has
+ * none, and it goes to the end of its group.
+ */
+function compareAdminOrder(a: Status, b: Status): number {
+  const left = typeof a.ui_position === "number" ? a.ui_position : null;
+  const right = typeof b.ui_position === "number" ? b.ui_position : null;
+  if (left === null && right !== null) return 1;
+  if (left !== null && right === null) return -1;
+  if (left !== null && right !== null && left !== right) return left - right;
+  return (a.source_position ?? a.position) - (b.source_position ?? b.position);
+}
+
+/**
  * THE order of the Deals board columns (owner decision, 2026-10-12). This is
  * the one place that decides it, and the mode is a parameter.
  *
  * The groups, in both modes: open and ongoing stages, then `on_hold`, then
- * won, then lost at the far end.
+ * won, then lost at the far end. A hidden stage, and one that Zoho no longer
+ * lists, goes to the end of its group (CRM-C3).
  *
- * - **Mirror mode.** Inside the open group, `probability` from low to high.
- *   A tie, and every other group, goes to the place in the chosen pipeline,
- *   then to the global `position`.
+ * - **Mirror mode, after an admin order** (`admin_order`). The admin order
+ *   key of `compareAdminOrder`, in each group. The pipeline place does not
+ *   apply: a pipeline is an ordered subset of the one stage list.
+ * - **Mirror mode, no admin order.** Inside the open group, the effective
+ *   `probability` from low to high. A tie, and every other group, goes to the
+ *   place in the chosen pipeline, then to the global `position`.
  * - **Native mode, and a mode not yet known.** The admin's stage order, the
  *   global `position`, then the pipeline place. Probability never reorders a
  *   Native board: a new Native stage has probability 0 and would jump first.
@@ -117,10 +138,16 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
   mode: CrmMode
 ): T[] {
   const mirror = mode === "mirror";
+  const adminOrder = mirror && lanes.some((lane) => lane.status.admin_order);
   return [...lanes].sort((a, b) => {
     const group = (LANE_GROUP[a.status.type] ?? 0) - (LANE_GROUP[b.status.type] ?? 0);
     if (group !== 0) return group;
-    if (mirror) {
+    const retired = Number(isRetired(a.status)) - Number(isRetired(b.status));
+    if (retired !== 0) return retired;
+    if (adminOrder) {
+      const key = compareAdminOrder(a.status, b.status);
+      if (key !== 0) return key;
+    } else if (mirror) {
       if ((LANE_GROUP[a.status.type] ?? 0) === 0) {
         const odds = (a.status.probability ?? 0) - (b.status.probability ?? 0);
         if (odds !== 0) return odds;
@@ -172,12 +199,16 @@ export type LeadLane = Omit<PipelineLane, "rows"> & {
  *
  * `total` is the count of the WHOLE status. `rows` is one page of it, as on the
  * deals board. A status with no page reads as an empty lane.
+ *
+ * CRM-C3: the Leads board takes the key of `orderLanes`. A lead status has no
+ * probability, so the effective `position` decides, and the gateway already
+ * folds the admin order into it. A hidden status shows only with leads in it.
  */
 export function toLeadLanes(
   statuses: readonly Status[],
   pages: Readonly<Record<string, { rows: Lead[]; total: number } | undefined>>,
 ): LeadLane[] {
-  return [...statuses]
+  const lanes = [...statuses]
     .sort((a, b) => a.position - b.position)
     .map((status) => {
       const page = pages[status.id];
@@ -190,6 +221,7 @@ export function toLeadLanes(
         tone: statusTone(status),
       };
     });
+  return visibleLanes(orderLanes(lanes, null), true);
 }
 
 /** The leads board as it should look the instant a card is dropped. */
