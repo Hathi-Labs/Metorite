@@ -32,6 +32,8 @@
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
 > **Built later:** CRM-Q6a, the generic record store (2026-10-12, migration 251). See §18.7.
+>
+> **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -2084,7 +2086,7 @@ the module note of `search.py` says.
   `["crm-assistant", "/crm"]` (item 10).
 - `src/lib/shell/seams.test.ts`, existing: item 11.
 
-### 19.7 CRM-X3: Next activity on each card
+### 19.7 CRM-X3: Next activity on each card (✅ built 2026-10-12)
 
 **Scope.**
 
@@ -2216,7 +2218,7 @@ SELECT DISTINCT ON (a.deal_id)
 - `tests/unit/test_crm_mirror_readonly.py`, existing: the slice writes
   nothing.
 
-### 19.8 CRM-X4: Record page v2
+### 19.8 CRM-X4: Record page v2 (✅ built 2026-10-12)
 
 **Scope.**
 

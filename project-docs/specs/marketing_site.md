@@ -91,6 +91,13 @@ board row. CP-2c (`customer_console.md`) owns the URL the CTA points at.
 D41/D40 own hostname topology. MT-1f owns per-tenant subdomains. No other doc
 may describe this page.
 
+**The legal pages (recorded 2026-10-12, PR-D0).** This spec also owns the legal pages under
+`site/`: `privacy.html`, `terms.html`, `refunds.html` and `contact.html`. A merge publishes them,
+because Caddy serves `/opt/acb/app/site`. So the owner approves the words of each change before the
+PR that publishes it (OWNER-GATE). An agent may write a draft in the spec that needs the change, as
+`email_app_master_plan.md` §12.4 does for Gmail. `work_plan.md` §4 holds the row. No test fences the
+approval, so the rule is advisory (R7).
+
 ## 6. Version 2 — the product tour (owner directive, 2026-10-09)
 
 **The owner widened the scope on 2026-10-09.** The apex page now markets each
