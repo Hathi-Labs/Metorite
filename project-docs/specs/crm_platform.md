@@ -1405,6 +1405,10 @@ entity that an admin decided, or that the assistant proposed.
 SECURITY, as for `crm_module_records`. CRM-Q7 covers the four known entities
 only. A generic module keeps every field in `fields`.
 
+Only one rule for each `(organization_id, entity, target_column)` can be
+`approved`. A partial unique index on `status = 'approved'` holds this. A
+second approve gives 409.
+
 **The legal targets.** `FIELD_RULE_TARGETS` in `crm_sources/zoho/mapping.py`
 holds exactly the columns of the two tables below, and no other column.
 
@@ -1481,7 +1485,12 @@ only.
 - An approved rule can be rejected, or it can go `stale`. Then the next run
   reads that entity in full once, as CRM-Q5 does for an old lead cursor. Each
   row then gets the fixed map's value again. A full read costs about 1 credit
-  for each 200 records.
+  for each 200 records. The read uses its own mark in the cursor state, and it
+  stamps nothing and deletes nothing.
+- A full read cannot restore a free column, because the fixed map never writes
+  it. A reject or a stale rule on a free column has its own step. The next run
+  sets that column to NULL on the mirrored rows, through
+  `apply_field_rule_from_source`.
 - `map_record` and the backfill coerce each value with the helpers of
   `mapping.py`: `text_value`, `number`, `integer`, `day` and `instant`. A value
   that does not coerce writes NULL.
@@ -1514,6 +1523,8 @@ decides again.
    fills only the NULL rows.
 9. A reject makes the next run read the entity in full once. Each row then
    holds the fixed map's value again, and the value stays in `custom`.
+10. A reject of a rule on a free column sets that column to NULL.
+11. A second approved rule for the same target column gives 409.
 
 #### CRM-Q7b: the proposer
 
