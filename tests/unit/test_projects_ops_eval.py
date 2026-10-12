@@ -89,11 +89,15 @@ def test_the_stub_lists_the_overdue_tasks_of_the_dataset() -> None:
 def test_a_bulk_write_changes_each_task_and_records_the_body() -> None:
     stub = stub_api.OpsStub(DS)
     ids = [DS.task(2).id, DS.task(3).id]
+    # A date that no task of the dataset holds. The dataset dates move with
+    # today, so a fixed date matched one task on 2026-10-13 and the stub
+    # counted that task as unchanged.
+    due = (DS.today + timedelta(days=400)).isoformat()
     status, body = stub.handle("POST", "/projects/tasks/bulk", T.MEMBER,
-                               {"task_ids": ids, "patch": {"due_at": "2026-10-12"}})
+                               {"task_ids": ids, "patch": {"due_at": due}})
     assert status == 200 and body["applied"] == 2
-    assert stub.tasks[ids[0]]["due_at"] == "2026-10-12"
-    assert stub.requests[-1].body == {"task_ids": ids, "patch": {"due_at": "2026-10-12"}}
+    assert stub.tasks[ids[0]]["due_at"] == due
+    assert stub.requests[-1].body == {"task_ids": ids, "patch": {"due_at": due}}
 
 
 @pytest.mark.parametrize("today, monday", [
