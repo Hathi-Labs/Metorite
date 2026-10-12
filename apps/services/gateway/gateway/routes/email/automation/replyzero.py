@@ -198,6 +198,14 @@ _FOLLOW_UP_LABEL = "Follow-up"
 # WS-17 EM-G3b-f7 (email_app_master_plan.md §12.3.12.6). Fence:
 # test_the_gmail_damage_rule_matches_folder_after_move, which reads the names
 # from the Python sets, so a name added on one side only turns it red.
+#
+# ⚠️ Nothing inside the MOVE_FOLDER ``EXISTS`` may name ``ts.``. The provider
+# check reads ``em.account_id``, the same value as ``ts.account_id``. A reference
+# to the outermost row stops Postgres from hashing that ``EXISTS``, so it runs
+# once for each thread. Measured in review round 1 (non-privileged role, JIT
+# off): the live Outlook health query went from 354 ms to 792 ms at 100k
+# threads, with 4.7x the buffers. Fence:
+# test_the_move_rule_exists_never_correlates_to_the_thread_row.
 DAMAGED_CONVERSATION_THREADS_SQL = """
     SELECT DISTINCT ts.account_id, ts.thread_id, ts.status
     FROM email_thread_status ts
@@ -223,7 +231,7 @@ DAMAGED_CONVERSATION_THREADS_SQL = """
                                    LOWER(COALESCE(em.folder, ''))
                                OR (LOWER(COALESCE(em.folder, '')) = 'archive'
                                    AND EXISTS (SELECT 1 FROM email_accounts acct
-                                         WHERE acct.id = ts.account_id
+                                         WHERE acct.id = em.account_id
                                            AND acct.provider = 'gmail')
                                    AND TRIM(ea.label) <> ''
                                    AND LOWER(TRIM(ea.label)) NOT IN

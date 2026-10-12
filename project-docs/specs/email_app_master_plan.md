@@ -12495,6 +12495,17 @@ row), and §12.3.12.1 to §12.3.12.7 hold one slice for each open item.
 9. **EM-G3b-f7.** The health metric and the repair script miss a Gmail thread that a custom
    `MOVE_FOLDER` rule moved. `DAMAGED_CONVERSATION_THREADS_SQL` compares the rule label with the
    folder. The fix changes SQL text and needs an R8 test (§12.3.4). Slice: §12.3.12.6.
+10. **EM-G3b-f8 (follow-up, reviewer P2 of PR-E, 2026-10-12).** On Gmail, the alarm and the
+    repair cannot tell a message that keeps the rule label from a message that the member filed
+    under another label. Both sit in `archive`. So a repair puts a re-filed message back in the
+    inbox, and that breaks "their move wins" (`_restore_conversation_messages`, the docstring and
+    the `continue` at `replyzero.py:1158-1159` of main). The fix changes the restore and the SQL
+    together, and keeps one definition. On Gmail, a message counts only when the rule label is
+    still in `em.categories`. A Gmail user label lands in `categories` (`gmail.py:57`), and
+    `mirror_label` (`automation/actions.py:114-125`) writes it there on a rule move. The slice
+    must decide how to compare the case of the label. 🟢 AGENT-SAFE · R8. Size S/M. Not
+    specified yet. The dispatch cited `_determined_matches` at `:1267` for the `categories` test.
+    That function is at `:1227` of main and reads no `categories`, so the anchors above replace it.
 
 #### 12.3.12.1 The before-customers slices: the PRs and the order
 
@@ -13056,14 +13067,29 @@ exist at dispatch, put the `sign_html` case into the file that tests `build_sign
 
 #### 12.3.12.6 EM-G3b-f7 — the thread health finds a Gmail custom move
 
-**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`). PR-E. The `OR`
-branch reads `email_accounts.provider` through an `EXISTS` on `ts.account_id`, so the compare of
-each provider runs as on main. The four fences of `test_email_thread_health_gmail.py` pass on a
-real Postgres, as `acb_app_h3rls`.
+**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`), fix round 1 closed.
+PR-E. The `OR` branch reads `email_accounts.provider` through an `EXISTS` on `em.account_id`, so
+the compare of each provider runs as on main. The four fences of
+`test_email_thread_health_gmail.py` pass on a real Postgres, as `acb_app_h3rls`.
+
+**Fix round 1 (verifier, 2026-10-12).** The first build read the provider through
+`acct.id = ts.account_id`. That reference to the outermost row stopped Postgres from hashing the
+`MOVE_FOLDER` `EXISTS`, so it ran once for each thread. The live Outlook health query ran 2.2x to
+3.1x slower, for example 354 ms to 792 ms at 100k threads, with 4.7x the buffers. The build now
+reads `acct.id = em.account_id`, which is the same value. The plan is a `hashed SubPlan` again.
+
+Fence: `test_the_move_rule_exists_never_correlates_to_the_thread_row` in
+`test_email_thread_health.py`. It reads the source, because an `EXPLAIN` on a small seed is not
+stable.
 
 **Known limit EM-G3b-f7-a.** SQL `TRIM` removes spaces only, and Python `strip` removes each
-whitespace character. So the two sides can differ for a rule label with a tab at an end. No writer strips a rule
-label. The parity fence uses spaces only.
+whitespace character. So the two sides can differ for a rule label with a tab at an end. No writer
+strips a rule label. The parity fence uses spaces only.
+
+**Known limit EM-G3b-f7-b.** On main and on this branch, a blank rule label with a blank folder
+counts as damage. The compare `LOWER(TRIM(ea.label)) = LOWER(COALESCE(em.folder, ''))` holds for
+two blank values. Production does not reach it: `email_messages.folder` is NOT NULL, and
+`canonical_folder` maps a blank name to `inbox`. This PR does not change it.
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the change is SQL text. No migration, no flag.
 
@@ -13107,7 +13133,8 @@ The dispatch cited the compare at `:218-219`. At `3d73313a4` it is at `:212-213`
 **Scope.**
 
 1. Extend the `MOVE_FOLDER` branch of `DAMAGED_CONVERSATION_THREADS_SQL` with an `OR`. The new
-   branch joins `email_accounts` on `ts.account_id`, and needs `provider = 'gmail'`,
+   branch reads `email_accounts` through an `EXISTS` on `em.account_id`, and needs
+   `provider = 'gmail'`,
    `LOWER(COALESCE(em.folder, '')) = 'archive'` and the label rule of D-G3b-f7-2.
 2. The existing compare `LOWER(TRIM(ea.label)) = LOWER(COALESCE(em.folder, ''))` stays as it is,
    for each provider.
