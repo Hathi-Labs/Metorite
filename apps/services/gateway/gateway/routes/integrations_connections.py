@@ -422,6 +422,15 @@ async def _disconnect_registry(org: str, provider: str, key: str, user: UserCont
         from gateway.routes.crm.connection import disconnect_zoho
 
         after = await disconnect_zoho(org)
+    elif conn.provider == "github" and conn.owning_app == "integrations":
+        # IN-7: GitHub deletes the blob AND the old `provider_keys` row. GitHub
+        # cannot revoke a device-flow token without the client secret, so there
+        # is no revoke call to make.
+        from gateway.connections import github as github_connection
+
+        await github_connection.disconnect(org)
+        async with tenant_session(org) as db:
+            after = await store.get_by_id(db, org, conn.id)
     else:
         async with tenant_session(org) as db:
             after = await store.disconnect(db, org, conn.id)

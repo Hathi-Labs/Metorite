@@ -518,6 +518,19 @@ select optgroup {
   outline-offset: 2px;
 }
 
+/* A TEXT FIELD draws its ring ON its own border, never outside it (owner,
+   2026-10-12: the rail's rename field "merges" with the Save beside it).
+   A field matches :focus-visible whenever it is focused, so it always wore
+   BOTH its `focus:border-primary` border and this 2px ring 2px outside it:
+   two outlines 3px apart, reaching 4px past the box into the button beside
+   it and past a dense row's edge. Inset by the border's width, the ring
+   covers the border and the box keeps its size. A button keeps the outer
+   ring, because it has no border state of its own. Fence:
+   src/lib/theme/fieldFocus.test.ts. */
+.cc-control:is(input, textarea, select):focus-visible {
+  outline-offset: -1px;
+}
+
 /* ── Prose that follows the theme ───────────────────────────────────────
    `@tailwindcss/typography` ships one grey palette for light and
    `prose-invert` for dark. This app is dark by default and turns light
