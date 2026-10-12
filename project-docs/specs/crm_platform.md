@@ -1716,8 +1716,8 @@ win moment and no streak.
 **F12: The research behind CRM-X3.** Pipedrive draws the next activity on each
 deal card. The colour is red when it is overdue, green for today, grey for
 later and yellow for none. Pipedrive also tints a deal red after the idle days
-of its stage. CRM-X3 copies the first rule with the colours of the house. The
-second rule waits for UX-Q5.
+of its stage. CRM-X3 copies the first rule with the colours of the house.
+CRM-I1 builds the second rule in Mirror mode (UX-Q5).
 
 **Where the audit was wrong.** The check against the code found five errors.
 This section uses the corrected facts.
@@ -1748,11 +1748,11 @@ means that the slice works in Mirror mode with no write-back (CRM-Z9).
 |---|---|---|---|---|---|
 | **CRM-X1** Find and page | A search box, "Load more", a Stage column, a "Last touched" column, and an owner filter that lists every member | AGENT-SAFE | S | Nothing | Y |
 | **CRM-X2** The CRM joins the shell | Cmd-K finds a lead, a deal, a contact or a company. Three new jobs: New deal, Log a call and Find a record. The run badge counts the CRM assistant on the CRM | AGENT-SAFE | M | CRM-X1, because two jobs open its search box | Y |
-| **CRM-X3** Next activity on each card | Each card shows its next activity: overdue, today, later or none. An overdue card has a red edge. A deal lane can sort by next activity | AGENT-SAFE. Idle days in Mirror mode wait for UX-Q5 | M | Nothing in code. Zoho tasks show after the reconnect of §12 | Y |
+| **CRM-X3** Next activity on each card | Each card shows its next activity: overdue, today, later or none. An overdue card has a red edge. A deal lane can sort by next activity | AGENT-SAFE | M | Nothing in code. Zoho tasks show after the reconnect of §12 | Y |
 | **CRM-X4** Record page v2 | A summary header, four tabs, a timeline filter, task due dates, `j` and `k` through the list, and phone and email links | AGENT-SAFE | M | Nothing | Y |
 | **CRM-S1** Follow-ups in the one task store | A follow-up is a `pm_tasks` row with a link to its record. It shows in My Tasks and Calendar, and one tick completes it everywhere | AGENT-SAFE (the §6 row) | L | A shape of the entity link that the owners of the task store agree | Y |
 | **CRM-X5** Activities | A rail row with my overdue, today and upcoming activities, each with its record | AGENT-SAFE | M | CRM-S1, for Metorite tasks | Y |
-| **CRM-I1** Pipeline health and "Needs you" | A health strip: stale deals, slipped close dates, no next step, no touch in 14 days, closing this month. My stale deals reach "Needs you" | AGENT-SAFE in the app. A push or a mail waits for UX-Q4 | M | CRM-X3 | Y |
+| **CRM-I1** Pipeline health and "Needs you" | A health strip: stale deals, slipped close dates, no next step, no touch in 14 days, closing this month. My stale deals reach "Needs you". An admin sets idle days for each stage in Mirror mode too (UX-Q5) | AGENT-SAFE in the app. A push or a mail waits for UX-Q4 | M | CRM-X3 | Y |
 | **CRM-X8** A board you can shape | Card fields, a choice of lane sum, "Load more" in a lane, a lane that folds, and one summary lane for won and lost deals | AGENT-SAFE | M | CRM-Q8 (built) | Y |
 | **CRM-U3 and CRM-U4** Fast, and one look | A revisit paints at once. Skeletons, empty states with a way out, the shared lane colours, a flash where a card lands, and undo after a Native move | AGENT-SAFE | M | Nothing | Y |
 | **CRM-I2** Targets and the forecast by month | A target for each member, the forecast by month against it, "₹X to go", and a Home card | AGENT-SAFE (UX-Q2 answered) | M to L | Nothing | Y |
@@ -1768,13 +1768,18 @@ means that the slice works in Mirror mode with no write-back (CRM-Z9).
 | **CRM-I4** Weekly digest | A Monday summary of the pipeline, by email or WhatsApp | OWNER-GATE: UX-Q3 and UX-Q4 | M | CRM-I1, CRM-I2 | Y |
 | **CRM-Q6b** Products and Quotes | Rail rows and generic record pages for the mirrored modules | AGENT-SAFE. The new consent is an owner act (§12) | M | CRM-Q6a (§18.7) | Y |
 | **CRM-X14** Win likelihood | A score from the stage, the age, the last activity and slipped dates, with its reasons. No model | AGENT-SAFE | M | CRM-X3, CRM-I1 | Y |
+| **CRM-Z9** Zoho write-back | A move, an edit or a new record in Metorite writes to Zoho, for an org with the flag on | AGENT-SAFE to build, with the flag off. Turning it on for an org is the owner's act (UX-Q6, §12). Needs its own spec audit before dispatch | L | Its spec audit. The consent note is §19.9 | It is the write-back |
+
+The first 22 rows are the slices of the audit. The owner's answer to UX-Q6
+added CRM-Z9.
 
 CRM-X2 builds the job half and the search half of CRM-L1 (§13.6). The needs
 half of CRM-L1, with stale deals in "Needs you", belongs to CRM-I1.
 
 ### 19.3 The slices that need write-back or Native mode
 
-These slices change records. For Fracktal they wait for UX-Q6. For a Native
+These slices change records. For Fracktal they wait for CRM-Z9 and its flag
+(UX-Q6). For a Native
 customer they are the next build after §19.2.
 
 | Slice | What the user gets | Waits for |
@@ -1789,59 +1794,29 @@ customer they are the next build after §19.2.
 | Stage transition forms | The move dialog gains a checklist and optional fields for each transition | Native mode |
 | Cadences | Sequences of mail, calls and tasks that stop on a reply | UX-Q4, because a cadence sends mail |
 
-### 19.4 Owner questions
+### 19.4 Owner answers and open questions
 
-The owner decides these. An agent builds no OWNER-GATE slice of §19.2 before
-the answer. Each recommendation is the audit's.
+**Owner answers (2026-10-12, in chat).** These four answers bind. Each one
+names the question as the audit asked it.
 
-**Owner answers (2026-10-12, in chat).** These four answers bind. UX-Q3 and
-UX-Q4 stay open.
+| Question | Answer | Effect |
+|---|---|---|
+| **UX-Q1.** Win moments and streaks. Is a win moment on by default? Does the team see a win, or only the owner of the deal? Is a streak private? | **Calm.** The deal owner sees a short toast and a card flash. The team sees a "wins this week" line. A streak is private to its member. No confetti by default | CRM-X6 and CRM-X7 become AGENT-SAFE. The gateway never sends one member's streak to another member |
+| **UX-Q2.** Targets. Monthly or quarterly? For each member or each team? Who sets a target, and who sees the progress of the others? | **Monthly, for each member.** An admin sets a monthly ₹ target for each rep. Everyone sees the team total. Each rep sees their own progress | CRM-I2 becomes AGENT-SAFE. Its `crm_targets` row holds one member and one month. The report route gives a rep the team total and their own row only |
+| **UX-Q5.** Idle days for each stage in Mirror mode. May an admin set `max_dwell_days` while Zoho owns the stages? | **Yes, as a Metorite-only setting.** The limit lives only in Metorite and never writes to Zoho. A stale deal shows its colour and reaches "Needs you" | CRM-I1 builds it. It unlocks that one column in `components/PipelineSettings.tsx` and in the mirror write guard, and `test_crm_mirror_readonly.py` names the column. No Zoho write path reads it |
+| **UX-Q6.** Zoho write-back for Fracktal (CRM-Z9, §12) | **Build it, flag off.** The flag defaults to off. The owner checks write-back on a test deal, then turns it on for Fracktal | CRM-Z9 is AGENT-SAFE to build. Turning the flag on for an org stays the owner's act (§12). The consent note is §19.9. CRM-Z9 needs its own spec audit before dispatch |
 
-- **UX-Q1, win moments: calm.** The deal owner sees a short toast and a card
-  flash. The team sees a "wins this week" line. A streak is private to its
-  member. No confetti by default.
-- **UX-Q2, targets: monthly, for each member.** An admin sets a monthly ₹
-  target for each rep. Everyone sees the team total. Each rep sees their own
-  progress.
-- **UX-Q5, idle days in Mirror mode: yes.** The limit is a Metorite-only
-  setting and never writes to Zoho. A stale deal shows its colour, and CRM-I1
-  puts it in "Needs you".
-- **UX-Q6, write-back: build it, flag off.** CRM-Z9 lands behind a flag that
-  defaults to off. The owner checks it on a test deal, then turns it on for
-  Fracktal. The flag flip is the owner's act. Write-back needs Zoho WRITE
-  scopes. A consent for every org must not ask for them, so only an org with
-  the flag on gets a second consent for them. `routes/crm/connection.py`
-  builds the consent from `ZOHO_READ_SCOPES` today. CRM-Z9 needs its own audit
-  before dispatch.
+**Still open.** An agent builds no OWNER-GATE part of §19.2 before the owner
+answers. Each recommendation is the audit's.
 
-The list below keeps each question as it was asked.
-
-1. **UX-Q1. Win moments and streaks.** Is a win moment on by default? Does the
-   team see a win, or only the owner of the deal? Is a streak private? Does
-   "By owner" rank people by ₹ won? *Recommendation:* on, and calm. The deal
-   owner alone sees the toast. The team sees a "Recent wins" line. Streaks stay
-   private, and no rank numbers show. No confetti, and no motion under
-   `prefers-reduced-motion`.
-2. **UX-Q2. Targets.** Monthly or quarterly? For each member, for each team,
-   or both? Who sets a target, and who sees the progress of the others?
-   *Recommendation:* the audit makes none. Its CRM-I2 row assumes a monthly or
-   quarterly target for each member, and an admin sets it.
-3. **UX-Q3. AI credits.** The deal brief (CRM-I3) and the digest (CRM-I4)
+1. **UX-Q3. AI credits.** The deal brief (CRM-I3) and the digest (CRM-I4)
    spend credits. Which plan pays for them? *Recommendation:* the audit makes
    none. Q7 (§16) already puts AI insights on credits. The meter (H-171) must
    count each call before either slice ships (§9).
-4. **UX-Q4. Anything that reaches a person outside the app.** A mail or a
+2. **UX-Q4. Anything that reaches a person outside the app.** A mail or a
    WhatsApp digest, a push for a stale deal, a scheduled report, or a cadence.
    *Recommendation:* the "Needs you" feed in the app is passive, and it fits
    CRM-S11, so it needs no decision. Each outward channel waits for the owner.
-5. **UX-Q5. Idle days for each stage in Mirror mode.** Zoho owns the stage, but
-   `max_dwell_days` is a Metorite-only display value. May an admin set it while
-   the stages stay locked? *Recommendation:* yes. Without it, rot never shows
-   for Fracktal. The build unlocks that one column in
-   `components/PipelineSettings.tsx` and in the mirror write guard, and
-   `tests/unit/test_crm_mirror_readonly.py` names it.
-6. **UX-Q6. Zoho write-back for Fracktal (CRM-Z9, §12).** It unlocks the
-   slices of §19.3 in Mirror mode. *Recommendation:* the audit makes none.
 
 The reconnect of Fracktal's Zoho is an act, not a question. §12 already holds
 it. Zoho tasks reach CRM-X3 and CRM-X5 only after it.
@@ -2074,7 +2049,7 @@ the module note of `search.py` says.
 3. An overdue card has a red left edge, from the shared status colours.
 4. A deal lane sorts by stage age, as today, or by next activity.
 
-**Non-goals.** Idle days in Mirror mode (UX-Q5). A card tint for rot, and the
+**Non-goals.** Idle days in Mirror mode (CRM-I1 builds them, UX-Q5). A card tint for rot, and the
 move to `TaskCardShell` (CRM-U3). Follow-ups in `pm_tasks` (CRM-S1 extends the
 same function). A sort of a lead lane (CRM-X8). A "Next activity" column in a
 list.
@@ -2299,3 +2274,49 @@ SELECT DISTINCT ON (a.deal_id)
 - `app/crm/lib/urlState.test.ts`, existing, wider: item 2.
 - `app/crm/lib/format.test.ts`, existing, wider: item 4.
 - `src/lib/theme/conformance.test.ts`, existing: the CRM baselines go down only.
+
+### 19.9 CRM-Z9: the write consent (a contract note)
+
+This is a note, not the contract. CRM-Z9 needs its own spec audit before
+dispatch. That audit also decides the write path: Zoho's MCP (§7.2), or the
+old writer in `apps/services/ingestion/ingestion/sources/zoho/writer.py`
+(§13.7).
+
+**The problem.** Write-back needs Zoho WRITE scopes, in the form
+`ZohoCRM.modules.<module>.UPDATE` and `ZohoCRM.modules.<module>.CREATE`. One
+consent serves every org today. If CRM-Z9 adds the write scopes to it, Zoho
+asks every org for write access, also with the flag off. That is wrong.
+
+**The seam today.** `ZOHO_READ_SCOPES` (`routes/crm/connection.py:98-115`) is
+the one scope list. It reaches Zoho at three points:
+
+- `start_zoho_connection` passes it to `source.consent_url`
+  (`connection.py:312`, `crm_sources/zoho/auth.py:171`).
+- `zoho_callback` passes it to `source.finish_consent` (`connection.py:354`).
+- `zoho_callback` stores it as the granted list through `store.save_credential`
+  (`connection.py:365`).
+
+The signed state has the purpose `crm.zoho.connect` (`connection.py:85`), and
+it names no scope.
+
+**The rule for CRM-Z9.**
+
+1. A new flag in `routes/crm/flags.py` names the orgs with write-back on. It
+   has the grammar of `CRM_MIRROR_ORGS`, and an empty list allows no org. It
+   ships empty.
+2. The read consent does not change. `ZOHO_READ_SCOPES` gets no WRITE scope.
+3. A second consent step asks for the write scopes. It is a separate admin
+   route beside `start_zoho_connection`. It gives 404 for an org that the flag
+   does not allow.
+4. The second step asks for `ZOHO_READ_SCOPES` and the write scopes together.
+   A Zoho token holds only the scopes of its own consent.
+5. The step signs its state with a purpose of its own. The callback picks the
+   scope list from that purpose, never from the request.
+6. `store.save_credential` records the scopes that the consent granted. The
+   writer refuses a write when the stored scopes do not hold the WRITE scope of
+   that module.
+7. The flag gates every write. With the flag off, the stored write scopes do
+   nothing.
+
+⚠️ Before the build, check each WRITE scope name against Zoho's published
+scope list. Zoho refuses the whole consent for one unknown scope (§18.7).
