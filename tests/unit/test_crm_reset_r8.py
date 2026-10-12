@@ -804,3 +804,24 @@ def test_the_migration_replays_with_no_change(x0) -> None:
         cur.execute(sql)
     assert _q(x0, check) == before
     assert "needs_reset" in before[0][0]
+
+
+async def test_the_save_checks_the_stored_account_again_under_the_lock(
+    x0, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Two consents at one time: the first stores its account after the second
+    read the org. The save, under the connect lock, still sees the first."""
+    _assert_non_priv(app_engine)
+    _seed(x0, x0.org_a, tag="A", deals=4)
+    assert (await _connect(x0, OrgZoho("A2", "Z-A"))).status_code == 302
+    assert _account_id(x0, x0.org_a) == "Z-A"
+    from gateway.routes.crm import connection as conn
+
+    async def stale(db: Any, org: str) -> Any:  # the read of the second consent
+        return conn.KnownAccount()
+
+    monkeypatch.setattr(conn, "_known_account", stale)
+    r = await _connect(x0, OrgZoho("B", "Z-OTHER"))
+    assert r.headers["location"] == "/crm?connect_error=different_org", r.text
+    assert _connection(x0, x0.org_a)[0] == "needs_reset"
+    assert _account_id(x0, x0.org_a) == "Z-A"
