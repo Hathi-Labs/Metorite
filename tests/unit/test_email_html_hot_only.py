@@ -10,7 +10,9 @@ for a message older than the hot window:
 1. the sync upsert (``persist.upsert_message``), through ``html_tier.drops_html``;
 2. the body backfill (``body_backfill.write_bodies``);
 3. the open (``transport/messages.py::get_message``);
-4. ``core.hydrate_message_body``.
+4. ``core.hydrate_message_body``. Its write lives in
+   ``core._store_hydrated_body``, which it shares with ``core.BodyFetch``
+   (EM-T17 PR-A1), so the two callers keep one write rule.
 
 Writers 2 to 4 write ``html_tier.COLD_SAFE_HTML_SET``. No writer clears HTML
 that a row holds. EM-S4 does that.
@@ -269,7 +271,8 @@ class TestTheHtmlToText:
     def test_each_writer_fills_the_text_with_the_same_helper(self) -> None:
         import inspect
 
-        for fn in (persist._bodies, m.get_message, core.hydrate_message_body):
+        # EM-T17 PR-A1: the hydrate and `BodyFetch` share `_hydrated_columns`.
+        for fn in (persist._bodies, m.get_message, core._hydrated_columns):
             assert "_html_to_text(" in inspect.getsource(fn), fn.__qualname__
         assert persist._html_to_text is body_backfill._html_to_text
         assert m._html_to_text is body_backfill._html_to_text
@@ -385,7 +388,9 @@ ALLOWED_HTML_WRITERS: dict[tuple[str, str], str] = {
         "writer 1, the sync upsert: `_INSERT`, and the SET of `_SYNCED_COLUMNS`",
     (f"{_INGESTION}/body_backfill.py", "write_bodies"): "writer 2, the body backfill",
     (f"{_ROUTES}/transport/messages.py", "get_message"): "writer 3, the open",
-    (f"{_ROUTES}/core.py", "hydrate_message_body"): "writer 4, the drafter's hydrate",
+    (f"{_ROUTES}/core.py", "_store_hydrated_body"):
+        "writer 4, the drafter's hydrate. `hydrate_message_body` and "
+        "`BodyFetch.store` both write through it (EM-T17 PR-A1)",
     (f"{_INGESTION}/html_tier.py", "<module>"): "the cold-safe term itself",
     (f"{_ROUTES}/automation/drafting.py", "_upsert_local_draft"):
         "a draft row, received_at = now(), so always hot. It stores no HTML. "
@@ -395,7 +400,7 @@ ALLOWED_HTML_WRITERS: dict[tuple[str, str], str] = {
 TERM_WRITERS = frozenset({
     (f"{_INGESTION}/body_backfill.py", "write_bodies"),
     (f"{_ROUTES}/transport/messages.py", "get_message"),
-    (f"{_ROUTES}/core.py", "hydrate_message_body"),
+    (f"{_ROUTES}/core.py", "_store_hydrated_body"),
 })
 #: The scopes that the scan must find, so a list that went stale fails.
 REQUIRED = frozenset(ALLOWED_HTML_WRITERS) - {
