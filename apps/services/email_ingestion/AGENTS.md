@@ -165,12 +165,17 @@ All providers implement the `BaseEmailProvider` abstract interface:
    - **A body part by `attachmentId` (EM-G2-f1).** Gmail can send a large
      `text/plain` or `text/html` part with `body.attachmentId` and no
      `body.data`. `get_message` runs `_fill_attachment_bodies` before the
-     parse. It fetches each such part once through the client seam, and it
-     uses the file rule of the body walk, so a file never gets a fetch. A
-     failed fetch leaves that body empty and logs `gmail.body_part_failed`.
-     Its record goes into `fetch_failures`, and `_fetch_into` copies it into
-     `SyncResult.errors`. A spent rate limit raises. The parse stays
-     synchronous.
+     parse. It fetches such a part once through the client seam, and it
+     uses the file rule of the body walk, so a file never gets a fetch.
+   - **The fill has two bounds**, because each fetch holds the part in the
+     memory of acb-gateway. Only the first part of each type that holds data
+     or an `attachmentId` is a candidate, as in the parse. A candidate over
+     `GMAIL_FILL_MAX_BYTES` gets no fetch and logs
+     `gmail.body_part_too_large`. The cap is two times the larger storage
+     cap of `persist`. Do not lift it for one route.
+   - A failed or skipped part leaves that body empty and one record in
+     `fetch_failures`, and `_fetch_into` copies it into `SyncResult.errors`.
+     A spent rate limit raises. The parse stays synchronous.
    - `_parse_headers` keys each header by its lower-case name. Read a header
      by that name.
    - `internet_message_id` is the `Message-ID` value, trimmed. It keeps its
