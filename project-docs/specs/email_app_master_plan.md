@@ -12877,8 +12877,8 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** 🔨 PR-C1a built, not merged (2026-10-12, branch `gmail-c1a-save`). PR-C1b and PR-C2
-are not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
+**Status.** 🔨 PR-C1b built, not merged (2026-10-12, branch `gmail-c1b-send`). PR-C1a merged as
+#919 (`421eeb8f4`). PR-C2 is not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
 C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
 widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
 
@@ -13120,6 +13120,13 @@ file. The member does not lose a file that the app showed: the parse already ski
 `persist.TRUNCATION_MARKER`. `_html_to_keep` treats a cut row HTML as absent, and reads Gmail. The
 Gmail read waits `BODY_FETCH_TIMEOUT_S` at most, and a timeout answers `lost`. A comma ends a cid, so
 each entry of a `srcset` names its own cid.
+
+**The build of PR-C1b (2026-10-12).** The send reads the HTML through `_html_to_keep` of PR-C1a,
+with its own `SELECT body_html`. The read runs only for a signed send of a Gmail draft. So the row
+read of `send_draft_endpoint` stays as on main, and an Outlook send writes the SQL text of main. The
+text half still comes from `build_signed_bodies`, because that half is the same for both paths.
+`sign_html` reads the new part of the HTML only. A quote of an earlier mail of the member holds the
+signature too, and that copy must not stop the signature.
 
 **Acceptance of PR-C1 (done when).**
 
