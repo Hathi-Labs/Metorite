@@ -162,6 +162,35 @@ async def test_the_four_reads_merge_newest_activity_first(
     ]
 
 
+async def test_each_read_takes_its_most_active_rows_not_its_newest(
+    ns, app_engine, roomy, caplog,  # noqa: F811
+) -> None:
+    # §19.10: the default sort of leads is `created_at`. Six leads match, and
+    # the OLDEST one has the newest activity. A read by `created_at` takes
+    # the five newest and leaves it out before the merge can see it.
+    tag = uuid.uuid4().hex[:6]
+    a = ns.org_a
+    word = f"busy{tag}"
+    await _native(ns, a)
+    with ns.admin_engine.begin() as c:
+        for n in range(6):
+            c.execute(text(
+                "INSERT INTO crm_leads (organization_id, lead_name, status_id, created_at, "
+                "last_activity_at) VALUES (CAST(:o AS uuid), :name, (SELECT id FROM "
+                "crm_lead_statuses WHERE organization_id = CAST(:o AS uuid) ORDER BY "
+                "position LIMIT 1), now() - make_interval(days => :age), "
+                "now() - make_interval(days => :idle))"),
+                {"o": a, "name": f"Lead {n} {word}", "age": 10 - n,
+                 "idle": 1 if n == 0 else 5 + n})
+
+    with caplog.at_level(logging.INFO, logger=shell.__name__):
+        answer = await _search(ns, _admin(a), word)
+    _no_provider_trouble(caplog)
+    titles = [i["title"] for i in _crm(answer)]
+    assert len(titles) == shell.PER_APP
+    assert titles[0] == f"Lead 0 {word}"
+
+
 # ── 7: a converted lead stays out ──────────────────────────────────────────
 
 async def test_a_converted_lead_does_not_show(ns, app_engine, roomy, caplog) -> None:  # noqa: F811
