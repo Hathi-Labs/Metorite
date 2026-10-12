@@ -100,6 +100,44 @@ def strip_signature_text(signature: str, body_text: str) -> str:
     return out.strip()
 
 
+def _squash(s: str) -> str:
+    """Text with each run of white space as one space, for a compare."""
+    return " ".join((s or "").split())
+
+
+def _holds_signature(signature: str, html: str) -> bool:
+    """True when ``html`` already holds the signature, as HTML or as text.
+
+    The text compare ignores white space, because Gmail can write the HTML
+    of a draft again with other spaces or tags."""
+    if signature_html(signature) in html:
+        return True
+    sig_text = _squash(signature_text(signature))
+    return bool(sig_text) and sig_text in _squash(html_to_text(html))
+
+
+def sign_html(signature: str, body_html: str) -> str:
+    """The HTML of a draft with the signature HTML under the new text.
+
+    WS-17 EM-G3a-f7 (D-G3a-f7-7). The signed send of a Gmail-web draft keeps
+    the HTML of the draft. :func:`build_signed_bodies` cannot sign it,
+    because it returns the HTML unchanged when the TEXT holds the signature,
+    and the upsert always puts the signature in the text.
+
+    The signature goes above the quote (:func:`split_quoted_html`), where
+    :func:`build_signed_bodies` puts it. When the new part already holds the
+    signature, nothing changes. Only the new part counts, because a quote of
+    an earlier mail of the member holds the signature too. With no signature
+    or no HTML, the HTML comes back unchanged."""
+    sig_html = signature_html(signature)
+    if not sig_html or not (body_html or "").strip():
+        return body_html
+    main_html, quoted_html = split_quoted_html(body_html)
+    if _holds_signature(signature, main_html):
+        return body_html
+    return f"{main_html}<br><br>{sig_html}{quoted_html}"
+
+
 def build_signed_bodies(
     signature: str, body_text: str, body_html: str | None = None,
 ) -> tuple[str, str | None]:
