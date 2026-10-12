@@ -82,6 +82,14 @@ describe("the CRM card's spoken name", () => {
     expect(label).toBe("Fixture set, ₹2,50,000, Bosch India, Call Priya today, Needs a lost reason");
   });
 
+  it("says a stalled deal in words, because the card shows it as a colour", () => {
+    expect(cardLabel({ title: "Lathe", stageAge: "3w", rot: "over" })).toBe("Lathe, 3 weeks in this stage, Stalled");
+    expect(cardLabel({ title: "Lathe", stageAge: "5d", rot: "warn" })).toBe("Lathe, 5 days in this stage, Stalling");
+    expect(cardLabel({ title: "Lathe", stageAge: "1d", rot: "fresh" })).toBe("Lathe, 1 day in this stage");
+    expect(cardLabel({ title: "Lathe", stageAge: "today" })).toBe("Lathe, Entered this stage today");
+    expect(cardLabel({ title: "Lathe", stageAge: "—" })).toBe("Lathe");
+  });
+
   it("says Overdue, so the red edge is not the only signal", () => {
     expect(cardLabel({ title: "Lathe", overdue: true })).toBe("Lathe, Overdue");
     // The chip already says it, and the name says it once.

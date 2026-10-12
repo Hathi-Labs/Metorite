@@ -267,6 +267,8 @@ function RecordCard({
         detail,
         next,
         overdue,
+        stageAge: deal ? stageAgeLabel(deal.status_changed_at) : null,
+        rot: deal ? rot : undefined,
         needsReason: warnLost,
       })}
       atCursor={atCursor}
