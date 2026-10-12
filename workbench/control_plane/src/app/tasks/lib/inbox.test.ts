@@ -4,7 +4,7 @@
  * The fences for the unified list: what it holds, that the badge and the
  * header count agree, the empty state, the source filter's counts, the order,
  * the actions per kind ("Not mine" never deletes), the origin marker in place
- * of `SourceBadge`, and the `m` / `o` keys.
+ * of `SourceBadge`, and that the Inbox binds no letter keys.
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -12,7 +12,6 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { submitCaptureBox } from "./quickAdd";
-import { INBOX_KEYS } from "./shortcuts";
 import {
   SOURCE_PILLS,
   assignedByLabel,
@@ -195,8 +194,9 @@ describe("the actions per kind (S6g)", () => {
     for (const rel of ["components/InboxCard.tsx", "components/InboxTable.tsx"]) {
       expect(read(rel), rel).toMatch(/notMine: \(\) => quickDispose\(item\.id, "TRASH"\)/);
     }
+    // The `t` key's own "Not mine" went with the letter keys (2026-10-13).
+    // The bulk bar is the other way to remove a board row.
     const view = read("components/InboxView.tsx");
-    expect(view).toMatch(/if \(curKind === "board"\) quickDispose\(cur\.id, "TRASH"\);/);
     expect(view).toMatch(/if \(selectedBoard\.length\) bulkDispose\(selectedBoard, "TRASH"\);/);
     // …and the dispose path writes the overlay only.
     const lens = readFileSync(resolve(__dirname, "lens.ts"), "utf-8");
@@ -213,20 +213,12 @@ describe("the actions per kind (S6g)", () => {
 describe("the keyboard (S6g)", () => {
   const view = read("components/InboxView.tsx");
 
-  it("m moves a capture, o opens a board row, and each refuses the other kind", () => {
-    expect(view).toMatch(
-      /case "m":\s*\/\/[^\n]*\n\s*if \(curKind !== "personal" \|\| !promoteAllowed\(cur\)\) break;[\s\S]*?openPromote\(cur\.id\)/,
-    );
-    expect(view).toMatch(
-      /case "o":\s*\/\/[^\n]*\n\s*if \(curKind !== "board"\) break;[\s\S]*?router\.push\(taskDeepLink\(cur\)\)/,
-    );
-  });
-
-  it("the shortcuts sheet names both keys", () => {
-    // Continuity P3: the inline legend became the `?` sheet, printed from
-    // `shortcuts.ts`, whose own test ties each row to the switch.
-    expect(INBOX_KEYS.find((k) => k.bound === "m")?.label).toBe("Move to project…");
-    expect(INBOX_KEYS.find((k) => k.bound === "o")?.label).toBe("Open on its board");
+  it("answers the shared cursor and Escape, and no letter key (owner, 2026-10-13)", () => {
+    // The triage keys `e x t s r 2 m o` went with the shortcuts sheet. Each
+    // is a button on the row. The repo-wide fence is `noLetterKeys.test.ts`.
+    expect(view).toMatch(/const moved = stepCursor\(/);
+    expect(view).toMatch(/if \(e\.key === "Escape"\) \{\s*setSelection\(NO_SELECTION\);/);
+    expect(view).not.toMatch(/case "[a-z0-9]":/);
   });
 
   it("the walk covers both kinds: the keyboard reads `visible`, built from the union", () => {

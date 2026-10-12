@@ -28,6 +28,8 @@ describe("one agent → app mapping", () => {
     ["task-manager", "/tasks"],
     ["email-assistant", "/email"],
     ["app-builder", "/build/apps"],
+    // WS-53 CRM-X2: the CRM pane names its agent, so its runs count there.
+    ["crm-assistant", "/crm"],
     ["research-agent", "/chat"],
     ["unknown", "/chat"],
   ])("%s runs on %s", (agent, href) => {
