@@ -898,7 +898,9 @@ async def test_a_reconnect_to_another_zoho_org_drops_the_old_profile(q) -> None:
     meta = _q(q.p, "SELECT provider_meta FROM integration_connections WHERE "
                    "organization_id = CAST(:o AS uuid)", o=q.org_a)[0][0]
     assert not {"domain_name", "edition", "tabs"} & set(meta)
-    assert _count(q.p, "crm_source_profiles", q.org_a) == 0
+    # CRM-X0: a disconnect keeps the profile, so the next consent can compare
+    # its account with this one. The new consent below drops it.
+    assert _count(q.p, "crm_source_profiles", q.org_a) == 1
 
     # Connect again, to the other Zoho org on another data centre.
     other = SourceCredential(

@@ -158,6 +158,11 @@ class FakeRegistry:
     async def read_mode(self, db, org):
         return self.modes.get(org)
 
+    async def stored_account(self, db, org):
+        """CRM-X0: no source profile, so the callback has nothing to compare.
+        ``test_crm_reset_r8.py`` holds the compare against a real profile."""
+        return None
+
     async def adopt_mirror(self, db, org, connection_id, email):
         if self.modes.get(org) == "native":
             from fastapi import HTTPException
@@ -213,6 +218,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> tuple[FakeRegistry, FakeZoho]:
         monkeypatch.setattr(store, name, getattr(registry, name))
     monkeypatch.setattr(conn, "_read_mode", registry.read_mode)
     monkeypatch.setattr(conn, "_adopt_mirror", registry.adopt_mirror)
+    monkeypatch.setattr(conn, "_stored_account", registry.stored_account)
     monkeypatch.setattr(conn, "_tenant_session", _no_session)
     # The router's access rule reads crm_settings. A fake keeps it off the DB.
     from types import SimpleNamespace
@@ -986,3 +992,80 @@ def test_the_state_carries_org_member_nonce_and_a_ten_minute_expiry(
     assert signing.verify_state(token, purpose="p.one", now=1_000_601.0) is None
     other = signing.sign_state(purpose="p.one", org=ORG_A, member=ADMIN, now=1_000_000.0)
     assert signing.verify_state(other, purpose="p.one", now=1_000_001.0)["nonce"] != payload["nonce"]
+
+
+# ── CRM-X0: the same Zoho account, another one, or no answer ────────────────
+
+
+def _org_answer(zoho: FakeZoho, body: dict[str, Any] | None) -> None:
+    """Make ``GET org`` answer *body*. The token calls answer as before."""
+    plain = zoho._handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/org"):
+            zoho.requests.append(request)
+            return httpx.Response(200, json=body or {})
+        return plain(request)
+
+    zoho.transport = httpx.MockTransport(handle)
+
+
+@pytest.fixture
+def stored(world, monkeypatch):  # noqa: ANN001 - a fixture
+    """A source profile names the account ``Z-A``. A start puts the old row in."""
+    registry, zoho = world
+
+    async def _stored(db: Any, org: str) -> dict[str, Any]:
+        return {"id": "Z-A", "domain_name": "orga"}
+
+    async def _needs_reset(org: str) -> None:
+        registry.rows[org].update(status="needs_reset", last_error="different_org")
+
+    monkeypatch.setattr(conn, "_stored_account", _stored)
+    monkeypatch.setattr(conn, "_mark_needs_reset", _needs_reset)
+    registry.rows[ORG_A] = {
+        "id": "conn-0001", "org": ORG_A, "status": "disconnected", "credential": None,
+        "connected_by": ADMIN, "last_error": None, "scopes": [],
+    }
+    registry.modes[ORG_A] = "mirror"
+    monkeypatch.setattr(
+        conn, "_source",
+        lambda credential=None, transport=None: ZohoSource(
+            conn.zoho_oauth_config(), credential, transport=zoho.transport,
+        ),
+    )
+    return registry, zoho
+
+
+def test_x0_the_same_account_connects_and_keeps_the_mode(stored) -> None:
+    registry, zoho = stored
+    _org_answer(zoho, {"org": [{"id": "Z-A", "domain_name": "orga"}]})
+    response = _callback(_client(_user()), _state())
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/crm?connected=zoho"
+    assert registry.rows[ORG_A]["status"] == "connected"
+    assert [r.url.path.rsplit("/", 1)[-1] for r in zoho.requests] == ["token", "org"]
+
+
+def test_x0_another_account_needs_a_reset_and_revokes_the_new_token(stored) -> None:
+    registry, zoho = stored
+    _org_answer(zoho, {"org": [{"id": "Z-OTHER", "domain_name": "other"}]})
+    response = _callback(_client(_user()), _state())
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/crm?tab=settings&connect_error=different_org"
+    assert registry.rows[ORG_A]["status"] == "needs_reset"
+    assert registry.adopted == []
+    revokes = [r for r in zoho.requests if r.url.path.endswith("/token/revoke")]
+    assert len(revokes) == 1 and S_REFRESH.encode() in revokes[0].content
+
+
+@pytest.mark.parametrize("body", [{}, {"org": []}, {"org": [{"currency": "INR"}]}])
+def test_x0_an_account_that_does_not_answer_changes_nothing(stored, body) -> None:
+    registry, zoho = stored
+    _org_answer(zoho, body)
+    response = _callback(_client(_user()), _state())
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/crm?connect_error=org_unreadable"
+    assert registry.rows[ORG_A]["status"] == "disconnected"
+    assert registry.adopted == []
+    assert any(r.url.path.endswith("/token/revoke") for r in zoho.requests)

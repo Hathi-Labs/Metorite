@@ -39,14 +39,13 @@ import { NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { AccessSection } from "./components/AccessPanel";
-import { SetupSection } from "./components/SetupPanel";
-import ConnectionPanel from "./components/ConnectionPanel";
+import SetupHubSection from "./components/SetupHub";
 import CrmBoundary from "./components/CrmBoundary";
 import ConvertModal from "./components/ConvertModal";
 import CrmRail, { type RailViewActions } from "./components/CrmRail";
 import FilterBar from "./components/FilterBar";
 import FirstOpen from "./components/FirstOpen";
-import { ImportProgress, ReconnectBanner } from "./components/MirrorBanner";
+import { ImportProgress, SetupLink, StalledBanner } from "./components/MirrorBanner";
 import KanbanBoard from "./components/KanbanBoard";
 import MoveModal from "./components/MoveModal";
 import PipelineSettings from "./components/PipelineSettings";
@@ -60,8 +59,8 @@ import {
   ADMIN_CAPABILITY,
   canCreate,
   clearReturnParams,
+  mirrorStalled,
   modeLine,
-  needsReconnect,
   returnNotice,
   startFailureMessage,
   syncFailureMessage,
@@ -476,7 +475,15 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               // Deals from Contacts.
               viewLabel(view.tab);
   const mode = modeLine({ mode: ctx.mode, connection: ctx.connection, sync: ctx.sync });
-  const subtitle = mode ? `${mode} · ${viewLine}` : viewLine;
+  // CRM-X0: the mode part links an admin to the setup hub.
+  const subtitle = mode ? (
+    <>
+      <SetupLink isAdmin={ctx.isAdmin}>{mode}</SetupLink>
+      {` · ${viewLine}`}
+    </>
+  ) : (
+    viewLine
+  );
 
   /** A rail row, from the desktop column or the phone's drawer. */
   function chooseView(tab: CrmView["tab"]): void {
@@ -636,11 +643,12 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         ) : null}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {ctx.mode === "mirror" && needsReconnect(ctx.connection) && (
-            <ReconnectBanner
+          {ctx.mode === "mirror" && mirrorStalled(ctx.connection) && (
+            // CRM-X0: the banner leads to the setup hub, which offers the fix.
+            <StalledBanner
               isAdmin={ctx.isAdmin}
-              busy={ctx.connecting}
-              onReconnect={ctx.onConnect}
+              status={ctx.connection?.status ?? null}
+              onOpenSetup={() => chooseView("settings")}
             />
           )}
           {ctx.mode === "mirror" && ctx.sync?.state === "running" && (
@@ -720,12 +728,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           ) : view.tab === "settings" ? (
             <PipelineSettings
               setup={
-                ctx.isAdmin ? <SetupSection mode={ctx.mode} connection={ctx.connection} /> : undefined
-              }
-              access={ctx.isAdmin ? <AccessSection /> : undefined}
-              connection={
-                ctx.isAdmin && ctx.connection ? (
-                  <ConnectionPanel
+                // CRM-X0: the one setup hub. It holds the connection too.
+                ctx.isAdmin ? (
+                  <SetupHubSection
                     mode={ctx.mode}
                     connection={ctx.connection}
                     sync={ctx.sync}
@@ -737,6 +742,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                   />
                 ) : undefined
               }
+              access={ctx.isAdmin ? <AccessSection /> : undefined}
               pipelines={pipelines}
               showAdminCards={ctx.isAdmin}
               dealStatuses={store.dealStatuses}

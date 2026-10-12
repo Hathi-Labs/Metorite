@@ -59,6 +59,10 @@ async def fresh_credential(
         row = await store.get(db, org, provider, owning_app)
         if row is None or row.status == store.STATUS_DISCONNECTED:
             return None
+        if row.status == store.STATUS_NEEDS_RESET:
+            # CRM-X0: the stored token belongs to an account whose records the
+            # CRM holds, and the admin chose another one. No run reads either.
+            return None
         if row.status == store.STATUS_NEEDS_RECONNECT:
             raise NeedsReconnect(
                 f"The {provider} connection needs an admin to connect again "

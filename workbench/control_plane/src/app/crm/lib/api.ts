@@ -16,6 +16,8 @@ import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type { FieldDef } from "./fields";
 import type { SavedView, SavedViewBody } from "./savedViews";
 import type { SyncHealth } from "./syncHealth";
+import type { RecordCounts, ResetThen } from "./setup";
+import type { ResetResult } from "./startOver";
 import type {
   Activity,
   Contact,
@@ -504,12 +506,37 @@ export function convertLead(
 
 export type { Contact, Deal, Lead, Organization };
 
-/** Admin only. Back to "no mode" (CRM-U5b). A 409 carries a `message` to show. */
-export function resetMode(): Promise<CrmSettings> {
-  return call<CrmSettings>("/settings", {
-    method: "PATCH",
-    body: JSON.stringify({ mode: null }),
-  });
+// ── The setup hub and the start over (WS-53 CRM-X0) ───────────────────────
+
+/** Admin only. The records of the org, by entity. */
+export function getRecordCounts(): Promise<RecordCounts> {
+  return call<RecordCounts>("/settings/counts");
+}
+
+/**
+ * Admin only. Remove every record and set the mode from `then`. A wrong
+ * `confirm` is a 422 with a sentence. `then = "mirror"` gives the consent URL.
+ */
+export function resetCrm(body: { confirm: string; then: ResetThen }): Promise<ResetResult> {
+  return call<ResetResult>("/reset", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** The ZIP of every record, through the proxy. The server names the file. */
+export const ALL_RECORDS_ZIP = "/api/crm/export/all.zip";
+
+/**
+ * Start the download of the ZIP. The browser streams the file to disk, so a
+ * large CRM never sits in this page's memory. The call returns when the
+ * download starts, which is what step 2 of the dialog waits for.
+ */
+export function downloadAllRecords(): void {
+  const link = document.createElement("a");
+  link.href = ALL_RECORDS_ZIP;
+  link.download = "crm-export.zip";
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 // ── Saved views (CRM-Q8) ──────────────────────────────────────────────────

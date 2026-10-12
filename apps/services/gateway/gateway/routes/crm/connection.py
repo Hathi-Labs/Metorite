@@ -39,6 +39,17 @@ Metorite's own Zoho app. This module is the one reader. With either unset,
 place the mode becomes ``mirror`` (``PATCH /crm/settings`` still refuses it). A
 Native org gets 409: Native to Mirror is a later release (§3.4).
 
+**The same Zoho account, or a start over (CRM-X0, §19.11 items 2 and 3).**
+When the org holds a source profile, the callback reads ``GET org`` with the
+new token and compares the account with the profile's
+(``mapping.same_org``). The same account goes on as before: the records
+stay, and the sync starts again. Another account sets ``needs_reset``, keeps
+the old token, revokes the new one and writes no record, so the records of
+two Zoho accounts never mix. An account that cannot be read, or that has no
+key to compare, is refused with ``org_unreadable``, and nothing changes. With no profile there is nothing to
+compare, and the callback goes on. A disconnect keeps the profile for this
+reason (``store.disconnect``), and the start over deletes it.
+
 **No secret out.** The code, the tokens and the secret never appear in a
 response body or a log line. A revoke or a refresh is logged by outcome and by
 Zoho error code only.
@@ -62,7 +73,7 @@ from gateway.crm_sources.base import (
     SourceError,
     UntrustedHost,
 )
-from gateway.crm_sources.zoho import ZohoSource, auth
+from gateway.crm_sources.zoho import ZohoSource, auth, mapping
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import _tenant_session, router
 from gateway.routes.crm.flags import require_crm_mirror
@@ -92,6 +103,9 @@ CALLBACK_ROUTE = "/oauth/zoho/callback"
 #: Where the callback sends the browser.
 RETURN_OK = "/crm?connected=zoho"
 RETURN_FAILED = "/crm?connect_error="
+#: CRM-X0: a consent to another Zoho account opens the setup hub, which offers
+#: the start over.
+RETURN_DIFFERENT_ORG = "/crm?tab=settings&connect_error=different_org"
 
 #: The read-only scopes of every consent (``docs/ZOHO_OAUTH_SETUP.md`` §5).
 #: Mirror v1 reads only (D95.3).
@@ -288,6 +302,47 @@ async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> 
     _log.info("zoho revoke (%s): %s", why, outcome)
 
 
+async def _stored_account(db: Any, org: str) -> dict[str, Any] | None:
+    """The ``org`` section of the latest source profile, or ``None``.
+
+    ``None`` also when the section names no account, so there is nothing to
+    compare. The sync package is imported here, as ``sync.py`` does.
+    """
+    from gateway.crm_sync import profiles
+
+    latest = await profiles.latest(db, org)
+    section = (latest.profile.get("org") if latest is not None else None) or None
+    if not isinstance(section, dict) or not any(mapping.org_identity(section).values()):
+        return None
+    return section
+
+
+async def _mark_needs_reset(org: str) -> None:
+    """Store ``needs_reset`` under the connect lock. The old token stays."""
+    async with _tenant_session() as db:
+        await db.execute(text(_CONNECT_LOCK_SQL), {"key": f"crm.connect:{org}:{PROVIDER}"})
+        row = await store.get(db, org, PROVIDER, OWNING_APP)
+        if row is not None:
+            await store.mark_needs_reset(db, org, row.id)
+
+
+def consent_url_for(org: str, member: str) -> str:
+    """The consent URL with a signed state for *org* and *member*.
+
+    The start route and the start over (``POST /crm/reset`` with
+    ``then = "mirror"``) both call it, so the state has one maker. 503 when
+    Metorite's Zoho client or the signing key is not set.
+    """
+    source = _source()
+    try:
+        state = sign_state(purpose=STATE_PURPOSE, org=org, member=member)
+    except SigningUnavailable as exc:
+        raise HTTPException(status_code=503, detail="signing_unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_member") from exc
+    return source.consent_url(scopes=ZOHO_READ_SCOPES, state=state)
+
+
 def _failed(code: str) -> RedirectResponse:
     return RedirectResponse(f"{RETURN_FAILED}{auth.safe_code(code) or 'failed'}", status_code=302)
 
@@ -319,16 +374,10 @@ async def start_zoho_connection(
     """The consent URL, with a signed state. The admin follows it to Zoho."""
     org = _organization(user)
     member = _member(user)
-    source = _source()
+    zoho_oauth_config()  # 503 before the mode check, as before CRM-X0
     async with _tenant_session() as db:
         _refuse_native(await _read_mode(db, org))
-    try:
-        state = sign_state(purpose=STATE_PURPOSE, org=org, member=member)
-    except SigningUnavailable as exc:
-        raise HTTPException(status_code=503, detail="signing_unavailable") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="invalid_member") from exc
-    return StartModel(url=source.consent_url(scopes=ZOHO_READ_SCOPES, state=state))
+    return StartModel(url=consent_url_for(org, member))
 
 
 @router.get(
@@ -362,9 +411,11 @@ async def zoho_callback(
     except UntrustedHost as exc:
         raise HTTPException(status_code=400, detail="untrusted_host") from exc
     source = _source()
-    # 4. The mode, before Zoho is called. _adopt_mirror checks it again.
+    # 4. The mode, before Zoho is called. _adopt_mirror checks it again. And
+    #    the account that the records came from (CRM-X0).
     async with _tenant_session() as db:
         _refuse_native(await _read_mode(db, org))
+        stored = await _stored_account(db, org)
     # 5. The code for tokens. Zoho is called here and not before.
     params: Mapping[str, str] = {
         "code": code, "accounts-server": server, **({"location": location} if location else {}),
@@ -374,6 +425,27 @@ async def zoho_callback(
     except SourceError as exc:
         _log.warning("zoho consent not finished: %s", auth.safe_code(exc.code) or "error")
         return _failed(exc.code or ("untrusted_host" if isinstance(exc, UntrustedHost) else "exchange_failed"))
+    # 5b. CRM-X0: the same Zoho account? One credit, and only when a profile
+    #     names the account. A read that fails confirms nothing, so nothing
+    #     changes and the new token goes.
+    if stored is not None:
+        try:
+            fresh = await _source(credential).read_org()
+        except (SourceError, TimeoutError, httpx.HTTPError) as exc:
+            code = auth.safe_code(getattr(exc, "code", "")) or type(exc).__name__
+            _log.warning("zoho consent: the account is not readable: %s", code)
+            await _best_effort_revoke(credential, "unconfirmed")
+            return _failed("org_unreadable")
+        verdict = mapping.same_org(stored, fresh)
+        if verdict is False:
+            await _mark_needs_reset(org)
+            await _best_effort_revoke(credential, "different_org")
+            _log.info("zoho consent for another account: needs_reset")
+            return RedirectResponse(RETURN_DIFFERENT_ORG, status_code=302)
+        if verdict is None:
+            # No row, or no key to compare: nothing confirms the account.
+            await _best_effort_revoke(credential, "unconfirmed")
+            return _failed("org_unreadable")
     # 6. The old credential, the new one, the mode and the pointer: one
     #    transaction. The old token is read under the row lock, so two
     #    callbacks at one time each see the token that the other replaced.

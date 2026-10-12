@@ -33,14 +33,35 @@ names groups, and ``everyone`` already says "the whole organization".
 
 **No tenant in the body.** The organization is ``UserContext.organization_id``
 from the server (R5, R11). The response does not name it either.
+
+**The start over (WS-53 CRM-X0, §19.11 item 6).** ``POST /crm/reset`` with
+``{"confirm": "DELETE", "then": "none" | "native" | "mirror"}``. Admin only,
+and any other ``confirm`` is a 422. It is the one route that removes CRM
+records, and it does four things in this order:
+
+1. ``then = "mirror"`` makes the Zoho consent URL first, so a missing Zoho
+   client is a 503 before anything goes.
+2. It disconnects Zoho through the ONE disconnect logic
+   (``connection.disconnect_zoho``): a revoke at Zoho, and no token left for a
+   run to read.
+3. In ONE transaction, it takes the ``crm_settings`` row ``FOR UPDATE``. A
+   sync page reads the mode ``FOR SHARE`` (``engine.MODE_SHARE_SQL``), so the
+   lock waits for a page in flight, and the next page reads the new mode and
+   stops. Then ``core.reset_crm_from_admin`` deletes the records, and the row
+   gets the new mode with no connection. ``then = "native"`` seeds the Native
+   stages in the same transaction.
+4. One audit line through ``acb_audit``: the admin, the time and the counts.
+
+``GET /crm/settings/counts`` reads the same counts for the hub, admin only.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_permission
+from acb_common import get_logger
 from fastapi import Depends, HTTPException
 from gateway.connections import store
 from gateway.routes.crm.access import (
@@ -49,13 +70,26 @@ from gateway.routes.crm.access import (
     DEFAULT_ACCESS,
     read_settings,
 )
-from gateway.routes.crm.connection import OWNING_APP, PROVIDER, disconnect_zoho
-from gateway.routes.crm.core import _tenant_session, router
+from gateway.routes.crm.connection import (
+    OWNING_APP,
+    PROVIDER,
+    consent_url_for,
+    disconnect_zoho,
+)
+from gateway.routes.crm.core import (
+    _tenant_session,
+    count_records,
+    reset_crm_from_admin,
+    router,
+)
+from gateway.routes.crm.flags import crm_mirror_allowed
 from gateway.routes.crm.seed import seed_native_pipeline
 from gateway.routes.projects.core import validate_grant_subject
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
+
+_log = get_logger("crm.settings")
 
 #: The ``crm_settings.mode`` vocabulary, mirrored from the CHECK in
 #: migration 243.
@@ -309,3 +343,122 @@ async def patch_crm_settings(
         # `connected` row never gets here (409 above).
         await disconnect_zoho(org)
     return result
+
+
+# ── The start over (WS-53 CRM-X0) ───────────────────────────────────────────
+
+#: The one word the admin types. The dialog shows it, and the route checks it.
+RESET_CONFIRM = "DELETE"
+
+#: ``SELECT ... FOR UPDATE`` on the org's settings row. A sync page holds the
+#: same row ``FOR SHARE`` (``engine.MODE_SHARE_SQL``), so this waits for it.
+_LOCK_SETTINGS_SQL = (
+    "SELECT mode FROM crm_settings "
+    "WHERE organization_id = CAST(:o AS uuid) FOR UPDATE"
+)
+
+_CLEAR_CONNECTION_SQL = (
+    "UPDATE crm_settings SET connection_id = NULL "
+    "WHERE organization_id = CAST(:o AS uuid)"
+)
+
+
+class ResetIn(BaseModel):
+    """The body of ``POST /crm/reset``. No other field is allowed (R11)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: str
+    then: Literal["none", "native", "mirror"] = "none"
+
+
+class ResetOut(BaseModel):
+    #: The records that went, by entity.
+    removed: dict[str, int]
+    #: The mode after the start over.
+    mode: str | None = None
+    #: ``then = "mirror"``: the Zoho consent to follow.
+    consent_url: str | None = None
+
+
+class CountsOut(BaseModel):
+    counts: dict[str, int]
+    total: int
+
+
+def _audit_reset(user: UserContext, org: str, then: str, removed: dict[str, int]) -> None:
+    """One audit line: the admin, the time (on the event) and the counts."""
+    try:
+        from acb_audit import AuditEvent, record
+
+        record(AuditEvent(
+            actor=f"user:{(user.email or '').strip().lower()}",
+            action="crm.reset",
+            target=f"crm:{org}",
+            payload={"organization_id": org, "then": then, "removed": dict(removed)},
+            organization_id=org,
+        ))
+    except Exception as exc:  # an audit backend that is down must not undo a reset
+        _log.warning("crm.reset.audit_failed error=%s", type(exc).__name__)
+
+
+@router.get(
+    "/settings/counts", response_model=CountsOut,
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def get_crm_counts(user: UserContext = Depends(get_current_user)) -> CountsOut:
+    """The records of the org, by entity, for the setup hub and the dialog."""
+    org = _organization(user)
+    async with _tenant_session() as db:
+        counts = await count_records(db, org)
+    return CountsOut(counts=counts, total=sum(counts.values()))
+
+
+@router.post(
+    "/reset", response_model=ResetOut,
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def reset_crm(
+    payload: ResetIn, user: UserContext = Depends(get_current_user),
+) -> ResetOut:
+    """Start the CRM over. See the module doc for the order of the steps."""
+    org = _organization(user)
+    if payload.confirm != RESET_CONFIRM:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Type {RESET_CONFIRM} to confirm. Nothing was removed.",
+        )
+    consent_url: str | None = None
+    if payload.then == "mirror":
+        # Before anything goes: a Zoho that cannot start must not cost the records.
+        if not crm_mirror_allowed(org):
+            raise HTTPException(status_code=409, detail={
+                "code": "mirror_unavailable",
+                "message": "Zoho sync is not on for this organization. Nothing was removed.",
+            })
+        consent_url = consent_url_for(org, (user.email or "").strip().lower())
+    # The sync stops: no token for a run, and a revoke at Zoho.
+    await disconnect_zoho(org)
+    mode = "native" if payload.then == "native" else None
+    async with _tenant_session() as db:
+        # Waits for a sync page in flight. A later page reads the new mode.
+        await db.execute(text(_LOCK_SETTINGS_SQL), {"o": org})
+        current = _wire(await read_settings(db, org))
+        removed = await reset_crm_from_admin(db, org)
+        row = (await db.execute(text(_UPSERT_SQL), {
+            "organization_id": org,
+            "mode": mode,
+            "access": current.access,
+            "access_groups": current.access_groups,
+            "updated_by": (user.email or "").strip().lower() or None,
+            "expected_mode": current.mode,
+        })).first()
+        if row is None:  # the lock makes this unreachable, and it stays a 409
+            raise HTTPException(status_code=409, detail=(
+                "The CRM mode changed while this request ran. Nothing was removed."
+            ))
+        await db.execute(text(_CLEAR_CONNECTION_SQL), {"o": org})
+        if mode == "native":
+            await seed_native_pipeline(db, org)
+    _audit_reset(user, org, payload.then, removed)
+    return ResetOut(removed=removed, mode=mode, consent_url=consent_url)
