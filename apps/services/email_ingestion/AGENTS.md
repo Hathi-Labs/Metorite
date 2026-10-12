@@ -217,12 +217,15 @@ All providers implement the `BaseEmailProvider` abstract interface:
       mail. It logs, and the next cycle seeds again. A spent rate limit is no
       failed seed: a `ProviderRateLimited` fails the cycle.
     - **The read (EM-G4b-f1).** The history read follows each
-      `nextPageToken`. Each page fetches its messages before the next page
-      is read, and an id that two pages name is fetched once. A finished
-      page that is not the last moves the position to the `id` of its last
+      `nextPageToken`. Each page fetches its messages before the loop reads
+      the next page. The read fetches an id once for each page that names
+      it, because the event of a later page can be newer than an earlier
+      fetch. A finished page moves the position to the `id` of its last
       record, never to the `historyId` of the answer (GM-17). After the last
-      page, the cursor is the `historyId` of the last answer. `labelsAdded`
-      and `labelsRemoved` fetch the message in full, as `messagesAdded` does.
+      page, the cursor is the larger of that id and the `historyId` of the
+      FIRST answer (`_read_end`), because the last answer can be past a
+      change that no page carried. `labelsAdded` and `labelsRemoved` fetch
+      the message in full, as `messagesAdded` does.
     - **A rate limit after a finished page.** The result holds the finished
       pages only, and it sets `SyncResult.rate_limited`. The page that the
       limit stopped drops what it fetched, and the next cycle reads it again.
