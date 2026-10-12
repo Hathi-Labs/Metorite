@@ -7,15 +7,21 @@ outside agent may reach. Branch 0 of ``get_current_user`` refuses every other
 pair. This file holds the list to the gateway and to the Projects chat
 manifest, so a change to any of the three cannot drift silently.
 
-The four rules of §9.5. EA-3a builds rules 1 and 2, the gateway half. EA-3b
+The four rules of §9.5. EA-3a built rules 1 and 2, the gateway half. EA-3b-1
 adds rules 3 and 4, which read the edge's tool records
-(``agent_edge/tools.py``), when that module exists.
+(``agent_edge/tools.py``).
 
 1. Each pair in ``MCP_ROUTES`` is a route the gateway serves, and its method
    is ``GET``.
 2. Each pair is class A in ``skill_projects.manifest.MANIFEST``, or it is a
    named exception. EA-3 has one exception, ``GET /auth/me``. No class B, C
    or X route appears.
+3. Each tool of ``agent_edge.tools.TOOLS`` declares a ``required_scope`` (a
+   resource scope, or ``None`` for any live token), the four annotations of
+   a read, an ``inputSchema`` and an ``outputSchema`` (EA-3b-1).
+4. Each tool input maps to a parameter of its route. The parameters come
+   from ``route.dependant``, as ``test_projects_field_parity.py`` reads them.
+   Each route a tool reads is in ``MCP_ROUTES`` (EA-3b-1).
 
 Database-free. The gateway app imports, and the manifest is a tuple.
 """
@@ -84,3 +90,88 @@ def test_rule_2_each_pair_is_class_a_or_a_named_exception():
 def test_every_named_exception_is_still_in_the_allowlist():
     stale = sorted(set(NAMED_EXCEPTIONS) - set(MCP_ROUTES))
     assert not stale, stale
+
+
+# ── Rules 3 and 4: the edge's tool records (EA-3b-1) ────────────────────────
+
+#: The four annotations of every EA-3 tool, and their values (§9.5).
+READ_HINTS = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
+
+def _tools() -> list:
+    from agent_edge.tools import TOOLS
+
+    assert TOOLS, "an empty tool list would make rules 3 and 4 vacuous"
+    return list(TOOLS.values())
+
+
+def _route_parameters() -> dict[str, set[str]]:
+    """``{template: names}`` of each GET route, from FastAPI's ``dependant``:
+    the path parameters and the query parameters, its dependencies too."""
+    from gateway import main
+
+    def query(dependant) -> set[str]:
+        names = {q.alias for q in dependant.query_params}
+        for sub in dependant.dependencies:
+            names |= query(sub)
+        return names
+
+    out: dict[str, set[str]] = {}
+    for route in served_routes(main.app.routes):
+        if "GET" in (getattr(route, "methods", None) or ()):
+            dependant = route.dependant
+            out[route.path] = {p.alias for p in dependant.path_params} | query(dependant)
+    return out
+
+
+def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
+    from acb_auth.agent_oauth import RESOURCE_SCOPES
+
+    wrong: list[str] = []
+    for tool in _tools():
+        if not hasattr(tool, "required_scope"):
+            wrong.append(f"{tool.name}: no required_scope")
+        elif tool.required_scope is not None and tool.required_scope not in RESOURCE_SCOPES:
+            wrong.append(f"{tool.name}: required_scope {tool.required_scope!r}")
+        if dict(tool.annotations) != READ_HINTS:
+            wrong.append(f"{tool.name}: annotations {dict(tool.annotations)}")
+        for name in ("input_schema", "output_schema"):
+            schema = getattr(tool, name, None)
+            if not isinstance(schema, dict) or schema.get("type") != "object":
+                wrong.append(f"{tool.name}: {name} is not an object schema")
+        listed = tool.describe()
+        for key in ("inputSchema", "outputSchema", "annotations", "title"):
+            if not listed.get(key):
+                wrong.append(f"{tool.name}: tools/list shows no {key}")
+    assert not wrong, "\n  ".join(["A tool record breaks §9.5 rule 3:", *wrong])
+
+
+def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
+    params = _route_parameters()
+    wrong: list[str] = []
+    for tool in _tools():
+        inputs = set(tool.input_schema.get("properties", {}))
+        if set(tool.params) != inputs:
+            wrong.append(f"{tool.name}: inputs {sorted(inputs)} but params "
+                         f"{sorted(tool.params)}")
+        served = params.get(tool.route)
+        if served is None:
+            wrong.append(f"{tool.name}: GET {tool.route} is not a gateway route")
+            continue
+        for name, parameter in sorted(tool.params.items()):
+            if parameter not in served:
+                wrong.append(f"{tool.name}: {name} maps to {parameter!r}, which "
+                             f"GET {tool.route} does not take")
+    assert not wrong, "\n  ".join(["A tool input breaks §9.5 rule 4:", *wrong])
+
+
+def test_rule_4_each_route_a_tool_reads_is_in_the_allowlist():
+    for tool in _tools():
+        reads = (tool.route, *tool.routes)
+        missing = sorted(r for r in reads if ("GET", r) not in MCP_ROUTES)
+        assert not missing, f"{tool.name} reads routes outside MCP_ROUTES: {missing}"
