@@ -152,6 +152,7 @@ def drive_native(
     history: list[dict[str, str]] | None = None,
     extra_payload: dict[str, Any] | None = None,
     request_model: str | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[Any]]:
     """Run agent *name* (built from *rel_dir*) through ``run_agent_stream``.
 
@@ -161,6 +162,8 @@ def drive_native(
     *extra_payload* adds keys that the gateway route puts on the payload
     before the run, for example ``memory_context`` and ``system_context``.
     *request_model* is the ``model`` of ``AgentRunRequest``, the chat's pick.
+    *on_event* gets each event WHILE the run goes on, for example to answer
+    a confirmation card the way ``POST /agent/respond-input`` does.
     """
     executor = pytest.importorskip(
         "orchestrator.executor", reason="orchestrator not installed",
@@ -212,14 +215,18 @@ def drive_native(
         payload.update(extra_payload)
 
     async def _collect() -> list[str]:
-        return [
-            line async for line in executor.run_agent_stream(
-                name, payload,
-                run_id=f"run-{name}-{think_mode or 'none'}",
-                thread_id=tid,
-                think_mode=think_mode or "auto",
-                model=request_model,
-            )
-        ]
+        lines: list[str] = []
+        async for line in executor.run_agent_stream(
+            name, payload,
+            run_id=f"run-{name}-{think_mode or 'none'}",
+            thread_id=tid,
+            think_mode=think_mode or "auto",
+            model=request_model,
+        ):
+            lines.append(line)
+            if on_event is not None:
+                for event in parse_frames([line]):
+                    on_event(event)
+        return lines
 
     return parse_frames(asyncio.run(_collect())), built
