@@ -607,7 +607,7 @@ function Node({
         editor={
           renaming && actions ? (
             <form
-              className="flex min-w-0 flex-1 items-center gap-1"
+              className="flex min-w-0 flex-1 items-center gap-1.5"
               onSubmit={(e) => {
                 e.preventDefault();
                 const next = draft.trim();
