@@ -12877,8 +12877,8 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** 🔨 PR-C1b built, not merged (2026-10-12, branch `gmail-c1b-send`). PR-C1a merged as
-#919 (`421eeb8f4`). PR-C2 is not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
+**Status.** 🔨 PR-C2 built, not merged (2026-10-13, branch `gmail-c2-ui`). PR-C1a merged as #919
+(`421eeb8f4`), and PR-C1b merged as #925 (`144dc0d1f`). Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
 C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
 widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
 
@@ -13130,6 +13130,20 @@ read of `send_draft_endpoint` stays as on main, and an Outlook send writes the S
 text half still comes from `build_signed_bodies`, because that half is the same for both paths.
 `sign_html` reads the new part of the HTML only. A quote of an earlier mail of the member holds the
 signature too, and that copy must not stop the signature.
+
+**The build of PR-C2 (2026-10-13).** Four facts that the scope did not name:
+
+- `gatewayFetch` keeps the raw `detail` on its error. The detail of the 409 is an object, so its
+  message reads `[object Object]`. `isHtmlUnavailable` reads `status` and `detail.reason`.
+- The store does not put `html` into a row of the list. It sets no page banner for the 409,
+  because the card shows the notice.
+- `draftText` is the one rule for the text of the card. The outgoing text and the text at open use
+  it, so a card with no edit equals its text at open.
+- The stopped send shows the words of the table, as an alert. The table has no words that tell the
+  member that the next press sends the text only.
+
+The behaviour fence is `e2e/email-gmail-draft-notice.spec.ts`. With `GMAIL_C2_SHOTS` set, it also
+saves the screenshots of acceptance 23.
 
 **Acceptance of PR-C1 (done when).**
 
