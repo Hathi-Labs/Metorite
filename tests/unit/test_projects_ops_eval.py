@@ -298,7 +298,11 @@ def _other_day(h: R.OpsHarness) -> set[str]:
     (datetime(2026, 10, 12, 18, 35, tzinfo=UTC), date(2026, 10, 13)),
     # 11:30 in India: the same day on both clocks.
     (datetime(2026, 10, 12, 6, 0, tzinfo=UTC), date(2026, 10, 12)),
-], ids=["18:35Z", "06:00Z"])
+    # Sunday in UTC, and Monday 00:05 in India: next_monday moves a week.
+    (datetime(2026, 10, 11, 18, 35, tzinfo=UTC), date(2026, 10, 12)),
+    # 31 October in UTC, and 1 November in India: every due date crosses a month.
+    (datetime(2026, 10, 31, 18, 35, tzinfo=UTC), date(2026, 11, 1)),
+], ids=["18:35Z", "06:00Z", "sunday-to-monday", "month-end"])
 def test_the_eval_passes_on_either_side_of_the_member_midnight(
     instant: datetime, today: date, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
