@@ -34,6 +34,9 @@
 > **Built later:** CRM-Q6a, the generic record store (2026-10-12, migration 251). See §18.7.
 >
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
+>
+> **Built from §20:** CRM-C3, stages and statuses you can shape, in both modes
+> (2026-10-13, migration 255). Two items wait for CRM-C2 (§20.6, "Built as").
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -2969,6 +2972,9 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app
 
 ### 20.6 CRM-C3: Stages and statuses you can shape, in both modes
 
+**Status.** 🔨 Built 2026-10-13 on branch `crm-c3`, migration 255. Two items
+wait for CRM-C2 to merge. See "Built as" at the end of this section.
+
 **Gate.** AGENT-SAFE. No flag. With no overlay value set, each board, list
 and report shows what it shows today. Item 7 is a fix of the sync.
 
@@ -3218,6 +3224,49 @@ the stage type or the name.
 `tests/unit/test_crm_upsert_from_source_fence.py`,
 `tests/fixtures/crm_weighted_parity.json`, `app/crm/lib/board.test.ts` and
 `app/crm/components/crmC3.test.ts` (new).
+
+**Built as (2026-10-13).** Migration 255 holds the columns and the two
+partial unique indexes of the table above.
+
+- **The wire.** `StatusModel` also carries `ui_position`, `ui_probability`
+  and `ui_color`, so the lane order and the colour rule read the overlay as
+  stored. The effective `position` folds the admin order key into one
+  number. An ordered row gives its `ui_position`. Once a kind has an admin
+  order, a row with none gives `1000000 + position`.
+  `core.ADMIN_ORDER_TAIL` holds that number.
+- **The reads.** `core.read_statuses` and `core.read_status` run the one
+  SELECT list. `LostReasonModel` carries `hidden`.
+- **The reset of the order.** "Reset order to Zoho" is `POST
+  /crm/statuses/{kind}/order/reset`. Mirror mode only, and Native mode gets
+  422. A `DELETE` on `/order` would meet `DELETE /statuses/{kind}/{status_id}`.
+- **The colour.** `ui_color` must be a short colour name, else 422. The
+  Native `color` keeps its rules.
+- **Native hide.** The rule of item 15 binds in Native mode only. The lead
+  rule refuses the default lead status.
+- **Two values that trade names.** The spec names the merge for a name row
+  with no `ext_id`. When the name row holds the `ext_id` of another value,
+  the sync renames it to `<name> [<ext_id>]`. Its own value names it again
+  in the same run. A value that Zoho no longer lists keeps that name, and
+  the gone rule marks it.
+- **A picklist with no Zoho id.** The gone rule marks nothing when no value
+  of the read has an id.
+- **The pickers.** `lib/emptyStages.ts` holds `pickable` and `isRetired`.
+  The filter chips are `chipsFor` in `lib/filters.ts`, because `FilterBar.tsx`
+  draws chips that it does not build. `QuickCreateModal.tsx` has no status
+  picker, so it needs no change, and `page.tsx` is not changed.
+- **The order of a hidden lane.** `orderLanes` puts it last in its group.
+  `visibleLanes` shows it only with records. The Leads board runs both.
+- **The Mirror editor.** `PipelineSettings.tsx` reads `orderStatuses` and
+  `resetStatusOrder` from the store, because the page wiring is CRM-C1's.
+  The Native drag keeps its PATCH of each moved row.
+- **Wait for CRM-C2.** The "Hidden" mark (item 13: the `hidden` prop of
+  `KanbanBoard.tsx` and `BoardColumn.tsx`) and the `stageAccent` rule of item
+  16 (done when 14). C2 owns those files, so this branch rebases on C2 and
+  adds them after C2 merges.
+- **A gap that this slice does not close.** The sync reads the picklist only
+  in an import or a reconcile (`engine._execute`). So a Zoho reorder or a
+  Zoho probability reaches the mirror at the next reconcile, not at the next
+  incremental run.
 
 **Verification.**
 
