@@ -88,6 +88,8 @@ type RecordActions = {
   /** A related row opens that record. */
   onOpenRelated?: (entity: EntitySlug, id: string) => void;
   onRetryRelated?: () => void;
+  /** The `log-call` job (CRM-X2): not 0 sets the Timeline composer to Call. */
+  callRequest?: number;
 };
 
 /** The place of the record in the list behind it (CRM-X4 item 5). */
@@ -252,6 +254,7 @@ export function RecordPage({
   related = NO_RELATED,
   onOpenRelated,
   onRetryRelated,
+  callRequest = 0,
 }: {
   entity: EntitySlug;
   record: Row;
@@ -373,6 +376,7 @@ export function RecordPage({
             saving={saving}
             parentMirrored={mirrored}
             now={now}
+            callRequest={callRequest}
           />
         ) : shown === "related" ? (
           <FieldsPanel part="related" {...panel} />

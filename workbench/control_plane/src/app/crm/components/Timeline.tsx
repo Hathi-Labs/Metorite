@@ -34,7 +34,7 @@ import Icon from "@/components/Icon";
 import { TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Input";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Badge from "@/components/ui/Badge";
 import { ONLY_IN_METORITE, onlyInMetorite } from "../lib/connect";
 import { dateTime, dwellLabel } from "../lib/format";
@@ -66,7 +66,13 @@ export default function Timeline({
   saving,
   parentMirrored = false,
   now,
+  callRequest = 0,
 }: {
+  /**
+   * The `log-call` job of the command bar (CRM-X2). A number other than 0
+   * sets the composer to Call and focuses it. Each new number asks again.
+   */
+  callRequest?: number;
   /** The record is owned by Zoho, so Metorite-only entries get a badge. */
   parentMirrored?: boolean;
   /** Today, for the due dates. A test passes a fixed one. */
@@ -81,7 +87,18 @@ export default function Timeline({
   onToggleTask: (activityId: string, completed: boolean) => void;
   saving: boolean;
 }) {
-  const [kind, setKind] = useState<Composable>("note");
+  const [kind, setKind] = useState<Composable>(callRequest ? "call" : "note");
+  // A new ask while the Timeline is already open. React's rule for state that
+  // follows a prop: compare during the render, not in an effect.
+  const [askSeen, setAskSeen] = useState(callRequest);
+  if (callRequest !== askSeen) {
+    setAskSeen(callRequest);
+    if (callRequest) setKind("call");
+  }
+  const composer = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (callRequest) composer.current?.focus();
+  }, [callRequest]);
   const [draft, setDraft] = useState("");
   const [due, setDue] = useState("");
   const [filter, setFilter] = useState<TimelineFilter>("all");
@@ -124,6 +141,7 @@ export default function Timeline({
         </div>
         {/* The shared primitives, never raw fields (design rule 3, CRM-X4). */}
         <Textarea
+          ref={composer}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           rows={2}
