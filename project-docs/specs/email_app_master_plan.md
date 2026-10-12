@@ -16309,6 +16309,10 @@ than the base finds. After each merge, check the box: the deployed SHA, and one
 - **`shadow` costs one more call.** In `shadow`, each long thread pays one `decide` call
   and keeps the fallback. Run `shadow` for one week at most. `bound_s` on `shadow` keeps the
   added wait at `CONTEXT_DECIDE_BOUND_S` (4 s) or less.
+- **Follow-up of PR-A2: an edit on a streamed preview is lost on Stop.** Stop gives back the
+  text that the member had before the round, so an edit on top of the preview goes. The fix
+  compares the body with the last write of the round, and that needs a body getter in each
+  composer. It is not built.
 
 ### 17.12 Owner questions
 
