@@ -1119,6 +1119,22 @@ class GmailProvider(BaseEmailProvider):
                        message_id, type(exc).__name__, status)
         return note
 
+    def _record_body_part_failure(
+        self, message_id: Any, part_id: Any, exc: BaseException,
+    ) -> None:
+        """Log and count one body part that a fetch could not read (WS-17
+        EM-G2-f1, D-G2-f1-5). The record goes into ``fetch_failures``, as
+        the record of a failed message does. It names the message id, the
+        part id, the class of the error and the HTTP status, and never a
+        subject or an address."""
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        self.fetch_failures.append(
+            f"gmail.body_part_failed id={message_id} part={part_id} "
+            f"error={type(exc).__name__} status={status}")
+        logger.warning(
+            "gmail.body_part_failed message_id=%s part_id=%s error=%s "
+            "status=%s", message_id, part_id, type(exc).__name__, status)
+
     async def _refresh_access_token(self) -> None:
         """Refresh the OAuth access token using the refresh token."""
         if not self._refresh_token:
@@ -1299,7 +1315,55 @@ class GmailProvider(BaseEmailProvider):
             params={"format": "full"},
         )
         resp.raise_for_status()
-        return self._parse_gmail_message(resp.json())
+        raw = resp.json()
+        # The one place of the fill (EM-G2-f1, D-G2-f1-2): each caller of
+        # the parse, the HTML route of §14 too, comes through here.
+        await self._fill_attachment_bodies(client, raw)
+        return self._parse_gmail_message(raw)
+
+    async def _fill_attachment_bodies(
+        self, client: httpx.AsyncClient, raw: dict[str, Any],
+    ) -> None:
+        """Fetch each body part that Gmail sent by ``attachmentId`` (WS-17
+        EM-G2-f1, ``email_app_master_plan.md`` §12.3.12.3).
+
+        Gmail can leave a large ``text/plain`` or ``text/html`` part out of
+        ``format=full``. The part then has ``body.attachmentId`` and no
+        ``body.data``, and the parse gives an empty body. This step runs one
+        ``users.messages.attachments.get`` for each such part, in order, and
+        writes the base64url answer into ``body.data``. The parse then decodes
+        it with the charset of the part (D-G2-f1-4). The parse stays
+        synchronous (D-G2-f1-1).
+
+        The walk skips each file and each part below a file, as
+        ``_gmail_bodies`` does, so a file never gets a fetch (D-G2-f1-3). A
+        message with no such part makes no request. A failed fetch leaves
+        that body empty and one record (D-G2-f1-5). A rate limit whose tries
+        are spent raises (D-G2-f1-6)."""
+        payload = raw.get("payload") or {}
+        for part in _iter_gmail_parts(
+                payload, descend=lambda p: not _gmail_part_is_file(p)):
+            if _gmail_part_is_file(part):
+                continue
+            if str(part.get("mimeType", "")).lower() not in (
+                    "text/plain", "text/html"):
+                continue
+            body = part.get("body") or {}
+            attachment_id = body.get("attachmentId")
+            if not attachment_id or body.get("data"):
+                continue
+            try:
+                resp = await client.get(
+                    f"/users/me/messages/{raw.get('id')}"
+                    f"/attachments/{attachment_id}")
+                resp.raise_for_status()
+                data = resp.json()["data"]
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                self._record_body_part_failure(
+                    raw.get("id"), part.get("partId"), exc)
+                continue
+            part["body"] = {**body, "data": data}
 
     async def send_message(
         self,
@@ -1763,7 +1827,10 @@ class GmailProvider(BaseEmailProvider):
         archiving a 40k-message newsletter backlog costs 40 calls, not 40,000.
 
         ``failed_out`` collects ids the per-message fallback could not apply, so
-        the caller can retry them (see the base contract).
+        the caller can retry them (see the base contract). A rate limit whose
+        tries are spent makes no per-message call. The ids of its chunk and of
+        each later chunk go into ``failed_out``, and the act returns
+        (EM-G4a-f1).
 
         Gmail never re-keys a message id, so the return is always empty.
         """
@@ -1783,6 +1850,20 @@ class GmailProvider(BaseEmailProvider):
             try:
                 resp = await client.post("/users/me/messages/batchModify", json=body)
                 resp.raise_for_status()
+            except GmailRateLimited:
+                # The tries and the wait budget of the client are spent, so
+                # each ``modify`` of a fallback stops at its first refusal.
+                # No call goes out for each message. This chunk and each later
+                # chunk fail, and the caller retries them with a back-off
+                # (EM-G4a-f1, D-G4a-f1-1).
+                left = provider_message_ids[i:]
+                logger.warning(
+                    "gmail.batch_modify_rate_limited action=%s size=%d left=%d",
+                    action, len(chunk), len(left),
+                )
+                if failed_out is not None:
+                    failed_out.extend(left)
+                return {}
             except Exception as exc:  # noqa: BLE001
                 # A whole chunk failing is worth a retry one message at a time:
                 # batchModify is all-or-nothing, so one stale id would otherwise
@@ -2284,18 +2365,24 @@ class GmailProvider(BaseEmailProvider):
         A rate limit whose tries are spent raises (EM-G4a item 9). The
         caller decides what it does: a sweep fails, and the history read
         keeps its finished pages (EM-G4b-f1). Each other failure leaves its
-        record in ``result.errors`` (item 10). Returns the ids whose failure
-        a later cycle can fix (``_transient``)."""
+        record in ``result.errors`` (item 10). The record of a body part that
+        ``get_message`` could not fill goes there too (EM-G2-f1,
+        D-G2-f1-5). Returns the ids whose failure a later cycle can fix
+        (``_transient``)."""
         failed: list[str] = []
         for mid in ids:
+            first = len(self.fetch_failures)
             try:
-                result.messages.append(await self.get_message(mid))
+                message = await self.get_message(mid)
             except Exception as exc:
                 _raise_rate_limit(exc)
-                result.errors.append(self._record_fetch_failure(mid, exc))
+                self._record_fetch_failure(mid, exc)
+                result.errors.extend(self.fetch_failures[first:])
                 if _transient(exc):
                     failed.append(mid)
                 continue
+            result.errors.extend(self.fetch_failures[first:])
+            result.messages.append(message)
             result.messages_synced += 1
         return failed
 

@@ -26,6 +26,9 @@ no real address and no real content.
   name holds a comma with no quotes.
 - (i) ``i_forwarded_rfc822.json``: a forward as an inline ``message/rfc822``
   part with no file name (review round 1).
+- (j) ``j_text_part_by_attachment_id.json``: a large HTML part that Gmail
+  sends by ``body.attachmentId`` with no ``body.data``, and a ``notes.txt``
+  file (EM-G2-f1, §12.3.12.3).
 
 R7 fences named here:
 
@@ -41,6 +44,10 @@ R7 fences named here:
 * ``gmail-folder-model``: the system labels decide the folder, else
   ``archive``. A user label never sets it. ``list_messages`` keeps the folder
   of the parse, and the Archive folder pages with a query.
+* ``gmail-body-part-fill`` (EM-G2-f1): ``get_message`` fetches a body part
+  that comes by ``attachmentId`` once, and never a file. A failed fetch
+  leaves that body empty and one record. A spent rate limit raises. These
+  cases drive the real client on ``httpx.MockTransport``.
 
 The R8 half is in ``test_email_rekey_reclaim.py``:
 ``test_two_parsed_gmail_fixtures_with_one_message_id_write_two_rows``.
@@ -53,16 +60,23 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
+import email_ingestion.providers.gmail as gmail_mod
+import httpx
 import pytest
+from email_ingestion.providers.app_credentials import OAuthApp
 from email_ingestion.providers.base import EmailAddress, EmailMessage
 from email_ingestion.providers.gmail import (
     GMAIL_ARCHIVE_QUERY,
+    GMAIL_MAX_TRIES,
     GmailProvider,
+    GmailRateLimited,
     _gmail_folder_from_labels,
     _gmail_part_charset,
 )
@@ -500,12 +514,12 @@ async def test_a_user_label_named_archive_does_not_replace_the_query() -> None:
 
 
 def test_each_fixture_is_a_gmail_message_with_no_real_address() -> None:
-    """Item 11. The nine fixtures exist, each has the shape of
+    """Item 11. The ten fixtures exist, each has the shape of
     ``users.messages.get`` with ``format=full``, and each address is at a
-    reserved example domain (RFC 2606)."""
+    reserved example domain (RFC 2606). EM-G2-f1 added (j)."""
     names = sorted(p.name for p in _FIXTURES.glob("*.json"))
     assert [n[:2] for n in names] == [
-        "a_", "b_", "c_", "d_", "e_", "f_", "g_", "h_", "i_"], names
+        "a_", "b_", "c_", "d_", "e_", "f_", "g_", "h_", "i_", "j_"], names
     for name in names:
         raw = _fixture(name)
         assert {"id", "threadId", "labelIds", "snippet", "payload",
@@ -514,3 +528,218 @@ def test_each_fixture_is_a_gmail_message_with_no_real_address() -> None:
         assert domains, name
         for domain in domains:
             assert domain.endswith(_EXAMPLE_DOMAINS), (name, domain)
+
+
+# ── gmail-body-part-fill (EM-G2-f1, §12.3.12.3) ─────────────────────────────
+
+_API = "/gmail/v1/users/me"
+_LOGGER = "email_ingestion.providers.gmail"
+#: The part of fixture (j) that Gmail sends by ``attachmentId``.
+_J_HTML_PART = "ANGjdJ_fixture_body_part_html"
+#: The HTML of that part. It is long, as a part that Gmail does not inline is.
+_J_HTML = ("<html><body>" + "<p>One row of the weekly report.</p>" * 2000
+           + "</body></html>")
+
+#: One answer of the fake. It makes a new response at each call.
+_Answer = Callable[[], httpx.Response]
+
+
+def _json(body: dict[str, Any], status: int = 200) -> _Answer:
+    return lambda: httpx.Response(status, json=body)
+
+
+def _part_answer(data: bytes) -> _Answer:
+    """The answer of ``users.messages.attachments.get``, in base64url."""
+    return _json({"size": len(data),
+                  "data": base64.urlsafe_b64encode(data).decode()})
+
+
+class _Wire:
+    """One fake Gmail API on ``httpx.MockTransport``.
+
+    ``on`` gives a path under ``/users/me`` its answers, in order. The last
+    answer repeats. ``seen`` records the path of each API request. The probe
+    of ``authenticate`` answers and is not recorded."""
+
+    def __init__(self) -> None:
+        self.answers: dict[str, list[_Answer]] = {
+            "/labels": [_json({"labels": []})]}
+        self.seen: list[str] = []
+
+    def on(self, path: str, *answers: _Answer) -> None:
+        self.answers[path] = list(answers)
+
+    def attachment_gets(self) -> list[str]:
+        return [p for p in self.seen if "/attachments/" in p]
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path.removeprefix(_API)
+        if path == "/profile":
+            return httpx.Response(200, json={"historyId": "1"})
+        self.seen.append(path)
+        answers = self.answers.get(path)
+        if not answers:
+            return httpx.Response(404, json={"error": {"code": 404}})
+        return (answers.pop(0) if len(answers) > 1 else answers[0])()
+
+
+@pytest.fixture()
+def wire(monkeypatch: pytest.MonkeyPatch) -> _Wire:
+    """Send each ``httpx.AsyncClient`` of the provider to one fake. The real
+    ``_get_client`` builds the client, so ``GmailBearer`` and its rate-limit
+    rule apply. ``_wait`` does not sleep."""
+    service = _Wire()
+    transport = httpx.MockTransport(service.handle)
+    real = httpx.AsyncClient
+
+    def _client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real(*args, **kwargs)
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(httpx, "AsyncClient", _client)
+    monkeypatch.setattr(gmail_mod, "_wait", _no_sleep)
+    return service
+
+
+def _wired_provider() -> GmailProvider:
+    return GmailProvider({"access_token": "at-1", "refresh_token": "r-1"},
+                         app=OAuthApp(client_id="cid", client_secret="secret"))
+
+
+def _j_on_the_wire(wire: _Wire, part_answer: _Answer) -> tuple[str, str]:
+    """Put fixture (j) and the answer for its HTML part on *wire*. Returns
+    the message id and the path of the part fetch."""
+    raw = _fixture("j_text_part_by_attachment_id.json")
+    mid = raw["id"]
+    wire.on(f"/messages/{mid}", _json(raw))
+    part_path = f"/messages/{mid}/attachments/{_J_HTML_PART}"
+    wire.on(part_path, part_answer)
+    return mid, part_path
+
+
+async def test_a_text_part_by_attachment_id_fills_the_body(wire: _Wire) -> None:
+    """EM-G2-f1 acceptance 1, mutation M1. Gmail sends a large body part by
+    ``body.attachmentId`` with no ``body.data``. ``get_message`` fetches it
+    once, and the parse gives the full HTML. The ``notes.txt`` file of the
+    fixture is a ``text/plain`` part by ``attachmentId`` too, and it gets no
+    fetch."""
+    mid, part_path = _j_on_the_wire(wire, _part_answer(_J_HTML.encode()))
+
+    msg = await _wired_provider().get_message(mid)
+
+    assert msg.body_html == _J_HTML
+    assert msg.body_text == (
+        "Hi Asha,\r\n\r\nThe full report is in the HTML part.\r\n\r\nRavi\r\n")
+    assert wire.attachment_gets() == [part_path]
+    assert [a.filename for a in msg.attachments] == ["notes.txt"]
+
+
+async def test_a_filled_part_keeps_its_charset(wire: _Wire) -> None:
+    """EM-G2-f1 acceptance 2, D-G2-f1-4. The filled bytes decode with the
+    charset of the part, as inline data does. A decode as UTF-8 turns each
+    accented letter of an ISO-8859-1 part into U+FFFD."""
+    html = "<p>Bonjour,</p><p>Le café est prêt. À bientôt.</p>"
+    raw = _fixture("j_text_part_by_attachment_id.json")
+    html_part = raw["payload"]["parts"][0]["parts"][1]
+    html_part["headers"][0]["value"] = 'text/html; charset="ISO-8859-1"'
+    mid = raw["id"]
+    wire.on(f"/messages/{mid}", _json(raw))
+    wire.on(f"/messages/{mid}/attachments/{_J_HTML_PART}",
+            _part_answer(html.encode("iso-8859-1")))
+
+    msg = await _wired_provider().get_message(mid)
+
+    assert msg.body_html == html
+    assert "�" not in msg.body_html
+    assert len(wire.attachment_gets()) == 1
+
+
+async def test_a_file_part_is_never_fetched_for_the_body(wire: _Wire) -> None:
+    """EM-G2-f1 acceptance 3, mutation M2, D-G2-f1-3. Fixture (a) has a PDF
+    and an inline text body. The test adds a ``text/plain`` file, and an
+    attached mail whose HTML comes by ``attachmentId``. A file can be 25 MB,
+    and the body needs none of its bytes, so no part gets a fetch."""
+    raw = _fixture("a_mixed_alternative_pdf.json")
+    raw["payload"]["parts"].append({
+        "partId": "2", "mimeType": "text/plain", "filename": "notes.txt",
+        "headers": [{"name": "Content-Disposition",
+                     "value": 'attachment; filename="notes.txt"'}],
+        "body": {"attachmentId": "ANGjdJ_fixture_attachment_notes_txt",
+                 "size": 1834}})
+    raw["payload"]["parts"].append({
+        "partId": "3", "mimeType": "message/rfc822", "filename": "",
+        "headers": [], "body": {"size": 0},
+        "parts": [{"partId": "3.0", "mimeType": "text/html", "filename": "",
+                   "headers": [{"name": "Content-Type",
+                                "value": 'text/html; charset="UTF-8"'}],
+                   "body": {"attachmentId": "ANGjdJ_fixture_inner_html",
+                            "size": 2457600}}]})
+    del raw["payload"]["parts"][0]["parts"][1]  # no HTML body of its own
+    mid = raw["id"]
+    wire.on(f"/messages/{mid}", _json(raw))
+
+    msg = await _wired_provider().get_message(mid)
+
+    assert wire.attachment_gets() == []
+    assert "The signed quote is attached." in msg.body_text
+    assert msg.body_html is None
+    assert [a.filename for a in msg.attachments] == [
+        "quote-signed.pdf", "notes.txt"]
+
+
+async def test_a_failed_body_part_fetch_leaves_a_record_and_an_empty_body(
+        wire: _Wire, caplog: pytest.LogCaptureFixture) -> None:
+    """EM-G2-f1 acceptance 4, D-G2-f1-5. A 500 on the part fetch leaves that
+    body empty, and the text body still parses. The fill logs one
+    ``gmail.body_part_failed`` line and adds one record. On the history
+    path, ``_fetch_into`` puts the record into ``SyncResult.errors``. The
+    record names no subject and no address."""
+    mid, part_path = _j_on_the_wire(
+        wire, _json({"error": {"code": 500, "message": "backendError"}}, 500))
+    record = (f"gmail.body_part_failed id={mid} part=0.1 "
+              "error=HTTPStatusError status=500")
+    p = _wired_provider()
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        msg = await p.get_message(mid)
+
+    assert msg.body_html is None
+    assert msg.body_text.startswith("Hi Asha,")
+    assert wire.attachment_gets() == [part_path]
+    assert p.fetch_failures == [record]
+    logged = [r.getMessage() for r in caplog.records
+              if r.getMessage().startswith("gmail.body_part_failed")]
+    assert logged == [f"gmail.body_part_failed message_id={mid} part_id=0.1 "
+                      "error=HTTPStatusError status=500"]
+    for text in [*p.fetch_failures, *logged]:
+        assert "Weekly" not in text and "@" not in text
+
+    wire.on("/history", _json({
+        "historyId": "120",
+        "history": [{"id": "110",
+                     "messagesAdded": [{"message": {"id": mid}}]}]}))
+    result = await _wired_provider().sync_messages(history_id="100")
+
+    assert [m.provider_message_id for m in result.messages] == [mid]
+    assert result.messages[0].body_html is None
+    assert result.errors == [record]
+    assert result.new_history_id == "120"
+
+
+async def test_a_rate_limit_on_the_body_part_fetch_raises(wire: _Wire) -> None:
+    """EM-G2-f1 acceptance 5, mutation M3, D-G2-f1-6. The fill does not
+    catch a spent rate limit. ``get_message`` raises it, so each caller
+    handles it as EM-G4a says. The fill leaves no record of it."""
+    mid, part_path = _j_on_the_wire(wire, _json(
+        {"error": {"code": 429, "errors": [{"reason": "rateLimitExceeded"}]}},
+        429))
+    p = _wired_provider()
+
+    with pytest.raises(GmailRateLimited):
+        await p.get_message(mid)
+
+    assert wire.attachment_gets() == [part_path] * GMAIL_MAX_TRIES
+    assert p.fetch_failures == []
