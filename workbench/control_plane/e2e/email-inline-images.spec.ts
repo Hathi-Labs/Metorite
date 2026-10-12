@@ -92,9 +92,15 @@ test.describe("Inline cid: pictures", () => {
   test("a styled mail in dark mode: the cid picture loads, re-inverted, while the remote logo stays blocked", async ({ page }) => {
     await installEmailMocks(page, [IDS.inlineStyled]);
     await stubInline(page, { [IDS.inlineStyled]: CIDS.gmail });
-    const remote: string[] = [];
-    page.on("request", (req) => {
-      if (req.url().includes("cdn.example.test") || req.url().includes("image-proxy")) remote.push(req.url());
+    // Chromium reports a request that the CSP then refuses, so the check is
+    // on the answer: no response, and a "csp" failure (the same on main).
+    const answered: string[] = [];
+    const refused: string[] = [];
+    page.on("response", (res) => {
+      if (res.url().includes("cdn.example.test") || res.url().includes("image-proxy")) answered.push(res.url());
+    });
+    page.on("requestfailed", (req) => {
+      if (req.url().includes("cdn.example.test")) refused.push(`${req.failure()?.errorText} ${req.url()}`);
     });
     await open(page, IDS.inlineStyled);
     await expect(frame(page)).toHaveAttribute("data-body-look", "invert");
@@ -104,7 +110,8 @@ test.describe("Inline cid: pictures", () => {
     expect(chart.filter).toContain("invert(1)");
     // The remote gate still holds the remote logo.
     await expect(page.getByRole("button", { name: "Show images" })).toBeVisible();
-    expect(remote).toEqual([]);
+    await expect.poll(() => refused).toContain("csp https://cdn.example.test/logo.png");
+    expect(answered).toEqual([]);
   });
 
   test("light mode: the cid picture loads, with no filter", async ({ page }) => {
