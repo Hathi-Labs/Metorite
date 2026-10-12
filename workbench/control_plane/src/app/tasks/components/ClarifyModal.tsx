@@ -56,7 +56,9 @@ export function ClarifyModal() {
     else close();
   }, [open, clarifiable, nextId, selectItem, close]);
 
-  // Keyboard: Escape closes; t/s/r/2 file the current item and advance.
+  // Keyboard: Escape closes, and the right arrow skips to the next item. The
+  // letter keys t/s/r/2 and `]` were removed with the Tasks shortcuts
+  // (owner, 2026-10-13): each is a button in the panel.
   useEffect(() => {
     if (!active || !item) return;
     const onKey = (e: KeyboardEvent) => {
@@ -71,28 +73,9 @@ export function ClarifyModal() {
           el.tagName === "TEXTAREA" ||
           el.isContentEditable);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === "]" || e.key === "ArrowRight") {
+      if (e.key === "ArrowRight") {
         e.preventDefault();
         skip();
-        return;
-      }
-      switch (e.key.toLowerCase()) {
-        case "t":
-          e.preventDefault();
-          clarify(item.id, { kind: "trash" });
-          break;
-        case "s":
-          e.preventDefault();
-          clarify(item.id, { kind: "someday" });
-          break;
-        case "r":
-          e.preventDefault();
-          clarify(item.id, { kind: "reference" });
-          break;
-        case "2":
-          e.preventDefault();
-          clarify(item.id, { kind: "do-now" });
-          break;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -163,25 +146,7 @@ export function ClarifyModal() {
           {/* keyed by id → the wizard resets as the modal advances to the next item */}
           <ClarifyPanel key={item.id} item={item} />
         </div>
-        <div className="hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-[10px] text-muted-foreground sm:flex">
-          <span className="font-semibold uppercase tracking-wide">Shortcuts</span>
-          <Kbd>↵</Kbd> accept
-          <Kbd>t</Kbd> trash
-          <Kbd>s</Kbd> someday
-          <Kbd>r</Kbd> reference
-          <Kbd>2</Kbd> do now
-          <Kbd>]</Kbd> skip
-          <Kbd>esc</Kbd> close
-        </div>
       </div>
     </div>
-  );
-}
-
-function Kbd({ children }: { children: React.ReactNode }) {
-  return (
-    <kbd className="rounded border border-border px-1 py-0.5 font-mono text-[9px] text-foreground">
-      {children}
-    </kbd>
   );
 }

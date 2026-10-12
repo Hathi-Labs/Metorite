@@ -99,6 +99,7 @@ function FocusRoom({ itemId }: { itemId: string }) {
   const quickDispose = useTaskStore((s) => s.quickDispose);
   const loadSubtasks = useTaskStore((s) => s.loadSubtasks);
   const quickCaptureOpen = useTaskStore((s) => s.quickCaptureOpen);
+  const openQuickCapture = useTaskStore((s) => s.openQuickCapture);
   const minimized = useTaskStore((s) => s.focusMinimized);
   const minimize = useTaskStore((s) => s.minimizeFocusSession);
   const expand = useTaskStore((s) => s.expandFocusSession);
@@ -672,12 +673,20 @@ function FocusRoom({ itemId }: { itemId: string }) {
             {fmtClock(nextBlock.start)}
           </span>
         )}
-        <span className="hidden sm:inline">
-          <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>{" "}
-          capture a stray thought ·{" "}
-          <kbd className="rounded border border-border px-1 text-[9px]">esc</kbd>{" "}
-          minimize
-        </span>
+        {/* A button, not the `C` key it used to name: the Tasks letter
+            shortcuts were removed (owner, 2026-10-13). Quick Capture opens
+            above this room (z-[80] over z-[70]). */}
+        <Button
+          variant="text"
+          size="none"
+          layout="inline-flex items-center"
+          type="button"
+          icon="Plus"
+          onClick={() => openQuickCapture("single")}
+          className="gap-1 text-[11px]"
+        >
+          Capture a thought
+        </Button>
       </div>
     </div>
   );
