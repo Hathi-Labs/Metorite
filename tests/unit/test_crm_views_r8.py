@@ -280,7 +280,7 @@ async def test_filters_do_not_cross_organizations(ns) -> None:
 
 _VIEW = {
     "entity": "deals", "name": "Mine", "layout": "board",
-    "filters": {"owner": "me", "custom": {"Region": "North"}},
+    "filters": {"owner": "me", "custom": {"Region": ["North"]}},
     "sort": {"key": "amount", "dir": "desc"}, "columns": ["Region"],
 }
 
@@ -294,7 +294,7 @@ async def test_a_private_view_is_invisible_to_another_member(ns) -> None:
     view = made.json()
     assert view["shared"] is False and view["mine"] is True
     assert view["owner_email"] == "ann@crm-q8.test"
-    assert view["filters"]["custom"] == {"Region": "North"}
+    assert view["filters"]["custom"] == {"Region": ["North"]}
     assert view["layout"] == "board" and view["columns"] == ["Region"]
 
     seen = await _call(ns, ann, "GET", "/crm/views?entity=deals")
@@ -424,3 +424,110 @@ async def test_the_deals_board_takes_the_same_filters(ns) -> None:
     assert await on_board("?source=agent") == ["D-south"]
     bad = await _call(ns, user, "GET", "/crm/pipeline?custom.Nope=1")
     assert bad.status_code == 422
+
+
+# ── Review fixes: multiselect, Mirror dates, view shapes ────────────────────
+
+def _seed_multiselect(p: Any, org: str) -> None:
+    """Deals with a multiselect value (a JSON array, as Zoho stores it)."""
+    _seed(p, org)
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_field_defs (organization_id, entity, key, label, type) "
+            "VALUES (CAST(:o AS uuid), 'deal', 'Colour', 'Colour', 'multiselect')"),
+            {"o": org})
+        for name, value in (
+            ("D-north", '["Red", "Blue"]'), ("D-south", '["Green"]'),
+            ("D-east", '"Red"'),
+        ):
+            c.execute(text(
+                "UPDATE crm_deals SET custom = custom || "
+                "jsonb_build_object('Colour', CAST(:v AS jsonb)) "
+                "WHERE organization_id = CAST(:o AS uuid) AND name = :n"),
+                {"o": org, "v": value, "n": name})
+
+
+async def test_a_multiselect_field_matches_when_any_option_is_in_the_array(ns) -> None:
+    _seed_multiselect(ns, ns.org_a)
+    user = _admin(ns.org_a)
+    # The array holds Red and Blue. A scalar "Red" still matches as before.
+    assert await _names(ns, user, "/crm/deals?custom.Colour.in=Red") == ["D-east", "D-north"]
+    assert await _names(ns, user, "/crm/deals?custom.Colour=Blue") == ["D-north"]
+    assert await _names(ns, user, "/crm/deals?custom.Colour.in=Blue,Green") == [
+        "D-north", "D-south",
+    ]
+    assert await _names(ns, user, "/crm/deals?custom.Colour.in=Pink") == []
+    # The board and the export read the same filter.
+    board = await _call(ns, user, "GET", "/crm/pipeline?custom.Colour.in=Green")
+    assert [r["name"] for lane in board.json()["lanes"] for r in lane["rows"]] == ["D-south"]
+    export = await _call(ns, user, "GET", "/crm/export/deals.csv?custom.Colour.in=Red")
+    assert export.status_code == 200 and export.headers["X-Export-Rows"] == "2"
+
+
+def _set_mirror(p: Any, org: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_settings (organization_id, access, mode) "
+            "VALUES (CAST(:o AS uuid), 'everyone', 'mirror') "
+            "ON CONFLICT (organization_id) DO UPDATE SET mode = 'mirror', "
+            "access = 'everyone'"), {"o": org})
+
+
+async def test_mirror_mode_refuses_a_created_range_and_ranges_updated_by_the_source(ns) -> None:
+    _seed(ns, ns.org_a)
+    with ns.admin_engine.begin() as c:
+        # Imported today, changed in Zoho on 2025-03-01.
+        c.execute(text(
+            "UPDATE crm_deals SET updated_at = now(), "
+            "ext_modified_at = CAST('2025-03-01' AS timestamptz) "
+            "WHERE organization_id = CAST(:o AS uuid) AND name = 'D-north'"),
+            {"o": ns.org_a})
+        c.execute(text(
+            "UPDATE crm_leads SET updated_at = now(), "
+            "ext_modified_at = CAST('2025-03-01' AS timestamptz) "
+            "WHERE organization_id = CAST(:o AS uuid) AND lead_name = 'L-ann'"),
+            {"o": ns.org_a})
+    _set_mirror(ns, ns.org_a)
+    user = _admin(ns.org_a)
+    for path in (
+        "/crm/deals?created_from=2025-01-01", "/crm/leads?created_to=2025-12-31",
+        "/crm/pipeline?created_from=2025-01-01",
+        "/crm/export/deals.csv?created_from=2025-01-01",
+    ):
+        response = await _call(ns, user, "GET", path)
+        assert response.status_code == 422, (path, response.text)
+        assert response.json()["detail"]["code"] == "created_range_mirror"
+    assert await _names(
+        ns, user, "/crm/deals?updated_from=2025-01-01&updated_to=2025-12-31",
+    ) == ["D-north"]
+    assert await _names(
+        ns, user, "/crm/leads?updated_from=2025-01-01&updated_to=2025-12-31",
+    ) == ["L-ann"]
+
+
+async def test_native_mode_still_ranges_on_created(ns) -> None:
+    _seed(ns, ns.org_a)
+    assert await _names(
+        ns, _admin(ns.org_a), "/crm/deals?created_to=2026-02-01",
+    ) == ["D-north"]
+
+
+@pytest.mark.parametrize("filters", [
+    {"custom": {"Region": "North"}},
+    {"custom": {"Region": [1]}},
+    {"custom": {"Region": [""]}},
+    {"custom": {"Region": ["x"] * 51}},
+    {"custom": ["Region"]},
+    {"created_from": "yesterday"},
+    {"close_to": 20260101},
+    {"owner": ["a"]},
+    {"converted": "yes"},
+])
+async def test_a_bad_filter_shape_in_a_view_is_refused(ns, filters: dict) -> None:
+    _everyone(ns, ns.org_a)
+    ann = _member(ns.org_a, "ann@crm-q8.test")
+    response = await _call(ns, ann, "POST", "/crm/views", {**_VIEW, "filters": filters})
+    assert response.status_code == 422, (filters, response.text)
+    made = (await _call(ns, ann, "POST", "/crm/views", _VIEW)).json()
+    patched = await _call(ns, ann, "PATCH", f"/crm/views/{made['id']}", {"filters": filters})
+    assert patched.status_code == 422

@@ -31,6 +31,7 @@ neither.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
@@ -55,6 +56,15 @@ FILTER_KEYS = frozenset({
     "created_from", "created_to", "updated_from", "updated_to",
     "close_from", "close_to", "custom",
 })
+
+_RANGE_KEYS = (
+    "created_from", "created_to", "updated_from", "updated_to",
+    "close_from", "close_to",
+)
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+#: The most custom filters, and options for each, that a view holds.
+MAX_CUSTOM_FILTERS = 20
+MAX_CUSTOM_OPTIONS = 50
 
 EntityName = Literal["leads", "deals", "contacts", "organizations"]
 
@@ -142,11 +152,39 @@ def _check_filters(filters: dict[str, Any]) -> None:
             status_code=422,
             detail=f"Unknown filter {unknown}. One of: {sorted(FILTER_KEYS)}.",
         )
+    for key in _RANGE_KEYS:
+        value = filters.get(key)
+        if value is not None and not (
+            isinstance(value, str) and _ISO_DATE.fullmatch(value)
+        ):
+            raise HTTPException(
+                status_code=422, detail=f"'{key}' must be an ISO date (YYYY-MM-DD).",
+            )
+    for key in ("q", "status", "owner", "source"):
+        if filters.get(key) is not None and not isinstance(filters[key], str):
+            raise HTTPException(status_code=422, detail=f"'{key}' must be text.")
+    if filters.get("converted") is not None and not isinstance(
+        filters["converted"], bool,
+    ):
+        raise HTTPException(status_code=422, detail="'converted' must be true or false.")
     custom = filters.get("custom")
-    if custom is not None and not isinstance(custom, dict):
-        raise HTTPException(
-            status_code=422, detail="'custom' must map a field key to a value.",
-        )
+    if custom is not None:
+        # The UI reads each value with `.join`, so the shape is a list of text.
+        if not isinstance(custom, dict) or len(custom) > MAX_CUSTOM_FILTERS:
+            raise HTTPException(
+                status_code=422, detail="'custom' must map a field key to a list of options.",
+            )
+        for key, items in custom.items():
+            if not (
+                isinstance(items, list)
+                and len(items) <= MAX_CUSTOM_OPTIONS
+                and all(isinstance(i, str) and 0 < len(i) <= 200 for i in items)
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'custom.{key}' must be a list of up to "
+                           f"{MAX_CUSTOM_OPTIONS} options, each text.",
+                )
     _check_json("filters", filters)
 
 

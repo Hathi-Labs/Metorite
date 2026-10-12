@@ -955,17 +955,35 @@ async def extra_filters(
         ("created_from", given.created_from, "created_at >= CAST(:created_from AS date)"),
         ("created_to", given.created_to,
          "created_at < CAST(:created_to AS date) + 1"),
-        ("updated_from", given.updated_from, "updated_at >= CAST(:updated_from AS date)"),
+        # ⚠️ The provider's modified time, when the row has one. A mirrored
+        # row's own `updated_at` is the import time, so ranging on it would
+        # show the day of the last sync and not the day of the change.
+        ("updated_from", given.updated_from,
+         "coalesce(ext_modified_at, updated_at) >= CAST(:updated_from AS date)"),
         ("updated_to", given.updated_to,
-         "updated_at < CAST(:updated_to AS date) + 1"),
+         "coalesce(ext_modified_at, updated_at) < CAST(:updated_to AS date) + 1"),
         ("close_from", given.close_from,
          "expected_close_date >= CAST(:close_from AS date)"),
         ("close_to", given.close_to, "expected_close_date <= CAST(:close_to AS date)"),
     )
+    mirror: bool | None = None
     for name, raw, clause in ranges:
         parsed = parse_iso_date(name, raw)
         if parsed is None:
             continue
+        if name.startswith("created_"):
+            # ⚠️ In Mirror mode `created_at` is the import time:
+            # `upsert_from_source` refuses to write it. A range on it would
+            # answer with the sync day and hide every older record. Refused,
+            # until a mirrored created column exists (spec 18.5, CRM-Q8).
+            if mirror is None:
+                mirror = await is_mirror_mode(db, current_tenant())
+            if mirror:
+                raise HTTPException(status_code=422, detail={
+                    "code": "created_range_mirror",
+                    "message": "The created date of a synced record is not "
+                               "kept. Filter by the updated date instead.",
+                })
         if name.startswith("close_") and entity.table != "crm_deals":
             raise HTTPException(
                 status_code=422,
@@ -997,12 +1015,22 @@ async def extra_filters(
         for index, ((key, is_in), values) in enumerate(grouped.items()):
             bound[f"ck{index}"] = key
             if is_in or len(values) > 1:
+                # A multiselect field holds a JSON array (`["Red","Blue"]`),
+                # and `->>` would give its text. The array arm matches when
+                # any chosen option is in the array. Every value is bound.
                 clauses.append(
-                    f"custom ->> :ck{index} = ANY(CAST(:cv{index} AS text[]))"
+                    f"(custom ->> :ck{index} = ANY(CAST(:cv{index} AS text[])) "
+                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
+                    f"AND jsonb_exists_any(custom -> :ck{index}, "
+                    f"CAST(:cv{index} AS text[]))))"
                 )
                 bound[f"cv{index}"] = values
             else:
-                clauses.append(f"custom ->> :ck{index} = :cv{index}")
+                clauses.append(
+                    f"(custom ->> :ck{index} = :cv{index} "
+                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
+                    f"AND jsonb_exists(custom -> :ck{index}, :cv{index})))"
+                )
                 bound[f"cv{index}"] = values[0]
     return tuple(clauses), bound
 
