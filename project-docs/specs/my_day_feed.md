@@ -1,8 +1,9 @@
 # My Day as a live feed — the chief of staff
 
-**Status: ACTIVE, 2026-10-13. MD-1a is BUILT (gateway half, dark by the
-absence of a caller).** The rest of this file is not built. The open
-AGENT-SAFE tickets are MD-1b, MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7,
+**Status: ACTIVE, 2026-10-13. MD-1a is BUILT (gateway half, merged as
+#964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
+dark behind `NEXT_PUBLIC_MY_DAY_FEED`).** The rest of this file is not
+built. The open AGENT-SAFE tickets are MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7,
 MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -1463,6 +1464,11 @@ Done when:
    `open` act is a link.
 4. The card draws through `HomeCard`, `Skeleton` and the house tokens, and
    `conformance.test.ts` passes with no new budget.
+
+**Built 2026-10-13** on the branch `my-day-feed-md1b`. The client is
+`src/lib/shell/feed.ts`, and its fence is `feed.test.ts`. The poll fence is
+`shellBell.test.ts`, and the cache fence is `dataCache.test.ts`
+(`guardedPut`).
 
 **Not in MD-1b, and where each part went.** The honest counts of §6.7 and the
 card menu go to MD-2, because each needs its state table. `stale_next` is
