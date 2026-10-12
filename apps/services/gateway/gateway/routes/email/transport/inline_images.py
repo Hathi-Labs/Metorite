@@ -72,13 +72,6 @@ INLINE_CACHE_TTL_SECS = ATTACHMENT_CACHE_TTL_SECS
 INLINE_NAMESPACE = "email-inline"
 INLINE_IDS_NAMESPACE = "email-inline-ids"
 
-#: The owner read. The same predicate as ``GET /email/messages/{id}/html``.
-_OWNED_MESSAGE_SQL = """SELECT em.id, em.provider_message_id, em.account_id,
-                               ea.provider, ea.credentials_encrypted
-                        FROM email_messages em
-                        JOIN email_accounts ea ON em.account_id = ea.id
-                        WHERE em.id = :mid AND ea.user_id = :user_id"""
-
 #: The headers of each picture. ``nosniff`` keeps the browser on the type the
 #: route chose, and the CSP and the sandbox stop a direct open of the URL from
 #: running anything.
@@ -308,11 +301,19 @@ async def get_inline_image(
     if mid is None or not want:
         raise HTTPException(status_code=404, detail="Picture not found")
 
-    # The owner read. The session opens OUTSIDE any try, so `TenantUnbound`
-    # and a refused connect reach the handlers of main.py.
+    # The owner read, with the predicate of `GET /email/messages/{id}/html`.
+    # It stays in this body, where `test_email_owner_scope_fence` reads it.
+    # The session opens OUTSIDE any try, so `TenantUnbound` and a refused
+    # connect reach the handlers of main.py.
     async with _tenant_session() as db:
         row = (await db.execute(
-            text(_OWNED_MESSAGE_SQL),
+            text(
+                """SELECT em.id, em.provider_message_id, em.account_id,
+                          ea.provider, ea.credentials_encrypted
+                   FROM email_messages em
+                   JOIN email_accounts ea ON em.account_id = ea.id
+                   WHERE em.id = :mid AND ea.user_id = :user_id"""
+            ),
             {"mid": mid, "user_id": user.email or "anonymous"},
         )).fetchone()
     if row is None:

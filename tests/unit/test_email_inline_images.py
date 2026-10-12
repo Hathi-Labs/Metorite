@@ -555,7 +555,7 @@ class TestTheRoute:
 
         params = inspect.signature(ii.get_inline_image).parameters
         assert set(params) == {"message_id", "cid", "user"}
-        assert "ea.user_id = :user_id" in ii._OWNED_MESSAGE_SQL
+        assert "ea.user_id = :user_id" in inspect.getsource(ii.get_inline_image)
         src = inspect.getsource(ii)
         assert "get_db(" not in src and "create_async_engine" not in src
         assert "redis.asyncio" not in src and "Redis(" not in src
