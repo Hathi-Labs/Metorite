@@ -7,6 +7,7 @@ Spec: ``project-docs/specs/crm_app.md`` §4 (``records.py`` row).
     GET    /crm/<entity>/{id}
     PATCH  /crm/<entity>/{id}
     DELETE /crm/<entity>/{id}                                 → what cascaded
+    GET    /crm/owners                                        → {owners}
 
 **Every path here is written out literally**, one route per entity, rather than
 served by a single ``/crm/{entity}`` template. That is not verbosity for its own
@@ -447,6 +448,70 @@ async def delete_record(
             deleted=record_id, entity=entity.slug, cascaded=cascaded,
             zoho_delete_queued=queued,
         )
+
+
+# ── Owners (WS-53 CRM-X1) ──────────────────────────────────────────────────
+
+#: The most owners one answer holds.
+MAX_OWNERS = 500
+
+#: The active members of the tenant, then each record owner that no active
+#: member holds. ``app_user`` and the four CRM tables force row level
+#: security, so the bound session reads the caller's tenant only. The member
+#: rule is the one ``rooms._directory`` uses.
+_OWNERS_SQL = """
+WITH members AS (
+    SELECT email, display_name AS name FROM app_user
+    WHERE COALESCE(status, 'active') = 'active'
+),
+record_owners AS (
+    SELECT DISTINCT lower(owner_email) AS email FROM (
+        SELECT owner_email FROM crm_leads
+        UNION ALL SELECT owner_email FROM crm_deals
+        UNION ALL SELECT owner_email FROM crm_contacts
+        UNION ALL SELECT owner_email FROM crm_companies
+    ) o
+    WHERE btrim(COALESCE(owner_email, '')) <> ''
+)
+SELECT email, name, member FROM (
+    SELECT email, name, true AS member FROM members
+    UNION ALL
+    SELECT r.email, NULL AS name, false AS member FROM record_owners r
+    WHERE NOT EXISTS (SELECT 1 FROM members m WHERE lower(m.email) = r.email)
+) owners
+ORDER BY lower(name) NULLS LAST, lower(email)
+LIMIT :limit
+"""
+
+
+class OwnerModel(BaseModel):
+    """One choice of the owner filter. It holds nothing else (R5)."""
+
+    email: str
+    name: str | None = None
+    member: bool
+
+
+class OwnersResponse(BaseModel):
+    owners: list[OwnerModel]
+
+
+@router.get("/owners", response_model=OwnersResponse)
+async def list_owners(
+    user: UserContext = Depends(get_current_user),
+) -> OwnersResponse:
+    """Each owner the filter offers, for the caller's tenant only.
+
+    A CRM route and not the member list of Chat, for two reasons: that list
+    needs ``feature:chat``, and it cannot name a Zoho owner who is not a
+    member. The router's kill switch, ``feature:crm`` and the access rule
+    apply here as on every ``/crm`` route.
+    """
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(_OWNERS_SQL), {"limit": MAX_OWNERS})).fetchall()
+    return OwnersResponse(owners=[
+        OwnerModel(email=r.email, name=r.name, member=bool(r.member)) for r in rows
+    ])
 
 
 # ── Leads ───────────────────────────────────────────────────────────────────

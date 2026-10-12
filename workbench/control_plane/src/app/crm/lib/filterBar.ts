@@ -3,6 +3,8 @@
 // Pure, so the vitest setup (no DOM) tests every rule. `components/FilterBar.tsx`
 // draws what this file decides.
 
+import { coalesce } from "@/lib/useCachedResource";
+
 import type { FieldDef } from "./fields";
 import { pickable } from "./fields";
 import type { EntitySlug } from "./types";
@@ -33,24 +35,62 @@ export function dateFilters(entity: EntitySlug, mirror = false): DateFilter[] {
   return out;
 }
 
-/** The owner options: anyone, me, then each owner seen in the rows, then a chosen one not in them. */
+/** One owner that `GET /crm/owners` names (CRM-X1). */
+export type CrmOwner = {
+  email: string;
+  /** The display name of a member. Null for an owner who is not a member. */
+  name: string | null;
+  /** True for an active member of the organization. */
+  member: boolean;
+};
+
+/**
+ * The owner options: anyone, me, each owner of `GET /crm/owners` in its order,
+ * then a chosen owner that the list does not hold (CRM-X1).
+ *
+ * The list is the members and the record owners of the whole organization,
+ * not the rows on screen. So an owner with no row on page 1 is still offered.
+ * `null` means the list is not read yet, or the read failed.
+ */
 export function ownerOptions(
-  rows: ReadonlyArray<Record<string, unknown>>,
+  owners: ReadonlyArray<CrmOwner> | null,
   chosen: string | null,
 ): Array<{ value: string; label: string }> {
-  const seen = new Map<string, string>();
-  for (const row of rows) {
-    const email = row.owner_email;
-    if (typeof email === "string" && email.trim()) seen.set(email.toLowerCase(), email);
+  const seen = new Set<string>();
+  const out: Array<{ value: string; label: string }> = [];
+  for (const owner of owners ?? []) {
+    const key = owner.email.toLowerCase();
+    if (!owner.email.trim() || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ value: owner.email, label: owner.name?.trim() || owner.email });
   }
   if (chosen && chosen !== ME && !seen.has(chosen.toLowerCase())) {
-    seen.set(chosen.toLowerCase(), chosen);
+    out.push({ value: chosen, label: chosen });
   }
-  return [
-    { value: ANY, label: "Anyone" },
-    { value: ME, label: "Me" },
-    ...[...seen.values()].sort().map((email) => ({ value: email, label: email })),
-  ];
+  return [{ value: ANY, label: "Anyone" }, { value: ME, label: "Me" }, ...out];
+}
+
+/** How long the search box waits after the last key before it writes `?q=`. */
+export const SEARCH_DELAY_MS = 300;
+
+/**
+ * The search box's timer (CRM-X1). Each key calls `type`, and `commit` runs
+ * once, with the last text, `ms` after the last key. It is the shared
+ * trailing coalescer, so the box adds no second debounce.
+ */
+export function searchCommitter(
+  commit: (q: string) => void,
+  ms = SEARCH_DELAY_MS,
+): { type: (q: string) => void; cancel: () => void } {
+  let latest = "";
+  const timer = coalesce(() => commit(latest), ms);
+  return {
+    type(q: string) {
+      latest = q;
+      timer.trigger();
+    },
+    cancel: timer.cancel,
+  };
 }
 
 /** The options of a picklist definition. The sync writes `{label, value}`. */

@@ -3,8 +3,9 @@
 /**
  * The CRM filter bar and the saved-view controls (WS-53 CRM-Q8, CRM-S2).
  *
- * One row of controls above a list or a board: owner, source, the custom
- * picklist fields and the date ranges. Then the view row: "Save view", and
+ * One row of controls above a list or a board: the search box (a list only,
+ * CRM-X1), owner, source, the custom picklist fields and the date ranges.
+ * Then the view row: "Save view", and
  * "Update view / Reset" when a saved view is in effect and the screen has moved
  * away from it. It is the Projects `FilterBar` pattern (`SelectButton` for a
  * choice, the house `Button`, the same off-default tint). It adds no second look.
@@ -17,7 +18,8 @@ import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import SelectButton, { OFF_DEFAULT } from "@/components/ui/SelectButton";
-import { useState } from "react";
+import { filterWord } from "@/lib/shell/registry";
+import { useEffect, useRef, useState } from "react";
 
 import type { FieldDef } from "../lib/fields";
 import {
@@ -28,19 +30,30 @@ import {
   optionsOf,
   ownerOptions,
   picklistDefs,
+  searchCommitter,
   setCustom,
   setRange,
+  type CrmOwner,
 } from "../lib/filterBar";
 import { clearFilters, type SavedView } from "../lib/savedViews";
 import type { EntitySlug } from "../lib/types";
 import type { CrmView } from "../lib/urlState";
+import { viewLabel } from "../lib/views";
 
 export type FilterBarProps = {
   entity: EntitySlug;
   view: CrmView;
   onChange: (next: CrmView) => void;
-  /** The rows on screen, to offer the owners that hold records. */
-  rows: ReadonlyArray<Record<string, unknown>>;
+  /**
+   * The owners of `GET /crm/owners` (CRM-X1): each active member, and each
+   * record owner who is not a member. `null` while unread or on a failure.
+   */
+  owners?: ReadonlyArray<CrmOwner> | null;
+  /**
+   * Draw the search box (CRM-X1). A list only: the board read takes no `q`,
+   * so a box on a board would change nothing.
+   */
+  search?: boolean;
   fieldDefs: FieldDef[] | null;
   /** Mirror mode: a synced record keeps no created date, so the range is hidden. */
   mirror?: boolean;
@@ -65,7 +78,8 @@ export default function FilterBar({
   entity,
   view,
   onChange,
-  rows,
+  owners = null,
+  search = false,
   fieldDefs,
   mirror = false,
   removed = [],
@@ -97,6 +111,15 @@ export default function FilterBar({
   return (
     <div className="shrink-0 border-b border-border px-3 py-2 sm:px-4" data-testid="crm-filter-bar">
       <div className="flex flex-wrap items-center gap-2">
+        {search ? (
+          <SearchBox
+            label={viewLabel(entity).toLowerCase()}
+            value={view.q}
+            onCommit={(q) => {
+              if (q !== view.q) onChange({ ...view, q });
+            }}
+          />
+        ) : null}
         <SelectButton
           label="Owner"
           widthClass="w-40"
@@ -104,7 +127,7 @@ export default function FilterBar({
           value={view.owner ?? ANY}
           defaultValue={ANY}
           onChange={(next) => onChange({ ...view, owner: next || null })}
-          options={ownerOptions(rows, view.owner)}
+          options={ownerOptions(owners, view.owner)}
         />
         <SelectButton
           label="Source"
@@ -240,5 +263,65 @@ export default function FilterBar({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * The list's search box (CRM-X1). It writes `?q=` once, 300 ms after the last
+ * key, through the page's `go`, so each search is one history entry and Back
+ * gives the last query back.
+ *
+ * The text is local while the member types. A `?q=` that this box did not
+ * write (Back, Clear, a saved view) replaces the text. Its own write does not,
+ * so a key typed while the URL catches up is never lost.
+ *
+ * `data-page-filter` lets the shell reach it: `/` focuses it, and "Show all in
+ * …" fills it (`src/lib/shell/pageFilter.ts`).
+ */
+function SearchBox({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  onCommit: (q: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [seen, setSeen] = useState(value);
+  const [mine, setMine] = useState<string | null>(null);
+  if (value !== seen) {
+    setSeen(value);
+    if (value !== mine) setDraft(value);
+    setMine(null);
+  }
+  const commit = useRef(onCommit);
+  useEffect(() => {
+    commit.current = onCommit;
+  });
+  // Made on the first key, in the handler, so no render reads a ref.
+  const box = useRef<ReturnType<typeof searchCommitter> | null>(null);
+  useEffect(() => {
+    const timer = box;
+    return () => timer.current?.cancel();
+  }, []);
+  return (
+    <Input
+      icon="Search"
+      inputSize="sm"
+      className="w-56"
+      value={draft}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        box.current ??= searchCommitter((q) => {
+          setMine(q);
+          commit.current(q);
+        });
+        box.current.type(e.target.value);
+      }}
+      placeholder={`${filterWord()} ${label}…`}
+      aria-label={`${filterWord()} ${label}`}
+      data-page-filter={label}
+    />
   );
 }

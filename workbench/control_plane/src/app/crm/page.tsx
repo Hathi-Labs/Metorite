@@ -119,7 +119,14 @@ import {
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
-import { invalidateCrmMode, useCrmMode, useFieldDefs, usePipelines, useSyncStatus } from "./lib/useCrmMode";
+import {
+  invalidateCrmMode,
+  useCrmMode,
+  useFieldDefs,
+  useOwners,
+  usePipelines,
+  useSyncStatus,
+} from "./lib/useCrmMode";
 import { boundaryKey } from "./lib/boundary";
 import { viewLabel } from "./lib/views";
 
@@ -166,6 +173,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   /** The collection whose records the filters narrow: a list or a board. */
   const filterEntity: EntitySlug | null = isEntity(view.tab) ? view.tab : null;
   const { defs: filterDefs, loading: defsLoading } = useFieldDefs(filterEntity);
+  /** The owner filter's choices: every member and record owner (CRM-X1). */
+  const owners = useOwners(filterEntity !== null);
   // A filter the gateway would refuse is dropped before the fetch (CRM-Q8):
   // a saved view can name a custom field that is gone, and one 422 would
   // empty the whole list.
@@ -298,11 +307,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         : [];
 
   const barDefs = filterDefs;
-  const barRows: Array<Record<string, unknown>> = boardOn
-    ? (view.tab === "leads" ? store.leadLanes : store.lanes).flatMap(
-        (lane) => lane.rows as Array<Record<string, unknown>>,
-      )
-    : store.rows;
 
   /** The custom columns in effect: the view's own, or this browser's. */
   const draftOfView = draftColumns?.viewId === view.viewId ? draftColumns?.keys : undefined;
@@ -659,7 +663,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               entity={filterEntity}
               view={view}
               onChange={go}
-              rows={barRows}
+              owners={owners}
+              search={!boardOn}
               fieldDefs={barDefs}
               mirror={ctx.mode === "mirror"}
               removed={waitingForDefs ? [] : pruned.removed}
@@ -767,6 +772,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 rows={store.rows}
                 total={store.total}
                 loading={store.loading}
+                statuses={statusesFor(listEntity)}
+                onLoadMore={() => void store.loadMore()}
+                loadingMore={store.loadingMore}
                 sort={view.sort}
                 direction={view.dir}
                 onSort={(key) => go(applySort(view, key))}

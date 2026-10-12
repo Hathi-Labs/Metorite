@@ -26,7 +26,7 @@ import {
 } from "./board";
 import { MIRROR_REFUSALS } from "./connect";
 import { NO_RELATED, RELATED_PAGE, type RelatedLists } from "./related";
-import { exportQuery, extraQuery, listQuery } from "./filters";
+import { appendPage, exportQuery, extraQuery, listQuery } from "./filters";
 import {
   applyPatches,
   reorderFailureMessage,
@@ -53,6 +53,13 @@ type Rows = Record<string, unknown>[];
 /** The record whose related lists were asked for last. */
 let latestRelated = "";
 
+/**
+ * The list read asked for last (CRM-X1). `loadList` counts up, and an answer
+ * for an older count is dropped, so a slow page of an old view never lands
+ * on the new one. The same latest-wins rule as `latestRelated`.
+ */
+let latestList = 0;
+
 type CrmState = {
   lanes: BoardLane[];
   /** The Leads board: one lane per Lead Status (CRM-Q3). */
@@ -60,6 +67,10 @@ type CrmState = {
   related: RelatedLists;
   rows: Rows;
   total: number;
+  /** The last page of the list on screen (CRM-X1). `loadList` sets it to 1. */
+  page: number;
+  /** True while "Load more" reads the next page. The rows stay on screen. */
+  loadingMore: boolean;
   dealStatuses: Status[];
   leadStatuses: Status[];
   lostReasons: LostReason[];
@@ -96,6 +107,8 @@ type CrmState = {
   /** WS-26g — the reports tab's read. All four blocks, in one pass. */
   loadReports: (view: CrmView) => Promise<void>;
   loadList: (entity: EntitySlug, view: CrmView) => Promise<void>;
+  /** CRM-X1: the next page of the list on screen, added under its rows. */
+  loadMore: () => Promise<void>;
   /**
    * WS-26i-export — the visible list, as a CSV.
    *
@@ -195,6 +208,8 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   related: NO_RELATED,
   rows: [],
   total: 0,
+  page: 1,
+  loadingMore: false,
   dealStatuses: [],
   leadStatuses: [],
   lostReasons: [],
@@ -332,14 +347,37 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async loadList(entity, view) {
-    set({ loading: true, lastView: view });
+    // A new view starts again at page 1 (CRM-X1).
+    const asked = ++latestList;
+    set({ loading: true, lastView: view, page: 1, loadingMore: false });
     try {
       const page = await api.listRecords(entity, listQuery(entity, view));
+      if (asked !== latestList) return;
       set({ rows: page.rows, total: page.total, error: null });
     } catch (err) {
+      if (asked !== latestList) return;
       set({ error: message(err), rows: [], total: 0 });
     } finally {
-      set({ loading: false });
+      if (asked === latestList) set({ loading: false });
+    }
+  },
+
+  async loadMore() {
+    const { lastView: view, page, loadingMore } = get();
+    if (!view || loadingMore || !isEntity(view.tab) || isBoardView(view)) return;
+    const entity = view.tab;
+    const asked = latestList;
+    set({ loadingMore: true });
+    try {
+      // The same `listQuery` as page 1, so the next page is of the same view.
+      const next = await api.listRecords(entity, listQuery(entity, view, page + 1));
+      if (asked !== latestList) return;
+      set({ rows: appendPage(get().rows, next.rows), total: next.total, page: page + 1 });
+    } catch (err) {
+      if (asked !== latestList) return;
+      set({ error: message(err) });
+    } finally {
+      if (asked === latestList) set({ loadingMore: false });
     }
   },
 

@@ -106,6 +106,25 @@ export function listQuery(
 }
 
 /**
+ * The rows on screen, then the rows of the next page that are not on screen
+ * (CRM-X1 "Load more").
+ *
+ * A record can move up between two reads, for example when somebody touches
+ * it, and then it shows on both pages. The row already on screen stays, and
+ * the copy on the next page is dropped. Pure, so the vitest setup tests it.
+ */
+export function appendPage<T extends { id?: unknown }>(shown: readonly T[], next: readonly T[]): T[] {
+  const seen = new Set(shown.map((row) => String(row.id)));
+  const added = next.filter((row) => {
+    const id = String(row.id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return [...shown, ...added];
+}
+
+/**
  * The same view, as the CSV export's query (WS-26i-export).
  *
  * ⚠️ Built by calling `listQuery` and DELETING the page, rather than by
