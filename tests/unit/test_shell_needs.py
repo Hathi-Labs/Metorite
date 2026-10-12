@@ -194,10 +194,22 @@ class Fakes:
         return {"rows": rows[: kw["page"].limit], "total": len(rows),
                 "unread": {"total": len(rows), "mentions": 0}}
 
+    async def feed_mailboxes(self, user):
+        await self._enter("feed_mailboxes", user, {"user": user})
+        return [dict(a) for a in self.accounts.get(user.email, [])]
+
     async def list_accounts(self, **kw):
+        # The feed must not call it: it counts the unread mail of every
+        # mailbox, and the feed threw that count away.
         await self._enter("list_accounts", kw["user"], kw)
-        return [SimpleNamespace(model_dump=lambda a=a: dict(a))
-                for a in self.accounts.get(kw["user"].email, [])]
+        raise AssertionError("the needs feed reads feed_mailboxes, not list_accounts")
+
+    async def needs_reply_count(self, user, account_id):
+        await self._enter("needs_reply_count", user, {"user": user, "account_id": account_id})
+        owned = {a["id"] for a in self.accounts.get(user.email, [])}
+        if account_id not in owned:
+            raise HTTPException(status_code=404, detail="Account not found")
+        return len(self.threads.get(account_id, []))
 
     @contextmanager
     def tenant_session(self, org=None):
@@ -244,7 +256,9 @@ def fakes(monkeypatch) -> Fakes:
     monkeypatch.setattr(personal, "my_due_tasks", f.my_due_tasks)
     monkeypatch.setattr(notifications, "list_notifications", f.list_notifications)
     monkeypatch.setattr(accounts, "list_accounts", f.list_accounts)
+    monkeypatch.setattr(accounts, "feed_mailboxes", f.feed_mailboxes)
     monkeypatch.setattr(digest, "needs_reply_threads", f.needs_reply_threads)
+    monkeypatch.setattr(digest, "needs_reply_count", f.needs_reply_count)
     import acb_graph
 
     monkeypatch.setattr(acb_graph, "tenant_session", f.tenant_session)
@@ -284,7 +298,7 @@ class TestTheFeatureGate:
         answer = run(member("projects"))
         assert answer["sources"]["email"] == "absent"
         assert "email" not in {i["app"] for i in answer["items"]}
-        assert not {name for name, _, _ in fakes.calls} & {"list_accounts",
+        assert not {name for name, _, _ in fakes.calls} & {"feed_mailboxes",
                                                             "needs_reply_threads"}
 
     def test_the_tasks_provider_checks_projects_not_tasks(self, fakes):
@@ -295,7 +309,7 @@ class TestTheFeatureGate:
 
     def test_a_member_with_no_app_gets_nothing(self, fakes):
         answer = run(member())
-        assert answer == {"count": 0, "total": 0, "items": [],
+        assert answer == {"count": 0, "total": 0, "items": [], "totals": {}, "capped": [],
                           "sources": {"tasks": "absent", "approvals": "absent",
                                       "projects": "absent", "email": "absent"}}
         assert fakes.calls == []
@@ -607,12 +621,84 @@ class TestTheCaps:
         assert run(member(*ALL), limit=2)["total"] == 45
         assert run(member(*ALL), limit=500)["count"] == run(member(*ALL), limit=500)["total"] == 45
 
+    def test_totals_count_each_answering_sources_rows_before_the_cut(self, fakes):
+        # The sidebar's row counts read ``totals``. The replies sort last, so
+        # the cut to 30 drops every one of them from ``items``, and a count
+        # taken from ``items`` would say Email has nothing.
+        fakes.tasks[ME] = [_task(f"t-{n}", "x", NOW - timedelta(hours=n + 1))
+                           for n in range(20)]
+        fakes.notes[ME] = [dict(fakes.notes[ME][0], id=f"n-{n}") for n in range(20)]
+        fakes.threads["a-mine"] = [
+            _thread(f"th-{n}", f"m-{n}", "s", NOW - timedelta(hours=n)) for n in range(20)]
+        answer = run(member(*ALL))
+        assert "email" not in {i["app"] for i in answer["items"]}
+        # Projects is the bell's own unread count, and Email the digest's own
+        # count. The lens read has no count, so Tasks is a floor (capped).
+        assert answer["totals"] == {"tasks": 15, "projects": 20, "email": 20}
+        assert answer["capped"] == ["tasks"]
+
+    def test_a_short_read_is_exact_and_not_capped(self, fakes):
+        answer = run(admin(*ALL, "approvals"))
+        assert answer["capped"] == []
+        assert answer["totals"]["email"] == 2
+        # A mailbox below the cap runs no count: its rows are the number.
+        assert "needs_reply_count" not in {name for name, _, _ in fakes.calls}
+
+    def test_projects_total_is_the_bells_unread_count(self, fakes):
+        fakes.notes[ME] = [dict(fakes.notes[ME][0], id=f"n-{n}") for n in range(40)]
+        answer = run(member("projects"))
+        assert len([i for i in answer["items"] if i["app"] == "projects"]) == shell.PER_APP
+        assert answer["totals"]["projects"] == 40
+        assert "projects" not in answer["capped"]
+
+    def test_a_full_read_with_no_count_is_a_floor(self, fakes):
+        fakes.tasks[ME] = [_task(f"t-{n}", "x", NOW - timedelta(hours=n + 1))
+                           for n in range(19)]
+        fakes.pending[ORG] = [dict(fakes.pending[ORG][0], id=f"pa-{n}",
+                                   created_at=NOW - timedelta(minutes=n)) for n in range(20)]
+        answer = run(admin(*ALL, "approvals"))
+        assert answer["totals"]["tasks"] == shell.PER_APP
+        assert answer["totals"]["approvals"] == shell.PER_APP
+        assert set(answer["capped"]) == {"tasks", "approvals"}
+
+    def test_a_full_mailbox_reads_the_digest_count(self, fakes):
+        fakes.threads["a-mine"] = [
+            _thread(f"th-{n}", f"m-{n}", "s", NOW - timedelta(hours=n)) for n in range(17)]
+        answer = run(member("email"))
+        assert answer["totals"]["email"] == 17
+        assert "email" not in answer["capped"]
+        asked = [kw["account_id"] for name, _, kw in fakes.calls if name == "needs_reply_count"]
+        assert asked == ["a-mine"]
+
+    def test_a_mailbox_count_that_fails_makes_email_a_floor(self, fakes):
+        fakes.threads["a-mine"] = [
+            _thread(f"th-{n}", f"m-{n}", "s", NOW - timedelta(hours=n)) for n in range(17)]
+        fakes.fail["needs_reply_count"] = RuntimeError("db down")
+        answer = run(member("email"))
+        assert answer["sources"]["email"] == "ok"
+        assert answer["totals"]["email"] == shell.PER_APP
+        assert answer["capped"] == ["email"]
+
+    def test_the_email_read_runs_no_unread_count(self, fakes):
+        run(member("email"))
+        called = {name for name, _, _ in fakes.calls}
+        assert "feed_mailboxes" in called
+        assert "list_accounts" not in called
+
+    def test_totals_leave_out_a_failed_and_an_absent_source(self, fakes):
+        fakes.fail["list_notifications"] = RuntimeError("db down")
+        answer = run(member("email", "projects"))
+        assert answer["sources"]["projects"] == "failed"
+        assert answer["sources"]["approvals"] == "absent"
+        assert set(answer["totals"]) == {"tasks", "email"}
+        assert "projects" not in answer["capped"]
+
 
 class TestAFailingAppIsLeftOut:
     @pytest.mark.parametrize(
         ("broken", "source"),
         [("my_due_tasks", "tasks"), ("list_notifications", "projects"),
-         ("needs_reply_threads", "email"), ("list_accounts", "email"),
+         ("needs_reply_threads", "email"), ("feed_mailboxes", "email"),
          ("read_pending", "approvals")],
     )
     @pytest.mark.parametrize("error", [HTTPException(status_code=404, detail="gone"),
@@ -632,6 +718,9 @@ class TestAFailingAppIsLeftOut:
         answer = run(member(*ALL))
         assert answer["sources"]["email"] == "ok"
         assert "email:a-mine:th-old" in ids(answer)
+        # The broken mailbox's replies are not counted, so the number is a
+        # floor, and the row must say "N+" and never an exact-looking count.
+        assert "email" in answer["capped"]
 
     def test_one_slow_mailbox_costs_only_its_own_rows(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "MAILBOX_TIMEOUT_S", 0.05)
