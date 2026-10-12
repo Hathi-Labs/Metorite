@@ -1,8 +1,10 @@
-"""WS-17 EM-G3a-f7 PR-C1a — a Gmail-web draft keeps its HTML through a save.
+"""WS-17 EM-G3a-f7 PR-C1a and PR-C1b — a Gmail-web draft keeps its HTML.
 
-Spec: ``project-docs/specs/email_app_master_plan.md`` §12.3.12.5, the
-decisions D-G3a-f7-2, -5, -6, -6a, -8 and -10, and the acceptance items 5, 6,
-12 and 14 with the save half of 9 and 13. PR-C1b adds the cases of the send.
+Spec: ``project-docs/specs/email_app_master_plan.md`` §12.3.12.5. PR-C1a, the
+save: the decisions D-G3a-f7-2, -5, -6, -6a, -8 and -10, and the acceptance
+items 5, 6, 12 and 14 with the save half of 9 and 13. PR-C1b, the send: the
+decisions D-G3a-f7-6, -6a, -7, -10, -11 and -11a, and the acceptance items 7,
+8, 10 and 11 with the send half of 9 and 13.
 
 * ``PUT /email/drafts`` takes ``keep_html``. For a Gmail mailbox the save
   sends the HTML of the draft: from the row, else from Gmail through
@@ -13,6 +15,11 @@ decisions D-G3a-f7-2, -5, -6, -6a, -8 and -10, and the acceptance items 5, 6,
   mirror of the AI drafter and ``/drafts/save`` write the row of main.
 * An Outlook save calls the provider with the arguments of main, answers the
   keys of main and leaves ``body_html`` as main does.
+* A signed send of a Gmail draft signs the HTML of the draft with
+  ``sign_html``: from the row, else from Gmail. With no HTML anywhere it signs
+  as main does. A failed read with ``allow_text_only: false`` answers 409 and
+  sends nothing. With ``true``, or with no value, it sends the text only. An
+  Outlook signed send calls the provider as main does.
 
 **R8.** Each case runs the real routes and the real SQL against the
 phase-4-promoted two-org catalog of ``test_h3_rls_promotion_rehearsal``,
@@ -45,7 +52,9 @@ from acb_auth.roles import UserContext, UserRole
 from email_ingestion.persist import TRUNCATION_MARKER
 from email_ingestion.providers.gmail import GmailProvider
 from email_ingestion.providers.outlook import OutlookProvider
+from fastapi import BackgroundTasks, HTTPException
 from gateway.routes.email.automation import drafting
+from gateway.routes.email.signature import build_signed_bodies
 from sqlalchemy import text
 
 from tests.unit.test_email_scheduler_tenancy import _assert_non_priv, _purge
@@ -54,6 +63,7 @@ from tests.unit.test_email_scheduler_tenancy import _assert_non_priv, _purge
 # imports are load-bearing even though they read as unused.
 from tests.unit.test_gmail_send_and_drafts import (  # noqa: F401
     CID,
+    PNG,
     RAVI,
     _account,
     _as_member,
@@ -62,6 +72,7 @@ from tests.unit.test_gmail_send_and_drafts import (  # noqa: F401
     _gmail_web_draft,
     _provider,
     _shape,
+    _sign,
     fake,
 )
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
@@ -165,6 +176,7 @@ def _outlook() -> OutlookProvider:
     outlook.update_draft = AsyncMock(return_value="AAMk-1")  # type: ignore[method-assign]
     outlook.create_draft = AsyncMock(return_value="AAMk-1")  # type: ignore[method-assign]
     outlook.get_message_body = AsyncMock()  # type: ignore[method-assign]
+    outlook.send_draft = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return outlook
 
 
@@ -525,3 +537,252 @@ async def test_only_a_gmail_save_answers_html(gmail, monkeypatch):
 
     assert "html" not in answer
     assert set(answer) == set(plain) - {"html"}
+
+
+# ── PR-C1b: the signed send keeps the HTML (acceptance 7 to 11, 13) ─────────
+
+#: An HTML signature. Its text is ``Asha | Contoso``.
+SIG = "<b>Asha</b> | Contoso"
+SIG_TEXT = "Asha | Contoso"
+#: The HTML of a Gmail-web reply, as the sync stores it in the row.
+QUOTED_HTML = (STORED_HTML + '<div class="gmail_quote"><div>On Mon, Ravi '
+               "wrote:</div><blockquote>Can you send it?</blockquote></div>")
+
+
+async def _send(m: SimpleNamespace, local_id: str, **fields: Any) -> Any:
+    """One POST /email/drafts/send of the member: the real route."""
+    req = drafting.DraftSendRequest(account_id=m.aid, draft_id=local_id,
+                                    **fields)
+    async with _as_member(m):
+        return await drafting.send_draft_endpoint(
+            req, BackgroundTasks(), user=m.me)
+
+
+def _parts(msg: Any) -> tuple[str, str]:
+    """The text and the HTML of a sent mail, at any depth."""
+    found = {p.get_content_type(): p.get_payload(decode=True).decode()
+             for p in msg.walk() if p.get_content_type() in
+             ("text/plain", "text/html")}
+    return found.get("text/plain", ""), found.get("text/html", "")
+
+
+def _spy_updates(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """The keyword arguments of each Gmail ``update_draft``."""
+    seen: list[dict[str, Any]] = []
+    real = GmailProvider.update_draft
+
+    async def _update(self: GmailProvider, draft_id: str, **kw: Any) -> Any:
+        seen.append(kw)
+        return await real(self, draft_id, **kw)
+
+    monkeypatch.setattr(GmailProvider, "update_draft", _update)
+    return seen
+
+
+def _fail_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fails(self: GmailProvider, _mid: str) -> Any:
+        raise RuntimeError("the read failed")
+
+    monkeypatch.setattr(GmailProvider, "get_message_body", _fails)
+
+
+@pytest.mark.parametrize("stored", [QUOTED_HTML, None],
+                         ids=["row-html", "gmail-html"])
+async def test_a_signed_send_keeps_the_html_and_the_inline_parts(gmail, stored):
+    """Acceptance 7, M3, D-G3a-f7-7. The signed send takes the HTML of the
+    draft, from the row or from Gmail, and signs it with ``sign_html``. The
+    update keeps the inline image with its ``Content-ID``. The signature
+    shows once, above the quote."""
+    m = gmail
+    _sign(m, SIG)
+    local = _gmail_draft(m, stored)
+
+    assert await _send(m, local) == {"sent": True}
+
+    msg = _sent(m)
+    assert _shape(msg) == _RELATED
+    image = msg.get_payload()[1]
+    assert image["Content-ID"] == f"<{CID}>"
+    assert image.get_payload(decode=True) == PNG
+    body_text, html = _parts(msg)
+    assert f'src="cid:{CID}"' in html
+    assert html.count(SIG) == 1
+    assert body_text.count(SIG_TEXT) == 1
+    if stored:
+        assert html.index(SIG) < html.index("gmail_quote")
+    assert _full_reads(m.fake, "m-c") == (0 if stored else 1)
+    assert m.fake.sent_drafts == ["r-c"]
+    assert _row(m.admin, local) is None, "the sent draft kept its row"
+
+
+async def test_a_kept_draft_goes_out_with_the_signature_once(gmail):
+    """The note of review round 1 of PR-C1a. A save with ``keep_html`` puts
+    the signature in the text only, so the kept HTML has none. The send adds
+    it to the HTML, and the text keeps its one copy."""
+    m = gmail
+    _sign(m, SIG)
+    local = _gmail_draft(m, None)
+    saved = await _save(m, draft_id=local, to=[RAVI], subject="New layout",
+                        body=TEXT, keep_html=True)
+    assert saved["html"] == "kept"
+    assert SIG not in _parts(_sent(m))[1]
+
+    await _send(m, local)
+
+    body_text, html = _parts(_sent(m))
+    assert html.count(SIG) == 1
+    assert body_text.count(SIG_TEXT) == 1
+    assert _shape(_sent(m)) == _RELATED
+
+
+async def test_a_signed_send_after_a_text_edit_sends_the_new_text(gmail):
+    """Acceptance 8, M4. A text save clears the stored HTML, and Gmail holds
+    a text draft. So the signed send sends the new text, and no HTML of the
+    text from before."""
+    m = gmail
+    _sign(m, SIG)
+    local = _gmail_draft(m, STORED_HTML)
+    await _save(m, draft_id=local, to=[RAVI], subject="New layout",
+                body="An edited text.")
+
+    await _send(m, local)
+
+    msg = _sent(m)
+    assert _shape(msg) == ("multipart/alternative", ["text/plain", "text/html"])
+    body_text, html = _parts(msg)
+    assert "An edited text." in html and "An edited text." in body_text
+    assert "Please find the layout" not in html
+    assert "cid:" not in html
+    assert html.count(SIG) == 1
+
+
+async def test_a_signed_send_with_no_html_anywhere_is_main(gmail, monkeypatch):
+    """Acceptance 10, M12, D-G3a-f7-10. A draft made in Metorite is
+    ``text/plain``, so neither the row nor Gmail holds HTML. The send signs
+    with ``build_signed_bodies(signature, body_text, None)``, as main does.
+    It costs one more Gmail read."""
+    m = gmail
+    _sign(m, SIG)
+    first = await _save(m, to=[RAVI], subject="Quote", body="v1")
+    mid = first["provider_message_id"]
+    row_text = _row(m.admin, first["id"]).body_text
+    updates = _spy_updates(monkeypatch)
+
+    await _send(m, first["id"])
+
+    want_text, want_html = build_signed_bodies(SIG, row_text, None)
+    [update] = updates
+    assert (update["body_text"], update["body_html"]) == (want_text, want_html)
+    assert _full_reads(m.fake, mid) == 1
+    assert len(m.fake.sent_drafts) == 1
+
+
+async def test_a_failed_read_at_the_send_answers_409_and_sends_nothing(
+        gmail, monkeypatch):
+    """Acceptance 11, M8, D-G3a-f7-11. The HTML read fails, and the client
+    says ``allow_text_only: false``. The send answers 409 with the reason
+    ``html_unavailable``. Gmail gets no update and no send, and the row
+    stays."""
+    m = gmail
+    _sign(m, SIG)
+    local = _gmail_draft(m, None)
+    _fail_reads(monkeypatch)
+
+    with pytest.raises(HTTPException) as caught:
+        await _send(m, local, allow_text_only=False)
+
+    assert caught.value.status_code == 409
+    assert caught.value.detail == {"reason": "html_unavailable"}
+    assert m.fake.saved == [] and m.fake.updated == []
+    assert m.fake.sent_drafts == []
+    assert _row(m.admin, local).provider_message_id == "m-c"
+
+
+async def _sends_the_text(m: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+                          **fields: Any) -> None:
+    _sign(m, SIG)
+    local = _gmail_draft(m, None)
+    _fail_reads(monkeypatch)
+    updates = _spy_updates(monkeypatch)
+
+    assert await _send(m, local, **fields) == {"sent": True}
+
+    want_text, want_html = build_signed_bodies(SIG, TEXT, None)
+    [update] = updates
+    assert (update["body_text"], update["body_html"]) == (want_text, want_html)
+    assert _shape(_sent(m)) == ("multipart/alternative",
+                                ["text/plain", "text/html"])
+    assert m.fake.sent_drafts == ["r-c"]
+
+
+async def test_allow_text_only_sends_the_text(gmail, monkeypatch):
+    """Acceptance 11, D-G3a-f7-11. On the next press the client says
+    ``allow_text_only: true``, and the send goes on with the text only."""
+    await _sends_the_text(gmail, monkeypatch, allow_text_only=True)
+
+
+async def test_an_old_client_send_with_a_failed_read_sends_the_text(
+        gmail, monkeypatch):
+    """Acceptance 11, D-G3a-f7-11a. A client before PR-C2, and the assistant
+    tool ``send_draft``, send no ``allow_text_only``. A failed read then sends
+    the text only, as main does."""
+    await _sends_the_text(gmail, monkeypatch)
+
+
+@pytest.mark.parametrize("allow_text_only", [None, False, True],
+                         ids=["old-client", "first-press", "next-press"])
+async def test_an_outlook_signed_send_calls_the_provider_as_on_main(
+        outlook, allow_text_only):
+    """Acceptance 9, the send half, D-G3a-f7-5. An Outlook signed send reads
+    no HTML, and signs the text as main does, whatever the client says. The
+    row HTML does not go to Outlook."""
+    m = outlook
+    _sign(m, SIG)
+    local = _seed_draft(m.admin, org=m.org, account_id=m.aid, pmid="AAMk-1",
+                        body_html=OUTLOOK_HTML)
+
+    await _send(m, local, allow_text_only=allow_text_only)
+
+    [provider] = m.providers
+    want_text, want_html = build_signed_bodies(SIG, TEXT, None)
+    provider.update_draft.assert_awaited_once_with(
+        "AAMk-1", to=[RAVI], cc=None, bcc=None, subject="New layout",
+        body_text=want_text, body_html=want_html, thread_id="t-c")
+    provider.send_draft.assert_awaited_once_with("AAMk-1")
+    provider.get_message_body.assert_not_awaited()
+
+
+async def test_the_html_read_runs_inside_the_send_session(gmail, monkeypatch):
+    """Acceptance 13, the send half, D-G3a-f7-6a. The Gmail read runs inside
+    the session of the route. The route opens the sessions of main: its own,
+    and the one that moves the row before the send (E-A1)."""
+    m = gmail
+    _sign(m, SIG)
+    local = _gmail_draft(m, None)
+    real_session = drafting._tenant_session
+    real_read = GmailProvider.get_message_body
+    opened: list[int] = []
+    depth = [0]
+    read_at: list[int] = []
+
+    @asynccontextmanager
+    async def _counted(*a: Any, **kw: Any) -> AsyncIterator[Any]:
+        opened.append(depth[0])
+        async with real_session(*a, **kw) as db:
+            depth[0] += 1
+            try:
+                yield db
+            finally:
+                depth[0] -= 1
+
+    async def _read(self: GmailProvider, mid: str) -> Any:
+        read_at.append(depth[0])
+        return await real_read(self, mid)
+
+    monkeypatch.setattr(drafting, "_tenant_session", _counted)
+    monkeypatch.setattr(GmailProvider, "get_message_body", _read)
+
+    await _send(m, local)
+
+    assert opened == [0, 1], "the send opened a session that main does not"
+    assert read_at == [1], "the Gmail read ran outside the session of the route"
