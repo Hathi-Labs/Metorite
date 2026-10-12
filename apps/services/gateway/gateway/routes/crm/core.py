@@ -416,7 +416,7 @@ class ListResponse(BaseModel):
 #: ``IS [NOT] NULL`` as a plain filter, so a comparison keeps it one clause.
 OPEN_LEAD_SQL = (
     "converted_deal_id IS NULL "
-    "AND NOT (ext_source > '' AND converted_at > '-infinity'::timestamptz)"
+    "AND NOT COALESCE(ext_source > '' AND converted_at > '-infinity'::timestamptz, false)"
 )
 
 
