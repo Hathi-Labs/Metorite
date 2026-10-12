@@ -70,7 +70,6 @@ function useModuleList(module: string, view: CrmView, reloadToken: number) {
   useEffect(() => {
     const asked = ++latest.current;
     // A new view starts again at page 1, with the rows of the old one gone.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setState((s) => ({ ...s, loading: true, loadingMore: false, error: null }));
     api
       .listModuleRecords(module, moduleListQuery(view, 1))

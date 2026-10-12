@@ -213,11 +213,11 @@ export function parseView(search: string | URLSearchParams): CrmView {
     typeof search === "string" ? new URLSearchParams(search) : search;
   const raw = params.get("tab");
   const legacy = raw ? LEGACY_TABS[raw] : undefined;
-  const module = params.get("module");
+  const moduleName = params.get("module");
   const parsedTab: CrmView["tab"] = legacy ? legacy.tab : isTab(raw) ? raw : "deals";
   // A module tab names its module, or it is not a tab.
   const tab: CrmView["tab"] =
-    parsedTab === "module" && !isModuleName(module) ? "deals" : parsedTab;
+    parsedTab === "module" && !isModuleName(moduleName) ? "deals" : parsedTab;
   const moduleRecord = parseModuleRecord(params.get("mrec"));
   // A known record wins a hand-edited URL that names both.
   const record = parseRecord(params);
@@ -242,7 +242,7 @@ export function parseView(search: string | URLSearchParams): CrmView {
     ranges: parseRanges(params),
     custom: parseCustom(params),
     viewId: params.get("view") || null,
-    module: tab === "module" ? module : null,
+    module: tab === "module" ? moduleName : null,
     moduleRecord: record ? null : moduleRecord,
   };
 }
@@ -252,9 +252,9 @@ export function parseModuleRecord(value: string | null): OpenModuleRecord | null
   if (!value) return null;
   const at = value.indexOf(":");
   if (at < 0) return null;
-  const module = value.slice(0, at);
+  const name = value.slice(0, at);
   const id = value.slice(at + 1);
-  return isModuleName(module) && id ? { module, id } : null;
+  return isModuleName(name) && id ? { module: name, id } : null;
 }
 
 function parseRanges(params: URLSearchParams): Partial<Record<RangeKey, string>> {
