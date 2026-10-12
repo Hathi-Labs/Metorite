@@ -60,10 +60,24 @@ _HTTP_TRANSPORTS = frozenset({"http-sse", "http"})
 
 # ``mcp_servers`` is exempt from RLS, so the ``organization_id`` predicate is
 # the boundary of each statement on it.
+#
+# ⚠️ ``FOR UPDATE`` is load-bearing (review of #905). The move holds the lock
+# of each old row until its transaction commits. :func:`remove` deletes the
+# old row FIRST, so a delete that runs during a move waits for the move, and
+# then its registry delete sees the moved row. Without the lock, a move could
+# write a server back that an admin deleted a moment before.
 _LEGACY_SQL = (
     "SELECT name, label, description, transport, url, headers, agent_scope, "
     "enabled FROM mcp_servers WHERE organization_id = CAST(:org AS uuid) "
-    "ORDER BY created_at, name"
+    "ORDER BY created_at, name FOR UPDATE"
+)
+
+#: Once the registry holds the server, the old row keeps no secret at rest.
+#: The row stays for one release (R6), with an empty header and env map.
+_LEGACY_CLEAR_SQL = (
+    "UPDATE mcp_servers SET headers = '{}'::jsonb, env_vars = '{}'::jsonb, "
+    "updated_at = now() WHERE organization_id = CAST(:org AS uuid) "
+    "AND name = :name AND (headers <> '{}'::jsonb OR env_vars <> '{}'::jsonb)"
 )
 
 _LEGACY_DELETE_SQL = (
@@ -182,11 +196,14 @@ async def _legacy_rows(db: Any, org: str) -> list[Any]:
 async def migrate_legacy(db: Any, org: str) -> int:
     """Move each old ``mcp_servers`` row of *org* that the registry lacks.
 
-    Returns the number of rows moved. The old row stays, for one release. A
-    row that the registry already holds, under any status, is never moved
-    again, so a second read moves nothing and a newer registration wins. The
-    insert does nothing on a conflict, so two reads at one time move a row
-    once. A stdio row, or a row with no url, does not move (D85).
+    Returns the number of rows moved. The old row stays, for one release,
+    but its headers and env vars are emptied in the same transaction, so no
+    plain secret stays at rest once the registry holds the server. A row that
+    the registry already holds, under any status, is never moved again, so a
+    second read moves nothing and a newer registration wins. The insert does
+    nothing on a conflict, and the old rows are locked (``FOR UPDATE``), so two
+    reads at one time move a row once, and a delete at the same time wins. A
+    stdio row, or a row with no url, does not move (D85).
     """
     legacy = await _legacy_rows(db, org)
     if not legacy:
@@ -196,6 +213,7 @@ async def migrate_legacy(db: Any, org: str) -> int:
     for row in legacy:
         name = str(row.name)
         if provider_for(name) in present:
+            await _clear_legacy(db, org, name)
             continue
         if row.transport not in _HTTP_TRANSPORTS or not row.url or not NAME_RE.match(name):
             _log.info("mcp.legacy_not_moved", name=name, transport=row.transport)
@@ -211,7 +229,17 @@ async def migrate_legacy(db: Any, org: str) -> int:
         if saved is not None:
             moved += 1
             _log.info("mcp.legacy_moved", name=name)
+        await _clear_legacy(db, org, name)
     return moved
+
+
+async def _clear_legacy(db: Any, org: str, name: str) -> None:
+    """Empty the plain headers and env vars of an old row the registry holds."""
+    try:
+        async with db.begin_nested():
+            await db.execute(text(_LEGACY_CLEAR_SQL), {"org": org, "name": name})
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.legacy_clear_failed", error=type(exc).__name__)
 
 
 # ── Reads ───────────────────────────────────────────────────────────────────
@@ -305,18 +333,25 @@ async def remove(org: str, name: str) -> bool:
 
     ``True`` when either existed. The old row goes too, or the next read
     would move it back.
+
+    ⚠️ The ORDER is load-bearing (review of #905). The old row goes FIRST. A
+    move holds that row's lock (``FOR UPDATE``) until it commits, so this
+    delete waits for it. The registry delete is the next statement, and it
+    sees the row that the move wrote, so the deleted server stays deleted.
     """
     if not NAME_RE.match(name or ""):
         return False
     org = _org(org)
+    removed = False
     async with tenant_session(org) as db:
-        removed = await store.delete(db, org, provider_for(name), OWNING_APP)
         try:
             async with db.begin_nested():
                 result = await db.execute(
                     text(_LEGACY_DELETE_SQL), {"org": org, "name": name},
                 )
-                removed = removed or bool(result.rowcount)
+                removed = bool(result.rowcount)
         except Exception as exc:  # a missing old table removes nothing more
             _log.warning("mcp.legacy_delete_failed", error=type(exc).__name__)
+        if await store.delete(db, org, provider_for(name), OWNING_APP):
+            removed = True
     return removed

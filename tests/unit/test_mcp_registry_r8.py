@@ -388,6 +388,75 @@ async def test_f_one_legacy_row_moves_once_and_stays(ns, monkeypatch) -> None:
     assert _registry(ns, ns.org_a) == {}
 
 
+def _legacy_secrets(p: Any, org: str, name: str) -> tuple[Any, Any]:
+    with p.admin_engine.connect() as c:
+        row = c.execute(text(
+            "SELECT headers, env_vars FROM mcp_servers WHERE organization_id = "
+            "CAST(:o AS uuid) AND name = :n"), {"o": org, "n": name}).one()
+    return row[0], row[1]
+
+
+async def test_f_a_move_leaves_no_plain_secret_in_the_old_row(ns) -> None:
+    """Review nit of #905: the old row stays for one release (R6), but once
+    the registry holds the server, its plain headers and env vars are gone."""
+    name = _name("clr")
+    _seed_legacy(ns, ns.org_a, name)
+    assert _legacy_secrets(ns, ns.org_a, name) == (
+        {"Authorization": LEGACY_SENTINEL}, {"API_KEY": LEGACY_ENV})
+    listed = (await _call(_user(ADMIN_A, ns.org_a), "GET", "/integrations/mcp")).json()
+    assert [r["name"] for r in listed] == [name]
+    assert _legacy_count(ns, ns.org_a, name) == 1, "the old row must stay for one release"
+    assert _legacy_secrets(ns, ns.org_a, name) == ({}, {})
+    # The registry keeps the header, encrypted.
+    from gateway.connections import mcp
+
+    assert (await mcp.get_one(ns.org_a, name)).headers == {"Authorization": LEGACY_SENTINEL}
+
+
+async def test_f_a_delete_during_a_move_stays_deleted(ns, monkeypatch) -> None:
+    """Review P2 of #905, proved on a real DB. A read sees no ``mcp:X`` and
+    starts to move the old row. An admin deletes X in that moment. Without the
+    row lock, the delete finds no registry row, deletes the old row, and then
+    the move writes ``mcp:X`` back. The reader is held at the insert, the
+    delete runs, and then the reader goes on: X must stay deleted."""
+    import asyncio
+
+    from gateway.connections import mcp, store
+
+    name = _name("race")
+    _seed_legacy(ns, ns.org_a, name)
+    real = store.save_headers
+    gate, reached = asyncio.Event(), asyncio.Event()
+
+    async def _held(*a: Any, **k: Any) -> Any:
+        if k.get("only_if_absent"):
+            reached.set()
+            await gate.wait()
+        return await real(*a, **k)
+
+    monkeypatch.setattr(mcp.store, "save_headers", _held)
+
+    def _waiting_on_a_lock() -> int:
+        with ns.admin_engine.connect() as c:
+            return c.execute(text(
+                "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                "AND query LIKE 'DELETE FROM mcp_servers%'")).scalar_one()
+
+    reader = asyncio.create_task(mcp.servers_for_org(ns.org_a))
+    await asyncio.wait_for(reached.wait(), 10)
+    remover = asyncio.create_task(mcp.remove(ns.org_a, name))
+    for _ in range(100):  # the delete finishes, or it waits on the move's lock
+        if remover.done() or _waiting_on_a_lock():
+            break
+        await asyncio.sleep(0.1)
+    gate.set()
+    await asyncio.wait_for(reader, 20)
+    assert await asyncio.wait_for(remover, 20) is True
+    assert _registry(ns, ns.org_a) == {}, "a move wrote back a server that was deleted"
+    assert _legacy_count(ns, ns.org_a, name) == 0
+    assert (await _call(_user(ADMIN_A, ns.org_a), "GET", "/integrations/mcp")).json() == []
+
+
 async def test_f_a_legacy_stdio_row_does_not_move(ns) -> None:
     name = _name("io")
     _seed_legacy(ns, ns.org_a, name, transport="stdio", url=None)
