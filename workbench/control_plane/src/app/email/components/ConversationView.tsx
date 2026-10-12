@@ -423,6 +423,13 @@ export function DraftCard({
   const [htmlRead, setHtmlRead] = useState<{ html: string | null; failed: boolean } | null>(null);
   const htmlReadStarted = useRef(false);
   const [htmlLost, setHtmlLost] = useState(false);
+  // The send reads the loss through a ref. A press during an autosave that
+  // answers `lost` then still sees it after the drain (review round 1, P2).
+  const htmlLostRef = useRef(false);
+  const markLost = () => {
+    htmlLostRef.current = true;
+    setHtmlLost(true);
+  };
   const [textOnlyConfirmed, setTextOnlyConfirmed] = useState(false);
   // A stopped send shows its own words, until the next send or a text edit.
   const [sendStopped, setSendStopped] = useState(false);
@@ -534,7 +541,7 @@ export function DraftCard({
           bcc: bccList(),
           subject: draft.subject || "",
         }, openedText, combinedBody(), provider));
-        if (noticeAfterSave(saved)) setHtmlLost(true);
+        if (noticeAfterSave(saved)) markLost();
         setDraftStatus("saved");
       } catch (err) {
         // The next edit tries again (EM-G3c-2 item 13).
@@ -580,10 +587,11 @@ export function DraftCard({
         bcc: bccList(),
         subject: draft.subject || "",
       }, openedText, combinedBody(), provider));
-      if (noticeAfterSave(saved)) setHtmlLost(true);
+      if (noticeAfterSave(saved)) markLost();
       // A `lost` stops the first press, and the card shows the notice. The
-      // next press sends the text only (D-G3a-f7-12).
-      if (sendAfterPreSave(saved, textOnlyConfirmed) === "stop") {
+      // next press sends the text only (D-G3a-f7-12). A `lost` of an earlier
+      // autosave stops it too, because this save then answers `none`.
+      if (sendAfterPreSave(saved, textOnlyConfirmed, htmlLostRef.current) === "stop") {
         stopSend();
         return;
       }
@@ -667,12 +675,14 @@ export function DraftCard({
   // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
   const saveFailure = saveFailureText(draftStatus);
   // The notice of a Gmail draft with HTML (EM-G3a-f7, D-G3a-f7-3). It also
-  // shows after a save that lost the HTML, and after a stopped send.
+  // shows after a save that lost the HTML, and after a stopped send. It shows
+  // while the HTML read runs, so the member knows before the first edit.
   const showNotice =
     showsFormattingNotice(
       provider,
       draft.bodyHtml || htmlRead?.html,
       htmlRead?.failed ?? false,
+      needsHtmlRead(provider, draft.bodyHtml, htmlRead !== null),
     ) || htmlLost || textOnlyConfirmed;
 
   return (

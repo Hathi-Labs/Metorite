@@ -70,14 +70,19 @@ export function draftSavePayload(
 /**
  * The notice shows before the first edit of a Gmail draft with HTML, and of a
  * Gmail draft whose HTML read failed (D-G3a-f7-3).
+ *
+ * Review round 1 (P3): it also shows while the HTML read of a Gmail draft
+ * with no row HTML runs (`htmlReadPending`). So the member knows first, even
+ * when the read is slow. A read that finds no HTML then removes it.
  */
 export function showsFormattingNotice(
   provider: string | undefined,
   html: string | null | undefined,
   htmlReadFailed: boolean,
+  htmlReadPending = false,
 ): boolean {
   if (provider !== "gmail") return false;
-  return htmlReadFailed || !!html?.trim();
+  return htmlReadFailed || htmlReadPending || !!html?.trim();
 }
 
 /** A save that answers `html: "lost"` sent the text only (D-G3a-f7-6). */
@@ -89,12 +94,17 @@ export function noticeAfterSave(answer: DraftSaveAnswer | null | undefined): boo
  * Whether the card sends after its pre-send save (D-G3a-f7-12). A `lost`
  * with no confirm stops the send, and the card shows the notice. The next
  * press of the member is the confirm.
+ *
+ * Review round 1 (P2): `lostBefore` is a `lost` of an earlier save of the
+ * card, such as an autosave. That save already wrote the text only to Gmail,
+ * so the pre-send save answers `none`. The send stops all the same.
  */
 export function sendAfterPreSave(
   answer: DraftSaveAnswer | null | undefined,
   confirmed: boolean,
+  lostBefore = false,
 ): "send" | "stop" {
-  return answer?.html === "lost" && !confirmed ? "stop" : "send";
+  return (answer?.html === "lost" || lostBefore) && !confirmed ? "stop" : "send";
 }
 
 /** The reason of the 409 of the send (D-G3a-f7-11, `drafting.py`). */

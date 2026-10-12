@@ -16,6 +16,10 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *      press sends the text only.
  *   4. An Outlook draft shows no notice, and its save and its send carry the
  *      bodies of main.
+ *   5. Review round 1. An autosave that answers `lost` stops the next send,
+ *      though the pre-send save answers `none`. A Gmail draft with no row
+ *      HTML reads its HTML from `full-body` (B5), and the notice shows while
+ *      that read runs.
  *
  * Acceptance 23 is a visual review. With `GMAIL_C2_SHOTS` set to a folder,
  * the spec saves a screenshot of each state there: dark, light, compact
@@ -32,6 +36,7 @@ const STOPPED =
 const INBOUND = "0f8fad5b-d9cb-469f-a165-70867728951a";
 const DRAFT = "0f8fad5b-d9cb-469f-a165-70867728951d";
 const THREAD = "t-plan";
+const DRAFT_HTML = '<p>Thanks Ravi. <b>The plan</b> is below.</p><img src="cid:ii_plan">';
 
 function account(provider: "gmail" | "microsoft") {
   return {
@@ -66,7 +71,7 @@ function inbound(accountId: string) {
 }
 
 /** A draft that the member wrote in Gmail web, with bold text and an inline image. */
-function draft(accountId: string) {
+function draft(accountId: string, rowHtml = true) {
   return {
     id: DRAFT,
     provider_message_id: "pm-draft",
@@ -76,7 +81,8 @@ function draft(accountId: string) {
     to_addresses: [{ name: "Ravi", email: "ravi@contoso.test" }],
     subject: "Re: The plan for the extruder",
     body_text: "Thanks Ravi. The plan is below.",
-    body_html: '<p>Thanks Ravi. <b>The plan</b> is below.</p><img src="cid:ii_plan">',
+    // The §14 hot window can leave a Gmail draft row with no HTML (B5).
+    body_html: rowHtml ? DRAFT_HTML : null,
     snippet: "Thanks Ravi.",
     folder: "drafts",
     is_read: true,
@@ -89,6 +95,13 @@ function draft(accountId: string) {
 interface Answers {
   /** The `html` answer of each save. */
   saveHtml?: "kept" | "lost" | "none";
+  /** The `html` answer of the first save. Each later save answers `saveHtml`. */
+  firstSaveHtml?: "kept" | "lost" | "none";
+  /** False: the draft row has no HTML, so the card reads `full-body`. */
+  rowHtml?: boolean;
+  /** The `body_html` that `full-body` answers, after `holdRead` settles. */
+  readHtml?: string | null;
+  holdRead?: Promise<void>;
   /** The status of the first send. Each later send answers 200. */
   firstSend?: number;
 }
@@ -99,6 +112,8 @@ async function installMocks(page: Page, provider: "gmail" | "microsoft", answers
     route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   const saves: Record<string, unknown>[] = [];
   const sends: Record<string, unknown>[] = [];
+  const reads: string[] = [];
+  const rowHtml = answers.rowHtml ?? true;
 
   // The fallback first: Playwright tries the LAST route first.
   await page.route("**/api/**", (r) => json(r, {}));
@@ -111,16 +126,25 @@ async function installMocks(page: Page, provider: "gmail" | "microsoft", answers
   await page.route(/.*\/api\/email\/messages\/facets.*/, (r) => json(r, { folder: "inbox", total: 0, unread: 0, labels: {} }));
   await page.route(/.*\/api\/email\/(messages|search)\?.*/, (r) => {
     const thread = new URL(r.request().url()).searchParams.get("thread_id");
-    const emails = thread ? [inbound(box.id), draft(box.id)] : [inbound(box.id)];
+    const emails = thread ? [inbound(box.id), draft(box.id, rowHtml)] : [inbound(box.id)];
     return json(r, { emails, total: emails.length, page: 1, page_size: 50 });
   });
   await page.route(new RegExp(`.*/api/email/messages/${INBOUND}(\\?.*)?$`), (r) => json(r, inbound(box.id)));
   await page.route(/.*\/api\/email\/contacts\/suggest.*/, (r) => json(r, []));
+  await page.route(new RegExp(`.*/api/email/messages/${DRAFT}/full-body$`), async (r) => {
+    reads.push(r.request().url());
+    await answers.holdRead;
+    return json(r, {
+      message_id: DRAFT, body_text: draft(box.id).body_text, body_html: answers.readHtml ?? null,
+      subject: draft(box.id).subject, from: "Me <me@example.com>",
+    });
+  });
   await page.route("**/api/email/drafts", (r) => {
     if (r.request().method() !== "PUT") return json(r, {});
     saves.push(JSON.parse(r.request().postData() ?? "{}"));
-    const answer: Record<string, unknown> = { ...draft(box.id) };
-    if (provider === "gmail") answer.html = answers.saveHtml ?? "kept";
+    const answer: Record<string, unknown> = { ...draft(box.id, rowHtml) };
+    const first = saves.length === 1 ? answers.firstSaveHtml : undefined;
+    if (provider === "gmail") answer.html = first ?? answers.saveHtml ?? "kept";
     return json(r, answer);
   });
   await page.route("**/api/email/drafts/send", (r) => {
@@ -130,7 +154,14 @@ async function installMocks(page: Page, provider: "gmail" | "microsoft", answers
     }
     return json(r, { sent: true });
   });
-  return { box, saves, sends };
+  return { box, saves, sends, reads };
+}
+
+/** A Cc edit: the text stays as it opened, so the autosave keeps the HTML. */
+async function editCc(page: Page) {
+  const cc = page.locator('[placeholder="Cc (comma-separated)"]:visible').first();
+  if (!(await cc.isVisible())) await page.getByRole("button", { name: "Cc/Bcc" }).click();
+  await cc.fill("lena@contoso.test");
 }
 
 async function openThread(page: Page, accountId: string, phone = false) {
@@ -165,9 +196,7 @@ test.describe("The DraftCard of a Gmail-web draft", () => {
     await shot(page, "notice-dark-1280");
 
     // A Cc edit saves with the text as it opened, so the save keeps the HTML.
-    const cc = page.locator('[placeholder="Cc (comma-separated)"]:visible').first();
-    if (!(await cc.isVisible())) await page.getByRole("button", { name: "Cc/Bcc" }).click();
-    await cc.fill("lena@contoso.test");
+    await editCc(page);
     await expect.poll(() => saves.length, { timeout: 10_000 }).toBeGreaterThan(0);
     expect(saves[saves.length - 1].keep_html).toBe(true);
 
@@ -214,6 +243,58 @@ test.describe("The DraftCard of a Gmail-web draft", () => {
     await sendButton(page).click();
     await expect.poll(() => sends.length).toBe(1);
     expect(sends[0].allow_text_only).toBe(true);
+  });
+
+  test("an autosave that lost the HTML stops the next send, though the pre-send save answers none", async ({ page }) => {
+    const { box, saves, sends } = await installMocks(page, "gmail", { firstSaveHtml: "lost", saveHtml: "none" });
+    await openThread(page, box.id);
+
+    await editCc(page);
+    await expect.poll(() => saves.length, { timeout: 10_000 }).toBe(1);
+    expect(saves[0].keep_html).toBe(true);
+    await expect(page.getByRole("status").filter({ hasText: NOTICE })).toBeVisible();
+
+    // The pre-send save answers `none`, because the autosave already wrote
+    // the text only to Gmail. The send stops all the same.
+    await sendButton(page).click();
+    await expect.poll(() => saves.length).toBe(2);
+    await expect(page.getByRole("alert").filter({ hasText: STOPPED })).toBeVisible();
+    expect(sends.length).toBe(0);
+
+    await sendButton(page).click();
+    await expect.poll(() => sends.length).toBe(1);
+    expect(sends[0].allow_text_only).toBe(true);
+  });
+
+  test("a Gmail draft with no row HTML reads it, shows the notice, and a Cc save keeps it (B5)", async ({ page }) => {
+    const { box, saves, reads } = await installMocks(page, "gmail", { rowHtml: false, readHtml: DRAFT_HTML });
+    const read = page.waitForResponse((r) => r.url().endsWith(`/messages/${DRAFT}/full-body`));
+    await openThread(page, box.id);
+    await read;
+    // The notice stays once the read returns, because the read found HTML.
+    await page.waitForTimeout(500);
+    await expect(page.getByRole("status").filter({ hasText: NOTICE })).toBeVisible();
+    expect(reads.length).toBe(1);
+
+    await editCc(page);
+    await expect.poll(() => saves.length, { timeout: 10_000 }).toBeGreaterThan(0);
+    expect(saves[saves.length - 1].keep_html).toBe(true);
+    expect(reads.length).toBe(1);
+  });
+
+  test("the notice shows while the HTML read runs, and a read with no HTML removes it", async ({ page }) => {
+    let release!: () => void;
+    const holdRead = new Promise<void>((done) => {
+      release = done;
+    });
+    const { box, reads } = await installMocks(page, "gmail", { rowHtml: false, readHtml: null, holdRead });
+    await openThread(page, box.id);
+    await expect.poll(() => reads.length).toBe(1);
+    // The member knows first: the notice is up before the read answers.
+    await expect(page.getByRole("status").filter({ hasText: NOTICE })).toBeVisible();
+
+    release();
+    await expect(page.getByText(NOTICE)).toHaveCount(0);
   });
 
   test("an Outlook draft shows no notice, and saves and sends the bodies of main", async ({ page }) => {

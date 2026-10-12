@@ -560,7 +560,7 @@ interface EmailState {
   undoSend: () => void;
   /** Create or update a draft (provider + local mirror); returns the saved
    *  draft, with the `html` answer of a Gmail save (EM-G3a-f7). */
-  saveDraft: (params: api.SaveDraftParams) => Promise<api.SavedDraft>;
+  saveDraft: (params: api.SaveDraftParams) => Promise<api.DraftSaveResult>;
   /** Send an existing draft natively (Drafts → Sent) and drop it from the list.
    *  `allowTextOnly` goes to `api.sendDraft` (EM-G3a-f7, D-G3a-f7-11a). */
   sendDraft: (accountId: string, draftId: string, allowTextOnly?: boolean) => Promise<void>;

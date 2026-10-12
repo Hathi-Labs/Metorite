@@ -13023,6 +13023,11 @@ images go too, or come back as plain files.
   other answer gives `send`. *Reason:* the pre-send save is the last chance to keep the HTML, so
   the member must see its loss before the mail goes.
 
+  *Amended by review round 1 of PR-C2 (2026-10-13).* A `lost` of an earlier save of the card also
+  stops the send. An autosave is the usual case. That save already wrote the text only to Gmail, so
+  the pre-send save then answers `none`. The helper is `sendAfterPreSave(answer, confirmed,
+  lostBefore)`, and the card passes the loss of its earlier saves as `lostBefore`.
+
 **Where the answer gets `html`.** `upsert_draft` ends with
 `return await _fetch_message_dict(db, local_id)` at `drafting.py:2492`. For a Gmail mailbox that
 line becomes `return {**await _fetch_message_dict(db, local_id), "html": html_state}`, where
@@ -13092,8 +13097,9 @@ The words stay true. A save or a send that leaves the text as it was keeps the f
 the same notice then tells the member (D-G3a-f7-6). A failed read at the send stops the send until
 the member presses again (D-G3a-f7-11, D-G3a-f7-12).
 
-Row 4a shows after a stopped send. That is a 409 `html_unavailable`, or a pre-send save that
-answered `lost`. It replaces the words of row 4 until the next send or a text edit.
+Row 4a shows after a stopped send. That is a 409 `html_unavailable`, a pre-send save that
+answered `lost`, or a first send after an earlier save of the card answered `lost`. It replaces the
+words of row 4 until the next send or a text edit.
 
 **Non-goals.** No HTML editor. No change to the send of a draft with no signature: Gmail sends the
 draft that it holds. No change to Outlook or IMAP drafts, or to the create of a draft.
@@ -13135,7 +13141,7 @@ text half still comes from `build_signed_bodies`, because that half is the same 
 `sign_html` reads the new part of the HTML only. A quote of an earlier mail of the member holds the
 signature too, and that copy must not stop the signature.
 
-**The build of PR-C2 (2026-10-13).** Three facts that the scope did not name:
+**The build of PR-C2 (2026-10-13).** Five facts that the scope did not name:
 
 - `gatewayFetch` keeps the raw `detail` on its error. The detail of the 409 is an object, so its
   message reads `[object Object]`. `isHtmlUnavailable` reads `status` and `detail.reason`.
@@ -13143,6 +13149,12 @@ signature too, and that copy must not stop the signature.
   because the card shows the notice.
 - `draftText` is the one rule for the text of the card. The outgoing text and the text at open use
   it, so a card with no edit equals its text at open.
+- Review round 1 (P3). The HTML read of a Gmail draft with no row HTML can be slow. The card shows
+  the notice while that read runs, and a read that finds no HTML removes it. We chose this over a
+  hold on edits, because it is simpler and the member can still type. It keeps "the member knows
+  first" true. The cost: a draft made in Metorite shows the notice for the time of one read.
+- Review round 1 (P4). The answer type of `saveDraft` in `api.ts` is `DraftSaveResult`.
+  `lib/draftAutosave.ts` already exports a `SavedDraft`.
 
 The behaviour fence is `e2e/email-gmail-draft-notice.spec.ts`. With `GMAIL_C2_SHOTS` set, it also
 saves the screenshots of acceptance 23.
@@ -13190,12 +13202,18 @@ saves the screenshots of acceptance 23.
 19. `noticeAfterSave` is true for `html: "lost"` only.
 20. (B3) `sendAfterPreSave` answers `stop` for `html: "lost"` with no confirm, and `send` with the
     confirm. It answers `send` for `kept` and `none`.
+20a. (Review round 1, P2) An autosave answers `lost`, and then the pre-send save answers `none`.
+    The first press stops and shows row 4a, and it sends nothing. The next press sends with
+    `allowTextOnly: true`.
 21. (B2 b) `isHtmlUnavailable` is true for the 409 of D-G3a-f7-11 only. The card sends
     `allowTextOnly: false` on the first press and `true` on the next press after the notice.
 21a. After a stopped send, the card shows the words of E-D3 row 4a as an alert, in place of the
     words of row 4. The next send and a text edit bring back the words of row 4.
 22. (B5) `needsHtmlRead` is true for a Gmail draft with `bodyText` and no `bodyHtml` that the card
     did not read yet. It is false for an Outlook draft and after one read.
+22a. (Review round 1, P2 and P3) Take a Gmail draft with no row HTML whose `full-body` read
+    answers HTML. The card reads once and shows the notice, and a Cc-only save sends
+    `keep_html: true`. The notice shows while the read runs, and a read with no HTML removes it.
 23. Do a visual review of the card with the notice (§12.3.10 item 8). Look in light mode, at
     compact density, with a changed accent and at 390 px.
 
@@ -13244,6 +13262,10 @@ saves the screenshots of acceptance 23.
   4a after a stop and the words of row 4 before it. A source-text case finds the alert role and the
   clear of the stop. `e2e/email-gmail-draft-notice.spec.ts` shows the words of row 4a after a
   stopped send.
+- `a-lost-autosave-stops-the-next-send` (acceptance 20a). The e2e case "an autosave that lost the
+  HTML stops the next send" holds the behaviour.
+- `the-notice-shows-while-the-html-read-runs` (acceptance 22a). The e2e cases "a Gmail draft with
+  no row HTML reads it" and "the notice shows while the HTML read runs" hold the behaviour.
 
 **Mutations.** Each must turn its named fence red. Then the file goes back to its exact SHA-256.
 
@@ -13262,6 +13284,9 @@ saves the screenshots of acceptance 23.
 | M11 | The HTML read joins the hydrate effect, after its early return | `a-gmail-draft-with-text-only-reads-its-html-once` |
 | M12 | A read with no HTML signs with `sign_html("")` | `test_a_signed_send_with_no_html_anywhere_is_main` |
 | M13 | `noticeWords` gives the words of row 4 after a stop | `a-stopped-send-says-press-send-again` |
+| M14 | `sendAfterPreSave` ignores `lostBefore` | `a-lost-autosave-stops-the-next-send`, and its e2e case |
+| M15 | The notice reads `draft.bodyHtml` only, not `htmlRead?.html` | `the-notice-shows-while-the-html-read-runs`, and the B5 e2e case |
+| M16 | The notice does not show while the read runs | the e2e case "the notice shows while the HTML read runs" |
 
 **Verify with.**
 

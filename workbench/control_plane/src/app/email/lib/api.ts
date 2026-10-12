@@ -1241,8 +1241,9 @@ export interface SaveDraftParams {
  *  text only. An Outlook save answers no `html`. */
 export type DraftHtmlState = "kept" | "lost" | "none";
 
-/** The saved draft, and the `html` answer of a Gmail save. */
-export type SavedDraft = Email & { html?: DraftHtmlState };
+/** The saved draft, and the `html` answer of a Gmail save. Not the
+ *  `SavedDraft` of `./draftAutosave`, which records one save of a composer. */
+export type DraftSaveResult = Email & { html?: DraftHtmlState };
 
 function asHtmlState(v: unknown): DraftHtmlState | undefined {
   return v === "kept" || v === "lost" || v === "none" ? v : undefined;
@@ -1253,7 +1254,7 @@ function asHtmlState(v: unknown): DraftHtmlState | undefined {
  * sync write path behind auto-save). Returns the persisted message so the caller
  * can show it in Drafts / in-thread and keep editing the same draft.
  */
-export async function saveDraft(params: SaveDraftParams): Promise<SavedDraft> {
+export async function saveDraft(params: SaveDraftParams): Promise<DraftSaveResult> {
   const raw = await gatewayFetch<Record<string, unknown>>("/email/drafts", {
     method: "PUT",
     body: JSON.stringify({

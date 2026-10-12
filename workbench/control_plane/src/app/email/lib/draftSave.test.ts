@@ -16,6 +16,8 @@
 //   * `a-gmail-draft-with-text-only-reads-its-html-once` (acceptance 22)
 //   * `the-send-asks-send-after-pre-save` (acceptance 20, source text)
 //   * `a-stopped-send-says-press-send-again` (acceptance 21a)
+//   * `a-lost-autosave-stops-the-next-send` (acceptance 20a, review round 1)
+//   * `the-notice-shows-while-the-html-read-runs` (acceptance 22a, review round 1)
 //
 // Mutations M6, M7, M10 and M11 of the spec each turn one of these red.
 
@@ -223,8 +225,8 @@ describe("a-lost-html-answer-shows-the-notice", () => {
   it("is read after the autosave and after the pre-send save", () => {
     const autosave = between(card, "autosave.schedule(", "const send = async");
     const send = between(card, "const send = async", "const discard = async");
-    expect(autosave).toContain("if (noticeAfterSave(saved)) setHtmlLost(true);");
-    expect(send).toContain("if (noticeAfterSave(saved)) setHtmlLost(true);");
+    expect(autosave).toContain("if (noticeAfterSave(saved)) markLost();");
+    expect(send).toContain("if (noticeAfterSave(saved)) markLost();");
   });
 });
 
@@ -317,7 +319,10 @@ describe("a-gmail-draft-with-text-only-reads-its-html-once", () => {
     expect(read).toContain("fetchFullBody(draft.id)");
     // The guard is set before the read starts, so a second run reads nothing.
     expect(read).toMatch(/needsHtmlRead\(provider, draft\.bodyHtml, htmlReadStarted\.current\)\) return;\s*htmlReadStarted\.current = true;/);
-    expect(calls(card, "needsHtmlRead(").length).toBe(1);
+    // The other call asks whether the read still runs, for the notice.
+    const all = calls(card, "needsHtmlRead(");
+    expect(all.length).toBe(2);
+    expect(all).toContain("needsHtmlRead(provider, draft.bodyHtml, htmlRead !== null)");
   });
 });
 
@@ -325,7 +330,7 @@ describe("the-send-asks-send-after-pre-save", () => {
   it("asks sendAfterPreSave between the pre-send save and sendDraft", () => {
     const send = between(card, "const send = async", "const discard = async");
     const save = send.indexOf("saveDraft(");
-    const ask = send.indexOf("sendAfterPreSave(saved, textOnlyConfirmed)");
+    const ask = send.indexOf("sendAfterPreSave(saved, textOnlyConfirmed, htmlLostRef.current)");
     const go = send.indexOf("await sendDraft(");
     expect(save).toBeGreaterThanOrEqual(0);
     expect(ask).toBeGreaterThan(save);
@@ -360,5 +365,35 @@ describe("a-stopped-send-says-press-send-again", () => {
     // A text edit of the member, or of the AI, clears it.
     expect(card).toMatch(/onChange=\{\(e\) => \{ dirty\.current = true; setSendStopped\(false\); setBody\(e\.target\.value\); \}\}/);
     expect(between(card, "onBody: (next) =>", "setBody(next)")).toContain("setSendStopped(false);");
+  });
+});
+
+describe("a-lost-autosave-stops-the-next-send", () => {
+  it("stops after an earlier lost save, though the pre-send save answers none", () => {
+    expect(sendAfterPreSave({ html: "none" }, false, true)).toBe("stop");
+    expect(sendAfterPreSave({ html: "kept" }, false, true)).toBe("stop");
+    expect(sendAfterPreSave({ html: "none" }, true, true)).toBe("send");
+    expect(sendAfterPreSave({ html: "none" }, false, false)).toBe("send");
+  });
+
+  it("reads the loss through a ref that each save sets", () => {
+    expect(card).toMatch(/const markLost = \(\) => \{\s*htmlLostRef\.current = true;\s*setHtmlLost\(true\);\s*\};/);
+    expect(card.match(/htmlLostRef\.current = /g)?.length).toBe(1);
+    const send = between(card, "const send = async", "const discard = async");
+    expect(send).toContain("sendAfterPreSave(saved, textOnlyConfirmed, htmlLostRef.current)");
+  });
+});
+
+describe("the-notice-shows-while-the-html-read-runs", () => {
+  it("shows for a Gmail draft while its read runs, and never for Outlook", () => {
+    expect(showsFormattingNotice("gmail", null, false, true)).toBe(true);
+    expect(showsFormattingNotice("gmail", null, false, false)).toBe(false);
+    expect(showsFormattingNotice("microsoft", null, false, true)).toBe(false);
+  });
+
+  it("asks needsHtmlRead with the read result, so the notice stays up until the read returns", () => {
+    const notice = between(card, "const showNotice =", "return (");
+    expect(notice).toContain("draft.bodyHtml || htmlRead?.html");
+    expect(notice).toContain("needsHtmlRead(provider, draft.bodyHtml, htmlRead !== null)");
   });
 });
