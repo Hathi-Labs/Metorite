@@ -5170,8 +5170,9 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-10 · the person names session
 
 ### H-300 · Build an "always confirm" setting for each MCP server · [AGENT]
-- **Check:** `grep -n "always_confirm" apps/services/orchestrator/orchestrator/_maf_mcp.py`
-  → no hit means this is open.
+- **Check:** `uv run pytest tests/unit/test_maf_mcp_confirm.py -q -k "always_confirm or registry_reads"`
+  → it must pass with no skip. A read-only tool of an always-confirm server
+  waits for the card, end to end. A red or a missing test means this is open.
 - **Why:** an MCP tool that says it is read-only runs with no card (H-299,
   WS-8c item 13). The server writes that hint, and a hostile server can mark
   a tool that deletes as read-only. The log line `mcp.tool_annotations` lets

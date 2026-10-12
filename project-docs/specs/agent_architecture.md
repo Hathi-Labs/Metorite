@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-10-12. §12.2 WS-8c adds on-demand MCP tools (items 22 to 30). Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
+**Updated:** 2026-10-12. §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30). Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -1098,10 +1098,43 @@ new, and its rows are A23 to A30 below.
 can mark a destructive tool read-only. Each attach logs `mcp.tool_annotations` with the
 server, the tool and the hints, so an admin can audit them. A later `tools/list` (after
 `notifications/tools/list_changed`) can only make a tool stricter in the run, and each change
-logs `mcp.tool_annotations_changed`. A per-server admin setting
-"always confirm" is H-300. The owner said "build it now, keep MCP on" on 2026-10-12. It is
-`provider_meta.always_confirm` on the registry row, read by `McpPermissionGate`, and it comes
-right after IN-4.
+logs `mcp.tool_annotations_changed`. Item 31 gives the admin a switch that ignores the hints.
+
+**Always confirm (H-300, added 2026-10-12).** The owner said "build it now, keep MCP on" on
+2026-10-12, and `MAF_MCP_ORGS=*` stays on production. Item 31 is the switch.
+
+31. **The admin's switch.** `provider_meta.always_confirm` on the `mcp:<name>` registry row
+    (`gateway/connections/mcp.py`).
+    - **The rule.** With the switch on, EVERY tool of that server waits for the card,
+      whatever its hints say. The gate passes the flag to `decide()` as the fact
+      `mcp_always_confirm`. Then `decide()` answers `mcp_always_confirm` and never
+      `mcp_read_only`, so the read-only shortcut does not apply. `decide()` stays the one
+      gate.
+    - **The path.** The flag goes from the row to `StoredServer`, to `McpServer`
+      (`_tool_injection._maf_servers`), and onto each attached tool
+      (`_maf_mcp.server_always_confirms`). A loaded tool of item 27 is an MCP function of
+      that tool, so the switch applies to it. The list and load tools stay without a card.
+    - **Defaults.** A new server gets `true`. `POST /integrations/mcp` takes
+      `always_confirm`, and the default is `true`. A row with no key reads as `false`, so a
+      server that was stored before H-300 keeps its behaviour. The move of an old
+      `mcp_servers` row writes `false` for the same reason. Any value but a real `false`
+      reads as `true`, so a damaged value fails closed.
+    - **The change.** `PATCH /integrations/mcp/{name}` takes `{"always_confirm": <bool>}`.
+      It needs `integrations:manage`, and it takes the org from the caller's tenant. It
+      changes the one key, under any status, and keeps the headers. Another org's name is
+      404. Each change writes one audit event, `integration.mcp.always_confirm`, through
+      `routes/integrations.audit_integration`, the one audit helper of the console.
+    - **The reads.** `GET /integrations/mcp` returns `always_confirm`, and the read model
+      returns `detail.always_confirm` as `"true"` or `"false"`. The rest of each shape does
+      not change.
+    - **The card.** Its detail starts with "This server is set to always confirm." The
+      hint line follows. The rules of items 14 to 21 do not change. A run with no member
+      and a WhatsApp run refuse the tool. A read-only tool that ran with no member before
+      is now refused there, because it needs a card.
+    - **The console.** The MCP side panel and the Add MCP form show one labelled tick on
+      the shared `Checkbox`: "Always ask before any tool runs". Its help line says that
+      Metorite does not trust the server's claim. It is on for a new server. A member
+      without `integrations:manage` sees it disabled.
 
 **The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
 request to the address that the check resolved, with the host name as SNI. It allows `https` on
@@ -1156,6 +1189,10 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A28 | With `ExperimentalWarning` set to error, the attach succeeds and the run goes on. | `test_maf_mcp_budget.py` |
 | A29 | A contract test pins the MAF API of items 22 to 27: the two constructor arguments, the read of the attribute in `functions`, the three loader names, the signature of `_list_progressive_mcp_tools`, `_functions` and `_progressive_loader_functions`. A MAF upgrade that changes one of them fails loud. | `test_maf_mcp_budget.py` |
 | A30 | A hidden tool whose name clashes with a platform tool leaves its server out. | `test_maf_mcp_budget.py` |
+| A31 | With `always_confirm` true, a tool with `readOnlyHint` true and `destructiveHint` false waits for the card. Approve runs it and Deny refuses it, on the gate and on the real `run_agent_stream` with a FastMCP server. With the switch off or the key missing, that tool runs with no card. | `test_maf_mcp_confirm.py` |
+| A32 | A new server is set to always confirm. A row with no key and a moved `mcp_servers` row read as false. R8. | `test_mcp_always_confirm_r8.py` |
+| A33 | `PATCH /integrations/mcp/{name}` flips the switch and keeps the headers, and writes one audit event. A member without `integrations:manage` gets 403. Another org's name is 404. R8, two orgs, the app role. | `test_mcp_always_confirm_r8.py` |
+| A34 | `GET /integrations/mcp` and the read model return the flag, and no header value reaches a response or a log line. The console toggle is on for a new server, and it sends `always_confirm`. | `test_mcp_always_confirm_r8.py`, `alwaysConfirm.test.ts` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
 off, the Copilot path reads the rows of the run's org only.
@@ -1166,7 +1203,7 @@ off, the Copilot path reads the rows of the run's org only.
     uv run pytest tests/unit/test_maf_mcp_injection.py tests/unit/test_maf_mcp_org_scope_r8.py \
       tests/unit/test_mcp_outbound_pin.py tests/unit/test_no_mcp_stdio.py \
       tests/unit/test_mcp_register_r8.py tests/unit/test_mcp_servers_org_scope.py \
-      tests/unit/test_maf_mcp_confirm.py -v -rs
+      tests/unit/test_maf_mcp_confirm.py tests/unit/test_mcp_always_confirm_r8.py -v -rs
 
 No R8 suite may skip.
 
@@ -1174,8 +1211,8 @@ The second review added `test_maf_mcp_lifecycle.py`: a slow connect, endless pag
 tool cap, a Stop during the attach, a slow session DELETE, the total close cap, and a 40 s
 DELETE through the real run.
 
-**Left open.** H-300: an admin setting "always confirm" for each MCP server. The owner said to
-build it (2026-10-12), right after IN-4. Items 13 to 17 close H-299 (the card).
+**Left open.** Nothing from H-299 or H-300. Items 13 to 17 close H-299 (the card), and item 31
+closes H-300 (the switch).
 
 **Done when** the fences above pass with no skip. Then a native MAF agent in an allowed org
 shows the tools of the server of its org. The production flip of `MAF_MCP_ORGS` is gate
