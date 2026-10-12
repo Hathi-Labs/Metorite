@@ -2911,6 +2911,9 @@ async def run_agent_stream_endpoint(
         organization_id=_organization_id,
         # H-73: WHO pays is the session's answer, never the body's.
         session_user=_session_member(user),
+        # The web chat draws each card (`AgentChat`, `useAgentChat` and
+        # `confirmationQueue.ts` read the CUSTOM card events of this stream).
+        shows_cards=True,
     )
 
     # The roster this run's authority intersection is folded over, recorded so a

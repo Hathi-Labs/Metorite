@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import itertools
 import json
 import re
 import unicodedata
@@ -539,18 +540,26 @@ async def attach_mcp_tools(
     return names
 
 
-def _arguments(context: Any) -> dict[str, Any]:
-    """The call arguments of a MAF function invocation, as a dict."""
+def _arguments(context: Any) -> dict[str, Any] | None:
+    """The call arguments of a MAF function invocation, as a dict.
+
+    No arguments is an empty call. A shape that the gate cannot read gives
+    None, and the gate refuses the call, so the card never shows less than
+    what runs (review of PR #888)."""
     args = getattr(context, "arguments", None)
+    if args is None:
+        return {}
     if isinstance(args, Mapping):
         return dict(args)
     dump: Callable[[], Any] | None = getattr(args, "model_dump", None)
     if callable(dump):
-        with contextlib.suppress(Exception):
+        try:
             out = dump()
-            if isinstance(out, Mapping):
-                return dict(out)
-    return {}
+        except Exception:
+            return None
+        if isinstance(out, Mapping):
+            return dict(out)
+    return None
 
 
 # ── The confirmation card (H-299) ────────────────────────────────────────────
@@ -566,7 +575,8 @@ NO_MEMBER_TEXT = (
     "card, and no member can confirm in this run. Do not call it again in "
     "this run.]"
 )
-#: What the model reads in a chat that cannot show a card (WhatsApp).
+#: What the model reads in a chat that cannot show a card (WhatsApp, and
+#: each stream that does not say ``shows_cards=True``).
 NO_CARD_CHANNEL_TEXT = (
     "[not run: {tool} can change data, so a member must confirm it on a "
     "card, and this chat cannot show that card. Tell the member to run it "
@@ -579,26 +589,39 @@ CARD_TOO_LONG_TEXT = (
     "for the member to see them all on the card, and a card that hides part "
     "of a call is not consent. Make a smaller call, or split it.]"
 )
+#: What the model reads when the gate cannot read the arguments at all.
+UNREADABLE_ARGUMENTS_TEXT = (
+    "[not run: Metorite could not read the arguments of {tool}, so it cannot "
+    "check the call or show it to the member.]"
+)
 
 #: The value that takes the place of a sensitive argument on the card.
 REDACTED = "[redacted]"
-#: Parts of an argument name that mark its value as sensitive. The name is
-#: compared in lower case with no separators, so ``api_key`` is ``apikey``.
-_SENSITIVE_NAME_PARTS = (
-    "password", "passwd", "passphrase", "secret", "token", "apikey",
-    "accesskey", "privatekey", "credential", "authorization", "cookie",
-    "signature", "sessionid", "bearer",
-)
-#: Whole argument names that mark the value as sensitive.
-_SENSITIVE_NAMES = frozenset({"auth", "key", "pin", "otp", "cvv", "cvc", "ssn", "pwd", "jwt"})
-#: Values that look like a credential, whatever the argument is called.
+#: Name parts that mark a value as sensitive. A name is split on ``_``, ``-``,
+#: ``.``, a space and camelCase, and each WHOLE part is compared. So
+#: ``access_token`` and ``refreshToken`` match, and ``max_tokens`` and
+#: ``keyword`` do not (review of PR #888, P2).
+_SECRET_WORDS = frozenset({
+    "password", "passwd", "passphrase", "passcode", "pwd", "secret", "token",
+    "credential", "credentials", "authorization", "auth", "cookie", "bearer",
+    "apikey", "pin", "otp", "cvv", "cvc", "ssn", "jwt",
+})
+#: Two parts in a row that mark a value as sensitive. A bare ``key`` is a
+#: call target (``delete_object(bucket, key)``), so it is not one.
+_SECRET_PAIRS = frozenset({
+    ("api", "key"), ("access", "key"), ("private", "key"), ("secret", "key"),
+    ("session", "id"), ("client", "secret"),
+})
+#: Values that ARE a credential, whatever the argument is called. Each one
+#: must match the WHOLE value, so prose that holds the word "bearer" stays.
 _SECRET_VALUES = (
-    re.compile(r"\bBearer\s+\S+", re.IGNORECASE),
-    re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
-    re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*"),
+    re.compile(r"bearer\s+[A-Za-z0-9._~+/=\-]+", re.IGNORECASE),
+    re.compile(r"basic\s+[A-Za-z0-9+/=]{8,}", re.IGNORECASE),
+    re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"xox[abprs]-[A-Za-z0-9\-]{10,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*"),
 )
 #: The deepest nesting that a card shows. A deeper call is refused, never cut.
 _ARG_DEPTH = 8
@@ -608,6 +631,10 @@ _ARG_DEPTH = 8
 _ARGS_CHARS = 2800
 #: The most characters of the whole card body (``ask_tools.request_confirmation``).
 _BODY_CHARS = 4000
+#: The longest server name or tool name that a card shows.
+NAME_CHARS = 64
+#: The most names that the line of hidden values lists.
+_HIDDEN_NAMES = 20
 #: The label above the server's description on the card.
 DESCRIPTION_LABEL = "Description from the MCP server (Metorite did not check this text):"
 
@@ -617,9 +644,22 @@ class CardTooLong(ValueError):
     not consent, so the gate refuses the call."""
 
 
+def _name_parts(name: Any) -> list[str]:
+    """*name* in lower-case parts, split on separators and camelCase."""
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(name))
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    return [p for p in re.split(r"[^a-z0-9]+", text.lower()) if p]
+
+
 def _sensitive_name(name: Any) -> bool:
-    flat = re.sub(r"[^a-z0-9]", "", str(name).lower())
-    return flat in _SENSITIVE_NAMES or any(part in flat for part in _SENSITIVE_NAME_PARTS)
+    parts = _name_parts(name)
+    return (any(p in _SECRET_WORDS for p in parts)
+            or any(pair in _SECRET_PAIRS for pair in itertools.pairwise(parts)))
+
+
+def _secret_value(text: str) -> bool:
+    stripped = text.strip()
+    return any(p.fullmatch(stripped) for p in _SECRET_VALUES)
 
 
 def _visible(text: str) -> str:
@@ -632,31 +672,67 @@ def _visible(text: str) -> str:
     )
 
 
-def redact_arguments(value: Any, depth: int = 0) -> Any:
-    """*value* with each sensitive value replaced by :data:`REDACTED`.
+def _shown_name(name: Any) -> str:
+    """A server or tool name as the card shows it: escaped and capped.
 
-    A value is sensitive when its argument name says so (``password``,
-    ``api_key``, ``token``) or when it looks like a credential (a bearer
-    token, a key with a known prefix, a JWT). Nothing else is cut: a call
-    nested deeper than :data:`_ARG_DEPTH` raises :class:`CardTooLong`. No
-    shared redaction helper fits structured arguments, so this one is local
-    to the card."""
+    The server writes its tool names. Each control, format, private or line
+    separator character is written as ``\\uXXXX``, so a name cannot reorder
+    the card or start a fake line (review of PR #888, P2). The name is cut
+    at :data:`NAME_CHARS`. A cut name hides nothing that runs."""
+    text = "".join(
+        f"\\u{ord(ch):04x}" if unicodedata.category(ch)[0] in "CZ" and ch != " " else ch
+        for ch in str(name)
+    )
+    return text if len(text) <= NAME_CHARS else text[: NAME_CHARS - 1] + "…"
+
+
+def _redact(value: Any, depth: int, path: str, hidden: list[str]) -> Any:
     if depth > _ARG_DEPTH:
         raise CardTooLong("depth")
     if isinstance(value, Mapping):
-        return {
-            _visible(str(name)): (REDACTED if _sensitive_name(name)
-                                  else redact_arguments(inner, depth + 1))
-            for name, inner in value.items()
-        }
+        out: dict[str, Any] = {}
+        for name, inner in value.items():
+            where = f"{path}.{name}" if path else str(name)
+            if _sensitive_name(name):
+                hidden.append(where)
+                out[_visible(str(name))] = REDACTED
+            else:
+                out[_visible(str(name))] = _redact(inner, depth + 1, where, hidden)
+        return out
     if isinstance(value, list | tuple):
-        return [redact_arguments(v, depth + 1) for v in value]
+        return [_redact(v, depth + 1, f"{path}[{i}]", hidden) for i, v in enumerate(value)]
     if value is None or isinstance(value, bool | int | float):
         return value
     text = str(value)
-    for pattern in _SECRET_VALUES:
-        text = pattern.sub(REDACTED, text)
+    if _secret_value(text):
+        hidden.append(path or "(value)")
+        return REDACTED
     return _visible(text)
+
+
+def redact_arguments(value: Any, hidden: list[str] | None = None) -> Any:
+    """*value* with each sensitive value replaced by :data:`REDACTED`.
+
+    A value is sensitive when a whole part of its argument name says so
+    (``password``, ``api_key``, ``access_token``), or when the WHOLE value
+    is a credential (a bearer token, a key with a known prefix, a JWT).
+    *hidden* gets the path of each value that it hides. Nothing else is cut:
+    a call nested deeper than :data:`_ARG_DEPTH` raises :class:`CardTooLong`.
+    No shared redaction helper fits structured arguments, so this one is
+    local to the card."""
+    return _redact(value, 0, "", hidden if hidden is not None else [])
+
+
+def _hidden_line(hidden: list[str]) -> str:
+    """The card line that says how many values are hidden, and which."""
+    if not hidden:
+        return ""
+    names = ", ".join(_shown_name(h) for h in hidden[:_HIDDEN_NAMES])
+    if len(hidden) > _HIDDEN_NAMES:
+        names += f", and {len(hidden) - _HIDDEN_NAMES} more"
+    if len(hidden) == 1:
+        return f"1 value is hidden: {names}\n"
+    return f"{len(hidden)} values are hidden: {names}\n"
 
 
 def _hint_line(hints: dict[str, bool] | None) -> str:
@@ -671,23 +747,29 @@ def card_text(server: str, tool: str, arguments: dict[str, Any],
               meta: ToolMeta | None, fallback_description: str = "") -> tuple[str, str, str]:
     """The title, detail and body of the card for one MCP call.
 
-    The body shows EVERY argument, with :func:`redact_arguments`, and then
-    the server's description of the tool under :data:`DESCRIPTION_LABEL`.
-    Only the description is cut to fit. Arguments that do not fit raise
+    The detail starts with the real hint line, and only then names the
+    server and the tool, each through :func:`_shown_name`. So a tool name
+    cannot spoof the hint line. The body shows EVERY argument, with
+    :func:`redact_arguments`, then a line that names each hidden value, and
+    then the server's description under :data:`DESCRIPTION_LABEL`. Only the
+    description is cut to fit. Arguments that do not fit raise
     :class:`CardTooLong`, because a member must see the whole call that
     Approve runs."""
-    shown = json.dumps(redact_arguments(arguments), indent=2, ensure_ascii=False,
+    hidden: list[str] = []
+    shown = json.dumps(redact_arguments(arguments, hidden), indent=2, ensure_ascii=False,
                        default=str)
     if len(shown) > _ARGS_CHARS:
         raise CardTooLong("size")
-    head = f"Arguments:\n{shown}\n\n{DESCRIPTION_LABEL}\n"
+    head = f"Arguments:\n{shown}\n{_hidden_line(hidden)}\n{DESCRIPTION_LABEL}\n"
     description = (meta.description if meta is not None else fallback_description) or ""
     description = _visible(description.strip()) or "(no description)"
     room = max(0, _BODY_CHARS - len(head))
     if len(description) > room:
         description = description[: max(0, room - 1)] + "…"
-    title = f"Run the MCP tool {tool} from {server}?"
-    detail = f"Server: {server} · Tool: {tool} · {_hint_line(meta.hints if meta else None)}"
+    shown_server, shown_tool = _shown_name(server), _shown_name(tool)
+    title = f"Run the MCP tool {shown_tool}?"
+    detail = (f"{_hint_line(meta.hints if meta else None)} "
+              f"Server: {shown_server} · Tool: {shown_tool}")
     return title, detail, head + description
 
 
@@ -773,6 +855,10 @@ def _make_gate_class() -> type:
                 return
             name = tool_name(function)
             arguments = _arguments(context)
+            if arguments is None:
+                _log.info("mcp.confirm", tool=name, outcome="unreadable_arguments")
+                context.result = UNREADABLE_ARGUMENTS_TEXT.format(tool=_shown_name(name))
+                return
             server, remote, meta = self.owner_of(function)
             allowed, reason = _permission_gate(
                 name, arguments, surface="mcp_tool",
@@ -830,6 +916,7 @@ __all__ = [
     "NO_CARD_CHANNEL_TEXT",
     "NO_MEMBER_TEXT",
     "REDACTED",
+    "UNREADABLE_ARGUMENTS_TEXT",
     "McpPermissionGate",
     "McpServer",
     "ToolMeta",

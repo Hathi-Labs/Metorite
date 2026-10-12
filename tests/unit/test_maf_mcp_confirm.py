@@ -465,7 +465,7 @@ async def test_the_card_names_the_server_and_labels_its_description() -> None:
         card = await _next_card(queue)
         _answer(card["request_id"], "REJECT")
         await asyncio.wait_for(task, timeout=5)
-    assert "crm-tools" in card["title"] and "delete_record" in card["title"]
+    assert "delete_record" in card["title"]
     assert "Server: crm-tools" in card["detail"] and "destructive" in card["detail"]
     body = card["context"]
     label = "Description from the MCP server (Metorite did not check this text):"
@@ -637,7 +637,7 @@ def test_a_destructive_tool_waits_for_approval_end_to_end(monkeypatch):
     assert len(seen["cards"]) == 1, "the destructive tool showed no card"
     assert seen["calls_at_card"] == [], "the server ran the tool before the card"
     assert srv.calls == ["delete:r-9"], "the approved tool did not run"
-    assert "probe-srv" in seen["cards"][0]["title"]
+    assert "Server: probe-srv" in seen["cards"][0]["detail"]
     assert any("deleted:r-9" in r for r in _tool_results(model))
     hints = [e for e in logs if e["event"] == "mcp.tool_annotations"]
     by_tool = {e["tool"]: e for e in hints}
