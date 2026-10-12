@@ -37,7 +37,13 @@ import { useAccess } from "@/components/AccessProvider";
 import { ShellJob } from "@/lib/shell/doJob";
 import { focusPageFilter } from "@/lib/shell/pageFilter";
 import { NEW_DEAL_MIRROR, NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
-import { CRM_JOB_IDS, findRecordPlan, logCallPlan, type JobPlan } from "./lib/shellJobs";
+import {
+  CRM_JOB_IDS,
+  afterDialogsClose,
+  findRecordPlan,
+  logCallPlan,
+  type JobPlan,
+} from "./lib/shellJobs";
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { AccessSection } from "./components/AccessPanel";
@@ -330,10 +336,12 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   // A job asked for the search box of a list (CRM-X2). The address may change
   // a render after the ask, so the ask waits here until that list is on screen.
+  // It also waits for the command bar to finish closing, or the bar takes the
+  // focus back (`afterDialogsClose`).
   useEffect(() => {
     if (!focusFor.current || focusFor.current !== listEntity) return;
     focusFor.current = null;
-    void focusPageFilter();
+    return afterDialogsClose(() => void focusPageFilter());
   }, [focusAsk, listEntity]);
 
   /**

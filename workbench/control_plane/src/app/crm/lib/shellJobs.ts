@@ -69,6 +69,52 @@ export function logCallPlan(before: CrmView | null): JobPlan {
   };
 }
 
+/** What `afterDialogsClose` needs from the browser. A test passes its own. */
+export type FrameHost = {
+  /** True while a dialog is in the document. */
+  dialogOpen: () => boolean;
+  nextFrame: (run: () => void) => number;
+  cancelFrame: (id: number) => void;
+};
+
+const BROWSER: FrameHost = {
+  dialogOpen: () => document.querySelector('[role="dialog"]') !== null,
+  nextFrame: (run) => requestAnimationFrame(run),
+  cancelFrame: (id) => cancelAnimationFrame(id),
+};
+
+/** Frames to wait after the last dialog leaves, for its focus cleanup. */
+export const SETTLE_FRAMES = 2;
+/** Frames to wait for a dialog to leave, about 1.5 s. Then the act runs anyway. */
+export const MAX_WAIT_FRAMES = 90;
+
+/**
+ * Run `act` once no dialog is open, and return a cancel.
+ *
+ * ⚠️ A job runs while the command bar is still closing, and `find-record`
+ * also closes a record sheet. Each `Modal` gives focus back when it has
+ * finished closing (its `finalFocus`), so a focus set before then is lost.
+ * Measured in the browser: the search box lost its focus to `<main>`.
+ */
+export function afterDialogsClose(act: () => void, host: FrameHost = BROWSER): () => void {
+  let waited = 0;
+  let settled = 0;
+  let id = host.nextFrame(tick);
+  function tick(): void {
+    if (host.dialogOpen() && waited < MAX_WAIT_FRAMES) {
+      waited += 1;
+      settled = 0;
+    } else if (settled < SETTLE_FRAMES) {
+      settled += 1;
+    } else {
+      act();
+      return;
+    }
+    id = host.nextFrame(tick);
+  }
+  return () => host.cancelFrame(id);
+}
+
 /**
  * `find-record`. The list of the collection on screen, or Deals when the view
  * is Reports or Settings, with its search box focused.

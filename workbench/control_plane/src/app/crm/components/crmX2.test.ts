@@ -14,7 +14,15 @@ import { describe, expect, it } from "vitest";
 import { isKnownIcon } from "@/lib/icons";
 import { FIND_ICONS } from "@/lib/shell/CommandBar";
 import { JOBS } from "@/lib/shell/registry";
-import { CRM_JOB_IDS, LOG_CALL_HINT, findRecordPlan, logCallPlan } from "../lib/shellJobs";
+import {
+  CRM_JOB_IDS,
+  LOG_CALL_HINT,
+  MAX_WAIT_FRAMES,
+  SETTLE_FRAMES,
+  afterDialogsClose,
+  findRecordPlan,
+  logCallPlan,
+} from "../lib/shellJobs";
 import { openRecord, parseView, selectRecordTab, viewHref } from "../lib/urlState";
 import Timeline from "./Timeline";
 
@@ -86,6 +94,52 @@ describe("find-record", () => {
     for (const before of [parseView("tab=reports"), parseView("tab=settings"), null]) {
       expect(viewHref(findRecordPlan(before).view)).toBe(DEALS_LIST);
     }
+  });
+});
+
+describe("afterDialogsClose", () => {
+  /** A host whose frames run when the test says, with a dialog it opens and closes. */
+  function host(open: boolean) {
+    const state = { open, queue: [] as Array<() => void>, cancelled: 0 };
+    return {
+      state,
+      host: {
+        dialogOpen: () => state.open,
+        nextFrame: (run: () => void) => state.queue.push(run),
+        cancelFrame: () => void (state.cancelled += 1),
+      },
+      frame: () => state.queue.shift()?.(),
+    };
+  }
+
+  it("waits while the command bar is still closing, then lets it settle", () => {
+    const h = host(true);
+    let ran = 0;
+    afterDialogsClose(() => void (ran += 1), h.host);
+    for (let i = 0; i < 10; i++) h.frame();
+    expect(ran).toBe(0);
+    h.state.open = false;
+    for (let i = 0; i < SETTLE_FRAMES; i++) h.frame();
+    expect(ran).toBe(0);
+    h.frame();
+    expect(ran).toBe(1);
+    h.frame();
+    expect(ran).toBe(1);
+  });
+
+  it("gives up waiting after MAX_WAIT_FRAMES, so a dialog left open never blocks it", () => {
+    const h = host(true);
+    let ran = 0;
+    afterDialogsClose(() => void (ran += 1), h.host);
+    for (let i = 0; i < MAX_WAIT_FRAMES + SETTLE_FRAMES + 1; i++) h.frame();
+    expect(ran).toBe(1);
+  });
+
+  it("can be cancelled", () => {
+    const h = host(false);
+    const cancel = afterDialogsClose(() => undefined, h.host);
+    cancel();
+    expect(h.state.cancelled).toBe(1);
   });
 });
 
