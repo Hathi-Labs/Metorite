@@ -1419,8 +1419,8 @@ The first kind is a **free column**, which the fixed map never writes:
 
 The second kind is a **fixed column that the org leaves empty**. The fixed map
 fills each one from one standard Zoho field, shown in brackets. A rule may
-target such a column only when the org's latest profile has no row for that
-standard field in `crm_field_defs`, or has the row with `visible = false`.
+target such a column in two cases only. The org's latest profile has no row
+for that standard field in `crm_field_defs`. Or the row has `visible = false`.
 While that rule is approved, the rule's value wins on that column.
 
 | Entity | Column (standard Zoho field) | Type |
