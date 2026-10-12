@@ -12485,11 +12485,13 @@ row), and §12.3.12.1 to §12.3.12.7 hold one slice for each open item.
    the old cursor (§12.3.5.2). Slice: §12.3.12.2. 🔨 Built 2026-10-12, not merged (branch
    `gmail-g4b-cursor`).
 5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body
-   (§12.3.2). Slice: §12.3.12.3.
+   (§12.3.2). Slice: §12.3.12.3. 🔨 Built 2026-10-12, not merged (PR-A, branch
+   `gmail-pra-fill-bulk`).
 6. **EM-G3a-f7.** An update of a draft made in Gmail web drops its inline images (§12.3.3). The
    measure of 2026-10-12 found that the update drops the whole HTML body too. Slice: §12.3.12.5.
 7. **EM-G4a-f1.** A `batchModify` that stops on a rate limit falls back to one `modify` for each
-   message (§12.3.5.1). Slice: §12.3.12.4.
+   message (§12.3.5.1). Slice: §12.3.12.4. 🔨 Built 2026-10-12, not merged (PR-A, branch
+   `gmail-pra-fill-bulk`).
 8. **The known limits of EM-G8** (§12.3.10). The rule editor suggests no Gmail user label. The
    reconnect banner does not read the capability read. `provider_unavailable` shows the generic
    failure. Slice: §12.3.12.7.
@@ -12725,7 +12727,20 @@ stay at or below the counts on main.
 
 #### 12.3.12.3 EM-G2-f1 — a large text part comes by `attachmentId`
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-A, with EM-G4a-f1.
+**Status.** 🔨 Built 2026-10-12, not merged. PR-A, with EM-G4a-f1, branch `gmail-pra-fill-bulk`.
+Specified 2026-10-12.
+
+**As built (2026-10-12).**
+
+- `GmailProvider._fill_attachment_bodies` runs in `get_message`, after `raise_for_status` and
+  before the parse. It fetches each body part of D-G2-f1-3, as the decision says. It does not stop
+  at the first part of each type.
+- `_record_body_part_failure` writes the record `gmail.body_part_failed id=<message> part=<part>
+  error=<class> status=<code>` into `fetch_failures`.
+- `_fetch_into` takes the length of `fetch_failures` before each fetch. It copies the new records
+  into `result.errors` on success and on failure.
+- Mutation M4 (`_fetch_into` drops the records of the fill) turns the fourth fence red. All four
+  mutations turn their fences red.
 
 **Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no flag.
 
@@ -12819,7 +12834,13 @@ uv run ruff check tests/unit/test_gmail_parse.py
 
 #### 12.3.12.4 EM-G4a-f1 — a rate limit in a bulk act
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-A, with EM-G2-f1.
+**Status.** 🔨 Built 2026-10-12, not merged. PR-A, with EM-G2-f1, branch `gmail-pra-fill-bulk`.
+Specified 2026-10-12.
+
+**As built (2026-10-12).** `bulk_apply` catches `GmailRateLimited` before `Exception`. It logs
+`gmail.batch_modify_rate_limited` with `size` (the chunk) and `left` (the chunk and each later
+chunk). A fourth fence, `test_a_rate_limited_batch_modify_with_no_failed_out_returns`, covers scope
+item 1 with no `failed_out`. Both mutations turn their fences red.
 
 **Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no flag.
 
