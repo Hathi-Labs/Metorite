@@ -605,6 +605,95 @@ async def test_a_second_approved_rule_for_the_same_column_gives_409(fr) -> None:
     assert now.json()["proposed_by"] == "ai", "an approve keeps who proposed it"
 
 
+# ── Review P1: the applied state never falls behind the writes ───────────────
+
+
+def _lost_notes(p: Any, org: str) -> dict[str, Any]:
+    return {k: v[3] for k, v in _leads(p, org).items()}
+
+
+async def _stopped_after_one_batch(p: Any, a: RuleZoho, monkeypatch: Any) -> str:
+    """Import with three leads that hold ``Why_Lost``, approve the free rule,
+    and run a sync that stops after the first backfill batch of one row."""
+    from gateway.crm_sync import field_rules
+
+    a.add("Leads", "l3", 6, Last_Name="Three", Why_Lost="Timing")
+    a.add("Leads", "l4", 7, Last_Name="Four", Why_Lost="Budget")
+    await _imported(p, p.org_a, a)
+    made = await _post(p.org_a, "Why_Lost", "lost_note")
+    assert made.status_code == 201, made.text
+    monkeypatch.setattr(field_rules, "BATCH", 1)
+    original = field_rules.backfill_batch
+    calls = {"n": 0}
+
+    async def stop_after_one(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("a deploy restart between two batches")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(field_rules, "backfill_batch", stop_after_one)
+    stopped = await _run(p.org_a)
+    assert stopped.status == "failed"
+    monkeypatch.setattr(field_rules, "backfill_batch", original)
+    written = [k for k, v in _lost_notes(p, p.org_a).items() if v is not None]
+    assert len(written) == 1, "the first batch committed one row"
+    return made.json()["id"]
+
+
+async def test_a_reject_after_a_stopped_backfill_clears_the_free_column(
+    fr, monkeypatch,
+) -> None:
+    p, a, _b = fr
+    rule_id = await _stopped_after_one_batch(p, a, monkeypatch)
+    assert (await _patch(p.org_a, rule_id, "rejected")).status_code == 200
+    assert (await _run(p.org_a)).status == "ok"
+    assert set(_lost_notes(p, p.org_a).values()) == {None}, (
+        "the row that the first batch wrote is cleared")
+
+
+async def test_a_stopped_backfill_goes_on_in_the_next_run(fr, monkeypatch) -> None:
+    p, a, _b = fr
+    await _stopped_after_one_batch(p, a, monkeypatch)
+    assert (await _run(p.org_a)).status == "ok"
+    notes = _lost_notes(p, p.org_a)
+    assert (notes["l1"], notes["l3"], notes["l4"]) == ("Price", "Timing", "Budget")
+    state = _q(p, "SELECT cursor_state FROM crm_sync_cursors WHERE organization_id = "
+                  "CAST(:o AS uuid) AND module = 'zoho:field_rules'", o=p.org_a)[0][0]
+    assert [r.get("backfilling") for r in state["applied"]] == [None]
+
+
+async def test_a_rule_approved_during_discovery_is_not_applied_in_that_run(
+    fr, monkeypatch,
+) -> None:
+    """The run applies exactly the rules that its backfill step handled, so
+    each rule that ``map_record`` writes is in the applied state."""
+    from gateway.crm_sync import engine
+
+    p, a, _b = fr
+    await _imported(p, p.org_a, a)
+    original = engine._discover
+
+    async def approve_mid_run(ctx: Any) -> None:
+        await original(ctx)
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
+                "field_api_name, field_type, profile_version, target_column, status, "
+                "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'lead', "
+                "'Custom_Industry', 'select', 1, 'industry', 'approved', 'admin')"),
+                {"o": p.org_a})
+
+    monkeypatch.setattr(engine, "_discover", approve_mid_run)
+    a.add("Leads", "l3", 30, Last_Name="Three", Custom_Industry="Space")
+    assert (await _run(p.org_a)).status == "ok"
+    assert _leads(p, p.org_a)["l3"][1] is None, "not handled by this run"
+    monkeypatch.setattr(engine, "_discover", original)
+    assert (await _run(p.org_a)).status == "ok"
+    leads = _leads(p, p.org_a)
+    assert (leads["l3"][1], leads["l1"][1]) == ("Space", "Robotics")
+
+
 # ── A profile from before this slice ─────────────────────────────────────────
 
 

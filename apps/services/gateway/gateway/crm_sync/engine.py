@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -579,6 +580,11 @@ class _Ctx:
         #: and the entities that a rejected or stale rule makes read in full.
         self.rules: dict[str, dict[str, str]] = {}
         self.rule_rereads: set[str] = set()
+        #: The approved rules that ``_field_rules`` handled, and the ids that
+        #: discovery made stale in this run. ``map_record`` applies the first
+        #: list minus the second, and never a rule approved during the run.
+        self.handled_rules: list[field_rules.Rule] = []
+        self.stale_rule_ids: set[str] = set()
 
     # ── Provider calls ──────────────────────────────────────────────────────
 
@@ -2011,7 +2017,9 @@ async def _discover(ctx: _Ctx) -> None:
     async with ctx.page() as db:
         await profiles.store(db, ctx.org, ctx.handle.connection_id, profile)
         # CRM-Q7a: an approved rule that the new profile breaks goes stale.
-        await field_rules.mark_stale(db, ctx.mapping, EXT_SOURCE, profile)
+        ctx.stale_rule_ids.update(
+            await field_rules.mark_stale(db, ctx.mapping, EXT_SOURCE, profile),
+        )
         await store.merge_provider_meta(db, ctx.org, ctx.handle.connection_id, meta)
         if "pipelines" not in (profile.get("unreadable") or []):
             await _mirror_pipelines(ctx, db, profile.get("pipelines") or [])
@@ -2120,10 +2128,13 @@ async def _field_rules(ctx: _Ctx) -> None:
     so it costs no credit. First it undoes each applied rule that is no longer
     approved: a free column goes back to NULL, and a fixed column asks for one
     full read of its entity. Then it backfills each approved rule that it has
-    not applied yet. Each batch is one ``tenant_session``. The cursor row
-    ``zoho:field_rules`` moves in the transaction of the batch that finishes
-    a rule, so a stop repeats only the unfinished rule, and a repeat writes
-    nothing new.
+    not applied yet. Each batch is one ``tenant_session``.
+
+    A rule enters the applied state, marked ``backfilling``, in the
+    transaction of its FIRST batch, and the last batch clears the mark (review
+    P1). So each value that a batch wrote belongs to an applied rule: a stop
+    between two batches, then a reject, still undoes it. The next run goes on
+    with a rule that still has the mark, and a repeat writes nothing new.
     """
     state = _row(ctx, FIELD_RULES_ROW).state or {}
     applied = field_rules.applied_of(state)
@@ -2155,10 +2166,13 @@ async def _field_rules(ctx: _Ctx) -> None:
                 break
         _log.info("crm.sync.field_rule_undone rule=%s cleared=%s", rule.id, cleared)
 
-    done = {rule.key for rule in applied}
+    done = {rule.key for rule in applied if not rule.backfilling}
     for rule in [r for r in approved if r.key not in done]:
+        applied = [r for r in applied if r.key != rule.key]
+        marked = dataclasses.replace(rule, backfilling=True)
         after: str | None = None
         filled = 0
+        first = True
         while True:
             async with ctx.page() as db:
                 after, seen, written = await field_rules.backfill_batch(
@@ -2166,21 +2180,30 @@ async def _field_rules(ctx: _Ctx) -> None:
                 )
                 filled += written
                 finished = seen < field_rules.BATCH
-                if finished:
-                    saved = _rules_row(ctx, [*applied, rule], reread)
+                if first or finished:
+                    saved = _rules_row(
+                        ctx, [*applied, rule if finished else marked], reread,
+                    )
                     await _save_cursor(ctx, db, saved, "ok")
+            if first or finished:
+                ctx.cursors[FIELD_RULES_ROW] = saved
+            first = False
             if finished:
                 applied = [*applied, rule]
-                ctx.cursors[FIELD_RULES_ROW] = saved
                 break
         _log.info("crm.sync.field_rule_backfilled rule=%s written=%s", rule.id, filled)
     ctx.rule_rereads = reread
+    ctx.handled_rules = list(approved)
 
 
 async def _load_rules(ctx: _Ctx) -> None:
-    """The approved rules that ``map_record`` applies in this run."""
-    async with ctx.page() as db:
-        ctx.rules = field_rules.by_entity(await field_rules.approved_rules(db, EXT_SOURCE))
+    """The rules that ``map_record`` applies in this run: exactly the list that
+    ``_field_rules`` handled, minus the rules that discovery made stale. It
+    does not read the table again (review P1). A rule approved during
+    the run is not in the applied state yet, so the next run handles it."""
+    ctx.rules = field_rules.by_entity(
+        r for r in ctx.handled_rules if r.id not in ctx.stale_rule_ids
+    )
 
 
 async def _rule_reread_done(ctx: _Ctx, db: Any, entity: str) -> None:

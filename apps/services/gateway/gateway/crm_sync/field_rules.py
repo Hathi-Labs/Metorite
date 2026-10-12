@@ -43,22 +43,32 @@ BATCH = FIELD_RULE_BATCH
 
 @dataclass(frozen=True)
 class Rule:
-    """One approved rule, as the sync applies it."""
+    """One approved rule, as the sync applies it.
+
+    ``backfilling`` is True while the backfill of the rule runs. The rule
+    enters the applied state with it in the transaction of the FIRST batch,
+    so a stop between two batches still leaves a rule that a reject undoes.
+    The last batch clears it. It is not part of :attr:`key`.
+    """
 
     id: str
     entity: str
     field_api_name: str
     target_column: str
+    backfilling: bool = False
 
     @property
     def key(self) -> tuple[str, str, str, str]:
         return (self.id, self.entity, self.field_api_name, self.target_column)
 
-    def as_state(self) -> dict[str, str]:
-        return {
+    def as_state(self) -> dict[str, Any]:
+        state: dict[str, Any] = {
             "id": self.id, "entity": self.entity,
             "field": self.field_api_name, "column": self.target_column,
         }
+        if self.backfilling:
+            state["backfilling"] = True
+        return state
 
 
 _APPROVED_SQL = (
@@ -99,7 +109,7 @@ def applied_of(state: Mapping[str, Any] | None) -> list[Rule]:
             continue
         values = [item.get(k) for k in ("id", "entity", "field", "column")]
         if all(isinstance(v, str) and v for v in values):
-            out.append(Rule(*values))  # type: ignore[arg-type]
+            out.append(Rule(*values, backfilling=item.get("backfilling") is True))  # type: ignore[arg-type]
     return out
 
 
