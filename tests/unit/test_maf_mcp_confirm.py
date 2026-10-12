@@ -23,6 +23,8 @@ Each fence names the acceptance item it covers:
   values redacted, and the server's description under a label.
 * **A17** Each attach logs ``mcp.tool_annotations`` with the server, the tool
   and the hints.
+* **A18** A later ``tools/list`` cannot relax a tool, and each change of
+  hints is logged. A call that the card cannot show whole is refused (A16).
 
 The end-to-end tests drive the REAL apis-config agent through the REAL
 ``run_agent_stream`` against a REAL streamable-HTTP MCP server on 127.0.0.1.
