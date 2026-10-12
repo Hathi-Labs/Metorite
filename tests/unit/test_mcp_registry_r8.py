@@ -151,10 +151,12 @@ async def _call(user: Any, method: str, path: str, body: dict | None = None) -> 
 
 
 async def _register(user: Any, name: str, *, url: str = "https://mcp.example.com/mcp",
-                    headers: dict[str, str] | None = None, enabled: bool = True) -> None:
+                    headers: dict[str, str] | None = None, enabled: bool = True,
+                    scope: list[str] | None = None) -> None:
     res = await _call(user, "POST", "/integrations/mcp", {
         "name": name, "transport": "http-sse", "url": url,
         "headers": headers or {}, "enabled": enabled,
+        "agent_scope": ["*"] if scope is None else scope,
     })
     assert res.status_code == 201, res.text
 
@@ -273,23 +275,28 @@ async def test_c_two_servers_of_one_org_both_reach_the_agent(ns, monkeypatch) ->
     set_flag(monkeypatch, "*")
     install_offline(monkeypatch)
     user = _user(ADMIN_A, ns.org_a)
-    one, two, off = _name("c1"), _name("c2"), _name("off")
+    one, two, off, none = _name("c1"), _name("c2"), _name("off"), _name("none")
     await _register(user, one, url="https://one.example.com/mcp",
                     headers={"Authorization": "Bearer one"})
     await _register(user, two, url="https://two.example.com/mcp",
                     headers={"X-Api-Key": "two"})
     await _register(user, off, enabled=False, headers={"Authorization": "Bearer off"})
+    # An empty scope gives the server to no agent, as before IN-4 (review P2).
+    await _register(user, none, scope=[], headers={"Authorization": "Bearer none"})
 
     agent = await _inject(ns.org_a)
 
     tools = {t.name: t for t in agent.mcp_tools}
-    assert set(tools) == {one, two}, "a disabled server must not reach the agent"
+    assert set(tools) == {one, two}, "a disabled or unscoped server reached the agent"
     assert tools[one]._static_headers == {"Authorization": "Bearer one"}
     assert tools[two]._static_headers == {"X-Api-Key": "two"}
     assert tools[one].url == "https://one.example.com/mcp"
     rows = _registry(ns, ns.org_a)
     assert {rows[n]["status"] for n in (one, two)} == {"connected"}
     assert rows[off]["status"] == "disconnected" and rows[off]["credentials_encrypted"]
+    assert rows[none]["provider_meta"]["agent_scope"] == []
+    listed = (await _call(user, "GET", "/integrations/mcp")).json()
+    assert next(r for r in listed if r["name"] == none)["agent_scope"] == []
     for n in (one, two, off):
         assert (rows[n]["owning_app"], rows[n]["scope_kind"], rows[n]["member_email"]) == (
             "integrations", "org", None)
