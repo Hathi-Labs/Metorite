@@ -43,16 +43,23 @@ export default function ThemeToggle() {
 /**
  * ThemeToggleMenuItem — same toggle but styled as a full-width menu item
  * (for use in dropdowns and drawer menus). Accepts an optional onClick callback
- * to close the parent menu/drawer after toggling.
+ * to close the parent menu/drawer after toggling. `className` sets the row's
+ * padding and type, so a menu's rows can share one rhythm (the Metorite menu).
  */
-export function ThemeToggleMenuItem({ onClick }: { onClick?: () => void }) {
+export function ThemeToggleMenuItem({
+  onClick,
+  className = "w-full gap-3 px-3 py-2.5 text-sm",
+}: {
+  onClick?: () => void;
+  className?: string;
+}) {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => setMounted(true), []);
 
   if (!mounted) {
-    return <div className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-muted-foreground">Colour mode</div>;
+    return <div className={`flex items-center rounded-lg text-muted-foreground ${className}`}>Colour mode</div>;
   }
 
   const isDark = theme === "dark";
@@ -61,7 +68,7 @@ export function ThemeToggleMenuItem({ onClick }: { onClick?: () => void }) {
     <Button variant="ghost" size="none" layout="flex items-center" onClick={() => {
         setTheme(isDark ? "light" : "dark");
         onClick?.();
-      }} className="w-full gap-3 px-3 py-2.5 text-sm">
+      }} className={className}>
       {isDark ? <Icon name="Sun" size={16} className="shrink-0" /> : <Icon name="Moon" size={16} className="shrink-0" />}
       {isDark ? "Light mode" : "Dark mode"}
     </Button>

@@ -39,6 +39,14 @@ rides `NEXT_PUBLIC_SHELL_NAV`, which is on in production. So the merge is its
 release, by owner decision of 2026-10-10. §11 records this exception, and
 §8 holds the table that the owner approved.
 
+**BUILT 2026-10-12, by owner direction: the account moves to the top
+right.** With the shell bar on, the bar's right end is the account: an
+avatar, the email, and a menu to switch, add or sign out. The sidebar's
+foot is our comet and the word "Metorite", and it opens the member's pages
+and settings. This replaces the comet signature of 2026-10-11. It rides the
+shell bar flag, which is on, so the merge is its release. §3.1 and §3.3
+hold the shape.
+
 **BUILT 2026-10-11, by owner direction: the star model.** The sidebar has no
 "My apps" group now. Each category lists only the apps that the member
 starred. The first sign-in dialog has a second step to choose them. A row
@@ -228,20 +236,32 @@ sees whose workspace this is at all times (D51).
   name. The comet replaced a ⌘ glyph on 2026-10-11, and no accent recolours it.
 - The customer's logo stands alone, with no words of ours beside it (owner,
   2026-10-11). It has the whole 176px slot (`BAR_LOCKUP`).
-- Our comet signs the bar's right end (owner, 2026-10-11). It is the last
-  item, after the activity control and a thin divider, at 20px.
-- The comet is not a control. It has no link, no button and no focus stop.
-  `BarSignature` in `src/lib/shell/ShellBar.tsx` draws it.
-- It shows from the `xl` width (1280px) up. Below that, with the bell on,
-  it pushed the bell over the command bar (measured 2026-10-11).
-- With no logo, the left end already shows our comet. Then the right end
-  shows none, so the bar shows one comet only (`ourMarkLeads`).
-- The phone has no shell row, so it shows no signature. The sidebar and the
-  phone drawer show no signature either.
-- A phone drawer with no logo shows our comet as its workspace badge, in the
-  drawer's head. That is the owner's no-logo badge decision of 2026-10-11.
-- Fences: `shellSignature.test.ts`, `metoriteMark.test.ts`,
-  `orgBrandLockup.mode.test.ts` and `e2e/shell-signature.spec.ts`.
+- ~~Our comet signs the bar's right end~~ (owner, 2026-10-11,
+  `BarSignature`). **Superseded on 2026-10-12.** The bar draws no comet of
+  its own now. Our comet is the sidebar's foot (§3.3).
+- **The account is the bar's last item** (owner, 2026-10-12). It comes after
+  the bell and the activity control. `BarAccount` in
+  `src/components/AccountSwitcher.tsx` draws it.
+- The trigger is quiet, as Google's and GitHub's are: the avatar, then the
+  email in muted text. It has no border and no fill at rest. It has the
+  height of the bar's other controls and the bar's focus ring. Its name is
+  "Account: <email>", and its tip gives the name, the email and the
+  organization.
+- The email shows from 1400px up. At 1280px and below, the avatar shows
+  alone. The brief named the `xl` step (1280px), and it also named the avatar
+  alone at 1280px. Those two disagree at 1280px. At that width the email took
+  too much of the bar, so the step is 1400px (measured 2026-10-12).
+- The right group keeps the width of its content, with no `min-w-0`. So the
+  bell never sits over the command bar. Where the room is short, the command
+  bar gives way and sits a little off centre. With `min-w-0`, the avatar put
+  the bell over the command bar at 1024px.
+- With no logo, the left end shows our comet, once.
+- The phone has no shell row, so it shows no account widget. Its drawer keeps
+  its account header and foot (§3.3). A phone drawer with no logo shows our
+  comet as its workspace badge, in the drawer's head.
+- Fences: `shellAccount.test.ts`, `metoriteMark.test.ts`,
+  `orgBrandLockup.mode.test.ts`, `e2e/shell-account.spec.ts` and
+  `e2e/shell-signature.spec.ts`.
 - The fold tip points up at the bar's control. The fold rules of §3.2 do not
   change.
 
@@ -261,7 +281,7 @@ over the page column, as NS-1 built it. `desktopFrame` in
 | New | The shell | The jobs of the apps the member holds, in preset order (§8). Not built |
 | Bell | The shell | "Needs you", from every app (§7.2). BUILT in NS-6 slice 6a, dark behind `NEXT_PUBLIC_SHELL_DOCK`. It sits before Activity (owner, 2026-10-10, §13.3 Q7). An app's own bell never moves into this bar |
 | Assistant | The shell | The dock toggle (§7.1). Not built, NS-6 slice 6b. It goes at the right end beside the bell (owner, 2026-10-10, §13.3 Q7). Today each app's assistant toggle is a tool in its own title bar |
-| ~~Avatar~~ | — | Not in the bar. The account menu is the sidebar's foot (§3.3, NS-2 slice 1) |
+| Account | The shell | The avatar and the email. It opens the account menu: switch, add, sign out (owner, 2026-10-12, §3.3). The last item of the bar. Until 2026-10-12, the account menu was the sidebar's foot (NS-2 slice 1) |
 
 **The command bar's "in <App>" chip stays.** It is the command bar's own
 scope (§6.4 rule 3), not the app's chrome. It is the one place the bar names
@@ -368,7 +388,8 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
 and Admin, each only when it has a starred item (§3.2b). "Add apps" is the
 last item of the list. Admin holds
 Approvals, and Organisation for an admin. All apps and the account menu are
-at the foot.
+at the foot. Since 2026-10-12, with the shell bar on, the foot holds All apps
+and the Metorite menu, and the account menu is in the bar (§3.3).
 
 `src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
 `shellNav.test.ts` pins five shapes. Two are a full admin and a plain member.
@@ -456,7 +477,8 @@ My Day's cards and the jobs of the empty command bar.
   sidebar" and "Open in new tab". A hide shows a toast with Undo. The folded
   rail has no "···", and a right-click there opens the menu. Home has no
   menu. The phone drawer has no "···", so a phone member uses All apps.
-- **"Change my layout"** in the account menu asks the question again (§8.4).
+- **"Change my layout"** asks the question again (§8.4). It is in the
+  Metorite menu at the sidebar's foot since 2026-10-12 (§3.3).
 
 **Categories fold.** A category heading toggles its list, and a folded
 heading shows its count, such as "Across teams (2)". The browser keeps the
@@ -564,6 +586,42 @@ the browser cases. The `totals` and `capped` tests are in
 
 ### 3.3 The account menu
 
+**The shape since 2026-10-12, with the shell bar on** (owner direction). The
+owner said: "place the account selector in the top-right corner." The owner
+gave its old place in the sidebar to "the Metorite logo and text".
+
+1. **The account menu is the bar's top right** (`BarAccount`). It holds
+   account acts only, in this order:
+   - the current account, with a larger avatar, the name, the email, the
+     organization and a "Signed in" mark
+   - the other accounts this browser holds, each with its organization.
+     A pick switches through `switchTo`.
+   - "Add another account"
+   - "Sign out". With one account it signs out. With more, it leaves this
+     account and lands on the next one (`signOutThis`: the `switch` action,
+     then `remove` of the same slot). "Sign out of all accounts" follows.
+   With the switcher flag off, the menu shows the current account and "Sign
+   out".
+2. **The sidebar's foot is the Metorite menu** (`MetoriteFoot.tsx`). Open,
+   it is our comet at 20px and the word "Metorite". Folded, it is the comet
+   alone, on the rail's icon column. Its name is "Metorite settings".
+3. **The Metorite menu** opens upward from the foot. It has two groups:
+   - **You**: My Profile and My access.
+   - **Settings**: Appearance, the colour mode (moved from beside the old
+     foot) and "Change my layout" while the shell nav is on.
+   It holds no account act. `metoriteMenu` in `src/lib/shell/shellNav.ts` is
+   its one list, built from `accountLinks`, so a new option is one line.
+4. **No build version shows.** The browser can reach no version that a
+   member can read. `/api/health` carries the Next build id, a random name,
+   and the gateway's `/version` has no proxy. A version line waits on a
+   decision to expose one.
+5. **The classic frame and the phone do not change.** With the shell bar
+   off, the foot below stays as it was. The phone keeps its drawer.
+
+Fences: `src/lib/shell/shellAccount.test.ts`, `src/lib/accountSwitch.test.ts`
+and `e2e/shell-account.spec.ts`. The text below is the shape of NS-2 slice
+1. It still binds the classic frame and the phone.
+
 It holds My Profile, My access, Appearance and sign-out. These pages describe
 the member. The member does not work in them, so they leave the sidebar.
 Organisation was in this menu until 2026-10-09. It is an app in Admin now
@@ -574,7 +632,7 @@ pages. Fences: `shellNav.test.ts` and `e2e/account-switcher.spec.ts`.
 until NS-6 builds the bell. The colour-mode toggle sits beside the foot's
 button, not inside the menu. Do not move either one from this paragraph alone.
 
-**The account switcher is in the sidebar foot** (MT-1k slice A2,
+**The account switcher is in the sidebar foot** in the classic frame (MT-1k slice A2,
 `saas_multitenancy.md`, built 2026-10-07). It lists every account this browser
 is signed in to, with its organization, and switches with one click.
 
@@ -1649,7 +1707,8 @@ Done when:
 - `src/lib/shell/shellNav.ts` builds the sidebar, the account menu and All
   apps from `visibleSections`. `AppLauncher.tsx` is All apps.
 - The sidebar, the folded rail and the phone drawer take the shape of §3.2a.
-  The account menu is the sidebar's foot (§3.3).
+  The account menu is the sidebar's foot (§3.3). With the shell bar on, it
+  moved to the bar's top right on 2026-10-12 (§3.3).
 - Fences: `nav.test.ts` and `shellNav.test.ts`. The first fails on a live
   pane with no team or no purpose. It also fails when a page other than the
   three member and organization pages opens from the account menu. The second
