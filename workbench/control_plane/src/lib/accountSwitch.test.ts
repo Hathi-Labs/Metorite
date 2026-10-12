@@ -302,6 +302,18 @@ describe("sign out of this account only", () => {
     expect(signOut).toHaveBeenCalledWith({ callbackUrl: "/signin" });
   });
 
+  it("the sign-in notice ends only when the toast closes or after its time on screen", () => {
+    // A clear on the first read lost the toast to a remount (Fast Refresh in
+    // dev, 2026-10-12). No browser test can force that remount, so this
+    // reads the source: two clears, the toast's close and the timer.
+    const src = read("components/SignOutNotice.tsx").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(src.match(/clearSignOutNotice/g) ?? []).toHaveLength(3);
+    expect(src).toMatch(/onClose: clearSignOutNotice/);
+    expect(src).toMatch(/setTimeout\(clearSignOutNotice, NOTICE_SEEN_MS\)/);
+    expect(src).toMatch(/import \{[^}]*\bclearSignOutNotice\b[^}]*\} from "@\/lib\/accountSwitch";/);
+    expect(read("app/signin/SignInForm.tsx")).toMatch(/<SignOutNotice \/>/);
+  });
+
   it("if the fallback itself throws, this tab hears the other tabs again", async () => {
     server({ switch: [status(409)] });
     await expect(
