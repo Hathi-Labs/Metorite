@@ -1445,15 +1445,32 @@ def test_a_long_sheet_name_is_cut_to_31_characters_and_stays_unique(dirs: Any) -
     assert [s["name"] for s in picked["sheets"]] == [prefix[:29] + "~3"]
 
 
-def test_a_number_format_past_255_characters_is_no_date_and_reads_quickly(dirs: Any) -> None:
+def test_a_number_format_past_255_characters_is_no_date_and_reads_quickly(
+    dirs: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Security review P3-2. openpyxl's date rule costs more than linear time
     on a long crafted code. The engine skips a code past Excel's 255
-    characters, and its number stays a number."""
+    characters, and its number stays a number.
+
+    The fence is that no long code reaches openpyxl's rules, not how many
+    seconds the check takes. A bound of 0.1 s on a call of a few microseconds
+    failed under load on 2026-10-13. The clock bounds stay only to catch a
+    slow read: openpyxl reads the crafted code in about 2.6 s, idle."""
+    from openpyxl.styles import numbers  # type: ignore[import-untyped]
+
+    seen: list[int] = []
+    for rule in ("is_date_format", "is_timedelta_format"):
+
+        def _spy(code: str, real: Any = getattr(numbers, rule)) -> Any:
+            seen.append(len(code))
+            return real(code)
+
+        monkeypatch.setattr(numbers, rule, _spy)
     crafted = "[h" * 50_000
     assert E._date_kind(14, None) == "date"  # The first call imports openpyxl. Time the next.
     began = time.perf_counter()
     assert E._date_kind(164, crafted) is None
-    assert time.perf_counter() - began < 0.1
+    assert time.perf_counter() - began < 1.0
     edge = "yyyy-mm-dd" + '"' + "x" * (E.FORMAT_CODE_CHARS - 12) + '"'
     assert len(edge) == E.FORMAT_CODE_CHARS and E._date_kind(164, edge) == "date"
     assert E._date_kind(164, edge + " ") is None
@@ -1462,8 +1479,11 @@ def test_a_number_format_past_255_characters_is_no_date_and_reads_quickly(dirs: 
     began = time.perf_counter()
     data = _book([("D", xb.sheet(rows))], extra={"xl/styles.xml": styles})
     cols = _columns(dirs, _ok(_load(dirs, "d.xlsx", data))["dataset_id"])
-    assert time.perf_counter() - began < 5
+    assert time.perf_counter() - began < 30
     assert cols["When"]["type"] == "integer"
+    # openpyxl's rules read the edge code, and never a code past 255 characters.
+    assert E.FORMAT_CODE_CHARS in seen, seen
+    assert max(seen) <= E.FORMAT_CODE_CHARS, max(seen)
 
 
 # --------------------------------------------------------------------------
