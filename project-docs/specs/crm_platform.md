@@ -2663,7 +2663,7 @@ total. `acb_skills/skill_families.py` has no `crm` family.
    that exists, and they write `forecast_category` and `type` only.
 5. **A stage probability does not move a mirrored forecast.** A Zoho deal
    carries its own `Probability` (`mapping.py:307`). `weightedDeal`
-   (`board.ts:243`) reads the deal value first. CRM-C3 item 8 keeps that
+   (`board.ts:243`) reads the deal value first. CRM-C3 item 10 keeps that
    rule.
 6. **Every mirrored stage is `gray`.** The sync never writes `color`, and the
    column default is `gray`. So the type fallback never colours a Mirror lane.
@@ -2680,7 +2680,7 @@ total. `acb_skills/skill_families.py` has no `crm` family.
 |---|---|---|---|---|---|
 | **CRM-C1** Settings sections | Child rows under the settings row. One section on each page | AGENT-SAFE | S | None | CRM-C3, because both edit `PipelineSettings.tsx` |
 | **CRM-C2** One board | One column primitive for Projects, Tasks and the CRM. A stage colour that does not fight the corner | AGENT-SAFE | M | None | Nothing |
-| **CRM-C3** Stages you can shape | Hide, order, colour and probability in both modes. A Mirror overlay that the sync never writes | AGENT-SAFE | M | 255 | Nothing |
+| **CRM-C3** Stages you can shape | Hide, order, colour and probability in both modes. A Mirror overlay that the sync never writes | AGENT-SAFE | M | 255 | CRM-C2 merged, because both edit three files |
 | **CRM-C4** Field studio | Create, rename, order, hide, sections, picklists, required and defaults (Native) | AGENT-SAFE. Flag `CRM_FIELD_STUDIO_ORGS`, shipped empty | L | 256 | CRM-C1 |
 | **CRM-C5** Field studio to Zoho | The C4 studio and the C3 stage order write to Zoho (Mirror) | AGENT-SAFE to build. 🔴 OWNER-GATE to turn on, and for the first live write | L | None | CRM-C4, the §19.9 consent, its own spec audit |
 | **CRM-C6** Field mapping | Lead conversion mapping, the CRM-Q7a Field map and lookup targets | AGENT-SAFE | M | 257 | CRM-C4, CRM-Q7a merged |
@@ -2701,11 +2701,10 @@ number at build time and checks it again at merge.
    - C3 owns `orderLanes` and `weightedDeal` in `board.ts`, and the grids in
      `PipelineSettings.tsx`. C3 takes its colour list from `ACCENT_HUES`,
      never from `TONE_COLORS`, which C2 deletes.
-   - C2 and C3 both edit `board.ts`, in hunks that do not overlap. The one
-     that merges second rebases.
-   - **C2 merges before C3 for `PipelineSettings.tsx`.** C2 changes only its
-     colour imports and three colour lines (§20.5 item 9). C3 rebases on C2
-     for that file.
+   - **C2 merges before C3.** They share `PipelineSettings.tsx`,
+     `StatusPill.tsx` and `board.ts`. C2 changes only the colour lines
+     there (§20.5 items 8 and 9). C3 builds in parallel, then rebases on
+     C2 before its merge.
 2. **Wave 2: C1.** It splits `PipelineSettings.tsx`, so it starts after C3
    merges. It does not touch `KanbanBoard.tsx`, so it may run beside C2.
 3. **Wave 3: C4.** It fills the Fields section that C1 makes.
@@ -2894,11 +2893,13 @@ the move from `TONES` to `statusAccent`. They are intended.
    - `app/crm/components/StatusPill.tsx:24`, `:120` and `:173`.
    - `app/crm/components/mirror.test.ts:195`, and the `statusTone` tests
      at `app/crm/lib/board.test.ts:15` and `:136-148`.
-9. **`PipelineSettings.tsx` has two owners.** C2 owns its colour imports
-   and the three colour lines of item 8 only. C3 owns the grids. **C2
-   merges first.** C3 rebases on C2 for that file. There is no re-export of
-   `statusTone`, because a kept alias is the second palette that rule 4
-   forbids.
+9. **Three files have two owners.** C2 and C3 share
+   `PipelineSettings.tsx`, `StatusPill.tsx` and `app/crm/lib/board.ts`.
+   C2 owns their colour lines of item 8 only. C3 owns the grids,
+   `orderLanes` and the Mirror `ui_color` rule of `stageAccent`. **C2
+   merges first.** C3 rebases on C2 for those files. There is no
+   re-export of `statusTone`, because a kept alias is the second palette
+   that rule 4 forbids.
 10. **The palette fence.** In `sharedTaskUi.test.ts`, widen `SCOPE` to
     `app/(projects|tasks|crm)/` and delete the exemption at `:471-477`.
 11. **The registry fence.** New `src/lib/boards.test.ts`, in the shape of
@@ -2971,6 +2972,10 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app
 **Gate.** AGENT-SAFE. No flag. With no overlay value set, each board, list
 and report shows what it shows today. Item 7 is a fix of the sync.
 
+**Waits for.** CRM-C2 merged. C2 and C3 share `PipelineSettings.tsx`,
+`StatusPill.tsx` and `app/crm/lib/board.ts`. C2 merges first, and C3
+rebases on it.
+
 **The model.** Each stage, status and lost reason has two sets of values.
 The **source values** come from Zoho in Mirror mode, and from the admin in
 Native mode. The **overlay values** are Metorite-only. The sync never writes
@@ -3003,15 +3008,17 @@ stage, which CRM-C2 leaves to this slice.
    pass only when each written column is in `MIRROR_OVERLAY_COLUMNS`. Any
    other column still gives 409 `mirror_mode_settings`.
 3. **The edit routes.** `StatusIn` (`routes/crm/admin.py:63`) and
-   `LostReasonIn` take the new fields. Mirror mode accepts the overlay
-   fields only. Native mode accepts every field, and the Native UI leaves
-   `ui_*` NULL.
+   `LostReasonIn` take the new fields.
+   - Mirror mode accepts the overlay fields only.
+   - Native mode accepts `hidden` and every source field. It refuses a
+     `ui_*` field with 422, because a Native admin edits the source columns
+     directly.
 4. **The order route.** New `PUT /crm/statuses/{kind}/order`. Only an admin
    calls it.
    - The body is `{"ids": [uuid, ...]}`, the full ordered list of that
      kind.
-   - It writes `position` in Native mode and `ui_position` in Mirror mode,
-     in one transaction.
+   - It writes `position` in Native mode. In Mirror mode it writes
+     `ui_position` on every row of the kind. All in one transaction.
    - It gives 422 when the list is not exactly the org's ids of that kind.
    - CRM-C5 (§20.8 item 2) sends this route to Zoho when its flag is on.
 5. **The wire contract.** `StatusModel` keeps its fields `position`,
@@ -3021,13 +3028,16 @@ stage, which CRM-C2 leaves to this slice.
    `source_color`, `hidden`, `source_gone_at`, `ext_id` and `admin_order`.
    `admin_order` is true when a row of that kind has `ui_position`.
 6. **One SQL helper.** New `core.EFFECTIVE_STATUS_COLUMNS` is the one SELECT
-   list of the effective and the source columns. Four readers use it, and
-   no route computes an effective value on its own:
-   - the lanes of `GET /crm/pipeline` (`routes/crm/pipeline.py:530`).
-   - the reports (`routes/crm/reports.py:263`).
+   list of the effective and the source columns. No route computes an
+   effective value on its own. These reads use it:
+   - the lanes of `GET /crm/pipeline` (`routes/crm/pipeline.py:417`, `:422`
+     and `:432`).
+   - the stage list of the reports (`routes/crm/reports.py:230`).
    - `GET /crm/pipelines` (`routes/crm/pipelines.py:108`), which reads raw
      `s.probability` today. CRM-C7 reads this route.
    - `GET /crm/statuses/{kind}` (`admin.py:289`).
+   The probability binds at `pipeline.py:530` and `reports.py:263` then
+   carry the effective value with no change.
 7. **The sync keeps the source values current.** `_ensure_status`
    (`crm_sync/engine.py:790`) has three callers. Only the picklist call
    (`:859`) updates a row that exists.
@@ -3039,53 +3049,92 @@ stage, which CRM-C2 leaves to this slice.
    - The picklist call matches a row by `ext_id` first, then by name. A
      Zoho rename then changes `name` in place. The row keeps its overlay
      and its deals.
-   - A stage or status that leaves the Zoho picklist gets `source_gone_at =
-     now()`. The sync never deletes it. A value that comes back clears
-     `source_gone_at`.
    - No SQL of the sync names an overlay column or `color`.
      `_STAGE_TYPE_SQL` (`:756`) and `_FORECAST_SQL` (`:748`) keep their
      work.
-8. **Weighted totals.** `WEIGHTED_SQL` (`core.py:130`) keeps its text. Its
-   `:stage_probability` now binds the effective stage probability from
-   `EFFECTIVE_STATUS_COLUMNS`. A deal with its own probability keeps it.
-   The stage value applies only to a deal with none, which is the rule of
-   today.
-   - In Mirror mode most deals carry a Zoho `Probability` (§20.1 fact 5).
-     So a `ui_probability` moves the forecast of the deals with no value
-     only. The settings row says so.
-   - A `ui_probability` on a won or a lost stage moves no forecast, because
-     `WEIGHTED_TYPES` leaves those stages out.
-   - `tests/fixtures/crm_weighted_parity.json` gets two cases: a deal with
-     no probability in a stage with `ui_probability`, and a deal with its
-     own probability in the same stage. `weightedDeal` in `board.ts` reads
-     the effective value from the wire, with no code change.
-9. **The lane order.** `orderLanes` keeps its four groups: open, on hold,
-   won and lost. When `admin_order` is true, each group sorts by the
-   effective `position`. Else the rule of today holds: Mirror sorts open
-   stages by the effective probability, and Native by `position`. The
-   Leads board sorts by the effective `position`.
-10. **Hidden.** These rules hold for a row with `hidden = true`, and for a
+8. **A rename that collides.** A record pull can run before the picklist
+   read. It then inserts a row under the new name with a NULL `ext_id`.
+   The picklist call finds the `ext_id` row with the old name, and a rename
+   would break `uq_crm_deal_statuses_org_name`. The rule:
+   - The `ext_id` row survives, because it holds the overlay.
+   - A new fenced door, `core.merge_status_from_source`, does the merge in
+     one transaction. Only `gateway/crm_sync/` may call it.
+   - It repoints each reference from the name row to the `ext_id` row:
+     `crm_deals.status_id` or `crm_leads.status_id`, and
+     `crm_pipeline_stages.status_id`. A pipeline that holds both rows keeps
+     one membership, at the place of the `ext_id` row.
+   - `crm_status_changes` holds names as text and has no foreign key. The
+     merge needs no repoint there, because the new name stays the name.
+   - A saved view (`crm_views`) whose `status` filter holds the id of the
+     name row gets the id of the `ext_id` row.
+   - It then deletes the name row and renames the `ext_id` row.
+   - The savepoint never swallows a failed merge. A failure fails the
+     picklist step, and the sync logs it.
+9. **A stage that leaves Zoho.** The gone rule runs only in a run that read
+   the Stage or Lead_Status picklist definition (`engine.py:1566-1575`). A
+   run that could not read it marks nothing.
+   - It applies only to a row with a non-null `ext_id`. A stage that only a
+     pipeline lists (`engine.py:1854`) and `UNKNOWN_STATUS` never get
+     `source_gone_at`.
+   - A row with an `ext_id` that the picklist no longer lists gets
+     `source_gone_at = now()`. The sync never deletes it.
+   - A value that comes back clears `source_gone_at`.
+10. **Weighted totals.** `WEIGHTED_SQL` (`core.py:130`) keeps its text. Its
+    `:stage_probability` now binds the effective stage probability. A deal
+    with its own probability keeps it. The stage value applies only to a
+    deal with none, which is the rule of today.
+    - In Mirror mode most deals carry a Zoho `Probability` (§20.1 fact 5).
+      So a `ui_probability` moves the forecast of the deals with no value
+      only. The settings row says so.
+    - A `ui_probability` on a won or a lost stage moves no forecast,
+      because `WEIGHTED_TYPES` leaves those stages out.
+    - `weightedDeal` in `board.ts` reads the effective value from the wire,
+      with no code change.
+11. **The parity fixture.** `tests/fixtures/crm_weighted_parity.json` gets a
+    `ui_probability` column. Two new kinds of case hold:
+    - A deal with no probability of its own, in a stage with
+      `ui_probability`. The result follows `ui_probability`.
+    - A deal with its own probability, in the same stage. The result does
+      not change.
+12. **The lane order.** `orderLanes` keeps its four groups: open, on hold,
+    won and lost.
+    - In Mirror mode with `admin_order`, each group sorts by the key
+      `(ui_position IS NULL, ui_position, source position)`. A row with no
+      `ui_position` sorts after each ordered row, in Zoho order.
+    - The order route writes `ui_position` on every row of the kind. So
+      after an admin order, only a new Zoho stage has none, and it goes to
+      the end of its group.
+    - In Mirror mode without `admin_order`, open stages sort by the
+      effective probability, as today. Native mode sorts by `position`.
+    - The Leads board takes the same key.
+13. **Hidden.** These rules hold for a row with `hidden = true`, and for a
     row with `source_gone_at` set.
     - No picker offers it, except as the current value of a record. The
       pickers are the move dialog (`MoveModal.tsx`), quick create
       (`QuickCreateModal.tsx`), the filter bar (`FilterBar.tsx`), the lost
       dialog and `StatusPill.tsx`.
     - A board shows its lane only when the lane holds records in the
-      current view. The lane then gets a "Hidden" mark and sits at the end
-      of its group (`lib/emptyStages.ts`, `visibleLanes`).
+      current view. The lane sits at the end of its group
+      (`lib/emptyStages.ts`, `visibleLanes`). `KanbanBoard.tsx` passes a
+      `hidden` prop, and `BoardColumn.tsx` (CRM-C2) draws the "Hidden" mark.
     - Reports count the deals in it, because data stays data.
     - The server does not refuse a move into it, because Zoho can move a
       deal there.
     - Settings shows a row with `source_gone_at` as "Removed in Zoho".
-11. **Mirror mode gets an editor.** For an admin, the Deal stages, Lead
+14. **Mirror mode gets an editor.** For an admin, the Deal stages, Lead
     statuses and Lost reasons sections become editable in Mirror mode. Each
-    row shows the Zoho value beside the Metorite value. "Reset to Zoho"
-    sets the overlay columns to NULL. A drag calls the order route.
-12. **Native mode adds hide.** A hide of the default stage, or of the only
+    row shows the Zoho value beside the Metorite value. A drag calls the
+    order route.
+    - "Reset to Zoho" on a row sets `ui_probability` and `ui_color` to
+      NULL. It does not change `hidden` or `max_dwell_days`.
+    - "Reset order to Zoho" on a section sets `ui_position` to NULL on every
+      row of that kind.
+15. **Native mode adds hide.** A hide of the default stage, or of the only
     `won` or `lost` stage, gives 422. The same holds for the default lead
     status.
-13. **Colour.** The picker offers `ACCENT_HUES`. Mirror writes `ui_color`.
-    Native writes `color`.
+16. **Colour.** The picker offers `ACCENT_HUES`. Mirror writes `ui_color`.
+    Native writes `color`. C3 changes `stageAccent` in `board.ts`: in Mirror
+    mode a set `ui_color` wins, else the C2 type rule applies.
 
 **Non-goals.** No write to Zoho (CRM-C5). No order for each pipeline: a
 pipeline is an ordered subset of the one stage list (§18.1). No overlay of
@@ -3094,19 +3143,24 @@ the stage type or the name.
 **Files.**
 
 - New: `infra/postgres/255_crm_stage_overlay.sql`, and the new tests below.
-- Gateway: `routes/crm/core.py`, `admin.py`, `pipeline.py`, `pipelines.py`,
-  `reports.py` and `crm_sync/engine.py`.
-- Frontend: `app/crm/components/PipelineSettings.tsx` (the grids, after
-  C2), `MoveModal.tsx`, `QuickCreateModal.tsx`, `FilterBar.tsx`,
-  `StatusPill.tsx`, `app/crm/lib/board.ts` (`orderLanes`),
-  `app/crm/lib/emptyStages.ts`, `types.ts`, `api.ts`, and `app/crm/page.tsx`
-  at `:1025` and `:1054` only.
+- Gateway: `routes/crm/core.py` (`MIRROR_OVERLAY_COLUMNS`,
+  `EFFECTIVE_STATUS_COLUMNS`, `merge_status_from_source`), `admin.py`,
+  `pipeline.py`, `pipelines.py`, `reports.py` and `crm_sync/engine.py`.
+- Frontend, after C2: `app/crm/components/PipelineSettings.tsx` (the grids),
+  `StatusPill.tsx`, `app/crm/lib/board.ts` (`orderLanes` and
+  `stageAccent`), and `src/components/board/BoardColumn.tsx` (the `hidden`
+  prop and its mark).
+- Frontend: `MoveModal.tsx`, `QuickCreateModal.tsx`, `FilterBar.tsx`,
+  `KanbanBoard.tsx`, `app/crm/lib/emptyStages.ts`, `types.ts`, `api.ts`, and
+  `app/crm/page.tsx` at `:1025` and `:1054` only.
 - Fixture: `tests/fixtures/crm_weighted_parity.json`.
+- Fence: `tests/unit/test_crm_upsert_from_source_fence.py`.
 
 **Done when.**
 
 1. An R8 test starts a Mirror org. An admin sets each overlay column, and
    each call gives 200. A PATCH of `name` or `probability` still gives 409.
+   In Native mode a PATCH of a `ui_*` field gives 422.
 2. The same test runs a full sync. The overlay columns keep their values.
    `position` and `probability` follow the Zoho picklist fixture. A second
    org does not change.
@@ -3116,28 +3170,52 @@ the stage type or the name.
 4. **Rename.** A Zoho fixture renames a stage and keeps its id. After the
    sync, the row has the new name, the same `id`, its overlay, and its
    deals.
-5. **Removal.** A Zoho fixture drops a stage. After the sync, the row
+5. **A rename that collides.** A record pull first inserts a row under the
+   new name, and a deal points to it. The next picklist read merges it. One
+   row remains, with the `ext_id`, the overlay and the new name. Each deal
+   and pipeline membership of the name row now points to it. No error is
+   swallowed.
+6. **Removal.** A Zoho fixture drops a stage. After the sync, the row
    exists with `source_gone_at` set, and its deals keep it. Settings shows
    "Removed in Zoho". A fixture that brings it back clears `source_gone_at`.
-6. The order route writes `ui_position` in Mirror mode and `position` in
-   Native mode. A list with a missing, extra or foreign id gives 422.
-7. `GET /crm/pipelines`, the lanes and the reports return the effective
-   probability. The parity fixture passes on both sides.
-8. A Native org hides a stage. A hide of the default stage gives 422.
-9. **Hidden.** A vitest shows each picker without a hidden stage, and with
-   it when it is the current value. A vitest shows a hidden lane with
-   records at the end of its group with the "Hidden" mark. An R8 test
-   counts a deal in a hidden stage in the pipeline report. An R8 test
-   moves a deal into a hidden stage with 200.
-10. `test_crm_mirror_readonly.py` names `MIRROR_OVERLAY_COLUMNS` exactly. A
-    scan of the SQL string literals passed to `text()` in `crm_sync/` and
-    `crm_sources/` finds no overlay column. The scan reads SQL text only,
-    because `engine.py:1192-1289` uses `hidden` as a Python name.
-11. `board.test.ts` shows the new `orderLanes` rule in both modes.
-12. `crmC3.test.ts` shows the Mirror editor and "Reset to Zoho".
+7. **No picklist read.** A run whose picklist read fails marks no row. A
+   pipeline-only stage and `UNKNOWN_STATUS` never get `source_gone_at`.
+8. The order route writes `ui_position` on every row in Mirror mode, and
+   `position` in Native mode. A list with a missing, extra or foreign id
+   gives 422.
+9. **The order key.** After an admin order, a new Zoho stage arrives. It
+   sorts at the end of its group, and the other rows keep the admin order.
+   `board.test.ts` shows the key in both modes.
+10. **Reset.** "Reset to Zoho" on a row clears `ui_probability` and
+    `ui_color`, and keeps `hidden` and `max_dwell_days`. "Reset order to
+    Zoho" clears `ui_position` on every row of the kind.
+11. `GET /crm/pipelines`, the lanes and the reports return the effective
+    probability. The parity fixture passes on both sides, with the new
+    cases of item 11.
+12. A Native org hides a stage. A hide of the default stage gives 422.
+13. **Hidden.** A vitest shows each picker without a hidden stage, and with
+    it when it is the current value. A vitest shows a hidden lane with
+    records at the end of its group with the "Hidden" mark. An R8 test
+    counts a deal in a hidden stage in the pipeline report. An R8 test
+    moves a deal into a hidden stage with 200.
+14. **Colour.** A vitest shows a Mirror lane with `ui_color` set in that
+    colour, and a Mirror won lane with no `ui_color` in green.
+15. **The SQL scan.** `test_crm_mirror_readonly.py` names
+    `MIRROR_OVERLAY_COLUMNS` exactly. An AST scan of `routes/crm/` and
+    `crm_sync/` reads each module-level `str` constant and each literal
+    argument of `text()`. In `crm_sync/` and `crm_sources/`, no such string
+    names an overlay column. Python names are out of scope, because
+    `engine.py:1192-1289` uses `hidden` as a local name.
+16. **The scan proves itself.** A self-test plants a literal that names
+    `ui_position` in a temporary module, and the scan finds it.
+17. `test_crm_upsert_from_source_fence.py` puts `merge_status_from_source`
+    in `NAMES`. Its allowlist names `gateway/crm_sync/` only, and a planted
+    call from a route fails.
+18. `crmC3.test.ts` shows the Mirror editor and both reset actions.
 
 **Fences.** `tests/unit/test_crm_stage_overlay_r8.py` (new, R8, `_DB_GATE`),
 `tests/unit/test_crm_mirror_readonly.py`,
+`tests/unit/test_crm_upsert_from_source_fence.py`,
 `tests/fixtures/crm_weighted_parity.json`, `app/crm/lib/board.test.ts` and
 `app/crm/components/crmC3.test.ts` (new).
 
@@ -3145,7 +3223,7 @@ the stage type or the name.
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_crm_stage_overlay_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_crm_pipelines_r8.py tests/unit/test_crm_discovery.py tests/unit/test_crm_migration.py tests/unit/test_crm_reports.py -q
+uv run pytest tests/unit/test_crm_stage_overlay_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_pipelines_r8.py tests/unit/test_crm_discovery.py tests/unit/test_crm_migration.py tests/unit/test_crm_reports.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
 
