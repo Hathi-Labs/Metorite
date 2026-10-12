@@ -177,6 +177,8 @@ export const DEFAULT_VIEW: CrmView = {
   ranges: {},
   custom: {},
   viewId: null,
+  module: null,
+  moduleRecord: null,
 };
 
 export function isEntity(value: string | null): value is EntitySlug {

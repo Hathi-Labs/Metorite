@@ -242,9 +242,10 @@ describe("the Open in Zoho link", () => {
   });
 
   it("sits in the record header", () => {
-    const src = read("./RecordSheet.tsx");
-    expect(src).toContain("Open in Zoho");
-    expect(src).toMatch(/zohoLink\(record\)/);
+    // The drawer of both record pages is one frame since CRM-Q6b.
+    expect(read("./RecordShell.tsx")).toContain("Open in Zoho");
+    expect(read("./RecordSheet.tsx")).toMatch(/zohoLink\(record\)/);
+    expect(read("./ModuleRecordSheet.tsx")).toMatch(/zohoLink\(page\.record\)/);
   });
 });
 
