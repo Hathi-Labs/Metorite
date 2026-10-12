@@ -196,9 +196,25 @@ async def test_request_https_refuses_http_and_a_port_before_dns(monkeypatch) -> 
 # ── O2: the AST fence ───────────────────────────────────────────────────────
 
 
+def _guard_names(tree: ast.AST) -> set[str]:
+    """Every local name of the guard module, so an alias cannot hide a call."""
+    guard_names = {"outbound_guard"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "outbound_guard":
+                    guard_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.endswith("outbound_guard"):
+                    guard_names.add(alias.asname or alias.name.split(".")[-1])
+    return guard_names
+
+
 def _offences(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     bad: list[str] = []
+    guard_names = _guard_names(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             bad += [f"import {a.name}" for a in node.names if a.name.split(".")[0] == "httpx"]
@@ -210,9 +226,13 @@ def _offences(path: Path) -> list[str]:
                 for alias in node.names:
                     if alias.name in ("request", "mcp_client", "send", "check_url"):
                         bad.append(f"from {mod} import {alias.name}")
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+              and node.func.id == "getattr" and node.args
+              and isinstance(node.args[0], ast.Name) and node.args[0].id in guard_names):
+            bad.append("getattr(outbound_guard, ...)")
         elif isinstance(node, ast.Attribute):
             if node.attr in ("request", "mcp_client", "send", "check_url") and (
-                    isinstance(node.value, ast.Name) and node.value.id in ("outbound_guard", "g")):
+                    isinstance(node.value, ast.Name) and node.value.id in guard_names):
                 bad.append(f"outbound_guard.{node.attr}")
             if isinstance(node.value, ast.Name) and node.value.id == "httpx":
                 bad.append(f"httpx.{node.attr}")
@@ -236,6 +256,9 @@ def test_the_fence_catches_each_banned_form(tmp_path: Path) -> None:
     for line in ("import httpx", "from httpx import AsyncClient",
                  "from gateway.outbound_guard import request",
                  "outbound_guard.request('GET', u)", "outbound_guard.mcp_client(u)",
-                 "httpx.get(u)"):
+                 "httpx.get(u)",
+                 "from gateway import outbound_guard as og\nog.request('GET', u)",
+                 "import gateway.outbound_guard as og\nog.mcp_client(u)",
+                 "from gateway import outbound_guard\ngetattr(outbound_guard, 'request')"):
         probe.write_text(line + "\n", encoding="utf-8")
         assert _offences(probe), line

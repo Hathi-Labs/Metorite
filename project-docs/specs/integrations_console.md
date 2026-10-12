@@ -26,7 +26,7 @@
 > `MCP_OAUTH_ENABLED`. Verified against code on 2026-10-12 at `origin/main`
 > `713dc84ac`, and against the six providers on the same day.
 
-> **IN-8a BUILT (2026-10-13, PR pending), dark.** The protocol half is
+> **IN-8a BUILT (2026-10-13, PR #931), dark.** The protocol half is
 > `connections/mcp_oauth.py`, and the routes are in
 > `routes/integrations_mcp_oauth.py`. The guard mode is
 > `outbound_guard.request_https`. The BFF has the callback and the public
@@ -611,7 +611,7 @@ IN-0 comes first and alone, because it closes live holes.
 | **IN-6** | **Custom APIs and plugins.** Keep them with a reader and per-org keys, or retire them | 🔴 owner (Q2) | Per the answer |
 | **IN-7** ✅ merged 2026-10-11 (#891) | **GitHub per org.** The device flow writes a member or org connection, not the deployment token. connect-cli goes. `GET /github/account` shows the org's own connection, never the operator's account (IN-D18). **Built as (2026-10-11):** The device poll saves an org connection (`github`, `integrations`) through `connections/store.py`. The login and the scopes sit in the row. `connections/github.py` is the one reader, `token_for_org(org)`. The agent config fetch reads it, and with no connection it sends no token. `GET /github/account` and `GET /test` read the org row only and run no `gh`. `DELETE /integrations/github` deletes the blob. GitHub cannot revoke a device-flow token without the client secret, so the answer says `revoked_at_github: false`. An old `provider_keys` `github:token` row moves into the store on the next read. That fallback read stays for one release. The slice adds no migration. The operator plane keeps `GITHUB_TOKEN`: the model list, the runtime check, the self-mutation PR, the LiteLLM route, the Copilot SDK runtime and the agent-repo clone in `loader.py`. A clone of a private customer repo waits for IN-3. A token that a member saves through configure or `PUT /keys` still lands in `provider_keys`, and the reader moves it. IN-5 retires that path. Fence: `tests/unit/test_github_per_org_r8.py`. | 🟢 AGENT-SAFE | Two orgs hold two tokens. The server's own `gh` token is never imported |
 | **IN-8** 📝 PLAN 2026-10-12 (D98) | **MCP OAuth for an org connection.** An admin connects an MCP server that needs an OAuth consent. The connection acts as that admin at the provider, and the console and each card say so. Dark behind `MCP_OAUTH_ENABLED`, default off. The design, the provider table and the acceptance are in §3.6. It needs IN-4 merged. A member connection over OAuth is out of scope (§1.3) | See IN-8a to IN-8d | Rows O1 to O14 of §3.6.11 pass, each red first. No R8 suite skips |
-| **IN-8a** 🔨 BUILT 2026-10-13, PR pending | Discovery, CIMD and DCR, PKCE, the signed state, the callback and the store (§3.6.3 to §3.6.6), dark | 🟢 AGENT-SAFE | O1 to O6, O9 and O11 to O13 |
+| **IN-8a** 🔨 BUILT 2026-10-13, PR #931 | Discovery, CIMD and DCR, PKCE, the signed state, the callback and the store (§3.6.3 to §3.6.6), dark | 🟢 AGENT-SAFE | O1 to O6, O9 and O11 to O13 |
 | **IN-8b** | Refresh at run time, the 401 on connect, and `needs_reconnect` (§3.6.7) | 🟢 AGENT-SAFE | O7, O8 and O14 |
 | **IN-8c** | The console Connect button, the dialog text, the acts-as label and the card line (§3.6.9) | 🟢 AGENT-SAFE | O10. Visual review passes |
 | **IN-8d** | Pre-registered providers: GitHub, Slack and HubSpot (§3.6.2) | 🔴 OWNER-GATE. The owner creates each OAuth app, and its secret goes in the operator plane (D56) | The owner's consent with each provider stores an org connection in Fracktal |
