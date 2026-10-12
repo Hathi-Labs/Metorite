@@ -161,13 +161,14 @@ async def _list(
 
 
 async def list_query(
-    db: Any, entity: Entity, params: ListParams, user: Any = None,
+    db: Any, entity: Entity, params: Any, user: Any = None,
 ) -> ListQuery:
     """The ONE builder of a list's WHERE clause and its bound values.
 
-    The list routes and ``aggregate.py`` (WS-53 CRM-C7) both call it, so an
-    aggregate counts exactly the rows that the list with the same filters
-    shows. Do not copy a filter into a caller.
+    *params* is a :class:`ListParams` or an ``export.ExportParams``. The list
+    routes, ``export.py`` and ``aggregate.py`` (WS-53 CRM-C7) all call it, so
+    an export and an aggregate cover exactly the rows that the list with the
+    same filters shows. Do not copy a filter into a caller.
     """
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:

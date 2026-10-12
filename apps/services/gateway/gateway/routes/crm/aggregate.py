@@ -15,7 +15,7 @@ binds, never from the request (R5).
 routes, through the same ``records.ListParams`` and ``records.list_query``.
 So an aggregate counts exactly the rows that the list with the same filters
 shows. Do not copy a filter here. Fence:
-``tests/unit/test_crm_aggregate_r8.py::test_the_aggregate_reuses_the_list_filter_builder``.
+``tests/unit/test_crm_aggregate.py::test_the_aggregate_reuses_the_list_filter_builder``.
 
 **Fixed SQL.** ``measure`` and ``group_by`` are keys of the two allowlists
 below. Any other value is a 422. Every identifier in a statement comes from
