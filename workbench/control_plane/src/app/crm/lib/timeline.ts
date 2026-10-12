@@ -15,7 +15,9 @@
 // the union in `types.ts` is therefore only half the change; the other half is
 // a branch here, and `timeline.test.ts` is what says so out loud.
 
-import type { TimelineEntry } from "./types";
+import type { MetaChip } from "@/lib/taskCard";
+import { dueDay } from "./format";
+import type { Activity, TimelineEntry } from "./types";
 
 /** Which renderer an entry belongs to, or `"unknown"` if nothing can render it. */
 export type TimelineBranch =
@@ -79,4 +81,127 @@ export function threadStatusLabel(
   const value = (status || "").trim();
   if (!value) return null;
   return THREAD_STATUS_LABELS[value.toUpperCase()] ?? value;
+}
+
+// ── The record page v2 (WS-53 CRM-X4, crm_platform.md section 19.8) ───────
+
+/** The kinds a member can filter the stream to. "All" comes first. */
+export const TIMELINE_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "note", label: "Notes" },
+  { id: "call", label: "Calls" },
+  { id: "meeting", label: "Meetings" },
+  { id: "task", label: "Tasks" },
+  { id: "email", label: "Emails" },
+  { id: "stage", label: "Stage changes" },
+] as const;
+
+export type TimelineFilter = (typeof TIMELINE_FILTERS)[number]["id"];
+
+/**
+ * The filter kind of one entry, or null when no filter but "All" keeps it.
+ *
+ * It reads the entry through `timelineBranch`, so an entry that no renderer
+ * can draw is no kind at all. A status change counts twice over: the funnel
+ * log's own entry and an activity of type `status_change` are both stage
+ * changes.
+ */
+export function entryKind(entry: TimelineEntry): Exclude<TimelineFilter, "all"> | null {
+  switch (timelineBranch(entry)) {
+    case "status_change":
+      return "stage";
+    case "email_thread":
+      return "email";
+    case "activity": {
+      const type = entry.activity?.type;
+      if (type === "status_change") return "stage";
+      if (type === "note" || type === "call" || type === "meeting" || type === "task") return type;
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** The entries of one kind. "All" keeps every entry, an entry of an unknown kind too. */
+export function filterTimeline(entries: TimelineEntry[], kind: TimelineFilter): TimelineEntry[] {
+  if (kind === "all") return entries;
+  return entries.filter((entry) => entryKind(entry) === kind);
+}
+
+/** When an open activity is next due, or null when it is no next step. */
+function nextAt(activity: Activity, now: Date): number | null {
+  if (activity.completed_at) return null;
+  if (activity.type === "task") {
+    const due = activity.due_at ? Date.parse(activity.due_at) : Number.NaN;
+    return Number.isNaN(due) ? null : due;
+  }
+  if (activity.type === "call" || activity.type === "meeting") {
+    const at = activity.occurred_at ? Date.parse(activity.occurred_at) : Number.NaN;
+    return !Number.isNaN(at) && at > now.getTime() ? at : null;
+  }
+  return null;
+}
+
+/**
+ * The next open activities of this record, soonest first, for the Overview
+ * tab. The rule is the one of section 19.7 (`NEXT_ACTIVITY_SQL`): an open
+ * task with a due date, or a call or a meeting still to come. A tie goes to
+ * the smaller id. An inherited entry of the lead is history, not a next step.
+ */
+export function nextOpenActivities(
+  entries: TimelineEntry[],
+  now: Date = new Date(),
+  limit = 3,
+): TimelineEntry[] {
+  return entries
+    .filter((entry) => entry.origin !== "lead" && timelineBranch(entry) === "activity")
+    .map((entry) => ({ entry, at: nextAt(entry.activity!, now) }))
+    .filter((row): row is { entry: TimelineEntry; at: number } => row.at !== null)
+    .sort((a, b) => a.at - b.at || a.entry.activity!.id.localeCompare(b.entry.activity!.id))
+    .slice(0, limit)
+    .map((row) => row.entry);
+}
+
+/** "12 Oct" for a due day. The year shows only when it is not this year. */
+function dueText(at: string, now: Date): string {
+  // A due date sits at 00:00 UTC, so it reads in UTC, or a member west of
+  // UTC sees the day before.
+  const when = new Date(at);
+  return when.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: when.getUTCFullYear() === now.getFullYear() ? undefined : "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/**
+ * The chips of a task's due date: the date, and "Overdue" in the `danger`
+ * tone when the task is open and its due day is before today (`dueDay`).
+ * `TaskMeta` draws them, so the CRM adds no class map of its own.
+ */
+export function taskDueChips(activity: Activity, now: Date = new Date()): MetaChip[] {
+  if (activity.type !== "task" || !activity.due_at) return [];
+  const day = dueDay(activity.due_at, true, now);
+  if (day === null) return [];
+  const chips: MetaChip[] = [
+    {
+      key: "due",
+      icon: "Calendar",
+      label: `Due ${dueText(activity.due_at, now)}`,
+      tone: "muted",
+      title: "The due date of this task",
+    },
+  ];
+  if (!activity.completed_at && day < 0) {
+    chips.push({
+      key: "overdue",
+      icon: "AlertCircle",
+      label: "Overdue",
+      tone: "danger",
+      title: "This task was due before today",
+    });
+  }
+  return chips;
 }

@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   compactMoney,
+  dueDay,
   dwellLabel,
   initials,
   money,
@@ -107,5 +108,51 @@ describe("small display helpers", () => {
     expect(initials("Anitha", null)).toBe("A");
     expect(initials(null, undefined)).toBe("?");
     expect(initials("a", "b", "c")).toBe("AB");
+  });
+});
+
+// CRM-X4 item 4 (spec section 19.8), with the day rule of section 19.7.
+describe("dueDay, for a member in UTC+05:30", () => {
+  const before = process.env.TZ;
+  beforeAll(() => {
+    process.env.TZ = "Asia/Kolkata";
+  });
+  afterAll(() => {
+    if (before === undefined) delete process.env.TZ;
+    else process.env.TZ = before;
+  });
+
+  // The composer and the Zoho sync both store a task's due date at 00:00 UTC.
+  const dueToday = "2026-10-12T00:00:00.000Z";
+
+  it("runs in UTC+05:30, or the cases below prove nothing", () => {
+    expect(new Date(dueToday).getTimezoneOffset()).toBe(-330);
+  });
+
+  it("calls a task due today 0, from the morning to the last minute of the day", () => {
+    expect(dueDay(dueToday, true, new Date("2026-10-12T03:30:00Z"))).toBe(0); // 09:00 IST
+    expect(dueDay(dueToday, true, new Date("2026-10-12T18:29:00Z"))).toBe(0); // 23:59 IST
+  });
+
+  it("calls it -1 from the first minute of the next local day", () => {
+    expect(dueDay(dueToday, true, new Date("2026-10-12T18:30:00Z"))).toBe(-1); // 00:00 IST, 13 Oct
+  });
+
+  it("counts the days to a later due date", () => {
+    expect(dueDay("2026-10-15T00:00:00.000Z", true, new Date("2026-10-12T03:30:00Z"))).toBe(3);
+  });
+
+  it("compares local dates for a call or a meeting", () => {
+    // 20:00 UTC on 12 Oct is 01:30 IST on 13 Oct: tomorrow for the member.
+    const call = "2026-10-12T20:00:00.000Z";
+    const now = new Date("2026-10-12T10:00:00Z"); // 15:30 IST, 12 Oct
+    expect(dueDay(call, false, now)).toBe(1);
+    expect(dueDay(call, true, now)).toBe(0);
+  });
+
+  it("gives null for no date and for a bad one", () => {
+    expect(dueDay(null, true, new Date())).toBeNull();
+    expect(dueDay(undefined, false, new Date())).toBeNull();
+    expect(dueDay("not a date", true, new Date())).toBeNull();
   });
 });

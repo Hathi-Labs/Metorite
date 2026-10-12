@@ -34,7 +34,8 @@ export type FieldValue =
   | { kind: "text"; text: string; wrap?: boolean }
   | { kind: "chips"; items: string[] }
   | { kind: "link"; href: string; text: string }
-  | { kind: "mailto"; href: string; text: string };
+  | { kind: "mailto"; href: string; text: string }
+  | { kind: "tel"; href: string; text: string };
 
 const EMPTY: FieldValue = { kind: "empty" };
 
@@ -45,9 +46,42 @@ export function safeHref(value: unknown): string | null {
   return /^https?:\/\/[^\s]+$/i.test(url) ? url : null;
 }
 
-function isEmail(value: string): boolean {
+/** The guard of every `mailto:` link the CRM draws. */
+export function isEmail(value: string): boolean {
   // `?`, `&`, `#` and `%` would let a value add a bcc or a subject to the draft.
   return /^[^\s@<>?&#%]+@[^\s@<>?&#%]+\.[^\s@<>?&#%]+$/.test(value);
+}
+
+/** The fewest digits a `tel:` link needs. A shorter value stays text. */
+export const TEL_MIN_DIGITS = 6;
+
+/**
+ * A `tel:` address for a phone number, or null (WS-53 CRM-X4 item 6).
+ *
+ * The `href` keeps only the digits and a leading `+`, so a value from Zoho
+ * can never put a letter, a `;` or a query into the link.
+ */
+export function telHref(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  const digits = text.replace(/\D/g, "");
+  if (digits.length < TEL_MIN_DIGITS) return null;
+  return `tel:${text.startsWith("+") ? "+" : ""}${digits}`;
+}
+
+/**
+ * A fixed field that holds an email or a phone (CRM-X4 item 6). The same rules
+ * as a custom field of that type: `mailto:` only when `isEmail` passes, and
+ * `tel:` only for 6 digits or more.
+ */
+export function contactValue(kind: "email" | "phone", value: unknown): FieldValue {
+  if (isBlank(value)) return EMPTY;
+  const text = typeof value === "string" ? value.trim() : customValue(value);
+  if (kind === "email") {
+    return isEmail(text) ? { kind: "mailto", href: `mailto:${text}`, text } : { kind: "text", text };
+  }
+  const href = telHref(text);
+  return href ? { kind: "tel", href, text } : { kind: "text", text };
 }
 
 /** The name of a lookup value `{name, id}`, or null when it is not one. */
@@ -121,12 +155,14 @@ export function formatField(def: FieldDef | null, value: unknown): FieldValue {
         ? { kind: "mailto", href: `mailto:${text}`, text }
         : { kind: "text", text: customValue(value) };
     }
+    case "phone":
+      return contactValue("phone", value);
     case "lookup":
       return { kind: "text", text: itemText(value) };
     case "textarea":
       return { kind: "text", text: customValue(value), wrap: true };
     default:
-      // text, phone, select and any type a later provider adds.
+      // text, select and any type a later provider adds.
       return { kind: "text", text: itemText(value) };
   }
 }
@@ -144,6 +180,59 @@ export function fieldText(value: FieldValue): string {
 }
 
 export type FieldRow = { key: string; label: string; value: FieldValue };
+
+/**
+ * The facts of the record page's summary header (CRM-X4 item 1), in order.
+ * A fact with no value is left out. The stage or the status is not a fact
+ * here: the header draws it as the `StatusPill`.
+ *
+ * `companyName` is the name of a contact's company, which the contact row
+ * does not carry. The sheet reads it, and null leaves the fact out.
+ */
+export function summaryFacts(
+  entity: EntitySlug,
+  record: Row,
+  companyName: string | null,
+): FieldRow[] {
+  const text = (value: unknown): FieldValue =>
+    isBlank(value) ? EMPTY : { kind: "text", text: customValue(value) };
+  const facts: Record<EntitySlug, FieldRow[]> = {
+    deals: [
+      {
+        key: "amount",
+        label: "Amount",
+        value:
+          typeof record.amount === "number"
+            ? { kind: "text", text: money(record.amount, (record.currency as string) || "INR") }
+            : EMPTY,
+      },
+      { key: "owner_email", label: "Owner", value: text(record.owner_email) },
+      {
+        key: "expected_close_date",
+        label: "Close",
+        value: record.expected_close_date
+          ? { kind: "text", text: shortDate(record.expected_close_date as string) }
+          : EMPTY,
+      },
+    ],
+    leads: [
+      { key: "organization_name", label: "Company", value: text(record.organization_name) },
+      { key: "owner_email", label: "Owner", value: text(record.owner_email) },
+    ],
+    contacts: [
+      { key: "title", label: "Title", value: text(record.title) },
+      { key: "company", label: "Company", value: text(companyName) },
+      { key: "email", label: "Email", value: contactValue("email", record.email) },
+      { key: "phone", label: "Phone", value: contactValue("phone", record.phone ?? record.mobile) },
+    ],
+    organizations: [
+      { key: "industry", label: "Industry", value: text(record.industry) },
+      { key: "phone", label: "Phone", value: contactValue("phone", record.phone) },
+      { key: "owner_email", label: "Owner", value: text(record.owner_email) },
+    ],
+  };
+  return facts[entity].filter((fact) => fact.value.kind !== "empty");
+}
 
 /**
  * The custom fields of a record, ready to draw.

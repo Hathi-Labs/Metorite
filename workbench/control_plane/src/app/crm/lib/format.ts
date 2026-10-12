@@ -108,6 +108,34 @@ export function dateTime(value: string | null | undefined): string {
   })}`;
 }
 
+/**
+ * The day of a due date, counted from the member's today: 0 is today, -1 is
+ * yesterday, 2 is the day after tomorrow. Null when there is no date.
+ *
+ * The day rule of `crm_platform.md` section 19.7, and the only copy of it.
+ * A task's `due_at` holds a date at 00:00 UTC (the Zoho sync and the composer
+ * both write it so), so for `allDay` the UTC date of `at` is the due day. A
+ * call or a meeting is an instant, so its due day is its local date. Today is
+ * always the local date of `now`.
+ *
+ * ⚠️ Comparing the instant with `now` instead calls a task due today
+ * "overdue" for every member east of UTC, from 00:00 their time.
+ */
+export function dueDay(
+  at: string | null | undefined,
+  allDay: boolean,
+  now: Date = new Date()
+): number | null {
+  if (!at) return null;
+  const when = new Date(at);
+  if (Number.isNaN(when.getTime())) return null;
+  const due = allDay
+    ? Date.UTC(when.getUTCFullYear(), when.getUTCMonth(), when.getUTCDate())
+    : Date.UTC(when.getFullYear(), when.getMonth(), when.getDate());
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((due - today) / 86_400_000);
+}
+
 /** The bit of an email address a card has room for. */
 export function shortEmail(email: string | null | undefined): string {
   if (!email) return "—";
