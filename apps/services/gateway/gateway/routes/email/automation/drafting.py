@@ -16,11 +16,12 @@ from acb_auth import UserContext, get_current_user
 from acb_llm.context import StreamTimeout
 from acb_llm.voice import voice_prompt
 from email_ingestion.llm_cap import automation_job, llm_slot
+from email_ingestion.persist import TRUNCATION_MARKER
 from email_ingestion.providers.base import (
     ProviderAttachmentFailed,
     ProviderMailTooLarge,
 )
-from email_ingestion.providers.gmail import GmailDraftNotFound
+from email_ingestion.providers.gmail import GmailDraftNotFound, GmailProvider
 from fastapi import BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from gateway.routes.email.automation.assistant import (
@@ -33,6 +34,7 @@ from gateway.routes.email.automation.identity import (
     sender_scope,
 )
 from gateway.routes.email.core import (
+    BODY_FETCH_TIMEOUT_S,
     BodyFetch,
     _account_scope,
     _assert_account_owner,
@@ -51,6 +53,7 @@ from gateway.routes.email.core import (
 from gateway.routes.email.quoting import split_quoted_text
 from gateway.routes.email.signature import (
     append_signature_text,
+    sign_html,
     strip_signature_text,
 )
 from gateway.routes.email.transport.send import (
@@ -2437,6 +2440,7 @@ async def _upsert_local_draft(
     cc: list[str] | None = None, bcc: list[str] | None = None,
     has_attachments: bool = False,
     to_addresses: list[str] | None = None,
+    clear_html: bool = False,
 ) -> str:
     """Persist a just-created/updated provider draft into ``email_messages`` so it
     shows in the Drafts folder and in-thread immediately — without waiting for the
@@ -2450,9 +2454,16 @@ async def _upsert_local_draft(
     ``to_addresses`` holds each To address of the draft, and it wins over
     ``to_email`` when given. The signed send reads the row back, so a row
     with the first address only sent the mail to that one person (WS-17
-    EM-G3a review round 1, F2, a live Outlook defect)."""
+    EM-G3a review round 1, F2, a live Outlook defect).
+
+    ``clear_html`` sets ``body_html`` to NULL on an update (WS-17 EM-G3a-f7,
+    D-G3a-f7-8). Only the upsert route passes it, and only for a Gmail save
+    with no ``keep_html``. A text save then leaves no stale HTML for the
+    signed send. Each other caller writes the SQL of before. The clear
+    stores no HTML, so it agrees with EM-S3 (§14.4.3)."""
     to_list = (to_addresses if to_addresses is not None
                else [to_email] if to_email else [])
+    clear = "body_html = NULL,\n             " if clear_html else ""
     res = await db.execute(text(
         """INSERT INTO email_messages
              (id, account_id, provider_message_id, thread_id, folder,
@@ -2476,7 +2487,7 @@ async def _upsert_local_draft(
              -- draft's attachments flag once the pre-send save has set it.
              has_attachments =
                email_messages.has_attachments OR EXCLUDED.has_attachments,
-             folder = 'drafts',
+             """ + clear + """folder = 'drafts',
              updated_at = now()
            RETURNING id"""
     ), {
@@ -2652,6 +2663,89 @@ class DraftUpsertRequest(BaseModel):
     # explicit pre-send save, so update_draft adds them exactly once.
     attachments: list[SendAttachment] = []
     artifacts: list[ArtifactAttachment] = []
+    # WS-17 EM-G3a-f7 (D-G3a-f7-2): the text is as the draft opened, so the
+    # save keeps the HTML of the draft. The gateway takes it from the row, or
+    # from Gmail. Only a Gmail mailbox reads the flag (D-G3a-f7-5).
+    keep_html: bool = False
+
+
+#: The ``html`` key of the answer of a Gmail save (EM-G3a-f7, D-G3a-f7-2,
+#: -6 and -10). ``kept``: the save sent the HTML of the draft. ``none``: the
+#: draft holds no HTML, or the client did not ask to keep it. ``lost``: the
+#: read of the HTML failed, so the save sent the text only.
+HTML_KEPT, HTML_NONE, HTML_LOST = "kept", "none", "lost"
+
+#: The stored HTML of one draft row of the mailbox.
+_DRAFT_HTML_SQL = (
+    "SELECT body_html FROM email_messages WHERE id = :id AND account_id = :aid")
+
+
+def _is_gmail(provider: Any) -> bool:
+    """A Gmail mailbox (D-G3a-f7-5). ``provider_session`` builds the
+    provider from the ``provider`` column of the mailbox row."""
+    return isinstance(provider, GmailProvider)
+
+
+async def _html_to_keep(
+    db: Any, provider: Any, account_id: str, draft_id: str,
+    provider_message_id: str,
+) -> tuple[str | None, str]:
+    """The HTML that a Gmail save with ``keep_html`` sends, and its state.
+
+    WS-17 EM-G3a-f7 (D-G3a-f7-6, -6a and -10). The row HTML wins. With none,
+    the draft HTML comes from Gmail through ``get_message_body``. The read
+    runs inside the session of the route. A failed read answers ``lost``, so
+    the save sends the text only. A read with no HTML answers ``none``. The
+    log names the class of the error only, never a subject or an address.
+
+    Review round 1: the sync cuts a large body and ends it with
+    ``TRUNCATION_MARKER``. A cut row HTML counts as absent, or the save
+    would write the cut HTML back into Gmail and drop each cid after the
+    cut. The read waits ``BODY_FETCH_TIMEOUT_S`` at most, and a timeout
+    answers ``lost``."""
+    row = (await db.execute(text(_DRAFT_HTML_SQL),
+                            {"id": draft_id, "aid": account_id})).fetchone()
+    stored = (row.body_html or "") if row is not None else ""
+    if stored.strip() and not stored.endswith(TRUNCATION_MARKER):
+        return stored, HTML_KEPT
+    try:
+        message = await asyncio.wait_for(
+            provider.get_message_body(provider_message_id), BODY_FETCH_TIMEOUT_S)
+    except Exception as exc:  # a failed read never fails the save
+        _log.warning("email.draft_html_read_failed",
+                     error=type(exc).__name__)
+        return None, HTML_LOST
+    html = getattr(message, "body_html", None) or ""
+    return (html, HTML_KEPT) if html.strip() else (None, HTML_NONE)
+
+
+#: The reason of the 409 when the send cannot read the HTML of a Gmail draft.
+HTML_UNAVAILABLE = "html_unavailable"
+
+
+async def _gmail_signed_html(
+    db: Any, provider: Any, req: DraftSendRequest, provider_message_id: str,
+    signature: str, text_html: str | None,
+) -> str | None:
+    """The HTML of a signed send of a Gmail draft.
+
+    WS-17 EM-G3a-f7 PR-C1b (D-G3a-f7-6, -6a, -7, -10, -11 and -11a). The HTML
+    of the draft comes from ``_html_to_keep``: from the row, else from Gmail,
+    inside the session of the route. ``sign_html`` signs it once, above the
+    quote. With no HTML anywhere, the send keeps ``text_html``, the HTML that
+    ``build_signed_bodies(signature, body_text, None)`` made, as main does.
+    A failed read with ``allow_text_only`` False answers 409 before any
+    write. With True, or with None (a client before PR-C2 and the assistant
+    tool), the send keeps ``text_html``: the HTML that main derives from the
+    text. The HTML and the inline images of the draft go."""
+    kept, state = await _html_to_keep(
+        db, provider, req.account_id, req.draft_id, provider_message_id)
+    if kept:
+        return sign_html(signature, kept)
+    if state == HTML_LOST and req.allow_text_only is False:
+        raise HTTPException(status_code=409,
+                            detail={"reason": HTML_UNAVAILABLE})
+    return text_html
 
 
 @router.put("/drafts")
@@ -2685,6 +2779,10 @@ async def upsert_draft(
             subject = req.subject or ""
             atts = _resolve_draft_attachments(req.attachments, req.artifacts, user.email)
             thread_id: str | None = None
+            # EM-G3a-f7: only a Gmail save answers ``html``, and only a Gmail
+            # save with ``keep_html`` sends HTML (D-G3a-f7-5).
+            gmail = _is_gmail(provider)
+            html_state = HTML_NONE
 
             if req.draft_id:
                 drow = (await db.execute(text(
@@ -2697,6 +2795,12 @@ async def upsert_draft(
                     raise HTTPException(status_code=404, detail="Draft not found")
                 thread_id = drow.thread_id
                 subject = subject or (drow.subject or "")
+                html_kw: dict[str, str] = {}
+                if gmail and req.keep_html:
+                    kept, html_state = await _html_to_keep(
+                        db, provider, req.account_id, req.draft_id,
+                        drow.provider_message_id)
+                    html_kw = {"body_html": kept} if kept else {}
                 try:
                     with (_draft_changed_upstream(), _file_not_attached(),
                           _mail_too_large()):
@@ -2705,6 +2809,7 @@ async def upsert_draft(
                             subject=subject or None, body_text=body,
                             thread_id=thread_id or None,
                             cc=cc, bcc=bcc, attachments=atts or None,
+                            **html_kw,
                         )
                 except NotImplementedError:
                     # No in-place update primitive → fresh draft, drop the old.
@@ -2763,13 +2868,18 @@ async def upsert_draft(
                     )
 
             # Each To address goes into the row, because the signed send reads
-            # them back (EM-G3a review round 1, F2).
+            # them back (EM-G3a review round 1, F2). A Gmail save with no
+            # ``keep_html`` sent the text only, so the row keeps no stale HTML
+            # (D-G3a-f7-8).
             local_id = await _upsert_local_draft(
                 db, req.account_id, provider_id, thread_id=thread_id,
                 owner_email=sess.owner_email, to_email=(to[0] if to else ""),
                 subject=subject, body=body, cc=cc, bcc=bcc,
                 has_attachments=bool(atts), to_addresses=to,
+                clear_html=gmail and not req.keep_html,
             )
+        if gmail:
+            return {**await _fetch_message_dict(db, local_id), "html": html_state}
         return await _fetch_message_dict(db, local_id)
 
 
@@ -2787,6 +2897,11 @@ class DraftSendRequest(BaseModel):
     # The email assistant sends what its card showed. None (the UI, and an
     # older agent) checks nothing, as before.
     expect: DraftExpect | None = None
+    # EM-G3a-f7 (D-G3a-f7-11a). A Gmail signed send whose HTML read fails:
+    # False answers 409. True sends the HTML that main derives from the text.
+    # None, which is each client before PR-C2 and the assistant tool, does
+    # the same, as main does.
+    allow_text_only: bool | None = None
 
 
 #: The answer when the row no longer holds the recipients of the card.
@@ -2930,6 +3045,13 @@ async def send_draft_endpoint(
             if signature.strip():
                 send_text, send_html = build_signed_bodies(
                     signature, drow.body_text or "", None)
+                # A Gmail draft keeps its HTML and its inline images, and
+                # the signature goes into that HTML (EM-G3a-f7 PR-C1b). Each
+                # other provider signs as on main.
+                if _is_gmail(provider):
+                    send_html = await _gmail_signed_html(
+                        db, provider, req, drow.provider_message_id,
+                        signature, send_html)
                 try:
                     # A Gmail draft whose files make the signed mail too
                     # large answers 413 (EM-G3c-1 item 7).

@@ -7,7 +7,8 @@
 //
 // Pure, so the test can hold the rail to the grammar without a browser.
 
-import type { CrmView } from "./urlState";
+import { moduleRailRows, type CrmModule, type ModuleRailRow } from "./modules";
+import { isEntity, type CrmView } from "./urlState";
 
 export interface CrmRailView {
   /** The `?tab=` value. It never changes, so an old link still opens. */
@@ -52,4 +53,28 @@ export const CRM_RAIL: readonly CrmRailView[] = [...CRM_VIEWS, CRM_SETTINGS_VIEW
 /** The label of a view, for the phone bar's title. */
 export function viewLabel(tab: CrmView["tab"]): string {
   return CRM_RAIL.find((v) => v.id === tab)?.label ?? "Deals";
+}
+
+/** One row of the rail: a view, or a generic Zoho module (CRM-Q6b). */
+export type RailEntry =
+  | { kind: "view"; view: CrmRailView }
+  | { kind: "module"; row: ModuleRailRow };
+
+/**
+ * The rows of the rail above the divider, in order (spec section 18.4).
+ *
+ * The generic modules come under the known modules, after the last view that
+ * is a collection (Deals), and before Reports. They keep the order of
+ * `GET /crm/modules`, which is the profile order. With no module, or a failed
+ * read, the group is absent and the rail is the one of CRM-Q3.
+ */
+export function railEntries(modules: readonly CrmModule[] | null | undefined): RailEntry[] {
+  const rows = moduleRailRows(modules);
+  const lastKnown = CRM_VIEWS.reduce((at, view, i) => (isEntity(view.id) ? i : at), -1);
+  const entries: RailEntry[] = [];
+  CRM_VIEWS.forEach((view, i) => {
+    entries.push({ kind: "view", view });
+    if (i === lastKnown) entries.push(...rows.map((row) => ({ kind: "module" as const, row })));
+  });
+  return entries;
 }

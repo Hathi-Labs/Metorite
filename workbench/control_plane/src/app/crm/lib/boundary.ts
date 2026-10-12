@@ -23,10 +23,12 @@ export const BOUNDARY_COPY = {
  * mounts a fresh subtree, so a failure on one does not stick to the next.
  */
 export function boundaryKey(
-  view: { tab: string; layout: string },
+  view: { tab: string; layout: string; module?: string | null },
   pipelineId: string | null,
 ): string {
-  return `${view.tab}:${view.layout}${pipelineId ? `:${pipelineId}` : ""}`;
+  // Each generic module is a view of its own (CRM-Q6b).
+  const tab = view.module ? `${view.tab}:${view.module}` : view.tab;
+  return `${tab}:${view.layout}${pipelineId ? `:${pipelineId}` : ""}`;
 }
 
 /** The sentence for this error. A stale tab gets the "updated" words. */

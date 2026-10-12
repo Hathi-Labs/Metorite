@@ -244,24 +244,27 @@ class TestTheHtmlToText:
             s = "".join(rnd.choice(_PIECES) for _ in range(rnd.randint(0, 24)))
             assert body_backfill._html_to_text(s) == _old_html_to_text(s), repr(s)
 
-    @pytest.mark.parametrize("hostile", [
-        " " * 1_000_000 + "x",
-        "\t " * 500_000 + "<p>",
-        "<" * 1_000_000,
-        "<a " * 333_334,
-        "< " * 500_000,
-        "<br" + " " * 1_000_000,
-        "</" + " " * 1_000_000,
+    @pytest.mark.parametrize(("make", "n"), [
+        (lambda k: " " * k + "x", 1_000_000),
+        (lambda k: "\t " * k + "<p>", 500_000),
+        (lambda k: "<" * k, 1_000_000),
+        (lambda k: "<a " * k, 333_334),
+        (lambda k: "< " * k, 500_000),
+        (lambda k: "<br" + " " * k, 1_000_000),
+        (lambda k: "</" + " " * k, 1_000_000),
     ], ids=["spaces", "tabs", "lt-run", "unclosed-tags", "lt-space", "br-space",
             "close-space"])
-    def test_one_megabyte_of_hostile_input_takes_under_half_a_second(
-        self, hostile: str,
+    def test_one_megabyte_of_hostile_input_reads_in_linear_time(
+        self, make: Any, n: int,
     ) -> None:
-        import time
+        """The old patterns took 31 s on 80 KB. A wall clock of 0.5 s on one
+        megabyte measured the runner too, so the fence is now the ratio of
+        two timings (``_linear_time``)."""
+        from functools import partial
 
-        start = time.perf_counter()
-        body_backfill._html_to_text(hostile)
-        assert time.perf_counter() - start < 0.5
+        from tests.unit._linear_time import assert_linear
+
+        assert_linear(lambda k: partial(body_backfill._html_to_text, make(k)), n)
 
     def test_the_input_stops_at_its_cap(self) -> None:
         cap = body_backfill.HTML_TEXT_INPUT_CAP
@@ -393,8 +396,8 @@ ALLOWED_HTML_WRITERS: dict[tuple[str, str], str] = {
         "`BodyFetch.store` both write through it (EM-T17 PR-A1)",
     (f"{_INGESTION}/html_tier.py", "<module>"): "the cold-safe term itself",
     (f"{_ROUTES}/automation/drafting.py", "_upsert_local_draft"):
-        "a draft row, received_at = now(), so always hot. Its SQL names no "
-        "body_html today",
+        "a draft row, received_at = now(), so always hot. It stores no HTML. "
+        "Its one body_html term is the NULL of clear_html (EM-G3a-f7, D-G3a-f7-8)",
 }
 #: The writers that must write the cold-safe term, and only it.
 TERM_WRITERS = frozenset({

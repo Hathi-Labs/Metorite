@@ -12877,9 +12877,10 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** 📝 Specified 2026-10-12, not built. Re-specified twice on 2026-10-12: after the first
-re-audit (E1, C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The
-measure below widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
+**Status.** 🔨 PR-C1b built, not merged (2026-10-12, branch `gmail-c1b-send`). PR-C1a merged as
+#919 (`421eeb8f4`). PR-C2 is not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
+C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
+widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
 
 **Gate.** 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2). No migration, no flag.
 
@@ -12969,11 +12970,13 @@ images go too, or come back as plain files.
   there today too. *Reason:* EM-T4 owns the I/O inside these blocks, and to restructure the two
   routes is a non-goal. The earlier promise "no session across that read (§14.4.2)" is withdrawn.
   §14.4.2 binds the HTML route of the reading pane, not these two routes.
-- **D-G3a-f7-7 (C3, option a). The signed send keeps the HTML.** `send_draft_endpoint` reads
-  `body_html` with the row. For a Gmail draft it takes the stored HTML, or the HTML of
-  D-G3a-f7-6. It puts the signature into that HTML with a new helper,
-  `sign_html(signature, body_html)`, in `signature.py`. It no longer calls
-  `build_signed_bodies(signature, body_text, None)` for a draft that has HTML. *Reason:*
+- **D-G3a-f7-7 (C3, option a). The signed send keeps the HTML.** Only for a signed send of a
+  Gmail draft, `send_draft_endpoint` reads the HTML through `_html_to_keep`, with its own
+  `SELECT body_html`. The row read of the route stays as on main, so an Outlook send writes the SQL
+  of main. The send takes the stored HTML, or the HTML of D-G3a-f7-6. It puts the signature into
+  that HTML with a new helper, `sign_html(signature, body_html)`, in `signature.py`. For a draft
+  that has HTML, it no longer sends the HTML of `build_signed_bodies(signature, body_text, None)`.
+  It still takes the text half from that call. *Reason:*
   `build_signed_bodies` returns the HTML unchanged when the text already holds the signature
   (`signature.py:137`), and the upsert always puts the signature into the text
   (`drafting.py:2394`). So the existing helper would send the HTML with no signature.
@@ -13041,9 +13044,16 @@ answer of an Outlook save does not change. On the client, `saveDraft` (`lib/api.
    `update_draft` as `body_html`. The answer gets `html`, at the line named above.
    `_upsert_local_draft` follows D-G3a-f7-8.
 4. **`drafting.py`, the send.** `DraftSendRequest` gets `allow_text_only` (D-G3a-f7-11a).
-   `send_draft_endpoint` reads `body_html` with the row. It follows D-G3a-f7-6, D-G3a-f7-6a,
-   D-G3a-f7-7, D-G3a-f7-10 and D-G3a-f7-11.
+   For a signed send of a Gmail draft only, `send_draft_endpoint` reads the HTML through
+   `_html_to_keep`, with its own `SELECT body_html`. So the Outlook SQL stays as on main. The send
+   follows D-G3a-f7-6, D-G3a-f7-6a, D-G3a-f7-7, D-G3a-f7-10 and D-G3a-f7-11.
 5. **`signature.py`.** `sign_html(signature, body_html)`, with the rule of D-G3a-f7-7.
+
+⚠️ **The kept HTML has no signature until the send (review round 1 of PR-C1a).** The upsert adds
+the signature to the text only (`append_signature_text`). A save with `keep_html` sends the HTML of
+the draft as it was. So Gmail web shows that draft with no signature in its HTML. `sign_html` adds
+the signature at the send (item 5). PR-C1b must test that a kept draft goes out with the signature
+once.
 
 **Scope of PR-C2 (UI).**
 
@@ -13101,6 +13111,25 @@ there sends the text only (D-G3a-f7-11a). The tool card "save" (`EmailToolCards.
 
 The limit that stays: a later caller of `upsert_draft` without `keep_html` saves the text only. A
 Gmail-web draft then loses its HTML, and no card shows the notice.
+
+**Known limit EM-G3a-f7-k2 (review round 1 of PR-C1a), an inline part at the top of
+`multipart/mixed`.** A part with a `Content-ID` and no `Content-Disposition` can sit at the top of
+`multipart/mixed`, beside the body. Since PR-C1a, `_draft_files` counts it as an inline part, not
+as a file. So it goes back only when the HTML names its cid. On main, the update put it back as a
+file. The member does not lose a file that the app showed: the parse already skips such a part
+(`_gmail_part_is_inline`, `gmail.py:97`), so no row lists it as a file.
+
+**Review round 1 of PR-C1a (2026-10-12).** The sync cuts a body over 2 MiB and ends it with
+`persist.TRUNCATION_MARKER`. `_html_to_keep` treats a cut row HTML as absent, and reads Gmail. The
+Gmail read waits `BODY_FETCH_TIMEOUT_S` at most, and a timeout answers `lost`. A comma ends a cid, so
+each entry of a `srcset` names its own cid.
+
+**The build of PR-C1b (2026-10-12).** The send reads the HTML through `_html_to_keep` of PR-C1a,
+with its own `SELECT body_html`. The read runs only for a signed send of a Gmail draft. So the row
+read of `send_draft_endpoint` stays as on main, and an Outlook send writes the SQL text of main. The
+text half still comes from `build_signed_bodies`, because that half is the same for both paths.
+`sign_html` reads the new part of the HTML only. A quote of an earlier mail of the member holds the
+signature too, and that copy must not stop the signature.
 
 **Acceptance of PR-C1 (done when).**
 
@@ -13338,7 +13367,7 @@ The R8 tests must show PASSED, with 0 skips.
 
 #### 12.3.12.7 EM-G8-f1 — the known limits of the connect UI
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-F.
+**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g8-ux`). PR-F. The fences are in `connect.test.ts`, and the mutations M1 to M4 each fail a fence.
 
 **Gate.** 🟢 AGENT-SAFE · visual review. UI only. No migration, no flag.
 

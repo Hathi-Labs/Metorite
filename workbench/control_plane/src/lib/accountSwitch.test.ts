@@ -11,7 +11,13 @@ import {
   resetLeaving,
   shouldReloadFor,
   signOutAll,
+  signOutThis,
   switchTo,
+  SIGN_OUT_ALL_NOTICE,
+  clearSignOutNotice,
+  peekSignOutNotice,
+  NOTICE_MAX_AGE_MS,
+  SIGN_OUT_NOTICE_KEY,
 } from "./accountSwitch";
 import { clearAccountNamespaces } from "./sessions";
 
@@ -179,6 +185,190 @@ describe("rule 4: sign out of all accounts", () => {
   it("clearAccountNamespaces uses the chat key shape that sessions.ts writes", () => {
     expect(read("lib/sessions.ts")).toContain('"cc-chat::"');
     clearAccountNamespaces([]);
+  });
+});
+
+/**
+ * Sign out of ONE account and keep the others (owner, 2026-10-12, the
+ * top-right account menu). It is built from the two server actions that
+ * exist: switch to the next account, then remove the slot the leaving
+ * account went into.
+ */
+describe("sign out of this account only", () => {
+  /** A fetch that answers each action in turn from `plan`, and records it. */
+  function server(plan: Record<string, (Response | "throw")[]>) {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${url} ${init?.body ?? ""}`);
+        const action = url.split("/").pop() ?? "";
+        const next = plan[action]?.shift() ?? Response.json({ ok: true });
+        if (next === "throw") throw new TypeError("network down");
+        return next;
+      }),
+    );
+    return calls;
+  }
+  const ok = () => Response.json({ ok: true, email: "b@two.test" });
+  const status = (n: number) => new Response("{}", { status: n });
+  const SWITCH = '/api/accounts/switch {"slot":2}';
+  const REMOVE = '/api/accounts/remove {"slot":2}';
+
+  beforeEach(() => {
+    (globalThis as { sessionStorage?: Storage }).sessionStorage = memoryStorage();
+    localStorage.setItem("cc-chat::a@one.test|org1::sessions", "1");
+    localStorage.setItem("cc-chat::b@two.test|org2::sessions", "1");
+  });
+  afterEach(() => {
+    delete (globalThis as { sessionStorage?: Storage }).sessionStorage;
+  });
+
+  it("switches to the next account, removes the SAME slot, clears only the leaving account, then loads /", async () => {
+    localStorage.setItem("cc-org-branding-v1", "logo of org A");
+    const calls = server({ switch: [ok()] });
+    const go = vi.fn();
+    const all = vi.fn(async () => {});
+    expect(await signOutThis("a@one.test", { slot: 2 }, go, all)).toBe("one");
+    expect(calls).toEqual([SWITCH, REMOVE]);
+    expect(localStorage.getItem("cc-chat::a@one.test|org1::sessions")).toBeNull();
+    expect(localStorage.getItem("cc-chat::b@two.test|org2::sessions")).toBe("1");
+    expect(localStorage.getItem("cc-org-branding-v1")).toBeNull();
+    expect(go).toHaveBeenCalledWith("/");
+    // Not a sign-out of the browser: the next account stays signed in.
+    expect(all).not.toHaveBeenCalled();
+    expect(peekSignOutNotice()).toBeNull();
+    // This tab is leaving, so its own channel never starts a second load.
+    expect(shouldReloadFor("a@one.test", "b@two.test")).toBe(false);
+  });
+
+  it("tells the other tabs the new account BEFORE the remove", async () => {
+    const order: string[] = [];
+    class FakeChannel {
+      postMessage(m: { email: string }) {
+        order.push(`announce ${m.email}`);
+      }
+      close() {}
+    }
+    vi.stubGlobal("BroadcastChannel", FakeChannel);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        order.push(url);
+        return ok();
+      }),
+    );
+    await signOutThis("a@one.test", { slot: 2 }, vi.fn(), vi.fn(async () => {}));
+    expect(order).toEqual(["/api/accounts/switch", "announce b@two.test", "/api/accounts/remove"]);
+  });
+
+  // ⚠️ Fails CLOSED (review of 2026-10-12, P1). Each failure below ends in a
+  // sign-out of every account, never on `/` with the leaving slot held.
+  it.each([
+    ["the switch is refused (409: another tab removed it)", { switch: [status(409)] }, [SWITCH]],
+    ["the switch fails (500)", { switch: [status(500)] }, [SWITCH]],
+    ["the switch throws (network)", { switch: ["throw" as const] }, [SWITCH]],
+    ["the remove fails twice", { switch: [ok()], remove: [status(500), status(500)] }, [SWITCH, REMOVE, REMOVE]],
+    ["the remove throws twice", { switch: [ok()], remove: ["throw" as const, "throw" as const] }, [SWITCH, REMOVE, REMOVE]],
+  ])("%s: signs out of every account, with the notice", async (_name, plan, expected) => {
+    const calls = server(plan as Record<string, (Response | "throw")[]>);
+    const go = vi.fn();
+    const all = vi.fn(async () => {});
+    expect(await signOutThis("a@one.test", { slot: 2 }, go, all)).toBe("all");
+    expect(calls).toEqual(expected);
+    expect(all).toHaveBeenCalledTimes(1);
+    expect(go).not.toHaveBeenCalled();
+    expect(peekSignOutNotice()).toBe(SIGN_OUT_ALL_NOTICE);
+    // A read keeps it, so a remount still shows it. A clear ends it.
+    expect(peekSignOutNotice()).toBe(SIGN_OUT_ALL_NOTICE);
+    clearSignOutNotice();
+    expect(peekSignOutNotice()).toBeNull();
+  });
+
+  it("a remove that fails once and then works is a single sign-out", async () => {
+    const calls = server({ switch: [ok()], remove: [status(500), Response.json({ ok: true })] });
+    const go = vi.fn();
+    const all = vi.fn(async () => {});
+    expect(await signOutThis("a@one.test", { slot: 2 }, go, all)).toBe("one");
+    expect(calls).toEqual([SWITCH, REMOVE, REMOVE]);
+    expect(all).not.toHaveBeenCalled();
+    expect(go).toHaveBeenCalledWith("/");
+    expect(localStorage.getItem("cc-chat::a@one.test|org1::sessions")).toBeNull();
+  });
+
+  it("the default fallback is signOutAll, a real sign-out of the browser", async () => {
+    const { signOut } = await import("next-auth/react");
+    vi.mocked(signOut).mockClear();
+    server({ switch: [status(409)], "signout-all": [Response.json({ ok: true, emails: ["a@one.test"] })] });
+    expect(await signOutThis("a@one.test", { slot: 2 }, vi.fn())).toBe("all");
+    expect(signOut).toHaveBeenCalledWith({ callbackUrl: "/signin" });
+  });
+
+  it("the sign-in notice ends only when the toast closes or after its time on screen", () => {
+    // A clear on the first read lost the toast to a remount (Fast Refresh in
+    // dev, 2026-10-12). No browser test can force that remount, so this
+    // reads the source: two clears, the toast's close and the timer.
+    const src = read("components/SignOutNotice.tsx").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(src.match(/clearSignOutNotice/g) ?? []).toHaveLength(3);
+    expect(src).toMatch(/onClose: clearSignOutNotice/);
+    expect(src).toMatch(/setTimeout\(clearSignOutNotice, NOTICE_SEEN_MS\)/);
+    expect(src).toMatch(/import \{[^}]*\bclearSignOutNotice\b[^}]*\} from "@\/lib\/accountSwitch";/);
+    expect(read("app/signin/SignInForm.tsx")).toMatch(/<SignOutNotice \/>/);
+  });
+
+  it("if the fallback itself throws before any switch, this tab stays, hears the other tabs, and keeps no notice", async () => {
+    server({ switch: [status(409)] });
+    const go = vi.fn();
+    await expect(
+      signOutThis("a@one.test", { slot: 2 }, go, async () => {
+        throw new Error("sign-out failed");
+      }),
+    ).rejects.toThrow("sign-out failed");
+    expect(shouldReloadFor("a@one.test", "b@two.test")).toBe(true);
+    // The cookie still names this account, so the page is right to stay.
+    expect(go).not.toHaveBeenCalled();
+    // (b) The notice was never shown, so no later /signin may show it.
+    expect(peekSignOutNotice()).toBeNull();
+  });
+
+  // Review of 2026-10-12, P2: a good switch, two removes that throw, then a
+  // sign-out that throws (next-auth on /api/auth/csrf). The cookie names the
+  // next account, so the tab must not stay on the leaving account's page.
+  it("if the fallback throws AFTER a good switch, the page loads / as the account the cookie names", async () => {
+    server({ switch: [ok()], remove: ["throw", "throw"] });
+    const go = vi.fn();
+    const result = await signOutThis("a@one.test", { slot: 2 }, go, async () => {
+      throw new Error("csrf failed");
+    });
+    expect(result).toBe("reload");
+    expect(go).toHaveBeenCalledWith("/");
+    expect(peekSignOutNotice()).toBeNull();
+    // Still leaving: its own channel must not start a second navigation.
+    expect(shouldReloadFor("a@one.test", "b@two.test")).toBe(false);
+  });
+
+  // Review of 2026-10-12, P2 (a): a flag the sign-in page never showed must
+  // not tell a later /signin?add=1 that every account signed out.
+  it("a notice flag older than its life is ignored and cleared", async () => {
+    server({ switch: [status(409)] });
+    const t0 = Date.now();
+    await signOutThis("a@one.test", { slot: 2 }, vi.fn(), async () => {});
+    expect(peekSignOutNotice(t0 + 1_000)).toBe(SIGN_OUT_ALL_NOTICE);
+    expect(peekSignOutNotice(t0 + NOTICE_MAX_AGE_MS + 5_000)).toBeNull();
+    // Cleared, not only hidden: a later read in time shows nothing either.
+    expect(peekSignOutNotice(t0 + 1_000)).toBeNull();
+  });
+
+  it("a flag that is not a time is a leftover, and is cleared", () => {
+    sessionStorage.setItem(SIGN_OUT_NOTICE_KEY, "all");
+    expect(peekSignOutNotice()).toBeNull();
+    expect(sessionStorage.getItem(SIGN_OUT_NOTICE_KEY)).toBeNull();
+  });
+
+  it("the signed-in shell ends the notice, and the chromeless sign-in pages keep it", () => {
+    const shell = read("components/AppShell.tsx").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(shell).toMatch(/const inShell = !isChromeless\(pathname \?\? ""\);/);
+    expect(shell).toMatch(/if \(signedInAs && inShell\) clearSignOutNotice\(\);/);
   });
 });
 

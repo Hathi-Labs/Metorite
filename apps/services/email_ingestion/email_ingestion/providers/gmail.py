@@ -29,6 +29,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
@@ -809,6 +810,66 @@ def _attachment_part(att: dict[str, Any]) -> Message:
     return part
 
 
+def _content_id(part: Message) -> str:
+    """The ``Content-ID`` of a part, with no angle brackets, else ``""``."""
+    return str(part.get("Content-ID") or "").strip().strip("<>").strip()
+
+
+def _is_inline_part(part: Message) -> bool:
+    """A part that the HTML of a mail shows in place (EM-G3a-f7 item 1).
+
+    It has a ``Content-ID`` and no ``attachment`` disposition. A container
+    and an attached mail are never inline parts."""
+    if part.is_multipart() or part.get_content_maintype() == "message":
+        return False
+    return (bool(_content_id(part))
+            and part.get_content_disposition() != "attachment")
+
+
+def _inline_parts(part: Message) -> Iterator[Message]:
+    """Each inline part of a raw mail, at any depth, in mail order.
+
+    The walk never opens an attached mail (``message/*``), because the
+    parts in it belong to that mail, and the builder puts it in as one
+    file (review round 2, P3-4)."""
+    if part.get_content_maintype() == "message":
+        return
+    if part.is_multipart():
+        for sub in part.get_payload():
+            yield from _inline_parts(sub)
+    elif _is_inline_part(part):
+        yield part
+
+
+#: A ``cid:`` reference in HTML, up to the end of its attribute value. A
+#: comma ends it too, so each entry of ``srcset="cid:a,cid:b 2x"`` counts. A
+#: Content-ID holds no comma, and a cid URL encodes one as ``%2C``.
+_CID_REFERENCE = re.compile(r"""cid:([^"'\s<>),]+)""", re.IGNORECASE)
+
+
+def _named_cids(body_html: str) -> set[str]:
+    """Each ``Content-ID`` that the HTML names with ``cid:``, in lower case.
+
+    RFC 2392 encodes a cid URL with ``%`` escapes, so each name decodes."""
+    return {unquote(m.group(1)).lower()
+            for m in _CID_REFERENCE.finditer(body_html)}
+
+
+def _inline_mime_part(att: dict[str, Any]) -> Message:
+    """One inline part of a draft, with its ``Content-ID`` (EM-G3a-f7)."""
+    main, sub = _attachment_type(att)
+    part = MIMEBase(main, sub)
+    part.set_payload(att.get("content") or b"")
+    encoders.encode_base64(part)
+    part.add_header("Content-ID", f"<{att['content_id']}>")
+    if att.get("filename"):
+        part.add_header("Content-Disposition", "inline",
+                        filename=str(att["filename"]))
+    else:
+        part.add_header("Content-Disposition", "inline")
+    return part
+
+
 def _build_gmail_mail(
     *,
     to: list[str] | None,
@@ -819,6 +880,7 @@ def _build_gmail_mail(
     bcc: list[str] | None = None,
     attachments: list[dict[str, Any]] | None = None,
     reply_headers: dict[str, str] | None = None,
+    inline_parts: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """The RFC 5322 bytes of a send or a draft.
 
@@ -834,6 +896,11 @@ def _build_gmail_mail(
     EM-G3c item 1: the builder gives bytes. The plain URI wraps them in
     base64url with :func:`_gmail_raw`, and the upload URI sends them as they
     are. So the two forms come from one builder.
+
+    EM-G3a-f7 (D-G3a-f7-4): ``inline_parts`` are the inline parts of a draft,
+    each with its ``content_id``. Only the parts whose cid ``body_html`` names
+    go back, inside ``multipart/related`` with the body. With no
+    ``body_html``, no inline part goes back, and none becomes a file.
     """
     text_part = MIMEText(body_text or "", "plain", "utf-8")
     body: Message
@@ -841,6 +908,15 @@ def _build_gmail_mail(
         body = MIMEMultipart("alternative")
         body.attach(text_part)
         body.attach(MIMEText(body_html, "html", "utf-8"))
+        named = _named_cids(body_html) if inline_parts else set()
+        kept = [p for p in inline_parts or []
+                if str(p.get("content_id") or "").lower() in named]
+        if kept:
+            related = MIMEMultipart("related")
+            related.attach(body)
+            for part in kept:
+                related.attach(_inline_mime_part(part))
+            body = related
     else:
         body = text_part
     msg: Message
@@ -1327,13 +1403,18 @@ class GmailProvider(BaseEmailProvider):
         EM-G3c item 2: the files AFTER the read-back decide the URI, not
         ``attachments``. So an autosave that adds no file still goes to the
         upload URI when the draft holds one.
+
+        EM-G3a-f7: the inline parts of the draft go back only when
+        ``body_html`` names their cid (D-G3a-f7-4).
         """
         gmail_draft_id = await self._draft_id_for(draft_id)
-        files = [*await self._draft_files(draft_id), *(attachments or [])]
+        kept_files, inline = await self._draft_files(draft_id)
+        files = [*kept_files, *(attachments or [])]
         mail = _build_gmail_mail(
             to=to, subject=subject, body_text=body_text, body_html=body_html,
             cc=cc, bcc=bcc, attachments=files or None,
-            reply_headers=await self._reply_headers(None, thread_id))
+            reply_headers=await self._reply_headers(None, thread_id),
+            inline_parts=inline)
         data = await self._write_mail(
             "PUT", f"/drafts/{gmail_draft_id}", mail,
             thread_id=thread_id, has_files=bool(files), draft=True)
@@ -1453,8 +1534,11 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
         return resp.json()
 
-    async def _draft_files(self, message_id: str) -> list[dict[str, Any]]:
-        """The files of a draft, in the shape of ``attachments``.
+    async def _draft_files(
+        self, message_id: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """The files and the inline parts of a draft, in the shape of
+        ``attachments``.
 
         WS-17 EM-G3a review round 1, F1. ``drafts.update`` replaces the whole
         draft, so an update that leaves out the files drops them. A read that
@@ -1467,6 +1551,13 @@ class GmailProvider(BaseEmailProvider):
         library gives each file of the top level once and never opens one.
         An attached mail stays one file: the mail, with its name, else
         ``attached.eml``. The body parts are no files, so they stay out.
+
+        EM-G3a-f7 item 1 (``email_app_master_plan.md`` §12.3.12.5): an inline
+        part is no file. It has a ``Content-ID`` and no ``attachment``
+        disposition, and the read finds it at any depth, but never inside an
+        attached mail. Each one keeps its bytes, its type and its
+        ``content_id``. With ``multipart/related`` at the top, the image used
+        to come back as a plain file. Under ``multipart/mixed`` it was lost.
         """
         client = await self._get_client()
         resp = await client.get(f"/users/me/messages/{message_id}",
@@ -1474,12 +1565,19 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
         raw = str((resp.json() or {}).get("raw") or "")
         if not raw:
-            return []
+            return [], []
         mail = message_from_bytes(
             base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)),
             policy=mail_policy.default)
+        inline = [{"filename": part.get_filename() or "",
+                   "content": part.get_payload(decode=True) or b"",
+                   "mime_type": part.get_content_type(),
+                   "content_id": _content_id(part)}
+                  for part in _inline_parts(mail)]
         files: list[dict[str, Any]] = []
         for part in mail.iter_attachments():
+            if _is_inline_part(part):
+                continue
             if part.get_content_maintype() == "message":
                 inner = part.get_payload()
                 content = (inner[0].as_bytes()
@@ -1490,7 +1588,7 @@ class GmailProvider(BaseEmailProvider):
                 name = part.get_filename() or "attachment"
             files.append({"filename": name, "content": content,
                           "mime_type": part.get_content_type()})
-        return files
+        return files, inline
 
     def _remember_draft(
         self, data: dict[str, Any], *, old_message_id: str | None = None,

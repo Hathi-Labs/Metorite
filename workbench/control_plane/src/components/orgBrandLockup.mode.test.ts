@@ -119,9 +119,9 @@ describe("with no logo, the comet", () => {
 });
 
 /**
- * Owner decision, 2026-10-11: our comet moved to the bar's right end
- * (`BarSignature`). A customer's logo carries nothing of ours, in the
- * bar, in the sidebar's head or in the phone menu's head.
+ * Owner decision, 2026-10-11: a customer's logo carries nothing of ours, in
+ * the bar, in the sidebar's head or in the phone menu's head. Our comet signs
+ * the sidebar's foot since 2026-10-12 (`MetoriteFoot.tsx`).
  */
 describe("no caption beside a customer's logo", () => {
   const all = (b: OrgBranding) =>

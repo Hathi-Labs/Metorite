@@ -12,6 +12,10 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   5. Phone: the drawer's account row unfolds the other accounts.
  *   6. Two tabs: a tab that loads as another account sends the old tab to /.
  *      Without it, the old tab writes as an account it does not show.
+ *
+ * The desktop cases run the classic frame, with the shell bar off. That frame
+ * keeps the account foot. With the shell bar on, the account is the bar's
+ * top-right widget, and `shell-account.spec.ts` fences it (owner, 2026-10-12).
  */
 
 const SESSION = {

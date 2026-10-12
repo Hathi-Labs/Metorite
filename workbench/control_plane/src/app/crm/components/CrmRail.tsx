@@ -8,6 +8,10 @@
  * entity nest under its row (spec section 8.1). The settings row sits apart
  * below a divider, because it changes the pipeline and does not show data.
  *
+ * Since WS-53 CRM-Q6b the rail also holds one row for each mirrored generic
+ * Zoho module (Products, Quotes, each custom module), under the known views
+ * and in the profile order (`railEntries`). With no module there is no row.
+ *
  * The page owns where the rail goes: a column beside the content on a
  * desktop, and the shell's drawer on a phone. This file draws the rows only.
  * Fence: `src/lib/railRows.test.ts`.
@@ -21,8 +25,9 @@ import { useState } from "react";
 
 import { canEditView, railViews, type SavedView } from "../lib/savedViews";
 import type { EntitySlug } from "../lib/types";
+import type { CrmModule } from "../lib/modules";
 import type { CrmView } from "../lib/urlState";
-import { CRM_SETTINGS_VIEW, CRM_VIEWS, type CrmRailView } from "../lib/views";
+import { CRM_SETTINGS_VIEW, railEntries, type CrmRailView } from "../lib/views";
 
 export type RailViewActions = {
   views: Record<EntitySlug, SavedView[]>;
@@ -35,14 +40,25 @@ export type RailViewActions = {
   onDeleteView: (view: SavedView) => void;
 };
 
+/** The generic modules of the rail (CRM-Q6b). */
+export type RailModules = {
+  /** `GET /crm/modules`, or null while unread or on a failure. */
+  modules: readonly CrmModule[] | null;
+  /** The module on screen, when the view is a module list. */
+  active: string | null;
+  onSelect: (module: string) => void;
+};
+
 export default function CrmRail({
   tab,
   onSelect,
   saved,
+  modules,
 }: {
   tab: CrmView["tab"];
   onSelect: (tab: CrmView["tab"]) => void;
   saved?: RailViewActions;
+  modules?: RailModules;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -137,7 +153,21 @@ export default function CrmRail({
 
   return (
     <div className="flex flex-col gap-0.5">
-      {CRM_VIEWS.map(row)}
+      {railEntries(modules?.modules).map((entry) => {
+        if (entry.kind === "view") return row(entry.view);
+        const selected = tab === "module" && modules?.active === entry.row.module;
+        return (
+          <RailRow
+            key={`module:${entry.row.module}`}
+            label={entry.row.label}
+            meta={entry.row.count}
+            selected={selected}
+            icon={<Icon name={entry.row.icon} className="h-4 w-4 shrink-0" />}
+            buttonProps={{ "aria-current": selected ? "page" : undefined }}
+            onSelect={() => modules?.onSelect(entry.row.module)}
+          />
+        );
+      })}
       <div className="my-1.5 h-px bg-border" aria-hidden />
       {row(CRM_SETTINGS_VIEW)}
     </div>
