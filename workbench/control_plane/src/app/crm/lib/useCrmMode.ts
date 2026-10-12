@@ -192,6 +192,21 @@ export function useSyncHealth(enabled: boolean): SyncHealthState {
   return { health, loading: enabled && res.loading, error: res.error, refresh };
 }
 
+export type ModulesState = { modules: CrmModule[] | null; loading: boolean };
+
+/**
+ * The mirrored generic modules (WS-53 CRM-Q6b), for the rail. Every failure
+ * reads as "no modules": the rail then shows the known views only. A rail
+ * that fails to draw because one read failed is worse.
+ */
+export function useModules(enabled: boolean): ModulesState {
+  const res = useCachedResource<CrmModule[] | null>(
+    enabled ? "crm:modules" : null,
+    () => api.listModules().catch(() => null),
+  );
+  return { modules: res.data ?? null, loading: enabled && res.loading };
+}
+
 const KEY_PIPELINES = "crm:pipelines";
 
 export type PipelinesState = {
@@ -227,19 +242,4 @@ export function useFieldDefs(entity: EntitySlug | null): FieldDefsState {
     () => api.listFields(entity!).catch(() => null),
   );
   return { defs: res.data ?? null, loading: entity !== null && res.loading };
-}
-
-export type ModulesState = { modules: CrmModule[] | null; loading: boolean };
-
-/**
- * The mirrored generic modules (WS-53 CRM-Q6b), for the rail. Every failure
- * reads as "no modules": the rail then shows the known views only. A rail
- * that fails to draw because one read failed is worse.
- */
-export function useModules(enabled: boolean): ModulesState {
-  const res = useCachedResource<CrmModule[] | null>(
-    enabled ? "crm:modules" : null,
-    () => api.listModules().catch(() => null),
-  );
-  return { modules: res.data ?? null, loading: enabled && res.loading };
 }
