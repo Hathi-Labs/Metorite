@@ -112,7 +112,8 @@ async def test_hydrate_fetches_full_body_when_only_snippet_stored() -> None:
 
     provider = AsyncMock()
     provider.authenticate.return_value = True
-    provider.get_message.return_value = SimpleNamespace(
+    # The body-only read (EM-T17 PR-A): the hydrate never asks for the files.
+    provider.get_message_body.return_value = SimpleNamespace(
         body_text="Sounds good. I am available Tuesday and Thursday afternoon.",
         body_html=None,
     )
@@ -131,7 +132,8 @@ async def test_hydrate_fetches_full_body_when_only_snippet_stored() -> None:
     assert "I am ava" != body[-8:]  # not truncated mid-word
     # It ran an UPDATE to persist (SELECT + UPDATE = 2 execute calls).
     assert db.execute.await_count >= 2
-    provider.get_message.assert_awaited_once()
+    provider.get_message_body.assert_awaited_once()
+    provider.get_message.assert_not_awaited()
 
 
 async def test_hydrate_noop_when_body_already_present() -> None:

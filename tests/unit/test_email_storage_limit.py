@@ -632,6 +632,11 @@ class _Offers:
         self.bodies.append(provider_message_id)
         return _full(provider_message_id)
 
+    async def get_message_body(self, provider_message_id):
+        """The default of ``EmailProvider``: the hydrate reads the body only
+        (EM-T17 PR-A)."""
+        return await self.get_message(provider_message_id)
+
 
 def _letters(n: int, now: datetime, *, chars: int = 4096) -> list[EmailMessage]:
     tag = uuid.uuid4().hex[:8]

@@ -21,6 +21,8 @@ emails. The fitting + fallback logic lives here so every in-gateway LLM call
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import sys
 from collections.abc import Callable
 from contextvars import ContextVar
@@ -393,6 +395,61 @@ async def _complete_with_fallback(
     raise last_exc or RuntimeError("LLM completion failed (no attempts made)")
 
 
+# ── The three bounds of a model stream (WS-17 EM-T17 PR-A) ─────────────────
+# `email_app_master_plan.md` §17.3.7. Before them a stream had no timeout: a
+# provider that sent no chunk, or stopped half-way, held the email composer
+# open with no end (§17.1.3, cause S1). The Router's 120 s bound does not
+# cover this path, because it calls litellm directly (H-287).
+#
+# A test makes a bound short by setting the constant. `_stream_text` reads
+# each one at call time for that reason. Fence: tests/unit/test_llm_stream_bounds.py.
+
+#: No chunk at all, counted from the call. Reason `model_slow`.
+STREAM_FIRST_CHUNK_S = 45.0
+#: A gap between two chunks. ANY chunk resets it, a `reasoning_content` chunk
+#: too, because a reasoning model thinks before it writes. Reason `model_stalled`.
+STREAM_IDLE_S = 30.0
+#: The whole stream, counted from the call. Reason `model_timeout`.
+STREAM_TOTAL_S = 150.0
+
+
+class StreamTimeout(TimeoutError):
+    """A model stream passed one of its three bounds.
+
+    ``reason`` is the code that the email route sends to the composer, and
+    ``bound`` names the bound. Both are code constants, never model text.
+    """
+
+    reason = "model_timeout"
+    bound = "total"
+
+    def __init__(self, bound_s: float, *, model: str = "") -> None:
+        super().__init__(f"model stream passed its {self.bound} bound of {bound_s}s")
+        self.bound_s = bound_s
+        self.model = model
+
+
+class StreamFirstChunkTimeout(StreamTimeout):
+    """No chunk arrived inside ``STREAM_FIRST_CHUNK_S``."""
+
+    reason = "model_slow"
+    bound = "first_chunk"
+
+
+class StreamIdleTimeout(StreamTimeout):
+    """No chunk arrived inside ``STREAM_IDLE_S`` after the one before."""
+
+    reason = "model_stalled"
+    bound = "idle"
+
+
+class StreamTotalTimeout(StreamTimeout):
+    """The stream ran past ``STREAM_TOTAL_S``."""
+
+    reason = "model_timeout"
+    bound = "total"
+
+
 async def acompletion_stream_text(
     *,
     model: str,
@@ -401,6 +458,9 @@ async def acompletion_stream_text(
     temperature: float = 0.2,
     on_delta: Any = None,
     feature: str | None = None,
+    first_chunk_s: float | None = None,
+    idle_s: float | None = None,
+    total_s: float | None = None,
     **extra: Any,
 ) -> tuple[str, str]:
     """Streaming counterpart of :func:`acompletion_with_fallback` for callers
@@ -421,13 +481,18 @@ async def acompletion_stream_text(
     streamed calls stay visible in observability like non-streamed ones.
 
     ``feature`` names the call, as :func:`acompletion_with_fallback` takes it.
+
+    ``first_chunk_s``, ``idle_s`` and ``total_s`` bound the stream. ``None``
+    takes the module constant. A stream past a bound raises a
+    :class:`StreamTimeout` subclass, and the caller decides what to do.
     """
     _source = _infer_app_source()
+    bounds = {"first_chunk_s": first_chunk_s, "idle_s": idle_s, "total_s": total_s}
     if not feature:
         return await _stream_text(
             model=model, messages=messages, max_tokens=max_tokens,
             temperature=temperature, on_delta=on_delta, source=_source,
-            extra=extra,
+            extra=extra, **bounds,
         )
     from acb_common._log import automation_agent_scope
 
@@ -435,8 +500,35 @@ async def acompletion_stream_text(
         return await _stream_text(
             model=model, messages=messages, max_tokens=max_tokens,
             temperature=temperature, on_delta=on_delta, source=_source,
-            extra=extra,
+            extra=extra, **bounds,
         )
+
+
+def _stream_timed_out(
+    cls: type[StreamTimeout], bound_s: float, *, model: str, chunks: int,
+    started: float,
+) -> StreamTimeout:
+    """Log the bound that a stream passed, and build its typed timeout.
+
+    The line holds the bound, the model and counts. It holds no prompt and no
+    model text, because both are tenant text.
+    """
+    elapsed_ms = int((asyncio.get_running_loop().time() - started) * 1000)
+    _log.warning(
+        "acb_llm.stream_timeout", bound=cls.bound, bound_s=bound_s,
+        reason=cls.reason, model=model, chunks=chunks, elapsed_ms=elapsed_ms,
+    )
+    return cls(bound_s, model=model)
+
+
+async def _close_stream(response: Any) -> None:
+    """Close a stream that passed a bound. Best-effort, and bounded too."""
+    close = getattr(response, "aclose", None)
+    if close is None:
+        return
+    # The timeout is the answer, so a close that fails changes nothing.
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(close(), timeout=1.0)
 
 
 async def _stream_text(
@@ -448,8 +540,17 @@ async def _stream_text(
     on_delta: Any,
     source: str | None,
     extra: dict[str, Any],
+    first_chunk_s: float | None = None,
+    idle_s: float | None = None,
+    total_s: float | None = None,
 ) -> tuple[str, str]:
-    """The body of :func:`acompletion_stream_text`, with ``source`` resolved."""
+    """The body of :func:`acompletion_stream_text`, with ``source`` resolved.
+
+    Three bounds end a stream that hangs (§17.3.7). ``first_chunk_s`` counts
+    from the call to the first chunk, and the open of the stream is part of
+    it. ``idle_s`` counts from each chunk to the next. ``total_s`` counts from
+    the call to the end. ``None`` takes the module constant at call time.
+    """
     import litellm as _litellm
     from litellm import acompletion
 
@@ -469,14 +570,55 @@ async def _stream_text(
     fitted, _was_truncated = fit_messages_to_context(
         messages, model, max_output_tokens=max_tokens,
     )
-    response = await acompletion(
-        model=resolved, messages=fitted,
-        temperature=temperature, max_tokens=max_tokens,
-        stream=True, **extra,
-    )
+    first_s = STREAM_FIRST_CHUNK_S if first_chunk_s is None else first_chunk_s
+    gap_s = STREAM_IDLE_S if idle_s is None else idle_s
+    whole_s = STREAM_TOTAL_S if total_s is None else total_s
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    total_deadline = started + whole_s
+    # The open of the stream counts against the first-chunk bound: a provider
+    # that never sends its headers is a model that never sends a chunk.
+    open_deadline = min(started + first_s, total_deadline)
+    try:
+        response = await asyncio.wait_for(
+            acompletion(
+                model=resolved, messages=fitted,
+                temperature=temperature, max_tokens=max_tokens,
+                stream=True, **extra,
+            ),
+            timeout=max(0.0, open_deadline - loop.time()),
+        )
+    except TimeoutError:
+        cls = StreamTotalTimeout if total_deadline <= started + first_s \
+            else StreamFirstChunkTimeout
+        raise _stream_timed_out(
+            cls, whole_s if cls is StreamTotalTimeout else first_s,
+            model=resolved, chunks=0, started=started) from None
     content_parts: list[str] = []
     chunks: list[Any] = []
-    async for chunk in response:
+    stream = response.__aiter__()
+    # The bound of the next wait: the first chunk, then the gap after each one.
+    phase_deadline, phase_cls, phase_s = started + first_s, StreamFirstChunkTimeout, first_s
+    while True:
+        deadline = min(phase_deadline, total_deadline)
+        try:
+            chunk = await asyncio.wait_for(
+                stream.__anext__(), timeout=max(0.0, deadline - loop.time()))
+        except StopAsyncIteration:
+            break
+        except TimeoutError:
+            await _close_stream(response)
+            if total_deadline <= phase_deadline:
+                raise _stream_timed_out(
+                    StreamTotalTimeout, whole_s, model=resolved,
+                    chunks=len(chunks), started=started) from None
+            raise _stream_timed_out(
+                phase_cls, phase_s, model=resolved, chunks=len(chunks),
+                started=started) from None
+        # ANY chunk is a sign of life: a reasoning chunk, a role chunk, or a
+        # chunk with no choices. Each one resets the gap.
+        phase_deadline = loop.time() + gap_s
+        phase_cls, phase_s = StreamIdleTimeout, gap_s
         chunks.append(chunk)
         try:
             delta = chunk.choices[0].delta

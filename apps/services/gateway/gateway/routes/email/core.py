@@ -8,9 +8,12 @@ package (it is the leaf), so importing it never pulls in a feature layer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 from contextlib import asynccontextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -375,6 +378,26 @@ async def _savepoint(db: Any):
         yield
 
 
+#: One provider body fetch of `hydrate_message_body` (WS-17 EM-T17 PR-A,
+#: `email_app_master_plan.md` §17.3.7). The httpx bound of the provider is 30 s
+#: for each phase, not a total. Fence: tests/unit/test_email_draft_no_stall.py.
+BODY_FETCH_TIMEOUT_S = 8.0
+
+#: The times, in ms, of each provider body fetch of `hydrate_message_body` in
+#: this context. The stream route sets a list, and `email.draft_timing` sums it
+#: as `fetch_ms`. With no list set (each other caller) nothing is recorded. A
+#: hydrate that finds the body stored makes no fetch and records nothing.
+body_fetch_times: ContextVar[list[int] | None] = ContextVar(
+    "email_body_fetch_times", default=None)
+
+
+def _note_body_fetch(started: float) -> None:
+    """Record the time of one provider body fetch, if a caller asked for it."""
+    times = body_fetch_times.get()
+    if times is not None:
+        times.append(int((time.monotonic() - started) * 1000))
+
+
 async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str:
     """Ensure a message's full ``body_text`` is present, fetching it if needed.
 
@@ -395,6 +418,10 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
     (WS-17 EM-T6c gap G2, owner answer Q4). The reply drafter and the
     follow-up path then load the body live again at each call. The same read
     returns the meter, so the check costs no query.
+
+    The fetch reads the body alone (``get_message_body``), and it ends at
+    ``BODY_FETCH_TIMEOUT_S`` (WS-17 EM-T17 PR-A, §17.3.7). Each caller gets
+    this: the reply drafter, the rule draft and the follow-up nudge.
     """
     row = (await db.execute(
         text(
@@ -412,6 +439,8 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
         return row.body_text  # already hydrated
     store_body = not ingest_storage.at_limit(getattr(row, "stored_bytes", None))
     # Header-only row: fetch the full body from the provider and persist it.
+    # `email.draft_timing` reads the time of this path as `fetch_ms`.
+    fetch_started = time.monotonic()
     try:
         # The savepoint covers the UPDATE and the creds persist on exit, so a
         # failed write here never aborts the caller's transaction.
@@ -420,7 +449,16 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
         ) as sess:
             if not sess.authed:
                 return row.body_text or ""
-            full = await sess.provider.get_message(sess.provider_message_id)
+            # EM-T17 PR-A (§17.3.7): the body only, never `get_message`, which
+            # makes Graph send each file in base64. One bound for the fetch.
+            try:
+                full = await asyncio.wait_for(
+                    sess.provider.get_message_body(sess.provider_message_id),
+                    timeout=BODY_FETCH_TIMEOUT_S)
+            except TimeoutError:
+                _log.warning("hydrate_message_body.timeout",
+                             message_id=message_id, bound_s=BODY_FETCH_TIMEOUT_S)
+                return row.body_text or ""
             body_text = _truncate_body(full.body_text or "", MAX_BODY_TEXT_BYTES)
             body_html = (
                 _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
@@ -464,6 +502,8 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
             "hydrate_message_body.failed", message_id=message_id, error=str(exc)[:200],
         )
         return row.body_text or ""
+    finally:
+        _note_body_fetch(fetch_started)
 
 
 # ── DB (the one shared gateway engine — gateway/db.py, BO-10) ────────────────
