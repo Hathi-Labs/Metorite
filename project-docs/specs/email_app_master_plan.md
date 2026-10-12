@@ -9012,7 +9012,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G2-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B | S | §12.3.12.3 |
 | **EM-G4a-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B | S | §12.3.12.4 |
 | **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1) · visual review (PR-C2) | Before customers, PR-C1 then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M | §12.3.12.5 |
-| **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
+| **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
 | **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -13056,7 +13056,14 @@ exist at dispatch, put the `sign_html` case into the file that tests `build_sign
 
 #### 12.3.12.6 EM-G3b-f7 — the thread health finds a Gmail custom move
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-E.
+**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`). PR-E. The `OR`
+branch reads `email_accounts.provider` through an `EXISTS` on `ts.account_id`, so the compare of
+each provider runs as on main. The four fences of `test_email_thread_health_gmail.py` pass on a
+real Postgres, as `acb_app_h3rls`.
+
+**Known limit EM-G3b-f7-a.** SQL `TRIM` removes spaces only, and Python `strip` removes each
+whitespace character. So the two sides can differ for a rule label with a tab at an end. No writer strips a rule
+label. The parity fence uses spaces only.
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the change is SQL text. No migration, no flag.
 
