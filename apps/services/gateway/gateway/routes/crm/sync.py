@@ -104,6 +104,8 @@ class SyncHealthModel(BaseModel):
     entities: list[HealthEntityModel] = []
     modules: list[HealthModuleModel] = []
     history: list[HealthRunModel] = []
+    #: True only for a running row with a fresh heartbeat. A crashed run is not live.
+    running: bool = False
     credits: HealthCreditsModel
 
 
@@ -306,6 +308,7 @@ async def get_sync_health(
         entities=entities,
         modules=modules,
         history=[_run_model(r) for r in history],
+        running=live,
         credits=HealthCreditsModel(budget_24h=budget, used_24h=used),
     )
 

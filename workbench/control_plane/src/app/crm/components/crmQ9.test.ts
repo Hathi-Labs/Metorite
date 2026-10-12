@@ -59,6 +59,7 @@ const healthy = (over: Partial<SyncHealth> = {}): SyncHealth => ({
       credits_used: 40,
     },
   ],
+  running: false,
   credits: { budget_24h: 500, used_24h: 125 },
   ...over,
 });
@@ -162,6 +163,7 @@ describe("an error", () => {
 
 describe("a running sync", () => {
   const running = healthy({
+    running: true,
     next_run_at: null,
     last_run: {
       kind: "import",
@@ -176,10 +178,32 @@ describe("a running sync", () => {
   it("says Running now and holds the Sync now button", () => {
     const html = draw(running);
     expect(html).toContain("Running now");
-    expect(html).toMatch(/<button[^>]*disabled[^>]*>/);
+    expect(html).toMatch(/<button[^>]*\sdisabled(=|\s|>)/);
     expect(isRunning(running)).toBe(true);
     expect(isRunning(healthy())).toBe(false);
     expect(isRunning(null)).toBe(false);
+  });
+});
+
+describe("a run that crashed", () => {
+  // The row still says running, but the heartbeat is old, so the gateway says running=false.
+  const stale = healthy({
+    running: false,
+    last_run: {
+      kind: "incremental",
+      status: "running",
+      started_at: minutesAgo(60),
+      finished_at: null,
+      error: null,
+      credits_used: null,
+    },
+  });
+
+  it("keeps Sync now enabled, does not say Running now and does not poll", () => {
+    const html = draw(stale);
+    expect(html).not.toContain("Running now");
+    expect(html).not.toMatch(/<button[^>]*\sdisabled(=|\s|>)/);
+    expect(isRunning(stale)).toBe(false);
   });
 });
 

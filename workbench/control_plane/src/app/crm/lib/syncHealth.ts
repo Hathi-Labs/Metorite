@@ -38,6 +38,8 @@ export type SyncHealth = {
   entities: HealthEntity[];
   modules: HealthModule[];
   history: HealthRun[];
+  /** A run is running and its heartbeat is fresh. A crashed run is not. */
+  running: boolean;
   credits: { budget_24h: number; used_24h: number };
 };
 
@@ -117,7 +119,7 @@ export function untilLabel(iso: string | null | undefined, nowMs = Date.now()): 
 }
 
 export function isRunning(health: SyncHealth | null | undefined): boolean {
-  return health?.last_run?.status === "running";
+  return health?.running === true;
 }
 
 export type StatusLines = {
@@ -135,7 +137,7 @@ export function statusLines(health: SyncHealth, nowMs = Date.now()): StatusLines
     synced: ago ? `Synced ${ago}` : "Never synced",
     next: isRunning(health) ? "Running now" : when ? `Next run ${when}` : null,
     // A run that is still going has no error to show yet.
-    error: run && run.status !== "running" ? errorSentence(run.error) : null,
+    error: run && !isRunning(health) ? errorSentence(run.error) : null,
   };
 }
 

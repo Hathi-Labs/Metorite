@@ -54,7 +54,7 @@ async def test_the_health_route_has_the_contract_shape(q) -> None:
     body = got.json()
     assert set(body) == {
         "last_run", "last_success_at", "next_run_at", "entities", "modules",
-        "history", "credits"}
+        "history", "credits", "running"}
     assert set(body["last_run"]) == {
         "kind", "status", "started_at", "finished_at", "error", "credits_used"}
     assert body["last_run"]["status"] == "ok" and body["last_run"]["error"] is None
@@ -134,3 +134,27 @@ async def test_the_health_route_is_404_with_crm_mirror_off(q, monkeypatch) -> No
     await _sync(q, q.org_a, q.a)
     monkeypatch.setattr(get_settings(), "crm_mirror", False, raising=False)
     assert (await _req(_admin(q.org_a), "GET", "/crm/sync/health")).status_code == 404
+
+
+async def test_a_stale_running_row_is_not_live(q) -> None:
+    seed_basic(q.a, "A")
+    await _sync(q, q.org_a, q.a)
+    admin = _admin(q.org_a)
+    assert (await _req(admin, "GET", "/crm/sync/health")).json()["running"] is False
+    # Fresh heartbeat: live.
+    with q.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_runs SET status = 'running', finished_at = NULL, "
+            "heartbeat_at = now() WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": q.org_a})
+    live = (await _req(admin, "GET", "/crm/sync/health")).json()
+    assert live["running"] is True and live["next_run_at"] is None
+    # A crashed run: the row says running, the heartbeat is old.
+    with q.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_runs SET heartbeat_at = now() - interval '1 hour' "
+            "WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": q.org_a})
+    stale = (await _req(admin, "GET", "/crm/sync/health")).json()
+    assert stale["last_run"]["status"] == "running"
+    assert stale["running"] is False
