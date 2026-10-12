@@ -114,10 +114,12 @@ _ARMED: list = []
 @pytest.fixture(params=["plain", "tripwire"])
 def world(request, monkeypatch):
     """Every test that uses the stand-in gateway runs twice. The second run
-    arms the runtime tripwire (``tests/unit/_branch_zero_tripwire.py``), so a
-    host-derived read on ANY exercised branch-0 path fails the test, whatever
-    its static shape. At TEARDOWN it asserts that no violation was recorded,
-    so a violation that the code swallowed still fails the test."""
+    arms the runtime tripwire (``tests/unit/_branch_zero_tripwire.py``). It
+    records each read outside the allowlist that goes through the wrapped
+    request, on the paths these tests run. At TEARDOWN it asserts that it
+    recorded no violation, so a violation that the code caught still fails
+    the test. It does not see a read that goes around the wrapper (see the
+    tripwire's docstring)."""
     w = _World()
     w.tripwire = request.param == "tripwire"
     w.armed = tripwire.arm(monkeypatch, deps) if w.tripwire else None
@@ -861,13 +863,18 @@ def _role_outages() -> dict[str, BaseException]:
     return found
 
 
-def _role_read(monkeypatch, error: BaseException | None) -> list[int]:
+def _role_read(monkeypatch, error: BaseException | None):
     """The REAL ``resolve_access`` with a session factory that raises *error*
     (or records a read when *error* is None). The identity read is the
-    world's fake, and it works."""
+    world's fake, and it works.
+
+    Returns ``(reads, flags)``. ``flags`` holds ``access.role_read_failed()``
+    as it is INSIDE the request, read by a probe right after each
+    ``resolve_access`` returns, in the request's own context."""
     from acb_auth import access
 
     reads: list[int] = []
+    flags: list[bool] = []
 
     def _factory():
         def _session():
@@ -877,48 +884,72 @@ def _role_read(monkeypatch, error: BaseException | None) -> list[int]:
             raise AssertionError("no read was expected")
         return _session
 
+    async def _probe(email, **kwargs):
+        result = await access.resolve_access(email, **kwargs)
+        flags.append(access.role_read_failed())
+        return result
+
     access.invalidate()
     monkeypatch.setattr(access, "_get_session_factory", _factory)
-    monkeypatch.setattr(deps, "resolve_access", access.resolve_access)
-    return reads
+    monkeypatch.setattr(deps, "resolve_access", _probe)
+    return reads, flags
+
+
+@pytest.fixture
+def stale_role_flag():
+    """The request's context starts with a STALE ``True`` in the flag, as a
+    task that a failed read ran in would leave it. Only the reset on the way
+    in to ``resolve_access`` can clear it."""
+    from acb_auth import access
+
+    token = access._role_read_failed.set(True)
+    yield
+    access._role_read_failed.reset(token)
 
 
 @pytest.mark.parametrize("label", sorted(_role_outages()))
 async def test_an_outage_in_the_role_read_alone_is_the_one_503(world, monkeypatch, label):
     from acb_auth import access
 
-    _role_read(monkeypatch, _role_outages()[label])
+    _, flags = _role_read(monkeypatch, _role_outages()[label])
     try:
         for extra in ({}, {"Authorization": f"Bearer {INTERNAL}", "X-User-Email": MEMBER}):
             r = await _get(TASK, extra=extra)
             assert r.status_code == 503, (label, extra, r.text)
             assert r.headers["retry-after"] == "2"
+        assert flags == [True, True]
     finally:
         access.invalidate()
 
 
 @pytest.mark.parametrize("error", [ValueError("bad"), RuntimeError("bug")])
-async def test_a_role_read_that_fails_otherwise_stays_a_refusal(world, monkeypatch, error):
+async def test_a_role_read_that_fails_otherwise_stays_a_refusal(
+        world, monkeypatch, stale_role_flag, error):
+    """A stale ``True`` in the context is cleared by the reset on the way in,
+    and a failure that is not an outage never sets it again."""
     from acb_auth import access
 
-    _role_read(monkeypatch, error)
+    _, flags = _role_read(monkeypatch, error)
     try:
         assert (await _get(TASK)).status_code == 401
-        assert access.role_read_failed() is False
+        assert flags == [False], "the flag inside the request"
     finally:
         access.invalidate()
 
 
-async def test_a_cached_role_never_reads_and_never_flags(world, monkeypatch):
+async def test_a_cached_role_never_reads_and_never_flags(world, monkeypatch, stale_role_flag):
+    """A cache hit reads nothing, and inside the request the flag is False:
+    the reset on the way in cleared the stale ``True``, and the cache hit
+    did not set it."""
     from acb_auth import access
 
-    reads = _role_read(monkeypatch, None)
+    reads, flags = _role_read(monkeypatch, None)
     access._cache_put(MEMBER, build_access(["feature:projects"], [], is_active=True))
     try:
         r = await _get(TASK)
         assert r.status_code == 200, r.text
         assert reads == [], "a cache hit opened a session"
-        assert access.role_read_failed() is False
+        assert flags == [False], "the flag inside the request"
     finally:
         access.invalidate()
 

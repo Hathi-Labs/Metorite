@@ -57,6 +57,8 @@ from acb_auth import (
     UserRole,
     agent_signing,
     agent_tokens,
+    deps,
+    get_current_user,
     require_authenticated,
 )
 from acb_auth import access as access_module
@@ -69,6 +71,7 @@ from gateway.routes.projects.core import Visibility, task_visibility_clause
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit import _branch_zero_tripwire as tripwire
 from tests.unit._tenant_ladder import _LADDER_DIR, apply_ladder, tenant_engine_scope
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -553,18 +556,33 @@ def armed(monkeypatch, world):
     # this suite does not depend on the order of the run.
     monkeypatch.setattr(access_module, "_tables_missing", False)
     invalidate_access()
-    yield world
-    invalidate_access()
+    # Every request of the suite runs branch 0 under the runtime tripwire
+    # (`_branch_zero_tripwire.py`), and the teardown asserts no violation.
+    _ARMED.append(tripwire.arm(monkeypatch, deps))
+    try:
+        yield world
+    finally:
+        _ARMED.clear()
+        invalidate_access()
+    tripwire.assert_clean()
+
+
+#: The armed tripwire of the running test. `_gateway` installs its override.
+_ARMED: list = []
 
 
 def _gateway() -> FastAPI:
-    """The Projects router and ``/auth/me`` behind the real default-deny guard."""
+    """The Projects router and ``/auth/me`` behind the real default-deny guard,
+    with branch 0 under the tripwire while a test has armed it."""
     from gateway.routes.admin.me import me_router
     from gateway.routes.projects import router as projects_router
 
     app = FastAPI(dependencies=[require_authenticated(public=frozenset())])
     app.include_router(projects_router)
     app.include_router(me_router)
+    if _ARMED:
+        app.dependency_overrides[get_current_user] = (
+            tripwire.current_user_override(_ARMED[0]))
     return app
 
 

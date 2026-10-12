@@ -210,17 +210,28 @@ def test_the_dependency_takes_no_host_derived_input_at_all(identity):
 
 # ── WS-55 EA-3a: branch 0 reads no host input and takes no tenant from a header
 #
-# Spec ``external_agent_access.md`` §10.1. ⚠️ Since the parameter test above
-# was widened, THIS is the H2 guard for branch 0. Two layers, and both are a
-# BACKSTOP, not a proof (§10.1, "process control"):
+# Spec ``external_agent_access.md`` §10.1. Since the parameter test above was
+# widened, these tests are the automatic H2 checks for branch 0. They are a
+# BACKSTOP and not a proof. Neither layer stops deliberate code. The guard
+# against deliberate code is the digest test at the end of this section and
+# the review rule of §10.1 (process control).
 #
-# 1. A STATIC scan that INVERTS the rule. It flags every occurrence of the name
-#    `request` in the branch-0 functions, unless the occurrence is one of a few
-#    exact, allowed shapes. It also refuses every way to rebind a name the
-#    scan trusts. Anything it does not recognise is a finding.
-# 2. A RUNTIME tripwire (`tests/unit/_branch_zero_tripwire.py`). Every branch-0
-#    test in `test_mcp_edge_signing.py` runs a second time on a wrapped request,
-#    and any read outside the allowlist is recorded and fails the test.
+# 1. A STATIC scan. In each scanned function it refuses a list of construct
+#    CLASSES that branch 0 does not need: nested functions, lambdas, `match`,
+#    `global`, frame and dunder attributes, the introspection modules and
+#    builtins, chained comparisons. It refuses every use of `request` that is
+#    not one of a few exact shapes, and every rebind of a trusted name.
+# 2. Module checks: each scanned function is bound once, by its own plain
+#    def, in its own file, with no wrapper.
+# 3. A RUNTIME tripwire (`tests/unit/_branch_zero_tripwire.py`). It records
+#    the reads it can see through a wrapped request, on the paths the tests
+#    run.
+#
+# Known residual gaps, named so nobody claims more: a caller-frame walk on a
+# path outside the refused constructs (for example through an exception that
+# a helper outside the scan builds), a closure cell reached through a helper
+# that the scan does not cover, and `gc`. The digest test makes any edit to
+# the scanned code visible, and the review rule decides it.
 
 #: The functions that make up branch 0, by name in ``acb_auth.deps``. The
 #: request may be handed only to one of these, and the scan reads each one.
@@ -237,9 +248,7 @@ _ALLOWED_CHAINS = frozenset({
     ("scope",), ("scope", "get"),
 })
 #: ``route`` and ``app`` find the matched route template. ``path`` and
-#: ``query_string`` are the signed path and query (§10.1). The runtime
-#: tripwire allows the same keys, and `test_mcp_edge_signing.py` pins that
-#: the success path reads exactly these.
+#: ``query_string`` are the signed path and query (§10.1).
 _SCOPE_KEYS = frozenset({"route", "app", "path", "query_string"})
 #: The four signed headers, and the two that tell branch 0 to refuse a body.
 _HEADERS = frozenset({
@@ -251,12 +260,66 @@ _HOST_NAMES = frozenset({
     "host", "x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",
     "x-real-ip", "forwarded", "origin", "referer", "server", "client",
 })
-#: Calls that reach a name or an attribute the AST cannot see. Each one is a
-#: finding anywhere in a scanned function.
-_DYNAMIC_CALLS = frozenset({
-    "setattr", "delattr", "globals", "locals", "vars", "eval", "exec",
-    "compile", "__import__", "breakpoint", "import_module", "_getframe",
-    "currentframe", "getframe",
+
+#: RULE 1c, the ONE list of refused names (it absorbed the old list of
+#: dynamic calls). A scanned function may not name one of these, call it,
+#: import it, or import from one of the modules among them. Annotations are
+#: not checked, because both modules start with ``from __future__ import
+#: annotations`` and so never evaluate them (a test pins that import).
+_REFUSED_NAMES = frozenset({
+    "sys", "inspect", "gc", "traceback", "operator", "functools", "builtins",
+    "importlib", "ctypes", "object", "type", "vars", "globals", "locals",
+    "setattr", "delattr", "getattr", "__import__", "eval", "exec", "compile",
+    "dict", "breakpoint", "import_module", "_getframe", "currentframe",
+    "getframe",
+})
+#: The modules among :data:`_REFUSED_NAMES`. Importing from one is refused.
+_REFUSED_MODULES = frozenset({
+    "sys", "inspect", "gc", "traceback", "operator", "functools", "builtins",
+    "importlib", "ctypes",
+})
+
+#: The allow-list of rule 1c: each ``getattr`` call the real code makes, by
+#: function and exact source, with its reason. Each one reads ONE fixed,
+#: literal attribute, with a default, from an object that is not the request.
+_ALLOWED_GETATTR: dict[tuple[str, str], str] = {
+    ("_matched_template", "getattr(route, 'path', None)"):
+        "the template of the route object Starlette matched; a route may lack it",
+    ("_effective_template", "getattr(request.scope.get('app'), 'routes', None)"):
+        "the app's route table, to find the prefixed template; the app may lack it",
+    ("_effective_template", "getattr(c, 'original_route', None)"):
+        "FastAPI's route context; an older context type lacks the field",
+    ("_effective_template", "getattr(contexts[0], 'path', None)"):
+        "the prefixed path of the one context that serves the route",
+    ("_effective_template", "getattr(context, 'path', None)"):
+        "the prefixed path of the context that matched this request",
+    ("agent_signing:_platform_secrets", "getattr(settings, 'gateway_internal_token', '')"):
+        "a Settings field read with a default, so a test stand-in may omit it",
+    ("agent_signing:_platform_secrets", "getattr(settings, 'litellm_master_key', '')"):
+        "a Settings field read with a default, so a test stand-in may omit it",
+    ("agent_signing:usable_keys", "getattr(settings, 'agent_edge_signing_key', '')"):
+        "a Settings field read with a default, so a test stand-in may omit it",
+    ("agent_signing:usable_keys",
+     "getattr(settings, 'agent_edge_signing_key_previous', '')"):
+        "a Settings field read with a default, so a test stand-in may omit it",
+    ("agent_signing:signing_key",
+     "getattr(get_settings(), 'agent_edge_signing_key', '')"):
+        "a Settings field read with a default, so a test stand-in may omit it",
+}
+
+#: RULE 1b: refused attribute names. The allow-list is EMPTY: no scanned
+#: function reads a dunder, a frame, a traceback, a generator or coroutine
+#: frame, or a closure cell.
+_REFUSED_ATTR_PREFIXES = ("__", "tb_", "f_", "gi_", "cr_")
+_REFUSED_ATTRS = frozenset({"cell_contents"})
+_ALLOWED_ATTRS: dict[str, str] = {}
+
+#: RULE 2d: the ONLY stores of these names in ``_effective_template``, as
+#: (name, line after the def line). A spy that rebinds ``context`` before
+#: ``context.matches(request.scope)`` adds a store, and the scan refuses it.
+_PINNED_STORES = frozenset({
+    ("cached", 13), ("contexts", 15), ("cached", 19), ("contexts", 21),
+    ("context", 26),
 })
 
 #: The one call outside branch 0 that may receive the request's scope:
@@ -265,30 +328,64 @@ _DYNAMIC_CALLS = frozenset({
 #: ``Route.matches`` answers which route matched, from the scope's type, path
 #: and method. Starlette's own router already read the same scope to send the
 #: request here. It returns a match, never a value from the scope.
-#: :func:`test_the_matches_receiver_is_derived_from_the_real_source` derives
-#: the name from the real code and pins it here.
 _MATCHES_RECEIVER = "context"
 
 #: The trigger's loop variable may only be used as
 #: ``<var>.lower().startswith(<literal that starts with this>)``.
 _TRIGGER_PREFIX = "x-agent-"
 
+#: Scanned functions of ``agent_signing.py`` carry this prefix in the source
+#: map, so their names never collide with a branch-0 name.
+_SIGNING = "agent_signing:"
+
+
+def _module_text(module) -> str:
+    """The source FILE of *module* (never ``inspect``, which follows
+    ``__wrapped__``). ``deps.py`` starts with a BOM, so read utf-8-sig."""
+    with open(module.__file__, encoding="utf-8-sig") as fh:
+        return fh.read()
+
+
+def _top_level_defs(module) -> dict[str, object]:
+    import ast
+
+    tree = ast.parse(_module_text(module))
+    out: dict[str, object] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out.setdefault(node.name, node)
+    return out
+
+
+def _signing_names() -> tuple[str, ...]:
+    from acb_auth import agent_signing
+
+    return tuple(_top_level_defs(agent_signing))
+
 
 def _sources() -> dict[str, str]:
-    import inspect
-    import textwrap
+    """Each scanned function's source, cut from its module FILE by the AST."""
+    import ast
 
-    return {
-        name: textwrap.dedent(inspect.getsource(getattr(deps, name)))
-        for name in _BRANCH_ZERO
-    }
+    from acb_auth import agent_signing
+
+    out: dict[str, str] = {}
+    for module, names, prefix in ((deps, _BRANCH_ZERO, ""),
+                                  (agent_signing, _signing_names(), _SIGNING)):
+        text = _module_text(module)
+        defs = _top_level_defs(module)
+        for name in names:
+            out[prefix + name] = ast.get_source_segment(text, defs[name])  # type: ignore[arg-type]
+    return out
 
 
-def _protected() -> frozenset[str]:
+def _protected(name: str) -> frozenset[str]:
     """Names a scanned function may never rebind: the branch-0 functions and
-    every module global of ``acb_auth.deps`` (``agent_signing``,
-    ``db_busy``, ``bind_tenant``, ``_route_template``, ...)."""
-    return frozenset({*_BRANCH_ZERO, *(n for n in vars(deps) if not n.startswith("__"))})
+    every module global of its own module."""
+    from acb_auth import agent_signing
+
+    module = agent_signing if name.startswith(_SIGNING) else deps
+    return frozenset({*_BRANCH_ZERO, *(n for n in vars(module) if not n.startswith("__"))})
 
 
 def _docstring_ids(tree) -> set[int]:
@@ -300,6 +397,23 @@ def _docstring_ids(tree) -> set[int]:
             first = node.body[0]
             if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
                 out.add(id(first.value))
+    return out
+
+
+def _annotation_ids(tree) -> set[int]:
+    import ast
+
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        parts = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns:
+            parts.append(node.returns)
+        if isinstance(node, ast.arg) and node.annotation:
+            parts.append(node.annotation)
+        if isinstance(node, ast.AnnAssign):
+            parts.append(node.annotation)
+        for part in parts:
+            out |= {id(n) for n in ast.walk(part)}
     return out
 
 
@@ -347,7 +461,8 @@ def ast_name(func) -> str:
 
 
 class _InvertedScan:
-    """Every `request` must be an allowed shape. Anything else is a finding."""
+    """Every `request` must be an allowed shape, and every refused construct
+    class is a finding."""
 
     def __init__(self, name: str, source: str, sources: dict[str, str]) -> None:
         import ast
@@ -357,12 +472,13 @@ class _InvertedScan:
         self.tree = ast.parse(source)
         self.fn = self.tree.body[0]
         self.docstrings = _docstring_ids(self.tree)
+        self.annotations = _annotation_ids(self.tree)
         self.parents = {
             child: parent
             for parent in ast.walk(self.tree)
             for child in ast.iter_child_nodes(parent)
         }
-        self.protected = _protected()
+        self.protected = _protected(name)
         self.problems: list[str] = []
 
     def flag(self, node, what: str) -> None:
@@ -378,7 +494,8 @@ class _InvertedScan:
         for node in ast.walk(self.tree):
             self.strings(node)
             self.rebinding(node)
-            self.dynamic(node)
+            self.constructs(node)
+            self.refused(node)
             if isinstance(node, ast.Name) and node.id == "request":
                 self.occurrence(node)
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_one_header":
@@ -389,6 +506,8 @@ class _InvertedScan:
             self.one_header_name()
         if self.name == "_is_agent_request":
             self.trigger_loop()
+        if self.name == "_effective_template":
+            self.pinned_stores()
         return self.problems
 
     # ── literals ────────────────────────────────────────────────────────────
@@ -403,7 +522,64 @@ class _InvertedScan:
             if text is not None and text.strip().lower() in _HOST_NAMES:
                 self.flag(node, f"names {text!r}")
 
-    # ── A1, A2, A5: nothing the scan trusts may be rebound or wrapped ──────
+    # ── RULE 1a and 1d: construct classes ─────────────────────────────────
+
+    def constructs(self, node) -> None:
+        import ast
+
+        if isinstance(node, ast.Match):
+            self.flag(node, "uses a match statement")
+        if isinstance(node, ast.Lambda):
+            self.flag(node, "uses a lambda")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and (
+                node is not self.fn):
+            self.flag(node, f"defines a nested {type(node).__name__}")
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            self.flag(node, "declares global or nonlocal")
+        if isinstance(node, ast.Compare) and len(node.ops) > 1:
+            self.flag(node, "uses a chained comparison")
+
+    # ── RULE 1b and 1c: frames, dunders, introspection ────────────────────
+
+    def refused(self, node) -> None:
+        import ast
+
+        if isinstance(node, ast.Attribute) and (
+                node.attr.startswith(_REFUSED_ATTR_PREFIXES) or node.attr in _REFUSED_ATTRS
+        ) and node.attr not in _ALLOWED_ATTRS:
+            self.flag(node, f"reads the attribute {node.attr}")
+        if isinstance(node, ast.Attribute) and node.attr in _REFUSED_NAMES:
+            self.flag(node, f"reaches {node.attr}")
+        if isinstance(node, ast.Name) and node.id in _REFUSED_NAMES and (
+                id(node) not in self.annotations) and not self._allowed_getattr(node):
+            self.flag(node, f"names {node.id}")
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = [getattr(node, "module", None) or ""]
+            modules += [alias.name for alias in node.names]
+            for module in modules:
+                if module.split(".")[0] in _REFUSED_MODULES:
+                    self.flag(node, f"imports from {module}")
+
+    def _allowed_getattr(self, node) -> bool:
+        import ast
+
+        call = self.parents.get(node)
+        if node.id != "getattr" or not isinstance(call, ast.Call) or call.func is not node:
+            return False
+        return (self.name, ast.unparse(call)) in _ALLOWED_GETATTR
+
+    # ── RULE 2d: the pinned stores of _effective_template ─────────────────
+
+    def pinned_stores(self) -> None:
+        import ast
+
+        for node in ast.walk(self.tree):
+            if (isinstance(node, ast.Name) and node.id in {n for n, _ in _PINNED_STORES}
+                    and not isinstance(node.ctx, ast.Load)
+                    and (node.id, node.lineno - self.fn.lineno) not in _PINNED_STORES):
+                self.flag(node, f"stores {node.id} outside its pinned lines")
+
+    # ── trusted names are never rebound ──────────────────────────────────
 
     def rebinding(self, node) -> None:
         import ast
@@ -426,8 +602,6 @@ class _InvertedScan:
                           and node.value.id == "_TEMPLATES")
             if not cache_fill:
                 self.flag(node, f"writes into the trusted name {_root_name(node)}")
-        if isinstance(node, (ast.Global, ast.Nonlocal)):
-            self.flag(node, "declares global or nonlocal")
         if isinstance(node, ast.ExceptHandler) and node.name in self.protected:
             self.flag(node, f"binds the trusted name {node.name} in except")
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -444,13 +618,7 @@ class _InvertedScan:
                 isinstance(node, ast.Attribute) and node.attr == "_route_template"):
             self.flag(node, "reaches _route_template, which falls back to request.url")
 
-    def dynamic(self, node) -> None:
-        import ast
-
-        if isinstance(node, ast.Call) and ast_name(node.func) in _DYNAMIC_CALLS:
-            self.flag(node, f"calls {ast_name(node.func)}")
-
-    # ── A3: `_one_header` reads its parameter `name`, and nothing else ──────
+    # ── `_one_header` reads its parameter `name`, and nothing else ─────────
 
     def one_header_name(self) -> None:
         import ast
@@ -471,7 +639,7 @@ class _InvertedScan:
             if not ok:
                 self.flag(node, f"uses the parameter {node.id} outside request.headers.getlist")
 
-    # ── A4: the trigger's loop variable ─────────────────────────────────────
+    # ── the trigger's loop variable ──────────────────────────────────────
 
     def trigger_loop(self) -> None:
         import ast
@@ -519,10 +687,11 @@ class _InvertedScan:
         elif isinstance(parent, ast.keyword):
             self.keyword(parent, node)
         elif (isinstance(parent, ast.Compare) and parent.left is node
-              and all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops)
-              and all(isinstance(c, ast.Constant) and c.value is None
-                      for c in parent.comparators)):
-            return  # `request is not None`
+              and len(parent.ops) == 1
+              and isinstance(parent.ops[0], (ast.Is, ast.IsNot))
+              and isinstance(parent.comparators[0], ast.Constant)
+              and parent.comparators[0].value is None):
+            return  # `request is not None`, one comparison only
         else:
             self.flag(node, f"uses request in {type(parent).__name__}")
 
@@ -587,8 +756,8 @@ class _InvertedScan:
         if key == ("headers",):
             if isinstance(use, ast.For) and use.iter is top and self.name == "_is_agent_request":
                 return  # the trigger reads header NAMES (see `trigger_loop`)
-            if isinstance(use, ast.Compare) and top in use.comparators and all(
-                    isinstance(op, (ast.In, ast.NotIn)) for op in use.ops):
+            if isinstance(use, ast.Compare) and len(use.ops) == 1 and top in use.comparators \
+                    and isinstance(use.ops[0], (ast.In, ast.NotIn)):
                 self.literal(use.left, _HEADERS, "header")
                 return
             if isinstance(use, ast.Subscript) and use.value is top:
@@ -642,58 +811,67 @@ def _scan(sources: dict[str, str]) -> list[str]:
 
 
 def test_branch_zero_reads_no_host_derived_input():
-    """The STATIC half of the H2 guard for branch 0. What it checks, for the
-    functions in ``_BRANCH_ZERO`` and every def and lambda nested in them:
+    """The STATIC scan of the branch-0 functions of ``deps.py`` and of every
+    function of ``agent_signing.py``. It refuses, in each one:
 
-    * every occurrence of the name ``request`` is one of these shapes, and any
-      other shape is a finding: an attribute chain of ``_ALLOWED_CHAINS`` used
-      in its one allowed way; a DIRECT positional or ``request=`` keyword
-      argument to a function of ``_BRANCH_ZERO``, bound there to a parameter
-      named ``request``; ``request is (not) None``. So no alias, walrus,
-      annotation, tuple, container, starred argument, default, lambda,
-      decorator, loop or comprehension target can carry the request;
-    * the allowed uses: ``request.method``; ``request.method.upper()``;
-      ``request.headers.get/getlist(<key>)`` and ``request.headers[<key>]``
-      and ``<key> in request.headers`` with a literal key of ``_HEADERS``;
-      ``request.scope.get(<key>)`` and ``request.scope[<key>]`` with a literal
-      key of ``_SCOPE_KEYS``; ``for <name> in request.headers`` in the trigger
-      only, where ``<name>`` is used ONLY as
-      ``<name>.lower().startswith(<"x-agent-" literal>)``;
-      ``context.matches(request.scope)`` in ``_effective_template`` only. A
-      key passed by keyword counts, and a computed key is a finding. The one
-      exception is the parameter ``name`` of ``_one_header``: it may appear
-      only as ``request.headers.getlist(name)`` or ``.get(name)``, never be
-      assigned, and every call site must pass an allowed literal;
-    * nothing the scan trusts is rebound: no store, ``del``, import, ``def``,
-      ``class``, ``except ... as`` or attribute write of a ``_BRANCH_ZERO``
-      name or of any module global of ``acb_auth.deps``; no ``global`` or
-      ``nonlocal``; no import with ``as``; no decorator on any scanned or
-      nested function; no use or import of ``_route_template``;
-    * no ``setattr``, ``delattr``, ``globals``, ``locals``, ``vars``,
-      ``eval``, ``exec``, ``compile``, ``__import__``, ``import_module`` or
-      frame walk;
-    * no str or bytes literal, ``+`` or f-string of literals names a host, a
-      forwarded header, an origin, a referer, ``server`` or ``client``.
+    * the construct classes of rule 1: a nested function or class, a
+      lambda, a ``match`` statement, ``global``, ``nonlocal``, a chained
+      comparison, an attribute that starts with ``__``, ``tb_``, ``f_``,
+      ``gi_`` or ``cr_`` or is ``cell_contents``, and every name of
+      ``_REFUSED_NAMES`` (the introspection modules, the frame and dynamic
+      calls, ``getattr``, ``type``, ``object`` and ``dict``) outside the
+      allow-list ``_ALLOWED_GETATTR``, and any import from those modules;
+    * every rebind of a trusted name (a branch-0 name or a global of its own
+      module), any decorator, any use of ``_route_template``, and any store
+      of ``contexts``, ``cached`` or ``context`` off its pinned line;
+    * every use of ``request`` that is not one of the exact shapes of
+      ``_ALLOWED_CHAINS`` and the hand-off rules, every header or scope key
+      that is not a literal of the allow-lists, and every literal that names
+      a host-derived input.
 
-    What it cannot see: an attribute or a name built at runtime and reached
-    without the calls above, an object that already holds the request through
-    another reference, and code outside ``_BRANCH_ZERO``. The runtime
-    tripwire covers the paths that the tests EXERCISE. A review must still
-    read every change to these functions (§10.1, process control).
-
-    Mutations: :func:`test_the_scan_turns_red_for_each_bypass` (on parsed
-    copies) and :func:`test_the_tripwire_catches_a_mutated_branch_zero`.
+    What it cannot stop: deliberate code that reaches the request on a path
+    outside these construct classes, for example through a helper outside
+    the scan. The digest test and the review rule of §10.1 are the guard
+    against deliberate code.
     """
     assert _scan(_sources()) == []
 
 
-def test_every_scanned_function_exists_and_reads_the_request():
-    """The scan is not vacuous: each name is a real function that reads the
-    request."""
+def test_both_modules_never_evaluate_annotations():
+    """Rule 1c skips annotations. That is safe only while both modules start
+    with ``from __future__ import annotations``."""
     import ast
 
+    from acb_auth import agent_signing
+
+    for module in (deps, agent_signing):
+        tree = ast.parse(_module_text(module))
+        assert any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
+                   and any(a.name == "annotations" for a in n.names)
+                   for n in tree.body), module.__name__
+
+
+def test_every_allow_list_entry_is_used():
+    """An allow-list entry the code no longer needs is removed, so the list
+    stays the list of real uses."""
+    import ast
+
+    used = set()
     for name, source in _sources().items():
-        tree = ast.parse(source)
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "getattr":
+                used.add((name, ast.unparse(node)))
+    assert set(_ALLOWED_GETATTR) == used
+    assert _ALLOWED_ATTRS == {}
+
+
+def test_every_scanned_branch_zero_function_reads_the_request():
+    """The scan is not vacuous: each branch-0 name is a real function that
+    reads the request."""
+    import ast
+
+    for name in _BRANCH_ZERO:
+        tree = ast.parse(_sources()[name])
         assert any(isinstance(n, ast.Name) and n.id == "request"
                    for n in ast.walk(tree)), name
 
@@ -734,6 +912,159 @@ def test_branch_zero_never_calls_the_url_fallback():
     assert len(calls) == 1
 
 
+# ── RULE 2: module level ─────────────────────────────────────────────────────
+
+
+def _binds(node, name: str) -> bool:
+    """True when *node* binds, rebinds, wraps or writes into *name*."""
+    import ast
+
+    return (
+        (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+         and node.name == name)
+        or (isinstance(node, ast.Name) and node.id == name
+            and not isinstance(node.ctx, ast.Load))
+        or (isinstance(node, (ast.Attribute, ast.Subscript))
+            and not isinstance(node.ctx, ast.Load) and _root_name(node) == name)
+        or (isinstance(node, (ast.Import, ast.ImportFrom))
+            and any((a.asname or a.name.split(".")[0]) == name for a in node.names))
+        or (isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names)
+    )
+
+
+def _module_findings(module, names, text: str | None = None) -> list[str]:
+    """Rule 2a and 2b for one module, on its file or on *text*."""
+    import ast
+
+    text = _module_text(module) if text is None else text
+    tree = ast.parse(text)
+    found: list[str] = []
+    for name in names:
+        bindings = [node for node in ast.walk(tree) if _binds(node, name)]
+        own = [b for b in bindings if b in tree.body
+               and isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and not b.decorator_list]
+        if len(bindings) != 1 or len(own) != 1:
+            found.append(f"{module.__name__}.{name} is bound {len(bindings)} times")
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in (
+                "__getattr__", "__dir__"):
+            found.append(f"{module.__name__} defines a module {node.name}")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "modules" and (
+                isinstance(node.value, ast.Name) and node.value.id == "sys"):
+            found.append(f"{module.__name__} reaches sys.modules")
+    return found
+
+
+def _agent_signing_bindings(text: str | None = None) -> list[str]:
+    """Rule 2b: ``agent_signing`` is bound once in ``deps.py``, by its import."""
+    import ast
+
+    tree = ast.parse(_module_text(deps) if text is None else text)
+    bindings = [node for node in ast.walk(tree) if _binds(node, "agent_signing")]
+    ok = (len(bindings) == 1 and isinstance(bindings[0], ast.ImportFrom)
+          and bindings[0] in tree.body and bindings[0].module == "acb_auth")
+    return [] if ok else [f"agent_signing is bound {len(bindings)} times in deps.py"]
+
+
+def test_each_scanned_function_is_bound_once_by_its_own_def():
+    """Rule 2a and 2b. No other statement in either module assigns, deletes,
+    decorates, imports over or wraps a scanned function. Neither module has a
+    module ``__getattr__`` or touches ``sys.modules``. ``agent_signing`` is
+    bound once in ``deps.py``, by its import."""
+    from acb_auth import agent_signing
+
+    assert _module_findings(deps, _BRANCH_ZERO) == []
+    assert _module_findings(agent_signing, _signing_names()) == []
+    assert _agent_signing_bindings() == []
+
+
+_MODULE_MUTANTS = {
+    "a module-level rewrap": "\n_agent_user = _agent_user\n",
+    "a module-level attribute write": "\n_agent_user.__qualname__ = 'x'\n",
+    "a module __getattr__": "\ndef __getattr__(name):\n    return None\n",
+    "a sys.modules write": "\nimport sys\nsys.modules['acb_auth.agent_signing'] = None\n",
+    "an agent_signing rebind": "\nagent_signing = None\n",
+}
+
+
+@pytest.mark.parametrize("label", sorted(_MODULE_MUTANTS))
+def test_the_module_checks_turn_red(label):
+    """Each mutant is appended to a COPY of the ``deps.py`` text."""
+    text = _module_text(deps) + _MODULE_MUTANTS[label]
+    found = _module_findings(deps, _BRANCH_ZERO, text) + _agent_signing_bindings(text)
+    assert found, label
+
+
+def test_each_scanned_function_is_its_own_code():
+    """Rule 2c, at runtime. The object on the module is not a wrapper, its
+    code comes from the module's own file, its qualified name is its own,
+    and its first line is the line of its def."""
+    import os
+
+    from acb_auth import agent_signing
+
+    for module, names in ((deps, _BRANCH_ZERO), (agent_signing, _signing_names())):
+        defs = _top_level_defs(module)
+        here = os.path.normcase(os.path.abspath(module.__file__))
+        for name in names:
+            obj = getattr(module, name)
+            assert not hasattr(obj, "__wrapped__"), name
+            assert os.path.normcase(os.path.abspath(obj.__code__.co_filename)) == here, name
+            assert obj.__qualname__ == name, name
+            assert obj.__code__.co_firstlineno == defs[name].lineno, name  # type: ignore[attr-defined]
+
+
+def test_the_runtime_identity_check_turns_red(monkeypatch):
+    """Wrap one function on the module, and the identity check fails."""
+    import functools
+
+    original = deps._one_header
+
+    @functools.wraps(original)
+    def _wrapper(*args, **kwargs):
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(deps, "_one_header", _wrapper)
+    with pytest.raises(AssertionError):
+        test_each_scanned_function_is_its_own_code()
+
+
+# ── RULE 5: the digest fence of the process control (R7) ────────────────────
+
+#: SHA-256 of the normalised AST of every scanned function, of
+#: ``agent_signing.py`` and of ``_branch_zero_tripwire.py``. Update it ONLY in
+#: the commit that carries the review and the verification of §10.1.
+_BRANCH_ZERO_DIGEST = "ca1e0849360b05293f045e8d778d1806b71089f7ca55512bb6ebdb84e83b3ca9"
+
+
+def _branch_zero_digest() -> str:
+    import ast
+    import hashlib
+    import os
+
+    from acb_auth import agent_signing
+
+    digest = hashlib.sha256()
+    for name, source in sorted(_sources().items()):
+        digest.update(name.encode())
+        digest.update(ast.dump(ast.parse(source)).encode())
+    tripwire = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "_branch_zero_tripwire.py")
+    for path in (agent_signing.__file__, tripwire):
+        with open(path, encoding="utf-8-sig") as fh:
+            digest.update(ast.dump(ast.parse(fh.read())).encode())
+    return digest.hexdigest()
+
+
+def test_branch_zero_digest_is_pinned():
+    assert _branch_zero_digest() == _BRANCH_ZERO_DIGEST, (
+        "branch 0 changed. Get a diff-reviewer review and an independent "
+        "verification, then update this digest in the same commit."
+    )
+
+
 #: Each bypass: the function it goes into, the anchor line it goes BEFORE (at
 #: that line's indentation), the inserted lines, and any helper added to the
 #: scanned set. Each must give a finding ON an inserted line, or in a helper.
@@ -743,6 +1074,7 @@ _A_ONE = "    values = request.headers.getlist(name)\n"
 _A_TRIGGER = "        if name.lower().startswith(agent_signing.AGENT_HEADER_PREFIX):\n"
 _A_VERIFY = "    connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)\n"
 _A_DEF = "async def _agent_user(request: Request) -> UserContext:\n"
+_A_KEYS = "    settings = get_settings()\n    forbidden = _platform_secrets()\n"
 _PEER_CLIENT = "def _peer(request):\n    return request.client\n"
 _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B01 request.headers['host']": ("_agent_user", _A_AGENT, ["_h = request.headers['host']"], {}),
@@ -757,7 +1089,7 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B06 list(request.headers.raw)": (
         "_agent_user", _A_AGENT, ["_h = list(request.headers.raw)"], {}),
     "B06b request.headers.items()": (
-        "_agent_user", _A_AGENT, ["_h = dict(request.headers.items())"], {}),
+        "_agent_user", _A_AGENT, ["_h = list(request.headers.items())"], {}),
     "B07 request.scope['server']": ("_agent_user", _A_AGENT, ["_h = request.scope['server']"], {}),
     "B08 helper(req=request)": ("_agent_user", _A_AGENT, ["_h = _helper(req=request)"], {}),
     "B09 a bytes literal": ("_agent_user", _A_AGENT, ["_h = b'x-forwarded-host'"], {}),
@@ -772,7 +1104,7 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B15 a tuple-unpack alias": (
         "_agent_user", _A_AGENT, ["_r, _s = request, None", "_h = _r.url"], {}),
     "B16 an annotated alias": (
-        "_agent_user", _A_AGENT, ["_r: object = request", "_h = _r.url"], {}),
+        "_agent_user", _A_AGENT, ["_r: str = request", "_h = _r.url"], {}),
     "B17 a for-loop alias": (
         "_agent_user", _A_AGENT, ["for _r in [request]:", "    _h = _r.url"], {}),
     "B18 a comprehension": (
@@ -803,12 +1135,11 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B29 a local function named matches": (
         "_agent_user", _A_AGENT,
         ["def matches(s):", "    return s.get('client')", "_h = matches(request.scope)"], {}),
-    "B30 req: object = request in _effective_template": (
-        "_effective_template", _A_TEMPLATE, ["req: object = request", "_h = req.client"], {}),
+    "B30 req: str = request in _effective_template": (
+        "_effective_template", _A_TEMPLATE, ["req: str = request", "_h = req.client"], {}),
     "B31 return request": ("_agent_user", _A_AGENT, ["return request"], {}),
     "B32 request.headers.keys()": (
         "_agent_user", _A_AGENT, ["_h = list(request.headers.keys())"], {}),
-    # ── fix round 3 ──
     "B33 _is_agent_request = _peer_unscanned": (
         "_agent_user", _A_AGENT,
         ["_is_agent_request = _peer_unscanned", "_h = _is_agent_request(request)"], {}),
@@ -853,6 +1184,36 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B48 del of a trusted name": ("_agent_user", _A_AGENT, ["del db_busy"], {}),
     "B49 a bare reference to _route_template": (
         "_agent_user", _A_AGENT, ["_fallback = _route_template"], {}),
+    # ── fix round 4: construct classes ──
+    "B50 sys._getframe(1)": ("_agent_user", _A_AGENT, ["_f = sys._getframe(1)"], {}),
+    "B51 a traceback frame walk": (
+        "_agent_user", _A_AGENT,
+        ["try:", "    raise ValueError", "except ValueError as _e:",
+         "    _f = _e.__traceback__.tb_frame.f_back"], {}),
+    "B52 inspect.stack()": ("_agent_user", _A_AGENT, ["_f = inspect.stack()"], {}),
+    "B53 dict.get on a value that holds the scope": (
+        "_agent_user", _A_AGENT, ["_h = dict.get(_x, 'x-tenant-id')"], {}),
+    "B54 operator.attrgetter": (
+        "_agent_user", _A_AGENT, ["_g = operator.attrgetter('url')"], {}),
+    "B55 type(x).__mro__": ("_agent_user", _A_AGENT, ["_t = type(_x).__mro__"], {}),
+    "B56 a chained comparison on request": (
+        "_agent_user", _A_AGENT, ["if request is not None is not None:", "    pass"], {}),
+    "B57 a match statement": (
+        "_agent_user", _A_AGENT, ["match _x:", "    case _:", "        pass"], {}),
+    "B58 functools.partial": ("_agent_user", _A_AGENT, ["_p = functools.partial(_x)"], {}),
+    "B59 getattr outside the allow-list": (
+        "_agent_user", _A_AGENT, ["_g = getattr(_x, 'url', None)"], {}),
+    "B60 from builtins import getattr as _ga": (
+        "_agent_user", _A_AGENT, ["from builtins import getattr as _ga"], {}),
+    "B61 a closure cell": ("_agent_user", _A_AGENT, ["_c = _x.cell_contents"], {}),
+    "B62 a frame read in agent_signing.usable_keys": (
+        _SIGNING + "usable_keys", _A_KEYS, ["import sys"], {}),
+    "B63 a spy rebinds context in _effective_template": (
+        "_effective_template", _A_TEMPLATE, ["context = _Spy()"], {}),
+    "B64 gc.get_referrers": ("_agent_user", _A_AGENT, ["_r = gc.get_referrers(_x)"], {}),
+    "B65 a coroutine frame": ("_agent_user", _A_AGENT, ["_f = _x.cr_frame"], {}),
+    "B66 an object.__getattribute__ call": (
+        "_agent_user", _A_AGENT, ["_u = object.__getattribute__(_x, 'url')"], {}),
 }
 
 
@@ -885,7 +1246,7 @@ def test_the_scan_turns_red_for_each_bypass(label):
 
 
 def test_the_bypass_list_has_the_count_the_spec_names():
-    assert len(_BYPASSES) == 53
+    assert len(_BYPASSES) == 70
 
 
 # ── The runtime tripwire ─────────────────────────────────────────────────────
@@ -922,15 +1283,35 @@ _TRIPWIRE_MUTANTS: dict[str, tuple[str, str, list[str]]] = {
          "except BaseException:", "    name = _orig"]),
     "scope.get('type') outside matches": (
         "_agent_user", _A_AGENT, ["_h = request.scope.get('type')"]),
+    # ── fix round 4 ──
+    "3a a str subclass whose lower() changes": (
+        "_agent_user", _A_AGENT,
+        ["class _Sly(str):",
+         "    calls = [0]",
+         "    def lower(self):",
+         "        self.calls[0] += 1",
+         "        return 'x-agent-connection' if self.calls[0] == 1 else 'host'",
+         "_h = request.headers.get(_Sly('Host'))"]),
+    "3b dict.get on the scope, TypeError caught": (
+        "_agent_user", _A_AGENT,
+        ["try:", "    _h = dict.get(request.scope, 'server')",
+         "except Exception:", "    _h = None"]),
+    "3c matches() on a fake receiver, error caught": (
+        "_agent_user", _A_AGENT,
+        ["import fastapi.routing as _fr",
+         "class _Fake:",
+         "    pass",
+         "try:",
+         "    _fr.APIRoute.matches(_Fake(), request.scope)",
+         "except Exception:",
+         "    pass"]),
 }
 
 
 def _mutant(target: str, anchor: str, lines: list[str]):
-    """*target* with *lines* inserted, compiled in ``deps``' globals."""
-    import inspect
-    import textwrap
-
-    source = textwrap.dedent(inspect.getsource(getattr(deps, target)))
+    """*target* with *lines* inserted, compiled in ``deps``' globals. The
+    source comes from the module FILE (``_sources``), never ``inspect``."""
+    source = _sources()[target]
     assert source.count(anchor) == 1
     indent = anchor[: len(anchor) - len(anchor.lstrip(" "))]
     block = "".join(f"{indent}{line}\n" for line in lines)
@@ -1133,13 +1514,17 @@ def _signed_headers(signed_org: str) -> dict[str, str]:
         actor_via="mcp:client.example", method="GET", path=_TASK)
 
 
-def test_branch_zero_binds_the_rows_organization_and_no_header_moves_it(monkeypatch):
+def test_branch_zero_binds_the_rows_organization_and_no_header_moves_it(
+        monkeypatch, tripwire_armed):
     """Host, forwarded and organization headers beside a signed request do
     not move the tenant. It is the organization of the connection row, which
-    the member's own resolve agrees with."""
+    the member's own resolve agrees with. Branch 0 runs under the tripwire."""
     from fastapi.testclient import TestClient
 
     app, seen = _signed_app(monkeypatch, row_org=ORG, member_org=ORG)
+    armed = tripwire_armed.arm(monkeypatch, deps)
+    app.dependency_overrides[deps.get_current_user] = (
+        tripwire_armed.current_user_override(armed))
     headers = {
         **_signed_headers(ORG),
         "Host": "other-org.metorite.com",
@@ -1154,13 +1539,17 @@ def test_branch_zero_binds_the_rows_organization_and_no_header_moves_it(monkeypa
     assert seen == [ORG]
 
 
-def test_a_signed_organization_that_differs_from_the_row_is_refused(monkeypatch):
+def test_a_signed_organization_that_differs_from_the_row_is_refused(
+        monkeypatch, tripwire_armed):
     """The row and the member agree on ``_OTHER_ORG``, and the request signs
     ``ORG``. The signed organization must EQUAL the row's, so this is the
-    anonymous context, and no route runs."""
+    anonymous context, and no route runs. Branch 0 runs under the tripwire."""
     from fastapi.testclient import TestClient
 
     app, seen = _signed_app(monkeypatch, row_org=_OTHER_ORG, member_org=_OTHER_ORG)
+    armed = tripwire_armed.arm(monkeypatch, deps)
+    app.dependency_overrides[deps.get_current_user] = (
+        tripwire_armed.current_user_override(armed))
     with TestClient(app) as client:
         answer = client.get(_TASK, headers=_signed_headers(ORG))
     assert answer.status_code == 200
