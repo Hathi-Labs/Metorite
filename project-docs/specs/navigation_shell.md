@@ -736,7 +736,7 @@ the top. The risk is a third view of the same tasks, so each app gets one job.
 **No second ritual.** Calendar has `StartupRitual`. The first open of My Day
 each day offers that ritual. My Day does not copy it.
 
-**What goes into the feed lives in `my_day_feed.md` (WS-57, PROPOSED
+**What goes into the feed lives in `my_day_feed.md` (WS-57, ACTIVE
 2026-10-13).** That spec owns the signals, the cards, the order, the life of
 a card and the AI that prepares one. **D100 (owner, 2026-10-13) widens the
 acts in the table above for that feed:** a card acts in place, unless the act
@@ -1206,7 +1206,7 @@ display order stays as below.
 - `total` is unchanged. It counts the rows before the cut, so the bell's
   number is still a floor of 60 at most.
 
-**The My Day feed reads the same providers (WS-57, PROPOSED 2026-10-13).**
+**The My Day feed reads the same providers (WS-57, ACTIVE 2026-10-13).**
 `my_day_feed.md` §4.4 owns the feed. This contract keeps its five kinds. A
 new kind joins it only by an amendment of this section, in the PR that adds
 the kind.

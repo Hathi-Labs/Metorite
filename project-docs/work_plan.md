@@ -5165,6 +5165,7 @@ acts. D100 widens that for the feed of WS-57.
 | **The tier vocabulary against the tier schema** — who owns `tier_catalog` | **Split, and the split is the point.** `customer_console.md` **§6A** owns `tier_catalog`'s schema and the serving path. `ai_metering_and_analytics.md` owns the tier vocabulary, the customer-facing labels (D-AI-1) and the §8 slice contracts | Recorded 2026-08-30 after slice 3's re-audit found the table already shipped in `015_tier_pricing.sql` under D67. One table, two owners, two questions: `customer_console.md` answers "what columns and who writes them", `ai_metering_and_analytics.md` answers "which tiers exist and what a customer is told they are" |
 | Visibility model (who inside that company) | **`specs/tenancy_and_visibility.md`** (D12 §3–§4 · the app-by-app gap table §5 · TV-1 §2 — **unchanged and still binding**) | `department_centers.md` (the "separate deployment is for a separate org, never a department" rule) · `org_access_control.md` §8 Ph2 · `multi_user_organization_research.md` §5/§7/§8/§9/§17 (**research only, and superseded for planning by the new spec**) · `groups_sessions_authority.md` §3 (the intersection rule it constrains) · D9 (the twelve "second tenant deployment" sites) |
 | **The shell** — the bar, the sidebar shape, Home and its altitudes, the command bar, the dock, the bell, the avatar menu, role presets and the app manifest | **WS-44 — `specs/navigation_shell.md`** (D87, D88 and D89, minted 2026-10-05) | `launch_surface.md` keeps WHICH panes are live (§2) and the one nav filter (§8.4) · `DESIGN_SYSTEM.md` §6a and `workbench/control_plane/AGENTS.md` rule 10 (pointers only) · `department_centers.md` (D49 banner, a pointer only) · each app's own spec keeps what happens inside the app |
+| **The My Day feed** — what goes into My Day: the signals, the cards, their order and life, the `decide` questions that judge them, and their cost | **WS-57 — `specs/my_day_feed.md`** (D99 and D100, 2026-10-13) | `specs/navigation_shell.md` keeps the page frame, the bell, the needs contract of §7.2 and the flags (pointers in its §4.3 and §7.2) |
 | **The public legal pages** — `site/privacy.html`, `site/terms.html`, `site/refunds.html` and `site/contact.html`. A merge publishes them, because Caddy serves `/opt/acb/app/site` | **WS-33 — `specs/marketing_site.md` §5** (recorded 2026-10-12, PR-D0). The page files and their fence belong to WS-33. 🔴 The words of each change are OWNER-GATE: the owner approves the text before the PR that publishes it, because a legal page binds Metorite to third parties (CLAUDE.md §3a rule 3) | `email_app_master_plan.md` §12.4, after step 15, holds the Gmail draft, for approval only. `site/AGENTS.md` points to the owner spec and adds nothing |
 
 ## 5. Documentation remediation backlog (WS-0)
@@ -5518,6 +5519,15 @@ and one thing that cannot be written until a second person exists.
 >
 > ⚠️ **No plan-guard rule names these flags**, so this text is the only fence.
 > A rule needs the `guard-write` grant.
+>
+> **WS-57 — the My Day feed flags.** *(Registered 2026-10-13 with D99 and
+> D100.)* To build MD-1a to MD-12 is AGENT-SAFE, and each slice ships dark. To
+> turn on `NEXT_PUBLIC_MY_DAY_FEED` in production is an owner flip, for the
+> reason of the WS-44 flags above. `MY_DAY_COMPOSE`, and any `my_day.*` mode
+> other than `off` in `DECIDE_FEATURE_MODES`, are owner flips because they
+> spend the org's credits (CLAUDE.md §3a rule 3). MD-10, a message outside the
+> app, is owner-only because it reaches a real person. `specs/my_day_feed.md`
+> §17.1 is the authority. No plan-guard rule names these flags either.
 >
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against
 > live customer data. AGENT-SAFE to build; **OWNER-GATE to execute.**

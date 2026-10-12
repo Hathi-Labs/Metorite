@@ -1,7 +1,7 @@
 # My Day as a live feed — the chief of staff
 
 **Status: ACTIVE, 2026-10-13.** Nothing in this file is built. The
-AGENT-SAFE tickets are MD-1 to MD-5, MD-6a to MD-6c (the build only), MD-7,
+AGENT-SAFE tickets are MD-1a, MD-1b, MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7,
 MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -222,7 +222,7 @@ query. It holds no prose that a model wrote.
 
 | Field | Meaning |
 |---|---|
-| `signal_id` | **The identity of the entity, never of the kind.** `<app>:<entity ref>`, the grammar of today's needs ids: `tasks:<task id>`, `email:<account id>:<thread id>`, `approvals:<id>`. A reader splits on the first colon only. So a task that moves from due today to overdue keeps its id, and keeps its snooze |
+| `signal_id` | **The identity of the entity, never of the kind.** `<app>:<entity ref>`, the grammar of today's needs ids: `tasks:<task id>`, `email:<account id>:<thread id>`, `approvals:<id>`. A reader splits on the first colon only. So a task that moves from due today to overdue keeps its id, and keeps its snooze. See the three rules below the table |
 | `app`, `kind` | The source app and the kind from §5. The kind is a field, and it may change |
 | `entity` | `{type, id, label}`. The thing the card is about |
 | `facts` | A small dict of typed values, for example `{due_at, priority, waited_hours}`. The templates and the `decide` state read only this |
@@ -231,6 +231,17 @@ query. It holds no prose that a model wrote.
 | `expires_at` | The time after which the signal is no longer true, or null. A meeting that ended expires |
 | `href` | The deep link (§12). Code builds it, never a model |
 | `acts` | The acts code offers, each with its class from §11 |
+
+**Three identity rules.**
+
+- **A block belongs to its task.** A calendar block is the scheduled time of
+  a task, so `block_soon` and `block_overlap` key on `tasks:<task id>`.
+- **A signal about a whole day keys on the day**: `calendar:<local date>`.
+  `day_overbooked` and `no_plan_yet` are such signals.
+- **In the feed, a Projects notification keys on its task**,
+  `tasks:<task id>`, so it folds into the task's one card. Its `read` act
+  still carries the notification id. The needs view keeps its own id,
+  `projects:<notification id>` (§4.4).
 
 **A provider follows the rules of `navigation_shell.md` §5.2.** It runs on
 the session at the `get_db()` seam. It calls its app's own authorized read
@@ -278,6 +289,21 @@ are when they scroll.
 
 Then the feed ends with "You are caught up". The feed never fills itself with
 filler to keep a member scrolling.
+
+**The old-path group of each MD-1 kind.** With no `decide` answer, this table
+sets the group. A ticket that adds a kind adds its row in the same PR.
+
+| Kind | Old-path group |
+|---|---|
+| `overdue` | Needs you |
+| `due_today` | Now when it is due within 2 hours, else Needs you |
+| `notification` | Needs you for `assigned`, `mention` and `nudge`. For your information for `comment` |
+| `approval` | Needs you |
+| `needs_reply` | Needs you |
+| `block_soon` | Now |
+| `block_overlap` | Now when the overlap is today, else Needs you |
+| `day_overbooked` | Needs you when the day is today, else For your information |
+| `no_plan_yet` | Needs you |
 
 ### 4.4 One registry, and the needs view stays five kinds
 
@@ -354,6 +380,34 @@ each renders as a link that opens the owning app at the right place.
 | `block_soon` | A block starts within 30 minutes | Template | The block and its task | "Open task" | None | MD-1 |
 | `meeting_overlap` | A meeting overlaps a meeting or a block (card A) | Template from the two events | The two-day strip of card A | "Move to <slot>" (class B), "See options" | `my_day.slot` | **MD-11, waits on calendar P4** |
 
+**The reads and the gates of the Calendar kinds (MD-1a).**
+
+- **Two gates.** The Calendar pane needs `feature:tasks`, and the lens read
+  of blocks needs `feature:projects`. The provider checks both. A member who
+  lacks either gets no Calendar signal, and the source reads `absent`.
+- **Today comes from the Calendar app's own read**, `day_summary`
+  (`routes/tasks/calendar.py:1388`). It gives `scheduled` and
+  `capacity_mins`. `block_soon`, `day_overbooked` and `no_plan_yet` read it.
+- **`day_overbooked` uses the planner's own budget.** It compares the planned
+  minutes of today's open blocks with `capacity_mins`. That is the number
+  Calendar plans against, so it is no second arithmetic.
+- **`no_plan_yet`** fires on a working day when `scheduled` holds no open
+  block, and the local time is 60 minutes past `day_start_hour`. The hour
+  comes from the Calendar app's settings read, `get_user_settings`
+  (`routes/tasks/settings.py:393`).
+- **`block_overlap` reads the next 7 days** from the lens, `my_calendar`
+  (`routes/projects/personal.py:2028`). That read is not bounded, so the
+  provider stops at 15 signals and sets `capped`.
+- **One overlap, one card.** An overlap of two blocks goes on the card of the
+  task whose block starts first. The other task is a fact on it, "overlaps
+  <title>". When the other task has a card of its own, that card carries the
+  same fact.
+- **Until MD-8**, the overlap card's act is "Open the day", a link to
+  `/calendar`. A slot act waits for MD-8, and a link to the day waits for
+  MD-3.
+- **A provider opens no session of its own.** It calls the app functions,
+  which open theirs, as `my_due_tasks` does (R5b).
+
 ⚠️ **Card A needs external calendar events, and Metorite has none today.**
 `POST /calendar/sync` answers 501 (`routes/tasks/calendar.py:62-75`). Until
 calendar sync lands, the feed sees an overlap of the member's own blocks
@@ -371,13 +425,12 @@ catalogue in the PR that promotes Notes (H-21). Its link is
 |---|---|---|---|---|---|
 | `overdue` | Today's provider | Template: "Due Monday. 2 days late." | Done (A), Snooze (A), "Move to tomorrow" (A\*) | None | MD-1 |
 | `due_today` | Today's provider | Template | Done (A), "Block time" (A\*) | None | MD-1 |
-| `notification` | Today's provider: assigned, mention, comment, nudge | Template from the actor and the excerpt | Mark read (A), Open | None | MD-1 |
+| `notification` | Today's provider: assigned, mention, comment, nudge. `assigned` is "a colleague gave me a task" | Template from the actor and the excerpt, for example "Ravi gave you this task today." | Mark read (A), Open | None | MD-1 |
 | `unblocked` | A task I own was blocked, and its blocker closed | Template: "Ravi closed the API task you waited on." | Open | None | MD-3 |
 | `waiting_quiet` | A Waiting task with no activity for 5 working days | Template: "You have waited 6 days on Ravi." | "Nudge Ravi" (B), Snooze | None | MD-3 |
 | `stale_next` | A Next task with no change for 14 days | Template | "Move to Someday" (A\*), Open | None | MD-3 |
 | `due_at_risk` | The outlook read says a deadline will slip at the current load | Template from the outlook facts | Open, "Ask to move the date" (B) | None | MD-3 |
 | `absent_on_due` | A due date of my task falls on a day **I** am absent | Template: "Due Friday. You are on leave that day." | "Move to <day>" (A\*) | None | MD-3. It reads **my own** absences, `GET /people/me/absences` (`routes/people/selfservice.py:272`), never the HR conflicts read |
-| `assigned_to_me` | A colleague gave me a task today | Template | Open | None | MD-1 |
 
 ### 5.3 Email
 
@@ -1187,6 +1240,51 @@ and is off by default (`packages/acb_memory`).
 - The first 20 cards load first. Scrolling loads the next 20, to the end of
   the feed.
 
+### 14.1a The answer of `GET /shell/feed`
+
+`GET /shell/feed?limit=` gives 40 cards by default, and 80 at most.
+
+```json
+{
+  "cards": [
+    {
+      "signal_id": "tasks:9b2e…",
+      "app": "tasks",
+      "kind": "overdue",
+      "folded": ["block_soon"],
+      "group": "needs_you",
+      "score": 87,
+      "entity": {"type": "task", "id": "9b2e…", "label": "Send the Q3 BOM"},
+      "title": "Send the Q3 BOM to purchase",
+      "why": "Due Monday. 2 days late.",
+      "why_key": "days_late",
+      "facts": {"due_at": "2026-10-12T17:00:00+05:30", "days_late": 2},
+      "fingerprint": "a41f09c2",
+      "urgent_at": null,
+      "expires_at": null,
+      "at": "2026-10-12T17:00:00+05:30",
+      "href": "/projects?task=9b2e…",
+      "acts": [
+        {"id": "done", "label": "Done", "class": "A", "way": "tap", "act": "done", "act_ref": "9b2e…"},
+        {"id": "open-day", "label": "Open the day", "class": "A", "way": "open", "href": "/calendar"}
+      ]
+    }
+  ],
+  "groups": [{"id": "now", "count": 1}, {"id": "needs_you", "count": 4}],
+  "needs": {"count": 5, "total": 5, "items": [], "sources": {}, "totals": {}, "capped": []},
+  "sources": {"tasks": "ok", "projects": "ok", "email": "absent", "approvals": "absent", "calendar": "ok"},
+  "capped": []
+}
+```
+
+- `needs` is exactly the answer of `GET /shell/needs`, from the same provider
+  run, before the fold of §4.5.
+- `groups` lists only the groups that hold a card, in the order of §4.3.
+- `folded` names the kinds that §4.5 folded into the card.
+- An act with `way: "tap"` names its `act` and `act_ref`, as the needs items
+  do. An act with `way: "open"` names its `href`.
+- A field that a later ticket adds is optional for the client.
+
 ### 14.2 The card registry
 
 - MD-4 adds a `feedKinds` field to `NavPane` (`src/lib/nav.ts`):
@@ -1254,28 +1352,60 @@ this spec disagree, this spec wins.
 
 Every ticket ships dark. MD-1 to MD-5 call no model.
 
-### MD-1 · The registry, `GET /shell/feed` and the one poll — AGENT-SAFE (build), OWNER-GATE (turn on)
+### MD-1a · The registry and `GET /shell/feed`, the gateway half — AGENT-SAFE
 
-Files: `gateway/routes/shell/needs.py` (split into a registry),
-`gateway/routes/shell/feed.py`, `gateway/routes/shell/feed_rank.py`,
-`src/app/api/shell/feed/route.ts`, `src/lib/shell/FeedCard.tsx`,
-`src/lib/shell/MyDayPage.tsx`, `src/lib/shell/ShellBell.tsx`. Flag
-`NEXT_PUBLIC_MY_DAY_FEED`.
+The spec-auditor cleared it on 2026-10-13 (GO-NARROWED), after B1 to B6 of
+its report landed in §4.1, §4.3, §5.1 and §5.2. It adds no flag, no table,
+no Redis key and no model call. `GET /shell/feed` serves on merge, and
+nothing calls it until MD-1b. So it is dark by the absence of a caller.
+
+Files: `gateway/routes/shell/needs.py` (split into one registry),
+`gateway/routes/shell/feed.py`, `gateway/routes/shell/feed_rank.py`, and
+`gateway/routes/shell/__init__.py`.
 
 Done when:
 
-1. `TestOneRegistry` (§4.4) and `TestOneCardPerEntity` (§4.5) pass.
-2. The feed returns the MD-1 kinds of §5. Each has a template why line, a
-   group, a score and its acts. Each act carries its way (§11.1). Done and
-   mark read run in place. Each A\* act is a link until MD-8.
-3. `block_overlap` and `day_overbooked` read the member's own blocks and
-   `work_schedule`. Each has a negative test: another member's block never
-   reaches the card.
-4. The feed answer carries the needs view, and the shared poll calls each
-   key (§14.1).
-5. With the flag on, `/` renders the feed column. With it off, `/` renders
-   today's page.
-6. The feed SQL ran against a real Postgres (R8), and the run is in the PR.
+1. `TestOneRegistry` (§4.4) and `TestOneCardPerEntity` (§4.5) pass. The fold
+   seed is an overdue task with a block that starts in 20 minutes and
+   overlaps a second block.
+2. The feed returns the MD-1 kinds of §5 in the shape of §14.1a. Each card
+   has a template why line, its old-path group (§4.3), a score and its acts.
+   `done` and `read` are `tap`, and every other act is `open`.
+3. Each Calendar kind has a negative test: another member's block never
+   reaches the card. Each of the two feature gates of §5.1 has one too.
+4. `GET /shell/needs` answers as before for the existing fixtures. Its
+   `sources` keys stay exactly `tasks`, `projects`, `email`, `approvals`.
+   `test_shell_needs.py` and `test_shell_needs_r8.py` pass with no edit.
+5. The needs providers run first, in today's order and on today's budget. A
+   slow feed-only provider never turns a needs source to `failed`.
+6. A mount test proves the route registers. `gateway/main.py` hides an
+   import error, so `test_shell_needs.py:913` is the model.
+7. `test_feed_rank.py` holds the base table, each term, §7 rules 1 and 3, and
+   a fixed seed. Rules 2 and 4 have no subject until MD-6a and MD-1b.
+8. `test_shell_feed_r8.py` runs against a real Postgres (R8), with
+   `pytestmark = _DB_GATE`. A second member's block in the same org reaches
+   no card, and each source reads `ok`. The passing count is in the PR, and
+   a run that skips is not a pass.
+
+The old-path weight reads `packages/acb_common/acb_common/priority.py`
+(`task_cell`, `priority_rank`). No second port of the D78 matrix.
+
+### MD-1b · The feed column and the one poll, the frontend half — AGENT-SAFE (build), OWNER-GATE (turn on)
+
+Files: `src/app/api/shell/feed/route.ts`, `src/lib/shell/FeedCard.tsx`,
+`src/lib/shell/MyDayPage.tsx`, `src/lib/shell/ShellBell.tsx`. Flag
+`NEXT_PUBLIC_MY_DAY_FEED`, off by default.
+
+Done when:
+
+1. With the flag on, `/` renders the feed column of §14.1. With it off, `/`
+   renders today's page.
+2. The feed answer fills the needs cache key, and the shared poll calls each
+   key (§14.1). Fence: `shellBell.test.ts`.
+3. Done and mark read run through the owning app's code, as NS-3 does. Every
+   `open` act is a link.
+4. The card draws through `HomeCard`, `Skeleton` and the house tokens, and
+   `conformance.test.ts` passes with no new budget.
 
 ### MD-2 · The life of a card — AGENT-SAFE
 
@@ -1415,7 +1545,7 @@ The lead's cards of §15 item 8, under `reader_scope` and the five rules of
 
 ### Order
 
-MD-1 → MD-2 → MD-5 → MD-6a → MD-3 → MD-4 → MD-6b → MD-7 → MD-9 → MD-6c →
+MD-1a → MD-1b → MD-2 → MD-5 → MD-6a → MD-3 → MD-4 → MD-6b → MD-7 → MD-9 → MD-6c →
 MD-8 → MD-12 → MD-10 → MD-11.
 
 `decide` comes early, because it is cheap and it is the brain of the feed.
@@ -1462,7 +1592,8 @@ npx vitest run src/lib/shell/ src/lib/theme/ src/lib/nav.test.ts
 
 # Gateway — needs a real database (R8)
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py -q
+uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py tests/unit/test_shell_feed_r8.py -q
+uv run ruff check apps/services/gateway/gateway/routes/shell
 uv run pytest tests/unit/test_my_day_loop.py tests/unit/test_my_day_prefs.py tests/unit/test_feed_decide.py -q
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
