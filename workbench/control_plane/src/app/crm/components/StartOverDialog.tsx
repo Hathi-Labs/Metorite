@@ -29,6 +29,7 @@ import {
   canConfirm,
   confirmLabel,
   countsSentence,
+  runDownload,
   runStartOver,
   startOverReducer,
   type StartOverEvent,
@@ -101,10 +102,16 @@ export function StartOverBody({
           <Button
             variant="secondary"
             size="sm"
-            icon={state.downloaded ? "Check" : "Download"}
+            icon={state.download === "done" ? "Check" : "Download"}
+            loading={state.download === "busy"}
+            disabled={state.download === "busy" || state.download === "done"}
             onClick={onDownload}
           >
-            {state.downloaded ? "Download started" : "Download a copy"}
+            {state.download === "done"
+              ? "Download complete"
+              : state.download === "failed"
+                ? "Try the download again"
+                : "Download a copy"}
           </Button>
         </div>
       )}
@@ -121,7 +128,7 @@ export function StartOverBody({
             spellCheck={false}
             onChange={(e) => onEvent({ type: "type", text: e.target.value })}
           />
-          {!state.downloaded && (
+          {state.download !== "done" && (
             <p className="flex items-center gap-1.5 text-[11px] text-warning">
               <Icon name="AlertTriangle" size={12} />
               You did not download a copy.
@@ -141,7 +148,7 @@ export function StartOverBody({
           <Button
             variant="ghost"
             size="sm"
-            disabled={state.busy}
+            disabled={state.busy || state.download === "busy"}
             onClick={() => onEvent({ type: "back" })}
           >
             Back
@@ -163,8 +170,15 @@ export function StartOverBody({
             {confirmLabel(total)}
           </Button>
         ) : (
-          <Button variant="primary" size="sm" onClick={() => onEvent({ type: "next" })}>
-            {state.step === "download" && !state.downloaded ? "Go on without a copy" : "Next"}
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={state.download === "busy"}
+            onClick={() => onEvent({ type: "next" })}
+          >
+            {state.step === "download" && state.download !== "done"
+              ? "Go on without a copy"
+              : "Next"}
           </Button>
         )}
       </div>
@@ -188,6 +202,13 @@ export default function StartOverDialog({
   onClose: () => void;
 }) {
   const [state, send] = useReducer(startOverReducer, INITIAL);
+
+  async function download() {
+    if (state.download === "busy") return;
+    send({ type: "download-start" });
+    const failed = await runDownload(api.downloadAllRecords);
+    send(failed ? { type: "download-failed", message: failed } : { type: "downloaded" });
+  }
 
   async function confirm() {
     if (!canConfirm(state)) return;
@@ -220,10 +241,7 @@ export default function StartOverDialog({
         explain={explain}
         counts={counts}
         onEvent={send}
-        onDownload={() => {
-          api.downloadAllRecords();
-          send({ type: "downloaded" });
-        }}
+        onDownload={() => void download()}
         onConfirm={() => void confirm()}
         onCancel={onClose}
       />

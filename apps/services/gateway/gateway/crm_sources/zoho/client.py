@@ -142,6 +142,9 @@ FIELDS_SCOPE = "ZohoCRM.settings.fields.READ"
 ORG_SCOPE = "ZohoCRM.org.READ"
 MODULES_SCOPE = "ZohoCRM.settings.modules.READ"
 
+#: The modules that :meth:`ZohoSource.record_exists` may read (CRM-X0).
+PROBE_MODULES = frozenset({"Deals", "Leads", "Contacts", "Accounts"})
+
 #: The ``provider_meta`` key that holds the org domain name (``GET org``).
 META_DOMAIN_NAME = "domain_name"
 
@@ -949,6 +952,31 @@ class ZohoSource:
         if isinstance(rows, list) and rows and isinstance(rows[0], dict):
             return rows[0]
         return None
+
+    async def record_exists(self, module: str, ext_id: str) -> bool:
+        """``GET {module}/{id}``: does this account hold the record? One credit.
+
+        The consent callback reads one mirrored record with the new token, to
+        tell the same Zoho account from another one (CRM-X0 review P1-2).
+        True only for a 200 whose ``data`` names the same id. A 204 or a 404
+        is False. Any other answer raises, so the caller fails closed.
+        """
+        if module not in PROBE_MODULES or not str(ext_id).isdigit():
+            raise SourceError("A record read needs a known module and a numeric id")
+        path = f"/crm/{RECORDS_API_VERSION}/{module}/{ext_id}"
+        r = await self._get(path, params={})
+        if r.status_code in (204, 404):
+            return False
+        if _is_scope_refusal(r):
+            raise ZohoScopeError(
+                f"ZohoCRM.modules.{module.lower()}.READ",
+                str(_error_body(r).get("message") or "")[:200],
+            )
+        self._raise_for_status(r, path)
+        rows = _error_body(r).get("data")
+        return isinstance(rows, list) and any(
+            isinstance(row, dict) and str(row.get("id")) == str(ext_id) for row in rows
+        )
 
     async def discover(self) -> dict[str, Any]:  # noqa: C901 - one linear read of five sections
         """Read the shape of the customer's Zoho. METADATA ONLY, never a record.

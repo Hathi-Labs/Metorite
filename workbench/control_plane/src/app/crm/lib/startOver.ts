@@ -5,8 +5,10 @@
 // Three steps, in this order:
 //
 //   1. counts   — the records of each entity, and that the change removes them.
-//   2. download — "Download a copy" (GET /crm/export/all.zip). The step is done
-//                 when the download starts. The admin may also go on without it.
+//   2. download — "Download a copy" (GET /crm/export/all.zip). The dialog
+//                 fetches the whole file, checks the answer, then saves it.
+//                 The step is done when the file is saved, and a failure says
+//                 so with a retry (review P2). The admin may also go on without it.
 //   3. confirm  — the admin types DELETE. The button reads
 //                 "Remove N records and continue".
 //
@@ -20,10 +22,13 @@ export type StartOverStep = "counts" | "download" | "confirm";
 
 export const STEPS: readonly StartOverStep[] = ["counts", "download", "confirm"];
 
+/** The copy of step 2. `done` only after the file is whole and saved. */
+export type DownloadState = "idle" | "busy" | "done" | "failed";
+
 export type StartOverState = {
   step: StartOverStep;
-  /** The download started (step 2). */
-  downloaded: boolean;
+  /** The copy (step 2). */
+  download: DownloadState;
   /** What the admin typed (step 3). */
   typed: string;
   busy: boolean;
@@ -33,14 +38,16 @@ export type StartOverState = {
 export type StartOverEvent =
   | { type: "next" }
   | { type: "back" }
+  | { type: "download-start" }
   | { type: "downloaded" }
+  | { type: "download-failed"; message: string }
   | { type: "type"; text: string }
   | { type: "submit" }
   | { type: "failed"; message: string };
 
 export const INITIAL: StartOverState = {
   step: "counts",
-  downloaded: false,
+  download: "idle",
   typed: "",
   busy: false,
   error: null,
@@ -58,8 +65,12 @@ export function startOverReducer(state: StartOverState, event: StartOverEvent): 
       return at < STEPS.length - 1 ? { ...state, step: STEPS[at + 1], error: null } : state;
     case "back":
       return at > 0 && !state.busy ? { ...state, step: STEPS[at - 1], error: null } : state;
+    case "download-start":
+      return state.download === "busy" ? state : { ...state, download: "busy", error: null };
     case "downloaded":
-      return { ...state, downloaded: true };
+      return { ...state, download: "done", error: null };
+    case "download-failed":
+      return { ...state, download: "failed", error: event.message };
     case "type":
       return { ...state, typed: event.text, error: null };
     case "submit":
@@ -91,6 +102,22 @@ export type ResetResult = {
 };
 
 export const RESET_FAILED = "The CRM did not start over. Nothing was removed. Try again.";
+
+export const DOWNLOAD_FAILED = "The copy did not download. Try again.";
+
+/**
+ * Step 2: get the whole ZIP, check the answer, then save it. Returns `null`
+ * when the file is saved, or the words of the failure. It never throws, and a
+ * refusal never becomes a saved file.
+ */
+export async function runDownload(download: () => Promise<void>): Promise<string | null> {
+  try {
+    await download();
+    return null;
+  } catch (err) {
+    return err instanceof Error && err.message ? err.message : DOWNLOAD_FAILED;
+  }
+}
 
 /**
  * The call, after the typed confirm. It sends the reset, then either follows

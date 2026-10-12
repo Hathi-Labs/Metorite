@@ -9,7 +9,7 @@
 // flattened them all to "request failed" would leave the UI unable to explain
 // a refusal, which is the difference between a rule and a bug.
 
-import { filenameFromDisposition, saveCsv } from "@/lib/export";
+import { filenameFromDisposition, saveBlob, saveCsv } from "@/lib/export";
 import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
@@ -525,18 +525,24 @@ export function resetCrm(body: { confirm: string; then: ResetThen }): Promise<Re
 export const ALL_RECORDS_ZIP = "/api/crm/export/all.zip";
 
 /**
- * Start the download of the ZIP. The browser streams the file to disk, so a
- * large CRM never sits in this page's memory. The call returns when the
- * download starts, which is what step 2 of the dialog waits for.
+ * Get the whole ZIP, then save it (review P2). A refusal or a proxy error is
+ * a `CrmError` with the server's words, and nothing is saved, so a JSON body
+ * never lands on disk as `crm-export.zip`. It resolves only after the save.
  */
-export function downloadAllRecords(): void {
-  const link = document.createElement("a");
-  link.href = ALL_RECORDS_ZIP;
-  link.download = "crm-export.zip";
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+export async function downloadAllRecords(
+  deps: { fetch: typeof fetch; save: (body: Blob, filename: string) => void } = {
+    fetch: (input, init) => fetch(input, init),
+    save: saveBlob,
+  },
+): Promise<void> {
+  const res = await deps.fetch(ALL_RECORDS_ZIP, { cache: "no-store" });
+  const type = res.headers.get("content-type") ?? "";
+  if (!res.ok || !type.includes("application/zip")) {
+    const body = (await res.json().catch(() => ({}))) as { detail?: unknown; error?: string };
+    throw new CrmError(detailOf(body) || `The copy did not download (${res.status}).`, res.status);
+  }
+  const blob = await res.blob();
+  deps.save(blob, filenameFromDisposition(res.headers.get("content-disposition"), "crm-export.zip"));
 }
 
 // ── Saved views (CRM-Q8) ──────────────────────────────────────────────────

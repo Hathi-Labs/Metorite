@@ -9,7 +9,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { connectErrorMessage, mirrorStalled, modeLine, type ConnectionInfo } from "../lib/connect";
+import { downloadAllRecords } from "../lib/api";
+import {
+  connectErrorMessage,
+  mirrorStalled,
+  modeLine,
+  returnTarget,
+  type ConnectionInfo,
+} from "../lib/connect";
 import {
   ACTIONS,
   CONNECT_FROM_NATIVE,
@@ -22,9 +29,11 @@ import {
 import {
   CONFIRM_WORD,
   INITIAL,
+  DOWNLOAD_FAILED,
   RESET_FAILED,
   canConfirm,
   confirmLabel,
+  runDownload,
   runStartOver,
   startOverReducer,
   type StartOverEvent,
@@ -244,6 +253,15 @@ describe("only the hub offers a change of setup", () => {
     );
   });
 
+  it("opens the setup hub after a return the hub answers (review P1-1)", () => {
+    expect(returnTarget("connect_error=different_org")).toBe("tab=settings");
+    expect(returnTarget("connect_error=org_unreadable&deal=d1")).toBe("deal=d1&tab=settings");
+    expect(returnTarget("connect_error=access_denied&tab=deals")).toBe("tab=deals");
+    expect(returnTarget("connected=zoho")).toBe("");
+    expect(read("page.tsx")).toContain("const rest = returnTarget(search);");
+    expect(read("page.tsx")).not.toContain("clearReturnParams(search)");
+  });
+
   it("names the two new refusals of the Zoho return", () => {
     expect(connectErrorMessage("different_org")).toContain("not the one your records came from");
     expect(connectErrorMessage("different_org")).toContain("CRM setup");
@@ -280,19 +298,46 @@ describe("the start-over dialog walks counts, download, typed confirm, then the 
     expect(html).not.toContain("Download a copy");
   });
 
-  it("step 2 offers the download and marks it done when it starts", () => {
+  it("step 2 offers the download and marks it done only when the file is saved", () => {
     const at = walk(INITIAL, { type: "next" });
     expect(at.step).toBe("download");
     expect(drawStep(at)).toContain("Download a copy");
     expect(drawStep(at)).toContain("Go on without a copy");
-    const done = walk(at, { type: "downloaded" });
-    expect(done.downloaded).toBe(true);
-    expect(drawStep(done)).toContain("Download started");
+    // Review P2: while the file comes, nothing says it is done.
+    const busy = walk(at, { type: "download-start" });
+    expect(busy.download).toBe("busy");
+    expect(drawStep(busy)).not.toContain("Download complete");
+    expect(drawStep(busy)).not.toContain("Download started");
+    expect(buttonWith(drawStep(busy), "Go on without a copy")).toContain('disabled=""');
+    const done = walk(busy, { type: "downloaded" });
+    expect(done.download).toBe("done");
+    expect(drawStep(done)).toContain("Download complete");
     expect(drawStep(done)).not.toContain("Go on without a copy");
   });
 
+  it("step 2 says when the download failed, and offers it again", () => {
+    const failed = walk(
+      INITIAL,
+      { type: "next" },
+      { type: "download-start" },
+      { type: "download-failed", message: "The copy did not download (502)." },
+    );
+    expect(failed.download).toBe("failed");
+    const html = drawStep(failed);
+    expect(html).toContain("Try the download again");
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("The copy did not download (502).");
+    expect(buttonWith(html, "Try the download again")).not.toContain('disabled=""');
+  });
+
   it("step 3 waits for the typed DELETE", () => {
-    const at = walk(INITIAL, { type: "next" }, { type: "downloaded" }, { type: "next" });
+    const at = walk(
+      INITIAL,
+      { type: "next" },
+      { type: "download-start" },
+      { type: "downloaded" },
+      { type: "next" },
+    );
     expect(at.step).toBe("confirm");
     expect(canConfirm(at)).toBe(false);
     expect(drawStep(at)).toContain("Remove 551 records and continue");
@@ -351,6 +396,46 @@ describe("the start-over dialog walks counts, download, typed confirm, then the 
       go: noop,
     });
     expect(plain).toBe(RESET_FAILED);
+  });
+
+  it("saves the ZIP only after a whole, good answer", async () => {
+    const zip = new Blob([new Uint8Array([0x50, 0x4b, 3, 4])], { type: "application/zip" });
+    const save = vi.fn();
+    const ok = vi.fn().mockResolvedValue(
+      new Response(zip, {
+        status: 200,
+        headers: {
+          "content-type": "application/zip",
+          "content-disposition": 'attachment; filename="crm-export.zip"',
+        },
+      }),
+    );
+    await downloadAllRecords({ fetch: ok, save });
+    expect(ok).toHaveBeenCalledWith("/api/crm/export/all.zip", { cache: "no-store" });
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0][1]).toBe("crm-export.zip");
+    expect((save.mock.calls[0][0] as Blob).size).toBe(4);
+  });
+
+  it("never saves a refusal as the ZIP", async () => {
+    for (const res of [
+      new Response(JSON.stringify({ error: "fetch failed" }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      }),
+      new Response(JSON.stringify({ detail: "Forbidden" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ]) {
+      const save = vi.fn();
+      const failed = await runDownload(() =>
+        downloadAllRecords({ fetch: vi.fn().mockResolvedValue(res), save }),
+      );
+      expect(failed).toBeTruthy();
+      expect(save).not.toHaveBeenCalled();
+    }
+    expect(await runDownload(() => Promise.reject(new Error("")))).toBe(DOWNLOAD_FAILED);
   });
 
   it("is a Modal, with the shared primitives", () => {

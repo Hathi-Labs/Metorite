@@ -77,19 +77,39 @@ KEPT = ("crm_settings", "crm_views", "crm_sync_runs")
 ALL = EMPTIED + KEPT
 
 
-class OrgZoho(FakeZoho):
-    """Zoho for one consent: a token and a ``GET org`` that names an org id."""
+#: The deal ids of each seeded account start with these digits. Zoho record
+#: ids are digits, and the callback reads one by id (CRM-X0 review P1-2).
+DEAL_BASE = {"A": 910_000_000, "B": 920_000_000}
 
-    def __init__(self, tag: str, org_id: str) -> None:
+
+class OrgZoho(FakeZoho):
+    """Zoho for one consent: a token, a ``GET org`` that names an org id, and
+    ``GET Deals/{id}`` that finds the deals whose id starts with *holds*.
+
+    ``record_status`` forces the status of the record read (404, 204, 500).
+    """
+
+    def __init__(self, tag: str, org_id: str, *, holds: str = "",
+                 record_status: int | None = None) -> None:
         super().__init__(token_body={
             "access_token": f"ACCESS-{tag}", "refresh_token": f"REFRESH-{tag}",
             "expires_in": 3600, "api_domain": "https://www.zohoapis.in",
         })
         self.org_id = org_id
+        self.holds = holds
+        self.record_status = record_status
 
     def _handle(self, request: Any) -> Any:
         import httpx
 
+        if "/crm/v2/Deals/" in request.url.path:
+            self.requests.append(request)
+            rid = request.url.path.rsplit("/", 1)[-1]
+            if self.record_status is not None:
+                return httpx.Response(self.record_status, json={"code": "X"})
+            if self.holds and rid.startswith(self.holds):
+                return httpx.Response(200, json={"data": [{"id": rid, "Deal_Name": "d"}]})
+            return httpx.Response(204)
         if request.url.path.endswith("/org"):
             self.requests.append(request)
             return httpx.Response(200, json={"org": [{
@@ -172,7 +192,7 @@ def _counts(p: Any, org: str) -> dict[str, int]:
 
 
 def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected",
-          zoho_org: str = "Z-A") -> str:
+          zoho_org: str = "Z-A", profile: bool = True) -> str:
     """A Mirror org with records in every listed table. Returns the connection id."""
     o = {"o": org}
     with p.admin_engine.begin() as c:
@@ -217,8 +237,9 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "INSERT INTO crm_deals (organization_id, name, status_id, pipeline_id, "
             "company_id, ext_source, ext_id, amount) "
             "SELECT CAST(:o AS uuid), :tag || ' deal ' || g, :s, :p, :co, 'zoho', "
-            ":tag || '-deal-' || g, g * 100 FROM generate_series(1, :n) g"),
-            {**o, "tag": tag, "s": ds, "p": pipe, "co": company, "n": deals})
+            "(:base + g)::text, g * 100 FROM generate_series(1, :n) g"),
+            {**o, "tag": tag, "s": ds, "p": pipe, "co": company, "n": deals,
+             "base": DEAL_BASE[tag]})
         first = c.execute(text(
             "SELECT id FROM crm_deals WHERE organization_id = CAST(:o AS uuid) "
             "ORDER BY ext_id LIMIT 1"), o).scalar()
@@ -253,6 +274,10 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "CAST(:c AS uuid), 1, CAST(:p AS jsonb), 'h')"),
             {**o, "c": conn, "p": json.dumps({"org": {
                 "id": zoho_org, "domain_name": f"dom-{zoho_org}"}})})
+        if not profile:
+            # The state of prod on 2026-10-12: an earlier disconnect dropped it.
+            c.execute(text("DELETE FROM crm_source_profiles WHERE "
+                           "organization_id = CAST(:o AS uuid)"), o)
         c.execute(text(
             "INSERT INTO crm_zoho_tombstones (organization_id, module, zoho_id, "
             "entity_type, deleted_by) VALUES (CAST(:o AS uuid), 'Deals', :z, "
@@ -266,18 +291,6 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "INSERT INTO crm_views (organization_id, entity, name, owner_email) "
             "VALUES (CAST(:o AS uuid), 'deals', 'Mine', 'admin@crm-t5-r8.test')"), o)
     return conn
-
-
-def _profile(p: Any, org: str, zoho_org: str) -> None:
-    """A source profile for the org's connection, as discovery writes it."""
-    with p.admin_engine.begin() as c:
-        c.execute(text(
-            "INSERT INTO crm_source_profiles (organization_id, connection_id, "
-            "version, profile, profile_hash) SELECT CAST(:o AS uuid), id, 1, "
-            "CAST(:p AS jsonb), 'h' FROM integration_connections "
-            "WHERE organization_id = CAST(:o AS uuid)"),
-            {"o": org, "p": json.dumps({"org": {
-                "id": zoho_org, "domain_name": f"dom-{zoho_org}"}})})
 
 
 def _seed_both(p: Any) -> None:
@@ -487,7 +500,7 @@ async def test_a_reconnect_to_another_zoho_org_needs_a_reset_and_writes_nothing(
     other = OrgZoho("B", "Z-OTHER")
     r = await _connect(x0, other)
     assert r.status_code == 302, r.text
-    assert r.headers["location"] == "/crm?tab=settings&connect_error=different_org"
+    assert r.headers["location"] == "/crm?connect_error=different_org"
     status, blob, err = _connection(x0, x0.org_a)
     assert (status, err) == ("needs_reset", "different_org")
     # Nothing of the other account is kept, and no record moved.
@@ -507,8 +520,9 @@ async def test_needs_reset_gives_the_sync_no_credential(x0, app_engine) -> None:
     first = await _connect(x0, OrgZoho("A1", "Z-A"))
     assert first.status_code == 302, first.text
     assert _connection(x0, x0.org_a)[0] == "connected"
-    # The first run's discovery writes the profile of the account again.
-    _profile(x0, x0.org_a, "Z-A")
+    # No discovery runs between the two consents: the first consent dropped
+    # the profile, and the account id it stored is what catches the second.
+    assert _counts(x0, x0.org_a)["crm_source_profiles"] == 0
     second = await _connect(x0, OrgZoho("B", "Z-OTHER"))
     assert second.status_code == 302, second.text
     assert _connection(x0, x0.org_a)[0] == "needs_reset"
@@ -524,6 +538,156 @@ async def test_needs_reset_gives_the_sync_no_credential(x0, app_engine) -> None:
     r = await _reset(x0, {"confirm": "DELETE", "then": "none"})
     assert r.status_code == 200, r.text
     assert _connection(x0, x0.org_a)[0] == "disconnected"
+
+
+def _account_id(p: Any, org: str) -> Any:
+    rows = _q(p, "SELECT provider_meta ->> 'account_id' FROM integration_connections "
+                 "WHERE organization_id = CAST(:o AS uuid)", o=org)
+    return rows[0][0] if rows else None
+
+
+# ── Review P1-2: the account id outlives a consent ──────────────────────────
+
+
+async def test_a_consent_stores_the_account_id_that_survives_the_next_consent(x0, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    _seed(x0, x0.org_a, tag="A", deals=DEALS)
+    r = await _connect(x0, OrgZoho("A2", "Z-A"))
+    assert r.headers["location"] == "/crm?connected=zoho", r.text
+    assert _account_id(x0, x0.org_a) == "Z-A"
+    assert _counts(x0, x0.org_a)["crm_deals"] == DEALS
+    # A disconnect keeps it too.
+    assert (await _call(x0, _admin(x0.org_a), "POST",
+                        "/crm/connection/disconnect")).status_code == 200
+    assert _account_id(x0, x0.org_a) == "Z-A"
+    again = await _connect(x0, OrgZoho("A3", "Z-A"))
+    assert again.headers["location"] == "/crm?connected=zoho"
+    other = await _connect(x0, OrgZoho("B", "Z-OTHER"))
+    assert other.headers["location"] == "/crm?connect_error=different_org"
+    assert _connection(x0, x0.org_a)[0] == "needs_reset"
+    assert _account_id(x0, x0.org_a) == "Z-A"
+    assert _counts(x0, x0.org_a)["crm_deals"] == DEALS
+
+
+async def test_no_stored_account_and_a_deal_zoho_holds_connects(x0, app_engine) -> None:  # noqa: F811
+    """Fracktal's case: records, no stored id, no profile. One deal is read."""
+    _assert_non_priv(app_engine)
+    _seed(x0, x0.org_a, tag="A", deals=DEALS, profile=False)
+    zoho = OrgZoho("A2", "Z-A", holds="91")
+    r = await _connect(x0, zoho)
+    assert r.headers["location"] == "/crm?connected=zoho", r.text
+    reads = [q for q in zoho.requests if "/crm/v2/Deals/" in q.url.path]
+    assert len(reads) == 1 and reads[0].url.path.rsplit("/", 1)[-1].startswith("91")
+    assert _account_id(x0, x0.org_a) == "Z-A"
+    assert _counts(x0, x0.org_a)["crm_deals"] == DEALS
+    assert x0.started == [x0.org_a]
+
+
+@pytest.mark.parametrize("status", [None, 404, 204])
+async def test_no_stored_account_and_a_deal_zoho_lacks_needs_a_reset(x0, app_engine, status) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    _seed(x0, x0.org_a, tag="A", deals=4, profile=False)
+    before = _counts(x0, x0.org_a)
+    zoho = OrgZoho("B", "Z-OTHER", holds="92", record_status=status)
+    r = await _connect(x0, zoho)
+    assert r.headers["location"] == "/crm?connect_error=different_org", r.text
+    assert _connection(x0, x0.org_a)[0] == "needs_reset"
+    assert _counts(x0, x0.org_a) == before
+    assert _account_id(x0, x0.org_a) is None
+    assert x0.started == []
+
+
+async def test_no_stored_account_and_a_failed_read_changes_nothing(x0, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    _seed(x0, x0.org_a, tag="A", deals=4, profile=False)
+    r = await _connect(x0, OrgZoho("B", "Z-OTHER", record_status=500))
+    assert r.headers["location"] == "/crm?connect_error=org_unreadable", r.text
+    assert _connection(x0, x0.org_a)[0] == "disconnected"
+    assert _account_id(x0, x0.org_a) is None
+
+
+async def test_no_records_and_no_stored_account_connects_and_stores_it(x0, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    zoho = OrgZoho("A", "Z-NEW")
+    r = await _connect(x0, zoho)
+    assert r.headers["location"] == "/crm?connected=zoho", r.text
+    assert _account_id(x0, x0.org_a) == "Z-NEW"
+    assert not [q for q in zoho.requests if "/crm/v2/Deals/" in q.url.path]
+
+
+async def test_the_start_over_forgets_the_account_id(x0, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    _seed(x0, x0.org_a, tag="A", deals=4)
+    assert (await _connect(x0, OrgZoho("A2", "Z-A"))).status_code == 302
+    assert _account_id(x0, x0.org_a) == "Z-A"
+    assert (await _reset(x0, {"confirm": "DELETE", "then": "none"})).status_code == 200
+    assert _account_id(x0, x0.org_a) is None
+    r = await _connect(x0, OrgZoho("B", "Z-OTHER"))
+    assert r.headers["location"] == "/crm?connected=zoho", r.text
+    assert _account_id(x0, x0.org_a) == "Z-OTHER"
+
+
+# ── Review P2: the run history after a start over ───────────────────────────
+
+
+async def test_the_next_import_ignores_the_runs_before_a_start_over(x0, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    conn = _seed(x0, x0.org_a, tag="A", deals=2)
+    with x0.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_sync_runs (organization_id, connection_id, kind, "
+            "status, started_at, finished_at, counts, estimate, credits_used) "
+            "VALUES (CAST(:o AS uuid), CAST(:c AS uuid), 'import', 'stopped', "
+            "now() - interval '1 hour', now() - interval '50 minutes', "
+            "CAST(:k AS jsonb), CAST(:e AS jsonb), 400)"),
+            {"o": x0.org_a, "c": conn, "k": json.dumps({"deals": {"created": 5}}),
+             "e": json.dumps({"deals": 9})})
+    from acb_common.db import tenant_session
+    from gateway.crm_sync import runs
+
+    async def read() -> tuple[Any, int]:
+        async with tenant_engine_scope(_app_dsn(x0)), tenant_session(x0.org_a) as db:
+            return (await runs.resumable_import(db, x0.org_a),
+                    await runs.credits_used_24h(db, x0.org_a))
+
+    (counts, estimate), used = await read()
+    assert counts == {"deals": {"created": 5}} and estimate == {"deals": 9} and used == 400
+    assert (await _reset(x0, {"confirm": "DELETE", "then": "none"})).status_code == 200
+    (counts, estimate), used = await read()
+    assert (counts, estimate, used) == ({}, None, 0)
+    # The history itself stays.
+    assert _counts(x0, x0.org_a)["crm_sync_runs"] == 2
+
+
+# ── Review P2: a write during the start over ────────────────────────────────
+
+
+async def test_a_record_written_during_the_start_over_is_409_not_500(x0, app_engine) -> None:  # noqa: F811
+    """Native mode: a lead lands while the reset runs. Its status cannot go
+    (RESTRICT), so the reset stops with 409 and removes nothing."""
+    _assert_non_priv(app_engine)
+    r = await _call(x0, _admin(x0.org_a), "PATCH", "/crm/settings", {"mode": "native"})
+    assert r.status_code == 200, r.text
+    before = _counts(x0, x0.org_a)
+    page = app_engine.connect()
+    tx = page.begin()
+    page.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": x0.org_a})
+    page.execute(text(
+        "INSERT INTO crm_leads (organization_id, lead_name, status_id) "
+        "SELECT CAST(:o AS uuid), 'Late', id FROM crm_lead_statuses "
+        "WHERE organization_id = CAST(:o AS uuid) LIMIT 1"), {"o": x0.org_a})
+    task = asyncio.create_task(_reset(x0, {"confirm": "DELETE", "then": "none"}))
+    await asyncio.sleep(1.5)
+    tx.commit()
+    page.close()
+    r = await task
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "crm_changed"
+    after = _counts(x0, x0.org_a)
+    assert after["crm_leads"] == 1
+    assert {t: after[t] for t in ("crm_lead_statuses", "crm_deal_statuses")} == {
+        t: before[t] for t in ("crm_lead_statuses", "crm_deal_statuses")}
+    assert _settings(x0, x0.org_a)[0] == "native"
 
 
 # ── Done when 4: the download ────────────────────────────────────────────────
@@ -545,7 +709,7 @@ async def test_the_zip_holds_every_row_of_each_entity_and_none_of_org_b(x0, app_
     rows = {}
     for name in names:
         body = archive.read(name).decode("utf-8-sig")
-        assert "B-" not in body, f"{name} holds a row of org B"
+        assert "B-" not in body and "B deal" not in body, f"{name} holds a row of org B"
         table = list(csv.reader(io.StringIO(body)))
         assert "organization_id" not in table[0]
         rows[name] = table[1:]

@@ -40,15 +40,27 @@ place the mode becomes ``mirror`` (``PATCH /crm/settings`` still refuses it). A
 Native org gets 409: Native to Mirror is a later release (§3.4).
 
 **The same Zoho account, or a start over (CRM-X0, §19.11 items 2 and 3).**
-When the org holds a source profile, the callback reads ``GET org`` with the
-new token and compares the account with the profile's
-(``mapping.same_org``). The same account goes on as before: the records
-stay, and the sync starts again. Another account sets ``needs_reset``, keeps
-the old token, revokes the new one and writes no record, so the records of
-two Zoho accounts never mix. An account that cannot be read, or that has no
-key to compare, is refused with ``org_unreadable``, and nothing changes. With no profile there is nothing to
-compare, and the callback goes on. A disconnect keeps the profile for this
-reason (``store.disconnect``), and the start over deletes it.
+Each callback reads ``GET org`` with the new token (one credit). An account
+that cannot be read, or has no id, is refused with ``org_unreadable``, the
+new token is revoked, and nothing changes. The callback then decides, in this
+order, whether the new account is the one the CRM records came from:
+
+1. The account id that a good consent stored in ``provider_meta``
+   (``store.META_ACCOUNT_ID``). A consent, a disconnect and ``needs_reset``
+   keep it. Only the start over removes it.
+2. Else the ``org`` section of the latest source profile (``mapping.same_org``),
+   for an org that connected before the id was stored.
+3. Else, when the org holds Zoho records, the new token reads up to
+   :data:`PROBE_LIMIT` of them by id (``ZohoSource.record_exists``). One found
+   means the same account. None found means another account. Any other answer
+   is ``org_unreadable``.
+4. Else the CRM holds nothing of Zoho, and the consent goes on.
+
+The same account goes on as before, and the save stores the account id.
+Another account sets ``needs_reset``, keeps the old token, revokes the new one
+and writes no record, so the records of two Zoho accounts never mix. The save
+checks the stored id again under the connect lock, so two consents at one time
+cannot both pass the check.
 
 **No secret out.** The code, the tokens and the secret never appear in a
 response body or a log line. A revoke or a refresh is logged by outcome and by
@@ -58,6 +70,7 @@ Zoho error code only.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -103,9 +116,27 @@ CALLBACK_ROUTE = "/oauth/zoho/callback"
 #: Where the callback sends the browser.
 RETURN_OK = "/crm?connected=zoho"
 RETURN_FAILED = "/crm?connect_error="
-#: CRM-X0: a consent to another Zoho account opens the setup hub, which offers
-#: the start over.
-RETURN_DIFFERENT_ORG = "/crm?tab=settings&connect_error=different_org"
+#: CRM-X0: a consent to another Zoho account. ONE query name, because the BFF
+#: callback passes no other shape (``api/crm/oauth/zoho/callback``). The page
+#: opens the setup hub for this code (``connect.ts`` ``returnTarget``).
+RETURN_DIFFERENT_ORG = "/crm?connect_error=different_org"
+
+#: The most mirrored records the callback reads to tell the account (step 3).
+#: More than one, because a record deleted in Zoho since the last sync must not
+#: look like another account.
+PROBE_LIMIT = 3
+
+#: The tables that step 3 reads from, with their Zoho module, in this order.
+_PROBE_TABLES: tuple[tuple[str, str], ...] = (
+    ("crm_deals", "Deals"), ("crm_leads", "Leads"),
+    ("crm_contacts", "Contacts"), ("crm_companies", "Accounts"),
+)
+
+_PROBE_SQL = (
+    "SELECT ext_id FROM {table} WHERE organization_id = CAST(:org AS uuid) "
+    "AND ext_source = 'zoho' AND ext_id ~ '^[0-9]+$' "
+    "ORDER BY ext_modified_at DESC NULLS LAST LIMIT :n"
+)
 
 #: The read-only scopes of every consent (``docs/ZOHO_OAUTH_SETUP.md`` §5).
 #: Mirror v1 reads only (D95.3).
@@ -302,19 +333,63 @@ async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> 
     _log.info("zoho revoke (%s): %s", why, outcome)
 
 
-async def _stored_account(db: Any, org: str) -> dict[str, Any] | None:
-    """The ``org`` section of the latest source profile, or ``None``.
+@dataclass(frozen=True)
+class KnownAccount:
+    """What the org knows of the Zoho account that its records came from."""
 
-    ``None`` also when the section names no account, so there is nothing to
-    compare. The sync package is imported here, as ``sync.py`` does.
+    #: The id that a good consent stored (step 1).
+    account_id: str | None = None
+    #: The ``org`` section of the latest source profile (step 2).
+    profile_org: dict[str, Any] | None = None
+    #: A Zoho module and up to :data:`PROBE_LIMIT` ids of its mirrored
+    #: records (step 3). ``None`` when the org holds no Zoho record.
+    probe: tuple[str, tuple[str, ...]] | None = None
+
+
+async def _known_account(db: Any, org: str) -> KnownAccount:
+    """Read the three sources of the module doc, in one session.
+
+    The sync package is imported here, as ``sync.py`` does.
     """
     from gateway.crm_sync import profiles
 
+    row = await store.get(db, org, PROVIDER, OWNING_APP)
+    stored = str((row.provider_meta if row else {}).get(store.META_ACCOUNT_ID) or "") or None
     latest = await profiles.latest(db, org)
     section = (latest.profile.get("org") if latest is not None else None) or None
     if not isinstance(section, dict) or not any(mapping.org_identity(section).values()):
-        return None
-    return section
+        section = None
+    probe: tuple[str, tuple[str, ...]] | None = None
+    for table, module in _PROBE_TABLES:
+        rows = (await db.execute(
+            text(_PROBE_SQL.format(table=table)), {"org": org, "n": PROBE_LIMIT},
+        )).fetchall()
+        if rows:
+            probe = (module, tuple(str(r.ext_id) for r in rows))
+            break
+    return KnownAccount(account_id=stored, profile_org=section, probe=probe)
+
+
+async def _same_account(
+    known: KnownAccount, fresh: dict[str, Any], credential: SourceCredential,
+) -> bool | None:
+    """Steps 1 to 4 of the module doc. ``None`` means the CRM holds nothing
+    of Zoho. A failed record read raises, and the caller fails closed."""
+    fresh_id = mapping.org_identity(fresh)["id"]
+    if known.account_id:
+        return known.account_id == fresh_id
+    if known.profile_org is not None:
+        verdict = mapping.same_org(known.profile_org, fresh)
+        if verdict is not None:
+            return verdict
+    if known.probe is not None:
+        module, ids = known.probe
+        source = _source(credential)
+        for ext_id in ids:
+            if await source.record_exists(module, ext_id):
+                return True
+        return False
+    return None
 
 
 async def _mark_needs_reset(org: str) -> None:
@@ -324,6 +399,10 @@ async def _mark_needs_reset(org: str) -> None:
         row = await store.get(db, org, PROVIDER, OWNING_APP)
         if row is not None:
             await store.mark_needs_reset(db, org, row.id)
+
+
+class _AccountChanged(Exception):
+    """Under the lock, the stored account id is another account's."""
 
 
 def consent_url_for(org: str, member: str) -> str:
@@ -341,6 +420,14 @@ def consent_url_for(org: str, member: str) -> str:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid_member") from exc
     return source.consent_url(scopes=ZOHO_READ_SCOPES, state=state)
+
+
+async def _different_account(org: str, credential: SourceCredential) -> RedirectResponse:
+    """``needs_reset``: keep the old token and the records, drop the new token."""
+    await _mark_needs_reset(org)
+    await _best_effort_revoke(credential, "different_org")
+    _log.info("zoho consent for another account: needs_reset")
+    return RedirectResponse(RETURN_DIFFERENT_ORG, status_code=302)
 
 
 def _failed(code: str) -> RedirectResponse:
@@ -415,7 +502,7 @@ async def zoho_callback(
     #    the account that the records came from (CRM-X0).
     async with _tenant_session() as db:
         _refuse_native(await _read_mode(db, org))
-        stored = await _stored_account(db, org)
+        known = await _known_account(db, org)
     # 5. The code for tokens. Zoho is called here and not before.
     params: Mapping[str, str] = {
         "code": code, "accounts-server": server, **({"location": location} if location else {}),
@@ -425,37 +512,43 @@ async def zoho_callback(
     except SourceError as exc:
         _log.warning("zoho consent not finished: %s", auth.safe_code(exc.code) or "error")
         return _failed(exc.code or ("untrusted_host" if isinstance(exc, UntrustedHost) else "exchange_failed"))
-    # 5b. CRM-X0: the same Zoho account? One credit, and only when a profile
-    #     names the account. A read that fails confirms nothing, so nothing
-    #     changes and the new token goes.
-    if stored is not None:
-        try:
-            fresh = await _source(credential).read_org()
-        except (SourceError, TimeoutError, httpx.HTTPError) as exc:
-            code = auth.safe_code(getattr(exc, "code", "")) or type(exc).__name__
-            _log.warning("zoho consent: the account is not readable: %s", code)
-            await _best_effort_revoke(credential, "unconfirmed")
-            return _failed("org_unreadable")
-        verdict = mapping.same_org(stored, fresh)
-        if verdict is False:
-            await _mark_needs_reset(org)
-            await _best_effort_revoke(credential, "different_org")
-            _log.info("zoho consent for another account: needs_reset")
-            return RedirectResponse(RETURN_DIFFERENT_ORG, status_code=302)
-        if verdict is None:
-            # No row, or no key to compare: nothing confirms the account.
-            await _best_effort_revoke(credential, "unconfirmed")
-            return _failed("org_unreadable")
+    # 5b. CRM-X0: the account of the new token, then the same account or not
+    #     (see the module doc). Anything that confirms nothing changes
+    #     nothing, and the new token goes.
+    try:
+        fresh = await _source(credential).read_org()
+        fresh_id = mapping.org_identity(fresh)["id"] if fresh else None
+        verdict = await _same_account(known, fresh, credential) if fresh_id else None
+    except (SourceError, TimeoutError, httpx.HTTPError) as exc:
+        _log.warning("zoho consent: the account is not readable: %s",
+                     auth.safe_code(getattr(exc, "code", "")) or type(exc).__name__)
+        fresh_id = None
+    if not fresh_id:
+        await _best_effort_revoke(credential, "unconfirmed")
+        return _failed("org_unreadable")
+    if verdict is False:
+        return await _different_account(org, credential)
+    credential = replace(credential, provider_meta={
+        **dict(credential.provider_meta), store.META_ACCOUNT_ID: str(fresh_id),
+    })
     # 6. The old credential, the new one, the mode and the pointer: one
     #    transaction. The old token is read under the row lock, so two
     #    callbacks at one time each see the token that the other replaced.
-    async with _tenant_session() as db:
-        old = await _old_credential_locked(db, org)
-        row = await store.save_credential(
-            db, org, PROVIDER, OWNING_APP, credential,
-            connected_by=member, scopes=ZOHO_READ_SCOPES,
-        )
-        await _adopt_mirror(db, org, row.id, member)
+    #    The stored account id is read again under the same lock.
+    try:
+        async with _tenant_session() as db:
+            old = await _old_credential_locked(db, org)
+            current = await store.get(db, org, PROVIDER, OWNING_APP)
+            now_id = (current.provider_meta if current else {}).get(store.META_ACCOUNT_ID)
+            if now_id and str(now_id) != str(fresh_id):
+                raise _AccountChanged()
+            row = await store.save_credential(
+                db, org, PROVIDER, OWNING_APP, credential,
+                connected_by=member, scopes=ZOHO_READ_SCOPES,
+            )
+            await _adopt_mirror(db, org, row.id, member)
+    except _AccountChanged:
+        return await _different_account(org, credential)
     # 7. A reconnect: revoke the old refresh token (Zoho keeps 20 per user).
     #    Only after the commit, so a failed save never kills the old token
     #    (CRM-Z2 review P2).

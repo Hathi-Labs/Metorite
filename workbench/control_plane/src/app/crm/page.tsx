@@ -58,7 +58,7 @@ import { CrmError } from "./lib/api";
 import {
   ADMIN_CAPABILITY,
   canCreate,
-  clearReturnParams,
+  returnTarget,
   mirrorStalled,
   modeLine,
   returnNotice,
@@ -971,7 +971,8 @@ function CrmGate(): ReactNode {
       toast.show({ key: "crm-connect-return", variant: "error", title: notice.message });
     }
     invalidateCrmMode();
-    const rest = clearReturnParams(search);
+    // CRM-X0: another Zoho account opens the setup hub (`returnTarget`).
+    const rest = returnTarget(search);
     router.replace(rest ? `${pathname}?${rest}` : pathname, { scroll: false });
   }, [search, pathname, router, toast]);
 

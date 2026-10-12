@@ -217,6 +217,24 @@ export function clearReturnParams(search: string): string {
   return params.toString();
 }
 
+/**
+ * The refusals of the Zoho return that only the setup hub can answer
+ * (CRM-X0). The gateway sends them as one query name, because the BFF
+ * callback passes no other shape, so the page adds the settings tab here.
+ */
+export const SETUP_RETURN_CODES = new Set(["different_org", "org_unreadable"]);
+
+/** The query to land on after a trip to Zoho: the return parameters go, and
+ *  a refusal that the hub answers opens the settings tab, where the hub is. */
+export function returnTarget(search: string): string {
+  const notice = returnNotice(search);
+  const params = new URLSearchParams(clearReturnParams(search));
+  if (notice?.kind === "error" && SETUP_RETURN_CODES.has(notice.code)) {
+    params.set("tab", "settings");
+  }
+  return params.toString();
+}
+
 /** The words for a refused Connect click. */
 export function startFailureMessage(status: number, code: string | undefined): string {
   if (status === 409 || code === "mode_is_native") return CONNECT_ERROR_MESSAGES.mode_is_native;

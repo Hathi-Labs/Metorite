@@ -357,10 +357,21 @@ _LOCK_SETTINGS_SQL = (
     "WHERE organization_id = CAST(:o AS uuid) FOR UPDATE"
 )
 
+#: No connection, and the time of this start over. The sync reads only the
+#: runs after ``reset_at`` (``crm_sync/runs.py``, migration 252).
 _CLEAR_CONNECTION_SQL = (
-    "UPDATE crm_settings SET connection_id = NULL "
+    "UPDATE crm_settings SET connection_id = NULL, reset_at = now() "
     "WHERE organization_id = CAST(:o AS uuid)"
 )
+
+#: A write that lands during the start over (CRM-X0 review P2).
+_CHANGED = {
+    "code": "crm_changed",
+    "message": (
+        "A record was saved while the CRM started over. Nothing was removed. "
+        "Try again."
+    ),
+}
 
 
 class ResetIn(BaseModel):
@@ -444,7 +455,15 @@ async def reset_crm(
         # Waits for a sync page in flight. A later page reads the new mode.
         await db.execute(text(_LOCK_SETTINGS_SQL), {"o": org})
         current = _wire(await read_settings(db, org))
-        removed = await reset_crm_from_admin(db, org)
+        try:
+            removed = await reset_crm_from_admin(db, org)
+        except DBAPIError as exc:
+            # A record that another request saved names a stage: RESTRICT
+            # refuses the delete. The transaction rolls back, so nothing went.
+            code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+            if code == "23503":
+                raise HTTPException(status_code=409, detail=dict(_CHANGED)) from exc
+            raise
         row = (await db.execute(text(_UPSERT_SQL), {
             "organization_id": org,
             "mode": mode,
@@ -458,6 +477,10 @@ async def reset_crm(
                 "The CRM mode changed while this request ran. Nothing was removed."
             ))
         await db.execute(text(_CLEAR_CONNECTION_SQL), {"o": org})
+        # The next consent may be for any account (CRM-X0 review P1-2).
+        connection = await store.get(db, org, PROVIDER, OWNING_APP)
+        if connection is not None:
+            await store.forget_account(db, org, connection.id)
         if mode == "native":
             await seed_native_pipeline(db, org)
     _audit_reset(user, org, payload.then, removed)

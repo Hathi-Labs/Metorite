@@ -56,6 +56,12 @@ STATUS_NEEDS_RECONNECT = "needs_reconnect"
 STATUS_NEEDS_RESET = "needs_reset"
 STATUS_DISCONNECTED = "disconnected"
 
+#: The ``provider_meta`` key of the provider account that a consent was for
+#: (CRM-X0 review P1-2). The consent callback writes it on each good consent.
+#: A disconnect and ``needs_reset`` keep it, and only the start over removes
+#: it (:func:`forget_account`), so a later consent always has it to compare.
+META_ACCOUNT_ID = "account_id"
+
 SCOPE_ORG = "org"
 SCOPE_MEMBER = "member"
 
@@ -137,6 +143,12 @@ _NEEDS_RECONNECT_SQL = (
 _NEEDS_RESET_SQL = (
     "UPDATE integration_connections SET status = 'needs_reset', "
     "last_error = :code, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
+)
+
+_FORGET_ACCOUNT_SQL = (
+    "UPDATE integration_connections SET provider_meta = provider_meta - 'account_id', "
+    "updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
 )
 
@@ -465,6 +477,11 @@ async def mark_needs_reset(
     await db.execute(text(_NEEDS_RESET_SQL), {
         "id": str(connection_id), "org": str(org), "code": safe_error_code(code),
     })
+
+
+async def forget_account(db: Any, org: str, connection_id: str) -> None:
+    """Remove :data:`META_ACCOUNT_ID`. Only the start over calls it (CRM-X0)."""
+    await db.execute(text(_FORGET_ACCOUNT_SQL), {"id": str(connection_id), "org": str(org)})
 
 
 async def disconnect(db: Any, org: str, connection_id: str) -> Connection | None:
