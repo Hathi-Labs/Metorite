@@ -19,17 +19,22 @@
  * `?mrec=<Module>:<id>` opens it, and `?rtab=` holds the tab.
  */
 
+import Button from "@/components/ui/Button";
 import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "../lib/api";
+import { CrmError } from "../lib/api";
 import { zohoLink } from "../lib/connect";
 import {
+  MODULE_NOT_FOUND,
   OVERVIEW_FIELDS,
   linkText,
   moduleFacts,
   moduleFieldRows,
   moduleRelated,
+  moduleSheetState,
   moduleTabs,
   moduleTitle,
+  sheetTitle,
   shownModuleTab,
   type ModuleFieldRow,
   type ModuleLink,
@@ -56,24 +61,42 @@ export default function ModuleRecordSheet({
   /** A lookup link: a known record, or another generic record. */
   onOpenLink: (link: ModuleLink) => void;
 }) {
-  const res = useCachedResource<ModuleRecordPage>(
+  // A 404 is an answer ("not in the mirror"), so it becomes data. Any other
+  // failure stays an error, and the sheet offers a retry.
+  const res = useCachedResource<ModuleRecordPage | typeof MODULE_NOT_FOUND>(
     `crm:module:${module}:${id}`,
-    () => api.getModuleRecord(module, id),
+    () =>
+      api.getModuleRecord(module, id).catch((err: unknown) => {
+        if (err instanceof CrmError && err.status === 404) return MODULE_NOT_FOUND;
+        throw err;
+      }),
   );
-  const page = res.data && res.data.record.id === id ? res.data : null;
+  const state = moduleSheetState(res.data, res.error, id);
+  const page = state.kind === "page" ? state.page : null;
   const noun = page?.module.singular_label || page?.module.label || module;
   return (
     <RecordModal
-      title={page ? moduleTitle(page.record, page.module.singular_label) : res.error ? "Not found" : "Loading…"}
+      title={
+        state.kind === "page"
+          ? moduleTitle(state.page.record, state.page.module.singular_label)
+          : sheetTitle(state)
+      }
       noun={noun}
       zoho={page ? zohoLink(page.record) : null}
       onClose={onClose}
     >
-      {page ? (
-        <ModuleRecordBody page={page} tab={tab} onTab={onTab} onOpenLink={onOpenLink} />
+      {state.kind === "page" ? (
+        <ModuleRecordBody page={state.page} tab={tab} onTab={onTab} onOpenLink={onOpenLink} />
+      ) : state.kind === "failed" ? (
+        <div className="flex flex-col items-center gap-3 p-8 text-center">
+          <p className="text-xs text-muted-foreground">This record did not load. Try again.</p>
+          <Button variant="secondary" size="sm" icon="RefreshCw" onClick={res.refresh}>
+            Retry
+          </Button>
+        </div>
       ) : (
         <p className="p-8 text-center text-xs text-muted-foreground">
-          {res.error ? "This record is not in the mirror." : "Loading…"}
+          {state.kind === "missing" ? "This record is not in the mirror." : "Loading…"}
         </p>
       )}
     </RecordModal>

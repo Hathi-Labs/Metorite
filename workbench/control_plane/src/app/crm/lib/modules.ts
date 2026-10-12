@@ -179,14 +179,18 @@ export function listRow(record: ModuleRecord): Row {
 /** The tabs of a generic record page. No timeline: a generic record has none. */
 export type ModuleTab = "overview" | "fields" | "related";
 
-/** Each field key whose definition is a lookup and whose value is set. */
+/**
+ * Each field key whose definition is a VISIBLE lookup and whose value is set.
+ * The Related tab draws visible fields only, so a hidden lookup must not make
+ * the tab show with nothing in it.
+ */
 export function lookupKeys(page: Pick<ModuleRecordPage, "record" | "field_defs">): string[] {
   return page.field_defs
-    .filter((d) => d.type === "lookup" && !isBlank(page.record.fields[d.key]))
+    .filter((d) => d.type === "lookup" && d.visible && !isBlank(page.record.fields[d.key]))
     .map((d) => d.key);
 }
 
-/** Overview and Fields, and Related only when a lookup holds a value. */
+/** Overview and Fields, and Related only when a visible lookup holds a value. */
 export function moduleTabs(page: Pick<ModuleRecordPage, "record" | "field_defs">): ModuleTab[] {
   return lookupKeys(page).length > 0 ? ["overview", "fields", "related"] : ["overview", "fields"];
 }
@@ -235,6 +239,41 @@ export function moduleFieldRows(page: Pick<ModuleRecordPage, "record" | "field_d
 export function moduleRelated(page: Pick<ModuleRecordPage, "record" | "field_defs" | "links">): ModuleFieldRow[] {
   const keys = new Set(lookupKeys(page));
   return moduleFieldRows(page).filter((row) => keys.has(row.key));
+}
+
+// ── The state of the record sheet ────────────────────────────────────────────
+
+/** What the sheet's read gives for a 404: the record is not in the mirror. */
+export const MODULE_NOT_FOUND = "not-found" as const;
+
+/** What the sheet draws: the page, a wait, a 404, or any other failure. */
+export type ModuleSheetState =
+  | { kind: "page"; page: ModuleRecordPage }
+  | { kind: "loading" }
+  | { kind: "missing" }
+  | { kind: "failed" };
+
+/**
+ * The sheet's state from its read. The id compares with no regard to case,
+ * because the gateway returns a UUID in lower case. Only a 404 is "missing".
+ * Any other error is "failed", and the sheet offers a retry.
+ */
+export function moduleSheetState(
+  data: ModuleRecordPage | typeof MODULE_NOT_FOUND | undefined,
+  error: string | null,
+  id: string,
+): ModuleSheetState {
+  if (data === MODULE_NOT_FOUND) return { kind: "missing" };
+  if (data && data.record.id.toLowerCase() === id.toLowerCase()) return { kind: "page", page: data };
+  if (error) return { kind: "failed" };
+  return { kind: "loading" };
+}
+
+/** The title of the sheet when it has no record to name. */
+export function sheetTitle(state: Exclude<ModuleSheetState, { kind: "page" }>): string {
+  if (state.kind === "missing") return "Not found";
+  if (state.kind === "failed") return "This record did not load. Try again.";
+  return "Loading…";
 }
 
 /** The most fields the Overview tab shows. The Fields tab shows them all. */

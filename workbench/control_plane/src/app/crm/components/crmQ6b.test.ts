@@ -12,12 +12,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   MODULE_COLUMNS,
+  MODULE_NOT_FOUND,
   linkOf,
   listRow,
+  lookupKeys,
   moduleFieldRows,
   moduleListQuery,
   moduleRailRows,
+  moduleRelated,
+  moduleSheetState,
   moduleTabs,
+  sheetTitle,
   shownModuleTab,
   type CrmModule,
   type ModuleRecordPage,
@@ -296,6 +301,50 @@ describe("the lookup links", () => {
     expect(moduleTabs(noLookup)).toEqual(["overview", "fields"]);
     expect(shownModuleTab(noLookup, "related")).toBe("overview");
     expect(shownModuleTab(PAGE, "timeline")).toBe("overview");
+  });
+
+  it("counts only a visible lookup for the Related tab (review note 1)", () => {
+    // The only lookup that holds a value is hidden, so Related would be empty.
+    const hidden = {
+      ...PAGE,
+      record: { ...PAGE.record, fields: { Subject: "Quote 1", Deal_Name: { id: "d1", name: "Bosch" } } },
+      field_defs: PAGE.field_defs.map((d) => (d.key === "Deal_Name" ? { ...d, visible: false } : d)),
+    };
+    expect(lookupKeys(hidden)).toEqual([]);
+    expect(moduleTabs(hidden)).toEqual(["overview", "fields"]);
+    expect(moduleRelated(hidden)).toEqual([]);
+  });
+});
+
+describe("the state of the generic record sheet (review notes 2 and 3)", () => {
+  const LOWER = "0b0e8c1e-5c7a-4f6e-9a35-c3d0c0de0001";
+  const page = { ...PAGE, record: { ...PAGE.record, id: LOWER } };
+
+  it("reads ?mrec= with an uppercase id as the lowercase id the gateway returns", () => {
+    expect(parseView(`mrec=Quotes:${LOWER.toUpperCase()}`).moduleRecord).toEqual({
+      module: "Quotes",
+      id: LOWER,
+    });
+  });
+
+  it("matches the record to the asked id with no regard to case", () => {
+    expect(moduleSheetState(page, null, LOWER.toUpperCase())).toEqual({ kind: "page", page });
+    expect(moduleSheetState(page, null, "another-id")).toEqual({ kind: "loading" });
+  });
+
+  it("says Not found only for a 404, and offers a retry for any other error", () => {
+    expect(moduleSheetState(MODULE_NOT_FOUND, null, LOWER)).toEqual({ kind: "missing" });
+    expect(moduleSheetState(undefined, "Gateway error 500", LOWER)).toEqual({ kind: "failed" });
+    expect(moduleSheetState(undefined, null, LOWER)).toEqual({ kind: "loading" });
+    expect(sheetTitle({ kind: "missing" })).toBe("Not found");
+    expect(sheetTitle({ kind: "failed" })).toBe("This record did not load. Try again.");
+  });
+
+  it("draws Not found and Retry in the sheet from those states", () => {
+    const src = readFileSync(new URL("./ModuleRecordSheet.tsx", import.meta.url), "utf8");
+    expect(src).toMatch(/moduleSheetState\(/);
+    expect(src).toMatch(/refresh/);
+    expect(src).not.toMatch(/res\.error \? "Not found"/);
   });
 
   it("draws the record page read only, with the header and the links as buttons", () => {

@@ -264,7 +264,8 @@ export function parseModuleRecord(value: string | null): OpenModuleRecord | null
   const at = value.indexOf(":");
   if (at < 0) return null;
   const name = value.slice(0, at);
-  const id = value.slice(at + 1);
+  // The gateway returns a UUID in lower case, so the sheet compares the same form.
+  const id = value.slice(at + 1).toLowerCase();
   return isModuleName(name) && id ? { module: name, id } : null;
 }
 
