@@ -252,6 +252,14 @@ DELETED_MARGIN = timedelta(minutes=10)
 #: A test sets this to put a fake transport under every provider call.
 TRANSPORT: httpx.AsyncBaseTransport | None = None
 
+#: The mode, read by each page with a share lock (CRM-X0). ``POST /crm/reset``
+#: holds the row ``FOR UPDATE`` while it deletes, so a page never writes a
+#: record that the start over does not see.
+MODE_SHARE_SQL = (
+    "SELECT mode FROM crm_settings "
+    "WHERE organization_id = CAST(:org AS uuid) FOR SHARE"
+)
+
 
 class NotConnected(Exception):
     """The organization has no live connection to the provider."""
@@ -613,12 +621,18 @@ class _Ctx:
         heartbeat, in the same transaction as the page.
 
         On a failure the in-memory counts return to what the last commit holds.
+
+        The page reads the mode ``FOR SHARE`` (CRM-X0). The start over takes the
+        same row ``FOR UPDATE``, so it waits until this page commits, and a page
+        that starts after it reads the new mode and stops here.
         """
         snapshot = copy.deepcopy(self.counts)
         try:
             async with tenant_session(self.org) as db:
-                settings = await crm_access.read_settings(db, self.org)
-                if getattr(settings, "mode", None) != "mirror":
+                mode = (await db.execute(
+                    text(MODE_SHARE_SQL), {"org": self.org},
+                )).scalar()
+                if mode != "mirror":
                     raise ModeChanged()
                 yield db
                 await runs.progress(
@@ -2212,6 +2226,7 @@ __all__ = [
     "DAILY_CREDIT_BUDGET",
     "ENTITY_ORDER",
     "INTERVAL_SECONDS",
+    "MODE_SHARE_SQL",
     "SLUGS",
     "SLUG_ORDER",
     "ModeChanged",

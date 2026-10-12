@@ -21,9 +21,14 @@ and §7.3. The shape follows :mod:`gateway.connections.github`.
   of the org into the registry on a read, once, and leaves the old row. A
   delete removes the old row too, so a removed server cannot come back. A
   follow-up drops the table (HANDOFF H-301).
-* **Room for H-300.** ``provider_meta.always_confirm`` is reserved for the
-  "always confirm" setting that the owner has not decided. Nothing here
-  writes or reads it yet.
+* **Always confirm (H-300).** ``provider_meta.always_confirm`` is the admin's
+  switch: with it ``true``, every tool of the server needs the member's card,
+  whatever its hints say (``orchestrator._maf_mcp.McpPermissionGate``). A new
+  server gets ``true`` (:func:`save`). A row with no key reads as ``false``,
+  so a server that was stored before H-300 keeps its behaviour, and the move
+  of an old row writes ``false`` for the same reason. Any value but a real
+  ``false`` reads as ``true``, so a damaged value fails closed.
+  :func:`set_always_confirm` changes it on one row.
 * **No secret out.** No function here logs a header or puts one in an error.
   :class:`StoredServer` keeps the headers out of its ``repr``.
 """
@@ -101,6 +106,8 @@ class StoredServer:
     headers: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    #: H-300. False is the reading of a row with no key.
+    always_confirm: bool = False
 
 
 def provider_for(name: str) -> str:
@@ -144,7 +151,7 @@ def _scope(raw: Any) -> tuple[str, ...]:
 
 def _meta(
     name: str, label: str, description: str, transport: str, url: str,
-    agent_scope: Sequence[str],
+    agent_scope: Sequence[str], *, always_confirm: bool,
 ) -> dict[str, Any]:
     """The non-secret fields. No header name or value goes here."""
     return {
@@ -154,7 +161,17 @@ def _meta(
         "transport": transport,
         "url": url,
         "agent_scope": list(agent_scope),  # [] stays [], no agent
+        "always_confirm": bool(always_confirm),
     }
+
+
+def _always_confirm(meta: dict[str, Any]) -> bool:
+    """The H-300 switch of one row. No key reads as false (the H-299
+    behaviour). A real ``false`` reads as false. Any other value reads as
+    true, so a damaged value asks for the card."""
+    if "always_confirm" not in meta:
+        return False
+    return meta["always_confirm"] is not False
 
 
 def _server(
@@ -174,6 +191,7 @@ def _server(
         headers=dict(headers) if with_headers else {},
         created_at=conn.created_at,
         updated_at=conn.updated_at,
+        always_confirm=_always_confirm(meta),
     )
 
 
@@ -220,9 +238,11 @@ async def migrate_legacy(db: Any, org: str) -> int:
             continue
         saved = await store.save_headers(
             db, org, provider_for(name), OWNING_APP, _str_map(row.headers),
+            # H-300: a moved server keeps its behaviour, so the switch is off.
             provider_meta=_meta(
                 name, str(row.label or name), str(row.description or ""),
                 str(row.transport), str(row.url), _scope(row.agent_scope),
+                always_confirm=False,
             ),
             connected_by=MIGRATED_BY, enabled=bool(row.enabled), only_if_absent=True,
         )
@@ -306,11 +326,13 @@ async def save(
     transport: str = "http-sse",
     agent_scope: Sequence[str] = ("*",),
     enabled: bool = True,
+    always_confirm: bool = True,
 ) -> StoredServer:
     """Add a server of *org*, or replace the one of that name.
 
     The caller checks the name, the transport and the URL first. The headers
-    go into the blob only.
+    go into the blob only. *always_confirm* is the H-300 switch, and a new
+    server gets ``True`` unless the caller says otherwise.
     """
     if not NAME_RE.match(name or ""):
         raise ValueError("the MCP server name does not match the name rule")
@@ -320,12 +342,37 @@ async def save(
     async with tenant_session(org) as db:
         conn = await store.save_headers(
             db, org, provider_for(name), OWNING_APP, headers,
-            provider_meta=_meta(name, label, description, transport, url, agent_scope),
+            provider_meta=_meta(name, label, description, transport, url, agent_scope,
+                                always_confirm=always_confirm),
             connected_by=connected_by, enabled=enabled,
         )
     if conn is None:  # a replace always returns the row
         raise RuntimeError("the MCP server was not saved")
     return _server(conn, dict(headers or {}), with_headers=False)
+
+
+async def set_always_confirm(org: str, name: str, value: bool) -> StoredServer | None:
+    """Set the H-300 switch of the server *name* of *org*. ``None`` when *org*
+    holds no such server.
+
+    It changes the one key in ``provider_meta`` and nothing else: the headers,
+    the status and the other fields stay. A disabled server can change too.
+    An old ``mcp_servers`` row of *org* moves first, so the console can set the
+    switch of a server that it listed. The statement names the org, and
+    ``tenant_session(org)`` binds row level security, so another org's server
+    of the same name is never changed.
+    """
+    if not NAME_RE.match(name or ""):
+        return None
+    org = _org(org)
+    async with tenant_session(org) as db:
+        await migrate_legacy(db, org)
+        conn = await store.merge_meta_by_key(
+            db, org, provider_for(name), OWNING_APP, {"always_confirm": bool(value)},
+        )
+    if conn is None:
+        return None
+    return _server(conn, {}, with_headers=False)
 
 
 async def remove(org: str, name: str) -> bool:

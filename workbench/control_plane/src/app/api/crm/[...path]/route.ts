@@ -19,6 +19,18 @@ import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * The routes whose body this proxy STREAMS instead of reading whole (WS-53
+ * CRM-X0 review P2). `export/all.zip` is every CRM record of the org. Read
+ * whole, it would sit in this server's memory and meet the 30 s limit. The
+ * gateway streams it, so this proxy hands the same stream on. A refusal from
+ * the same route is JSON, and it still takes the buffered path below.
+ */
+const STREAMED_PATHS = new Set(["export/all.zip"]);
+
+/** How long a streamed download may run. */
+const STREAM_TIMEOUT_MS = 10 * 60_000;
+
 function buildUpstreamUrl(path: string[], req: NextRequest): string {
   const base = `${GATEWAY_URL}/crm/${path.join("/")}`;
   const qs = req.nextUrl.searchParams.toString();
@@ -34,6 +46,7 @@ async function forward(
   const refused = refuseUnsafePath(path);
   if (refused) return refused;
   const upstream = buildUpstreamUrl(path, req);
+  const streamed = method === "GET" && STREAMED_PATHS.has(path.join("/"));
   try {
     const init: RequestInit = {
       method,
@@ -43,7 +56,7 @@ async function forward(
           ? {}
           : { "Content-Type": "application/json" }),
       },
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(streamed ? STREAM_TIMEOUT_MS : 30_000),
     };
     if (method !== "GET" && method !== "DELETE") {
       const body = await req.json().catch(() => ({}));
@@ -66,6 +79,18 @@ async function forward(
     // same bytes to `NextResponse` is what makes the downloaded file identical
     // to the one the endpoint produced. Fence: `src/lib/export.test.ts` runs
     // this proxy end to end over a BOM'd body.
+    if (streamed && res.ok && res.body) {
+      // The bytes go on as they arrive. Nothing here decodes them, so the
+      // BOM rule below holds for a stream too.
+      const headers: Record<string, string> = {
+        "Content-Type": res.headers.get("content-type") ?? "application/octet-stream",
+      };
+      const disposition = res.headers.get("content-disposition");
+      if (disposition) headers["Content-Disposition"] = disposition;
+      const noSniff = res.headers.get("x-content-type-options");
+      if (noSniff) headers["X-Content-Type-Options"] = noSniff;
+      return new NextResponse(res.body, { status: res.status, headers });
+    }
     const buf = await res.arrayBuffer();
     // 204 and every other empty body: no content type to guess at, and
     // `NextResponse.json("")` would answer `""` where the caller expects

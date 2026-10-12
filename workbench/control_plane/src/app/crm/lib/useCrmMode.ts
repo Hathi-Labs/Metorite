@@ -16,6 +16,7 @@ import { startPoller } from "./poller";
 import { isRunning, type SyncHealth } from "./syncHealth";
 import type { FieldDef } from "./fields";
 import type { CrmOwner } from "./filterBar";
+import type { RecordCounts } from "./setup";
 import type { DealPipeline, EntitySlug } from "./types";
 import {
   POLL_MS,
@@ -239,4 +240,24 @@ export function useFieldDefs(entity: EntitySlug | null): FieldDefsState {
     () => api.listFields(entity!).catch(() => null),
   );
   return { defs: res.data ?? null, loading: entity !== null && res.loading };
+}
+
+const KEY_RECORD_COUNTS = "crm:record-counts";
+
+export type RecordCountsState = {
+  counts: RecordCounts | null;
+  loading: boolean;
+  refresh: () => void;
+};
+
+/**
+ * The record counts of the setup hub (CRM-X0). Admin only. `invalidateCrmMode`
+ * wakes it with every other CRM read, so a start over shows 0 at once.
+ */
+export function useRecordCounts(enabled: boolean): RecordCountsState {
+  const res = useCachedResource<RecordCounts>(
+    enabled ? KEY_RECORD_COUNTS : null,
+    api.getRecordCounts,
+  );
+  return { counts: res.data ?? null, loading: enabled && res.loading, refresh: res.refresh };
 }

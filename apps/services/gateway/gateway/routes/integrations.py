@@ -40,7 +40,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from gateway import outbound_guard
 from gateway.connections import github as github_connection
 from gateway.db import current_tenant, tenant_session
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 from sqlalchemy import text
 
 _log = get_logger("gateway.integrations")
@@ -1800,6 +1800,40 @@ class McpServerRequest(BaseModel):
     headers: dict[str, str] = {}
     agent_scope: list[str] = ["*"]
     enabled: bool = True
+    #: H-300: every tool of the server needs the member's card, whatever its
+    #: hints say. A new server is set to always confirm unless the admin
+    #: says no.
+    #: Strict, as the PATCH is: "false", "off" or 0 is 422, never "off".
+    always_confirm: StrictBool = True
+
+
+class McpAlwaysConfirmRequest(BaseModel):
+    """The body of ``PATCH /integrations/mcp/{name}`` (H-300)."""
+
+    always_confirm: StrictBool
+
+
+def audit_integration(
+    user: UserContext, org: str, target: str, *, action: str, **payload: Any,
+) -> None:
+    """One audit event of the console: who, what, when, which organization.
+
+    ``specs/integrations_console.md`` §4.4. The one helper of the Integrations
+    routes. A disconnect and the H-300 switch both write through it. A
+    payload holds no secret.
+    """
+    try:
+        from acb_audit import AuditEvent, record  # noqa: PLC0415
+
+        record(AuditEvent(
+            actor=f"user:{user.email}",
+            action=action,
+            target=target,
+            payload={"organization_id": org, **payload},
+            organization_id=org,
+        ))
+    except Exception as exc:  # an audit backend that is down must not block this
+        _log.warning("connections.audit_failed", error=type(exc).__name__)
 
 
 def mcp_out(server: Any) -> dict[str, Any]:
@@ -1814,6 +1848,7 @@ def mcp_out(server: Any) -> dict[str, Any]:
         "transport": server.transport, "command": None, "url": server.url,
         "env_var_names": [], "header_names": list(server.header_names),
         "agent_scope": list(server.agent_scope), "enabled": server.enabled,
+        "always_confirm": bool(server.always_confirm),
         "created_at": str(server.created_at) if server.created_at else None,
         "updated_at": str(server.updated_at) if server.updated_at else None,
     }
@@ -1903,18 +1938,68 @@ async def register_mcp_server(
             ) from None
 
     try:
-        await mcp_registry.save(
+        saved = await mcp_registry.save(
             org, name=req.name, url=req.url or "", headers=req.headers,
             connected_by=user.email, label=req.label or req.name,
             description=req.description, transport=req.transport,
             agent_scope=req.agent_scope, enabled=req.enabled,
+            always_confirm=req.always_confirm,
         )
-        _log.info("mcp.registered", name=req.name, actor=user.email)
-        return {"ok": True, "name": req.name}
     except Exception as exc:
         # The class of the error only: a DB message can echo a bound header.
         _log.warning("mcp.register_failed", name=req.name, error=type(exc).__name__)
         raise HTTPException(500, "The MCP server could not be saved.") from exc
+    # H-300: a register can turn the switch off, on a new server or on a
+    # re-POST of one that exists, so it writes an audit event as the PATCH
+    # does. The insert sets both stamps to one now(). An update keeps
+    # ``created_at``. No header and no url go into the payload.
+    stamp = getattr(saved, "created_at", None)
+    created = stamp is not None and stamp == getattr(saved, "updated_at", None)
+    audit_integration(user, org, f"mcp:{req.name}", action="integration.mcp.registered",
+                      always_confirm=req.always_confirm,
+                      outcome="created" if created else "updated")
+    _log.info("mcp.registered", name=req.name, actor=user.email,
+              always_confirm=req.always_confirm)
+    return {"ok": True, "name": req.name}
+
+
+@router.patch(
+    "/mcp/{name}", summary="Set the always-confirm switch of an MCP server",
+    dependencies=[_REQUIRE_MANAGE],
+)
+async def set_mcp_always_confirm(
+    name: str,
+    req: McpAlwaysConfirmRequest,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Turn the "always confirm" switch of one server of the caller's org on or off.
+
+    H-300 (``agent_architecture.md`` §12.2 WS-8c, item 31). With the switch on,
+    every tool of the server waits for the member's card, whatever hints the
+    server sends. The change goes through ``gateway.connections.mcp`` inside
+    ``tenant_session(org)``, so a name that another organization holds is
+    404, and its row stays. It changes the switch only: the headers, the URL
+    and the status stay. With no tenant bound, it is 404 and nothing is
+    written. Each change writes one audit event.
+    """
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    try:
+        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+        server = await mcp_registry.set_always_confirm(org, name, req.always_confirm)
+    except Exception as exc:
+        # The class of the error only: a DB message can echo a bound value.
+        _log.warning("mcp.always_confirm_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be changed.") from exc
+    if server is None:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    audit_integration(user, org, f"mcp:{server.name}", action="integration.mcp.always_confirm",
+                      always_confirm=server.always_confirm)
+    _log.info("mcp.always_confirm_set", name=server.name, actor=user.email,
+              always_confirm=server.always_confirm)
+    return {"ok": True, "name": server.name, "always_confirm": server.always_confirm}
 
 
 @router.delete(
