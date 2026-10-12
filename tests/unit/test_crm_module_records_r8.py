@@ -312,6 +312,19 @@ async def test_a_second_sync_with_no_change_adds_no_row(mz) -> None:
     assert _count(p, "crm_module_records", p.org_a) == 3
     assert again.counts["module:Products"]["upserted"] == 0
 
+    # A full re-read of the same records (the module cursors are gone) still
+    # adds no row and rewrites none: the door keys on the record and skips a
+    # write that changes nothing.
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_sync_cursors WHERE organization_id = "
+                       "CAST(:o AS uuid) AND module LIKE 'zoho:module:%'"), {"o": p.org_a})
+    full = await _run(p.org_a)
+    assert full.status == "ok"
+    assert full.counts["module:Products"]["seen"] == 2
+    assert full.counts["module:Products"]["upserted"] == 0
+    assert full.counts["module:Products"]["failed"] == 0
+    assert {k: (r[10], r[9]) for k, r in _records(p, p.org_a).items()} == before
+
 
 # ── 4. A change and a delete ─────────────────────────────────────────────────
 
