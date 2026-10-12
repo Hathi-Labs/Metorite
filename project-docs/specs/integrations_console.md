@@ -2,7 +2,7 @@
 
 > **Board row:** WS-54 · **Created:** 2026-10-11 · **Owner question:** 2026-10-11
 > **Status:** ✅ **IN-0 MERGED 2026-10-11** (#859). Its part (e) is held
-> behind H-244. 🔨 **IN-1 BUILT 2026-10-11** (#878). 🔨 **IN-2 BUILT 2026-10-11**. IN-3 to IN-7 are a 📝 PLAN, verified against code and
+> behind H-244. 🔨 **IN-1 BUILT 2026-10-11** (#878). 🔨 **IN-2 BUILT 2026-10-11**. ✅ **IN-7 built 2026-10-11**. IN-3 to IN-6 are a 📝 PLAN, verified against code and
 > production on 2026-10-11 at `origin/main` `ba6bbb7b6`. The MAF MCP client
 > and IN-D6 moved to WS-8c on 2026-10-11 (`agent_architecture.md` §12.2).
 
@@ -250,7 +250,7 @@ IN-0 comes first and alone, because it closes live holes.
 | **IN-4** | **Move the MCP rows into `integration_connections`, and repoint the WS-8c reader.** The MAF MCP client and the IN-D6 fix of register and install moved to WS-8c on 2026-10-11 (`agent_architecture.md` §12.2). IN-4 changes the store that WS-8c reads, and nothing else. Registry MCP is MAF-only: since the second review of #869, a registry row never reaches a Copilot agent, and `POST /mcp` refuses a URL that the guard refuses | 🟢 AGENT-SAFE | The WS-8c fences pass against the new store. A registered server reaches a MAF agent in its org only. Its header never reaches a log |
 | **IN-5** | **Retire the old writes.** Remove the env-write code, `_persist_tokens`, the dead OAuth route, and `configure_integrations`'s copy into the environment for customer keys. Move `COPILOT_CHAT_MODEL` out of the deployment `.env` (IN-D17) | 🔴 §6 gate (f) | `os.environ[` with a customer key appears nowhere outside the operator plane (fence) |
 | **IN-6** | **Custom APIs and plugins.** Keep them with a reader and per-org keys, or retire them | 🔴 owner (Q2) | Per the answer |
-| **IN-7** | **GitHub per org.** The device flow writes a member or org connection, not the deployment token. connect-cli goes. `GET /github/account` shows the org's own connection, never the operator's account (IN-D18) | 🟢 AGENT-SAFE | Two orgs hold two tokens. The server's own `gh` token is never imported |
+| **IN-7** ✅ built 2026-10-11 | **GitHub per org.** The device flow writes a member or org connection, not the deployment token. connect-cli goes. `GET /github/account` shows the org's own connection, never the operator's account (IN-D18). **Built as (2026-10-11):** The device poll saves an org connection (`github`, `integrations`) through `connections/store.py`. The login and the scopes sit in the row. `connections/github.py` is the one reader, `token_for_org(org)`. The agent config fetch reads it, and with no connection it sends no token. `GET /github/account` and `GET /test` read the org row only and run no `gh`. `DELETE /integrations/github` deletes the blob. GitHub cannot revoke a device-flow token without the client secret, so the answer says `revoked_at_github: false`. An old `provider_keys` `github:token` row moves into the store on the next read. That fallback read stays for one release. The slice adds no migration. The operator plane keeps `GITHUB_TOKEN`: the model list, the runtime check, the self-mutation PR, the LiteLLM route, the Copilot SDK runtime and the agent-repo clone in `loader.py`. A clone of a private customer repo waits for IN-3. A token that a member saves through configure or `PUT /keys` still lands in `provider_keys`, and the reader moves it. IN-5 retires that path. Fence: `tests/unit/test_github_per_org_r8.py`. | 🟢 AGENT-SAFE | Two orgs hold two tokens. The server's own `gh` token is never imported |
 
 ---
 
