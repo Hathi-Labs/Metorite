@@ -306,16 +306,31 @@ async def test_a_timeout_error_inside_the_run_is_not_the_server_bound(monkeypatc
 # ── email.draft_timing ──────────────────────────────────────────────────────
 
 _PLANTED = ("SUBJWORD41", "BODYWORD42", "INSTRWORD43", "plant44@x.test",
-            "DRAFTWORD45", "DELTAWORD46")
+            "DRAFTWORD45", "DELTAWORD46", "FETCHWORD48", "sender49@x.test")
+
+#: A2e: every key of `email.draft_timing` (§17.8).
+_TIMING_KEYS = ("context_ms", "decide_ms", "fetch_ms", "first_chunk_ms",
+                "total_ms", "outcome", "mode")
 
 
-async def _timed_run(req, user, on_activity=None, on_delta=None):
-    await on_activity({"kind": "stage", "id": "context", "status": "start"})
-    await asyncio.sleep(0.08)
-    await on_activity({"kind": "stage", "id": "draft", "status": "start"})
-    await asyncio.sleep(0.01)
-    await on_delta("content", "DELTAWORD46")
-    return {"draft": "Hello DRAFTWORD45"}
+def _timed_run_factory(hydrate_db: Any = None):
+    """A stand-in for ``_compose_assist_run``. With ``hydrate_db`` it runs a
+    real ``hydrate_message_body`` in its context step, as a reply does."""
+
+    async def _timed_run(req, user, on_activity=None, on_delta=None):
+        await on_activity({"kind": "stage", "id": "context", "status": "start"})
+        if hydrate_db is not None:
+            await core.hydrate_message_body(hydrate_db, "m-1", "owner@a.test")
+        await asyncio.sleep(0.08)
+        await on_activity({"kind": "stage", "id": "draft", "status": "start"})
+        await asyncio.sleep(0.01)
+        await on_delta("content", "DELTAWORD46")
+        return {"draft": "Hello DRAFTWORD45"}
+
+    return _timed_run
+
+
+_timed_run = _timed_run_factory()
 
 
 def _timing_req() -> drafting.ComposeAssistRequest:
@@ -323,23 +338,67 @@ def _timing_req() -> drafting.ComposeAssistRequest:
                 instruction="INSTRWORD43", to=["plant44@x.test"])
 
 
-async def test_the_timing_line_has_its_keys_and_no_tenant_text(monkeypatch) -> None:
-    monkeypatch.setattr(drafting, "_compose_assist_run", _timed_run)
+async def _timing_line(monkeypatch, run: Any, req: Any) -> dict[str, Any]:
+    monkeypatch.setattr(drafting, "_compose_assist_run", run)
     with structlog.testing.capture_logs() as logs:
-        resp = await drafting.compose_assist_stream(_timing_req(), _USER)
+        resp = await drafting.compose_assist_stream(req, _USER)
         await _drain(resp.body_iterator)
-    line = next(e for e in logs if e["event"] == "email.draft_timing")
-    for key in ("context_ms", "first_chunk_ms", "total_ms", "outcome", "mode"):
+    return next(e for e in logs if e["event"] == "email.draft_timing")
+
+
+async def test_the_timing_line_has_its_keys_and_no_tenant_text(monkeypatch) -> None:
+    """A2e. The draft fetches a body with a planted word and a planted
+    sender, and none of the planted words reaches the line."""
+
+    async def body_with_plants(_pmid: str) -> Any:
+        await asyncio.sleep(0.06)
+        return SimpleNamespace(
+            body_text="From sender49@x.test: FETCHWORD48", body_html=None)
+
+    db = _hydrate_world(monkeypatch, _provider(get_message_body=body_with_plants))
+    line = await _timing_line(monkeypatch, _timed_run_factory(db), _timing_req())
+    for key in _TIMING_KEYS:
         assert key in line, (key, line)
     assert line["outcome"] == "done"
-    # Windows ticks the clock at about 15.6 ms, so the floor has a margin.
+    # Windows ticks the clock at about 15.6 ms, so each floor has a margin.
     assert line["context_ms"] >= 50
     assert line["total_ms"] >= line["context_ms"]
     assert isinstance(line["first_chunk_ms"], int)
+    assert isinstance(line["fetch_ms"], int) and line["fetch_ms"] >= 40
+    assert line["fetch_ms"] <= line["context_ms"]
+    assert line["decide_ms"] is None, "decide_ms stays null until PR-C"
     text = repr(line)
     for word in _PLANTED:
         assert word not in text, word
     assert "owner@a.test" not in text
+
+
+async def test_fetch_ms_is_null_when_no_fetch_ran(monkeypatch) -> None:
+    line = await _timing_line(monkeypatch, _timed_run, _timing_req())
+    assert line["fetch_ms"] is None
+    assert line["decide_ms"] is None
+
+
+async def test_a_stored_body_makes_no_fetch_and_no_fetch_ms(monkeypatch) -> None:
+    stored = SimpleNamespace(body_text="Already here.", body_html=None,
+                             snippet="", received_at=None, stored_bytes=0)
+    db = AsyncMock()
+    db.execute.side_effect = [_one(stored)]
+    line = await _timing_line(monkeypatch, _timed_run_factory(db), _timing_req())
+    assert line["fetch_ms"] is None
+
+
+async def test_a_hydrate_outside_the_route_records_nothing(monkeypatch) -> None:
+    """Each other caller of the hydrate (the rule draft, the nudge) sets no
+    list, so the hydrate records no time anywhere."""
+
+    async def body_only(_pmid: str) -> Any:
+        return SimpleNamespace(body_text="text", body_html=None)
+
+    db = _hydrate_world(monkeypatch, _provider(get_message_body=body_only))
+    assert core.body_fetch_times.get() is None
+    await core.hydrate_message_body(db, "m-1", "owner@a.test")
+    assert core.body_fetch_times.get() is None
 
 
 async def test_the_timing_line_names_the_timeout_reason(monkeypatch) -> None:

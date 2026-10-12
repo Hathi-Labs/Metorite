@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from contextlib import asynccontextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -381,6 +383,20 @@ async def _savepoint(db: Any):
 #: for each phase, not a total. Fence: tests/unit/test_email_draft_no_stall.py.
 BODY_FETCH_TIMEOUT_S = 8.0
 
+#: The times, in ms, of each provider body fetch of `hydrate_message_body` in
+#: this context. The stream route sets a list, and `email.draft_timing` sums it
+#: as `fetch_ms`. With no list set (each other caller) nothing is recorded. A
+#: hydrate that finds the body stored makes no fetch and records nothing.
+body_fetch_times: ContextVar[list[int] | None] = ContextVar(
+    "email_body_fetch_times", default=None)
+
+
+def _note_body_fetch(started: float) -> None:
+    """Record the time of one provider body fetch, if a caller asked for it."""
+    times = body_fetch_times.get()
+    if times is not None:
+        times.append(int((time.monotonic() - started) * 1000))
+
 
 async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str:
     """Ensure a message's full ``body_text`` is present, fetching it if needed.
@@ -423,6 +439,8 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
         return row.body_text  # already hydrated
     store_body = not ingest_storage.at_limit(getattr(row, "stored_bytes", None))
     # Header-only row: fetch the full body from the provider and persist it.
+    # `email.draft_timing` reads the time of this path as `fetch_ms`.
+    fetch_started = time.monotonic()
     try:
         # The savepoint covers the UPDATE and the creds persist on exit, so a
         # failed write here never aborts the caller's transaction.
@@ -484,6 +502,8 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
             "hydrate_message_body.failed", message_id=message_id, error=str(exc)[:200],
         )
         return row.body_text or ""
+    finally:
+        _note_body_fetch(fetch_started)
 
 
 # ── DB (the one shared gateway engine — gateway/db.py, BO-10) ────────────────

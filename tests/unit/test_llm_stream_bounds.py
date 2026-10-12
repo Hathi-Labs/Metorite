@@ -196,19 +196,26 @@ async def test_a_slow_open_past_the_total_bound_is_a_total_timeout(provider) -> 
 
 async def test_reasoning_chunks_reset_the_idle_timer(provider) -> None:
     """A reasoning model thinks for longer than one idle bound before it
-    writes. Each reasoning chunk is a sign of life, so the stream lives."""
+    writes. Each reasoning chunk is a sign of life, so the stream lives.
+
+    The first-chunk bound (0.15 s) is shorter than the reasoning (8 chunks of
+    0.06 s, about 0.48 s). So the stream lives only if the FIRST reasoning
+    chunk ends the first-chunk phase, and each later one resets the gap. A
+    drafter that counts content chunks only fails here (mutation M4a)."""
     steps = [(0.06, _chunk(reasoning="thinking")) for _ in range(8)]
     steps.append((0.06, _chunk(content="Hi Ravi")))
     provider["stream"] = _Stream(steps)
-    text, _model = await _run(first_chunk_s=5.0, idle_s=0.15, total_s=5.0)
+    text, _model = await _run(first_chunk_s=0.15, idle_s=0.15, total_s=5.0)
     assert text == "Hi Ravi"
 
 
 async def test_an_empty_chunk_resets_the_idle_timer(provider) -> None:
+    """The same rule for a chunk with no choices: 6 of them take about
+    0.36 s, past the first-chunk bound of 0.15 s."""
     steps = [(0.06, SimpleNamespace(choices=[])) for _ in range(6)]
     steps.append((0.06, _chunk(content="done")))
     provider["stream"] = _Stream(steps)
-    text, _model = await _run(first_chunk_s=5.0, idle_s=0.15, total_s=5.0)
+    text, _model = await _run(first_chunk_s=0.15, idle_s=0.15, total_s=5.0)
     assert text == "done"
 
 

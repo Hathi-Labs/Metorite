@@ -42,6 +42,7 @@ from gateway.routes.email.core import (
     _row_to_message,
     _savepoint,
     _tenant_session,
+    body_fetch_times,
     email_memory_scope,
     provider_session,
     router,
@@ -1992,10 +1993,14 @@ _TIMED_MODES = frozenset({"new", "reply", "forward"})
 
 def _log_draft_timing(
     marks: dict[str, float], end: float, *, outcome: str, mode: str,
+    fetches: list[int] | None = None,
 ) -> None:
     """Log ``email.draft_timing``: the stage durations in ms and the outcome.
 
     ``context_ms`` runs from the request to the start of the model step.
+    ``fetch_ms`` is the time of the provider body fetches of
+    ``hydrate_message_body`` in the context step, and ``None`` when no fetch
+    ran. ``decide_ms`` is ``None`` until PR-C adds the ``decide`` choice.
     ``first_chunk_ms`` runs from the start of the model step to the first
     chunk, and is ``None`` when no chunk came. The line holds no tenant text:
     no subject, no body, no address and no instruction.
@@ -2010,6 +2015,8 @@ def _log_draft_timing(
     _log.info(
         "email.draft_timing",
         context_ms=_ms(start, draft_at if draft_at is not None else end),
+        decide_ms=None,
+        fetch_ms=sum(fetches) if fetches else None,
         first_chunk_ms=_ms(draft_at, first),
         total_ms=_ms(start, end),
         outcome=outcome,
@@ -2066,6 +2073,10 @@ async def compose_assist_stream(
     async def runner() -> None:
         outcome = "cancelled"
         bound = asyncio.timeout(SERVER_TOTAL_S)
+        # The task runs in its own copy of the context, so this list sees the
+        # body fetches of this draft only.
+        fetches: list[int] = []
+        body_fetch_times.set(fetches)
         try:
             async with bound:
                 result = await _compose_assist_run(
@@ -2098,7 +2109,8 @@ async def compose_assist_stream(
             _log.warning("email.compose_stream_failed", error=str(exc)[:200])
             await queue.put({"type": "error", "error": "draft failed"})
         finally:
-            _log_draft_timing(marks, loop.time(), outcome=outcome, mode=req.mode)
+            _log_draft_timing(marks, loop.time(), outcome=outcome, mode=req.mode,
+                              fetches=fetches)
             await queue.put(None)
 
     async def event_stream():
