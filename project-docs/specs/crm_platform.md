@@ -1995,7 +1995,7 @@ touched" sits before the converted badge. Two findings stay open. The search
 box makes the Closing range wrap at 1440, and a `blue` stage follows the accent
 until CRM-U3.
 
-### 19.6 CRM-X2: The CRM joins the shell
+### 19.6 CRM-X2: The CRM joins the shell (✅ built 2026-10-12)
 
 **Scope.**
 
@@ -2096,6 +2096,32 @@ the module note of `search.py` says.
 - `src/lib/runActivity.test.ts`, existing: the table gains
   `["crm-assistant", "/crm"]` (item 10).
 - `src/lib/shell/seams.test.ts`, existing: item 11.
+
+**Built as.** The scope and the eleven items are built. Each new fence went
+red first, or a mutation of the code made it red. The R8 suite also proves
+item 4 on a real database, and the sort and the merge of the §19.10 notes.
+`app/crm/components/crmX2.test.ts` holds the browser half. The slice adds no
+migration.
+
+Four rules came from the build.
+
+- `core.run_list` takes `rows_only`. It skips the count, the provider link and
+  the next activity, and `search_records` uses it.
+- The bar puts `/crm?do=<job>` in place of the whole query. So the page keeps
+  the view from before the job link, and `log-call` reads the open record
+  from it.
+- The jobs change the address with `history.replaceState`, as
+  `shell/doJob.tsx` does. No new `router.push` is in `app/crm/`.
+- The command bar gives focus back to `<main>` when it closes. So the page
+  waits until no dialog is open, and then it focuses the search box
+  (`lib/shellJobs.ts`, `afterDialogsClose`).
+
+The hint of `log-call` is one line above the Deals list, because the toast
+has no neutral kind. The gate mounts the four jobs from one list, so each job
+says why the CRM does not open. `agent: "crm-assistant"` feeds the run badge
+only, because the assistant dock (NS-6 slice 6b) is not built. One finding
+stays open: "Show all in …" of the shell loses its focus to `<main>` in the
+same way.
 
 ### 19.7 CRM-X3: Next activity on each card (✅ built 2026-10-12)
 
