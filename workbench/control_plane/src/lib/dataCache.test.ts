@@ -289,7 +289,7 @@ describe("guardedPut — a value that another key's read carried (MD-1b)", () =>
    * so does the needs view in it. It must not replace the needs entry.
    *
    * Mutation, run by hand (2026-10-13): make the returned put call `put`
-   * with no check, and the first and third tests fail.
+   * with no check, and the first, third and fourth tests fail.
    */
   const FEED = cacheKey("projects/shell/feed", { limit: 40 });
   const NEEDS = cacheKey("projects/shell/needs", { limit: 30 });

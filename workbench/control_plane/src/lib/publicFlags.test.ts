@@ -112,6 +112,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_SHELL_DOCK",
       // D99, NS-6 slice 6b: the chat bar and the one assistant.
       "NEXT_PUBLIC_SHELL_CHAT",
+      // WS-57 MD-1b: My Day draws the live feed.
+      "NEXT_PUBLIC_MY_DAY_FEED",
     ];
     const all = sourcesNamingAFlag()
       .map((f) => f.text)
