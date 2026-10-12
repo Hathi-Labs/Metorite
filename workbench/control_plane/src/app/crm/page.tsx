@@ -71,11 +71,14 @@ import {
 } from "./lib/connect";
 import {
   boardTotals,
+  orderLanes,
   missingRequiredFields,
   needsLostReason,
   type DealMove,
   type RequireableField,
 } from "./lib/board";
+import { readShowEmpty, showEmptyStages, visibleLanes, writeShowEmpty } from "./lib/emptyStages";
+import { chatScope } from "@/lib/sessions";
 import { activeChip, applyChip, chipsFor } from "./lib/filters";
 import { readColumns } from "./lib/fields";
 import { pruneFilters } from "./lib/filterBar";
@@ -386,6 +389,23 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   const totals = boardTotals(store.lanes);
   const leadCount = store.leadLanes.reduce((n, lane) => n + lane.count, 0);
+
+  // Empty stages on the Deals board (lib/emptyStages.ts). The member's choice
+  // is kept in this browser per member and organization. With no choice, the
+  // board hides them in Mirror mode and shows them in Native mode.
+  const { access } = useAccess();
+  const memberScope = chatScope(access.email, access.organization?.id);
+  const savedEmpty = useMemo(() => readShowEmpty(memberScope), [memberScope]);
+  const [pickedEmpty, setPickedEmpty] = useState<{ scope: string | null; show: boolean } | null>(
+    null
+  );
+  const showEmpty = showEmptyStages(
+    ctx.mode,
+    pickedEmpty && pickedEmpty.scope === memberScope ? pickedEmpty.show : savedEmpty
+  );
+  // The one column order, for this mode (lib/board.ts `orderLanes`).
+  const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode), showEmpty);
+  const dealBoard = boardOn && view.tab === "deals";
   const mayCreate = canCreate(ctx.mode);
 
   /** A board drop, or the status pill in the sheet. Same request either way. */
@@ -510,6 +530,24 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           onPick={(next) => go(selectLayout(view, next))}
           label={`${viewLabel(view.tab)} layout`}
         />
+      )}
+      {dealBoard && (
+        // Show or hide the stages that hold no deal under the filters on screen.
+        <Button
+          variant="ghost"
+          size={isMobile ? "icon-sm" : "sm"}
+          icon={showEmpty ? "Eye" : "EyeOff"}
+          selected={showEmpty}
+          aria-label="Show empty stages"
+          title={showEmpty ? "Hide the stages that hold no deal" : "Show the stages that hold no deal"}
+          onClick={() => {
+            const next = !showEmpty;
+            writeShowEmpty(memberScope, next);
+            setPickedEmpty({ scope: memberScope, show: next });
+          }}
+        >
+          {isMobile ? null : "Empty stages"}
+        </Button>
       )}
       {listEntity && (
         // WS-26i-export — the filter that is on screen, as a CSV.
@@ -663,7 +701,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           {boardOn ? (
             <KanbanBoard
               entity={view.tab === "leads" ? "leads" : "deals"}
-              lanes={view.tab === "leads" ? store.leadLanes : store.lanes}
+              lanes={view.tab === "leads" ? store.leadLanes : dealLanes}
+              hiddenEmpty={view.tab === "leads" ? 0 : store.lanes.length - dealLanes.length}
               loading={store.loading}
               readOnly={ctx.mode === "mirror"}
               onMove={
