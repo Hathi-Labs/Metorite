@@ -15,6 +15,7 @@ import { denialOf, isNotFound, type Denial } from "./access";
 import { startPoller } from "./poller";
 import { isRunning, type SyncHealth } from "./syncHealth";
 import type { FieldDef } from "./fields";
+import type { CrmOwner } from "./filterBar";
 import type { DealPipeline, EntitySlug } from "./types";
 import {
   POLL_MS,
@@ -211,6 +212,18 @@ export function usePipelines(enabled: boolean): PipelinesState {
     () => api.listPipelines().catch(() => null),
   );
   return { pipelines: res.data ?? null, loading: enabled && res.loading };
+}
+
+/**
+ * The owners the owner filter offers (CRM-X1). A failure reads as "no list":
+ * the filter then offers Anyone and Me, and the list still loads.
+ */
+export function useOwners(enabled: boolean): CrmOwner[] | null {
+  const res = useCachedResource<CrmOwner[] | null>(
+    enabled ? "crm:owners" : null,
+    () => api.listOwners().catch(() => null),
+  );
+  return res.data ?? null;
 }
 
 export type FieldDefsState = { defs: FieldDef[] | null; loading: boolean };

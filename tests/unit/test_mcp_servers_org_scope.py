@@ -16,6 +16,13 @@ else the async ``current_tenant()``) — NEVER from tool args / the message (R11
 org-less "global" servers: the filter is strictly ``organization_id = :org`` and
 the fail-closed subset (flag ON, no resolvable org) is EMPTY.
 
+⚠️ **WS-54 IN-4 (2026-10-12): the servers moved into the connection
+registry.** ``integration_connections`` has FORCE RLS, and the one reader
+``gateway.connections.mcp.servers_for_org`` opens ``tenant_session(org)``. So
+these fences seed the registry through the real writer, and run the reader
+as the non-privileged role through :func:`registry_on_promoted`. The
+"not vacuous" check reads both orgs' rows as the admin, who bypasses RLS.
+
 ⚠️ **WS-8c review round 2 (2026-10-11): registry MCP is MAF-only.** A
 Copilot agent now gets NO registry server. It logs each in-scope row of the
 run's org as ``mcp.copilot_registry_skipped`` and drops it. So these fences
@@ -53,13 +60,14 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-import acb_graph
 from acb_common.db import bind_tenant, clear_tenant, release_tenant
 from orchestrator import executor
 from orchestrator._tool_injection import _inject_mcp_servers
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
+
+from tests.unit._tenant_ladder import tenant_engine_scope
 
 # Reuse the two-org phase-4 fixture + its DB gate (the SAME dedicated catalog the
 # slice-7 reads use, so mcp_servers has the 158 org column). ``promoted`` is used
@@ -92,10 +100,57 @@ def graph_on_promoted(promoted, monkeypatch):  # noqa: F811
     finally:
         eng.dispose()
 
-# The pre-fix query (no org filter) a revert restores — used ONLY to prove the
-# seeded org-B row is visible to an unfiltered read, so the isolation assertions
-# are not vacuously passing because org B's server is invisible.
-_UNFILTERED_SQL = "SELECT name FROM mcp_servers WHERE enabled = true"
+#: The master key of the registry blob in these suites (IN-4).
+R8_MASTER_KEY = "r8-master-key-in4-mcp"
+
+
+@pytest.fixture
+async def registry_on_promoted(graph_on_promoted, monkeypatch):
+    """``graph_on_promoted``, plus the async seam of the MCP registry (IN-4).
+
+    The reader opens ``tenant_session``, so ``acb_common.db`` points at the
+    two-org catalog as the NON-privileged role. The blob needs a master key.
+    Each registry row of an MCP server in the two orgs is deleted after.
+    """
+    import acb_llm.key_store as key_store
+    from acb_common import get_settings
+
+    p = graph_on_promoted
+    app_dsn = p.app_url.render_as_string(hide_password=False)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "acb_master_key", R8_MASTER_KEY, raising=False)
+    # The key-store reads of the read model go to the same catalog.
+    monkeypatch.setattr(settings, "database_url", app_dsn, raising=False)
+    monkeypatch.setattr(key_store, "_store", None)
+    try:
+        async with tenant_engine_scope(app_dsn):
+            yield p
+    finally:
+        with p.admin_engine.begin() as c:
+            for org in (p.org_a, p.org_b):
+                c.execute(text(
+                    "DELETE FROM integration_connections WHERE organization_id = "
+                    "CAST(:o AS uuid) AND provider LIKE 'mcp:%'"), {"o": org})
+                c.execute(text(
+                    "DELETE FROM mcp_servers WHERE organization_id = CAST(:o AS uuid)"),
+                    {"o": org})
+
+
+async def seed_registry(org: str, name: str, *, headers: dict | None = None,
+                        url: str = "https://mcp.example.com/mcp") -> None:
+    """Register one enabled http-sse server through the REAL writer (IN-4)."""
+    from gateway.connections import mcp
+
+    await mcp.save(org, name=name, url=url, headers=headers or {}, connected_by="r8-seed")
+
+
+def registry_names(admin_engine) -> set[str]:
+    """Every MCP server name of the registry, read as the admin (no RLS)."""
+    with admin_engine.connect() as c:
+        rows = c.execute(text(
+            "SELECT provider FROM integration_connections WHERE provider LIKE 'mcp:%'"
+        )).fetchall()
+    return {r[0].removeprefix("mcp:") for r in rows}
 
 
 async def _rows_read(agent) -> set[str]:
@@ -119,48 +174,24 @@ class _Agent:
         self._default_options: dict = {}
 
 
-def _seed_mcp(admin_engine, *, org: str, name: str) -> None:
-    """Seed one enabled http-sse ``mcp_servers`` row for *org* as the
-    RLS-bypassing admin, stamping ``organization_id`` explicitly (NOT NULL
-    since 158). WS-8c: a stdio row would be dropped on both paths (D85)."""
-    with admin_engine.begin() as c:
-        c.execute(
-            text(
-                "INSERT INTO mcp_servers (name, label, transport, url, "
-                "enabled, organization_id) VALUES "
-                "(:name, :name, 'http-sse', 'https://mcp.example.com/mcp', "
-                "true, :org)"
-            ),
-            {"name": name, "org": org},
-        )
-
-
-def _cleanup_mcp(admin_engine, *, names: list[str]) -> None:
-    with admin_engine.begin() as c:
-        c.execute(
-            text("DELETE FROM mcp_servers WHERE name = ANY(:names)"),
-            {"names": names},
-        )
-
-
 @_DB_GATE
 class TestMcpServersScopedToRunOrg:
     """``mcp-servers-scoped-to-run-org``: the REAL MCP injection under the two-org
     catalog, gated by ``ACB_GRAPH_TENANT_BIND``."""
 
     async def test_flag_on_injects_only_the_run_orgs_servers(
-        self, graph_on_promoted, monkeypatch,
+        self, registry_on_promoted, monkeypatch,
     ):
         """flag ON + org A bound: ``_inject_mcp_servers`` injects org A's server
         and NOT org B's. RED-on-removal: the SAME rows read WITHOUT the filter
         (the pre-fix query) show BOTH — so the filter is load-bearing."""
         monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
-        p = graph_on_promoted
+        p = registry_on_promoted
         marker = uuid.uuid4().hex[:8]
         srv_a = f"srv-a-{marker}"
         srv_b = f"srv-b-{marker}"
-        _seed_mcp(p.admin_engine, org=p.org_a, name=srv_a)
-        _seed_mcp(p.admin_engine, org=p.org_b, name=srv_b)
+        await seed_registry(p.org_a, srv_a)
+        await seed_registry(p.org_b, srv_b)
         try:
             agent = _Agent()
             clear_tenant()
@@ -179,12 +210,9 @@ class TestMcpServersScopedToRunOrg:
                 f"cross-tenant read is not closed: {sorted(injected)!r}"
             )
 
-            # RED-on-removal proof: the pre-fix query (no org filter) SEES org
-            # B's row, so the assertion above is not vacuous.
-            with acb_graph.get_session() as s:
-                unfiltered = {
-                    r[0] for r in s.execute(text(_UNFILTERED_SQL)).fetchall()
-                }
+            # Not vacuous: a read with no tenant and no filter (the admin,
+            # who bypasses RLS) SEES org B's row.
+            unfiltered = registry_names(p.admin_engine)
             assert srv_a in unfiltered and srv_b in unfiltered, (
                 "the seeded org-B server is not visible to an unfiltered read — "
                 "dropping the filter would NOT leak it, so the isolation "
@@ -192,21 +220,20 @@ class TestMcpServersScopedToRunOrg:
             )
         finally:
             clear_tenant()
-            _cleanup_mcp(p.admin_engine, names=[srv_a, srv_b])
 
     async def test_flag_off_still_injects_only_the_run_orgs_servers(
-        self, graph_on_promoted, monkeypatch,
+        self, registry_on_promoted, monkeypatch,
     ):
         """WS-8c inverted this fence. With ``ACB_GRAPH_TENANT_BIND`` OFF and
         org A bound, the filter still applies: org A's server injects, and
         org B's does not. Before WS-8c, the flag-OFF path read every org."""
         monkeypatch.delenv("ACB_GRAPH_TENANT_BIND", raising=False)
-        p = graph_on_promoted
+        p = registry_on_promoted
         marker = uuid.uuid4().hex[:8]
         srv_a = f"srv-a-{marker}"
         srv_b = f"srv-b-{marker}"
-        _seed_mcp(p.admin_engine, org=p.org_a, name=srv_a)
-        _seed_mcp(p.admin_engine, org=p.org_b, name=srv_b)
+        await seed_registry(p.org_a, srv_a)
+        await seed_registry(p.org_b, srv_b)
         try:
             agent = _Agent()
             clear_tenant()
@@ -225,11 +252,10 @@ class TestMcpServersScopedToRunOrg:
             )
         finally:
             clear_tenant()
-            _cleanup_mcp(p.admin_engine, names=[srv_a, srv_b])
 
     @pytest.mark.parametrize("bind_flag", ["1", None], ids=["flag-on", "flag-off"])
     async def test_without_org_fails_closed_to_empty(
-        self, graph_on_promoted, monkeypatch, bind_flag,
+        self, registry_on_promoted, monkeypatch, bind_flag,
     ):
         """NO resolvable tenant → fail closed to EMPTY, with the flag ON or
         OFF (WS-8c). ``mcp_servers`` has no org-less "global" rows
@@ -239,12 +265,12 @@ class TestMcpServersScopedToRunOrg:
             monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", bind_flag)
         else:
             monkeypatch.delenv("ACB_GRAPH_TENANT_BIND", raising=False)
-        p = graph_on_promoted
+        p = registry_on_promoted
         marker = uuid.uuid4().hex[:8]
         srv_a = f"srv-a-{marker}"
         srv_b = f"srv-b-{marker}"
-        _seed_mcp(p.admin_engine, org=p.org_a, name=srv_a)
-        _seed_mcp(p.admin_engine, org=p.org_b, name=srv_b)
+        await seed_registry(p.org_a, srv_a)
+        await seed_registry(p.org_b, srv_b)
         try:
             agent = _Agent()
             clear_tenant()
@@ -259,4 +285,3 @@ class TestMcpServersScopedToRunOrg:
             )
         finally:
             clear_tenant()
-            _cleanup_mcp(p.admin_engine, names=[srv_a, srv_b])

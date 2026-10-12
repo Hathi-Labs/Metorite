@@ -50,6 +50,8 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
       sort: "name",
       className: "font-medium text-foreground",
     },
+    // CRM-X1: the stage by name. The gateway projects it (`status_name`).
+    { key: "status_name", label: "Stage" },
     { key: "organization_name", label: "Company" },
     { key: "amount", label: "Amount", sort: "amount" },
     {
@@ -58,6 +60,7 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
       sort: "expected_close_date",
     },
     { key: "owner_email", label: "Owner" },
+    { key: "last_activity_at", label: "Last touched", sort: "last_activity_at" },
   ],
   leads: [
     {
@@ -66,9 +69,11 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
       sort: "lead_name",
       className: "font-medium text-foreground",
     },
+    { key: "status_name", label: "Status" },
     { key: "organization_name", label: "Company" },
     { key: "email", label: "Email", sort: "email" },
     { key: "owner_email", label: "Owner", sort: "owner_email" },
+    { key: "last_activity_at", label: "Last touched", sort: "last_activity_at" },
     {
       // "Converted" is the FK, never the timestamp (B6): deleting the deal
       // SET-NULLs the link and the lead comes back to the working list. The
@@ -89,6 +94,7 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
     { key: "email", label: "Email", sort: "email" },
     { key: "phone", label: "Phone" },
     { key: "owner_email", label: "Owner", sort: "owner_email" },
+    { key: "last_activity_at", label: "Last touched", sort: "last_activity_at" },
   ],
   organizations: [
     {
@@ -100,5 +106,6 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
     { key: "industry", label: "Industry" },
     { key: "phone", label: "Phone" },
     { key: "owner_email", label: "Owner", sort: "owner_email" },
+    { key: "last_activity_at", label: "Last touched", sort: "last_activity_at" },
   ],
 };

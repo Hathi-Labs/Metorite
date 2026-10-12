@@ -9012,7 +9012,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G2-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B | S | §12.3.12.3 |
 | **EM-G4a-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B | S | §12.3.12.4 |
 | **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
-| **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
+| **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
 | **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -12496,6 +12496,17 @@ row), and §12.3.12.1 to §12.3.12.7 hold one slice for each open item.
 9. **EM-G3b-f7.** The health metric and the repair script miss a Gmail thread that a custom
    `MOVE_FOLDER` rule moved. `DAMAGED_CONVERSATION_THREADS_SQL` compares the rule label with the
    folder. The fix changes SQL text and needs an R8 test (§12.3.4). Slice: §12.3.12.6.
+10. **EM-G3b-f8 (follow-up, reviewer P2 of PR-E, 2026-10-12).** On Gmail, the alarm and the
+    repair cannot tell a message that keeps the rule label from a message that the member filed
+    under another label. Both sit in `archive`. So a repair puts a re-filed message back in the
+    inbox, and that breaks "their move wins" (`_restore_conversation_messages`, the docstring and
+    the `continue` at `replyzero.py:1158-1159` of main). The fix changes the restore and the SQL
+    together, and keeps one definition. On Gmail, a message counts only when the rule label is
+    still in `em.categories`. A Gmail user label lands in `categories` (`gmail.py:57`), and
+    `mirror_label` (`automation/actions.py:114-125`) writes it there on a rule move. The slice
+    must decide how to compare the case of the label. 🟢 AGENT-SAFE · R8. Size S/M. Not
+    specified yet. The dispatch cited `_determined_matches` at `:1267` for the `categories` test.
+    That function is at `:1227` of main and reads no `categories`, so the anchors above replace it.
 
 #### 12.3.12.1 The before-customers slices: the PRs and the order
 
@@ -13213,7 +13224,29 @@ The R8 tests must show PASSED, with 0 skips.
 
 #### 12.3.12.6 EM-G3b-f7 — the thread health finds a Gmail custom move
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-E.
+**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`), fix round 1 closed.
+PR-E. The `OR` branch reads `email_accounts.provider` through an `EXISTS` on `em.account_id`, so
+the compare of each provider runs as on main. The four fences of
+`test_email_thread_health_gmail.py` pass on a real Postgres, as `acb_app_h3rls`.
+
+**Fix round 1 (verifier, 2026-10-12).** The first build read the provider through
+`acct.id = ts.account_id`. That reference to the outermost row stopped Postgres from hashing the
+`MOVE_FOLDER` `EXISTS`, so it ran once for each thread. The live Outlook health query ran 2.2x to
+3.1x slower, for example 354 ms to 792 ms at 100k threads, with 4.7x the buffers. The build now
+reads `acct.id = em.account_id`, which is the same value. The plan is a `hashed SubPlan` again.
+
+Fence: `test_the_move_rule_exists_never_correlates_to_the_thread_row` in
+`test_email_thread_health.py`. It reads the source, because an `EXPLAIN` on a small seed is not
+stable.
+
+**Known limit EM-G3b-f7-a.** SQL `TRIM` removes spaces only, and Python `strip` removes each
+whitespace character. So the two sides can differ for a rule label with a tab at an end. No writer
+strips a rule label. The parity fence uses spaces only.
+
+**Known limit EM-G3b-f7-b.** On main and on this branch, a blank rule label with a blank folder
+counts as damage. The compare `LOWER(TRIM(ea.label)) = LOWER(COALESCE(em.folder, ''))` holds for
+two blank values. Production does not reach it: `email_messages.folder` is NOT NULL, and
+`canonical_folder` maps a blank name to `inbox`. This PR does not change it.
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the change is SQL text. No migration, no flag.
 
@@ -13257,7 +13290,8 @@ The dispatch cited the compare at `:218-219`. At `3d73313a4` it is at `:212-213`
 **Scope.**
 
 1. Extend the `MOVE_FOLDER` branch of `DAMAGED_CONVERSATION_THREADS_SQL` with an `OR`. The new
-   branch joins `email_accounts` on `ts.account_id`, and needs `provider = 'gmail'`,
+   branch reads `email_accounts` through an `EXISTS` on `em.account_id`, and needs
+   `provider = 'gmail'`,
    `LOWER(COALESCE(em.folder, '')) = 'archive'` and the label rule of D-G3b-f7-2.
 2. The existing compare `LOWER(TRIM(ea.label)) = LOWER(COALESCE(em.folder, ''))` stays as it is,
    for each provider.
@@ -16714,8 +16748,8 @@ or replying to messages but also when the email AI assistant generates insights 
 inboxes, intelligently incorporating relevant body content.
 ```
 
-**Status.** 📝 SPECIFIED 2026-10-12. 🔨 PR-A is built, not merged (branch `email-stall-pra`).
-The spec audit of 2026-10-12 returned
+**Status.** 📝 SPECIFIED 2026-10-12. ✅ PR-A is MERGED as #894 (`52c791d7a`, 2026-10-12).
+🔨 PR-A1 is built, not merged (branch `email-stall-pra1`). The spec audit of 2026-10-12 returned
 GO-NARROWED, and its edits D1 to D14 are in this section. The re-audit of 2026-10-12
 returned GO-NARROWED, and its edits E1 to E6 are in this section too. Slice **EM-T17** has
 seven PRs (§17.7).
@@ -17080,6 +17114,11 @@ with the bound and the step, and no tenant text.
 - **No session across the model.** PR-A1 takes this from EM-T4a-4 (§10.4.6 item 6).
   `_compose_assist_run` closes its session before the model call, and opens a short new one
   for `_store_ai_draft`. Its docstring (`drafting.py:1835-1836`) changes to say so.
+- **A failed draft store does not stop the draft.** PR-A1 makes this choice on purpose. When the new block of
+  `_store_ai_draft` fails, the run logs `email.store_ai_draft_failed` and still returns the
+  draft. The member gets the draft, and only the learning from a later edit is lost.
+- **The rule path gets two of the bounds.** The rule draft also calls `_orchestrate_draft`.
+  So the `SIDE_STEP_BOUND_S` bounds of the Mem0 recall and the consult plan apply there too.
 - **The rule draft keeps its place in Block W.** EM-T4a-3 item 1 owns that move.
 
 - **The log line that measures it.** `email.draft_timing` holds the stage durations in ms
@@ -17103,6 +17142,17 @@ So the context step of `_compose_assist_run` runs in this order:
    (the EM-T4c idiom, `apps/services/gateway/AGENTS.md:73`). Then it reads the memories, the
    few-shot by the embedding, and the calendar.
 
+**Block 2 has two parts (B2, built 2026-10-12).** A cancel by `CONTEXT_STEP_BOUND_S` rolls back
+the block that is open. So block 2a writes the body and the creds in a block of its own, and
+that block runs outside the context bound. Block 2b then reads, in the time that is left.
+Block 2a also writes the creds when the fetch passed `SIDE_STEP_BOUND_S` after
+`authenticate()` refreshed the token. `core.BodyFetch` holds the three steps of the fetch, and
+it shares `_hydrated_columns` and `_store_hydrated_body` with `hydrate_message_body`.
+
+**An expiry in block 1 (B3, built 2026-10-12).** The draft goes on only when block 1 has done
+the owner check and has the target row. An expiry before that point raises, and the stream
+route sends its `error` event. No draft goes on without the owner check.
+
 `_fetch_sent_fewshot` (`drafting.py:199`) splits into the embed (step 2) and the read
 (step 3). The Mem0 recall and the consult plan run in `_orchestrate_draft`
 (`drafting.py:1512`), with no session. They already run at the same time, and PR-A1 gives
@@ -17117,7 +17167,8 @@ each one `SIDE_STEP_BOUND_S`.
 
 **The context step on expiry (before PR-B).** When `CONTEXT_STEP_BOUND_S` ends:
 
-- The target body is the stored `body_text`, or else the snippet.
+- The target body is the stored `body_text`, or else the snippet. A body that the fetch
+  brought before the expiry counts as stored, because block 2a writes it.
 - The thread is the output of `_fetch_thread_context`, or empty.
 - Each other side block is empty: the examples, the few-shot, the memories and the calendar.
 - The open session block exits before the draft goes on.

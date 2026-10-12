@@ -196,18 +196,16 @@ REGISTER_REFUSED = [
 
 @pytest.mark.parametrize(("url", "dns"), REGISTER_REFUSED)
 async def test_post_mcp_refuses_an_internal_url_and_writes_nothing(url, dns, monkeypatch):
-    import acb_graph
     from acb_auth import UserContext, UserRole
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
     from fastapi import HTTPException
     from gateway.routes import integrations
 
+    from tests.unit._maf_mcp_fakes import refuse_registry
+
     _Dns(dns).install(monkeypatch)
-
-    def _no_db():
-        raise AssertionError("a refused URL reached the database")
-
-    monkeypatch.setattr(acb_graph, "get_session", _no_db)
+    # IN-4: the registry reader is the only way to the store.
+    refuse_registry(monkeypatch, "a refused URL reached the database")
     org = "dddddddd-0000-0000-0000-00000000000d"
     user = UserContext(email="admin@example.test", role=UserRole.EXECUTIVE, organization_id=org)
     req = integrations.McpServerRequest(

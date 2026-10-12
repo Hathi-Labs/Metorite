@@ -44,7 +44,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { appIcon, emptyNeedsLine, failedLines, keepApprovals, rowTime, shownNeeds } from "./myDay";
-import { type NeedsFeed, type NeedsItem, fetchNeeds, needsKey, runAct } from "./needs";
+import { type NeedsApp, type NeedsFeed, type NeedsItem, countsByApp, fetchNeeds, floorApps, needsKey, runAct } from "./needs";
 import {
   EMPTY_ACTS,
   acquireReader,
@@ -68,6 +68,14 @@ export interface NeedsYou {
    */
   total: number | undefined;
   sources: NeedsFeed["sources"];
+  /**
+   * The rows that need the member in each app, by `total` semantics, less
+   * the removed rows (`countsByApp`). Only a source that answered `ok` has
+   * an entry. The sidebar's rows read it.
+   */
+  byApp: Partial<Record<NeedsApp, number>>;
+  /** The apps whose `byApp` count is a floor: "15 or more" (`floorApps`). */
+  floors: ReadonlySet<NeedsApp>;
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -85,13 +93,18 @@ export function useNeedsYou(
   enabled: boolean,
   /** An org admin with `approvals` (`seesApprovals`). The server applies it too. */
   approvals = false,
+  /**
+   * At most one read in this many ms because of a write elsewhere. The
+   * sidebar passes it (`useNavNeeds`), because it is mounted on every page.
+   * My Day and the bell pass none, so they read as before.
+   */
+  wakeEveryMs?: number,
 ): NeedsYou {
-  const feed = useCachedResource<NeedsFeed>(enabled ? needsKey() : null, () => fetchNeeds());
+  const feed = useCachedResource<NeedsFeed>(enabled ? needsKey() : null, () => fetchNeeds(), { wakeEveryMs });
   const { removed, errors } = useSyncExternalStore(subscribeActs, actsSnapshot, () => EMPTY_ACTS);
 
-  // The shared store keeps marks only while a reader is mounted
-  // (`needsActs.ts` rule 1), so an error or a hidden row never outlives
-  // the page that showed it.
+  // Count this reader (`needsActs.ts` rule 1). The sidebar is a reader on
+  // every page, so the marks end by rules 2 and 3 in practice.
   useEffect(() => acquireReader(), []);
 
   // A new answer from the server forgets each mark it no longer holds, and
@@ -114,11 +127,21 @@ export function useNeedsYou(
     [feed.data, removed, approvals],
   );
   const gone = feed.data ? feed.data.items.length - (items?.length ?? 0) : 0;
+  const byApp = useMemo(
+    () => (feed.data && items ? countsByApp(feed.data, items, approvals) : {}),
+    [feed.data, items, approvals],
+  );
+  const floors = useMemo(
+    () => (feed.data ? floorApps(feed.data, approvals) : new Set<NeedsApp>()),
+    [feed.data, approvals],
+  );
   return {
     items,
     count: feed.data ? Math.max(0, feed.data.count - gone) : undefined,
     total: feed.data ? Math.max(0, feed.data.total - gone) : undefined,
     sources: feed.data?.sources ?? {},
+    byApp,
+    floors,
     loading: feed.loading,
     error: feed.error,
     refresh: feed.refresh,
