@@ -290,10 +290,6 @@ describe("3. the feed answer fills the needs key", () => {
 });
 
 describe("4. the acts go through the owning app", () => {
-  const read_card = card("tasks:t9", "needs_you", {
-    kind: "notification",
-    acts: [{ id: "read", label: "Mark read", class: "A", way: "tap", act: "read", act_ref: "n1" }],
-  });
   const folded = card("tasks:t1", "needs_you", {
     kind: "overdue",
     acts: [
