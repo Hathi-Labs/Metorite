@@ -19,6 +19,13 @@ bypasses the Mirror write guard. Only ``routes/crm/settings.py`` may name it.
 covers the whole gateway package, ``crm_sync/`` included, because a sync that
 named it would empty a CRM by itself.
 
+**The status merge has one home** (WS-53 CRM-C3, ``crm_platform.md`` §20.6
+item 8). ``core.merge_status_from_source`` folds a stage row that a record
+pull made under a new name into the row that holds the Zoho id. It repoints
+deals, leads, pipeline memberships and saved views, then deletes a row. Only
+files under ``gateway/crm_sync/`` may name it. :data:`ALLOWED_DIRS` holds that
+one folder, for that one name, and the scan covers the whole gateway.
+
 **What it cannot see.** A name built at run time (``"upsert_" + "from_source"``)
 and a file outside the three roots. Both need someone willing to edit around
 the fence, and a fence cannot stop that (the same limit as the pipeline gate
@@ -40,11 +47,13 @@ NAME = "upsert_from_source"
 #: store, which has no native writer). Same fence.
 #: CRM-X0 adds the start over, which has ONE allowed caller.
 RESET_NAME = "reset_crm_from_admin"
+#: CRM-C3 adds the merge of two stage rows. Only the sync may name it.
+MERGE_NAME = "merge_status_from_source"
 NAMES = (
     NAME, "delete_from_source", "set_pipeline_stages_from_source",
     "set_deal_contacts_from_source",
     "upsert_module_records_from_source", "delete_module_records_from_source",
-    RESET_NAME,
+    RESET_NAME, MERGE_NAME,
 )
 
 GATEWAY = ROOT / "apps" / "services" / "gateway" / "gateway"
@@ -53,6 +62,12 @@ GATEWAY = ROOT / "apps" / "services" / "gateway" / "gateway"
 #: has no caller outside the definer. No mirror write is on this list.
 ALLOWED_CALLERS: dict[str, frozenset[Path]] = {
     RESET_NAME: frozenset({GATEWAY / "routes" / "crm" / "settings.py"}),
+}
+
+#: A fenced name and the ONE folder whose files may name it (CRM-C3). The
+#: folder is the sync package, so no route, agent or skill can merge stages.
+ALLOWED_DIRS: dict[str, Path] = {
+    MERGE_NAME: GATEWAY / "crm_sync",
 }
 
 #: Where the start over may never be named: the whole gateway package (the
@@ -102,13 +117,16 @@ def violations(
     *,
     names: tuple[str, ...] = NAMES,
     allowed: dict[str, frozenset[Path]] | None = None,
+    allowed_dirs: dict[str, Path] | None = None,
 ) -> list[str]:
     """Every ``path:line`` under *roots* that names a fenced function.
 
-    A file in ``allowed[name]`` may name that one name. ``None`` takes
-    :data:`ALLOWED_CALLERS`.
+    A file in ``allowed[name]`` may name that one name, and so may a file
+    under ``allowed_dirs[name]``. ``None`` takes :data:`ALLOWED_CALLERS` and
+    :data:`ALLOWED_DIRS`.
     """
     allowed = ALLOWED_CALLERS if allowed is None else allowed
+    allowed_dirs = ALLOWED_DIRS if allowed_dirs is None else allowed_dirs
     found: list[str] = []
     for root in roots:
         if not root.exists():
@@ -120,6 +138,9 @@ def violations(
             tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
             for line, name in _names_it(tree, names):
                 if path in allowed.get(name, frozenset()):
+                    continue
+                folder = allowed_dirs.get(name)
+                if folder is not None and path.is_relative_to(folder):
                     continue
                 found.append(f"{path}:{line}")
     return found
@@ -152,6 +173,7 @@ def test_the_definer_and_the_scan_roots_exist() -> None:
     assert "async def upsert_module_records_from_source" in definer_text
     assert "async def delete_module_records_from_source" in definer_text
     assert "async def reset_crm_from_admin" in definer_text
+    assert "async def merge_status_from_source" in definer_text
     assert GATEWAY.is_dir() and (GATEWAY / "crm_sync").is_dir()
     assert any(r.is_dir() for r in SCAN_ROOTS)
     assert (ROOT / "apps" / "services" / "gateway" / "gateway" / "routes").is_dir()
@@ -253,3 +275,66 @@ def test_the_definer_is_the_only_exemption(tmp_path: Path) -> None:
                        encoding="utf-8")
     assert violations((package,), definer) == []
     assert violations((package,), None) != []
+
+
+# ── CRM-C3: the status merge (crm_platform.md §20.6 item 8) ─────────────────
+
+
+def test_only_the_sync_names_the_status_merge() -> None:
+    """CRM-C3 done when 17: the whole gateway, every agent, skill and package."""
+    assert violations(RESET_SCAN_ROOTS, DEFINER, names=(MERGE_NAME,)) == []
+
+
+def test_the_sync_does_name_the_status_merge() -> None:
+    """The exception is used, so the folder in the allowlist is not dead text."""
+    found = [
+        path for path in sorted(ALLOWED_DIRS[MERGE_NAME].rglob("*.py"))
+        if _names_it(ast.parse(path.read_text(encoding="utf-8")), (MERGE_NAME,))
+    ]
+    assert found, "no file of gateway/crm_sync/ names the status merge"
+
+
+NL = chr(10)
+
+
+@pytest.mark.parametrize(
+    ("folder", "source"),
+    [
+        ("routes/crm", "from .core import merge_status_from_source" + NL),
+        ("routes/crm", "from gateway.routes.crm import core" + NL + NL
+         + "async def go(db):" + NL
+         + "    await core.merge_status_from_source(db, 't', 'a', 'b', 'n')" + NL),
+        ("agents", "import importlib" + NL + NL
+         + "F = getattr(importlib.import_module('x'), 'merge_status_from_source')" + NL),
+        # A folder that is CALLED crm_sync somewhere else is not the allowed one.
+        ("routes/crm_sync",
+         "from gateway.routes.crm.core import merge_status_from_source" + NL),
+    ],
+)
+def test_a_planted_status_merge_outside_the_sync_fails(
+    tmp_path: Path, folder: str, source: str,
+) -> None:
+    """Red-first proof for CRM-C3 done when 17."""
+    package = tmp_path / folder
+    package.mkdir(parents=True)
+    (package / "planted.py").write_text(source, encoding="utf-8")
+    dirs = {MERGE_NAME: tmp_path / "crm_sync"}
+    assert violations((tmp_path,), names=(MERGE_NAME,), allowed_dirs=dirs), folder
+
+
+def test_a_status_merge_inside_the_allowed_folder_passes(tmp_path: Path) -> None:
+    sync = tmp_path / "crm_sync"
+    sync.mkdir()
+    (sync / "engine.py").write_text(
+        "from gateway.routes.crm.core import merge_status_from_source" + NL,
+        encoding="utf-8",
+    )
+    dirs = {MERGE_NAME: sync}
+    assert violations((tmp_path,), names=(MERGE_NAME,), allowed_dirs=dirs) == []
+    # The folder exception is for that one name only.
+    (sync / "other.py").write_text(
+        "from gateway.routes.crm.core import reset_crm_from_admin" + NL,
+        encoding="utf-8",
+    )
+    assert violations((tmp_path,), allowed_dirs=dirs, allowed={}) == [
+        f"{sync / 'other.py'}:1"]
