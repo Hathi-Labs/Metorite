@@ -5193,7 +5193,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/integrations_console.md` §7.2 (IN-4) · R6
 - **Added:** 2026-10-12 · IN-4
 
-### H-301 · Put the MCP edge signing key on both units, and strip identity headers at Caddy · [OWNER]
+### H-302 · Put the MCP edge signing key on both units, and strip identity headers at Caddy · [OWNER]
 - **Check:** two parts. This entry is done only when both pass.
   1. `grep -cE "header_up -X-(User-Email|User-Role|Actor-Via)" deploy/hostinger/caddy/Caddyfile`
      → a count below 3 means the strip is open.
@@ -5218,7 +5218,7 @@ line — never reclaim a number by deleting the other entry.
   both of them owner gates. Do them after EA-3a merges and before the flag turns on.
 - **Authority:** `specs/external_agent_access.md` §10.1 and §15 EA-10 · `work_plan.md` WS-55 ·
   D97
-- **Added:** 2026-10-12 · branch `feat/ws55-ea3-mcp-read-tools`. H-301 was free on
+- **Added:** 2026-10-12 · branch `feat/ws55-ea3-mcp-read-tools`. Renumbered from H-301 to H-302 at the merge of 2026-10-13, because `origin/main` took H-301. H-302 was free on
   `origin/main` and in each open pull request.
 
 # DONE — deleted, not archived
