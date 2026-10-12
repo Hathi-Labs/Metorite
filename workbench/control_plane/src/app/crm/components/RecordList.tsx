@@ -20,6 +20,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import Modal from "@/components/ui/Modal";
+import { relativeTime } from "@/lib/taskCard";
 import { useState } from "react";
 import {
   MAX_COLUMNS,
@@ -32,12 +33,16 @@ import {
   type FieldDef,
 } from "../lib/fields";
 import FieldValue from "./FieldValue";
+import { statusTone } from "../lib/board";
 import { COLUMNS } from "../lib/columns";
 import { SORTS } from "../lib/filters";
 import { money, shortDate, shortEmail } from "../lib/format";
-import type { EntitySlug } from "../lib/types";
+import type { EntitySlug, Status } from "../lib/types";
 
 type Row = Record<string, unknown>;
+
+/** What a renderer may read beside its row. */
+type CellContext = { statuses: ReadonlyArray<Status> };
 
 function text(row: Row, key: string): string {
   const value = row[key];
@@ -56,11 +61,26 @@ function text(row: Row, key: string): string {
  * no edit here, and adding a formatted one fails visibly (raw value on screen)
  * rather than silently.
  */
-const RENDERERS: Record<string, (row: Row) => React.ReactNode> = {
+const RENDERERS: Record<string, (row: Row, ctx: CellContext) => React.ReactNode> = {
   amount: (r) => money(r.amount as number | null, (r.currency as string) || "INR"),
   expected_close_date: (r) => shortDate(r.expected_close_date as string | null),
   owner_email: (r) => shortEmail(r.owner_email as string | null),
   first_name: (r) => `${text(r, "first_name")} ${r.last_name ?? ""}`.trim(),
+  // CRM-X1: the stage by name, with the dot of `statusTone`, the one stage
+  // tone of the CRM. A stage the vocabulary does not hold draws a muted dot.
+  status_name: (r, ctx) => {
+    if (!r.status_name) return "—";
+    const status = ctx.statuses.find((s) => s.id === r.status_id);
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${status ? statusTone(status) : "bg-muted-foreground"}`}
+        />
+        {String(r.status_name)}
+      </span>
+    );
+  },
+  last_activity_at: (r) => relativeTime(r.last_activity_at as string | null) || "—",
   converted_deal_id: (r) =>
     r.converted_deal_id ? (
       <span className="rounded-full bg-success/10 px-2 py-0.5 text-[10px] text-success">
@@ -69,8 +89,8 @@ const RENDERERS: Record<string, (row: Row) => React.ReactNode> = {
     ) : null,
 };
 
-function cell(key: string, row: Row): React.ReactNode {
-  return (RENDERERS[key] ?? ((r: Row) => text(r, key)))(row);
+function cell(key: string, row: Row, ctx: CellContext): React.ReactNode {
+  return (RENDERERS[key] ?? ((r: Row) => text(r, key)))(row, ctx);
 }
 
 export default function RecordList({
@@ -85,6 +105,10 @@ export default function RecordList({
   fieldDefs = null,
   columnKeys,
   onColumnsChange,
+  statuses = [],
+  onLoadMore,
+  loadingMore = false,
+  hasMore = true,
 }: {
   entity: EntitySlug;
   rows: Row[];
@@ -103,6 +127,14 @@ export default function RecordList({
    */
   columnKeys?: string[];
   onColumnsChange?: (keys: string[]) => void;
+  /** The stages or statuses of this entity, for the dot of the Stage column. */
+  statuses?: ReadonlyArray<Status>;
+  /** CRM-X1: read the next page of the same view. */
+  onLoadMore?: () => void;
+  /** The next page is being read. */
+  loadingMore?: boolean;
+  /** False once a page came back short or empty: the list has ended. */
+  hasMore?: boolean;
 }) {
   const columns = COLUMNS[entity];
   // The choice is per entity and lives in this browser. The state re-seats
@@ -195,7 +227,7 @@ export default function RecordList({
                     key={column.key}
                     className={`px-4 py-2 text-muted-foreground ${column.className ?? ""}`}
                   >
-                    {cell(column.key, row)}
+                    {cell(column.key, row, { statuses })}
                   </td>
                 ))}
                 {extra.map((def) => (
@@ -211,6 +243,13 @@ export default function RecordList({
           <p className="p-8 text-center text-xs text-muted-foreground">
             Nothing matches this view.
           </p>
+        )}
+        {!loading && onLoadMore && hasMore && rows.length > 0 && rows.length < total && (
+          <div className="flex justify-center p-3">
+            <Button variant="secondary" size="sm" loading={loadingMore} onClick={onLoadMore}>
+              Load more
+            </Button>
+          </div>
         )}
       </div>
       <footer className="shrink-0 border-t border-border px-4 py-2 text-[10px] text-muted-foreground">
