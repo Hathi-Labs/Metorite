@@ -1023,21 +1023,49 @@ def _free_slots() -> int:
     return taken
 
 
+def _wait_for_free_slots(seconds: float = 30.0) -> int:
+    """The free slots, once all of them are back or *seconds* have passed.
+
+    The parse thread keeps its slot until it ends (see the runaway test
+    below), and the read can return before the thread ends. On a loaded CI
+    runner the thread can still be finishing, so wait for the slot rather
+    than race it. A leaked slot never comes back, so it still fails here."""
+    give_up = time.monotonic() + seconds
+    while _free_slots() != tools.MAX_PARSES and time.monotonic() < give_up:
+        time.sleep(0.05)
+    return _free_slots()
+
+
 def test_a_slow_pdf_is_refused_and_frees_its_slot(ws, monkeypatch) -> None:
+    """The read refuses a slow PDF at its deadline. The parse gives its slot
+    back, and the next read takes that slot.
+
+    The fence is what happens, not how many seconds it takes. A bound of
+    deadline + ``_WAIT_MARGIN`` + 1.5 s (4.5 s) failed #933 on 2026-10-12
+    at 5.4 s on a loaded CI runner. The clock bound here is five times the
+    longest wait of ``parse_bounded``. It only catches a read that never
+    comes back: with no deadline, this file parses for about 50 s."""
     monkeypatch.setattr(at, "DEADLINE_SECONDS", 1.0)
+    assert _free_slots() == tools.MAX_PARSES
     _attach(ws, SID_A, "slow.pdf", _slow_pdf())
+    _attach(ws, SID_A, "after.txt", b"the slot came back")
     started = time.monotonic()
     out = _read(ws, SID_A, "slow.pdf")
-    assert "took too long" in out
-    assert time.monotonic() - started < 1.0 + tools._WAIT_MARGIN + 1.5
-    # The parse thread keeps its slot until it ends (see the runaway test
-    # below), and the read returns at the deadline. On a loaded CI runner the
-    # thread can still be finishing here, so wait a bounded time for the slot
-    # to come back rather than race it. It failed four times in a row on
-    # 2026-10-11 with 1 free slot of 2, never with a slot leaked for good.
-    deadline = time.monotonic() + 15.0
-    while _free_slots() != tools.MAX_PARSES and time.monotonic() < deadline:
-        time.sleep(0.05)
+    took = time.monotonic() - started
+    assert "took too long" in out, out
+    assert took < 5 * (at.DEADLINE_SECONDS + tools._WAIT_MARGIN), took
+    # It failed four times in a row on 2026-10-11 with 1 free slot of 2,
+    # never with a slot leaked for good, so the wait is bounded and generous.
+    assert _wait_for_free_slots() == tools.MAX_PARSES
+    # Hold every slot but one. The next read can only run on the slot that
+    # the slow parse gave back.
+    for _ in range(tools.MAX_PARSES - 1):
+        assert tools._SLOTS.acquire(blocking=False)
+    try:
+        assert "the slot came back" in _read(ws, SID_A, "after.txt")
+    finally:
+        for _ in range(tools.MAX_PARSES - 1):
+            tools._SLOTS.release()
     assert _free_slots() == tools.MAX_PARSES
 
 
@@ -1594,15 +1622,25 @@ def _timed_html(data: bytes) -> tuple[at.Extracted, float]:
     return got, time.monotonic() - started
 
 
+def _spaces_parse(k: int) -> Any:
+    """A thunk that reads ``"<i> " * k``. The deadline is far away, so load
+    cannot refuse it, and only the ratio fence decides."""
+    data = ("<i> " * k).encode()
+    return lambda: at.extract_text(data, ".html", seconds=600.0)
+
+
 def test_a_line_of_spaces_reads_inside_the_deadline() -> None:
     """P0: ``"<i> " * 400_000`` (1.6 MB) once took 83.6 s, past the 20 s deadline,
     because a regex on the line was quadratic in a run of spaces and no check
-    ran inside it. It now takes about 1.3 s on an idle dev box. The bound is
-    15 s, under the deadline, because a loaded box is slow and noisy. The
-    next test fences the join itself, with a tighter bound."""
-    got, took = _timed_html(("<i> " * 400_000).encode())
+    ran inside it. It now takes about 1.3 s on an idle dev box.
+
+    The fence is the ratio of two timings of the whole read, not a wall clock
+    (``_linear_time``). A bound of 15 s took 14.4 s on a loaded dev box on
+    2026-10-13. Linear code reads this file well inside the deadline, and
+    quadratic code fails the ratio. The next test fences the join itself."""
+    got = _spaces_parse(400_000)()
     assert got.text == ""
-    assert took < 15.0, took
+    assert_linear(_spaces_parse, 100_000)
 
 
 def test_the_line_join_is_linear_on_a_run_of_spaces() -> None:
@@ -1628,19 +1666,26 @@ def test_a_line_holds_no_run_of_spaces() -> None:
 
 def test_a_parse_never_stalls_the_event_loop() -> None:
     """P0: under ``parse_bounded`` an 800 KB file once froze the loop for
-    21.7 s. A heartbeat every 50 ms must never wait more than 0.5 s."""
+    21.7 s. A heartbeat every 50 ms must keep beating while the parse runs.
+
+    Two checks. First, the heartbeat beats during the parse. A parse on the
+    loop thread lets no beat run at all, whatever the load. Second, no gap
+    between two beats reaches 2 s, a tenth of the freeze. A bound of 0.5 s
+    measured the runner as much as the code."""
     data = ("<i> " * 200_000).encode()
 
-    async def _run() -> float:
+    async def _run() -> tuple[int, float]:
+        beats = 0
         worst = 0.0
         done = asyncio.Event()
 
         async def _beat() -> None:
-            nonlocal worst
+            nonlocal beats, worst
             last = time.monotonic()
             while not done.is_set():
                 await asyncio.sleep(0.05)
                 now = time.monotonic()
+                beats += 1
                 worst = max(worst, now - last - 0.05)
                 last = now
 
@@ -1649,9 +1694,12 @@ def test_a_parse_never_stalls_the_event_loop() -> None:
         done.set()
         await beat
         assert not isinstance(got, str), got
-        return worst
+        return beats, worst
 
-    assert asyncio.run(_run()) < 0.5
+    beats, worst = asyncio.run(_run())
+    # The last beat can come after the parse ends, so 3 beats prove 2 in it.
+    assert beats >= 3, beats
+    assert worst < 2.0, worst
 
 
 @pytest.mark.parametrize("size", [8 * 1024 * 1024, 25 * 1024 * 1024 - 64])
