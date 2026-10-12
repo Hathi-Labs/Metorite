@@ -64,6 +64,10 @@ Native-mode writes on a pipeline and its stages, and ``GET /crm/source-profile``
 (Sync now). Both are behind ``CRM_MIRROR``. The engine they start lives in
 ``gateway/crm_sync/``, which imports ``routes.crm.core``, so ``sync.py`` imports
 it inside its handlers.
+
+``views.py`` is WS-53 CRM-Q8 — ``GET``, ``POST``, ``PATCH`` and ``DELETE`` on
+``/crm/views``, the saved views of the lists and boards (table ``crm_views``).
+A view is not a CRM record, so the routes work in Mirror mode as well.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
@@ -81,6 +85,7 @@ from gateway.routes.crm import settings as _settings  # noqa: F401
 from gateway.routes.crm import stage_metadata as _stage_metadata  # noqa: F401
 from gateway.routes.crm import sync as _sync  # noqa: F401
 from gateway.routes.crm import sync_zoho as _sync_zoho  # noqa: F401
+from gateway.routes.crm import views as _views  # noqa: F401
 from gateway.routes.crm.core import router
 
 __all__ = ["router"]

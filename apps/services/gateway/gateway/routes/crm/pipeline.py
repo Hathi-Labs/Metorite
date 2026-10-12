@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
@@ -32,6 +32,7 @@ from gateway.routes.crm.core import (
     WEIGHTED_TYPES,
     DealModel,
     Entity,
+    ExtraFilterInput,
     StatusModel,
     _tenant_session,
     actor,
@@ -39,7 +40,9 @@ from gateway.routes.crm.core import (
     attach_ext_urls,
     checked_uuid,
     current_tenant,
+    custom_pairs,
     default_pipeline_id,
+    extra_filters,
     has_column,
     insert_row,
     link_deal_contact,
@@ -49,6 +52,7 @@ from gateway.routes.crm.core import (
     project_joined,
     record_activity,
     require_row,
+    resolve_owner,
     router,
     row_to_dict,
     status_wire,
@@ -362,12 +366,60 @@ class PipelineResponse(BaseModel):
     lanes: list[PipelineLane]
 
 
+async def _board_lanes(
+    db: Any, pipeline_id: str | None, where: str, params: dict[str, Any],
+) -> list[Any]:
+    """The stage rows of the board.
+
+    With a pipeline: its listed stages (each with ``pipeline_position``), then
+    each stage it does not list that holds a deal under ``where``. ``where``
+    must already hold EVERY filter, because the held read rebinds its lane
+    predicate to the stage row and keeps the rest with the same binds.
+    Without a pipeline: every stage.
+    """
+    if not pipeline_id:
+        return list((await db.execute(
+            text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
+        )).fetchall())
+    listed = (await db.execute(
+        text(
+            "SELECT s.*, ps.position AS pipeline_position "
+            "FROM crm_deal_statuses s "
+            "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
+            "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+            "ORDER BY ps.position, s.name"
+        ),
+        {"pipeline_id": pipeline_id},
+    )).fetchall()
+    held = where.replace(_LANE_SQL, "status_id = s.id", 1)
+    extra = (await db.execute(
+        text(
+            "SELECT s.* FROM crm_deal_statuses s "
+            "WHERE NOT EXISTS (SELECT 1 FROM crm_pipeline_stages ps "
+            "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+            "AND ps.status_id = s.id) "
+            f"AND EXISTS (SELECT 1 FROM crm_deals WHERE {held}) "
+            "ORDER BY s.position, s.name"
+        ),
+        params,
+    )).fetchall()
+    return [*listed, *extra]
+
+
 @router.get("/pipeline", response_model=PipelineResponse)
 async def get_pipeline(
     owner: str | None = None,
     per_lane: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
     pipeline_id: str | None = None,
+    source: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    updated_from: str | None = None,
+    updated_to: str | None = None,
+    close_from: str | None = None,
+    close_to: str | None = None,
     user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]
 ) -> PipelineResponse:
     """Deals grouped by status — the kanban read.
 
@@ -381,10 +433,18 @@ async def get_pipeline(
     stages in its own order, and the deals are the ones that name it. With no
     ``pipeline_id`` the board is the whole organization, as it always was.
 
+    **The filters of a list** (WS-53 CRM-Q8) narrow the board too: ``owner``
+    (``me`` is the caller), ``source``, the date ranges, and
+    ``custom.<key>=<value>``. They are the same code as the list route's
+    (``core.extra_filters``), so a view that filters a list filters the board.
+
     **No deal disappears.** A deal of the pipeline can sit in a stage that the
     pipeline does not list (a mirrored Zoho stage that left the pipeline). That
-    stage is a lane too, after the listed ones, while it holds a deal under
-    the same filters. So the lane counts add up to the deals of the pipeline.
+    stage is a lane too while it holds a deal under ALL the filters above
+    (:func:`_board_lanes`). So the lane counts add up to the deals of the
+    pipeline. The board places each lane by its own order rule
+    (``lib/board.ts`` ``orderLanes``), so a held lane can sit between listed
+    ones. This payload order is not that order.
     """
     async with _tenant_session() as db:
         params: dict[str, Any] = {}
@@ -395,37 +455,26 @@ async def get_pipeline(
             await require_row(db, "crm_pipelines", wanted, "Pipeline")
             where += " AND pipeline_id = CAST(:pipeline_id AS uuid)"
             params["pipeline_id"] = wanted
+        owner = resolve_owner(owner, user)
         if owner:
             where += " AND lower(owner_email) = :owner"
             params["owner"] = owner.strip().lower()
-        if wanted:
-            lanes = (await db.execute(
-                text(
-                    "SELECT s.*, ps.position AS pipeline_position "
-                    "FROM crm_deal_statuses s "
-                    "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
-                    "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
-                    "ORDER BY ps.position, s.name"
-                ),
-                {"pipeline_id": wanted},
-            )).fetchall()
-            # The same deal filters, with the lane bound to each stage row.
-            held = where.replace(_LANE_SQL, "status_id = s.id", 1)
-            lanes += (await db.execute(
-                text(
-                    "SELECT s.* FROM crm_deal_statuses s "
-                    "WHERE NOT EXISTS (SELECT 1 FROM crm_pipeline_stages ps "
-                    "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
-                    "AND ps.status_id = s.id) "
-                    f"AND EXISTS (SELECT 1 FROM crm_deals WHERE {held}) "
-                    "ORDER BY s.position, s.name"
-                ),
-                params,
-            )).fetchall()
-        else:
-            lanes = (await db.execute(
-                text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
-            )).fetchall()
+        if source:
+            where += " AND source = :source"
+            params["source"] = source
+        more_where, more_params = await extra_filters(
+            db, DEALS, ExtraFilterInput(
+                created_from=created_from, created_to=created_to,
+                updated_from=updated_from, updated_to=updated_to,
+                close_from=close_from, close_to=close_to,
+                custom=tuple(custom_pairs(request.query_params if request else None)),
+            ),
+        )
+        for clause in more_where:
+            where += f" AND {clause}"
+        params.update(more_params)
+        # ⚠️ After the LAST filter: the held-lane read reuses `where` whole.
+        lanes = await _board_lanes(db, wanted, where, params)
 
         out: list[PipelineLane] = []
         for lane in lanes:

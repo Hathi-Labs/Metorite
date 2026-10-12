@@ -83,6 +83,8 @@ export default function RecordList({
   onSort,
   onOpen,
   fieldDefs = null,
+  columnKeys,
+  onColumnsChange,
 }: {
   entity: EntitySlug;
   rows: Row[];
@@ -94,6 +96,13 @@ export default function RecordList({
   onOpen: (id: string) => void;
   /** What each custom field means (CRM-Q4). The member may show up to five as columns. */
   fieldDefs?: FieldDef[] | null;
+  /**
+   * The chosen custom columns of the saved view in effect (CRM-Q8). When it is
+   * given, the view owns the choice and the browser's choice is left alone.
+   * When it is absent, the choice is per entity and lives in this browser.
+   */
+  columnKeys?: string[];
+  onColumnsChange?: (keys: string[]) => void;
 }) {
   const columns = COLUMNS[entity];
   // The choice is per entity and lives in this browser. The state re-seats
@@ -105,10 +114,16 @@ export default function RecordList({
     chosen = readColumns(entity);
     setPicked({ entity, keys: chosen });
   }
+  const owned = columnKeys !== undefined;
+  if (owned) chosen = columnKeys;
   const available = pickable(fieldDefs);
   const extra = chosenDefs(chosen, fieldDefs);
   function toggle(key: string) {
     const keys = toggleColumn(chosen, key);
+    if (owned) {
+      onColumnsChange?.(keys);
+      return;
+    }
     writeColumns(entity, keys);
     setPicked({ entity, keys });
   }

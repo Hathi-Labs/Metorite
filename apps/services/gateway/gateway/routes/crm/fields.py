@@ -20,18 +20,13 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
-from gateway.routes.crm.core import _tenant_session, router
+from gateway.routes.crm.core import FIELD_ENTITY_BY_SLUG, _tenant_session, router
 from pydantic import BaseModel
 from sqlalchemy import text
 
 #: The API slug of each entity → the value that ``crm_field_defs.entity`` holds.
-#: The sync writes the singular form (``crm_sync.engine.FIELD_DEF_ENTITIES``).
-ENTITY_BY_SLUG: dict[str, str] = {
-    "leads": "lead",
-    "contacts": "contact",
-    "organizations": "company",
-    "deals": "deal",
-}
+#: One map, in ``core``, because the list filters read it too.
+ENTITY_BY_SLUG = FIELD_ENTITY_BY_SLUG
 
 _FIELDS_SQL = (
     "SELECT key, label, type, options, source, provider_api_name, position, "
