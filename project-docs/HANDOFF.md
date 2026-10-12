@@ -4859,25 +4859,6 @@ line — never reclaim a number by deleting the other entry.
   `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
-### H-217 · Registry MCP servers no longer reach apis-config · [AGENT]
-- **Check:** run two commands. First,
-  `uv run pytest tests/unit/test_maf_mcp_injection.py -q -k native_agent_gets_the_server_tools`.
-  Then `ssh metorite 'grep -c "^MAF_MCP_ORGS=." /opt/acb/app/.env'`. The entry
-  closes only when the test passes AND the count is 1 or more. A missing test
-  file means WS-8c has not merged. A count of 0 means the flag allows no org,
-  so a `*` server still reaches no MAF agent.
-  ⚠️ Do not use a grep for `MCPStreamableHTTPTool` here. It matches
-  `acb_skills/egress.py:101`, which only names the class, and it gives a
-  false pass.
-- **Why:** `merge_mcp_servers` writes the field that only the Copilot agent
-  class reads (WS-8c). apis-config was a Copilot agent until PR #585. So an
-  `mcp_servers` row with agent scope `*` reached it before, and reaches only
-  Copilot agents now. WS-8c owns the real fix. Until it lands, do not expect
-  a `*` server to show up in apis-config. The same gap waits for task-manager
-  when H-215 moves it.
-- **Authority:** `specs/agent_architecture.md` §11.3.1 and §12.2 WS-8c · PR #585 review
-- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
-
 ### H-219 · A steer note shows as extra detail rows on a tool card · [AGENT]
 - **Check:** `grep -rn "arrived from a participant" workbench/control_plane/src/`
   → no hit means the cards still show the note as rows, and the entry is still open.
