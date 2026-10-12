@@ -103,6 +103,9 @@ ZOHO_READ_SCOPES: tuple[str, ...] = (
     "ZohoCRM.modules.notes.READ",
     "ZohoCRM.modules.calls.READ",
     "ZohoCRM.modules.events.READ",
+    # CRM-Q5. A connection made before this scope existed must reconnect to
+    # grant it. Until then the sync skips Tasks and reports them unavailable.
+    "ZohoCRM.modules.tasks.READ",
     "ZohoCRM.settings.fields.READ",
     "ZohoCRM.settings.layouts.READ",
     "ZohoCRM.settings.pipeline.READ",

@@ -87,6 +87,7 @@ from gateway.crm_sources.base import (
     SourceCursor,
     SourceError,
     SourceRecord,
+    SourceScopeError,
     UntrustedHost,
 )
 from gateway.crm_sources.registry import mapping_for, source_class
@@ -98,6 +99,7 @@ from gateway.routes.crm.core import (
     compute_lead_name,
     delete_from_source,
     savepoint,
+    set_deal_contacts_from_source,
     set_pipeline_stages_from_source,
     upsert_from_source,
 )
@@ -114,8 +116,16 @@ EXT_SOURCE = "zoho"
 
 #: Dependency order: a parent is read before its children.
 ENTITY_ORDER: tuple[str, ...] = (
-    "company", "contact", "lead", "deal", "note", "call", "meeting",
+    "company", "contact", "lead", "deal", "note", "call", "meeting", "task",
 )
+
+#: An entity the run may skip when the connection lacks its scope (CRM-Q5). A
+#: connection made before the scope existed must reconnect to grant it. Until
+#: then the run reports the module as unavailable and goes on. A missing scope
+#: is not a dead token, so it never marks the connection ``needs_reconnect``.
+OPTIONAL_ENTITIES: frozenset[str] = frozenset({"task"})
+#: An unavailable module is asked again after this long.
+UNAVAILABLE_RETRY = timedelta(hours=1)
 
 #: The entities that have field definitions.
 FIELD_DEF_ENTITIES: tuple[str, ...] = ("company", "contact", "lead", "deal")
@@ -129,11 +139,31 @@ SLUGS: dict[str, str] = {
     "note": "activities",
     "call": "activities",
     "meeting": "activities",
+    "task": "activities",
 }
 SLUG_ORDER: tuple[str, ...] = ("organizations", "contacts", "leads", "deals", "activities")
 
 #: The ``type`` of a ``crm_activities`` row for an activity entity.
-ACTIVITY_TYPES = {"note": "note", "call": "call", "meeting": "meeting"}
+ACTIVITY_TYPES = {"note": "note", "call": "call", "meeting": "meeting", "task": "task"}
+
+#: The steps that report under a key of their own in ``crm_sync_runs.counts``
+#: (CRM-Q5), so the health panel can show each one. ``unlinked`` is the number
+#: of Zoho ids that still have no local row. ``skipped`` is the number of
+#: records or deals the step left alone. ``unavailable`` is 1 when the module
+#: could not be read (a missing scope).
+STEP_KEYS: tuple[str, ...] = ("converted_leads", "tasks", "deal_contacts")
+STEP_COUNTS: tuple[str, ...] = (
+    "seen", "upserted", "deleted", "unlinked", "skipped", "unavailable",
+)
+
+#: The cursor row that queues the deals whose contact roles are still unread.
+ROLES_MODULE = f"{PROVIDER}:deal_roles"
+#: A role read costs one credit for each deal. The step stops while this many
+#: credits remain, so it never starves the record passes of the next run.
+ROLES_RESERVE = 20
+ROLES_PENDING_CAP = 20_000
+#: A deal whose roles fail to read this many times is dropped from the queue.
+ROLES_MAX_ATTEMPTS = 3
 
 LEAD_STATUSES = "crm_lead_statuses"
 DEAL_STATUSES = "crm_deal_statuses"
@@ -300,11 +330,17 @@ def plan(
     """The kind of the next run, and the entities that need a full id compare."""
     for entity in ENTITY_ORDER:
         row = cursors.get(changed_module(entity))
+        if entity in OPTIONAL_ENTITIES:
+            # An optional module that never read must not hold the plan at
+            # import for ever (CRM-Q5). The incremental run reads it.
+            continue
         if row is None or row.initial_done_at is None:
             return runs.KIND_IMPORT, frozenset()
     due: set[str] = set()
     for entity in ENTITY_ORDER:
-        row = cursors[changed_module(entity)]
+        row = cursors.get(changed_module(entity))
+        if row is None:
+            continue
         state = row.state or {}
         if state.get("in_progress") and state.get("walk_start"):
             due.add(entity)  # a walk that stopped resumes first
@@ -349,6 +385,18 @@ def _fatal(exc: BaseException) -> bool:
     return isinstance(exc, NeedsReconnect | BudgetExhausted | RateLimited)
 
 
+def _skip_optional(entity: str, exc: BaseException) -> bool:
+    """True when an optional module's read failure means "not available here".
+
+    A plain HTTP 401 is a token that went stale mid-run, not a missing module,
+    so it fails the run like any other module would. A 401 that names a scope
+    arrives as ``SourceScopeError`` and is still skipped.
+    """
+    if entity not in OPTIONAL_ENTITIES or _fatal(exc) or isinstance(exc, UntrustedHost):
+        return False
+    return isinstance(exc, SourceScopeError) or "HTTP 401" not in str(exc)
+
+
 # ── The run ─────────────────────────────────────────────────────────────────
 
 
@@ -383,7 +431,7 @@ def _blank_counts() -> dict[str, dict[str, int]]:
             "refused": 0,
         }
         for slug in SLUG_ORDER
-    }
+    } | {key: dict.fromkeys(STEP_COUNTS, 0) for key in STEP_KEYS}
 
 
 def _merge_counts(saved: dict[str, Any]) -> dict[str, dict[str, int]]:
@@ -467,6 +515,11 @@ class _Ctx:
         self.budget_is_default = credit_budget is None
         #: The local pipelines of the org, loaded once for the deal writes.
         self.pipelines: _PipelineIndex | None = None
+        #: The deals whose contact roles are not read yet, oldest first.
+        self.roles_pending: list[str] | None = None
+        #: Failed reads for each queued deal, and whether the queue was seeded.
+        self.roles_attempts: dict[str, int] = {}
+        self.roles_seeded = False
 
     # ── Provider calls ──────────────────────────────────────────────────────
 
@@ -536,6 +589,14 @@ class _Ctx:
 
     def bump(self, entity: str, name: str, amount: int = 1) -> None:
         self.counts[SLUGS[entity]][name] += amount
+        if entity == "task":
+            self.step("tasks", name, amount)
+
+    def step(self, key: str, name: str, amount: int = 1) -> None:
+        """Count under the key of a step. A name that the step does not keep
+        (``failed``, ``refused``) is ignored."""
+        if name in self.counts[key]:
+            self.counts[key][name] += amount
 
     # ── Lookups ─────────────────────────────────────────────────────────────
 
@@ -570,12 +631,22 @@ _LOCAL_ID_SQL = (
 )
 
 _DEAL_CONTACT_SQL = (
-    "INSERT INTO crm_deal_contacts (deal_id, contact_id, is_primary) "
+    "INSERT INTO crm_deal_contacts (deal_id, contact_id, is_primary, ext_source) "
     "SELECT CAST(:deal_id AS uuid), CAST(:contact_id AS uuid), "
     "       NOT EXISTS (SELECT 1 FROM crm_deal_contacts "
-    "                    WHERE deal_id = CAST(:deal_id AS uuid) AND is_primary) "
+    "                    WHERE deal_id = CAST(:deal_id AS uuid) AND is_primary), "
+    "       'zoho' "
     "ON CONFLICT DO NOTHING"
 )
+
+#: The key of ``custom`` that keeps the Zoho ids of a converted lead.
+CONVERTED_KEY = "_converted"
+#: The canonical entity of each Zoho id -> the column of ``crm_leads`` it fills.
+_CONVERSION_COLUMNS = {
+    "contact": "converted_contact_id",
+    "company": "converted_organization_id",
+    "deal": "converted_deal_id",
+}
 
 _BUMP_SQL = (
     "UPDATE {table} SET last_activity_at = :at WHERE id = CAST(:id AS uuid) "
@@ -816,6 +887,8 @@ async def _write_record(  # noqa: C901 - one record, one linear mapping to colum
             values.setdefault(column, None)
         if not any(values[c] for c in _ACTIVITY_TARGETS):
             ctx.bump(entity, "unlinked", max(unlinked, 1))
+            if entity == "task":
+                ctx.step("tasks", "skipped")
             return False
 
     if entity in ("lead", "deal"):
@@ -827,8 +900,22 @@ async def _write_record(  # noqa: C901 - one record, one linear mapping to colum
         values["pipeline_id"] = await _deal_pipeline_id(ctx, db, mapped.pipeline)
     if "lead_name" in mapped.derived:
         values["lead_name"] = compute_lead_name(values)
+    if mapped.conversion is not None:
+        # The Zoho ids stay in ``custom``, so a later pass resolves the ones
+        # that were not written yet (a deal is read after its lead).
+        values["custom"] = {**values["custom"], CONVERTED_KEY: mapped.conversion}
+        for key, column in _CONVERSION_COLUMNS.items():
+            ext = mapped.conversion.get(key)
+            values[column] = (
+                await _local_id(ctx, db, key, ext, caches.links) if ext else None
+            )
 
     row = await upsert_from_source(db, mapped.table, values)
+    if mapped.conversion is not None:
+        ctx.step("converted_leads", "seen")
+        ctx.step("converted_leads", "upserted")
+        if not mapped.conversion:
+            ctx.step("converted_leads", "skipped")
 
     if mapped.deal_contact is not None:
         contact = await _local_id(
@@ -840,7 +927,7 @@ async def _write_record(  # noqa: C901 - one record, one linear mapping to colum
             )
         else:
             unlinked += 1
-    if mapped.table == "crm_activities":
+    if mapped.table == "crm_activities" and entity != "task":
         when = values.get("occurred_at") or record.modified_at
         if when is not None:
             for column, table in (
@@ -989,11 +1076,17 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     module = changed_module(entity)
     row = _row(ctx, module)
     saved = row.state or {}
+    if _unavailable_now(ctx, entity):
+        return
     walking = entity in ctx.reconcile
     if row.initial_done_at is not None and saved.get("offset_paged") and not walking:
         return
     stamping = walking or row.initial_done_at is None
     resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
+    backfill = (
+        entity == "lead" and row.initial_done_at is not None
+        and not saved.get("converted_both") and not resumed
+    )
     hidden = bool(saved.get("offset_paged")) if resumed else False
     walk_start = ctx.started
     walk_count = 0
@@ -1016,16 +1109,29 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         newest = _parse(saved.get("max_modified"))
         newest_ids = set(saved.get("watermark_ids") or ())
     else:
-        since = None if walking else row.last_pulled_at
+        since = None if walking or backfill else row.last_pulled_at
         ids = tuple(saved.get("watermark_ids") or ()) if since is not None else ()
         cursor = SourceCursor(since=since, seen_ids=ids)
         newest = since
         newest_ids = set(ids)
     first_pass = row.initial_done_at is None and not resumed
+    # Leads were read without ``converted=both`` before CRM-Q5, and an incremental
+    # read never returns a lead that did not change. So the first read of a lead
+    # cursor made earlier is a full read, once (CRM-Q5). It does not stamp and
+    # it deletes nothing.
+    marks: dict[str, Any] = {"converted_both": True} if entity == "lead" else {}
     table = _table(entity)
     try:
         while True:
-            page = await ctx.call(lambda s, c=cursor: s.list_changed(entity, c))
+            try:
+                page = await ctx.call(lambda s, c=cursor: s.list_changed(entity, c))
+            except (SourceScopeError, SourceError) as exc:
+                # An optional module that cannot be read for ANY reason that is
+                # not a dead token, a spent budget or a throttle is skipped.
+                if not _skip_optional(entity, exc):
+                    raise
+                await _mark_unavailable(ctx, entity, row)
+                return
             if page.records and ctx.owners is None:
                 await ctx.load_owners()
             for record in page.records:
@@ -1042,6 +1148,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
             async with ctx.page() as db:
                 landed, bad = await _apply_records(ctx, db, entity, page.records)
                 failed_map = _merge_failed(failed_map, landed, bad)
+                if entity == "deal" and landed:
+                    await _queue_roles(ctx, db, landed)
                 if not last_page and page.next_cursor is not None:
                     extra: dict[str, Any] = {}
                     if stamping:
@@ -1057,6 +1165,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                         failed=failed_map,
                         retry_from=_iso(_pin(failed_map)),
                         prev_walk_start=_iso(prev_walk),
+                        **marks,
                         **extra,
                     )
                     row = CursorRow(
@@ -1087,6 +1196,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                             "failed": failed_map,
                             "retry_from": _iso(_pin(failed_map)),
                             "prev_walk_start": _iso(next_prev),
+                            **marks,
                         },
                         row.initial_done_at or complete_at,
                         complete_at if (walking or first_pass) else row.last_reconciled_at,
@@ -1098,6 +1208,43 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
             cursor = page.next_cursor  # type: ignore[assignment]
     finally:
         ctx.stamp = None
+
+
+def _unavailable_now(ctx: _Ctx, entity: str) -> bool:
+    """True when the module was found unavailable less than an hour ago.
+
+    The run then reads nothing and counts the module as unavailable. After the
+    hour it asks once more, so a reconnect that grants the scope heals the sync.
+    """
+    state = _row(ctx, changed_module(entity)).state or {}
+    if not state.get("unavailable"):
+        return False
+    checked = _parse(state.get("checked_at"))
+    if checked is not None and ctx.started - checked >= UNAVAILABLE_RETRY:
+        return False
+    if entity == "task":
+        ctx.counts["tasks"]["unavailable"] = 1
+    return True
+
+
+async def _mark_unavailable(ctx: _Ctx, entity: str, row: CursorRow) -> None:
+    """Record that the connection cannot read ``entity``, and go on.
+
+    The row is marked done, so a module that never reads does not hold the
+    plan at ``import`` for ever. The error text is not kept, only the fact.
+    """
+    now = _now()
+    _log.warning("crm.sync.module_unavailable entity=%s reason=scope", entity)
+    marked = CursorRow(
+        changed_module(entity), row.last_pulled_at,
+        {"in_progress": False, "unavailable": True, "checked_at": _iso(now)},
+        row.initial_done_at or now, row.last_reconciled_at,
+    )
+    async with ctx.page() as db:
+        await _save_cursor(ctx, db, marked, "unavailable")
+        if entity == "task":
+            ctx.counts["tasks"]["unavailable"] = 1
+    ctx.cursors[changed_module(entity)] = marked
 
 
 async def _drop_stale(
@@ -1166,6 +1313,10 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
     module = deleted_module(entity)
     row = _row(ctx, module)
     saved = row.state
+    if entity in OPTIONAL_ENTITIES and (
+        (_row(ctx, changed_module(entity)).state or {}).get("unavailable")
+    ):
+        return
     resumed = bool(saved and saved.get("in_progress"))
     checked = _parse((saved or {}).get("checked_at"))
     if (
@@ -1181,7 +1332,13 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
         window = ctx.started - DELETED_MARGIN
     table = _table(entity)
     while True:
-        page = await ctx.call(lambda s, c=cursor: s.list_deleted(entity, c))
+        try:
+            page = await ctx.call(lambda s, c=cursor: s.list_deleted(entity, c))
+        except SourceError as exc:
+            if not _skip_optional(entity, exc):
+                raise
+            _log.warning("crm.sync.module_unavailable entity=%s reason=deleted", entity)
+            return
         last_page = page.next_cursor is None
         async with ctx.page() as db:
             removed = await delete_from_source(
@@ -1320,6 +1477,188 @@ async def _relink_deals(db: Any) -> None:
     default = next((r for r in rows if r.is_default), rows[0] if rows else None)
     if default is not None:
         await db.execute(text(_RELINK_DEFAULT), {"p": str(default.id), "src": EXT_SOURCE})
+
+
+_RELINK_LEAD_SQL = (
+    "UPDATE crm_leads l SET {column} = t.id FROM {table} t "
+    "WHERE l.ext_source = :src AND l.{column} IS NULL "
+    "AND t.ext_source = :src AND t.organization_id = l.organization_id "
+    "AND t.ext_id = l.custom->'{key}'->>'{kind}'"
+)
+_UNRESOLVED_LEAD_SQL = (
+    "SELECT count(*) AS n FROM crm_leads WHERE ext_source = :src AND ("
+    "(custom->'{key}'->>'contact' IS NOT NULL AND converted_contact_id IS NULL) OR "
+    "(custom->'{key}'->>'company' IS NOT NULL AND converted_organization_id IS NULL) OR "
+    "(custom->'{key}'->>'deal' IS NOT NULL AND converted_deal_id IS NULL))"
+)
+_CONVERSION_TABLES = {"contact": "crm_contacts", "company": "crm_companies", "deal": "crm_deals"}
+
+
+async def _relink_leads(ctx: _Ctx) -> None:
+    """Give a converted lead the local contact, company and deal that its stored
+    Zoho ids name (CRM-Q5). A lead is read before the deals, so a deal id is not
+    resolvable on the first pass. A later run, or this pass, fills it in. An id
+    that names a record that is not here stays NULL, and ``unlinked`` counts it.
+
+    Like :func:`_relink_deals`, these raw UPDATEs are the sync's own write. They
+    leave ``zoho_dirty`` and ``updated_at`` alone, because a re-link is not a
+    native edit and must not push the lead back to Zoho.
+    """
+    async with ctx.page() as db:
+        for kind, column in _CONVERSION_COLUMNS.items():
+            await db.execute(text(_RELINK_LEAD_SQL.format(
+                column=column, table=_CONVERSION_TABLES[kind], key=CONVERTED_KEY, kind=kind,
+            )), {"src": EXT_SOURCE})
+        row = (await db.execute(
+            text(_UNRESOLVED_LEAD_SQL.format(key=CONVERTED_KEY)), {"src": EXT_SOURCE},
+        )).first()
+        # A gauge, not a sum: the leads that still wait for a record.
+        ctx.counts["converted_leads"]["unlinked"] = int(row.n if row is not None else 0)
+
+
+async def _roles_pending(ctx: _Ctx) -> list[str]:
+    if ctx.roles_pending is None:
+        state = _row(ctx, ROLES_MODULE).state or {}
+        ctx.roles_pending = [str(i) for i in state.get("pending") or ()]
+        ctx.roles_attempts = {
+            str(k): int(v) for k, v in (state.get("attempts") or {}).items()
+        }
+        ctx.roles_seeded = bool(state.get("seeded"))
+    return ctx.roles_pending
+
+
+async def _save_roles_pending(ctx: _Ctx, db: Any) -> None:
+    pending = ctx.roles_pending or []
+    if len(pending) > ROLES_PENDING_CAP:
+        _log.warning("crm.sync.roles_queue_capped dropped=%s", len(pending) - ROLES_PENDING_CAP)
+        pending = pending[-ROLES_PENDING_CAP:]
+        ctx.roles_pending = pending
+    old = _row(ctx, ROLES_MODULE)
+    live = set(pending)
+    attempts = {k: v for k, v in ctx.roles_attempts.items() if k in live}
+    row = CursorRow(ROLES_MODULE, old.last_pulled_at,
+                    {"pending": pending, "attempts": attempts, "seeded": ctx.roles_seeded},
+                    old.initial_done_at or _now(), old.last_reconciled_at)
+    await _save_cursor(ctx, db, row, "ok")
+    ctx.cursors[ROLES_MODULE] = row
+
+
+async def _queue_roles(ctx: _Ctx, db: Any, landed: set[str]) -> None:
+    """Remember the deals that changed, in the SAME transaction as their page.
+
+    A run that stops before it reads the roles still owes them to the next run.
+    """
+    pending = await _roles_pending(ctx)
+    known = set(pending)
+    pending.extend(sorted(i for i in landed if i not in known))
+    await _save_roles_pending(ctx, db)
+
+
+def _roles_budget_low(ctx: _Ctx) -> bool:
+    left = ctx._budget_left()
+    if left is not None and left <= ROLES_RESERVE:
+        return True
+    return ctx.credits_left is not None and ctx.credits_left <= CREDITS_FLOOR + ROLES_RESERVE
+
+
+_SEED_ROLES_SQL = (
+    "SELECT ext_id FROM crm_deals WHERE ext_source = :src AND ext_id IS NOT NULL "
+    "ORDER BY ext_id"
+)
+
+
+async def _seed_roles(ctx: _Ctx) -> None:
+    """Queue every mirrored deal once (CRM-Q5). A deal that was mirrored before
+    the roles step existed would never be queued, because its cursor is past
+    it. The queue drains over several runs, inside the budget and the reserve."""
+    await _roles_pending(ctx)
+    if ctx.roles_seeded:
+        return
+    async with ctx.page() as db:
+        rows = (await db.execute(text(_SEED_ROLES_SQL), {"src": EXT_SOURCE})).fetchall()
+        known = set(ctx.roles_pending or [])
+        ctx.roles_pending = [*(ctx.roles_pending or []),
+                             *(str(r.ext_id) for r in rows if str(r.ext_id) not in known)]
+        ctx.roles_seeded = True
+        await _save_roles_pending(ctx, db)
+
+
+async def _deal_roles(ctx: _Ctx) -> None:
+    """Read the contact roles of the deals that changed (CRM-Q5), one call each.
+
+    The deals wait in ``zoho:deal_roles``. Each call costs one credit, so the
+    step stops when the budget is low and leaves the rest queued. ``skipped``
+    counts the deals it left. A role that Zoho no longer lists is removed, and a
+    contact that is not here is counted in ``unlinked``. A scope refusal or a
+    failed read keeps the deal queued, and the third failure drops it.
+    """
+    await _seed_roles(ctx)
+    pending = list(ctx.roles_pending or [])
+    if not pending:
+        return
+    done: list[str] = []
+    for ext_id in list(pending):
+        if _roles_budget_low(ctx):
+            break
+        try:
+            roles = await ctx.call(lambda s, i=ext_id: s.list_deal_contact_roles(i))
+        except (NotConnected, Stopped, ModeChanged):
+            raise
+        except SourceScopeError:
+            _log.warning("crm.sync.deal_roles_unavailable reason=scope")
+            ctx.counts["deal_contacts"]["unavailable"] = 1
+            break
+        except SourceError as exc:
+            if _fatal(exc):
+                raise
+            _log.warning("crm.sync.deal_roles_unreadable deal=%s error=%s",
+                         ext_id, error_code(exc))
+            tries = ctx.roles_attempts.get(ext_id, 0) + 1
+            ctx.roles_attempts[ext_id] = tries
+            if tries >= ROLES_MAX_ATTEMPTS:
+                _log.warning("crm.sync.deal_roles_dropped deal=%s", ext_id)
+                ctx.step("deal_contacts", "skipped")
+                done.append(ext_id)
+            continue
+        ctx.step("deal_contacts", "seen")
+        async with ctx.page() as db:
+            await _write_roles(ctx, db, ext_id, roles)
+            done.append(ext_id)
+            gone = set(done)
+            ctx.roles_pending = [i for i in pending if i not in gone]
+            await _save_roles_pending(ctx, db)
+    if pending and len(done) < len(pending):
+        ctx.step("deal_contacts", "skipped", len(pending) - len(done))
+    if done or ctx.roles_attempts:
+        # Save the queue and the attempt counts of the reads that failed.
+        async with ctx.page() as db:
+            gone = set(done)
+            ctx.roles_pending = [i for i in pending if i not in gone]
+            await _save_roles_pending(ctx, db)
+
+
+async def _write_roles(
+    ctx: _Ctx, db: Any, deal_ext_id: str, roles: list[tuple[str, str | None]],
+) -> None:
+    deal = await _local_id(ctx, db, "deal", deal_ext_id, {})
+    if deal is None:
+        ctx.step("deal_contacts", "skipped")  # the deal was deleted since
+        return
+    cache: dict[tuple[str, str], str | None] = {}
+    wanted: list[tuple[str, str | None]] = []
+    for contact_ext, role in roles:
+        local = await _local_id(ctx, db, "contact", contact_ext, cache)
+        if local is None:
+            ctx.step("deal_contacts", "unlinked")
+        else:
+            wanted.append((local, role))
+    if roles and not wanted:
+        # No contact here yet: removing rows now would drop real links.
+        return
+    async with savepoint(db):
+        written, removed = await set_deal_contacts_from_source(db, deal, wanted)
+    ctx.step("deal_contacts", "upserted", written)
+    ctx.step("deal_contacts", "deleted", removed)
 
 
 async def _mirror_pipelines(
@@ -1474,6 +1813,8 @@ async def _execute(ctx: _Ctx) -> None:
     if ctx.kind != runs.KIND_IMPORT:
         for entity in ENTITY_ORDER:
             await _deleted_pass(ctx, entity)
+    await _relink_leads(ctx)
+    await _deal_roles(ctx)
 
 
 async def _finish(

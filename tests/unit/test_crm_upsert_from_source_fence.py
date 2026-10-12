@@ -28,8 +28,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 NAME = "upsert_from_source"
 #: The second door of the mirror write path (CRM-Z4), and the third (CRM-Q2,
-#: the stages of a mirrored pipeline). Same fence.
-NAMES = (NAME, "delete_from_source", "set_pipeline_stages_from_source")
+#: the stages of a mirrored pipeline), and the fourth (CRM-Q5, the contacts of
+#: a mirrored deal). Same fence.
+NAMES = (
+    NAME, "delete_from_source", "set_pipeline_stages_from_source",
+    "set_deal_contacts_from_source",
+)
 
 #: The trees that must never name the function.
 SCAN_ROOTS = (

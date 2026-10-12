@@ -114,8 +114,11 @@ def _done(entity: str, **kw: object) -> tuple[str, CursorRow]:
 
 def test_the_plan_is_an_import_until_each_entity_has_had_a_full_read() -> None:
     assert engine.plan({}, NOW, None)[0] == "import"
-    cursors = dict(_done(e) for e in engine.ENTITY_ORDER[:-1])
+    cursors = dict(_done(e) for e in engine.ENTITY_ORDER if e != "meeting")
     assert engine.plan(cursors, NOW, None)[0] == "import"
+    # An optional module that never read does not hold the plan at import (CRM-Q5).
+    cursors = dict(_done(e) for e in engine.ENTITY_ORDER if e != "task")
+    assert engine.plan(cursors, NOW, NOW)[0] == "incremental"
     cursors = dict(_done(e) for e in engine.ENTITY_ORDER)
     assert engine.plan(cursors, NOW, NOW) == ("incremental", frozenset())
 

@@ -88,6 +88,7 @@ from gateway.routes.crm.core import (
     CONTACTS,
     DEALS,
     LEADS,
+    OPEN_LEAD_SQL,
     ORGANIZATIONS,
     Entity,
     _tenant_session,
@@ -248,7 +249,7 @@ async def _export(entity: Entity, params: ExportParams) -> Response:
     if entity.hides_converted and not params.include_converted:
         # §3.3/B6, `records._list`'s clause verbatim: a lead is "converted"
         # while the deal it became still exists.
-        extra = ("converted_deal_id IS NULL",)
+        extra = (OPEN_LEAD_SQL,)
     # CRM-Q3: the related-list filters travel with the export, so the file is
     # the list that is on screen.
     related_where, related_params = related_filters(
