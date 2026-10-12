@@ -1102,3 +1102,54 @@ async def test_no_deal_disappears_from_a_pipeline_board(q) -> None:
     whole = (await _req(admin, "GET", "/crm/pipeline")).json()
     assert {lane["pipeline_position"] for lane in whole["lanes"]} == {None}
     assert sum(lane["count"] for lane in whole["lanes"]) == 6
+
+
+async def test_held_lanes_follow_every_board_filter(q) -> None:
+    """CRM-Q8's filters reach the held-lane read with the same binds.
+
+    ``owner=me`` binds the caller, never the word ``me``. A held lane shows
+    only while it holds a deal that passes every filter, and the lane counts
+    add up to the filtered deals of the pipeline.
+    """
+    _deal(q.a, "s1", 1, Pipeline="Standard")
+    _deal(q.a, "h1", 2, Pipeline="Standard", Stage="Delivered & Installed")
+    _deal(q.a, "h2", 3, Pipeline="Standard", Stage="Delivered & Installed")
+    _deal(q.a, "n1", 4, Pipeline="Standard", Stage="New Lead")
+    await _sync(q, q.org_a, q.a)
+    me, other = "admin@crm-sync.test", "other@crm-sync.test"
+    with q.p.admin_engine.begin() as c:
+        for ext, owner, source, close in (
+            ("s1", me, "manual", "2026-03-15"), ("h1", me, "manual", "2026-03-10"),
+            ("h2", other, "email", "2026-06-10"), ("n1", other, "email", "2026-06-20"),
+        ):
+            c.execute(text(
+                "UPDATE crm_deals SET owner_email = :w, source = :s, "
+                "expected_close_date = CAST(:d AS date) WHERE ext_id = :e "
+                "AND organization_id = CAST(:o AS uuid)"),
+                {"w": owner, "s": source, "d": close, "e": ext, "o": q.org_a})
+    admin = _admin(q.org_a)
+    std = _pid(q)
+
+    cases = (
+        ("owner=me", f"lower(owner_email) = '{me}'", {"Delivered & Installed"}),
+        ("source=email", "source = 'email'", {"Delivered & Installed", "New Lead"}),
+        ("source=manual", "source = 'manual'", {"Delivered & Installed"}),
+        ("close_from=2026-06-01&close_to=2026-06-30",
+         "expected_close_date BETWEEN '2026-06-01' AND '2026-06-30'",
+         {"Delivered & Installed", "New Lead"}),
+        ("close_from=2026-03-01&close_to=2026-03-31",
+         "expected_close_date BETWEEN '2026-03-01' AND '2026-03-31'",
+         {"Delivered & Installed"}),
+        ("owner=me&source=email", f"lower(owner_email) = '{me}' AND source = 'email'",
+         set()),
+    )
+    for query, predicate, held_names in cases:
+        res = await _req(admin, "GET", f"/crm/pipeline?pipeline_id={std}&{query}")
+        assert res.status_code == 200, (query, res.text)
+        lanes = res.json()["lanes"]
+        expected = _count(q.p, "crm_deals", q.org_a,
+                          f"pipeline_id = CAST('{std}' AS uuid) AND {predicate}")
+        assert sum(lane["count"] for lane in lanes) == expected, query
+        held = [lane for lane in lanes if lane["pipeline_position"] is None]
+        assert {lane["status"]["name"] for lane in held} == held_names, query
+        assert all(lane["count"] > 0 for lane in held), query
