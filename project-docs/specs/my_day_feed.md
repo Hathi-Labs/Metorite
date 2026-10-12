@@ -1277,9 +1277,16 @@ and is off by default (`packages/acb_memory`).
 }
 ```
 
-- `needs` is exactly the answer of `GET /shell/needs`, from the same provider
-  run, before the fold of §4.5.
-- `groups` lists only the groups that hold a card, in the order of §4.3.
+- `needs` is exactly the answer of `GET /shell/needs?limit=30`, from the
+  same provider run, before the fold of §4.5. It always uses the needs
+  route's own default limit, 30 (`DEFAULT_LIMIT`, `needs.py:138`), whatever
+  `limit` the feed request carries. The client stores it under the needs
+  cache key, so the bell's counts stay true.
+- **The group ids** are `now`, `needs_you`, `ready`, `fyi`, `later` and
+  `handled`, in that order. MD-1 emits only the first four.
+- **The app ids** are `tasks`, `projects`, `email`, `approvals` and
+  `calendar`. The `sources` key of the Calendar provider is `calendar`.
+- `groups` lists only the groups that hold a card, in the order above.
 - `folded` names the kinds that §4.5 folded into the card.
 - An act with `way: "tap"` names its `act` and `act_ref`, as the needs items
   do. An act with `way: "open"` names its `href`.
@@ -1396,16 +1403,27 @@ Files: `src/app/api/shell/feed/route.ts`, `src/lib/shell/FeedCard.tsx`,
 `src/lib/shell/MyDayPage.tsx`, `src/lib/shell/ShellBell.tsx`. Flag
 `NEXT_PUBLIC_MY_DAY_FEED`, off by default.
 
+The spec-auditor cleared it on 2026-10-13 (GO-NARROWED) for a build beside
+MD-1a, against the shape of §14.1a.
+
 Done when:
 
-1. With the flag on, `/` renders the feed column of §14.1. With it off, `/`
-   renders today's page.
+1. With the flag on, `/` renders the feed column: the groups in the order of
+   `groups`, the cards in server order inside each group, `TodayCard` on the
+   `xl` rail, and no Next actions card. One request at the default limit,
+   and the client shows 20 cards at a time. With the flag off, `/` renders
+   today's page.
 2. The feed answer fills the needs cache key, and the shared poll calls each
    key (§14.1). Fence: `shellBell.test.ts`.
 3. Done and mark read run through the owning app's code, as NS-3 does. Every
    `open` act is a link.
 4. The card draws through `HomeCard`, `Skeleton` and the house tokens, and
    `conformance.test.ts` passes with no new budget.
+
+**Not in MD-1b, and where each part went.** The honest counts of §6.7 and the
+card menu go to MD-2, because each needs its state table. `stale_next` is
+MD-3. Server paging with a cursor goes to MD-5. The keys of §14.3 go to
+MD-9.
 
 ### MD-2 · The life of a card — AGENT-SAFE
 
@@ -1506,7 +1524,8 @@ copies nothing of it.
 
 ### MD-8 · Acts in the card — AGENT-SAFE (D100)
 
-The A\* acts as taps, and the class B acts in the expand panel of §11.3. The
+The A\* acts as taps, and the class B acts in the expand panel of §11.3.
+MD-9 also adds the keys of §14.3. The
 "needs more context" test of §11.2, and "Always open <kind> in the app".
 Fence: `feedActs.test.ts` (§11.4).
 
