@@ -150,7 +150,11 @@ export interface DraftAssistantProps {
   revisions: DraftRevision[];
   activeRevision: number | null;
   elapsedMs: number | null;
+  /** Why the last round gave no draft: Stop, the time bound or a model error. */
+  notice?: string | null;
   onRun: () => void;
+  /** Stop the round that runs now (EM-T17 A5). */
+  onStop: () => void;
   onRestore: (id: number) => void;
   onClose: () => void;
 }
@@ -166,7 +170,9 @@ export function DraftAssistant({
   revisions,
   activeRevision,
   elapsedMs,
+  notice,
   onRun,
+  onStop,
   onRestore,
   onClose,
 }: DraftAssistantProps) {
@@ -259,6 +265,15 @@ export function DraftAssistant({
 
       {/* Refine affordance: after a draft lands, say plainly that another
           instruction edits it — the loop is the feature, not a hidden trick. */}
+      {/* Why the last round gave no draft (EM-T17): Stop, the time bound or
+          a model that ran out of time. */}
+      {notice && !busy && (
+        <p role="status" className="px-4 pt-1.5 flex items-start gap-1.5 text-[10.5px] text-warning">
+          <Icon name="AlertTriangle" size={11} className="flex-shrink-0 mt-[2px]" aria-hidden />
+          {notice}
+        </p>
+      )}
+
       {hasDraft && !busy && (
         <p className="px-4 pt-1.5 text-[10.5px] text-muted-foreground">
           Keep going — tell it what to change and it edits this draft.
@@ -301,14 +316,19 @@ export function DraftAssistant({
             <Icon name="Undo2" size={13} />
           </Button>
         )}
-        <Button size="none" radius="keep" layout="flex items-center" type="button" onClick={onRunClick} disabled={busy} className="px-2.5 py-1 text-xs rounded-md gap-1 flex-shrink-0">
-          {busy ? (
-            <Icon name="Loader2" size={12} className="animate-spin" aria-hidden />
-          ) : (
+        {busy ? (
+          // While a round runs, the run button becomes Stop. The member keeps
+          // their own text (EM-T17 A5).
+          <Button variant="secondary" size="none" radius="keep" layout="flex items-center" type="button" onClick={onStop} title="Stop drafting" aria-label="Stop drafting" className="px-2.5 py-1 text-xs rounded-md gap-1 flex-shrink-0">
+            <Icon name="Square" size={10} className="fill-current" aria-hidden />
+            Stop
+          </Button>
+        ) : (
+          <Button size="none" radius="keep" layout="flex items-center" type="button" onClick={onRunClick} className="px-2.5 py-1 text-xs rounded-md gap-1 flex-shrink-0">
             <Icon name="CornerDownLeft" size={12} aria-hidden />
-          )}
-          {runLabel}
-        </Button>
+            {runLabel}
+          </Button>
+        )}
         <button
           type="button"
           onClick={onClose}

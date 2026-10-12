@@ -28,6 +28,10 @@ Decision policy (see specs/permissions_sandbox_b6.md for the table):
                                                  with a sentence that names
                                                  ``read_attachment`` (incident
                                                  2026-10-09, :func:`binary_file_note`)
+  * a tool of an MCP server (WS-8c, H-299)     → APPROVE with ``mcp_confirm``
+                                                 (the caller shows a card) unless
+                                                 it says read-only and not
+                                                 destructive (:func:`mcp_needs_confirmation`)
   * network                                    → APPROVE (open_world is normal),
                                                  logged for exfil visibility
   * unknown / unclassifiable                   → APPROVE + WARN (fail-open-loud;
@@ -131,6 +135,37 @@ def _is_within(path: str, root: str) -> bool:
         return False
 
 
+# ── A tool of an MCP server (WS-8c, H-299) ───────────────────────────────────
+# A native MAF agent calls the tools of an org's MCP servers. The server sends
+# its own hints in ``tools/list`` (``annotations``, MCP 2025-03-26). The rule
+# is one line: a tool needs the member's confirmation card UNLESS it says it
+# is read-only AND does not say it is destructive. A missing hint, a hint that
+# is not a JSON boolean, and no annotations at all each need the card. So the
+# rule fails closed. The hints are the server's own claim, and a hostile
+# server can lie (``agent_architecture.md`` §12.2 WS-8c, known limit).
+# Fence: tests/unit/test_maf_mcp_confirm.py.
+
+#: The code of an MCP tool that needs the member's confirmation card.
+MCP_CONFIRM = "mcp_confirm"
+#: The code of an MCP tool that runs at once. No other code skips the card.
+MCP_READ_ONLY = "mcp_read_only"
+
+
+def mcp_needs_confirmation(annotations: Any) -> bool:
+    """True unless *annotations* say read-only and do not say destructive.
+
+    *annotations* is the ``annotations`` object of one MCP tool as a mapping,
+    with the MCP names (``readOnlyHint``, ``destructiveHint``). Only a real
+    ``True`` counts as read-only, and anything but a real ``True`` counts as
+    not destructive.
+    """
+    if not isinstance(annotations, dict):
+        return True
+    read_only = annotations.get("readOnlyHint") is True
+    destructive = annotations.get("destructiveHint") is True
+    return not (read_only and not destructive)
+
+
 # ── Pure decision function (unit-testable, no SDK types) ─────────────────────
 
 
@@ -209,6 +244,15 @@ def decide(request: Any) -> tuple[bool, str, str]:
             return False, "write_without_workspace", target[:200]
         if root and target and not _is_within(target, root):
             return False, "write_out_of_workspace", target[:200]
+
+    # 3b. A tool of an MCP server (WS-8c, H-299) → its own rule, BEFORE the
+    #     platform annotations, so a server tool never borrows the hints of a
+    #     platform tool of the same name. Approved, and the caller shows a
+    #     confirmation card for MCP_CONFIRM (orchestrator._maf_mcp).
+    if _field(request, "mcp_tool"):
+        if mcp_needs_confirmation(_field(request, "mcp_annotations")):
+            return True, MCP_CONFIRM, tool_name or "(mcp tool)"
+        return True, MCP_READ_ONLY, tool_name or "(mcp tool)"
 
     # 4. Named platform tool → consult risk annotations. Reached once the
     #    hard vetoes above have cleared (or didn't apply), so the common case

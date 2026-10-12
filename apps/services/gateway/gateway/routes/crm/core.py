@@ -409,6 +409,17 @@ class ListResponse(BaseModel):
 
 # ── Entity registry ─────────────────────────────────────────────────────────
 
+#: The WHERE clause of an OPEN lead (CRM-Q5). A native lead is converted while the
+#: deal it became exists (§3.3/B6). A mirrored lead is converted when Zoho says so,
+#: because Zoho allows a conversion with no deal, and the deal can be absent here.
+#: The second half avoids ``IS NOT NULL`` on purpose: the CRM test fake reads each
+#: ``IS [NOT] NULL`` as a plain filter, so a comparison keeps it one clause.
+OPEN_LEAD_SQL = (
+    "converted_deal_id IS NULL "
+    "AND NOT COALESCE(ext_source > '' AND converted_at > '-infinity'::timestamptz, false)"
+)
+
+
 @dataclass(frozen=True)
 class Entity:
     """One CRM record type, and everything generic code needs to know about it."""
@@ -868,6 +879,170 @@ def related_filters(
             "WHERE contact_id = CAST(:contact_id AS uuid))"
         )
         bound["contact_id"] = _uuid_param("contact_id", contact_id)
+    return tuple(clauses), bound
+
+
+# ── The extra list filters (WS-53 CRM-Q8) ──────────────────────────────────
+
+#: The API slug of each entity → the value that ``crm_field_defs.entity`` holds.
+#: The sync writes the singular form (``crm_sync.engine.FIELD_DEF_ENTITIES``).
+FIELD_ENTITY_BY_SLUG: dict[str, str] = {
+    "leads": "lead",
+    "contacts": "contact",
+    "organizations": "company",
+    "deals": "deal",
+}
+
+#: The query-string prefix of a custom field filter: ``custom.<key>=<value>``.
+CUSTOM_PREFIX = "custom."
+
+
+def parse_iso_date(name: str, value: str | None) -> date | None:
+    """*value* as a date, ``None`` when it is empty, or a 422 that names *name*.
+
+    The check runs before any SQL, so a bad date never becomes a database cast
+    error (a 500).
+    """
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value.strip()[:10])
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"'{name}' must be an ISO date (YYYY-MM-DD).",
+        ) from None
+
+
+def custom_pairs(query_params: Any) -> list[tuple[str, str]]:
+    """Every ``custom.<name>=<value>`` pair of a query string, in order.
+
+    *query_params* is ``request.query_params`` or ``None``. FastAPI cannot
+    declare a parameter name that is not known up front, so the dynamic names
+    are read off the request.
+    """
+    if query_params is None:
+        return []
+    return [
+        (key[len(CUSTOM_PREFIX):], value)
+        for key, value in query_params.multi_items()
+        if key.startswith(CUSTOM_PREFIX) and key != CUSTOM_PREFIX
+    ]
+
+
+def resolve_owner(owner: str | None, user: Any) -> str | None:
+    """``me`` is the caller. The identity comes from the session (R5), never
+    from the request."""
+    if owner and owner.strip().lower() == "me" and user is not None:
+        return actor(user)
+    return owner
+
+
+@dataclass(frozen=True)
+class ExtraFilterInput:
+    """The Q8 filters as the caller sent them, before they are checked."""
+
+    created_from: str | None = None
+    created_to: str | None = None
+    updated_from: str | None = None
+    updated_to: str | None = None
+    close_from: str | None = None
+    close_to: str | None = None
+    custom: tuple[tuple[str, str], ...] = ()
+
+
+async def extra_filters(
+    db: Any, entity: Entity, given: ExtraFilterInput,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """The date-range and custom field filters, as SQL and bound parameters.
+
+    A bad date, or a ``close_*`` filter on an entity without a close date, or a
+    custom key that ``crm_field_defs`` does not list for this entity, is a 422
+    before the list query runs. Every value is a bound parameter. The custom
+    key is bound too (``custom ->> :ck``), so no caller text enters the SQL.
+    """
+    clauses: list[str] = []
+    bound: dict[str, Any] = {}
+    ranges = (
+        ("created_from", given.created_from, "created_at >= CAST(:created_from AS date)"),
+        ("created_to", given.created_to,
+         "created_at < CAST(:created_to AS date) + 1"),
+        # ⚠️ The provider's modified time, when the row has one. A mirrored
+        # row's own `updated_at` is the import time, so ranging on it would
+        # show the day of the last sync and not the day of the change.
+        ("updated_from", given.updated_from,
+         "coalesce(ext_modified_at, updated_at) >= CAST(:updated_from AS date)"),
+        ("updated_to", given.updated_to,
+         "coalesce(ext_modified_at, updated_at) < CAST(:updated_to AS date) + 1"),
+        ("close_from", given.close_from,
+         "expected_close_date >= CAST(:close_from AS date)"),
+        ("close_to", given.close_to, "expected_close_date <= CAST(:close_to AS date)"),
+    )
+    mirror: bool | None = None
+    for name, raw, clause in ranges:
+        parsed = parse_iso_date(name, raw)
+        if parsed is None:
+            continue
+        if name.startswith("created_"):
+            # ⚠️ In Mirror mode `created_at` is the import time:
+            # `upsert_from_source` refuses to write it. A range on it would
+            # answer with the sync day and hide every older record. Refused,
+            # until a mirrored created column exists (spec 18.5, CRM-Q8).
+            if mirror is None:
+                mirror = await is_mirror_mode(db, current_tenant())
+            if mirror:
+                raise HTTPException(status_code=422, detail={
+                    "code": "created_range_mirror",
+                    "message": "The created date of a synced record is not "
+                               "kept. Filter by the updated date instead.",
+                })
+        if name.startswith("close_") and entity.table != "crm_deals":
+            raise HTTPException(
+                status_code=422,
+                detail=f"{entity.slug} have no close date, so '?{name}' cannot "
+                       "filter them. Drop the parameter.",
+            )
+        clauses.append(clause)
+        bound[name] = parsed
+    if given.custom:
+        known = {
+            r.key for r in (await db.execute(
+                text("SELECT key FROM crm_field_defs WHERE entity = :entity"),
+                {"entity": FIELD_ENTITY_BY_SLUG[entity.slug]},
+            )).fetchall()
+        }
+        grouped: dict[tuple[str, bool], list[str]] = {}
+        for name, value in given.custom:
+            if name in known:
+                grouped.setdefault((name, False), []).append(value)
+            elif name.endswith(".in") and name[:-3] in known:
+                grouped.setdefault((name[:-3], True), []).extend(
+                    part.strip() for part in value.split(",") if part.strip()
+                )
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{name}' is not a custom field of {entity.slug}.",
+                )
+        for index, ((key, is_in), values) in enumerate(grouped.items()):
+            bound[f"ck{index}"] = key
+            if is_in or len(values) > 1:
+                # A multiselect field holds a JSON array (`["Red","Blue"]`),
+                # and `->>` would give its text. The array arm matches when
+                # any chosen option is in the array. Every value is bound.
+                clauses.append(
+                    f"(custom ->> :ck{index} = ANY(CAST(:cv{index} AS text[])) "
+                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
+                    f"AND jsonb_exists_any(custom -> :ck{index}, "
+                    f"CAST(:cv{index} AS text[]))))"
+                )
+                bound[f"cv{index}"] = values
+            else:
+                clauses.append(
+                    f"(custom ->> :ck{index} = :cv{index} "
+                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
+                    f"AND jsonb_exists(custom -> :ck{index}, :cv{index})))"
+                )
+                bound[f"cv{index}"] = values[0]
     return tuple(clauses), bound
 
 
@@ -1586,6 +1761,48 @@ async def set_pipeline_stages_from_source(
             ),
             {"p": pipeline_id, "s": str(status_id), "pos": int(position)},
         )
+
+
+async def set_deal_contacts_from_source(
+    db: Any, deal_id: str, contacts: Sequence[tuple[str, str | None]],
+) -> tuple[int, int]:
+    """Set the contacts, and their roles, of one MIRRORED deal (WS-53 CRM-Q5).
+
+    The fourth door of the mirror write path, beside :func:`upsert_from_source`,
+    :func:`delete_from_source` and :func:`set_pipeline_stages_from_source`, with
+    the same fence (``tests/unit/test_crm_upsert_from_source_fence.py``).
+    ``crm_deal_contacts`` has no ``ext_id``, so ``(deal_id, contact_id)`` is the
+    natural key. *contacts* is ``[(contact_id, role), ...]`` with LOCAL ids.
+
+    A row that the list leaves out is removed only when its ``ext_source`` is
+    ``'zoho'`` (migration 249), so a link a person made here on a mirrored deal
+    survives. The primary contact is never removed. The primary comes from the ``Contact_Name`` of the deal itself, and a deal can
+    list no role for it. ``is_primary`` is never changed here. The tenant
+    policy binds the organization, and the column default fills it on insert.
+
+    Returns ``(written, removed)``.
+    """
+    ids = [str(contact_id) for contact_id, _ in contacts]
+    removed = await db.execute(
+        text(
+            "DELETE FROM crm_deal_contacts WHERE deal_id = CAST(:d AS uuid) "
+            "AND ext_source = 'zoho' AND NOT is_primary AND NOT (contact_id = ANY(CAST(:ids AS uuid[])))"
+        ),
+        {"d": deal_id, "ids": ids},
+    )
+    for contact_id, role in contacts:
+        await db.execute(
+            text(
+                "INSERT INTO crm_deal_contacts (deal_id, contact_id, role, ext_source) "
+                "VALUES (CAST(:d AS uuid), CAST(:c AS uuid), :role, 'zoho') "
+                "ON CONFLICT (deal_id, contact_id) DO UPDATE SET "
+                "role = EXCLUDED.role, ext_source = 'zoho' "
+                "WHERE crm_deal_contacts.ext_source = 'zoho' "
+                "OR crm_deal_contacts.is_primary"
+            ),
+            {"d": deal_id, "c": str(contact_id), "role": role},
+        )
+    return len(contacts), int(removed.rowcount or 0)
 
 
 async def load_by_zoho_id(db: Any, table: str, zoho_id: str) -> Any | None:

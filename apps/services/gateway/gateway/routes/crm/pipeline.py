@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
@@ -32,6 +32,7 @@ from gateway.routes.crm.core import (
     WEIGHTED_TYPES,
     DealModel,
     Entity,
+    ExtraFilterInput,
     StatusModel,
     _tenant_session,
     actor,
@@ -39,7 +40,9 @@ from gateway.routes.crm.core import (
     attach_ext_urls,
     checked_uuid,
     current_tenant,
+    custom_pairs,
     default_pipeline_id,
+    extra_filters,
     has_column,
     insert_row,
     link_deal_contact,
@@ -49,6 +52,7 @@ from gateway.routes.crm.core import (
     project_joined,
     record_activity,
     require_row,
+    resolve_owner,
     router,
     row_to_dict,
     status_wire,
@@ -338,6 +342,11 @@ def _dwell_seconds(since: Any, changed_at: Any) -> int | None:
 # this namespace), so no existing caller had to move.
 
 
+#: The lane predicate of every deal read on the board. The held-stage read
+#: rebinds it to each stage row, so it keeps every other filter.
+_LANE_SQL = "status_id = CAST(:status_id AS uuid)"
+
+
 class PipelineLane(BaseModel):
     status: StatusModel
     rows: list[dict]
@@ -347,10 +356,54 @@ class PipelineLane(BaseModel):
     #: not in ``WEIGHTED_TYPES``, because won revenue is closed and a lost or
     #: on-hold deal forecasts nothing (D-CRM-10).
     weighted: float = 0.0
+    #: The stage's place in the chosen pipeline. ``None`` with no
+    #: ``?pipeline_id=``, and for a stage the pipeline does not list that still
+    #: holds its deals. The board orders its columns with it (``lib/board.ts``).
+    pipeline_position: int | None = None
 
 
 class PipelineResponse(BaseModel):
     lanes: list[PipelineLane]
+
+
+async def _board_lanes(
+    db: Any, pipeline_id: str | None, where: str, params: dict[str, Any],
+) -> list[Any]:
+    """The stage rows of the board.
+
+    With a pipeline: its listed stages (each with ``pipeline_position``), then
+    each stage it does not list that holds a deal under ``where``. ``where``
+    must already hold EVERY filter, because the held read rebinds its lane
+    predicate to the stage row and keeps the rest with the same binds.
+    Without a pipeline: every stage.
+    """
+    if not pipeline_id:
+        return list((await db.execute(
+            text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
+        )).fetchall())
+    listed = (await db.execute(
+        text(
+            "SELECT s.*, ps.position AS pipeline_position "
+            "FROM crm_deal_statuses s "
+            "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
+            "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+            "ORDER BY ps.position, s.name"
+        ),
+        {"pipeline_id": pipeline_id},
+    )).fetchall()
+    held = where.replace(_LANE_SQL, "status_id = s.id", 1)
+    extra = (await db.execute(
+        text(
+            "SELECT s.* FROM crm_deal_statuses s "
+            "WHERE NOT EXISTS (SELECT 1 FROM crm_pipeline_stages ps "
+            "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+            "AND ps.status_id = s.id) "
+            f"AND EXISTS (SELECT 1 FROM crm_deals WHERE {held}) "
+            "ORDER BY s.position, s.name"
+        ),
+        params,
+    )).fetchall()
+    return [*listed, *extra]
 
 
 @router.get("/pipeline", response_model=PipelineResponse)
@@ -358,7 +411,15 @@ async def get_pipeline(
     owner: str | None = None,
     per_lane: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
     pipeline_id: str | None = None,
+    source: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    updated_from: str | None = None,
+    updated_to: str | None = None,
+    close_from: str | None = None,
+    close_to: str | None = None,
     user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]
 ) -> PipelineResponse:
     """Deals grouped by status — the kanban read.
 
@@ -371,31 +432,49 @@ async def get_pipeline(
     **``?pipeline_id=``** (WS-53 CRM-Q2) shows one pipeline. The lanes are its
     stages in its own order, and the deals are the ones that name it. With no
     ``pipeline_id`` the board is the whole organization, as it always was.
+
+    **The filters of a list** (WS-53 CRM-Q8) narrow the board too: ``owner``
+    (``me`` is the caller), ``source``, the date ranges, and
+    ``custom.<key>=<value>``. They are the same code as the list route's
+    (``core.extra_filters``), so a view that filters a list filters the board.
+
+    **No deal disappears.** A deal of the pipeline can sit in a stage that the
+    pipeline does not list (a mirrored Zoho stage that left the pipeline). That
+    stage is a lane too while it holds a deal under ALL the filters above
+    (:func:`_board_lanes`). So the lane counts add up to the deals of the
+    pipeline. The board places each lane by its own order rule
+    (``lib/board.ts`` ``orderLanes``), so a held lane can sit between listed
+    ones. This payload order is not that order.
     """
     async with _tenant_session() as db:
         params: dict[str, Any] = {}
-        where = "status_id = CAST(:status_id AS uuid)"
+        where = _LANE_SQL
+        wanted: str | None = None
         if pipeline_id:
             wanted = checked_uuid(pipeline_id, "pipeline_id")
             await require_row(db, "crm_pipelines", wanted, "Pipeline")
-            lanes = (await db.execute(
-                text(
-                    "SELECT s.* FROM crm_deal_statuses s "
-                    "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
-                    "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
-                    "ORDER BY ps.position, s.name"
-                ),
-                {"pipeline_id": wanted},
-            )).fetchall()
             where += " AND pipeline_id = CAST(:pipeline_id AS uuid)"
             params["pipeline_id"] = wanted
-        else:
-            lanes = (await db.execute(
-                text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
-            )).fetchall()
+        owner = resolve_owner(owner, user)
         if owner:
             where += " AND lower(owner_email) = :owner"
             params["owner"] = owner.strip().lower()
+        if source:
+            where += " AND source = :source"
+            params["source"] = source
+        more_where, more_params = await extra_filters(
+            db, DEALS, ExtraFilterInput(
+                created_from=created_from, created_to=created_to,
+                updated_from=updated_from, updated_to=updated_to,
+                close_from=close_from, close_to=close_to,
+                custom=tuple(custom_pairs(request.query_params if request else None)),
+            ),
+        )
+        for clause in more_where:
+            where += f" AND {clause}"
+        params.update(more_params)
+        # ⚠️ After the LAST filter: the held-lane read reuses `where` whole.
+        lanes = await _board_lanes(db, wanted, where, params)
 
         out: list[PipelineLane] = []
         for lane in lanes:
@@ -443,6 +522,7 @@ async def get_pipeline(
                     float(getattr(agg, "weighted", 0) or 0)
                     if getattr(lane, "type", "open") in WEIGHTED_TYPES else 0.0
                 ),
+                pipeline_position=getattr(lane, "pipeline_position", None),
             ))
         return PipelineResponse(lanes=out)
 
@@ -495,7 +575,9 @@ async def convert_lead(
     async with _tenant_session() as db:
         lead = await require_row(db, LEADS.table, lead_id, "Lead")
         await assert_writable(db, current_tenant(), LEADS, None, row=lead)
-        if getattr(lead, "converted_deal_id", None):
+        if getattr(lead, "converted_deal_id", None) or (
+            getattr(lead, "ext_source", None) and getattr(lead, "converted_at", None)
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="This lead has already been converted.",

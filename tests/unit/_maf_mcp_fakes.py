@@ -142,19 +142,37 @@ class LocalServer:
 
 @contextlib.contextmanager
 def local_mcp_server() -> Iterator[LocalServer]:
-    """A streamable-HTTP MCP server with one tool, ``echo``, on 127.0.0.1."""
+    """A streamable-HTTP MCP server on 127.0.0.1 with three tools.
+
+    * ``echo`` says it is read-only, so it runs with no card (H-299).
+    * ``delete_record`` says it is destructive, so it needs the card.
+    * ``plain_note`` sends no hints, so it needs the card too.
+    """
     import uvicorn
     from mcp.server.fastmcp import FastMCP
+    from mcp.types import ToolAnnotations
 
     calls: list[str] = []
     headers_seen: list[dict[str, str]] = []
     server = FastMCP("probe", stateless_http=True, json_response=True)
 
-    @server.tool()
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def echo(text: str) -> str:
         """Echo the text back."""
         calls.append(text)
         return f"echo:{text}"
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    def delete_record(record_id: str) -> str:
+        """Delete one record for ever."""
+        calls.append(f"delete:{record_id}")
+        return f"deleted:{record_id}"
+
+    @server.tool()
+    def plain_note(text: str) -> str:
+        """Write a note."""
+        calls.append(f"note:{text}")
+        return f"noted:{text}"
 
     inner = server.streamable_http_app()
 

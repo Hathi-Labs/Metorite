@@ -290,7 +290,7 @@ describe("CRM settings", () => {
     );
 
   it("draws the cards in the order of the spec", () => {
-    const html = draw();
+    const html = draw({ readOnly: true });
     const order = [
       "SETUP",
       "ACCESS",
@@ -305,8 +305,10 @@ describe("CRM settings", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
-  it("fills Sync health with a Coming soon card, and Fields with the list (CRM-Q4)", () => {
-    expect(draw().match(/Coming soon/g)).toHaveLength(1);
+  it("draws Sync health in Mirror mode only (CRM-Q9)", () => {
+    expect(draw({ readOnly: true })).toContain("Sync health");
+    expect(draw()).not.toContain("Sync health");
+    expect(draw({ readOnly: true })).not.toContain("Coming soon");
   });
 
   it("keeps the admin cards from a member", () => {

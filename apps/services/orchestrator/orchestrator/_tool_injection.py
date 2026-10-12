@@ -853,6 +853,7 @@ def _whatsapp_tool_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) 
 
 def _permission_gate(
     tool_name: str, call_kwargs: dict[str, Any] | None, *, surface: str,
+    facts: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     """Return (allowed, reason) for one tool call. Never raises. Logs EVERY decision.
 
@@ -871,12 +872,21 @@ def _permission_gate(
     the full call. Passed to build_tool_call_context so tools with a real
     command/path shape (run_script) are checked against what they're
     actually about to do, not just their name.
+
+    ``facts`` are fields that the CALLER knows and the arguments do not
+    carry. The MCP gate passes ``mcp_tool`` and the server's
+    ``mcp_annotations`` (H-299), so ``decide()`` applies its MCP rule. They
+    are set after the argument mapping, so a tool argument cannot write them.
+    A caller that needs a fail-closed answer must not trust ``gate_error``:
+    the MCP gate shows a card for every code but ``mcp_read_only``.
     """
     try:
         from acb_skills.permission_policy import (  # noqa: PLC0415
             build_tool_call_context, decide,
         )
         request = build_tool_call_context(tool_name, call_kwargs or {})
+        if facts:
+            request.update(facts)
         ok, code, _ = decide(request)
         mode = os.environ.get(
             "AGENT_PERMISSION_MODE", "enforce"
@@ -2133,6 +2143,7 @@ async def _inject_mcp_servers(
     organization_id: str | None = None,
     is_authorized: Any = None,
     opened: list[Any] | None = None,
+    member_present: bool = False,
 ) -> None:
     """Give *agent* the enabled MCP servers of the run's organization.
 
@@ -2158,6 +2169,11 @@ async def _inject_mcp_servers(
     (R11). With no org, nothing is read and nothing is injected.
     ``mcp_servers.organization_id`` is NOT NULL (migration 158), so there are
     no org-less "global" servers.
+
+    **The card** (H-299). *member_present* is True only when a member can
+    answer a confirmation card in this run. The executor passes it. The
+    default is False, so a caller that does not say refuses each MCP tool
+    that needs a card (``_maf_mcp.McpPermissionGate``).
 
     **No stdio** (D85). A stdio row starts a process on the host, so both
     paths drop it and log ``mcp.stdio_refused``.
@@ -2196,6 +2212,7 @@ async def _inject_mcp_servers(
         if maf_servers:
             await _maf_mcp.attach_mcp_tools(
                 agent, maf_servers, opened if opened is not None else [],
+                member_present=member_present,
             )
         return
 
