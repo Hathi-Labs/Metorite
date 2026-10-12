@@ -19,6 +19,12 @@ bypasses the Mirror write guard. Only ``routes/crm/settings.py`` may name it.
 covers the whole gateway package, ``crm_sync/`` included, because a sync that
 named it would empty a CRM by itself.
 
+**The field-rule door is for the sync only** (WS-53 CRM-Q7a,
+``crm_platform.md`` §18.7). ``core.apply_field_rule_from_source`` writes an
+approved rule's value into a mirror table. Only the files of
+``gateway/crm_sync/`` may name it, and the scan covers the whole gateway
+package, every agent, every skill and every shared package.
+
 **What it cannot see.** A name built at run time (``"upsert_" + "from_source"``)
 and a file outside the three roots. Both need someone willing to edit around
 the fence, and a fence cannot stop that (the same limit as the pipeline gate
@@ -40,19 +46,24 @@ NAME = "upsert_from_source"
 #: store, which has no native writer). Same fence.
 #: CRM-X0 adds the start over, which has ONE allowed caller.
 RESET_NAME = "reset_crm_from_admin"
+#: CRM-Q7a adds the field-rule door, which only ``gateway/crm_sync/`` calls.
+RULE_NAME = "apply_field_rule_from_source"
 NAMES = (
     NAME, "delete_from_source", "set_pipeline_stages_from_source",
     "set_deal_contacts_from_source",
     "upsert_module_records_from_source", "delete_module_records_from_source",
-    RESET_NAME,
+    RESET_NAME, RULE_NAME,
 )
 
 GATEWAY = ROOT / "apps" / "services" / "gateway" / "gateway"
+SYNC = GATEWAY / "crm_sync"
 
 #: A fenced name and the ONLY files that may name it. A name that is not here
-#: has no caller outside the definer. No mirror write is on this list.
+#: has no caller outside the definer. The field-rule door may be named by the
+#: files of the sync package and nowhere else.
 ALLOWED_CALLERS: dict[str, frozenset[Path]] = {
     RESET_NAME: frozenset({GATEWAY / "routes" / "crm" / "settings.py"}),
+    RULE_NAME: frozenset(SYNC.rglob("*.py")),
 }
 
 #: Where the start over may never be named: the whole gateway package (the
@@ -134,6 +145,47 @@ def test_only_settings_names_the_start_over() -> None:
     assert violations(RESET_SCAN_ROOTS, DEFINER, names=(RESET_NAME,)) == []
 
 
+def test_only_the_sync_names_the_field_rule_door() -> None:
+    """CRM-Q7a: no file outside ``gateway/crm_sync/`` names the door."""
+    assert violations(RESET_SCAN_ROOTS, DEFINER, names=(RULE_NAME,)) == []
+
+
+def test_the_sync_does_name_the_field_rule_door() -> None:
+    """The exception is used, so it is not dead text in the allowlist."""
+    named = [
+        path for path in ALLOWED_CALLERS[RULE_NAME]
+        if _names_it(ast.parse(path.read_text(encoding="utf-8")), (RULE_NAME,))
+    ]
+    assert named, "no file of gateway/crm_sync/ names the field-rule door"
+
+
+@pytest.mark.parametrize(
+    ("folder", "filename", "source"),
+    [
+        # A route of the CRM, the Field map routes included.
+        ("routes/crm", "field_rules.py",
+         "from gateway.routes.crm.core import apply_field_rule_from_source\n"),
+        ("routes/crm", "records.py",
+         "from gateway.routes.crm import core\n\nasync def go(db):\n"
+         "    await core.apply_field_rule_from_source(db, 't', 'c', 'zoho', None)\n"),
+        ("agents", "tool.py",
+         "import importlib\n\nF = getattr(importlib.import_module('x'), "
+         "'apply_field_rule_from_source')\n"),
+        # A folder that is only CALLED crm_sync is not the sync package.
+        ("elsewhere/crm_sync", "engine.py",
+         "from gateway.routes.crm.core import apply_field_rule_from_source as a\n"),
+    ],
+)
+def test_the_field_rule_fence_refuses_any_other_caller(
+    tmp_path: Path, folder: str, filename: str, source: str,
+) -> None:
+    """Red-first proof for the CRM-Q7a door."""
+    package = tmp_path / folder
+    package.mkdir(parents=True)
+    (package / filename).write_text(source, encoding="utf-8")
+    assert violations((tmp_path,), names=(RULE_NAME,)), (folder, filename)
+
+
 def test_settings_does_name_the_start_over() -> None:
     """The exception is used, so it is not dead text in the allowlist."""
     (settings,) = ALLOWED_CALLERS[RESET_NAME]
@@ -152,6 +204,8 @@ def test_the_definer_and_the_scan_roots_exist() -> None:
     assert "async def upsert_module_records_from_source" in definer_text
     assert "async def delete_module_records_from_source" in definer_text
     assert "async def reset_crm_from_admin" in definer_text
+    assert "async def apply_field_rule_from_source" in definer_text
+    assert SYNC.is_dir() and ALLOWED_CALLERS[RULE_NAME]
     assert GATEWAY.is_dir() and (GATEWAY / "crm_sync").is_dir()
     assert any(r.is_dir() for r in SCAN_ROOTS)
     assert (ROOT / "apps" / "services" / "gateway" / "gateway" / "routes").is_dir()

@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 157
+-- Tables in this phase: 158
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -554,6 +554,18 @@ ALTER TABLE crm_module_records ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE crm_module_records ADD CONSTRAINT crm_module_records_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS crm_module_records_org_idx ON crm_module_records (organization_id);
+
+-- crm_field_rules
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM crm_field_rules WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: crm_field_rules still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE crm_field_rules ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE crm_field_rules ADD CONSTRAINT crm_field_rules_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS crm_field_rules_org_idx ON crm_field_rules (organization_id);
 
 -- crm_zoho_tombstones
 DO $$

@@ -37,8 +37,6 @@ import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
 import { DelegatePopup } from "./components/DelegatePopup";
-import { TasksShortcuts } from "./components/TasksShortcuts";
-import { tasksOverlayOpen } from "./lib/shortcuts";
 // ⌘K is search in both task apps, and it is ONE palette. My Tasks mounts the
 // Projects one with no commands (`paletteCommands`), so it searches tasks only.
 import { SearchPalette } from "../projects/components/SearchPalette";
@@ -200,40 +198,25 @@ export default function TasksPage() {
     }
   }, [maximisedId]);
 
-  // Two hotkeys from any Tasks view: ⌘K searches and `C` captures. ⌘K opens
-  // the same palette it opens in Projects, so one key means one thing in both
-  // task apps. It captured here until 2026-09-24. (App-wide capture from other
-  // Metorite apps needs a persisted store + AppShell-level listener — see spec
-  // §2.1 C2 [plumbing].)
+  // ⌘K searches from any Tasks view. It opens the same palette it opens in
+  // Projects, so one key means one thing in both task apps.
+  //
+  // ⚠️ It is the ONLY key this app binds of its own. The letter shortcuts
+  // (`c`, `u`, `?`, `g`, the Inbox's and Clarify's triage keys) and their
+  // sheet were removed on 2026-10-13: the owner found them unnecessary and
+  // complicated. Arrows, Enter, Escape and Ctrl+Z stay, because a member
+  // brings those from every other application.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (quickCaptureOpen || clarifyModalOpen) return; // a modal owns the keyboard
-      const el = e.target as HTMLElement | null;
-      const typing =
-        !!el &&
-        (el.tagName === "INPUT" ||
-          el.tagName === "TEXTAREA" ||
-          el.isContentEditable);
       if (isOpenShortcut(e)) {
         e.preventDefault();
         openSearch();
-        return;
-      }
-      if (searching) return; // the palette owns the keyboard
-      if (
-        !typing &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        (e.key === "c" || e.key === "C")
-      ) {
-        e.preventDefault();
-        openQuickCapture("single");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openQuickCapture, quickCaptureOpen, clarifyModalOpen, searching, openSearch]);
+  }, [quickCaptureOpen, clarifyModalOpen, openSearch]);
 
   // A hit My Tasks holds opens here. Any other task opens in Projects, because
   // the palette searches every project and My Tasks cannot draw a task it does
@@ -253,13 +236,6 @@ export default function TasksPage() {
       onOpenTask={openHit}
     />
   );
-  // `?` and the `g <letter>` jumps, the ones Projects binds. Held off while
-  // any overlay owns the keyboard (`tasksOverlayOpen`, the twin of Projects'
-  // `overlayOpen`), so neither fires under an open dialog.
-  const overlayOpen = useTaskStore((s) =>
-    tasksOverlayOpen(s, { searching, maximised: Boolean(maximisedId) }),
-  );
-  const shortcuts = <TasksShortcuts blocked={overlayOpen} />;
   // WS-27bn R5b-2 — "My day" opens the T2 report in Projects. The builder
   // makes the reader its subject, so the link names none (`myDayLink`).
   // A member who cannot open Projects sees no control at all (`myDayShown`).
@@ -327,7 +303,6 @@ export default function TasksPage() {
         <EliminatePopup />
         <DelegatePopup />
         {search}
-        {shortcuts}
       </div>
     );
   }
@@ -356,7 +331,6 @@ export default function TasksPage() {
               onClick={() => openQuickCapture("single")}
             >
               Capture
-              <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>
             </Button>
             {myDay}
           </>
@@ -471,7 +445,6 @@ export default function TasksPage() {
       <EliminatePopup />
       <DelegatePopup />
       {search}
-      {shortcuts}
     </div>
   );
 }

@@ -345,6 +345,10 @@ export const NAV_SECTIONS: NavSection[] = [
         // now"), taking the live set from ELEVEN to TWELVE (WS-53 CRM-L2).
         // This line, `launch_surface.md` section 2 and `nav.test.ts` move together.
         launch: "live",
+        // WS-53 CRM-X2. Today this feeds the run badge only: a run of the CRM
+        // assistant counts on the CRM, not on Chat. The shell's assistant
+        // dock (NS-6 slice 6b) is not built, so nothing docks it yet.
+        agent: "crm-assistant",
       },
       {
         href: "/people",
