@@ -5184,22 +5184,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner ask, 2026-10-10 · `src/lib/personName.ts`
 - **Added:** 2026-10-10 · the person names session
 
-### H-299 · A destructive MCP tool runs with no confirmation card · [AGENT]
-- **Check:** `grep -n "destructiveHint" apps/services/orchestrator/orchestrator/_maf_mcp.py`
+### H-300 · Decide on an "always confirm" setting for each MCP server · [OWNER]
+- **Check:** `grep -n "always_confirm" apps/services/orchestrator/orchestrator/_maf_mcp.py`
   → no hit means this is open.
-- **Why:** an MCP function of a native MAF agent goes through
-  `permission_policy.decide()` (WS-8c), and `decide()` approves any name
-  it does not know as `unknown_allowed`. So a server tool that deletes or
-  sends runs with no confirmation card. The review of PR #869 found it.
-- **Do:** read the MCP tool annotations. A tool with `destructiveHint` true,
-  or with `readOnlyHint` false or missing, asks for a confirmation card
-  before it runs. Fence it with a test that a destructive tool waits for
-  the card.
-- **When:** before the first production flip of `MAF_MCP_ORGS` (gate
-  `enforcement-flip`).
-- **Authority:** `specs/agent_architecture.md` §12.2 WS-8c (left open) ·
-  PR #869 review, round 2
-- **Added:** 2026-10-11 · WS-8c
+- **Why:** an MCP tool that says it is read-only runs with no card (H-299,
+  WS-8c item 13). The server writes that hint, and a hostile server can mark
+  a tool that deletes as read-only. The log line `mcp.tool_annotations` lets
+  an admin audit the hints. It does not stop the call.
+- **Do:** decide if an admin may set "always confirm" on one MCP server, so
+  that every tool of that server needs the card, whatever its hints say. If
+  yes, add a column to `mcp_servers`, default `true` for a new row, and pass
+  it to `McpPermissionGate`. Do not build it before the owner decides.
+- **When:** before the first org outside Fracktal gets `MAF_MCP_ORGS`.
+- **Authority:** `specs/agent_architecture.md` §12.2 WS-8c (the known limit)
+- **Added:** 2026-10-12 · H-299
 
 # DONE — deleted, not archived
 

@@ -26,7 +26,7 @@ import {
 } from "./board";
 import { MIRROR_REFUSALS } from "./connect";
 import { NO_RELATED, RELATED_PAGE, type RelatedLists } from "./related";
-import { exportQuery, listQuery } from "./filters";
+import { exportQuery, extraQuery, listQuery } from "./filters";
 import {
   applyPatches,
   reorderFailureMessage,
@@ -246,7 +246,11 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   async loadBoard(view) {
     set({ loading: true, lastView: view });
     try {
-      const pipeline = await api.getPipeline(view.owner, view.pipelineId);
+      const extra = extraQuery("deals", view);
+      const pipeline =
+        Object.keys(extra).length > 0
+          ? await api.getPipeline(view.owner, view.pipelineId, extra)
+          : await api.getPipeline(view.owner, view.pipelineId);
       set({ lanes: toBoardLanes(pipeline), error: null });
     } catch (err) {
       set({ error: message(err) });
@@ -269,6 +273,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
             status_id: status.id,
             page_size: 50,
             ...(view.owner ? { owner: view.owner } : {}),
+            ...extraQuery("leads", view),
           }),
         ),
       );

@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
@@ -32,6 +32,7 @@ from gateway.routes.crm.core import (
     WEIGHTED_TYPES,
     DealModel,
     Entity,
+    ExtraFilterInput,
     StatusModel,
     _tenant_session,
     actor,
@@ -39,7 +40,9 @@ from gateway.routes.crm.core import (
     attach_ext_urls,
     checked_uuid,
     current_tenant,
+    custom_pairs,
     default_pipeline_id,
+    extra_filters,
     has_column,
     insert_row,
     link_deal_contact,
@@ -49,6 +52,7 @@ from gateway.routes.crm.core import (
     project_joined,
     record_activity,
     require_row,
+    resolve_owner,
     router,
     row_to_dict,
     status_wire,
@@ -358,7 +362,15 @@ async def get_pipeline(
     owner: str | None = None,
     per_lane: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
     pipeline_id: str | None = None,
+    source: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    updated_from: str | None = None,
+    updated_to: str | None = None,
+    close_from: str | None = None,
+    close_to: str | None = None,
     user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]
 ) -> PipelineResponse:
     """Deals grouped by status — the kanban read.
 
@@ -371,6 +383,11 @@ async def get_pipeline(
     **``?pipeline_id=``** (WS-53 CRM-Q2) shows one pipeline. The lanes are its
     stages in its own order, and the deals are the ones that name it. With no
     ``pipeline_id`` the board is the whole organization, as it always was.
+
+    **The filters of a list** (WS-53 CRM-Q8) narrow the board too: ``owner``
+    (``me`` is the caller), ``source``, the date ranges, and
+    ``custom.<key>=<value>``. They are the same code as the list route's
+    (``core.extra_filters``), so a view that filters a list filters the board.
     """
     async with _tenant_session() as db:
         params: dict[str, Any] = {}
@@ -393,9 +410,24 @@ async def get_pipeline(
             lanes = (await db.execute(
                 text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
             )).fetchall()
+        owner = resolve_owner(owner, user)
         if owner:
             where += " AND lower(owner_email) = :owner"
             params["owner"] = owner.strip().lower()
+        if source:
+            where += " AND source = :source"
+            params["source"] = source
+        more_where, more_params = await extra_filters(
+            db, DEALS, ExtraFilterInput(
+                created_from=created_from, created_to=created_to,
+                updated_from=updated_from, updated_to=updated_to,
+                close_from=close_from, close_to=close_to,
+                custom=tuple(custom_pairs(request.query_params if request else None)),
+            ),
+        )
+        for clause in more_where:
+            where += f" AND {clause}"
+        params.update(more_params)
 
         out: list[PipelineLane] = []
         for lane in lanes:

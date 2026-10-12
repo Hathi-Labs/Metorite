@@ -703,6 +703,8 @@ export function DraftCard({
             revisions={ai.revisions}
             activeRevision={ai.activeRevision}
             elapsedMs={ai.elapsedMs}
+            notice={ai.notice}
+            onStop={ai.stop}
             onRun={runAi}
             onRestore={(id) => ai.restore(id)}
             onClose={() => setAiOpen(false)}

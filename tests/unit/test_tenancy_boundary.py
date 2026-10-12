@@ -138,6 +138,8 @@ EXPECTED_SCOPED = {
     "crm_source_profiles",
     "crm_pipelines",
     "crm_pipeline_stages",
+    # WS-53 CRM-Q8 (2026-10-12): the saved views of the lists and boards.
+    "crm_views",
     # WS-53 CRM-Q6a (2026-10-12): the generic record store of the mirror.
     "crm_module_records",
 }

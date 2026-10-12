@@ -79,6 +79,10 @@ const BASE: CrmView = {
   owner: null,
   sort: null,
   dir: "desc",
+  source: null,
+  ranges: {},
+  custom: {},
+  viewId: null,
 };
 
 const REPORTS_VIEW: CrmView = {
