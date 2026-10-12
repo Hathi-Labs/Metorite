@@ -319,7 +319,8 @@ describe("the source keeps the flag's two sides apart", () => {
     const shell = read("components/AppShell.tsx");
     expect(shell).toMatch(/dynamic\(\(\) => import\("@\/lib\/shell\/AssistantDock"\)/);
     expect(shell).toMatch(/chatOn \? \(\s*<AssistantWorkArea/);
-    expect(shell).toMatch(/chatOn \? <PhoneChatBar \/> : <AgentPill \/>/);
+    expect(shell).toMatch(/chatOn \? null : <AgentPill \/>/);
+    expect(shell).not.toMatch(/PhoneChatBar/);
     expect(shell).not.toMatch(/import AssistantDock/);
   });
 
@@ -334,11 +335,15 @@ describe("the source keeps the flag's two sides apart", () => {
     expect(read("app/email/page.tsx")).toMatch(/feature === "chat" && ONE_ASSISTANT/);
   });
 
-  it("the phone and the desktop raise the toasts above the bar", () => {
-    const css = read("app/globals.css");
-    expect(css).toContain(':root[data-chat-bar="phone"] .toast-viewport-bottom');
-    expect(css).toContain(':root[data-chat-bar="desktop"] .toast-viewport-bottom');
-    expect(css).toContain(':root[data-chat-bar="phone"] .pb-nav');
+  it("the desktop raises the toasts above the bar", () => {
+    expect(read("app/globals.css")).toContain(':root[data-chat-bar="desktop"] .toast-viewport-bottom');
+  });
+
+  it("the phone's bottom nav holds an Ask tab with the run badge, and Menu gives the badge up", () => {
+    const shell = read("components/AppShell.tsx");
+    expect(shell).toMatch(/\{chatOn && \(\s*<button[\s\S]{0,400}?openAssistant\(\{ mode: "full" \}\)/);
+    expect(shell).toMatch(/data-ask-tab=""[\s\S]{0,600}?<NavBadge count=\{tabBadge\.count\}/);
+    expect(shell).toContain("{!isChatPage && !chatOn && tabBadge && (");
   });
 
   it("the app switch listens to the live loop only, never to a replay", () => {

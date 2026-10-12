@@ -7,10 +7,11 @@
  *
  *   [ ✦ Ask Metorite…                     ]  [ Projects · Website relaunch ]  [ Ctrl J ]  [ activity ]  [ ⤢ ]
  *
- * **A row of the frame, not a layer.** On the desktop, `AppShell` puts it
- * under `<main>` in the page column, so an app's own bottom controls sit in
- * `<main>`, above it, and the bar never covers them. On a phone it sits on
- * top of the bottom nav and raises the page's last row (`data-chat-bar`).
+ * **A row of the frame, not a layer.** `AppShell` puts it under `<main>` in
+ * the page column, so an app's own bottom controls sit in `<main>`, above
+ * it, and the bar never covers them. The phone has no bar: its bottom nav
+ * holds an Ask tab, which opens the assistant as a full-screen sheet
+ * (`AppShell.tsx`, `data-ask-tab`).
  *
  * **Enter sends.** The words go to the assistant, which opens and sends them
  * (`openAssistant({ text })`). The expand control opens it with nothing sent.
@@ -215,41 +216,6 @@ export function ChatBar() {
           className="shrink-0"
         />
       </form>
-    </div>
-  );
-}
-
-/**
- * The phone bar: a slim row on top of the bottom nav. A tap opens the
- * assistant as a full-screen sheet, with the keyboard in its composer, so
- * the member types once, in one place.
- */
-export function PhoneChatBar() {
-  const { open } = useAssistant();
-  const here = useHere();
-  // While the bar shows, the page's last row and the toasts rise above it
-  // (`globals.css`, `:root[data-chat-bar]`).
-  useEffect(() => {
-    if (open) return;
-    const root = document.documentElement;
-    root.setAttribute("data-chat-bar", "phone");
-    return () => root.removeAttribute("data-chat-bar");
-  }, [open]);
-  if (open) return null;
-  return (
-    <div data-chat-bar-row="phone" className="chat-bar-phone fixed inset-x-0 z-40 px-3 pb-1.5">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => openAssistant({ mode: "full" })}
-          aria-haspopup="dialog"
-          className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full border border-border bg-card px-3 text-left text-sm text-muted-foreground shadow-md"
-        >
-          <Icon name="Sparkles" size={16} className="shrink-0 text-primary" />
-          <span className="min-w-0 flex-1 truncate">{barPlaceholder(here?.label ?? null)}</span>
-        </button>
-        <BarActivity className="h-10 w-10 shrink-0 rounded-full border border-border bg-card shadow-md" />
-      </div>
     </div>
   );
 }

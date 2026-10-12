@@ -50,7 +50,8 @@ import { shellDockOn } from "@/lib/shell/dockFlag";
 import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import { shellChatOn } from "@/lib/shell/chatFlag";
-import { AssistantWorkArea, PhoneChatBar } from "@/lib/shell/ChatBar";
+import { AssistantWorkArea } from "@/lib/shell/ChatBar";
+import { openAssistant } from "@/lib/shell/assistant";
 // D99: the one assistant, loaded on demand, so a shell with the flag off
 // never carries the chat in its bundle.
 const AssistantDock = dynamic(() => import("@/lib/shell/AssistantDock"), { ssr: false });
@@ -347,9 +348,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* WS-51 S5: the same signals, and the agent pill above the bottom
             nav while a run goes on. */}
         <RunSignalsHost />
-        {/* D99: the chat bar takes the pill's place, and its activity
-            control carries the pill's count. */}
-        {chatOn ? <PhoneChatBar /> : <AgentPill />}
+        {/* D99: the bottom nav's Ask tab takes the pill's place, and its
+            badge carries the pill's count. */}
+        {chatOn ? null : <AgentPill />}
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
         <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">
@@ -737,7 +738,7 @@ function MobileBottomNavInner({
         >
           <span className="relative">
             <AppIcon name="Menu" size={20} />
-            {!isChatPage && tabBadge && (
+            {!isChatPage && !chatOn && tabBadge && (
               <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
             )}
           </span>
@@ -889,6 +890,33 @@ function MobileBottomNavInner({
               label="Tests"
             />
           </>
+        )}
+        {/* D99 on the phone: the one assistant is a tab of its own, at the
+            right end of every page's bar, so the thumb learns one place.
+            It opens the assistant as a full-screen sheet with the keyboard
+            in its composer, and its badge is the activity control: green
+            while a chat runs, amber when one waits on the member. A bar
+            above the nav cost every screen a row, and a floating button
+            collided with the Calendar and Focus buttons (owner, 2026-10-13). */}
+        {chatOn && (
+          <button
+            type="button"
+            onClick={() => {
+              close();
+              openAssistant({ mode: "full" });
+            }}
+            aria-label={tabBadge ? `Ask Metorite, ${tabBadge.label}` : "Ask Metorite"}
+            data-ask-tab=""
+            className="relative flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-primary transition-colors"
+          >
+            <span className="relative">
+              <AppIcon name="Sparkles" size={20} strokeWidth={2.4} />
+              {tabBadge && (
+                <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
+              )}
+            </span>
+            <span className="text-[10px] font-medium leading-none">Ask</span>
+          </button>
         )}
     </nav>
     {shellNav && (

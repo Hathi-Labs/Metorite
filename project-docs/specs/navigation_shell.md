@@ -1088,8 +1088,13 @@ general agent, and a chat bar at the foot of the page opens it. Flag
   the key (§5.2 rule 2).
 - **The bar hides while the assistant is open.** The assistant has its own
   composer.
-- **On a phone** the bar is a slim row on top of the bottom nav, and the
-  assistant opens as a full-screen sheet (§9).
+- **On a phone, an Ask tab replaces the bar** (owner, 2026-10-13). It sits
+  at the right end of the bottom nav on every page, so the thumb learns one
+  place. A tap opens the assistant as a full-screen sheet, with the cursor
+  in its composer. Its badge is the activity control: green while a chat
+  runs, amber when one waits on the member. A bar above the nav took a row
+  from every screen. A floating button met the Calendar, Focus and
+  recording buttons (§9).
 
 **Two forms, one chat.**
 
@@ -1648,7 +1653,8 @@ and a Menu tab opens a drawer (`AppShell.tsx:186-236`).
 - **Add one row at the top of every screen**: the command bar and the scope
   chip.
 - **The drawer takes the sidebar shape of §3.2.** My Day comes first.
-- **The dock opens as a full-screen sheet.**
+- **The dock opens as a full-screen sheet.** With `NEXT_PUBLIC_SHELL_CHAT`
+  on, the Ask tab at the right end of the bottom nav opens it (D99, §7.1).
 
 ---
 
@@ -2062,8 +2068,8 @@ shares sessions with `/chat`. §7.1 holds the shape.
 
 Done when, with the flag on:
 
-1. Every page draws the chat bar at the foot of the page column, and the
-   phone draws it on top of the bottom nav.
+1. Every desktop page draws the chat bar at the foot of the page column,
+   and every phone page draws an Ask tab in the bottom nav.
 2. From any app, one press or one Enter opens the assistant, and the first
    turn names the app the member is in.
 3. The side panel and the full view switch, and a running reply survives
