@@ -254,6 +254,7 @@ async def test_a_module_the_profile_does_not_mirror_is_404(ns, module: str) -> N
     for path in (
         f"/crm/modules/{module}/records",
         f"/crm/modules/{module}/records/{record}",
+        f"/crm/modules/{module}/records/not-a-uuid",  # the module check comes first
     ):
         res = await _get(ns, a, path)
         assert res.status_code == 404, (path, res.text)

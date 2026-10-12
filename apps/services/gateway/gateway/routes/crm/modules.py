@@ -404,10 +404,10 @@ async def get_module_record(
 ) -> ModuleRecordPage:
     """One record of a mirrored module, with its field definitions and the
     link of each lookup. 404 for an unknown module or record."""
-    wanted = checked_uuid(record_id, "id")
     async with _tenant_session() as db:
         mirrored = await mirrored_modules(db)
         row = _require_module(mirrored, module)
+        wanted = checked_uuid(record_id, "id")
         found = (await db.execute(
             text(_ONE_SQL), {"id": wanted, "module": module},
         )).first()
