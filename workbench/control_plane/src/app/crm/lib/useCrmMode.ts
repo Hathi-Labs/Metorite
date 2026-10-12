@@ -30,6 +30,7 @@ import {
   type FirstOpen,
   type SyncStatus,
 } from "./connect";
+import type { CrmModule } from "./modules";
 
 const KEY_CONNECTION = "crm:connection";
 const KEY_SETTINGS = "crm:settings";
@@ -191,6 +192,21 @@ export function useSyncHealth(enabled: boolean): SyncHealthState {
   }, [enabled, running, refresh]);
 
   return { health, loading: enabled && res.loading, error: res.error, refresh };
+}
+
+export type ModulesState = { modules: CrmModule[] | null; loading: boolean };
+
+/**
+ * The mirrored generic modules (WS-53 CRM-Q6b), for the rail. Every failure
+ * reads as "no modules": the rail then shows the known views only. A rail
+ * that fails to draw because one read failed is worse.
+ */
+export function useModules(enabled: boolean): ModulesState {
+  const res = useCachedResource<CrmModule[] | null>(
+    enabled ? "crm:modules" : null,
+    () => api.listModules().catch(() => null),
+  );
+  return { modules: res.data ?? null, loading: enabled && res.loading };
 }
 
 const KEY_PIPELINES = "crm:pipelines";

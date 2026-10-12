@@ -13,7 +13,8 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   3. The star in All apps shows an app under its category, or hides it.
  *      A category with nothing starred is gone.
  *   4. "Add apps" at the end of the sidebar opens All apps with a hint.
- *   5. "Change my layout" in the account menu asks again.
+ *   5. "Change my layout" in the Metorite menu asks again (the sidebar's
+ *      foot, owner 2026-10-12).
  *   6. A founder's `?welcome=new-org` goes question, apps, invite, one
  *      dialog at a time.
  *   7. The phone drawer follows the same model.
@@ -342,7 +343,7 @@ test("Change my layout asks again: the same answer keeps the stars, a new one gi
 
   const openMenu = async () => {
     // From the keyboard: in the dev build, Next's own badge sits over the foot.
-    const foot = page.getByRole("button", { name: /^Accounts: signed in as/ });
+    const foot = page.getByRole("button", { name: "Metorite settings" });
     await foot.focus();
     await page.keyboard.press("Enter");
     await page.getByRole("button", { name: "Change my layout" }).click();
@@ -727,7 +728,7 @@ test("asked again, Escape on step 2 changes nothing and writes nothing", async (
   const store = await stub(page, STARS);
   await page.goto("/settings/appearance");
   await expect.poll(() => shape(page)).toEqual([["across", ["Projects"]]]);
-  const foot = page.getByRole("button", { name: /^Accounts: signed in as/ });
+  const foot = page.getByRole("button", { name: "Metorite settings" });
   await foot.focus();
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Change my layout" }).click();

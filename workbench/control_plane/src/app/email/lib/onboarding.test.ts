@@ -703,7 +703,7 @@ describe("email-sync-banner: the row on screen", () => {
     expect(PAGE).toContain("<SyncBanner rows={syncRows} />");
     const at = PAGE.indexOf("<SyncBanner");
     // Below the reconnect banner, which wins attention for a failed mailbox.
-    const reconnect = PAGE.indexOf("{RECONNECT_LABEL[provider]}");
+    const reconnect = PAGE.indexOf("{action.label}");
     expect(reconnect).toBeGreaterThan(-1);
     expect(at).toBeGreaterThan(reconnect);
     expect(at).toBeLessThan(PAGE.indexOf("<StorageNotice"));
