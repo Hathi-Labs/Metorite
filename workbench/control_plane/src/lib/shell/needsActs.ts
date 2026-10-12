@@ -11,7 +11,8 @@
  * A shared store outlives a page, which a card's own state never did. Four
  * rules keep it from hiding a live task or showing a stale error. ⚠️ Since
  * the row counts (`useNavNeeds`, 2026-10-11), the sidebar is a reader on
- * every page of a member with the shell nav on. So rules 2 and 3 end the
+ * every page. `useNeedsYou` acquires its reader even while it is disabled,
+ * so that holds with the shell nav off too. So rules 2 and 3 end the
  * marks in practice, and rule 1 applies only where no sidebar is mounted.
  *
  *   1. **No reader, no memory.** When the last reader unmounts, the store

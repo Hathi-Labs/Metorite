@@ -718,6 +718,9 @@ class TestAFailingAppIsLeftOut:
         answer = run(member(*ALL))
         assert answer["sources"]["email"] == "ok"
         assert "email:a-mine:th-old" in ids(answer)
+        # The broken mailbox's replies are not counted, so the number is a
+        # floor, and the row must say "N+" and never an exact-looking count.
+        assert "email" in answer["capped"]
 
     def test_one_slow_mailbox_costs_only_its_own_rows(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "MAILBOX_TIMEOUT_S", 0.05)

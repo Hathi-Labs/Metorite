@@ -1136,7 +1136,8 @@ display order stays as below.
   gateway leaves it out, and the client then counts the rows in `items`.
 - `capped` lists the sources whose `totals` entry is a floor: the read
   stopped at 15 and has no count. Today that is `tasks` or `approvals` with
-  15 rows, or `email` when the count of a full mailbox failed.
+  15 rows. It is also `email` when the count of a full mailbox failed, or
+  when one mailbox failed and the others answered.
 - `total` is unchanged. It counts the rows before the cut, so the bell's
   number is still a floor of 60 at most.
 
