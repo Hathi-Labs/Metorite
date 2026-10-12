@@ -2736,7 +2736,8 @@ async def _gmail_signed_html(
     ``build_signed_bodies(signature, body_text, None)`` made, as main does.
     A failed read with ``allow_text_only`` False answers 409 before any
     write. With True, or with None (a client before PR-C2 and the assistant
-    tool), the send keeps ``text_html`` and sends the text only."""
+    tool), the send keeps ``text_html``: the HTML that main derives from the
+    text. The HTML and the inline images of the draft go."""
     kept, state = await _html_to_keep(
         db, provider, req.account_id, req.draft_id, provider_message_id)
     if kept:
@@ -2897,8 +2898,9 @@ class DraftSendRequest(BaseModel):
     # older agent) checks nothing, as before.
     expect: DraftExpect | None = None
     # EM-G3a-f7 (D-G3a-f7-11a). A Gmail signed send whose HTML read fails:
-    # False answers 409, True sends the text only. None, which is each client
-    # before PR-C2 and the assistant tool, sends the text only, as main does.
+    # False answers 409. True sends the HTML that main derives from the text.
+    # None, which is each client before PR-C2 and the assistant tool, does
+    # the same, as main does.
     allow_text_only: bool | None = None
 
 

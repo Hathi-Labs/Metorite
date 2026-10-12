@@ -40,6 +40,8 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from email import message_from_bytes
+from email.mime.text import MIMEText
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -579,6 +581,18 @@ def _spy_updates(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return seen
 
 
+def _web_draft_with_html(html: str) -> bytes:
+    """The Gmail-web draft of the fixture, with ``html`` as its HTML part."""
+    mail = message_from_bytes(_gmail_web_draft())
+    for part in mail.walk():
+        if part.is_multipart():
+            part.set_payload([
+                MIMEText(html, "html", "utf-8")
+                if sub.get_content_type() == "text/html" else sub
+                for sub in part.get_payload()])
+    return mail.as_bytes()
+
+
 def _fail_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fails(self: GmailProvider, _mid: str) -> Any:
         raise RuntimeError("the read failed")
@@ -595,6 +609,9 @@ async def test_a_signed_send_keeps_the_html_and_the_inline_parts(gmail, stored):
     shows once, above the quote."""
     m = gmail
     _sign(m, SIG)
+    # Gmail holds the quoted HTML too, so the Gmail-read case has a quote.
+    m.fake.add_raw_draft("r-c", "m-c", _web_draft_with_html(QUOTED_HTML),
+                         thread="t-c")
     local = _gmail_draft(m, stored)
 
     assert await _send(m, local) == {"sent": True}
@@ -608,8 +625,7 @@ async def test_a_signed_send_keeps_the_html_and_the_inline_parts(gmail, stored):
     assert f'src="cid:{CID}"' in html
     assert html.count(SIG) == 1
     assert body_text.count(SIG_TEXT) == 1
-    if stored:
-        assert html.index(SIG) < html.index("gmail_quote")
+    assert html.index(SIG) < html.index("gmail_quote"), "the signature is below the quote"
     assert _full_reads(m.fake, "m-c") == (0 if stored else 1)
     assert m.fake.sent_drafts == ["r-c"]
     assert _row(m.admin, local) is None, "the sent draft kept its row"

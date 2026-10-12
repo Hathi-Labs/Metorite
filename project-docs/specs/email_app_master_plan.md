@@ -12970,11 +12970,13 @@ images go too, or come back as plain files.
   there today too. *Reason:* EM-T4 owns the I/O inside these blocks, and to restructure the two
   routes is a non-goal. The earlier promise "no session across that read (§14.4.2)" is withdrawn.
   §14.4.2 binds the HTML route of the reading pane, not these two routes.
-- **D-G3a-f7-7 (C3, option a). The signed send keeps the HTML.** `send_draft_endpoint` reads
-  `body_html` with the row. For a Gmail draft it takes the stored HTML, or the HTML of
-  D-G3a-f7-6. It puts the signature into that HTML with a new helper,
-  `sign_html(signature, body_html)`, in `signature.py`. It no longer calls
-  `build_signed_bodies(signature, body_text, None)` for a draft that has HTML. *Reason:*
+- **D-G3a-f7-7 (C3, option a). The signed send keeps the HTML.** Only for a signed send of a
+  Gmail draft, `send_draft_endpoint` reads the HTML through `_html_to_keep`, with its own
+  `SELECT body_html`. The row read of the route stays as on main, so an Outlook send writes the SQL
+  of main. The send takes the stored HTML, or the HTML of D-G3a-f7-6. It puts the signature into
+  that HTML with a new helper, `sign_html(signature, body_html)`, in `signature.py`. For a draft
+  that has HTML, it no longer sends the HTML of `build_signed_bodies(signature, body_text, None)`.
+  It still takes the text half from that call. *Reason:*
   `build_signed_bodies` returns the HTML unchanged when the text already holds the signature
   (`signature.py:137`), and the upsert always puts the signature into the text
   (`drafting.py:2394`). So the existing helper would send the HTML with no signature.
@@ -13042,8 +13044,9 @@ answer of an Outlook save does not change. On the client, `saveDraft` (`lib/api.
    `update_draft` as `body_html`. The answer gets `html`, at the line named above.
    `_upsert_local_draft` follows D-G3a-f7-8.
 4. **`drafting.py`, the send.** `DraftSendRequest` gets `allow_text_only` (D-G3a-f7-11a).
-   `send_draft_endpoint` reads `body_html` with the row. It follows D-G3a-f7-6, D-G3a-f7-6a,
-   D-G3a-f7-7, D-G3a-f7-10 and D-G3a-f7-11.
+   For a signed send of a Gmail draft only, `send_draft_endpoint` reads the HTML through
+   `_html_to_keep`, with its own `SELECT body_html`. So the Outlook SQL stays as on main. The send
+   follows D-G3a-f7-6, D-G3a-f7-6a, D-G3a-f7-7, D-G3a-f7-10 and D-G3a-f7-11.
 5. **`signature.py`.** `sign_html(signature, body_html)`, with the rule of D-G3a-f7-7.
 
 ⚠️ **The kept HTML has no signature until the send (review round 1 of PR-C1a).** The upsert adds
