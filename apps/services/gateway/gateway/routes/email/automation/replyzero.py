@@ -188,6 +188,24 @@ _FOLLOW_UP_LABEL = "Follow-up"
 # the #110 invariant has a permanent regression alarm instead of a script someone
 # has to remember to run. Keep them sharing this constant — if the definition of
 # "damaged" ever drifts between the alarm and the fix, the alarm lies.
+#
+# A Gmail user label is a label and never a folder (O-GM-1), so a rule move to
+# "Receipts" leaves the message in ``archive`` and the label compare misses it.
+# The ``OR`` branch mirrors ``GmailProvider.folder_after_move``: on a Gmail
+# mailbox, a move to a non-blank label that is no system name expects
+# ``archive``. Its literals are the keys of ``_CANONICAL_FOLDERS`` whose value is
+# not ``archive``, then ``_GMAIL_RESERVED``, then the ``CATEGORY_`` prefix.
+# WS-17 EM-G3b-f7 (email_app_master_plan.md §12.3.12.6). Fence:
+# test_the_gmail_damage_rule_matches_folder_after_move, which reads the names
+# from the Python sets, so a name added on one side only turns it red.
+#
+# ⚠️ Nothing inside the MOVE_FOLDER ``EXISTS`` may name ``ts.``. The provider
+# check reads ``em.account_id``, the same value as ``ts.account_id``. A reference
+# to the outermost row stops Postgres from hashing that ``EXISTS``, so it runs
+# once for each thread. Measured in review round 1 (non-privileged role, JIT
+# off): the live Outlook health query went from 354 ms to 792 ms at 100k
+# threads, with 4.7x the buffers. Fence:
+# test_the_move_rule_exists_never_correlates_to_the_thread_row.
 DAMAGED_CONVERSATION_THREADS_SQL = """
     SELECT DISTINCT ts.account_id, ts.thread_id, ts.status
     FROM email_thread_status ts
@@ -209,8 +227,25 @@ DAMAGED_CONVERSATION_THREADS_SQL = """
                         WHERE er.message_id = em.id
                           AND er.status = 'APPLIED'
                           AND er.actions_taken @> '"MOVE_FOLDER"'
-                          AND LOWER(TRIM(ea.label)) =
-                              LOWER(COALESCE(em.folder, '')))))
+                          AND (LOWER(TRIM(ea.label)) =
+                                   LOWER(COALESCE(em.folder, ''))
+                               OR (LOWER(COALESCE(em.folder, '')) = 'archive'
+                                   AND EXISTS (SELECT 1 FROM email_accounts acct
+                                         WHERE acct.id = em.account_id
+                                           AND acct.provider = 'gmail')
+                                   AND TRIM(ea.label) <> ''
+                                   AND LOWER(TRIM(ea.label)) NOT IN
+                                       ('inbox', 'sent', 'sentitems',
+                                        'sent items', 'sent mail', 'drafts',
+                                        'draft', 'trash', 'deleteditems',
+                                        'deleted items', 'bin', 'junk',
+                                        'junkemail', 'junk email', 'spam')
+                                   AND UPPER(TRIM(ea.label)) NOT IN
+                                       ('INBOX', 'SENT', 'DRAFT', 'TRASH',
+                                        'SPAM', 'UNREAD', 'STARRED',
+                                        'IMPORTANT', 'CHAT')
+                                   AND NOT starts_with(UPPER(TRIM(ea.label)),
+                                                       'CATEGORY_'))))))
 """
 
 
