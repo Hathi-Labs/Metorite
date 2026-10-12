@@ -2270,17 +2270,13 @@ def prompt_to_save(
     marker = [{"name": "edited", "value": {"supersedes": supersedes}}] if supersedes else []
     # A card answer that went as a new message keeps its display (owner
     # report, 2026-10-13), as the browser's own save writes it
-    # (`lib/cardAnswer.ts`). Only a turn in the envelope's shape takes one,
-    # so no other turn can draw as an answered card.
-    from gateway.chat_recovery import (  # noqa: PLC0415
-        CARD_ANSWER_EVENT,
-        clean_card_answer,
-        is_card_answer_text,
-    )
+    # (`lib/cardAnswer.ts`). Only an envelope that says the same thing takes
+    # one, so no other turn can draw as an answered card (review of #942).
+    from gateway.chat_recovery import card_answer_marker  # noqa: PLC0415
 
-    display = clean_card_answer(card_answer) if is_card_answer_text(words) else None
-    if display is not None:
-        marker.append({"name": CARD_ANSWER_EVENT, "value": display})
+    card = card_answer_marker(words, card_answer) if card_answer is not None else None
+    if card is not None:
+        marker.append(card)
     return PromptToSave(
         message_id=mid, content=words, timestamp_ms=ts, custom_events=marker,
     )

@@ -236,7 +236,14 @@ export interface SendOptions {
   /** A card answer that went as a new message (`lib/cardAnswer.ts`). The
    *  text is the envelope the model reads, and the bubble draws this. */
   cardAnswer?: CardAnswer | null;
+  /** Hears once what became of this send (review of #942): the server took
+   *  it or steered it (`sent`), it waits for the app (`held`), a run in this
+   *  tab is live so it never left (`busy`), or the server refused it. */
+  onSettled?: (outcome: SendOutcome) => void;
 }
+
+/** What became of one send. */
+export type SendOutcome = "sent" | "held" | "busy" | "refused";
 
 /** What a held edit keeps: its target and its answer. It keeps no bubble,
  *  because the old turn stays visible until the server accepts the edit. */

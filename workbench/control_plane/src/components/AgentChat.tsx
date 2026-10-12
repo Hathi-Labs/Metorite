@@ -29,7 +29,7 @@ import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/Confirm
 import AskPin from "@/components/AskPin";
 import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
-import { genUiAnswersFromTurns, parseCardAnswerEnvelope } from "@/lib/cardAnswer";
+import { genUiAnswersFromTurns, parseCardAnswerEnvelope, resendPlan } from "@/lib/cardAnswer";
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
@@ -1150,19 +1150,36 @@ export default function AgentChat({
         }
         if (outcome === "retry") { restoreCard(); return; }
         if (resend) {
-          setMessages((prev) => [...prev, {
-            id: `restarted-${payload.request_id}`,
-            role: "system",
-            content: `__ERROR__${JSON.stringify({ code: "run_restarted", ref: null, raw: "" })}`,
-            timestamp: Date.now(),
-          }]);
           // The model reads the envelope. The member reads the answered
           // card (owner report, 2026-10-13, `lib/cardAnswer.ts`). An old
           // gateway sends no display, so the envelope is parsed instead.
+          // The notice and the card follow what became of the send, so the
+          // notice never says "went" for an answer that did not go
+          // (review of #942, `resendPlan`).
           void sendMessageRef.current(resend, {
             cardAnswer: display ?? parseCardAnswerEnvelope(resend),
+            onSettled: (outcome) => {
+              if (sessionIdRef.current !== forSession) return;
+              const plan = resendPlan(outcome);
+              if (plan.queue) {
+                // A run in this tab is live: the answer waits for it to end.
+                queueRef.current.push(resend);
+                setQueuedCount(queueRef.current.length);
+                saveQueue(forSession, queueRef.current);
+              }
+              if (plan.notice) {
+                const code = plan.notice;
+                setMessages((prev) => [...prev.filter((m) => m.id !== `restarted-${payload.request_id}`), {
+                  id: `restarted-${payload.request_id}`,
+                  role: "system",
+                  content: `__ERROR__${JSON.stringify({ code, ref: null, raw: "" })}`,
+                  timestamp: Date.now(),
+                }]);
+              }
+              if (plan.card === "keep") restoreCard();
+              else settle?.("resent");
+            },
           });
-          settle?.("resent");
           return;
         }
         settle?.(outcome);
@@ -1824,12 +1841,17 @@ export default function AgentChat({
   // The element that waits on the member, for the pin above the composer
   // (spec §24 rule 1). It reads the queue and the question state above, and
   // keeps none of its own.
+  // The room: read here, before the card answers below, which count only
+  // the viewer's own turns (review of #942). The room layer is further down.
+  const viewerEmail = memoryUserId ?? "";
+  const { room, shared: isRoom, presence, timeline, refresh: refreshRoom } =
+    useRoom(sessionId, viewerEmail, { enabled: !compact });
   // A blocking generative-UI card whose answer went as a new message after a
   // restart: its run died before its tool result recorded the answer, so the
   // answer comes from the member's turn (`lib/cardAnswer.ts`). The card then
   // stays answered after a reload too. Keyed on the text, so a streamed
   // token makes no new map and every bubble keeps its memo.
-  const restartAnswersKey = JSON.stringify([...genUiAnswersFromTurns(messages)]);
+  const restartAnswersKey = JSON.stringify([...genUiAnswersFromTurns(messages, viewerEmail || undefined, isRoom)]);
   const cardAskAnswers = useMemo<ReadonlyMap<string, string>>(() => {
     const fromTurns = JSON.parse(restartAnswersKey) as [string, string][];
     return fromTurns.length === 0 ? askAnswers : new Map([...fromTurns, ...askAnswers]);
@@ -1878,9 +1900,7 @@ export default function AgentChat({
   // nothing: `shared` is false, so no rail, no banner, no stream, no
   // heartbeat. Everything below keys off `shared` rather than off the room
   // object, so solo chat is exactly the surface it has always been.
-  const viewerEmail = memoryUserId ?? "";
-  const { room, shared: isRoom, presence, timeline, refresh: refreshRoom } =
-    useRoom(sessionId, viewerEmail, { enabled: !compact });
+  // `viewerEmail` and `isRoom` are read above, by the card answers.
   const [railOpen, setRailOpen] = useState(false);
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
   // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).

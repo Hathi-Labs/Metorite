@@ -39,6 +39,7 @@ export type RunErrorCode =
   | "updating"
   | "interrupted"
   | "run_restarted"
+  | "run_restarted_queued"
   | "answer_in_other_account"
   | "too_many_runs"
   | "unknown";
@@ -134,6 +135,14 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
   run_restarted: {
     title: "The assistant restarted",
     body: "Your answer went to it as a new message.",
+    retry: false,
+    tone: "notice",
+  },
+  // The resend met a live run in this tab, so it waits in the queue
+  // (review of #942). It goes when that reply ends.
+  run_restarted_queued: {
+    title: "The assistant restarted",
+    body: "Your answer goes as a new message when this reply ends.",
     retry: false,
     tone: "notice",
   },

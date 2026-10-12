@@ -52,7 +52,8 @@ export interface CardAnswer {
 
 const QUESTION_MAX = 500;
 const ANSWER_MAX = 2000;
-const ROW_MAX = 200;
+/** The card's own cap (`ask_tools.ROW_LABEL_MAX`), as the gateway keeps it. */
+const ROW_MAX = 500;
 const ROWS_MAX = 100;
 
 const str = (v: unknown, max: number): string | undefined =>
@@ -150,18 +151,84 @@ export function parseCardAnswerEnvelope(text: string): CardAnswer | null {
   return { kind: "ask_user", question, answer: answer.slice(0, ANSWER_MAX) };
 }
 
+// ── The marker must agree with the words (review of #942, P2) ───────────────
+//
+// A marker is a claim about the turn's own words, and a member can save any
+// marker through the browser save. So the chat draws a marker only on an
+// envelope that says the same thing: the same question, the same decision,
+// the same rows, the same words. The gateway runs the same check on every
+// write (`chat_recovery.card_answer_agrees`). On a mismatch the turn draws as
+// its plain text, so a viewer reads what the model read.
+
+const BARE = /^My answer to your last question: ([\s\S]+)$/;
+
+/** The question and the answer of an envelope, in either shape, or null. */
+function envelopeParts(text: string): { question: string; answer: string } | null {
+  const m = ENVELOPE.exec(text);
+  if (m) return { question: m[1], answer: m[2] };
+  const b = BARE.exec(text);
+  return b ? { question: "", answer: b[1] } : null;
+}
+
+/** Letters and digits only, NFKC and lower case. The neutralising pass
+ *  changes only marks, spaces and look-alikes, so a fold compares words. */
+function fold(text: string): string {
+  return text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+/** True when the envelope `text` says what the marker `d` says. */
+export function markerAgrees(text: string, d: CardAnswer): boolean {
+  const env = envelopeParts(text);
+  if (!env) return false;
+  let question = env.question;
+  const listed = new Map<string, string>();
+  const at = question.indexOf(ROWS_LEAD);
+  if (at >= 0) {
+    for (const line of question.slice(at + ROWS_LEAD.length).split("\n")) {
+      const row = ROW_LINE.exec(line);
+      if (row) listed.set(row[1], row[2]);
+    }
+    question = question.slice(0, at);
+  }
+  if (!fold(question).startsWith(fold(d.question))) return false;
+  const answer = env.answer;
+  if (d.kind !== "confirmation") {
+    const shown = d.answer ?? "";
+    return shown === answer.slice(0, ANSWER_MAX) || (shown === "" && answer === "(no answer)");
+  }
+  const decision = /^REJECT$/i.test(answer) ? "reject" : /^APPROVE/i.test(answer) ? "approve" : null;
+  if (!decision || d.decision !== decision) return false;
+  const ids = decision === "approve" ? approvedIds(answer) : null;
+  if (d.rows) {
+    if (!ids) return false;
+    if (listed.size > 0) {
+      const chosen = new Set(ids);
+      const want = [...listed].filter(([id]) => chosen.has(id)).map(([, label]) => fold(label));
+      const got = d.rows.map(fold);
+      return want.length === got.length && want.every((w, i) => w === got[i]);
+    }
+    return d.rows.length === ids.length;
+  }
+  if (d.rowCount !== undefined) return !!ids && Math.min(ids.length, ROWS_MAX) === d.rowCount;
+  return true;
+}
+
 /**
  * The answered card a member's turn stands for, or null for a plain turn.
- * The marker comes first. A row with no marker falls back to the envelope.
+ * A marker counts only on an envelope that agrees with it. A marker that
+ * disagrees draws the turn as plain text. A turn with no marker falls back
+ * to the envelope.
  */
 export function cardAnswerOf(m: Pick<ChatMessage, "role" | "content" | "customEvents">): CardAnswer | null {
   if (m.role !== "user") return null;
+  const text = m.content ?? "";
   for (const e of m.customEvents ?? []) {
     if (e.name !== CARD_ANSWER_EVENT) continue;
     const d = cardAnswerFrom(e.value);
-    if (d) return d;
+    if (!d) continue;
+    return markerAgrees(text, d) ? d : null;
   }
-  return parseCardAnswerEnvelope(m.content ?? "");
+  return parseCardAnswerEnvelope(text);
 }
 
 /** The first line of the answered card: what the member did. */
@@ -189,16 +256,57 @@ export function cardAnswerText(d: CardAnswer): string {
  * request id. The card in the earlier turn reads them (`askAnswers`), so it
  * stays locked after a reload too: its run died before its tool result could
  * record the answer (`lib/askAnswers.ts`).
+ *
+ * Only the viewer's OWN turns count (review of #942). The gateway takes an
+ * answer only from the member the card asked, so another member's turn can
+ * never answer my card, and a forged one must not lock it either. A turn
+ * with no author predates rooms: it is the reader's in a solo thread, and
+ * nobody's in a shared room. The marker must agree with the turn's envelope
+ * (`cardAnswerOf`).
  */
-export function genUiAnswersFromTurns(messages: readonly ChatMessage[]): Map<string, string> {
+export function genUiAnswersFromTurns(
+  messages: readonly ChatMessage[],
+  viewerEmail: string | undefined,
+  shared = false,
+): Map<string, string> {
   const out = new Map<string, string>();
+  const me = (viewerEmail ?? "").toLowerCase();
   for (const m of messages) {
     if (m.role !== "user") continue;
-    for (const e of m.customEvents ?? []) {
-      if (e.name !== CARD_ANSWER_EVENT) continue;
-      const d = cardAnswerFrom(e.value);
-      if (d?.kind === "generative_ui" && d.requestId && d.answer) out.set(d.requestId, d.answer);
-    }
+    if (m.authorKind && m.authorKind !== "human") continue;
+    const author = (m.authorEmail ?? "").toLowerCase();
+    if (author ? author !== me : shared) continue;
+    if (!m.customEvents?.some((e) => e.name === CARD_ANSWER_EVENT)) continue;
+    const d = cardAnswerOf(m);
+    if (d?.kind === "generative_ui" && d.requestId && d.answer) out.set(d.requestId, d.answer);
   }
   return out;
+}
+
+/**
+ * What the chat does once it knows what became of a card answer's resend
+ * (review of #942, P2). The notice says only what HAS happened:
+ *
+ * - `sent`: the server took the turn, or steered it into a live run. The card
+ *   closes, and the notice says the answer went.
+ * - `busy`: a run in this tab is live, so the send never left. The answer
+ *   waits in the composer queue and goes when that reply ends. The card
+ *   closes, and the notice says so. Before this, the send was dropped and
+ *   the notice still said "went": the answer was lost.
+ * - `held`: the app is updating. The send waits, and the "Metorite is
+ *   updating" notice already says so.
+ * - `refused`: the server refused it (the run cap, a failed turn). Its own
+ *   notice says why, and the card stays open.
+ */
+export function resendPlan(outcome: "sent" | "held" | "busy" | "refused"): {
+  notice: "run_restarted" | "run_restarted_queued" | null;
+  queue: boolean;
+  card: "close" | "keep";
+} {
+  switch (outcome) {
+    case "sent": return { notice: "run_restarted", queue: false, card: "close" };
+    case "busy": return { notice: "run_restarted_queued", queue: true, card: "close" };
+    case "held": return { notice: null, queue: false, card: "close" };
+    default: return { notice: null, queue: false, card: "keep" };
+  }
 }

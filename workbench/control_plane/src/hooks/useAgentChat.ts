@@ -47,6 +47,7 @@ import {
   registerSender,
   retryHeldNow,
   type SendOptions,
+  type SendOutcome,
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
 import {
@@ -266,6 +267,13 @@ export function useAgentChat({
     async (content: string, opts?: SendOptions) => {
       const text = content.trim();
       const supersedes = opts?.supersedes;
+      // The caller hears once what became of the send (`opts.onSettled`).
+      let sendSettled = false;
+      const settleSend = (o: SendOutcome) => {
+        if (sendSettled) return;
+        sendSettled = true;
+        opts?.onSettled?.(o);
+      };
       // An edit hears its answer exactly once: accepted, or the reason why not.
       let editAnswered = false;
       const answerEdit = (o: EditOutcome) => {
@@ -281,6 +289,7 @@ export function useAgentChat({
       });
       if (!text) {
         answerEdit({ ok: false, reason: EDIT_UNSENT });
+        settleSend("refused");
         return;
       }
       const before = getSessionState(threadId);
@@ -314,7 +323,10 @@ export function useAgentChat({
       // "Continue" bubbles of the incident. `hold`: the gateway is down, so
       // the send waits once, and goes out when /api/health says it is back.
       const plan = supersedes ? "send" : planSend(before, text, held?.id);
-      if (plan === "collapse" || plan === "busy") return;
+      if (plan === "collapse" || plan === "busy") {
+        settleSend(plan === "busy" ? "busy" : "held");
+        return;
+      }
       if (plan === "hold") {
         const heldMsg: ChatMessage = {
           id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
@@ -327,10 +339,12 @@ export function useAgentChat({
         };
         setSessionState(threadId, (prev) => ({ ...prev, messages: [...prev.messages, heldMsg] }));
         holdForUpdate(threadId, text, { resume: opts?.resume });
+        settleSend("held");
         return;
       }
       if (plan === "requeue") {
         holdForUpdate(threadId, text, { front: true, resume: opts?.resume });
+        settleSend("held");
         return;
       }
 
@@ -485,6 +499,8 @@ export function useAgentChat({
         // Only a 429 can be the run cap, and an update outage is no answer.
         // Any other answer confirms the turn.
         if (res.status !== 429 && !isUpdateOutage({ status: res.status, gotResponse: true })) confirmTurn();
+        // A stream, or a 202 that steered the words into a live run.
+        if (res.ok) settleSend("sent");
 
         // ── Stand down: this message was folded into a run already going ──
         // docs/multiplayer/README.md §4.6. A 202 means the gateway steered our
@@ -676,6 +692,7 @@ export function useAgentChat({
             userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
           });
           heldAgain = true;
+          settleSend("held");
           return;
         }
         const lc = rawErr.toLowerCase();
@@ -703,6 +720,7 @@ export function useAgentChat({
             ),
           }));
           // Don't clear isLoading — let the polling effect handle recovery.
+          settleSend("sent");
           return;
         }
         // One seam decides what the failure leaves in the thread: an error
@@ -717,12 +735,16 @@ export function useAgentChat({
           code: err instanceof ChatRunError ? err.code : null,
           ref: err instanceof ChatRunError ? err.ref : null,
           onSessionRefused: onSessionRefusedRef.current,
-          onRunCapped: onRunCappedRef.current,
+          // A card answer's words are the envelope the model reads: they
+          // never go back to the composer. Its card stays open instead.
+          onRunCapped: opts?.cardAnswer ? undefined : onRunCappedRef.current,
         });
         capped = outcome === "capped";
+        settleSend("refused");
         if (outcome === "error") emitAgentEvent("onError", { error: rawErr, threadId });
       } finally {
         if (!capped && !heldAgain) confirmTurn();
+        settleSend("sent");
         // If a reconnect/replay loop superseded us mid-stream it now owns the
         // message AND the shared loading/abort state. A superseded loop must NOT
         // reset isLoading/abortController or it would kill the live reconnect

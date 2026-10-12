@@ -40,6 +40,9 @@ type Scenario = {
   /** The 409's `resumeMessage` and `resumeDisplay`. */
   resumeMessage: string;
   resumeDisplay: Record<string, unknown>;
+  /** A run in this tab is still live when the member answers (review of
+   *  #942): the first stream stays open until a beat after the answer. */
+  liveRun?: boolean;
 };
 
 const CONFIRM: Scenario = {
@@ -79,7 +82,7 @@ const ASK: Scenario = {
 
 async function installScenario(page: Page, scenario: Scenario) {
   await page.addInitScript(
-    ({ card, resumeMessage, resumeDisplay, reply }) => {
+    ({ card, resumeMessage, resumeDisplay, reply, liveRun }) => {
       window.localStorage.clear();
       const w = window as unknown as Record<string, unknown>;
       const chatBodies: unknown[] = [];
@@ -88,10 +91,14 @@ async function installScenario(page: Page, scenario: Scenario) {
       const frame = (e: unknown) => enc.encode(`data: ${JSON.stringify(e)}\n\n`);
       const json = (body: unknown, status = 200) =>
         new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+      let release: () => void = () => {};
+      const released = new Promise<void>((r) => { release = r; });
       const orig = window.fetch.bind(window);
       window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
         if (url.includes("/api/agent/respond-input")) {
+          // The live run ends a beat after the answer, so its queue drains.
+          setTimeout(release, 2500);
           // The run that asked died with the app update.
           return json({ detail: {
             error: "run_restarted",
@@ -121,12 +128,21 @@ async function installScenario(page: Page, scenario: Scenario) {
           chatBodies.push(body);
           const first = chatBodies.length === 1;
           const stream = new ReadableStream<Uint8Array>({
-            start(controller) {
+            async start(controller) {
               if (first) {
                 controller.enqueue(frame({ type: "message_start", messageId: "m-1" }));
                 controller.enqueue(frame({ type: "delta", content: "I need your answer first.", messageId: "m-1" }));
                 controller.enqueue(frame({ type: "message_end", messageId: "m-1" }));
                 controller.enqueue(frame(card));
+                if (liveRun) {
+                  // This tab's run is still live when the member answers.
+                  await released;
+                  controller.enqueue(frame({ type: "message_start", messageId: "m-1b" }));
+                  controller.enqueue(frame({ type: "delta", content: "The other reply ends here.", messageId: "m-1b" }));
+                  controller.enqueue(frame({ type: "done" }));
+                  controller.close();
+                  return;
+                }
                 // The app update cut the stream: no `done`.
                 controller.close();
                 return;
@@ -142,7 +158,7 @@ async function installScenario(page: Page, scenario: Scenario) {
         return orig(input, init);
       };
     },
-    { ...scenario, reply: REPLY },
+    { ...scenario, reply: REPLY, liveRun: !!scenario.liveRun },
   );
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
@@ -200,6 +216,30 @@ test.describe("A card answered after the assistant restarted", () => {
     for (const t of TASKS) await expect(answered).toContainText(t);
     await expect(page.getByText(REPLY).first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText("Your answer went to it as a new message.")).toBeVisible();
+    await expectNoEnvelope(page);
+  });
+
+  test("an answer that meets a live run waits for it, and is not lost", async ({ page }) => {
+    // Review of #942: a parked card answered while this tab's run is live.
+    // The send never left, and the notice said "went": the answer was lost.
+    await installScenario(page, { ...CONFIRM, liveRun: true });
+    await startTurn(page, "Create 9 tasks in");
+
+    const approve = page.locator("[data-confirmation-approve]");
+    await expect(approve).toBeEnabled();
+    await page.waitForTimeout(500); // ARM_MS
+    await approve.click();
+
+    // It waits, and the notice says so, never "went".
+    await expect(page.getByText("Your answer goes as a new message when this reply ends.")).toBeVisible();
+    await expect(page.getByText("Your answer went to it as a new message.")).toHaveCount(0);
+    // The live reply ends, and the queue sends the envelope.
+    await expect.poll(async () => (await chatBodies(page)).length, { timeout: 15_000 }).toBe(2);
+    expect((await chatBodies(page)).at(-1)?.message).toBe(CONFIRM.resumeMessage);
+    // The turn draws as the answered card, from its own envelope.
+    const answered = page.locator('[data-card-answer="approve"]');
+    await expect(answered).toBeVisible({ timeout: 10_000 });
+    for (const t of TASKS) await expect(answered).toContainText(t);
     await expectNoEnvelope(page);
   });
 
