@@ -865,11 +865,20 @@ end gives its unread steers back, maybe later and on another worker. Then:
 | `tests/unit/test_chat_prompt_saved_at_start.py` | R8: the steered row carries the `steered` mark in Postgres |
 | `e2e/chat-steer.spec.ts` | The browser: the stream goes on, the words show as added, the follow-up answer draws below the steer, and Stop and Esc halt the run |
 
-**Mutation record (2026-10-12).** Round 2 adds seven, all killed: no Stop
-mark, a gate that ignores the mark, a mark that is never cleared, a client
-that keeps the owed follow-up after a Stop, a late steer answer that owes
-again, a drop of the durable copy at buffer time, and a steer row that
-refuses the edit. Round 1 had eleven mutants, eleven killed: the client
+**Mutation record (2026-10-12).** Round 2 adds ten mutants, and all ten
+are killed:
+
+- no Stop mark, a gate that ignores the mark, and a mark that a new run never
+  clears;
+- an ENGAGE that replays a stopped run's steers;
+- a client that owes a follow-up after a Stop, and a `stopped` answer that
+  keeps the retry;
+- a drop of the durable copy at buffer time;
+- a follow-up refusal that draws a card;
+- a steer row that refuses the edit on the server, and Edit on the steer row
+  in the client.
+
+Round 1 had eleven mutants, eleven killed: the client
 stops on send, the client enqueues, the button ignores the box, no give-back
 at the terminal event, a give-back that saves nothing, no follow-up gate, a
 replay that keeps the history copy, no follow-up from the hook, a steered
