@@ -11,7 +11,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { formatField, isEmail, summaryFacts, telHref, type FieldDef } from "../lib/fields";
+import { contactValue, formatField, isEmail, summaryFacts, telHref, type FieldDef } from "../lib/fields";
+import { RECORD_PAGE_ATTR } from "../lib/recordNav";
 import type { RecordTab } from "../lib/urlState";
 import type { EntitySlug, Status, TimelineEntry } from "../lib/types";
 import FieldValue from "./FieldValue";
@@ -102,8 +103,40 @@ describe("phone and email links (CRM-X4 item 6)", () => {
   });
 
   it("never lets a letter or a query into the href", () => {
-    const href = telHref("+91 98450 12345;ext=9?x=javascript:1") ?? "";
-    expect(href).toMatch(/^tel:\+?\d+$/);
+    // A `;` means two values, so the whole value stays text.
+    expect(telHref("+91 98450 12345;ext=9?x=javascript:1")).toBeNull();
+    for (const value of ["+91 98450 12345", "(080) 4123-4567", "+91.80.4123.4567"]) {
+      expect(telHref(value)).toMatch(/^tel:\+?\d+$/);
+    }
+  });
+
+  // Review P2: one link never joins the digits of two things.
+  it("dials the number of a value with an extension, not the extension", () => {
+    expect(telHref("+91 98450 12345 x56")).toBe("tel:+919845012345");
+    expect(telHref("+91 98450 12345 ext. 56")).toBe("tel:+919845012345");
+    expect(telHref("080 4123 4567 #2")).toBe("tel:08041234567");
+    expect(telHref("080 4123 4567 X2")).toBe("tel:08041234567");
+  });
+
+  it("keeps a value that holds two numbers as text", () => {
+    for (const value of [
+      "98450 12345 / 98450 54321",
+      "98450 12345, 98450 54321",
+      "98450 12345; 98450 54321",
+      "98450 12345 98450 54321",
+      "98450 12345 or 98450 54321",
+      "98450 12345 +91 98450 54321",
+    ]) {
+      expect(telHref(value), value).toBeNull();
+      expect(formatField(phoneDef, value), value).toEqual({ kind: "text", text: value });
+    }
+  });
+
+  it("never passes a list of addresses as one mailto:", () => {
+    for (const value of ["sales@bosch.in,info", "sales@bosch.in;info", "a@b.in,c@d.in", "a@b.in, c@d.in"]) {
+      expect(isEmail(value), value).toBe(false);
+      expect(contactValue("email", value), value).toEqual({ kind: "text", text: value });
+    }
   });
 
   it("draws the tel kind as a link", () => {
@@ -295,6 +328,11 @@ describe("the place in the list (CRM-X4 item 5)", () => {
     expect(html).toContain("2 of 3");
     expect(html).toContain('aria-label="Previous record"');
     expect(html).toContain('aria-label="Next record"');
+  });
+
+  it("marks its body, so navStep can tell the sheet from another dialog", () => {
+    expect(RECORD_PAGE_ATTR).toBe("data-crm-record-page");
+    expect(page({})).toContain(`${RECORD_PAGE_ATTR}=""`);
   });
 
   it("shows no arrows when no list is behind the record", () => {

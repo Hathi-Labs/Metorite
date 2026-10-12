@@ -32,7 +32,7 @@ import * as api from "../lib/api";
 import { isMirrored, zohoLink } from "../lib/connect";
 import { summaryFacts, type FieldDef } from "../lib/fields";
 import { NO_RELATED, type RelatedLists } from "../lib/related";
-import { navLabel, navStep, neighbour } from "../lib/recordNav";
+import { navLabel, navStep, neighbour, RECORD_PAGE_ATTR } from "../lib/recordNav";
 import { nextOpenActivities } from "../lib/timeline";
 import { recordTabsFor, shownRecordTab, type RecordTab } from "../lib/urlState";
 import { useFieldDefs } from "../lib/useCrmMode";
@@ -296,7 +296,9 @@ export function RecordPage({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    // The mark of the record page (`RECORD_PAGE_ATTR`): `navStep` reads it to
+    // tell the sheet's own dialog from a dialog over it.
+    <div className="flex min-h-0 flex-1 flex-col" {...{ [RECORD_PAGE_ATTR]: "" }}>
       {/* The summary header (CRM-X4 item 1). It wraps on a phone. */}
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
         {statuses.length > 0 && (

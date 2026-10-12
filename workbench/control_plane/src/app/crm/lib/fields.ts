@@ -49,23 +49,42 @@ export function safeHref(value: unknown): string | null {
 /** The guard of every `mailto:` link the CRM draws. */
 export function isEmail(value: string): boolean {
   // `?`, `&`, `#` and `%` would let a value add a bcc or a subject to the draft.
-  return /^[^\s@<>?&#%]+@[^\s@<>?&#%]+\.[^\s@<>?&#%]+$/.test(value);
+  // `,` and `;` would make a list of addresses one link (review P2).
+  return /^[^\s@<>?&#%,;]+@[^\s@<>?&#%,;]+\.[^\s@<>?&#%,;]+$/.test(value);
 }
 
 /** The fewest digits a `tel:` link needs. A shorter value stays text. */
 export const TEL_MIN_DIGITS = 6;
+
+/** The most digits one phone number holds (E.164). More is two numbers. */
+export const TEL_MAX_DIGITS = 15;
+
+/** Where an extension starts: `x`, `ext` or `#`, in any case. */
+const TEL_EXTENSION = /ext|x|#/i;
+
+/** What one number may hold: a leading `+`, digits, and the usual spacers. */
+const ONE_NUMBER = /^\+?[\d\s().-]+$/;
 
 /**
  * A `tel:` address for a phone number, or null (WS-53 CRM-X4 item 6).
  *
  * The `href` keeps only the digits and a leading `+`, so a value from Zoho
  * can never put a letter, a `;` or a query into the link.
+ *
+ * ⚠️ One link dials one number (review P2). An extension (`x56`, `ext. 56`,
+ * `#2`) is cut off, because `tel:` cannot dial it after a wait. A value that
+ * holds `/`, `,` or `;`, a word, a second `+`, or more than 15 digits holds
+ * two numbers, and it stays text. Joined digits dial a number nobody has.
  */
 export function telHref(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const text = value.trim();
+  const whole = value.trim();
+  if (/[/,;]/.test(whole)) return null;
+  const at = whole.search(TEL_EXTENSION);
+  const text = (at < 0 ? whole : whole.slice(0, at)).trim();
+  if (!ONE_NUMBER.test(text)) return null;
   const digits = text.replace(/\D/g, "");
-  if (digits.length < TEL_MIN_DIGITS) return null;
+  if (digits.length < TEL_MIN_DIGITS || digits.length > TEL_MAX_DIGITS) return null;
   return `tel:${text.startsWith("+") ? "+" : ""}${digits}`;
 }
 
