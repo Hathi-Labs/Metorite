@@ -72,10 +72,16 @@ it inside its handlers.
 ``views.py`` is WS-53 CRM-Q8 — ``GET``, ``POST``, ``PATCH`` and ``DELETE`` on
 ``/crm/views``, the saved views of the lists and boards (table ``crm_views``).
 A view is not a CRM record, so the routes work in Mirror mode as well.
+
+``aggregate.py`` is WS-53 CRM-C7 — ``GET /crm/aggregate`` and
+``GET /crm/aggregate/stage-dwell``, the totals that an agent reads. Read only.
+It builds its filters with ``records.list_query``, the one list builder.
+``settings.py`` also holds ``GET /crm/mode``, the mode for any admitted member.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
 from gateway.routes.crm import admin as _admin  # noqa: F401
+from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
