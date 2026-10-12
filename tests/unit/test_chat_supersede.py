@@ -424,10 +424,19 @@ def test_five_long_steers_stay_in_the_cap_with_the_step_the_closing_and_a_count(
     assert '"send_email"' in _block(note)
     assert note.rstrip().endswith("or ask the member.")
     assert "more messages were added while it ran." in note
-    # Each added message is cut at 120 characters.
-    for line in _block(note).splitlines():
-        if line.startswith("added_while_running:"):
-            assert len(line) <= len('added_while_running: ""') + 120
+    # Each added message is cut at 120 characters, so one fits beside the
+    # step. Quoted whole, none would.
+    quoted = [ln for ln in _block(note).splitlines() if ln.startswith("added_while_running:")]
+    assert quoted, "at least one added message is quoted"
+    assert all(len(ln) <= len('added_while_running: ""') + 120 for ln in quoted)
+
+
+def test_one_long_steer_is_cut_at_120_characters():
+    note = _note(50, 400, 1, [])
+    quoted = [ln for ln in _block(note).splitlines() if ln.startswith("added_while_running:")]
+    assert len(quoted) == 1
+    assert len(quoted[0]) <= len('added_while_running: ""') + 120
+    assert "more message" not in note
 
 
 def test_steers_with_no_step_keep_the_closing_line_and_the_cap():
