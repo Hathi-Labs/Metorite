@@ -43,6 +43,7 @@ from acb_common.child_env import child_env
 from fastapi import (APIRouter, BackgroundTasks, Depends, Header,
                      HTTPException, Request, status)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from gateway.connections import github as github_connection
 from gateway.db import TenantUnbound, current_tenant
 from gateway.room_stream import publish_room_event
 from pydantic import BaseModel
@@ -1300,6 +1301,23 @@ class RegisterAgentRequest(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+async def _org_github_token() -> str:
+    """The GitHub token of the caller's organization, or ``""``.
+
+    WS-54 IN-7. A request for a customer reads the org connection only. It
+    never reads the deployment ``GITHUB_TOKEN``, which is the operator's. With
+    no connection the fetch goes out with no token, so it reads a public repo.
+    """
+    org = current_tenant()
+    if not org:
+        return ""
+    try:
+        return await github_connection.token_or_none(str(org)) or ""
+    except Exception as exc:
+        _log.warning("agent.github_token_unreadable", error=type(exc).__name__)
+        return ""
+
+
 @router.get("/config", summary="Fetch config.json from a GitHub agent repo or local path")
 async def get_agent_config(
     repo: str,
@@ -1335,9 +1353,8 @@ async def get_agent_config(
     # ── GitHub ──────────────────────────────────────────────────────────────
     slug = raw.removeprefix("https://github.com/").removeprefix("http://github.com/")
 
-    settings = get_settings()
     headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
-    token: str = getattr(settings, "github_token", "") or ""
+    token: str = await _org_github_token()
     if token:
         headers["Authorization"] = f"token {token}"
 
@@ -1532,7 +1549,34 @@ async def list_agents(
     return merged
 
 
-@router.post("/{name}/pull", summary="Pull latest commits for an agent's local clone", dependencies=[require_permission("agents:manage")])
+def _registry_orgs() -> frozenset[str]:
+    raw = str(get_settings().agent_registry_orgs or "")
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+async def _require_registry_operator(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Only the platform operator changes the agent registry.
+
+    ``agents:manage`` alone is not enough: every org's owner and admin hold
+    it. The registry is deployment-wide, a register clones a repo with the
+    operator's ``GITHUB_TOKEN`` (or reads a path on the server), and the code
+    runs inside the shared gateway. ``AGENT_REGISTRY_ORGS`` names the orgs
+    that may do it. Empty means none (fail closed). The org comes from the
+    server-side ``UserContext``, never from the request.
+    """
+    org = str(user.organization_id or "").strip().lower()
+    allowed = _registry_orgs()
+    if org and ("*" in allowed or org in allowed):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only the platform operator can change the agent registry.",
+    )
+
+
+@router.post("/{name}/pull", summary="Pull latest commits for an agent's local clone", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def pull_agent(
     name: str,
     user: UserContext = Depends(get_current_user),
@@ -1648,7 +1692,7 @@ async def pull_agent(
     }
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, summary="Register an agent from a GitHub repo", dependencies=[require_permission("agents:manage")])
+@router.post("", status_code=status.HTTP_201_CREATED, summary="Register an agent from a GitHub repo", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def register_agent(
     req: RegisterAgentRequest,
     background_tasks: BackgroundTasks,
@@ -1727,8 +1771,7 @@ async def register_agent(
         # nothing. A 404 means the repo declares nothing, so it gets "maf".
         # A 403 also registers as before, because the loader cannot clone a
         # repo that the token cannot read.
-        settings = get_settings()
-        gh_token: str = getattr(settings, "github_token", "") or ""
+        gh_token: str = await _org_github_token()
         headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
         if gh_token:
             headers["Authorization"] = f"token {gh_token}"
@@ -1899,7 +1942,7 @@ def _cleanup_agent_workspace(agent_name: str) -> bool:
         return False
 
 
-@router.delete("/{name}", summary="Remove a user-registered agent", dependencies=[require_permission("agents:manage")])
+@router.delete("/{name}", summary="Remove a user-registered agent", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def remove_agent(
     name: str,
     user: UserContext = Depends(get_current_user),
@@ -1960,7 +2003,7 @@ class PatchAgentRequest(BaseModel):
     status: str | None = None
 
 
-@router.patch("/{name}", summary="Update metadata for a user-registered agent", dependencies=[require_permission("agents:manage")])
+@router.patch("/{name}", summary="Update metadata for a user-registered agent", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def patch_agent(
     name: str,
     req: PatchAgentRequest,
@@ -2884,6 +2927,9 @@ async def run_agent_stream_endpoint(
         organization_id=_organization_id,
         # H-73: WHO pays is the session's answer, never the body's.
         session_user=_session_member(user),
+        # The web chat draws each card (`AgentChat`, `useAgentChat` and
+        # `confirmationQueue.ts` read the CUSTOM card events of this stream).
+        shows_cards=True,
     )
 
     # The roster this run's authority intersection is folded over, recorded so a

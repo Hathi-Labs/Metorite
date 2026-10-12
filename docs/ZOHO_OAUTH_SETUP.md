@@ -107,10 +107,10 @@ drop folder is the only place for it.
 
 You do not do these steps. They are here so that you know what happens.
 
-1. The agent adds `CRM_ZOHO_CLIENT_ID` and `CRM_ZOHO_CLIENT_SECRET` to
-   `allowed_keys` of the `app-env` entry in `deploy/secrets/manifest.json`, in
-   a reviewed change. Until then `push` refuses the two keys. The manifest
-   lets only the keys that it names into the app env file.
+1. CRM-Z2 added `CRM_ZOHO_CLIENT_ID` and `CRM_ZOHO_CLIENT_SECRET` to
+   `allowed_keys` of the `app-env` entry in `deploy/secrets/manifest.json`
+   (2026-10-11). The manifest lets only the keys that it names into the app
+   env file, and `tests/unit/test_secrets_drop.py` pins that list.
 2. The agent runs `scripts/secrets.sh diff app-env`. It shows the two key
    names with a `+`, and never a value.
 3. The agent runs `scripts/secrets.sh push app-env`. The script merges the
@@ -132,6 +132,18 @@ You do not do these steps. They are here so that you know what happens.
    | `ZohoCRM.modules.notes.READ` | Notes |
    | `ZohoCRM.modules.calls.READ` | Calls |
    | `ZohoCRM.modules.events.READ` | Meetings, which the API calls Events |
+   | `ZohoCRM.modules.tasks.READ` | Tasks. A connection made before 2026-10-12 must reconnect to grant it |
+   | `ZohoCRM.modules.products.READ` | Products, in the generic record store (CRM-Q6a). A connection made before CRM-Q6a must reconnect to grant it |
+   | `ZohoCRM.modules.quotes.READ` | Quotes (CRM-Q6a) |
+   | `ZohoCRM.modules.salesorders.READ` | Sales Orders (CRM-Q6a) |
+   | `ZohoCRM.modules.purchaseorders.READ` | The module `Purchase_Orders` (CRM-Q6a) |
+   | `ZohoCRM.modules.invoices.READ` | Invoices (CRM-Q6a) |
+   | `ZohoCRM.modules.vendors.READ` | Vendors (CRM-Q6a) |
+   | `ZohoCRM.modules.pricebooks.READ` | Price Books (CRM-Q6a) |
+   | `ZohoCRM.modules.cases.READ` | Cases (CRM-Q6a) |
+   | `ZohoCRM.modules.solutions.READ` | Solutions (CRM-Q6a) |
+   | `ZohoCRM.modules.campaigns.READ` | Campaigns (CRM-Q6a) |
+   | `ZohoCRM.modules.custom.READ` | Each custom module (CRM-Q6a) |
    | `ZohoCRM.settings.fields.READ` | The field definitions of each module |
    | `ZohoCRM.settings.layouts.READ` | The Deals layouts, which hold the pipelines |
    | `ZohoCRM.settings.pipeline.READ` | The pipelines and their stages |

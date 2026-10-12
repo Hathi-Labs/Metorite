@@ -235,6 +235,43 @@ class Settings(BaseSettings):
     crm_enabled: bool = False
     crm_orgs: str = ""
 
+    # ── The CRM mirror (WS-53 CRM-Z2, 2026-10-11) ───────────────────────────
+    #
+    # `crm_mirror` is the kill switch of the Zoho connection routes
+    # (`/crm/connection*` and `/crm/oauth/zoho/callback`), default OFF. With it
+    # off each of those routes answers 404, on top of the `CRM_ENABLED` check.
+    # The one reader is `gateway.routes.crm.flags`.
+    #
+    # `crm_zoho_client_id` and `crm_zoho_client_secret` are Metorite's OWN Zoho
+    # OAuth client (docs/ZOHO_OAUTH_SETUP.md). A customer never sets them. The
+    # one reader is `gateway.routes.crm.connection`. With either unset, the
+    # start route answers 503 `zoho_not_configured`. The secret never goes in a
+    # log line or a response.
+    #
+    # 🔴 A flip of `CRM_MIRROR` on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_crm_kill_switch.py, tests/unit/test_crm_connection.py.
+    crm_mirror: bool = False
+    # `crm_mirror_orgs` (WS-53 CRM-L2, 2026-10-11) lists the organization ids
+    # that may use the mirror, in the grammar of `crm_orgs`: ids with a comma
+    # between them, or `*`. Default empty means NO organization (fail closed).
+    # The CRM is live for each organization, and the Zoho mirror is not. An
+    # organization outside the list gets 404 on the mirror routes, and the
+    # sync loop skips it. The one reader is `gateway.routes.crm.flags`.
+    crm_mirror_orgs: str = ""
+    crm_zoho_client_id: str = ""
+    crm_zoho_client_secret: str = ""
+
+    # `agent_registry_orgs` (2026-10-11, found in the WS-54 IN-7 review) lists
+    # the organization ids that may change the agent registry: register, pull,
+    # delete and patch on `/agent`. Grammar of `crm_orgs`: ids with a comma
+    # between them, or `*`. Default empty means NO organization (fail closed).
+    # The registry is deployment-wide, a register clones a repo with the
+    # operator's GITHUB_TOKEN, and its code runs inside the shared gateway. So
+    # only the platform operator's organization belongs here. The one reader
+    # is `gateway.routes.agent._require_registry_operator`. Fence:
+    # tests/unit/test_agent_registry_operator_only.py.
+    agent_registry_orgs: str = ""
+
     # ── Customer Console sign-in resolve (WS-31 CP-2b, spec customer_console.md
     # §6(f)) ────────────────────────────────────────────────────────────────
     #
@@ -560,8 +597,10 @@ class Settings(BaseSettings):
 
     # ── The Gmail connect, dark (WS-17 EM-G7, orchestrator, 2026-10-05) ──────
     #
-    # The production box already holds a Google client, so the app alone
-    # cannot keep Gmail hidden. While this is false, `GET /email/oauth/
+    # On 2026-10-12 the production box holds both `GMAIL_OAUTH_*` names with
+    # empty values, so the keys alone keep Gmail hidden today (spec §12.1).
+    # After §12.4 step 9 writes the client, only this flag keeps Gmail
+    # hidden. While this is false, `GET /email/oauth/
     # providers` answers `gmail: false`, and the authorize leg, the callback
     # leg and `GET /email/oauth/gmail/app` all refuse. Microsoft ignores it.
     # `email_gmail_connect_members` (below) narrows it to listed members.
@@ -826,6 +865,21 @@ class Settings(BaseSettings):
     # `orchestrator.native_session_store.finish_turn`.
     maf_session_max_bytes: int = 2 * 1024 * 1024
 
+    # ── MCP servers on native MAF agents (WS-8c, agent_architecture.md §12.2) ─
+    #
+    # `MAF_MCP_ORGS` lists the organization ids whose native MAF agents get
+    # the MCP servers of their org, with a comma between ids. `*` allows each
+    # organization. An empty list, the default, allows none, and then a native
+    # agent reads no `mcp_servers` row. The Copilot path does not read it. The
+    # one reader is `orchestrator._maf_mcp.maf_mcp_org_allowed`, and the org it
+    # checks is the run binding, never request input. `env_guard` refuses each
+    # `MAF_*` name on each Integrations write. Restart the gateway after a
+    # change.
+    #
+    # 🔴 A flip on a box is gate `enforcement-flip`. Name the org and the box.
+    # Fence: tests/unit/test_maf_mcp_injection.py.
+    maf_mcp_orgs: str = ""
+
     # ── A durable "needs input" (WS-51 S2, chat_run_continuity.md §4 S2) ────
     #
     # `CHAT_DURABLE_ASKS`, default OFF. OFF means no change: no row is written,
@@ -1064,6 +1118,57 @@ class Settings(BaseSettings):
     # (WAC-9). Fence: tests/unit/test_wac_writes.py.
     whatsapp_assistant_writes: bool = False
     whatsapp_assistant_writes_orgs: str = ""
+
+    # ── External agent access (WS-55 EA-1, D97) ─────────────────────────────
+    #
+    # An outside agent reaches Metorite over MCP with an opaque token (spec
+    # project-docs/specs/external_agent_access.md §5.5). `agent_access_enabled`
+    # is the kill switch, default OFF. While it is false, every route of
+    # EA-2a answers 404: the edge's metadata, `token` and `revoke`, and the
+    # gateway's `/agent-access/*`. `acb_auth.agent_oauth.enabled` reads it.
+    #
+    # The lifetimes, in seconds. `acb_auth.agent_tokens` reads the first four.
+    # An access token lives one hour, a refresh token 30 days and an
+    # authorization code 60 seconds. A connection expires 90 days after it
+    # last issued a token: each token issue and each refresh moves its
+    # `expires_at` to now plus this value. An expired connection issues no
+    # token, and the token lookup refuses every token of it. There is no
+    # grace window on a refresh: two refreshes at once revoke the connection.
+    #
+    # `agent_client_unused_ttl_s` has NO reader yet. EA-2b (dynamic client
+    # registration) is to read it, so an unused registered client expires
+    # after one day.
+    #
+    # `env_guard` refuses each `AGENT_*` name on each Integrations write, so
+    # only the env file of the box sets them. 🔴 A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_agent_connection_tokens.py.
+    agent_access_enabled: bool = False
+    agent_access_token_ttl_s: int = 3600
+    agent_refresh_token_ttl_s: int = 30 * 24 * 3600
+    agent_code_ttl_s: int = 60
+    agent_connection_idle_ttl_s: int = 90 * 24 * 3600
+    agent_client_unused_ttl_s: int = 24 * 3600
+    # EA-2a, the authorization server (spec §5.5). The issuer, the canonical
+    # resource and the consent page are fixed addresses. They are Settings
+    # so a test can assert them. `acb_auth.agent_oauth` is their one reader.
+    # The edge serves the metadata, `token` and `revoke` under the issuer.
+    # EA-4 builds the consent page at `agent_authorize_url`.
+    agent_issuer: str = "https://mcp.metorite.com"
+    agent_resource: str = "https://mcp.metorite.com/mcp"
+    agent_authorize_url: str = "https://app.metorite.com/connect/authorize"
+    # A Client ID Metadata Document: the gateway fetches it through
+    # `gateway.outbound_guard`, refuses a body over `agent_cimd_max_bytes`
+    # and a fetch slower than `agent_cimd_timeout_s`, and caches it in
+    # `agent_client` for `agent_cimd_cache_ttl_s`. The edge refuses a token
+    # or revoke body over `agent_oauth_max_body_bytes` with a 413.
+    agent_cimd_max_bytes: int = 5 * 1024
+    agent_cimd_timeout_s: float = 5.0
+    agent_cimd_cache_ttl_s: int = 3600
+    agent_oauth_max_body_bytes: int = 8 * 1024
+    # A spent code that comes again revokes its connection, but only within
+    # this many seconds after the code expired. A code that leaked long ago
+    # then cannot end a live connection. Reader: `acb_auth.agent_tokens`.
+    agent_code_replay_window_s: int = 600
 
     # ── Token accessors ────────────────────────────────────────────────────
 

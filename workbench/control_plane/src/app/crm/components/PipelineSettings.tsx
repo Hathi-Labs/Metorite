@@ -1,9 +1,14 @@
 "use client";
 
 /**
- * `?tab=settings` — the pipeline's management surface (WS-26f f2, §5.1).
+ * `?tab=settings` — CRM settings (WS-26f f2, WS-53 CRM-Q3).
  *
- * Three grids over the EXISTING admin API: deal stages, lead statuses, lost
+ * One column of cards, in this order: Setup, Access, Connection, Pipelines and
+ * stages, Lead Status, Lost reasons, Fields, Sync health. The first three are
+ * nodes the page passes in for an admin. Fields and Sync health wait for
+ * CRM-Q4 and CRM-Q9, and say so.
+ *
+ * The grids drive the EXISTING admin API: deal stages, lead statuses, lost
  * reasons. Before this existed the API was headless — every stage rename,
  * reorder or probability was a curl, which is the second half of why the live
  * board was wrong (§5.1's delivery gap 2).
@@ -12,6 +17,10 @@
  * manages its own pipeline). The one control that needs more is the Zoho pull,
  * which is floored on `admin:access:manage` server-side; hiding it here is the
  * courtesy half.
+ *
+ * Several pipelines (CRM-Q2) show one read-only section each. The stage routes
+ * for a second pipeline are not in this build, so the grid edits the stages of
+ * the one implicit pipeline only.
  *
  * Everything server-shaped is pure and lives in ../lib/settings.ts: what a
  * drop renumbers, which rows that actually PATCHes, and the client half of
@@ -31,17 +40,20 @@ import {
   statusTone,
   TONE_COLORS,
 } from "../lib/board";
+import { showPicker } from "../lib/pipelines";
 import {
-  backfillRan,
   changedFields,
   reorder,
   validateLostReasonDraft,
   validateStatusDraft,
   type PositionPatch,
 } from "../lib/settings";
+import FieldsCard from "./FieldsCard";
+import { Card, NameList, PipelineSections } from "./SettingsCards";
+import SyncHealthCard from "./SyncHealthCard";
 import type {
+  DealPipeline,
   LostReason,
-  StageMetadataReport,
   Status,
   StatusKind,
   StatusType,
@@ -64,20 +76,35 @@ export default function PipelineSettings({
   leadStatuses,
   lostReasons,
   saving,
-  canPullStages,
   onSaveStatus,
   onRemoveStatus,
   onReorderStatuses,
   onSaveLostReason,
   onRemoveLostReason,
   onReorderLostReasons,
-  onPullStages,
+  setup,
+  access,
+  connection,
+  pipelines = null,
+  showAdminCards = false,
+  readOnly = false,
 }: {
+  /** Mirror mode: Zoho owns the stages, and the gateway refuses a write. */
+  readOnly?: boolean;
+  /** The Setup, Access and Connection cards of an admin, in this order. */
+  setup?: React.ReactNode;
+  access?: React.ReactNode;
+  connection?: React.ReactNode;
+  /** The deal pipelines (CRM-Q2). `null` while the gateway has no such route. */
+  pipelines?: DealPipeline[] | null;
+  /** The Fields and Sync health cards are for an admin. */
+  showAdminCards?: boolean;
   dealStatuses: Status[];
   leadStatuses: Status[];
   lostReasons: LostReason[];
   saving: boolean;
-  canPullStages: boolean;
+  /** Retired: the legacy stage repair is no longer drawn (CRM-L2). */
+  canPullStages?: boolean;
   onSaveStatus: (
     kind: StatusKind,
     statusId: string | null,
@@ -94,182 +121,75 @@ export default function PipelineSettings({
   ) => Promise<boolean>;
   onRemoveLostReason: (reasonId: string) => Promise<boolean>;
   onReorderLostReasons: (patches: PositionPatch[]) => Promise<void>;
-  onPullStages: (apply: boolean) => Promise<StageMetadataReport | null>;
+  onPullStages?: unknown;
 }) {
+  const several = showPicker(pipelines);
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
-      <StagePull canPull={canPullStages} saving={saving} onPull={onPullStages} />
+      {setup}
+      {access}
+      {connection}
+      {readOnly ? (
+        <>
+          <PipelineSections
+            pipelines={pipelines}
+            fallback={dealStatuses}
+            note="Stages come from Zoho."
+          />
+          <Card title="Lead Status" note="Lead Status values come from Zoho.">
+            <NameList names={leadStatuses.map((x) => x.name)} />
+          </Card>
+          <Card title="Lost reasons" note="Lost reasons come from Zoho.">
+            <NameList names={lostReasons.map((x) => x.label)} />
+          </Card>
+        </>
+      ) : (
+        <>
+          {several ? (
+            <PipelineSections
+              pipelines={pipelines}
+              fallback={dealStatuses}
+              note="Stage editing for several pipelines is not available yet."
+            />
+          ) : (
+            <StatusGrid
+              kind="deal"
+              title="Pipelines and stages"
+              blurb="Lane order, colour and the win probability the forecast reads. A won stage always forecasts 100%, a lost stage 0%. The type is what closes a deal, and the probability is what the pipeline number believes."
+              statuses={dealStatuses}
+              saving={saving}
+              onSave={onSaveStatus}
+              onRemove={onRemoveStatus}
+              onReorder={onReorderStatuses}
+            />
+          )}
 
-      <StatusGrid
-        kind="deal"
-        title="Deal stages"
-        blurb="Lane order, colour and the win probability the forecast reads. A won stage always forecasts 100%, a lost stage 0% — the type is what closes a deal, the probability is what the pipeline number believes."
-        statuses={dealStatuses}
-        saving={saving}
-        onSave={onSaveStatus}
-        onRemove={onRemoveStatus}
-        onReorder={onReorderStatuses}
-      />
+          <StatusGrid
+            kind="lead"
+            title="Lead Status"
+            blurb="The funnel before a deal exists. No probability: a lead forecasts nothing until it converts."
+            statuses={leadStatuses}
+            saving={saving}
+            onSave={onSaveStatus}
+            onRemove={onRemoveStatus}
+            onReorder={onReorderStatuses}
+          />
 
-      <StatusGrid
-        kind="lead"
-        title="Lead statuses"
-        blurb="The funnel before a deal exists. No probability — a lead forecasts nothing until it converts."
-        statuses={leadStatuses}
-        saving={saving}
-        onSave={onSaveStatus}
-        onRemove={onRemoveStatus}
-        onReorder={onReorderStatuses}
-      />
-
-      <ReasonGrid
-        reasons={lostReasons}
-        saving={saving}
-        onSave={onSaveLostReason}
-        onRemove={onRemoveLostReason}
-        onReorder={onReorderLostReasons}
-      />
-    </div>
-  );
-}
-
-// ── f1 · the Zoho stage pull ────────────────────────────────────────────────
-
-function StagePull({
-  canPull,
-  saving,
-  onPull,
-}: {
-  canPull: boolean;
-  saving: boolean;
-  onPull: (apply: boolean) => Promise<StageMetadataReport | null>;
-}) {
-  const [report, setReport] = useState<StageMetadataReport | null>(null);
-
-  if (!canPull) return null;
-
-  return (
-    <section className="rounded-xl border border-border bg-card/40">
-      <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-foreground">
-            Repair from Zoho
-          </h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Reads the tenant&apos;s real lane order and forecast types. Preview
-            writes nothing.
-          </p>
-        </div>
-        <Button
-          variant="secondary"
-          size="sm"
-          icon="Search"
-          loading={saving}
-          onClick={async () => setReport(await onPull(false))}
-        >
-          Preview
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          icon="Wand2"
-          disabled={saving || !report || report.outcome !== "dry_run"}
-          onClick={async () => setReport(await onPull(true))}
-          title={
-            report?.outcome === "dry_run"
-              ? "Apply the repair above"
-              : "Run a preview first — this rewrites the pipeline"
-          }
-        >
-          Apply
-        </Button>
-      </header>
-      {report && <StageReport report={report} />}
-    </section>
-  );
-}
-
-function StageReport({ report }: { report: StageMetadataReport }) {
-  return (
-    <div className="space-y-3 px-4 py-3 text-xs">
-      {report.outcome === "stopped" && (
-        <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-warning">
-          {report.stop_reason}
-        </p>
+          <ReasonGrid
+            reasons={lostReasons}
+            saving={saving}
+            onSave={onSaveLostReason}
+            onRemove={onRemoveLostReason}
+            onReorder={onReorderLostReasons}
+          />
+        </>
       )}
-      {report.missing_scope && (
-        <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-warning">
-          The Zoho token is not minted with{" "}
-          <code className="font-mono">{report.missing_scope}</code>. Nothing was
-          read — set the stages below by hand, or re-mint the token with that
-          scope.
-        </p>
-      )}
-      {report.errors.map((error) => (
-        <p key={error} className="text-destructive">
-          {error}
-        </p>
-      ))}
-      {report.notes.map((note) => (
-        <p key={note} className="text-muted-foreground">
-          {note}
-        </p>
-      ))}
-
-      {report.stages.length > 0 && (
-        <div>
-          <p className="mb-1 text-muted-foreground">
-            {report.applied ? "Applied" : "Would apply"} — {report.changed}{" "}
-            lane(s) change.
-          </p>
-          <ul className="space-y-0.5">
-            {report.stages.map((change) => (
-              <li
-                key={change.name}
-                className={
-                  change.changed ? "text-foreground" : "text-muted-foreground"
-                }
-              >
-                <span className="font-medium">{change.name}</span>{" "}
-                <span className="opacity-70">
-                  {change.action} · position{" "}
-                  {change.position_before ?? "—"} → {change.position_after} ·
-                  type {change.type_before ?? "—"} → {change.type_after} ·
-                  probability {change.probability_before ?? "—"} →{" "}
-                  {change.probability_after ?? "—"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {report.orphans.length > 0 && (
-        <p className="text-muted-foreground">
-          Kept, with no counterpart in Zoho (never deleted automatically):{" "}
-          {report.orphans
-            .map((o) => `${o.name} (${o.deals} deal${o.deals === 1 ? "" : "s"})`)
-            .join(", ")}
-        </p>
-      )}
-
-      {/* Only when the backfill actually ran. On the D-CRM-11 stop and on any
-          unavailable outcome the database is never opened, and printing
-          "0 stamped, 0 left blank" there reports a measurement nobody took —
-          next to a banner saying nothing was read. */}
-      {backfillRan(report) && report.closed_at && (
-        <p className="text-muted-foreground">
-          Close dates: {report.closed_at.stamped} stamped from Zoho&apos;s
-          closing date
-          {report.applied ? "" : ` (${report.closed_at.eligible} eligible)`},{" "}
-          {report.closed_at.missing_close_date} left blank because the tenant
-          gave no date.
-        </p>
-      )}
-      {report.probability.outcome === "no_data" && (
-        <p className="text-muted-foreground">
-          Zoho carries no per-stage probability for this layout — set them below.
-        </p>
+      {showAdminCards && (
+        <>
+          <FieldsCard readOnly={readOnly} />
+          {/* Sync health reads the mirror, so Native mode does not draw it. */}
+          {readOnly && <SyncHealthCard />}
+        </>
       )}
     </div>
   );

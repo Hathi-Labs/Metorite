@@ -310,13 +310,16 @@ describe("load older keeps its state per mailbox (MB-10)", () => {
 });
 
 describe("Add on Integrations opens the connect flow of Email (MB-16)", () => {
+  const dir = join(ROOT, "..", "integrations");
   const integrations = codeOnly(
-    readFileSync(join(ROOT, "..", "integrations", "page.tsx"), "utf-8").replace(/\r\n/g, "\n"),
+    ["page.tsx", "components/AddMcpModal.tsx", "components/ConnectionsView.tsx"]
+      .map((f) => readFileSync(join(dir, f), "utf-8").replace(/\r\n/g, "\n"))
+      .join("\n"),
   );
 
-  it("routes every Add button to /email?connect=1", () => {
-    expect(integrations).toContain('window.location.assign("/email?connect=1");');
-    expect((integrations.match(/onClick=\{connectInEmail\}/g) ?? []).length).toBe(3);
+  it("routes the Mailbox entry of the Add menu to /email?connect=1", () => {
+    expect(integrations).toContain('label: "Mailbox"');
+    expect(integrations).toContain('window.location.assign("/email?connect=1")');
   });
 
   it("offers no Gmail or IMAP leg of its own (D-EM-5)", () => {

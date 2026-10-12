@@ -172,6 +172,27 @@ def _headers() -> dict[str, str]:
 _ALLOWED_METHODS: frozenset[str] = frozenset({"GET", "POST", "PATCH"})
 
 
+#: The `detail.code` values the gateway answers with (409) when a write meets a
+#: record that a provider owns (WS-53 CRM-Z6, Mirror mode).
+_MIRROR_CODES: frozenset[str] = frozenset({
+    "mirrored_record", "mirror_mode_create", "mirror_mode_settings",
+    "mirror_mode_legacy_import",
+})
+
+_MIRROR_ADVICE = (
+    "In Mirror mode the CRM records are read-only here. "
+    "Offer to add a Metorite-only note or a task, or to open the record in Zoho."
+)
+
+
+class _MirrorBlocked(RuntimeError):
+    """The gateway refused a write because the record or the create is Zoho's."""
+
+
+def _mirror_message(exc: _MirrorBlocked) -> str:
+    return f"Nothing was changed. {exc} {_MIRROR_ADVICE}"
+
+
 def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     """Turn a 4xx/5xx into a short user-facing error (the agent relays raised
     exceptions verbatim, so a raw httpx error reads badly)."""
@@ -180,8 +201,14 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     detail = ""
     try:
         body = resp.json()
+        if resp.status_code == 409 and isinstance(body, dict):
+            blocked = body.get("detail")
+            if isinstance(blocked, dict) and blocked.get("code") in _MIRROR_CODES:
+                raise _MirrorBlocked(str(blocked.get("message") or "Zoho owns this."))
         if isinstance(body, dict):
             detail = str(body.get("detail") or body.get("error") or "")
+    except _MirrorBlocked:
+        raise
     except Exception:  # non-JSON body
         detail = (resp.text or "")[:200]
     raise RuntimeError(
@@ -740,7 +767,10 @@ async def create_lead(
         context=_fields_block(payload),
     ):
         return f"Cancelled — no lead was created for {name}."
-    row = await _post("/crm/leads", payload)
+    try:
+        row = await _post("/crm/leads", payload)
+    except _MirrorBlocked as blocked:
+        return _mirror_message(blocked)
     created = row if isinstance(row, dict) else {}
     return (
         f"Created lead {created.get('lead_name') or name} "
@@ -822,7 +852,10 @@ async def update_deal_status(
         context=_fields_block({"deal": title, "stage": lane, **payload}),
     ):
         return f"Cancelled — {title} was not moved to {lane}."
-    await _patch(f"/crm/deals/{record}", payload)
+    try:
+        await _patch(f"/crm/deals/{record}", payload)
+    except _MirrorBlocked as blocked:
+        return _mirror_message(blocked)
     return f"Moved {title} to {lane}."
 
 
@@ -885,7 +918,10 @@ async def log_activity(
         context=_fields_block({label: target, **payload}),
     ):
         return f"Cancelled — nothing was logged on {target}: {line}"
-    await _post(f"/crm/{slug}/{record}/activities", payload)
+    try:
+        await _post(f"/crm/{slug}/{record}/activities", payload)
+    except _MirrorBlocked as blocked:
+        return _mirror_message(blocked)
     return (
         f"Logged {kind} on {target}: {line}"
         + (" (with detail)" if detail else "")
@@ -942,7 +978,10 @@ async def convert_lead(
         context=_fields_block({"lead": title, **deal}),
     ):
         return f"Cancelled — {title} was not converted."
-    result = await _post(f"/crm/leads/{record}/convert", payload)
+    try:
+        result = await _post(f"/crm/leads/{record}/convert", payload)
+    except _MirrorBlocked as blocked:
+        return _mirror_message(blocked)
     made = result if isinstance(result, dict) else {}
     new_deal = made.get("deal") or {}
     contact = made.get("contact") or {}

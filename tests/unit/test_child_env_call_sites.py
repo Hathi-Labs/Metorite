@@ -145,24 +145,34 @@ async def test_t2_build_gets_its_two_dirs(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert env["AGENTS_CLONE_DIR"] == "/srv/agents"
 
 
-async def test_gh_auth_status_alone_gets_the_gh_names(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_github_account_runs_no_gh_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WS-54 IN-7 (IN-D18). The account card never runs `gh auth status`.
+
+    It once ran it with the `gh` names, which showed the operator's own
+    account to a member. The call site is gone, so no `gh` env is built here.
+    """
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
     from gateway.routes import integrations
 
-    monkeypatch.setenv("GH_TOKEN", "gho_bh1_status")
     seen: list[tuple[list[str], dict[str, str]]] = []
 
     def fake_run(args: list[str], **kw: Any) -> Any:
         seen.append((args, kw.get("env")))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(integrations.subprocess, "run", fake_run)
-    monkeypatch.setattr(integrations, "get_settings", lambda: SimpleNamespace(github_token=""))
-    await integrations.github_account(user=SimpleNamespace(email="a@b.c"))
-    args, env = seen[0]
-    assert args == ["gh", "auth", "status"]
-    _clean(env, "GH_TOKEN", "GITHUB_TOKEN")
-    assert env["GH_TOKEN"] == "gho_bh1_status"
-    assert env["GITHUB_TOKEN"] == "ghp_bh1canary"  # gh reads both names (spec §2.2)
+    async def fake_summary(org: str) -> dict[str, Any]:
+        return {"connected": False, "status": "not_connected", "login": None,
+                "scopes": [], "connected_by": None}
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(integrations.github_connection, "account_summary", fake_summary)
+    scope = clear_tenant()
+    bind_tenant("11111111-2222-3333-4444-555555555555")
+    try:
+        await integrations.github_account(user=SimpleNamespace(email="a@b.c"))
+    finally:
+        release_tenant(scope)
+    assert seen == []
 
     # WS-54 IN-0: connect-cli is retired. It answers 410 and runs no `gh`
     # subprocess, so the operator's own `gh` token is never read.

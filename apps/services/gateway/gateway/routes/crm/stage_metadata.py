@@ -51,6 +51,7 @@ from gateway.routes.crm.core import (
     _tenant_session,
     actor,
     insert_row,
+    refuse_in_mirror_mode,
     router,
     update_row,
 )
@@ -590,6 +591,14 @@ async def import_zoho_stages(
     act for the same reason.
     """
     who = actor(user)
+    # Mirror mode: Zoho owns the stages. Refuse BEFORE the Zoho call, so a
+    # Mirror org sends nothing through the global legacy credential. It also
+    # covers the closed_at backfill below.
+    async with _tenant_session() as db:
+        await refuse_in_mirror_mode(
+            db, "mirror_mode_settings",
+            "The stages come from Zoho. Change them in Zoho.",
+        )
     meta = await fetch_metadata(import_zoho._client())
 
     if meta.layout is None or not meta.pipelines:

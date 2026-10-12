@@ -29,6 +29,7 @@ import {
   canDownloadPdf,
   classifyArtifact,
   extOf,
+  isArchive,
   isRenderable,
   pdfNameFor,
   workspaceFileUrl,
@@ -65,7 +66,9 @@ type ViewerState =
   | { status: "image"; url: string }
   | { status: "pdf"; url: string }
   | { status: "docx"; html: string }
-  | { status: "binary"; hex: string; filename: string };
+  | { status: "binary"; hex: string; filename: string }
+  /** A zip: no preview, and the bytes are never fetched for one. */
+  | { status: "archive" };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -333,6 +336,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current);
       blobUrlRef.current = null;
+    }
+
+    if (isArchive(entry.name, entry.mime_type)) {
+      setState({ status: "archive" });
+      return;
     }
 
     setState({ status: "loading" });
@@ -763,6 +771,21 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               className="cc-prose prose prose-sm max-w-none overflow-x-auto"
               dangerouslySetInnerHTML={{ __html: state.html }}
             />
+          )}
+
+          {state.status === "archive" && (
+            <div className="flex flex-col gap-3">
+              <p className="text-xs text-muted-foreground">
+                A zip file has no preview. Download it to open it.
+              </p>
+              <a
+                href={downloadUrl}
+                download={entry.name}
+                className="self-start rounded px-3 py-1.5 text-sm bg-secondary hover:bg-secondary text-foreground transition-colors"
+              >
+                Download file
+              </a>
+            </div>
           )}
 
           {state.status === "binary" && (

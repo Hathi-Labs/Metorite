@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -36,11 +35,11 @@ from acb_auth import (
     require_role,
 )
 from acb_common import env_guard, get_logger, get_settings
-from acb_common.child_env import child_env, env_values
 from acb_llm.key_store import CUSTOM_INTEGRATION_TYPE, INTEGRATION_ENV_MAP
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway import outbound_guard
-from gateway.db import current_tenant
+from gateway.connections import github as github_connection
+from gateway.db import current_tenant, tenant_session
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -432,7 +431,10 @@ def _is_configured(service_name: str, settings: Any) -> bool:
         "whatsapp":      lambda s: False,
 
         "smtp":          lambda s: bool(s.smtp_host and s.smtp_username),
-        "github":        lambda s: bool(s.github_token),
+        # IN-7: GitHub is a per-org connection. The deployment token is the
+        # operator's, so it never reads as "configured" for a customer.
+        # `integrations_status` and `/test` ask the org connection.
+        "github":        lambda s: False,
         "serpapi":       lambda s: bool(getattr(s, "serpapi_api_key", "") or os.getenv("SERPAPI_API_KEY", "")),
         "apify":         lambda s: bool(getattr(s, "apify_api_token", "") or os.getenv("APIFY_API_TOKEN", "")),
         "anymailfinder": lambda s: bool(getattr(s, "anymailfinder_api_key", "") or os.getenv("ANYMAILFINDER_API_KEY", "")),
@@ -443,7 +445,9 @@ def _is_configured(service_name: str, settings: Any) -> bool:
     }
     checker = checkers.get(service_name)
     if checker is None:
-        return True  # Unknown service — assume configured (don't block)
+        # IN-D8 (WS-54 IN-1): an unknown service is NOT configured. It used to
+        # answer True, so a typo or a service with no checker read as set up.
+        return False
     try:
         return checker(settings)
     except Exception:  # noqa: BLE001
@@ -788,6 +792,8 @@ async def integration_status(
     for svc in services:
         guide = _SETUP_GUIDES.get(svc, {})
         configured = _is_configured(svc, settings)
+        if svc == "github":
+            configured = await _github_connected()
         # 🔒 A form offers only the keys that a tenant may write
         # (`BUILTIN_ENV_KEYS`). The rest go to `operator_env_vars`, which the
         # Integrations page shows read-only: the operator sets them on the box.
@@ -1060,6 +1066,13 @@ async def configure_integrations(
         #    answer 200 with nothing written. Layer C makes every key here a
         #    built-in key, so `BUILTIN_PROVIDER` always holds it, under the
         #    name that the startup copy reads.
+        if var.key == "GITHUB_TOKEN":
+            # IN-7: the org connection, not a `provider_keys` row.
+            await _store_github_pat(value, user)
+            db_written.append("github:connection")
+            written.append(var.key)
+            _log.info("integrations.configure", key=var.key, actor=user.email)
+            continue
         svc, suffix = BUILTIN_PROVIDER[var.key]
         provider = f"{svc}:{suffix}"
         try:
@@ -1205,15 +1218,20 @@ async def put_integration_key(
         )
     svc, suffix = BUILTIN_PROVIDER[env_var]
     provider = f"{svc}:{suffix}"
-    from acb_llm.key_store import get_key_store
-    store = get_key_store()
-    await store.put(
-        provider,
-        value,
-        credential_type="integration",
-        service=svc,
-        organization_id=current_tenant(),
-    )
+    if env_var == "GITHUB_TOKEN":
+        # IN-7: the org connection, not a `provider_keys` row.
+        await _store_github_pat(value, user)
+        provider = "github:connection"
+    else:
+        from acb_llm.key_store import get_key_store
+        store = get_key_store()
+        await store.put(
+            provider,
+            value,
+            credential_type="integration",
+            service=svc,
+            organization_id=current_tenant(),
+        )
 
     _log.info(
         "integrations.key_put",
@@ -1259,9 +1277,13 @@ async def delete_integration_key(
         _refuse_provider_key_without_byok([popped])
 
     provider = f"{req.service}:{req.key_name}"
-    from acb_llm.key_store import get_key_store
-    store = get_key_store()
-    await store.delete(provider, organization_id=current_tenant())
+    if popped == "GITHUB_TOKEN":
+        # IN-7: the token is the org connection. This deletes it, and any old row.
+        await github_connection.disconnect(_github_org())
+    else:
+        from acb_llm.key_store import get_key_store
+        store = get_key_store()
+        await store.delete(provider, organization_id=current_tenant())
 
     _log.info(
         "integrations.key_deleted",
@@ -1570,6 +1592,41 @@ async def delete_custom_api(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
+async def _github_connected() -> bool:
+    """True when the bound organization holds a live GitHub connection."""
+    try:
+        org = current_tenant()
+        return bool(org and await github_connection.token_or_none(str(org)))
+    except Exception as exc:
+        _log.warning("github.status_unreadable", error=type(exc).__name__)
+        return False
+
+
+async def _test_github(user: UserContext) -> dict[str, Any]:
+    """Test the GitHub token of the caller's organization. Never the operator's."""
+    org = _github_org()
+    try:
+        token = await github_connection.token_or_none(org)
+    except Exception as exc:
+        _log.warning("github.test_unreadable", error=type(exc).__name__)
+        return {"ok": False, "detail": "The GitHub connection could not be read."}
+    if not token:
+        return {"ok": False, "detail": github_connection.NOT_CONNECTED}
+    async with httpx.AsyncClient(timeout=8) as client:
+        resp = await client.get(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+    _log.info("integrations.test", service="github", ok=resp.status_code == 200, actor=user.email)
+    if resp.status_code == 200:
+        login = resp.json().get("login", "?")
+        return {"ok": True, "detail": f"Authenticated as GitHub user '{login}'."}
+    return {"ok": False, "detail": f"GitHub answered status {resp.status_code}."}
+
+
 @router.get("/test")
 async def test_integration(
     service: str,
@@ -1580,6 +1637,18 @@ async def test_integration(
     Returns {service, ok, detail}.
     """
     settings = get_settings()
+
+    if service == "github":
+        # The test spends the token of the organization on a GitHub request, so it
+        # needs the same right as the writers (IN-7 review). Other services test
+        # the env of the deployment, which is not a customer token.
+        if not user.has_permission(MANAGE_PERMISSION):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Forbidden: missing permission(s) ['{MANAGE_PERMISSION}'].",
+            )
+        result = await _test_github(user)
+        return {"service": service, **result}
 
     if not _is_configured(service, settings):
         return {
@@ -1648,19 +1717,6 @@ async def _run_test(service: str, settings: Any) -> dict[str, Any]:
             if sa_path.exists():
                 return {"ok": True, "detail": "Service account key file found."}
             return {"ok": False, "detail": f"Key file not found: {sa_path}"}
-
-        if service == "github":
-            resp = await client.get(
-                "https://api.github.com/user",
-                headers={
-                    "Authorization": f"token {settings.github_token}",
-                    "Accept": "application/vnd.github.v3+json",
-                },
-            )
-            if resp.status_code == 200:
-                login = resp.json().get("login", "?")
-                return {"ok": True, "detail": f"Authenticated as GitHub user '{login}'."}
-            return {"ok": False, "detail": f"Status {resp.status_code}: {resp.text[:200]}"}
 
         if service == "gmail-oauth":
             client_id = (
@@ -1800,6 +1856,28 @@ async def list_mcp_servers(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
+#: WS-8c (IN-D6): the upsert of ONE organization's row. Named binds, the org
+#: from the session, and the conflict key of migration 158.
+_MCP_REGISTER_SQL = (
+    "INSERT INTO mcp_servers (organization_id, name, label, description, "
+    "transport, command, url, env_vars, headers, agent_scope, enabled, "
+    "updated_at) VALUES (:org, :name, :label, :description, :transport, "
+    ":command, :url, CAST(:env_vars AS jsonb), CAST(:headers AS jsonb), "
+    "CAST(:agent_scope AS jsonb), :enabled, now()) "
+    "ON CONFLICT (organization_id, name) DO UPDATE SET "
+    "label = EXCLUDED.label, description = EXCLUDED.description, "
+    "transport = EXCLUDED.transport, command = EXCLUDED.command, "
+    "url = EXCLUDED.url, env_vars = EXCLUDED.env_vars, "
+    "headers = EXCLUDED.headers, agent_scope = EXCLUDED.agent_scope, "
+    "enabled = EXCLUDED.enabled, updated_at = now()"
+)
+
+#: D85: an MCP server over stdio starts a process on the host.
+_MCP_STDIO_REFUSED = (
+    "Metorite does not run MCP servers over stdio. Use an http-sse server."
+)
+
+
 @router.post(
     "/mcp", status_code=status.HTTP_201_CREATED,
     summary="Register or update an MCP server", dependencies=[_REQUIRE_MANAGE],
@@ -1808,42 +1886,71 @@ async def register_mcp_server(
     req: McpServerRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Add or update an MCP server configuration."""
+    """Add or update an MCP server of the caller's organization.
+
+    WS-8c (IN-D6). ``mcp_servers`` is exempt from RLS and keyed
+    ``(organization_id, name)`` by migration 158 (``mcp_servers_org_name_pkey``).
+    So the INSERT writes ``organization_id = current_tenant()``, and the
+    conflict key is that pair. Two orgs can hold one name, and a second
+    register of a name updates the row of the caller's org only. With no
+    tenant bound, it is 403 and nothing is written. ⚠️
+    ``schema.generated.sql`` still keys this table by name only. Do not copy
+    it.
+
+    A stdio server starts a process on the host, so it is 422 (D85).
+    """
     if not re.match(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$", req.name):
         raise HTTPException(
             422,
             "MCP server name must be 2-50 lowercase letters, digits, "
             "or hyphens.",
         )
-    if req.transport == "stdio" and not req.command:
-        raise HTTPException(422, "stdio transport requires a 'command'.")
+    if req.transport == "stdio":
+        raise HTTPException(422, _MCP_STDIO_REFUSED)
     if req.transport == "http-sse" and not req.url:
         raise HTTPException(422, "http-sse transport requires a 'url'.")
+    org = current_tenant()
+    if not org:
+        raise HTTPException(403, "No organization is bound to this session.")
+    # WS-8c review round 2 (P0): the URL is customer input, and a stored row
+    # reaches an agent. It passes the MCP rule of the one URL guard (https,
+    # port 443, public addresses only) before any row is written. The run
+    # checks it again and pins it, because DNS can change after this.
+    if req.url:
+        try:
+            await outbound_guard.check_mcp_url(req.url)
+        except outbound_guard.OutboundRefused as exc:
+            _log.warning(
+                "mcp.register_refused", name=req.name, host=exc.host, reason=exc.reason,
+                actor=user.email,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Metorite does not connect to this URL: {exc.reason}.",
+            ) from None
 
     try:
         from acb_graph import get_session  # noqa: PLC0415
         with get_session() as s:
             s.execute(
-                text("""INSERT INTO mcp_servers (name, label, description, transport, command, url,
-                   env_vars, headers, agent_scope, enabled, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,now())
-                   ON CONFLICT (name) DO UPDATE SET
-                   label=EXCLUDED.label, description=EXCLUDED.description,
-                   transport=EXCLUDED.transport, command=EXCLUDED.command,
-                   url=EXCLUDED.url, env_vars=EXCLUDED.env_vars,
-                   headers=EXCLUDED.headers, agent_scope=EXCLUDED.agent_scope,
-                   enabled=EXCLUDED.enabled, updated_at=now()"""),
-                (req.name, req.label or req.name, req.description,
-                 req.transport, req.command, req.url,
-                 json.dumps(req.env_vars), json.dumps(req.headers),
-                 json.dumps(req.agent_scope), req.enabled),
+                text(_MCP_REGISTER_SQL),
+                {
+                    "org": org, "name": req.name, "label": req.label or req.name,
+                    "description": req.description, "transport": req.transport,
+                    "command": req.command, "url": req.url,
+                    "env_vars": json.dumps(req.env_vars),
+                    "headers": json.dumps(req.headers),
+                    "agent_scope": json.dumps(req.agent_scope),
+                    "enabled": req.enabled,
+                },
             )
             s.commit()
         _log.info("mcp.registered", name=req.name, actor=user.email)
         return {"ok": True, "name": req.name}
     except Exception as exc:
-        _log.warning("mcp.register_failed", name=req.name, error=str(exc))
-        raise HTTPException(500, f"DB error: {exc}") from exc
+        # The class of the error only: a DB message can echo a bound header.
+        _log.warning("mcp.register_failed", name=req.name, error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be saved.") from exc
 
 
 @router.delete(
@@ -1895,7 +2002,7 @@ async def test_mcp_server(
     """Perform a lightweight connectivity check for an MCP server.
 
     For http-sse: makes a GET to the URL to verify reachability.
-    For stdio: checks that the command is executable.
+    For stdio: 422, because Metorite runs no stdio server (D85, WS-8c).
     Returns {ok, detail}.
 
     🔒 WS-54 IN-0. The URL is customer input, so the GET goes through the
@@ -1926,13 +2033,14 @@ async def test_mcp_server(
         if answer.status_code < 500:
             return {"ok": True, "detail": f"Server reachable (HTTP {answer.status_code})."}
         return {"ok": False, "detail": f"Server returned HTTP {answer.status_code}."}
-    if req.transport == "stdio" and req.command:
-        import shutil  # noqa: PLC0415
-        exe = (req.command or "").split()[0]
-        if shutil.which(exe):
-            return {"ok": True, "detail": f"Command '{exe}' found on PATH."}
-        return {"ok": False, "detail": f"Command '{exe}' not found on PATH."}
-    return {"ok": False, "detail": "No URL or command to test."}
+    if req.transport == "stdio":
+        # D85 (WS-8c): no stdio server runs, so there is nothing to test, and
+        # a tenant may not probe the PATH of the host.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_MCP_STDIO_REFUSED,
+        )
+    return {"ok": False, "detail": "No URL to test."}
 
 
 # ---------------------------------------------------------------------------
@@ -1941,6 +2049,28 @@ async def test_mcp_server(
 
 class PluginInstallRequest(BaseModel):
     manifest_url: str
+
+
+#: WS-8c (IN-D6): the upsert of ONE organization's plugin. Migration 158
+#: replaced ``plugins_name_key`` with the unique index ``plugins_org_name_key``
+#: on ``(organization_id, name)``, so that pair is the conflict key.
+_PLUGIN_INSTALL_SQL = (
+    "INSERT INTO plugins (organization_id, name, label, description, "
+    "manifest_url, openapi_url, logo_url, auth_type, auth_config, manifest, "
+    "openapi_spec, tools_generated, enabled, version, updated_at) VALUES "
+    "(:org, :name, :label, :description, :manifest_url, :openapi_url, "
+    ":logo_url, :auth_type, CAST(:auth_config AS jsonb), "
+    "CAST(:manifest AS jsonb), CAST(:openapi_spec AS jsonb), "
+    "CAST(:tools_generated AS jsonb), :enabled, :version, now()) "
+    "ON CONFLICT (organization_id, name) DO UPDATE SET "
+    "label = EXCLUDED.label, description = EXCLUDED.description, "
+    "manifest_url = EXCLUDED.manifest_url, openapi_url = EXCLUDED.openapi_url, "
+    "logo_url = EXCLUDED.logo_url, auth_type = EXCLUDED.auth_type, "
+    "auth_config = EXCLUDED.auth_config, manifest = EXCLUDED.manifest, "
+    "openapi_spec = EXCLUDED.openapi_spec, "
+    "tools_generated = EXCLUDED.tools_generated, "
+    "enabled = EXCLUDED.enabled, version = EXCLUDED.version, updated_at = now()"
+)
 
 
 @router.get("/plugins", summary="List installed plugins")
@@ -1998,6 +2128,11 @@ async def install_plugin(
     manifest_url = req.manifest_url.strip()
     if not manifest_url.startswith(("https://", "http://")):
         raise HTTPException(422, "Manifest URL must start with http:// or https://.")
+    # WS-8c (IN-D6): the row belongs to the caller's org. With no tenant, no
+    # fetch goes out and no row is written.
+    org = current_tenant()
+    if not org:
+        raise HTTPException(403, "No organization is bound to this session.")
 
     # 1. Fetch the manifest
     try:
@@ -2064,31 +2199,25 @@ async def install_plugin(
         except Exception as exc:
             _log.warning("plugins.openapi_fetch_failed", name=plugin_name, error=str(exc))
 
-    # 4. Store in DB
+    # 4. Store in DB. ``plugins`` has FORCE RLS (phase 4), so the write binds
+    # the tenant. An unbound session would write nothing once RLS applies.
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
+        from acb_graph import tenant_session  # noqa: PLC0415
+        with tenant_session(org) as s:
             s.execute(
-                text("""INSERT INTO plugins (name, label, description, manifest_url, openapi_url,
-                   logo_url, auth_type, auth_config, manifest, openapi_spec,
-                   tools_generated, enabled, version, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,
-                           %s::jsonb,%s,%s,now())
-                   ON CONFLICT (name) DO UPDATE SET
-                   label=EXCLUDED.label, description=EXCLUDED.description,
-                   manifest_url=EXCLUDED.manifest_url, openapi_url=EXCLUDED.openapi_url,
-                   logo_url=EXCLUDED.logo_url, auth_type=EXCLUDED.auth_type,
-                   auth_config=EXCLUDED.auth_config, manifest=EXCLUDED.manifest,
-                   openapi_spec=EXCLUDED.openapi_spec,
-                   tools_generated=EXCLUDED.tools_generated,
-                   enabled=EXCLUDED.enabled, version=EXCLUDED.version,
-                   updated_at=now()"""),
-                (plugin_name, label, description, manifest_url, api_url,
-                 logo_url, auth_type, json.dumps(manifest.get("auth", {}) or {}),
-                 json.dumps(manifest), json.dumps(openapi_spec),
-                 json.dumps(tools_generated), True, version),
+                text(_PLUGIN_INSTALL_SQL),
+                {
+                    "org": org, "name": plugin_name, "label": label,
+                    "description": description, "manifest_url": manifest_url,
+                    "openapi_url": api_url, "logo_url": logo_url,
+                    "auth_type": auth_type,
+                    "auth_config": json.dumps(manifest.get("auth", {}) or {}),
+                    "manifest": json.dumps(manifest),
+                    "openapi_spec": json.dumps(openapi_spec),
+                    "tools_generated": json.dumps(tools_generated),
+                    "enabled": True, "version": version,
+                },
             )
-            s.commit()
         _log.info("plugin.installed", name=plugin_name, actor=user.email)
         return {
             "ok": True, "name": plugin_name, "label": label,
@@ -2267,13 +2396,14 @@ async def github_device_poll(
         {status: "expired"}                 — code expired, restart flow
         {status: "denied"}                  — user denied access
 
-    🔒 It stores ``github:token``, a provider key, so the BYOK gate runs
-    first. The token goes to the store of the caller's organization only, and
-    never to ``os.environ`` or the env file (WS-54 IN-0). A failed store write
-    answers 503. IN-7 makes this a member or org connection.
+    🔒 WS-54 IN-7. The token becomes the ORG connection of the caller's
+    organization in the connection registry, through
+    ``gateway/connections/github.py``. It goes nowhere else: not to
+    ``provider_keys``, not to ``os.environ``, not to the env file. The BYOK
+    gate still runs first. A failed store write answers 503.
     """
     _refuse_provider_key_without_byok(["GITHUB_TOKEN"])
-    store, client_id = await _github_org_store()
+    _store, client_id = await _github_org_store()
     if not client_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2297,23 +2427,11 @@ async def github_device_poll(
         token: str = data["access_token"]
         # Layer A before any write: the token comes from GitHub, not from us.
         _refuse_unsafe_env_writes([("GITHUB_TOKEN", str(token))], actor=user.email)
-        # 🔒 IN-0: the store of this organization, never the env. The env and
-        # the env file have one GITHUB_TOKEN for the whole deployment, so that
-        # write gave this member's token to every organization on the box.
-        try:
-            await store.put(
-                "github:token", token, credential_type="integration",
-                service="github", organization_id=current_tenant(),
-            )
-        except Exception as exc:
-            _log.warning("github.device.store_failed", error=str(exc))
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Could not store the GitHub token for this organization.",
-            ) from None
+        org = _github_org()
 
-        # Fetch the GitHub login name for a friendly confirmation message
+        # Fetch the GitHub login name and the scopes for the connection card.
         login = "unknown"
+        scopes = github_connection.parse_scopes(data.get("scope"))
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 ur = await client.get(
@@ -2325,8 +2443,25 @@ async def github_device_poll(
                 )
                 if ur.status_code == 200:
                     login = ur.json().get("login", "unknown")
+                    header = ur.headers.get("X-OAuth-Scopes", "")
+                    scopes = scopes or github_connection.parse_scopes(header)
         except Exception:  # noqa: BLE001
             pass
+
+        try:
+            async with tenant_session(org) as db:
+                await github_connection.save_device_token(
+                    db, org, access_token=token, login=login, scopes=scopes,
+                    connected_by=user.email,
+                    refresh_token=str(data.get("refresh_token") or ""),
+                    expires_in=_int_or_none(data.get("expires_in")),
+                )
+        except Exception as exc:
+            _log.warning("github.device.store_failed", error=type(exc).__name__)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Could not store the GitHub token for this organization.",
+            ) from None
 
         _log.info("github.device.authorized", login=login, actor=user.email)
         return {"status": "authorized", "login": login}
@@ -2344,51 +2479,92 @@ async def github_device_poll(
 # GitHub account info & CLI import
 # ---------------------------------------------------------------------------
 
-def _parse_gh_status(output: str) -> dict[str, Any]:
-    """Parse `gh auth status` output into structured fields."""
-    result: dict[str, Any] = {
-        "authenticated": False,
-        "login": None,
-        "scopes": [],
-        "has_copilot": False,
-    }
-    if "Logged in to github.com" not in output:
-        return result
-    result["authenticated"] = True
-    login_m = re.search(r"account\s+(\S+)\s+\(", output)
-    if login_m:
-        result["login"] = login_m.group(1)
-    scope_line = next((ln for ln in output.splitlines() if "Token scopes:" in ln), "")
-    result["scopes"] = re.findall(r"'([^']+)'", scope_line)
-    result["has_copilot"] = "copilot" in result["scopes"]
-    return result
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _github_org() -> str:
+    """The organization of the request, from the bound tenant (R5). 403 if none."""
+    org = current_tenant()
+    if not org:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="No organization is bound.",
+        )
+    return str(org)
+
+
+async def _store_github_pat(token: str, user: UserContext) -> None:
+    """Save a token that a member typed as the org GitHub connection.
+
+    WS-54 IN-7 review. ``GITHUB_TOKEN`` in configure and ``PUT /keys`` used to
+    land in ``provider_keys``, where no reader looks once a connection row
+    exists. It is the same org connection as the device flow now. The login
+    and the scopes come from ``GET /user``. A lookup that fails leaves them
+    empty, and the token is still saved.
+    """
+    org = _github_org()
+    login = ""
+    scopes: tuple[str, ...] = ()
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            ur = await client.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+            )
+        if ur.status_code == 200:
+            login = str(ur.json().get("login") or "")
+            scopes = github_connection.parse_scopes(ur.headers.get("X-OAuth-Scopes", ""))
+    except Exception:
+        pass
+    try:
+        async with tenant_session(org) as db:
+            await github_connection.save_device_token(
+                db, org, access_token=token, login=login, scopes=scopes,
+                connected_by=user.email,
+            )
+    except Exception as exc:
+        _log.warning("github.pat.store_failed", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not store GITHUB_TOKEN for this organization.",
+        ) from None
+    _log.info("github.pat.saved", actor=user.email)
 
 
 @router.get("/github/account")
 async def github_account(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Return current GitHub account info: connected token details + gh CLI status.
+    """Return the GitHub connection of the caller's organization.
+
+    🔒 WS-54 IN-7 (IN-D18). It reads the org connection and nothing else. It
+    never reads the deployment ``GITHUB_TOKEN`` and never runs ``gh``, so a
+    member never sees the account of the operator. No token is in the answer.
 
     Response fields:
-        token_configured (bool)   — GITHUB_TOKEN is set in env
-        token_login      (str?)   — GitHub login resolved from the token
-        token_scopes     (list)   — OAuth scopes on the token (from X-OAuth-Scopes header)
-        token_has_copilot(bool)   — whether 'copilot' scope is present
-        gh_cli_available (bool)   — gh binary is on PATH
-        gh_cli_authenticated(bool)— gh has a logged-in account
-        gh_cli_login     (str?)   — account name from gh auth status
-        gh_cli_scopes    (list)   — scopes on the CLI token
-        gh_cli_has_copilot(bool)  — whether gh CLI token has 'copilot' scope
+        connected (bool)       — the organization holds a live connection
+        status (str)           — connected, needs_reconnect, disconnected or not_connected
+        login (str?)           — the GitHub user or org name
+        scopes (list)          — the token scopes
+        connected_by (str?)    — the member who connected it
+        token_configured, token_login, token_scopes, token_has_copilot —
+            the same facts under the names that the account badge reads
+        gh_cli_*               — always empty. The CLI import is retired.
     """
-    settings = get_settings()
-    token: str = getattr(settings, "github_token", "") or ""
-
-    info: dict[str, Any] = {
-        "token_configured": bool(token.strip()),
-        "token_login": None,
-        "token_scopes": [],
-        "token_has_copilot": False,
+    summary = await github_connection.account_summary(_github_org())
+    scopes: list[str] = summary["scopes"]
+    return {
+        **summary,
+        "token_configured": summary["connected"],
+        "token_login": summary["login"],
+        "token_scopes": scopes,
+        "token_has_copilot": "copilot" in scopes,
         "gh_cli_available": False,
         "gh_cli_authenticated": False,
         "gh_cli_login": None,
@@ -2396,47 +2572,32 @@ async def github_account(
         "gh_cli_has_copilot": False,
     }
 
-    # Resolve info from current GITHUB_TOKEN via GitHub REST API
-    if token.strip():
-        try:
-            async with httpx.AsyncClient(timeout=8) as client:
-                resp = await client.get(
-                    "https://api.github.com/user",
-                    headers={
-                        "Authorization": f"token {token}",
-                        "Accept": "application/vnd.github.v3+json",
-                    },
-                )
-                if resp.status_code == 200:
-                    info["token_login"] = resp.json().get("login")
-                    scopes_header = resp.headers.get("X-OAuth-Scopes", "")
-                    info["token_scopes"] = [s.strip() for s in scopes_header.split(",") if s.strip()]
-                    info["token_has_copilot"] = "copilot" in info["token_scopes"]
-        except Exception:  # noqa: BLE001
-            pass
 
-    # Check gh CLI availability + auth state (non-blocking; failure is graceful)
-    try:
-        proc = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            env=child_env(extra=env_values("GH_TOKEN", "GITHUB_TOKEN")),
-        )
-        output = proc.stdout + proc.stderr
-        parsed = _parse_gh_status(output)
-        info["gh_cli_available"] = True
-        info["gh_cli_authenticated"] = parsed["authenticated"]
-        info["gh_cli_login"] = parsed["login"]
-        info["gh_cli_scopes"] = parsed["scopes"]
-        info["gh_cli_has_copilot"] = parsed["has_copilot"]
-    except FileNotFoundError:
-        pass  # gh not installed
-    except Exception:  # noqa: BLE001
-        info["gh_cli_available"] = True  # binary found but errored
+@router.delete("/github", dependencies=[_REQUIRE_MANAGE])
+async def github_disconnect(
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Disconnect GitHub for the caller's organization.
 
-    return info
+    🔒 WS-54 IN-7. It deletes the stored token and sets ``disconnected``.
+    GitHub revokes an OAuth app token only with ``DELETE
+    /applications/{client_id}/token``, and that call needs the client SECRET
+    of the app. The device flow holds the client id only, so the token is NOT
+    revoked at GitHub. The answer says so (``revoked_at_github: false``), and
+    the member can revoke the app at https://github.com/settings/applications.
+    """
+    removed = await github_connection.disconnect(_github_org())
+    _log.info("github.disconnected", actor=user.email, removed=removed)
+    return {
+        "disconnected": True,
+        "removed": removed,
+        "revoked_at_github": False,
+        "note": (
+            "The token is deleted from Metorite. GitHub cannot revoke a "
+            "device-flow token without the client secret, so revoke the app "
+            "at https://github.com/settings/applications."
+        ),
+    }
 
 
 @router.post(
@@ -2452,7 +2613,7 @@ async def github_connect_cli(
     own GitHub identity, and wrote it to ``GITHUB_TOKEN`` for the whole
     deployment. To store that token in a tenant row would give the
     operator's identity to that tenant, so it writes nothing at all. A member
-    connects GitHub with the device flow. IN-7 removes this route.
+    connects GitHub with the device flow. It stays as a 410 so that an old client gets a clear answer.
 
     🔒 The BYOK gate still runs first, so the answer with BYOK off stays 403.
     """

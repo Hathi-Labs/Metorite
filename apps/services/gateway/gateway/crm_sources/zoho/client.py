@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -40,8 +41,10 @@ from gateway.crm_sources.base import (
     SourceError,
     SourcePage,
     SourceRecord,
+    SourceScopeError,
+    UntrustedHost,
 )
-from gateway.crm_sources.zoho import auth
+from gateway.crm_sources.zoho import auth, links
 
 _log = structlog.get_logger("gateway.crm_sources.zoho")
 
@@ -70,10 +73,26 @@ ZOHO_MODULES: Mapping[str, str] = MappingProxyType(
         "note": "Notes",
         "call": "Calls",
         "meeting": "Events",
+        "task": "Tasks",
     }
 )
 
+#: Extra query parameters of the changed-records read, by entity (CRM-Q5).
+#: Zoho hides a converted lead from the Leads list unless the call asks for
+#: ``converted=both`` (v2 Get Records). Without it the mirror silently loses
+#: every lead that became a contact and a deal.
+_EXTRA_PARAMS: Mapping[str, Mapping[str, Any]] = MappingProxyType(
+    {"lead": MappingProxyType({"converted": "both"})}
+)
+
 _RATE_LIMIT_CODE = "TOO_MANY_REQUESTS"
+
+#: Zoho sends this header only after half of the daily credits are spent
+#: (``crm_platform.md`` §5.2 item 6).
+_CREDITS_HEADER = "X-API-CREDITS-REMAINING"
+
+#: A deleted-records call costs 2 credits (§5.2 item 5). Every other call costs 1.
+DELETED_CALL_COST = 2
 
 
 def _with_modified_since(
@@ -115,8 +134,21 @@ SETTINGS_API_VERSION = "v8"
 LAYOUTS_SCOPE = "ZohoCRM.settings.layouts.READ"
 PIPELINE_SCOPE = "ZohoCRM.settings.pipeline.READ"
 
-#: The scope of the field definitions read. CRM-Z0 confirms the exact name.
+#: The scope of the field definitions read.
 FIELDS_SCOPE = "ZohoCRM.settings.fields.READ"
+
+#: The scopes of the discovery reads (CRM-Q1). ``GET org`` and ``GET
+#: settings/modules`` need one each.
+ORG_SCOPE = "ZohoCRM.org.READ"
+MODULES_SCOPE = "ZohoCRM.settings.modules.READ"
+
+#: The ``provider_meta`` key that holds the org domain name (``GET org``).
+META_DOMAIN_NAME = "domain_name"
+
+#: The modules whose layouts and fields discovery reads. These are the modules
+#: the mirror models, so the profile says what the customer has changed in
+#: them. Notes, Calls and Events keep a fixed shape.
+DISCOVERED_MODULES: tuple[str, ...] = ("Leads", "Contacts", "Accounts", "Deals")
 
 #: Zoho's own error codes. A scope refusal and a version refusal arrive as the
 #: same 401/404 shape as any other failure, and telling them apart is the whole
@@ -126,7 +158,7 @@ _SCOPE_ERROR_CODES = frozenset({"OAUTH_SCOPE_MISMATCH"})
 _VERSION_ERROR_CODES = frozenset({"INVALID_URL_PATTERN", "INVALID_MODULE"})
 
 
-class ZohoScopeError(SourceError):
+class ZohoScopeError(SourceScopeError):
     """The refresh token was not minted with the scope this read needs."""
 
     def __init__(self, scope: str, detail: str = "") -> None:
@@ -143,6 +175,25 @@ class ZohoApiVersionError(SourceError):
         self.version = version
         self.path = path
         self.detail = detail
+
+
+#: A failure that must stop a discovery. Any other :class:`SourceError` costs
+#: one section of the profile, and the rest goes on.
+_DISCOVERY_FATAL = (NeedsReconnect, BudgetExhausted, RateLimited, UntrustedHost)
+
+
+def _dict_rows(value: object) -> list[dict[str, Any]]:
+    """The dict items of a JSON list, or an empty list for anything else."""
+    return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+
+
+def _is_scope_refusal(response: httpx.Response) -> bool:
+    """A 401 or 403 that names a missing scope, and not a dead token."""
+    body = _error_body(response)
+    if str(body.get("code") or "") in _SCOPE_ERROR_CODES:
+        return True
+    message = str(body.get("message") or "")
+    return response.status_code in (401, 403) and "scope" in message.lower()
 
 
 def _error_body(response: httpx.Response) -> dict[str, Any]:
@@ -196,11 +247,37 @@ def _parse_time(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+#: A generic module entity is ``module:<ApiName>`` (CRM-Q6a). The API name
+#: goes into a URL path, so it must be a plain identifier.
+_GENERIC_PREFIX = "module:"
+_GENERIC_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+
+
 def _module(entity: str) -> str:
+    """The Zoho module API name of a canonical entity or a generic module."""
+    if entity.startswith(_GENERIC_PREFIX):
+        name = entity[len(_GENERIC_PREFIX):]
+        if not _GENERIC_NAME.match(name):
+            raise ValueError(f"{name!r} is not a Zoho module API name")
+        return name
     try:
         return ZOHO_MODULES[entity]
     except KeyError:
         raise ValueError(f"Zoho has no module for the entity {entity!r}") from None
+
+
+def _read_scope(entity: str) -> str:
+    """The published read scope of an entity's module, for a scope refusal.
+
+    The one rule is ``mapping.module_read_scope`` (``Sales_Orders`` gives
+    ``salesorders``). A generic module that is not a standard module is a
+    custom module, and takes ``ZohoCRM.modules.custom.READ``.
+    """
+    from gateway.crm_sources.zoho.mapping import GENERIC_STANDARD_MODULES, module_read_scope
+
+    module = _module(entity)
+    custom = entity.startswith(_GENERIC_PREFIX) and module not in GENERIC_STANDARD_MODULES
+    return module_read_scope(module, custom=custom)
 
 
 def _page_params(cursor: SourceCursor, extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -370,6 +447,8 @@ class ZohoSource:
         self._clock = clock
         self.credit_budget = credit_budget
         self._credits_used = 0
+        # The last ``X-API-CREDITS-REMAINING``. ``None`` until Zoho sends one.
+        self._credits_left: int | None = None
         # Single flight: one refresh at a time on this instance. A call that
         # waited re-checks the expiry, so N calls at expiry send ONE token
         # request. ``_dead`` keeps a NeedsReconnect, so the waiters do not each
@@ -446,6 +525,12 @@ class ZohoSource:
             raise
         return self._credential
 
+    # ── 9. Revoke ───────────────────────────────────────────────────────────
+
+    async def revoke(self) -> bool:
+        """Revoke the refresh token at Zoho. True when Zoho confirms."""
+        return await auth.revoke(self._config, self._connected(), transport=self._transport)
+
     async def _fresh_credential(self) -> SourceCredential:
         """The credential, refreshed first when it expires within five minutes."""
         credential = self._connected()
@@ -470,10 +555,14 @@ class ZohoSource:
         *,
         params: Mapping[str, Any],
         since: datetime | None = None,
+        cost: int = 1,
     ) -> httpx.Response:
-        """One GET to ``api_domain``, with credits, the budget and the backoff."""
+        """One GET to ``api_domain``, with credits, the budget and the backoff.
+
+        ``cost`` is the credits of one request. A retry costs it again.
+        """
         credential = self._connected()
-        self._check_budget()
+        self._check_budget(cost)
         auth.check_api_domain(auth.meta(credential, auth.META_API_DOMAIN))
         credential = await self._fresh_credential()
         base = auth.check_api_domain(auth.meta(credential, auth.META_API_DOMAIN))
@@ -484,8 +573,10 @@ class ZohoSource:
         reason = ""
         for attempt in range(1, MAX_TRIES + 1):
             # Each request that leaves costs a credit, a retry included.
-            self._spend_credit()
+            self._spend_credit(cost)
             r, reason = await self._send_once(f"{base}{path}", path, headers, params)
+            if r is not None:
+                self._note_credits_left(r)
             if r is not None and not reason:
                 return r
             if attempt == MAX_TRIES:
@@ -538,19 +629,25 @@ class ZohoSource:
             return r, f"HTTP {r.status_code}"
         return r, ""
 
-    def _check_budget(self) -> None:
+    def _note_credits_left(self, r: httpx.Response) -> None:
+        """Keep ``X-API-CREDITS-REMAINING`` when it is a whole number."""
+        raw = r.headers.get(_CREDITS_HEADER, "").strip()
+        if raw.isdigit():
+            self._credits_left = int(raw)
+
+    def _check_budget(self, cost: int = 1) -> None:
         """Refuse the next call before it leaves when it would pass the budget."""
         budget = self.credit_budget
-        if budget is not None and self._credits_used + 1 > budget:
+        if budget is not None and self._credits_used + cost > budget:
             raise BudgetExhausted(
                 f"The Zoho credit budget of {budget} is spent",
                 used=self._credits_used,
                 budget=budget,
             )
 
-    def _spend_credit(self) -> None:
-        self._check_budget()
-        self._credits_used += 1
+    def _spend_credit(self, cost: int = 1) -> None:
+        self._check_budget(cost)
+        self._credits_used += cost
 
     @staticmethod
     def _raise_for_status(r: httpx.Response, path: str) -> None:
@@ -568,13 +665,20 @@ class ZohoSource:
         extra: Mapping[str, Any],
         *,
         keyset: bool,
+        cost: int = 1,
     ) -> SourcePage:
         cursor = cursor or SourceCursor()
         since = _request_since(cursor) if keyset else cursor.since
-        r = await self._get(path, params=_page_params(cursor, extra), since=since)
+        r = await self._get(
+            path, params=_page_params(cursor, extra), since=since, cost=cost,
+        )
         # 204 = nothing there; 304 = nothing changed since the cursor.
         if r.status_code in (204, 304):
             return SourcePage(records=(), next_cursor=None)
+        if _is_scope_refusal(r):
+            raise ZohoScopeError(
+                _read_scope(entity), str(_error_body(r).get("message") or "")[:200],
+            )
         self._raise_for_status(r, path)
         body = _error_body(r)
         rows = body.get("data") or []
@@ -634,7 +738,7 @@ class ZohoSource:
             entity,
             f"/crm/{RECORDS_API_VERSION}/{module}",
             cursor,
-            {"sort_by": "Modified_Time", "sort_order": "asc"},
+            {"sort_by": "Modified_Time", "sort_order": "asc", **_EXTRA_PARAMS.get(entity, {})},
             keyset=True,
         )
 
@@ -667,6 +771,7 @@ class ZohoSource:
             cursor,
             {"type": kind},
             keyset=False,
+            cost=DELETED_CALL_COST,
         )
 
     # ── 6. Users ────────────────────────────────────────────────────────────
@@ -785,24 +890,175 @@ class ZohoSource:
                     out.append({**pipeline, "layout_id": layout_id})
         return out
 
-    # ── 7 and 8. Wait for CRM-Z0 ────────────────────────────────────────────
+    # ── 10. The record count ────────────────────────────────────────────────
+
+    async def count_records(self, entity: str) -> int | None:
+        """The number of records of one module, for the progress estimate.
+
+        ``GET /crm/v8/{module}/actions/count``. One credit. ``None`` when
+        Zoho gives no number, so the caller shows no estimate and reads on.
+        """
+        module = _module(entity)
+        path = f"/crm/{SETTINGS_API_VERSION}/{module}/actions/count"
+        r = await self._get(path, params={})
+        if r.status_code in (204, 304):
+            return 0
+        self._raise_for_status(r, path)
+        count = _error_body(r).get("count")
+        return count if isinstance(count, int) and count >= 0 else None
+
+    # ── 11. Deal contact roles (CRM-Q5) ─────────────────────────────────────
+
+    async def list_deal_contact_roles(self, deal_ext_id: str) -> list[tuple[str, str | None]]:
+        """The contacts on one deal: ``GET /crm/v2/Deals/{id}/Contact_Roles``.
+
+        One credit. Each row is a contact, with its role in ``Contact_Role``,
+        a plain name or an object that holds ``name``. A row with no id is
+        dropped. An empty answer (204) is an empty list.
+        """
+        if not deal_ext_id.isalnum():
+            raise SourceError("The deal id is not a plain id")
+        path = f"/crm/{RECORDS_API_VERSION}/Deals/{deal_ext_id}/Contact_Roles"
+        r = await self._get(path, params={})
+        if r.status_code in (204, 304):
+            return []
+        if _is_scope_refusal(r):
+            raise ZohoScopeError("ZohoCRM.modules.deals.READ")
+        self._raise_for_status(r, path)
+        out: list[tuple[str, str | None]] = []
+        for row in _dict_rows(_error_body(r).get("data")):
+            contact = str(row.get("id") or "").strip()
+            if not contact:
+                continue
+            role = row.get("Contact_Role")
+            if isinstance(role, dict):
+                role = role.get("name")
+            out.append((contact, str(role).strip() or None if role else None))
+        return out
+
+    # ── 3b. Discovery (CRM-Q1) ──────────────────────────────────────────────
+
+    async def discover(self) -> dict[str, Any]:  # noqa: C901 - one linear read of five sections
+        """Read the shape of the customer's Zoho. METADATA ONLY, never a record.
+
+        Each read goes through :meth:`_get`, so each one is counted. They are
+        ``GET org`` (1), ``GET settings/modules`` (1), ``GET settings/layouts``
+        and ``GET settings/fields`` for each of :data:`DISCOVERED_MODULES` (8),
+        and ``GET settings/pipeline`` for each Deals layout. About 11 credits.
+
+        The answer is raw: ``org`` (a dict or ``None``), ``modules``,
+        ``layouts`` and ``fields`` (each keyed by module), ``pipelines`` (each
+        row gains ``layout_id``), and ``failed``, the sections that could not be
+        read. A section that fails for a reason that is not fatal is listed in
+        ``failed`` and the rest goes on. A dead token, a spent budget, a
+        throttle or an untrusted host stops the whole read, because the next
+        call would fail the same way.
+        """
+        out: dict[str, Any] = {
+            "org": None, "modules": [], "layouts": {}, "fields": {},
+            "pipelines": [], "failed": [],
+        }
+        deal_layouts: list[dict[str, Any]] = []
+
+        async def section(name: str, read: Callable[[], Awaitable[None]]) -> None:
+            try:
+                await read()
+            except _DISCOVERY_FATAL:
+                raise
+            except SourceError as exc:
+                _log.warning(
+                    "crm_sources.zoho.discovery_section_failed",
+                    section=name, error=type(exc).__name__,
+                )
+                if name not in out["failed"]:
+                    out["failed"].append(name)
+
+        async def read_org() -> None:
+            body = await self._settings_json("org", {}, scope=ORG_SCOPE)
+            rows = body.get("org")
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                out["org"] = rows[0]
+
+        async def read_modules() -> None:
+            body = await self._settings_json("settings/modules", {}, scope=MODULES_SCOPE)
+            out["modules"] = _dict_rows(body.get("modules"))
+
+        def reader(kind: str, module: str) -> Callable[[], Awaitable[None]]:
+            scope = LAYOUTS_SCOPE if kind == "layouts" else FIELDS_SCOPE
+
+            async def read() -> None:
+                body = await self._settings_json(
+                    f"settings/{kind}", {"module": module}, scope=scope,
+                )
+                found = _dict_rows(body.get(kind))
+                out[kind][module] = found
+                if kind == "layouts" and module == "Deals":
+                    deal_layouts.extend(found)
+
+            return read
+
+        async def read_pipelines() -> None:
+            for layout in deal_layouts:
+                layout_id = str(layout.get("id") or "")
+                if not layout_id:
+                    continue
+                for pipeline in await self.list_deal_pipelines(layout_id):
+                    if isinstance(pipeline, dict):
+                        out["pipelines"].append({**pipeline, "layout_id": layout_id})
+
+        await section("org", read_org)
+        await section("modules", read_modules)
+        for module in DISCOVERED_MODULES:
+            await section("layouts", reader("layouts", module))
+            await section("fields", reader("fields", module))
+        if "Deals" in out["layouts"]:
+            await section("pipelines", read_pipelines)
+        else:
+            # No Deals layout was read, so "no pipelines" would be a guess.
+            out["failed"].append("pipelines")
+        return out
+
+    # ── 7 and 8. The deep link and the credits ──────────────────────────────
 
     def deep_link(self, entity: str, ext_id: str) -> str:
-        raise NotImplementedError(
-            "The Zoho deep link waits for CRM-Z0, which confirms its shape for each data centre"
-        )
+        """The link to one record, from the credential's ``domain_name``.
 
-    async def credits_remaining(self) -> int:
-        raise NotImplementedError(
-            "The credits that Zoho has left wait for CRM-Z0. Read credits_used for "
-            "the credits this instance spent"
+        The sync stores ``domain_name`` in ``provider_meta`` after it reads
+        ``GET org``. With none stored, or an entity with no tab, this raises
+        :class:`SourceError`. The record wire builds its link with
+        :func:`gateway.crm_sources.zoho.links.deep_link`, which returns ``None``
+        in that case.
+        """
+        meta = self._connected().provider_meta
+        url = links.deep_link(
+            meta.get(auth.META_ACCOUNTS_SERVER),
+            meta.get(META_DOMAIN_NAME),
+            entity,
+            ext_id,
         )
+        if url is None:
+            raise SourceError("No deep link for this record: the org domain is not known yet")
+        return url
+
+    async def credits_remaining(self) -> int | None:
+        """The credits Zoho has left, from the last ``X-API-CREDITS-REMAINING``.
+
+        Zoho sends the header only after half of the daily credits are
+        spent, so ``None`` means "not reported: more than half is left"
+        (§5.2 item 6).
+        """
+        return self._credits_left
 
 
 __all__ = [
+    "DELETED_CALL_COST",
+    "DISCOVERED_MODULES",
     "FIELDS_SCOPE",
     "LAYOUTS_SCOPE",
     "MAX_TRIES",
+    "META_DOMAIN_NAME",
+    "MODULES_SCOPE",
+    "ORG_SCOPE",
     "PER_PAGE",
     "PIPELINE_SCOPE",
     "RECORDS_API_VERSION",

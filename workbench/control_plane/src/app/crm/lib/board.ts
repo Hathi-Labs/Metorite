@@ -6,8 +6,9 @@
 //
 // Spec: project-docs/specs/crm_app.md §5 surface 1.
 
+import type { CrmMode } from "./connect";
 import { stageAgeDays } from "./format";
-import type { Deal, Pipeline, PipelineLane, Status, StatusType } from "./types";
+import type { Deal, Lead, Pipeline, PipelineLane, Status, StatusType } from "./types";
 
 /** A lane as the board renders it — the wire lane plus its display totals. */
 export type BoardLane = PipelineLane & {
@@ -71,19 +72,147 @@ export function statusTone(status: Pick<Status, "color" | "type">): string {
   );
 }
 
+/** The group of a stage type on the board: open work, then won, then lost. */
+const LANE_GROUP: Record<StatusType, number> = {
+  open: 0,
+  ongoing: 0,
+  on_hold: 1,
+  won: 2,
+  lost: 3,
+};
+
+/** Two pipeline places. A missing place sorts after every stated place. */
+function comparePlaces(
+  a: number | null | undefined,
+  b: number | null | undefined
+): number {
+  const left = typeof a === "number" ? a : null;
+  const right = typeof b === "number" ? b : null;
+  if (left === right) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left - right;
+}
+
 /**
- * Lanes in `position` order, empty ones included.
+ * THE order of the Deals board columns (owner decision, 2026-10-12). This is
+ * the one place that decides it, and the mode is a parameter.
  *
- * The gateway already orders them; re-sorting here is not distrust, it is
- * that the board must not depend on a payload's ordering to be correct — and
- * an empty lane is kept because a kanban that hides its empty columns is a
- * list (the gateway's own words).
+ * The groups, in both modes: open and ongoing stages, then `on_hold`, then
+ * won, then lost at the far end.
+ *
+ * - **Mirror mode.** Inside the open group, `probability` from low to high.
+ *   A tie, and every other group, goes to the place in the chosen pipeline,
+ *   then to the global `position`.
+ * - **Native mode, and a mode not yet known.** The admin's stage order, the
+ *   global `position`, then the pipeline place. Probability never reorders a
+ *   Native board: a new Native stage has probability 0 and would jump first.
+ *
+ * A stage with no pipeline place (no pipeline chosen, or a stage that only
+ * holds deals) sorts after the stated places of its tie. The stage editor in
+ * CRM settings keeps its own order.
+ */
+export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_position">>(
+  lanes: readonly T[],
+  mode: CrmMode
+): T[] {
+  const mirror = mode === "mirror";
+  return [...lanes].sort((a, b) => {
+    const group = (LANE_GROUP[a.status.type] ?? 0) - (LANE_GROUP[b.status.type] ?? 0);
+    if (group !== 0) return group;
+    if (mirror) {
+      if ((LANE_GROUP[a.status.type] ?? 0) === 0) {
+        const odds = (a.status.probability ?? 0) - (b.status.probability ?? 0);
+        if (odds !== 0) return odds;
+      }
+      const inPipeline = comparePlaces(a.pipeline_position, b.pipeline_position);
+      if (inPipeline !== 0) return inPipeline;
+      const global = a.status.position - b.status.position;
+      if (global !== 0) return global;
+    } else {
+      const global = a.status.position - b.status.position;
+      if (global !== 0) return global;
+      const inPipeline = comparePlaces(a.pipeline_position, b.pipeline_position);
+      if (inPipeline !== 0) return inPipeline;
+    }
+    return a.status.name.localeCompare(b.status.name);
+  });
+}
+
+/**
+ * Lanes in the Native order of `orderLanes`, empty ones included. The page
+ * orders them again for its mode, and decides which empty lanes to hide
+ * (`lib/emptyStages.ts`). The store does not know the mode.
+ *
+ * The board must not depend on a payload's ordering to be correct, so it
+ * sorts here and does not trust the order of the payload.
  */
 export function toBoardLanes(pipeline: Pipeline | null): BoardLane[] {
   if (!pipeline) return [];
-  return [...pipeline.lanes]
-    .sort((a, b) => a.status.position - b.status.position)
-    .map((lane) => ({ ...lane, tone: statusTone(lane.status) }));
+  return orderLanes(pipeline.lanes, null).map((lane) => ({
+    ...lane,
+    tone: statusTone(lane.status),
+  }));
+}
+
+// ── The Leads board (CRM-Q3) ──────────────────────────────────────────────
+//
+// The columns are the Lead Status values, in order. A lead has no amount and no
+// forecast, so a lane carries a count and nothing else. The card and the drop
+// are the same as on the deals board, so one `KanbanBoard` draws both.
+
+/** A Leads board column. */
+export type LeadLane = Omit<PipelineLane, "rows"> & {
+  rows: Lead[];
+  tone: string;
+};
+
+/**
+ * Lanes from the Lead Status list and one page of leads for each status.
+ *
+ * `total` is the count of the WHOLE status. `rows` is one page of it, as on the
+ * deals board. A status with no page reads as an empty lane.
+ */
+export function toLeadLanes(
+  statuses: readonly Status[],
+  pages: Readonly<Record<string, { rows: Lead[]; total: number } | undefined>>,
+): LeadLane[] {
+  return [...statuses]
+    .sort((a, b) => a.position - b.position)
+    .map((status) => {
+      const page = pages[status.id];
+      return {
+        status,
+        rows: page?.rows ?? [],
+        count: page?.total ?? 0,
+        amount: 0,
+        weighted: 0,
+        tone: statusTone(status),
+      };
+    });
+}
+
+/** The leads board as it should look the instant a card is dropped. */
+export function applyLeadMove(lanes: LeadLane[], move: DealMove): LeadLane[] {
+  const moving = lanes.flatMap((lane) => lane.rows).find((lead) => lead.id === move.dealId);
+  if (!moving) return lanes;
+  return lanes.map((lane) => {
+    if (lane.status.id === move.fromStatusId) {
+      return {
+        ...lane,
+        rows: lane.rows.filter((lead) => lead.id !== move.dealId),
+        count: Math.max(0, lane.count - 1),
+      };
+    }
+    if (lane.status.id === move.toStatusId) {
+      return {
+        ...lane,
+        rows: [{ ...moving, status_id: move.toStatusId }, ...lane.rows],
+        count: lane.count + 1,
+      };
+    }
+    return lane;
+  });
 }
 
 // ── Weighted ₹ (WS-26f f3, spec §5.1) ─────────────────────────────────────
@@ -137,23 +266,34 @@ export function weightedRows(
 }
 
 /** The board's own totals, for the header. Sums the LANE figures, which cover
- *  the whole lane — not the rows returned, which are one page of it. */
+ *  the whole lane — not the rows returned, which are one page of it.
+ *
+ *  The header says "open deals" and "in the pipeline", so only the lanes in
+ *  `WEIGHTED_TYPES` count. A won or a lost deal is closed, which is the rule
+ *  of the owner leaderboard's `open_deals` in `routes/crm/reports.py`. */
 export function boardTotals(lanes: BoardLane[]): {
   count: number;
   amount: number;
   weighted: number;
 } {
   return lanes.reduce(
-    (acc, lane) => ({
-      count: acc.count + lane.count,
-      amount: acc.amount + (lane.amount || 0),
-      weighted: acc.weighted + (lane.weighted || 0),
-    }),
+    (acc, lane) =>
+      WEIGHTED_TYPES.includes(lane.status.type)
+        ? {
+            count: acc.count + lane.count,
+            amount: acc.amount + (lane.amount || 0),
+            weighted: acc.weighted + (lane.weighted || 0),
+          }
+        : acc,
     { count: 0, amount: 0, weighted: 0 }
   );
 }
 
-/** The move a drop asks for, or null when the drop changes nothing. */
+/**
+ * The move a drop asks for, or null when the drop changes nothing.
+ *
+ * `dealId` names the record that moves. On the Leads board it holds a lead id.
+ */
 export type DealMove = {
   dealId: string;
   fromStatusId: string | null;

@@ -1,6 +1,6 @@
 """The tenant boundary, as a ratchet (WS-29).
 
-⚠️ **113 of Metorite's 147 tables still carry no tenant key.** That is not
+⚠️ **113 of Metorite's 148 tables still carry no tenant key.** That is not
 a bug list — it is the honest state of a system built for one organisation. The
 bug would be adding the 147th.
 
@@ -124,11 +124,24 @@ EXPECTED_SCOPED = {
     # tenant key, FORCE row level security and per-tenant unique keys.
     "crm_activities", "crm_auto_lead_cursors", "crm_companies",
     "crm_contacts", "crm_deal_contacts", "crm_deal_statuses", "crm_deals",
+    "crm_field_defs",
     "crm_lead_statuses", "crm_leads", "crm_lost_reasons",
     "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
     # WS-53 CRM-T5 (2026-10-11): migration 243, one settings row for each
     # organization, keyed on the tenant `organization_id`, FORCE RLS.
     "crm_settings",
+    # WS-53 CRM-Z2 (2026-10-11): the registry of external connections.
+    "integration_connections",
+    # WS-53 CRM-Z4/Z5 (2026-10-11): one row for each run of the mirror sync.
+    "crm_sync_runs",
+    # WS-53 CRM-Q1/Q2 (2026-10-12): the source profile and the deal pipelines.
+    "crm_source_profiles",
+    "crm_pipelines",
+    "crm_pipeline_stages",
+    # WS-53 CRM-Q8 (2026-10-12): the saved views of the lists and boards.
+    "crm_views",
+    # WS-53 CRM-Q6a (2026-10-12): the generic record store of the mirror.
+    "crm_module_records",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`

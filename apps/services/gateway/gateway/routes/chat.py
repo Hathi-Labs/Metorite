@@ -994,7 +994,8 @@ async def delete_session(
     # again (fix round 2). A second pass after the delete sweeps a file that
     # a run wrote in between.
     try:
-        await purge_thread_files(session_id, org)
+        # The member who deletes resolves the chat's own dir, for its zips.
+        await purge_thread_files(session_id, org, member=email)
     except ThreadPurgeFailed:
         raise HTTPException(
             status_code=503,

@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 148
+-- Tables in this phase: 157
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -28,6 +28,9 @@ UPDATE agent_avatars SET organization_id = (SELECT id FROM organization WHERE sl
  WHERE organization_id IS NULL;
 
 UPDATE agent_blob SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE agent_connection SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE agent_file_history SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -108,6 +111,9 @@ UPDATE crm_deal_statuses SET organization_id = (SELECT id FROM organization WHER
 UPDATE crm_deals SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE crm_field_defs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE crm_lead_statuses SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
@@ -127,6 +133,24 @@ UPDATE crm_status_changes SET organization_id = (SELECT id FROM organization WHE
  WHERE organization_id IS NULL;
 
 UPDATE crm_sync_cursors SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_sync_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_pipeline_stages SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_pipelines SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_source_profiles SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_views SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_module_records SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE crm_zoho_tombstones SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -247,6 +271,9 @@ UPDATE maf_agent_session SET organization_id = (SELECT id FROM organization WHER
  WHERE organization_id IS NULL;
 
 UPDATE user_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE integration_connections SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE live_session SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

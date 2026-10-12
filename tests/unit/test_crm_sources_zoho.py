@@ -691,8 +691,8 @@ def test_each_data_centre_is_on_the_allowlist() -> None:
             f"https://{dc.accounts_host}"
         )
         assert auth.check_api_domain(f"https://{dc.api_host}/") == f"https://{dc.api_host}"
-    # The nine of zoho.com/developer/oauth/multi-dc-support.html (2026-10-11).
-    assert set(auth.ZOHO_DATA_CENTRES) == {"us", "eu", "in", "au", "jp", "ca", "cn", "sa", "uk"}
+    # The eight of zoho.com/developer/oauth/multi-dc-support.html (2026-10-11).
+    assert set(auth.ZOHO_DATA_CENTRES) == {"us", "eu", "in", "au", "jp", "ca", "sa", "uk"}
     assert auth.ZOHO_DATA_CENTRES["sa"] == auth.DataCentre("accounts.zoho.sa", "www.zohoapis.sa")
     assert auth.ZOHO_DATA_CENTRES["uk"] == auth.DataCentre("accounts.zoho.uk", "www.zohoapis.uk")
 
@@ -1018,12 +1018,45 @@ def test_the_registry_has_one_line_for_zoho() -> None:
         source_class("salesforce")
 
 
-async def test_the_deep_link_and_credits_left_wait_for_crm_z0() -> None:
+async def test_the_deep_link_needs_the_org_domain() -> None:
+    """CRM-Q1 built it. Without ``domain_name`` there is no link to build, and
+    ``test_crm_discovery.py`` holds the rest."""
     source = ZohoSource(CONFIG, credential())
-    with pytest.raises(NotImplementedError, match="CRM-Z0"):
+    with pytest.raises(SourceError, match="domain"):
         source.deep_link("deal", "1")
-    with pytest.raises(NotImplementedError, match="CRM-Z0"):
-        await source.credits_remaining()
+
+
+async def test_credits_left_is_none_until_zoho_reports_it() -> None:
+    """§5.2 item 6: Zoho sends the header after half of the credits are spent."""
+    fake = Fake([
+        ok({"data": []}), ok({"data": []}),
+        ok({"data": []}, **{"X-API-CREDITS-REMAINING": "1234"}),
+    ])
+    source = fake.source()
+    assert await source.credits_remaining() is None
+    await source.list_changed("deal")
+    assert await source.credits_remaining() is None
+    await source.list_changed("deal")
+    await source.list_changed("deal")
+    assert await source.credits_remaining() == 1234
+
+
+async def test_the_deleted_list_costs_two_credits() -> None:
+    """§5.2 item 5. A refused call still costs its credits, so the count is the safe one."""
+    fake = Fake([ok({"data": []})])
+    source = fake.source()
+    await source.list_deleted("company")
+    assert source.credits_used == 2
+    with pytest.raises(BudgetExhausted):
+        await Fake([]).source(credit_budget=1).list_deleted("company")
+
+
+async def test_the_record_count_reads_one_number() -> None:
+    fake = Fake([ok({"count": 42}), ok({"count": "many"})])
+    source = fake.source()
+    assert await source.count_records("lead") == 42
+    assert fake.requests[0].url.path.endswith("/Leads/actions/count")
+    assert await source.count_records("lead") is None
 
 
 def test_no_repr_holds_a_secret() -> None:

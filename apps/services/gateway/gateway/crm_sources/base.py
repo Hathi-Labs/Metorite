@@ -36,6 +36,7 @@ CANONICAL_ENTITIES: tuple[str, ...] = (
     "note",
     "call",
     "meeting",
+    "task",
 )
 
 
@@ -115,7 +116,14 @@ class SourcePage:
 
 
 class SourceError(RuntimeError):
-    """A provider call failed. The message never holds a token or a secret."""
+    """A provider call failed. The message never holds a token or a secret.
+
+    ``code`` is the provider's error code when it looks like a code
+    (``invalid_code``, for example) and ``""`` otherwise. The caller stores it
+    as ``last_error``, so it never holds a token either.
+    """
+
+    code: str = ""
 
 
 class NeedsReconnect(SourceError):
@@ -143,6 +151,15 @@ class BudgetExhausted(SourceError):
         self.budget = budget
 
 
+class SourceScopeError(SourceError):
+    """The credential lacks the scope this read needs (CRM-Q5).
+
+    It is NOT a dead token. The caller must never mark the connection
+    ``needs_reconnect`` for it. A module the mirror treats as optional is
+    skipped and reported as unavailable, and the run goes on.
+    """
+
+
 class UntrustedHost(SourceError):
     """A URL is not on the provider's allowlist, or it is not https."""
 
@@ -151,7 +168,7 @@ class UntrustedHost(SourceError):
 
 
 class CrmSource(Protocol):
-    """The eight operations of ``crm_platform.md`` §5.1.
+    """The operations of ``crm_platform.md`` §5.1 (nine, and the count of CRM-Z4).
 
     Each numbered comment names the operation of the spec.
     """
@@ -183,6 +200,11 @@ class CrmSource(Protocol):
 
     async def list_pipelines(self, entity: str) -> list[dict[str, Any]]: ...
 
+    # 3b. The shape of the customer's account: edition, modules, layouts,
+    # fields and pipelines. METADATA ONLY, never a record (CRM-Q1). The answer
+    # is raw provider data. The mapping builds the source profile from it.
+    async def discover(self) -> dict[str, Any]: ...
+
     # 4. The records changed since a cursor, one page for each call.
     async def list_changed(
         self,
@@ -203,11 +225,24 @@ class CrmSource(Protocol):
     # 7. The deep link to one record.
     def deep_link(self, entity: str, ext_id: str) -> str: ...
 
-    # 8. The budget used, and what is left.
+    # 8. The budget used, and what is left. ``None`` means the provider has
+    # not reported it, so more than half of the daily credits is left.
     @property
     def credits_used(self) -> int: ...
 
-    async def credits_remaining(self) -> int: ...
+    async def credits_remaining(self) -> int | None: ...
+
+    # 9. Revoke the credential at the provider. True when the provider
+    # confirms. The caller treats a revoke as best effort.
+    async def revoke(self) -> bool: ...
+
+    # 10. The record count of one entity, for the import progress estimate.
+    # ``None`` when the provider gives no number.
+    async def count_records(self, entity: str) -> int | None: ...
+
+    # 11. The contacts on one deal, as ``(contact id, role or None)`` pairs.
+    # One call for each deal (CRM-Q5).
+    async def list_deal_contact_roles(self, deal_ext_id: str) -> list[tuple[str, str | None]]: ...
 
 
 __all__ = [
@@ -222,5 +257,6 @@ __all__ = [
     "SourceError",
     "SourcePage",
     "SourceRecord",
+    "SourceScopeError",
     "UntrustedHost",
 ]

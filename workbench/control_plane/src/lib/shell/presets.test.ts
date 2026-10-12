@@ -106,12 +106,13 @@ describe("the subset rule: a preset never draws what the member does not hold (Â
     });
   }
 
-  it("draws a preview pin only when the app is promoted (CRM)", () => {
+  it("draws the CRM pin only for a member who holds the CRM (live since CRM-L2)", () => {
     const sales = presetById("sales-manager")!;
     expect(sales.pins).toContain("/crm");
     const stars = { pins: sales.pins, known: [] };
-    expect([...starredHrefs(stars, visibleSections(ALL, false, false))!]).not.toContain("/crm");
-    expect([...starredHrefs(stars, visibleSections(ALL, false, true))!]).toContain("/crm");
+    const without = ALL.filter((f) => f !== "crm");
+    expect([...starredHrefs(stars, visibleSections(without, false, false))!]).not.toContain("/crm");
+    expect([...starredHrefs(stars, visibleSections(ALL, false, false))!]).toContain("/crm");
   });
 
   it("never pins a page about the member, even when one is named", () => {

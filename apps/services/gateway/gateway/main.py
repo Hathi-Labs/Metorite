@@ -395,6 +395,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.crm_zoho_sync_skipped", error=str(exc))
 
+    # Start the CRM mirror sync loop (gateway/crm_sync/scheduler.py; spec
+    # crm_platform.md §5.4, WS-53 CRM-Z5). It READS Zoho into the mirror and
+    # writes nothing back. Dark by default: with CRM_MIRROR or CRM_ENABLED off
+    # it starts no task and logs once. Each run binds one tenant_session(org)
+    # for each step.
+    try:
+        from gateway.crm_sync.scheduler import start_crm_mirror_sync
+        crm_mirror_started = await start_crm_mirror_sync()
+        _log.info("gateway.crm_mirror_sync", started=crm_mirror_started)
+    except Exception as exc:
+        _log.warning("gateway.crm_mirror_sync_skipped", error=str(exc))
+
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
     # as dead. The loop also sweeps: each run a dead process left is closed,
@@ -462,6 +474,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.crm.sync_zoho import stop_crm_zoho_sync
         await stop_crm_zoho_sync()
+    except Exception:
+        pass
+
+    # Stop the CRM mirror sync loop and wait for a run in progress.
+    try:
+        from gateway.crm_sync.scheduler import stop_crm_mirror_sync
+        await stop_crm_mirror_sync()
     except Exception:
         pass
 
@@ -1329,6 +1348,14 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-54 IN-1 — the Integrations console read model and its writes.
+    from gateway.routes.integrations_connections import router as _connections_router
+
+    app.include_router(_connections_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-23 S1 — read-only skills catalog (skill families + token costs).
     from gateway.routes.integrations_skills import router as _skills_router
 
@@ -1684,6 +1711,19 @@ try:
     from gateway.routes.billing import router as _billing_router
 
     app.include_router(_billing_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-55 EA-2a — the authenticated half of the outside-agent authorization
+    # server (external_agent_access.md §15). Authenticated by the app-wide
+    # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES; the
+    # consent page reaches it through a BFF. The public half (metadata, token,
+    # revoke) is the separate edge unit `apps/services/agent_edge`. Ships dark
+    # — `agent_access_enabled` off ⇒ every route 404.
+    from gateway.routes.agent_access import router as _agent_access_router
+
+    app.include_router(_agent_access_router)
 except Exception:  # pragma: no cover
     pass
 

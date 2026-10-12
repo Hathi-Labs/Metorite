@@ -34,7 +34,8 @@ filter rows.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -44,7 +45,6 @@ from uuid import UUID
 
 from acb_auth import require_feature_router
 from acb_common import get_logger
-from fastapi import APIRouter, Depends, HTTPException
 
 # The shared seam (BO-10 / D-CRM-4 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased per-package for the same reason
@@ -60,6 +60,8 @@ from fastapi import APIRouter, Depends, HTTPException
 # CRM-T3 moved the other two leaves to `tenant_session(org)`: `auto_lead`
 # takes the tenant the email hook bound, and `broker_handlers` takes the
 # tenant the `approve` call bound. Each passes that tenant by value.
+from acb_common.db import current_tenant
+from fastapi import APIRouter, Depends, HTTPException
 from gateway.db import get_db as _get_db  # noqa: F401
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 from gateway.routes.crm.access import require_crm_access
@@ -165,7 +167,25 @@ MAX_PAGE_SIZE = 100
 # Entity (`required`) and checked in `records.py`. Two near-identical models per
 # entity is the shape that drifts.
 
-class OrganizationModel(BaseModel):
+class MirrorFields(BaseModel):
+    """What a provider mirror adds to a record on the wire (WS-53 CRM-Z6).
+
+    The UI reads ``ext_source`` to lock a mirrored record's fields. ``custom``
+    holds the provider fields that have no native column.
+    """
+
+    ext_source: str | None = None
+    ext_id: str | None = None
+    ext_modified_at: str | None = None
+    #: The link to the record in the provider's own app ("Open in Zoho"). It is
+    #: NOT a column: :func:`attach_ext_urls` computes it from the connection of
+    #: the organization, and it stays ``None`` until the sync has read the org
+    #: domain (WS-53 CRM-Q1).
+    ext_url: str | None = None
+    custom: dict = {}
+
+
+class OrganizationModel(MirrorFields):
     id: str
     name: str
     website: str | None = None
@@ -200,7 +220,7 @@ class OrganizationIn(BaseModel):
     source: str | None = None
 
 
-class ContactModel(BaseModel):
+class ContactModel(MirrorFields):
     id: str
     first_name: str
     last_name: str | None = None
@@ -233,7 +253,7 @@ class ContactIn(BaseModel):
     source: str | None = None
 
 
-class LeadModel(BaseModel):
+class LeadModel(MirrorFields):
     id: str
     first_name: str | None = None
     last_name: str | None = None
@@ -284,7 +304,7 @@ class LeadIn(BaseModel):
     source: str | None = None
 
 
-class DealModel(BaseModel):
+class DealModel(MirrorFields):
     id: str
     name: str
     company_id: str | None = None
@@ -294,6 +314,8 @@ class DealModel(BaseModel):
     #: read straight from ``crm_deals`` leaves it None, which is the honest
     #: answer for a deal with no organization.
     organization_name: str | None = None
+    #: The deal pipeline (WS-53 CRM-Q2). ``None`` for a deal that no pipeline holds.
+    pipeline_id: str | None = None
     status_id: str | None = None
     status_changed_at: str | None = None
     amount: float | None = None
@@ -317,6 +339,7 @@ class DealModel(BaseModel):
 class DealIn(BaseModel):
     name: str | None = None
     company_id: str | None = None
+    pipeline_id: str | None = None
     status_id: str | None = None
     amount: float | None = None
     currency: str | None = None
@@ -331,7 +354,7 @@ class DealIn(BaseModel):
     source: str | None = None
 
 
-class ActivityModel(BaseModel):
+class ActivityModel(MirrorFields):
     id: str
     type: str
     subject: str | None = None
@@ -366,6 +389,9 @@ class StatusModel(BaseModel):
     #: Deal statuses only (WS-26h) — days a deal may sit here before its card
     #: wears an age badge. ``None`` = this stage never rots.
     max_dwell_days: int | None = None
+    #: Deal statuses only (WS-53 CRM-Q2) — the forecast category as the provider
+    #: names it ("Pipeline", "Closed Won"). ``None`` for a native stage.
+    forecast_category: str | None = None
 
 
 class LostReasonModel(BaseModel):
@@ -382,6 +408,17 @@ class ListResponse(BaseModel):
 
 
 # ── Entity registry ─────────────────────────────────────────────────────────
+
+#: The WHERE clause of an OPEN lead (CRM-Q5). A native lead is converted while the
+#: deal it became exists (§3.3/B6). A mirrored lead is converted when Zoho says so,
+#: because Zoho allows a conversion with no deal, and the deal can be absent here.
+#: The second half avoids ``IS NOT NULL`` on purpose: the CRM test fake reads each
+#: ``IS [NOT] NULL`` as a plain filter, so a comparison keeps it one clause.
+OPEN_LEAD_SQL = (
+    "converted_deal_id IS NULL "
+    "AND NOT COALESCE(ext_source > '' AND converted_at > '-infinity'::timestamptz, false)"
+)
+
 
 @dataclass(frozen=True)
 class Entity:
@@ -587,6 +624,8 @@ def row_to_model(row: Any, model: type[BaseModel]) -> Any:
         )
         for name in model.model_fields
     }
+    if "custom" in data and data["custom"] is None:
+        data["custom"] = {}  # NOT NULL in the table; a fake or a stale row may omit it
     return model(**data)
 
 
@@ -620,6 +659,7 @@ def status_wire(row: Any) -> StatusModel:
         # mutate the row's own list.
         required_fields=list(getattr(row, "required_fields", None) or []),
         max_dwell_days=getattr(row, "max_dwell_days", None),
+        forecast_category=getattr(row, "forecast_category", None),
     )
 
 
@@ -692,6 +732,16 @@ class ListQuery:
     params: dict[str, Any]
 
 
+def checked_uuid(value: str, what: str) -> str:
+    """*value* as a canonical UUID string, or a 422 that names *what*."""
+    try:
+        return str(UUID(str(value)))
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"'{what}' is not a valid id.",
+        ) from None
+
+
 def list_contract(
     entity: Entity,
     *,
@@ -703,6 +753,7 @@ def list_contract(
     status_id: str | None = None,
     owner: str | None = None,
     source: str | None = None,
+    pipeline_id: str | None = None,
     extra_where: tuple[str, ...] = (),
     extra_params: dict[str, Any] | None = None,
 ) -> ListQuery:
@@ -751,6 +802,17 @@ def list_contract(
             )
         clauses.append("status_id = CAST(:status_id AS uuid)")
         params["status_id"] = status_id
+    if pipeline_id:
+        if entity.table != "crm_deals":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{entity.slug} have no pipeline, so '?pipeline_id' cannot "
+                    "filter them. Drop the parameter."
+                ),
+            )
+        clauses.append("pipeline_id = CAST(:pipeline_id AS uuid)")
+        params["pipeline_id"] = checked_uuid(pipeline_id, "pipeline_id")
     if owner:
         # R10 — email comparisons are case-insensitive on both sides.
         clauses.append("lower(owner_email) = :owner")
@@ -770,6 +832,218 @@ def list_contract(
         offset=(page - 1) * page_size,
         params=params,
     )
+
+
+#: CRM-Q3 — the related lists of a record page. A company shows its contacts
+#: and deals, and a contact shows its deals. Only these entities carry the link.
+_COMPANY_FILTERABLE = frozenset({"contacts", "deals"})
+
+
+def _uuid_param(name: str, value: str) -> str:
+    """A UUID from the query string, or a 422 — never a database cast error."""
+    try:
+        return str(UUID(value))
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"'{name}' must be a UUID.") from None
+
+
+def related_filters(
+    entity: Entity, *, company_id: str | None, contact_id: str | None,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """The ``?company_id=`` and ``?contact_id=`` filters, as SQL and parameters.
+
+    Refused with a 422 on an entity that has no such link. Ignoring the filter
+    would answer 200 with the whole table, as ``?status_id`` is refused on
+    contacts. The SQL is a literal here, and the id is a bound parameter.
+    """
+    clauses: list[str] = []
+    bound: dict[str, Any] = {}
+    if company_id:
+        if entity.slug not in _COMPANY_FILTERABLE:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{entity.slug} have no company link, so '?company_id' "
+                       "cannot filter them. Drop the parameter.",
+            )
+        clauses.append("company_id = CAST(:company_id AS uuid)")
+        bound["company_id"] = _uuid_param("company_id", company_id)
+    if contact_id:
+        if entity.slug != "deals":
+            raise HTTPException(
+                status_code=422,
+                detail=f"'?contact_id' filters deals only, not {entity.slug}. "
+                       "Drop the parameter.",
+            )
+        clauses.append(
+            "id IN (SELECT deal_id FROM crm_deal_contacts "
+            "WHERE contact_id = CAST(:contact_id AS uuid))"
+        )
+        bound["contact_id"] = _uuid_param("contact_id", contact_id)
+    return tuple(clauses), bound
+
+
+# ── The extra list filters (WS-53 CRM-Q8) ──────────────────────────────────
+
+#: The API slug of each entity → the value that ``crm_field_defs.entity`` holds.
+#: The sync writes the singular form (``crm_sync.engine.FIELD_DEF_ENTITIES``).
+FIELD_ENTITY_BY_SLUG: dict[str, str] = {
+    "leads": "lead",
+    "contacts": "contact",
+    "organizations": "company",
+    "deals": "deal",
+}
+
+#: The query-string prefix of a custom field filter: ``custom.<key>=<value>``.
+CUSTOM_PREFIX = "custom."
+
+
+def parse_iso_date(name: str, value: str | None) -> date | None:
+    """*value* as a date, ``None`` when it is empty, or a 422 that names *name*.
+
+    The check runs before any SQL, so a bad date never becomes a database cast
+    error (a 500).
+    """
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value.strip()[:10])
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"'{name}' must be an ISO date (YYYY-MM-DD).",
+        ) from None
+
+
+def custom_pairs(query_params: Any) -> list[tuple[str, str]]:
+    """Every ``custom.<name>=<value>`` pair of a query string, in order.
+
+    *query_params* is ``request.query_params`` or ``None``. FastAPI cannot
+    declare a parameter name that is not known up front, so the dynamic names
+    are read off the request.
+    """
+    if query_params is None:
+        return []
+    return [
+        (key[len(CUSTOM_PREFIX):], value)
+        for key, value in query_params.multi_items()
+        if key.startswith(CUSTOM_PREFIX) and key != CUSTOM_PREFIX
+    ]
+
+
+def resolve_owner(owner: str | None, user: Any) -> str | None:
+    """``me`` is the caller. The identity comes from the session (R5), never
+    from the request."""
+    if owner and owner.strip().lower() == "me" and user is not None:
+        return actor(user)
+    return owner
+
+
+@dataclass(frozen=True)
+class ExtraFilterInput:
+    """The Q8 filters as the caller sent them, before they are checked."""
+
+    created_from: str | None = None
+    created_to: str | None = None
+    updated_from: str | None = None
+    updated_to: str | None = None
+    close_from: str | None = None
+    close_to: str | None = None
+    custom: tuple[tuple[str, str], ...] = ()
+
+
+async def extra_filters(
+    db: Any, entity: Entity, given: ExtraFilterInput,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """The date-range and custom field filters, as SQL and bound parameters.
+
+    A bad date, or a ``close_*`` filter on an entity without a close date, or a
+    custom key that ``crm_field_defs`` does not list for this entity, is a 422
+    before the list query runs. Every value is a bound parameter. The custom
+    key is bound too (``custom ->> :ck``), so no caller text enters the SQL.
+    """
+    clauses: list[str] = []
+    bound: dict[str, Any] = {}
+    ranges = (
+        ("created_from", given.created_from, "created_at >= CAST(:created_from AS date)"),
+        ("created_to", given.created_to,
+         "created_at < CAST(:created_to AS date) + 1"),
+        # ⚠️ The provider's modified time, when the row has one. A mirrored
+        # row's own `updated_at` is the import time, so ranging on it would
+        # show the day of the last sync and not the day of the change.
+        ("updated_from", given.updated_from,
+         "coalesce(ext_modified_at, updated_at) >= CAST(:updated_from AS date)"),
+        ("updated_to", given.updated_to,
+         "coalesce(ext_modified_at, updated_at) < CAST(:updated_to AS date) + 1"),
+        ("close_from", given.close_from,
+         "expected_close_date >= CAST(:close_from AS date)"),
+        ("close_to", given.close_to, "expected_close_date <= CAST(:close_to AS date)"),
+    )
+    mirror: bool | None = None
+    for name, raw, clause in ranges:
+        parsed = parse_iso_date(name, raw)
+        if parsed is None:
+            continue
+        if name.startswith("created_"):
+            # ⚠️ In Mirror mode `created_at` is the import time:
+            # `upsert_from_source` refuses to write it. A range on it would
+            # answer with the sync day and hide every older record. Refused,
+            # until a mirrored created column exists (spec 18.5, CRM-Q8).
+            if mirror is None:
+                mirror = await is_mirror_mode(db, current_tenant())
+            if mirror:
+                raise HTTPException(status_code=422, detail={
+                    "code": "created_range_mirror",
+                    "message": "The created date of a synced record is not "
+                               "kept. Filter by the updated date instead.",
+                })
+        if name.startswith("close_") and entity.table != "crm_deals":
+            raise HTTPException(
+                status_code=422,
+                detail=f"{entity.slug} have no close date, so '?{name}' cannot "
+                       "filter them. Drop the parameter.",
+            )
+        clauses.append(clause)
+        bound[name] = parsed
+    if given.custom:
+        known = {
+            r.key for r in (await db.execute(
+                text("SELECT key FROM crm_field_defs WHERE entity = :entity"),
+                {"entity": FIELD_ENTITY_BY_SLUG[entity.slug]},
+            )).fetchall()
+        }
+        grouped: dict[tuple[str, bool], list[str]] = {}
+        for name, value in given.custom:
+            if name in known:
+                grouped.setdefault((name, False), []).append(value)
+            elif name.endswith(".in") and name[:-3] in known:
+                grouped.setdefault((name[:-3], True), []).extend(
+                    part.strip() for part in value.split(",") if part.strip()
+                )
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{name}' is not a custom field of {entity.slug}.",
+                )
+        for index, ((key, is_in), values) in enumerate(grouped.items()):
+            bound[f"ck{index}"] = key
+            if is_in or len(values) > 1:
+                # A multiselect field holds a JSON array (`["Red","Blue"]`),
+                # and `->>` would give its text. The array arm matches when
+                # any chosen option is in the array. Every value is bound.
+                clauses.append(
+                    f"(custom ->> :ck{index} = ANY(CAST(:cv{index} AS text[])) "
+                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
+                    f"AND jsonb_exists_any(custom -> :ck{index}, "
+                    f"CAST(:cv{index} AS text[]))))"
+                )
+                bound[f"cv{index}"] = values
+            else:
+                clauses.append(
+                    f"(custom ->> :ck{index} = :cv{index} "
+                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
+                    f"AND jsonb_exists(custom -> :ck{index}, :cv{index})))"
+                )
+                bound[f"cv{index}"] = values[0]
+    return tuple(clauses), bound
 
 
 def project_joined(entity: Entity, inner: str, order_by: str) -> str:
@@ -827,9 +1101,184 @@ async def run_list(db: Any, entity: Entity, query: ListQuery) -> ListResponse:
         text(project_joined(entity, inner, qualify(query.order_by, "base"))),
         {**query.params, "limit": query.limit, "offset": query.offset},
     )).fetchall()
-    return ListResponse(
-        rows=[row_to_dict(r, entity.model) for r in rows], total=int(total),
+    wired = [row_to_dict(r, entity.model) for r in rows]
+    await attach_ext_urls(db, entity.table, wired)
+    await attach_next_activity(db, entity, wired)
+    return ListResponse(rows=wired, total=int(total))
+
+
+# ── The link to a record in the provider's app (WS-53 CRM-Q1) ──────────────
+
+#: Mirror table to the canonical entity that ``crm_sources.zoho.links`` knows.
+_LINK_ENTITIES: dict[str, str] = {
+    "crm_companies": "company", "crm_contacts": "contact",
+    "crm_leads": "lead", "crm_deals": "deal",
+}
+
+
+@dataclass(frozen=True)
+class ProviderLinkContext:
+    """What the record wire needs to build an "Open in Zoho" link."""
+
+    accounts_server: str | None
+    domain_name: str | None
+    tabs: dict[str, str]
+
+
+async def provider_link_context(db: Any) -> ProviderLinkContext | None:
+    """The link context of the caller's organization, or ``None``.
+
+    It reads the registry row (``provider_meta``) and never the token blob. The
+    organization is the bound tenant. A missing connection, or one the sync has
+    not yet discovered, gives ``None``, and the wire shows no link.
+    """
+    from gateway.connections import store
+
+    org = current_tenant()
+    if not org:
+        return None
+    try:
+        connection = await store.get(db, str(org), "zoho", "crm")
+    except ValueError:  # a tenant that is not a UUID has no connection
+        return None
+    if connection is None:
+        return None
+    meta = connection.provider_meta
+    tabs = meta.get("tabs")
+    return ProviderLinkContext(
+        accounts_server=str(meta.get("accounts_server") or "") or None,
+        domain_name=str(meta.get("domain_name") or "") or None,
+        tabs={str(k): str(v) for k, v in tabs.items()} if isinstance(tabs, dict) else {},
     )
+
+
+async def attach_ext_urls(db: Any, table: str, rows: list[dict[str, Any]]) -> None:
+    """Set ``ext_url`` on each mirrored row of *rows*, in place.
+
+    One registry read for the whole page, and none when no row is mirrored.
+    ``ext_url`` stays ``None`` when the org domain is not known yet.
+    """
+    from gateway.crm_sources.zoho import links
+
+    entity = _LINK_ENTITIES.get(table)
+    mirrored = [r for r in rows if r.get("ext_source") == "zoho" and r.get("ext_id")]
+    if entity is None or not mirrored:
+        return
+    context = await provider_link_context(db)
+    if context is None:
+        return
+    for row in mirrored:
+        row["ext_url"] = links.deep_link(
+            context.accounts_server, context.domain_name, entity, row["ext_id"],
+            context.tabs,
+        )
+
+
+# ── The next activity on a card (WS-53 CRM-X3, crm_platform.md §19.7) ──────
+
+#: What counts as a record's next activity, over ``crm_activities a``. It is
+#: the ONE rule: the card chip (:func:`attach_next_activity`) and the lane sort
+#: (``pipeline.get_pipeline``) both read it. An open task counts when it has a
+#: due date. A call or a meeting counts while it is still ahead. The rule has
+#: no branch on ``ext_source``: CRM-Q5 writes a Zoho task with the same
+#: ``type`` and ``due_at`` as the composer writes a native one.
+NEXT_ACTIVITY_SQL = (
+    "a.completed_at IS NULL AND ("
+    "(a.type = 'task' AND a.due_at IS NOT NULL) "
+    "OR (a.type IN ('call', 'meeting') AND a.occurred_at > now()))"
+)
+
+#: The instant that orders the next activities of one record.
+NEXT_AT_SQL = "COALESCE(a.due_at, a.occurred_at)"
+
+#: The entities whose rows carry ``next_activity``. Contacts and companies
+#: get nothing, because a card is a deal or a lead.
+_NEXT_ACTIVITY_SLUGS = frozenset({"deals", "leads"})
+
+
+async def attach_next_activity(
+    db: Any, entity: Entity, rows: list[dict[str, Any]],
+) -> None:
+    """Set ``next_activity`` on each deal or lead of *rows*, in place.
+
+    ONE statement for all the rows, whatever their count: ``DISTINCT ON`` the
+    target column keeps the first row of each record under
+    :data:`NEXT_AT_SQL`, then the smaller ``id``. The column comes from
+    ``Entity.activity_column``, a registry literal and never caller text, and
+    the index on ``(<column>, created_at)`` serves ``= ANY``. Row level
+    security keeps another tenant's activity off every card.
+
+    Each row gets ``{id, type, subject, at, all_day}``, or ``None`` when
+    nothing counts. ``all_day`` is true for a task, whose ``due_at`` holds a
+    date at 00:00 UTC.
+    """
+    if entity.slug not in _NEXT_ACTIVITY_SLUGS:
+        return
+    for row in rows:
+        row["next_activity"] = None
+    ids = [str(row["id"]) for row in rows if row.get("id")]
+    if not ids:
+        return
+    column = entity.activity_column
+    found = (await db.execute(
+        text(
+            f"SELECT DISTINCT ON (a.{column}) a.{column} AS record_id, a.id, "
+            f"a.type, a.subject, {NEXT_AT_SQL} AS at, "
+            "(a.type = 'task') AS all_day "
+            "FROM crm_activities a "
+            f"WHERE a.{column} = ANY(CAST(:ids AS uuid[])) "
+            f"AND {NEXT_ACTIVITY_SQL} "
+            f"ORDER BY a.{column}, {NEXT_AT_SQL}, a.id"
+        ),
+        {"ids": ids},
+    )).fetchall()
+    by_record = {
+        str(r.record_id): {
+            "id": wire(r.id), "type": r.type, "subject": r.subject,
+            "at": wire(r.at), "all_day": bool(r.all_day),
+        }
+        for r in found
+    }
+    for row in rows:
+        row["next_activity"] = by_record.get(str(row.get("id")))
+
+
+async def add_stage_to_default_pipeline(db: Any, status_id: str) -> None:
+    """Append a new deal stage to the default pipeline, last (WS-53 CRM-Q2).
+
+    The stage route calls it in the same transaction as the insert, so a stage
+    an admin creates in Native mode is usable on the board at once. It goes
+    through the one write guard: Mirror mode refuses (409), and the stage route
+    has refused already. With no pipeline it does nothing.
+    """
+    await assert_writable(db, current_tenant(), "crm_pipeline_stages")
+    pipeline = await default_pipeline_id(db)
+    if pipeline is None:
+        return
+    await db.execute(
+        text(
+            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
+            "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), COALESCE((SELECT "
+            "max(position) + 1 FROM crm_pipeline_stages WHERE pipeline_id = "
+            "CAST(:p AS uuid)), 0)) ON CONFLICT (pipeline_id, status_id) DO NOTHING"
+        ),
+        {"p": pipeline, "s": str(status_id)},
+    )
+
+
+async def default_pipeline_id(db: Any) -> str | None:
+    """The id of the organization's default deal pipeline, or ``None``.
+
+    A deal with no stated pipeline joins it (native create and lead convert).
+    """
+    row = (await db.execute(
+        text(
+            "SELECT id FROM crm_pipelines "
+            "ORDER BY is_default DESC, position, created_at LIMIT 1"
+        ),
+        {},
+    )).first()
+    return str(row.id) if row is not None else None
 
 
 # ── SQL helpers ─────────────────────────────────────────────────────────────
@@ -880,7 +1329,7 @@ async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
 
 #: Columns declared ``JSONB`` in migration 144. asyncpg has no codec for a bare
 #: Python dict, so these are serialized here and cast in the statement.
-JSONB_COLUMNS: frozenset[str] = frozenset({"address", "meta"})
+JSONB_COLUMNS: frozenset[str] = frozenset({"address", "meta", "custom"})
 
 #: ``TIMESTAMPTZ`` / ``DATE`` columns a request body may set as an ISO string.
 #: asyncpg binds real ``datetime``/``date`` objects, so the string is parsed
@@ -1037,7 +1486,116 @@ def mark_dirty_on_update(
     return {**values, "zoho_dirty": True}
 
 
+# ── The mirror write guard (WS-53 CRM-Z6) ──────────────────────────────────
+
+#: The four record tables. In Mirror mode a provider owns their rows.
+MIRROR_RECORD_TABLES: frozenset[str] = frozenset({
+    "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
+})
+
+#: Pipeline settings. In Mirror mode the provider owns the stage picklist and
+#: the deal pipelines (WS-53 CRM-Q2).
+MIRROR_SETTINGS_TABLES: frozenset[str] = frozenset({
+    "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
+    "crm_pipelines", "crm_pipeline_stages",
+})
+
+#: ``ext_source`` value → the name a person reads.
+SOURCE_LABELS: dict[str, str] = {"zoho": "Zoho"}
+
+
+def source_label(source: str | None) -> str:
+    return SOURCE_LABELS.get(str(source or "").lower(), str(source or "the source"))
+
+
+async def is_mirror_mode(db: Any, organization_id: str | None) -> bool:
+    """True when ``crm_settings.mode`` is ``'mirror'`` for the organization.
+
+    Read on each guarded write and cached nowhere, so a mode change takes
+    effect on the next request. The organization comes from the bound tenant
+    (never from the request). Row level security filters the read as well.
+    """
+    if organization_id:
+        row = (await db.execute(
+            text(
+                "SELECT mode FROM crm_settings "
+                "WHERE organization_id = CAST(:organization_id AS uuid)"
+            ),
+            {"organization_id": str(organization_id)},
+        )).first()
+    else:
+        row = (await db.execute(text("SELECT mode FROM crm_settings"))).first()
+    return row is not None and getattr(row, "mode", None) == "mirror"
+
+
+def _conflict(code: str, message: str, **extra: Any) -> HTTPException:
+    return HTTPException(
+        status_code=409, detail={"code": code, "message": message, **extra},
+    )
+
+
+async def refuse_in_mirror_mode(db: Any, code: str, message: str) -> None:
+    """409 ``code`` when the organization is in Mirror mode. For whole routes."""
+    if await is_mirror_mode(db, current_tenant()):
+        raise _conflict(code, message)
+
+
+async def assert_writable(
+    db: Any, organization_id: str | None, entity: Any,
+    fields: dict[str, Any] | None = None, *,
+    row: Any = None, record_id: str | None = None, creating: bool = False,
+) -> None:
+    """Refuse a native write to data that a provider owns (CRM-Z6, Mirror mode).
+
+    ``entity`` is an :class:`Entity` or a table name. This guard is the ONE
+    write guard (``crm_platform.md`` §3.5 rule 2). :func:`insert_row` and
+    :func:`update_row` call it, and each route that writes with raw SQL (a
+    delete) or acts before it writes (a status move) calls it first with the
+    loaded ``row``. In Native mode, or with no mode, it does nothing.
+
+    * a write to a row with ``ext_source`` set: 409 ``mirrored_record``;
+    * a new lead, deal, contact or company: 409 ``mirror_mode_create``;
+    * a write to pipeline settings: 409 ``mirror_mode_settings``;
+    * an activity with ``ext_source`` NULL passes (§3.3).
+
+    The sync's ``upsert_from_source`` is the only bypass. It never calls this.
+    """
+    table = getattr(entity, "table", entity)
+    guarded = (
+        table in MIRROR_RECORD_TABLES or table in MIRROR_SETTINGS_TABLES
+        or table == "crm_activities"
+    )
+    if not guarded or not await is_mirror_mode(db, organization_id):
+        return
+    if table in MIRROR_SETTINGS_TABLES:
+        raise _conflict(
+            "mirror_mode_settings",
+            "The stages, pipelines and lost reasons come from Zoho. Change them in Zoho.",
+        )
+    if creating:
+        if table == "crm_activities":
+            return
+        raise _conflict(
+            "mirror_mode_create",
+            "In Mirror mode, new records are created in Zoho. "
+            "Create it there; the next sync brings it here.",
+            source="zoho",
+        )
+    if row is None and record_id is not None:
+        row = await load_row(db, table, record_id)
+    source = getattr(row, "ext_source", None) if row is not None else None
+    if source:
+        raise _conflict(
+            "mirrored_record",
+            f"This record comes from {source_label(source)}. "
+            f"Change it in {source_label(source)}; "
+            "the next sync brings the change here.",
+            source=source,
+        )
+
+
 async def insert_row(db: Any, table: str, values: dict[str, Any]) -> Any:
+    await assert_writable(db, current_tenant(), table, values, creating=True)
     reject_null_on_defaulted(table, values)
     values = mark_dirty_on_insert(table, values)
     columns = list(values)
@@ -1055,6 +1613,7 @@ async def update_row(
     db: Any, table: str, record_id: str, values: dict[str, Any],
     *, touch: bool = True,
 ) -> Any:
+    await assert_writable(db, current_tenant(), table, values, record_id=record_id)
     reject_null_on_defaulted(table, values)
     values = mark_dirty_on_update(table, values, touch=touch)
     assignments = [f"{c} = {_placeholder(c)}" for c in values]
@@ -1115,6 +1674,299 @@ async def upsert_by_zoho_id(db: Any, table: str, values: dict[str, Any]) -> Any:
         ),
         _bindable(values),
     )).fetchone()
+
+
+#: The five tables a provider mirror may write (migration 244, CRM-Z3). Every
+#: other crm_* table is native vocabulary or bookkeeping and has no ``ext_*``.
+MIRROR_TABLES: frozenset[str] = frozenset({
+    "crm_companies", "crm_contacts", "crm_leads", "crm_deals", "crm_activities",
+})
+
+#: Columns the mirror upsert never rewrites on the conflict arm. The first
+#: two are the key. ``source`` is provenance, as in :data:`INSERT_ONLY_COLUMNS`.
+MIRROR_INSERT_ONLY: frozenset[str] = frozenset({
+    "ext_source", "ext_id", "source", "zoho_id",
+})
+
+#: Column names the mirror upsert refuses. ``id`` and ``created_at`` belong to
+#: the row, ``organization_id`` to the bound session, and ``zoho_dirty`` to the
+#: native write path.
+MIRROR_REFUSED: frozenset[str] = frozenset({
+    "id", "organization_id", "zoho_dirty", "created_at",
+})
+
+#: The settings tables a provider mirror may also write (CRM-Q2). They are keyed
+#: ``(organization_id, ext_source, ext_id)`` like the five above, but they have
+#: no ``zoho_id`` column, and the sync writes them only from the discovery step.
+MIRROR_SETTINGS_SOURCE_TABLES: frozenset[str] = frozenset({"crm_pipelines"})
+
+_COLUMN_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
+async def upsert_from_source(db: Any, table: str, values: dict[str, Any]) -> Any:
+    """Write a row a provider owns, keyed on ``(organization_id, ext_source, ext_id)``.
+
+    This is the mirror's ONE write path (WS-53 CRM-Z3). Two calls with one key
+    give one row, and the second updates it. Two organizations may each hold
+    the same ``ext_id``, because the key includes the tenant, and the tenant
+    comes from the column DEFAULT that the bound session sets.
+
+    A mirror write is not a native edit, so this never sets ``zoho_dirty``.
+    A caller that passes it gets a ``ValueError``, because the sync would push
+    the row straight back to the provider. Callers outside ``gateway/crm_sync/``
+    must not import this: ``tests/unit/test_crm_upsert_from_source_fence.py``
+    refuses it.
+
+    Like :func:`upsert_by_zoho_id`, it leaves ``updated_at`` alone on the
+    conflict arm, so last-writer-wins keeps comparing against ``ext_modified_at``.
+    The conflict arm overwrites every passed column: deciding WHETHER the source
+    is newer than a native edit is the caller's job, before it calls.
+
+    ⚠️ A Zoho row also gets ``zoho_id = ext_id`` (CRM-Z3 review, P1). The old
+    sync pushes an activity whose ``zoho_id`` is NULL as a NEW Zoho record, and
+    the old importer keys on ``zoho_id``. Without it, a mirrored activity went
+    back to Zoho as a duplicate, and the importer made a second native row.
+
+    Column names come from the caller's dict, so each one must be a plain
+    identifier and none may be in :data:`MIRROR_REFUSED`.
+    """
+    if table not in MIRROR_TABLES and table not in MIRROR_SETTINGS_SOURCE_TABLES:
+        raise ValueError(
+            f"upsert_from_source: {table!r} is not a mirror table "
+            f"(allowed: {sorted(MIRROR_TABLES | MIRROR_SETTINGS_SOURCE_TABLES)})"
+        )
+    for required in ("ext_source", "ext_id"):
+        if not values.get(required):
+            raise ValueError(f"upsert_from_source: {required!r} is required")
+    for column in values:
+        if column in MIRROR_REFUSED:
+            raise ValueError(f"upsert_from_source: {column!r} must not be passed")
+        if not _COLUMN_NAME.match(column):
+            raise ValueError(f"upsert_from_source: {column!r} is not a column name")
+    if values["ext_source"] == "zoho" and table in MIRROR_TABLES:
+        if values.get("zoho_id") not in (None, values["ext_id"]):
+            raise ValueError("upsert_from_source: zoho_id must equal ext_id for Zoho")
+        values = {**values, "zoho_id": values["ext_id"]}
+    columns = list(values)
+    placeholders = ", ".join(_placeholder(c) for c in columns)
+    assignments = ", ".join(
+        f"{c} = EXCLUDED.{c}" for c in columns if c not in MIRROR_INSERT_ONLY
+    ) or "ext_id = EXCLUDED.ext_id"  # a key-only write still RETURNs the row
+    return (await db.execute(
+        text(
+            f"INSERT INTO {table} ({', '.join(columns)}) "
+            f"VALUES ({placeholders}) "
+            f"ON CONFLICT (organization_id, ext_source, ext_id) "
+            f"DO UPDATE SET {assignments} RETURNING *"
+        ),
+        _bindable(values),
+    )).fetchone()
+
+
+async def delete_from_source(
+    db: Any, table: str, ext_source: str, ext_ids: Sequence[str],
+) -> int:
+    """Delete the mirror rows that a provider deleted. Returns how many went.
+
+    The second door of the mirror write path (WS-53 CRM-Z4), beside
+    :func:`upsert_from_source`, with the same table allowlist and the same
+    fence (``tests/unit/test_crm_upsert_from_source_fence.py`` refuses both
+    names outside ``gateway/crm_sync/``). It matches ``ext_source`` and
+    ``ext_id`` only, so a native row (both NULL) is never touched. The
+    tenant policy binds the organization.
+
+    It writes NO tombstone. A tombstone queues a delete for the provider, and
+    this delete came from the provider.
+    """
+    if table not in MIRROR_TABLES and table not in MIRROR_SETTINGS_SOURCE_TABLES:
+        raise ValueError(
+            f"delete_from_source: {table!r} is not a mirror table "
+            f"(allowed: {sorted(MIRROR_TABLES | MIRROR_SETTINGS_SOURCE_TABLES)})"
+        )
+    if not ext_source:
+        raise ValueError("delete_from_source: 'ext_source' is required")
+    ids = sorted({str(i) for i in ext_ids if i})
+    if not ids:
+        return 0
+    result = await db.execute(
+        text(
+            f"DELETE FROM {table} WHERE ext_source = :ext_source "
+            f"AND ext_id = ANY(CAST(:ext_ids AS text[]))"
+        ),
+        {"ext_source": ext_source, "ext_ids": ids},
+    )
+    return int(result.rowcount or 0)
+
+
+async def set_pipeline_stages_from_source(
+    db: Any, pipeline_id: str, stages: Sequence[tuple[str, int]],
+) -> None:
+    """Set which stages sit in one MIRRORED pipeline, and in what order.
+
+    The third door of the mirror write path (WS-53 CRM-Q2), beside
+    :func:`upsert_from_source` and :func:`delete_from_source`, with the same
+    fence (``tests/unit/test_crm_upsert_from_source_fence.py`` refuses all three
+    names outside ``gateway/crm_sync/``). ``crm_pipeline_stages`` has no
+    ``ext_id``, so the ``(pipeline_id, status_id)`` key is the whole identity.
+
+    *stages* is ``[(status_id, position), ...]``. A stage that the list leaves
+    out is removed from the pipeline. The stage row (``crm_deal_statuses``) stays,
+    because it is one global list. The tenant policy binds the organization.
+    """
+    ids = [str(status_id) for status_id, _ in stages]
+    await db.execute(
+        text(
+            "DELETE FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid) "
+            "AND NOT (status_id = ANY(CAST(:ids AS uuid[])))"
+        ),
+        {"p": pipeline_id, "ids": ids},
+    )
+    for status_id, position in stages:
+        await db.execute(
+            text(
+                "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
+                "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), :pos) "
+                "ON CONFLICT (pipeline_id, status_id) "
+                "DO UPDATE SET position = EXCLUDED.position"
+            ),
+            {"p": pipeline_id, "s": str(status_id), "pos": int(position)},
+        )
+
+
+async def set_deal_contacts_from_source(
+    db: Any, deal_id: str, contacts: Sequence[tuple[str, str | None]],
+) -> tuple[int, int]:
+    """Set the contacts, and their roles, of one MIRRORED deal (WS-53 CRM-Q5).
+
+    The fourth door of the mirror write path, beside :func:`upsert_from_source`,
+    :func:`delete_from_source` and :func:`set_pipeline_stages_from_source`, with
+    the same fence (``tests/unit/test_crm_upsert_from_source_fence.py``).
+    ``crm_deal_contacts`` has no ``ext_id``, so ``(deal_id, contact_id)`` is the
+    natural key. *contacts* is ``[(contact_id, role), ...]`` with LOCAL ids.
+
+    A row that the list leaves out is removed only when its ``ext_source`` is
+    ``'zoho'`` (migration 249), so a link a person made here on a mirrored deal
+    survives. The primary contact is never removed. The primary comes from the ``Contact_Name`` of the deal itself, and a deal can
+    list no role for it. ``is_primary`` is never changed here. The tenant
+    policy binds the organization, and the column default fills it on insert.
+
+    Returns ``(written, removed)``.
+    """
+    ids = [str(contact_id) for contact_id, _ in contacts]
+    removed = await db.execute(
+        text(
+            "DELETE FROM crm_deal_contacts WHERE deal_id = CAST(:d AS uuid) "
+            "AND ext_source = 'zoho' AND NOT is_primary AND NOT (contact_id = ANY(CAST(:ids AS uuid[])))"
+        ),
+        {"d": deal_id, "ids": ids},
+    )
+    for contact_id, role in contacts:
+        await db.execute(
+            text(
+                "INSERT INTO crm_deal_contacts (deal_id, contact_id, role, ext_source) "
+                "VALUES (CAST(:d AS uuid), CAST(:c AS uuid), :role, 'zoho') "
+                "ON CONFLICT (deal_id, contact_id) DO UPDATE SET "
+                "role = EXCLUDED.role, ext_source = 'zoho' "
+                "WHERE crm_deal_contacts.ext_source = 'zoho' "
+                "OR crm_deal_contacts.is_primary"
+            ),
+            {"d": deal_id, "c": str(contact_id), "role": role},
+        )
+    return len(contacts), int(removed.rowcount or 0)
+
+
+# ── The generic record store (WS-53 CRM-Q6a, migration 251) ────────────────
+
+#: A provider module API name: a letter, then letters, digits and ``_``. The
+#: name reaches only a bound parameter, and the check keeps junk out of the key.
+_MODULE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+
+#: The columns that the module door writes. The caller passes no column name.
+MODULE_RECORD_COLUMNS: tuple[str, ...] = (
+    "name", "owner_email", "fields", "ext_url", "ext_created_at", "ext_modified_at",
+)
+
+_UPSERT_MODULE_RECORD_SQL = (
+    "INSERT INTO crm_module_records (module, ext_source, ext_id, name, "
+    "owner_email, fields, ext_url, ext_created_at, ext_modified_at) VALUES "
+    "(:module, :ext_source, :ext_id, :name, :owner_email, CAST(:fields AS jsonb), "
+    ":ext_url, :ext_created_at, :ext_modified_at) "
+    "ON CONFLICT (organization_id, ext_source, module, ext_id) DO UPDATE SET "
+    "name = EXCLUDED.name, owner_email = EXCLUDED.owner_email, "
+    "fields = EXCLUDED.fields, ext_url = EXCLUDED.ext_url, "
+    "ext_created_at = EXCLUDED.ext_created_at, "
+    "ext_modified_at = EXCLUDED.ext_modified_at, updated_at = now() "
+    # A replay of the same record changes nothing, not even updated_at.
+    "WHERE (crm_module_records.name, crm_module_records.owner_email, "
+    "crm_module_records.fields, crm_module_records.ext_url, "
+    "crm_module_records.ext_created_at, crm_module_records.ext_modified_at) "
+    "IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.owner_email, EXCLUDED.fields, "
+    "EXCLUDED.ext_url, EXCLUDED.ext_created_at, EXCLUDED.ext_modified_at) "
+    "RETURNING id"
+)
+
+
+def _module_key(ext_source: str, module: str) -> None:
+    if not ext_source:
+        raise ValueError("module records: 'ext_source' is required")
+    if not _MODULE_NAME.match(module or ""):
+        raise ValueError(f"module records: {module!r} is not a module API name")
+
+
+async def upsert_module_records_from_source(
+    db: Any, ext_source: str, module: str, ext_id: str, values: dict[str, Any],
+) -> bool:
+    """Write one record of a generic module, keyed on
+    ``(organization_id, ext_source, module, ext_id)`` (WS-53 CRM-Q6a).
+
+    The fifth door of the mirror write path, beside :func:`upsert_from_source`,
+    with the same fence (``tests/unit/test_crm_upsert_from_source_fence.py``
+    refuses its name outside ``gateway/crm_sync/``). No native writer of
+    ``crm_module_records`` exists. The table has no ``zoho_id`` column, so this
+    door sets none.
+
+    *values* holds only :data:`MODULE_RECORD_COLUMNS`. A key outside them is a
+    ``ValueError``, so a column name never comes from the caller. The tenant
+    comes from the column DEFAULT that the bound session sets.
+
+    Returns True when a row was written, and False for a replay that changed
+    nothing.
+    """
+    _module_key(ext_source, module)
+    if not ext_id:
+        raise ValueError("module records: 'ext_id' is required")
+    unknown = sorted(set(values) - set(MODULE_RECORD_COLUMNS))
+    if unknown:
+        raise ValueError(f"module records: {unknown} are not columns this door writes")
+    params = {column: values.get(column) for column in MODULE_RECORD_COLUMNS}
+    params["fields"] = json.dumps(params["fields"] or {}, default=str)
+    row = (await db.execute(text(_UPSERT_MODULE_RECORD_SQL), {
+        **params, "module": module, "ext_source": ext_source, "ext_id": str(ext_id),
+    })).first()
+    return row is not None
+
+
+async def delete_module_records_from_source(
+    db: Any, ext_source: str, module: str, ext_ids: Sequence[str],
+) -> int:
+    """Delete the generic records that a provider deleted. Returns how many went.
+
+    The sixth door of the mirror write path (WS-53 CRM-Q6a), with the same
+    fence as :func:`delete_from_source`. It matches the module, ``ext_source``
+    and ``ext_id``, and the tenant policy binds the organization.
+    """
+    _module_key(ext_source, module)
+    ids = sorted({str(i) for i in ext_ids if i})
+    if not ids:
+        return 0
+    result = await db.execute(
+        text(
+            "DELETE FROM crm_module_records WHERE ext_source = :ext_source "
+            "AND module = :module AND ext_id = ANY(CAST(:ext_ids AS text[]))"
+        ),
+        {"ext_source": ext_source, "module": module, "ext_ids": ids},
+    )
+    return int(result.rowcount or 0)
 
 
 async def load_by_zoho_id(db: Any, table: str, zoho_id: str) -> Any | None:

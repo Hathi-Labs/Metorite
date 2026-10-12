@@ -1029,6 +1029,14 @@ def test_a_slow_pdf_is_refused_and_frees_its_slot(ws, monkeypatch) -> None:
     out = _read(ws, SID_A, "slow.pdf")
     assert "took too long" in out
     assert time.monotonic() - started < 1.0 + tools._WAIT_MARGIN + 1.5
+    # The parse thread keeps its slot until it ends (see the runaway test
+    # below), and the read returns at the deadline. On a loaded CI runner the
+    # thread can still be finishing here, so wait a bounded time for the slot
+    # to come back rather than race it. It failed four times in a row on
+    # 2026-10-11 with 1 free slot of 2, never with a slot leaked for good.
+    deadline = time.monotonic() + 15.0
+    while _free_slots() != tools.MAX_PARSES and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert _free_slots() == tools.MAX_PARSES
 
 

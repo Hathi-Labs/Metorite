@@ -710,6 +710,11 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "It reads only through the SECURITY DEFINER "
         "`whatsapp_member_links_for_phone`, granted to `acb_app` alone, and "
         "it writes nothing",
+    ("apps/services/gateway/gateway/crm_sync/scheduler.py",
+     "_organization_ids"):
+        "WS-53 CRM-Z5: which organizations the CRM mirror loop looks at. It "
+        "lists the RLS-EXEMPT `organization` table, so it does not go blind. "
+        "Every read after it binds one organization with `tenant_session`",
     ("apps/services/gateway/gateway/routes/whatsapp_channel/inbound.py",
      "_code_rows"):
         "WS-47 WAC-2: which org issued the link code that a phone sent. The "
@@ -862,6 +867,21 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "readable AND writable unbound, as the non-privileged role on a "
         "phase-4-promoted catalog, by `test_h3_rls_promotion_rehearsal.py::"
         "TestTheEmailOtpTokenIsReachableUnbound`.",
+    ),
+    "packages/acb_auth/acb_auth/agent_tokens.py": (
+        1,
+        "WS-55 EA-1 — the outside-agent token store. ONE helper (`_session`) "
+        "that only the token acts open, and it MUST start unbound: an outside "
+        "agent sends only an opaque token, so the edge finds the token BEFORE "
+        "it knows the tenant. The first read touches only `agent_token`, which "
+        "is RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
+        "§10.3). Before it touches the tenant-scoped `agent_connection`, the "
+        "act binds the tenant FROM THE TOKEN ROW inside the same transaction, "
+        "with the seam's own `set_config(..., true)` statement (the "
+        "`org_settings` pattern). Not a known-open brick: "
+        "`test_agent_connection_tokens.py` proves the lookup, the code spend, "
+        "the issue and the refresh rotation as the non-privileged role on a "
+        "phase-4-promoted catalog.",
     ),
     "packages/acb_common/acb_common/provisioning.py": (
         3,

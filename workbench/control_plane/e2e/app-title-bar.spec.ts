@@ -154,7 +154,7 @@ const PAGES: Array<[string, string]> = [
   ["My Email", "/email"],
   ["My WhatsApp", "/whatsapp"],
   ["Projects", "/projects"],
-  // A `preview` pane that opens with the bar (WS-53 CRM-U1).
+  // Live since 2026-10-11 (WS-53 CRM-L2).
   ["CRM", "/crm"],
   ["People", "/people"],
   ["Chat", "/chat"],

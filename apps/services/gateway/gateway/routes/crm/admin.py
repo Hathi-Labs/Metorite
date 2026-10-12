@@ -34,6 +34,9 @@ from gateway.routes.crm.core import (
     LostReasonModel,
     StatusModel,
     _tenant_session,
+    add_stage_to_default_pipeline,
+    assert_writable,
+    current_tenant,
     insert_row,
     require_row,
     router,
@@ -314,6 +317,8 @@ async def create_status(
         if values.get("position") is None:
             values["position"] = await _next_position(db, table)
         row = await insert_row(db, table, values)
+        if kind == "deal":
+            await add_stage_to_default_pipeline(db, str(row.id))
         return status_wire(row)
 
 
@@ -366,6 +371,7 @@ async def delete_status(
                     "to another status first — deleting it would orphan them."
                 ),
             )
+        await assert_writable(db, current_tenant(), table)
         await db.execute(
             text(f"DELETE FROM {table} WHERE id = CAST(:id AS uuid)"),
             {"id": status_id},
@@ -450,6 +456,7 @@ async def delete_lost_reason(
     the records that cited it keep their ``lost_note`` and lose the label."""
     async with _tenant_session() as db:
         await require_row(db, "crm_lost_reasons", reason_id, "Lost reason")
+        await assert_writable(db, current_tenant(), "crm_lost_reasons")
         await db.execute(
             text("DELETE FROM crm_lost_reasons WHERE id = CAST(:id AS uuid)"),
             {"id": reason_id},

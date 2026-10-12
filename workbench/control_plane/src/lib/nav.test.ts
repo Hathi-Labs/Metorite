@@ -57,6 +57,9 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   // TEN to ELEVEN. "My WhatsApp" sits after "My Email", in nav order.
   ["personal", "/whatsapp"],
   ["apps", "/projects"],
+  // Added 2026-10-11 by owner decision in chat (WS-53 CRM-L2), taking the live
+  // set from ELEVEN to TWELVE. CRM sits after Projects, in nav order.
+  ["apps", "/crm"],
   // Added 2026-09-20 by owner decision, taking the live set from NINE to TEN.
   // The directory was held back while it could not load at all (PR #306) and
   // while it had no rows to show (H-124's roster sync). Same fence, same
@@ -111,7 +114,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the eleven panes launch_surface.md §2 names", () => {
+  it("ships exactly the twelve panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);

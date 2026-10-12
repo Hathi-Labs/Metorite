@@ -690,6 +690,9 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: by the agent's `floor_opt_out`: call_agent_background, call_agents_parallel,
 #: get_workflow_run, list_integrations, list_workflows, load_artifact_kit,
 #: load_design_system and manage_todo_list. None of them was called.
+#: 2026-10-11: package_artifacts joined the floor. It reads and writes the
+#: working dir through the safe opener and under the broker's dir lock, so it
+#: is no `_HOST_FILE_TOOLS` member, and it says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -707,7 +710,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "intake_queue", "link_tasks", "list_tasks",
     "mark_notifications_read", "merge_tags", "merge_tasks", "move_project",
     "move_task", "my_areas", "my_contexts", "my_led_projects", "my_task", "my_work",
-    "notifications", "open_in_app", "people_for", "project_access",
+    "notifications", "open_in_app", "package_artifacts", "people_for", "project_access",
     "project_summary", "project_views", "projects_tree", "propose_plan",
     "read_attachment", "rebalance", "recall_timeline", "recurrence", "remember", "render_board",
     "render_report", "render_tasks", "render_timeline", "report_delete",
@@ -1625,7 +1628,8 @@ TASK_MANAGER_RISK_BLOCK = (
     "my_tasks_list_schedule, my_tasks_move, my_tasks_organize, my_tasks_plan_day, "
     "my_tasks_plan_project, my_tasks_replan_day, my_tasks_rollover, my_tasks_schedule, "
     "my_tasks_set_one_thing, my_tasks_set_stage, my_tasks_unschedule, my_tasks_update, "
-    "run_script, run_workflow, save_episode, save_memory, save_note, write_artifact\n"
+    "package_artifacts, run_script, run_workflow, save_episode, save_memory, save_note, "
+    "write_artifact\n"
     "- DESTRUCTIVE (irreversible/outward \u2014 always confirm with the user first): "
     "install_dependency\n"
     "- Open-world (reaches outside Metorite): call_agent, call_agent_background, "

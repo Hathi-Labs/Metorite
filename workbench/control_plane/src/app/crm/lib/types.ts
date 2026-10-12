@@ -213,6 +213,16 @@ type Provenance = {
   created_at?: string | null;
   updated_at?: string | null;
   owner_email?: string | null;
+  /**
+   * Mirror fields (WS-53 CRM-Z6). `ext_source` names the system that owns the
+   * record (`zoho`). Null or absent means a record made in Metorite.
+   */
+  ext_source?: string | null;
+  ext_id?: string | null;
+  ext_modified_at?: string | null;
+  /** The "Open in Zoho" link of a mirrored record (CRM-Q1). Null or absent: none. */
+  ext_url?: string | null;
+  custom?: Record<string, unknown> | null;
 };
 
 export type Organization = Provenance & {
@@ -263,12 +273,29 @@ export type Lead = Provenance & {
   converted_organization_id?: string | null;
   /** The link that decides "converted", never the timestamp (§3.3 / B6). */
   converted_deal_id?: string | null;
+  /** CRM-X3. Null: nothing is planned. Absent: an older gateway. */
+  next_activity?: NextActivity | null;
+};
+
+/**
+ * The next open activity of a deal or a lead (CRM-X3, `core.attach_next_activity`):
+ * the open task with the soonest due date, or the next call or meeting.
+ * `all_day` is true for a task, whose `at` is a date at 00:00 UTC.
+ */
+export type NextActivity = {
+  id: string;
+  type: string;
+  subject: string | null;
+  at: string;
+  all_day: boolean;
 };
 
 export type Deal = Provenance & {
   id: string;
   name: string;
   company_id?: string | null;
+  /** The deal pipeline (CRM-Q2). Absent while the gateway has one implicit pipeline. */
+  pipeline_id?: string | null;
   /** Projected by the gateway's LEFT JOIN — never client-side joined. */
   organization_name?: string | null;
   status_id?: string | null;
@@ -283,6 +310,8 @@ export type Deal = Provenance & {
   next_step?: string | null;
   lead_id?: string | null;
   description?: string | null;
+  /** CRM-X3. Null: nothing is planned. Absent: an older gateway. */
+  next_activity?: NextActivity | null;
 };
 
 export type CrmRecord = Deal | Lead | Contact | Organization;
@@ -306,9 +335,39 @@ export type PipelineLane = {
    * Zero on lanes whose type is not open/ongoing (D-CRM-10).
    */
   weighted: number;
+  /**
+   * The stage's place in the chosen pipeline. Null with no pipeline chosen,
+   * and for a stage the pipeline does not list that still holds its deals.
+   * Optional for the R6 window, when a new bundle meets an older gateway.
+   */
+  pipeline_position?: number | null;
 };
 
 export type Pipeline = { lanes: PipelineLane[] };
+
+/** One stage of a deal pipeline, as `GET /crm/pipelines` sends it (CRM-Q2). */
+export type PipelineStage = {
+  id: string;
+  name: string;
+  position: number;
+  type: StatusType;
+  probability?: number | null;
+  forecast_category?: string | null;
+};
+
+/**
+ * A deal pipeline. Not an object in Zoho: a property of a Deal, with its own
+ * ordered stages (spec section 18.1). Named `DealPipeline` because `Pipeline`
+ * above is the board payload.
+ */
+export type DealPipeline = {
+  id: string;
+  name: string;
+  is_default: boolean;
+  position: number;
+  ext_url?: string | null;
+  stages: PipelineStage[];
+};
 
 export type Activity = {
   id: string;
@@ -320,6 +379,8 @@ export type Activity = {
   completed_at?: string | null;
   created_by?: string | null;
   created_at?: string | null;
+  /** Set on an activity that Zoho owns (CRM-Z6). Null: only in Metorite. */
+  ext_source?: string | null;
 };
 
 export type StatusChange = {

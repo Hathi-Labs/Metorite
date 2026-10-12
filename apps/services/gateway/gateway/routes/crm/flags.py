@@ -9,6 +9,14 @@ gateway reads them.
 * ``CRM_ORGS`` — the organization ids that may reach ``/crm``, with a comma
   between ids. ``*`` allows each organization with a bound tenant. An empty
   list allows no organization.
+* ``CRM_MIRROR`` — the kill switch of the Zoho connection routes (WS-53
+  CRM-Z2), default OFF. :func:`require_crm_mirror` is their dependency. It
+  adds to ``CRM_ENABLED`` and never replaces it.
+* ``CRM_MIRROR_ORGS`` — the organization ids that may use the Zoho mirror (WS-53
+  CRM-L2). The grammar is the one of ``CRM_ORGS``: ids with a comma between
+  them, or ``*``. An empty list allows no organization, so the mirror fails
+  closed. Since the CRM is live for each organization, this list keeps the
+  Zoho mirror to the organizations that the owner names.
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -44,6 +52,16 @@ def crm_enabled() -> bool:
     return get_settings().crm_enabled is True
 
 
+def crm_mirror_enabled() -> bool:
+    """True when the mirror switch is on. Default OFF."""
+    return get_settings().crm_mirror is True
+
+
+def mirror_sync_enabled() -> bool:
+    """True when the mirror sync loop may start: the CRM AND the mirror are on."""
+    return crm_enabled() and crm_mirror_enabled()
+
+
 @functools.lru_cache(maxsize=16)
 def _parse_orgs(raw: str) -> frozenset[str]:
     """The ids in *raw*, trimmed and in lower case. Cached on the raw value."""
@@ -70,6 +88,25 @@ def crm_org_allowed(organization_id: str | None) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def crm_mirror_orgs() -> frozenset[str]:
+    """The organization ids that may use the mirror. Empty means none."""
+    return _parse_orgs(str(get_settings().crm_mirror_orgs or ""))
+
+
+def crm_mirror_allowed(organization_id: str | None) -> bool:
+    """True when the mirror may serve this organization.
+
+    It needs the mirror switch, the CRM switch with the CRM list
+    (:func:`crm_org_allowed`) AND a place on ``CRM_MIRROR_ORGS``, or ``*``
+    there. An empty list allows no organization.
+    """
+    if not crm_mirror_enabled() or not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_mirror_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
 async def require_crm_enabled(
     user: Annotated[UserContext, Depends(get_current_user)],
 ) -> None:
@@ -78,4 +115,15 @@ async def require_crm_enabled(
     It reads ``user.organization_id`` and nothing else from the request.
     """
     if not crm_org_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_crm_mirror(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless the mirror may serve the caller's organization.
+
+    It reads ``user.organization_id`` and nothing else from the request.
+    """
+    if not crm_mirror_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail="Not Found")

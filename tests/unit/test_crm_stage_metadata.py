@@ -293,9 +293,10 @@ async def test_more_than_one_pipeline_stops_before_anything_is_written(
     assert report.pipelines == ["Standard", "Renewals"]
     assert "D-CRM-11" in (report.stop_reason or "")
     # Not merely "no writes": the database is never opened, so there is no
-    # window in which a half-applied repair could exist.
-    assert db.statements == []
-    assert db.committed == 0
+    # window in which a half-applied repair could exist. The one short session
+    # is the Mirror-mode check (CRM-Z6): a single read of crm_settings.
+    assert len(db.statements) == 1
+    assert db.statements[0].startswith("SELECT mode FROM crm_settings")
     assert report.stages == []
 
 
@@ -370,7 +371,7 @@ async def test_apply_renumbers_retypes_and_creates_the_missing_lanes(
     report = await run(apply=True)
 
     assert report.outcome == "applied"
-    assert db.committed == 1
+    assert db.committed == 2  # the Mirror-mode check, then the repair
     by_name = {row["name"]: row for row in db.rows("crm_deal_statuses")}
     assert by_name["Qualification"]["position"] == 10
     assert by_name["Closed Won"]["position"] == 40

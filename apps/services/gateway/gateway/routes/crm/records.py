@@ -26,25 +26,33 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
     DEALS,
     LEADS,
     MAX_PAGE_SIZE,
+    OPEN_LEAD_SQL,
     ORGANIZATIONS,
     ContactIn,
     DealIn,
     Entity,
+    ExtraFilterInput,
     LeadIn,
     ListResponse,
     OrganizationIn,
     _tenant_session,
     actor,
+    assert_writable,
+    attach_ext_urls,
     clean_payload,
     compute_lead_name,
     count_where,
+    current_tenant,
+    custom_pairs,
+    default_pipeline_id,
+    extra_filters,
     has_column,
     insert_row,
     lead_name_is_derived,
@@ -52,7 +60,9 @@ from gateway.routes.crm.core import (
     load_default_status,
     now,
     record_zoho_tombstone,
+    related_filters,
     require_row,
+    resolve_owner,
     router,
     row_to_dict,
     run_list,
@@ -89,6 +99,16 @@ class ListParams:
         owner: str | None = None,
         source: str | None = None,
         include_converted: bool = False,
+        pipeline_id: str | None = None,
+        company_id: str | None = None,
+        contact_id: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        updated_from: str | None = None,
+        updated_to: str | None = None,
+        close_from: str | None = None,
+        close_to: str | None = None,
+        request: Request = None,  # type: ignore[assignment]
     ) -> None:
         self.q = q
         self.sort = sort
@@ -99,6 +119,21 @@ class ListParams:
         self.owner = owner
         self.source = source
         self.include_converted = include_converted
+        #: Deals only (WS-53 CRM-Q2). With none, a list behaves as it always did.
+        self.pipeline_id = pipeline_id
+        self.company_id = company_id
+        self.contact_id = contact_id
+        #: CRM-Q8. ISO dates. A bad one is a 422 before any SQL.
+        self.created_from = created_from
+        self.created_to = created_to
+        self.updated_from = updated_from
+        self.updated_to = updated_to
+        #: Deals only.
+        self.close_from = close_from
+        self.close_to = close_to
+        #: ``custom.<key>=<value>`` and ``custom.<key>.in=a,b``, read off the
+        #: request because the key names are not known up front.
+        self.custom = tuple(custom_pairs(request.query_params if request else None))
 
 
 class DeleteResponse(BaseModel):
@@ -115,29 +150,91 @@ class DeleteResponse(BaseModel):
 
 # ── Shared behaviour ────────────────────────────────────────────────────────
 
-async def _list(entity: Entity, params: ListParams) -> ListResponse:
+async def _list(
+    entity: Entity, params: ListParams, user: Any = None,
+) -> ListResponse:
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:
         # §3.3/B6 — a lead is "converted" while the deal it became still
         # exists. Keying on converted_at instead would strand the lead
         # invisibly forever if that deal were deleted (the FK SET-NULLs the
         # link; the timestamp survives as history).
-        extra = ("converted_deal_id IS NULL",)
-    query = list_contract(
-        entity,
-        q=params.q, sort=params.sort, direction=params.direction,
-        page=params.page, page_size=params.page_size,
-        status_id=params.status_id, owner=params.owner, source=params.source,
-        extra_where=extra,
+        extra = (OPEN_LEAD_SQL,)
+    extra_params: dict[str, Any] = {}
+    related_where, related_params = related_filters(
+        entity, company_id=params.company_id, contact_id=params.contact_id,
     )
+    extra = (*extra, *related_where)
+    extra_params.update(related_params)
+    params.owner = resolve_owner(params.owner, user)
     async with _tenant_session() as db:
+        # CRM-Q8: the date ranges and the custom field filters. They validate
+        # first, so a bad value is a 422 before the list query runs.
+        more_where, more_params = await extra_filters(
+            db, entity, ExtraFilterInput(
+                created_from=params.created_from, created_to=params.created_to,
+                updated_from=params.updated_from, updated_to=params.updated_to,
+                close_from=params.close_from, close_to=params.close_to,
+                custom=params.custom,
+            ),
+        )
+        query = list_contract(
+            entity,
+            q=params.q, sort=params.sort, direction=params.direction,
+            page=params.page, page_size=params.page_size,
+            status_id=params.status_id, owner=params.owner, source=params.source,
+            pipeline_id=params.pipeline_id, extra_where=(*extra, *more_where),
+            extra_params={**extra_params, **more_params},
+        )
         return await run_list(db, entity, query)
 
 
 async def _get(entity: Entity, record_id: str) -> dict:
     async with _tenant_session() as db:
         row = await require_row(db, entity.table, record_id, entity.label)
-        return row_to_dict(row, entity.model)
+        wired = row_to_dict(row, entity.model)
+        await attach_ext_urls(db, entity.table, [wired])
+        return wired
+
+
+async def _resolve_pipeline(db: Any, entity: Entity, values: dict[str, Any]) -> None:
+    """A deal names an existing pipeline, or joins the default one (CRM-Q2).
+
+    A stated ``pipeline_id`` must be a pipeline of this organization, else 404.
+    With none stated on a create, the deal joins the default pipeline when the
+    organization has one. An organization with no pipeline leaves it ``None``.
+    """
+    if entity is not DEALS:
+        return
+    stated = values.get("pipeline_id")
+    if stated:
+        await require_row(db, "crm_pipelines", str(stated), "Pipeline")
+    elif "pipeline_id" not in values:
+        found = await default_pipeline_id(db)
+        if found:
+            values["pipeline_id"] = found
+
+
+async def _check_stage_in_pipeline(
+    db: Any, pipeline_id: Any, status_id: Any,
+) -> None:
+    """422 ``stage_not_in_pipeline`` when a pipeline lists stages and the deal's
+    stage is not one of them. A pipeline with no listed stage allows any."""
+    if not pipeline_id or not status_id:
+        return
+    row = (await db.execute(
+        text(
+            "SELECT count(*) AS total, "
+            "count(*) FILTER (WHERE status_id = CAST(:s AS uuid)) AS hit "
+            "FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid)"
+        ),
+        {"p": str(pipeline_id), "s": str(status_id)},
+    )).first()
+    if row is not None and int(row.total or 0) and not int(row.hit or 0):
+        raise HTTPException(status_code=422, detail={
+            "code": "stage_not_in_pipeline",
+            "message": "This stage is not in the deal's pipeline.",
+        })
 
 
 async def _resolve_status(
@@ -227,6 +324,13 @@ async def create_record(
     values.setdefault("owner_email", actor(user))
 
     async with _tenant_session() as db:
+        await assert_writable(
+            db, current_tenant(), entity, values, creating=True,
+        )
+        chosen_stage = values.get("status_id")
+        await _resolve_pipeline(db, entity, values)
+        if entity is DEALS and chosen_stage:
+            await _check_stage_in_pipeline(db, values.get("pipeline_id"), chosen_stage)
         await _resolve_status(db, entity, values)
         row = await insert_row(db, entity.table, values)
         return row_to_dict(row, entity.model)
@@ -246,6 +350,23 @@ async def patch_record(
     validate_source(values)
     async with _tenant_session() as db:
         record = await require_row(db, entity.table, record_id, entity.label)
+        await assert_writable(
+            db, current_tenant(), entity, values, row=record,
+        )
+        if values.get("pipeline_id"):
+            await _resolve_pipeline(db, entity, values)
+        # Only a CHANGE is checked: a new stage, or a new pipeline. A deal that
+        # keeps its stage is never refused for it.
+        stage_changes = (
+            values.get("status_id") is not None
+            and str(values["status_id"]) != str(getattr(record, "status_id", "") or "")
+        )
+        if entity is DEALS and ("pipeline_id" in values or stage_changes):
+            await _check_stage_in_pipeline(
+                db,
+                values.get("pipeline_id", getattr(record, "pipeline_id", None)),
+                values.get("status_id", getattr(record, "status_id", None)),
+            )
         wanted = values.get("status_id")
         if wanted and str(getattr(record, "status_id", "") or "") != str(wanted):
             values.update(await apply_status_transition(
@@ -311,6 +432,7 @@ async def delete_record(
     """
     async with _tenant_session() as db:
         record = await require_row(db, entity.table, record_id, entity.label)
+        await assert_writable(db, current_tenant(), entity, None, row=record)
         cascaded: dict[str, int] = {}
         for table, column in entity.cascades:
             cascaded[table] = await count_where(db, table, column, record_id)
@@ -335,7 +457,7 @@ async def list_leads(
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
     """Leads, newest first. Converted leads are hidden unless asked for."""
-    return await _list(LEADS, params)
+    return await _list(LEADS, params, user)
 
 
 @router.post("/leads", status_code=201)
@@ -374,7 +496,7 @@ async def list_deals(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(DEALS, params)
+    return await _list(DEALS, params, user)
 
 
 @router.post("/deals", status_code=201)
@@ -413,7 +535,7 @@ async def list_contacts(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(CONTACTS, params)
+    return await _list(CONTACTS, params, user)
 
 
 @router.post("/contacts", status_code=201)
@@ -452,7 +574,7 @@ async def list_organizations(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(ORGANIZATIONS, params)
+    return await _list(ORGANIZATIONS, params, user)
 
 
 @router.post("/organizations", status_code=201)

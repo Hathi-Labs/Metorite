@@ -48,6 +48,7 @@ from gateway.routes.crm.core import (
     compute_lead_name,
     load_by_zoho_id,
     load_default_status,
+    refuse_in_mirror_mode,
     router,
     savepoint,
     upsert_by_zoho_id,
@@ -789,6 +790,12 @@ async def import_from_zoho(
     """
     payload = payload or ImportRequest()
     who = actor(user)
+    async with _tenant_session() as db:
+        await refuse_in_mirror_mode(
+            db, "mirror_mode_legacy_import",
+            "This organization mirrors Zoho. The sync brings the records here, "
+            "so this import is off.",
+        )
     report = ImportReport(dry_run=payload.dry_run, modules={})
     zoho = _client()
 

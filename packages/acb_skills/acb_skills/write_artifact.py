@@ -305,6 +305,17 @@ def announce_artifact(rel_path: str, data: bytes) -> str | None:
     that a command or a file tool wrote under the thread's output folder.
     Returns the download link, or ``None`` when no run is bound.
     """
+    return announce_file(rel_path, len(data), _sha256(data))
+
+
+def announce_file(
+    rel_path: str, size: int, sha256: str, *, mime_type: str | None = None,
+) -> str | None:
+    """:func:`announce_artifact` for a file the caller does not hold in memory.
+
+    The same card and the same :func:`_notify`, from the size and the digest.
+    ``package_artifacts`` streams its zip to disk, and calls this.
+    """
     import asyncio
 
     ctx = artifact_context()
@@ -314,12 +325,12 @@ def announce_artifact(rel_path: str, data: bytes) -> str | None:
         return None
     rel = rel_path.replace("\\", "/")
     name = rel.rsplit("/", 1)[-1]
-    mime, _ = mimetypes.guess_type(name)
+    mime = mime_type or mimetypes.guess_type(name)[0]
     artifact = {
         "path": rel,
         "name": name,
-        "size": len(data),
-        "sha256": _sha256(data),
+        "size": size,
+        "sha256": sha256,
         "mime_type": mime or "application/octet-stream",
         "modified_at": datetime.now(tz=UTC).isoformat(),
         "is_dir": False,
@@ -973,28 +984,19 @@ def _not_this_chats(ctx: Mapping[str, Any]) -> Callable[[str], bool]:
 
 
 async def share_artifact(path: str) -> dict:
-    """Surface a file you ALREADY created as a downloadable, previewable card in
-    the chat — and get back a download link.
+    """Show a file you ALREADY created as a download and preview card in the chat.
 
-    Use this whenever you produced a file with your own tools (shell, editor,
-    Write, a script you ran) instead of ``write_artifact``.  Do NOT re-create or
-    re-read the file's contents — just point this tool at the path you already
-    wrote and it will appear in the chat with a Download button and an inline
-    preview, with zero extra effort on your part.  You do not need to construct
-    any URL by hand; the returned ``download_url`` is the canonical link.
-
-    Pass a single file, or a directory to share every file inside it.
+    Use it for a file you made with your own tools (shell, editor, a script)
+    instead of ``write_artifact``. Do not re-create or re-read the file. Never
+    build a URL: the returned ``download_url`` is the link.
 
     Args:
-        path: File or directory path relative to your workspace (e.g.
-              ``"outputs/report.pdf"``, ``"q2_summary.xlsx"``, or ``"outputs"``
-              to share the whole folder).  Absolute paths inside the workspace
-              are also accepted.
+        path: A file or a directory (every file inside it) in your workspace,
+              e.g. ``"outputs/report.pdf"`` or ``"outputs"``.
 
     Returns:
-        ``{"artifacts": [{"path","name","size","mime_type","download_url"}, ...],
-        "download_url": <first file's link>}``.  On error,
-        ``{"error": str, "artifacts": []}``.
+        ``{"artifacts": [{"path","name","size","mime_type","download_url"}],
+        "download_url"}``, or ``{"error", "artifacts": []}``.
     """
     import asyncio
 
@@ -1481,6 +1483,22 @@ def _warn_fields(warnings: list[str]) -> dict:
     }
 
 
+#: What ``emit_generative_ui`` returns for a blocking card where no card can show.
+GENUI_NO_CARD_TEXT = (
+    "This chat cannot show a card that waits for the member. Ask the member in "
+    "plain text in your reply, and stop."
+)
+
+
+def _genui_card_refused(spec: dict) -> bool:
+    """True for a blocking card in a run that cannot show a card."""
+    if not spec.get("hitl"):
+        return False
+    from acb_skills.ask_tools import cards_refused
+
+    return cards_refused()
+
+
 async def emit_generative_ui(ui: str) -> dict:
     """Draw a card in the chat: a template, a component tree, React or HTML.
 
@@ -1533,6 +1551,12 @@ async def emit_generative_ui(ui: str) -> dict:
         return {"ok": False, "error": f"ui must be valid JSON: {exc}"}
     if not isinstance(spec, dict):
         return {"ok": False, "error": "ui must be a JSON object (a component node)"}
+    # A blocking card parks the run until a member answers. A stream that
+    # cannot show a card (WhatsApp, or a stream that does not declare
+    # ``shows_cards=True``) would wait an hour, so it is refused at once
+    # (review of PR #897). Fence: tests/unit/test_maf_mcp_confirm.py.
+    if _genui_card_refused(spec):
+        return {"ok": False, "error": GENUI_NO_CARD_TEXT}
     # The catalog on demand: a template with no data, an unknown or empty
     # template name, or a code mode with no code asks for its guide. Nothing
     # is parked or pushed for it.

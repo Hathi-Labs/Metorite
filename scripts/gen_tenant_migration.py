@@ -84,6 +84,18 @@ EXEMPT: dict[str, str] = {
     # exempt-identity-table permission. It holds no tenant data: an address, a
     # SHA-256 of the code salted with AUTH_SECRET, an expiry and two counters.
     "auth_email_otp_token":    "belongs to an email, minted pre-session; no organization_id exists to stamp",
+    # WS-55 EA-1 (external_agent_access.md §10.3). An outside agent sends only
+    # an opaque token, so the edge must find the token BEFORE it knows the
+    # tenant. A policy keyed on app.tenant_id could never match that lookup.
+    # The row still carries organization_id with a foreign key, and the lookup
+    # returns it so the edge binds the tenant before it reads anything else.
+    # It holds a SHA-256 of each token, never the token. The connection the
+    # token belongs to (agent_connection) stays tenant-scoped.
+    "agent_token":             "looked up by token hash before the tenant is known; returns organization_id so the edge can bind it",
+    # WS-55 EA-1. A cache of an outside client's public metadata (a Client ID
+    # Metadata Document or a dynamic registration). One client serves every
+    # organization, and the row holds no tenant data at all.
+    "agent_client":            "global cache of public client metadata; no tenant data",
     # ── Catalogs: identical for every tenant, no customer data ─────────────
     "feature_catalog":         "a catalog of product surfaces, not tenant data",
     "schema_migrations":       "migration bookkeeping",

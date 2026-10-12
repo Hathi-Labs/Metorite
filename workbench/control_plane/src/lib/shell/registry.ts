@@ -127,6 +127,39 @@ export const JOBS: readonly ShellJob[] = [
     icon: "UserPlus",
   },
   {
+    // CRM-L2 builds one of the four jobs of crm_platform.md section 11. It
+    // opens the quick-create form and never saves.
+    id: "new-lead",
+    label: "New lead",
+    words: ["lead", "prospect", "crm", "sales", "enquiry", "inquiry"],
+    app: "/crm",
+    href: "/crm?do=new-lead",
+    icon: "UserPlus",
+  },
+  {
+    // IN-2. Opens the "MCP server" form of the Integrations console. It saves
+    // nothing. ⚠️ The registry gates a job by PANE only, not by capability. A
+    // member with the pane and no `integrations:manage` can still follow the
+    // link. The page then opens no form (it mounts the job only for a manager
+    // and only when the list exists), so the link is dead and harmless. The
+    // gateway refuses the write anyway.
+    id: "add-mcp",
+    label: "Add an MCP server",
+    words: ["mcp", "server", "tool", "tools", "connect", "integration", "integrations"],
+    app: "/integrations",
+    href: "/integrations?do=add-mcp",
+    icon: "Server",
+  },
+  {
+    // IN-2. A link job: the list of connections is where the work waits.
+    id: "review-integrations",
+    label: "Review connections",
+    words: ["connections", "review", "integrations", "reconnect", "health", "status"],
+    app: "/integrations",
+    href: "/integrations",
+    icon: "Plug",
+  },
+  {
     id: "find-person",
     label: "Find a colleague",
     words: ["people", "person", "colleague", "directory", "who", "team", "contact"],

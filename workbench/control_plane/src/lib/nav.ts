@@ -336,11 +336,15 @@ export const NAV_SECTIONS: NavSection[] = [
       {
         href: "/crm",
         team: "across",
+        blurb: "Track leads, deals and customers in one pipeline",
         label: "CRM",
         icon: "KanbanSquare",
         note: "Pipeline, leads and customers",
         feature: "crm",
-        launch: "preview", // WS-26 incomplete
+        // `live` since 2026-10-11 - owner, in chat ("Promote CRM to live
+        // now"), taking the live set from ELEVEN to TWELVE (WS-53 CRM-L2).
+        // This line, `launch_surface.md` section 2 and `nav.test.ts` move together.
+        launch: "live",
       },
       {
         href: "/people",
@@ -495,9 +499,10 @@ export const NAV_SECTIONS: NavSection[] = [
       {
         href: "/integrations",
         team: "admin",
+        blurb: "Every tool your company has connected",
         label: "Integrations",
         icon: "Plug",
-        note: "APIs · MCP servers · plugins",
+        note: "Connections · API keys · MCP servers",
         feature: "integrations",
         launch: "preview",
       },

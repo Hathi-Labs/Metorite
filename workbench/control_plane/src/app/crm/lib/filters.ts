@@ -9,7 +9,7 @@
 // because a shared list component is what would send it. So the chips a list
 // offers are derived from the entity, and the query is built from the chips.
 
-import type { CrmView } from "./urlState";
+import { RANGE_KEYS, type CrmView } from "./urlState";
 import type { EntitySlug, Status } from "./types";
 
 /** Entities with a status pipeline. Sending `status_id` for any other is a
@@ -32,7 +32,42 @@ export type ListQuery = {
   owner?: string;
   source?: string;
   include_converted?: boolean;
+  /** Deals only (CRM-Q2). Sent only when the org has two pipelines or more. */
+  pipeline_id?: string;
+  /** Related lists (CRM-Q3): the contacts and deals of one company. */
+  company_id?: string;
+  /** Related lists (CRM-Q3): the deals one contact is attached to. */
+  contact_id?: string;
+  /** CRM-Q8: the date ranges. ISO dates. */
+  created_from?: string;
+  created_to?: string;
+  updated_from?: string;
+  updated_to?: string;
+  /** Deals only. */
+  close_from?: string;
+  close_to?: string;
+  /** CRM-X3, the board only: the order of the cards in a deal lane. */
+  card_sort?: "stage_age" | "next_activity";
+  /** CRM-Q8: `custom.<key>.in` = the chosen options, joined by commas. */
+  [custom: `custom.${string}`]: string | undefined;
 };
+
+/** The filters that are the same on a list and on a board (CRM-Q8). */
+export function extraQuery(entity: EntitySlug, view: CrmView): ListQuery {
+  const query: ListQuery = {};
+  if (view.source) query.source = view.source;
+  for (const key of RANGE_KEYS) {
+    const value = view.ranges[key];
+    if (!value) continue;
+    // A close date belongs to a deal. The gateway refuses it on the rest.
+    if (key.startsWith("close_") && entity !== "deals") continue;
+    query[key] = value;
+  }
+  for (const [key, items] of Object.entries(view.custom)) {
+    if (items.length > 0) query[`custom.${key}.in`] = items.join(",");
+  }
+  return query;
+}
 
 /**
  * The view's filters as the list endpoint's query parameters.
@@ -60,6 +95,8 @@ export function listQuery(
   if (view.q.trim()) query.q = view.q.trim();
   if (view.statusId && hasPipeline(entity)) query.status_id = view.statusId;
   if (view.owner) query.owner = view.owner;
+  Object.assign(query, extraQuery(entity, view));
+  if (entity === "deals" && view.pipelineId) query.pipeline_id = view.pipelineId;
   if (entity === "leads" && view.includeConverted) {
     query.include_converted = true;
   }

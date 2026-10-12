@@ -12,12 +12,17 @@
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
+import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
+import type { FieldDef } from "./fields";
+import type { SavedView, SavedViewBody } from "./savedViews";
+import type { SyncHealth } from "./syncHealth";
 import type {
   Activity,
   Contact,
   ConvertResult,
   Deal,
   DealContact,
+  DealPipeline,
   EntitySlug,
   FunnelReport,
   Lead,
@@ -36,10 +41,16 @@ import type {
 
 export class CrmError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /**
+   * The machine code of a refusal: a string `detail` (`sync_running`) or the
+   * `code` of an object `detail` (`mirrored_record`, `mirror_mode_create`).
+   */
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = "CrmError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -53,7 +64,11 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
       detail?: unknown;
       error?: string;
     };
-    throw new CrmError(detailOf(body) || `Gateway error ${res.status}`, res.status);
+    throw new CrmError(
+      detailOf(body) || `Gateway error ${res.status}`,
+      res.status,
+      codeOf(body)
+    );
   }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
@@ -68,6 +83,11 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 function detailOf(body: { detail?: unknown; error?: string }): string {
   const { detail } = body;
   if (typeof detail === "string") return detail;
+  // The write guard (CRM-Z6) answers `{code, source, message}`.
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
   if (Array.isArray(detail)) {
     return detail
       .map((item) =>
@@ -78,6 +98,16 @@ function detailOf(body: { detail?: unknown; error?: string }): string {
       .join("; ");
   }
   return body.error ?? "";
+}
+
+function codeOf(body: { detail?: unknown }): string | undefined {
+  const { detail } = body;
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const code = (detail as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return undefined;
 }
 
 // ── Records ───────────────────────────────────────────────────────────────
@@ -116,6 +146,13 @@ export function deleteRecord(
   id: string
 ): Promise<{ deleted: string; entity: string; cascaded: Record<string, number> }> {
   return call(`/${entity}/${id}`, { method: "DELETE" });
+}
+
+// ── Field definitions (CRM-Q4) ────────────────────────────────────────────
+
+/** What each custom field of one entity means. Read only. */
+export function listFields(entity: EntitySlug): Promise<FieldDef[]> {
+  return call<FieldDef[]>(`/fields/${entity}`);
 }
 
 // ── The CSV export (WS-26i-export) ────────────────────────────────────────
@@ -162,8 +199,28 @@ export async function exportRecords(
 
 // ── The board ─────────────────────────────────────────────────────────────
 
-export function getPipeline(owner?: string | null): Promise<Pipeline> {
-  return call<Pipeline>(`/pipeline${owner ? `?owner=${encodeURIComponent(owner)}` : ""}`);
+export function getPipeline(
+  owner?: string | null,
+  pipelineId?: string | null,
+  extra?: ListQuery,
+): Promise<Pipeline> {
+  const params = new URLSearchParams();
+  if (owner) params.set("owner", owner);
+  if (pipelineId) params.set("pipeline_id", pipelineId);
+  // CRM-Q8: the board takes the same filters as the list.
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return call<Pipeline>(`/pipeline${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * The deal pipelines (CRM-Q2). `null` when the gateway has no such route yet:
+ * the CRM then has one implicit pipeline and shows no picker.
+ */
+export function listPipelines(): Promise<DealPipeline[] | null> {
+  return orNullOn404(call<DealPipeline[]>("/pipelines"));
 }
 
 /**
@@ -298,6 +355,78 @@ export function getOwnerLeaderboard(): Promise<OwnerLeaderboard> {
   return call<OwnerLeaderboard>("/reports/owners");
 }
 
+// ── Mode, connection and sync (WS-53 CRM-U5, CRM-Z7) ───────────────────────
+//
+// A 404 from the three reads below means the Zoho mirror is dark for this
+// deployment (`CRM_MIRROR` off). It is an answer, not a failure: each read
+// then returns `null` and the mirror UI stays hidden.
+
+async function orNullOn404<T>(work: Promise<T>): Promise<T | null> {
+  try {
+    return await work;
+  } catch (err) {
+    if (err instanceof CrmError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export function getConnection(): Promise<ConnectionInfo | null> {
+  return orNullOn404(call<ConnectionInfo>("/connection"));
+}
+
+export function getSyncStatus(): Promise<SyncStatus | null> {
+  return orNullOn404(call<SyncStatus>("/sync/status"));
+}
+
+/** Admin only (CRM-Q9). The sync health card reads it. A 404 means the mirror is off. */
+export function getSyncHealth(): Promise<SyncHealth | null> {
+  return orNullOn404(call<SyncHealth>("/sync/health"));
+}
+
+/** Admin only. A member gets 403, which the caller treats as "unknown". */
+export function getCrmSettings(): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings");
+}
+
+/** Admin only. Choose who may open the CRM (CRM-T5). Each group is `group:<slug>`. */
+export function saveAccess(body: {
+  access: "admins" | "everyone" | "groups";
+  access_groups: string[];
+}): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings", { method: "PATCH", body: JSON.stringify(body) });
+}
+
+/** The organization's groups, for the access control. An empty list when unreadable. */
+export async function listGroups(): Promise<Array<{ slug: string; display_name?: string }>> {
+  try {
+    const res = await fetch("/api/admin/groups", { cache: "no-store" });
+    if (!res.ok) return [];
+    const rows: unknown = await res.json();
+    return Array.isArray(rows) ? (rows as Array<{ slug: string; display_name?: string }>) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function chooseNativeMode(): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings", {
+    method: "PATCH",
+    body: JSON.stringify({ mode: "native" }),
+  });
+}
+
+export function startZohoConnect(): Promise<{ url: string }> {
+  return call<{ url: string }>("/connection/zoho/start", { method: "POST" });
+}
+
+export function disconnectCrm(): Promise<ConnectionInfo> {
+  return call<ConnectionInfo>("/connection/disconnect", { method: "POST" });
+}
+
+export function syncZohoNow(): Promise<{ started: boolean }> {
+  return call<{ started: boolean }>("/sync/zoho", { method: "POST" });
+}
+
 // ── Timeline ──────────────────────────────────────────────────────────────
 
 export function getTimeline(
@@ -374,3 +503,29 @@ export function convertLead(
 }
 
 export type { Contact, Deal, Lead, Organization };
+
+/** Admin only. Back to "no mode" (CRM-U5b). A 409 carries a `message` to show. */
+export function resetMode(): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings", {
+    method: "PATCH",
+    body: JSON.stringify({ mode: null }),
+  });
+}
+
+// ── Saved views (CRM-Q8) ──────────────────────────────────────────────────
+
+export function listViews(entity: EntitySlug): Promise<SavedView[]> {
+  return call<SavedView[]>(`/views?entity=${entity}`);
+}
+
+export function createView(body: SavedViewBody): Promise<SavedView> {
+  return call<SavedView>("/views", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function patchView(id: string, body: Partial<SavedViewBody>): Promise<SavedView> {
+  return call<SavedView>(`/views/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteView(id: string): Promise<{ deleted: string }> {
+  return call<{ deleted: string }>(`/views/${id}`, { method: "DELETE" });
+}

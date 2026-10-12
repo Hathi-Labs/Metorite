@@ -109,6 +109,54 @@ def test_the_crm_settings_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE crm_settings FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_integration_connections_table_is_tenant_scoped() -> None:
+    """WS-53 CRM-Z2 (``crm_platform.md`` §5.3). ``integration_connections``
+    holds the tokens of each connection of an organization. It must never be
+    exempt, and the committed policy phase must carry it."""
+    gen = _generator()
+    assert "integration_connections" in gen.discover_tables()
+    assert "integration_connections" not in gen.EXEMPT
+    assert "integration_connections" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE integration_connections FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_crm_sync_runs_table_is_tenant_scoped() -> None:
+    """WS-53 CRM-Z4/Z5 (``crm_platform.md`` §5.3). ``crm_sync_runs`` is the
+    run lock and the health record of the mirror sync. It must never be
+    exempt, and the committed policy phase must carry it."""
+    gen = _generator()
+    assert "crm_sync_runs" in gen.discover_tables()
+    assert "crm_sync_runs" not in gen.EXEMPT
+    assert "crm_sync_runs" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE crm_sync_runs FORCE  ROW LEVEL SECURITY" in policies
+
+
+@pytest.mark.parametrize(
+    "table",
+    ["crm_source_profiles", "crm_pipelines", "crm_pipeline_stages", "crm_views",
+     "crm_module_records"],
+)
+def test_the_crm_q1_q2_tables_are_tenant_scoped(table: str) -> None:
+    """WS-53 CRM-Q1/Q2 (``crm_platform.md`` §18). The source profile and the
+    deal pipelines hold one organization's data. None may be exempt, and the
+    committed policy phase must carry each. CRM-Q6a adds the generic record
+    store (§18.7)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:
     """FORCE, WITH CHECK and the missing-ok flag each have an incident behind
     them (saas_multitenancy_implementation.md §1.1). Drop any one and the

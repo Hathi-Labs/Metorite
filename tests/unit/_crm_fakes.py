@@ -171,6 +171,12 @@ def _value_exprs(statement: str) -> list[str]:
 #: tables rather than from a list of subjects, so the join keys and the
 #: ``status = 'active'`` filter are the fake's too.
 _MY_GROUPS_RE = re.compile(r"FROM\s+org_group\s+g\s+JOIN\s+org_group_member", re.I)
+#: ``core.attach_next_activity`` (WS-53 CRM-X3): ``SELECT DISTINCT ON (a.<col>)
+#: … FROM crm_activities a WHERE a.<col> = ANY(…)``. The target column is read
+#: off the statement.
+_NEXT_ACTIVITY_RE = re.compile(
+    r"^SELECT DISTINCT ON \(a\.(\w+)\).*\bFROM crm_activities a\b", re.I,
+)
 
 # ── WS-26d-email: the shapes the CRM timeline's email source emits ──────────
 #
@@ -586,6 +592,9 @@ class FakeCrmDB:
             ])
         if _MY_GROUPS_RE.search(statement):
             return self._my_groups(args)
+        next_activity = _NEXT_ACTIVITY_RE.match(statement)
+        if next_activity:
+            return self._next_activity(next_activity.group(1), args)
         head = statement.split(None, 1)[0].upper()
         table = _table(statement)
         if head == "INSERT":
@@ -709,6 +718,46 @@ class FakeCrmDB:
             return _Result([], scalar=max(values) if values else None)
         matched = self._joined(statement, matched)
         return _Result([SimpleNamespace(**r) for r in matched])
+
+    # the next activity of each card (CRM-X3) ------------------------------
+    def _next_activity(self, column: str, args: dict) -> _Result:
+        """The rule of ``core.NEXT_ACTIVITY_SQL``, for the hermetic suites only.
+
+        ⚠️ This copy answers the route tests that never look at the chip. It
+        proves nothing about the SQL: ``test_crm_next_activity_r8.py`` runs the
+        real statement against Postgres, and that suite is the fence.
+        """
+        wanted = {str(v) for v in args.get("ids") or ()}
+        now = _now()
+        best: dict[str, tuple[tuple[Any, str], dict[str, Any]]] = {}
+        for row in self.tables.get("crm_activities", []):
+            record = row.get(column)
+            if record is None or str(record) not in wanted:
+                continue
+            if row.get("completed_at") is not None:
+                continue
+            kind, due, occurred = row.get("type"), row.get("due_at"), row.get("occurred_at")
+            dated_task = kind == "task" and due is not None
+            ahead = (
+                kind in ("call", "meeting")
+                and isinstance(occurred, datetime) and occurred > now
+            )
+            if not (dated_task or ahead):
+                continue
+            key = (_sortable(due if due is not None else occurred), str(row.get("id")))
+            held = best.get(str(record))
+            if held is None or key < held[0]:
+                best[str(record)] = (key, row)
+        return _Result([
+            SimpleNamespace(
+                record_id=record, id=row.get("id"), type=row.get("type"),
+                subject=row.get("subject"),
+                at=row.get("due_at") if row.get("due_at") is not None
+                else row.get("occurred_at"),
+                all_day=row.get("type") == "task",
+            )
+            for record, (_key, row) in best.items()
+        ])
 
     # newest-per-group ----------------------------------------------------
     def _distinct_on(self, derived: re.Match[str], args: dict) -> _Result:
