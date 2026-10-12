@@ -14,6 +14,7 @@ import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type { FieldDef } from "./fields";
+import type { SavedView, SavedViewBody } from "./savedViews";
 import type {
   Activity,
   Contact,
@@ -200,10 +201,15 @@ export async function exportRecords(
 export function getPipeline(
   owner?: string | null,
   pipelineId?: string | null,
+  extra?: ListQuery,
 ): Promise<Pipeline> {
   const params = new URLSearchParams();
   if (owner) params.set("owner", owner);
   if (pipelineId) params.set("pipeline_id", pipelineId);
+  // CRM-Q8: the board takes the same filters as the list.
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
   const qs = params.toString();
   return call<Pipeline>(`/pipeline${qs ? `?${qs}` : ""}`);
 }
@@ -498,4 +504,22 @@ export function resetMode(): Promise<CrmSettings> {
     method: "PATCH",
     body: JSON.stringify({ mode: null }),
   });
+}
+
+// ── Saved views (CRM-Q8) ──────────────────────────────────────────────────
+
+export function listViews(entity: EntitySlug): Promise<SavedView[]> {
+  return call<SavedView[]>(`/views?entity=${entity}`);
+}
+
+export function createView(body: SavedViewBody): Promise<SavedView> {
+  return call<SavedView>("/views", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function patchView(id: string, body: Partial<SavedViewBody>): Promise<SavedView> {
+  return call<SavedView>(`/views/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteView(id: string): Promise<{ deleted: string }> {
+  return call<{ deleted: string }>(`/views/${id}`, { method: "DELETE" });
 }
