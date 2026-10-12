@@ -851,6 +851,8 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
         "_agent_user", _A_AGENT, ["_h = eval('request.' + 'url')"], {}),
     "B47 a global declaration": ("_agent_user", _A_AGENT, ["global _is_agent_request"], {}),
     "B48 del of a trusted name": ("_agent_user", _A_AGENT, ["del db_busy"], {}),
+    "B49 a bare reference to _route_template": (
+        "_agent_user", _A_AGENT, ["_fallback = _route_template"], {}),
 }
 
 
@@ -883,7 +885,7 @@ def test_the_scan_turns_red_for_each_bypass(label):
 
 
 def test_the_bypass_list_has_the_count_the_spec_names():
-    assert len(_BYPASSES) == 52
+    assert len(_BYPASSES) == 53
 
 
 # ── The runtime tripwire ─────────────────────────────────────────────────────
