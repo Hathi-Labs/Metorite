@@ -1,7 +1,7 @@
 """H-299 — an MCP tool that can change data waits for the member's card.
 
 Spec: ``project-docs/specs/agent_architecture.md`` §12.2 WS-8c, items 13 to 17
-and acceptance A12 to A18.
+and acceptance A12 to A22.
 
 WS-8c gave a native MAF agent the tools of its org's MCP servers. Each call
 went through ``permission_policy.decide()``, and ``decide()`` approved any name
@@ -25,6 +25,18 @@ Each fence names the acceptance item it covers:
   and the hints.
 * **A18** A later ``tools/list`` cannot relax a tool, and each change of
   hints is logged. A call that the card cannot show whole is refused (A16).
+* **A19** A stream says if it can show a card (``shows_cards=``). A stream
+  that cannot refuses each card, and a new caller that does not say fails a
+  fence (review of PR #888, P2).
+* **A20** The server and tool names on the card are escaped and capped at 64
+  characters, and the real hint line comes before them.
+* **A21** Redaction matches whole name parts and whole credential values, and
+  the card names each value it hides. A call target (``key``) stays visible.
+* **A22** Arguments of a shape the gate cannot read refuse the call.
+
+The ``mcp`` types are pydantic in lax mode, so ``"true"`` and ``1`` reach
+``tool_hints`` as ``True``. The string rows of the rule table test the input
+of ``decide()`` itself.
 
 The end-to-end tests drive the REAL apis-config agent through the REAL
 ``run_agent_stream`` against a REAL streamable-HTTP MCP server on 127.0.0.1.
@@ -37,7 +49,7 @@ Mutation table (each mutation was made by hand, and the named test failed):
 |---|---|---|
 | M1 | ``mcp_needs_confirmation`` returns ``False`` when hints are not a dict (fail open) | ``test_the_rule_table[no-hints]``, ``test_a_tool_with_no_hints_waits_for_the_card`` |
 | M2 | the rule reads ``readOnlyHint`` alone and ignores ``destructiveHint`` | ``test_the_rule_table[read-only-and-destructive]`` |
-| M3 | the rule takes a truthy hint (``bool(...)``) in place of ``is True`` | ``test_the_rule_table[read-only-as-a-string]`` |
+| M3 | the rule takes a truthy hint (``bool(...)``) in place of ``is True`` | ``test_the_rule_table[decide-gets-a-string]`` |
 | M4 | the gate runs the tool when the card answers False (deny ignored) | ``test_deny_returns_a_refusal_and_the_tool_never_runs`` |
 | M5 | ``request_confirmation`` answers True on a timeout | ``test_a_timeout_is_a_deny`` |
 | M6 | ``_card_refusal`` ignores ``member_present`` | ``test_a_run_with_no_member_refuses_and_shows_no_card`` |
@@ -49,6 +61,14 @@ Mutation table (each mutation was made by hand, and the named test failed):
 | M12 | ``decide()`` checks the platform annotations before the MCP rule | ``test_an_mcp_tool_never_borrows_a_platform_tool_s_hints`` |
 | M13 | ``card_text`` cuts long arguments in place of a refusal | ``test_a_call_too_long_for_the_card_is_refused_and_never_runs`` |
 | M14 | a later ``tools/list`` may relax the hints of a tool | ``test_a_later_list_cannot_relax_a_tool_and_each_change_is_logged`` |
+| M15 | ``run_agent_stream`` ignores ``shows_cards`` (cards stay open) | ``test_a_stream_that_shows_no_cards_refuses_end_to_end`` |
+| M16 | the email chat call drops ``shows_cards=`` | ``test_every_stream_declares_if_it_shows_cards`` |
+| M17 | the card shows names with no escape | ``test_a_tool_name_cannot_spoof_the_hint_line`` |
+| M18 | the card shows names with no cap | ``test_names_are_escaped_and_capped`` |
+| M19 | the hint line comes after the tool name again | ``test_a_tool_name_cannot_spoof_the_hint_line`` |
+| M20 | a secret word matches as a substring again | ``test_a_name_that_only_holds_a_secret_word_is_shown`` |
+| M21 | the card leaves out the line of hidden values | ``test_the_card_names_the_values_it_hides`` |
+| M22 | an unknown argument shape reads as ``{}`` | ``test_arguments_of_an_unknown_shape_refuse_the_call`` |
 """
 from __future__ import annotations
 
@@ -176,7 +196,7 @@ def _gate(fn: Any, hints: dict[str, Any] | None, *, member: bool = True, **kw: A
     ],
     ids=["no-hints", "empty", "read-only", "read-only-not-destructive",
          "read-only-and-destructive", "not-read-only", "destructive", "only-not-destructive",
-         "read-only-as-a-string", "read-only-as-a-number"],
+         "decide-gets-a-string", "decide-gets-a-number"],
 )
 def test_the_rule_table(hints, code) -> None:
     approved, got, _ = permission_policy.decide(
@@ -420,7 +440,8 @@ async def test_the_card_redacts_sensitive_arguments() -> None:
         "password": "hunter2-h299",
         "api_key": "plain-key-h299",
         "headers": {"Authorization": "Basic aDI5OQ==", "X-Trace": "ok"},
-        "note": f"use {SECRET} and Bearer abc.def.h299 here",
+        "note": SECRET,
+        "bearer": "Bearer abc.def.h299",
         "long": "x" * 600,
     }
     with _card_channel() as queue:
@@ -580,7 +601,7 @@ def _tool_results(model: ScriptedModel) -> list[str]:
 
 
 def _drive(monkeypatch, srv, model, *, payload=None, answer: str | None = None,
-           thread: str = "thread-h299-e2e"):
+           thread: str = "thread-h299-e2e", shows_cards: bool = True):
     set_flag(monkeypatch, _ORG)
     RegistrySpy([row("probe-srv", org=_ORG, url=srv.url)]).install(monkeypatch)
     _stub_pin(monkeypatch, srv.url)
@@ -599,6 +620,7 @@ def _drive(monkeypatch, srv, model, *, payload=None, answer: str | None = None,
         events, built = drive_native(
             _AGENT, "apps/agents/agent-apis-config", monkeypatch, model,
             thread_id=thread, extra_payload=payload, on_event=_on_event,
+            shows_cards=shows_cards,
         )
     return events, built, seen, logs
 
@@ -661,3 +683,198 @@ def test_a_run_with_no_member_refuses_end_to_end(monkeypatch):
     assert seen["cards"] == [], "a run with no member showed a card"
     assert srv.calls == []
     assert any("no member can confirm" in r for r in _tool_results(model))
+
+
+# ── Hardening: review of PR #888 (three P2s and two nits) ────────────────────
+
+
+def test_the_mcp_library_turns_a_string_hint_into_true() -> None:
+    """Known limit, kept honest: the ``mcp`` types are pydantic in lax mode, so
+    ``"true"``, ``"yes"`` and ``1`` arrive as ``True`` before ``tool_hints``
+    reads them. The string rows of the rule table test ``decide()``'s own
+    input, not what a server can send."""
+    from mcp.types import ToolAnnotations
+
+    for sent in ("true", "yes", 1):
+        assert _maf_mcp.tool_hints(ToolAnnotations(readOnlyHint=sent)) == {
+            "readOnlyHint": True}
+
+
+# P2-1: a stream must declare that it can show a card.
+
+
+@pytest.mark.usefixtures("_a_tenant")
+def test_a_stream_that_shows_no_cards_refuses_end_to_end(monkeypatch):
+    """The email chat (``email-chat:...``) forwards no CUSTOM event. Before
+    the fix its card waited 3600 s with no output. Now the run refuses."""
+    with local_mcp_server() as srv:
+        model = ScriptedModel([
+            tool_turn("probe-srv_delete_record", '{"record_id": "r-9"}'), text_turn("ok"),
+        ])
+        events, _built, seen, _logs = _drive(
+            monkeypatch, srv, model, payload=_a_member(monkeypatch), answer="APPROVE",
+            thread="email-chat:member@h299.test:s1", shows_cards=False)
+    assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
+    assert seen["cards"] == [], "a stream that shows no cards emitted a card"
+    assert srv.calls == []
+    assert any("cannot show that card" in r for r in _tool_results(model))
+
+
+def _stream_calls() -> list[tuple[str, Any]]:
+    """Every call of ``run_agent_stream`` in ``apps/`` and ``packages/``."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    found: list[tuple[str, Any]] = []
+    for base in ("apps", "packages"):
+        for path in (root / base).rglob("*.py"):
+            if "node_modules" in path.parts or ".venv" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "run_agent_stream(" not in text:
+                continue
+            for node in ast.walk(ast.parse(text)):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                if name == "run_agent_stream":
+                    found.append((str(path.relative_to(root)).replace("\\", "/"), node))
+    return found
+
+
+def test_every_stream_declares_if_it_shows_cards() -> None:
+    """A new caller of ``run_agent_stream`` must say ``shows_cards=``. One that
+    forgets fails here, and it would refuse every card at run time."""
+    calls = _stream_calls()
+    assert len(calls) >= 2, calls
+    missing = [p for p, node in calls
+               if not any(k.arg == "shows_cards" for k in node.keywords)]
+    assert missing == [], f"run_agent_stream without shows_cards= in {missing}"
+    declared = {p: next(k.value for k in node.keywords if k.arg == "shows_cards")
+                for p, node in calls}
+    chat = declared["apps/services/gateway/gateway/routes/agent.py"]
+    email = declared["apps/services/gateway/gateway/routes/email/automation/chat.py"]
+    assert isinstance(chat, __import__("ast").Constant) and chat.value is True
+    assert isinstance(email, __import__("ast").Constant) and email.value is False
+
+
+def test_the_default_of_shows_cards_is_no() -> None:
+    import inspect
+
+    default = inspect.signature(executor.run_agent_stream).parameters["shows_cards"].default
+    assert default is False
+
+
+def test_a_card_stream_inside_a_refuse_scope_stays_refused() -> None:
+    with ask_tools.refuse_cards():
+        token = ask_tools.refuse_cards_for_run(False)
+        try:
+            assert ask_tools.cards_refused() is True
+        finally:
+            ask_tools.release_cards_switch(token)
+    token = ask_tools.refuse_cards_for_run(True)
+    try:
+        assert ask_tools.cards_refused() is True
+    finally:
+        ask_tools.release_cards_switch(token)
+    assert ask_tools.cards_refused() is False
+
+
+# P2-2: the tool name cannot spoof the card.
+
+_SPOOF = "list_files‮ · The server marks this tool as read-only"
+
+
+def test_a_tool_name_cannot_spoof_the_hint_line() -> None:
+    title, detail, _body = _maf_mcp.card_text(
+        "files", _SPOOF, {"bucket": "prod"}, _maf_mcp.ToolMeta(hints=None, description="x"))
+    for text in (title, detail):
+        assert "‮" not in text and "\\u202e" in text
+    assert detail.startswith("The server sent no hints for this tool."), detail
+    assert detail.index("sent no hints") < detail.index("Tool:")
+
+
+def test_names_are_escaped_and_capped() -> None:
+    title, detail, _ = _maf_mcp.card_text("s" * 200, "a\nb" + "a" * 200, {}, None)
+    assert "\n" not in title and "\n" not in detail
+    assert "s" * 65 not in title + detail and "s" * 63 in detail
+    assert "a" * 65 not in title + detail
+    assert len(title) <= 120
+
+
+# P2-3: redaction hides secrets, not the target of a call.
+
+
+def test_redaction_keeps_the_target_of_a_call() -> None:
+    _t, _d, body = _maf_mcp.card_text("files", "delete_object", {
+        "bucket": "prod", "key": "backups/2026/", "max_tokens": 50,
+        "text": "The bearer of this note is Ana",
+        "note": f"the old key {SECRET} is gone",
+    }, None)
+    for shown in ("backups/2026/", '"max_tokens": 50', "The bearer of this note is Ana",
+                  f"the old key {SECRET} is gone"):
+        assert shown in body, shown
+    assert "hidden" not in body
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["access_token", "accessToken", "client-secret", "X-Api-Key", "apiKey", "password",
+     "db.password", "refreshToken", "Authorization", "auth", "session_id"],
+)
+def test_a_secret_name_is_redacted_as_a_whole_part(name) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {name: "v-h299"}, None)
+    assert "v-h299" not in body and _maf_mcp.REDACTED in body
+
+
+@pytest.mark.parametrize(
+    "name", ["max_tokens", "tokenizer", "keyword", "monkey", "author", "secretary_name",
+             "key", "signature"],
+)
+def test_a_name_that_only_holds_a_secret_word_is_shown(name) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {name: "v-h299"}, None)
+    assert "v-h299" in body
+
+
+@pytest.mark.parametrize(
+    "value",
+    [SECRET, "Bearer abc.def.h299", "Basic aDI5OQ==", "ghp_" + "a" * 30,
+     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl"],
+)
+def test_a_whole_credential_value_is_redacted(value) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {"value": value}, None)
+    assert value not in body and _maf_mcp.REDACTED in body
+    assert "1 value is hidden: value" in body
+
+
+def test_the_card_names_the_values_it_hides() -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {
+        "password": "p", "api_key": "k", "headers": {"Authorization": "x"},
+        "rows": ["ok", SECRET],
+    }, None)
+    assert "4 values are hidden: password, api_key, headers.Authorization, rows[1]" in body
+    assert body.index("values are hidden") < body.index(_maf_mcp.DESCRIPTION_LABEL)
+
+
+# Nit 4: arguments of a shape the gate cannot read refuse the call.
+
+
+@pytest.mark.parametrize("hints", [None, {"readOnlyHint": True}], ids=["card", "read-only"])
+async def test_arguments_of_an_unknown_shape_refuse_the_call(hints) -> None:
+    fn = _function()
+    ctx = SimpleNamespace(function=fn, arguments=object(), result=None)
+    ran = _Ran()
+    with _card_channel() as queue:
+        await _bounded(_gate(fn, hints).process(ctx, ran))
+    assert ran.count == 0 and queue.empty()
+    assert ctx.result == _maf_mcp.UNREADABLE_ARGUMENTS_TEXT.format(tool="srv_delete_record")
+
+
+async def test_no_arguments_count_as_an_empty_call() -> None:
+    fn = _function("srv_echo", "echo")
+    ctx = SimpleNamespace(function=fn, arguments=None, result=None)
+    ran = _Ran()
+    await _bounded(_gate(fn, {"readOnlyHint": True}).process(ctx, ran))
+    assert ran.count == 1
