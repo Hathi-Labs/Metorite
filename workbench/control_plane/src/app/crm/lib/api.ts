@@ -15,6 +15,7 @@ import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type { FieldDef } from "./fields";
 import type { SavedView, SavedViewBody } from "./savedViews";
+import type { SyncHealth } from "./syncHealth";
 import type {
   Activity,
   Contact,
@@ -375,6 +376,11 @@ export function getConnection(): Promise<ConnectionInfo | null> {
 
 export function getSyncStatus(): Promise<SyncStatus | null> {
   return orNullOn404(call<SyncStatus>("/sync/status"));
+}
+
+/** Admin only (CRM-Q9). The sync health card reads it. A 404 means the mirror is off. */
+export function getSyncHealth(): Promise<SyncHealth | null> {
+  return orNullOn404(call<SyncHealth>("/sync/health"));
 }
 
 /** Admin only. A member gets 403, which the caller treats as "unknown". */

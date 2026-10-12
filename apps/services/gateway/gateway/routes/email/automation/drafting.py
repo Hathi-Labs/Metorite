@@ -53,7 +53,9 @@ from gateway.routes.email.signature import (
 from gateway.routes.email.transport.send import (
     ArtifactAttachment,
     SendAttachment,
+    _as_uuid,
     load_artifact_attachments,
+    reply_row_match,
 )
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -2212,6 +2214,18 @@ async def _fetch_message_dict(db: Any, message_id: str) -> dict[str, Any]:
     return _row_to_message(row).model_dump() if row else {}
 
 
+def _refuse_bad_draft_id(draft_id: str | None) -> None:
+    """Answer 404 for a draft id that is not a UUID.
+
+    ``email_messages.id`` is a uuid, so Postgres raises ``invalid input
+    syntax for type uuid`` on any other value, and the route answered 500.
+    No row can hold such an id, so the draft is not found. The check runs
+    before any database or provider call (``email_app_master_plan.md``
+    §17.11). Fence: ``tests/unit/test_email_reply_draft_save.py``."""
+    if draft_id and _as_uuid(draft_id) is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+
 class DraftUpsertRequest(BaseModel):
     account_id: str
     # Local id of an existing draft to UPDATE in place (omit to create a new one).
@@ -2242,6 +2256,7 @@ async def upsert_draft(
     place (no duplicates); ``reply_to_message_id`` threads a new reply draft;
     neither → a standalone draft. Returns the persisted message so the UI can show
     it in the Drafts folder and in-thread at once."""
+    _refuse_bad_draft_id(req.draft_id)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         # The signature lives IN the draft body so the upstream (provider)
@@ -2302,13 +2317,12 @@ async def upsert_draft(
                 # Accept either the local message id (inline reply) or the
                 # provider message id (full composer pop-out passes
                 # providerMessageId).
+                match, params = reply_row_match(req.reply_to_message_id)
                 rrow = (await db.execute(text(
                     "SELECT provider_message_id, thread_id, subject, from_address"
-                    " FROM email_messages WHERE account_id = :aid"
-                    " AND (id = :id OR provider_message_id = :id)"
-                    " LIMIT 1"
-                ), {"id": req.reply_to_message_id,
-                    "aid": req.account_id})).fetchone()
+                    f" FROM email_messages WHERE account_id = :aid AND {match}"
+                    " ORDER BY (provider_message_id = :rid) DESC LIMIT 1"
+                ), {**params, "aid": req.account_id})).fetchone()
                 if not rrow:
                     raise HTTPException(
                         status_code=404, detail="Reply target not found")
@@ -2430,6 +2444,7 @@ async def send_draft_endpoint(
     """Send an existing draft natively (Drafts → Sent, no duplicate) and drop the
     local draft row. Falls back to send-new-then-trash for providers without a
     native send-draft primitive."""
+    _refuse_bad_draft_id(req.draft_id)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         drow = (await db.execute(text(

@@ -100,6 +100,12 @@ _LATEST_SQL = (
     "ORDER BY started_at DESC LIMIT 1"
 )
 
+_RECENT_SQL = (
+    f"SELECT {_RUN_COLUMNS} FROM crm_sync_runs "
+    "WHERE organization_id = CAST(:org AS uuid) "
+    "ORDER BY started_at DESC LIMIT :n"
+)
+
 _LAST_OK_SQL = (
     "SELECT max(finished_at) AS at FROM crm_sync_runs "
     "WHERE organization_id = CAST(:org AS uuid) AND status = 'ok'"
@@ -232,6 +238,12 @@ async def latest(db: Any, org: str) -> RunRow | None:
     return _row(row) if row is not None else None
 
 
+async def recent(db: Any, org: str, limit: int = 10) -> list[RunRow]:
+    """The newest *limit* runs of *org*, newest first (CRM-Q9)."""
+    rows = (await db.execute(text(_RECENT_SQL), {"org": org, "n": int(limit)})).fetchall()
+    return [_row(r) for r in rows]
+
+
 async def last_success_at(db: Any, org: str) -> datetime | None:
     row = (await db.execute(text(_LAST_OK_SQL), {"org": org})).first()
     return row.at if row is not None else None
@@ -359,6 +371,7 @@ __all__ = [
     "member_emails",
     "progress",
     "read_cursors",
+    "recent",
     "resumable_import",
     "start",
     "write_cursor",

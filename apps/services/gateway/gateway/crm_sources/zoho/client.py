@@ -40,6 +40,7 @@ from gateway.crm_sources.base import (
     SourceError,
     SourcePage,
     SourceRecord,
+    SourceScopeError,
     UntrustedHost,
 )
 from gateway.crm_sources.zoho import auth, links
@@ -71,7 +72,16 @@ ZOHO_MODULES: Mapping[str, str] = MappingProxyType(
         "note": "Notes",
         "call": "Calls",
         "meeting": "Events",
+        "task": "Tasks",
     }
+)
+
+#: Extra query parameters of the changed-records read, by entity (CRM-Q5).
+#: Zoho hides a converted lead from the Leads list unless the call asks for
+#: ``converted=both`` (v2 Get Records). Without it the mirror silently loses
+#: every lead that became a contact and a deal.
+_EXTRA_PARAMS: Mapping[str, Mapping[str, Any]] = MappingProxyType(
+    {"lead": MappingProxyType({"converted": "both"})}
 )
 
 _RATE_LIMIT_CODE = "TOO_MANY_REQUESTS"
@@ -147,7 +157,7 @@ _SCOPE_ERROR_CODES = frozenset({"OAUTH_SCOPE_MISMATCH"})
 _VERSION_ERROR_CODES = frozenset({"INVALID_URL_PATTERN", "INVALID_MODULE"})
 
 
-class ZohoScopeError(SourceError):
+class ZohoScopeError(SourceScopeError):
     """The refresh token was not minted with the scope this read needs."""
 
     def __init__(self, scope: str, detail: str = "") -> None:
@@ -174,6 +184,15 @@ _DISCOVERY_FATAL = (NeedsReconnect, BudgetExhausted, RateLimited, UntrustedHost)
 def _dict_rows(value: object) -> list[dict[str, Any]]:
     """The dict items of a JSON list, or an empty list for anything else."""
     return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+
+
+def _is_scope_refusal(response: httpx.Response) -> bool:
+    """A 401 or 403 that names a missing scope, and not a dead token."""
+    body = _error_body(response)
+    if str(body.get("code") or "") in _SCOPE_ERROR_CODES:
+        return True
+    message = str(body.get("message") or "")
+    return response.status_code in (401, 403) and "scope" in message.lower()
 
 
 def _error_body(response: httpx.Response) -> dict[str, Any]:
@@ -629,6 +648,12 @@ class ZohoSource:
         # 204 = nothing there; 304 = nothing changed since the cursor.
         if r.status_code in (204, 304):
             return SourcePage(records=(), next_cursor=None)
+        if _is_scope_refusal(r):
+            module = _module(entity)
+            raise ZohoScopeError(
+                f"ZohoCRM.modules.{module.lower()}.READ",
+                str(_error_body(r).get("message") or "")[:200],
+            )
         self._raise_for_status(r, path)
         body = _error_body(r)
         rows = body.get("data") or []
@@ -688,7 +713,7 @@ class ZohoSource:
             entity,
             f"/crm/{RECORDS_API_VERSION}/{module}",
             cursor,
-            {"sort_by": "Modified_Time", "sort_order": "asc"},
+            {"sort_by": "Modified_Time", "sort_order": "asc", **_EXTRA_PARAMS.get(entity, {})},
             keyset=True,
         )
 
@@ -856,6 +881,35 @@ class ZohoSource:
         self._raise_for_status(r, path)
         count = _error_body(r).get("count")
         return count if isinstance(count, int) and count >= 0 else None
+
+    # ── 11. Deal contact roles (CRM-Q5) ─────────────────────────────────────
+
+    async def list_deal_contact_roles(self, deal_ext_id: str) -> list[tuple[str, str | None]]:
+        """The contacts on one deal: ``GET /crm/v2/Deals/{id}/Contact_Roles``.
+
+        One credit. Each row is a contact, with its role in ``Contact_Role``,
+        a plain name or an object that holds ``name``. A row with no id is
+        dropped. An empty answer (204) is an empty list.
+        """
+        if not deal_ext_id.isalnum():
+            raise SourceError("The deal id is not a plain id")
+        path = f"/crm/{RECORDS_API_VERSION}/Deals/{deal_ext_id}/Contact_Roles"
+        r = await self._get(path, params={})
+        if r.status_code in (204, 304):
+            return []
+        if _is_scope_refusal(r):
+            raise ZohoScopeError("ZohoCRM.modules.deals.READ")
+        self._raise_for_status(r, path)
+        out: list[tuple[str, str | None]] = []
+        for row in _dict_rows(_error_body(r).get("data")):
+            contact = str(row.get("id") or "").strip()
+            if not contact:
+                continue
+            role = row.get("Contact_Role")
+            if isinstance(role, dict):
+                role = role.get("name")
+            out.append((contact, str(role).strip() or None if role else None))
+        return out
 
     # ── 3b. Discovery (CRM-Q1) ──────────────────────────────────────────────
 

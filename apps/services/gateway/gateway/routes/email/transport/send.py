@@ -232,6 +232,27 @@ def _as_uuid(value: str) -> str | None:
         return None
 
 
+def reply_row_match(
+    reply_to: str, alias: str = "",
+) -> tuple[str, dict[str, str]]:
+    """The WHERE arm and the params that find the mail a reply answers.
+
+    ``reply_to`` is the local row id or the provider id of the mail. ``id``
+    is a uuid and ``provider_message_id`` is text, so each one gets its own
+    typed parameter. One parameter for both made Postgres raise ``operator
+    does not exist: text = uuid`` (live defect, 2026-10-11,
+    ``email_app_master_plan.md`` §17.11). A value that is not a UUID can only
+    be a provider id. ``drafting.upsert_draft`` uses it too. Fence:
+    ``tests/unit/test_email_reply_draft_save.py``."""
+    col = f"{alias}." if alias else ""
+    local_id = _as_uuid(reply_to)
+    if local_id is None:
+        return f"{col}provider_message_id = :rid", {"rid": reply_to}
+    return (f"({col}id = CAST(:lid AS uuid) OR "
+            f"{col}provider_message_id = :rid)",
+            {"lid": local_id, "rid": reply_to})
+
+
 async def _reply_target(
     db, account_id: str, reply_to: str | None, owner: str,
 ) -> tuple[str | None, str | None]:
@@ -253,13 +274,8 @@ async def _reply_target(
     aid = _as_uuid(account_id)
     if aid is None:
         raise HTTPException(status_code=404, detail="Account not found")
-    params = {"aid": aid, "rid": reply_to, "uid": owner}
-    local_id = _as_uuid(reply_to)
-    if local_id is not None:
-        params["lid"] = local_id
-        match = "(em.id = CAST(:lid AS uuid) OR em.provider_message_id = :rid)"
-    else:
-        match = "em.provider_message_id = :rid"
+    match, params = reply_row_match(reply_to, "em")
+    params.update(aid=aid, uid=owner)
     row = (await db.execute(text(
         "SELECT em.provider_message_id, em.thread_id FROM email_messages em "
         "JOIN email_accounts ea ON ea.id = em.account_id "

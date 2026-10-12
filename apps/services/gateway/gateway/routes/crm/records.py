@@ -33,6 +33,7 @@ from gateway.routes.crm.core import (
     DEALS,
     LEADS,
     MAX_PAGE_SIZE,
+    OPEN_LEAD_SQL,
     ORGANIZATIONS,
     ContactIn,
     DealIn,
@@ -158,7 +159,7 @@ async def _list(
         # exists. Keying on converted_at instead would strand the lead
         # invisibly forever if that deal were deleted (the FK SET-NULLs the
         # link; the timestamp survives as history).
-        extra = ("converted_deal_id IS NULL",)
+        extra = (OPEN_LEAD_SQL,)
     extra_params: dict[str, Any] = {}
     related_where, related_params = related_filters(
         entity, company_id=params.company_id, contact_id=params.contact_id,
