@@ -267,6 +267,9 @@ class LeadModel(MirrorFields):
     no_of_employees: int | None = None
     annual_revenue: float | None = None
     status_id: str | None = None
+    #: NOT a column — the status name, projected by :func:`project_joined`
+    #: (WS-53 CRM-X1). ``None`` on a row read straight from ``crm_leads``.
+    status_name: str | None = None
     lead_source: str | None = None
     owner_email: str | None = None
     description: str | None = None
@@ -317,6 +320,9 @@ class DealModel(MirrorFields):
     #: The deal pipeline (WS-53 CRM-Q2). ``None`` for a deal that no pipeline holds.
     pipeline_id: str | None = None
     status_id: str | None = None
+    #: NOT a column — the stage name, projected by :func:`project_joined`
+    #: (WS-53 CRM-X1). ``None`` on a row read straight from ``crm_deals``.
+    status_name: str | None = None
     status_changed_at: str | None = None
     amount: float | None = None
     currency: str = "INR"
@@ -440,6 +446,14 @@ class Entity:
     default_sort: str
     #: Columns ``?q=`` matches with ILIKE.
     search: tuple[str, ...] = ()
+    #: More ``?q=`` predicates, each a SQL constant of THIS module that reads
+    #: the bound ``:q`` (WS-53 CRM-X1). :func:`list_contract` adds each one to
+    #: the OR group of :attr:`search`. Never caller text.
+    search_sql: tuple[str, ...] = ()
+    #: Phone columns that ``?q=`` also matches on their digits alone, so
+    #: "98450 12345" finds "+91-98450-12345" (CRM-X1 review round 1). Each
+    #: name is a constant of this module, never caller text.
+    phone_search: tuple[str, ...] = ()
     #: The statuses table this entity's ``status_id`` points at, if any.
     status_table: str | None = None
     #: Leads only: default lists hide converted rows (§3.3). ``?include_converted``
@@ -483,7 +497,8 @@ ORGANIZATIONS = Entity(
     required=("name",),
     sorts={"name": "name", "owner_email": "owner_email", **_TIMESTAMP_SORTS},
     default_sort="last_activity_at",
-    search=("name", "email", "website"),
+    search=("name", "email", "website", "phone"),
+    phone_search=("phone",),
     cascades=(("crm_activities", "company_id"),),
     # Zoho calls an organization an Account — the one place that rename lives.
     zoho_module="Accounts",
@@ -503,7 +518,8 @@ CONTACTS = Entity(
         "owner_email": "owner_email", **_TIMESTAMP_SORTS,
     },
     default_sort="last_activity_at",
-    search=("first_name", "last_name", "email"),
+    search=("first_name", "last_name", "email", "phone", "mobile"),
+    phone_search=("phone", "mobile"),
     cascades=(
         ("crm_activities", "contact_id"),
         ("crm_deal_contacts", "contact_id"),
@@ -526,12 +542,16 @@ LEADS = Entity(
         "converted_at": "converted_at", **_TIMESTAMP_SORTS,
     },
     default_sort="created_at",
-    search=("lead_name", "email", "organization_name"),
+    search=("lead_name", "email", "organization_name", "phone", "mobile"),
+    phone_search=("phone", "mobile"),
     status_table="crm_lead_statuses",
     hides_converted=True,
     cascades=(("crm_activities", "lead_id"),),
     zoho_module="Leads",
     zoho_entity_type="lead",
+    # The list draws the status by name (CRM-X1).
+    joined_columns=(("status_name", "st.name"),),
+    join_sql=" LEFT JOIN crm_lead_statuses st ON st.id = base.status_id",
 )
 
 DEALS = Entity(
@@ -550,6 +570,11 @@ DEALS = Entity(
     },
     default_sort="last_activity_at",
     search=("name", "next_step"),
+    # A deal also matches the name of its company (CRM-X1). FORCE RLS keeps
+    # the inner read in the tenant of the session.
+    search_sql=(
+        "company_id IN (SELECT c.id FROM crm_companies c WHERE c.name ILIKE :q)",
+    ),
     status_table="crm_deal_statuses",
     cascades=(
         ("crm_activities", "deal_id"),
@@ -561,9 +586,11 @@ DEALS = Entity(
     # browser is not an optimisation: the org list the client would join
     # against is paged at 100, so a board with the 101st organization on it
     # would render blank labels that look like missing data (WS-26c dw 2).
-    joined_columns=(("organization_name", "org.name"),),
+    # The list and the board draw the stage by name (CRM-X1).
+    joined_columns=(("organization_name", "org.name"), ("status_name", "st.name")),
     join_sql=(
         " LEFT JOIN crm_companies org ON org.id = base.company_id"
+        " LEFT JOIN crm_deal_statuses st ON st.id = base.status_id"
     ),
 )
 
@@ -720,6 +747,10 @@ def lead_name_is_derived(values: dict[str, Any]) -> bool:
 
 DIRECTIONS: dict[str, str] = {"asc": "ASC", "desc": "DESC"}
 
+#: The fewest digits a query needs before a phone matches on digits alone.
+#: Fewer would match nearly every number.
+MIN_PHONE_DIGITS = 4
+
 
 @dataclass(frozen=True)
 class ListQuery:
@@ -782,10 +813,20 @@ def list_contract(
     clauses: list[str] = list(extra_where)
     params: dict[str, Any] = dict(extra_params or {})
 
-    if q and entity.search:
+    if q and (entity.search or entity.search_sql):
         params["q"] = f"%{q.strip()}%"
-        matches = " OR ".join(f"{col} ILIKE :q" for col in entity.search)
-        clauses.append(f"({matches})")
+        terms = [*(f"{col} ILIKE :q" for col in entity.search), *entity.search_sql]
+        digits = "".join(ch for ch in q if ch.isascii() and ch.isdigit())
+        if entity.phone_search and len(digits) >= MIN_PHONE_DIGITS:
+            # The digits are their own bound parameter. The column names are
+            # constants of the entity. No index serves this, and none is
+            # needed at the size of one tenant's CRM.
+            params["q_digits"] = f"%{digits}%"
+            terms += [
+                f"regexp_replace({col}, '\\D', '', 'g') LIKE :q_digits"
+                for col in entity.phone_search
+            ]
+        clauses.append(f"({' OR '.join(terms)})")
     if status_id:
         if not entity.status_table:
             # Contacts and organizations have no pipeline. Ignoring the filter
@@ -1967,6 +2008,79 @@ async def delete_module_records_from_source(
         {"ext_source": ext_source, "module": module, "ext_ids": ids},
     )
     return int(result.rowcount or 0)
+
+
+# ── The start over (WS-53 CRM-X0, crm_platform.md §19.11 item 6) ────────────
+
+#: The records, as the setup hub and the start-over dialog count them:
+#: ``(key, table)``. The keys are the API's slugs, and ``module_records`` is the
+#: generic record store of CRM-Q6a.
+RECORD_COUNT_TABLES: tuple[tuple[str, str], ...] = (
+    ("leads", "crm_leads"),
+    ("contacts", "crm_contacts"),
+    ("organizations", "crm_companies"),
+    ("deals", "crm_deals"),
+    ("activities", "crm_activities"),
+    ("module_records", "crm_module_records"),
+)
+
+#: Every table that the start over empties, child first. A record names a
+#: stage with ``ON DELETE RESTRICT``, so the records go before the stages.
+#: ``tests/unit/test_crm_reset_r8.py`` holds its own copy of this list.
+RESET_TABLES: tuple[str, ...] = (
+    "crm_activities", "crm_deal_contacts", "crm_deals", "crm_leads",
+    "crm_contacts", "crm_companies", "crm_module_records",
+    "crm_status_changes", "crm_field_defs", "crm_pipeline_stages",
+    "crm_pipelines", "crm_deal_statuses", "crm_lead_statuses",
+    "crm_lost_reasons",
+    # The sync state of the old account. A cursor with ``initial_done_at``
+    # would make the next connection skip its first import.
+    "crm_sync_cursors", "crm_source_profiles",
+    # The push queue of the old two-way sync names records that are gone.
+    "crm_zoho_tombstones",
+)
+
+#: What the start over keeps: the access rule and the mode row, the saved
+#: views, the run history, and the cursor of the mail hook (not a record).
+RESET_KEEPS: tuple[str, ...] = (
+    "crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors",
+)
+
+
+async def count_records(db: Any, organization_id: str) -> dict[str, int]:
+    """The records of the org, by key of :data:`RECORD_COUNT_TABLES`."""
+    counts: dict[str, int] = {}
+    for key, table in RECORD_COUNT_TABLES:
+        counts[key] = int((await db.execute(
+            text(f"SELECT count(*) FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": str(organization_id)},
+        )).scalar() or 0)
+    return counts
+
+
+async def reset_crm_from_admin(db: Any, organization_id: str) -> dict[str, int]:
+    """Delete every CRM record of the org. Returns the counts before the delete.
+
+    ⚠️ **A fenced door, like the mirror writes.** It bypasses the Mirror write
+    guard, because a start over in Mirror mode must remove mirrored rows.
+    Only ``routes/crm/settings.py`` may call it, after the admin check, the
+    typed confirm and the stop of the sync.
+    ``tests/unit/test_crm_upsert_from_source_fence.py`` refuses any other
+    caller, in the whole gateway package.
+
+    The caller owns the transaction (one ``tenant_session``) and holds the
+    ``crm_settings`` row ``FOR UPDATE``. Each statement also names the
+    organization, so a session with row level security off still deletes one
+    organization. It keeps :data:`RESET_KEEPS`.
+    """
+    org = str(organization_id)
+    counts = await count_records(db, org)
+    for table in RESET_TABLES:
+        await db.execute(
+            text(f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": org},
+        )
+    return counts
 
 
 async def load_by_zoho_id(db: Any, table: str, zoho_id: str) -> Any | None:

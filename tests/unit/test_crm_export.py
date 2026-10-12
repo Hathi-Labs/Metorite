@@ -384,9 +384,9 @@ async def test_the_export_carries_every_matching_row(db) -> None:
     text, headers = await _export("organizations", sort="name", direction="asc")
 
     assert _rows(text) == [
-        ["Company", "Industry", "Phone", "Owner"],
-        ["Acme", "Manufacturing", "123", "priya@fracktal.in"],
-        ["Globex", "Retail", "456", "asha@fracktal.in"],
+        ["Company", "Industry", "Phone", "Owner", "Last touched"],
+        ["Acme", "Manufacturing", "123", "priya@fracktal.in", ""],
+        ["Globex", "Retail", "456", "asha@fracktal.in", ""],
     ]
     assert headers["content-type"].startswith("text/csv")
     assert headers["content-disposition"] == (
@@ -441,7 +441,9 @@ async def test_a_deal_carries_its_organization_name(db) -> None:
 
     text, _ = await _export("deals")
 
-    assert _rows(text)[1][:2] == ["Big one", "Acme"]
+    header, row = _rows(text)[:2]
+    # Read by header: CRM-X1 put the Stage column between the two.
+    assert [row[header.index("Deal")], row[header.index("Company")]] == ["Big one", "Acme"]
 
 
 @pytest.mark.asyncio
@@ -614,7 +616,9 @@ async def test_an_empty_result_is_a_header_row_not_an_error(db) -> None:
     download; the header row says "this filter matched nothing"."""
     text, headers = await _export("deals")
 
-    assert _rows(text) == [["Deal", "Company", "Amount", "Closing", "Owner"]]
+    assert _rows(text) == [
+        ["Deal", "Stage", "Company", "Amount", "Closing", "Owner", "Last touched"],
+    ]
     assert headers["x-export-rows"] == "0"
 
 

@@ -296,8 +296,11 @@ async def test_the_rows_carry_the_contract_fields_and_sort(ns, app_engine) -> No
     assert (wa["kind"], wa["status"], wa["label"], wa["setup_href"]) == (
         "whatsapp", "connected", "Shop a", "/whatsapp")
     mcp = by_id[f"mcp:{a.mcp}"]
+    # H-300: a server moved from mcp_servers keeps its behaviour, so the
+    # switch reads "false".
     assert mcp["detail"] == {
-        "name": a.mcp, "transport": "http-sse", "agent_scope": "*", "host": "mcp.example.com"}
+        "name": a.mcp, "transport": "http-sse", "agent_scope": "*", "host": "mcp.example.com",
+        "always_confirm": "false"}
     key = by_id["key:apollo"]
     assert (key["kind"], key["status"], key["scope"]) == ("api_key", "configured", "org")
 

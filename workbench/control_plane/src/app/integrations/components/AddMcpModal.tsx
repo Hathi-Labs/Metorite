@@ -10,14 +10,60 @@
  * wrote it.
  */
 
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import Button from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 
 import * as api from "../lib/api";
-import { EMPTY_MCP_FORM, mcpBody, mcpFormReady, type McpForm } from "../lib/connections";
+import {
+  ALWAYS_CONFIRM_HELP,
+  ALWAYS_CONFIRM_LABEL,
+  EMPTY_MCP_FORM,
+  mcpBody,
+  mcpFormReady,
+  type McpForm,
+} from "../lib/connections";
+
+/**
+ * The H-300 switch: "Always ask before any tool runs". One labelled tick on
+ * the shared Checkbox, with the help line under it. The Add form and the side
+ * panel both draw this one control.
+ */
+export function AlwaysConfirmField({
+  checked,
+  disabled,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const id = useId();
+  const helpId = `${id}-help`;
+  return (
+    <div className="flex items-start gap-2">
+      <Checkbox
+        id={id}
+        className="mt-0.5"
+        checked={checked}
+        disabled={disabled}
+        aria-describedby={helpId}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <label htmlFor={id} className="text-sm text-foreground">
+          {ALWAYS_CONFIRM_LABEL}
+        </label>
+        <span id={helpId} className="text-[11px] text-muted-foreground">
+          {ALWAYS_CONFIRM_HELP}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -76,6 +122,10 @@ export function McpFormFields({
       <Field label="Agent scope" hint="Agent names, separated by commas. Use * for all agents.">
         <Input value={form.agentScope} onChange={set("agentScope")} />
       </Field>
+      <AlwaysConfirmField
+        checked={form.alwaysConfirm}
+        onChange={(next) => onChange({ ...form, alwaysConfirm: next })}
+      />
     </div>
   );
 }

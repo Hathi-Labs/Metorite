@@ -24,6 +24,14 @@ and 11, the audit rules E-B1 to E-B3, and the known limit EM-G4a-f2 of
   that is gone, and it never holds the cursor.
 * **A deleted draft (E-B2).** A ``[DELETED]`` marker deletes a row in
   ``drafts`` and moves any other row to TRASH.
+* **The cursor moves at each page (EM-G4b-f1, §12.3.12.2).** Each page
+  fetches its messages before the next page is read. A finished page that is
+  not the last sets the position to the ``id`` of its last record. A rate
+  limit after a finished page keeps the finished pages, sets
+  ``rate_limited``, and backs the loop off. A held fetch holds the cursor at
+  the end of the page before its page. Fix round 1: a full read ends at the
+  larger of the last record id and the ``historyId`` of the FIRST answer,
+  and a later page fetches again an id that an earlier page fetched.
 
 These tests use ``httpx.MockTransport``, because an ``AsyncMock`` client skips
 the auth flow of the client seam. The provider makes no ``authenticate``
@@ -358,16 +366,21 @@ async def test_history_reads_every_page(fake: _Gmail) -> None:
     assert fake.requests("/profile") == []
 
 
-async def test_the_new_cursor_is_the_id_of_the_last_answer(fake: _Gmail) -> None:
-    """M6. The cursor is the ``historyId`` of the LAST page. The id of the
-    first page would read the changes of the later pages again."""
+async def test_the_new_cursor_is_the_id_of_the_answer_of_a_one_page_read(
+        fake: _Gmail) -> None:
+    """M6, as amended by EM-G4b-f1 fix round 1 (D-G4b-f1-4). A read of one
+    page ends at the ``historyId`` of its answer, as before. A read of three
+    pages with no record ends at the ``historyId`` of the FIRST answer, never
+    of the last: the later id can be past a change that no page carried."""
+    fake.history = [_ok({"historyId": "130", "history": []})]
+    one_page = await _provider().sync_messages(history_id="100")
     fake.history = [_pages({"historyId": "110", "history": []},
                            {"historyId": "120", "history": []},
                            {"historyId": "130", "history": []})]
+    three_pages = await _provider().sync_messages(history_id="100")
 
-    result = await _provider().sync_messages(history_id="100")
-
-    assert result.new_history_id == "130"
+    assert one_page.new_history_id == "130"
+    assert three_pages.new_history_id == "110"
 
 
 # ── item 3: the label events ────────────────────────────────────────────────
@@ -432,22 +445,282 @@ async def test_a_deleted_message_is_a_marker_and_is_not_fetched(
     assert result.new_history_id == "120"
 
 
-async def test_a_rate_limit_on_a_later_history_page_fails_the_sync(
-        fake: _Gmail) -> None:
-    """A rate limit on any history page fails the sync, so phase (d) never
-    moves the cursor (EM-G4a item 9)."""
-    first = _pages({"historyId": "110", "history": []},
-                   {"historyId": "120", "history": []})
+# ── EM-G4b-f1: the cursor moves at each page ────────────────────────────────
+# Spec §12.3.12.2. The EM-G4b case
+# ``test_a_rate_limit_on_a_later_history_page_fails_the_sync`` inverts. It is
+# now ``test_a_rate_limit_on_a_later_page_keeps_the_finished_pages``.
+
+#: The ``historyId`` that Gmail gives in each answer: the id of the whole
+#: mailbox, past the records of every page (D-G4b-f1-4).
+MAILBOX_ID = "190"
+
+
+def _record(rid: str, **events: Any) -> dict[str, Any]:
+    """One history record with its ``id``, as Gmail gives it."""
+    return {"id": rid, **events}
+
+
+def _three_pages() -> list[dict[str, Any]]:
+    """Three pages. Page 1 ends at record 107, page 2 at 125, and page 3 at
+    140. Each answer carries ``MAILBOX_ID``."""
+    return [
+        {"historyId": MAILBOX_ID, "history": [
+            _record("101", **_added("m1")), _record("107", **_added("m1b"))]},
+        {"historyId": MAILBOX_ID, "history": [_record("125", **_added("m2"))]},
+        {"historyId": MAILBOX_ID, "history": [_record("140", **_added("m3"))]},
+    ]
+
+
+def _limit_on(page: int, *pages: dict[str, Any]) -> Answer:
+    """The pages of ``_pages``, with a 429 on each try of page *page*."""
+    answer = _pages(*pages)
+    token = f"p{page}" if page > 1 else None
 
     def _answer(request: httpx.Request) -> httpx.Response:
-        if request.url.params.get("pageToken"):
+        if request.url.params.get("pageToken") == token:
             return _refuse(429, "rateLimitExceeded")(request)
-        return first(request)
+        return answer(request)
+    return _answer
 
-    fake.history = [_answer]
+
+def _serve(fake: _Gmail, *ids: str) -> None:
+    for mid in ids:
+        fake.message(mid, _ok(_message(mid, "INBOX")))
+
+
+async def test_a_rate_limit_on_a_later_page_keeps_the_finished_pages(
+        fake: _Gmail, caplog: pytest.LogCaptureFixture) -> None:
+    """Acceptance 1, M3 (D-G4b-f1-2). A rate limit on page 3 of 3 ends the
+    read with pages 1 and 2 kept. The cursor is the ``id`` of the last
+    record of page 2, ``rate_limited`` is True, and the log line counts the
+    finished pages with no message id."""
+    fake.history = [_limit_on(3, *_three_pages())]
+    _serve(fake, "m1", "m1b", "m2", "m3")
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        result = await _provider().sync_messages(history_id="100")
+
+    assert _ids(result) == ["m1", "m1b", "m2"]
+    assert result.messages_synced == 3
+    assert result.new_history_id == "125"
+    assert result.rate_limited is True
+    assert result.errors == []
+    assert fake.requests("/messages/m3") == []
+    lines = [r.getMessage() for r in caplog.records
+             if r.getMessage().startswith("gmail.history_partial")]
+    assert lines == ["gmail.history_partial pages=2"]
+
+
+@pytest.mark.parametrize("where", ["history", "fetch"])
+async def test_a_rate_limit_on_the_first_page_fails_the_sync(
+        fake: _Gmail, cycle: SimpleNamespace, where: str) -> None:
+    """Acceptance 2 (D-G4b-f1-3). A rate limit on page 1, from
+    ``history.list`` or from a fetch of page 1, raises. No page finished,
+    so the cycle fails and phase (d) writes no cursor."""
+    if where == "history":
+        fake.history = [_limit_on(1, *_three_pages())]
+    else:
+        fake.history = [_pages(*_three_pages())]
+        _serve(fake, "m1")
+        fake.message("m1b", _refuse(429, "rateLimitExceeded"))
 
     with pytest.raises(GmailRateLimited):
         await _provider().sync_messages(history_id="100")
+    res = await cycle.run(_row(last_history_id="100"))
+
+    assert "error" in res, res
+    assert cycle.phase_d() == []
+
+
+async def test_each_page_is_fetched_before_the_next_page_is_read(
+        fake: _Gmail) -> None:
+    """Acceptance 3, M2 (D-G4b-f1-1). The fake sees page 1, then its
+    fetches, then page 2, then its fetches, then page 3. The parse reads
+    ``/labels`` once for the names of the user labels, so the order leaves
+    it out."""
+    fake.history = [_pages(*_three_pages())]
+    _serve(fake, "m1", "m1b", "m2", "m3")
+
+    await _provider().sync_messages(history_id="100")
+
+    assert [path for _, path, _ in fake.seen if path != "/labels"] == [
+        "/history", "/messages/m1", "/messages/m1b",
+        "/history", "/messages/m2",
+        "/history", "/messages/m3"]
+
+
+async def test_the_page_cursor_is_the_last_record_id_not_the_answer_history_id(
+        fake: _Gmail) -> None:
+    """Acceptance 1, M1 (D-G4b-f1-4). Page 1 has three records, and its
+    answer gives the ``historyId`` of the whole mailbox. A rate limit on
+    page 2 leaves the cursor at the LAST record of page 1. The ``historyId``
+    of the answer is past page 2, so a cursor set to it loses page 2 (GM-17).
+    A complete read still ends at the ``historyId`` of the last answer."""
+    pages = [{"historyId": MAILBOX_ID, "history": [
+                 _record("101", **_added("m1")), _record("104"),
+                 _record("107", **_added("m1b"))]},
+             {"historyId": MAILBOX_ID, "history": [_record("125", **_added("m2"))]}]
+    _serve(fake, "m1", "m1b", "m2")
+
+    fake.history = [_limit_on(2, *pages)]
+    partial = await _provider().sync_messages(history_id="100")
+    fake.history = [_pages(*pages)]
+    complete = await _provider().sync_messages(history_id="100")
+
+    assert partial.new_history_id == "107"
+    assert complete.new_history_id == MAILBOX_ID
+    assert complete.rate_limited is False
+
+
+async def test_a_rate_limit_inside_a_page_drops_the_fetches_of_that_page(
+        fake: _Gmail) -> None:
+    """The choice of the auditor note P3 (2026-10-12). A rate limit on a
+    fetch of page 3 comes after another fetch of page 3 landed. The result
+    holds pages 1 and 2 only: the fetch that landed and the marker of page 3
+    drop, because the cursor stays at the end of page 2 and the next cycle
+    reads page 3 again (D-G4b-f1-7)."""
+    pages = _three_pages()
+    pages[2] = {"historyId": MAILBOX_ID, "history": [
+        _record("131", **_deleted("gone")), _record("140", **_added("m3", "m4"))]}
+    fake.history = [_pages(*pages)]
+    _serve(fake, "m1", "m1b", "m2", "m3")
+    fake.message("m4", _refuse(429, "rateLimitExceeded"))
+
+    result = await _provider().sync_messages(history_id="100")
+
+    assert fake.requests("/messages/m3") == [{"format": ["full"]}]
+    assert _ids(result) == ["m1", "m1b", "m2"]
+    assert result.messages_synced == 3
+    assert result.new_history_id == "125"
+    assert result.rate_limited is True
+
+
+async def test_a_later_page_fetches_again_a_message_that_an_earlier_page_fetched(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """Fix round 1 (a), the amendment of scope item 2. Page 1 adds m1, and
+    page 2 removes INBOX and UNREAD from it and stars it. The read lasts
+    minutes, so the events of page 2 can be newer than the fetch of page 1.
+    m1 is fetched again on page 2, once although page 2 names it two times,
+    and the upsert ends at the newer state. A message that page 1 deleted
+    gets one marker and no fetch."""
+    pages = [{"historyId": MAILBOX_ID, "history": [
+                 _record("101", **_added("m1")), _record("102", **_deleted("d1"))]},
+             {"historyId": MAILBOX_ID, "history": [
+                 _record("125", **_labels_event(
+                     "labelsRemoved", "m1", "INBOX", "UNREAD")),
+                 _record("126", **_labels_event("labelsAdded", "m1", "STARRED")),
+                 _record("127", **_labels_event("labelsAdded", "d1", "STARRED")),
+                 _record("128", **_deleted("d1"))]}]
+    fake.history = [_pages(*pages)]
+    fake.message("m1", _ok(_message("m1", "INBOX", "UNREAD")),
+                 _ok(_message("m1", "STARRED")))
+
+    res = await cycle.run(_row(last_history_id="100"))
+
+    assert "error" not in res, res
+    history = [i for i, (_, p, _) in enumerate(fake.seen) if p == "/history"]
+    fetches = [i for i, (_, p, _) in enumerate(fake.seen) if p == "/messages/m1"]
+    assert len(fetches) == 2
+    assert fetches[0] < history[1] < fetches[1]
+    assert fake.requests("/messages/d1") == []
+    assert [(m.folder, m.is_read, m.is_starred) for m in cycle.upserts
+            if m.provider_message_id == "m1"] == [
+        ("inbox", False, False), ("archive", True, True)]
+    # One marker of d1 writes two statements: the draft delete and the move
+    # to TRASH.
+    assert len([p for _, p in cycle.log if p.get("provider_id") == "d1"]) == 2
+
+
+@pytest.mark.parametrize(("last_record", "end"), [
+    ("150", "150"), ("80", "100")], ids=["a_record_past_the_first_answer",
+                                        "no_record_past_the_first_answer"])
+async def test_the_end_of_a_long_read_is_never_past_the_first_answer(
+        fake: _Gmail, last_record: str, end: str) -> None:
+    """Fix round 1 (b), the amendment of D-G4b-f1-4. Page 1 answers
+    ``historyId`` 100 and the last page answers 200. A change between the
+    two reads that no page carried can sit between them, so the cursor must
+    not reach 200. It ends at the larger of the first answer and the last
+    record that the read saw."""
+    fake.history = [_pages(
+        {"historyId": "100", "history": [_record("60", **_added("m1")),
+                                         _record("70")]},
+        {"historyId": "200", "history": [_record(last_record, **_added("m2"))]})]
+    _serve(fake, "m1", "m2")
+
+    result = await _provider().sync_messages(history_id="50")
+
+    assert result.new_history_id == end
+    assert _ids(result) == ["m1", "m2"]
+
+
+async def test_a_stale_cursor_on_a_later_page_keeps_the_finished_pages(
+        fake: _Gmail) -> None:
+    """Scope item 6. Page 2 answers 404. The reset sweep runs, and the
+    messages of page 1 stay in its result."""
+    first = _pages(*_three_pages())
+
+    def _answer(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("pageToken"):
+            return _refuse(404, "notFound")(request)
+        return first(request)
+
+    fake.history = [_answer]
+    fake.profile = [_ok({"historyId": "900"})]
+    fake.listing = _ok({"messages": [{"id": "s1"}]})
+    _serve(fake, "m1", "m1b", "s1")
+
+    result = await _provider().sync_messages(history_id="100")
+
+    assert _ids(result) == ["m1", "m1b", "s1"]
+    assert result.cursor_reset is True
+    assert result.new_history_id == "900"
+    assert result.rate_limited is False
+
+
+async def test_a_5xx_on_page_two_holds_the_cursor_at_the_end_of_page_one(
+        fake: _Gmail) -> None:
+    """Acceptance 4, M5 (D-G4b-f1-5). A 5xx on the fetch of page 2 of 3
+    holds the cursor at the end of page 1, in the JSON form with
+    ``held_cycles`` 1. The read goes on, and the message of page 3 lands."""
+    fake.history = [_pages(*_three_pages())]
+    _serve(fake, "m1", "m1b", "m3")
+    fake.message("m2", _refuse(503, "backendError"))
+
+    result = await _provider().sync_messages(history_id="100")
+
+    assert _ids(result) == ["m1", "m1b", "m3"]
+    assert json.loads(result.new_history_id) == {
+        "v": 1, "history_id": "107", "held_cycles": 1}
+    assert result.errors == [
+        "gmail.fetch_failed id=m2 error=HTTPStatusError status=503"]
+
+
+async def test_the_held_page_cursor_still_passes_after_three_cycles(
+        fake: _Gmail) -> None:
+    """Acceptance 5. m2 on page 2 fails on each cycle. The first cycles
+    hold the cursor at the end of page 1, and the next cycle reads from
+    there. On cycle ``GMAIL_FETCH_HOLD_CYCLES`` the cursor moves to the last
+    answer, and m2 gets ``gmail.fetch_abandoned``."""
+    fake.history = [_pages(*_three_pages())]
+    _serve(fake, "m1", "m1b", "m3")
+    fake.message("m2", _refuse(500, "backendError"))
+    cursor = "100"
+    cursors: list[Any] = []
+
+    for _ in range(GMAIL_FETCH_HOLD_CYCLES):
+        result = await _provider().sync_messages(history_id=cursor)
+        cursor = result.new_history_id
+        cursors.append(cursor)
+
+    assert [json.loads(c) for c in cursors[:-1]] == [
+        {"v": 1, "history_id": "107", "held_cycles": k}
+        for k in range(1, GMAIL_FETCH_HOLD_CYCLES)]
+    assert cursors[-1] == MAILBOX_ID
+    starts = [p["startHistoryId"] for p in fake.requests("/history")
+              if "pageToken" not in p]
+    assert starts == [["100"]] + [["107"]] * (GMAIL_FETCH_HOLD_CYCLES - 1)
+    assert [e for e in result.errors if e.startswith("gmail.fetch_abandoned")] == [
+        f"gmail.fetch_abandoned id=m2 held_cycles={GMAIL_FETCH_HOLD_CYCLES}"]
 
 
 # ── items 5 and 6, E-B1: a stale cursor ─────────────────────────────────────
@@ -911,6 +1184,40 @@ async def test_a_failed_reseed_logs_the_mailbox_and_backs_the_loop_off(
     assert "gmail.reseed_failed account=acc-1" in lines
 
 
+async def test_a_partial_cycle_keeps_the_watermark_and_backs_off(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """Scope item 5 (D-G4b-f1-2), hermetic. A rate limit on page 3 is no
+    error. Phase (d) writes the page-2 position and keeps the watermark,
+    the mail of pages 1 and 2 lands, and the result backs the loop off."""
+    fake.history = [_limit_on(3, *_three_pages())]
+    _serve(fake, "m1", "m1b", "m2", "m3")
+
+    res = await cycle.run(_row(last_history_id="100"), from_loop=True)
+
+    assert "error" not in res, res
+    assert res.get("catch_up_incomplete") is True
+    [phase_d] = cycle.phase_d()
+    assert phase_d["history_id"] == "125"
+    assert phase_d["keep_watermark"] is True
+    assert phase_d["sync_note"] is None
+    assert [m.provider_message_id for m in cycle.upserts] == ["m1", "m1b", "m2"]
+
+
+@pytest.mark.parametrize("result", [
+    SimpleNamespace(new_history_id=None),
+    SimpleNamespace(new_history_id='{"v":1,"folders":{}}'),
+    SimpleNamespace(new_history_id="7:9", rate_limited=False),
+], ids=["outlook_no_cursor", "outlook_delta_cursor", "imap"])
+def test_a_result_that_is_not_rate_limited_keeps_its_catch_up(result: Any) -> None:
+    """Acceptance 8. Outlook and IMAP never set ``rate_limited``, and a fake
+    that does not subclass ``SyncResult`` has no such field. ``_next_cursor``
+    gives them the same answer as before."""
+    catch_up = sched._CatchUp(False, None, False)
+
+    assert sched._next_cursor("acc-1", result, catch_up) == (
+        result.new_history_id, catch_up)
+
+
 def _log_writes(log: list[tuple[str, dict[str, Any]]]) -> list[Any]:
     """The ``provider_history_id`` of each sync-log write of phase (d)."""
     return [p["history_id"] for sql, p in log
@@ -1102,8 +1409,10 @@ class TestTheCursorOnARealDatabase:
             assert _stored_rows(p.admin_engine, account) == {"m1": ("inbox", False)}
 
             # 2. Two pages from the stored cursor.
+            # Each answer carries the mailbox id of its time (GM-17), so the
+            # read ends at the id of the first answer (fix round 1).
             fake.history = [_pages(
-                {"historyId": "510", "history": [
+                {"historyId": "520", "history": [
                     _labels_event("labelsRemoved", "m1", "INBOX", "UNREAD")]},
                 {"historyId": "520", "history": [_added("m2")]})]
             fake.message("m1", _ok(_message("m1")))
@@ -1144,6 +1453,88 @@ class TestTheCursorOnARealDatabase:
             # failed cycle 4 wrote no cursor into its log row.
             assert _sync_log_cursors(p.admin_engine, account) == [
                 "500", "520", None, None, "540"]
+        finally:
+            release_tenant(cleared)
+            _drop(p.admin_engine, account)
+
+    async def test_a_partial_cycle_writes_the_page_cursor_and_backs_off(
+        self, promoted, app_engine, fake, real_cycle, monkeypatch,  # noqa: F811
+    ):
+        """Acceptance 7, M4 (D-G4b-f1-2), through the real loop and the real
+        SQL of phase (d).
+
+        1. A loop cycle reads three history pages, and page 3 answers 429 on
+           each try. ``last_history_id`` holds the ``id`` of the last record
+           of page 2. The mail of pages 1 and 2 lands, and the mail of page
+           3 does not. ``last_synced_at`` stays, ``sync_status`` is
+           ``idle``, and the loop backs off.
+        2. The next loop cycle sends that position as ``startHistoryId``.
+           The mail of page 3 lands, the cursor is the last answer, and the
+           loop does not back off."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        account = _gmail_account(p.admin_engine, p.org_b)
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE email_accounts SET last_history_id = '100', "
+                "initial_sync_done = true, "
+                "last_synced_at = now() - interval '1 hour' "
+                "WHERE id = CAST(:a AS uuid)"), {"a": account})
+        with p.admin_engine.connect() as c:
+            watermark = c.execute(text(
+                "SELECT last_synced_at FROM email_accounts "
+                "WHERE id = CAST(:a AS uuid)"), {"a": account}).scalar_one()
+
+        class _StopLoop(Exception):
+            pass
+
+        backoffs: list[tuple[bool, int]] = []
+        real_backoff = sched._next_backoff
+
+        def _one_cycle(current: int, interval: int, *, failed: bool) -> int:
+            backoffs.append((failed, real_backoff(current, interval,
+                                                  failed=failed)))
+            raise _StopLoop
+
+        async def _no_hook(*_a: Any, **_k: Any) -> None:
+            return None
+
+        monkeypatch.setattr(sched, "_next_backoff", _one_cycle)
+        monkeypatch.setattr(sched, "run_hook", _no_hook)
+
+        async def _loop_once() -> None:
+            async with tenant_engine_scope(_dsn(p)):
+                with pytest.raises(_StopLoop):
+                    await sched._account_sync_loop(
+                        account, 300, organization_id=p.org_b)
+
+        cleared = clear_tenant()
+        try:
+            # 1. A rate limit on page 3.
+            fake.history = [_limit_on(3, *_three_pages())]
+            _serve(fake, "m1", "m1b", "m2", "m3")
+            await _loop_once()
+            state = _account_state(p.admin_engine, account)
+            assert state["last_history_id"] == "125"
+            assert state["sync_status"] == "idle"
+            assert sorted(_stored_rows(p.admin_engine, account)) == [
+                "m1", "m1b", "m2"]
+            with p.admin_engine.connect() as c:
+                assert c.execute(text(
+                    "SELECT last_synced_at FROM email_accounts "
+                    "WHERE id = CAST(:a AS uuid)"),
+                    {"a": account}).scalar_one() == watermark
+            assert backoffs == [(True, 600)], backoffs
+
+            # 2. The next cycle reads from the page-2 position.
+            fake.history = [_ok({"historyId": "300", "history": [
+                _record("140", **_added("m3"))]})]
+            await _loop_once()
+            assert fake.requests("/history")[-1]["startHistoryId"] == ["125"]
+            assert _account_state(p.admin_engine, account)[
+                "last_history_id"] == "300"
+            assert "m3" in _stored_rows(p.admin_engine, account)
+            assert backoffs[-1] == (False, 0), backoffs
         finally:
             release_tenant(cleared)
             _drop(p.admin_engine, account)

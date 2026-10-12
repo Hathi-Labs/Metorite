@@ -6,7 +6,8 @@
  *
  * The panel shows every `detail` field and never a stored value (spec §3.3
  * rule 4). Setup belongs to the owning app, so "Open in <app>" and "Connect
- * again" are links. Only Disconnect and Test call the console's own routes.
+ * again" are links. Only Disconnect, Test and the "always confirm" switch of
+ * an MCP server (H-300) call the console's own routes.
  */
 
 import Button from "@/components/ui/Button";
@@ -18,11 +19,13 @@ import {
   detailRows,
   errorMessage,
   lastSyncLabel,
+  mcpAlwaysConfirm,
   panelPlan,
   rowLabel,
   scopeLabel,
   type Connection,
 } from "../lib/connections";
+import { AlwaysConfirmField } from "./AddMcpModal";
 import { ConnectionState } from "./ConnectionList";
 
 export interface SheetBodyProps {
@@ -34,6 +37,10 @@ export interface SheetBodyProps {
   onNavigate: (href: string) => void;
   onDisconnect: () => void;
   onTest: () => void;
+  /** H-300: the admin turns the "always confirm" switch of an MCP server. */
+  onAlwaysConfirm?: (next: boolean) => void;
+  /** True while that change is on its way. */
+  savingAlwaysConfirm?: boolean;
 }
 
 export function SheetBody({
@@ -45,6 +52,8 @@ export function SheetBody({
   onNavigate,
   onDisconnect,
   onTest,
+  onAlwaysConfirm,
+  savingAlwaysConfirm,
 }: SheetBodyProps) {
   const plan = panelPlan(row, canManage);
   const error = errorMessage(row.last_error);
@@ -73,6 +82,13 @@ export function SheetBody({
           </div>
         ))}
       </dl>
+      {plan.alwaysConfirm ? (
+        <AlwaysConfirmField
+          checked={mcpAlwaysConfirm(row) === true}
+          disabled={plan.alwaysConfirm !== "edit" || !onAlwaysConfirm || savingAlwaysConfirm}
+          onChange={(next) => onAlwaysConfirm?.(next)}
+        />
+      ) : null}
       {plan.memberNote ? (
         <p className="rounded-lg bg-secondary px-3 py-2 text-xs text-muted-foreground">{plan.memberNote}</p>
       ) : null}

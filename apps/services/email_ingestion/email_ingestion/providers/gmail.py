@@ -387,7 +387,9 @@ def _raise_rate_limit(exc: BaseException) -> None:
 
     A sweep skips a label that fails, and the history path records a fetch
     that fails. A rate limit must fail the sync instead, so the loop backs
-    off and the cursor stays (EM-G4a item 9)."""
+    off and the cursor stays (EM-G4a item 9). On the history path,
+    ``_history_sync`` catches it after a finished page and keeps the work of
+    the finished pages (EM-G4b-f1, D-G4b-f1-2)."""
     if isinstance(exc, GmailRateLimited):
         raise exc
 
@@ -494,30 +496,72 @@ def _transient(exc: BaseException) -> bool:
     return isinstance(status, int) and status >= 500
 
 
+def _page_end(records: list[dict[str, Any]], position: str) -> str:
+    """The position at the end of one finished page (WS-17 EM-G4b-f1,
+    D-G4b-f1-4).
+
+    It is the ``id`` of the last history record of the page, never the
+    ``historyId`` of the answer. Gmail gives the ``historyId`` of the whole
+    mailbox in each answer, so that id is past the records of the later
+    pages, and a cursor set to it loses them (GM-17). A page with no record
+    id keeps *position*, so the next read starts earlier, never later. The
+    end of the last page goes through ``_read_end`` too."""
+    for record in reversed(records):
+        record_id = str(record.get("id") or "")
+        if _is_history_id(record_id):
+            return record_id
+    return position
+
+
+def _read_end(last_record: str, first_answer: Any) -> str:
+    """The cursor at the end of a full read (EM-G4b-f1 fix round 1, the
+    amendment of D-G4b-f1-4).
+
+    It is the larger of *last_record*, the ``id`` of the last record that
+    the read saw, and *first_answer*, the ``historyId`` of the FIRST answer.
+    Each page fetches before the next page is read, so a read can last
+    minutes. The ``historyId`` of the last answer is the mailbox id at that
+    later time, and it can be past a change that no page carried. So the
+    cursor never goes past the first answer, unless a record of the read
+    is past it. A read of one page ends at the ``historyId`` of its answer,
+    as before, because no record is past it."""
+    first = str(first_answer or "")
+    if not _is_history_id(first):
+        return last_record
+    return max(last_record, first, key=int)
+
+
 def _cursor_after_read(
-    start: str, last_id: str | None, held_cycles: int, failed: list[str],
+    hold_at: str, last_id: str, held_cycles: int, failed: list[str],
     errors: list[str],
 ) -> str:
-    """The cursor after one read of the history (item 2, EM-G4a-f2).
+    """The cursor after one read of the history (item 2, EM-G4a-f2,
+    EM-G4b-f1 D-G4b-f1-5).
 
-    With no failed fetch, it is the ``historyId`` of the last answer, and the
-    count of held cycles goes back to 0. A fetch that a later cycle can fix
-    keeps the OLD position, and the count goes up by 1. The count belongs to
-    the cursor, not to a message, so a new failure on each cycle cannot hold
-    the cursor longer (review round 1 F1). On the cycle that reaches
-    ``GMAIL_FETCH_HOLD_CYCLES``, the cursor moves to the last answer. Each
-    message that still fails gets a log line and a record in ``errors``,
-    with its id only. A message that succeeds is not in them."""
+    *last_id* is the end of the last finished page: the ``historyId`` of the
+    last answer, or the page position of ``_page_end`` when a rate limit
+    stopped the read. *hold_at* is the end of the last page before the first
+    page with a fetch that a later cycle can fix, or the start of the read
+    when that page is page 1.
+
+    With no such fetch, the cursor is *last_id*, and the count of held
+    cycles goes back to 0. With one, the cursor holds at *hold_at*, and the
+    count goes up by 1. The count belongs to the cursor, not to a message,
+    so a new failure on each cycle cannot hold the cursor longer (review
+    round 1 F1). On the cycle that reaches ``GMAIL_FETCH_HOLD_CYCLES``, the
+    cursor moves to *last_id*. Each message that still fails gets a log line
+    and a record in ``errors``, with its id only. A message that succeeds is
+    not in them."""
     if not failed:
-        return last_id or start
+        return last_id
     cycles = held_cycles + 1
     if cycles < GMAIL_FETCH_HOLD_CYCLES:
-        return _format_cursor(start, cycles)
+        return _format_cursor(hold_at, cycles)
     for mid in failed:
         logger.warning("gmail.fetch_abandoned message_id=%s held_cycles=%d",
                        mid, cycles)
         errors.append(f"gmail.fetch_abandoned id={mid} held_cycles={cycles}")
-    return last_id or start
+    return last_id
 
 
 def _reset_sweep_after(
@@ -2075,9 +2119,12 @@ class GmailProvider(BaseEmailProvider):
           cursor. The import does not use it since EM-G5a (E-G5-8):
           ``import_batches`` reads one list of all mail.
         * With a cursor, the sync reads ``history.list`` from it, page by
-          page (items 2 to 4). The new cursor is the ``historyId`` of the
-          last answer. A fetch that a later cycle can fix holds the cursor
-          (EM-G4a-f2, ``_cursor_after_read``).
+          page, and fetches each page before it reads the next (items 2 to
+          4, EM-G4b-f1). The new cursor is the ``historyId`` of the last
+          answer. A fetch that a later cycle can fix holds the cursor at the
+          end of the page before its page (EM-G4a-f2,
+          ``_cursor_after_read``). A rate limit after a finished page keeps
+          the finished pages and sets ``rate_limited`` (D-G4b-f1-2).
         * With no cursor, ``users.getProfile`` gives the seed FIRST. The
           sweep then reads the newest page of each label and returns the
           seed (item 1). So the next history read gets each change made
@@ -2136,10 +2183,11 @@ class GmailProvider(BaseEmailProvider):
     async def _fetch_into(self, ids: list[str], result: SyncResult) -> list[str]:
         """Fetch each message of *ids* in full into *result* (items 3 and 6).
 
-        A rate limit whose tries are spent raises, so the sync fails and the
-        cursor stays (EM-G4a item 9). Each other failure leaves its record in
-        ``result.errors`` (item 10). Returns the ids whose failure a later
-        cycle can fix (``_transient``)."""
+        A rate limit whose tries are spent raises (EM-G4a item 9). The
+        caller decides what it does: a sweep fails, and the history read
+        keeps its finished pages (EM-G4b-f1). Each other failure leaves its
+        record in ``result.errors`` (item 10). Returns the ids whose failure
+        a later cycle can fix (``_transient``)."""
         failed: list[str] = []
         for mid in ids:
             try:
@@ -2153,58 +2201,122 @@ class GmailProvider(BaseEmailProvider):
             result.messages_synced += 1
         return failed
 
-    async def _read_history(
-        self, start: str, max_results: int,
-    ) -> tuple[dict[str, None], dict[str, None], str | None]:
-        """Read ``history.list`` from *start* to the last page (item 2).
+    async def _history_page(
+        self, client: httpx.AsyncClient, params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """One page of ``history.list``. A 404 raises ``_StaleCursor`` (item
+        5). A rate limit whose tries are spent raises ``GmailRateLimited``
+        through the client seam. Any other failure raises, so the sync
+        fails and the cursor stays."""
+        resp = await client.get("/users/me/history", params=params)
+        if resp.status_code == 404:
+            raise _StaleCursor
+        resp.raise_for_status()
+        return resp.json()
 
-        Returns the fetch set, the delete set and the ``historyId`` of the
-        last answer. A 404 raises ``_StaleCursor`` (item 5). Any other
-        failure raises, so the sync fails and the cursor stays."""
-        client = await self._get_client()
-        params: dict[str, Any] = {"startHistoryId": start,
-                                  "maxResults": max_results,
-                                  "historyTypes": _HISTORY_TYPES}
+    async def _apply_history_page(
+        self, records: list[dict[str, Any]], marked: set[str],
+        result: SyncResult,
+    ) -> list[str]:
+        """Put one history page into *result*: its ``[DELETED]`` markers,
+        then its fetches (EM-G4b-f1 scope items 1 and 2).
+
+        An id that one page names two times is fetched once. An id that an
+        EARLIER page fetched is fetched again when a later page names it
+        (fix round 1, the amendment of scope item 2). The read can last
+        minutes, so the later event can be newer than the earlier fetch, and
+        a skip leaves the read mark or the folder of the row stale. The later
+        fetch comes later in ``messages``, so the upsert keeps the newer
+        state. An id that an earlier page marked gets no second marker and
+        no fetch, because Gmail deleted it. Returns the ids whose fetch a
+        later cycle can fix (``_fetch_into``)."""
         fetch: dict[str, None] = {}
         deleted: dict[str, None] = {}
-        last_id: str | None = None
-        while True:
-            resp = await client.get("/users/me/history", params=params)
-            if resp.status_code == 404:
-                raise _StaleCursor
-            resp.raise_for_status()
-            data = resp.json()
-            _collect_history(data.get("history") or [], fetch, deleted)
-            last_id = data.get("historyId") or last_id
-            token = data.get("nextPageToken")
-            if not token:
-                return fetch, deleted, last_id
-            params["pageToken"] = token
+        _collect_history(records, fetch, deleted)
+        markers = [mid for mid in deleted if mid not in marked]
+        for mid in markers:
+            result.messages.append(_deleted_marker(mid))
+        marked.update(markers)
+        result.messages_synced += len(markers)
+        ids = [mid for mid in fetch if mid not in deleted and mid not in marked]
+        return await self._fetch_into(ids, result)
 
     async def _history_sync(
         self, cursor: tuple[str, int], max_results: int,
         since: datetime | None, catch_up: datetime | None,
     ) -> SyncResult:
-        """The sync from a cursor (items 2 to 5, EM-G4a-f2)."""
+        """The sync from a cursor, one page at a time (items 2 to 5,
+        EM-G4a-f2, EM-G4b-f1).
+
+        Each page fetches its messages before the loop reads the next page
+        (D-G4b-f1-1). So each finished page moves ``position`` to the ``id``
+        of its last history record. After the last page, the cursor is the
+        larger of that id and the ``historyId`` of the FIRST answer
+        (``_read_end``, D-G4b-f1-4 as amended in fix round 1).
+
+        * A fetch that a later cycle can fix holds the cursor at the end of
+          the page before its page. The read goes on (D-G4b-f1-5).
+        * A rate limit on page 1 raises, so the sync fails (D-G4b-f1-3).
+        * A rate limit on a later page, from ``history.list`` or from a
+          fetch, ends the read (D-G4b-f1-2). The result holds the finished
+          pages only. The messages that the stopped page fetched before the
+          limit drop, and the next cycle fetches them again from the page
+          position. It sets ``rate_limited`` and logs
+          ``gmail.history_partial`` with the count of finished pages.
+        * A 404 on any page runs the reset sweep, and the messages of the
+          finished pages stay in its result (scope item 6)."""
         start, held_cycles = cursor
-        try:
-            fetch, deleted, last_id = await self._read_history(start, max_results)
-        except _StaleCursor:
-            return await self._recover_stale_cursor(max_results, since, catch_up)
+        client = await self._get_client()
+        params: dict[str, Any] = {"startHistoryId": start,
+                                  "maxResults": max_results,
+                                  "historyTypes": _HISTORY_TYPES}
         result = SyncResult()
-        for mid in deleted:
-            result.messages.append(_deleted_marker(mid))
-        # A message that Gmail deleted has nothing to fetch.
-        failed = await self._fetch_into(
-            [mid for mid in fetch if mid not in deleted], result)
-        result.messages_synced += len(deleted)
+        marked: set[str] = set()
+        failed: list[str] = []
+        position = start
+        first_answer: Any = None
+        hold_at: str | None = None
+        pages = 0
+        while True:
+            kept = (len(result.messages), result.messages_synced,
+                    len(result.errors))
+            try:
+                data = await self._history_page(client, params)
+                if not pages:
+                    first_answer = data.get("historyId")
+                records = data.get("history") or []
+                page_failed = await self._apply_history_page(
+                    records, marked, result)
+            except _StaleCursor:
+                return await self._recover_stale_cursor(
+                    max_results, since, catch_up, result)
+            except GmailRateLimited:
+                if not pages:
+                    raise
+                del result.messages[kept[0]:]
+                result.messages_synced = kept[1]
+                del result.errors[kept[2]:]
+                logger.warning("gmail.history_partial pages=%d", pages)
+                result.rate_limited = True
+                break
+            pages += 1
+            if page_failed and hold_at is None:
+                hold_at = position
+            failed.extend(page_failed)
+            position = _page_end(records, position)
+            token = data.get("nextPageToken")
+            if not token:
+                position = _read_end(position, first_answer)
+                break
+            params["pageToken"] = token
         result.new_history_id = _cursor_after_read(
-            start, last_id, held_cycles, failed, result.errors)
+            position if hold_at is None else hold_at, position, held_cycles,
+            failed, result.errors)
         return result
 
     async def _recover_stale_cursor(
         self, max_results: int, since: datetime | None,
-        catch_up: datetime | None,
+        catch_up: datetime | None, result: SyncResult | None = None,
     ) -> SyncResult:
         """A stale cursor (items 5 and 6, E-B1). Seed FIRST, then sweep all
         mail back to the watermark.
@@ -2217,9 +2329,15 @@ class GmailProvider(BaseEmailProvider):
         abandons the catch-up (``CATCH_UP_MAX_MISSES``). A failed seed makes
         the sweep short too, because it has no cursor to return.
         ``cursor_reset`` tells the scheduler to log the reset with the
-        mailbox id, also when the seed failed (review round 1 F6)."""
+        mailbox id, also when the seed failed (review round 1 F6).
+
+        *result* holds the history pages that finished before the 404
+        (EM-G4b-f1 scope item 6), so their messages stay. With no *result*,
+        the sweep starts a new one."""
         seed = await self._try_seed()
-        result = SyncResult(reseed_history_id=seed, cursor_reset=True)
+        result = result if result is not None else SyncResult()
+        result.reseed_history_id = seed
+        result.cursor_reset = True
         after = _reset_sweep_after(catch_up, since)
         complete = await self._sweep_after_reset(max_results, after, result)
         if complete and seed is not None:

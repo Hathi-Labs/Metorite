@@ -39,14 +39,13 @@ import { NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { AccessSection } from "./components/AccessPanel";
-import { SetupSection } from "./components/SetupPanel";
-import ConnectionPanel from "./components/ConnectionPanel";
+import SetupHubSection from "./components/SetupHub";
 import CrmBoundary from "./components/CrmBoundary";
 import ConvertModal from "./components/ConvertModal";
 import CrmRail, { type RailViewActions } from "./components/CrmRail";
 import FilterBar from "./components/FilterBar";
 import FirstOpen from "./components/FirstOpen";
-import { ImportProgress, ReconnectBanner } from "./components/MirrorBanner";
+import { ImportProgress, SetupLink, StalledBanner } from "./components/MirrorBanner";
 import KanbanBoard from "./components/KanbanBoard";
 import MoveModal from "./components/MoveModal";
 import PipelineSettings from "./components/PipelineSettings";
@@ -59,9 +58,9 @@ import { CrmError } from "./lib/api";
 import {
   ADMIN_CAPABILITY,
   canCreate,
-  clearReturnParams,
+  returnTarget,
+  mirrorStalled,
   modeLine,
-  needsReconnect,
   returnNotice,
   startFailureMessage,
   syncFailureMessage,
@@ -121,7 +120,14 @@ import {
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
-import { invalidateCrmMode, useCrmMode, useFieldDefs, usePipelines, useSyncStatus } from "./lib/useCrmMode";
+import {
+  invalidateCrmMode,
+  useCrmMode,
+  useFieldDefs,
+  useOwners,
+  usePipelines,
+  useSyncStatus,
+} from "./lib/useCrmMode";
 import { boundaryKey } from "./lib/boundary";
 import { pushView, replaceView } from "./lib/history";
 import { viewLabel } from "./lib/views";
@@ -168,6 +174,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   /** The collection whose records the filters narrow: a list or a board. */
   const filterEntity: EntitySlug | null = isEntity(view.tab) ? view.tab : null;
   const { defs: filterDefs, loading: defsLoading } = useFieldDefs(filterEntity);
+  /** The owner filter's choices: every member and record owner (CRM-X1). */
+  const owners = useOwners(filterEntity !== null);
   // A filter the gateway would refuse is dropped before the fetch (CRM-Q8):
   // a saved view can name a custom field that is gone, and one 422 would
   // empty the whole list.
@@ -320,11 +328,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         : [];
 
   const barDefs = filterDefs;
-  const barRows: Array<Record<string, unknown>> = boardOn
-    ? (view.tab === "leads" ? store.leadLanes : store.lanes).flatMap(
-        (lane) => lane.rows as Array<Record<string, unknown>>,
-      )
-    : store.rows;
 
   /** The custom columns in effect: the view's own, or this browser's. */
   const draftOfView = draftColumns?.viewId === view.viewId ? draftColumns?.keys : undefined;
@@ -519,7 +522,15 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               // Deals from Contacts.
               viewLabel(view.tab);
   const mode = modeLine({ mode: ctx.mode, connection: ctx.connection, sync: ctx.sync });
-  const subtitle = mode ? `${mode} · ${viewLine}` : viewLine;
+  // CRM-X0: the mode part links an admin to the setup hub.
+  const subtitle = mode ? (
+    <>
+      <SetupLink isAdmin={ctx.isAdmin}>{mode}</SetupLink>
+      {` · ${viewLine}`}
+    </>
+  ) : (
+    viewLine
+  );
 
   /** A rail row, from the desktop column or the phone's drawer. */
   function chooseView(tab: CrmView["tab"]): void {
@@ -703,11 +714,12 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         ) : null}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {ctx.mode === "mirror" && needsReconnect(ctx.connection) && (
-            <ReconnectBanner
+          {ctx.mode === "mirror" && mirrorStalled(ctx.connection) && (
+            // CRM-X0: the banner leads to the setup hub, which offers the fix.
+            <StalledBanner
               isAdmin={ctx.isAdmin}
-              busy={ctx.connecting}
-              onReconnect={ctx.onConnect}
+              status={ctx.connection?.status ?? null}
+              onOpenSetup={() => chooseView("settings")}
             />
           )}
           {ctx.mode === "mirror" && ctx.sync?.state === "running" && (
@@ -726,7 +738,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               entity={filterEntity}
               view={view}
               onChange={go}
-              rows={barRows}
+              owners={owners}
+              search={!boardOn}
               fieldDefs={barDefs}
               mirror={ctx.mode === "mirror"}
               removed={waitingForDefs ? [] : pruned.removed}
@@ -792,12 +805,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           ) : view.tab === "settings" ? (
             <PipelineSettings
               setup={
-                ctx.isAdmin ? <SetupSection mode={ctx.mode} connection={ctx.connection} /> : undefined
-              }
-              access={ctx.isAdmin ? <AccessSection /> : undefined}
-              connection={
-                ctx.isAdmin && ctx.connection ? (
-                  <ConnectionPanel
+                // CRM-X0: the one setup hub. It holds the connection too.
+                ctx.isAdmin ? (
+                  <SetupHubSection
                     mode={ctx.mode}
                     connection={ctx.connection}
                     sync={ctx.sync}
@@ -809,6 +819,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                   />
                 ) : undefined
               }
+              access={ctx.isAdmin ? <AccessSection /> : undefined}
               pipelines={pipelines}
               showAdminCards={ctx.isAdmin}
               dealStatuses={store.dealStatuses}
@@ -839,6 +850,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 rows={store.rows}
                 total={store.total}
                 loading={store.loading}
+                statuses={statusesFor(listEntity)}
+                onLoadMore={() => void store.loadMore()}
+                loadingMore={store.loadingMore}
+                hasMore={store.hasMore}
                 sort={view.sort}
                 direction={view.dir}
                 onSort={(key) => go(applySort(view, key))}
@@ -1053,7 +1068,8 @@ function CrmGate(): ReactNode {
       toast.show({ key: "crm-connect-return", variant: "error", title: notice.message });
     }
     invalidateCrmMode();
-    const rest = clearReturnParams(search);
+    // CRM-X0: another Zoho account opens the setup hub (`returnTarget`).
+    const rest = returnTarget(search);
     replaceView(rest ? `${pathname}?${rest}` : pathname);
   }, [search, pathname, toast]);
 

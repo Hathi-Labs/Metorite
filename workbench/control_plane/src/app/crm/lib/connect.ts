@@ -19,7 +19,11 @@ export type ConnectionInfo = {
   connected: boolean;
   provider: string;
   owning_app: string;
-  status: "connected" | "needs_reconnect" | "disconnected" | null;
+  /**
+   * `needs_reset` (CRM-X0, migration 252): the last consent was for another
+   * Zoho account than the one the records came from. Nothing syncs.
+   */
+  status: "connected" | "needs_reconnect" | "needs_reset" | "disconnected" | null;
   location: string | null;
   scopes: string[];
   connected_by: string | null;
@@ -148,7 +152,7 @@ export function modeLine(input: {
   const last = input.sync?.last_success_at ?? input.connection?.last_sync_at ?? null;
   const when = last ? relativeTime(last, input.nowMs) : "";
   const status = input.connection?.status;
-  if (status === "needs_reconnect" || status === "disconnected") {
+  if (status === "needs_reconnect" || status === "needs_reset" || status === "disconnected") {
     return when ? `Zoho disconnected · last synced ${when}` : "Zoho disconnected";
   }
   if (input.sync?.state === "running") return "Importing from Zoho…";
@@ -160,6 +164,16 @@ export function needsReconnect(connection: ConnectionInfo | null): boolean {
   return connection?.status === "needs_reconnect";
 }
 
+/**
+ * A Mirror CRM whose records do not update, for any reason (CRM-X0): the
+ * consent lapsed, an admin disconnected, or the new consent is for another
+ * account. The banner shows for each, and it links to the setup hub.
+ */
+export function mirrorStalled(connection: ConnectionInfo | null): boolean {
+  const status = connection?.status;
+  return status === "needs_reconnect" || status === "needs_reset" || status === "disconnected";
+}
+
 // ── The return from Zoho (§8.3) ───────────────────────────────────────────
 
 export const CONNECT_ERROR_MESSAGES: Record<string, string> = {
@@ -168,6 +182,10 @@ export const CONNECT_ERROR_MESSAGES: Record<string, string> = {
   untrusted_host: "Metorite does not trust that Zoho address. Ask support.",
   mode_is_native: "This CRM already uses Metorite as its CRM. It cannot sync from Zoho.",
   zoho_not_configured: "Zoho CRM is not set up for this workspace yet. Ask support.",
+  // CRM-X0: the callback compares the account with the one the records came from.
+  different_org:
+    "That Zoho account is not the one your records came from. Nothing synced. CRM setup shows what you can do.",
+  org_unreadable: "Metorite could not read the Zoho account. Nothing changed. Connect again.",
 };
 
 export const CONNECT_ERROR_FALLBACK = "Zoho CRM did not connect. Try again.";
@@ -196,6 +214,24 @@ export function clearReturnParams(search: string): string {
   const params = new URLSearchParams(search);
   params.delete("connected");
   params.delete("connect_error");
+  return params.toString();
+}
+
+/**
+ * The refusals of the Zoho return that only the setup hub can answer
+ * (CRM-X0). The gateway sends them as one query name, because the BFF
+ * callback passes no other shape, so the page adds the settings tab here.
+ */
+export const SETUP_RETURN_CODES = new Set(["different_org", "org_unreadable"]);
+
+/** The query to land on after a trip to Zoho: the return parameters go, and
+ *  a refusal that the hub answers opens the settings tab, where the hub is. */
+export function returnTarget(search: string): string {
+  const notice = returnNotice(search);
+  const params = new URLSearchParams(clearReturnParams(search));
+  if (notice?.kind === "error" && SETUP_RETURN_CODES.has(notice.code)) {
+    params.set("tab", "settings");
+  }
   return params.toString();
 }
 

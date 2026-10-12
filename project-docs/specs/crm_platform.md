@@ -1869,7 +1869,7 @@ answers. Each recommendation is the audit's.
 The reconnect of Fracktal's Zoho is an act, not a question. §12 already holds
 it. Zoho tasks reach CRM-X3 and CRM-X5 only after it.
 
-### 19.5 CRM-X1: Find and page
+### 19.5 CRM-X1: Find and page (✅ built 2026-10-12)
 
 **Scope.**
 
@@ -1983,6 +1983,17 @@ CRM router, so the kill switch, `feature:crm` and the access rule hold.
   column set, and each exported key is a field of its model.
 - `app/crm/components/crmX1.test.ts`, new: items 7 and 8, and the page that
   `listQuery` sends.
+
+**Built as.** The scope and the nine items are built, and each fence went red
+first. The review added three rules. A short or empty page ends "Load more"
+(`hasMore`), because a sync can move a row between two reads. A write re-reads
+as many rows as the list showed, up to 100. A query with 4 digits or more also
+matches a phone on its digits alone, through a second bound parameter. The
+visual review found one defect: a pause after a space removed the space. The
+pure rule is now in `lib/filterBar.ts` (`searchBoxSync`). On Leads, "Last
+touched" sits before the converted badge. Two findings stay open. The search
+box makes the Closing range wrap at 1440, and a `blue` stage follows the accent
+until CRM-U3.
 
 ### 19.6 CRM-X2: The CRM joins the shell
 
@@ -2418,7 +2429,7 @@ to CRM-I1.
 **Order.** CRM-X1, CRM-X3 and CRM-X4 run in parallel. CRM-X2 follows CRM-X1.
 None of the four needs a migration.
 
-### 19.11 CRM-X0: Setup, connection and start over (owner report, 2026-10-12)
+### 19.11 CRM-X0: Setup, connection and start over (owner report, 2026-10-12) (✅ built 2026-10-12)
 
 **The report.** The owner connected Zoho, disconnected it, and then tried to
 sync again. The CRM showed "This CRM has records, so its setup cannot change.
