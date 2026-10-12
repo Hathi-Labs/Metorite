@@ -437,6 +437,12 @@ class SyncResult:
     # EM-G4b review round 1 F6). The scheduler then logs the reset with the
     # mailbox id. When ``reseed_history_id`` is None too, the seed failed.
     cursor_reset: bool = False
+    # True when a rate limit stopped the read after one or more finished
+    # pages (WS-17 EM-G4b-f1, D-G4b-f1-2). Only Gmail sets it. The messages
+    # above are those of the finished pages, and ``new_history_id`` is the
+    # end of the last finished page. The scheduler writes both, keeps the
+    # watermark and backs the loop off. Outlook and IMAP never set it.
+    rate_limited: bool = False
 
 
 #: The callback that an import calls once, before its first batch, with the
