@@ -121,7 +121,7 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
     const group = (LANE_GROUP[a.status.type] ?? 0) - (LANE_GROUP[b.status.type] ?? 0);
     if (group !== 0) return group;
     if (mirror) {
-      if (LANE_GROUP[a.status.type] === 0) {
+      if ((LANE_GROUP[a.status.type] ?? 0) === 0) {
         const odds = (a.status.probability ?? 0) - (b.status.probability ?? 0);
         if (odds !== 0) return odds;
       }
