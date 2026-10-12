@@ -353,6 +353,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
     autosave.flush();
     replySessionRef.current += 1;
     replyHasFileRef.current = false;
+    // The pane stays mounted across a switch, so the AI round of the mail
+    // before ends here, and so does a delete or an archive of the open mail.
+    // Else its draft lands in the next reply (EM-T17).
+    ai.reset();
     if (!email) {
       setDetail(null);
       setThread(null);
@@ -368,9 +372,6 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setReplyQuote("");
     setAiOpen(false);
     setAiInstruction("");
-    // The pane stays mounted across a switch, so the AI round of the mail
-    // before ends here. Else its draft lands in this mail's reply (EM-T17).
-    ai.reset();
     draftIdRef.current = null;
     replyDirty.current = false;
     setDraftStatus("idle");
@@ -1078,6 +1079,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // flush here would make two drafts (EM-G3c-2 review rounds 1 and 2).
     const drained = autosave.drain(session);
     setReplyMode(null);
+    // The inline reply closes, so its AI round ends (EM-T17).
+    ai.reset();
     // The draft of the reply goes to the full composer when the drain
     // settles. The composer opens now, so a New in that gap cannot take the
     // composer first (EM-G3c-3 item 6, EM-G3c-2-f8).

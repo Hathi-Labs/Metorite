@@ -508,7 +508,12 @@ describe("email-draft-composers-end-the-round (fix round 2)", () => {
   // The panes stay mounted, so the hook's unmount abort never runs there. The
   // behaviour is fenced in `e2e/email-draft-switch.spec.ts`. This source check
   // runs in every vitest run.
-  const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf-8");
+  // Code only, as `draftAutosave.test.ts` reads it, so a reset that is
+  // commented out fails.
+  const read = (p: string) =>
+    readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf-8").replace(/\r\n/g, "\n");
+  const codeOnly = (src: string) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
   const span = (src: string, from: string, to: string) => {
     const a = src.indexOf(from);
     const b = src.indexOf(to, a + from.length);
@@ -516,11 +521,20 @@ describe("email-draft-composers-end-the-round (fix round 2)", () => {
     expect(b, `missing: ${to}`).toBeGreaterThan(a);
     return src.slice(a, b);
   };
-  const detail = read("../components/EmailDetail.tsx");
-  const compose = read("../components/ComposePanel.tsx");
+  const detail = codeOnly(read("../components/EmailDetail.tsx"));
+  const compose = codeOnly(read("../components/ComposePanel.tsx"));
 
-  it("EmailDetail resets the AI round on a mail switch", () => {
-    expect(span(detail, "// Fetch full content whenever the selected email changes.", "}, [email?.id]);")).toContain("ai.reset();");
+  it("EmailDetail resets the AI round on a mail switch, before the no-mail return", () => {
+    // A delete or an archive of the open mail takes the `!email` branch.
+    const branch = "if (!email) {\n      setDetail(null);";
+    const end = detail.indexOf(branch);
+    expect(end).toBeGreaterThanOrEqual(0);
+    expect(detail.indexOf(branch, end + 1)).toBe(-1);
+    expect(detail.slice(detail.lastIndexOf("useEffect(", end), end)).toContain("ai.reset();");
+  });
+
+  it("EmailDetail resets the AI round on a pop-out to the full composer", () => {
+    expect(span(detail, "const popOutToComposer = ", "const handOver")).toContain("ai.reset();");
   });
 
   it("EmailDetail resets the AI round on a new reply", () => {

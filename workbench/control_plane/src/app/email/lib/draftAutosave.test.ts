@@ -658,8 +658,10 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
   });
 
   it("flushes on a switch to another mail, while the draft id still names its draft", () => {
+    // EM-T17 PR-A2: the AI round of the mail before ends before the no-mail
+    // return, so a delete or an archive ends it too.
     expect(detail).toMatch(
-      /useEffect\(\(\) => \{\s*autosave\.flush\(\);\s*replySessionRef\.current \+= 1;\s*replyHasFileRef\.current = false;\s*if \(!email\) \{\s*setDetail\(null\);/,
+      /useEffect\(\(\) => \{\s*autosave\.flush\(\);\s*replySessionRef\.current \+= 1;\s*replyHasFileRef\.current = false;\s*ai\.reset\(\);\s*if \(!email\) \{\s*setDetail\(null\);/,
     );
     const effect = between(detail, "autosave.flush();\n    replySessionRef.current += 1;", "}, [email?.id]);");
     comesBefore(effect, "autosave.flush();", "draftIdRef.current = null;");
