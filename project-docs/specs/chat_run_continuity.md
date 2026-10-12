@@ -869,12 +869,12 @@ end gives its unread steers back, maybe later and on another worker. Then:
 are killed:
 
 - no Stop mark, a gate that ignores the mark, and a mark that a new run never
-  clears;
-- an ENGAGE that replays a stopped run's steers;
+  clears.
+- an ENGAGE that replays a stopped run's steers.
 - a client that owes a follow-up after a Stop, and a `stopped` answer that
-  keeps the retry;
-- a drop of the durable copy at buffer time;
-- a follow-up refusal that draws a card;
+  keeps the retry.
+- a drop of the durable copy at buffer time.
+- a follow-up refusal that draws a card.
 - a steer row that refuses the edit on the server, and Edit on the steer row
   in the client.
 
