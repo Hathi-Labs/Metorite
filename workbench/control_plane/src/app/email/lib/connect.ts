@@ -13,7 +13,7 @@
  * Fence: `connect.test.ts`.
  */
 
-import type { EmailAccount } from "./types";
+import type { EmailAccount, EmailFolder } from "./types";
 
 // ── The providers a member may connect ──────────────────────────────────────
 
@@ -317,6 +317,118 @@ export function reconnectProvider(account: Pick<EmailAccount, "provider">): Conn
     : null;
 }
 
+/** The line of the reconnect banner on a Gmail mailbox while Gmail is not live (E-D3). */
+export const GMAIL_RECONNECT_UNAVAILABLE = "Gmail reconnect is not available right now.";
+
+/** The line of the reconnect banner for a provider with no reconnect, as on main. */
+export const RECONNECT_BY_DISCONNECT = "Disconnect it from the account menu, then connect it again.";
+
+/** What the reconnect banner draws at its end (`reconnectAction`). */
+export type ReconnectAction =
+  | { kind: "button"; provider: ConnectProviderId; label: string }
+  | { kind: "unavailable"; text: string }
+  | { kind: "disconnect"; text: string };
+
+/**
+ * The end of the reconnect banner (WS-17 EM-G8-f1, D-G8-f1-3).
+ *
+ * A Gmail mailbox gets the button only while the capability read makes Gmail
+ * live. Otherwise the gateway refuses the try, so the banner shows a line and
+ * no button. A failed or unsettled read gives no Gmail (`liveProviders`).
+ *
+ * ⚠️ Outlook is LIVE. It keeps its button for each read, as on main.
+ */
+export function reconnectAction(
+  account: Pick<EmailAccount, "provider">,
+  live: ReadonlySet<ConnectProviderId>,
+): ReconnectAction {
+  const provider = reconnectProvider(account);
+  if (!provider) return { kind: "disconnect", text: RECONNECT_BY_DISCONNECT };
+  if (provider === "gmail" && !live.has("gmail")) {
+    return { kind: "unavailable", text: GMAIL_RECONNECT_UNAVAILABLE };
+  }
+  return { kind: "button", provider, label: RECONNECT_LABEL[provider] };
+}
+
+// ── The move field of the rule editor (WS-17 EM-G8-f1, §12.3.12.7) ─────────
+
+/** One suggestion of the move field: a key for the list, and the name it fills in. */
+export interface MoveTarget {
+  key: string;
+  label: string;
+}
+
+/** The well-known folders that a rule may move mail into. */
+const MOVE_SYSTEM_KEYS = new Set(["archive", "junk"]);
+
+/**
+ * The suggestions of the move field of a rule (D-G8-f1-1).
+ *
+ * Outlook and IMAP: the user folders and Archive and Junk of `folders`, in the
+ * order of the tree, as on main. Gmail: Archive and Junk of `folders`, then the
+ * labels of the mailbox. `folders` of a Gmail mailbox holds no user label
+ * (`mergeFolders`, O-GM-1), so the labels come from `availableLabels`. A label
+ * with the name of a target already in the list does not come again.
+ */
+export function moveTargets(
+  provider: EmailAccount["provider"] | undefined,
+  folders: ReadonlyArray<Pick<EmailFolder, "key" | "label" | "type">>,
+  labels: ReadonlyArray<string>,
+): MoveTarget[] {
+  if (provider !== "gmail") {
+    return folders
+      .filter((f) => f.type === "user" || MOVE_SYSTEM_KEYS.has(f.key))
+      .map((f) => ({ key: f.key, label: f.label }));
+  }
+  const out: MoveTarget[] = folders
+    .filter((f) => MOVE_SYSTEM_KEYS.has(f.key))
+    .map((f) => ({ key: f.key, label: f.label }));
+  const seen = new Set(out.map((t) => t.label.toLowerCase()));
+  for (const name of labels) {
+    const low = name.toLowerCase();
+    if (!name.trim() || seen.has(low)) continue;
+    seen.add(low);
+    out.push({ key: `label:${low}`, label: name });
+  }
+  return out;
+}
+
+/** The words and the icon of the move field (`moveFieldCopy`). */
+export interface MoveFieldCopy {
+  placeholder: string;
+  /** The words of the create button for a typed name. */
+  createLabel: (name: string) => string;
+  createError: string;
+  /** A Lucide name for the create button. */
+  createIcon: string;
+}
+
+const MOVE_FIELD_FOLDER: MoveFieldCopy = {
+  placeholder: "Choose or type a folder name",
+  createLabel: (name) => `Create folder “${name}”`,
+  createError: "Couldn't create that folder. Try again.",
+  createIcon: "FolderPlus",
+};
+
+const MOVE_FIELD_LABEL: MoveFieldCopy = {
+  placeholder: "Choose or type a label name",
+  createLabel: (name) => `Create label “${name}”`,
+  createError: "Couldn't create that label. Try again.",
+  createIcon: "Tag",
+};
+
+/**
+ * The words of the move field (D-G8-f1-2, E-D3).
+ *
+ * A Gmail user label is a label and never a folder (O-GM-1), so a Gmail
+ * mailbox reads "label". The create route is the same for each provider, and
+ * for Gmail it makes a user label. ⚠️ Outlook is LIVE and keeps the words of
+ * main.
+ */
+export function moveFieldCopy(provider: EmailAccount["provider"] | undefined): MoveFieldCopy {
+  return provider === "gmail" ? MOVE_FIELD_LABEL : MOVE_FIELD_FOLDER;
+}
+
 // ── Which surface the page draws ───────────────────────────────────────────
 
 export type EmailSurface = "loading" | "empty" | "mailbox";
@@ -479,6 +591,7 @@ export type CallbackKind =
   | "retry"
   | "scope_missing"
   | "workspace_admin_blocked"
+  | "provider_unavailable"
   | "unknown";
 
 /**
@@ -580,6 +693,17 @@ export function callbackView(params: {
       body:
         "Your company lets Google mail reach only the apps that its admin trusts. " +
         "Your admin can trust Metorite once for everyone in the company. When that is done, connect again.",
+    };
+  }
+  // EM-G8-f1 (D-G8-f1-4): the gateway bounces a Gmail try while Gmail is not
+  // open to this member (`transport/oauth.py`). A second try changes nothing,
+  // so the view offers no retry. The flag and `EMAIL_GMAIL_CONNECT_MEMBERS`
+  // open Gmail for each member, so the body says "your account".
+  if (error === "provider_unavailable") {
+    return {
+      kind: "provider_unavailable",
+      title: "Gmail is not available yet",
+      body: "Gmail is not available for your account yet.",
     };
   }
   if (error === "duplicate") {

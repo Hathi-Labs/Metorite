@@ -243,9 +243,10 @@ describe("the Open in Zoho link", () => {
   });
 
   it("sits in the record header", () => {
-    const src = read("./RecordSheet.tsx");
-    expect(src).toContain("Open in Zoho");
-    expect(src).toMatch(/zohoLink\(record\)/);
+    // The drawer of both record pages is one frame since CRM-Q6b.
+    expect(read("./RecordShell.tsx")).toContain("Open in Zoho");
+    expect(read("./RecordSheet.tsx")).toMatch(/zohoLink\(record\)/);
+    expect(read("./ModuleRecordSheet.tsx")).toMatch(/zohoLink\(page\.record\)/);
   });
 });
 
@@ -276,7 +277,6 @@ describe("CRM settings", () => {
       createElement(PipelineSettings, {
         setup: createElement("section", { "aria-label": "Setup" }, "SETUP"),
         access: createElement("section", { "aria-label": "Access" }, "ACCESS"),
-        connection: createElement("section", { "aria-label": "Connection" }, "CONNECTION"),
         showAdminCards: true,
         dealStatuses: deal,
         leadStatuses: [status("l1", "New", 0)],
@@ -297,7 +297,6 @@ describe("CRM settings", () => {
     const order = [
       "SETUP",
       "ACCESS",
-      "CONNECTION",
       "Pipelines and stages",
       "Lead Status",
       "Lost reasons",

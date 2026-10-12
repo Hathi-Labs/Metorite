@@ -22,7 +22,7 @@
  */
 
 import Icon from "@/components/Icon";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppTopBar } from "@/components/AppTopBar";
 import { useMobileDrawer } from "@/components/AppShell";
@@ -49,14 +49,13 @@ import {
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { AccessSection } from "./components/AccessPanel";
-import { SetupSection } from "./components/SetupPanel";
-import ConnectionPanel from "./components/ConnectionPanel";
+import SetupHubSection from "./components/SetupHub";
 import CrmBoundary from "./components/CrmBoundary";
 import ConvertModal from "./components/ConvertModal";
 import CrmRail, { type RailViewActions } from "./components/CrmRail";
 import FilterBar from "./components/FilterBar";
 import FirstOpen from "./components/FirstOpen";
-import { ImportProgress, ReconnectBanner } from "./components/MirrorBanner";
+import { ImportProgress, SetupLink, StalledBanner } from "./components/MirrorBanner";
 import KanbanBoard from "./components/KanbanBoard";
 import MoveModal from "./components/MoveModal";
 import PipelineSettings from "./components/PipelineSettings";
@@ -64,14 +63,19 @@ import QuickCreateModal from "./components/QuickCreateModal";
 import RecordList from "./components/RecordList";
 import Reports from "./components/Reports";
 import RecordSheet from "./components/RecordSheet";
+import ModuleList from "./components/ModuleList";
+import ModuleRecordSheet from "./components/ModuleRecordSheet";
+import { moduleLabel, type ModuleLink } from "./lib/modules";
+import { openModuleRecord, selectModule } from "./lib/urlState";
+import { useModules } from "./lib/useCrmMode";
 import * as api from "./lib/api";
 import { CrmError } from "./lib/api";
 import {
   ADMIN_CAPABILITY,
   canCreate,
-  clearReturnParams,
+  returnTarget,
+  mirrorStalled,
   modeLine,
-  needsReconnect,
   returnNotice,
   startFailureMessage,
   syncFailureMessage,
@@ -140,6 +144,7 @@ import {
   useSyncStatus,
 } from "./lib/useCrmMode";
 import { boundaryKey } from "./lib/boundary";
+import { pushView, replaceView } from "./lib/history";
 import { viewLabel } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
@@ -165,7 +170,6 @@ type MirrorContext = {
 };
 
 function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
-  const router = useRouter();
   const toast = useToast();
   const searchParams = useSearchParams();
   const view = useMemo(
@@ -174,6 +178,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   );
 
   const store = useCrmStore();
+  // The mirrored generic Zoho modules, for the rail (CRM-Q6b). Native: none.
+  const { modules } = useModules(ctx.mode === "mirror");
+  /** The Refresh button of a module list reads page 1 again. */
+  const [moduleReload, setModuleReload] = useState(0);
   const { isMobile } = useViewMode();
   // The deal pipelines (CRM-Q3). Null until read, and null when the gateway
   // has no pipelines route: then there is one implicit pipeline and no picker.
@@ -271,18 +279,18 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   /** The hint of `log-call` with no record, for the Deals list it opened. */
   const [jobHint, setJobHint] = useState<string | null>(null);
 
-  /** Every navigation in this app is a URL rewrite — Back closes the sheet. */
-  const go = useCallback(
-    (next: CrmView) => router.push(viewHref(next), { scroll: false }),
-    [router]
-  );
+  /** Every navigation in this app is a URL rewrite — Back closes the sheet.
+   *  ⚠️ `pushView`, never `router.push`: a router push waits on a server
+   *  request before the view changes, and a held request left the rail dead
+   *  (`lib/history.ts`). */
+  const go = useCallback((next: CrmView) => pushView(viewHref(next)), []);
 
   // A link that carries only `?view=<id>` opens that view (CRM-Q8).
   const search = searchParams.toString();
   useEffect(() => {
     const opened = resolveBareLink(search, savedList);
-    if (opened) router.replace(viewHref(opened), { scroll: false });
-  }, [search, savedList, router]);
+    if (opened) replaceView(viewHref(opened));
+  }, [search, savedList]);
 
   useEffect(() => {
     store.loadVocabulary();
@@ -348,13 +356,13 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   }, [focusAsk, listEntity]);
 
   /**
-   * Run the plan of a job (`lib/shellJobs.ts`). The address changes through the
-   * browser's history, as `shell/doJob.tsx` does, so nothing waits on the
+   * Run the plan of a job (`lib/shellJobs.ts`). The address changes through
+   * `replaceView`, as `shell/doJob.tsx` does, so nothing waits on the
    * server. A replace, not a push: the job link was the last entry, so Back
    * returns to the view before it.
    */
   function runJob(plan: JobPlan): void {
-    window.history.replaceState(null, "", viewHref(plan.view));
+    replaceView(viewHref(plan.view));
     const opened = plan.view.record;
     if (plan.composeCall && opened) {
       setCallAsk((ask) => ({ n: (ask?.n ?? 0) + 1, id: opened.id }));
@@ -378,6 +386,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     // from, so its re-read is the same call the page makes on mount.
     else if (view.tab === "settings") void store.loadVocabulary();
     else if (view.tab === "reports") void store.loadReports(loadView);
+    else if (view.tab === "module") setModuleReload((n) => n + 1);
     else if (listEntity) void store.loadList(listEntity, loadView);
   }
   const statusesFor = (entity: EntitySlug | null): Status[] =>
@@ -467,6 +476,20 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     onShareView: (saved) => void changeView(saved, { shared: !saved.shared }),
     onDeleteView: setDeletingView,
   };
+
+  /** The rail rows of the generic modules (CRM-Q6b), and where a lookup opens. */
+  const railModules = {
+    modules,
+    active: view.tab === "module" ? (view.module ?? null) : null,
+    onSelect: (module: string) => {
+      go(selectModule(view, module));
+      if (isMobile) closeDrawer();
+    },
+  };
+  function openLink(link: ModuleLink): void {
+    if (link.kind === "record") openAlone(openRecord(view, PARAM_FOR[link.entity], link.id));
+    else openAlone(openModuleRecord(view, link.module, link.id));
+  }
 
   const chips = listEntity
     ? chipsFor(listEntity, statusesFor(listEntity), view)
@@ -577,12 +600,22 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           ? "Setup, access, pipelines and statuses"
           : view.tab === "reports"
             ? "Forecast, funnel, win rate and who is carrying what"
-            : // A list view names itself. With the rail folded, the four
+            : view.tab === "module"
+              ? moduleLabel(modules, view.module)
+              : // A list view names itself. With the rail folded, the four
               // lists share one layout, and this line is all that tells
               // Deals from Contacts.
               viewLabel(view.tab);
   const mode = modeLine({ mode: ctx.mode, connection: ctx.connection, sync: ctx.sync });
-  const subtitle = mode ? `${mode} · ${viewLine}` : viewLine;
+  // CRM-X0: the mode part links an admin to the setup hub.
+  const subtitle = mode ? (
+    <>
+      <SetupLink isAdmin={ctx.isAdmin}>{mode}</SetupLink>
+      {` · ${viewLine}`}
+    </>
+  ) : (
+    viewLine
+  );
 
   /** A rail row, from the desktop column or the phone's drawer. */
   function chooseView(tab: CrmView["tab"]): void {
@@ -594,7 +627,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // the quick-create entry the old header held, at the bar's size.
   // In Mirror mode a record is made in Zoho, so the verb is gone (spec §3.3).
   const actions =
-    mayCreate && view.tab !== "settings" && view.tab !== "reports" ? (
+    mayCreate && view.tab !== "settings" && view.tab !== "reports" && view.tab !== "module" ? (
       <Button
         variant="secondary"
         size="sm"
@@ -734,13 +767,15 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               onClick={() =>
                 openDrawer(
                   <nav aria-label="CRM views" className="p-2">
-                    <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} />
+                    <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} modules={railModules} />
                   </nav>
                 )
               }
               className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
             >
-              <span className="truncate">{viewLabel(view.tab)}</span>
+              <span className="truncate">
+                {view.tab === "module" ? moduleLabel(modules, view.module) : viewLabel(view.tab)}
+              </span>
               <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
             </button>
           ) : (
@@ -761,16 +796,17 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             aria-label="CRM views"
             className={`w-56 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
           >
-            <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} />
+            <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} modules={railModules} />
           </nav>
         ) : null}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {ctx.mode === "mirror" && needsReconnect(ctx.connection) && (
-            <ReconnectBanner
+          {ctx.mode === "mirror" && mirrorStalled(ctx.connection) && (
+            // CRM-X0: the banner leads to the setup hub, which offers the fix.
+            <StalledBanner
               isAdmin={ctx.isAdmin}
-              busy={ctx.connecting}
-              onReconnect={ctx.onConnect}
+              status={ctx.connection?.status ?? null}
+              onOpenSetup={() => chooseView("settings")}
             />
           )}
           {ctx.mode === "mirror" && ctx.sync?.state === "running" && (
@@ -867,17 +903,24 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               }}
               onCreate={mayCreate ? () => setCreating(view.tab === "leads" ? "leads" : "deals") : undefined}
             />
+          ) : view.tab === "module" && view.module ? (
+            // A generic Zoho module (CRM-Q6b): the shared list, read only.
+            <ModuleList
+              module={view.module}
+              label={moduleLabel(modules, view.module)}
+              view={view}
+              onChange={go}
+              onOpen={(id) => openAlone(openModuleRecord(view, view.module!, id))}
+              reloadToken={moduleReload}
+            />
           ) : view.tab === "reports" ? (
             <Reports reports={store.reports} loading={store.loading} />
           ) : view.tab === "settings" ? (
             <PipelineSettings
               setup={
-                ctx.isAdmin ? <SetupSection mode={ctx.mode} connection={ctx.connection} /> : undefined
-              }
-              access={ctx.isAdmin ? <AccessSection /> : undefined}
-              connection={
-                ctx.isAdmin && ctx.connection ? (
-                  <ConnectionPanel
+                // CRM-X0: the one setup hub. It holds the connection too.
+                ctx.isAdmin ? (
+                  <SetupHubSection
                     mode={ctx.mode}
                     connection={ctx.connection}
                     sync={ctx.sync}
@@ -889,6 +932,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                   />
                 ) : undefined
               }
+              access={ctx.isAdmin ? <AccessSection /> : undefined}
               pipelines={pipelines}
               showAdminCards={ctx.isAdmin}
               dealStatuses={store.dealStatuses}
@@ -971,14 +1015,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           tab={view.recordTab ?? "overview"}
           // A tab replaces the URL, so Back still closes the sheet.
           onTab={(tab) =>
-            router.replace(viewHref(selectRecordTab(view, tab)), { scroll: false })
+            replaceView(viewHref(selectRecordTab(view, tab)))
           }
           // No step while a dialog is open over the sheet.
           order={converting || pendingMove ? null : recordOrder()}
           // The step replaces the URL too: Back closes the sheet, and does not
           // walk back through every record the keys passed.
           onStep={(id) =>
-            router.replace(viewHref(openRecord(view, view.record!.param, id)), { scroll: false })
+            replaceView(viewHref(openRecord(view, view.record!.param, id)))
           }
           onPatch={(body) =>
             store.patchRecord(view.record!.entity, view.record!.id, body)
@@ -1030,6 +1074,19 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           callRequest={callAsk && callAsk.id === view.record.id ? callAsk.n : 0}
           onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
           onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
+        />
+      )}
+
+      {view.moduleRecord && (
+        // A generic record (CRM-Q6b), on the same record page shell.
+        <ModuleRecordSheet
+          module={view.moduleRecord.module}
+          id={view.moduleRecord.id}
+          tab={view.recordTab ?? "overview"}
+          // A tab replaces the URL, so Back still closes the sheet (#914 idiom).
+          onTab={(tab) => replaceView(viewHref(selectRecordTab(view, tab)))}
+          onClose={() => go(closeRecord(view))}
+          onOpenLink={openLink}
         />
       )}
 
@@ -1113,7 +1170,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
  * the gate says "ready".
  */
 function CrmGate(): ReactNode {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const toast = useToast();
@@ -1154,9 +1210,10 @@ function CrmGate(): ReactNode {
       toast.show({ key: "crm-connect-return", variant: "error", title: notice.message });
     }
     invalidateCrmMode();
-    const rest = clearReturnParams(search);
-    router.replace(rest ? `${pathname}?${rest}` : pathname, { scroll: false });
-  }, [search, pathname, router, toast]);
+    // CRM-X0: another Zoho account opens the setup hub (`returnTarget`).
+    const rest = returnTarget(search);
+    replaceView(rest ? `${pathname}?${rest}` : pathname);
+  }, [search, pathname, toast]);
 
   async function connectZoho() {
     setBusy("zoho");

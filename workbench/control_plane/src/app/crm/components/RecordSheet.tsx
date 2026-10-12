@@ -22,10 +22,7 @@
  * the body from props only, so a test renders it without a DOM.
  */
 
-import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
-import Modal from "@/components/ui/Modal";
-import { useViewMode } from "@/components/ViewModeProvider";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { useEffect } from "react";
 import * as api from "../lib/api";
@@ -36,8 +33,8 @@ import { navLabel, navStep, neighbour, RECORD_PAGE_ATTR } from "../lib/recordNav
 import { nextOpenActivities } from "../lib/timeline";
 import { recordTabsFor, shownRecordTab, type RecordTab } from "../lib/urlState";
 import { useFieldDefs } from "../lib/useCrmMode";
-import FieldValue from "./FieldValue";
 import FieldsPanel from "./FieldsPanel";
+import { RecordFacts, RecordModal, RecordTabBar } from "./RecordShell";
 import StatusPill from "./StatusPill";
 import Timeline, { TimelineItem } from "./Timeline";
 import type { DealContact, EntitySlug, Status, TimelineEntry } from "../lib/types";
@@ -57,13 +54,6 @@ const TITLE_KEY: Record<EntitySlug, string[]> = {
   leads: ["lead_name"],
   contacts: ["first_name", "last_name"],
   organizations: ["name"],
-};
-
-const TAB_LABEL: Record<RecordTab, string> = {
-  overview: "Overview",
-  timeline: "Timeline",
-  related: "Related",
-  fields: "Fields",
 };
 
 type LogBody = {
@@ -127,7 +117,6 @@ export default function RecordSheet({
   onTab: (tab: RecordTab) => void;
 } & RecordActions &
   RecordOrder) {
-  const { isMobile } = useViewMode();
   const { defs } = useFieldDefs(entity);
 
   // A contact row names its company by id only. The name is one read of the
@@ -168,39 +157,10 @@ export default function RecordSheet({
   const zoho = zohoLink(record);
 
   return (
-    // On `Modal` (CRM-U2), as a drawer at the right edge on a desktop and as
-    // a sheet from the bottom on a phone. The URL still owns whether it is
-    // open: the page mounts it from `?deal=` and the rest, and every way out
-    // (Escape, the scrim, the close button) runs `onClose`, which is
-    // `closeRecord`. Back closes it too, because Back drops the parameter.
-    <Modal
-      open
-      onClose={onClose}
-      title={title}
-      description={
-        <>
-          {ENTITY_NOUN[entity]}
-          {zoho && (
-            // The record header carries the way back to Zoho (CRM-Q1).
-            <>
-              {" · "}
-              <a
-                href={zoho}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary underline underline-offset-2"
-              >
-                Open in Zoho
-              </a>
-            </>
-          )}
-        </>
-      }
-      size="4xl"
-      placement={isMobile ? "sheet" : "end"}
-      closeLabel="Close record"
-      className="h-full"
-    >
+    // The page mounts it from `?deal=` and the rest, and every way out runs
+    // `onClose`, which is `closeRecord`. Back closes it too, because Back
+    // drops the parameter. The drawer is the shared shell (`RecordShell`).
+    <RecordModal title={title} noun={ENTITY_NOUN[entity]} zoho={zoho} onClose={onClose}>
       {record === null ? (
         <p className="p-8 text-center text-xs text-muted-foreground">Loading…</p>
       ) : (
@@ -221,7 +181,7 @@ export default function RecordSheet({
           {...actions}
         />
       )}
-    </Modal>
+    </RecordModal>
   );
 }
 
@@ -314,20 +274,7 @@ export function RecordPage({
             disabled={saving || mirrored}
           />
         )}
-        {facts.length > 0 && (
-          <dl className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1">
-            {facts.map((fact) => (
-              <div key={fact.key} className="flex min-w-0 items-baseline gap-1.5">
-                <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  {fact.label}
-                </dt>
-                <dd className="min-w-0 truncate text-xs text-foreground">
-                  <FieldValue value={fact.value} />
-                </dd>
-              </div>
-            ))}
-          </dl>
-        )}
+        <RecordFacts facts={facts} />
         {order && (
           // The place in the list, and the two steps for a mouse or a touch.
           // `j` and `k` do the same from the keyboard.
@@ -357,15 +304,7 @@ export function RecordPage({
         )}
       </div>
 
-      <div className="shrink-0 border-b border-border px-2">
-        <Tabs
-          chrome="inline"
-          variant="underline"
-          tabs={recordTabsFor(entity).map((t) => ({ id: t, label: TAB_LABEL[t] }))}
-          activeTab={shown}
-          onTabChange={(t) => onTab(t as RecordTab)}
-        />
-      </div>
+      <RecordTabBar tabs={recordTabsFor(entity)} active={shown} onTab={onTab} />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {shown === "timeline" ? (

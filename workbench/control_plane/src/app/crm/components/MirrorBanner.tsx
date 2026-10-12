@@ -6,26 +6,51 @@
  *
  * - The import progress, while a sync runs: a bar and one count for each kind
  *   of record, against the estimate when Zoho gave one.
- * - The warning when the consent has lapsed. An admin gets one button that
- *   starts the same flow as Connect. A member is told whom to ask.
+ * - The warning when the records stop updating: the consent lapsed, an admin
+ *   disconnected, or the new consent is for another account (CRM-X0). An
+ *   admin gets one button, to the setup hub, which offers what fits. A member
+ *   is told whom to ask.
+ * - `SetupLink`: the mode part of the title-bar line, as a link to the hub.
  *
- * Both sit in the page. The shell bar carries nothing of the app.
+ * Both strips sit in the page. The shell bar carries nothing of the app.
  */
+
+import Link from "next/link";
+import type { ReactNode } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import ProgressBar from "@/components/ui/ProgressBar";
 
-import { progressDetail, progressPercent, type SyncStatus } from "../lib/connect";
+import {
+  progressDetail,
+  progressPercent,
+  type ConnectionInfo,
+  type SyncStatus,
+} from "../lib/connect";
+import { SETUP_HREF } from "../lib/setup";
 
-export function ReconnectBanner({
+/** The banner's sentence for each stalled status. */
+export function stalledSentence(status: ConnectionInfo["status"], isAdmin: boolean): string {
+  if (status === "needs_reset") {
+    return "The new Zoho account is not the one these records came from. Nothing syncs until an admin chooses.";
+  }
+  if (status === "disconnected") {
+    return "Zoho is disconnected. Records stay here, but they are not updating.";
+  }
+  return isAdmin
+    ? "Zoho stopped sharing data with Metorite. Records stay here, but they are not updating."
+    : "Zoho stopped sharing data with Metorite. Records are not updating.";
+}
+
+export function StalledBanner({
   isAdmin,
-  busy,
-  onReconnect,
+  status,
+  onOpenSetup,
 }: {
   isAdmin: boolean;
-  busy: boolean;
-  onReconnect: () => void;
+  status: ConnectionInfo["status"];
+  onOpenSetup: () => void;
 }) {
   return (
     <div
@@ -33,19 +58,32 @@ export function ReconnectBanner({
       className="flex shrink-0 flex-wrap items-center gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2"
     >
       <Icon name="AlertCircle" size={14} className="shrink-0 text-warning" />
-      <p className="min-w-0 flex-1 text-xs text-foreground">
-        {isAdmin
-          ? "Zoho stopped sharing data with Metorite. Records stay here, but they are not updating."
-          : "Zoho stopped sharing data with Metorite. Records are not updating."}
-      </p>
+      <p className="min-w-0 flex-1 text-xs text-foreground">{stalledSentence(status, isAdmin)}</p>
       {isAdmin ? (
-        <Button variant="primary" size="sm" icon="RefreshCw" loading={busy} onClick={onReconnect}>
-          Connect Zoho again
+        <Button variant="primary" size="sm" icon="Settings" onClick={onOpenSetup}>
+          Open CRM setup
         </Button>
       ) : (
         <span className="text-xs text-muted-foreground">Ask an admin to connect Zoho again</span>
       )}
     </div>
+  );
+}
+
+/**
+ * The mode part of the title-bar line. For an admin it is a link to the setup
+ * hub (CRM-X0), so "Zoho disconnected" leads to the fix. A member gets text.
+ */
+export function SetupLink({ isAdmin, children }: { isAdmin: boolean; children: ReactNode }) {
+  if (!isAdmin) return <>{children}</>;
+  return (
+    <Link
+      href={SETUP_HREF}
+      className="underline underline-offset-2 hover:text-foreground"
+      title="Open CRM setup"
+    >
+      {children}
+    </Link>
   );
 }
 

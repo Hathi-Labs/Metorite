@@ -50,10 +50,21 @@ class Undecryptable(Exception):
     """
 
 
-#: The ``status`` vocabulary, mirrored from the CHECK in migration 245.
+#: The ``status`` vocabulary, mirrored from the CHECK in migration 245, and
+#: widened by migration 252.
 STATUS_CONNECTED = "connected"
 STATUS_NEEDS_RECONNECT = "needs_reconnect"
+#: CRM-X0: the new consent is for another account than the one the records
+#: came from. Nothing syncs until an admin starts over or connects the first
+#: account again. ``shared_token`` gives no credential for it.
+STATUS_NEEDS_RESET = "needs_reset"
 STATUS_DISCONNECTED = "disconnected"
+
+#: The ``provider_meta`` key of the provider account that a consent was for
+#: (CRM-X0 review P1-2). The consent callback writes it on each good consent.
+#: A disconnect and ``needs_reset`` keep it, and only the start over removes
+#: it (:func:`forget_account`), so a later consent always has it to compare.
+META_ACCOUNT_ID = "account_id"
 
 SCOPE_ORG = "org"
 SCOPE_MEMBER = "member"
@@ -126,11 +137,32 @@ _MERGE_META_SQL = (
     "AND status <> 'disconnected'"
 )
 
+#: Merge keys into ``provider_meta`` of one row, found by its key, under any
+#: status. For a family such as MCP, where a disabled row is still the admin's
+#: (H-300).
+_MERGE_META_BY_KEY_SQL = (
+    "UPDATE integration_connections SET "
+    "provider_meta = provider_meta || CAST(:extra AS jsonb), updated_at = now() "
+    f"WHERE {_KEY_WHERE} RETURNING {_PUBLIC_COLUMNS}"
+)
+
 _NEEDS_RECONNECT_SQL = (
     "UPDATE integration_connections SET status = 'needs_reconnect', "
     "last_error = :code, updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
     "AND status <> 'disconnected'"
+)
+
+_NEEDS_RESET_SQL = (
+    "UPDATE integration_connections SET status = 'needs_reset', "
+    "last_error = :code, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
+)
+
+_FORGET_ACCOUNT_SQL = (
+    "UPDATE integration_connections SET provider_meta = provider_meta - 'account_id', "
+    "updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
 )
 
 _MARK_SYNCED_SQL = (
@@ -142,6 +174,10 @@ _MARK_SYNCED_SQL = (
 #: What the sync learned about the account. A new consent or a disconnect drops
 #: it, because the next connection may be another Zoho org (CRM-Q1 review).
 _DISCOVERED_KEYS = ("domain_name", "edition", "tabs")
+
+#: A new consent drops the profile. A disconnect keeps it (CRM-X0): the next
+#: consent compares its account with the profile's, and a different account
+#: gets ``needs_reset`` (``routes/crm/connection.py``).
 
 _DROP_PROFILES_SQL = (
     "DELETE FROM crm_source_profiles WHERE connection_id = CAST(:id AS uuid) "
@@ -503,6 +539,28 @@ async def merge_provider_meta(
     })
 
 
+async def merge_meta_by_key(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    extra: dict[str, Any],
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> Connection | None:
+    """Merge *extra* into ``provider_meta`` of one row, under any status.
+
+    The row is found by its key, so the org is in the statement. The other
+    keys, the blob and the status stay. ``None`` when no row has that key.
+    *extra* must hold no secret: ``provider_meta`` is plain text.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    params["extra"] = json.dumps(dict(extra))
+    row = (await db.execute(text(_MERGE_META_BY_KEY_SQL), params)).first()
+    return _connection(row) if row is not None else None
+
+
 def safe_error_code(code: str | None) -> str:
     """A provider error code when it looks like one, else ``refresh_failed``."""
     value = (code or "").strip()
@@ -522,13 +580,34 @@ async def mark_needs_reconnect(db: Any, org: str, connection_id: str, code: str)
     })
 
 
+async def mark_needs_reset(
+    db: Any, org: str, connection_id: str, code: str = "different_org",
+) -> None:
+    """Set ``needs_reset`` (CRM-X0) and ``last_error`` to the safe *code*.
+
+    It keeps the blob and the profile. The blob is the token of the FIRST
+    account, so a disconnect still revokes it, and a consent to the first
+    account again still compares with the profile.
+    """
+    await db.execute(text(_NEEDS_RESET_SQL), {
+        "id": str(connection_id), "org": str(org), "code": safe_error_code(code),
+    })
+
+
+async def forget_account(db: Any, org: str, connection_id: str) -> None:
+    """Remove :data:`META_ACCOUNT_ID`. Only the start over calls it (CRM-X0)."""
+    await db.execute(text(_FORGET_ACCOUNT_SQL), {"id": str(connection_id), "org": str(org)})
+
+
 async def disconnect(db: Any, org: str, connection_id: str) -> Connection | None:
-    """Delete the blob and set ``disconnected``. The row stays as a record."""
+    """Delete the blob and set ``disconnected``. The row stays as a record.
+
+    The source profile stays too (CRM-X0), so the next consent can tell the
+    same account from another one. The start over deletes it.
+    """
     row = (await db.execute(
         text(_DISCONNECT_SQL), {"id": str(connection_id), "org": str(org)},
     )).first()
-    if row is not None:
-        await db.execute(text(_DROP_PROFILES_SQL), {"id": str(connection_id), "org": str(org)})
     return _connection(row) if row is not None else None
 
 

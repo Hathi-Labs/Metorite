@@ -294,7 +294,13 @@ export const MAX_COLUMNS = 5;
 
 export const COLUMNS_KEY_PREFIX = "cc.crm.columns.";
 
-export function columnsKey(entity: EntitySlug): string {
+/**
+ * Whose column choice it is: one of the four entities, or one generic module
+ * (`module:Products`, WS-53 CRM-Q6b). Each keeps its own choice.
+ */
+export type ColumnScope = EntitySlug | `module:${string}`;
+
+export function columnsKey(entity: ColumnScope): string {
   return `${COLUMNS_KEY_PREFIX}${entity}`;
 }
 
@@ -309,7 +315,7 @@ function browserStore(): Store | null {
 }
 
 /** The keys this browser chose for one entity. Never throws. */
-export function readColumns(entity: EntitySlug, store: Store | null = browserStore()): string[] {
+export function readColumns(entity: ColumnScope, store: Store | null = browserStore()): string[] {
   try {
     const raw = store?.getItem(columnsKey(entity));
     const parsed: unknown = raw ? JSON.parse(raw) : [];
@@ -323,7 +329,7 @@ export function readColumns(entity: EntitySlug, store: Store | null = browserSto
 
 /** Keep the choice. A blocked store loses it and nothing else. */
 export function writeColumns(
-  entity: EntitySlug,
+  entity: ColumnScope,
   keys: string[],
   store: Store | null = browserStore(),
 ): void {

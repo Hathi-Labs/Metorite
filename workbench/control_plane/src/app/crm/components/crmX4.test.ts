@@ -351,7 +351,9 @@ describe("the place in the list (CRM-X4 item 5)", () => {
   it("is fed by the page: the order of the list and a step that replaces the URL", () => {
     const src = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
     expect(src).toMatch(/order=\{/);
-    expect(src).toMatch(/router\.replace\(viewHref\(openRecord\(/);
+    // `replaceView`, not `router.replace`: the router waits on a server
+    // request (lib/history.ts).
+    expect(src).toMatch(/replaceView\(viewHref\(openRecord\(/);
   });
 });
 

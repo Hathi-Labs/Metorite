@@ -164,6 +164,7 @@ def test_the_profile_holds_no_record_no_token_and_no_company_name() -> None:
     assert "token" not in text.lower()
     profile = _profile()
     assert profile["org"] == {
+        "id": "9",
         "edition": "professional", "currency": "INR", "multi_currency": False,
         "time_zone": "Asia/Kolkata", "domain_name": "org123", "licences": 12,
     }

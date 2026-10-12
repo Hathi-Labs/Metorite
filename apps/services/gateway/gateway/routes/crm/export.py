@@ -75,15 +75,34 @@ here either — the same decision ``core``'s docstring records for the list.
 
 **CSV injection is neutralised, not documented away** — by the shared
 ``gateway.csv_export`` seam, not a second copy of it.
+
+**The whole CRM as one ZIP (WS-53 CRM-X0, ``crm_platform.md`` §19.11 item 4).**
+``GET /crm/export/all.zip`` is the copy an admin takes before a start over.
+It holds one CSV for each entity in :data:`ZIP_ENTITIES`, with every column
+of the table except ``organization_id``, and every row: there is no cap,
+because a partial copy before a delete is the one file that must be whole.
+It streams. Each table is read in pages of :data:`ZIP_PAGE_ROWS` by ``id``,
+each CSV line comes from ``csv_export.csv_lines`` (the same writer and the
+same guard), and the ZIP goes out as it is written. It needs
+``admin:access:manage``, and the router's CRM access rule runs first. The
+organization is the session's, never the request's (R11), and each read also
+names it. Like the rest of this module, it writes nothing.
 """
 
 from __future__ import annotations
 
+import io
+import json
+import zipfile
+from collections.abc import AsyncIterator
+from datetime import date, datetime
 from typing import Any
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException, Query, Request, Response
-from gateway.csv_export import csv_document
+from fastapi.responses import StreamingResponse
+from gateway.csv_export import csv_document, csv_lines
+from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
     CONTACTS,
     DEALS,
@@ -414,6 +433,126 @@ async def export_organizations_csv(
     return await _export(ORGANIZATIONS, params, user)
 
 
+# ── The whole CRM as one ZIP (CRM-X0) ───────────────────────────────────────
+
+#: ``(file in the ZIP, table)``, in the order the files are written.
+ZIP_ENTITIES: tuple[tuple[str, str], ...] = (
+    ("leads.csv", "crm_leads"),
+    ("contacts.csv", "crm_contacts"),
+    ("companies.csv", "crm_companies"),
+    ("deals.csv", "crm_deals"),
+    ("activities.csv", "crm_activities"),
+    ("module_records.csv", "crm_module_records"),
+)
+
+#: Rows read at a time. The memory of one request holds one page of one table.
+ZIP_PAGE_ROWS = 1000
+
+#: The tenant column never leaves the server (R5).
+_HIDDEN_COLUMNS = frozenset({"organization_id"})
+
+
+def _zip_cell(value: Any) -> Any:
+    """A stored value as one CSV cell. JSON stays JSON, a time is ISO 8601."""
+    if isinstance(value, dict | list):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    return value
+
+
+class _Sink(io.RawIOBase):
+    """The bytes that ``zipfile`` writes, kept until the stream takes them.
+
+    It cannot seek, so ``zipfile`` writes a data descriptor after each file
+    and never goes back. That is what lets the ZIP stream.
+    """
+
+    def __init__(self) -> None:
+        self._parts: list[bytes] = []
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: Any) -> int:
+        self._parts.append(bytes(data))
+        return len(data)
+
+    def take(self) -> bytes:
+        out = b"".join(self._parts)
+        self._parts.clear()
+        return out
+
+
+async def _columns(db: Any, table: str) -> list[str]:
+    result = await db.execute(text(f"SELECT * FROM {table} WHERE false"))
+    return [c for c in result.keys() if c not in _HIDDEN_COLUMNS]  # noqa: SIM118 - a Result, not a dict
+
+
+async def _pages(db: Any, table: str, org: str) -> AsyncIterator[list[Any]]:
+    """Every row of *table* for *org*, a page at a time, in ``id`` order."""
+    after: str | None = None
+    while True:
+        where = "organization_id = CAST(:o AS uuid)"
+        params: dict[str, Any] = {"o": org, "n": ZIP_PAGE_ROWS}
+        if after is not None:
+            where += " AND id > CAST(:after AS uuid)"
+            params["after"] = after
+        rows = (await db.execute(
+            text(f"SELECT * FROM {table} WHERE {where} ORDER BY id LIMIT :n"),
+            params,
+        )).mappings().all()
+        if not rows:
+            return
+        yield list(rows)
+        if len(rows) < ZIP_PAGE_ROWS:
+            return
+        after = str(rows[-1]["id"])
+
+
+async def zip_stream(org: str) -> AsyncIterator[bytes]:
+    """The ZIP of the whole CRM of *org*, as it is written."""
+    sink = _Sink()
+    async with _tenant_session(org) as db:
+        with zipfile.ZipFile(sink, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for filename, table in ZIP_ENTITIES:
+                columns = await _columns(db, table)
+                with archive.open(filename, "w", force_zip64=True) as member:
+                    for line in csv_lines(columns, ()):
+                        member.write(line.encode("utf-8"))
+                    async for page in _pages(db, table, org):
+                        body = csv_lines(
+                            None, ([_zip_cell(row[c]) for c in columns] for row in page),
+                        )
+                        member.write("".join(body).encode("utf-8"))
+                        chunk = sink.take()
+                        if chunk:
+                            yield chunk
+                chunk = sink.take()
+                if chunk:
+                    yield chunk
+    chunk = sink.take()
+    if chunk:
+        yield chunk
+
+
+@router.get(
+    "/export/all.zip",
+    dependencies=[require_permission(ADMIN_PERMISSION)],
+)
+async def export_all_zip(
+    user: UserContext = Depends(get_current_user),
+) -> StreamingResponse:
+    """Every record of the CRM, one CSV for each entity, as one ZIP."""
+    if not user.organization_id:
+        raise HTTPException(status_code=403, detail="Forbidden: you are in no organization.")
+    return StreamingResponse(
+        zip_stream(str(user.organization_id)),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="crm-export.zip"'},
+    )
+
+
 #: Slug → handler, for the tests that exercise all four without a TestClient.
 #:
 #: The parametrised suites index this by every key of :data:`core.ENTITIES`, so
@@ -427,4 +566,12 @@ HANDLERS = {
 }
 
 
-__all__ = ["COLUMNS", "HANDLERS", "MAX_EXPORT_ROWS", "ExportParams"]
+__all__ = [
+    "COLUMNS",
+    "HANDLERS",
+    "MAX_EXPORT_ROWS",
+    "ZIP_ENTITIES",
+    "ZIP_PAGE_ROWS",
+    "ExportParams",
+    "zip_stream",
+]

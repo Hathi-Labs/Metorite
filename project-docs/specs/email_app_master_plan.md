@@ -9008,7 +9008,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
 | **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #682 (2026-10-06). The visual check is H-255. Audited GO-NARROWED. The known limits f3, f5, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
-| **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
+| **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g4b-cursor`). Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
 | **EM-G2-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B | S | §12.3.12.3 |
 | **EM-G4a-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B | S | §12.3.12.4 |
 | **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
@@ -11202,7 +11202,7 @@ and the bullets above give the rules that apply now.
 **Known limit EM-G4b-f1.** The cursor moves only at the end of a read. A backlog that one cycle
 cannot finish can fail on a rate limit before its end, such as a bulk label on 50,000 messages.
 The next cycle then starts again at the old cursor. §12.3.12.2 owns the fix: the cursor moves at
-the end of each finished page.
+the end of each finished page. 🔨 The fix is built, not merged (2026-10-12).
 
 **The fences, as built.** `tests/unit/test_gmail_history_cursor.py` holds 49 cases. A fake Gmail
 on `httpx.MockTransport` answers the client. The provider sends no `authenticate` request, so the
@@ -12482,7 +12482,8 @@ row), and §12.3.12.1 to §12.3.12.7 hold one slice for each open item.
    merged as #651 (2026-10-05). The composers flush a pending save, and a Gmail draft with a
    file waits 10 seconds. A failed save or send shows its reason.
 4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
-   the old cursor (§12.3.5.2). Slice: §12.3.12.2.
+   the old cursor (§12.3.5.2). Slice: §12.3.12.2. 🔨 Built 2026-10-12, not merged (branch
+   `gmail-g4b-cursor`).
 5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body
    (§12.3.2). Slice: §12.3.12.3.
 6. **EM-G3a-f7.** An update of a draft made in Gmail web drops its inline images (§12.3.3). The
@@ -12543,7 +12544,52 @@ and the rule editor and the banner. So each one carries an Outlook acceptance it
 
 #### 12.3.12.2 EM-G4b-f1 — the history cursor moves at each page
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-B.
+**Status.** 🔨 Built 2026-10-12, not merged. PR-B, branch `gmail-g4b-cursor`. Specified
+2026-10-12.
+
+**As built (2026-10-12).**
+
+- `GmailProvider._history_sync` is the one loop over the pages. `_history_page` reads one page,
+  and `_apply_history_page` adds its markers and then fetches its messages. `_read_history` is
+  gone. `_page_end` gives the page position, and `_cursor_after_read` takes the held position.
+- **The auditor note P3.** A rate limit inside page P drops the messages that page P fetched
+  before the limit, and the markers of page P too. The cursor stays at the end of page P-1, so
+  the next cycle fetches them again (D-G4b-f1-7). The fence is
+  `test_a_rate_limit_inside_a_page_drops_the_fetches_of_that_page`.
+- A page with no record `id` keeps the position of the page before it. So the next read starts
+  earlier, never later.
+- `scheduler._next_cursor` reads `rate_limited` before `cursor_reset`. The reset sweep never
+  sets the flag, because the sweep still raises on a rate limit.
+- Four more fences beside the seven of the list below:
+  `test_a_rate_limit_inside_a_page_drops_the_fetches_of_that_page`,
+  `test_a_later_page_fetches_again_a_message_that_an_earlier_page_fetched` (scope item 2, as
+  amended), `test_a_stale_cursor_on_a_later_page_keeps_the_finished_pages` (scope item 6) and
+  `test_a_partial_cycle_keeps_the_watermark_and_backs_off` (scope item 5, hermetic).
+  `test_a_result_that_is_not_rate_limited_keeps_its_catch_up` covers acceptance 8.
+- The R8 fence drives `_account_sync_loop` for one cycle at a time. It reads the real back-off
+  of the loop, and it does not trust the result dict alone.
+
+**Fix round 1 (2026-10-12, review P1).** The reviewer found that the per-page fetch makes a read
+last minutes. Under GM-17 each answer carries the mailbox `historyId` of its own time. So two old
+rules were no longer safe. The orchestrator took two decisions, and they amend D-G4b-f1-4, scope
+item 2 and acceptance 5 and 6 below.
+
+- **(a) A later page fetches again.** A later page can carry a label event for a message that an
+  earlier page fetched. The event can be newer than that fetch. A skip then leaves the read mark
+  or the folder of the row stale. The build fetches the id again on the later page. It dedupes
+  within one page only. This is the simpler of the two choices that stay correct, because a label
+  delta on the stored row needs a second write path. A marked id still gets no fetch. The fence is
+  `test_a_later_page_fetches_again_a_message_that_an_earlier_page_fetched`. It replaces
+  `test_a_message_that_two_pages_name_is_fetched_once`, which pinned the drop. Mutation M6
+  (the cross-page skip comes back) turns it red.
+- **(b) The end of a full read.** The cursor is the larger of the last record `id` that the read
+  saw and the `historyId` of the FIRST answer (`gmail._read_end`). The `historyId` of the last
+  answer can be past a change made between the reads of page 1 and page N, which no page
+  carried. A read of one page ends as before. The fence is
+  `test_the_end_of_a_long_read_is_never_past_the_first_answer`. Mutation M7 (the end is the last
+  answer again) turns it red. The EM-G4b case `test_the_new_cursor_is_the_id_of_the_last_answer`
+  becomes `test_the_new_cursor_is_the_id_of_the_answer_of_a_one_page_read`.
+- The cost of (a) is more fetches. When N pages name one message, the read fetches it N times.
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the cursor write is SQL. No migration:
 `email_accounts.last_history_id` holds the cursor, as in EM-G4b.
@@ -12573,8 +12619,10 @@ at `:597`, the result at `:676`, `_next_cursor` at `:685`, the loop back-off at 
 - **D-G4b-f1-4. The page cursor is the `id` of the last history record of the page, never the
   `historyId` of the answer.** Gmail gives the `historyId` of the whole mailbox in each answer.
   *Reason:* the `historyId` of a middle page is past the records of the later pages, so a cursor
-  set to it loses them. That was the defect GM-17. On the last page the cursor is the `historyId`
-  of the answer, as today.
+  set to it loses them. That was the defect GM-17. ~~On the last page the cursor is the
+  `historyId` of the answer, as today.~~ *Amended in fix round 1 (b):* at the end of a full read,
+  the cursor is the larger of the last record `id` and the `historyId` of the FIRST answer. A
+  read of one page still ends at the `historyId` of its answer.
 - **D-G4b-f1-5. The held cursor rule becomes per page.** Let a fetch on page K stop on a 5xx or a
   transport error. The cursor then holds at the end of page K-1, or at the start when K is 1. The
   read goes on to the later pages, and their messages land. Each cycle with such a failure adds 1
@@ -12595,7 +12643,10 @@ at `:597`, the result at `:676`, `_next_cursor` at `:685`, the loop back-off at 
 1. `_read_history` and `_history_sync` become one loop over the pages. For each page, the loop
    collects the events (`_collect_history`) and adds the delete markers. It then fetches the
    messages of that page through `_fetch_into`, and only then reads the next page.
-2. A message id that two pages name is fetched once, on the first page that names it.
+2. ~~A message id that two pages name is fetched once, on the first page that names it.~~
+   *Amended in fix round 1 (a):* the read fetches an id once for each page that names it. So a
+   later page fetches again an id that an earlier page fetched. An id that a page marked as deleted
+   gets no later fetch and no second marker.
 3. Each finished page sets the page position (D-G4b-f1-4). `_cursor_after_read` takes the
    position of the end of the last page before the first page with a held failure.
 4. `SyncResult` gets one new field, `rate_limited: bool = False`. Only Gmail sets it. The provider
@@ -12621,9 +12672,11 @@ cursor, the deep sync, the import or the seed. No change to the stored cursor fo
    then the fetches of page 2.
 4. A 5xx on a fetch of page 2 of 3 holds the cursor at the end of page 1. The cursor is in the
    JSON form, with `held_cycles` 1. The messages of page 3 land.
-5. On the third held cycle, the cursor moves to the last answer, and each message that still fails
-   gets `gmail.fetch_abandoned`.
-6. With no failure, the cursor is the `historyId` of the last answer, as today.
+5. On the third held cycle, the cursor moves to the end of the read (D-G4b-f1-4 as amended), and
+   each message that still fails gets `gmail.fetch_abandoned`.
+6. With no failure, the cursor is the end of the read: the larger of the last record `id` and
+   the `historyId` of the first answer (fix round 1 (b)). A read of one page ends at the
+   `historyId` of its answer, as before.
 7. On a real database, a cycle with a rate limit on page 3 writes the page-2 position to
    `email_accounts.last_history_id`. The loop backs off, and the next cycle sends that position as
    `startHistoryId`.
@@ -12638,6 +12691,8 @@ cursor, the deep sync, the import or the seed. No change to the stored cursor fo
 - `test_a_5xx_on_page_two_holds_the_cursor_at_the_end_of_page_one` (acceptance 4)
 - `test_the_held_page_cursor_still_passes_after_three_cycles` (acceptance 5)
 - R8 `test_a_partial_cycle_writes_the_page_cursor_and_backs_off` (acceptance 7)
+- `test_a_later_page_fetches_again_a_message_that_an_earlier_page_fetched` (fix round 1 (a))
+- `test_the_end_of_a_long_read_is_never_past_the_first_answer` (fix round 1 (b), acceptance 6)
 
 The case `test_a_rate_limit_on_a_later_history_page_fails_the_sync` of EM-G4b inverts. It becomes
 the first fence above, and the PR says so. The history case of
@@ -12822,9 +12877,10 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** 📝 Specified 2026-10-12, not built. Re-specified twice on 2026-10-12: after the first
-re-audit (E1, C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The
-measure below widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
+**Status.** 🔨 PR-C1a built, not merged (2026-10-12, branch `gmail-c1a-save`). PR-C1b and PR-C2
+are not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
+C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
+widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
 
 **Gate.** 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2). No migration, no flag.
 
@@ -12990,6 +13046,12 @@ answer of an Outlook save does not change. On the client, `saveDraft` (`lib/api.
    D-G3a-f7-7, D-G3a-f7-10 and D-G3a-f7-11.
 5. **`signature.py`.** `sign_html(signature, body_html)`, with the rule of D-G3a-f7-7.
 
+⚠️ **The kept HTML has no signature until the send (review round 1 of PR-C1a).** The upsert adds
+the signature to the text only (`append_signature_text`). A save with `keep_html` sends the HTML of
+the draft as it was. So Gmail web shows that draft with no signature in its HTML. `sign_html` adds
+the signature at the send (item 5). PR-C1b must test that a kept draft goes out with the signature
+once.
+
 **Scope of PR-C2 (UI).**
 
 1. **`lib/draftSave.ts`.** Five pure helpers:
@@ -13046,6 +13108,18 @@ there sends the text only (D-G3a-f7-11a). The tool card "save" (`EmailToolCards.
 
 The limit that stays: a later caller of `upsert_draft` without `keep_html` saves the text only. A
 Gmail-web draft then loses its HTML, and no card shows the notice.
+
+**Known limit EM-G3a-f7-k2 (review round 1 of PR-C1a), an inline part at the top of
+`multipart/mixed`.** A part with a `Content-ID` and no `Content-Disposition` can sit at the top of
+`multipart/mixed`, beside the body. Since PR-C1a, `_draft_files` counts it as an inline part, not
+as a file. So it goes back only when the HTML names its cid. On main, the update put it back as a
+file. The member does not lose a file that the app showed: the parse already skips such a part
+(`_gmail_part_is_inline`, `gmail.py:97`), so no row lists it as a file.
+
+**Review round 1 of PR-C1a (2026-10-12).** The sync cuts a body over 2 MiB and ends it with
+`persist.TRUNCATION_MARKER`. `_html_to_keep` treats a cut row HTML as absent, and reads Gmail. The
+Gmail read waits `BODY_FETCH_TIMEOUT_S` at most, and a timeout answers `lost`. A comma ends a cid, so
+each entry of a `srcset` names its own cid.
 
 **Acceptance of PR-C1 (done when).**
 
@@ -13283,7 +13357,7 @@ The R8 tests must show PASSED, with 0 skips.
 
 #### 12.3.12.7 EM-G8-f1 — the known limits of the connect UI
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-F.
+**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g8-ux`). PR-F. The fences are in `connect.test.ts`, and the mutations M1 to M4 each fail a fence.
 
 **Gate.** 🟢 AGENT-SAFE · visual review. UI only. No migration, no flag.
 

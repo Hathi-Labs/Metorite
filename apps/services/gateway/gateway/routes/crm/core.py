@@ -2021,6 +2021,79 @@ async def delete_module_records_from_source(
     return int(result.rowcount or 0)
 
 
+# ── The start over (WS-53 CRM-X0, crm_platform.md §19.11 item 6) ────────────
+
+#: The records, as the setup hub and the start-over dialog count them:
+#: ``(key, table)``. The keys are the API's slugs, and ``module_records`` is the
+#: generic record store of CRM-Q6a.
+RECORD_COUNT_TABLES: tuple[tuple[str, str], ...] = (
+    ("leads", "crm_leads"),
+    ("contacts", "crm_contacts"),
+    ("organizations", "crm_companies"),
+    ("deals", "crm_deals"),
+    ("activities", "crm_activities"),
+    ("module_records", "crm_module_records"),
+)
+
+#: Every table that the start over empties, child first. A record names a
+#: stage with ``ON DELETE RESTRICT``, so the records go before the stages.
+#: ``tests/unit/test_crm_reset_r8.py`` holds its own copy of this list.
+RESET_TABLES: tuple[str, ...] = (
+    "crm_activities", "crm_deal_contacts", "crm_deals", "crm_leads",
+    "crm_contacts", "crm_companies", "crm_module_records",
+    "crm_status_changes", "crm_field_defs", "crm_pipeline_stages",
+    "crm_pipelines", "crm_deal_statuses", "crm_lead_statuses",
+    "crm_lost_reasons",
+    # The sync state of the old account. A cursor with ``initial_done_at``
+    # would make the next connection skip its first import.
+    "crm_sync_cursors", "crm_source_profiles",
+    # The push queue of the old two-way sync names records that are gone.
+    "crm_zoho_tombstones",
+)
+
+#: What the start over keeps: the access rule and the mode row, the saved
+#: views, the run history, and the cursor of the mail hook (not a record).
+RESET_KEEPS: tuple[str, ...] = (
+    "crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors",
+)
+
+
+async def count_records(db: Any, organization_id: str) -> dict[str, int]:
+    """The records of the org, by key of :data:`RECORD_COUNT_TABLES`."""
+    counts: dict[str, int] = {}
+    for key, table in RECORD_COUNT_TABLES:
+        counts[key] = int((await db.execute(
+            text(f"SELECT count(*) FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": str(organization_id)},
+        )).scalar() or 0)
+    return counts
+
+
+async def reset_crm_from_admin(db: Any, organization_id: str) -> dict[str, int]:
+    """Delete every CRM record of the org. Returns the counts before the delete.
+
+    ⚠️ **A fenced door, like the mirror writes.** It bypasses the Mirror write
+    guard, because a start over in Mirror mode must remove mirrored rows.
+    Only ``routes/crm/settings.py`` may call it, after the admin check, the
+    typed confirm and the stop of the sync.
+    ``tests/unit/test_crm_upsert_from_source_fence.py`` refuses any other
+    caller, in the whole gateway package.
+
+    The caller owns the transaction (one ``tenant_session``) and holds the
+    ``crm_settings`` row ``FOR UPDATE``. Each statement also names the
+    organization, so a session with row level security off still deletes one
+    organization. It keeps :data:`RESET_KEEPS`.
+    """
+    org = str(organization_id)
+    counts = await count_records(db, org)
+    for table in RESET_TABLES:
+        await db.execute(
+            text(f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": org},
+        )
+    return counts
+
+
 async def load_by_zoho_id(db: Any, table: str, zoho_id: str) -> Any | None:
     """The native row a Zoho record already maps to, if there is one."""
     return (await db.execute(

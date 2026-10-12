@@ -167,7 +167,7 @@ describe("the CRM page", () => {
     // jobs follow `shell/doJob.tsx`: the address changes, and nothing waits on
     // the server.
     const run = inner.slice(inner.indexOf("function runJob"), inner.indexOf("function runJob") + 1400);
-    expect(run).toContain("window.history.replaceState(null, \"\", viewHref(plan.view))");
+    expect(run).toContain("replaceView(viewHref(plan.view))");
     expect(run).not.toMatch(/router\.(push|replace)/);
   });
 

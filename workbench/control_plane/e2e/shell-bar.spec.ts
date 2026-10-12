@@ -545,24 +545,32 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
       await page.goto(path);
       const row = appBar(page);
       await expect(row.getByRole("heading", { level: 1 })).toBeVisible();
-      const shell = await box(bar(page));
-      const app = await box(row);
-      // Under the shell bar, not beside the command bar.
-      expect(app.y, path).toBeGreaterThanOrEqual(shell.y + shell.height - 1);
-      // Nothing in the row runs past its right edge or out of the window.
-      const fit = await row.evaluate((el) => {
-        let hi = -Infinity;
-        for (const d of Array.from(el.querySelectorAll("*"))) {
-          const r = d.getBoundingClientRect();
-          if (r.width === 0 || r.height === 0) continue;
-          hi = Math.max(hi, r.right);
-        }
-        const own = el.getBoundingClientRect();
-        return { hi, right: own.right, overflow: el.scrollWidth > el.clientWidth + 1 };
-      });
-      expect(fit.overflow, `${path}: the title bar overflows`).toBe(false);
-      expect(fit.hi, `${path}: content past the bar's edge`).toBeLessThanOrEqual(fit.right + 1);
-      expect(fit.right).toBeLessThanOrEqual(1280);
+      // ⚠️ Measured as one block that may run again, with `toPass`. A cold
+      // load mounts the page TWICE: `OrgLinkGate`'s Suspense renders the page
+      // as its fallback, then swaps in the real copy (measured 2026-10-12, on
+      // main too, the `test.fixme` below). A measure that lands in the swap
+      // reads a detached row, and `boundingBox()` gives null. That failed CI
+      // twice on #918. A real overflow still fails every run of the block.
+      await expect(async () => {
+        const shell = await box(bar(page));
+        const app = await box(row);
+        // Under the shell bar, not beside the command bar.
+        expect(app.y, path).toBeGreaterThanOrEqual(shell.y + shell.height - 1);
+        // Nothing in the row runs past its right edge or out of the window.
+        const fit = await row.evaluate((el) => {
+          let hi = -Infinity;
+          for (const d of Array.from(el.querySelectorAll("*"))) {
+            const r = d.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            hi = Math.max(hi, r.right);
+          }
+          const own = el.getBoundingClientRect();
+          return { hi, right: own.right, overflow: el.scrollWidth > el.clientWidth + 1 };
+        });
+        expect(fit.overflow, `${path}: the title bar overflows`).toBe(false);
+        expect(fit.hi, `${path}: content past the bar's edge`).toBeLessThanOrEqual(fit.right + 1);
+        expect(fit.right).toBeLessThanOrEqual(1280);
+      }).toPass({ timeout: 10_000 });
     }
     // The shell bar's left zone is empty: no app put anything in it.
     const left = await bar(page)
@@ -570,6 +578,42 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
       .nth(1)
       .evaluate((el) => el.childElementCount);
     expect(left).toBe(0);
+  });
+
+  // ⚠️ KNOWN DEFECT, on main as well (measured 2026-10-12, #918). A cold
+  // load mounts each page twice. `OrgLinkGate` wraps the page in
+  // `<Suspense fallback={<>{children}</>}>` for `useSearchParams`, so the page
+  // renders as the fallback and is then replaced by the real copy, about
+  // 120 ms later (2 to 3 s at 6x CPU in dev). A member sees the title bar
+  // flicker, and the first copy's state and requests are thrown away.
+  // Without the Suspense, this count is 1. The fix trades one of two things,
+  // so it waits on a decision: `fallback={null}` (an empty main until the
+  // params resolve) or a param lifted into state (an in-app `?org=` link
+  // mounts the page as the wrong account for one commit). Remove `fixme`
+  // with that fix, and this fences it.
+  test.fixme("a cold load of /tasks mounts the app bar once", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await shellOn(page);
+    await page.addInitScript(() => {
+      localStorage.setItem("cc-shell-nav", "1");
+      const w = window as unknown as { __appBarMounts: number };
+      w.__appBarMounts = 0;
+      new MutationObserver((ms) => {
+        for (const m of ms)
+          for (const n of Array.from(m.addedNodes)) {
+            if (!(n instanceof Element)) continue;
+            w.__appBarMounts += n.matches('[data-app-bar="desktop"]') ? 1 : n.querySelectorAll('[data-app-bar="desktop"]').length;
+          }
+      }).observe(document, { childList: true, subtree: true });
+    });
+    await stub(page);
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    await page.goto("/tasks");
+    await expect(appBar(page).getByRole("heading", { level: 1 })).toBeVisible();
+    // Long enough for the swap to land, even under the throttle.
+    await page.waitForTimeout(5_000);
+    expect(await page.evaluate(() => (window as unknown as { __appBarMounts: number }).__appBarMounts)).toBe(1);
   });
 });
 
