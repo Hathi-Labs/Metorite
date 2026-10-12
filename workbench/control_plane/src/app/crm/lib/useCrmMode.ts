@@ -13,6 +13,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "./api";
 import { denialOf, isNotFound, type Denial } from "./access";
 import { startPoller } from "./poller";
+import { isRunning, type SyncHealth } from "./syncHealth";
 import type { FieldDef } from "./fields";
 import type { DealPipeline, EntitySlug } from "./types";
 import {
@@ -142,6 +143,52 @@ export function useSyncStatus(enabled: boolean, watchToken: number): SyncStatus 
   }, [live, watchToken, refresh]);
 
   return status;
+}
+
+const KEY_SYNC_HEALTH = "crm:sync-health";
+
+export type SyncHealthState = {
+  health: SyncHealth | null;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+};
+
+/**
+ * The sync health (CRM-Q9). It polls every 3 s while the last run is
+ * `running`, with the poller of the status banner. A hidden tab is not polled.
+ */
+export function useSyncHealth(enabled: boolean): SyncHealthState {
+  const res = useCachedResource<SyncHealth | null>(
+    enabled ? KEY_SYNC_HEALTH : null,
+    api.getSyncHealth,
+  );
+  const health = res.data ?? null;
+  const refresh = res.refresh;
+  const running = isRunning(health);
+
+  const runningRef = useRef(false);
+  useEffect(() => {
+    runningRef.current = running;
+  });
+
+  useEffect(() => {
+    if (!enabled || !running) return;
+    const poller = startPoller({
+      refresh,
+      isRunning: () => runningRef.current,
+      isHidden: () => document.hidden,
+      ms: POLL_MS,
+      limit: WATCH_LIMIT_POLLS,
+    });
+    document.addEventListener("visibilitychange", poller.onVisible);
+    return () => {
+      poller.stop();
+      document.removeEventListener("visibilitychange", poller.onVisible);
+    };
+  }, [enabled, running, refresh]);
+
+  return { health, loading: enabled && res.loading, error: res.error, refresh };
 }
 
 const KEY_PIPELINES = "crm:pipelines";
