@@ -137,9 +137,16 @@ describe("the list request carries the new filters", () => {
 // ── The bar's choices ──────────────────────────────────────────────────────
 
 describe("the filter bar choices", () => {
-  it("offers Anyone, Me, the owners on screen and a chosen one that left", () => {
-    const options = ownerOptions([{ owner_email: "b@x.test" }, { owner_email: "B@x.test" }], "gone@x.test");
-    expect(options.map((o) => o.value)).toEqual(["", ME, "B@x.test", "gone@x.test"]);
+  it("offers Anyone, Me, the owners of the list and a chosen one that left", () => {
+    // CRM-X1: the owners come from `GET /crm/owners`, not from the rows.
+    const options = ownerOptions(
+      [
+        { email: "b@x.test", name: null, member: false },
+        { email: "B@x.test", name: null, member: false },
+      ],
+      "gone@x.test",
+    );
+    expect(options.map((o) => o.value)).toEqual(["", ME, "b@x.test", "gone@x.test"]);
   });
 
   it("offers close dates on deals only", () => {
@@ -172,7 +179,7 @@ describe("the filter bar choices", () => {
         entity: "deals",
         view: DEFAULT_VIEW,
         onChange: noop,
-        rows: [{ owner_email: "a@x.test" }],
+        owners: [{ email: "a@x.test", name: null, member: true }],
         fieldDefs: [region],
         activeView: null,
         dirty: false,
@@ -196,7 +203,7 @@ describe("the filter bar choices", () => {
         entity: "deals",
         view: DEFAULT_VIEW,
         onChange: noop,
-        rows: [],
+        owners: [],
         fieldDefs: null,
         activeView: saved(),
         dirty: true,
@@ -428,7 +435,7 @@ describe("a stale filter is dropped before the request", () => {
   it("says that the custom filters could not be checked", () => {
     const html = renderToStaticMarkup(
       createElement(FilterBar, {
-        entity: "deals", view: DEFAULT_VIEW, onChange: noop, rows: [], fieldDefs: null,
+        entity: "deals", view: DEFAULT_VIEW, onChange: noop, owners: [], fieldDefs: null,
         unchecked: true, activeView: null, dirty: false, canEdit: false, isAdmin: false,
         saving: false, onSave: async () => undefined, onUpdate: async () => undefined,
         onReset: noop,
@@ -460,7 +467,7 @@ describe("a stale filter is dropped before the request", () => {
         entity: "deals",
         view: DEFAULT_VIEW,
         onChange: noop,
-        rows: [],
+        owners: [],
         fieldDefs: [region],
         mirror: true,
         removed: ["Gone"],
