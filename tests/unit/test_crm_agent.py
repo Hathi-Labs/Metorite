@@ -1016,21 +1016,47 @@ def _refusing(status: int, detail: Any) -> type[FakeClient]:
     return _Refusing
 
 
+_SHARED_TOOLS = sorted(_T.CRM_TOOL_NAMES)
+
+
+@pytest.mark.parametrize("tool", _SHARED_TOOLS, ids=_SHARED_TOOLS)
 @pytest.mark.parametrize(("status", "detail", "expected"), [
     (404, "Not Found", "The CRM is off for this organization"),
     (403, "Forbidden: an admin of your organization has not given you access "
           "to the CRM.", "The CRM is not open to you."),
     (403, "Feature 'crm' not enabled", "The CRM is not open to you."),
 ])
-async def test_a_refusal_is_the_answer(status, detail, expected, monkeypatch) -> None:
-    """D3: the kill switch (404) and the access rule (403) read apart."""
+async def test_a_refusal_is_the_answer(
+    status, detail, expected, tool: str, monkeypatch,
+) -> None:
+    """D3: the kill switch (404) and the access rule (403) read apart, for
+    EVERY shared tool. A tool that loses ``_read_tool`` raises here."""
     calls: list[dict] = []
     monkeypatch.setattr(_T, "httpx", SimpleNamespace(
         AsyncClient=lambda **_kw: _refusing(status, detail)(calls, None)))
     monkeypatch.setattr(_T, "_current_user_email", lambda: "sales@fracktal.in")
-    for fn in (_T.crm_list_pipelines, _T.crm_stage_dwell):
-        assert expected in await fn()
-    assert len(calls) == 2
+    answer = await _INVOCATIONS[tool]()
+    assert expected in answer
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("tool", _SHARED_TOOLS, ids=_SHARED_TOOLS)
+@pytest.mark.parametrize("identity", ["room:4f1c-thread", "agent:crm", "default"])
+async def test_a_shared_room_reads_no_crm(tool: str, identity: str, monkeypatch) -> None:
+    """A run whose identity is not an email (a shared room's compartment)
+    sends nothing to the gateway, and the tool names the shared room."""
+    calls = _fake_gateway(monkeypatch, _responder, user=identity)
+    answer = await _INVOCATIONS[tool]()
+    assert answer == _T.CRM_SHARED_ROOM
+    assert "shared room" in answer
+    assert calls == []
+
+
+async def test_the_mode_reader_refuses_a_shared_room(monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, lambda _c: {"mode": "mirror"}, user="room:x")
+    with pytest.raises(Exception, match="shared room"):
+        await _T.crm_mode()
+    assert calls == []
 
 
 async def test_a_missing_record_is_not_read_as_the_crm_off(monkeypatch) -> None:

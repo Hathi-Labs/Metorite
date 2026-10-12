@@ -59,6 +59,13 @@ CRM_CLOSED = (
     "access."
 )
 
+#: What the member reads in a shared room. There the run's identity is the
+#: room's memory compartment (``room:<thread>``), not a person, and the
+#: gateway must never read it as an email.
+CRM_SHARED_ROOM = (
+    "A shared room cannot read the CRM. Ask in your own chat."
+)
+
 #: The record types. The keys are the gateway's ``core.ENTITIES`` slugs.
 ENTITY_LABELS: dict[str, str] = {
     "leads": "Lead",
@@ -119,13 +126,20 @@ def _internal_token() -> str:
 
 
 def _headers() -> dict[str, str]:
-    """The bearer and the acting member. With no member, refuse."""
+    """The bearer and the acting member. With no member, refuse.
+
+    An identity with no ``@`` is not a member. In a shared room the run's
+    identity is the room's compartment (``room:<thread>``), so the tool
+    answers :data:`CRM_SHARED_ROOM` and sends nothing to the gateway.
+    """
     user = _current_user_email()
     if not user:
         raise RuntimeError(
             "No acting user for this run, so there is nobody to act as — "
             "refusing to call the gateway as the platform itself."
         )
+    if "@" not in user:
+        raise _Refused(CRM_SHARED_ROOM)
     return {
         "Authorization": f"Bearer {_internal_token()}",
         "Content-Type": "application/json",
@@ -726,6 +740,6 @@ CRM_TOOLS: tuple[Callable[..., Awaitable[str]], ...] = (
 CRM_TOOL_NAMES: frozenset[str] = frozenset(fn.__name__ for fn in CRM_TOOLS)
 
 __all__ = [
-    "CRM_CLOSED", "CRM_OFF", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
+    "CRM_CLOSED", "CRM_OFF", "CRM_SHARED_ROOM", "CRM_TOOLS", "CRM_TOOL_NAMES", "MAX_ROWS",
     "crm_mode", *(fn.__name__ for fn in CRM_TOOLS),
 ]

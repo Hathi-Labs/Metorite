@@ -159,7 +159,8 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "save_agent_memory", "save_org_memory",
     # Not H-236's, and left out for the same reason: only a WhatsApp run holds
     # it, so the block of every other agent stays byte-identical.
-    "whatsapp_ui",    # WS-53 CRM-C7: the twelve CRM reads. They only read, so the risk block
+    "whatsapp_ui",
+    # WS-53 CRM-C7: the twelve CRM reads. They only read, so the risk block
     # gains nothing from them, and it stays byte-identical for every agent.
     "crm_list_records",
     "crm_get_record",
