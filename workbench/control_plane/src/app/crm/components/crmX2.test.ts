@@ -19,9 +19,12 @@ import {
   LOG_CALL_HINT,
   MAX_WAIT_FRAMES,
   SETTLE_FRAMES,
+  FOCUS_ASK_MS,
   afterDialogsClose,
   findRecordPlan,
+  focusAskFor,
   logCallPlan,
+  otherDialogOpen,
 } from "../lib/shellJobs";
 import { openRecord, parseView, selectRecordTab, viewHref } from "../lib/urlState";
 import Timeline from "./Timeline";
@@ -203,6 +206,65 @@ describe("the Timeline composer", () => {
 
   it("starts on Call when log-call asks", () => {
     expect(activeComposer(timeline(1))).toBe("Call");
+  });
+
+  it("focuses only after the command bar has closed (review P2)", () => {
+    // The bar's `Modal` gives focus back when it has closed. A plain effect
+    // focused the composer first, and the bar took the focus away again.
+    const src = read("./Timeline.tsx");
+    const effect = src.slice(src.indexOf("useEffect(() => {"), src.indexOf("}, [callRequest]);"));
+    expect(effect).toMatch(/afterDialogsClose\(/);
+    // Its own record sheet is a dialog too, so the wait leaves that one out.
+    expect(effect).toMatch(/browserHost\(composer\.current\)/);
+    expect(effect).not.toMatch(/^\s*if \(callRequest\) composer\.current\?\.focus\(\);/m);
+  });
+});
+
+describe("otherDialogOpen", () => {
+  // The composer sits in the record sheet, which is a dialog too. Only a
+  // dialog that does NOT hold the composer is one to wait for.
+  const node = { name: "composer" };
+  const dialog = (holds: boolean) => ({ contains: (n: unknown) => holds && n === node });
+
+  it("ignores the dialog that holds the element", () => {
+    expect(otherDialogOpen([dialog(true)], node)).toBe(false);
+  });
+
+  it("waits for any other dialog, such as the closing command bar", () => {
+    expect(otherDialogOpen([dialog(true), dialog(false)], node)).toBe(true);
+    expect(otherDialogOpen([dialog(false)], null)).toBe(true);
+  });
+
+  it("finds nothing when no dialog is open", () => {
+    expect(otherDialogOpen([], node)).toBe(false);
+  });
+});
+
+describe("focusAskFor (review P2: an ask whose list never renders)", () => {
+  const ask = { entity: "deals" as const, at: 1_000 };
+
+  it("focuses when its list is on screen in time, and the ask is spent", () => {
+    expect(focusAskFor(ask, "deals", 1_500)).toEqual({ focus: true, keep: null });
+  });
+
+  it("waits while another view is still on screen", () => {
+    expect(focusAskFor(ask, null, 1_500)).toEqual({ focus: false, keep: ask });
+  });
+
+  it("drops an ask that is too old, so a later visit to the list keeps its focus", () => {
+    expect(focusAskFor(ask, "deals", 1_000 + FOCUS_ASK_MS + 1)).toEqual({ focus: false, keep: null });
+    expect(focusAskFor(ask, null, 1_000 + FOCUS_ASK_MS + 1)).toEqual({ focus: false, keep: null });
+  });
+
+  it("does nothing with no ask", () => {
+    expect(focusAskFor(null, "deals", 1_500)).toEqual({ focus: false, keep: null });
+  });
+});
+
+describe("the page reads the focus ask through focusAskFor", () => {
+  it("never compares the ask by hand", () => {
+    const page = read("../page.tsx");
+    expect(page).toMatch(/focusAskFor\(focusFor\.current, listEntity, Date\.now\(\)\)/);
   });
 });
 

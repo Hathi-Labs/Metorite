@@ -38,6 +38,7 @@ import { useEffect, useRef, useState } from "react";
 import Badge from "@/components/ui/Badge";
 import { ONLY_IN_METORITE, onlyInMetorite } from "../lib/connect";
 import { dateTime, dwellLabel } from "../lib/format";
+import { afterDialogsClose, browserHost } from "../lib/shellJobs";
 import {
   entryKind,
   filterTimeline,
@@ -96,8 +97,14 @@ export default function Timeline({
     if (callRequest) setKind("call");
   }
   const composer = useRef<HTMLTextAreaElement>(null);
+  // The command bar gives focus back when it has closed, so the composer
+  // waits for it. Its own record sheet is a dialog too, and does not count.
   useEffect(() => {
-    if (callRequest) composer.current?.focus();
+    if (!callRequest) return;
+    return afterDialogsClose(
+      () => composer.current?.focus(),
+      browserHost(composer.current),
+    );
   }, [callRequest]);
   const [draft, setDraft] = useState("");
   const [due, setDue] = useState("");

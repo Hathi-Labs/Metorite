@@ -41,7 +41,9 @@ import {
   CRM_JOB_IDS,
   afterDialogsClose,
   findRecordPlan,
+  focusAskFor,
   logCallPlan,
+  type FocusAsk,
   type JobPlan,
 } from "./lib/shellJobs";
 import { hasCapability } from "@/lib/access";
@@ -264,7 +266,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   /** A `log-call` ask for one record: its Timeline composer opens on Call. */
   const [callAsk, setCallAsk] = useState<{ n: number; id: string } | null>(null);
   /** The list whose search box a job asked to focus, once it is on screen. */
-  const focusFor = useRef<EntitySlug | null>(null);
+  const focusFor = useRef<FocusAsk | null>(null);
   const [focusAsk, setFocusAsk] = useState(0);
   /** The hint of `log-call` with no record, for the Deals list it opened. */
   const [jobHint, setJobHint] = useState<string | null>(null);
@@ -339,8 +341,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // It also waits for the command bar to finish closing, or the bar takes the
   // focus back (`afterDialogsClose`).
   useEffect(() => {
-    if (!focusFor.current || focusFor.current !== listEntity) return;
-    focusFor.current = null;
+    const { focus, keep } = focusAskFor(focusFor.current, listEntity, Date.now());
+    focusFor.current = keep;
+    if (!focus) return;
     return afterDialogsClose(() => void focusPageFilter());
   }, [focusAsk, listEntity]);
 
@@ -357,7 +360,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       setCallAsk((ask) => ({ n: (ask?.n ?? 0) + 1, id: opened.id }));
     }
     if (plan.focusSearch && isEntity(plan.view.tab)) {
-      focusFor.current = plan.view.tab;
+      focusFor.current = { entity: plan.view.tab, at: Date.now() };
       setFocusAsk((n) => n + 1);
     }
     setJobHint(plan.hint);

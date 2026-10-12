@@ -77,11 +77,48 @@ export type FrameHost = {
   cancelFrame: (id: number) => void;
 };
 
-const BROWSER: FrameHost = {
-  dialogOpen: () => document.querySelector('[role="dialog"]') !== null,
-  nextFrame: (run) => requestAnimationFrame(run),
-  cancelFrame: (id) => cancelAnimationFrame(id),
-};
+/**
+ * True while a dialog is open that does not hold `inside`. The `log-call`
+ * composer sits in the record sheet, which is a dialog too, so only another
+ * dialog, such as the closing command bar, is one to wait for.
+ */
+export function otherDialogOpen(
+  dialogs: ArrayLike<{ contains: (node: never) => boolean }>,
+  inside: unknown,
+): boolean {
+  return Array.from(dialogs).some((d) => !inside || !d.contains(inside as never));
+}
+
+/** The browser's host. With `inside`, the dialog that holds it does not count. */
+export function browserHost(inside: Element | null = null): FrameHost {
+  return {
+    dialogOpen: () => otherDialogOpen(document.querySelectorAll('[role="dialog"]'), inside),
+    nextFrame: (run) => requestAnimationFrame(run),
+    cancelFrame: (id) => cancelAnimationFrame(id),
+  };
+}
+
+/** Milliseconds a focus ask waits for its list. Then the page drops it. */
+export const FOCUS_ASK_MS = 3000;
+
+/** A job's ask to focus the search box of one list, and when it was made. */
+export type FocusAsk = { entity: EntitySlug; at: number };
+
+/**
+ * What the page does with a focus ask, now that `listEntity` is on screen.
+ * A list that is on screen in time gets the focus, and the ask is spent. An
+ * ask older than `FOCUS_ASK_MS` is dropped, so a later visit to that list
+ * never takes the focus by surprise.
+ */
+export function focusAskFor(
+  ask: FocusAsk | null,
+  listEntity: EntitySlug | null,
+  now: number,
+): { focus: boolean; keep: FocusAsk | null } {
+  if (!ask || now - ask.at > FOCUS_ASK_MS) return { focus: false, keep: null };
+  if (ask.entity === listEntity) return { focus: true, keep: null };
+  return { focus: false, keep: ask };
+}
 
 /** Frames to wait after the last dialog leaves, for its focus cleanup. */
 export const SETTLE_FRAMES = 2;
@@ -96,7 +133,7 @@ export const MAX_WAIT_FRAMES = 90;
  * finished closing (its `finalFocus`), so a focus set before then is lost.
  * Measured in the browser: the search box lost its focus to `<main>`.
  */
-export function afterDialogsClose(act: () => void, host: FrameHost = BROWSER): () => void {
+export function afterDialogsClose(act: () => void, host: FrameHost = browserHost()): () => void {
   let waited = 0;
   let settled = 0;
   let id = host.nextFrame(tick);
