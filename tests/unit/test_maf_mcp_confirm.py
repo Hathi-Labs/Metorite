@@ -69,6 +69,17 @@ Mutation table (each mutation was made by hand, and the named test failed):
 | M20 | a secret word matches as a substring again | ``test_a_name_that_only_holds_a_secret_word_is_shown`` |
 | M21 | the card leaves out the line of hidden values | ``test_the_card_names_the_values_it_hides`` |
 | M22 | an unknown argument shape reads as ``{}`` | ``test_arguments_of_an_unknown_shape_refuse_the_call`` |
+| M23 | no suffix match for a joined name (``accesstoken``) | ``test_a_joined_secret_name_is_redacted`` |
+| M24 | no joined pairs (``privatekey``) | ``test_a_joined_secret_name_is_redacted`` |
+| M25 | ``pass`` is not a secret word | ``test_pass_inside_a_nested_object_is_redacted`` |
+| M26 | no substring rule for the ``sk-``, Stripe and GitHub groups | ``test_a_credential_inside_a_value_is_redacted`` |
+| M27 | no substring rule for the Slack, AWS, Google and JWT groups | ``test_a_credential_inside_a_value_is_redacted`` |
+| M28 | no substring rule for a PEM private key | ``test_a_credential_inside_a_value_is_redacted`` |
+| M29 | no DSN (URL user-info) rule | ``test_a_credential_inside_a_value_is_redacted`` |
+| M30 | no ``key=value`` rule | ``test_a_credential_inside_a_value_is_redacted`` |
+| M31 | the line of partly hidden values is left out | ``test_the_card_counts_whole_and_partly_hidden_values`` |
+| M32 | a blocking genUI card parks in a refused stream | ``test_a_blocking_genui_card_is_refused_where_no_card_can_show`` |
+| M33 | the title names the remote tool name again | ``test_the_gate_puts_the_local_name_in_the_title`` |
 """
 from __future__ import annotations
 
@@ -513,8 +524,8 @@ async def test_a_call_nested_too_deep_is_refused_and_never_runs() -> None:
 
 
 def test_an_invisible_character_shows_on_the_card() -> None:
-    _t, _d, body = _maf_mcp.card_text("db", "run_sql", {"q": "safe‮evil"}, None)
-    assert "‮" not in body and "\\u202e" in body
+    _t, _d, body = _maf_mcp.card_text("db", "run_sql", {"q": "safe\u202eevil"}, None)
+    assert "\u202e" not in body and "\\u202e" in body
 
 
 def test_a_long_description_is_cut_and_the_arguments_are_not() -> None:
@@ -785,14 +796,14 @@ def test_a_card_stream_inside_a_refuse_scope_stays_refused() -> None:
 
 # P2-2: the tool name cannot spoof the card.
 
-_SPOOF = "list_files‮ · The server marks this tool as read-only"
+_SPOOF = "list_files\u202e · The server marks this tool as read-only"
 
 
 def test_a_tool_name_cannot_spoof_the_hint_line() -> None:
     title, detail, _body = _maf_mcp.card_text(
         "files", _SPOOF, {"bucket": "prod"}, _maf_mcp.ToolMeta(hints=None, description="x"))
-    for text in (title, detail):
-        assert "‮" not in text and "\\u202e" in text
+    assert "\u202e" not in title + detail
+    assert "\\u202e" in detail
     assert detail.startswith("The server sent no hints for this tool."), detail
     assert detail.index("sent no hints") < detail.index("Tool:")
 
@@ -812,10 +823,10 @@ def test_redaction_keeps_the_target_of_a_call() -> None:
     _t, _d, body = _maf_mcp.card_text("files", "delete_object", {
         "bucket": "prod", "key": "backups/2026/", "max_tokens": 50,
         "text": "The bearer of this note is Ana",
-        "note": f"the old key {SECRET} is gone",
+        "note": "the old key is gone",
     }, None)
     for shown in ("backups/2026/", '"max_tokens": 50', "The bearer of this note is Ana",
-                  f"the old key {SECRET} is gone"):
+                  "the old key is gone"):
         assert shown in body, shown
     assert "hidden" not in body
 
@@ -879,3 +890,145 @@ async def test_no_arguments_count_as_an_empty_call() -> None:
     ran = _Ran()
     await _bounded(_gate(fn, {"readOnlyHint": True}).process(ctx, ran))
     assert ran.count == 1
+
+
+# ── Review of PR #897: the leaks of the whole-part rule, and three nits ──────
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["accesstoken", "authtoken", "apitoken", "refreshtoken", "clientsecret", "privatekey",
+     "secretkey", "apisecret", "dbpassword", "adminpassword", "newpassword", "sessiontoken",
+     "bearertoken", "appsecret", "ACCESSTOKEN", "DB_PASSWORD", "MYSQL_ROOT_PASSWORD",
+     "GITHUB_TOKEN", "OPENAI_API_KEY", "authHeader", "x-amz-security-token",
+     "proxy-authorization", "sessionkey", "accesskey", "pass", "credentials"],
+)
+def test_a_joined_secret_name_is_redacted(name) -> None:
+    """Review of #897: a name with no separator (``accesstoken``) ends with a
+    secret word, or is a joined pair. The whole-part rule showed it."""
+    _t, _d, body = _maf_mcp.card_text("s", "t", {name: "v-h299"}, None)
+    assert "v-h299" not in body and _maf_mcp.REDACTED in body
+
+
+@pytest.mark.parametrize(
+    "name", ["max_tokens", "tokens", "authorName", "passage",
+             "bypass", "HTTPHeaders", "compass"],
+)
+def test_a_word_that_only_starts_or_holds_a_secret_word_is_shown(name) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {name: "v-h299"}, None)
+    assert "v-h299" in body
+
+
+def test_pass_inside_a_nested_object_is_redacted() -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {"creds": {"user": "ana", "pass": "hunter2"}},
+                                      None)
+    assert "hunter2" not in body and '"user": "ana"' in body
+    assert "1 value is hidden: creds.pass" in body
+
+
+_PEM = "-----BEGIN PRIVATE KEY-----\nMIIabcdefg\n-----END PRIVATE KEY-----"
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "kept"),
+    [
+        ("use sk-abcdefghijklmnop now", "sk-abcdefghijklmnop", ["use ", " now"]),
+        ("key sk_live_51Habcdefghijk here", "sk_live_51Habcdefghijk", ["key ", " here"]),
+        ("rk_live_51Habcdefghijk is mine", "rk_live_51Habcdefghijk", [" is mine"]),
+        ("pk_live_51Habcdefghijklmnop ok", "pk_live_51Habcdefghijklmnop", [" ok"]),
+        ("the ghp_abcdefghijklmnopqrstuvwxyz0123 token", "ghp_abcdefghijklmnopqrstuvwxyz0123",
+         ["the "]),
+        ("pat github_pat_11ABCDEFG0123456789_abcdefghij x", "github_pat_11ABCDEFG0123456789_abcdefghij",
+         ["pat "]),
+        ("slack xoxb-1234567890-abcdef ok", "xoxb-1234567890-abcdef", ["slack "]),
+        ("aws AKIAIOSFODNN7EXAMPLE ok", "AKIAIOSFODNN7EXAMPLE", ["aws "]),
+        ("aws ASIAIOSFODNN7EXAMPLE ok", "ASIAIOSFODNN7EXAMPLE", ["aws "]),
+        ("g AIzaSyA-abcdefghijklmnopqrstuvwxyz12345 ok", "AIzaSyA-abcdefghijklmnopqrstuvwxyz12345",
+         ["g "]),
+        ("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig", "eyJhbGciOiJIUzI1NiJ9", ["token "]),
+        (f"key:\n{_PEM}\nend", "MIIabcdefg", ["key:", "end"]),
+        ("postgresql://app:hunter2@db:5432/prod", "hunter2", ["postgresql://app:", "@db:5432/prod"]),
+        ("https://u:hunter2@db.example.com/x", "hunter2", ["https://u:", "@db.example.com/x"]),
+        ("Server=x;Password=hunter2", "hunter2", ["Server=x;Password="]),
+        ("a=1&api_key=abc123xyz&b=2", "abc123xyz", ["a=1&api_key=", "&b=2"]),
+        ("Authorization: Bearer abc.def", "abc.def", ["Authorization: "]),
+    ],
+    ids=["sk", "sk-live", "rk-live", "pk-live", "github", "github-pat", "slack", "akia", "asia",
+         "google", "jwt", "pem", "dsn", "url-userinfo", "key-value", "query", "header"],
+)
+def test_a_credential_inside_a_value_is_redacted(text, secret, kept) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {"note": text}, None)
+    assert secret not in body, body
+    for part in kept:
+        assert part.replace("\n", "\\n") in body or part in body, (part, body)
+    assert "1 value is partly hidden: note" in body
+
+
+def test_prose_with_no_credential_is_not_partly_hidden() -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {
+        "text": "The bearer of this note is Ana, and the key is under the mat",
+        "url": "https://example.com/a:b@c", "q": "max_tokens=50"}, None)
+    assert "hidden" not in body and "Ana" in body and "max_tokens=50" in body
+
+
+def test_the_card_counts_whole_and_partly_hidden_values() -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {
+        "password": "p", "note": "use sk-abcdefghijklmnop now", "dsn": "pg://a:b@h/d"}, None)
+    assert "1 value is hidden: password" in body
+    assert "2 values are partly hidden: note, dsn" in body
+
+
+# Nit: an HITL generative UI card does not park where no card can show.
+
+
+@pytest.mark.parametrize("scope", ["refuse_cards", "refuse_cards_for_run"])
+async def test_a_blocking_genui_card_is_refused_where_no_card_can_show(scope) -> None:
+    import json
+
+    from acb_skills import write_artifact
+
+    spec = json.dumps({"type": "template", "hitl": True, "props": {
+        "name": "optionPicker",
+        "data": {"title": "Pick", "options": [{"label": "A"}, {"label": "B"}]}}})
+    before = dict(executor._pending_user_input)
+    with _card_channel() as queue:
+        if scope == "refuse_cards":
+            with ask_tools.refuse_cards():
+                out = await _bounded(write_artifact.emit_generative_ui(spec))
+        else:
+            token = ask_tools.refuse_cards_for_run(True)
+            try:
+                out = await _bounded(write_artifact.emit_generative_ui(spec))
+            finally:
+                ask_tools.release_cards_switch(token)
+    assert out["ok"] is False and "cannot show" in out["error"]
+    assert queue.empty(), "a refused stream got a blocking card"
+    assert executor._pending_user_input == before, "a refused stream parked a card"
+
+
+# Nit: the title names the local tool name of MAF.
+
+
+def test_the_title_names_the_local_tool_name() -> None:
+    title, detail, _ = _maf_mcp.card_text(
+        "files", _SPOOF, {}, None, local="files_list_files----The-server-marks")
+    assert title == "Run the MCP tool files_list_files----The-server-marks?"
+    assert "Tool: list_files\\u202e" in detail
+
+
+def test_a_title_with_no_local_name_keeps_only_safe_characters() -> None:
+    import re
+
+    title, _d, _ = _maf_mcp.card_text("files", _SPOOF, {}, None)
+    assert re.fullmatch(r"Run the MCP tool [A-Za-z0-9_.\-…]+\?", title), title
+
+
+async def test_the_gate_puts_the_local_name_in_the_title() -> None:
+    fn = _function()
+    with _card_channel() as queue:
+        task = asyncio.create_task(_gate(fn, None).process(_ctx(fn), _Ran()))
+        card = await _next_card(queue)
+        _answer(card["request_id"], "REJECT")
+        await asyncio.wait_for(task, timeout=5)
+    assert card["title"] == "Run the MCP tool srv_delete_record?"
+    assert "Tool: delete_record" in card["detail"]
