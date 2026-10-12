@@ -1616,7 +1616,8 @@ decides again.
   both use it.
 - The profile gains two keys from the reads that discovery already makes.
   `layout_fields` holds the fields on an active layout. `custom_field_types`
-  holds the type of each field that goes to `custom`.
+  holds the type of each field that goes to `custom`. A profile with no
+  `layout_fields` makes discovery due at once.
 - Discovery makes an approved rule stale from those two keys. An entity that
   discovery could not read keeps the status of its rules.
 - `POST /crm/field-rules` is the pick by hand. It writes an approved rule with
