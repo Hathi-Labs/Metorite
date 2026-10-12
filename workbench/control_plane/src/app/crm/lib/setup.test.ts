@@ -1,73 +1,46 @@
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+// The words of the setup hub (WS-53 CRM-X0). The actions of each state and
+// the dialog are in `components/crmX0.test.ts`.
+import { describe, expect, it } from "vitest";
 
-import SetupPanel from "../components/SetupPanel";
-import { CrmError } from "./api";
 import { firstOpen, type ConnectionInfo } from "./connect";
-import {
-  CONNECTED_REASON,
-  FAILED_TOAST,
-  changeSetup,
-  setupBlock,
-  setupFailure,
-  setupLine,
-} from "./setup";
+import { connectionLabel, countLines, hubNote, hubState, modeLabel } from "./setup";
 
 const conn = (status: string): ConnectionInfo =>
   ({ connected: status === "connected", status, mode: "mirror" }) as ConnectionInfo;
 
-const draw = (mode: "native" | "mirror" | null, blocked: string | null) =>
-  renderToStaticMarkup(
-    createElement(SetupPanel, { mode, blocked, busy: false, onChange: () => undefined }),
-  );
-
-describe("the CRM setup card (CRM-U5b)", () => {
+describe("the setup hub's words", () => {
   it("names the mode", () => {
-    expect(setupLine("native")).toBe("Metorite is your CRM");
-    expect(setupLine("mirror")).toBe("Synced from Zoho");
-    expect(setupLine(null)).toBe("Not set up");
-    expect(draw("native", null)).toContain("Metorite is your CRM");
-    expect(draw("native", null)).toContain("Change CRM setup");
+    expect(modeLabel("native")).toBe("Metorite is your CRM");
+    expect(modeLabel("mirror")).toBe("Synced from Zoho");
+    expect(modeLabel(null)).toBe("Not set up");
   });
 
-  it("is open with no live connection", () => {
-    expect(setupBlock("native", null)).toBeNull();
-    expect(setupBlock("mirror", conn("needs_reconnect"))).toBeNull();
-    expect(setupBlock("mirror", conn("disconnected"))).toBeNull();
-    expect(draw("native", null)).not.toContain('disabled=""');
+  it("names the connection of each state", () => {
+    const say = (status: string) => connectionLabel(hubState("mirror", conn(status)), conn(status));
+    expect(say("connected")).toBe("Connected");
+    expect(say("disconnected")).toBe("Disconnected");
+    expect(say("needs_reconnect")).toBe("Zoho needs you to connect again");
+    expect(say("needs_reset")).toContain("Another Zoho account");
+    expect(connectionLabel("native", null)).toBe("No Zoho connection");
   });
 
-  it("is off, with the reason, while Zoho is connected", () => {
-    expect(setupBlock("mirror", conn("connected"))).toBe(CONNECTED_REASON);
-    const html = draw("mirror", CONNECTED_REASON);
-    expect(html).toContain("Disconnect Zoho first, then change the setup.");
-    expect(html).toContain('disabled=""');
-  });
-});
-
-describe("the confirm", () => {
-  it("sends the reset, then wakes the CRM caches", async () => {
-    const save = vi.fn().mockResolvedValue({});
-    const invalidate = vi.fn();
-    expect(await changeSetup({ save, invalidate })).toBeNull();
-    expect(save).toHaveBeenCalledOnce();
-    expect(invalidate).toHaveBeenCalledOnce();
+  it("says that a disconnected CRM keeps its records", () => {
+    expect(hubNote("mirror-disconnected")).toContain("The records stay here");
+    expect(hubNote("mirror-needs-reset")).toContain("never mix");
   });
 
-  it("returns the 409 message for a toast and wakes nothing", async () => {
-    const message = "This CRM has records, so its setup cannot change. Remove the records first.";
-    const save = vi.fn().mockRejectedValue(new CrmError(message, 409));
-    const invalidate = vi.fn();
-    expect(await changeSetup({ save, invalidate })).toBe(message);
-    expect(invalidate).not.toHaveBeenCalled();
+  it("lists every entity, zero included, in one order", () => {
+    expect(countLines({ deals: 3 }).map((l) => [l.key, l.count])).toEqual([
+      ["leads", 0],
+      ["contacts", 0],
+      ["organizations", 0],
+      ["deals", 3],
+      ["activities", 0],
+      ["module_records", 0],
+    ]);
   });
 
-  it("uses a plain line for an error with no message", () => {
-    expect(setupFailure(new Error("network"))).toBe(FAILED_TOAST);
-  });
-
-  it("lands on the first-open choice once the mode is NULL", () => {
+  it("lands on the first-open choice once the start over leaves no mode", () => {
     const base = { loading: false, settingsMode: null, isAdmin: true } as const;
     expect(firstOpen({ ...base, connection: null })).toBe("native-only");
     expect(firstOpen({ ...base, connection: { ...conn("disconnected"), mode: null } })).toBe(
