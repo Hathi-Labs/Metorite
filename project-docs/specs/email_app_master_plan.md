@@ -16766,8 +16766,9 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
 
 ### 16.6 Inline pictures in the body (2026-10-13)
 
-**Status: 🔨 BUILT on branch `email-inline-images`, not merged (2026-10-13).** No migration
-and no flag. A WS-17 bug fix, and it needed no spec audit.
+**Status: 🔨 BUILT on branch `email-inline-images`, not merged (2026-10-13). The security
+review gave APPROVE, and its P2 and P3 fixes are in (below).** No migration and no flag. A
+WS-17 bug fix, and it needed no spec audit.
 
 **The report.** The owner's screenshot showed the reading pane in dark mode. A broken
 picture with the alt text "image.png" sat between the text and the sign-off. The owner saw
@@ -16842,7 +16843,53 @@ EM-T17 or of #894.
 - A message that is not a stored row, such as a provider search hit, gets 404. Its
   pictures show the alt text, as before.
 - The first open of a message with many pictures makes one Graph read for each part.
-  The cache and the browser cache then serve it for one hour.
+  The server cache then serves it for one hour, and the browser cache for ten minutes.
+- **A shared browser keeps a picture for ten minutes** (review P3-6). The answer says
+  `Cache-Control: private, max-age=600`. After a sign-out, the next person at that
+  browser can open the cached URL until the ten minutes end. The hour of the server
+  cache is safe, because the owner check runs before each read of it.
+- A kept owner verdict lives for one minute. If a member disconnects a mailbox in that
+  minute, they can still read the cached pictures of a message that they opened.
+
+**Security review of 2026-10-13: APPROVE, and the fixes.** The review found no P0 or P1.
+This change fixes its four P2 and two P3 findings.
+
+1. **P2-1, the binary Redis pool.** That pool holds 4 connections
+   (`BINARY_POOL_MAX_CONNECTIONS`), and redis-py raises when it is full, with no wait.
+   The route's binary calls now pass one gate of `REDIS_GATE_SIZE`, one below the pool.
+   So a burst queues, and a cache hit never turns into a provider read. The pool class
+   stays as it is, because the download route shares it.
+2. **P2-2, one owner read for each picture.** A body of 165 pictures took 165 owner
+   reads, and that filled the database pool. The route now keeps a POSITIVE verdict in
+   the process for 60 s, by organization, member and message. The requests of one open
+   share one owner read. A denial is never kept. A rotated token drops the verdict. The
+   owner SQL stays in the handler body for the owner-scope fence.
+3. **P2-3, no bytes past the caps.** Gmail reads a part only when it is inline AND of an
+   `image/*` type, so it never downloads a PDF with a Content-ID. Outlook and Gmail stop
+   choosing parts when the listed sizes reach `MAX_INLINE_TOTAL_BYTES` (`max_total`).
+4. **P2-4, a passing fault.** A part that fails for a reason other than a rate limit
+   makes the read incomplete (`InlineRead.complete`). The list of names then lives
+   `INLINE_RETRY_TTL_SECS` (60 s), not one hour, so the next open reads that part again.
+5. **P3-5.** A 429 on one Outlook part cancels the reads that still run (`TaskGroup`).
+6. **P3-6.** The browser cache is ten minutes, as the risk above says.
+
+Fences, in `tests/unit/test_email_inline_images.py`, and the mutation that each one
+kills:
+
+- `TestTheRedisPool`: a fake pool that refuses a fifth call, and a burst of 20 on a full
+  cache with no provider read. It kills a gate of 50.
+- `TestOneOwnerReadForEachOpen`: 100 requests make one owner read. Another member and
+  another organization each read again and a stranger gets 404. The verdict ends after
+  its TTL. It kills no kept verdict, no single flight, and a key with no member.
+- `TestTheReadStopsAtTheCaps`: one Gmail picture and five 4 MB PDFs give one download,
+  and a 27 MB Outlook list reads 4 parts. It kills a Gmail check with no type and an
+  Outlook read with no total cap.
+- `TestAFailedPartIsReadAgainSoon`: a 503 or a 404 on a part makes the read incomplete.
+  The list then lives 60 s, and the next open after it reads the provider again. It
+  kills a route that ignores the flag, and an Outlook or Gmail read that always reports
+  complete.
+- `TestARateLimitStopsTheSiblings`: no read runs on after a 429. It kills `gather`.
+- The header test kills a browser cache of one hour.
 
 ## 17. Email AI context: the whole conversation, chosen by Jev, and no stall (2026-10-12)
 
