@@ -654,7 +654,10 @@ async def test_the_next_import_ignores_the_runs_before_a_start_over(x0, app_engi
     assert counts == {"deals": {"created": 5}} and estimate == {"deals": 9} and used == 400
     assert (await _reset(x0, {"confirm": "DELETE", "then": "none"})).status_code == 200
     (counts, estimate), used = await read()
-    assert (counts, estimate, used) == ({}, None, 0)
+    assert (counts, estimate) == ({}, None)
+    # Re-review P2: the credits are the Zoho org's, and a start over does not
+    # give them back, so the same account that returns has spent them.
+    assert used == 400
     # The history itself stays.
     assert _counts(x0, x0.org_a)["crm_sync_runs"] == 2
 
@@ -825,3 +828,52 @@ async def test_the_save_checks_the_stored_account_again_under_the_lock(
     assert r.headers["location"] == "/crm?connect_error=different_org", r.text
     assert _connection(x0, x0.org_a)[0] == "needs_reset"
     assert _account_id(x0, x0.org_a) == "Z-A"
+
+
+
+# ── Re-review P2: the lock order of the start over ──────────────────────────
+
+
+async def test_the_reset_takes_the_connect_lock_first(x0, app_engine) -> None:  # noqa: F811
+    """A consent holds the advisory connect lock and then writes the
+    connection. The reset takes the same lock before ``crm_settings``, so the
+    two never wait on each other in opposite orders (40P01)."""
+    _assert_non_priv(app_engine)
+    from gateway.routes.crm import connection as conn
+
+    _seed(x0, x0.org_a, tag="A", deals=2)
+    consent = app_engine.connect()
+    tx = consent.begin()
+    consent.execute(text(conn._CONNECT_LOCK_SQL),
+                    {"key": f"crm.connect:{x0.org_a}:{conn.PROVIDER}"})
+    task = asyncio.create_task(_reset(x0, {"confirm": "DELETE", "then": "none"}))
+    for _ in range(20):
+        await asyncio.sleep(0.2)
+        if task.done():
+            break
+    waited = not task.done()
+    tx.commit()
+    consent.close()
+    r = await task
+    assert waited, "the reset did not take the connect lock"
+    assert r.status_code == 200, r.text
+
+
+async def test_a_deadlock_in_the_reset_is_409(x0, app_engine, monkeypatch) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    from gateway.routes.crm import settings as mod
+    from sqlalchemy.exc import DBAPIError
+
+    class _Orig(Exception):
+        sqlstate = "40P01"
+
+    async def deadlocked(db: Any, org: str) -> Any:
+        raise DBAPIError("DELETE", {}, _Orig())
+
+    _seed(x0, x0.org_a, tag="A", deals=2)
+    before = _counts(x0, x0.org_a)
+    monkeypatch.setattr(mod, "reset_crm_from_admin", deadlocked)
+    r = await _reset(x0, {"confirm": "DELETE", "then": "none"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "crm_changed"
+    assert _counts(x0, x0.org_a) == before

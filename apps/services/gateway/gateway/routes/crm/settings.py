@@ -71,6 +71,7 @@ from gateway.routes.crm.access import (
     read_settings,
 )
 from gateway.routes.crm.connection import (
+    _CONNECT_LOCK_SQL,
     OWNING_APP,
     PROVIDER,
     consent_url_for,
@@ -364,6 +365,10 @@ _CLEAR_CONNECTION_SQL = (
     "WHERE organization_id = CAST(:o AS uuid)"
 )
 
+#: The SQLSTATEs of a write that runs into the start over: a record that
+#: names a stage (23503) and a deadlock (40P01). The transaction rolls back.
+_CHANGED_STATES = frozenset({"23503", "40P01"})
+
 #: A write that lands during the start over (CRM-X0 review P2).
 _CHANGED = {
     "code": "crm_changed",
@@ -451,19 +456,33 @@ async def reset_crm(
     # The sync stops: no token for a run, and a revoke at Zoho.
     await disconnect_zoho(org)
     mode = "native" if payload.then == "native" else None
+    try:
+        removed = await _start_over(mode=mode, org=org, user=user)
+    except DBAPIError as exc:
+        # A record that another request saved names a stage (RESTRICT), or a
+        # deadlock. The transaction rolled back, so nothing went.
+        code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+        if code in _CHANGED_STATES:
+            raise HTTPException(status_code=409, detail=dict(_CHANGED)) from exc
+        raise
+    _audit_reset(user, org, payload.then, removed)
+    return ResetOut(removed=removed, mode=mode, consent_url=consent_url)
+
+
+async def _start_over(*, mode: str | None, org: str, user: UserContext) -> dict[str, int]:
+    """The one transaction of ``POST /crm/reset``. Returns the counts.
+
+    ⚠️ **The lock order is the consent's** (re-review P2). The callback takes
+    the advisory connect lock, then writes the connection row. This
+    takes the same lock FIRST, then ``crm_settings`` ``FOR UPDATE``, then the
+    connection, so the two never wait on each other in opposite orders.
+    """
     async with _tenant_session() as db:
+        await db.execute(text(_CONNECT_LOCK_SQL), {"key": f"crm.connect:{org}:{PROVIDER}"})
         # Waits for a sync page in flight. A later page reads the new mode.
         await db.execute(text(_LOCK_SETTINGS_SQL), {"o": org})
         current = _wire(await read_settings(db, org))
-        try:
-            removed = await reset_crm_from_admin(db, org)
-        except DBAPIError as exc:
-            # A record that another request saved names a stage: RESTRICT
-            # refuses the delete. The transaction rolls back, so nothing went.
-            code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
-            if code == "23503":
-                raise HTTPException(status_code=409, detail=dict(_CHANGED)) from exc
-            raise
+        removed = await reset_crm_from_admin(db, org)
         row = (await db.execute(text(_UPSERT_SQL), {
             "organization_id": org,
             "mode": mode,
@@ -483,5 +502,4 @@ async def reset_crm(
             await store.forget_account(db, org, connection.id)
         if mode == "native":
             await seed_native_pipeline(db, org)
-    _audit_reset(user, org, payload.then, removed)
-    return ResetOut(removed=removed, mode=mode, consent_url=consent_url)
+    return removed

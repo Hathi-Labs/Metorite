@@ -959,13 +959,20 @@ class ZohoSource:
         The consent callback reads one mirrored record with the new token, to
         tell the same Zoho account from another one (CRM-X0 review P1-2).
         True only for a 200 whose ``data`` names the same id. A 204 or a 404
-        is False. Any other answer raises, so the caller fails closed.
+        is False. A version refusal (``INVALID_URL_PATTERN``,
+        ``INVALID_MODULE``) says nothing about the account, so it raises, as
+        any other answer does, and the caller fails closed.
         """
         if module not in PROBE_MODULES or not str(ext_id).isdigit():
             raise SourceError("A record read needs a known module and a numeric id")
         path = f"/crm/{RECORDS_API_VERSION}/{module}/{ext_id}"
         r = await self._get(path, params={})
-        if r.status_code in (204, 404):
+        if r.status_code == 204:
+            return False
+        code = str(_error_body(r).get("code") or "")
+        if code in _VERSION_ERROR_CODES:
+            raise ZohoApiVersionError(RECORDS_API_VERSION, path, code)
+        if r.status_code == 404:
             return False
         if _is_scope_refusal(r):
             raise ZohoScopeError(

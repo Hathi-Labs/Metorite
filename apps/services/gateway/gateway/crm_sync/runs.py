@@ -112,8 +112,10 @@ _LAST_OK_SQL = (
 )
 
 #: The runs after the last start over only (CRM-X0 review P2, migration 252).
-#: A run of the old account carries no counts, no estimate and no credits into
-#: the first import after ``POST /crm/reset``. The history rows stay.
+#: A run of the old account carries no counts and no estimate into the first
+#: import after ``POST /crm/reset``. The history rows stay. The credits read
+#: does NOT use it: the credits are the Zoho org's, and a start over in
+#: Metorite gives none back (re-review P2).
 _AFTER_RESET = (
     "AND started_at > COALESCE((SELECT reset_at FROM crm_settings "
     "WHERE organization_id = CAST(:org AS uuid)), '-infinity'::timestamptz) "
@@ -122,7 +124,7 @@ _AFTER_RESET = (
 _CREDITS_24H_SQL = (
     "SELECT COALESCE(sum(credits_used), 0) AS used FROM crm_sync_runs "
     "WHERE organization_id = CAST(:org AS uuid) "
-    "AND started_at > now() - interval '24 hours' " + _AFTER_RESET
+    "AND started_at > now() - interval '24 hours'"
 )
 
 _RESUMABLE_IMPORT_SQL = (

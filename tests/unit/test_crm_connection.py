@@ -1085,3 +1085,37 @@ def test_x0_every_return_has_one_query_name() -> None:
         parts = urlsplit(location)
         assert parts.path == "/crm"
         assert len(parse_qsl(parts.query)) == 1, location
+
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expect"),
+    [
+        (204, None, False),
+        (404, {"code": "RECORD_NOT_FOUND"}, False),
+        (200, {"data": [{"id": "999"}]}, False),
+        (200, {"data": [{"id": "123"}]}, True),
+        (404, {"code": "INVALID_URL_PATTERN"}, "raise"),
+        (400, {"code": "INVALID_MODULE"}, "raise"),
+        (500, {"code": "INTERNAL_ERROR"}, "raise"),
+    ],
+)
+async def test_x0_a_record_read_tells_missing_from_a_broken_endpoint(
+    world, status, body, expect,
+) -> None:
+    """Re-review P2: a version refusal is no answer about the account. Only a
+    204, a 404 with another code, or a 200 with another id means missing."""
+    from gateway.crm_sources.base import SourceError
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/crm/v2/Deals/123"
+        return httpx.Response(status, json=body) if body is not None else httpx.Response(status)
+
+    fresh = _credential(expires=datetime.now(UTC) + timedelta(hours=1))
+    source = ZohoSource(conn.zoho_oauth_config(), fresh,
+                        transport=httpx.MockTransport(handle))
+    if expect == "raise":
+        with pytest.raises(SourceError):
+            await source.record_exists("Deals", "123")
+    else:
+        assert await source.record_exists("Deals", "123") is expect
