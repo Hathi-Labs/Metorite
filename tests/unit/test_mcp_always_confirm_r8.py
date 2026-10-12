@@ -132,7 +132,7 @@ async def test_a_new_server_defaults_to_always_confirm(ns, app_engine) -> None: 
 # ── A32: an older row reads as false ────────────────────────────────────────
 
 
-async def test_a_server_with_no_key_reads_false(ns) -> None:
+async def test_a_server_with_no_key_reads_false(ns) -> None:  # noqa: F811
     """A row that the IN-4 writer stored before H-300 has no key."""
     from acb_common.db import tenant_session
     from gateway.connections import mcp, store
@@ -151,7 +151,7 @@ async def test_a_server_with_no_key_reads_false(ns) -> None:
     assert (await _listed(_user(ADMIN_A, ns.org_a), name))["always_confirm"] is False
 
 
-async def test_a_legacy_row_moves_with_the_switch_off(ns) -> None:
+async def test_a_legacy_row_moves_with_the_switch_off(ns) -> None:  # noqa: F811
     name = _name("legacy")
     _seed_legacy(ns, ns.org_a, name)
     listed = await _listed(_user(ADMIN_A, ns.org_a), name)
@@ -162,7 +162,7 @@ async def test_a_legacy_row_moves_with_the_switch_off(ns) -> None:
 # ── A33: the PATCH ──────────────────────────────────────────────────────────
 
 
-async def test_the_patch_flips_the_switch_keeps_the_headers_and_audits(ns, audit) -> None:
+async def test_the_patch_flips_the_switch_keeps_the_headers_and_audits(ns, audit) -> None:  # noqa: F811
     user = _user(ADMIN_A, ns.org_a)
     name = _name("flip")
     await _post(user, name)
@@ -194,7 +194,7 @@ async def test_the_patch_flips_the_switch_keeps_the_headers_and_audits(ns, audit
     assert SENTINEL not in repr(audit)
 
 
-async def test_the_patch_flips_a_disabled_server_too(ns) -> None:
+async def test_the_patch_flips_a_disabled_server_too(ns) -> None:  # noqa: F811
     user = _user(ADMIN_A, ns.org_a)
     name = _name("disabled")
     await _post(user, name, enabled=False)
@@ -204,7 +204,7 @@ async def test_the_patch_flips_a_disabled_server_too(ns) -> None:
     assert _meta(ns, ns.org_a, name)["always_confirm"] is False
 
 
-async def test_a_member_without_manage_gets_403(ns, audit) -> None:
+async def test_a_member_without_manage_gets_403(ns, audit) -> None:  # noqa: F811
     from acb_auth import UserContext, UserRole, build_access
 
     name = _name("perm")
@@ -220,7 +220,7 @@ async def test_a_member_without_manage_gets_403(ns, audit) -> None:
     assert audit == []
 
 
-async def test_org_b_cannot_flip_org_a_server(ns, audit) -> None:
+async def test_org_b_cannot_flip_org_a_server(ns, audit) -> None:  # noqa: F811
     name_a, name_b = _name("a"), _name("b")
     await _post(_user(ADMIN_A, ns.org_a), name_a)
     await _post(_user(ADMIN_B, ns.org_b), name_b)
@@ -241,7 +241,7 @@ async def test_org_b_cannot_flip_org_a_server(ns, audit) -> None:
     assert _meta(ns, ns.org_a, name_a)["always_confirm"] is True
 
 
-async def test_the_store_predicate_holds_on_a_session_that_bypasses_rls(ns) -> None:
+async def test_the_store_predicate_holds_on_a_session_that_bypasses_rls(ns) -> None:  # noqa: F811
     """Two orgs hold one name. On a session with RLS off (the admin is a
     superuser), only the org predicate of the statement can keep the change
     in one org."""
@@ -261,7 +261,7 @@ async def test_the_store_predicate_holds_on_a_session_that_bypasses_rls(ns) -> N
         "the change reached the other org's row of the same name")
 
 
-async def test_the_patch_refuses_a_body_with_no_flag(ns) -> None:
+async def test_the_patch_refuses_a_body_with_no_flag(ns) -> None:  # noqa: F811
     user = _user(ADMIN_A, ns.org_a)
     name = _name("body")
     await _post(user, name)
@@ -274,7 +274,7 @@ async def test_the_patch_refuses_a_body_with_no_flag(ns) -> None:
 # ── A34: the reads return the flag, and no secret ───────────────────────────
 
 
-async def test_the_reads_return_the_flag_and_no_header_value(ns, caplog) -> None:
+async def test_the_reads_return_the_flag_and_no_header_value(ns, caplog) -> None:  # noqa: F811
     user = _user(ADMIN_A, ns.org_a)
     name = _name("read")
     bodies: list[str] = []
@@ -295,7 +295,7 @@ async def test_the_reads_return_the_flag_and_no_header_value(ns, caplog) -> None
     assert SENTINEL not in everything and "sentinel-h300" not in everything
 
 
-async def test_a_run_carries_the_flag_of_each_server(ns, monkeypatch) -> None:
+async def test_a_run_carries_the_flag_of_each_server(ns, monkeypatch) -> None:  # noqa: F811
     """The real reader, the real injection: each attached tool carries the
     flag of its own row."""
     from orchestrator import _maf_mcp
