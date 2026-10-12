@@ -1418,10 +1418,19 @@ The first kind is a **free column**, which the fixed map never writes:
 | deal | `lost_note` | TEXT |
 
 The second kind is a **fixed column that the org leaves empty**. The fixed map
-fills each one from one standard Zoho field, shown in brackets. A rule may
-target such a column in two cases only. The org's latest profile has no row
-for that standard field in `crm_field_defs`. Or the row has `visible = false`.
-While that rule is approved, the rule's value wins on that column.
+fills each one from one standard Zoho field, shown in brackets. Zoho does not
+let an org delete a standard field. An org that does not use one takes it off
+every layout, so no user can fill it in.
+
+- Discovery already reads the layouts of the four known modules. It stores
+  `layout_fields` in the profile: for each entity, the field API names that
+  are on at least one active layout.
+- A rule may target a fixed column only when the column's standard field is
+  not in `layout_fields`. `crm_field_defs` cannot answer this, because
+  `map_field_def` writes no row for a standard field.
+- The rule fills the column only where the fixed map gives NULL. So a rule
+  never overwrites a value that came from the standard field, and no old value
+  is lost.
 
 | Entity | Column (standard Zoho field) | Type |
 |---|---|---|
@@ -1434,7 +1443,7 @@ While that rule is approved, the rule's value wins on that column.
 | lead | `annual_revenue` (Annual_Revenue) | NUMERIC |
 | deal | `next_step` (Next_Step), `description` (Description) | TEXT |
 | deal | `expected_close_date` (Closing_Date) | DATE |
-| deal | `probability` (Probability) | INT |
+| deal | `probability` (Probability) | SMALLINT, coerced with `integer(value, _SMALLINT_CEILING)` |
 
 A rule is legal only when the `field_type` agrees with the column type:
 
@@ -1446,8 +1455,7 @@ A rule is legal only when the `field_type` agrees with the column type:
 | `datetime` | TIMESTAMPTZ |
 | `multiselect`, `lookup` | None. A rule cannot target a column |
 
-The routes refuse any other rule with 422. So a rule never overwrites a value
-that the fixed map takes from a field that the org uses.
+The routes refuse any other rule with 422.
 
 **The Field map card.** It is in CRM settings, for an admin, in Mirror mode
 only.
@@ -1465,13 +1473,15 @@ only.
   The value also stays in `custom`, so a later reject loses nothing.
 - The routes write no CRM record. Approve and reject only set `status`.
 - The next sync run, in `gateway/crm_sync/`, does the backfill before it reads
-  Zoho. It copies `custom ->> field_api_name` into the column for the existing
-  rows, in batches of 500. It reads no Zoho data, so it costs no credit.
-- After a reject of an approved rule, the next run sets the column back to NULL
-  on the mirrored rows.
-- Both writes go through a new door, `apply_field_rule_from_source`, in
-  `routes/crm/core.py`. Its name joins `NAMES` in
-  `tests/unit/test_crm_upsert_from_source_fence.py`.
+  Zoho. It copies `custom ->> field_api_name` into the column, only on the
+  mirrored rows where the column is NULL, in batches of 500. It reads no Zoho
+  data, so it costs no credit. The backfill goes through a new door,
+  `apply_field_rule_from_source`, in `routes/crm/core.py`. Its name joins
+  `NAMES` in `tests/unit/test_crm_upsert_from_source_fence.py`.
+- After a reject of an approved rule, or when a rule goes `stale`, the next run
+  reads that entity in full once, as CRM-Q5 does for an old lead cursor. Each
+  row then gets the fixed map's value again. A full read costs about 1 credit
+  for each 200 records.
 - `map_record` and the backfill coerce each value with the helpers of
   `mapping.py`: `text_value`, `number`, `integer`, `day` and `instant`. A value
   that does not coerce writes NULL.
@@ -1482,7 +1492,7 @@ new profile version. A rule goes `stale` in three cases:
 - its field is gone.
 - the new `field_type` disagrees with the target.
 - its target is a fixed column, and the standard field of that column is back
-  and visible.
+  in `layout_fields`.
 
 The sync stops applying a stale rule. The Field map shows it, and an admin
 decides again.
@@ -1492,15 +1502,18 @@ decides again.
 1. An approved rule makes the next sync write the column.
 2. The next run after the approval backfills the existing rows, with no Zoho
    call. A value that does not coerce gives NULL, and the run still succeeds.
-3. A rule on a fixed column whose standard field the org uses gives 422. A type
-   mismatch gives 422. A rule on the same column, with the standard field gone
-   from the profile, is legal.
+3. A rule on a fixed column whose standard field is in `layout_fields` gives
+   422. A type mismatch gives 422. A rule on the same column, with the standard
+   field off every layout, is legal.
 4. A member who is not an admin gets 403.
 5. Org B sees none of org A's rules.
 6. A type change in the profile makes the rule `stale`, and the sync stops
    applying it.
 7. Two syncs of the same data give the same rows.
-8. A reject clears the column and keeps the value in `custom`.
+8. A record whose standard field holds a value keeps that value. The rule
+   fills only the NULL rows.
+9. A reject makes the next run read the entity in full once. Each row then
+   holds the fixed map's value again, and the value stays in `custom`.
 
 #### CRM-Q7b: the proposer
 
