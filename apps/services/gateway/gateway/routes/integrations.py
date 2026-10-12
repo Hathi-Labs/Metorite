@@ -1813,7 +1813,7 @@ def mcp_out(server: Any) -> dict[str, Any]:
         "name": server.name, "label": server.label, "description": server.description,
         "transport": server.transport, "command": None, "url": server.url,
         "env_var_names": [], "header_names": list(server.header_names),
-        "agent_scope": list(server.agent_scope) or ["*"], "enabled": server.enabled,
+        "agent_scope": list(server.agent_scope), "enabled": server.enabled,
         "created_at": str(server.created_at) if server.created_at else None,
         "updated_at": str(server.updated_at) if server.updated_at else None,
     }
@@ -1907,7 +1907,7 @@ async def register_mcp_server(
             org, name=req.name, url=req.url or "", headers=req.headers,
             connected_by=user.email, label=req.label or req.name,
             description=req.description, transport=req.transport,
-            agent_scope=req.agent_scope or ["*"], enabled=req.enabled,
+            agent_scope=req.agent_scope, enabled=req.enabled,
         )
         _log.info("mcp.registered", name=req.name, actor=user.email)
         return {"ok": True, "name": req.name}

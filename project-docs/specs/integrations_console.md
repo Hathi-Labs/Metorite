@@ -288,7 +288,8 @@ uv run pytest tests/unit/test_integrations_env_hardening.py \
   tests/unit/test_integration_env_scoping.py \
   tests/unit/test_org_access_credentials.py \
   tests/unit/test_integrations_in0.py \
-  tests/unit/test_integrations_mcp_tenant_r8.py \n  tests/unit/test_mcp_registry_r8.py
+  tests/unit/test_integrations_mcp_tenant_r8.py \
+  tests/unit/test_mcp_registry_r8.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/missingIntegrations.test.ts src/app/integrations
 ```
 

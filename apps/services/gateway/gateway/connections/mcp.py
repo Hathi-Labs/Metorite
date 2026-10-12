@@ -114,10 +114,16 @@ def _str_map(raw: Any) -> dict[str, str]:
 
 
 def _scope(raw: Any) -> tuple[str, ...]:
+    """The agent scope. A missing value is ``*``, the old column default.
+
+    ⚠️ An EMPTY list stays empty, and it gives the server to no agent, as
+    ``_tool_injection._in_scope`` decided before IN-4. Widening it to ``*``
+    would hand the server and its headers to every agent of the org.
+    """
     value = _json(raw)
     if isinstance(value, str):
         value = [value]
-    if not isinstance(value, list) or not value:
+    if not isinstance(value, list):
         return ("*",)
     return tuple(str(a) for a in value)
 
@@ -133,7 +139,7 @@ def _meta(
         "description": description or "",
         "transport": transport,
         "url": url,
-        "agent_scope": list(agent_scope) or ["*"],
+        "agent_scope": list(agent_scope),  # [] stays [], no agent
     }
 
 
