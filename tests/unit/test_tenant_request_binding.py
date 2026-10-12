@@ -1214,6 +1214,11 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B65 a coroutine frame": ("_agent_user", _A_AGENT, ["_f = _x.cr_frame"], {}),
     "B66 an object.__getattribute__ call": (
         "_agent_user", _A_AGENT, ["_u = object.__getattribute__(_x, 'url')"], {}),
+    # Shapes that ONE rule alone catches, so each rule has its own red case.
+    "B67 a bare lambda": ("_agent_user", _A_AGENT, ["_f = lambda: None"], {}),
+    "B68 a bare nested def": ("_agent_user", _A_AGENT, ["def _f():", "    pass"], {}),
+    "B69 a bare nested class": ("_agent_user", _A_AGENT, ["class _C:", "    pass"], {}),
+    "B70 a bare chained comparison": ("_agent_user", _A_AGENT, ["_ok = 1 < _x < 3"], {}),
 }
 
 
@@ -1246,7 +1251,7 @@ def test_the_scan_turns_red_for_each_bypass(label):
 
 
 def test_the_bypass_list_has_the_count_the_spec_names():
-    assert len(_BYPASSES) == 70
+    assert len(_BYPASSES) == 74
 
 
 # ── The runtime tripwire ─────────────────────────────────────────────────────
