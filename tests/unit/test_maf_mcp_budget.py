@@ -28,23 +28,29 @@ The end-to-end tests drive the REAL apis-config agent through the REAL
 Only the model wire is scripted. The offline tests use the REAL pinned client
 and the REAL ``MCPStreamableHTTPTool`` over an ``httpx.MockTransport``.
 
-Mutation table (written before the code. Each mutation was made by hand, and
-the named test failed):
+Mutation table. The rows M1 to M12 were written before the code, and M13 to
+M16 were added during the build. Each mutation was made by the runner script,
+and the named tests failed (measured 2026-10-12, all 16 killed). The first
+runs found two survivors, M6 and M12, and the two tests were then fixed.
 
 | # | Mutation | Test that fails |
 |---|---|---|
-| M1 | the threshold is ignored: every server keeps its full schemas | ``test_a_server_past_the_threshold_shows_only_the_loaders``, ``test_a_run_of_eight_servers_fits_the_budget`` |
-| M2 | the threshold is ignored: every server shows the loaders only | ``test_a_small_server_attaches_its_tools_directly`` |
-| M3 | the full schema leaks into the index (``parameters`` kept) | ``test_the_list_is_an_index``, ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end`` |
+| M1 | the threshold is ignored: every server keeps its full schemas | ``test_a_server_past_the_threshold_shows_only_the_loaders``, ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end`` and 10 more |
+| M2 | the threshold is ignored: every server shows the loaders only | ``test_a_small_server_attaches_its_tools_directly``, ``test_a_server_of_three_tools_still_attaches_them_directly_end_to_end``, ``test_a_run_of_eight_servers_fits_the_budget`` |
+| M3 | the list returns MAF's full entries (``parameters`` kept) | ``test_the_list_is_an_index``, ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end`` |
 | M4 | the loader marker is missing | ``test_a_loader_is_egress``, ``test_a_loader_that_no_tool_of_the_run_holds_is_refused`` |
-| M5 | the loaders carry MAF's ``_mcp_is_tool`` in place of the marker, so the gate cards them | ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end``, ``test_a_loader_passes_the_gate_with_no_card_and_is_logged`` |
+| M5 | the loaders carry MAF's ``_mcp_is_tool`` in place of the marker, so the gate cards them | ``test_a_loader_passes_the_gate_with_no_card_and_is_logged``, ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end`` |
 | M6 | the per-server budget is not enforced | ``test_a_small_server_with_large_schemas_shows_only_the_loaders`` |
-| M7 | the total budget is not enforced | ``test_a_run_of_eight_servers_fits_the_budget`` |
+| M7 | the total budget is not enforced | ``test_a_run_of_eight_servers_fits_the_budget``, ``test_the_largest_server_that_shows_full_schemas_changes_first`` |
 | M8 | the server cap is not enforced | ``test_a_ninth_server_is_left_out_in_name_order_and_logged`` |
-| M9 | a loaded tool skips its card | ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end``, ``test_a_loaded_tool_keeps_its_card_at_the_gate`` |
+| M9 | a loaded tool skips its card | ``test_a_loaded_tool_keeps_its_card_at_the_gate``, ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end`` |
 | M10 | ``always_confirm`` is ignored for a loaded tool | ``test_a_loaded_read_only_tool_of_an_always_confirm_server_waits_end_to_end`` |
 | M11 | the clash check reads ``functions`` only | ``test_a_hidden_tool_that_clashes_leaves_its_server_out`` |
-| M12 | the constructor runs with no warning filter | ``test_an_experimental_warning_set_to_error_does_not_fail_the_attach`` |
+| M12 | the constructor runs with no warning filter | ``test_an_experimental_warning_set_to_error_does_not_fail_the_attach``, ``test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end`` |
+| M13 | ``egress._from_mcp`` ignores the loader key | ``test_a_loader_is_egress`` |
+| M14 | the gate finds a loader by name, not by identity | ``test_a_loader_that_no_tool_of_the_run_holds_is_refused`` |
+| M15 | the index line escapes no character | ``test_the_index_line_escapes_control_characters_and_fits_80`` |
+| M16 | ``tool_json_schema`` prices a MAF function by its class docstring again | ``test_tool_json_schema_prices_a_maf_function_by_its_own_schema``, ``test_a_small_server_attaches_its_tools_directly`` |
 """
 from __future__ import annotations
 
