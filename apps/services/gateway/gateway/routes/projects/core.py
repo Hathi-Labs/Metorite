@@ -35,7 +35,6 @@ correct in the UI and silently empties the timeline — the CRM learned this in
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -44,7 +43,8 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from acb_auth import UserContext, require_feature_router
+from acb_auth import AgentScope, UserContext, require_feature_router
+from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
@@ -75,8 +75,9 @@ _log = get_logger("gateway.projects")
 #: The value is bounded by :data:`ACTOR_VIA_PATTERN` so a header cannot put a
 #: sentence into a JSONB column the timeline renders. An absent or malformed
 #: header binds ``""``, which stamps nothing — the human path is unchanged.
+#: The pattern lives in ``acb_auth.agent_oauth`` (WS-55 EA-3a), because branch
+#: 0 of the auth dependency checks the ``mcp:`` stamp with it. One copy.
 ACTOR_VIA: ContextVar[str] = ContextVar("projects_actor_via", default="")
-ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 
 
 async def capture_actor_via(
@@ -1135,6 +1136,55 @@ WITH RECURSIVE granted AS (
 SELECT id FROM granted
 """
 
+#: The projects an outside agent may reach (WS-55 EA-3a, external_agent_access
+#: §7.3). :func:`_narrow_for_agent` ANDs a project column into this set, over
+#: BOTH arms of :func:`task_visibility_clause`, so a task that the member sees
+#: only as its assignee is narrowed too. A sealed tree is always out, so a D63
+#: hand-over task stays hidden from an agent even when its member holds it.
+#: ``personal_owner`` and ``sealed_at`` are stamped on every node of a tree
+#: (personal.py, seal.py), so the task's own project is enough to check.
+_AGENT_PROJECTS_SQL = """
+SELECT id FROM pm_projects
+WHERE organization_id = CAST(:vis_org AS uuid)
+  AND sealed_at IS NULL"""
+
+#: Added when the connection's ``include_personal`` is false (D-EA-4).
+_AGENT_NOT_PERSONAL_SQL = """
+  AND personal_owner IS NULL"""
+
+#: Added when the connection has pins: the pinned ids in ``:vis_org`` and every
+#: project beneath them. A POSITIVE ``IN``, never ``NOT IN``, because one NULL
+#: makes ``NOT IN`` match nothing. ``:vis_pins`` binds as ``uuid[]``.
+_AGENT_PINS_SQL = """
+  AND id IN (
+    WITH RECURSIVE pinned AS (
+        SELECT pp.id FROM pm_projects pp
+        WHERE pp.organization_id = CAST(:vis_org AS uuid)
+          AND pp.id = ANY(CAST(:vis_pins AS uuid[]))
+        UNION
+        SELECT c.id FROM pm_projects c
+        JOIN pinned q ON c.parent_project_id = q.id
+        WHERE c.organization_id = CAST(:vis_org AS uuid)
+    )
+    SELECT id FROM pinned
+  )"""
+
+
+def _narrow_for_agent(clause: str, column: str, agent: AgentScope | None) -> str:
+    """*clause*, ANDed with the agent's project set when *agent* is set.
+
+    ⚠️ With ``agent`` None this returns *clause* itself, so every string is
+    byte-identical to the human path (fence: ``test_mcp_edge_authority.py``).
+    """
+    if agent is None:
+        return clause
+    projects = _AGENT_PROJECTS_SQL
+    if not agent.include_personal:
+        projects += _AGENT_NOT_PERSONAL_SQL
+    if agent.pinned_projects:
+        projects += _AGENT_PINS_SQL
+    return f"({clause} AND {column} IN ({projects}\n))"
+
 
 @dataclass(frozen=True)
 class Visibility:
@@ -1163,24 +1213,33 @@ class Visibility:
     #: a service identity that was never onboarded, and the wrong answer to give
     #: by accident, so it is stated here.
     organization_id: str | None = None
+    #: An outside agent's narrowing (WS-55 EA-3a). ``resolve_visibility``
+    #: copies ``user.agent``. ``None`` leaves every clause as it was.
+    agent: AgentScope | None = None
 
     @property
     def params(self) -> dict[str, Any]:
         # `vis_org` is bound even when unrestricted, because the unrestricted
         # clause is no longer `TRUE` — it is the tenant.
         if self.unrestricted:
-            return {"vis_org": self.organization_id}
-        return {
-            "vis_email": self.email,
-            "vis_groups": list(self.groups),
-            "vis_org": self.organization_id,
-        }
+            params: dict[str, Any] = {"vis_org": self.organization_id}
+        else:
+            params = {
+                "vis_email": self.email,
+                "vis_groups": list(self.groups),
+                "vis_org": self.organization_id,
+            }
+        if self.agent is not None and self.agent.pinned_projects:
+            params["vis_pins"] = [str(p) for p in self.agent.pinned_projects]
+        return params
 
     def project_clause(self, column: str = "id") -> str:
         """A predicate restricting ``column`` (a project id) to the visible set."""
         if self.unrestricted:
-            return f"{column} IN ({_TENANT_PROJECTS_SQL})"
-        return f"{column} IN ({_VISIBLE_PROJECTS_SQL})"
+            clause = f"{column} IN ({_TENANT_PROJECTS_SQL})"
+        else:
+            clause = f"{column} IN ({_VISIBLE_PROJECTS_SQL})"
+        return _narrow_for_agent(clause, column, self.agent)
 
 
 async def resolve_organization_id(db: Any, email: str) -> str | None:
@@ -1214,10 +1273,14 @@ async def resolve_visibility(db: Any, user: UserContext) -> Visibility:
     """
     email = actor(user).lower()
     organization_id = await resolve_organization_id(db, email)
+    # WS-55 EA-3a: an outside agent's narrowing rides on the caller. Only
+    # THIS resolver copies it; `resolve_visibility_for` resolves another
+    # person and never does.
+    agent = getattr(user, "agent", None)
     if user is not None and user.has_permission(ORG_READ):
         return Visibility(
             unrestricted=True, email="", groups=(),
-            organization_id=organization_id,
+            organization_id=organization_id, agent=agent,
         )
     rows = (await db.execute(text(_MY_GROUPS_SQL), {"email": email})).fetchall()
     return Visibility(
@@ -1225,6 +1288,7 @@ async def resolve_visibility(db: Any, user: UserContext) -> Visibility:
         email=email,
         groups=tuple(r.subject for r in rows if getattr(r, "subject", None)),
         organization_id=organization_id,
+        agent=agent,
     )
 
 
@@ -1600,14 +1664,18 @@ def task_visibility_clause(vis: Visibility, alias: str = "t") -> str:
     if vis.unrestricted:
         # `data:org:read` is the whole portfolio OF ONE ORGANIZATION. This
         # answered the literal `TRUE` before WS-29b.
-        return tenant
-    return (
-        f"({tenant}"
-        f" AND ({alias}.project_id IN ({_VISIBLE_PROJECTS_SQL})"
-        f"      OR EXISTS (SELECT 1 FROM pm_task_assignees a"
-        f"                 WHERE a.task_id = {alias}.id"
-        f"                   AND lower(a.assignee) = :vis_email)))"
-    )
+        clause = tenant
+    else:
+        clause = (
+            f"({tenant}"
+            f" AND ({alias}.project_id IN ({_VISIBLE_PROJECTS_SQL})"
+            f"      OR EXISTS (SELECT 1 FROM pm_task_assignees a"
+            f"                 WHERE a.task_id = {alias}.id"
+            f"                   AND lower(a.assignee) = :vis_email)))"
+        )
+    # WS-55 EA-3a: ONE `AND` over both arms, so the assignee arm is narrowed
+    # by the agent's pins, its personal opt-out and the seal too (§7.3).
+    return _narrow_for_agent(clause, f"{alias}.project_id", vis.agent)
 
 
 def triage_exclusion_clause(alias: str = "t") -> str:

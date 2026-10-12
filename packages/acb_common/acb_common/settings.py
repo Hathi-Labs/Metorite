@@ -1167,6 +1167,18 @@ class Settings(BaseSettings):
     # this many seconds after the code expired. A code that leaked long ago
     # then cannot end a live connection. Reader: `acb_auth.agent_tokens`.
     agent_code_replay_window_s: int = 600
+    # EA-3a, the signed request (spec §10.1). The edge signs each gateway
+    # request with an HMAC, and branch 0 of `acb_auth.deps.get_current_user`
+    # checks it. `acb_auth.agent_signing` is the one reader of the two keys.
+    # A key under 32 bytes, or equal to GATEWAY_INTERNAL_TOKEN or to
+    # LITELLM_MASTER_KEY, counts as unset. With no usable key, branch 0
+    # refuses every request. The gateway accepts the current key and the
+    # previous key, so a rotation needs no outage. The edge signs with the
+    # current key only. It calls the gateway at `agent_edge_gateway_url`.
+    # 🔴 Setting a key on a box is gate `env-write` (EA-10, HANDOFF H-301).
+    agent_edge_signing_key: str = ""
+    agent_edge_signing_key_previous: str = ""
+    agent_edge_gateway_url: str = "http://127.0.0.1:8080"
 
     # ── Token accessors ────────────────────────────────────────────────────
 
