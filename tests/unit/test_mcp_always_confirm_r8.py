@@ -241,6 +241,26 @@ async def test_org_b_cannot_flip_org_a_server(ns, audit) -> None:
     assert _meta(ns, ns.org_a, name_a)["always_confirm"] is True
 
 
+async def test_the_store_predicate_holds_on_a_session_that_bypasses_rls(ns) -> None:
+    """Two orgs hold one name. On a session with RLS off (the admin is a
+    superuser), only the org predicate of the statement can keep the change
+    in one org."""
+    from gateway.connections import mcp
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    shared = _name("shared")
+    await _post(_user(ADMIN_A, ns.org_a), shared)
+    await _post(_user(ADMIN_B, ns.org_b), shared)
+    admin_dsn = ns.admin_engine.url.render_as_string(hide_password=False)
+    async with tenant_engine_scope(admin_dsn):
+        changed = await mcp.set_always_confirm(ns.org_a, shared, False)
+    assert changed is not None and changed.always_confirm is False
+    assert _meta(ns, ns.org_a, shared)["always_confirm"] is False
+    assert _meta(ns, ns.org_b, shared)["always_confirm"] is True, (
+        "the change reached the other org's row of the same name")
+
+
 async def test_the_patch_refuses_a_body_with_no_flag(ns) -> None:
     user = _user(ADMIN_A, ns.org_a)
     name = _name("body")

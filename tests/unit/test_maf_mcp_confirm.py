@@ -88,9 +88,10 @@ Rows M36 to M38 are fenced in ``tests/unit/test_mcp_always_confirm_r8.py``.
 |---|---|---|
 | M34 | the gate ignores the flag (it passes no ``mcp_always_confirm`` fact) | ``test_a_read_only_tool_of_an_always_confirm_server_waits_for_the_card``, ``test_a_read_only_tool_of_an_always_confirm_server_waits_end_to_end`` |
 | M35 | a missing key reads as true | ``test_the_registry_reads_the_key[missing]``, ``test_a_server_with_no_key_reads_false`` (R8) |
-| M36 | the default of a new server is false | ``test_a_new_server_defaults_to_always_confirm`` (R8) |
-| M37 | the PATCH skips the role check | ``test_a_member_without_manage_gets_403`` (R8) |
-| M38 | the PATCH loses its org filter | ``test_org_b_cannot_flip_org_a_server`` (R8) |
+| M36a | the route default of a new server is false | ``test_a_new_server_defaults_to_always_confirm`` (R8) |
+| M36b | the writer default of a new server is false | ``test_a_new_server_defaults_to_always_confirm`` (R8) |
+| M37 | the PATCH skips the role check | ``test_a_member_without_manage_gets_403`` (R8), ``test_integrations_in0.py::test_a_member_without_manage_is_refused_before_the_handler`` |
+| M38 | the PATCH statement loses its org predicate | ``test_the_store_predicate_holds_on_a_session_that_bypasses_rls`` (R8) |
 """
 from __future__ import annotations
 
