@@ -1011,16 +1011,30 @@ that gap, and items 18 to 21 harden them (review of PR #888). The first producti
     declares `True`. The email chat (`routes/email/automation/chat.py`) declares `False`,
     because its stream forwards no CUSTOM event. Before this item its card waited 3600 s, and
     then the model read that the member said no. A fence fails when a new caller of
-    `run_agent_stream` does not declare `shows_cards`.
+    `run_agent_stream` does not declare `shows_cards`. `emit_generative_ui` refuses a blocking
+    card (`"hitl": true`) in the same runs, WhatsApp included. ⚠️ The switch is a ContextVar.
+    It covers the tools of a MAF agent. It does not cover a Copilot SDK tool that runs in a
+    JSON-RPC thread, because that thread reads a fresh context. Only the email chat passes
+    `False`, and it runs MAF.
 19. **Names cannot spoof the card.** The card escapes each control, format and separator
     character of the server name and the tool name, and caps each name at 64 characters. The
-    detail starts with the real hint line, and then names the server and the tool. The title
-    names the tool only.
-20. **Redaction keeps the target of a call.** A name is split on `_`, `-`, `.`, a space and
-    camelCase, and each whole part is compared. So `access_token` is hidden, and `max_tokens`
-    and `key` (as in `delete_object(bucket, key)`) stay. A value rule hides a value only when
-    the WHOLE value is a credential, so prose that holds the word "bearer" stays. A line under
-    the arguments names each hidden value, for example "2 values are hidden: password, api_key".
+    detail starts with the real hint line, and then names the server and the remote tool. The
+    title names the local tool name of MAF, in `[A-Za-z0-9_.-]` only.
+20. **Redaction keeps the target of a call, and hides each secret.** The card saves into the
+    history of the room, so a secret that it shows stays there.
+    - A name is split on `_`, `-`, `.`, a space and camelCase. A part is a secret when it is a
+      secret word (`password`, `pass`, `token`, `auth` and more), when it ENDS with `token`,
+      `password`, `passwd`, `pwd`, `secret`, `credential(s)` or `passphrase`, or when it is a
+      joined pair (`privatekey`, `accesskey`, `secretkey`, `clientsecret`, `apikey`,
+      `sessionid`, `sessionkey`). So `accesstoken` and `dbpassword` are hidden, and
+      `max_tokens` and `key` (as in `delete_object(bucket, key)`) stay.
+    - A credential INSIDE a value is hidden in place: `sk-`, Stripe `sk_`/`rk_`/`pk_live_`,
+      GitHub `ghp_` and `github_pat_`, Slack `xox`, AWS `AKIA`/`ASIA`, Google `AIza`, a JWT,
+      a PEM private key, the password of a URL or a DSN, and a `key=value` pair whose key is a
+      secret name. A bearer or basic credential is hidden only when it is the WHOLE value, so
+      prose that holds the word "bearer" stays.
+    - Lines under the arguments name each value that the card hid whole, and each value that
+      it hid in part ("1 value is partly hidden: note").
 21. **Unreadable arguments refuse.** When the gate cannot read the arguments of a call, it
     refuses the call, so the card never shows less than what runs.
 
