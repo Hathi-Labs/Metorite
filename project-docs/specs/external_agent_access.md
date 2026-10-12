@@ -2,7 +2,7 @@
 
 **Status: DECIDED (D97, 2026-10-10). Updated 2026-10-12. EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
 
-**EA-3a is BUILT, with fix round 1, and dark on the branch `feat/ws55-ea3-mcp-read-tools`. It is not merged. EA-3b is next. EA-2b, EA-3b, EA-3c and EA-4 to EA-11 are not built.**
+**EA-3a is BUILT, with fix rounds 1 and 2, and dark on the branch `feat/ws55-ea3-mcp-read-tools`. It is not merged. EA-3b is next. EA-2b, EA-3b, EA-3c and EA-4 to EA-11 are not built.**
 
 **EA-3, 2026-10-11.** The spec audit of EA-3 gave NO-GO. The engineering decisions EA3-1 to EA3-8 (§6.1) answer it. EA-3 now splits into EA-3a (the gateway) and EA-3b (the edge), with EA-3c as a later follow-up.
 
@@ -533,7 +533,11 @@ v1
 
 **Why this order.** The first draft checked the stamp last. The code checks the stamp and the two organization checks before the member resolve, because the resolve binds a tenant. So a request that fails on a stamp or an organization never binds one. A refusal after the resolve also clears the tenant it bound.
 
-**An outage is a 503.** A pool or connect timeout in the connection read (step 4) or in the member resolve (step 6) answers the 503 of `_with_resolved_access`, with `Retry-After`. It never falls through to another branch. A 401 there would make an MCP client drop a good token and sign in again. Every other failed read is a refusal.
+**An outage is a 503.** A database outage answers the 503 of `_with_resolved_access`, with `Retry-After: 2`. It never falls through to another branch, whatever bearer or `X-User-Email` the request also carries. A 401 there would make an MCP client drop a good token and sign in again.
+
+- **Step 4, the connection read.** `deps._is_database_outage` decides. It answers yes for `acb_common.db_busy.is_db_unavailable`. That covers the pooler's `EMAXCONNSESSION`, `TooManyConnectionsError`, `CannotConnectNowError` and `ConnectionDoesNotExistError`. It also covers the "connection refused" family of messages, and SQLSTATE class 08, 53300 and 57P01 to 57P03. It also answers yes for `db_busy.is_db_timeout`, a pool or connect timeout. It also answers yes for an `OSError` anywhere in the cause chain, `ConnectionRefusedError` included, because asyncpg raises the bare socket error when a connect fails. Every other failed read is a refusal, a 401.
+- **Step 6, the member resolve.** A pool or connect timeout raises `IdentityUnavailable` in `acb_auth.access`, and `_with_resolved_access` answers the 503. The identity read records any other failure in `identity_read_failed()`, the flag that `gateway.main` reads to answer 503 for an unbound tenant. When the seat check would refuse and that flag is set, branch 0 answers the 503.
+- **What stays a 401.** A failure of the role read alone, while the identity read succeeds, still degrades to no access. `acb_auth.access` keeps that rule for every caller.
 
 On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind_session_member`, because no route in `MCP_ROUTES` calls a model.
 
@@ -676,7 +680,13 @@ The EA-3 slices create four test files: `tests/unit/test_mcp_edge_protocol.py`, 
 
 **The R8 database.** Run `eval "$(bash scripts/dev_db.sh --export)"`, or export the DSN of a private container. The shared scratch database holds rows from other branches. Use one private pgvector container for each R8 run, and never run two R8 runs at once.
 
-**The new suites, with the EA-1 and EA-2a fences:**
+**The new suites of EA-3a, with the EA-1 and EA-2a fences.** Each file in this line exists after EA-3a:
+
+```
+uv run pytest tests/unit/test_mcp_edge_signing.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_authority.py tests/unit/test_agent_oauth_server.py tests/unit/test_agent_connection_tokens.py -v -rs
+```
+
+**The same line after EA-3b.** EA-3b creates `test_mcp_edge_protocol.py`, so this line adds it:
 
 ```
 uv run pytest tests/unit/test_mcp_edge_protocol.py tests/unit/test_mcp_edge_signing.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_authority.py tests/unit/test_agent_oauth_server.py tests/unit/test_agent_connection_tokens.py -v -rs
@@ -692,12 +702,14 @@ uv run pytest tests/unit/test_default_deny_auth.py tests/unit/test_service_ident
 
 ```
 uv run ruff check apps/services/agent_edge packages/acb_auth packages/acb_common apps/services/gateway/gateway/routes/projects/core.py tests/unit/test_mcp_edge_*.py
-uv run mypy apps/services/agent_edge packages/acb_auth/acb_auth/agent_signing.py
+uv run mypy --ignore-missing-imports apps/services/agent_edge packages/acb_auth/acb_auth/agent_signing.py
 ```
+
+The mypy line needs `--ignore-missing-imports`, as `deploy.yml` does. The workspace packages ship no `py.typed` marker, so mypy refuses to read `acb_common` and `acb_auth` without the flag.
 
 **Conformance.** Run `npx @modelcontextprotocol/inspector` against the edge.
 
-Every file in the two pytest lines existed on 2026-10-11, except the four new ones. With `-rs`, a skipped R8 test shows its reason. A skip is not a pass. Name the files you mean when you run pytest. Do not run `tests/unit/` as a directory.
+Every file in these pytest lines existed on 2026-10-11, except the four new ones. With `-rs`, a skipped R8 test shows its reason. A skip is not a pass. Name the files you mean when you run pytest. Do not run `tests/unit/` as a directory.
 
 ### 15.2 EA-3 acceptance (EA3-8)
 
@@ -795,8 +807,14 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The Settings.** `agent_edge_signing_key`, `agent_edge_signing_key_previous` and `agent_edge_gateway_url`.
   - **The fences.** `tests/unit/test_mcp_edge_signing.py` holds D1, D2 and the gateway half of D14. `tests/unit/test_mcp_edge_authority.py` holds D3 and D4, and it holds D14 on a real database as a non-privileged role. `tests/unit/test_mcp_edge_coverage.py` holds rules 1 and 2 of §9.5. EA-3b adds rules 3 and 4.
 - 2026-10-12 — Fix round 1 of EA-3a, after the independent verification and an adversarial review.
-  - **Stand-ins.** The Projects clauses read `agent` with `getattr`, so a Visibility-like stand-in with no `agent` field gives the old string. Two older unit tests pass such a stand-in.
+  - **Stand-ins.** The Projects clauses read `agent` with `getattr`, so a Visibility-like stand-in with no `agent` field gives the old string. Two older unit tests pass such a stand-in. Fix round 2 reversed this.
   - **The row's organization.** `read_live_connection` now returns the organization of the ROW, not its argument, so the comparison in branch 0 can refuse. An R8 test removes the read's predicate and runs as a role that bypasses RLS, and branch 0 still refuses.
-  - **An outage is a 503.** A pool or connect timeout in the connection read answers the same 503 as the member resolve, with `Retry-After`. Every other failed read stays a refusal.
+  - **An outage is a 503.** A pool or connect timeout in the connection read answers the same 503 as the member resolve, with `Retry-After`. Every other failed read stays a refusal. Fix round 2 widened this to every database outage.
   - **The query.** Branch 0 refuses a repeated query key and a query that is not strict ASCII and UTF-8 (§10.1). The header checks use `fullmatch`, so a trailing newline never passes.
-  - **The fence scan.** The source scan of branch 0 follows aliases, keywords, bytes, built strings and every function that receives the request. Fourteen bypasses each turn it red.
+  - **The fence scan.** The source scan of branch 0 follows aliases, keywords, bytes, built strings and every function that receives the request. Fourteen bypasses each turn it red. The review of fix round 2 found that this claim was too wide: the scan read only plain assignments, so other static shapes passed it.
+- 2026-10-12 — Fix round 2 of EA-3a, after a second adversarial review and a second verification.
+  - **Every database outage is the 503.** Round 1 mapped only a timeout. The pooler's `EMAXCONNSESSION`, the other refused connects and a bare socket error now answer the 503 in the connection read. A failed identity read answers the 503 at the seat check. §10.1 names each error.
+  - **The static scan is inverted.** It flags every use of the name `request` in the branch-0 functions, except a short list of exact shapes. 33 bypass shapes each give a finding on the line they add. The scan cannot see dynamic access such as `eval`.
+  - **A runtime tripwire.** Every branch-0 test in `test_mcp_edge_signing.py` runs a second time on a wrapped request. Any read outside the allowlist raises: `url`, `client`, a header or scope key outside the list, and the whole-scope or whole-header walks. It proves nothing about a path that no test runs.
+  - **Strict `agent`.** The Projects clauses read `vis.agent` again, so an object with no `agent` field raises and never reads as "no narrowing". The two older stand-ins carry `agent=None`.
+  - **Other fixes.** `agent_oauth.py` checks each shape with `fullmatch`. §15.1 splits the pytest line, because `test_mcp_edge_protocol.py` arrives with EA-3b, and the mypy line takes `--ignore-missing-imports`. An R8 test isolates the row's organization check.

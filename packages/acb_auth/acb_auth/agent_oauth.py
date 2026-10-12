@@ -77,7 +77,7 @@ def parse_scope(value: str | None) -> tuple[str, ...]:
     for token in tokens:
         if token == "":
             continue
-        if not _SCOPE_TOKEN.match(token):
+        if not _SCOPE_TOKEN.fullmatch(token):
             raise ValueError("scope holds a bad token")
         named.add(token)
     return tuple(s for s in SUPPORTED_SCOPES if s in named)
@@ -134,11 +134,11 @@ S256 = "S256"
 
 
 def is_valid_challenge(challenge: str | None) -> bool:
-    return bool(challenge) and bool(_CHALLENGE.match(challenge or ""))
+    return bool(challenge) and bool(_CHALLENGE.fullmatch(challenge or ""))
 
 
 def is_valid_verifier(verifier: str | None) -> bool:
-    return bool(verifier) and bool(_VERIFIER.match(verifier or ""))
+    return bool(verifier) and bool(_VERIFIER.fullmatch(verifier or ""))
 
 
 def s256(verifier: str) -> str:
@@ -254,7 +254,7 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
     except ValueError:
         return False
     scheme = parts.scheme
-    if not _SCHEME.match(scheme) or scheme in _FORBIDDEN_SCHEMES:
+    if not _SCHEME.fullmatch(scheme) or scheme in _FORBIDDEN_SCHEMES:
         return False
     if "#" in uri or parts.username is not None or parts.password is not None:
         return False
@@ -318,7 +318,7 @@ def actor_via_for(client_origin: str | None) -> str:
     except ValueError:
         host = ""
     stamp = f"mcp:{host}"
-    if host and host.isascii() and ACTOR_VIA_PATTERN.match(stamp):
+    if host and host.isascii() and ACTOR_VIA_PATTERN.fullmatch(stamp):
         return stamp
     return "mcp:" + hashlib.sha256(origin.encode("utf-8")).hexdigest()[:16]
 

@@ -196,18 +196,28 @@ class TestTheHumanPathIsByteIdentical:
         assert Visibility(unrestricted=False, email="", groups=()).agent is None
 
     @pytest.mark.parametrize("unrestricted", [False, True])
-    def test_a_stand_in_with_no_agent_attribute_gives_the_old_sql(self, unrestricted):
-        """Callers and tests hand the seam a Visibility-like stand-in with no
-        ``agent`` field (``test_projects_analytics_throughput.py``,
-        ``test_subtasks_s5.py``). It must give the old string, not raise."""
+    def test_a_stand_in_with_no_agent_attribute_fails_closed(self, unrestricted):
+        """A Visibility-like object with no ``agent`` field RAISES. It never
+        reads as "no narrowing", so a future duck-typed scope cannot drop the
+        agent narrowing by leaving the field out. The two older stand-ins
+        (``test_projects_analytics_throughput.py``, ``test_subtasks_s5.py``)
+        carry ``agent=None`` for that reason."""
         stand_in = SimpleNamespace(
             unrestricted=unrestricted, email="dev@golden.test",
             groups=("group:ops",), organization_id=GOLDEN_ORG)
+        with pytest.raises(AttributeError):
+            task_visibility_clause(stand_in)
+        with pytest.raises(AttributeError):
+            Visibility.project_clause(stand_in)
+
+    @pytest.mark.parametrize("unrestricted", [False, True])
+    def test_a_stand_in_with_agent_none_gives_the_old_sql(self, unrestricted):
+        stand_in = SimpleNamespace(
+            unrestricted=unrestricted, email="dev@golden.test",
+            groups=("group:ops",), organization_id=GOLDEN_ORG, agent=None)
         kind = "unrestricted" if unrestricted else "restricted"
         assert task_visibility_clause(stand_in) == GOLDEN[
             f"task_visibility_clause({kind})"][0]
-        assert task_visibility_clause(stand_in, "x") == GOLDEN[
-            f"task_visibility_clause({kind}, 'x')"][0]
         assert Visibility.project_clause(stand_in) == GOLDEN[
             f"{kind}.project_clause()"][0]
 
@@ -308,6 +318,7 @@ MEMBER = "agent-member@mcpauth.test"
 READER = "org-reader@mcpauth.test"
 OTHER = "someone-else@mcpauth.test"
 B_MEMBER = "b-member@mcpauth.test"
+MOVER = "mover@mcpauth.test"
 OWNER = "owner@mcpauth.test"
 ORIGIN = "https://client.example"
 VIA = "mcp:client.example"
@@ -509,6 +520,9 @@ def world():
     w.c["b"] = b.connection(MEMBER)
     b.member(B_MEMBER, ["feature:projects"])
     w.c["b_member"] = b.connection(B_MEMBER)
+    # A member of org A whose connection row still says org B (S4).
+    a.member(MOVER, ["feature:projects"])
+    w.c["mover_row_b"] = b.connection(MOVER)
     w.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
@@ -848,5 +862,21 @@ class TestTheRowOrganizationIsTheOneThatCounts:
         assert ok.json()["email"] == B_MEMBER
         # Signed as org A: the row and the member both say org B.
         r = await _agent(armed, armed.c["b_member"], "/auth/me",
+                         org=armed.org_a, dsn=armed.admin_dsn)
+        assert r.status_code == 401, r.text
+
+    async def test_only_the_row_org_compare_refuses_a_member_who_moved(self, armed, monkeypatch):
+        """Fix round 2, S4. The member HAS moved into org A, the signed org.
+        The connection ROW still says org B. Under the lenient read as the
+        superuser, the seat check would pass (member org A == signed org A),
+        so the ONE check left to refuse is the row's organization against the
+        signed one. Reverting the read to report its argument turns this red."""
+        self._lenient(monkeypatch)
+        async with tenant_engine_scope(armed.admin_dsn):
+            found = await agent_tokens.read_live_connection(
+                armed.org_a, armed.c["mover_row_b"])
+        assert found is not None and found.organization_id == armed.org_b
+        assert found.member_email == MOVER
+        r = await _agent(armed, armed.c["mover_row_b"], "/auth/me",
                          org=armed.org_a, dsn=armed.admin_dsn)
         assert r.status_code == 401, r.text

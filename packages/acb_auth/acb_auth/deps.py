@@ -79,7 +79,7 @@ import secrets
 from collections.abc import Collection
 from typing import Annotated
 
-from acb_common import bind_run_context, get_logger
+from acb_common import bind_run_context, db_busy, get_logger
 from acb_common.db import bind_tenant, clear_tenant
 from fastapi import Depends, Header, HTTPException, Request
 
@@ -87,8 +87,8 @@ from acb_auth import agent_oauth, agent_signing, agent_tokens
 from acb_auth.access import (
     SERVICE_ACCESS,
     IdentityUnavailable,
-    _raise_if_pool_timeout,
     identity_cutover_enabled,
+    identity_read_failed,
     resolve_access,
     resolve_identity,
 )
@@ -538,23 +538,48 @@ async def _read_connection(
 ) -> agent_tokens.LiveConnection | None:
     """Step 4 of branch 0: the live connection in the SIGNED organization.
 
-    ``None`` for no live connection and for any failed read, which is a
-    refusal. A pool or connect timeout raises the ONE 503 instead.
+    ``None`` for no live connection and for any other failed read, which is
+    a refusal. A database outage (:func:`_is_database_outage`) raises the ONE
+    503 of :func:`_identity_unavailable` instead.
     """
     try:
         return await agent_tokens.read_live_connection(
             organization_id, connection_id,
         )
     except Exception as exc:
-        # A pool or connect timeout is an outage: the ONE 503, never a 401.
-        # The access module decides what a timeout is.
-        try:
-            _raise_if_pool_timeout(exc, "agent_connection")
-        except IdentityUnavailable as unavailable:
-            raise _identity_unavailable() from unavailable
+        if _is_database_outage(exc):
+            db_busy.mark()
+            _log.warning("auth.agent_connection_db_unavailable",
+                         error=type(exc).__name__)
+            raise _identity_unavailable() from exc
         # Any other failed read is a refusal, not a 500. Ids only in the log.
         _log.exception("auth.agent_connection_read_failed")
         return None
+
+
+def _is_database_outage(exc: BaseException) -> bool:
+    """True when *exc*, from a block that does only database I/O, means the
+    database could not be reached.
+
+    The two classifiers of ``acb_common.db_busy`` decide first:
+    ``is_db_unavailable`` (the pooler's EMAXCONNSESSION, TooManyConnections,
+    CannotConnectNow, ConnectionDoesNotExist, "connection refused", SQLSTATE
+    08 and 57P0x) and ``is_db_timeout`` (a pool or connect timeout). Then an
+    ``OSError`` anywhere in the cause chain, ``ConnectionRefusedError``
+    included: asyncpg raises the socket error bare when a connect fails, and
+    the read that raised it does nothing but database I/O.
+    """
+    if db_busy.is_db_unavailable(exc) or db_busy.is_db_timeout(exc):
+        return True
+    seen: set[int] = set()
+    cause: BaseException | None = exc
+    while cause is not None and id(cause) not in seen and len(seen) < 8:
+        seen.add(id(cause))
+        if isinstance(cause, OSError):
+            return True
+        orig = getattr(cause, "orig", None)
+        cause = orig if isinstance(orig, BaseException) else cause.__cause__
+    return False
 
 
 async def _agent_user(request: Request) -> UserContext:
@@ -569,11 +594,19 @@ async def _agent_user(request: Request) -> UserContext:
     both organization checks run BEFORE the member resolve, so a refused
     request never binds a tenant.
 
-    ⚠️ A pool or connect timeout is an outage, not a refusal. In the
-    connection read and in the member's resolve it answers the ONE 503 of
-    :func:`_identity_unavailable`, with ``Retry-After``, and it never falls
-    through to another branch. A 401 there would make an MCP client drop a
-    good token and sign in again. Every other failed read is a refusal.
+    ⚠️ A database outage is not a refusal. It answers the ONE 503 of
+    :func:`_identity_unavailable`, with ``Retry-After: 2``, and it never
+    falls through to another branch. A 401 there would make an MCP client
+    drop a good token and sign in again.
+
+    * Step 4, the connection read: :func:`_is_database_outage`. Every other
+      failed read is a refusal.
+    * Step 6, the member resolve: a pool or connect timeout raises in
+      ``acb_auth.access`` (:class:`IdentityUnavailable`). Any other failed
+      identity read is recorded by ``access.identity_read_failed()``, the
+      same flag ``gateway.main`` reads to answer 503 for an unbound tenant.
+      When the seat check would refuse and that flag is set, branch 0
+      answers the 503, not the 401.
     """
     # 1. The flag is on, and a usable key is set.
     if not agent_oauth.enabled():
@@ -610,7 +643,7 @@ async def _agent_user(request: Request) -> UserContext:
     if connection.organization_id != organization_id:
         return _refuse_agent("connection_org", **ids)
 
-    # 7 (checked before the resolve, so a bad stamp binds no tenant). The stamp
+    # 5. Checked before the resolve, so a bad stamp binds no tenant. The stamp
     # is the one the connection's origin gives, and it has the stamp's shape.
     expected_via = agent_oauth.actor_via_for(connection.client_origin)
     if (
@@ -620,12 +653,12 @@ async def _agent_user(request: Request) -> UserContext:
     ):
         return _refuse_agent("actor_via", **ids)
 
-    # 5. The member from the ROW, never from a header. Resolved as a request.
+    # 6. The member from the ROW, never from a header. Resolved as a request.
     resolved = await _with_resolved_access(
         UserContext(email=connection.member_email, role=UserRole.EMPLOYEE)
     )
 
-    # 6. The seat: the member's organization is the signed one, and active.
+    # 7. The seat: the member's organization is the row's, and active.
     if (
         resolved.organization_id != connection.organization_id
         or not resolved.access.is_active
@@ -633,6 +666,10 @@ async def _agent_user(request: Request) -> UserContext:
         # `_with_resolved_access` may have bound the member's tenant. A refused
         # request keeps none.
         clear_tenant()
+        if identity_read_failed():
+            # The directory refused the read: an outage, not "no seat".
+            db_busy.mark()
+            raise _identity_unavailable()
         return _refuse_agent("seat", **ids)
 
     # Attach the scope LAST. No `_bind_session_member`: no route in

@@ -47,6 +47,8 @@ from acb_common import get_settings
 from acb_common.db import current_tenant
 from fastapi import Depends, FastAPI
 
+from tests.unit import _branch_zero_tripwire as tripwire
+
 _ROOT = Path(__file__).resolve().parents[2]
 
 KEY = "current-signing-key-" + "c" * 24
@@ -103,9 +105,15 @@ class _World:
         return ("uid-" + (email or ""), org) if org else (None, None)
 
 
-@pytest.fixture
-def world(monkeypatch) -> _World:
+@pytest.fixture(params=["plain", "tripwire"])
+def world(request, monkeypatch) -> _World:
+    """Every test that uses the stand-in gateway runs twice. The second run
+    arms the runtime tripwire (``tests/unit/_branch_zero_tripwire.py``), so a
+    host-derived read on ANY exercised branch-0 path fails the test, whatever
+    its static shape."""
     w = _World()
+    w.tripwire = request.param == "tripwire"
+    w.wrapped = tripwire.arm(monkeypatch, deps) if w.tripwire else []
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_access_enabled", True)
     monkeypatch.setattr(settings, "agent_edge_signing_key", KEY)
@@ -699,3 +707,124 @@ async def test_any_other_failed_read_stays_a_refusal(world, monkeypatch):
 
     monkeypatch.setattr(agent_tokens, "read_live_connection", _broken)
     assert (await _get(TASK)).status_code == 401
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix round 2: what branch 0 reads, and every database outage is the 503
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_the_success_path_reads_exactly_the_allowed_scope_keys(world, monkeypatch):
+    """The tripwire's scope allowlist is EXACTLY what branch 0 reads."""
+    seen = world.wrapped if world.tripwire else tripwire.arm(monkeypatch, deps)
+    assert (await _get(TASK, "q=x")).status_code == 200
+    scope_keys = {k for w in seen for k in w.reads["scope"]}
+    header_names = {h for w in seen for h in w.reads["headers"]}
+    assert scope_keys == tripwire.ALLOWED_SCOPE_KEYS
+    assert header_names <= tripwire.ALLOWED_HEADERS
+    assert {"x-agent-connection", "x-agent-timestamp", "x-agent-signature",
+            "x-actor-via"} <= header_names
+
+
+REFUSAL = (
+    "(EMAXCONNSESSION) max clients reached in session mode - max clients are"
+    " limited to pool_size: 15"
+)
+
+
+def _wrapped(orig: BaseException) -> Exception:
+    """What SQLAlchemy raises around a driver error."""
+    import sqlalchemy.exc as sa_exc
+
+    return sa_exc.DBAPIError.instance(
+        "SELECT 1", {}, orig, Exception, connection_invalidated=False)
+
+
+def _outages() -> dict[str, BaseException]:
+    import asyncpg
+
+    errors = asyncpg.exceptions
+    return {
+        "EMAXCONNSESSION bare": errors.InternalServerError(REFUSAL),
+        "EMAXCONNSESSION wrapped": _wrapped(errors.InternalServerError(REFUSAL)),
+        "TooManyConnectionsError": errors.TooManyConnectionsError("sorry"),
+        "CannotConnectNowError": errors.CannotConnectNowError(
+            "the database system is starting up"),
+        "ConnectionDoesNotExistError": errors.ConnectionDoesNotExistError(
+            "connection was closed in the middle of operation"),
+        "ConnectionRefusedError": ConnectionRefusedError(111, "Connection refused"),
+        "OSError": OSError(113, "No route to host"),
+        "pool timeout": _pool_timeout(),
+    }
+
+
+@pytest.mark.parametrize("label", sorted(_outages()))
+async def test_a_database_outage_in_the_connection_read_is_the_one_503(world, monkeypatch, label):
+    error = _outages()[label]
+
+    async def _down(org, conn):
+        raise error
+
+    monkeypatch.setattr(agent_tokens, "read_live_connection", _down)
+    for extra in ({}, {"Authorization": f"Bearer {INTERNAL}", "X-User-Email": MEMBER}):
+        r = await _get(TASK, extra=extra)
+        assert r.status_code == 503, (label, extra, r.text)
+        assert r.headers["retry-after"] == "2"
+        assert r.json()["detail"] == deps.IDENTITY_UNAVAILABLE_DETAIL
+
+
+@pytest.mark.parametrize("error", [ValueError("bad"), RuntimeError("bug"),
+                                   KeyError("member_email")])
+async def test_a_failed_read_that_is_not_an_outage_stays_a_refusal(world, monkeypatch, error):
+    async def _broken(org, conn):
+        raise error
+
+    monkeypatch.setattr(agent_tokens, "read_live_connection", _broken)
+    for extra in ({}, {"Authorization": f"Bearer {INTERNAL}", "X-User-Email": MEMBER}):
+        assert (await _get(TASK, extra=extra)).status_code == 401
+
+
+@pytest.mark.parametrize("label", ["EMAXCONNSESSION wrapped", "TooManyConnectionsError",
+                                   "ConnectionRefusedError", "pool timeout"])
+async def test_a_database_outage_in_the_member_resolve_is_the_one_503(world, monkeypatch, label):
+    """Step 6 runs the REAL resolvers of ``acb_auth.access``. The database
+    refuses them both. The identity read records the failure
+    (``identity_read_failed``), and branch 0 answers the 503, not "no seat"."""
+    from acb_auth import access
+
+    error = _outages()[label]
+
+    def _refusing_factory():
+        def _session():
+            raise error
+        return _session
+
+    access.invalidate()
+    monkeypatch.setattr(access, "_get_session_factory", _refusing_factory)
+    monkeypatch.setattr(deps, "resolve_access", access.resolve_access)
+    monkeypatch.setattr(deps, "resolve_identity", access.resolve_identity)
+    try:
+        for extra in ({}, {"Authorization": f"Bearer {INTERNAL}", "X-User-Email": MEMBER}):
+            r = await _get(TASK, extra=extra)
+            assert r.status_code == 503, (label, extra, r.text)
+            assert r.headers["retry-after"] == "2"
+    finally:
+        access.invalidate()
+
+
+def test_the_oauth_shape_checks_refuse_a_trailing_newline():
+    """``$`` matches before a trailing newline, so each shape check in
+    ``agent_oauth`` uses ``fullmatch``."""
+    verifier = "v" * 43
+    challenge = agent_oauth.s256(verifier)
+    assert agent_oauth.is_valid_challenge(challenge)
+    assert not agent_oauth.is_valid_challenge(challenge + "\n")
+    assert agent_oauth.is_valid_verifier(verifier)
+    assert not agent_oauth.is_valid_verifier(verifier + "\n")
+    assert agent_oauth.parse_scope("projects:read") == ("projects:read",)
+    with pytest.raises(ValueError):
+        agent_oauth.parse_scope("projects:read\n")
+    assert agent_oauth._SCHEME.fullmatch("https")
+    assert not agent_oauth._SCHEME.fullmatch("https\n")
+    assert agent_oauth.ACTOR_VIA_PATTERN.fullmatch("mcp:client.example")
+    assert not agent_oauth.ACTOR_VIA_PATTERN.fullmatch("mcp:client.example\n")
