@@ -68,6 +68,14 @@ describe("stored colour names", () => {
     ["purple", "violet"],
     ["orange", "amber"],
     ["yellow", "amber"],
+    // WS-53 CRM-C2: the names the CRM's own stage map accepted.
+    ["slate", "gray"],
+    ["sky", "blue"],
+    ["cyan", "blue"],
+    ["emerald", "green"],
+    ["teal", "green"],
+    ["rose", "red"],
+    ["pink", "violet"],
   ])("resolves %s → %s", (stored, hue) => {
     expect(resolveHue({ color: stored })).toBe(hue);
   });
@@ -81,6 +89,38 @@ describe("stored colour names", () => {
     // worse failure than a column that comes out the category's colour.
     expect(resolveHue({ color: "chartreuse", category: "done" })).toBe("green");
     expect(resolveHue({ color: "chartreuse" })).toBe("gray");
+  });
+});
+
+describe("the CRM stage types (WS-53 CRM-C2)", () => {
+  it.each([
+    ["won", "green"],
+    ["lost", "red"],
+    ["on_hold", "amber"],
+    ["ongoing", "blue"],
+  ])("%s → %s", (stageType, hue) => {
+    expect(resolveHue({ stageType })).toBe(hue);
+  });
+
+  it("comes after the stored colour", () => {
+    // A Native admin who paints a won lane violet gets violet.
+    expect(resolveHue({ color: "violet", stageType: "won" })).toBe("violet");
+  });
+
+  it("comes before the name", () => {
+    // A lost stage called "Closed" is lost, not done.
+    expect(resolveHue({ stageType: "lost", name: "Closed" })).toBe("red");
+  });
+
+  it("lets an open stage fall through to its name, then its position", () => {
+    expect(resolveHue({ stageType: "open", name: "Waiting on PO" })).toBe("amber");
+    expect(resolveHue({ stageType: "open", name: "Qualification", index: 1, total: 4 })).toBe(
+      "blue",
+    );
+  });
+
+  it("falls through an unknown colour to the type, as the CRM map did", () => {
+    expect(resolveHue({ color: "chartreuse", stageType: "won" })).toBe("green");
   });
 });
 

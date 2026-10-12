@@ -29,6 +29,9 @@
  *   2. **category** — Projects' six machine-readable values
  *      (`routes/projects/core.py` `STATUS_CATEGORIES`). Projects *knows* what a
  *      lane means; guessing from its name would be worse information.
+ *   2b. **CRM stage type** (WS-53 CRM-C2) — `won`, `lost`, `on_hold` and
+ *      `ongoing`. The CRM has no category, and its type is the same kind of
+ *      fact. The two never both arrive, so their order is free.
  *   3. **name keyword** — /tasks' stages are user-named and have no category, so
  *      "Done"/"Waiting"/"In progress" are read out of the words. The regexes are
  *      ported unchanged from `stageColors.ts`.
@@ -163,7 +166,13 @@ const ACCENTS: Record<AccentHue, StatusAccent> = {
   },
 };
 
-/** Spellings a stored value may legitimately use. */
+/**
+ * Spellings a stored value may legitimately use.
+ *
+ * The second group came in with the CRM (WS-53 CRM-C2). Its stage colour is
+ * free text, and its own map accepted these names until this module took it
+ * over. So a stored `sky` or `rose` still draws, as the nearest hue here.
+ */
 const COLOR_ALIASES: Record<string, AccentHue> = {
   grey: "gray",
   gray: "gray",
@@ -175,6 +184,29 @@ const COLOR_ALIASES: Record<string, AccentHue> = {
   blue: "blue",
   violet: "violet",
   purple: "violet",
+  slate: "gray",
+  sky: "blue",
+  cyan: "blue",
+  emerald: "green",
+  teal: "green",
+  rose: "red",
+  pink: "violet",
+};
+
+/**
+ * A CRM stage type → hue (WS-53 CRM-C2).
+ *
+ * The type is a closed CHECK vocabulary (`crm_*_statuses.type`), so it says
+ * what a lane means even where nobody chose a colour. That matters most in
+ * Mirror mode, where the sync never writes a colour and every row is `gray`.
+ * `open` is not here: an open stage means only "not closed", so it falls
+ * through to its name and its position.
+ */
+const STAGE_TYPE_HUES: Record<string, AccentHue> = {
+  won: "green",
+  lost: "red",
+  on_hold: "amber",
+  ongoing: "blue",
 };
 
 /**
@@ -244,6 +276,11 @@ export interface AccentInput {
   color?: string | null;
   /** A machine-readable category — Projects' `STATUS_CATEGORIES`. */
   category?: string | null;
+  /**
+   * A CRM stage type — `open`, `ongoing`, `on_hold`, `won` or `lost`. It
+   * comes after the stored colour and before the name (WS-53 CRM-C2).
+   */
+  stageType?: string | null;
   /** The human-facing name, for axes nobody categorised (/tasks' stages). */
   name?: string | null;
   /** Where this lane sits on its axis, for the positional fallback. */
@@ -270,6 +307,9 @@ export function resolveHue(input: AccentInput): AccentHue {
 
   const category = input.category?.trim().toLowerCase();
   if (category && category in CATEGORY_HUES) return CATEGORY_HUES[category];
+
+  const stageType = input.stageType?.trim().toLowerCase();
+  if (stageType && stageType in STAGE_TYPE_HUES) return STAGE_TYPE_HUES[stageType];
 
   if (input.name) {
     const keyword = keywordHue(input.name);
