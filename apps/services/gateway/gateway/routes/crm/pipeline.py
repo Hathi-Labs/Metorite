@@ -338,6 +338,11 @@ def _dwell_seconds(since: Any, changed_at: Any) -> int | None:
 # this namespace), so no existing caller had to move.
 
 
+#: The lane predicate of every deal read on the board. The held-stage read
+#: rebinds it to each stage row, so it keeps every other filter.
+_LANE_SQL = "status_id = CAST(:status_id AS uuid)"
+
+
 class PipelineLane(BaseModel):
     status: StatusModel
     rows: list[dict]
@@ -347,6 +352,10 @@ class PipelineLane(BaseModel):
     #: not in ``WEIGHTED_TYPES``, because won revenue is closed and a lost or
     #: on-hold deal forecasts nothing (D-CRM-10).
     weighted: float = 0.0
+    #: The stage's place in the chosen pipeline. ``None`` with no
+    #: ``?pipeline_id=``, and for a stage the pipeline does not list that still
+    #: holds its deals. The board orders its columns with it (``lib/board.ts``).
+    pipeline_position: int | None = None
 
 
 class PipelineResponse(BaseModel):
@@ -371,31 +380,52 @@ async def get_pipeline(
     **``?pipeline_id=``** (WS-53 CRM-Q2) shows one pipeline. The lanes are its
     stages in its own order, and the deals are the ones that name it. With no
     ``pipeline_id`` the board is the whole organization, as it always was.
+
+    **No deal disappears.** A deal of the pipeline can sit in a stage that the
+    pipeline does not list (a mirrored Zoho stage that left the pipeline). That
+    stage is a lane too, after the listed ones, while it holds a deal under
+    the same filters. So the lane counts add up to the deals of the pipeline.
     """
     async with _tenant_session() as db:
         params: dict[str, Any] = {}
-        where = "status_id = CAST(:status_id AS uuid)"
+        where = _LANE_SQL
+        wanted: str | None = None
         if pipeline_id:
             wanted = checked_uuid(pipeline_id, "pipeline_id")
             await require_row(db, "crm_pipelines", wanted, "Pipeline")
+            where += " AND pipeline_id = CAST(:pipeline_id AS uuid)"
+            params["pipeline_id"] = wanted
+        if owner:
+            where += " AND lower(owner_email) = :owner"
+            params["owner"] = owner.strip().lower()
+        if wanted:
             lanes = (await db.execute(
                 text(
-                    "SELECT s.* FROM crm_deal_statuses s "
+                    "SELECT s.*, ps.position AS pipeline_position "
+                    "FROM crm_deal_statuses s "
                     "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
                     "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
                     "ORDER BY ps.position, s.name"
                 ),
                 {"pipeline_id": wanted},
             )).fetchall()
-            where += " AND pipeline_id = CAST(:pipeline_id AS uuid)"
-            params["pipeline_id"] = wanted
+            # The same deal filters, with the lane bound to each stage row.
+            held = where.replace(_LANE_SQL, "status_id = s.id", 1)
+            lanes += (await db.execute(
+                text(
+                    "SELECT s.* FROM crm_deal_statuses s "
+                    "WHERE NOT EXISTS (SELECT 1 FROM crm_pipeline_stages ps "
+                    "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+                    "AND ps.status_id = s.id) "
+                    f"AND EXISTS (SELECT 1 FROM crm_deals WHERE {held}) "
+                    "ORDER BY s.position, s.name"
+                ),
+                params,
+            )).fetchall()
         else:
             lanes = (await db.execute(
                 text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
             )).fetchall()
-        if owner:
-            where += " AND lower(owner_email) = :owner"
-            params["owner"] = owner.strip().lower()
 
         out: list[PipelineLane] = []
         for lane in lanes:
@@ -443,6 +473,7 @@ async def get_pipeline(
                     float(getattr(agg, "weighted", 0) or 0)
                     if getattr(lane, "type", "open") in WEIGHTED_TYPES else 0.0
                 ),
+                pipeline_position=getattr(lane, "pipeline_position", None),
             ))
         return PipelineResponse(lanes=out)
 

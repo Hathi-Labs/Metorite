@@ -613,6 +613,42 @@ _FORECAST_SQL = (
     "WHERE id = CAST(:id AS uuid) AND forecast_category IS DISTINCT FROM :category"
 )
 
+#: A pipeline stage that names ``won`` or ``lost`` gives its row that type, also
+#: a row that exists already. The insert above never changes an existing row,
+#: so without this a stage first seen as ``open`` stayed open for good.
+_STAGE_TYPE_SQL = (
+    "UPDATE crm_deal_statuses SET type = :type "
+    "WHERE organization_id = CAST(:org AS uuid) AND name = :name "
+    "AND type IS DISTINCT FROM :type"
+)
+#: The stage types a pipeline can state. A stage with no type keeps its row.
+STAGE_TYPES = ("won", "lost")
+
+
+def stage_types(pipelines: list[dict[str, Any]]) -> dict[str, str]:
+    """Stage name → ``won`` or ``lost``, from the pipelines of a profile.
+
+    A stage with no type is absent. When two pipelines give one stage two
+    types, the first pipeline in the profile decides.
+    """
+    found: dict[str, str] = {}
+    for pipeline in pipelines:
+        if not isinstance(pipeline, dict):
+            continue
+        for stage in pipeline.get("stages") or []:
+            if not isinstance(stage, dict):
+                continue
+            name, kind = stage.get("name"), stage.get("type")
+            if isinstance(name, str) and name and kind in STAGE_TYPES:
+                found.setdefault(name, kind)
+    return found
+
+
+async def _apply_stage_types(db: Any, org: str, pipelines: list[dict[str, Any]]) -> None:
+    """Give each mirrored stage the type its pipeline names (won or lost)."""
+    for name, kind in stage_types(pipelines).items():
+        await db.execute(text(_STAGE_TYPE_SQL), {"org": org, "name": name, "type": kind})
+
 
 async def _ensure_status(
     db: Any, table: str, name: str, *, type_: str | None = None,
@@ -1319,6 +1355,7 @@ async def _mirror_pipelines(
         seen.append(row["ext_id"])
     if not seen:
         return
+    await _apply_stage_types(db, ctx.org, rows)
     known = [
         str(r.ext_id) for r in (await db.execute(
             text(_PIPELINE_INDEX_SQL), {"src": EXT_SOURCE},
@@ -1368,6 +1405,27 @@ async def _discover(ctx: _Ctx) -> None:
         ctx.budget_total = max(daily_budget(profile) - ctx.used_24h, 0)
 
 
+async def _stage_types_from_profile(ctx: _Ctx) -> None:
+    """Apply the stage types of the latest stored profile. No provider call.
+
+    Discovery reads the pipelines once in 24 hours. This pass makes each run
+    apply what the profile already holds, so a fix of the type rule reaches an
+    org on its next run. ``ctx.page`` refuses an org that is not in Mirror
+    mode, so a Native org's stages are never touched.
+    """
+    current = ctx.profile
+    if current is None or str(current.connection_id) != str(ctx.handle.connection_id):
+        return
+    profile = current.profile or {}
+    if "pipelines" in (profile.get("unreadable") or []):
+        return
+    pipelines = profile.get("pipelines") or []
+    if not stage_types(pipelines):
+        return
+    async with ctx.page() as db:
+        await _apply_stage_types(db, ctx.org, pipelines)
+
+
 async def _estimate(ctx: _Ctx) -> None:
     """The record count of each entity, for the progress bar. Best effort."""
     totals: dict[str, int] = {}
@@ -1400,6 +1458,7 @@ async def _execute(ctx: _Ctx) -> None:
         ctx.budget_total = max(
             daily_budget(ctx.profile.profile if ctx.profile else None) - ctx.used_24h, 0,
         )
+    await _stage_types_from_profile(ctx)
     if ctx.kind == runs.KIND_IMPORT:
         await _start_deleted_windows(ctx)
         if ctx.estimate is None:
