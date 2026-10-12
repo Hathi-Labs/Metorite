@@ -2084,7 +2084,7 @@ the module note of `search.py` says.
   `["crm-assistant", "/crm"]` (item 10).
 - `src/lib/shell/seams.test.ts`, existing: item 11.
 
-### 19.7 CRM-X3: Next activity on each card
+### 19.7 CRM-X3: Next activity on each card (✅ built 2026-10-12)
 
 **Scope.**
 
