@@ -40,7 +40,7 @@ import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from acb_common import get_logger
@@ -108,6 +108,10 @@ class StoredServer:
     updated_at: datetime | None = None
     #: H-300. False is the reading of a row with no key.
     always_confirm: bool = False
+    #: IN-8a: the row holds OAuth tokens, not a header map. The admin in
+    #: ``connected_by`` is who the connection acts as (D98).
+    oauth: bool = False
+    connected_by: str | None = None
 
 
 def provider_for(name: str) -> str:
@@ -192,7 +196,14 @@ def _server(
         created_at=conn.created_at,
         updated_at=conn.updated_at,
         always_confirm=_always_confirm(meta),
+        oauth=_is_oauth(conn),
+        connected_by=conn.connected_by,
     )
+
+
+def _is_oauth(conn: store.Connection) -> bool:
+    """True when the row holds OAuth tokens (WS-54 IN-8a)."""
+    return (conn.provider_meta or {}).get("auth") == store.AUTH_OAUTH
 
 
 # ── The move of an old row (R6 expand) ──────────────────────────────────────
@@ -265,15 +276,66 @@ async def _clear_legacy(db: Any, org: str, name: str) -> None:
 # ── Reads ───────────────────────────────────────────────────────────────────
 
 
+#: IN-8a: a run sends no token that ends within this many seconds. IN-8b
+#: refreshes such a token first (``TOKEN_MARGIN_S``, §3.6.7).
+_OAUTH_SKEW_S = 60
+
+
+async def _oauth_runtime_headers(
+    db: Any, org: str, conns: Sequence[store.Connection],
+) -> dict[str, dict[str, str]]:
+    """The ``Authorization`` header of each OAuth row that a run may use.
+
+    ⚠️ With ``MCP_OAUTH_ENABLED`` off, none: the run leaves the row out and
+    logs ``mcp.oauth_disabled`` (§3.6.7, O12). A token that has ended, or
+    ends within :data:`_OAUTH_SKEW_S`, is left out too, with
+    ``mcp.oauth_expired``: IN-8b adds the refresh. The token goes to the MCP
+    client as an argument only, never to a log line.
+    """
+    from gateway.connections import mcp_oauth
+
+    out: dict[str, dict[str, str]] = {}
+    oauth_rows = [c for c in conns if _is_oauth(c) and c.status == store.STATUS_CONNECTED]
+    if not oauth_rows:
+        return out
+    if not mcp_oauth.oauth_enabled():
+        for conn in oauth_rows:
+            _log.info("mcp.oauth_disabled", name=conn.provider[len(PREFIX):])
+        return out
+    edge = datetime.now(UTC) + timedelta(seconds=_OAUTH_SKEW_S)
+    for conn in oauth_rows:
+        credential = await store.load_credential(db, org, conn.provider, OWNING_APP)
+        name = conn.provider[len(PREFIX):]
+        if credential is None or not credential.access_token:
+            _log.warning("mcp.oauth_unreadable", name=name)
+            continue
+        if credential.expires_at <= edge:
+            _log.info("mcp.oauth_expired", name=name)
+            continue
+        out[conn.provider] = {"Authorization": f"Bearer {credential.access_token}"}
+    return out
+
+
 async def _read(org: str, *, enabled_only: bool, with_headers: bool) -> list[StoredServer]:
     org = _org(org)
     async with tenant_session(org) as db:
         await migrate_legacy(db, org)
         conns = await store.list_by_prefix(db, org, PREFIX, OWNING_APP)
         headers = await store.load_headers_by_prefix(db, org, PREFIX, OWNING_APP)
+        tokens = (await _oauth_runtime_headers(db, org, conns)) if enabled_only else {}
     out: list[StoredServer] = []
     for conn in conns:
         if enabled_only and conn.status != store.STATUS_CONNECTED:
+            continue
+        if _is_oauth(conn):
+            # IN-8a. The console lists the row with no header. A run gets it
+            # only with its bearer token (see ``_oauth_runtime_headers``).
+            if enabled_only:
+                if conn.provider not in tokens:
+                    continue
+                out.append(_server(conn, tokens[conn.provider], with_headers=with_headers))
+            else:
+                out.append(_server(conn, {}, with_headers=False))
             continue
         sealed = headers.get(conn.provider, {})
         if sealed is None:

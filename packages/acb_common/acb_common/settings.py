@@ -880,6 +880,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_maf_mcp_injection.py.
     maf_mcp_orgs: str = ""
 
+    # ── MCP OAuth for an org connection (WS-54 IN-8a, D98) ──────────────────
+    #
+    # `MCP_OAUTH_ENABLED`, default OFF. OFF: the start route, the callback and
+    # the client-metadata document answer 404, and a run leaves out each MCP
+    # server whose row holds OAuth tokens (log `mcp.oauth_disabled`). ON: an
+    # admin can connect an MCP server that needs a consent, and the connection
+    # acts as that admin at the provider. The one reader is
+    # `gateway.connections.mcp_oauth.oauth_enabled`. `env_guard` refuses each
+    # `*_ENABLED` name on each Integrations write.
+    #
+    # 🔴 A flip on a box is gate `enforcement-flip`, and it waits for the
+    # owner's real consent test (integrations_console.md §3.6.10, act 1).
+    # Fence: tests/unit/test_mcp_oauth_flow.py.
+    mcp_oauth_enabled: bool = False
+
     # ── A durable "needs input" (WS-51 S2, chat_run_continuity.md §4 S2) ────
     #
     # `CHAT_DURABLE_ASKS`, default OFF. OFF means no change: no row is written,

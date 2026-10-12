@@ -36,6 +36,10 @@ WS-8c adds :func:`mcp_client`, the client of an MCP session for a native MAF
 agent (``orchestrator/_maf_mcp.py``). It is the third caller, and it keeps
 rules 1 to 3. The section above :func:`mcp_client` says what it adds.
 
+WS-54 IN-8a adds :func:`request_https`, the mode of each MCP OAuth fetch
+(``gateway/connections/mcp_oauth.py``). It is :func:`request` with the two MCP
+rules: ``https`` only, on port 443 only.
+
 ``_host_is_public`` and ``_is_safe_external_url`` keep the names that they had
 in ``senders.py``, which imports them again.
 
@@ -48,7 +52,7 @@ import asyncio
 import errno
 import ipaddress
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -105,10 +109,15 @@ class Target:
 
 @dataclass(frozen=True)
 class Answer:
-    """The status of an answer, and at most :data:`MAX_ANSWER_BYTES` of it."""
+    """The status of an answer, and at most :data:`MAX_ANSWER_BYTES` of it.
+
+    ``headers`` are the headers of the answer (WS-54 IN-8a). The MCP OAuth
+    discovery reads ``WWW-Authenticate`` from a 401. The lookup ignores case.
+    """
 
     status_code: int
     body: bytes
+    headers: httpx.Headers = field(default_factory=httpx.Headers, compare=False)
 
     @property
     def is_success(self) -> bool:
@@ -299,7 +308,7 @@ async def send(
                     await resp.aclose()
     except TimeoutError:
         raise OutboundRefused(target.host, "timeout") from None
-    return Answer(status_code=resp.status_code, body=body)
+    return Answer(status_code=resp.status_code, body=body, headers=resp.headers)
 
 
 async def request(
@@ -364,6 +373,32 @@ async def check_mcp_url(url: str) -> Target:
     if (parsed.port or MCP_PORT) != MCP_PORT:
         raise OutboundRefused(host, "port")
     return await check_url(url)
+
+
+async def request_https(
+    method: str, url: str, *,
+    headers: dict[str, str] | None = None,
+    content: bytes | None = None,
+    json: Any = None,
+) -> Answer:
+    """:func:`check_mcp_url`, then :func:`send`, for one request (WS-54 IN-8a).
+
+    The mode of each MCP OAuth fetch: discovery, registration, token and
+    revoke (``integrations_console.md`` §3.6.5). It keeps every rule of
+    :func:`request`, and it adds two: ``https`` only, on port 443 only.
+    :func:`request` allows ``http``, and :func:`mcp_client` refuses another
+    origin, so neither serves the OAuth flow. One :func:`deadline` covers the
+    lookup and the request together.
+
+    Fence: ``tests/unit/test_mcp_oauth_guard.py``.
+    """
+    try:
+        async with deadline():
+            target = await check_mcp_url(url)
+            return await send(
+                target, method, headers=headers, content=content, json=json)
+    except TimeoutError:
+        raise OutboundRefused(_host_of(url), "timeout") from None
 
 
 def _mcp_inner_transport() -> httpx.AsyncBaseTransport:
@@ -440,5 +475,6 @@ __all__ = [
     "deadline",
     "mcp_client",
     "request",
+    "request_https",
     "send",
 ]

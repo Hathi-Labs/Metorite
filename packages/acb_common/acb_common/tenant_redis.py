@@ -499,6 +499,13 @@ class TenantRedis:
             return []
         return list(await self._client.mget(raw))
 
+    async def getdel(self, k: TenantKey) -> Any:
+        """Read the value and delete the key in ONE command (Redis 6.2+).
+
+        A one-time record (the pending flow of an MCP OAuth consent, WS-54
+        IN-8a) is taken once: a second take finds nothing."""
+        return await self._client.getdel(self._raw(k))
+
     async def set(self, k: TenantKey, value: Any, **kwargs: Any) -> Any:
         return await self._client.set(self._raw(k), value, **kwargs)
 
