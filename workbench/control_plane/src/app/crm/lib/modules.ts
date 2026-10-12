@@ -15,7 +15,7 @@
 // is the only writer (CRM-Q6a), so no control here ever edits one.
 
 import { fieldRows, type FieldDef, type FieldRow, type FieldValue } from "./fields";
-import type { ListQuery } from "./filters";
+import { LIST_PAGE_SIZE, type ListQuery } from "./filters";
 import { dateTime, shortDate } from "./format";
 import type { CrmColumn } from "./columns";
 import type { EntitySlug } from "./types";
@@ -144,8 +144,8 @@ export const MODULE_COLUMNS: CrmColumn[] = [
   { key: "modified", label: "Modified", sort: "ext_modified_at" },
 ];
 
-/** The rows per page, as the four lists read. */
-export const MODULE_PAGE_SIZE = 50;
+/** The rows per page: the page of the four lists (CRM-X1). */
+export const MODULE_PAGE_SIZE = LIST_PAGE_SIZE;
 
 /** The request of one page of a module list. */
 export function moduleListQuery(
@@ -175,11 +175,6 @@ export function listRow(record: ModuleRecord): Row {
   };
 }
 
-/** Add a page under the rows on screen. A row already on screen is dropped. */
-export function appendRows(rows: readonly Row[], page: readonly Row[]): Row[] {
-  const seen = new Set(rows.map((r) => String(r.id)));
-  return [...rows, ...page.filter((r) => !seen.has(String(r.id)))];
-}
 
 // ── The record page ────────────────────────────────────────────────────────
 

@@ -1478,9 +1478,11 @@ each of these on a real database:
 - `?tab=module&module=<ApiName>` opens a list, and `?mrec=<ApiName>:<id>` opens
   a record with its `?rtab=`. A known record and a generic record never open
   together.
-- The list is `RecordList` with `MODULE_COLUMNS`. Its search box and its "Load
-  more" button are local to `ModuleList.tsx`, with the names of the CRM-X1
-  store. They move onto the CRM-X1 parts after CRM-X1 merges.
+- The list is `RecordList` with `MODULE_COLUMNS`, the CRM-X1 search box
+  (`FilterBar.tsx` exports `SearchBox`) and the CRM-X1 "Load more". The rows
+  of a module are not in the CRM store, so `ModuleList.tsx` holds the paging
+  state. It keeps the rules of the store: `appendPage`, a short page ends the
+  list, and the newest request wins.
 - `RecordShell.tsx` holds the drawer, the header facts and the tab bar.
   `RecordSheet` and `ModuleRecordSheet` both use it, so the two record pages
   have one look.

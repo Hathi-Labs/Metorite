@@ -6,31 +6,31 @@
  * holds.
  *
  * It is the shared list, not a second one: `RecordList` draws the rows, with
- * the columns of `MODULE_COLUMNS` and the Columns control of `fields.ts`. A
- * search box above it writes `?q=`, and "Load more" adds the next page under
- * the rows. Read only, in every mode: the sync is the only writer.
+ * the columns of `MODULE_COLUMNS`, the Columns control of `fields.ts` and the
+ * "Load more" of CRM-X1. The CRM-X1 search box sits above it and writes
+ * `?q=`. Read only, in every mode: the sync is the only writer.
  *
- * ⚠️ The paging is local to this view, with the names and the rules of the
- * CRM-X1 store (`page`, `hasMore`, `loadMore`, latest wins). When CRM-X1 is on
- * main, the search box and "Load more" move onto its shared parts.
+ * The rows of a module are not in the CRM store, so the paging state lives
+ * here. It keeps the rules of the store's `loadList` and `loadMore` (CRM-X1):
+ * page 1 on a new view, `appendPage` for the next page, a short page ends the
+ * list, and an answer for an older view is dropped.
  */
 
-import Button from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { filterWord } from "@/lib/shell/registry";
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
+import { searchChanges } from "../lib/filterBar";
+import { appendPage } from "../lib/filters";
 import {
   MODULE_COLUMNS,
   MODULE_PAGE_SIZE,
   MODULE_SORTS,
-  appendRows,
   listRow,
   moduleListQuery,
   type ModuleFieldDef,
 } from "../lib/modules";
 import { applySort, type CrmView } from "../lib/urlState";
+import { SearchBox } from "./FilterBar";
 import RecordList from "./RecordList";
 
 type Row = Record<string, unknown>;
@@ -102,7 +102,7 @@ function useModuleList(module: string, view: CrmView, reloadToken: number) {
       if (asked !== latest.current) return;
       setState((s) => ({
         ...s,
-        rows: appendRows(s.rows, res.rows.map(listRow)),
+        rows: appendPage(s.rows, res.rows.map(listRow)),
         total: res.total,
         page: next,
         // A short page, or an empty one, is the end of the list.
@@ -137,7 +137,6 @@ export default function ModuleList({
   reloadToken?: number;
 }) {
   const list = useModuleList(module, view, reloadToken);
-  const showMore = !list.loading && list.hasMore && list.rows.length > 0 && list.rows.length < list.total;
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="shrink-0 border-b border-border px-3 py-2 sm:px-4" data-testid="crm-module-bar">
@@ -145,7 +144,7 @@ export default function ModuleList({
           label={label.toLowerCase()}
           value={view.q}
           onCommit={(q) => {
-            if (q !== view.q.trim()) onChange({ ...view, q });
+            if (searchChanges(q, view.q)) onChange({ ...view, q });
           }}
         />
       </div>
@@ -166,64 +165,10 @@ export default function ModuleList({
         direction={view.dir}
         onSort={(key) => onChange(applySort(view, key))}
         onOpen={onOpen}
-        more={
-          showMore ? (
-            <div className="flex justify-center p-3">
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={list.loadingMore}
-                onClick={() => void list.loadMore()}
-              >
-                Load more
-              </Button>
-            </div>
-          ) : null
-        }
+        onLoadMore={() => void list.loadMore()}
+        loadingMore={list.loadingMore}
+        hasMore={list.hasMore}
       />
     </div>
-  );
-}
-
-/**
- * The search box. It writes `?q=` once, 300 ms after the last key, so each
- * search is one history entry. A `?q=` that changes from outside (Back, a
- * link) replaces the text. `data-page-filter` lets the shell's `/` reach it.
- */
-function SearchBox({
-  label,
-  value,
-  onCommit,
-}: {
-  label: string;
-  value: string;
-  onCommit: (q: string) => void;
-}) {
-  const [draft, setDraft] = useState(value);
-  const [seen, setSeen] = useState(value);
-  if (seen !== value) {
-    setSeen(value);
-    setDraft(value);
-  }
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (timer.current) clearTimeout(timer.current);
-  }, []);
-  return (
-    <Input
-      icon="Search"
-      inputSize="sm"
-      className="w-56"
-      value={draft}
-      onChange={(e) => {
-        const text = e.target.value;
-        setDraft(text);
-        if (timer.current) clearTimeout(timer.current);
-        timer.current = setTimeout(() => onCommit(text.trim()), 300);
-      }}
-      placeholder={`${filterWord()} ${label}…`}
-      aria-label={`${filterWord()} ${label}`}
-      data-page-filter={label}
-    />
   );
 }

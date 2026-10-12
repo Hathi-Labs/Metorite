@@ -97,7 +97,6 @@ export default function RecordList({
   entity,
   columns: columnsProp,
   sortKeys,
-  more,
   rows,
   total,
   loading,
@@ -119,8 +118,6 @@ export default function RecordList({
   columns?: (typeof COLUMNS)[EntitySlug];
   /** The sort keys of a generic module. The four entities read `SORTS`. */
   sortKeys?: readonly string[];
-  /** What follows the rows, such as the "Load more" of a module list. */
-  more?: React.ReactNode;
   rows: Row[];
   total: number;
   loading: boolean;
@@ -249,7 +246,6 @@ export default function RecordList({
             ))}
           </tbody>
         </table>
-        {more}
         {!loading && rows.length === 0 && (
           <p className="p-8 text-center text-xs text-muted-foreground">
             Nothing matches this view.
