@@ -2981,16 +2981,29 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app
   row. Each head has the lane width and padding, so its chip stands over
   the chip of a lane.
 - The chip uses the `chip` slot of the hue. For a coloured hue that slot is
-  `soft` plus `text`. For gray it is `bg-secondary text-muted-foreground`.
+  `soft` plus `text`. For gray it is `bg-secondary text-secondary-foreground`.
+  The review changed the gray ink, because `text-muted-foreground` on
+  `bg-secondary` measured 4.33 : 1 in light mode. `contrast.test.ts` now
+  fails a chip that draws a pair it does not measure at AA.
+- A lane is `role="group"` with the lane name. It is not a `<section>`
+  landmark.
+- The CRM card is a `role="button"`, so `cardLabel` (`lib/cardLabel.ts`)
+  gives it a full name. That name holds the money or the company, the next
+  step, "Overdue" and the lost-reason warning.
+- The settings colour picker shows a stored name that it does not offer
+  (`orange`, `teal`, `sky`) first, marked "custom", with the hue it draws
+  (`lib/colorOptions.ts`).
+- The radius check in `boards.test.ts` is advisory. `--radius-lg` and
+  `--radius-xl` are one value, so it cannot catch a change that shows.
 - A lane with an icon (won, lost, on hold) shows the icon in the place of
   the dot. `stageIcon` in `board.ts` holds the three names.
 - `stageAccent` passes no index. So an open stage with no keyword in its
   name is gray on every surface. A lane that the board hides changes the
   colour of no other lane.
-- `RecordList`, `Reports`, `StatusPill` and the settings dot do not know the
-  mode. They pass `null`, so they read the stored colour, as they did
-  before. In Mirror mode they draw a won stage gray while the board draws it
-  green. CRM-C3 owns the Mirror colour and can close that gap.
+- `RecordList`, `Reports`, `StatusPill` and the settings dot read the mode
+  from `CrmModeContext` (`lib/modeContext.ts`). `page.tsx` provides it from
+  `ctx.mode`. So a mirrored won stage is green on each of them and on the
+  board. Fence: `components/crmC2.test.ts`.
 - `TaskCardShell` has a new `overdue` prop, for the red edge of CRM-X3.
 
 ### 20.6 CRM-C3: Stages and statuses you can shape, in both modes
