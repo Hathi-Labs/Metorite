@@ -86,7 +86,10 @@ def test_the_tool_sends_the_whole_question() -> None:
             }]})))
             event = await asyncio.wait_for(queue.get(), 5)
             rid = event["value"]["request_id"]
-            ex._pending_user_input[rid].set_result({"answer": "Archive both #22 and #23"})
+            # Pop the Future, as `resolve_user_input` does. Left in the
+            # shared registry, it broke `test_ask_user_hitl.py`, which reads
+            # the first pending id (CI, 2026-10-13).
+            ex._pending_user_input.pop(rid).set_result({"answer": "Archive both #22 and #23"})
             assert await task == "User response: Archive both #22 and #23"
             return event
         finally:
