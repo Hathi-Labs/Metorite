@@ -348,6 +348,30 @@ async def list_accounts(
         return accounts
 
 
+async def feed_mailboxes(user: UserContext) -> list[dict[str, Any]]:
+    """The member's own mailboxes, as the shell's needs feed reads them.
+
+    One read of ``email_accounts``, with the owner predicate of
+    :func:`list_accounts` and in its order. It gives the two fields the
+    feed uses, ``id`` and ``in_all_inboxes``. ⚠️ It runs no unread count:
+    ``list_accounts`` counts the unread mail of every mailbox
+    (``_unread_counts``), and the feed threw that count away on each read.
+
+    Not a route. The shell calls it after its own ``feature:email`` check.
+    """
+    owner = user.email or "anonymous"
+    async with _tenant_session() as db:
+        rows = (await db.execute(
+            text(
+                """SELECT id, in_all_inboxes FROM email_accounts
+                   WHERE user_id = :user_id
+                   ORDER BY is_default DESC, created_at"""
+            ),
+            {"user_id": owner},
+        )).fetchall()
+    return [{"id": str(r.id), "in_all_inboxes": bool(r.in_all_inboxes)} for r in rows]
+
+
 @router.get(
     "/admin/connections",
     response_model=OrgConnectionCounts,
