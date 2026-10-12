@@ -255,7 +255,9 @@ function RecordCard({
       onClick={onOpen}
       // An overdue card wears a red left edge, from the shared status colours.
       className={`cursor-pointer rounded-lg border border-border bg-card p-2.5 hover:border-primary/40 hover:bg-secondary/30 tech-transition ${
-        overdue ? `border-l-2 ${accentForHue("red").bar}` : ""
+        // The hover border recolours all four sides, so the red edge repeats
+        // it. A literal class, because Tailwind cannot see a built one.
+        overdue ? `border-l-2 ${accentForHue("red").bar} hover:border-l-destructive` : ""
       }`}
     >
       <h3 className="truncate text-xs font-medium text-foreground">{title}</h3>

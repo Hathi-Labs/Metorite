@@ -54,6 +54,9 @@ type Rows = Record<string, unknown>[];
 /** The record whose related lists were asked for last. */
 let latestRelated = "";
 
+/** The number of the last board read. A slower, older read never wins. */
+let latestBoard = 0;
+
 type CrmState = {
   lanes: BoardLane[];
   /** The Leads board: one lane per Lead Status (CRM-Q3). */
@@ -248,6 +251,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   async loadBoard(view) {
     // `lastView` keeps `cardSort` too, so a re-read after a write keeps the
     // member's lane order (CRM-X3).
+    const mine = ++latestBoard;
     set({ loading: true, lastView: view });
     try {
       const extra = { ...extraQuery("deals", view), ...cardSortQuery(view.cardSort) };
@@ -255,11 +259,13 @@ export const useCrmStore = create<CrmState>((set, get) => ({
         Object.keys(extra).length > 0
           ? await api.getPipeline(view.owner, view.pipelineId, extra)
           : await api.getPipeline(view.owner, view.pipelineId);
+      if (mine !== latestBoard) return;
       set({ lanes: toBoardLanes(pipeline), error: null });
     } catch (err) {
+      if (mine !== latestBoard) return;
       set({ error: message(err) });
     } finally {
-      set({ loading: false });
+      if (mine === latestBoard) set({ loading: false });
     }
   },
 
