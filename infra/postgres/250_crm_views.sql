@@ -1,5 +1,5 @@
 -- ============================================================================
--- 249_crm_views.sql — saved views of the CRM lists and boards.
+-- 250_crm_views.sql — saved views of the CRM lists and boards.
 --
 -- What: `crm_views`, one row for each saved view. A view holds the filters, the
 --       sort, the chosen custom columns, the layout (list or board) and the

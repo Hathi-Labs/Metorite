@@ -405,3 +405,22 @@ def test_the_table_forces_row_level_security(ns) -> None:
             "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
             "WHERE oid = 'crm_views'::regclass")).first()
     assert tuple(flags) == (True, True)
+
+
+async def test_the_deals_board_takes_the_same_filters(ns) -> None:
+    _seed(ns, ns.org_a)
+    user = _admin(ns.org_a, "ann@crm-q8.test")
+
+    async def on_board(query: str) -> list[str]:
+        response = await _call(ns, user, "GET", f"/crm/pipeline{query}")
+        assert response.status_code == 200, response.text
+        return sorted(
+            r["name"] for lane in response.json()["lanes"] for r in lane["rows"]
+        )
+
+    assert await on_board("?owner=me") == ["D-east", "D-north"]
+    assert await on_board("?custom.Region.in=South,East") == ["D-east", "D-south"]
+    assert await on_board("?close_from=2026-05-01") == ["D-east"]
+    assert await on_board("?source=agent") == ["D-south"]
+    bad = await _call(ns, user, "GET", "/crm/pipeline?custom.Nope=1")
+    assert bad.status_code == 422
