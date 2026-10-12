@@ -766,10 +766,9 @@ Four things worked only on the Copilot path:
    `memory_context` and the persona reach the model only through the string fallback,
    `_build_event_message`. WS-43t1 (PR #595) repaired the branch behind
    `MAF_NATIVE_SESSIONS`, which is off by default (`maf_coding_engine.md` §15.9).
-3. **Registry MCP servers do not reach apis-config now.** `merge_mcp_servers` is a no-op on
-   MAF. So an `mcp_servers` row with agent scope `*` reaches only Copilot agents (H-217).
-   WS-8c gives MAF agents an MCP client, behind the setting `MAF_MCP_ORGS`. Until the flag
-   allows an org, this item stays true for that org.
+3. ~~**Registry MCP servers do not reach apis-config now.**~~ *Closed 2026-10-12.* WS-8c
+   gives MAF agents an MCP client (#869, #875), and `MAF_MCP_ORGS=*` is set on production,
+   so a registry server reaches every native MAF agent in its org. H-217 is deleted.
 4. **A delegated run is a batch run, and the addendum is Copilot-only.** When another agent
    calls apis-config, it returns one result. A native agent gets the registry block, the UI
    directive and the output-discipline block, not "Metorite Platform Tools".
