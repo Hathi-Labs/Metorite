@@ -13,6 +13,8 @@ The fences of the server half of the stall fix:
   ``get_message``, and each fetch ends at ``BODY_FETCH_TIMEOUT_S``.
 * ``email.draft_timing`` carries the stage durations and the outcome, and no
   tenant text.
+* A7 (PR-A2). The reply path sends the ``context`` ``done`` event, once and
+  before the draft starts.
 
 Hermetic: the model, the provider and the session are fakes.
 """
@@ -31,6 +33,8 @@ from acb_llm import context as llm_ctx
 from gateway.routes.email import core
 from gateway.routes.email.automation import drafting
 from gateway.routes.email.automation.identity import SelfIdentity
+
+from tests.unit._email_fakes import bind_db
 
 _EMAIL = {"from": "alice@example.com", "from_name": "Alice", "subject": "Quote",
           "body": "Can you send pricing?"}
@@ -489,3 +493,91 @@ async def test_a_body_fetch_ends_at_its_bound(monkeypatch) -> None:
 
 def test_the_body_fetch_bound_is_eight_seconds() -> None:
     assert core.BODY_FETCH_TIMEOUT_S == 8.0
+
+
+# ── A7 (PR-A2): the reply path sends the context done event ───────────────
+
+
+_CTX = {
+    "from": "ravi@example.com", "from_name": "Ravi", "subject": "Quote",
+    "body": "Please send it.", "thread": "", "thread_id": "t1",
+    "self": "sales@example.com", "self_label": "Sales",
+}
+
+
+def _wire(monkeypatch, *, order: list[str]) -> None:
+    async def _agent_draft(*_a, **_kw) -> str:
+        order.append("draft")
+        return "Hello Ravi"
+
+    async def _compose(**_kw) -> str:
+        order.append("draft")
+        return "Hello Ravi"
+
+    for name, value in (
+        ("_tenant_session", bind_db(AsyncMock())),
+        ("_assert_account_owner", AsyncMock()),
+        ("_build_reply_context", AsyncMock(return_value=dict(_CTX))),
+        ("_load_assistant_about", AsyncMock(return_value=("", ""))),
+        ("_agent_draft_reply", _agent_draft),
+        ("_llm_compose_assist", _compose),
+        ("_store_ai_draft", AsyncMock()),
+    ):
+        monkeypatch.setattr(drafting, name, value)
+
+
+def _context_events(events: list[dict]) -> list[str]:
+    return [e.get("status", "") for e in events
+            if e.get("kind") == "stage" and e.get("id") == "context"]
+
+
+async def test_the_reply_path_sends_the_context_done_event(monkeypatch) -> None:
+    """A7: an empty reply goes to the reply drafter. The run sends
+    ``context`` ``done`` once, and before the draft starts."""
+    order: list[str] = []
+    events: list[dict] = []
+
+    async def on_activity(evt: dict) -> None:
+        events.append(evt)
+        if evt.get("id") == "context":
+            order.append(f"context:{evt.get('status')}")
+
+    _wire(monkeypatch, order=order)
+    out = await drafting._compose_assist_run(
+        drafting.ComposeAssistRequest(
+            account_id="acc-1", mode="reply", message_id="m1"),
+        SimpleNamespace(email="me@example.com"),
+        on_activity=on_activity)
+
+    assert out["draft"].startswith("Hello Ravi")
+    assert _context_events(events) == ["start", "done"]
+    assert order == ["context:start", "context:done", "draft"]
+
+
+@pytest.mark.parametrize("mode,body", [
+    ("reply", "My own words."),
+    ("forward", ""),
+    ("new", ""),
+])
+async def test_each_other_path_sends_context_done_once(
+        monkeypatch, mode: str, body: str) -> None:
+    """The improve, forward and new paths keep their one ``context``
+    ``done``. The A7 change adds no second one."""
+    order: list[str] = []
+    events: list[dict] = []
+
+    async def on_activity(evt: dict) -> None:
+        events.append(evt)
+
+    _wire(monkeypatch, order=order)
+    monkeypatch.setattr(drafting, "resolve_self", AsyncMock(
+        return_value=SimpleNamespace(address="sales@example.com", label="Sales")))
+    await drafting._compose_assist_run(
+        drafting.ComposeAssistRequest(
+            account_id="acc-1", mode=mode, body=body,
+            message_id="m1" if mode != "new" else None,
+            to=["ravi@example.com"]),
+        SimpleNamespace(email="me@example.com"),
+        on_activity=on_activity)
+
+    assert _context_events(events) == ["start", "done"]

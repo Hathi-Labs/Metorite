@@ -2432,10 +2432,12 @@ export interface ComposeAssistArgs {
 }
 
 export async function composeAssist(
-  args: ComposeAssistArgs
+  args: ComposeAssistArgs,
+  signal?: AbortSignal
 ): Promise<{ draft: string; skipped?: string }> {
   return gatewayFetch("/email/compose-assist", {
     method: "POST",
+    signal,
     body: JSON.stringify({
       account_id: args.accountId,
       body: args.body ?? "",
@@ -2471,6 +2473,45 @@ export interface ComposeAssistStreamHandlers {
   /** Live model output. kind "content" is draft text (append to the body);
    *  "reasoning" is the model thinking out loud (show, don't insert). */
   onDelta?: (kind: "reasoning" | "content", text: string) => void;
+  /** The server stage now running (`{"type":"status","stage":...}`). The
+   *  route sends it before it opens a session (EM-T17 §17.3.7). */
+  onStatus?: (stage: string, detail?: string) => void;
+  /** Stop and the client bound abort through this signal. An abort never
+   *  falls back to the JSON route (EM-T17 A5). */
+  signal?: AbortSignal;
+}
+
+/** The typed reasons of a server `error` event (EM-T17 §17.3.7). Each one
+ *  means the model or the server ran out of time. */
+export const DRAFT_ERROR_REASONS = [
+  "model_slow",
+  "model_stalled",
+  "model_timeout",
+  "server_timeout",
+] as const;
+export type DraftErrorReason = (typeof DRAFT_ERROR_REASONS)[number];
+
+/** A stream that ended with an `error` event. `reason` is set when the
+ *  server sent one of {@link DRAFT_ERROR_REASONS}. */
+export class DraftStreamError extends Error {
+  readonly reason: DraftErrorReason | null;
+  constructor(message: string, reason: DraftErrorReason | null) {
+    super(message);
+    this.name = "DraftStreamError";
+    this.reason = reason;
+  }
+}
+
+function draftErrorReason(value: unknown): DraftErrorReason | null {
+  return (DRAFT_ERROR_REASONS as readonly unknown[]).includes(value)
+    ? (value as DraftErrorReason)
+    : null;
+}
+
+/** True when the request stopped because its signal aborted. A browser fetch
+ *  rejects with `signal.reason`, so the name alone does not tell. */
+function wasAborted(err: unknown, signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted) || (err as Error | null)?.name === "AbortError";
 }
 
 /**
@@ -2478,17 +2519,23 @@ export interface ComposeAssistStreamHandlers {
  * draft tokens arrive live over SSE so the composer can narrate what the
  * backend is doing instead of holding a bare spinner. Resolves with the FINAL
  * cleaned draft (always prefer it over concatenated deltas). Falls back to the
- * non-streaming endpoint transparently if the stream can't be opened.
+ * non-streaming endpoint if the stream can't be opened — but never after an
+ * abort, which would start a second draft that nobody waits for (EM-T17 A5).
+ *
+ * An SSE comment line (`: keepalive`, sent while the server is quiet) changes
+ * nothing. An `error` event rejects with a {@link DraftStreamError}.
  */
 export async function composeAssistStream(
   args: ComposeAssistArgs,
   handlers: ComposeAssistStreamHandlers = {}
 ): Promise<{ draft: string; skipped?: string }> {
+  const { signal } = handlers;
   let res: Response;
   try {
     res = await fetch("/api/email/compose-assist/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal,
       body: JSON.stringify({
         account_id: args.accountId,
         body: args.body ?? "",
@@ -2500,30 +2547,34 @@ export async function composeAssistStream(
       }),
     });
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
-  } catch {
+  } catch (err) {
+    if (wasAborted(err, signal)) throw err;
     // Older gateway / proxy without the stream route — degrade silently.
-    return composeAssist(args);
+    return composeAssist(args, signal);
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let done: { draft: string; skipped?: string } | null = null;
-  let streamError: string | null = null;
+  let streamError: DraftStreamError | null = null;
   for (;;) {
     const { value, done: eof } = await reader.read();
     if (eof) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? ""; // keep the trailing partial line
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
+    for (const raw of lines) {
+      const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      // A line that starts with ":" is an SSE comment: the keepalive.
+      if (line.startsWith(":") || !line.startsWith("data: ")) continue;
       let evt: ComposeActivityEvent & {
         type?: string;
         text?: string;
         draft?: string;
         skipped?: string;
         error?: string;
+        reason?: string;
+        stage?: string;
       };
       try {
         evt = JSON.parse(line.slice(6));
@@ -2533,20 +2584,27 @@ export async function composeAssistStream(
       if (evt.type === "activity") {
         const { type: _t, text: _x, draft: _d, ...event } = evt;
         handlers.onActivity?.(event);
+      } else if (evt.type === "status" && evt.stage) {
+        handlers.onStatus?.(evt.stage, evt.detail);
       } else if (evt.type === "delta" && evt.text) {
         handlers.onDelta?.(
           evt.kind === "reasoning" ? "reasoning" : "content",
           evt.text
         );
       } else if (evt.type === "done") {
-        done = { draft: evt.draft ?? "", skipped: evt.skipped };
+        // Return at once. A Stop or a bound that lands before EOF must not
+        // throw away a draft that already arrived.
+        reader.cancel().catch(() => undefined);
+        return { draft: evt.draft ?? "", skipped: evt.skipped };
       } else if (evt.type === "error") {
-        streamError = evt.error || "draft failed";
+        streamError = new DraftStreamError(
+          evt.error || "draft failed",
+          draftErrorReason(evt.reason) ?? draftErrorReason(evt.error)
+        );
       }
     }
   }
-  if (done) return done;
-  throw new Error(streamError ?? "draft stream ended without a result");
+  throw streamError ?? new DraftStreamError("draft stream ended without a result", null);
 }
 
 // ── Digest ──────────────────────────────────────────────────────────────────

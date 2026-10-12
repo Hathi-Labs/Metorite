@@ -62,7 +62,11 @@ async def test_the_health_route_has_the_contract_shape(q) -> None:
     assert [e["key"] for e in body["entities"]][:5] == ENTITY_KEYS
     for entity in body["entities"]:
         assert set(entity) == {"key", "zoho_count", "ours", "last_run"}
-        assert {"seen", "failed"} <= set(entity["last_run"])
+        assert "seen" in entity["last_run"]
+        # The CRM-Q5 steps (tasks, converted_leads, deal_contacts) pass through
+        # with their own keys, and the card reads a missing count as 0.
+        if entity["key"] in ENTITY_KEYS:
+            assert "failed" in entity["last_run"]
     # Zoho's count is the estimate, ours is the local rows with ext_source = zoho.
     by_key = {e["key"]: e for e in body["entities"]}
     assert by_key["organizations"]["zoho_count"] == 5 and by_key["organizations"]["ours"] == 5

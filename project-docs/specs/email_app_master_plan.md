@@ -15657,6 +15657,12 @@ GO-NARROWED, and its edits D1 to D14 are in this section. The re-audit of 2026-1
 returned GO-NARROWED, and its edits E1 to E6 are in this section too. Slice **EM-T17** has
 seven PRs (§17.7).
 
+✅ **PR-A2 is MERGED** as #893 (`0bd098f18`, 2026-10-12). The composer
+has a Stop button and the bound `CLIENT_TOTAL_MS`. An abort never falls back to
+`composeAssist`, and a typed error keeps the preview. The reply path sends the `context`
+`done` event (A7). The fences are `useDraftSession.test.ts` and
+`tests/unit/test_email_draft_no_stall.py`.
+
 No migration. Each behaviour that changes the context of a model ships dark. The stall bounds
 of PR-A and PR-A2 ship with no flag, because they bound a live defect (as EM-T9 did).
 
@@ -16286,13 +16292,25 @@ than the base finds. After each merge, check the box: the deployed SHA, and one
 
 ### 17.11 Recorded risks and board findings
 
-- **A LIVE defect, not in this slice: the first save of a reply draft fails.** `upsert_draft`
-  binds one parameter to `id` (`uuid`) and to `provider_message_id` (`text`) in one query
-  (`drafting.py:2305-2311`). asyncpg types the parameter as `uuid`, and Postgres refuses
-  `text = uuid`. The box logged 62 `PUT /email/drafts` answers of 500 and 16 of 200 in 3 days,
-  each 500 with `operator does not exist: text = uuid`. The last was at 08 UTC on
-  2026-10-11. The fix casts `id::text = :id`, or tests the value for a UUID first. It needs
-  its own ticket and an R8 test.
+- ✅ **FIXED on branch `email-draft-save-fix` (2026-10-12): the first save of a reply draft
+  failed.** This was a live defect and not part of this slice. `upsert_draft` bound one parameter
+  to `id` (`uuid`) and to `provider_message_id` (`text`) in one query
+  (`automation/drafting.py`, the reply branch). asyncpg typed the parameter as `uuid`, and
+  Postgres refused `text = uuid`. The box logged 62 `PUT /email/drafts` answers of 500 and 16
+  of 200 in 3 days. Each 500 had `operator does not exist: text = uuid`, and the last was at
+  08 UTC on 2026-10-11.
+  - **The fix.** `reply_row_match` in `transport/send.py` gives each column its own typed
+    parameter. A UUID value matches `id = CAST(:lid AS uuid) OR provider_message_id = :rid`.
+    Any other value matches `provider_message_id = :rid` only. `upsert_draft` and the send
+    route `_reply_target` use this one helper.
+  - **Not `id::text = :id`.** That cast cannot use the primary key, so it reads each row of
+    the mailbox. The two arms use the primary key and the unique
+    `(account_id, provider_message_id)` index.
+  - **A `draft_id` that is not a UUID** now answers 404 in `PUT /email/drafts` and in
+    `POST /email/drafts/send`, and no longer 500.
+  - **Fence:** `tests/unit/test_email_reply_draft_save.py`. Its source scan runs with no
+    database. Its R8 class runs the real route under FORCE RLS, and it was red with the
+    production error before the fix.
 - **The excerpt is not a summary.** A `summary` choice gives the first 800 characters of the
   new text. A message whose point is at its end loses the point. The left-out note and the
   ask-for-more tool are the way back.
@@ -16304,6 +16322,10 @@ than the base finds. After each merge, check the box: the deployed SHA, and one
 - **`shadow` costs one more call.** In `shadow`, each long thread pays one `decide` call
   and keeps the fallback. Run `shadow` for one week at most. `bound_s` on `shadow` keeps the
   added wait at `CONTEXT_DECIDE_BOUND_S` (4 s) or less.
+- **Follow-up of PR-A2: an edit on a streamed preview is lost on Stop.** Stop gives back the
+  text that the member had before the round, so an edit on top of the preview goes. The fix
+  compares the body with the last write of the round, and that needs a body getter in each
+  composer. It is not built.
 
 ### 17.12 Owner questions
 

@@ -68,6 +68,9 @@ def _load():
 agents = _load()
 
 BOX = "acc-1"
+#: A local draft id: ``email_messages.id`` is a uuid, and the draft routes
+#: answer 404 for any other value (``email_app_master_plan.md`` §17.11).
+LOCAL_DRAFT_ID = "00000000-0000-4000-8000-0000000000d1"
 OTHER_BOX = "acc-2"
 SENDER = "news@list.example"
 ONE_CLICK = {"kind": "one-click", "link": "https://list.example.com/u?id=42",
@@ -429,7 +432,7 @@ async def _send(expect: dict[str, list[str]] | None, drow: SimpleNamespace):
         raise _Reached
         yield  # pragma: no cover
 
-    req = d.DraftSendRequest(account_id=BOX, draft_id="d1", expect=expect)
+    req = d.DraftSendRequest(account_id=BOX, draft_id=LOCAL_DRAFT_ID, expect=expect)
     with patch.object(d, "_tenant_session", bind_db(db)), \
             patch.object(d, "_assert_account_owner", AsyncMock()), \
             patch.object(d, "provider_session", provider_session), \
@@ -672,7 +675,7 @@ async def _send_to(provider: _OutlookDraft, *, expect: Any, drow: SimpleNamespac
     async def provider_session(*_a: Any, **_k: Any):
         yield SimpleNamespace(provider=provider)
 
-    req = d.DraftSendRequest(account_id=BOX, draft_id="d1", expect=expect)
+    req = d.DraftSendRequest(account_id=BOX, draft_id=LOCAL_DRAFT_ID, expect=expect)
     with patch.object(d, "_tenant_session", bind_db(db)), \
             patch.object(d, "_assert_account_owner", AsyncMock()), \
             patch.object(d, "provider_session", provider_session):

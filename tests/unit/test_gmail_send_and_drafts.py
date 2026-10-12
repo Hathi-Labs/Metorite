@@ -98,6 +98,9 @@ API = "/gmail/v1/users/me"
 UPLOAD = "/upload" + API
 LOGGER = "email_ingestion.providers.gmail"
 RAVI = "ravi@contoso-em-g3a.test"
+#: A local draft id: ``email_messages.id`` is a uuid, and the draft routes
+#: answer 404 for any other value (``email_app_master_plan.md`` §17.11).
+LOCAL_DRAFT_ID = "00000000-0000-4000-8000-0000000000d1"
 
 
 # ── the fake Gmail ──────────────────────────────────────────────────────────
@@ -800,7 +803,7 @@ async def test_a_signed_send_sends_the_id_that_the_update_returns(
     _route_patches(monkeypatch, _Rows(_draft_row("m-90"), "Asha, Contoso"), p)
 
     out = await drafting.send_draft_endpoint(
-        drafting.DraftSendRequest(account_id="acc-1", draft_id="local-1"),
+        drafting.DraftSendRequest(account_id="acc-1", draft_id=LOCAL_DRAFT_ID),
         BackgroundTasks(), user=_ME)
 
     assert out == {"sent": True}
@@ -823,7 +826,7 @@ async def test_a_signed_send_of_a_provider_that_keeps_its_id_is_unchanged(
     _route_patches(monkeypatch, _Rows(_draft_row("AAMk-1"), "Asha"), provider)
 
     await drafting.send_draft_endpoint(
-        drafting.DraftSendRequest(account_id="acc-1", draft_id="local-1"),
+        drafting.DraftSendRequest(account_id="acc-1", draft_id=LOCAL_DRAFT_ID),
         BackgroundTasks(), user=_ME)
 
     provider.send_draft.assert_awaited_once_with("AAMk-1")
@@ -883,7 +886,7 @@ async def test_a_draft_that_changed_in_gmail_answers_409(
         with pytest.raises(HTTPException) as caught:
             await drafting.send_draft_endpoint(
                 drafting.DraftSendRequest(account_id="acc-1",
-                                          draft_id="local-1"),
+                                          draft_id=LOCAL_DRAFT_ID),
                 BackgroundTasks(), user=_ME)
         assert caught.value.status_code == 409
         assert caught.value.detail == drafting.DRAFT_CHANGED_DETAIL
@@ -891,7 +894,7 @@ async def test_a_draft_that_changed_in_gmail_answers_409(
     _route_patches(monkeypatch, _Rows(_draft_row("m-gone"), ""), _provider())
     with pytest.raises(HTTPException) as caught:
         await drafting.upsert_draft(drafting.DraftUpsertRequest(
-            account_id="acc-1", draft_id="local-1", body="v2"), user=_ME)
+            account_id="acc-1", draft_id=LOCAL_DRAFT_ID, body="v2"), user=_ME)
     assert caught.value.status_code == 409
     assert fake.saved == [] and fake.sent_drafts == []
 
@@ -930,7 +933,7 @@ async def test_an_outlook_signed_send_patches_only_the_lists_the_row_holds(
                                       "Asha"), outlook)
 
     await drafting.send_draft_endpoint(
-        drafting.DraftSendRequest(account_id="acc-1", draft_id="local-1"),
+        drafting.DraftSendRequest(account_id="acc-1", draft_id=LOCAL_DRAFT_ID),
         BackgroundTasks(), user=_ME)
 
     [patch] = client.patch.await_args_list
@@ -955,7 +958,7 @@ async def test_a_signed_gmail_send_keeps_the_bcc(
                                       "Asha"), _provider())
 
     await drafting.send_draft_endpoint(
-        drafting.DraftSendRequest(account_id="acc-1", draft_id="local-1"),
+        drafting.DraftSendRequest(account_id="acc-1", draft_id=LOCAL_DRAFT_ID),
         BackgroundTasks(), user=_ME)
 
     assert _decode(fake.saved[-1]["message"]["raw"])["Bcc"] == AUDIT
@@ -980,7 +983,7 @@ async def test_the_imap_fallback_sends_each_to_cc_and_bcc(
     _route_patches(monkeypatch, _Rows(row, signature), imap)
 
     await drafting.send_draft_endpoint(
-        drafting.DraftSendRequest(account_id="acc-1", draft_id="local-1"),
+        drafting.DraftSendRequest(account_id="acc-1", draft_id=LOCAL_DRAFT_ID),
         BackgroundTasks(), user=_ME)
 
     sent = imap.send_message.await_args.kwargs
