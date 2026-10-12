@@ -58,7 +58,7 @@ from gateway.routes.crm.core import (
     wire,
 )
 from gateway.routes.crm.fields import FieldDef
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 #: The provider whose profile names the modules. One provider today.
@@ -113,6 +113,14 @@ class ModuleLink(BaseModel):
     module: str | None = None
     id: str
     name: str | None = None
+
+
+class ModuleListResponse(ListResponse):
+    """``GET /crm/modules/{module}/records``: the list shape of every CRM list,
+    and the field definitions of the module, so the list can offer its fields
+    as columns by the CRM-Q4 rules."""
+
+    field_defs: list[ModuleFieldDef] = Field(default_factory=list)
 
 
 class ModuleRecordPage(BaseModel):
@@ -257,6 +265,14 @@ def _field_def(row: Any) -> ModuleFieldDef:
     )
 
 
+async def _field_defs(db: Any, module: str) -> list[ModuleFieldDef]:
+    """The field definitions of a module (``module:<ApiName>``), by position."""
+    rows = (await db.execute(
+        text(_DEFS_SQL), {"entity": _mapping().module_entity(module)},
+    )).fetchall()
+    return [_field_def(r) for r in rows]
+
+
 def _lookup_ids(
     record: ModuleRecordModel, defs: list[ModuleFieldDef],
 ) -> dict[str, list[tuple[str, str, str | None]]]:
@@ -342,7 +358,7 @@ async def list_modules(
     return [_summary(row, counts.get(name, 0)) for name, row in mirrored.items()]
 
 
-@router.get("/modules/{module}/records", response_model=ListResponse)
+@router.get("/modules/{module}/records", response_model=ModuleListResponse)
 async def list_module_records(
     module: str,
     q: str | None = None,
@@ -351,7 +367,7 @@ async def list_module_records(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
     user: UserContext = Depends(get_current_user),
-) -> ListResponse:
+) -> ModuleListResponse:
     """One page of a mirrored module's records. 404 for a module that the
     profile does not mirror. ``q`` matches ``name``, and ``sort`` is one of
     :data:`MODULE_RECORDS` ``sorts``.
@@ -373,8 +389,10 @@ async def list_module_records(
             ),
             {**query.params, "limit": query.limit, "offset": query.offset},
         )).fetchall()
-    return ListResponse(
+        defs = await _field_defs(db, module)
+    return ModuleListResponse(
         rows=[_record(r).model_dump() for r in rows], total=int(total),
+        field_defs=defs,
     )
 
 
@@ -396,11 +414,7 @@ async def get_module_record(
         if found is None:
             raise HTTPException(status_code=404, detail="Record not found")
         record = _record(found)
-        defs = [
-            _field_def(r) for r in (await db.execute(
-                text(_DEFS_SQL), {"entity": _mapping().module_entity(module)},
-            )).fetchall()
-        ]
+        defs = await _field_defs(db, module)
         links = await resolve_links(db, record, defs, mirrored)
     return ModuleRecordPage(
         module=_summary(row), record=record, field_defs=defs, links=links,

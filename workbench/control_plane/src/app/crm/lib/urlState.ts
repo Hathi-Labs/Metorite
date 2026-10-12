@@ -9,6 +9,7 @@
 // All of it is parse/serialize over URLSearchParams, so it is pure and the
 // deep-link behaviour is testable without a browser.
 
+import { isModuleName } from "./modules";
 import { ENTITIES, type EntitySlug } from "./types";
 
 /** The four sheet parameters, in the order a conflict resolves. */
@@ -57,6 +58,9 @@ export function shownRecordTab(entity: EntitySlug, tab: RecordTab): RecordTab {
  * state) could not stay open across them. `?tab=reports&deal=<id>` is a
  * legitimate link.
  *
+ * `module` is the list of one generic Zoho module (WS-53 CRM-Q6b). `?module=`
+ * names it, and a `module` tab with no valid name opens Deals.
+ *
  * The old `board` tab is gone (CRM-Q3, spec section 18.4). The board is the
  * `board` LAYOUT of the Deals view, and `LEGACY_TABS` keeps the old links alive.
  *
@@ -64,7 +68,7 @@ export function shownRecordTab(entity: EntitySlug, tab: RecordTab): RecordTab {
  * load effect both have to learn it, or the tab parses, the row highlights
  * and the screen keeps showing whatever was there.
  */
-export const NON_ENTITY_TABS = ["settings", "reports"] as const;
+export const NON_ENTITY_TABS = ["settings", "reports", "module"] as const;
 export type NonEntityTab = (typeof NON_ENTITY_TABS)[number];
 
 /** How a Deals or Leads view draws its records. */
@@ -143,7 +147,19 @@ export type CrmView = {
   custom: Record<string, string[]>;
   /** The saved view in effect (`?view=`), or null. */
   viewId: string | null;
+  /**
+   * The generic module of a `module` tab (`?module=`, WS-53 CRM-Q6b). Optional,
+   * so a view built before CRM-Q6b still type-checks: absent reads as none.
+   */
+  module?: string | null;
+  /**
+   * The generic record open over the view (`?mrec=<Module>:<id>`). It never
+   * shares the screen with `record`: opening one closes the other.
+   */
+  moduleRecord?: OpenModuleRecord | null;
 };
+
+export type OpenModuleRecord = { module: string; id: string };
 
 export const DEFAULT_VIEW: CrmView = {
   tab: "deals",
@@ -195,7 +211,13 @@ export function parseView(search: string | URLSearchParams): CrmView {
     typeof search === "string" ? new URLSearchParams(search) : search;
   const raw = params.get("tab");
   const legacy = raw ? LEGACY_TABS[raw] : undefined;
-  const tab: CrmView["tab"] = legacy ? legacy.tab : isTab(raw) ? raw : "deals";
+  const module = params.get("module");
+  const parsedTab: CrmView["tab"] = legacy ? legacy.tab : isTab(raw) ? raw : "deals";
+  // A module tab names its module, or it is not a tab.
+  const tab: CrmView["tab"] =
+    parsedTab === "module" && !isModuleName(module) ? "deals" : parsedTab;
+  const moduleRecord = parseModuleRecord(params.get("mrec"));
+  // A known record wins a hand-edited URL that names both.
   const record = parseRecord(params);
   return {
     tab,
@@ -217,7 +239,19 @@ export function parseView(search: string | URLSearchParams): CrmView {
     ranges: parseRanges(params),
     custom: parseCustom(params),
     viewId: params.get("view") || null,
+    module: tab === "module" ? module : null,
+    moduleRecord: record ? null : moduleRecord,
   };
+}
+
+/** `?mrec=Products:<id>`, or null for a value that is not one. */
+export function parseModuleRecord(value: string | null): OpenModuleRecord | null {
+  if (!value) return null;
+  const at = value.indexOf(":");
+  if (at < 0) return null;
+  const module = value.slice(0, at);
+  const id = value.slice(at + 1);
+  return isModuleName(module) && id ? { module, id } : null;
 }
 
 function parseRanges(params: URLSearchParams): Partial<Record<RangeKey, string>> {
@@ -290,6 +324,7 @@ export function parseRecord(params: URLSearchParams): OpenRecord | null {
 export function serializeView(view: CrmView): string {
   const params = new URLSearchParams();
   if (view.tab !== "deals") params.set("tab", view.tab);
+  if (view.tab === "module" && view.module) params.set("module", view.module);
   // A board that carries a filter says so, or the link would reopen as a list
   // (parseLayout): the filter is what the reader sent.
   const filtered = Boolean(view.q.trim() || view.statusId || view.sort);
@@ -322,6 +357,9 @@ export function serializeView(view: CrmView): string {
   if (view.record) {
     params.set(view.record.param, view.record.id);
     if (view.recordTab && view.recordTab !== "overview") params.set("rtab", view.recordTab);
+  } else if (view.moduleRecord) {
+    params.set("mrec", `${view.moduleRecord.module}:${view.moduleRecord.id}`);
+    if (view.recordTab && view.recordTab !== "overview") params.set("rtab", view.recordTab);
   }
   return params.toString();
 }
@@ -341,11 +379,27 @@ export function openRecord(
   param: SheetParam,
   id: string
 ): CrmView {
-  return { ...view, record: { param, entity: SHEET_ENTITY[param], id } };
+  return { ...view, record: { param, entity: SHEET_ENTITY[param], id }, moduleRecord: null };
 }
 
 export function closeRecord(view: CrmView): CrmView {
-  return { ...view, record: null, recordTab: "overview" };
+  return { ...view, record: null, moduleRecord: null, recordTab: "overview" };
+}
+
+/**
+ * Open a generic record over the view (WS-53 CRM-Q6b). It closes a known
+ * record, so the two sheets never stack, and it starts on Overview.
+ */
+export function openModuleRecord(view: CrmView, module: string, id: string): CrmView {
+  return { ...view, record: null, moduleRecord: { module, id }, recordTab: "overview" };
+}
+
+/** The list of one generic module. It closes the sheet, as `selectTab` does. */
+export function selectModule(view: CrmView, module: string): CrmView {
+  if (view.tab === "module" && view.module === module) return view;
+  // From one module to another is a change of view too, so it resets the
+  // filters through `selectTab`, which skips a move to the same tab.
+  return { ...selectTab({ ...view, tab: "deals" }, "module"), module, q: "" };
 }
 
 /** A tab of the record page. */
@@ -379,6 +433,8 @@ export function selectTab(view: CrmView, tab: CrmView["tab"]): CrmView {
     ranges: {},
     custom: {},
     viewId: null,
+    module: null,
+    moduleRecord: null,
   };
 }
 

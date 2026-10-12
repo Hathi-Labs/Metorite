@@ -349,11 +349,15 @@ async def test_the_record_list_searches_sorts_and_pages(ns) -> None:
     _record(ns, a, "Products", "p1", "Alpha widget", modified="2026-10-01")
     _record(ns, a, "Products", "p2", "Beta gadget", modified="2026-10-03")
     _record(ns, a, "Products", "p3", "Gamma widget", modified="2026-10-02")
+    _field_def(ns, a, "Products", "Unit_Price", "currency", position=2)
+    _field_def(ns, a, "Products", "Name", "text", position=1)
 
     newest = await _get(ns, a, "/crm/modules/Products/records")
     assert [r["name"] for r in newest.json()["rows"]] == [
         "Beta gadget", "Gamma widget", "Alpha widget",
     ]
+    # The field definitions travel with the list, for its Columns control.
+    assert [d["key"] for d in newest.json()["field_defs"]] == ["Name", "Unit_Price"]
     found = await _get(ns, a, "/crm/modules/Products/records?q=widget&sort=name&dir=asc")
     assert found.status_code == 200, found.text
     assert [r["name"] for r in found.json()["rows"]] == ["Alpha widget", "Gamma widget"]

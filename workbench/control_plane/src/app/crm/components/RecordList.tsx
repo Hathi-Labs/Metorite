@@ -75,6 +75,9 @@ function cell(key: string, row: Row): React.ReactNode {
 
 export default function RecordList({
   entity,
+  columns: columnsProp,
+  sortKeys,
+  more,
   rows,
   total,
   loading,
@@ -86,7 +89,14 @@ export default function RecordList({
   columnKeys,
   onColumnsChange,
 }: {
-  entity: EntitySlug;
+  /** The collection, or a generic module (`module:Products`, CRM-Q6b). */
+  entity: EntitySlug | `module:${string}`;
+  /** The columns of a generic module. The four entities read `COLUMNS`. */
+  columns?: (typeof COLUMNS)[EntitySlug];
+  /** The sort keys of a generic module. The four entities read `SORTS`. */
+  sortKeys?: readonly string[];
+  /** What follows the rows, such as the "Load more" of a module list. */
+  more?: React.ReactNode;
   rows: Row[];
   total: number;
   loading: boolean;
@@ -104,7 +114,7 @@ export default function RecordList({
   columnKeys?: string[];
   onColumnsChange?: (keys: string[]) => void;
 }) {
-  const columns = COLUMNS[entity];
+  const columns = columnsProp ?? COLUMNS[entity as EntitySlug];
   // The choice is per entity and lives in this browser. The state re-seats
   // while rendering when the entity changes, so no frame shows the old list's choice.
   const [picked, setPicked] = useState(() => ({ entity, keys: readColumns(entity) }));
@@ -127,7 +137,7 @@ export default function RecordList({
     writeColumns(entity, keys);
     setPicked({ entity, keys });
   }
-  const sortable = new Set(SORTS[entity].map((s) => s.key));
+  const sortable = new Set(sortKeys ?? SORTS[entity as EntitySlug].map((s) => s.key));
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -207,6 +217,7 @@ export default function RecordList({
             ))}
           </tbody>
         </table>
+        {more}
         {!loading && rows.length === 0 && (
           <p className="p-8 text-center text-xs text-muted-foreground">
             Nothing matches this view.
