@@ -36,7 +36,10 @@ from gateway.routes.crm.core import (
     _tenant_session,
     actor,
     assert_writable,
+    attach_ext_urls,
+    checked_uuid,
     current_tenant,
+    default_pipeline_id,
     has_column,
     insert_row,
     link_deal_contact,
@@ -354,6 +357,7 @@ class PipelineResponse(BaseModel):
 async def get_pipeline(
     owner: str | None = None,
     per_lane: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
+    pipeline_id: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> PipelineResponse:
     """Deals grouped by status — the kanban read.
@@ -363,13 +367,32 @@ async def get_pipeline(
     total and ₹ weighted are aggregated over the WHOLE lane, not over the page
     of rows returned, or the header would lie about a lane with more than
     ``per_lane`` deals in it.
+
+    **``?pipeline_id=``** (WS-53 CRM-Q2) shows one pipeline. The lanes are its
+    stages in its own order, and the deals are the ones that name it. With no
+    ``pipeline_id`` the board is the whole organization, as it always was.
     """
     async with _tenant_session() as db:
-        lanes = (await db.execute(
-            text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
-        )).fetchall()
-        where = "status_id = CAST(:status_id AS uuid)"
         params: dict[str, Any] = {}
+        where = "status_id = CAST(:status_id AS uuid)"
+        if pipeline_id:
+            wanted = checked_uuid(pipeline_id, "pipeline_id")
+            await require_row(db, "crm_pipelines", wanted, "Pipeline")
+            lanes = (await db.execute(
+                text(
+                    "SELECT s.* FROM crm_deal_statuses s "
+                    "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
+                    "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+                    "ORDER BY ps.position, s.name"
+                ),
+                {"pipeline_id": wanted},
+            )).fetchall()
+            where += " AND pipeline_id = CAST(:pipeline_id AS uuid)"
+            params["pipeline_id"] = wanted
+        else:
+            lanes = (await db.execute(
+                text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
+            )).fetchall()
         if owner:
             where += " AND lower(owner_email) = :owner"
             params["owner"] = owner.strip().lower()
@@ -405,9 +428,11 @@ async def get_pipeline(
                 )),
                 {**scope, "limit": per_lane},
             )).fetchall()
+            wired = [row_to_dict(r, DealModel) for r in rows]
+            await attach_ext_urls(db, DEALS.table, wired)
             out.append(PipelineLane(
                 status=status_wire(lane),
-                rows=[row_to_dict(r, DealModel) for r in rows],
+                rows=wired,
                 count=int(getattr(agg, "count", 0) or 0),
                 amount=float(getattr(agg, "amount", 0) or 0),
                 # The open/ongoing restriction is applied per LANE rather than
@@ -573,6 +598,7 @@ async def _create_deal(
     """The deal the lead became — carrying its provenance and its primary contact."""
     wanted = body.deal or ConvertDeal()
     status = await load_default_status(db, DEALS.status_table or "crm_deal_statuses")
+    pipeline_id = await default_pipeline_id(db)
     name = (
         (wanted.name or "").strip()
         or (getattr(lead, "organization_name", None) or "").strip()
@@ -581,6 +607,7 @@ async def _create_deal(
     deal = await insert_row(db, DEALS.table, {
         "name": name,
         "company_id": str(organization.id) if organization is not None else None,
+        "pipeline_id": pipeline_id,
         "status_id": str(status.id),
         "amount": wanted.amount,
         "currency": wanted.currency or "INR",

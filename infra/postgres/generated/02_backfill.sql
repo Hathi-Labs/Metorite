@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 151
+-- Tables in this phase: 155
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -28,6 +28,9 @@ UPDATE agent_avatars SET organization_id = (SELECT id FROM organization WHERE sl
  WHERE organization_id IS NULL;
 
 UPDATE agent_blob SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE agent_connection SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE agent_file_history SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -133,6 +136,15 @@ UPDATE crm_sync_cursors SET organization_id = (SELECT id FROM organization WHERE
  WHERE organization_id IS NULL;
 
 UPDATE crm_sync_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_pipeline_stages SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_pipelines SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_source_profiles SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE crm_zoho_tombstones SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

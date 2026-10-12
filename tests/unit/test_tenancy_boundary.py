@@ -134,6 +134,10 @@ EXPECTED_SCOPED = {
     "integration_connections",
     # WS-53 CRM-Z4/Z5 (2026-10-11): one row for each run of the mirror sync.
     "crm_sync_runs",
+    # WS-53 CRM-Q1/Q2 (2026-10-12): the source profile and the deal pipelines.
+    "crm_source_profiles",
+    "crm_pipelines",
+    "crm_pipeline_stages",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`

@@ -13,6 +13,8 @@ import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
+import type { FieldDef } from "./fields";
+import type { SyncHealth } from "./syncHealth";
 import type {
   Activity,
   Contact,
@@ -143,6 +145,13 @@ export function deleteRecord(
   id: string
 ): Promise<{ deleted: string; entity: string; cascaded: Record<string, number> }> {
   return call(`/${entity}/${id}`, { method: "DELETE" });
+}
+
+// ── Field definitions (CRM-Q4) ────────────────────────────────────────────
+
+/** What each custom field of one entity means. Read only. */
+export function listFields(entity: EntitySlug): Promise<FieldDef[]> {
+  return call<FieldDef[]>(`/fields/${entity}`);
 }
 
 // ── The CSV export (WS-26i-export) ────────────────────────────────────────
@@ -361,6 +370,11 @@ export function getConnection(): Promise<ConnectionInfo | null> {
 
 export function getSyncStatus(): Promise<SyncStatus | null> {
   return orNullOn404(call<SyncStatus>("/sync/status"));
+}
+
+/** Admin only (CRM-Q9). The sync health card reads it. A 404 means the mirror is off. */
+export function getSyncHealth(): Promise<SyncHealth | null> {
+  return orNullOn404(call<SyncHealth>("/sync/health"));
 }
 
 /** Admin only. A member gets 403, which the caller treats as "unknown". */

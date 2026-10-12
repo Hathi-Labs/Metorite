@@ -10,6 +10,11 @@ in the same transaction as the mode change. Nothing seeds on a read, and
 ``provision_organization`` seeds nothing. A Mirror organization gets its stages
 from the source system (CRM-Z4).
 
+**The default pipeline** (WS-53 CRM-Q2). The same call also gives the org ONE
+pipeline, :data:`DEFAULT_PIPELINE_NAME`, that holds every deal stage in stage
+order. It is made only when the org has no pipeline yet, so a pipeline that an
+admin renamed or emptied does not come back.
+
 The three lists are the ``VALUES`` of ``infra/postgres/144_crm.sql``.
 ``tests/unit/test_crm_migration.py`` reads that file and fails if the two
 disagree, so a stage renamed in one place is renamed in both or the build is
@@ -63,6 +68,23 @@ LOST_REASONS: tuple[tuple[str, int], ...] = (
     ("Other", 60),
 )
 
+#: The name of the pipeline that a Native org starts with.
+DEFAULT_PIPELINE_NAME = "Sales pipeline"
+
+_PIPELINE_SQL = (
+    "INSERT INTO crm_pipelines "
+    "(organization_id, name, position, is_default) "
+    "VALUES (CAST(:organization_id AS uuid), :name, 0, true) RETURNING id"
+)
+
+_PIPELINE_STAGES_SQL = (
+    "INSERT INTO crm_pipeline_stages "
+    "(organization_id, pipeline_id, status_id, position) "
+    "SELECT CAST(:organization_id AS uuid), CAST(:pipeline_id AS uuid), s.id, "
+    "s.position FROM crm_deal_statuses s "
+    "WHERE s.organization_id = CAST(:organization_id AS uuid)"
+)
+
 _LEAD_SQL = (
     "INSERT INTO crm_lead_statuses "
     "(organization_id, name, color, position, type, is_default) "
@@ -112,7 +134,7 @@ async def seed_native_pipeline(db: Any, organization_id: str) -> dict[str, int]:
     own (CRM-T5 review, P2). An org with any stage keeps its own pipeline.
     """
     org = str(organization_id)
-    added = {"lead_statuses": 0, "deal_statuses": 0, "lost_reasons": 0}
+    added = {"lead_statuses": 0, "deal_statuses": 0, "lost_reasons": 0, "pipelines": 0}
     if not await _has_rows(db, "crm_lead_statuses", org):
         for name, color, position, kind, is_default in LEAD_STATUSES:
             added["lead_statuses"] += await _insert(db, _LEAD_SQL, {
@@ -126,6 +148,19 @@ async def seed_native_pipeline(db: Any, organization_id: str) -> dict[str, int]:
                 "position": position, "type": kind, "is_default": is_default,
                 "probability": probability,
             })
+    if (
+        not await _has_rows(db, "crm_pipelines", org)
+        and await _has_rows(db, "crm_deal_statuses", org)
+    ):
+        created = (await db.execute(
+            text(_PIPELINE_SQL),
+            {"organization_id": org, "name": DEFAULT_PIPELINE_NAME},
+        )).first()
+        await db.execute(
+            text(_PIPELINE_STAGES_SQL),
+            {"organization_id": org, "pipeline_id": str(created.id)},
+        )
+        added["pipelines"] = 1
     if not await _has_rows(db, "crm_lost_reasons", org):
         for label, position in LOST_REASONS:
             added["lost_reasons"] += await _insert(db, _REASON_SQL, {

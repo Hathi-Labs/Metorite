@@ -177,6 +177,11 @@ class MirrorFields(BaseModel):
     ext_source: str | None = None
     ext_id: str | None = None
     ext_modified_at: str | None = None
+    #: The link to the record in the provider's own app ("Open in Zoho"). It is
+    #: NOT a column: :func:`attach_ext_urls` computes it from the connection of
+    #: the organization, and it stays ``None`` until the sync has read the org
+    #: domain (WS-53 CRM-Q1).
+    ext_url: str | None = None
     custom: dict = {}
 
 
@@ -309,6 +314,8 @@ class DealModel(MirrorFields):
     #: read straight from ``crm_deals`` leaves it None, which is the honest
     #: answer for a deal with no organization.
     organization_name: str | None = None
+    #: The deal pipeline (WS-53 CRM-Q2). ``None`` for a deal that no pipeline holds.
+    pipeline_id: str | None = None
     status_id: str | None = None
     status_changed_at: str | None = None
     amount: float | None = None
@@ -332,6 +339,7 @@ class DealModel(MirrorFields):
 class DealIn(BaseModel):
     name: str | None = None
     company_id: str | None = None
+    pipeline_id: str | None = None
     status_id: str | None = None
     amount: float | None = None
     currency: str | None = None
@@ -381,6 +389,9 @@ class StatusModel(BaseModel):
     #: Deal statuses only (WS-26h) — days a deal may sit here before its card
     #: wears an age badge. ``None`` = this stage never rots.
     max_dwell_days: int | None = None
+    #: Deal statuses only (WS-53 CRM-Q2) — the forecast category as the provider
+    #: names it ("Pipeline", "Closed Won"). ``None`` for a native stage.
+    forecast_category: str | None = None
 
 
 class LostReasonModel(BaseModel):
@@ -637,6 +648,7 @@ def status_wire(row: Any) -> StatusModel:
         # mutate the row's own list.
         required_fields=list(getattr(row, "required_fields", None) or []),
         max_dwell_days=getattr(row, "max_dwell_days", None),
+        forecast_category=getattr(row, "forecast_category", None),
     )
 
 
@@ -709,6 +721,16 @@ class ListQuery:
     params: dict[str, Any]
 
 
+def checked_uuid(value: str, what: str) -> str:
+    """*value* as a canonical UUID string, or a 422 that names *what*."""
+    try:
+        return str(UUID(str(value)))
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"'{what}' is not a valid id.",
+        ) from None
+
+
 def list_contract(
     entity: Entity,
     *,
@@ -720,6 +742,7 @@ def list_contract(
     status_id: str | None = None,
     owner: str | None = None,
     source: str | None = None,
+    pipeline_id: str | None = None,
     extra_where: tuple[str, ...] = (),
     extra_params: dict[str, Any] | None = None,
 ) -> ListQuery:
@@ -768,6 +791,17 @@ def list_contract(
             )
         clauses.append("status_id = CAST(:status_id AS uuid)")
         params["status_id"] = status_id
+    if pipeline_id:
+        if entity.table != "crm_deals":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{entity.slug} have no pipeline, so '?pipeline_id' cannot "
+                    "filter them. Drop the parameter."
+                ),
+            )
+        clauses.append("pipeline_id = CAST(:pipeline_id AS uuid)")
+        params["pipeline_id"] = checked_uuid(pipeline_id, "pipeline_id")
     if owner:
         # R10 — email comparisons are case-insensitive on both sides.
         clauses.append("lower(owner_email) = :owner")
@@ -892,9 +926,114 @@ async def run_list(db: Any, entity: Entity, query: ListQuery) -> ListResponse:
         text(project_joined(entity, inner, qualify(query.order_by, "base"))),
         {**query.params, "limit": query.limit, "offset": query.offset},
     )).fetchall()
-    return ListResponse(
-        rows=[row_to_dict(r, entity.model) for r in rows], total=int(total),
+    wired = [row_to_dict(r, entity.model) for r in rows]
+    await attach_ext_urls(db, entity.table, wired)
+    return ListResponse(rows=wired, total=int(total))
+
+
+# ── The link to a record in the provider's app (WS-53 CRM-Q1) ──────────────
+
+#: Mirror table to the canonical entity that ``crm_sources.zoho.links`` knows.
+_LINK_ENTITIES: dict[str, str] = {
+    "crm_companies": "company", "crm_contacts": "contact",
+    "crm_leads": "lead", "crm_deals": "deal",
+}
+
+
+@dataclass(frozen=True)
+class ProviderLinkContext:
+    """What the record wire needs to build an "Open in Zoho" link."""
+
+    accounts_server: str | None
+    domain_name: str | None
+    tabs: dict[str, str]
+
+
+async def provider_link_context(db: Any) -> ProviderLinkContext | None:
+    """The link context of the caller's organization, or ``None``.
+
+    It reads the registry row (``provider_meta``) and never the token blob. The
+    organization is the bound tenant. A missing connection, or one the sync has
+    not yet discovered, gives ``None``, and the wire shows no link.
+    """
+    from gateway.connections import store
+
+    org = current_tenant()
+    if not org:
+        return None
+    try:
+        connection = await store.get(db, str(org), "zoho", "crm")
+    except ValueError:  # a tenant that is not a UUID has no connection
+        return None
+    if connection is None:
+        return None
+    meta = connection.provider_meta
+    tabs = meta.get("tabs")
+    return ProviderLinkContext(
+        accounts_server=str(meta.get("accounts_server") or "") or None,
+        domain_name=str(meta.get("domain_name") or "") or None,
+        tabs={str(k): str(v) for k, v in tabs.items()} if isinstance(tabs, dict) else {},
     )
+
+
+async def attach_ext_urls(db: Any, table: str, rows: list[dict[str, Any]]) -> None:
+    """Set ``ext_url`` on each mirrored row of *rows*, in place.
+
+    One registry read for the whole page, and none when no row is mirrored.
+    ``ext_url`` stays ``None`` when the org domain is not known yet.
+    """
+    from gateway.crm_sources.zoho import links
+
+    entity = _LINK_ENTITIES.get(table)
+    mirrored = [r for r in rows if r.get("ext_source") == "zoho" and r.get("ext_id")]
+    if entity is None or not mirrored:
+        return
+    context = await provider_link_context(db)
+    if context is None:
+        return
+    for row in mirrored:
+        row["ext_url"] = links.deep_link(
+            context.accounts_server, context.domain_name, entity, row["ext_id"],
+            context.tabs,
+        )
+
+
+async def add_stage_to_default_pipeline(db: Any, status_id: str) -> None:
+    """Append a new deal stage to the default pipeline, last (WS-53 CRM-Q2).
+
+    The stage route calls it in the same transaction as the insert, so a stage
+    an admin creates in Native mode is usable on the board at once. It goes
+    through the one write guard: Mirror mode refuses (409), and the stage route
+    has refused already. With no pipeline it does nothing.
+    """
+    await assert_writable(db, current_tenant(), "crm_pipeline_stages")
+    pipeline = await default_pipeline_id(db)
+    if pipeline is None:
+        return
+    await db.execute(
+        text(
+            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
+            "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), COALESCE((SELECT "
+            "max(position) + 1 FROM crm_pipeline_stages WHERE pipeline_id = "
+            "CAST(:p AS uuid)), 0)) ON CONFLICT (pipeline_id, status_id) DO NOTHING"
+        ),
+        {"p": pipeline, "s": str(status_id)},
+    )
+
+
+async def default_pipeline_id(db: Any) -> str | None:
+    """The id of the organization's default deal pipeline, or ``None``.
+
+    A deal with no stated pipeline joins it (native create and lead convert).
+    """
+    row = (await db.execute(
+        text(
+            "SELECT id FROM crm_pipelines "
+            "ORDER BY is_default DESC, position, created_at LIMIT 1"
+        ),
+        {},
+    )).first()
+    return str(row.id) if row is not None else None
 
 
 # ── SQL helpers ─────────────────────────────────────────────────────────────
@@ -1109,9 +1248,11 @@ MIRROR_RECORD_TABLES: frozenset[str] = frozenset({
     "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
 })
 
-#: Pipeline settings. In Mirror mode the provider owns the stage picklist.
+#: Pipeline settings. In Mirror mode the provider owns the stage picklist and
+#: the deal pipelines (WS-53 CRM-Q2).
 MIRROR_SETTINGS_TABLES: frozenset[str] = frozenset({
     "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
+    "crm_pipelines", "crm_pipeline_stages",
 })
 
 #: ``ext_source`` value → the name a person reads.
@@ -1184,7 +1325,7 @@ async def assert_writable(
     if table in MIRROR_SETTINGS_TABLES:
         raise _conflict(
             "mirror_mode_settings",
-            "The stages and lost reasons come from Zoho. Change them in Zoho.",
+            "The stages, pipelines and lost reasons come from Zoho. Change them in Zoho.",
         )
     if creating:
         if table == "crm_activities":
@@ -1309,6 +1450,11 @@ MIRROR_REFUSED: frozenset[str] = frozenset({
     "id", "organization_id", "zoho_dirty", "created_at",
 })
 
+#: The settings tables a provider mirror may also write (CRM-Q2). They are keyed
+#: ``(organization_id, ext_source, ext_id)`` like the five above, but they have
+#: no ``zoho_id`` column, and the sync writes them only from the discovery step.
+MIRROR_SETTINGS_SOURCE_TABLES: frozenset[str] = frozenset({"crm_pipelines"})
+
 _COLUMN_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
@@ -1339,10 +1485,10 @@ async def upsert_from_source(db: Any, table: str, values: dict[str, Any]) -> Any
     Column names come from the caller's dict, so each one must be a plain
     identifier and none may be in :data:`MIRROR_REFUSED`.
     """
-    if table not in MIRROR_TABLES:
+    if table not in MIRROR_TABLES and table not in MIRROR_SETTINGS_SOURCE_TABLES:
         raise ValueError(
             f"upsert_from_source: {table!r} is not a mirror table "
-            f"(allowed: {sorted(MIRROR_TABLES)})"
+            f"(allowed: {sorted(MIRROR_TABLES | MIRROR_SETTINGS_SOURCE_TABLES)})"
         )
     for required in ("ext_source", "ext_id"):
         if not values.get(required):
@@ -1352,7 +1498,7 @@ async def upsert_from_source(db: Any, table: str, values: dict[str, Any]) -> Any
             raise ValueError(f"upsert_from_source: {column!r} must not be passed")
         if not _COLUMN_NAME.match(column):
             raise ValueError(f"upsert_from_source: {column!r} is not a column name")
-    if values["ext_source"] == "zoho":
+    if values["ext_source"] == "zoho" and table in MIRROR_TABLES:
         if values.get("zoho_id") not in (None, values["ext_id"]):
             raise ValueError("upsert_from_source: zoho_id must equal ext_id for Zoho")
         values = {**values, "zoho_id": values["ext_id"]}
@@ -1387,10 +1533,10 @@ async def delete_from_source(
     It writes NO tombstone. A tombstone queues a delete for the provider, and
     this delete came from the provider.
     """
-    if table not in MIRROR_TABLES:
+    if table not in MIRROR_TABLES and table not in MIRROR_SETTINGS_SOURCE_TABLES:
         raise ValueError(
             f"delete_from_source: {table!r} is not a mirror table "
-            f"(allowed: {sorted(MIRROR_TABLES)})"
+            f"(allowed: {sorted(MIRROR_TABLES | MIRROR_SETTINGS_SOURCE_TABLES)})"
         )
     if not ext_source:
         raise ValueError("delete_from_source: 'ext_source' is required")
@@ -1405,6 +1551,41 @@ async def delete_from_source(
         {"ext_source": ext_source, "ext_ids": ids},
     )
     return int(result.rowcount or 0)
+
+
+async def set_pipeline_stages_from_source(
+    db: Any, pipeline_id: str, stages: Sequence[tuple[str, int]],
+) -> None:
+    """Set which stages sit in one MIRRORED pipeline, and in what order.
+
+    The third door of the mirror write path (WS-53 CRM-Q2), beside
+    :func:`upsert_from_source` and :func:`delete_from_source`, with the same
+    fence (``tests/unit/test_crm_upsert_from_source_fence.py`` refuses all three
+    names outside ``gateway/crm_sync/``). ``crm_pipeline_stages`` has no
+    ``ext_id``, so the ``(pipeline_id, status_id)`` key is the whole identity.
+
+    *stages* is ``[(status_id, position), ...]``. A stage that the list leaves
+    out is removed from the pipeline. The stage row (``crm_deal_statuses``) stays,
+    because it is one global list. The tenant policy binds the organization.
+    """
+    ids = [str(status_id) for status_id, _ in stages]
+    await db.execute(
+        text(
+            "DELETE FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid) "
+            "AND NOT (status_id = ANY(CAST(:ids AS uuid[])))"
+        ),
+        {"p": pipeline_id, "ids": ids},
+    )
+    for status_id, position in stages:
+        await db.execute(
+            text(
+                "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
+                "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), :pos) "
+                "ON CONFLICT (pipeline_id, status_id) "
+                "DO UPDATE SET position = EXCLUDED.position"
+            ),
+            {"p": pipeline_id, "s": str(status_id), "pos": int(position)},
+        )
 
 
 async def load_by_zoho_id(db: Any, table: str, zoho_id: str) -> Any | None:
