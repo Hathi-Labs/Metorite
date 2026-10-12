@@ -211,31 +211,69 @@ def _guard_names(tree: ast.AST) -> set[str]:
     return guard_names
 
 
+#: The guard calls that the OAuth modules may not make.
+_BANNED_GUARD = ("request", "mcp_client", "send", "check_url")
+#: HTTP clients that the OAuth modules may not import at all (review of #931).
+_BANNED_MODULES = ("httpx", "urllib.request", "aiohttp", "requests", "http.client")
+
+
+def _banned_module(name: str) -> bool:
+    return any(name == m or name.startswith(m + ".") for m in _BANNED_MODULES)
+
+
+def _dotted(node: ast.AST) -> str:
+    """``a.b.c`` for an attribute chain over a name, else an empty string."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return ""
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _import_offences(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Import):
+        return [f"import {a.name}" for a in node.names if _banned_module(a.name)]
+    if not isinstance(node, ast.ImportFrom):
+        return []
+    mod = node.module or ""
+    bad = [f"from {mod} import"] if _banned_module(mod) else []
+    # ``from urllib import request`` and ``from http import client``.
+    bad += [f"from {mod} import {a.name}" for a in node.names
+            if _banned_module(f"{mod}.{a.name}")]
+    if mod.endswith("outbound_guard"):
+        bad += [f"from {mod} import {a.name}" for a in node.names if a.name in _BANNED_GUARD]
+    return bad
+
+
+def _call_offences(node: ast.AST, guard_names: set[str]) -> list[str]:
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr" and node.args
+            and _dotted(node.args[0]).split(".")[-1] in guard_names):
+        return ["getattr(outbound_guard, ...)"]
+    if not isinstance(node, ast.Attribute):
+        return []
+    chain = _dotted(node)
+    head = chain.rsplit(".", 1)[0] if "." in chain else ""
+    bad: list[str] = []
+    # ``outbound_guard.request``, an alias of it, and a fully qualified
+    # ``gateway.outbound_guard.request``.
+    if node.attr in _BANNED_GUARD and head and (
+            head in guard_names or head.endswith(".outbound_guard")):
+        bad.append(f"{chain}")
+    if chain.split(".")[0] == "httpx":
+        bad.append(chain)
+    return bad
+
+
 def _offences(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    bad: list[str] = []
     guard_names = _guard_names(tree)
+    bad: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            bad += [f"import {a.name}" for a in node.names if a.name.split(".")[0] == "httpx"]
-        elif isinstance(node, ast.ImportFrom):
-            mod = node.module or ""
-            if mod.split(".")[0] == "httpx":
-                bad.append(f"from {mod} import")
-            if mod.endswith("outbound_guard"):
-                for alias in node.names:
-                    if alias.name in ("request", "mcp_client", "send", "check_url"):
-                        bad.append(f"from {mod} import {alias.name}")
-        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-              and node.func.id == "getattr" and node.args
-              and isinstance(node.args[0], ast.Name) and node.args[0].id in guard_names):
-            bad.append("getattr(outbound_guard, ...)")
-        elif isinstance(node, ast.Attribute):
-            if node.attr in ("request", "mcp_client", "send", "check_url") and (
-                    isinstance(node.value, ast.Name) and node.value.id in guard_names):
-                bad.append(f"outbound_guard.{node.attr}")
-            if isinstance(node.value, ast.Name) and node.value.id == "httpx":
-                bad.append(f"httpx.{node.attr}")
+        bad += _import_offences(node) + _call_offences(node, guard_names)
     return bad
 
 
@@ -259,6 +297,11 @@ def test_the_fence_catches_each_banned_form(tmp_path: Path) -> None:
                  "httpx.get(u)",
                  "from gateway import outbound_guard as og\nog.request('GET', u)",
                  "import gateway.outbound_guard as og\nog.mcp_client(u)",
-                 "from gateway import outbound_guard\ngetattr(outbound_guard, 'request')"):
+                 "from gateway import outbound_guard\ngetattr(outbound_guard, 'request')",
+                 "import gateway.outbound_guard\ngateway.outbound_guard.request('GET', u)",
+                 "gateway.outbound_guard.mcp_client(u)",
+                 "import urllib.request", "from urllib import request",
+                 "import aiohttp", "import requests", "import http.client",
+                 "from http import client", "from aiohttp import ClientSession"):
         probe.write_text(line + "\n", encoding="utf-8")
         assert _offences(probe), line

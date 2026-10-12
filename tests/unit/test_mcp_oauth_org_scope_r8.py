@@ -215,3 +215,141 @@ async def test_the_store_predicate_holds_on_a_session_that_bypasses_rls(
     assert done is not None and done.after.organization_id == ns.org_b
     assert _registry(ns, ns.org_a)[name]["provider_meta"].get("auth") is None
     assert _registry(ns, ns.org_b)[name]["provider_meta"]["auth"] == "oauth"
+
+
+# ── Review of #931: a register, a delete and a test of an OAuth row ─────────
+
+
+@pytest.fixture
+def audit(monkeypatch) -> list[Any]:
+    import acb_audit
+
+    events: list[Any] = []
+    monkeypatch.setattr(acb_audit, "record", events.append)
+    return events
+
+
+async def _post(who: Any, name: str, **extra: Any) -> Any:
+    body = {"name": name, "transport": "http-sse", "url": f.MCP_URL,
+            "agent_scope": ["*"], "headers": {}, **extra}
+    return await _call(who, "POST", "/integrations/mcp", body)
+
+
+async def test_a_register_keeps_an_oauth_row_and_merges_its_public_keys(
+        ns, world, audit, monkeypatch) -> None:  # noqa: F811
+    """P2 1, option (a): the tokens, ``auth`` and ``connected_by`` stay."""
+    set_flag(monkeypatch, "*")
+    install_offline(monkeypatch)
+    name = _name("rereg")
+    await _seed(ns.org_a, name, always_confirm=True)
+    assert (await _connect(world, f.user(ADMIN_A, ns.org_a), name, TOKEN_A)).status_code == 302
+    before = _registry(ns, ns.org_a)[name]
+    audit.clear()
+
+    res = await _post(f.user(ADMIN_A2, ns.org_a), name, label="New label",
+                      description="d", agent_scope=["apis-config"], always_confirm=False,
+                      headers={"X-Ignored": "header-sentinel"})
+    assert res.status_code == 201, res.text
+    row = _registry(ns, ns.org_a)[name]
+    meta = row["provider_meta"]
+    assert meta["auth"] == "oauth" and meta["registration"] == "dcr"
+    assert meta["label"] == "New label" and meta["always_confirm"] is False
+    assert meta["agent_scope"] == ["apis-config"]
+    assert row["credentials_encrypted"] == before["credentials_encrypted"]
+    assert row["connected_by"] == ADMIN_A, "a register must not change who it acts as"
+    assert "header-sentinel" not in row["whole"]
+    assert [e.action for e in audit] == ["integration.mcp.registered"]
+    # The run still sends the token of the consent.
+    tools = {t.name: t for t in (await _inject(ns.org_a)).mcp_tools}
+    assert tools[name]._static_headers == {"Authorization": f"Bearer {TOKEN_A}"}
+
+    # Disabled keeps the blob, and enabled again sends the token again.
+    assert (await _post(f.user(ADMIN_A, ns.org_a), name, enabled=False)).status_code == 201
+    row = _registry(ns, ns.org_a)[name]
+    assert row["status"] == "disconnected"
+    assert row["credentials_encrypted"] == before["credentials_encrypted"]
+    assert name not in {t.name for t in (await _inject(ns.org_a)).mcp_tools}
+    assert (await _post(f.user(ADMIN_A, ns.org_a), name, enabled=True)).status_code == 201
+    assert _registry(ns, ns.org_a)[name]["status"] == "connected"
+
+
+async def test_a_register_with_a_new_url_is_409_and_changes_nothing(
+        ns, world, audit) -> None:  # noqa: F811
+    name = _name("newurl")
+    await _seed(ns.org_a, name)
+    assert (await _connect(world, f.user(ADMIN_A, ns.org_a), name, TOKEN_A)).status_code == 302
+    before = _registry(ns, ns.org_a)[name]
+    audit.clear()
+    res = await _post(f.user(ADMIN_A, ns.org_a), name, url="https://mcp.fake.test/other")
+    assert res.status_code == 409, res.text
+    assert "Disconnect it first" in res.json()["detail"]
+    after = _registry(ns, ns.org_a)[name]
+    assert after["whole"] == before["whole"]
+    assert audit == []
+
+
+async def test_a_delete_revokes_the_refresh_token_after_the_commit(
+        ns, world, caplog) -> None:  # noqa: F811
+    """P2 2: best effort, logged by outcome only."""
+    import structlog
+
+    one, two = _name("del"), _name("disc")
+    for name in (one, two):
+        await _seed(ns.org_a, name)
+    assert (await _connect(world, f.user(ADMIN_A, ns.org_a), one, TOKEN_A)).status_code == 302
+    assert (await _connect(world, f.user(ADMIN_A, ns.org_a), two, TOKEN_B)).status_code == 302
+    admin = f.user(ADMIN_A, ns.org_a)
+    with structlog.testing.capture_logs() as logs:
+        res = await _call(admin, "DELETE", f"/integrations/mcp/{one}")
+        assert res.status_code == 200, res.text
+        res = await _call(admin, "POST", f"/integrations/connections/mcp:{two}/disconnect")
+        assert res.status_code == 200, res.text
+    assert world.revoked == [f"refresh-{TOKEN_A}", f"refresh-{TOKEN_B}"]
+    assert one not in _registry(ns, ns.org_a) and two not in _registry(ns, ns.org_a)
+    revokes = [e for e in logs if e.get("event") == "mcp.oauth_revoke"]
+    assert [e["outcome"] for e in revokes] == ["confirmed", "confirmed"]
+    text_of = f.text_of(logs, caplog)
+    for secret in (TOKEN_A, TOKEN_B, f"refresh-{TOKEN_A}", f.SENTINEL_SECRET):
+        assert secret not in text_of
+
+
+async def test_a_failed_revoke_never_fails_the_delete(ns, world) -> None:  # noqa: F811
+    import httpx
+
+    name = _name("revfail")
+    await _seed(ns.org_a, name)
+    assert (await _connect(world, f.user(ADMIN_A, ns.org_a), name, TOKEN_A)).status_code == 302
+    world.fixed[(f.AUTH_HOST, "/revoke")] = httpx.Response(500)
+    res = await _call(f.user(ADMIN_A, ns.org_a), "DELETE", f"/integrations/mcp/{name}")
+    assert res.status_code == 200, res.text
+    assert name not in _registry(ns, ns.org_a)
+
+
+async def test_the_test_button_sends_the_stored_bearer(ns, world, monkeypatch) -> None:  # noqa: F811
+    """P2 3: the Test of an OAuth server sends the header that a run sends."""
+    from acb_common import get_settings
+
+    name = _name("test")
+    await _seed(ns.org_a, name)
+    assert (await _connect(world, f.user(ADMIN_A, ns.org_a), name, TOKEN_A)).status_code == 302
+    admin = f.user(ADMIN_A, ns.org_a)
+    res = await _call(admin, "POST", f"/integrations/mcp/{name}/test")
+    assert res.status_code == 200 and res.json()["ok"] is True, res.text
+    sent = [r for r in world.requests if r.url.path == "/mcp"][-1]
+    assert sent.headers["authorization"] == f"Bearer {TOKEN_A}"
+    assert TOKEN_A not in res.text
+    # The flag off: no bearer, as before this slice.
+    monkeypatch.setattr(get_settings(), "mcp_oauth_enabled", False, raising=False)
+    res = await _call(admin, "POST", f"/integrations/mcp/{name}/test")
+    assert res.json() == {"ok": False, "tools": None, "error": "unauthorized"}
+
+
+async def test_the_test_button_names_an_expired_token(ns, world) -> None:  # noqa: F811
+    name = _name("expired")
+    await _seed(ns.org_a, name)
+    world.expires_in = 30  # inside the 60 s margin of a run
+    assert (await _connect(world, f.user(ADMIN_A, ns.org_a), name, TOKEN_A)).status_code == 302
+    before = len(world.requests)
+    res = await _call(f.user(ADMIN_A, ns.org_a), "POST", f"/integrations/mcp/{name}/test")
+    assert res.json() == {"ok": False, "tools": None, "error": "token_expired"}
+    assert len(world.requests) == before, "an expired token sent a request"

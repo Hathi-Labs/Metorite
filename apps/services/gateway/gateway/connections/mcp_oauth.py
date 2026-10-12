@@ -10,6 +10,8 @@ route, opens no database session and reads no request.
   metadata, the auth server is the origin of the MCP URL (MCP 2025-03-26).
 * **Registration** (§3.6.3), in the order of the MCP text: a pre-registered
   client (IN-8d, none yet), then CIMD, then DCR. Else ``no_registration``.
+  CIMD only with a server that says it sends ``iss`` (RFC 9207), because
+  every CIMD flow shares one client id and one redirect URI.
 * **PKCE** is S256 only, also when the server offers ``plain``.
 * **Every fetch** goes through :func:`gateway.outbound_guard.request_https`:
   ``https`` on port 443, a public address, no redirect, 64 KiB and 10 s
@@ -423,7 +425,11 @@ async def register(plan: Plan) -> Client:
     if pre is not None:
         return pre
     url = client_metadata_url()
-    if plan.cimd_supported and is_valid_client_metadata_url(url):
+    # Review of #931 (the mix-up residual). Every CIMD flow shares ONE
+    # client_id and ONE redirect URI, so ``iss`` is the only defence against
+    # an auth-server mix-up. So CIMD only with a server that sends ``iss``.
+    # Else DCR, which gives a client_id per auth server.
+    if plan.cimd_supported and plan.iss_required and is_valid_client_metadata_url(url):
         # ``should_use_client_metadata_url`` reads the one flag of the model.
         model = OAuthMetadata.model_construct(client_id_metadata_document_supported=True)
         if should_use_client_metadata_url(model, url):
@@ -512,6 +518,22 @@ def public_meta(pending: Pending) -> dict[str, str]:
     return meta
 
 
+def _lifetime(expires_in: Any) -> timedelta:
+    """The life of a token from ``expires_in`` (review of #931, P2 4).
+
+    No value means the token does not expire by itself: :data:`_NO_EXPIRY`.
+    ``0`` means it has ended already, not "never". A value above ten years is
+    cut to ten years, so a hostile answer cannot overflow the date after the
+    code is spent. A negative value, or one that is not an integer, is
+    :class:`OAuthFailed` ``exchange_failed``.
+    """
+    if expires_in is None:
+        return _NO_EXPIRY
+    if isinstance(expires_in, bool) or not isinstance(expires_in, int) or expires_in < 0:
+        raise OAuthFailed("exchange_failed")
+    return timedelta(seconds=min(expires_in, int(_NO_EXPIRY.total_seconds())))
+
+
 async def exchange_code(
     pending: Pending, code: str, *, now: datetime | None = None,
 ) -> SourceCredential:
@@ -545,8 +567,7 @@ async def exchange_code(
     if not token.access_token:
         raise OAuthFailed("exchange_failed")
     issued = now or datetime.now(UTC)
-    expires_at = (issued + timedelta(seconds=int(token.expires_in))
-                  if token.expires_in else issued + _NO_EXPIRY)
+    expires_at = issued + _lifetime(token.expires_in)
     scope = token.scope if token.scope is not None else (pending.scope or "")
     return SourceCredential(
         access_token=token.access_token,

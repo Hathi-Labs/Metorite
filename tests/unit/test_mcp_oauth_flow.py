@@ -28,6 +28,21 @@ call did not take the flow.
 | M11 | the ``client_id`` of the CIMD document is not its own URL | ``test_mcp_oauth_cimd.py::test_the_client_id_is_the_url_of_the_document`` |
 | M12 | the callback does not compare the member of the state with the session | ``test_mcp_oauth_state.py::test_a_state_of_another_member_is_400`` |
 | M13 | the code exchange sends no ``code_verifier`` | ``test_mcp_oauth_flow.py::test_the_whole_flow_saves_the_credential_as_the_admin`` |
+
+Rows M14 to M21 fence the owner decisions on the review of #931 (2026-10-13).
+They were written with the code, and each one was run by hand.
+
+| # | Mutation | Test that fails |
+|---|---|---|
+| M14 | a register of an OAuth name replaces the row (the OAuth branch of ``mcp.save`` is gone) | ``test_mcp_oauth_org_scope_r8.py::test_a_register_keeps_an_oauth_row_and_merges_its_public_keys`` |
+| M15 | a register may change the URL of an OAuth row | ``test_mcp_oauth_org_scope_r8.py::test_a_register_with_a_new_url_is_409_and_changes_nothing`` |
+| M16 | a delete revokes nothing | ``test_mcp_oauth_org_scope_r8.py::test_a_delete_revokes_the_refresh_token_after_the_commit`` |
+| M17 | the Test of an OAuth server sends no bearer | ``test_mcp_oauth_org_scope_r8.py::test_the_test_button_sends_the_stored_bearer`` |
+| M18 | ``expires_in`` is not cut to ten years | ``test_mcp_oauth_flow.py::test_a_huge_expires_in_is_cut_to_ten_years`` |
+| M19 | ``expires_in = 0`` reads as "never expires" again | ``test_mcp_oauth_flow.py::test_a_zero_expires_in_has_ended_and_does_not_mean_never`` |
+| M20 | the O2 fence misses a fully qualified ``gateway.outbound_guard.request`` | ``test_mcp_oauth_guard.py::test_the_fence_catches_each_banned_form`` |
+| M21 | the O2 fence bans ``httpx`` only, not the other HTTP clients | ``test_mcp_oauth_guard.py::test_the_fence_catches_each_banned_form`` |
+| M22 | CIMD without ``iss`` | ``test_mcp_oauth_flow.py::test_cimd_without_iss_falls_back_to_dcr`` |
 """
 
 from __future__ import annotations
@@ -406,3 +421,98 @@ async def test_an_expired_token_is_left_out_until_in8b_refreshes_it(runtime) -> 
         servers = await mcp.servers_for_org(ORG_A)
     assert [s.name for s in servers] == ["plain"]
     assert any(e.get("event") == "mcp.oauth_expired" for e in logs)
+
+
+# ── Review of #931: expires_in (P2 4) ───────────────────────────────────────
+
+
+def _pending() -> Any:
+    from gateway.connections import mcp_oauth
+
+    return mcp_oauth.Pending(
+        name="notion", member=ADMIN, server_url=f.MCP_URL, resource=f.MCP_URL,
+        issuer=f.ISSUER, iss_required=True, token_endpoint=f"{f.ISSUER}/token",
+        revocation_endpoint=None, client_id="dcr-client-1", registration="dcr",
+        token_auth="client_secret_post", scope="read write", verifier="v" * 64,
+        client_secret=f.SENTINEL_SECRET)
+
+
+async def _exchange(world: f.World, expires_in: Any) -> Any:
+    from gateway.connections import mcp_oauth
+
+    pending = _pending()
+    world.expires_in = expires_in
+    world.grants["c"] = f.Grant(challenge=f.s256(pending.verifier), method="S256",
+                                client_id="dcr-client-1", redirect_uri=f.REDIRECT_URI,
+                                resource=f.MCP_URL)
+    now = datetime(2026, 10, 13, tzinfo=UTC)
+    return now, await mcp_oauth.exchange_code(pending, "c", now=now)
+
+
+TEN_YEARS = timedelta(days=3650)
+
+
+async def test_a_huge_expires_in_is_cut_to_ten_years(world) -> None:
+    now, cred = await _exchange(world, 10**12)
+    assert cred.expires_at == now + TEN_YEARS
+
+
+async def test_a_zero_expires_in_has_ended_and_does_not_mean_never(world) -> None:
+    now, cred = await _exchange(world, 0)
+    assert cred.expires_at == now
+
+
+async def test_a_missing_expires_in_means_no_expiry(world) -> None:
+    now, cred = await _exchange(world, None)
+    assert cred.expires_at == now + TEN_YEARS
+
+
+@pytest.mark.parametrize("bad", [-5, -1])
+async def test_a_negative_expires_in_is_exchange_failed(world, bad: int) -> None:
+    from gateway.connections import mcp_oauth
+
+    with pytest.raises(mcp_oauth.OAuthFailed) as err:
+        await _exchange(world, bad)
+    assert err.value.code == "exchange_failed"
+
+
+async def test_a_huge_expires_in_through_the_callback_is_no_500(world, reg) -> None:
+    world.expires_in = 10**12
+    _, code, state = await f.start_and_consent(_admin(), world)
+    res = await f.finish(_admin(), code, state, iss=f.ISSUER)
+    assert res.status_code == 302 and "mcp_connected" in res.headers["location"]
+
+
+# ── Review of #931: CIMD only with iss (hardening 6) ────────────────────────
+
+
+async def test_cimd_without_iss_falls_back_to_dcr(world, reg) -> None:
+    world.as_meta["client_id_metadata_document_supported"] = True
+    world.as_meta["authorization_response_iss_parameter_supported"] = False
+    url, _, _ = await f.start_and_consent(_admin(), world)
+    assert f.query_of(url)["client_id"] == "dcr-client-1"
+    assert [r for r in world.requests if r.url.path == "/register"] != []
+
+
+async def test_cimd_without_iss_and_no_dcr_is_no_registration(world, reg) -> None:
+    world.as_meta["client_id_metadata_document_supported"] = True
+    world.as_meta.pop("authorization_response_iss_parameter_supported")
+    world.as_meta.pop("registration_endpoint")
+    res = await f.call(_admin(), "POST", "/integrations/mcp/notion/oauth/start")
+    assert res.status_code == 502 and res.json()["detail"] == "no_registration"
+
+
+async def test_a_broken_oauth_import_never_drops_a_header_server(monkeypatch, runtime) -> None:
+    """Review of #931 (item 8): with no OAuth row, the reader never imports
+    the OAuth module, so a fault there cannot drop the header servers."""
+    import sys
+
+    from gateway.connections import mcp
+
+    runtime["conns"] = [c for c in runtime["conns"] if c.provider == "mcp:plain"]
+    import gateway.connections as package
+
+    monkeypatch.setitem(sys.modules, "gateway.connections.mcp_oauth", None)
+    monkeypatch.delattr(package, "mcp_oauth", raising=False)
+    servers = await mcp.servers_for_org(ORG_A)
+    assert [s.name for s in servers] == ["plain"]

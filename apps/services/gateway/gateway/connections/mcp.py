@@ -29,6 +29,9 @@ and §7.3. The shape follows :mod:`gateway.connections.github`.
   of an old row writes ``false`` for the same reason. Any value but a real
   ``false`` reads as ``true``, so a damaged value fails closed.
   :func:`set_always_confirm` changes it on one row.
+* **OAuth rows (IN-8a).** A row with ``provider_meta.auth = "oauth"`` holds
+  tokens, not headers. A register keeps them (:func:`save`). A delete
+  revokes the refresh token after the commit (:func:`remove`).
 * **No secret out.** No function here logs a header or puts one in an error.
   :class:`StoredServer` keeps the headers out of its ``repr``.
 """
@@ -89,6 +92,11 @@ _LEGACY_DELETE_SQL = (
     "DELETE FROM mcp_servers WHERE organization_id = CAST(:org AS uuid) "
     "AND name = :name"
 )
+
+
+class OAuthUrlChange(ValueError):
+    """A register tried to change the URL of an OAuth server. Disconnect it
+    first, because its token is for the old URL (review of #931, P2 1)."""
 
 
 @dataclass(frozen=True)
@@ -292,12 +300,14 @@ async def _oauth_runtime_headers(
     ``mcp.oauth_expired``: IN-8b adds the refresh. The token goes to the MCP
     client as an argument only, never to a log line.
     """
-    from gateway.connections import mcp_oauth
-
     out: dict[str, dict[str, str]] = {}
     oauth_rows = [c for c in conns if _is_oauth(c) and c.status == store.STATUS_CONNECTED]
     if not oauth_rows:
         return out
+    # Only here, after an OAuth row is found: a broken import of the OAuth
+    # module must never drop the header servers of a run (review of #931).
+    from gateway.connections import mcp_oauth
+
     if not mcp_oauth.oauth_enabled():
         for conn in oauth_rows:
             _log.info("mcp.oauth_disabled", name=conn.provider[len(PREFIX):])
@@ -314,6 +324,35 @@ async def _oauth_runtime_headers(
             continue
         out[conn.provider] = {"Authorization": f"Bearer {credential.access_token}"}
     return out
+
+
+#: The answers of :func:`oauth_test_header`.
+TEST_BEARER_OK = "ok"
+TEST_BEARER_EXPIRED = "token_expired"
+TEST_BEARER_OFF = "disabled"
+TEST_BEARER_UNREADABLE = "unreadable"
+
+
+async def oauth_test_header(org: str, name: str) -> tuple[str, dict[str, str]]:
+    """The header that the Test button sends for an OAuth server (#931, P2 3).
+
+    It is the header that a run sends (:func:`_oauth_runtime_headers`), by
+    the same rule. With the flag off, :data:`TEST_BEARER_OFF` and no header.
+    A token that has ended, or ends within :data:`_OAUTH_SKEW_S`, is
+    :data:`TEST_BEARER_EXPIRED`. The token goes to the caller only.
+    """
+    from gateway.connections import mcp_oauth
+
+    if not mcp_oauth.oauth_enabled():
+        return TEST_BEARER_OFF, {}
+    org = _org(org)
+    async with tenant_session(org) as db:
+        credential = await store.load_credential(db, org, provider_for(name), OWNING_APP)
+    if credential is None or not credential.access_token:
+        return TEST_BEARER_UNREADABLE, {}
+    if credential.expires_at <= datetime.now(UTC) + timedelta(seconds=_OAUTH_SKEW_S):
+        return TEST_BEARER_EXPIRED, {}
+    return TEST_BEARER_OK, {"Authorization": f"Bearer {credential.access_token}"}
 
 
 async def _read(org: str, *, enabled_only: bool, with_headers: bool) -> list[StoredServer]:
@@ -395,18 +434,34 @@ async def save(
     The caller checks the name, the transport and the URL first. The headers
     go into the blob only. *always_confirm* is the H-300 switch, and a new
     server gets ``True`` unless the caller says otherwise.
+
+    An OAuth row (IN-8a) is not replaced. Its public keys merge in, and its
+    tokens, ``auth`` and ``connected_by`` stay. A new *url* for it raises
+    :class:`OAuthUrlChange`: the admin disconnects first (review of #931).
     """
     if not NAME_RE.match(name or ""):
         raise ValueError("the MCP server name does not match the name rule")
     if transport not in _HTTP_TRANSPORTS or not url:
         raise ValueError("an MCP server in the registry is http-sse with a url")
     org = _org(org)
+    meta = _meta(name, label, description, transport, url, agent_scope,
+                 always_confirm=always_confirm)
     async with tenant_session(org) as db:
+        locked = await store.lock_row(db, org, provider_for(name), OWNING_APP)
+        if locked is not None and _is_oauth(locked[0]):
+            # Review of #931, P2 1. An OAuth row keeps its tokens and its
+            # ``auth`` key, and only the public keys change. A new URL is
+            # another server, and the token is for the old one.
+            existing = locked[0]
+            if str(existing.provider_meta.get("url") or "") != url:
+                raise OAuthUrlChange(name)
+            if headers:
+                _log.info("mcp.oauth_headers_ignored", name=name)
+            conn = await store.update_oauth_public(db, existing, meta, enabled=enabled)
+            return _server(conn, {}, with_headers=False)
         conn = await store.save_headers(
             db, org, provider_for(name), OWNING_APP, headers,
-            provider_meta=_meta(name, label, description, transport, url, agent_scope,
-                                always_confirm=always_confirm),
-            connected_by=connected_by, enabled=enabled,
+            provider_meta=meta, connected_by=connected_by, enabled=enabled,
         )
     if conn is None:  # a replace always returns the row
         raise RuntimeError("the MCP server was not saved")
@@ -452,7 +507,11 @@ async def remove(org: str, name: str) -> bool:
         return False
     org = _org(org)
     removed = False
+    credential = None
     async with tenant_session(org) as db:
+        locked = await store.lock_row(db, org, provider_for(name), OWNING_APP)
+        if locked is not None:
+            credential = locked[1]
         try:
             async with db.begin_nested():
                 result = await db.execute(
@@ -463,4 +522,21 @@ async def remove(org: str, name: str) -> bool:
             _log.warning("mcp.legacy_delete_failed", error=type(exc).__name__)
         if await store.delete(db, org, provider_for(name), OWNING_APP):
             removed = True
+    if removed and credential is not None:
+        await _revoke_after_delete(name, credential)
     return removed
+
+
+async def _revoke_after_delete(name: str, credential: Any) -> None:
+    """Revoke the refresh token of a deleted OAuth row (review of #931, P2 2).
+
+    Best effort, after the commit, through ``request_https``. The log line
+    names the outcome only. A revoke that fails never fails the delete.
+    """
+    try:
+        from gateway.connections import mcp_oauth
+
+        outcome = await mcp_oauth.revoke(credential)
+    except Exception as exc:  # the class only: a message can echo a URL
+        outcome = f"failed:{type(exc).__name__}"
+    _log.info("mcp.oauth_revoke", name=name, why="removed", outcome=outcome)

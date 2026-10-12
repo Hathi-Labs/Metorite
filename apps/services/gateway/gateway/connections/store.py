@@ -248,6 +248,20 @@ _ATTACH_OAUTH_SQL = (
     f"RETURNING {_PUBLIC_COLUMNS}"
 )
 
+#: A re-register of an OAuth row (review of #931, P2 1). The public keys
+#: merge in, the blob and ``auth`` stay. *enabled* false disables the row.
+#: True enables a disabled row and keeps any other status, such as
+#: ``needs_reconnect``.
+_UPDATE_OAUTH_PUBLIC_SQL = (
+    "UPDATE integration_connections SET "
+    "provider_meta = provider_meta || CAST(:extra AS jsonb), "
+    "status = CASE WHEN NOT :enabled THEN 'disconnected' "
+    "WHEN status = 'disconnected' THEN 'connected' ELSE status END, "
+    "updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
 _UPSERT_HEADERS_SQL = (
     "INSERT INTO integration_connections (organization_id, provider, "
     "owning_app, scope_kind, member_email, status, provider_meta, "
@@ -796,6 +810,46 @@ async def attach_oauth_credential(
         "connected_by": (connected_by or "").strip().lower() or None,
     })).first()
     return OAuthAttach(before=before, after=_connection(after_row), previous=previous)
+
+
+async def lock_row(
+    db: Any, org: str, provider: str, owning_app: str,
+) -> tuple[Connection, SourceCredential | None] | None:
+    """The org row of *provider*, with ``FOR UPDATE``, or ``None``.
+
+    The second value is the OAuth credential of an OAuth row (``auth =
+    'oauth'``), so the caller can revoke it after its commit. It is ``None``
+    for a header row, and for a blob that does not open.
+    """
+    params = _key(org, provider, owning_app, SCOPE_ORG, None)
+    row = (await db.execute(text(_LOCK_ROW_SQL), params)).first()
+    if row is None:
+        return None
+    conn = _connection(row)
+    credential: SourceCredential | None = None
+    if conn.provider_meta.get("auth") == AUTH_OAUTH and row.credentials_encrypted:
+        try:
+            credential = _unseal(row.credentials_encrypted)
+        except Undecryptable as exc:
+            _log.warning("connection blob does not open (%s)", exc)
+    return conn, credential
+
+
+async def update_oauth_public(
+    db: Any, conn: Connection, extra: dict[str, Any], *, enabled: bool,
+) -> Connection:
+    """Merge public keys into an OAuth row that :func:`lock_row` read.
+
+    The blob, ``auth`` and ``connected_by`` stay: the connection still acts
+    as the admin who gave the consent (D98). *extra* must hold no secret and
+    no ``auth`` key.
+    """
+    kept = {str(k): v for k, v in extra.items() if k != "auth"}
+    row = (await db.execute(text(_UPDATE_OAUTH_PUBLIC_SQL), {
+        "id": conn.id, "org": conn.organization_id,
+        "extra": json.dumps(kept), "enabled": bool(enabled),
+    })).first()
+    return _connection(row)
 
 
 # ── A short-lived sealed value (WS-54 IN-8a) ────────────────────────────────

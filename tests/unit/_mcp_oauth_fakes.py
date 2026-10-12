@@ -110,6 +110,11 @@ class World:
     grants: dict[str, Grant] = field(default_factory=dict)
     revoked: list[str] = field(default_factory=list)
     access_token: str = SENTINEL_ACCESS
+    #: ``expires_in`` of the token answer. ``None`` leaves the key out.
+    expires_in: Any = 3600
+    #: Every access token that the token endpoint issued. The MCP server
+    #: answers 200 to a request that carries one of them.
+    issued: set[str] = field(default_factory=set)
     refresh_token: str = SENTINEL_REFRESH
 
     # ── the resolver ────────────────────────────────────────────────────────
@@ -163,6 +168,9 @@ class World:
         return handler(request)
 
     def _mcp(self, request: httpx.Request) -> httpx.Response:
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer ") and auth[7:] in self.issued:
+            return httpx.Response(200, json={"jsonrpc": "2.0"})
         headers = {"WWW-Authenticate": self.www_authenticate} if self.www_authenticate else {}
         return httpx.Response(401, headers=headers, json={"error": "unauthorized"})
 
@@ -205,10 +213,14 @@ class World:
                 or s256(form.get("code_verifier", "")) != grant.challenge
                 or not self._client_ok(request, form)):
             return httpx.Response(400, json={"error": "invalid_grant"})
-        return httpx.Response(200, json={
+        answer: dict[str, Any] = {
             "access_token": self.access_token, "refresh_token": self.refresh_token,
-            "token_type": "bearer", "expires_in": 3600, "scope": "read write",
-        })
+            "token_type": "bearer", "scope": "read write",
+        }
+        if self.expires_in is not None:
+            answer["expires_in"] = self.expires_in
+        self.issued.add(self.access_token)
+        return httpx.Response(200, json=answer)
 
     def _revoke(self, request: httpx.Request) -> httpx.Response:
         self.revoked.append(self._form(request).get("token", ""))
