@@ -353,16 +353,20 @@ def test_twelve_oclock_am_and_pm() -> None:
 
 def test_a_long_parent_chain_parses_in_linear_time() -> None:
     """A 20,000-deep chain took 24 s with the old walk. It must not hold a
-    gateway worker."""
-    import time
+    gateway worker. The fence is the ratio of two timings, not a wall clock
+    (``_linear_time``)."""
+    from functools import partial
 
-    rows = [{"Task ID": "t0"}] + [
-        {"Task ID": f"t{i}", "Parent ID": f"t{i - 1}"} for i in range(1, 20000)
-    ]
-    started = time.perf_counter()
-    b = _file(*rows)
-    assert time.perf_counter() - started < 10
+    from tests.unit._linear_time import assert_linear
+
+    def _chain(depth: int) -> list[dict[str, str]]:
+        return [{"Task ID": "t0"}] + [
+            {"Task ID": f"t{i}", "Parent ID": f"t{i - 1}"} for i in range(1, depth)
+        ]
+
+    b = _file(*_chain(20000))
     assert sum(1 for t in b.tasks if t.parent_ref) == 19999
+    assert_linear(lambda k: partial(_file, *_chain(k)), 20000, repeats=3)
 
 
 def test_a_subtask_follows_its_parent_into_the_parents_list() -> None:

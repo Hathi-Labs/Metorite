@@ -61,6 +61,7 @@ from acb_skills.agent_paths import (  # noqa: E402
 from acb_skills.write_artifact import bind_artifact_context  # noqa: E402
 
 from tests.unit import _xlsx_build as xb  # noqa: E402
+from tests.unit._linear_time import assert_linear  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 ORG = "org-h229"
@@ -1606,13 +1607,18 @@ def test_a_line_of_spaces_reads_inside_the_deadline() -> None:
 
 def test_the_line_join_is_linear_on_a_run_of_spaces() -> None:
     """The join alone, on a line that holds 100,000 spaces and no tab. The
-    old regex took seconds here, inside one C call that held the GIL."""
-    page = at._Html()
-    page._line = [" "] * 100_000 + ["x"]
-    started = time.monotonic()
+    old regex took seconds here, inside one C call that held the GIL. The
+    fence is the ratio of two timings, not a wall clock (``_linear_time``)."""
+
+    def _page(spaces: int) -> at._Html:
+        page = at._Html()
+        page._line = [" "] * spaces + ["x"]
+        return page
+
+    page = _page(100_000)
     page.end_line()
     assert page.lines == ["x"]
-    assert time.monotonic() - started < 0.5
+    assert_linear(lambda k: _page(k).end_line, 100_000)
 
 
 def test_a_line_holds_no_run_of_spaces() -> None:
