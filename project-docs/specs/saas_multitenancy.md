@@ -2550,8 +2550,12 @@ vocabulary: the chooser lists organizations, never roles (D12).
   safe paths). `accountSwitch.test.ts` (`switch-target-is-local`).
   `app/api/accounts/route.test.ts` (`accounts-orgs-shape`). `proxy.test.ts`
   (`proxy-callback-keeps-query`). `app/projects/lib/card.test.ts`
-  (`copied-link-names-org`). **Advisory:** no test renders `OrgLinkGate`
-  itself, because vitest in this tree runs in node.
+  (`copied-link-names-org`).
+
+  **The gate itself.** `components/OrgLinkGate.test.ts`
+  (`org-link-gate-arms`) renders the gate in node, and fails when the cover
+  or the notice draws the page. `e2e/org-link.spec.ts` opens a link to a held
+  org, to a stranger org and to the active org in a browser.
 
 #### MT-1g · Blobs out of Postgres · 🟢 AGENT-SAFE
 **Owner:** §1.6 · **Anchor:** `71_agent_blob_store.sql:30` (`content BYTEA`)

@@ -604,11 +604,11 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
   // renders as the fallback and is then replaced by the real copy, about
   // 120 ms later (2 to 3 s at 6x CPU in dev). A member sees the title bar
   // flicker, and the first copy's state and requests are thrown away.
-  // Without the Suspense, this count is 1. The fix trades one of two things,
-  // so it waits on a decision: `fallback={null}` (an empty main until the
-  // params resolve) or a param lifted into state (an in-app `?org=` link
-  // mounts the page as the wrong account for one commit). Remove `fixme`
-  // with that fix, and this fences it.
+  // Without the Suspense, this count is 1. HANDOFF H-302 holds the work: the
+  // production measurements, the two refused fixes (`fallback={null}` left
+  // `<main>` empty for 300 ms and more, and a param lifted into state mounts
+  // an in-app `?org=` link as the wrong account), and the open question of
+  // what suspends. Remove `fixme` with the fix, and this fences it.
   test.fixme("a cold load of /tasks mounts the app bar once", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await shellOn(page);
