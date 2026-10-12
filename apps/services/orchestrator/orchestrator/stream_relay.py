@@ -155,6 +155,27 @@ async def _get_client() -> aioredis.Redis:
     return _client
 
 
+#: The events that end a run's stream. A subscriber stops at either one.
+_TERMINAL_EVENTS: frozenset[str] = frozenset({"RUN_FINISHED", "RUN_ERROR"})
+
+
+async def _give_back_steers(thread_id: str) -> None:
+    """Before a run's terminal event lands, return the steers it never read.
+
+    Ordered BEFORE the write on purpose: the chat reads the terminal event
+    and then asks for the steer follow-up, so the durable store must already
+    hold the steer when the event becomes visible (owner, 2026-10-12). One
+    seam for every path that ends a run, because every one of them writes
+    its terminal event here. Never raises.
+    """
+    try:
+        from orchestrator.steer import return_unconsumed  # noqa: PLC0415
+
+        await return_unconsumed(thread_id)
+    except Exception:  # noqa: BLE001 — a run must end whatever happens here
+        _log.warning("stream_relay.steer_give_back_failed", thread_id=thread_id[:12])
+
+
 async def push_event(thread_id: str, event: dict[str, Any]) -> str:
     """Append a single event to the per-thread stream.
 
@@ -165,6 +186,8 @@ async def push_event(thread_id: str, event: dict[str, Any]) -> str:
     Returns:
         The Redis entry ID (e.g. ``"1719123456789-0"``).
     """
+    if isinstance(event, dict) and event.get("type") in _TERMINAL_EVENTS:
+        await _give_back_steers(thread_id)
     r = await _get_client()
     try:
         eid = await r.xadd(
@@ -1426,6 +1449,13 @@ async def run_detached(
             with contextlib.suppress(BaseException):
                 await _stop_control_listener_wait(thread_id)
             unregister_control_handler(thread_id)
+            # A steer this run never read goes back to the durable store, so
+            # the follow-up turn answers it (owner, 2026-10-12). The terminal
+            # event already did this. This catches a run that sent none.
+            with contextlib.suppress(BaseException):
+                from orchestrator.steer import end_of_run as _steer_end  # noqa: PLC0415
+
+                await asyncio.shield(_steer_end(thread_id))
             # WS-51 S2: a card this run left open, and no wait settled, is
             # closed now. A parked card stays open (orchestrator.pending_ask).
             with contextlib.suppress(BaseException):
@@ -1485,13 +1515,20 @@ async def run_detached(
         if not text:
             return False
         author = str(command.get("author") or "someone")
+        sid = str(command.get("signal_id") or "")
         try:
             from orchestrator.steer import (  # noqa: PLC0415
                 buffer_guidance, discard_signal,
             )
-            buffer_guidance(thread_id, author, text)
+            buffered = buffer_guidance(thread_id, author, text, signal_id=sid)
         except Exception:  # noqa: BLE001
             return False
+        if not buffered:
+            # The run has sent its terminal event and reads no more notes.
+            # The owner still has the steer: its durable copy stays, and the
+            # follow-up turn answers it (owner, 2026-10-12). So this is an
+            # ack, and the signal is NOT discarded.
+            return True
         # NOTE the visible half of this — the ``STEER_INJECTED`` event everyone
         # in the room sees — is published by the SENDER onto ``cc:room:``, not
         # here onto ``cc:stream:``. Two reasons, both deliberate:
@@ -1502,7 +1539,6 @@ async def run_detached(
         #     run-event type is a two-sided change. A steer is a room fact, not
         #     a turn fact — §4.4 puts ``STEER_INJECTED`` on the room stream for
         #     exactly this reason.
-        sid = str(command.get("signal_id") or "")
         if sid:
             with contextlib.suppress(Exception):
                 asyncio.create_task(discard_signal(thread_id, sid))

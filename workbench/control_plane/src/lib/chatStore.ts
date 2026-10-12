@@ -98,6 +98,11 @@ export interface ChatMessage {
    *  not save it until the answer comes, so a send that the run cap refuses
    *  (WS-51 D-3) leaves no row. Cleared on every other answer. */
   awaitingServer?: boolean;
+  /** A message sent while a run was live, which steers it (owner,
+   *  2026-10-12, `lib/chatSteer.ts`). "sending" until the server answers,
+   *  then "added" once the server folded it into the run. Never saved: the
+   *  saved row carries the `steered` custom event instead. */
+  steerAck?: "sending" | "added";
 }
 
 // ── Session state ────────────────────────────────────────────────────────────
@@ -130,6 +135,10 @@ export interface SessionStreamState {
   pendingSends: string[];
   /** The held sends that are a Continue: they go out with `resume`. */
   pendingResume: string[];
+  /** This tab steered the live run. Once the run ends, the chat asks the
+   *  server once for a follow-up turn, which answers any steer the run never
+   *  read (`lib/chatSteer.ts`). A Stop clears it. */
+  steerOwed?: boolean;
 }
 
 function _defaultState(): SessionStreamState {

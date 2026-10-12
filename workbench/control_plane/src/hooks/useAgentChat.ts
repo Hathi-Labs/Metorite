@@ -49,6 +49,7 @@ import {
   type SendOptions,
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
+import { followUpDue, sendSteer, type SteerOutcome } from "@/lib/chatSteer";
 import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
@@ -163,6 +164,10 @@ interface UseAgentChatReturn {
    *  reply after it, only once the server accepts it, and `onEditOutcome`
    *  hears the answer once, also after a hold (`lib/chatEdit.ts`). */
   sendMessage: (content: string, opts?: SendOptions) => Promise<void>;
+  /** Send words into the live run (owner, 2026-10-12, `lib/chatSteer.ts`).
+   *  It never stops the run and never opens a second stream. A refusal
+   *  resolves with the notice, and the caller puts the words back. */
+  steerMessage: (content: string) => Promise<SteerOutcome>;
   clearMessages: () => void;
   /** Resolves when the server has answered the cancel, so an edit can wait
    *  for the old run to stop before it starts the new one. */
@@ -257,6 +262,10 @@ export function useAgentChat({
     async (content: string, opts?: SendOptions) => {
       const text = content.trim();
       const supersedes = opts?.supersedes;
+      // The steer follow-up has no words and no bubble (`lib/chatSteer.ts`).
+      const followUp = !!opts?.steerFollowUp && !supersedes;
+      // A steer the server answered with a new run: follow that response.
+      const adopt = opts?.adopt;
       // An edit hears its answer exactly once: accepted, or the reason why not.
       let editAnswered = false;
       const answerEdit = (o: EditOutcome) => {
@@ -270,7 +279,7 @@ export function useAgentChat({
       const holdEdit = (front: boolean) => holdForUpdate(threadId, text, {
         front, edit: { supersedes: supersedes!, onEditOutcome: opts?.onEditOutcome },
       });
-      if (!text) {
+      if (!text && !followUp) {
         answerEdit({ ok: false, reason: EDIT_UNSENT });
         return;
       }
@@ -304,7 +313,11 @@ export function useAgentChat({
       // second bubble and no second copy on the server. That is the four
       // "Continue" bubbles of the incident. `hold`: the gateway is down, so
       // the send waits once, and goes out when /api/health says it is back.
-      const plan = supersedes ? "send" : planSend(before, text, held?.id);
+      const plan = supersedes || adopt
+        ? "send"
+        : followUp
+          ? (before.isLoading || before.outage ? "busy" : "send")
+          : planSend(before, text, held?.id);
       if (plan === "collapse" || plan === "busy") return;
       if (plan === "hold") {
         const heldMsg: ChatMessage = {
@@ -323,7 +336,7 @@ export function useAgentChat({
         return;
       }
 
-      const controller = new AbortController();
+      const controller = adopt?.controller ?? new AbortController();
       // Stamp the assistant 1ms after the user so the pair never shares a
       // timestamp_ms. The DB orders by (timestamp_ms, id); an identical ms for
       // both would let a reload render the reply before its own prompt.
@@ -340,7 +353,7 @@ export function useAgentChat({
           // WS-51 D-3: on the gateway path the server saves this turn at run
           // start (S4). The chat saves it only once the server answers, so a
           // send the run cap refuses leaves no row behind.
-          ...(!supersedes && modeRef.current === "copilot" ? { awaitingServer: true } : {}),
+          ...(!supersedes && !followUp && modeRef.current === "copilot" ? { awaitingServer: true } : {}),
         };
       const assistantId = nanoid();
       const assistantMsg: ChatMessage = {
@@ -368,7 +381,13 @@ export function useAgentChat({
           return {
             ...prev,
             // A new send retires the last run-cap notice (WS-51 D-3).
-            messages: [...prev.messages.filter((m) => m.id !== RUN_CAP_NOTICE_ID), userMsg, assistantMsg],
+            // A follow-up draws no user bubble: the steer it answers is on
+            // the thread already.
+            messages: [
+              ...prev.messages.filter((m) => m.id !== RUN_CAP_NOTICE_ID),
+              ...(followUp ? [] : [userMsg]),
+              assistantMsg,
+            ],
             isLoading: true, error: null, abortController: controller,
           };
         }
@@ -423,6 +442,8 @@ export function useAgentChat({
         const all = getSessionState(threadId).messages;
         const prior = editBase
           ? editBase.slice(0, editIdx)
+          : followUp
+          ? getSessionState(threadId).messages.slice(0, -1)
           : held
           ? all.slice(0, Math.max(all.findIndex((m) => m.id === userMsg.id), 0)).filter((m) => !m.pendingDelivery)
           : getSessionState(threadId).messages.slice(0, -2);
@@ -431,13 +452,18 @@ export function useAgentChat({
           .filter((m, idx) => m.role !== "system" || (idx === 0 && isCompactionCheckpoint(m)))
           .map((m) => ({ role: m.role, content: m.content }));
 
-        const res = await fetch("/api/agent/chat", {
+        // A steer that started a new run has its response already: follow
+        // it, and fetch nothing (`lib/chatSteer.ts`).
+        const res = adopt ? adopt.response : await fetch("/api/agent/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
           body: JSON.stringify({
             agentName: agentNameRef.current,
             message: userMsg.content,
+            // The steer follow-up: the gateway makes the stored steers its
+            // message, or answers 202 when nothing is owed.
+            ...(followUp ? { steerFollowUp: true } : {}),
             messages: history,
             threadId,
             mode: modeRef.current,
@@ -453,6 +479,8 @@ export function useAgentChat({
             // The id and the time of the member's turn. The gateway saves the
             // turn under this id before the run starts (WS-51 S4), so a tab
             // closed at once keeps it, and the save below updates that row.
+            // A steer follow-up names an id with no words, and the gateway
+            // saves no row for it.
             userMessageId: userMsg.id,
             userMessageTs: userMsg.timestamp,
             // The gateway stops the old run, removes the old turn and tells
@@ -515,17 +543,16 @@ export function useAgentChat({
             steered?: boolean;
             pendingReplay?: boolean;
           };
-          if (outcome.steered) {
-            // Drop our own placeholder; the user's message stays, attributed.
-            // A steer the run has not taken yet marks the turn pending, so a
-            // repeat of the same words collapses into it.
-            setSessionState(threadId, (prev) => ({
-              ...prev,
-              messages: prev.messages
-                .filter((m) => m.id !== assistantId)
-                .map((m) => (m.id === userMsg.id && outcome.pendingReplay ? { ...m, pendingDelivery: true } : m)),
-            }));
-          }
+          // No stream comes for this send, so our placeholder goes. A steer
+          // keeps the user's message, attributed. A steer the run has not
+          // taken yet marks the turn pending, so a repeat of the same words
+          // collapses into it. A follow-up with nothing owed leaves nothing.
+          setSessionState(threadId, (prev) => ({
+            ...prev,
+            messages: prev.messages
+              .filter((m) => m.id !== assistantId)
+              .map((m) => (m.id === userMsg.id && outcome.steered && outcome.pendingReplay ? { ...m, pendingDelivery: true } : m)),
+          }));
           return;
         }
 
@@ -653,7 +680,11 @@ export function useAgentChat({
           setSessionState(threadId, (prev) => ({
             ...prev,
             messages: prev.messages.filter((m) => m.id !== assistantId),
+            // A follow-up is asked again once the app is back. It holds no
+            // words, so it never goes in the held sends.
+            ...(followUp ? { steerOwed: true } : {}),
           }));
+          if (followUp) { heldAgain = true; return; }
           holdForUpdate(threadId, userMsg.content, {
             userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
           });
@@ -731,6 +762,52 @@ export function useAgentChat({
   // The nav's run badge names the app of a run by its agent (WS-51 S1).
   useEffect(() => { setSessionAgent(threadId, agentName); }, [threadId, agentName]);
   const retryHeld = useCallback(() => { void retryHeldNow(threadId); }, [threadId]);
+
+  // -- Steer (owner, 2026-10-12, `lib/chatSteer.ts`) ----------------------
+  // Words sent while a run is live go into that run. The live stream keeps
+  // going. If the run had ended, the server starts a new one, and this
+  // follows its stream as a normal turn, in place of the steer's bubble.
+  const steerMessage = useCallback(async (content: string): Promise<SteerOutcome> => {
+    const out = await sendSteer({
+      threadId,
+      text: content,
+      buildBody: ({ message, userMessageId, userMessageTs, history }) => ({
+        agentName: agentNameRef.current,
+        message,
+        messages: activeContextSlice(history)
+          .filter((m, idx) => m.role !== "system" || (idx === 0 && isCompactionCheckpoint(m)))
+          .map((m) => ({ role: m.role, content: m.content })),
+        threadId,
+        mode: modeRef.current,
+        ...chatModelField(modelRef.current),
+        context: systemContextRef.current ?? undefined,
+        thinkMode: thinkModeRef.current ?? "auto",
+        assistantMessageId: nanoid(),
+        userMessageId,
+        userMessageTs,
+      }),
+    });
+    if (out.kind === "started") {
+      void sendMessage(content, {
+        heldId: out.bubbleId,
+        adopt: { response: out.response, controller: out.controller },
+      });
+    }
+    return out;
+  }, [threadId, sendMessage]);
+
+  // The follow-up: once the run this tab steered has ended, ask once for a
+  // turn that answers any steer the run never read. The server answers 202
+  // when the run read every one, and nothing draws.
+  const steerOwed = !!sessionState.steerOwed;
+  const outageNow = sessionState.outage;
+  const recoveringNow = sessionState.recovering;
+  useEffect(() => {
+    const st = getSessionState(threadId);
+    if (!followUpDue(st, modeRef.current)) return;
+    setSessionState(threadId, (prev) => ({ ...prev, steerOwed: false }));
+    void sendMessage("", { steerFollowUp: true });
+  }, [threadId, steerOwed, isLoading, outageNow, recoveringNow, sendMessage]);
 
   const clearMessages = useCallback(() => {
     setSessionState(threadId, (prev) => ({ ...prev, messages: [], error: null }));
@@ -1112,6 +1189,9 @@ export function useAgentChat({
       isLoading: false,
       recovering: false,
       runStatus: "idle",
+      // A Stop asks for no follow-up. A steer the run never read stays in
+      // the server's store, and the next message replays it.
+      steerOwed: false,
     }));
     return settled;
   }, [threadId]);
@@ -1427,7 +1507,7 @@ export function useAgentChat({
   const outage = sessionState.outage;
 
   return {
-    messages, isLoading, error, sendMessage, clearMessages, stopGeneration, setMessages,
+    messages, isLoading, error, sendMessage, steerMessage, clearMessages, stopGeneration, setMessages,
     recovering, runStatus, outage, retryHeld,
   };
 }

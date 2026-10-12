@@ -169,6 +169,14 @@ class _FakeRedis:
     async def delete(self, key: str) -> None:
         self.lists.pop(key, None)
 
+    # The run stream, for the terminal-event seam (``stream_relay.push_event``).
+    async def xadd(self, key: str, fields: dict, **_kw: Any) -> str:
+        self.lists.setdefault(key, []).append(json.dumps(fields))
+        return f"{len(self.lists[key])}-0"
+
+    async def set(self, *_a: Any, **_kw: Any) -> bool:
+        return True
+
 
 @pytest.fixture
 def fake_redis(monkeypatch) -> _FakeRedis:
@@ -263,8 +271,10 @@ def test_no_pending_steers_is_an_empty_list_not_an_error(fake_redis):
 @pytest.fixture(autouse=True)
 def _clean_guidance():
     steer._PENDING_GUIDANCE.clear()
+    steer._CLOSED.clear()
     yield
     steer._PENDING_GUIDANCE.clear()
+    steer._CLOSED.clear()
 
 
 def test_guidance_reaches_the_model_at_the_next_tool_boundary():
@@ -349,3 +359,125 @@ def test_a_signal_is_json_serialisable_and_attributed():
     assert round_tripped["author"] == "bob@x.io"
     assert round_tripped["targetRunId"] == "r1"
     assert round_tripped["id"]
+
+
+# ---------------------------------------------------------------------------
+# 8. A steer after the last tool call still gets an answer (owner, 2026-10-12)
+# ---------------------------------------------------------------------------
+#
+# A steer rides the next tool result. A steer that arrives while the model
+# writes its final answer meets no tool result. Before 2026-10-12 it died in
+# the in-process buffer: the applier had already discarded its durable copy,
+# and the next run start cleared the buffer. Now the run's terminal event
+# gives it back to the durable store under its own id, and the steer
+# follow-up replays it through ENGAGE (tests/unit/test_steer_follow_up.py).
+
+def test_an_unread_steer_goes_back_to_the_store_at_the_terminal_event(fake_redis):
+    """The seam is ``stream_relay.push_event``: every path that ends a run
+    writes its terminal event there, and the store is written FIRST."""
+    from orchestrator import stream_relay
+
+    # The applier buffered it, and discarded the durable copy.
+    assert steer.buffer_guidance("t-late", "alice@x.io", "add a due date", signal_id="s-1")
+    assert asyncio.run(steer.take_pending_steers("t-late")) == []
+
+    # The model wrote its last answer with no tool call. The run ends.
+    asyncio.run(stream_relay.push_event("t-late", {"type": "RUN_FINISHED"}))
+
+    stored = fake_redis.lists.get("cc:steer:t-late", [])
+    assert len(stored) == 1, "the unread steer must go back to the store"
+    pending = asyncio.run(steer.take_pending_steers("t-late"))
+    assert [(p["id"], p["author"], p["text"]) for p in pending] == [
+        ("s-1", "alice@x.io", "add a due date"),
+    ]
+    # The model never read it, and it is not read twice.
+    assert steer.decorate_tool_result("out", "t-late") == "out"
+
+
+def test_the_store_is_written_before_the_terminal_event(fake_redis):
+    """The chat reads RUN_FINISHED and then asks for the follow-up, so the
+    steer must be in the store when the event becomes visible."""
+    from orchestrator import stream_relay
+
+    order: list[str] = []
+    real_rpush, real_xadd = fake_redis.rpush, fake_redis.xadd
+
+    async def rpush(key, val):
+        order.append("store")
+        return await real_rpush(key, val)
+
+    async def xadd(key, fields, **kw):
+        order.append("event")
+        return await real_xadd(key, fields, **kw)
+
+    fake_redis.rpush, fake_redis.xadd = rpush, xadd
+    steer.buffer_guidance("t-order", "alice@x.io", "and the owner", signal_id="s-2")
+    asyncio.run(stream_relay.push_event("t-order", {"type": "RUN_ERROR"}))
+    assert order == ["store", "event"]
+
+
+def test_a_tool_event_gives_nothing_back(fake_redis):
+    """Only a terminal event closes the run: a mid-run event keeps the note
+    for the next tool boundary."""
+    from orchestrator import stream_relay
+
+    steer.buffer_guidance("t-mid", "alice@x.io", "skip staging", signal_id="s-3")
+    asyncio.run(stream_relay.push_event("t-mid", {"type": "TOOL_CALL_END"}))
+    assert "cc:steer:t-mid" not in fake_redis.lists
+    assert "skip staging" in steer.decorate_tool_result("out", "t-mid")
+
+
+def test_a_closed_run_buffers_nothing():
+    """After the terminal event a late steer is not buffered. The applier
+    then acks it and keeps its durable copy, so the follow-up answers it."""
+    asyncio.run(steer.return_unconsumed("t-closed"))
+    assert steer.buffer_guidance("t-closed", "bob@x.io", "too late") is False
+    assert not steer.has_guidance("t-closed")
+    # The next run start opens the thread again.
+    steer.clear_guidance("t-closed")
+    assert steer.buffer_guidance("t-closed", "bob@x.io", "next run") is True
+
+
+def test_end_of_run_forgets_the_closed_mark(fake_redis):
+    asyncio.run(steer.end_of_run("t-end"))
+    assert "t-end" not in steer._CLOSED
+
+
+def test_a_returned_steer_is_replayed_once_even_with_its_first_copy_still_stored(
+    fake_redis, monkeypatch,
+):
+    """The applier's discard runs as a task. If the run ends before it ran,
+    the store holds the first copy AND the returned one. One answer."""
+    async def _dispatch(_tid: str, _cmd: dict[str, Any]) -> bool:
+        return True
+
+    from orchestrator import stream_relay
+    monkeypatch.setattr(stream_relay, "dispatch_control", _dispatch)
+    out = asyncio.run(steer.send_steer("t-dup", "bob@x.io", "check the invoice"))
+    steer.buffer_guidance("t-dup", "bob@x.io", "check the invoice", signal_id=out["id"])
+    asyncio.run(steer.return_unconsumed("t-dup"))
+    assert len(fake_redis.lists["cc:steer:t-dup"]) == 2
+    pending = asyncio.run(steer.take_pending_steers("t-dup"))
+    assert [p["text"] for p in pending] == ["check the invoice"]
+
+
+def test_has_pending_steers(fake_redis):
+    assert asyncio.run(steer.has_pending_steers("t-none")) is False
+    asyncio.run(steer.persist_signal("t-some", steer.make_signal(
+        thread_id="t-some", author="a@x.io", text="hi",
+    )))
+    assert asyncio.run(steer.has_pending_steers("t-some")) is True
+
+
+def test_a_replayed_steer_is_not_also_a_history_turn():
+    """The chat sends the steer bubble as a user turn too. One copy goes."""
+    history = [
+        {"role": "user", "content": "Plan the release"},
+        {"role": "assistant", "content": "Here is the plan."},
+        {"role": "user", "content": "add a due date"},
+    ]
+    out = steer.without_replayed(history, [{"text": "add a due date"}])
+    assert out == history[:2]
+    assert len(history) == 3, "the input list is not changed"
+    # Words that match no turn change nothing.
+    assert steer.without_replayed(history, [{"text": "other"}]) == history

@@ -217,6 +217,14 @@ export interface SendOptions {
   onEditOutcome?: (o: EditOutcome) => void;
   /** Set by `flushHeld`: a held send that meets a running turn waits again. */
   fromHold?: boolean;
+  /** The steer follow-up (`lib/chatSteer.ts`): a turn with no words of its
+   *  own and no user bubble. The server answers the steers the run never
+   *  read, or 202 when nothing is owed. */
+  steerFollowUp?: boolean;
+  /** A steer that the server answered with a stream: it started a new run
+   *  (`lib/chatSteer.ts`). The send follows THIS response, under THIS
+   *  controller, and fetches nothing. Use with `heldId`, the steer's bubble. */
+  adopt?: { response: Response; controller: AbortController };
 }
 
 /** What a held edit keeps: its target and its answer. It keeps no bubble,
