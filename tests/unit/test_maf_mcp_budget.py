@@ -328,10 +328,12 @@ async def test_a_server_past_the_threshold_shows_only_the_loaders(monkeypatch):
 
 
 async def test_a_small_server_with_large_schemas_shows_only_the_loaders(monkeypatch):
-    agent, opened, _fleet, _logs = await _attach(monkeypatch, {"wide": _many(12, params=12)})
+    agent, opened, _fleet, _logs = await _attach(monkeypatch, {"wide": _many(12)})
     try:
         tool = _by_name(agent)["wide"]
-        assert _full_cost(tool) > 1500, "the fixture must pass the per-server budget"
+        # Past the per-server budget, and inside the run budget, so only the
+        # per-server rule can turn the loaders on.
+        assert 1500 < _full_cost(tool) <= _maf_mcp.RUN_SCHEMA_TOKENS
         assert tool.use_progressive_disclosure is True
         assert _seen_cost(tool) <= 1500
     finally:
@@ -570,7 +572,7 @@ def _load_and_call(tool: str, arguments: str) -> ScriptedModel:
     ])
 
 
-@pytest.mark.usefixtures("_a_tenant")
+@pytest.mark.usefixtures("_a_tenant", "warn_again")
 @pytest.mark.filterwarnings("error::agent_framework._feature_stage.ExperimentalWarning")
 def test_the_model_sees_the_index_loads_one_tool_and_calls_it_end_to_end(monkeypatch):
     with local_mcp_server(filler=10) as srv:
@@ -706,6 +708,16 @@ async def test_a_ninth_server_is_left_out_in_name_order_and_logged(monkeypatch):
 # ── A28: the experimental warning ────────────────────────────────────────────
 
 
+@pytest.fixture
+def warn_again(monkeypatch):
+    """MAF warns once for each feature in a process (``_WARNED_FEATURES``).
+    An earlier test spends that one warning, so each A28 test resets it."""
+    from agent_framework import _feature_stage
+
+    monkeypatch.setattr(_feature_stage, "_WARNED_FEATURES", set())
+
+
+@pytest.mark.usefixtures("warn_again")
 async def test_an_experimental_warning_set_to_error_does_not_fail_the_attach(monkeypatch):
     with warnings.catch_warnings():
         warnings.simplefilter("error", ExperimentalWarning)
