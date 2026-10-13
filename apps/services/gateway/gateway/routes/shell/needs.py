@@ -363,7 +363,7 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
     try:
         local_today = date.fromisoformat(str(today))
     except ValueError:
-        local_today = datetime.now(UTC).astimezone(tz).date()
+        local_today = _now().astimezone(tz).date()
     out: list[Signal] = []
     for kind, task in kept[:PER_APP]:
         task_id = str(task["id"])

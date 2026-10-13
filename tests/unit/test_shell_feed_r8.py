@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -54,7 +54,7 @@ from tests.unit.test_email_keep_separate import (  # noqa: F401
     promoted,
 )
 from tests.unit.test_shell_feed import _a_daytime_zone
-from tests.unit.test_shell_needs_r8 import _project, _task
+from tests.unit.test_shell_needs_r8 import NOW, _Frozen, _project, _task
 
 pytestmark = _DB_GATE
 
@@ -62,6 +62,17 @@ TAG = uuid.uuid4().hex[:8]
 ME = f"feed-me-{TAG}@md1.test"
 OTHER = f"feed-other-{TAG}@md1.test"
 PLANLESS = f"feed-planless-{TAG}@md1.test"
+@pytest.fixture(autouse=True)
+def _one_instant(monkeypatch):
+    """The route's clocks read ``NOW``, the R8 needs suite's one instant,
+    which every seed below reads too: the feed's clock (``shell._now``) and
+    the lens read's "today" (``personal.datetime``), as that suite does."""
+    from gateway.routes.projects import personal
+
+    monkeypatch.setattr(shell, "_now", lambda: NOW)
+    monkeypatch.setattr(personal, "datetime", _Frozen)
+
+
 #: The sources of a member with Projects, Email and the Calendar pane.
 SOURCES = {"tasks": "ok", "projects": "ok", "email": "ok", "approvals": "absent",
            "calendar": "ok"}
@@ -99,8 +110,8 @@ def seeded(promoted):  # noqa: F811
     where it is daytime now, so the blocks stay on the member's today."""
     p = promoted
     org = p.org_b
-    zone = _a_daytime_zone()
-    now = datetime.now(UTC)
+    zone = _a_daytime_zone(NOW)
+    now = NOW
     ids: dict[str, str] = {"zone": zone}
     with p.admin_engine.begin() as c:
         for email, capacity in ((ME, 360), (OTHER, 30), (PLANLESS, 360)):
@@ -171,7 +182,7 @@ def _card(answer: dict, signal_id: str) -> dict:
 
 
 def _today(seeded) -> str:
-    return datetime.now(UTC).astimezone(ZoneInfo(seeded["zone"])).date().isoformat()
+    return NOW.astimezone(ZoneInfo(seeded["zone"])).date().isoformat()
 
 
 class TestTheFeedOnARealDatabase:

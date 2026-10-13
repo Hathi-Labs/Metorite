@@ -37,7 +37,16 @@ from fastapi import HTTPException
 from gateway.routes.shell import feed, feed_rank
 from gateway.routes.shell import needs as shell
 
-from tests.unit.test_shell_needs import LATER_TODAY, ME, ORG, OTHER, Fakes
+from tests.unit.test_shell_needs import (
+    LATER_TODAY,
+    ME,
+    NOW,
+    ORG,
+    OTHER,
+    Fakes,
+    _freeze,
+    _install,
+)
 
 #: The features of a member who holds Projects, Email, and the Calendar pane.
 FULL = ("projects", "email", "tasks")
@@ -62,11 +71,10 @@ def admin(*features: str, email: str = ME) -> UserContext:
                            {*(f"feature:{f}" for f in features), shell.ADMIN_PERMISSION})))
 
 
-def _a_daytime_zone() -> str:
+def _a_daytime_zone(now: datetime) -> str:
     """A zone where it is now between 03:00 and 20:59, so the blocks of the
     seed (20 to 110 minutes from now) stay on the member's today, whatever
-    the hour the suite runs at."""
-    now = datetime.now(UTC)
+    the instant the suite reads."""
     for name in ("UTC", "Asia/Kolkata", "America/New_York", "Asia/Tokyo",
                  "America/Los_Angeles", "Pacific/Kiritimati", "Europe/Berlin"):
         if 3 <= now.astimezone(ZoneInfo(name)).hour <= 20:
@@ -87,10 +95,11 @@ class FeedFakes(Fakes):
     member it is handed, as the real one does, and records the call."""
 
     def __init__(self) -> None:
-        super().__init__()
-        now = datetime.now(UTC)
-        self.now = now
-        self.zone = _a_daytime_zone()
+        super().__init__(NOW)
+        # The needs suite's one fixed instant (``test_shell_needs.NOW``).
+        # The fixture freezes the route's clock (``shell._now``) to it.
+        now = self.now
+        self.zone = _a_daytime_zone(now)
         #: The member's blocks, by member: the lens rows `my_calendar` reads.
         self.blocks: dict[str, list[dict]] = {
             # The fold seed: the overdue task `t-late` has a block in 20
@@ -108,7 +117,7 @@ class FeedFakes(Fakes):
         self.slow_calendar = 0.0
 
     def _today(self):
-        return datetime.now(UTC).astimezone(ZoneInfo(self.zone)).date()
+        return self.now.astimezone(ZoneInfo(self.zone)).date()
 
     def _midnight(self) -> datetime:
         return datetime.combine(self._today(), datetime.min.time(), tzinfo=ZoneInfo(self.zone))
@@ -156,23 +165,14 @@ class FeedFakes(Fakes):
 
 @pytest.fixture()
 def fakes(monkeypatch) -> FeedFakes:
-    f = FeedFakes()
-    import acb_graph
-    import gateway.routes.email.transport.accounts as accounts
+    """The needs suite's own install, which also freezes ``shell._now`` to
+    ``f.now``, plus the four Calendar reads."""
+    f = _install(monkeypatch, FeedFakes())
     import gateway.routes.people.selfservice as selfservice
-    import gateway.routes.projects.notifications as notifications
     import gateway.routes.tasks.calendar as calendar
     import gateway.routes.tasks.settings as settings
-    from gateway.routes.email import digest
     from gateway.routes.projects import personal
 
-    monkeypatch.setattr(personal, "my_due_tasks", f.my_due_tasks)
-    monkeypatch.setattr(notifications, "list_notifications", f.list_notifications)
-    monkeypatch.setattr(accounts, "list_accounts", f.list_accounts)
-    monkeypatch.setattr(accounts, "feed_mailboxes", f.feed_mailboxes)
-    monkeypatch.setattr(digest, "needs_reply_threads", f.needs_reply_threads)
-    monkeypatch.setattr(digest, "needs_reply_count", f.needs_reply_count)
-    monkeypatch.setattr(acb_graph, "tenant_session", f.tenant_session)
     monkeypatch.setattr(calendar, "day_summary", f.day_summary)
     monkeypatch.setattr(settings, "get_user_settings", f.get_user_settings)
     monkeypatch.setattr(personal, "my_calendar", f.my_calendar)
@@ -525,18 +525,11 @@ class TestTheFingerprint:
     such as ``minutes`` or ``days_late`` never goes in it."""
 
     def _poll(self, fakes, monkeypatch, at: datetime) -> dict:
-        class _Clock(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return at if tz is None else at.astimezone(tz)
-
-        monkeypatch.setattr(feed, "datetime", _Clock)
-        monkeypatch.setattr(shell, "datetime", _Clock)
+        _freeze(monkeypatch, at)  # the route's one clock, `shell._now`
         try:
             return run_feed(member(*FULL))
         finally:
-            monkeypatch.setattr(feed, "datetime", datetime)
-            monkeypatch.setattr(shell, "datetime", datetime)
+            _freeze(monkeypatch, fakes.now)
 
     def test_two_polls_a_minute_apart_give_the_same_fingerprint(self, fakes, monkeypatch):
         first = card(self._poll(fakes, monkeypatch, fakes.now), "tasks:t-late")
@@ -667,7 +660,7 @@ class TestTheCalendarKinds:
     def test_no_plan_yet_waits_60_minutes_after_the_day_starts(self, fakes):
         fakes.blocks[ME] = []
         # The day started this hour, so the 60 minutes are not over.
-        fakes.day_start[ME] = datetime.now(UTC).astimezone(ZoneInfo(fakes.zone)).hour
+        fakes.day_start[ME] = fakes.now.astimezone(ZoneInfo(fakes.zone)).hour
         answer = run_feed(member(*FULL))
         assert not [c for c in answer["cards"] if c["kind"] == "no_plan_yet"]
 
@@ -678,12 +671,7 @@ class TestTheCalendarKinds:
         five = datetime.combine(fakes._today(), datetime.min.time(),
                                 tzinfo=ZoneInfo(fakes.zone)) + timedelta(hours=5)
 
-        class _Clock(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return five if tz is None else five.astimezone(tz)
-
-        monkeypatch.setattr(feed, "datetime", _Clock)
+        _freeze(monkeypatch, five)  # the route's one clock, `shell._now`
         fakes.blocks[ME] = []
         fakes.day_start[ME] = None
         if stored == "missing":
@@ -703,12 +691,7 @@ class TestTheCalendarKinds:
         five = datetime.combine(fakes._today(), datetime.min.time(),
                                 tzinfo=ZoneInfo(fakes.zone)) + timedelta(hours=5)
 
-        class _Clock(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return five if tz is None else five.astimezone(tz)
-
-        monkeypatch.setattr(feed, "datetime", _Clock)
+        _freeze(monkeypatch, five)  # the route's one clock, `shell._now`
         fakes.blocks[ME] = []
         fakes.day_start[ME] = 0
         answer = run_feed(member(*FULL))
@@ -913,6 +896,15 @@ class TestTheCallsStayInStep:
         from gateway.routes.people.selfservice import get_me
 
         assert list(inspect.signature(get_me).parameters) == ["user"]
+
+    def test_the_feed_reads_no_clock_but_the_needs_one(self):
+        # One clock for the whole feed (main #951): `needs._now`, which the
+        # suites freeze. A clock of the feed's own would escape the freeze.
+        for module in (feed, feed_rank):
+            source = inspect.getsource(module)
+            for clock in ("datetime.now(", "datetime.utcnow(", "date.today(", "time.time("):
+                assert clock not in source, (module.__name__, clock)
+        assert inspect.getsource(feed).count("needs._now()") == 2
 
     def test_the_calendar_provider_opens_no_session_of_its_own(self):
         source = inspect.getsource(feed)

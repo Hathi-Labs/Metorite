@@ -55,7 +55,7 @@ import hashlib
 import json
 import logging
 import math
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -109,7 +109,7 @@ async def _calendar(user: UserContext) -> Found:
     from gateway.routes.tasks.calendar import day_summary
     from gateway.routes.tasks.settings import get_user_settings
 
-    now = datetime.now(UTC)
+    now = needs._now()  # the feed's one clock (needs._now)
     summary = await day_summary(date=None, user=user)
     settings = await get_user_settings(user=user)
     zone = zone_name(getattr(settings, "timezone", None))
@@ -530,7 +530,7 @@ async def shell_feed(
                            extra={"provider": key, "error": type(exc).__name__})
             sources[key] = "failed"
 
-    now = datetime.now(UTC)
+    now = needs._now()  # the feed's one clock (needs._now)
     tz = _zone(next((a.zone for a in found.values() if a.zone), None))
     today = now.astimezone(tz).date()
     cards = feed_rank.order(build_cards(signals, now, tz, today), size)
