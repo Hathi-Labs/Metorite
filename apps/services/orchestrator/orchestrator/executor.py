@@ -39,6 +39,9 @@ from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_llm.run_errors import run_error_event
+from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
+from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
+from acb_skills.ask_tools import clip_words as _clip_words
 from acb_skills.ask_tools import is_hitl_blocking_tool as _is_hitl_blocking_tool
 from acb_skills.integrations import build_integrations
 from acb_skills.loader import (
@@ -5004,12 +5007,16 @@ async def run_agent_stream(
                                 for _qi, _q in enumerate(_qs):
                                     if not isinstance(_q, dict):
                                         continue
-                                    _qh = str(
-                                        _q.get("header", f"Q{_qi + 1}")
-                                    ).strip()[:50]
-                                    _qt = str(
-                                        _q.get("question", "")
-                                    ).strip()[:200]
+                                    # Cut at a word, with an ellipsis: the
+                                    # same cut as the tool's own path.
+                                    _qh = _clip_words(
+                                        str(_q.get("header", f"Q{_qi + 1}")),
+                                        _QUESTION_HEADER_MAX,
+                                    )
+                                    _qt = _clip_words(
+                                        str(_q.get("question", "")),
+                                        _QUESTION_TEXT_MAX,
+                                    )
                                     if not _qt:
                                         continue
                                     _valid.append({

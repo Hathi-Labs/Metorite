@@ -137,6 +137,58 @@ def is_hitl_blocking_tool(name: str) -> bool:
     return (name or "").strip().lower() in HITL_BLOCKING_TOOLS
 
 
+# ── The text limits of a question card (owner report, 2026-10-13) ────────────
+#
+# The card cut the question at 200 characters, in the middle of a word and
+# with no mark: "…should be in the same plac". The member could not tell
+# that text was missing. Now a long text is cut at a word, with an ellipsis,
+# and the question may run to 1000 characters, so a cut is rare and never
+# silent. The executor's bridge (``orchestrator.executor``) cuts the header
+# and the question with the same function. It passes the options on as the
+# model wrote them, uncut, so no option loses a word there either.
+# Fence: ``tests/unit/test_ask_questions_text.py``.
+
+#: The longest header (a short label) the card keeps.
+QUESTION_HEADER_MAX = 50
+#: The longest question text the card keeps.
+QUESTION_TEXT_MAX = 1000
+#: The longest option label the card keeps.
+OPTION_LABEL_MAX = 100
+#: The longest option description the card keeps.
+OPTION_DESCRIPTION_MAX = 200
+#: The marks a cut text drops at its end, before the ellipsis: a space,
+#: a comma and the like, and the en and em dashes (by code, not as glyphs).
+_CUT_MARKS = " ,;:.-" + chr(0x2013) + chr(0x2014)
+#: The mark at the end of a cut text.
+ELLIPSIS = "…"
+
+
+def clip_words(text: str, limit: int) -> str:
+    """*text*, stripped, and cut at a word to at most *limit* characters.
+
+    A text that fits comes back whole. A longer text is cut at the last
+    space inside the limit, and ends with an ellipsis, so the member sees
+    that text is missing. A text with no space inside the limit (one very
+    long token) is cut at the limit, with the ellipsis. The result is never
+    longer than *limit*.
+    """
+    t = str(text or "").strip()
+    if len(t) <= limit:
+        return t
+    room = max(limit - len(ELLIPSIS), 0)
+    head = t[:room]
+    cut = head.rstrip()
+    # The limit fell inside a word: go back to the space before it. Do so
+    # only when that keeps most of the text, because a space near the start
+    # would throw away almost all of it.
+    inside_word = not t[room].isspace() and not head[-1:].isspace()
+    space = cut.rfind(" ")
+    if inside_word and space >= room // 2:
+        cut = cut[:space]
+    cut = cut.rstrip(_CUT_MARKS)
+    return f"{cut}{ELLIPSIS}"
+
+
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
@@ -166,7 +218,7 @@ async def ask_questions(questions: str) -> str:
               "questions": [
                 {
                   "header": "Short label (max 50 chars)",
-                  "question": "The full question text (max 200 chars)",
+                  "question": "The full question text (aim for 200 chars)",
                   "multiSelect": false,
                   "allowFreeformInput": true,
                   "options": [
@@ -204,8 +256,8 @@ async def ask_questions(questions: str) -> str:
     for i, q in enumerate(qs):
         if not isinstance(q, dict):
             return f"Error: question {i} is not an object"
-        header = str(q.get("header", f"Question {i + 1}")).strip()[:50]
-        question = str(q.get("question", "")).strip()[:200]
+        header = clip_words(str(q.get("header", f"Question {i + 1}")), QUESTION_HEADER_MAX)
+        question = clip_words(str(q.get("question", "")), QUESTION_TEXT_MAX)
         if not question:
             return f"Error: question {i} has no question text"
 
@@ -215,8 +267,8 @@ async def ask_questions(questions: str) -> str:
             for o in opts_raw:
                 if isinstance(o, dict) and o.get("label"):
                     options.append({
-                        "label": str(o["label"]).strip()[:100],
-                        "description": str(o.get("description", "")).strip()[:200] or None,
+                        "label": clip_words(str(o["label"]), OPTION_LABEL_MAX),
+                        "description": clip_words(str(o.get("description", "")), OPTION_DESCRIPTION_MAX) or None,
                         "recommended": bool(o.get("recommended", False)),
                     })
 

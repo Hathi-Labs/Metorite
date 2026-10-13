@@ -94,6 +94,9 @@ REQUEST_TIMEOUT_S = 30
 CLOSE_BUDGET_S = 3.0
 #: Seconds to close EVERY tool of one run. The servers close at the same time.
 CLOSE_TOTAL_S = 5.0
+#: Seconds that :func:`_stop_owner` waits for the MAF task to end after its
+#: cancel. A task that ends later is left to end on its own.
+STOP_WAIT_S = 0.5
 #: The most ``tools/list`` pages that one server may send in one load.
 MAX_TOOL_PAGES = 10
 #: The most tools that one server may expose. A server past it is left out,
@@ -237,7 +240,7 @@ async def _stop_owner(tool: Any) -> None:
     # Only a cancel that arrives DURING this wait is a new one.
     before = current.cancelling() if current is not None else 0
     try:
-        async with asyncio.timeout(0.5):
+        async with asyncio.timeout(STOP_WAIT_S):
             await asyncio.shield(task)
     except TimeoutError:
         return
@@ -252,13 +255,32 @@ async def _stop_owner(tool: Any) -> None:
 async def _close_tool(tool: Any) -> bool:
     """Close one tool within :data:`CLOSE_BUDGET_S`. True when it closed.
 
-    A close that runs past the budget stops the lifecycle task of MAF."""
+    A close that runs past the budget stops the lifecycle task of MAF.
+
+    MAF puts the close in the queue of its lifecycle task when that task
+    still runs. When :func:`_stop_owner` cancelled the task and its wait ran
+    out, the task ends after the close is in its queue. Then MAF fails the
+    close with the task's OWN ``CancelledError``. That is a failed close, not
+    a Stop, so it gives False. If it went up, an unreachable server would
+    stop the run. A cancel of the CALLER (a Stop) still goes up: only a task
+    that ran when the close started, and that ended in a cancel, can cause
+    the quiet path."""
     if tool is None:
         return True
+    owner = getattr(tool, "_lifecycle_owner_task", None)
+    queued_on_owner = owner is not None and not owner.done()
+    current = asyncio.current_task()
+    before = current.cancelling() if current is not None else 0
     try:
         async with asyncio.timeout(CLOSE_BUDGET_S):
             await tool.close()
         return True
+    except asyncio.CancelledError:
+        caller_cancelled = current is None or current.cancelling() > before
+        if caller_cancelled or not queued_on_owner or not owner.cancelled():
+            raise
+        _log.info("mcp.close_owner_stopped", name=str(getattr(tool, "name", ""))[:100])
+        return False
     except Exception:  # a timeout or a transport fault: the caller goes on
         await _stop_owner(tool)
         return False

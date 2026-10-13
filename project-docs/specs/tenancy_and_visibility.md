@@ -359,6 +359,12 @@ produced the Notes hole. When a surface needs sharing, it adopts
 invent `shared_with_department`, a `visible_to` array, or a per-app grant table with
 its own subject grammar.
 
+**The agent scope (WS-55 EA-3a, specified 2026-10-11, not built).** The Projects `Visibility`
+seam gains an optional agent scope: the pins and the personal opt-out of an outside agent's
+connection, and the seal.
+It narrows the seam for that agent, and it adds no grant and no subject.
+`specs/external_agent_access.md` §7.3 owns it.
+
 ### 3.3 Which surfaces are private by default
 
 **Private by default — a grant is required to widen them:**

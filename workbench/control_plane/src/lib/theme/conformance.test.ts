@@ -371,7 +371,9 @@ describe("solid controls go through the Button primitive", () => {
   // 22 since 2026-10-09: the edit composer's own coral Send pill is gone. It
   // draws the composer's one Send button (`components/ChatSendButton.tsx`).
   // 21 since the same day: that Send button is the `Button` primitive now.
-  const SOLID_BUTTON_DEBT = 21;
+  // 20 since 2026-10-12: the composer's split Send/Queue/Steer pill is gone.
+  // Send and Stop are one `ChatSendButton` (`lib/chatSteer.ts`).
+  const SOLID_BUTTON_DEBT = 20;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};
@@ -471,14 +473,14 @@ describe("no raw Tailwind palette colours", () => {
     "app/workflows/lib/types.ts": 50,
     "components/AddAgentWizard.tsx": 15,
     // 13 since WS-17 EM-T8f-3: the mark of the mailbox picker is text-primary.
-    "components/AgentChat.tsx": 12,
+    // 3 since 2026-10-12: the Send/Queue/Steer pill and its menu are gone,
+    // and the live spinner is text-primary (lib/chatSteer.ts).
+    "components/AgentChat.tsx": 3,
     "components/AgentStatusBar.tsx": 4,
-    "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,
     "components/ArtifactViewerModal.tsx": 5,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
-    "components/TodoPanel.tsx": 1,
     "lib/providers.ts": 30,
   };
 

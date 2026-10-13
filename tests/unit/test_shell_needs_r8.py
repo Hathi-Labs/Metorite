@@ -76,6 +76,36 @@ ZONED = f"needs-zoned-{TAG}@ns3.test"
 #: Fourteen hours ahead of UTC, so the member's date and the UTC date
 #: differ for ten hours of every day, and their midnights always differ.
 ZONE = "Pacific/Kiritimati"
+#: The suite's one instant. Every seed reads it, and ``_one_instant`` freezes
+#: the two clocks the route reads to it: the feed's split (``shell._now``)
+#: and the lens read's "today" (``personal.datetime``). Each seed once read
+#: its own ``datetime.now``, so a run that came late in the day called the
+#: task "due today, and not yet" overdue (the #948 flake, on a real database).
+NOW = datetime.now(UTC)
+
+
+class _Meta(type):
+    def __instancecheck__(cls, obj: object) -> bool:
+        # A real datetime from the driver is still a datetime to the code.
+        return isinstance(obj, _REAL_DATETIME)
+
+
+_REAL_DATETIME = datetime
+
+
+class _Frozen(datetime, metaclass=_Meta):
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return NOW.astimezone(tz) if tz else NOW.astimezone(UTC).replace(tzinfo=None)
+
+
+@pytest.fixture(autouse=True)
+def _one_instant(monkeypatch):
+    """The route's clocks read ``NOW``, the instant the seeds read."""
+    from gateway.routes.projects import personal
+
+    monkeypatch.setattr(shell, "_now", lambda: NOW)
+    monkeypatch.setattr(personal, "datetime", _Frozen)
 
 
 #: The sources of a member with Projects and Email, and no Approvals.
@@ -171,7 +201,7 @@ def seeded(promoted):  # noqa: F811
     the app role makes."""
     p = promoted
     org, elsewhere = p.org_b, p.org_a
-    now = datetime.now(UTC)
+    now = NOW
     midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
     later_today = now + (midnight - now) / 2
     ids: dict[str, str] = {}
@@ -250,7 +280,7 @@ def busy(promoted):  # noqa: F811
     """A third member with more due work and more waiting mail than the cap."""
     p = promoted
     org = p.org_b
-    now = datetime.now(UTC)
+    now = NOW
     out: dict[str, object] = {}
     with p.admin_engine.begin() as c:
         c.execute(text(
@@ -497,7 +527,7 @@ def zoned(promoted):  # noqa: F811
 
     p = promoted
     org = p.org_b
-    local_today = datetime.now(ZoneInfo(ZONE)).date()
+    local_today = NOW.astimezone(ZoneInfo(ZONE)).date()
     bound = datetime.combine(local_today + timedelta(days=1), datetime.min.time(),
                              tzinfo=ZoneInfo(ZONE))
     with p.admin_engine.begin() as c:

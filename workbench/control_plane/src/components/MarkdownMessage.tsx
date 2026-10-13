@@ -31,6 +31,7 @@ import { announceInAppLink, externalHost } from "@/lib/inAppLink";
 import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
 import remarkEntityPills, {
   PILL_ATTR,
+  PILL_GROUP_CLASS,
   PILL_NUMBER_ATTR,
   PILL_TEXT_ATTR,
   spaceBeforeBold,
@@ -388,6 +389,12 @@ export function MarkdownBody({
               <FencedName text={text} number={n} />
             );
           }
+          // A name with no pill is a run of words, and it must wrap like
+          // words (owner report, 2026-10-13: a long «task title» and its
+          // full stop ran past the right edge of the question card). The
+          // group's `whitespace-nowrap` keeps a short PILL with its comma.
+          // A word and the mark that touches it never part anyway.
+          if (!entityPills && attrs.className === PILL_GROUP_CLASS) return <>{children}</>;
           return <span {...rest}>{children}</span>;
         },
 
