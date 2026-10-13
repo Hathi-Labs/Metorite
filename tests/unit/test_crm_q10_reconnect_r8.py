@@ -227,29 +227,59 @@ async def test_no_profile_and_a_spent_default_budget_still_discovers(
         assert await profiles.budget_for(db, q.org_a) == EDITION_BUDGET
 
 
-async def test_an_unknown_edition_gets_the_allowance_once_in_24_hours(q, app_engine) -> None:
+async def test_an_unknown_edition_gets_the_allowance_once_in_24_hours(
+    q, app_engine, monkeypatch,
+) -> None:
     """GET org fails during the recovery discovery. The run stores a profile
-    with ``unreadable: ["org"]`` and stops on ``budget``. The next run gets no
-    allowance, because discovery is not due. 24 hours later discovery is due
-    again, the edition is still the floor, and the allowance recovers it."""
+    with ``unreadable: ["org"]`` and stops on ``budget``.
+
+    The org mirrors a custom module, and the spent budget skips its fields, so
+    the profile carries ``fields_pending``. That makes discovery due again after
+    one hour, but the allowance waits for a profile 24 hours old (re-review P2).
+    The runs between also write no pipeline. 24 hours later the allowance
+    recovers the edition."""
     from gateway.crm_sync import engine
 
     _assert_non_priv(app_engine)
     seed_basic(q.a, "A")
     await _sync(q, q.org_a, q.a)
+    with q.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE integration_connections SET scopes = "
+            "array_append(scopes, 'ZohoCRM.modules.custom.READ') "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": q.org_a})
     _spend_the_window(q.p, q.org_a)
     q.a.org_error = True
     first = await engine.run_org(q.org_a)
     assert (first.status, first.error) == ("stopped", "budget"), first
     assert 0 < first.credits_used <= engine.DISCOVERY_ALLOWANCE
-    rows = _q(q.p, "SELECT profile->'unreadable' FROM crm_source_profiles "
-                   "WHERE organization_id = CAST(:o AS uuid)", o=q.org_a)
+    rows = _q(q.p, "SELECT profile->'unreadable', profile->'modules' FROM "
+                   "crm_source_profiles WHERE organization_id = CAST(:o AS uuid)",
+              o=q.org_a)
     assert [r[0] for r in rows] == [["org"]]
+    installs = [m for m in rows[0][1] if m["api_name"] == "Installs"]
+    assert installs and installs[0]["mirrored"] and installs[0]["fields_pending"]
 
+    writes: list[str] = []
+    original = engine._mirror_pipelines
+
+    async def counted(ctx: Any, db: Any, pipelines: Any) -> None:
+        writes.append(ctx.org)
+        await original(ctx, db, pipelines)
+
+    monkeypatch.setattr(engine, "_mirror_pipelines", counted)
     reads = q.a.org_reads
     second = await engine.run_org(q.org_a)
     assert (second.status, second.error, second.credits_used) == ("stopped", "budget", 0)
     assert q.a.org_reads == reads, "no allowance while discovery is not due"
+    assert writes == [], "a run after the repair writes no pipeline"
+
+    # Pending fields make discovery due after one hour. Still no allowance.
+    _age_profile(q.p, q.org_a, hours=2)
+    hourly = await engine.run_org(q.org_a)
+    assert (hourly.status, hourly.error, hourly.credits_used) == ("stopped", "budget", 0)
+    assert q.a.org_reads == reads, "the allowance waits for a 24-hour-old profile"
+    assert writes == []
 
     q.a.org_error = False
     _age_profile(q.p, q.org_a, hours=25)
