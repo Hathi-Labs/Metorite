@@ -145,7 +145,8 @@ _DATETIMES = [
 _EMAILS = [
     "a@b.in", "first.last@sub.example.co.in", "a@b", "a b@c.in", "a@b.com?bcc=x",
     "a@b.com#x", "a%b@c.in", "a,b@c.in", "a;b@c.in", "<a@b.in>", "a@@b.in",
-    "@b.in", "a@.in", "a&b@c.in",
+    "@b.in", "a@.in", "a&b@c.in", "a?b@c.in", "a#b@c.in", "a<b@c.in",
+    "a@b?c.in", "a@b.c;d",
 ]
 _PHONES = [
     "+91 98450 12345", "(080) 4123-4567", "+91.80.4123.4567", "1234",
