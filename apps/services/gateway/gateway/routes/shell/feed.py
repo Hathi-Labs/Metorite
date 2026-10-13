@@ -378,9 +378,19 @@ def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) 
 # ── The fold (§4.5) and the card (§14.1a) ───────────────────────────────────
 
 
-def _fingerprint(kind: str, folded: list[str], facts: dict[str, Any]) -> str:
-    blob = json.dumps({"kind": kind, "folded": folded, "facts": facts},
-                      sort_keys=True, default=str)
+#: The facts a fingerprint hashes (§14.1a): the ones that change only when
+#: the entity changes in substance. ⚠️ A countdown such as ``minutes`` or
+#: ``days_late`` never goes in, or the fingerprint moves on every poll and
+#: MD-2's "changed in substance" rule (§6.3) fires for nothing.
+STABLE_FACTS = ("due_at", "block_start", "block_end", "overlap_ids", "note_ids",
+                "waiting_since")
+
+
+def _fingerprint(signal_id: str, kind: str, folded: list[str],
+                 facts: dict[str, Any]) -> str:
+    stable = {name: facts.get(name) for name in STABLE_FACTS if name in facts}
+    blob = json.dumps({"entity": signal_id, "kind": kind, "folded": sorted(folded),
+                       "facts": stable}, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:8]
 
 
@@ -406,8 +416,9 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
     """One card for each entity (§4.5), in the shape of §14.1a, unordered."""
     by_key: dict[str, dict[str, Signal]] = {}
     for signal in signals:
-        # One signal of each kind on an entity. Each provider gives its best
-        # first (the newest notification), and the first one wins.
+        # One signal of each kind on an entity. Each provider already gives
+        # one signal for each entity and kind: a task's unread notifications
+        # are ONE signal, whose `read` act covers every id (`act_refs`).
         by_key.setdefault(signal.signal_id, {}).setdefault(signal.kind, signal)
 
     parts: dict[str, tuple[list[Signal], dict[str, Any]]] = {}
@@ -456,7 +467,7 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
             "why": " ".join(clauses),
             "why_key": why_key,
             "facts": facts,
-            "fingerprint": _fingerprint(main.kind, folded, facts),
+            "fingerprint": _fingerprint(key, main.kind, folded, facts),
             "urgent_at": main.urgent_at,
             "expires_at": main.expires_at,
             "at": main.at,

@@ -358,7 +358,47 @@ class TestOneCardPerEntity:
         assert (note["kind"], note["app"], note["folded"]) == ("notification", "projects", [])
         assert note["why"].startswith("priya gave you this task")
         assert note["acts"][0] == {"id": "read", "label": "Mark read", "class": "A",
-                                   "way": "tap", "act": "read", "act_ref": "n-1"}
+                                   "way": "tap", "act": "read", "act_ref": "n-1",
+                                   "act_refs": ["n-1"]}
+
+    def test_a_later_comment_never_hides_an_earlier_mention(self, fakes):
+        # Review round 1, P1. A mention at 09:00 and a comment at 11:00 on one
+        # task. One signal with one `read` act that marks BOTH read, and the
+        # asking reason (the mention) sets the group and the why line.
+        nine = datetime.combine(fakes._today(), datetime.min.time(),
+                                tzinfo=ZoneInfo(fakes.zone)) + timedelta(hours=9)
+        fakes.notes[ME] = [
+            {"id": "n-mention", "task_id": "t-q", "kind": "mention", "actor": "ravi@x.test",
+             "task_title": "Quote the housing", "task_number": 7, "excerpt": "Can you check?",
+             "created_at": nine},
+            {"id": "n-comment", "task_id": "t-q", "kind": "comment", "actor": "lena@x.test",
+             "task_title": "Quote the housing", "task_number": 7, "excerpt": "Done on my side",
+             "created_at": nine + timedelta(hours=2)},
+        ]
+        answer = run_feed(member(*FULL))
+        quote = card(answer, "tasks:t-q")
+        assert [c["signal_id"] for c in answer["cards"]].count("tasks:t-q") == 1
+        assert (quote["kind"], quote["group"]) == ("notification", "needs_you")
+        assert quote["why_key"] == "notification_mention"
+        assert quote["why"].startswith("ravi mentioned you on this task")
+        reads = [a for a in quote["acts"] if a["id"] == "read"]
+        assert len(reads) == 1
+        assert reads[0]["act_refs"] == ["n-comment", "n-mention"]  # newest first
+        assert reads[0]["act_ref"] == "n-comment"
+        # The needs view keeps one row for each notification.
+        needs_ids = [i["id"] for i in answer["needs"]["items"]]
+        assert "projects:n-mention" in needs_ids and "projects:n-comment" in needs_ids
+
+    def test_comments_alone_stay_information(self, fakes):
+        fakes.notes[ME] = [
+            {"id": f"n-c{n}", "task_id": "t-q", "kind": "comment", "actor": "lena@x.test",
+             "task_title": "Quote the housing", "task_number": 7, "excerpt": None,
+             "created_at": fakes.now - timedelta(hours=n)} for n in (1, 2)]
+        answer = run_feed(member(*FULL))
+        quote = card(answer, "tasks:t-q")
+        assert (quote["group"], quote["why_key"]) == ("fyi", "notification_comment")
+        read = next(a for a in quote["acts"] if a["id"] == "read")
+        assert read["act_refs"] == ["n-c1", "n-c2"]
 
 
 # ── §14.1a The shape, the templates and the acts ────────────────────────────
@@ -437,6 +477,82 @@ class TestTheCardShape:
         late = card(answer, "tasks:t-late")
         assert late["facts"]["priority"] == "critical"
         assert late["score"] >= 60 + 60 + 24
+
+
+class TestTheFingerprint:
+    """Review round 1, P2. The fingerprint hashes stable facts only (§14.1a):
+    the entity, the kind, the folded kinds, the due time, the block times,
+    the overlap ids, the notification ids and the waiting time. A countdown
+    such as ``minutes`` or ``days_late`` never goes in it."""
+
+    def _poll(self, fakes, monkeypatch, at: datetime) -> dict:
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return at if tz is None else at.astimezone(tz)
+
+        monkeypatch.setattr(feed, "datetime", _Clock)
+        monkeypatch.setattr(shell, "datetime", _Clock)
+        try:
+            return run_feed(member(*FULL))
+        finally:
+            monkeypatch.setattr(feed, "datetime", datetime)
+            monkeypatch.setattr(shell, "datetime", datetime)
+
+    def test_two_polls_a_minute_apart_give_the_same_fingerprint(self, fakes, monkeypatch):
+        first = card(self._poll(fakes, monkeypatch, fakes.now), "tasks:t-late")
+        second = card(self._poll(fakes, monkeypatch, fakes.now + timedelta(minutes=1)),
+                      "tasks:t-late")
+        # Non-vacuity: the countdown moved between the two polls.
+        assert first["facts"]["minutes"] != second["facts"]["minutes"]
+        assert "block_soon" in first["folded"] and "block_soon" in second["folded"]
+        assert first["fingerprint"] == second["fingerprint"]
+
+    def test_a_late_day_more_keeps_the_fingerprint(self):
+        now = datetime(2026, 10, 13, 10, 0, tzinfo=UTC)
+        cards = []
+        for late in (2, 3):
+            signal = shell.Signal(
+                signal_id="tasks:t-1", app="tasks", kind="overdue",
+                entity={"type": "task", "id": "t-1", "label": "A"}, title="A",
+                facts={"due_at": "2026-10-10T17:00:00+00:00", "days_late": late},
+                href="/projects?task=t-1", acts=(),
+            )
+            cards.append(feed.build_cards([signal], now, ZoneInfo("UTC"), now.date())[0])
+        assert cards[0]["fingerprint"] == cards[1]["fingerprint"]
+
+    def test_a_changed_due_date_gives_a_new_fingerprint(self, fakes):
+        before = card(run_feed(member(*FULL)), "tasks:t-late")
+        moved = next(t for t in fakes.tasks[ME] if t["id"] == "t-late")
+        moved["due_at"] = (datetime.fromisoformat(moved["due_at"])
+                           - timedelta(hours=1)).isoformat()
+        after = card(run_feed(member(*FULL)), "tasks:t-late")
+        assert before["fingerprint"] != after["fingerprint"]
+
+    def test_a_new_unread_notification_gives_a_new_fingerprint(self, fakes):
+        before = card(run_feed(member(*FULL)), "tasks:t-9")
+        fakes.notes[ME].append({"id": "n-new", "task_id": "t-9", "kind": "comment",
+                                "actor": "lena@x.test", "task_title": "Fix the hopper",
+                                "task_number": 12, "excerpt": None, "created_at": fakes.now})
+        after = card(run_feed(member(*FULL)), "tasks:t-9")
+        assert before["fingerprint"] != after["fingerprint"]
+
+
+class TestTheBlockTimeLink:
+    """Review round 1, P2. "Block time" opens the Calendar pane, so a member
+    without ``feature:tasks`` never gets it."""
+
+    def test_a_member_without_the_calendar_pane_gets_no_block_time(self, fakes):
+        answer = run_feed(member("projects", "email"))
+        soon = card(answer, "tasks:t-soon")
+        assert soon["kind"] == "due_today"
+        assert "block-time" not in [a["id"] for a in soon["acts"]]
+        assert not [a for c in answer["cards"] for a in c["acts"]
+                    if a.get("href") == "/calendar"]
+
+    def test_a_member_with_the_calendar_pane_gets_it(self, fakes):
+        soon = card(run_feed(member(*FULL)), "tasks:t-soon")
+        assert "block-time" in [a["id"] for a in soon["acts"]]
 
 
 # ── §5.1 The Calendar kinds ─────────────────────────────────────────────────

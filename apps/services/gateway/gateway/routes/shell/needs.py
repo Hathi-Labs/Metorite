@@ -206,11 +206,17 @@ class Signal:
     expires_at: str | None = None
 
 
-def tap(act_id: str, label: str, act: str, act_ref: str) -> Act:
+def tap(act_id: str, label: str, act: str, act_ref: str,
+        act_refs: list[str] | None = None) -> Act:
     """An act that runs in the card (§11.1). In MD-1 only ``done`` and
-    ``read`` are taps, and each runs through its owning app's route."""
-    return {"id": act_id, "label": label, "class": "A", "way": "tap",
-            "act": act, "act_ref": act_ref}
+    ``read`` are taps, and each runs through its owning app's route.
+    ``act_refs`` names every id the act covers, ``act_ref`` first: a task's
+    ``read`` marks each of its unread notifications read (§14.1a)."""
+    out: Act = {"id": act_id, "label": label, "class": "A", "way": "tap",
+                "act": act, "act_ref": act_ref}
+    if act_refs is not None:
+        out["act_refs"] = list(act_refs)
+    return out
 
 
 def link(act_id: str, label: str, href: str, cls: str = "A") -> Act:
@@ -317,8 +323,12 @@ async def _tasks(user: UserContext) -> Found:
     rows = (_sort(overdue) + _sort(due_today))[:PER_APP]
     zone = answer.get("timezone")
 
+    # "Block time" opens the Calendar pane, which needs `feature:tasks`.
+    # The lens read needs only `feature:projects`, so check it here.
+    calendar = user.has_permission("feature:tasks")
+
     def signals() -> list[Signal]:
-        return _task_signals(kept, zone, answer.get("today"))
+        return _task_signals(kept, zone, answer.get("today"), calendar=calendar)
 
     # The lens read stops at PER_APP and runs no count, so a full read is a
     # floor: the member has this many due tasks or more.
@@ -336,8 +346,11 @@ def task_entity(task_id: str, title: Any) -> dict[str, Any]:
 
 
 def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
-                  today: Any) -> list[Signal]:
+                  today: Any, *, calendar: bool) -> list[Signal]:
     """The feed signals of the due rows: one for each task, keyed on it.
+
+    ``calendar`` says that the member holds the Calendar pane
+    (``feature:tasks``). Without it, no act links to ``/calendar``.
 
     ``days_late`` counts the member's own dates, in the zone the lens read
     reports. ``priority`` is the D78 level, from the one server matrix
@@ -365,7 +378,7 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
             late = (local_today - due.astimezone(tz).date()).days if due else 0
             facts["days_late"] = max(0, late)
             acts.append(link("move-tomorrow", "Move to tomorrow", task_href(task_id)))
-        else:
+        elif calendar:
             acts.append(link("block-time", "Block time", "/calendar"))
         out.append(Signal(
             signal_id=f"tasks:{task_id}", app="tasks", kind=kind,
@@ -432,30 +445,48 @@ async def _projects(user: UserContext) -> Found:
                  signals=signals)
 
 
+#: The notification kinds that ask the member for something. One of them
+#: sets the card's reason over a ``comment`` (§4.3, §14.1a).
+ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge"})
+
+
 def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
-    """The feed signals of the unread notifications, the newest first.
+    """The feed signals of the unread notifications: ONE for each task.
 
     ⚠️ **In the feed a notification keys on its TASK**, ``tasks:<task id>``,
-    so it folds into the task's one card (``my_day_feed.md`` §4.1). Its
-    ``read`` act still carries the notification id. The needs view keeps
-    its own id, ``projects:<notification id>``.
+    so it folds into the task's one card (``my_day_feed.md`` §4.1). The
+    needs view keeps one row for each, ``projects:<notification id>``.
+
+    ⚠️ **A task's unread notifications are one signal, with one ``read``
+    act** (§14.1a). ``act_refs`` lists every unread id on the task, the
+    newest first, and ``act_ref`` is the first of them. The reason is the
+    newest ASKING notification (assigned, mention, nudge) when there is one,
+    else the newest one. So a later comment never hides an earlier mention,
+    and the mention never stays unread behind it (review round 1, P1).
     """
-    newest = sorted(notes, key=lambda r: _instant(r.get("created_at"))
-                    or datetime.min.replace(tzinfo=UTC), reverse=True)
+    def stamp(row: dict[str, Any]) -> datetime:
+        return _instant(row.get("created_at")) or datetime.min.replace(tzinfo=UTC)
+
+    by_task: dict[str, list[dict[str, Any]]] = {}
+    for row in sorted(notes, key=stamp, reverse=True):
+        by_task.setdefault(str(row["task_id"]), []).append(row)
     out: list[Signal] = []
-    for row in newest:
-        note_id, task_id = str(row["id"]), str(row["task_id"])
-        entity = task_entity(task_id, row.get("task_title"))
+    for task_id, rows in by_task.items():
+        ids = [str(r["id"]) for r in rows]
+        asking = [r for r in rows if str(r.get("kind") or "") in ASKING_NOTIFICATIONS]
+        reason = (asking or rows)[0]
+        entity = task_entity(task_id, reason.get("task_title"))
         out.append(Signal(
             signal_id=f"tasks:{task_id}", app="projects", kind="notification",
             entity=entity, title=entity["label"],
-            facts={"notification": str(row.get("kind") or ""), "who": _who(row.get("actor")),
-                   "excerpt": row.get("excerpt"), "note_id": note_id,
-                   "at": _iso(row.get("created_at"))},
+            facts={"notification": str(reason.get("kind") or ""),
+                   "who": _who(reason.get("actor")), "excerpt": reason.get("excerpt"),
+                   "at": _iso(reason.get("created_at")), "note_ids": ids,
+                   "unread": len(ids)},
             href=task_href(task_id),
-            acts=(tap("read", "Mark read", "read", note_id),
+            acts=(tap("read", "Mark read", "read", ids[0], act_refs=ids),
                   link("open", "Open", task_href(task_id))),
-            at=_iso(row.get("created_at")),
+            at=_iso(rows[0].get("created_at")),
         ))
     return out
 

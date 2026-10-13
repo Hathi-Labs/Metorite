@@ -34,7 +34,12 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from acb_common.priority import CELL_META
-from gateway.routes.shell.needs import PER_APP, YIELDING_KINDS, _instant
+from gateway.routes.shell.needs import (
+    ASKING_NOTIFICATIONS,
+    PER_APP,
+    YIELDING_KINDS,
+    _instant,
+)
 
 #: The groups, in the order the feed shows them (§4.3). MD-1 fills only the
 #: first four. ``later`` waits on MD-2, and ``handled`` on MD-7.
@@ -78,9 +83,6 @@ LEVEL_BY_CELL: dict[str, int] = {
     "low-priority": 0,
 }
 
-#: The notification kinds that ask the member for something (§4.3). A
-#: comment is information.
-ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge"})
 
 
 def base(kind: str) -> int:
