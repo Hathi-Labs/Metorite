@@ -12,6 +12,11 @@
  * Zoho module (Products, Quotes, each custom module), under the known views
  * and in the profile order (`railEntries`). With no module there is no row.
  *
+ * Since WS-53 CRM-C1 the settings row opens its sections as child rows while
+ * the settings tab is on screen (`SettingsSectionRows`, crm_platform.md
+ * §20.4). Each child is a `RailRow` at depth 1, as a saved view is. While a
+ * section is open, the child row takes the highlight from the settings row.
+ *
  * The page owns where the rail goes: a column beside the content on a
  * desktop, and the shell's drawer on a phone. This file draws the rows only.
  * Fence: `src/lib/railRows.test.ts`.
@@ -24,6 +29,7 @@ import RailRow from "@/components/ui/RailRow";
 import { useState } from "react";
 
 import { canEditView, railViews, type SavedView } from "../lib/savedViews";
+import type { SettingsSection, SettingsSectionId } from "../lib/settingsSections";
 import type { EntitySlug } from "../lib/types";
 import type { CrmModule } from "../lib/modules";
 import type { CrmView } from "../lib/urlState";
@@ -49,16 +55,54 @@ export type RailModules = {
   onSelect: (module: string) => void;
 };
 
+/** The sections of CRM settings, as child rows of its rail row (CRM-C1). */
+export type RailSettings = {
+  /** The sections the caller can open, in rail order (`visibleSections`). */
+  sections: readonly SettingsSection[];
+  /** The section on screen, or null on another tab. */
+  active: SettingsSectionId | null;
+  onSelect: (section: SettingsSectionId) => void;
+};
+
+/**
+ * The child rows of the settings row: one `RailRow` at depth 1 for each
+ * section. No hook, so the test can read its element tree.
+ */
+export function SettingsSectionRows({ sections, active, onSelect }: RailSettings) {
+  return (
+    <>
+      {sections.map((section) => {
+        const selected = active === section.id;
+        return (
+          <RailRow
+            key={section.id}
+            label={section.label}
+            depth={1}
+            guides
+            selected={selected}
+            icon={<Icon name={section.icon} className="h-3.5 w-3.5 shrink-0" />}
+            buttonProps={{ "aria-current": selected ? "page" : undefined }}
+            onSelect={() => onSelect(section.id as SettingsSectionId)}
+          />
+        );
+      })}
+    </>
+  );
+}
+
 export default function CrmRail({
   tab,
   onSelect,
   saved,
   modules,
+  settings,
 }: {
   tab: CrmView["tab"];
   onSelect: (tab: CrmView["tab"]) => void;
   saved?: RailViewActions;
   modules?: RailModules;
+  /** The settings sections. They show while the settings tab is on screen. */
+  settings?: RailSettings;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -136,7 +180,10 @@ export default function CrmRail({
       saved && view.id in saved.views ? railViews(saved.views[view.id as EntitySlug]) : [];
     // A saved view in effect takes the highlight from its entity row.
     const viewInEffect = nested.some((v) => v.id === saved?.activeViewId);
-    const selected = tab === view.id && !viewInEffect;
+    // So does an open settings section (CRM-C1).
+    const sections = view.id === "settings" && tab === "settings" ? settings : undefined;
+    const sectionOpen = Boolean(sections?.sections.some((s) => s.id === sections.active));
+    const selected = tab === view.id && !viewInEffect && !sectionOpen;
     return (
       <div key={view.id} className="flex flex-col gap-0.5">
         <RailRow
@@ -147,6 +194,7 @@ export default function CrmRail({
           onSelect={() => onSelect(view.id)}
         />
         {saved ? nested.map((v) => viewRow(v, saved)) : null}
+        {sections ? <SettingsSectionRows {...sections} /> : null}
       </div>
     );
   };
