@@ -11,13 +11,13 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 - `POST /oauth/token` serves `authorization_code` with PKCE S256 and `refresh_token`.
 - `POST /oauth/revoke` answers 200 for an unknown token (RFC 7009).
 
-## The MCP endpoint (EA-3b-1)
+## The MCP endpoint (EA-3b-1 and EA-3b-2)
 
 - `POST /mcp` is the stateless MCP endpoint. `mcp.py` holds the transport and the order of the checks of spec §9.6.
 - `bearer.py` reads the bearer token, looks it up, checks the audience and computes the effective scopes.
 - `gateway_client.py` is the only client of the gateway. It sends the four signed headers of `acb_auth.agent_signing` and no other header that it sets.
-- `cursor.py` signs and reads the page cursor of a list tool.
-- `tools.py` holds the tool records and is the ONE module that maps a gateway response to a tool result (EA3-9). EA-3b-1 holds `list_tasks` and `search_tasks`. EA-3b-2 adds the other five read tools.
+- `cursor.py` signs and reads the page cursor of a list tool. The cursor binds the tool name, so a cursor of one tool never pages another.
+- `tools.py` holds the tool records and is the ONE module that maps a gateway response to a tool result (EA3-9). It holds the seven read tools of spec §9.1: `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline` and `search_tasks`.
 
 ## Local contract
 
@@ -34,7 +34,9 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 11. **Keep the order of the checks.** The order of spec §9.6 is the flag, the key, the method, the origin, the body, the token, the version and the scope. Do not move a check.
 12. **An outage is a 503, never a 401.** A 401 makes a client drop a good token. `acb_common.db_busy.is_db_outage` decides.
 13. **Only check 8 sends `insufficient_scope`.** A gateway 403 is a tool error with a fixed text. Never send a gateway error text to an agent.
-14. **Free text is untrusted.** Each free-text value goes out as `{"untrusted_text": ...}`. A tool returns only the keys that spec §9.1 names.
+14. **Free text is untrusted.** Each free-text value goes out as `{"untrusted_text": ...}`. A tool returns only the keys that spec §9.1 names. A value that a member writes and the gateway does not shape-check leaves as a plain string only in its shape (spec §9.1, mark (S)). Today these are `task_prefix`, `timezone` and each assignee.
+15. **One mapping module (EA3-9).** Only `tools.py` may hold an identity literal such as `"email"`, and only as a `.get()` argument, a subscript index or a dict-display key. `tools.py` reads no request header, query, form, cookie or path parameter, and imports nothing from `fastapi` or `starlette`. Every other edge module holds no identity literal at all. ⚠️ The AST tests of this rule are a heuristic that catches the common shapes. They miss a literal that reaches a read through a variable, such as a value from a dict key, and an attribute name that the code computes without `getattr`. The real guards are that `tools.py` receives no `Request` object and that coverage rule 4 holds.
+16. **An edge input needs a spec amendment.** An input that the edge applies itself, because the route takes no such parameter, goes in the tool record's `edge_inputs`. Spec §9.5 rule 4 names the four that exist, all of `list_projects`.
 
 ## Deploy
 
@@ -42,7 +44,7 @@ This unit is not deployed. EA-10 writes its unit file, its Caddy block and its D
 
 ## Fence
 
-`tests/unit/test_agent_oauth_server.py` holds the behaviour of the OAuth routes, and it holds the structural fences of rules 2 and 4. `tests/unit/test_mcp_edge_protocol.py` holds rules 10 to 14 and the wire contract of `/mcp`. `tests/unit/test_mcp_edge_coverage.py` holds the tool records against `MCP_ROUTES` and the gateway routes.
+`tests/unit/test_agent_oauth_server.py` holds the behaviour of the OAuth routes, and it holds the structural fences of rules 2, 4 and 15. `tests/unit/test_mcp_edge_protocol.py` holds rules 10 to 14 and the wire contract of `/mcp`. `tests/unit/test_mcp_edge_coverage.py` holds the tool records against `MCP_ROUTES` and the gateway routes, and rule 16.
 
 ## Child DOX Index
 

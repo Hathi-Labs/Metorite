@@ -5,15 +5,19 @@ and "A bad cursor".
 
 A cursor is ``<payload>.<tag>``.
 
-* ``<payload>`` is the base64url form (no padding) of a JSON object with four
-  keys: ``page``, ``size``, ``filter`` and ``connection``.
+* ``<payload>`` is the base64url form (no padding) of a JSON object with five
+  keys: ``tool``, ``page``, ``size``, ``filter`` and ``connection``.
+* ``tool`` is the name of the tool that made the cursor (EA-3b-2). Two tools
+  with no filter have the same ``filter``, so without it a cursor of
+  ``list_tasks`` would page ``list_projects``.
 * ``filter`` is the hex SHA-256 of the sorted-key JSON of every tool input
   except ``limit`` and ``cursor``.
 * ``<tag>`` is the base64url HMAC-SHA256 of the ``<payload>`` text. Its key is
   the HMAC-SHA256 of ``agent_edge_signing_key`` over the label ``cursor-v1``.
 
 A cursor fixes the page size, so a ``limit`` sent with a cursor is ignored.
-A cursor with a bad tag, another filter or another connection is refused,
+A cursor with a bad tag, another tool, another filter or another connection
+is refused,
 and the tool answers ``isError: true``. A key rotation ends every open cursor
 in the same way, and the agent lists again.
 
@@ -83,10 +87,11 @@ def filter_hash(arguments: Mapping[str, Any]) -> str:
     return hashlib.sha256(text.encode("ascii")).hexdigest()
 
 
-def encode(signing_key: str, *, page: int, size: int,
+def encode(signing_key: str, *, tool: str, page: int, size: int,
            arguments: Mapping[str, Any], connection_id: str) -> str:
-    """A cursor for *page* of *size* rows of this list and this connection."""
+    """A cursor for *page* of *size* rows of this tool, list and connection."""
     body = {
+        "tool": tool,
         "page": int(page),
         "size": int(size),
         "filter": filter_hash(arguments),
@@ -97,7 +102,7 @@ def encode(signing_key: str, *, page: int, size: int,
     return f"{payload}.{_tag(signing_key, payload)}"
 
 
-def decode(signing_key: str, cursor: str, *,
+def decode(signing_key: str, cursor: str, *, tool: str,
            arguments: Mapping[str, Any], connection_id: str) -> Position:
     """The position of *cursor*, or raise :class:`BadCursor`.
 
@@ -117,6 +122,8 @@ def decode(signing_key: str, cursor: str, *,
         raise BadCursor("malformed") from None
     if not isinstance(body, dict):
         raise BadCursor("malformed")
+    if body.get("tool") != tool:
+        raise BadCursor("tool")
     if body.get("connection") != connection_id:
         raise BadCursor("connection")
     if body.get("filter") != filter_hash(arguments):
