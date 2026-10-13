@@ -97,12 +97,13 @@ import {
   FeedCard,
   OVERLAY_MIN_WAIT_MS,
   expireFeedActs,
+  carryFeedNeeds,
   feedActMover,
   joinFeedPoll,
   runFeedAct,
   watchOverlayEnds,
 } from "./FeedCard";
-import { needsKey, runAct } from "./needs";
+import { fetchNeeds, needsKey, runAct } from "./needs";
 import { ACT_HOLD_MS, acquireReader, actsSnapshot, pruneActs, removeRow } from "./needsActs";
 import { BELL_POLL_MS, joinNeedsPoll } from "./ShellBell";
 
@@ -913,6 +914,81 @@ describe("7. the poll covers the needs key only after a needs view (fix round 1,
 
   it("after a good answer, the feed's read is the only one", () => {
     expect(tick(coversNeeds(withNeeds, null))).toEqual({ bell: 0, feed: 1 });
+  });
+});
+
+describe("8. a cold load runs the providers once (visual review, item 2)", () => {
+  /** Count the requests, and answer each route. */
+  function stubRoutes(feedStatus = 200) {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        urls.push(url);
+        if (url.startsWith("/api/shell/feed")) {
+          return feedStatus === 200
+            ? new Response(JSON.stringify(ANSWER), { status: 200 })
+            : new Response(JSON.stringify({ error: "feed_unavailable" }), { status: feedStatus });
+        }
+        return new Response(JSON.stringify(NEEDS_VIEW), { status: 200 });
+      }),
+    );
+    return urls;
+  }
+
+  /** The mount reads of a cold load: My Day's feed, My Day's needs, the bell, the sidebar. */
+  const coldLoad = () =>
+    Promise.all([
+      read(needsKey(), () => fetchNeeds()),
+      read(needsKey(), () => fetchNeeds()),
+      read(feedKey(), () => fetchFeed()),
+      read(needsKey(), () => fetchNeeds()),
+    ]);
+
+  it("makes exactly ONE request, and the needs readers get the feed's needs view", async () => {
+    const urls = stubRoutes();
+    const release = carryFeedNeeds();
+    try {
+      await coldLoad();
+    } finally {
+      release();
+    }
+    expect(urls).toEqual(["/api/shell/feed?limit=40"]);
+    expect(peek(needsKey())?.data).toEqual(NEEDS_VIEW);
+  });
+
+  it("falls back to the needs route when the feed fails, so the bell still counts", async () => {
+    const urls = stubRoutes(502);
+    const release = carryFeedNeeds();
+    try {
+      await coldLoad().catch(() => {});
+      expect(await read(needsKey(), () => fetchNeeds())).toEqual(NEEDS_VIEW);
+    } finally {
+      release();
+    }
+    expect(urls.filter((u) => u.startsWith("/api/shell/needs"))).toEqual(["/api/shell/needs?limit=30"]);
+  });
+
+  it("reads the needs route again once My Day leaves, and for any other limit", async () => {
+    const urls = stubRoutes();
+    carryFeedNeeds()(); // carried, then released: My Day unmounted
+    await read(needsKey(), () => fetchNeeds());
+    const release = carryFeedNeeds();
+    try {
+      await fetchNeeds(10);
+    } finally {
+      release();
+    }
+    expect(urls).toEqual(["/api/shell/needs?limit=30", "/api/shell/needs?limit=10"]);
+  });
+
+  it("is in place before any needs reader starts: a layout effect in useFeed", () => {
+    const src = code(read_("./FeedCard.tsx"));
+    expect(src).toMatch(/useLayoutEffect\(\(\) => \(enabled \? carryFeedNeeds\(\) : undefined\), \[enabled\]\);/);
+    // My Day keeps its needs reader for the summary line and `pruneActs`,
+    // and that reader now asks the feed through `fetchNeeds`.
+    expect(code(read_("./NeedsYouCard.tsx"))).toMatch(/\(\) => fetchNeeds\(\)/);
   });
 });
 

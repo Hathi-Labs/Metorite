@@ -27,13 +27,14 @@
  *
  * Fences: `feed.test.ts` and `myDayPage.test.ts`.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { accentForHue } from "@/lib/statusAccent";
+import { read } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
@@ -64,7 +65,7 @@ import {
 } from "./feed";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
-import { needsKey, runAct } from "./needs";
+import { carryNeeds, needsKey, runAct } from "./needs";
 import {
   EMPTY_ACTS,
   acquireReader,
@@ -114,6 +115,12 @@ export function useFeed(enabled: boolean): Feed {
 
   // Count this reader (`needsActs.ts` rule 1), as `useNeedsYou` does.
   useEffect(() => acquireReader(), []);
+
+  // One provider run on a cold load (`carryFeedNeeds`). A LAYOUT effect on
+  // purpose: the layout phase of a commit runs before every passive effect
+  // of it, and each needs reader (My Day, the bell, the sidebar) starts its
+  // read in a passive effect. So the carrier is in place before any of them.
+  useLayoutEffect(() => (enabled ? carryFeedNeeds() : undefined), [enabled]);
 
   // The one poll (`joinFeedPoll`).
   const covers = coversNeeds(feed.data, feed.error);
@@ -176,6 +183,16 @@ export function useFeed(enabled: boolean): Feed {
  */
 export function joinFeedPoll(refresh: () => void, covers: boolean): () => void {
   return joinNeedsPoll(refresh, feedKey(), covers ? [needsKey()] : []);
+}
+
+/**
+ * Make the feed the carrier of the needs view (`carryNeeds` in `needs.ts`).
+ * A needs read then joins the feed's read of the feed key, the one request
+ * in flight, and takes the needs view out of its answer. So a cold load of
+ * My Day runs the providers once. Returns the release.
+ */
+export function carryFeedNeeds(): () => void {
+  return carryNeeds(() => read(feedKey(), () => fetchFeed()).then((answer) => answer.needs));
 }
 
 /** What `runFeedAct` reads and writes, so a test can drive it with no React. */
