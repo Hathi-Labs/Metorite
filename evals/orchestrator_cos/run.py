@@ -82,12 +82,22 @@ _PREAMBLE = re.compile(
 )
 #: A deliverable may open by naming itself ("Here is the draft").
 _HERE_IS = re.compile(r"\A\W*here(?:'s| is| are)\b", re.IGNORECASE)
+#: Words that make a recommendation. A word of the ask ("hire", "take it",
+#: "choose") is not one, so it is not here.
 _RECOMMEND = re.compile(
     r"\b(recommend\w*|i'd go with|i would go with|go with|my pick|suggest\w*|"
-    r"hire\b|counter at|counter with|counter-offer|take it|hold the price|"
-    r"best option|the better choice|choose)\b",
+    r"counter at|counter with|i'd counter|i would counter|my advice|the better choice)\b",
     re.IGNORECASE,
 )
+
+
+def _has_term(text: str, term: str) -> bool:
+    """*term* in *text* as a whole word (so "no" never matches "Nov")."""
+    return re.search(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", text, re.I) is not None
+
+
+def _sentences(text: str) -> list[str]:
+    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", text or "") if s.strip()]
 _UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
 _RAW_ID = re.compile(r"\b(?:evt|run|msg|thr)_[0-9a-f]{6,}\b", re.I)
 _JSON_LINE = re.compile(r'^\s*[\[{]\s*"|"\w+"\s*:\s*["\[{\d]', re.MULTILINE)
@@ -100,6 +110,11 @@ _WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'.,%#/-]*")
 def words(text: str) -> int:
     """The words of *text*: tokens that hold a letter or a digit."""
     return len(_WORD.findall(text or ""))
+
+
+#: A sentence that opens with one of these verbs and names the pick is a
+#: recommendation too ("Hire Tomas", "Counter at 8 percent").
+_PICK_VERBS: tuple[str, ...] = ("hire", "pick", "choose", "take", "accept", "counter at", "go with")
 
 
 def first_sentence(text: str) -> str:
@@ -150,7 +165,7 @@ def check(case: dict[str, Any], prose: str, card: str = "") -> dict[str, bool | 
     if case.get("kind") == "deliverable" and _HERE_IS.match(prose or ""):
         opens_badly = False
     lead_terms = c.get("lead_any") or []
-    lead_ok = not lead_terms or any(t.lower() in lead.lower() for t in lead_terms)
+    lead_ok = not lead_terms or any(_has_term(lead, t) for t in lead_terms)
     out["bluf"] = bool(lead) and not opens_badly and lead_ok and words(lead) <= 35
 
     if routine:
@@ -161,7 +176,9 @@ def check(case: dict[str, Any], prose: str, card: str = "") -> dict[str, bool | 
     out["no_dump"] = not (
         _JSON_LINE.search(prose) or _UUID.search(_strip_citations(prose))
         or _RAW_ID.search(prose) or _ISO_STAMP.search(prose)
-        or _AGENT_BLOCK.search(prose) or _FENCE.search(prose)
+        or _AGENT_BLOCK.search(prose)
+        # A draft to keep whole may sit in a fence.
+        or (_FENCE.search(prose) and case.get("kind") != "deliverable")
     )
 
     if routine:
@@ -169,7 +186,13 @@ def check(case: dict[str, Any], prose: str, card: str = "") -> dict[str, bool | 
         out["no_relay"] = all(longest_copy(prose, r) < COPY_RUN for r in reads)
 
     if c.get("needs_recommendation"):
-        out["recommendation"] = bool(_RECOMMEND.search(prose))
+        # The recommending word and the thing it picks, in one sentence.
+        picks = c.get("recommend_any") or []
+        out["recommendation"] = any(
+            _RECOMMEND.search(s) or any(_has_term(s, f"{v} {p}") for v in _PICK_VERBS for p in picks)
+            for s in _sentences(prose)
+            if not picks or any(_has_term(s, p) for p in picks)
+        )
 
     groups = c.get("must_mention") or []
     if groups:
@@ -483,7 +506,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(cases) - len({b.split()[0] for b in bad})} of {len(cases)} cases match")
         return EXIT_FAIL if bad else EXIT_PASS
     if args.print_prompt:
-        Path(args.out).write_text(built_prompt(), encoding="utf-8")
+        # Its own default, so it never writes over the committed arms.
+        target = Path(args.out) if args.out != parser.get_default("out") else HERE / "prompt_after.txt"
+        target.write_text(built_prompt(), encoding="utf-8")
         return EXIT_PASS
 
     out = Path(args.out)

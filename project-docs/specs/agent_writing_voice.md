@@ -432,7 +432,7 @@ fails when the two differ.
 As chief of staff (the member decides, you prepare the decision):
 - Open with the bottom line: the answer, the status, or the decision the member must take. Do not restate the question.
 - Then give the 2 to 5 points that matter, the most important first. Leave out what does not change what the member knows or does next.
-- Never paste the output of a read or another agent's reply. Say what it means. The detail stays in its step, in a link, or in one folded card.
+- Never paste the output of a read or another agent's reply. Say what it means. The detail stays in its step, in a link, or in one folded card. The one exception is text the member asked for (a draft, a message, a document): give it whole.
 - Raise what the member did not ask about only when it is real and close: a deadline, a risk, a conflict, a number out of line, or a thing that waits on the member. One line each. Raise nothing to fill space.
 - For a decision, give each option, your recommendation and its trade-off, one line each. Then say what happens next and who owns it.
 - Fit the length to the question. A fact gets a sentence. A routine reply stays under about 120 words of text. When the member asks for the detail or the data, give all of it.
@@ -444,7 +444,7 @@ As chief of staff (the member decides, you prepare the decision):
 |---|---|---|
 | Give the answer first, with no preamble | `CORE` rule 1 | It suits every agent, and the core already says it |
 | The role (§11.1) | `ROLES["chief_of_staff"]`. `AGENT_ROLES` gives it to `orchestrator` only | The orchestrator answers for the whole company. A specialist must keep its detail: an email draft, a coding report, a Projects plan |
-| Merge the replies of the specialists, and never relay one whole | The orchestrator's own instructions, `_PULL_INSTRUCTIONS` in `orchestrator/agents.py` | It names the specialist tools, and the voice names no tool |
+| Merge the replies of the specialists, and never relay one whole. The role also says it: a draft that the member asked for is the one exception to "never paste" | The orchestrator's own instructions, `_PULL_INSTRUCTIONS` in `orchestrator/agents.py` | It names the specialist tools, and the voice names no tool |
 | Keep a deliverable whole (an email, a message, a document) | The same instructions | A draft is the answer, so a summary of it loses the work |
 
 **A role is not a surface.** A surface says what kind of text a call writes.
@@ -462,8 +462,8 @@ of reading, which is about 120 words at 240 words a minute. The c-level
 chief-of-staff skill allows 5 bullets in a section, at most. The live eval
 (§11.5) is the check, and a later PR can move the number on its evidence.
 
-**The cost.** The role is 254 tokens in the run-context tokenizer (233 in
-`o200k_base`). The orchestrator's voice block grows from 577 to 823. The
+**The cost.** The role is 278 tokens in the run-context tokenizer (256 in
+`o200k_base`). The orchestrator's voice block grows from 577 to 847. The
 orchestrator pays it once in its prefix, and the cache covers it after the
 first request. No other agent pays it.
 
@@ -496,12 +496,16 @@ tool docstring changes the schema of each agent that holds the tool, and the
 WS-23 ratchet of `test_tool_schema_diet.py` with it. The output of each other
 agent stays the same.
 
-⚠️ **The orchestrator does not load `apps/agents/agent-orchestrator/instructions.md`.**
+⚠️ **The chat prompt of the orchestrator does not hold `apps/agents/agent-orchestrator/instructions.md`.**
 The wrapper `agents.py` calls `build_orchestrator_agent`, which reads
 `_PULL_INSTRUCTIONS`. Measured 2026-10-13: the built prompt holds none of the
 rules 9 to 11 of that file. It also does not hold the section of that file
-"Where each part of your answer goes". This change gives the file the same delegation rule, so the two
-texts agree. A later decision loads the file or deletes it.
+"Where each part of your answer goes". This change gives the file the same
+delegation rule, so the two texts agree.
+
+One other reader exists: `mutation.py` gives the file to the self-repair
+sandbox as context. A later decision loads the file into the
+prompt or deletes it.
 
 ### 11.5 The eval
 

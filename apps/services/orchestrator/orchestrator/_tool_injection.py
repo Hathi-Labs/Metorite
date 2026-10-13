@@ -788,14 +788,15 @@ def _apply_voice(
     Best-effort per agent, like the rest of the injection: a frozen agent
     keeps its prompt and logs a warning.
 
-    The role comes from ``acb_llm.voice.role_for``, by *agent_name* or
-    else by the agent's own ``name``. Only the orchestrator has one (the
-    chief of staff, ``specs/agent_writing_voice.md`` §11).
+    The role comes from ``acb_llm.voice.role_for(agent_name)``, the
+    registry name that every executor site passes. The object's own
+    ``name`` never selects a role, so a repo agent cannot claim one. Only
+    the orchestrator has one (``specs/agent_writing_voice.md`` §11).
     """
     from acb_llm.voice import role_for  # noqa: PLC0415
     for agent in agents:
         try:
-            _role = role_for(agent_name or getattr(agent, "name", None))
+            _role = role_for(agent_name)
             if hasattr(agent, "_tools") and isinstance(agent._tools, list):
                 opts = getattr(agent, "_default_options", None)
                 if not isinstance(opts, dict):

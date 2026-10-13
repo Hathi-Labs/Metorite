@@ -8,7 +8,11 @@
       "bad": [
         {
           "text": "Here is the status from each agent.\n\n[projects-assistant]\nHere is the status of every active project as of Monday 12 Oct 2026.\n\n**Kestrel printer refresh** (owner: Anil Rao). 14 of 22 tasks done. On track for the 30 Oct release. Two tasks moved to next sprint: the firmware OTA test and the packaging artwork. No blockers.\n\n[crm-assistant]\nPipeline this week: 18 open deals worth Rs 2.4 crore. The Acme Robotics renewal (Rs 22 lakh) expires on Friday 16 Oct and the contract is not signed yet.\n\n[email-assistant]\nPriya Shah of Lyra Components wrote that the boards will ship 2 weeks late. Orion has overdue tasks.",
-          "expected_fail": ["bluf", "no_dump", "no_relay"]
+          "expected_fail": [
+            "bluf",
+            "no_dump",
+            "no_relay"
+          ]
         }
       ]
     },
@@ -19,7 +23,11 @@
       "bad": [
         {
           "text": "You have 23 open tasks. Due today: 2 (task #412 'Review Q3 board deck' and task #415 'Sign off travel policy'). Overdue: 3 (task #377 'Reply to auditor questions', overdue 6 days; task #390 'Approve Vega CAD licence renewal, Rs 1.8 lakh', overdue 2 days, Meera Pillai is blocked on it; task #366 'Update LinkedIn bio', overdue 20 days).",
-          "expected_fail": ["bluf", "mentions", "no_relay"]
+          "expected_fail": [
+            "bluf",
+            "mentions",
+            "no_relay"
+          ]
         }
       ]
     },
@@ -30,7 +38,17 @@
       "bad": [
         {
           "text": "Tarang Foods asked for 12 percent off. Gross margin at list is 34 percent, at 12 percent off it is 25 percent and at 8 percent off it is 28 percent. They have 3 more plants. A competitor quoted 10 percent below list. There are 52 units in stock.",
-          "expected_fail": ["bluf", "recommendation"]
+          "expected_fail": [
+            "bluf",
+            "recommendation"
+          ]
+        },
+        {
+          "text": "Tarang Foods wants 12 percent off the 40-printer order, which is Rs 10.56 lakh. You need to choose whether to take it or hold the price. Margin at 8 percent off is 28 percent.",
+          "expected_fail": [
+            "bluf",
+            "recommendation"
+          ]
         }
       ]
     },
@@ -41,7 +59,9 @@
       "bad": [
         {
           "text": "Kestrel is on track for the 30 Oct release.\n\n## In progress\n- Task #312 Firmware OTA test, Joel Dsouza, due 16 Oct. 60 percent done.\n- Task #314 Packaging artwork, Neha Joshi, due 19 Oct. Waiting on the final product photos.\n\n## Risks\n- The CE test lab slot on 19 Oct is the only one before the release. If the test fails, the release moves to mid-November.",
-          "expected_fail": ["no_relay"]
+          "expected_fail": [
+            "no_relay"
+          ]
         }
       ]
     },
@@ -52,7 +72,10 @@
       "bad": [
         {
           "text": "The Vega design review is on 2026-10-15T11:00:00+05:30 (event evt_8f2c1a9d), in Board room 2, with 7 attendees.",
-          "expected_fail": ["no_dump"]
+          "expected_fail": [
+            "bluf",
+            "no_dump"
+          ]
         }
       ]
     },
@@ -64,7 +87,10 @@
       "bad": [
         {
           "text": "Nine invoices are open, worth Rs 11,38,500. One is overdue, INV-2207.",
-          "expected_fail": ["length", "mentions"]
+          "expected_fail": [
+            "length",
+            "mentions"
+          ]
         }
       ]
     },
@@ -75,7 +101,17 @@
       "bad": [
         {
           "text": "The Lyra launch project is marked on track. 31 of 40 tasks are done. The launch date is 6 Nov 2026. Separately, there is an email from Priya Shah saying the boards will ship on 27 Oct.",
-          "expected_fail": ["bluf", "mentions", "no_relay"]
+          "expected_fail": [
+            "bluf",
+            "mentions",
+            "no_relay"
+          ]
+        },
+        {
+          "text": "The Lyra launch is on track for 6 Nov 2026.\n\n- The motor driver boards now ship on 27 Oct.\n- Final assembly (task #452) is due on 30 Oct.",
+          "expected_fail": [
+            "bluf"
+          ]
         }
       ]
     },
@@ -86,7 +122,9 @@
       "bad": [
         {
           "text": "I checked the records. Rohan Kulkarni owns it.",
-          "expected_fail": ["bluf"]
+          "expected_fail": [
+            "bluf"
+          ]
         }
       ]
     },
@@ -97,7 +135,17 @@
       "bad": [
         {
           "text": "Both candidates are strong. Asha Verghese has 9 years in QA and scored 4.4. Tomas Pereira has 6 years and scored 4.1. Asha's notice period is 90 days, and Tomas's is 30 days. Tomas has no reference call yet.",
-          "expected_fail": ["bluf", "recommendation"]
+          "expected_fail": [
+            "bluf",
+            "recommendation"
+          ]
+        },
+        {
+          "text": "You have two finalists to hire from.\n\n- Asha has 9 years and a 90-day notice.\n- Tomas has 6 years, a 30-day notice and no reference call yet, so he can start by 1 Dec.",
+          "expected_fail": [
+            "bluf",
+            "recommendation"
+          ]
         }
       ]
     },
@@ -108,18 +156,23 @@
       "bad": [
         {
           "text": "Nimbus Schools has been a customer since 2024, with 14 printers installed, all on warranty until 2027. There is an open deal for 6 more printers worth Rs 9 lakh, in Negotiation, with the next call on 22 Oct 2026, owned by Rohan Kulkarni. The last support ticket, a filament jam, closed on 30 Sep and took 1 day. All invoices are paid on time. The NPS reply on 5 Oct was 9 of 10. Watch out for warranty expiry, churn risk, competitor offers, budget cuts in schools and filament price rises, which could all affect this account over the next year or two.",
-          "expected_fail": ["bluf", "length"]
+          "expected_fail": [
+            "bluf",
+            "length"
+          ]
         }
       ]
     },
     "C11": {
       "good": {
-        "text": "Here is the draft reply to Priya. It accepts the split and covers the freight.\n\nSubject: Re: Motor driver boards, revised shipping\n\nHi Priya,\n\nThanks for the early warning. Please go ahead with the split: send the 20 boards by air on 20 Oct, and we will cover the Rs 46,000 freight. Ship the remaining boards on 27 Oct as planned.\n\nCan you confirm the air waybill number once the first batch leaves?\n\nBest,\nSanjay"
+        "text": "Here is the draft reply to Priya. It accepts the split and covers the freight.\n\n```text\nSubject: Re: Motor driver boards, revised shipping\n\nHi Priya,\n\nThanks for the early warning. Please go ahead with the split: send the 20 boards by air on 20 Oct, and we will cover the Rs 46,000 freight. Ship the remaining boards on 27 Oct as planned.\n\nCan you confirm the air waybill number once the first batch leaves?\n\nBest,\nSanjay\n```"
       },
       "bad": [
         {
           "text": "The draft accepts the split shipment. It asks Priya to send 20 boards by air on 20 Oct at our cost of Rs 46,000, and to confirm the air waybill.",
-          "expected_fail": ["keeps_deliverable"]
+          "expected_fail": [
+            "keeps_deliverable"
+          ]
         }
       ]
     },
@@ -130,7 +183,10 @@
       "bad": [
         {
           "text": "Eight tasks are open. Two have no owner.",
-          "expected_fail": ["length", "mentions"]
+          "expected_fail": [
+            "length",
+            "mentions"
+          ]
         }
       ]
     }

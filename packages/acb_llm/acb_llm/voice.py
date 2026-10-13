@@ -111,7 +111,9 @@ ROLES: dict[str, str] = {
         "- Then give the 2 to 5 points that matter, the most important first. Leave "
         "out what does not change what the member knows or does next.",
         "- Never paste the output of a read or another agent's reply. Say what it "
-        "means. The detail stays in its step, in a link, or in one folded card.",
+        "means. The detail stays in its step, in a link, or in one folded card. "
+        "The one exception is text the member asked for (a draft, a message, a "
+        "document): give it whole.",
         "- Raise what the member did not ask about only when it is real and close: "
         "a deadline, a risk, a conflict, a number out of line, or a thing that "
         "waits on the member. One line each. Raise nothing to fill space.",

@@ -15,11 +15,11 @@ counts for a request for detail, and never for the cap.
 
 | Check | It passes when |
 |---|---|
-| `bluf` | The first sentence holds a lead term of the case, has 35 words or fewer, and opens with no preamble ("Here is", "I checked", "Let me", "Based on") |
+| `bluf` | The first sentence holds a lead term of the case as a whole word, has 35 words or fewer, and opens with no preamble ("Here is", "I checked", "Let me", "Based on") |
 | `length` | A routine reply has 120 words of prose or fewer, or the `max_words` of the case. A request for detail has at least `min_words`, with the card |
 | `no_dump` | No JSON, no fenced block, no UUID outside an `[entity:...]` citation, no raw id, no ISO time stamp, no `[agent-name]` header |
 | `no_relay` | A routine reply copies fewer than 20 words in a row from any one read |
-| `recommendation` | A decision case holds a recommendation |
+| `recommendation` | A decision case holds a recommendation. One sentence holds a recommending word ("recommend", "suggest", "go with", "counter at") or a verb with the pick ("Hire Tomas"), and it names a pick of `recommend_any` |
 | `mentions` | Each group of terms of the case shows at least once. These are the facts that matter, and the items that the member did not ask about |
 | `keeps_deliverable` | The draft of case C11 is still whole |
 | `voice` | `acb_llm.voice.voice_lint` finds nothing |
@@ -61,7 +61,8 @@ address ends in `.example`.
    ```
 
    One arm makes about 24 model calls and 12 judge calls. Commit
-   `results.json`.
+   `results.json`. When you can, give `--judge-model` a model that is not
+   the model under test, because a model grades its own text too kindly.
 
 ## Exit codes
 

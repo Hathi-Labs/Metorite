@@ -59,8 +59,8 @@ AGENTS: tuple[tuple[str, str], ...] = (
     ("agent-whatsapp-assistant", "whatsapp-assistant"),
 )
 
-#: Measured 2026-10-13 in the run-context tokenizer: the role 254, the
-#: orchestrator's voice block 823. In tiktoken ``o200k_base``: 233 and 771.
+#: Measured 2026-10-13 in the run-context tokenizer: the role 278, the
+#: orchestrator's voice block 847. In tiktoken ``o200k_base``: 256 and 794.
 ROLE_TOKEN_CEILING = 300
 ORCHESTRATOR_BLOCK_TOKEN_CEILING = 900
 
@@ -124,6 +124,7 @@ def test_the_role_holds_each_rule_of_the_contract() -> None:
         "Do not restate the question",         # no recap
         "the 2 to 5 points that matter",       # distil, ranked
         "Never paste the output of a read",    # no raw dump
+        "text the member asked for",           # ...but a draft stays whole
         "one folded card",                     # detail one click away
         "did not ask about only when it is real",  # proactive, never padding
         "your recommendation and its",         # decision support
@@ -195,14 +196,16 @@ class _Native:
         self.default_options: dict[str, Any] = {"tools": [], "instructions": "You route."}
 
 
-def test_the_role_follows_the_registry_name_or_the_agent_name() -> None:
+def test_only_the_registry_name_selects_the_role() -> None:
+    """Every executor site passes the registry name. The object's own name
+    never selects a role, so a repo agent that names itself "orchestrator"
+    gets the plain voice (review round 1)."""
     by_param, by_attr, other = _Native("x"), _Native("orchestrator"), _Native("orchestrator")
     ti._apply_voice([by_param], agent_name="orchestrator")
     ti._apply_voice([by_attr])
     ti._apply_voice([other], agent_name="crm")
     assert CHIEF_OF_STAFF_HEADING in by_param.default_options["instructions"]
-    assert CHIEF_OF_STAFF_HEADING in by_attr.default_options["instructions"]
-    # The registry name wins over the object's own name.
+    assert CHIEF_OF_STAFF_HEADING not in by_attr.default_options["instructions"]
     assert CHIEF_OF_STAFF_HEADING not in other.default_options["instructions"]
 
 
