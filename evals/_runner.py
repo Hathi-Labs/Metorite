@@ -103,11 +103,30 @@ def _resolve_case_input(variables: dict[str, Any]) -> str:
     return "\n\n".join(parts) or "(no input vars)"
 
 
-def _call_llm(model: str, system: str, user: str, *, json_mode: bool) -> str:
+def post_chat_completion(payload: dict[str, Any], *, timeout: int = 120) -> dict[str, Any]:
+    """POST *payload* to ``/v1/chat/completions`` of ``LITELLM_BASE_URL``.
+
+    The one eval HTTP call. ``_call_llm`` uses it, and so does a runner that
+    needs a whole message list (``evals/orchestrator_cos``).
+    """
     import urllib.request
 
     base = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
     key = os.environ.get("LITELLM_API_KEY", "sk-local-dev-change-me")
+    req = urllib.request.Request(
+        f"{base}/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _call_llm(model: str, system: str, user: str, *, json_mode: bool) -> str:
     payload: dict[str, Any] = {
         "model": model,
         "messages": [
@@ -122,17 +141,7 @@ def _call_llm(model: str, system: str, user: str, *, json_mode: bool) -> str:
         # structured tasks unless JSON mode is explicit.
         payload["response_format"] = {"type": "json_object"}
 
-    req = urllib.request.Request(
-        f"{base}/v1/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    data = post_chat_completion(payload)
     return data["choices"][0]["message"]["content"] or ""
 
 

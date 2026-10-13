@@ -1,0 +1,471 @@
+[
+  {
+    "id": "C01",
+    "kind": "status",
+    "ask": "Where do things stand across the company this week?",
+    "reads": [
+      {
+        "tool": "call_agents_parallel",
+        "args": {
+          "tasks": "[{\"agent\": \"projects-assistant\", \"message\": \"Status of every active project this week\"}, {\"agent\": \"crm-assistant\", \"message\": \"Pipeline status this week\"}, {\"agent\": \"email-assistant\", \"message\": \"Anything urgent in the inbox this week\"}]"
+        },
+        "result": "[projects-assistant]\nHere is the status of every active project as of Monday 12 Oct 2026.\n\n**Kestrel printer refresh** (owner: Anil Rao). 14 of 22 tasks done. On track for the 30 Oct release. Two tasks moved to next sprint: the firmware OTA test and the packaging artwork. No blockers.\n\n**Vega design review** (owner: Meera Pillai). The review is booked for Thursday 15 Oct at 11:00. 6 of 9 tasks done. The CAD export task is waiting on a licence renewal.\n\n**Lyra launch** (owner: Sanjay Iyer). 31 of 40 tasks done. Marked on track. The launch is 6 Nov.\n\n**Orion plant setup** (owner: Divya Nair). 9 of 25 tasks done. 4 tasks are overdue, the oldest by 11 days (task #388, electrical sign-off). Divya has not commented since 2 Oct.\n\n**Internal wiki** (owner: Ravi Menon). Paused since September.\n\nIn total: 5 projects, 1 paused, 1 with overdue tasks.\n\n[crm-assistant]\nPipeline this week: 18 open deals worth Rs 2.4 crore. Three deals moved to Negotiation (Helios Labs Rs 38 lakh, Tarang Foods Rs 12 lakh, Nimbus Schools Rs 9 lakh). One deal was lost: Corvid Tools, Rs 6 lakh, lost on price on 9 Oct. The Acme Robotics renewal (Rs 22 lakh) expires on Friday 16 Oct and the contract is not signed yet. Win rate this quarter: 31 percent, down from 36 percent last quarter.\n\n[email-assistant]\nI checked the inbox for this week. There are 214 new emails. 9 are flagged as needing a reply. The most urgent: Priya Shah of Lyra Components wrote on 11 Oct that the motor driver boards for the Lyra launch will ship 2 weeks late, on 27 Oct instead of 13 Oct. Kiran at Acme Robotics asked on 10 Oct for the signed renewal by Thursday. Three vendor invoices arrived."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "lead_any": [
+        "on track",
+        "risk",
+        "two",
+        "three",
+        "attention",
+        "need you",
+        "needs you",
+        "late",
+        "behind",
+        "slip"
+      ],
+      "must_mention": [
+        [
+          "Lyra"
+        ],
+        [
+          "Acme"
+        ],
+        [
+          "Orion"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C02",
+    "kind": "attention",
+    "ask": "What needs my attention today?",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "task-manager",
+          "message": "My open tasks and anything waiting on me, today 13 Oct 2026"
+        },
+        "result": "You have 23 open tasks. Due today: 2 (task #412 'Review Q3 board deck' and task #415 'Sign off travel policy'). Overdue: 3 (task #377 'Reply to auditor questions', overdue 6 days; task #390 'Approve Vega CAD licence renewal, Rs 1.8 lakh', overdue 2 days, Meera Pillai is blocked on it; task #366 'Update LinkedIn bio', overdue 20 days). Waiting on you: 1 approval, the Vega CAD licence (task #390). The other 18 tasks are due later this month. Your calendar today has 5 meetings, from 10:00 to 17:30, with a 45-minute gap at 13:15."
+      },
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "crm-assistant",
+          "message": "Deals that need the member this week"
+        },
+        "result": "Acme Robotics renewal, Rs 22 lakh, expires Friday 16 Oct 2026. The contract is with you for signature since 8 Oct. Kiran at Acme asked for it by Thursday 15 Oct. Helios Labs is in Negotiation and the next call is 20 Oct. No other deal needs you this week."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "lead_any": [
+        "Acme",
+        "Vega",
+        "approv",
+        "sign",
+        "three things",
+        "two things",
+        "renewal",
+        "licence"
+      ],
+      "must_mention": [
+        [
+          "Acme"
+        ],
+        [
+          "#390",
+          "Vega",
+          "CAD"
+        ],
+        [
+          "#377",
+          "auditor"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C03",
+    "kind": "decision",
+    "ask": "Tarang Foods wants a 12 percent discount on the 40-printer order. Do we take it or hold the price?",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "crm-assistant",
+          "message": "Tarang Foods deal and pricing history"
+        },
+        "result": "Tarang Foods: deal 'Tarang 40 x K2 printers', Rs 12 lakh at list price, stage Negotiation since 9 Oct 2026. They asked for 12 percent off (Rs 10.56 lakh). Our standard ceiling for a volume deal is 8 percent; above that needs the founder's approval. Gross margin at list is 34 percent; at 12 percent off it is 25 percent; at 8 percent off it is 28 percent. Tarang bought 6 printers in 2025 at 5 percent off and paid on time. Their buyer, Leela Krishnan, said on 11 Oct that a competitor quoted 10 percent below our list. Tarang has 3 more plants that may order in 2027."
+      },
+      {
+        "tool": "retrieve_entity_context",
+        "args": {
+          "query": "K2 printer stock and capacity October"
+        },
+        "result": "[entity:7c1e] K2 printer stock: 52 units in the warehouse on 12 Oct 2026. [entity:91aa] Production capacity: 60 K2 units a month. Committed orders for Oct to Nov: 34 units."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "needs_recommendation": true,
+      "lead_any": [
+        "recommend",
+        "counter",
+        "8 percent",
+        "8%",
+        "decline",
+        "hold the price",
+        "hold list"
+      ],
+      "must_mention": [
+        [
+          "margin"
+        ],
+        [
+          "8 percent",
+          "8%",
+          "10 percent",
+          "10%"
+        ]
+      ],
+      "recommend_any": [
+        "8 percent",
+        "8%",
+        "10 percent",
+        "10%",
+        "12 percent",
+        "12%",
+        "list price",
+        "hold"
+      ]
+    }
+  },
+  {
+    "id": "C04",
+    "kind": "relay",
+    "ask": "What is the status of the Kestrel project?",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "projects-assistant",
+          "message": "Full status of the Kestrel printer refresh project"
+        },
+        "result": "Here is a full status report for **Kestrel printer refresh** as of 12 Oct 2026.\n\n## Summary\nThe project is on track for the 30 Oct 2026 release. 14 of 22 tasks are done (64 percent). The owner is Anil Rao.\n\n## Done this week\n- Task #301 Thermal test of the new hot end, done 6 Oct by Farah Ali. Result: holds 300 C for 8 hours.\n- Task #305 Bed levelling firmware, done 7 Oct by Joel Dsouza.\n- Task #309 Supplier quote for the enclosure panels, done 8 Oct by Anil Rao. Chosen supplier: Sahyadri Plastics.\n\n## In progress\n- Task #312 Firmware OTA test, Joel Dsouza, due 16 Oct. 60 percent done.\n- Task #314 Packaging artwork, Neha Joshi, due 19 Oct. Waiting on the final product photos.\n- Task #316 User manual, Neha Joshi, due 23 Oct.\n- Task #318 Certification paperwork (CE), Anil Rao, due 21 Oct. The test lab slot is booked for 19 Oct.\n\n## Not started\n- Task #320 Launch webinar, due 28 Oct.\n- Task #321 Sales training, due 27 Oct.\n- Task #322 Price list update, due 26 Oct.\n- Task #323 Spare parts SKUs, due 26 Oct.\n\n## Risks\n- The CE test lab slot on 19 Oct is the only one before the release. If the test fails, the release moves to mid-November.\n- Neha Joshi holds two tasks due within 4 days of each other.\n\n## Budget\nSpent Rs 18.2 lakh of Rs 24 lakh (76 percent).\n\n## Next milestone\nFirmware freeze on 16 Oct.\n\nLet me know if you want me to update any of these tasks or draw a Gantt chart."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "lead_any": [
+        "on track",
+        "30 Oct",
+        "release"
+      ],
+      "must_mention": [
+        [
+          "CE",
+          "certification",
+          "test lab"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C05",
+    "kind": "fact",
+    "ask": "When is the Vega design review?",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "task-manager",
+          "message": "When is the Vega design review meeting?"
+        },
+        "result": "{\"events\": [{\"title\": \"Vega design review\", \"start\": \"2026-10-15T11:00:00+05:30\", \"end\": \"2026-10-15T12:30:00+05:30\", \"location\": \"Board room 2\", \"organizer\": \"meera.pillai@fracktal.example\", \"attendees\": 7, \"status\": \"confirmed\", \"id\": \"evt_8f2c1a9d\"}]}"
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "max_words": 40,
+      "lead_any": [
+        "Thursday",
+        "15 Oct",
+        "15 October",
+        "11:00",
+        "11 am",
+        "11am"
+      ],
+      "must_mention": [
+        [
+          "11"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C06",
+    "kind": "detail",
+    "ask": "Give me all the detail on the open vendor invoices. Every line, I want to see the data.",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "email-assistant",
+          "message": "List every open vendor invoice with all fields"
+        },
+        "result": "Open vendor invoices on 13 Oct 2026 (9):\n1. INV-2207, Kaveri Steel, Rs 1,84,000, issued 2 Sep, due 2 Oct, overdue 11 days.\n2. INV-2211, Nilgiri Freight, Rs 42,500, issued 20 Sep, due 20 Oct.\n3. INV-2214, Sahyadri Plastics, Rs 3,10,000, issued 22 Sep, due 22 Oct.\n4. INV-2216, Deccan Electricals, Rs 58,200, issued 25 Sep, due 25 Oct.\n5. INV-2219, Kaveri Steel, Rs 96,400, issued 28 Sep, due 28 Oct.\n6. INV-2220, Malabar Logistics, Rs 21,000, issued 29 Sep, due 29 Oct.\n7. INV-2223, Nilgiri Freight, Rs 39,800, issued 1 Oct, due 31 Oct.\n8. INV-2225, Western Ghats Packaging, Rs 1,12,000, issued 3 Oct, due 2 Nov.\n9. INV-2226, Deccan Electricals, Rs 74,600, issued 5 Oct, due 4 Nov.\nTotal open: Rs 11,38,500. Overdue: Rs 1,84,000 (1 invoice)."
+      }
+    ],
+    "checks": {
+      "routine": false,
+      "min_words": 90,
+      "lead_any": [
+        "9",
+        "nine",
+        "11,38,500",
+        "11.4",
+        "open",
+        "overdue",
+        "INV-2207"
+      ],
+      "must_mention": [
+        [
+          "INV-2207"
+        ],
+        [
+          "INV-2226"
+        ],
+        [
+          "11,38,500",
+          "11.38",
+          "11.4"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C07",
+    "kind": "relay_conflict",
+    "ask": "Is the Lyra launch on track?",
+    "reads": [
+      {
+        "tool": "call_agents_parallel",
+        "args": {
+          "tasks": "[{\"agent\": \"projects-assistant\", \"message\": \"Is the Lyra launch on track?\"}, {\"agent\": \"email-assistant\", \"message\": \"Any email about the Lyra launch or its suppliers\"}]"
+        },
+        "result": "[projects-assistant]\nThe Lyra launch project is marked on track. 31 of 40 tasks are done. The launch date is 6 Nov 2026. The remaining tasks: final assembly of the first 50 units (task #452, due 30 Oct, depends on the motor driver boards), QA of the first batch (task #455, due 2 Nov), launch press kit (task #458, due 3 Nov), 6 more small tasks. Owner: Sanjay Iyer. No risks are logged on the project.\n\n[email-assistant]\nOne email matters. On 11 Oct 2026 Priya Shah of Lyra Components wrote to Sanjay Iyer: \"The motor driver boards will ship on 27 Oct, not 13 Oct as agreed. We had a reflow oven failure. We can split the order and send 20 boards on 20 Oct by air at your cost (Rs 46,000).\" Sanjay has not replied yet. No other email about Lyra this week."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "lead_any": [
+        "at risk",
+        "not on track",
+        "No",
+        "late",
+        "slip",
+        "slipping",
+        "delay",
+        "delayed",
+        "behind"
+      ],
+      "must_mention": [
+        [
+          "27 Oct",
+          "two weeks",
+          "2 weeks",
+          "late",
+          "delay"
+        ],
+        [
+          "#452",
+          "assembly",
+          "30 Oct"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C08",
+    "kind": "fact",
+    "ask": "Who owns the Helios deal?",
+    "reads": [
+      {
+        "tool": "retrieve_entity_context",
+        "args": {
+          "query": "Helios deal owner"
+        },
+        "result": "[entity:a41f] Deal 'Helios Labs, 12 x K2 Pro' | stage: Negotiation | value: Rs 38,00,000 | owner: Rohan Kulkarni | created 2026-08-14 | last activity 2026-10-09 (call) | next step: pricing call 2026-10-20 | probability 60 | source: inbound web form | tags: education, repeat."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "max_words": 40,
+      "lead_any": [
+        "Rohan"
+      ],
+      "must_mention": [
+        [
+          "Rohan"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C09",
+    "kind": "decision",
+    "ask": "We have two finalists for the QA lead role. Who should we hire?",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "crm-assistant",
+          "message": "Compare the two QA lead finalists from the hiring notes"
+        },
+        "result": "Finalist A, Asha Verghese: 9 years in QA, 4 as a lead at a medical device maker. Strong on ISO 13485 and test automation (Python). Asks for Rs 32 lakh. Notice period 90 days. Interview score 4.4 of 5. One reference call done, positive.\nFinalist B, Tomas Pereira: 6 years in QA, 2 as a lead at a consumer electronics firm. Strong on hardware test rigs and CE work. Asks for Rs 26 lakh. Notice period 30 days. Interview score 4.1 of 5. No reference call yet.\nThe hiring brief says: the QA lead must own the CE certification for Kestrel and Lyra in Q1 2027, and start by 1 Dec 2026."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "needs_recommendation": true,
+      "lead_any": [
+        "Tomas",
+        "Asha"
+      ],
+      "must_mention": [
+        [
+          "notice",
+          "1 Dec",
+          "start"
+        ],
+        [
+          "reference"
+        ]
+      ],
+      "recommend_any": [
+        "Tomas",
+        "Asha"
+      ]
+    }
+  },
+  {
+    "id": "C10",
+    "kind": "attention_quiet",
+    "ask": "Anything I should know about the Nimbus Schools account?",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "crm-assistant",
+          "message": "Everything on the Nimbus Schools account"
+        },
+        "result": "Nimbus Schools: customer since 2024, 14 printers installed, all on warranty until 2027. Open deal: 'Nimbus 6 more printers', Rs 9 lakh, Negotiation, next call 22 Oct 2026, owner Rohan Kulkarni. Last support ticket closed on 30 Sep (filament jam, solved in 1 day). Invoices: all paid on time. NPS reply on 5 Oct: 9 of 10. No open issues."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "max_words": 80,
+      "lead_any": [
+        "Nothing",
+        "No issues",
+        "no open issues",
+        "healthy",
+        "in good shape",
+        "nothing needs"
+      ],
+      "must_mention": [
+        [
+          "22 Oct",
+          "6 more",
+          "Rs 9 lakh",
+          "9 lakh"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C11",
+    "kind": "deliverable",
+    "ask": "Draft a reply to Priya Shah about the late motor driver boards. Accept the split shipment.",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "email-assistant",
+          "message": "Draft a reply to Priya Shah of Lyra Components accepting the split shipment of the motor driver boards (20 by air on 20 Oct at our cost, the rest on 27 Oct)"
+        },
+        "result": "Here is the draft:\n\nSubject: Re: Motor driver boards, revised shipping\n\nHi Priya,\n\nThanks for the early warning. Please go ahead with the split: send the 20 boards by air on 20 Oct, and we will cover the Rs 46,000 freight. Ship the remaining boards on 27 Oct as planned.\n\nCan you confirm the air waybill number once the first batch leaves?\n\nBest,\nSanjay"
+      }
+    ],
+    "checks": {
+      "routine": false,
+      "keep_verbatim": [
+        "Please go ahead with the split: send the 20 boards by air on 20 Oct, and we will cover the Rs 46,000 freight."
+      ],
+      "lead_any": [
+        "draft",
+        "Priya",
+        "reply",
+        "Subject"
+      ],
+      "must_mention": [
+        [
+          "46,000"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C12",
+    "kind": "expand",
+    "history": [
+      {
+        "role": "user",
+        "content": "What is the status of the Kestrel project?"
+      },
+      {
+        "role": "assistant",
+        "content": "Kestrel is on track for the 30 Oct release, with 14 of 22 tasks done. The one real risk is the CE test on 19 Oct: it is the only lab slot before the release, so a failure moves the release to mid-November."
+      }
+    ],
+    "ask": "Tell me more. Show me everything that is still open.",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "projects-assistant",
+          "message": "Every open task on the Kestrel printer refresh project"
+        },
+        "result": "Open tasks on Kestrel printer refresh (8):\n- #312 Firmware OTA test, Joel Dsouza, due 16 Oct, 60 percent done.\n- #314 Packaging artwork, Neha Joshi, due 19 Oct, waiting on the final product photos.\n- #316 User manual, Neha Joshi, due 23 Oct.\n- #318 Certification paperwork (CE), Anil Rao, due 21 Oct, lab slot booked 19 Oct.\n- #320 Launch webinar, unassigned, due 28 Oct.\n- #321 Sales training, Ravi Menon, due 27 Oct.\n- #322 Price list update, Divya Nair, due 26 Oct.\n- #323 Spare parts SKUs, unassigned, due 26 Oct.\nBudget: Rs 18.2 lakh of Rs 24 lakh spent."
+      }
+    ],
+    "checks": {
+      "routine": false,
+      "min_words": 80,
+      "lead_any": [
+        "8",
+        "eight",
+        "Eight"
+      ],
+      "must_mention": [
+        [
+          "#312",
+          "OTA"
+        ],
+        [
+          "#323",
+          "Spare parts"
+        ],
+        [
+          "unassigned",
+          "no owner"
+        ]
+      ]
+    }
+  }
+]

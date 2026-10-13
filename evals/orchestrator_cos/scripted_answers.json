@@ -1,0 +1,194 @@
+{
+  "note": "Hand-written answers. Each good answer must pass every check of its case. Each bad answer must fail exactly its expected_fail checks, so the checks are proved to fire. Every name is made up.",
+  "answers": {
+    "C01": {
+      "good": {
+        "text": "Most work is on track, but three things need you this week.\n\n- **Acme Robotics renewal (Rs 22 lakh) expires Friday 16 Oct.** The contract is still unsigned, and Kiran asked for it by Thursday.\n- **Lyra launch is at risk.** The motor driver boards ship on 27 Oct, two weeks late, and the project still shows on track.\n- **Orion plant setup has 4 overdue tasks**, the oldest 11 days (electrical sign-off). Divya has been silent since 2 Oct.\n\nKestrel and Vega are on plan. The pipeline holds 18 deals worth Rs 2.4 crore, and the win rate fell to 31 percent."
+      },
+      "bad": [
+        {
+          "text": "Here is the status from each agent.\n\n[projects-assistant]\nHere is the status of every active project as of Monday 12 Oct 2026.\n\n**Kestrel printer refresh** (owner: Anil Rao). 14 of 22 tasks done. On track for the 30 Oct release. Two tasks moved to next sprint: the firmware OTA test and the packaging artwork. No blockers.\n\n[crm-assistant]\nPipeline this week: 18 open deals worth Rs 2.4 crore. The Acme Robotics renewal (Rs 22 lakh) expires on Friday 16 Oct and the contract is not signed yet.\n\n[email-assistant]\nPriya Shah of Lyra Components wrote that the boards will ship 2 weeks late. Orion has overdue tasks.",
+          "expected_fail": [
+            "bluf",
+            "no_dump",
+            "no_relay"
+          ]
+        }
+      ]
+    },
+    "C02": {
+      "good": {
+        "text": "Two things wait on you today: the Acme renewal signature and the Vega CAD licence approval.\n\n1. **Sign the Acme Robotics renewal (Rs 22 lakh).** It expires Friday, and Kiran wants it by Thursday.\n2. **Approve the Vega CAD licence (task #390, Rs 1.8 lakh).** It is 2 days overdue, and Meera is blocked on it.\n3. **Reply to the auditor (task #377)**, 6 days overdue.\n\nTwo tasks are due today: the Q3 board deck review and the travel policy sign-off. Your one free slot is 13:15 to 14:00."
+      },
+      "bad": [
+        {
+          "text": "You have 23 open tasks. Due today: 2 (task #412 'Review Q3 board deck' and task #415 'Sign off travel policy'). Overdue: 3 (task #377 'Reply to auditor questions', overdue 6 days; task #390 'Approve Vega CAD licence renewal, Rs 1.8 lakh', overdue 2 days, Meera Pillai is blocked on it; task #366 'Update LinkedIn bio', overdue 20 days).",
+          "expected_fail": [
+            "bluf",
+            "mentions",
+            "no_relay"
+          ]
+        }
+      ]
+    },
+    "C03": {
+      "good": {
+        "text": "I recommend a counter at 8 percent off (Rs 11.04 lakh), with a path to 10 percent if they commit to a second plant.\n\n| Option | Margin | Trade-off |\n|---|---|---|\n| Hold list price | 34% | Best margin, but the competitor quote is 10% below us |\n| Counter at 8% | 28% | Inside our ceiling, no founder approval needed |\n| Accept 12% | 25% | Wins the deal now, and sets a low price for 3 more plants |\n\nStock is fine: 52 units on hand against 34 committed. Next step: Rohan sends the 8 percent counter to Leela by Thursday. Going past 8 percent needs your approval."
+      },
+      "bad": [
+        {
+          "text": "Tarang Foods asked for 12 percent off. Gross margin at list is 34 percent, at 12 percent off it is 25 percent and at 8 percent off it is 28 percent. They have 3 more plants. A competitor quoted 10 percent below list. There are 52 units in stock.",
+          "expected_fail": [
+            "bluf",
+            "recommendation"
+          ]
+        },
+        {
+          "text": "Tarang Foods wants 12 percent off the 40-printer order, which is Rs 10.56 lakh. You need to choose whether to take it or hold the price. Margin at 8 percent off is 28 percent.",
+          "expected_fail": [
+            "bluf",
+            "recommendation"
+          ]
+        }
+      ]
+    },
+    "C04": {
+      "good": {
+        "text": "Kestrel is on track for the 30 Oct release, with 14 of 22 tasks done.\n\nThe one real risk is the CE test on 19 Oct. It is the only lab slot before the release, so a failure moves the release to mid-November. Neha Joshi also holds two tasks due within 4 days of each other. Budget is at 76 percent (Rs 18.2 of 24 lakh). Next milestone: firmware freeze on 16 Oct."
+      },
+      "bad": [
+        {
+          "text": "Kestrel is on track for the 30 Oct release.\n\n## In progress\n- Task #312 Firmware OTA test, Joel Dsouza, due 16 Oct. 60 percent done.\n- Task #314 Packaging artwork, Neha Joshi, due 19 Oct. Waiting on the final product photos.\n\n## Risks\n- The CE test lab slot on 19 Oct is the only one before the release. If the test fails, the release moves to mid-November.",
+          "expected_fail": [
+            "no_relay"
+          ]
+        }
+      ]
+    },
+    "C05": {
+      "good": {
+        "text": "Thursday 15 Oct, 11:00 to 12:30, in Board room 2. Meera Pillai is running it."
+      },
+      "bad": [
+        {
+          "text": "The Vega design review is on 2026-10-15T11:00:00+05:30 (event evt_8f2c1a9d), in Board room 2, with 7 attendees.",
+          "expected_fail": [
+            "bluf",
+            "no_dump"
+          ]
+        }
+      ]
+    },
+    "C06": {
+      "good": {
+        "text": "Nine vendor invoices are open, worth Rs 11,38,500. One is overdue: INV-2207 from Kaveri Steel, Rs 1,84,000, 11 days late.\n\nThe full list is in the table below, in due-date order.",
+        "card": "Open vendor invoices INV-2207 Kaveri Steel Rs 1,84,000 due 2 Oct overdue 11 days INV-2211 Nilgiri Freight Rs 42,500 due 20 Oct INV-2214 Sahyadri Plastics Rs 3,10,000 due 22 Oct INV-2216 Deccan Electricals Rs 58,200 due 25 Oct INV-2219 Kaveri Steel Rs 96,400 due 28 Oct INV-2220 Malabar Logistics Rs 21,000 due 29 Oct INV-2223 Nilgiri Freight Rs 39,800 due 31 Oct INV-2225 Western Ghats Packaging Rs 1,12,000 due 2 Nov INV-2226 Deccan Electricals Rs 74,600 due 4 Nov Total Rs 11,38,500"
+      },
+      "bad": [
+        {
+          "text": "Nine invoices are open, worth Rs 11,38,500. One is overdue, INV-2207.",
+          "expected_fail": [
+            "length",
+            "mentions"
+          ]
+        }
+      ]
+    },
+    "C07": {
+      "good": {
+        "text": "No, Lyra is at risk, though the project still shows on track.\n\nThe motor driver boards now ship on 27 Oct, two weeks late, and final assembly (task #452) needs them by 30 Oct. Lyra Components offered a split: 20 boards by air on 20 Oct for Rs 46,000. That keeps assembly on time for the first units.\n\nSanjay has not replied. I recommend he accepts the split today, and logs the risk on the project."
+      },
+      "bad": [
+        {
+          "text": "The Lyra launch project is marked on track. 31 of 40 tasks are done. The launch date is 6 Nov 2026. Separately, there is an email from Priya Shah saying the boards will ship on 27 Oct.",
+          "expected_fail": [
+            "bluf",
+            "mentions",
+            "no_relay"
+          ]
+        },
+        {
+          "text": "The Lyra launch is on track for 6 Nov 2026.\n\n- The motor driver boards now ship on 27 Oct.\n- Final assembly (task #452) is due on 30 Oct.",
+          "expected_fail": [
+            "bluf"
+          ]
+        }
+      ]
+    },
+    "C08": {
+      "good": {
+        "text": "Rohan Kulkarni owns the Helios Labs deal (Rs 38 lakh, in Negotiation) [entity:a41f]. The next pricing call is on 20 Oct."
+      },
+      "bad": [
+        {
+          "text": "I checked the records. Rohan Kulkarni owns it.",
+          "expected_fail": [
+            "bluf"
+          ]
+        }
+      ]
+    },
+    "C09": {
+      "good": {
+        "text": "Hire Tomas Pereira. He can start by 1 Dec, and Asha cannot.\n\n- **Tomas**: CE and hardware test rigs, the exact Q1 work. 30-day notice. Rs 26 lakh.\n- **Asha**: the stronger lead (4.4 vs 4.1, ISO 13485), but her 90-day notice puts her start in January.\n\nTrade-off: you get less lead experience for an on-time start and Rs 6 lakh less. Before an offer, do his reference call this week. If it is weak, Asha is the fallback."
+      },
+      "bad": [
+        {
+          "text": "Both candidates are strong. Asha Verghese has 9 years in QA and scored 4.4. Tomas Pereira has 6 years and scored 4.1. Asha's notice period is 90 days, and Tomas's is 30 days. Tomas has no reference call yet.",
+          "expected_fail": [
+            "bluf",
+            "recommendation"
+          ]
+        },
+        {
+          "text": "You have two finalists to hire from.\n\n- Asha has 9 years and a 90-day notice.\n- Tomas has 6 years, a 30-day notice and no reference call yet, so he can start by 1 Dec.",
+          "expected_fail": [
+            "bluf",
+            "recommendation"
+          ]
+        }
+      ]
+    },
+    "C10": {
+      "good": {
+        "text": "Nothing needs you. Nimbus Schools is a healthy account: invoices paid on time, no open issues, and an NPS of 9.\n\nThe one open item is the deal for 6 more printers (Rs 9 lakh). Rohan has the next call on 22 Oct."
+      },
+      "bad": [
+        {
+          "text": "Nimbus Schools has been a customer since 2024, with 14 printers installed, all on warranty until 2027. There is an open deal for 6 more printers worth Rs 9 lakh, in Negotiation, with the next call on 22 Oct 2026, owned by Rohan Kulkarni. The last support ticket, a filament jam, closed on 30 Sep and took 1 day. All invoices are paid on time. The NPS reply on 5 Oct was 9 of 10. Watch out for warranty expiry, churn risk, competitor offers, budget cuts in schools and filament price rises, which could all affect this account over the next year or two.",
+          "expected_fail": [
+            "bluf",
+            "length"
+          ]
+        }
+      ]
+    },
+    "C11": {
+      "good": {
+        "text": "Here is the draft reply to Priya. It accepts the split and covers the freight.\n\n```text\nSubject: Re: Motor driver boards, revised shipping\n\nHi Priya,\n\nThanks for the early warning. Please go ahead with the split: send the 20 boards by air on 20 Oct, and we will cover the Rs 46,000 freight. Ship the remaining boards on 27 Oct as planned.\n\nCan you confirm the air waybill number once the first batch leaves?\n\nBest,\nSanjay\n```"
+      },
+      "bad": [
+        {
+          "text": "The draft accepts the split shipment. It asks Priya to send 20 boards by air on 20 Oct at our cost of Rs 46,000, and to confirm the air waybill.",
+          "expected_fail": [
+            "keeps_deliverable"
+          ]
+        }
+      ]
+    },
+    "C12": {
+      "good": {
+        "text": "Eight tasks are still open, and two have no owner.\n\n- **#312 Firmware OTA test**, Joel Dsouza, due 16 Oct, 60 percent done. It gates the firmware freeze.\n- **#314 Packaging artwork**, Neha Joshi, due 19 Oct, waiting on the product photos.\n- **#318 CE paperwork**, Anil Rao, due 21 Oct. The lab slot is 19 Oct.\n- **#316 User manual**, Neha Joshi, due 23 Oct.\n- **#322 Price list update**, Divya Nair, due 26 Oct.\n- **#323 Spare parts SKUs**, unassigned, due 26 Oct.\n- **#321 Sales training**, Ravi Menon, due 27 Oct.\n- **#320 Launch webinar**, unassigned, due 28 Oct.\n\nAssign #320 and #323 this week. Budget: Rs 18.2 of 24 lakh spent."
+      },
+      "bad": [
+        {
+          "text": "Eight tasks are open. Two have no owner.",
+          "expected_fail": [
+            "length",
+            "mentions"
+          ]
+        }
+      ]
+    }
+  }
+}

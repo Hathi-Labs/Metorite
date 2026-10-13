@@ -95,6 +95,47 @@ AGENT = "agent"
 
 SURFACES: tuple[str, ...] = tuple(OVERLAYS)
 
+#: The line that opens the chief-of-staff role. Tests look for it as the
+#: section marker, so they never pin the full text.
+CHIEF_OF_STAFF_HEADING = "As chief of staff (the member decides, you prepare the decision):"
+
+#: One rule set for each agent ROLE (owner, 2026-10-13). A surface says what
+#: kind of text it is. A role says what one agent is for, so it reaches that
+#: agent only, through :data:`AGENT_ROLES`. Spec §11. Keep each role at about
+#: 300 tokens or fewer: ``test_orchestrator_voice.py`` measures it.
+ROLES: dict[str, str] = {
+    "chief_of_staff": "\n".join((
+        CHIEF_OF_STAFF_HEADING,
+        "- Open with the bottom line: the answer, the status, or the decision the "
+        "member must take. Do not restate the question.",
+        "- Then give the 2 to 5 points that matter, the most important first. Leave "
+        "out what does not change what the member knows or does next.",
+        "- Never paste the output of a read or another agent's reply. Say what it "
+        "means. The detail stays in its step, in a link, or in one folded card. "
+        "The one exception is text the member asked for (a draft, a message, a "
+        "document): give it whole.",
+        "- Raise what the member did not ask about only when it is real and close: "
+        "a deadline, a risk, a conflict, a number out of line, or a thing that "
+        "waits on the member. One line each. Raise nothing to fill space.",
+        "- For a decision, give each option, your recommendation and its "
+        "trade-off, one line each. Then say what happens next and who owns it.",
+        "- Fit the length to the question. A fact gets a sentence. A routine reply "
+        "stays under about 120 words of text. When the member asks for the "
+        "detail or the data, give all of it.",
+    )),
+}
+
+#: The agent that reads each role, by registry name. Every other agent reads
+#: no role, so its prompt does not change.
+AGENT_ROLES: dict[str, str] = {
+    "orchestrator": "chief_of_staff",
+}
+
+
+def role_for(agent_name: str | None) -> str | None:
+    """The role of the agent *agent_name*, or ``None`` for no role."""
+    return AGENT_ROLES.get(agent_name or "")
+
 
 #: The line a JSON drafting call adds, so the rules bind the prose values
 #: and never the keys or the shape that code parses.
@@ -104,7 +145,9 @@ JSON_NOTE = (
 )
 
 
-def voice_prompt(surface: str = AGENT, *more: str, json: bool = False) -> str:
+def voice_prompt(
+    surface: str = AGENT, *more: str, json: bool = False, role: str | None = None,
+) -> str:
     """The voice for *surface*, as system-prompt text.
 
     ``AGENT`` (the default) gives the heading, the core and every overlay,
@@ -114,10 +157,19 @@ def voice_prompt(surface: str = AGENT, *more: str, json: bool = False) -> str:
     title and a description) names both, and gets both overlays. ``json``
     adds :data:`JSON_NOTE`. An unknown name raises ``KeyError``, so a typo
     fails in a test and never ships a prompt with no overlay.
+
+    *role* (a key of :data:`ROLES`) adds that role after the overlays. Only
+    the agent block takes a role: a drafting call writes one kind of text,
+    and a role describes what an agent is for, so a role on a surface raises
+    ``ValueError``.
     """
+    if role is not None and (surface != AGENT or more):
+        raise ValueError("a role belongs to the agent block only")
     if surface == AGENT and not more:
         overlays = "\n".join(f"- {text}" for text in OVERLAYS.values())
         text = f"{VOICE_HEADING}\n{CORE}\nBy surface:\n{overlays}"
+        if role is not None:
+            text = f"{text}\n{ROLES[role]}"
     else:
         overlays = "\n".join(OVERLAYS[name] for name in (surface, *more))
         text = f"{VOICE_HEADING}\n{CORE}\n{overlays}"
@@ -245,7 +297,8 @@ def voice_lint(text: str, surface: str | None = None) -> list[Finding]:
 
 
 __all__ = [
-    "AGENT", "CORE", "CORPORATE_STEMS", "FILLER_WORDS", "Finding", "JSON_NOTE", "OVERLAYS",
-    "core_prompt",
+    "AGENT", "AGENT_ROLES", "CHIEF_OF_STAFF_HEADING", "CORE", "CORPORATE_STEMS",
+    "FILLER_WORDS", "Finding", "JSON_NOTE", "OVERLAYS", "ROLES",
+    "core_prompt", "role_for",
     "SURFACES", "VOICE_HEADING", "voice_lint", "voice_prompt",
 ]
