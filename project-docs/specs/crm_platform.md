@@ -1779,6 +1779,22 @@ uv run pytest tests/unit/test_crm_q10_reconnect_r8.py tests/unit/test_crm_reset_
 cd workbench/control_plane && npx vitest run src/app/crm/components/crmQ9.test.ts
 ```
 
+**Built as (2026-10-13).** ✅ Built. No migration and no flag.
+
+- `store.save_credential(keep_profile=...)`. `_STALE_PROFILES_SQL` moves each
+  `fetched_at` of the connection 7 days back. The callback passes
+  `keep_profile=verdict is True`.
+- `engine.DISCOVERY_ALLOWANCE = 25`. `_discovery_allowance_due` reads the
+  three conditions. `_execute` runs `_discover` first when they hold.
+  `_discover` reads at most once in a run, and it sets the edition budget
+  before the module fields.
+- `runs.resumes_at` reads the window with one window function, on the filter
+  of `credits_used_24h`. `GET /crm/sync/health` returns it as
+  `credits.resumes_at`, and `statusLines` in `lib/syncHealth.ts` writes the
+  pause sentence.
+- `test_crm_reset_r8.py` now expects the first same-account consent to keep the
+  profile.
+
 ---
 
 ## 19. The daily-use UX (2026-10-12)
