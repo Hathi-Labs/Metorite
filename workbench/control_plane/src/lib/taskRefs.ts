@@ -337,8 +337,9 @@ const rootResolvers = new Map<string, TaskRefResolver>();
 /**
  * The store for a text that belongs to a task (WS-57 TR-5): the task card's
  * title, description and comments. A number resolves in the task's own root
- * first, and to the one visible task in the organization only when that root
- * has no such number. The gateway's links from text read the same rule
+ * and nowhere else. A number that root cannot resolve stays text, because a
+ * moved, deleted or hidden #12 must not borrow another root's #12 (review
+ * round 1). The gateway's links from text read the same rule
  * (`text_links.py`), so a pill and a saved link name one task.
  *
  * One store per root, kept for the page's life: a root's answers stay right

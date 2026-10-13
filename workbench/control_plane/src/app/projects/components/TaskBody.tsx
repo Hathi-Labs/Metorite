@@ -333,7 +333,7 @@ export function TaskBody({
 }: TaskBodyProps) {
   const toast = useToast();
   // WS-57 TR-5 — the `#123` pills in the description and the comments read
-  // this task's root first, as the gateway's links from text do.
+  // this task's root only, as the gateway's links from text do.
   const refResolver = taskRefResolverFor(task.root_project_id);
   // D-PM-38 decision 2 (S5) — completing a parent with open subtasks asks.
   const subtaskComplete = useSubtaskComplete();
