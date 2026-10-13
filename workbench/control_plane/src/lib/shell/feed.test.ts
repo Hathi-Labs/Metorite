@@ -42,14 +42,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * The My Tasks store's gesture, shaped like the real one: it hides the row,
  * then calls `keep` once the write begins. "parent" asks, and the answer is no.
+ * While `hydrate.gate` is set, `keep` waits for it: the cold hydrate of the
+ * first Done of a page session (fix round 3).
  */
 type Row = { hide(): void; show(): void; keep?(): void };
+const hydrate: { gate: Promise<void> | null; open: () => void } = { gate: null, open: () => {} };
 const markDoneFromHome = vi.fn(async (id: string, row?: Row) => {
   row?.hide();
   if (id === "parent") {
     row?.show();
     return "kept";
   }
+  if (hydrate.gate) await hydrate.gate;
   row?.keep?.();
   return "done";
 });
@@ -64,6 +68,7 @@ import { applyData, applyError, initialState } from "@/lib/useCachedResource";
 import {
   FEED_CACHE,
   FEED_SHOWN,
+  PENDING,
   type ActOverlay,
   type FeedAnswer,
   type FeedCard as Card,
@@ -80,11 +85,21 @@ import {
   fetchFeed,
   needsRowFor,
   overlayAdd,
+  overlayExpired,
   overlayNextEnd,
   readFeedAnswer,
   sourceLine,
 } from "./feed";
-import { type FeedActDeps, FeedCard, expireFeedActs, feedActMover, joinFeedPoll, runFeedAct } from "./FeedCard";
+import {
+  type FeedActDeps,
+  FeedCard,
+  OVERLAY_MIN_WAIT_MS,
+  expireFeedActs,
+  feedActMover,
+  joinFeedPoll,
+  runFeedAct,
+  watchOverlayEnds,
+} from "./FeedCard";
 import { needsKey, runAct } from "./needs";
 import { ACT_HOLD_MS, acquireReader, actsSnapshot, pruneActs, removeRow } from "./needsActs";
 import { BELL_POLL_MS, joinNeedsPoll } from "./ShellBell";
@@ -153,6 +168,7 @@ const card = (id: string, group: string, extra: Record<string, unknown> = {}): C
 afterEach(() => {
   vi.unstubAllGlobals();
   markDoneFromHome.mockClear();
+  hydrate.gate = null;
   clearAll();
 });
 
@@ -442,9 +458,11 @@ describe("4. the acts go through the owning app", () => {
     // The hook runs each act through `runFeedAct`, which runs `runAct` with
     // the row half that marks every needs row (sections 5 and 5b drive it).
     expect(src).toMatch(/void runFeedAct\(card, a, from, \{/);
-    expect(src).toMatch(/const mover = feedActMover\(rows, from\);/);
+    expect(src).toMatch(/const mover = feedActMover\(rows, from, now\);/);
+    // A row is PENDING from the hide until `keep` (fix round 3).
+    expect(src).toMatch(/deps\.overlay\(\(o\) => overlayAdd\(o, rows, PENDING\)\);/);
     expect(src).toMatch(/const out = await runAct\(item, row\);/);
-    expect(src).toMatch(/for \(const row of rows\) removeRow\(row, gone\);/);
+    expect(src).toMatch(/for \(const row of rows\) removeRow\(row, gone, now\(\)\);/);
     // The feed keeps no private removed set: it reads the one store.
     expect(src).toMatch(/useSyncExternalStore\(subscribeActs, actsSnapshot, \(\) => EMPTY_ACTS\)/);
     expect(src).not.toMatch(/keepRemoved|useState<ReadonlySet<string>>/);
@@ -641,7 +659,7 @@ describe("5b. the feed's own acts outlive a needs answer (fix round 2, F1)", () 
     const p = page([taskCard("t1")]);
     await p.tapDone();
     // The needs view still holds the row inside its hold, so its mark stays.
-    pruneActs(["tasks:t1"]);
+    pruneActs(["tasks:t1"], T_ACT + 500);
     expect(actsSnapshot().removed.has("tasks:t1")).toBe(true);
     // The feed answer from after the act is the truth.
     p.state.answer = { ...p.state.answer, fetchedAt: T_ACT + 1_000 };
@@ -660,6 +678,73 @@ describe("5b. the feed's own acts outlive a needs answer (fix round 2, F1)", () 
     pruneActs(cards.slice(0, 30).map((c) => c.signal_id));
     expect(p.shown()).toHaveLength(39);
     expect(p.shown()).not.toContain("tasks:c35");
+  });
+
+  it("(v) a feed answer with the task, between hide and keep (a cold hydrate), keeps the card hidden", async () => {
+    // Fix round 3, item 1. The first Done of a page session hydrates the
+    // store before it writes, so `keep` comes late. A feed read lands in
+    // that window, fetched after the tap, and it still holds the task.
+    hydrate.gate = new Promise<void>((open) => (hydrate.open = open));
+    const p = page([taskCard("t1")]);
+    const first = p.tapDone();
+    p.state.answer = { ...p.state.answer, fetchedAt: T_ACT + 1_500 };
+    p.state.now = T_ACT + 1_500;
+    expect(p.shown()).toEqual([]);
+    expect(await p.tapDone()).toBe("blocked");
+    expect(markDoneFromHome).toHaveBeenCalledTimes(1);
+    // The write begins: the overlay takes its real time from `keep`.
+    p.state.now = T_ACT + 2_000;
+    hydrate.open();
+    expect(await first).toBe("done");
+    expect(p.state.overlay.get("tasks:t1")).toBe(T_ACT + 2_000);
+    expect(p.shown()).toEqual([]);
+    // Only an answer fetched after the write began is the truth.
+    p.state.answer = { ...p.state.answer, fetchedAt: T_ACT + 2_500 };
+    expect(p.shown()).toEqual(["tasks:t1"]);
+  });
+
+  it("a pending row has no hold to count down, and never expires on its own", () => {
+    const o = overlayAdd(new Map(), ["tasks:p"], PENDING);
+    expect(overlayNextEnd(o, T_ACT)).toBeNull();
+    expect(overlayExpired(o, Number.MAX_SAFE_INTEGER)).toEqual([]);
+    expect(feedHiddenRows(new Set(), o, Number.MAX_SAFE_INTEGER)).toEqual(new Set(["tasks:p"]));
+  });
+
+  it("re-books a pass when the timer fires early, so a row never stays for the life of the page", () => {
+    // Fix round 3, item 2. Node may fire a timer 1 ms early, or the clock
+    // may step back. The pass then expires nothing, and it must book again.
+    vi.useFakeTimers();
+    let clock = 0;
+    let o: ActOverlay = overlayAdd(new Map(), ["tasks:a"], 0);
+    const stop = watchOverlayEnds(
+      () => o,
+      (now) => {
+        o = expireFeedActs(o, now);
+      },
+      () => clock,
+    );
+    try {
+      clock = ACT_HOLD_MS - 1; // the timer fires, and the clock reads 1 ms short
+      vi.advanceTimersByTime(ACT_HOLD_MS);
+      expect(o.has("tasks:a")).toBe(true);
+      clock = ACT_HOLD_MS - 1 + OVERLAY_MIN_WAIT_MS;
+      vi.advanceTimersByTime(OVERLAY_MIN_WAIT_MS);
+      expect(o.size).toBe(0);
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("the end of the feed's act keeps a NEWER needs mark that the bell set on the same row", () => {
+    // Fix round 3, item 3.
+    const o = overlayAdd(new Map(), ["tasks:a", "tasks:b"], 1_000);
+    removeRow("tasks:a", true, 900); // the feed's own mark, from its hide
+    removeRow("tasks:b", true, 5_000); // the bell's Done, after the feed's act
+    const left = expireFeedActs(o, 1_000 + ACT_HOLD_MS);
+    expect(left.size).toBe(0);
+    expect(actsSnapshot().removed.has("tasks:a")).toBe(false);
+    expect(actsSnapshot().removed.has("tasks:b")).toBe(true);
   });
 
   it("(d) a Done that asks and gets no shows the card again at once", async () => {

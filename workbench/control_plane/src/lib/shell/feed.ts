@@ -363,6 +363,15 @@ export function cardHidden(card: FeedCard, marked: ReadonlySet<string>): boolean
 /** Each needs row the feed's own acts took off, with the time of the act. */
 export type ActOverlay = ReadonlyMap<string, number>;
 
+/**
+ * The time of a row whose write has not begun (fix round 3). A Done hides
+ * its row at once, and the first Done of a page session then hydrates the
+ * My Tasks store before it writes. No feed answer is the truth for a row in
+ * that window, so the row waits at `PENDING` until `keep`, or until the act
+ * settles. A pending row never expires: the act ends it either way.
+ */
+export const PENDING = Number.POSITIVE_INFINITY;
+
 /** Add these rows at `at`, or move their time to `at`. */
 export function overlayAdd(overlay: ActOverlay, rows: readonly string[], at: number): ActOverlay {
   const next = new Map(overlay);
@@ -383,10 +392,14 @@ export function overlayExpired(overlay: ActOverlay, now: number): string[] {
   return [...overlay].filter(([, at]) => now - at >= ACT_HOLD_MS).map(([row]) => row);
 }
 
-/** How long until the next hold ends, in ms, or null for an empty overlay. */
+/**
+ * How long until the next hold ends, in ms, or null when no row has a hold:
+ * an empty overlay, or one with only `PENDING` rows.
+ */
 export function overlayNextEnd(overlay: ActOverlay, now: number): number | null {
   let next: number | null = null;
   for (const at of overlay.values()) {
+    if (!Number.isFinite(at)) continue;
     const left = Math.max(0, at + ACT_HOLD_MS - now);
     if (next === null || left < next) next = left;
   }
@@ -397,7 +410,8 @@ export function overlayNextEnd(overlay: ActOverlay, now: number): number | null 
  * The needs rows the feed treats as taken off, for the answer on screen.
  *
  *   - A row of the feed's own act follows the overlay. It is off while the
- *     act is at least as new as the answer's fetch (`at >= fetchedAt`). An
+ *     act is at least as new as the answer's fetch (`at >= fetchedAt`), and
+ *     always while the row is `PENDING`. An
  *     answer fetched after the act is the truth: a task it still holds was
  *     really reopened, so its card shows, whatever the needs mark says.
  *   - Every other row follows its `needsActs` mark, so a Done in the bell

@@ -1470,6 +1470,14 @@ Done when:
 `shellBell.test.ts`, and the cache fence is `dataCache.test.ts`
 (`guardedPut`).
 
+**Two accepted limits of MD-1b.** The verifier accepted both on 2026-10-13.
+
+- A feed read can land after `keep()` and before the PATCH answers. That
+  read counts as the truth for one PATCH round trip. The re-read after the
+  invalidate heals it.
+- Suppose a feed answer shows a reopened task, and the bell then marks that
+  task Done within the 30 s hold. The feed card stays until the hold ends.
+
 **Not in MD-1b, and where each part went.** The honest counts of §6.7 and the
 card menu go to MD-2, because each needs its state table. `stale_next` is
 MD-3. Server paging with a cursor goes to MD-5. The keys of §14.3 go to

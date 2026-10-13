@@ -39,6 +39,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
   FEED_SHOWN,
+  PENDING,
   type ActOverlay,
   type FeedAct,
   type FeedAnswer,
@@ -65,7 +66,15 @@ import {
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
 import { needsKey, runAct } from "./needs";
-import { EMPTY_ACTS, acquireReader, actsSnapshot, removeRow, setRowError, subscribeActs } from "./needsActs";
+import {
+  EMPTY_ACTS,
+  acquireReader,
+  actsSnapshot,
+  markedAt,
+  removeRow,
+  setRowError,
+  subscribeActs,
+} from "./needsActs";
 import { joinNeedsPoll } from "./ShellBell";
 
 const DANGER = accentForHue("red");
@@ -128,12 +137,14 @@ export function useFeed(enabled: boolean): Feed {
   });
 
   // Each overlay row ends after its hold, and its needs mark ends with it.
-  useEffect(() => {
-    const wait = overlayNextEnd(overlay, Date.now());
-    if (wait === null) return;
-    const id = setTimeout(() => changeOverlay((o) => expireFeedActs(o, Date.now())), wait);
-    return () => clearTimeout(id);
-  }, [overlay, changeOverlay]);
+  useEffect(
+    () =>
+      watchOverlayEnds(
+        () => overlayRef.current,
+        (now) => changeOverlay((o) => expireFeedActs(o, now)),
+      ),
+    [overlay, changeOverlay],
+  );
 
   const marked = useMemo(() => feedHiddenRows(needsMarks, overlay, fetchedAt), [needsMarks, overlay, fetchedAt]);
 
@@ -182,10 +193,11 @@ export interface FeedActDeps {
  *
  *   - An act whose rows are all off already does not run again: "blocked".
  *   - The act marks its needs rows in `needsActs`, for the bell and the
- *     sidebar, and adds them to the overlay at the time of the act.
- *   - The overlay time moves to the moment the write began (`keep`) and to
- *     the moment the act settled, so only a feed answer fetched after the
- *     write ends the overlay.
+ *     sidebar, and adds them to the overlay as `PENDING`. No feed answer is
+ *     the truth for a pending row (fix round 3: a cold hydrate comes first).
+ *   - The overlay takes a real time when the write begins (`keep`), and moves
+ *     it forward when the act settles. So only a feed answer fetched after
+ *     the write began ends the overlay.
  *   - A show (Undo, a question answered no) or a failure takes the rows back
  *     out of both.
  */
@@ -201,13 +213,13 @@ export async function runFeedAct(
   const held = deps.held();
   if (rows.every((r) => held.has(r))) return "blocked";
   const now = deps.now ?? Date.now;
-  const mover = feedActMover(rows, from);
+  const mover = feedActMover(rows, from, now);
   const stamp = () => deps.overlay((o) => overlayAdd(o, rows, now()));
   const clear = () => deps.overlay((o) => overlayDrop(o, rows));
   const row: DoneRow = {
     hide() {
       mover.hide();
-      stamp();
+      deps.overlay((o) => overlayAdd(o, rows, PENDING));
     },
     show() {
       mover.show();
@@ -230,11 +242,49 @@ export async function runFeedAct(
 /**
  * End each overlay row whose hold is over, and its needs mark with it. A
  * Done that never landed then shows its card again, with a live act.
+ *
+ * ⚠️ It clears a needs mark only when the mark is not newer than the
+ * overlay row. A newer mark is the bell's own act on the same row, and that
+ * mark stays (fix round 3). A row with no mark has nothing to clear.
  */
 export function expireFeedActs(overlay: ActOverlay, now: number): ActOverlay {
   const gone = overlayExpired(overlay, now);
-  for (const row of gone) removeRow(row, false);
+  for (const row of gone) {
+    const marked = markedAt(row);
+    if (marked !== undefined && marked <= (overlay.get(row) ?? -Infinity)) removeRow(row, false);
+  }
   return overlayDrop(overlay, gone);
+}
+
+/** The least wait between two passes over the overlay's holds, in ms. */
+export const OVERLAY_MIN_WAIT_MS = 50;
+
+/**
+ * Watch the holds of the overlay. Each pass expires what is due, then ALWAYS
+ * books the next pass from `overlayNextEnd`, at least `OVERLAY_MIN_WAIT_MS`
+ * away. So a timer that fires early, or a clock that steps back, books one
+ * more pass and never leaves a row for the life of the page (fix round 3).
+ * Returns the stop.
+ */
+export function watchOverlayEnds(
+  read: () => ActOverlay,
+  expire: (now: number) => void,
+  now: () => number = Date.now,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const book = () => {
+    const wait = overlayNextEnd(read(), now());
+    timer = wait === null ? undefined : setTimeout(pass, Math.max(OVERLAY_MIN_WAIT_MS, wait));
+  };
+  const pass = () => {
+    expire(now());
+    book();
+  };
+  book();
+  return () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
 }
 
 /**
@@ -243,9 +293,13 @@ export function expireFeedActs(overlay: ActOverlay, now: number): ActOverlay {
  * out of the bell at once. A failure puts them all back, with the error on
  * the first.
  */
-export function feedActMover(rows: readonly string[], from: HTMLElement | null = null): DoneRow {
+export function feedActMover(
+  rows: readonly string[],
+  from: HTMLElement | null = null,
+  now: () => number = Date.now,
+): DoneRow {
   const move = (_: string, gone: boolean) => {
-    for (const row of rows) removeRow(row, gone);
+    for (const row of rows) removeRow(row, gone, now());
   };
   const fail = (_: string, message: string | null) => setRowError(rows[0], message);
   return rowMover(rows[0], move, fail, from);
