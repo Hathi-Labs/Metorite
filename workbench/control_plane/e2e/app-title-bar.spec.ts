@@ -23,7 +23,7 @@ const ADMIN = {
   email: "admin@example.com",
   name: "Asha Rao",
   is_admin: true,
-  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals", "crm", "integrations"],
+  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals", "crm", "integrations", "artifacts"],
   permissions: ["admin:members:read", "admin:members:manage"],
   capabilities: ["admin:members:read", "admin:members:manage"],
   roles: ["owner"],
