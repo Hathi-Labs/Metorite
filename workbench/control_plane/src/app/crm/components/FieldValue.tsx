@@ -56,6 +56,7 @@ export default function FieldValue({
     case "tel":
       // A mail or a call opens the member's own app, so the link stays in
       // this tab (CRM-X4 item 6).
+      // crm-link-external: a mailto or tel href leaves the app, so no pushView.
       return (
         <a
           href={value.href}
