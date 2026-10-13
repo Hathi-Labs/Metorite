@@ -25,7 +25,8 @@
  */
 
 import Icon from "@/components/Icon";
-import { statusTone } from "../lib/board";
+import { stageAccent } from "../lib/board";
+import { useCrmModeValue } from "../lib/modeContext";
 import { compactMoney, money, shortDate } from "../lib/format";
 import {
   byWeight,
@@ -117,6 +118,7 @@ function Figure({
 // ── 1 · the forecast ──────────────────────────────────────────────────────
 
 function Forecast({ reports }: { reports: CrmReports }) {
+  const mode = useCrmModeValue();
   const { pipeline } = reports;
   const widths = pipelineWidths(pipeline);
   const ordered = pipeline.stages;
@@ -143,7 +145,7 @@ function Forecast({ reports }: { reports: CrmReports }) {
           {ordered.map((stage, index) => (
             <li key={stage.status.id} className="flex items-center gap-3">
               <span
-                className={`h-2 w-2 shrink-0 rounded-full ${statusTone(stage.status)}`}
+                className={`h-2 w-2 shrink-0 rounded-full ${stageAccent(stage.status, mode).dot}`}
                 aria-hidden
               />
               <span className="w-36 shrink-0 truncate text-xs text-foreground">
@@ -184,6 +186,7 @@ function Forecast({ reports }: { reports: CrmReports }) {
 // ── 2 · the funnel ────────────────────────────────────────────────────────
 
 function Funnel({ reports }: { reports: CrmReports }) {
+  const mode = useCrmModeValue();
   const { funnel } = reports;
   const widths = funnelWidths(funnel);
   return (
@@ -200,7 +203,7 @@ function Funnel({ reports }: { reports: CrmReports }) {
               <li key={stage.status.id}>
                 <div className="flex items-center gap-3">
                   <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${statusTone(stage.status)}`}
+                    className={`h-2 w-2 shrink-0 rounded-full ${stageAccent(stage.status, mode).dot}`}
                     aria-hidden
                   />
                   <span className="w-36 shrink-0 truncate text-xs text-foreground">

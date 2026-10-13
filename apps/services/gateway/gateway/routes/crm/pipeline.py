@@ -25,6 +25,7 @@ from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
     DEALS,
+    EFFECTIVE_STATUS_COLUMNS,
     LEADS,
     MAX_PAGE_SIZE,
     NEXT_ACTIVITY_SQL,
@@ -53,6 +54,7 @@ from gateway.routes.crm.core import (
     load_row,
     now,
     project_joined,
+    read_statuses,
     record_activity,
     require_row,
     resolve_owner,
@@ -394,6 +396,11 @@ _NEXT_AT_COLUMN = (
 )
 
 
+#: The lane rows carry the effective and the source values (CRM-C3, §20.6
+#: item 6). So ``stage_probability`` below binds the effective probability.
+_STAGE_COLUMNS = EFFECTIVE_STATUS_COLUMNS["crm_deal_statuses"]
+
+
 def _lane_select(card_sort: str) -> str:
     """The SELECT list of a lane read. Only ``next_activity`` adds ``next_at``."""
     if card_sort == "next_activity":
@@ -413,12 +420,10 @@ async def _board_lanes(
     Without a pipeline: every stage.
     """
     if not pipeline_id:
-        return list((await db.execute(
-            text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
-        )).fetchall())
+        return await read_statuses(db, "crm_deal_statuses")
     listed = (await db.execute(
         text(
-            "SELECT s.*, ps.position AS pipeline_position "
+            f"SELECT {_STAGE_COLUMNS}, ps.position AS pipeline_position "
             "FROM crm_deal_statuses s "
             "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
             "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
@@ -429,7 +434,7 @@ async def _board_lanes(
     held = where.replace(_LANE_SQL, "status_id = s.id", 1)
     extra = (await db.execute(
         text(
-            "SELECT s.* FROM crm_deal_statuses s "
+            f"SELECT {_STAGE_COLUMNS} FROM crm_deal_statuses s "
             "WHERE NOT EXISTS (SELECT 1 FROM crm_pipeline_stages ps "
             "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
             "AND ps.status_id = s.id) "

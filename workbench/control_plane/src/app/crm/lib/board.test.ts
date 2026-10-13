@@ -7,18 +7,22 @@ import {
   missingRequiredFields,
   moveRequest,
   needsLostReason,
+  orderLanes,
   planMove,
   REQUIREABLE_FIELD_LABELS,
   REQUIREABLE_FIELDS,
   ROT_TONES,
   rotLevel,
-  statusTone,
+  stageAccent,
+  stageIcon,
   toBoardLanes,
   weightedDeal,
   weightedRows,
   WEIGHTED_TYPES,
   type BoardLane,
 } from "./board";
+import { accentForHue } from "@/lib/statusAccent";
+
 import type { Deal, Pipeline, Status, StatusType } from "./types";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
@@ -133,19 +137,52 @@ describe("toBoardLanes", () => {
   });
 });
 
-describe("statusTone", () => {
-  it("maps the stored colour onto a semantic token", () => {
-    // `color` is free text the owner (and the Zoho importer) writes, so
-    // `bg-${color}-500` would be a class Tailwind never saw at build time and
-    // every lane would render colourless.
-    expect(statusTone({ color: "amber", type: "ongoing" })).toBe("bg-warning");
-    expect(statusTone({ color: "red", type: "lost" })).toBe("bg-destructive");
+describe("stageAccent (WS-53 CRM-C2)", () => {
+  const stage = (color: string, type: StatusType, name = "Stage") => ({ color, type, name });
+
+  it("maps the stored colour through the shared vocabulary", () => {
+    // `color` is free text the owner (and the Zoho importer) writes. The
+    // shared module turns it into token classes, so no class is built here.
+    expect(stageAccent(stage("amber", "ongoing"), "native")).toBe(accentForHue("amber"));
+    expect(stageAccent(stage("red", "lost"), "native")).toBe(accentForHue("red"));
+  });
+
+  it("draws the seeded Proposal lane violet, not the orange of the old map", () => {
+    expect(stageAccent(stage("violet", "ongoing", "Proposal"), "native").dot).toBe("bg-violet");
+  });
+
+  it("never paints a blue lane with the member's accent", () => {
+    expect(stageAccent(stage("sky", "open"), "native").dot).toBe("bg-info");
   });
 
   it("falls back by status TYPE, not to grey", () => {
     // An unrecognised colour on a won lane should still read as won.
-    expect(statusTone({ color: "chartreuse", type: "won" })).toBe("bg-success");
-    expect(statusTone({ color: "", type: "lost" })).toBe("bg-destructive");
+    expect(stageAccent(stage("chartreuse", "won"), "native")).toBe(accentForHue("green"));
+    expect(stageAccent(stage("", "lost"), null)).toBe(accentForHue("red"));
+  });
+
+  // Done-when 4: every mirrored row is `gray` (§20.1 fact 6), and Mirror mode
+  // must still show what a lane means.
+  it.each([
+    ["won", "green"],
+    ["lost", "red"],
+    ["on_hold", "amber"],
+    ["ongoing", "blue"],
+    ["open", "gray"],
+  ] as const)("a gray Mirror %s stage draws %s", (type, hue) => {
+    expect(stageAccent(stage("gray", type), "mirror")).toBe(accentForHue(hue));
+  });
+
+  it("keeps a Native admin's gray, because a person chose it", () => {
+    expect(stageAccent(stage("gray", "won"), "native")).toBe(accentForHue("gray"));
+  });
+
+  it("gives a closed or a paused stage an icon, so colour is not alone", () => {
+    expect(stageIcon("won")).toBe("CircleCheck");
+    expect(stageIcon("lost")).toBe("CircleX");
+    expect(stageIcon("on_hold")).toBe("CirclePause");
+    expect(stageIcon("open")).toBeNull();
+    expect(stageIcon("ongoing")).toBeNull();
   });
 });
 
@@ -276,9 +313,20 @@ type ParityRow = {
   amount: number | null;
   deal_probability: number | null;
   stage_probability: number | null;
+  /** CRM-C3: the Metorite overlay of the stage, or null. */
+  ui_probability: number | null;
   stage_type: StatusType;
   expected_weighted: number;
 };
+
+/**
+ * The stage probability the wire carries for a fixture row (CRM-C3, §20.6
+ * item 5): the gateway sends the EFFECTIVE value, the overlay when it is set,
+ * else the source. `weightedDeal` reads the wire with no change, so the board
+ * side of the parity reads it the same way.
+ */
+const wireProbability = (row: ParityRow): number | null =>
+  row.ui_probability ?? row.stage_probability;
 
 const PARITY: ParityRow[] = JSON.parse(
   readFileSync(
@@ -310,7 +358,7 @@ describe("the weighted parity fixture", () => {
       expect(
         weightedRows(
           [{ amount: row.amount, probability: row.deal_probability }],
-          { type: row.stage_type, probability: row.stage_probability }
+          { type: row.stage_type, probability: wireProbability(row) }
         )
       ).toBeCloseTo(row.expected_weighted, 6);
     }
@@ -322,7 +370,7 @@ describe("the weighted parity fixture", () => {
       expect(
         weightedDeal(
           { amount: row.amount, probability: row.deal_probability },
-          { probability: row.stage_probability }
+          { probability: wireProbability(row) }
         )
       ).toBeCloseTo(row.expected_weighted, 6);
     }
@@ -428,7 +476,6 @@ describe("applyMove", () => {
         count: 0,
         amount: 0,
         weighted: 0,
-        tone: "bg-primary",
       },
       {
         status: PROPOSAL,
@@ -436,7 +483,6 @@ describe("applyMove", () => {
         count: 0,
         amount: 0,
         weighted: 0,
-        tone: "bg-warning",
       },
     ];
     const next = applyMove(empty, {
@@ -567,5 +613,85 @@ describe("rotLevel", () => {
     // tones — never as a hue somebody picked (DESIGN_SYSTEM rule 4).
     expect(ROT_TONES.warn).toBe("text-warning");
     expect(ROT_TONES.over).toBe("text-destructive");
+  });
+});
+
+// ── CRM-C3 · the admin order key (crm_platform.md §20.6 item 12) ──────────
+//
+// In Mirror mode an admin order wins. The key is (ui_position IS NULL,
+// ui_position, source position), in each of the four groups. Done when 9.
+
+describe("orderLanes with an admin order", () => {
+  /** A lane of a Mirror org: source position `source`, Metorite order `ui`. */
+  const lane = (
+    id: string,
+    type: StatusType,
+    source: number,
+    ui: number | null,
+    over: Partial<Status> = {}
+  ) => ({
+    pipeline_position: null,
+    status: status({
+      id,
+      name: id,
+      type,
+      source_position: source,
+      ui_position: ui,
+      // The gateway folds the key into the effective position (core.py).
+      position: ui ?? 1_000_000 + source,
+      probability: 10 * source,
+      admin_order: true,
+      ...over,
+    }),
+  });
+  const names = (lanes: { status: Status }[]) => lanes.map((l) => l.status.name);
+
+  it("sorts by the admin order, and a new Zoho stage goes to the end of its group", () => {
+    const lanes = [
+      lane("Qualify", "open", 0, 20),
+      lane("Propose", "open", 1, 10),
+      lane("Discover", "open", 5, null), // Zoho added it after the admin order
+      lane("Won", "won", 2, 0),
+      lane("Lost", "lost", 3, 30),
+    ];
+    expect(names(orderLanes(lanes, "mirror"))).toEqual([
+      "Propose",
+      "Qualify",
+      "Discover",
+      "Won",
+      "Lost",
+    ]);
+  });
+
+  it("does not sort by probability once an admin ordered the stages", () => {
+    const lanes = [lane("Low", "open", 0, 10, { probability: 5 }), lane("High", "open", 1, 0, { probability: 90 })];
+    expect(names(orderLanes(lanes, "mirror"))).toEqual(["High", "Low"]);
+  });
+
+  it("sorts by the effective probability in Mirror mode with no admin order", () => {
+    const lanes = [
+      lane("High", "open", 0, null, { admin_order: false, probability: 90 }),
+      lane("Low", "open", 1, null, { admin_order: false, probability: 5 }),
+    ];
+    expect(names(orderLanes(lanes, "mirror"))).toEqual(["Low", "High"]);
+  });
+
+  it("sorts a Native board by position, which the gateway already made effective", () => {
+    const lanes = [
+      lane("B", "open", 0, null, { admin_order: false, position: 20 }),
+      lane("A", "open", 1, null, { admin_order: false, position: 10 }),
+    ];
+    expect(names(orderLanes(lanes, null))).toEqual(["A", "B"]);
+    expect(names(orderLanes(lanes, "native"))).toEqual(["A", "B"]);
+  });
+
+  it("puts a hidden stage, and a stage that left Zoho, at the end of its group", () => {
+    const lanes = [
+      lane("Hidden", "open", 0, 0, { hidden: true }),
+      lane("Gone", "open", 1, 5, { source_gone_at: "2026-10-13T00:00:00Z" }),
+      lane("Open", "open", 2, 10),
+      lane("Won", "won", 3, 20),
+    ];
+    expect(names(orderLanes(lanes, "mirror"))).toEqual(["Open", "Hidden", "Gone", "Won"]);
   });
 });

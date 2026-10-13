@@ -145,6 +145,36 @@ export function put<T>(key: CacheKey, data: T): void {
   notify(key);
 }
 
+/**
+ * A `put` for a value that a read of ANOTHER key carried (MD-1b,
+ * `my_day_feed.md` §14.1). My Day's feed answer carries the needs view, and
+ * the feed's fetcher stores that view under the needs key, so the bell and
+ * the sidebar read it with no second request.
+ *
+ * Call it BEFORE the request goes out. It notes the write counters of both
+ * keys and the clock. The put it returns stores the value only when:
+ *
+ *   - no write landed on the carrier key while its read was in flight (the
+ *     carrier's counter did not move), and none landed on `key` either;
+ *   - no answer newer than the request already sits under `key`.
+ *
+ * Else it stores nothing and returns false. ⚠️ The carrier must be the key
+ * whose read is in flight around the request. `invalidate` bumps a counter
+ * only for a key in flight, and a carrier read is the one in flight.
+ */
+export function guardedPut<T>(carrier: CacheKey, key: CacheKey): (data: T) => boolean {
+  const since = clock();
+  const carrierGen = genOf(carrier);
+  const keyGen = genOf(key);
+  return (data: T) => {
+    if (genOf(carrier) !== carrierGen || genOf(key) !== keyGen) return false;
+    const held = store.get(key);
+    if (held && held.storedAt > since) return false;
+    put(key, data);
+    return true;
+  };
+}
+
 function notify(key: CacheKey): void {
   const set = watchers.get(key);
   if (!set) return;

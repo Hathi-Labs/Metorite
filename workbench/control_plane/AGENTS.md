@@ -142,6 +142,13 @@ Seven rules on top of the three above. Each one exists because it was broken:
    image. The task card passes `plainEmails` to `MarkdownBody`, so an
    @mention stays text. Fences: `markdownMedia.test.ts` and
    `app/projects/lib/inlineUploads.test.ts`.
+   The task card draws `#123` as the task pill (WS-57 TR-5). It passes
+   `taskRefs` alone, so the plugin changes only the `#123`s, and
+   `taskRefResolverFor(root)`, so a number reads the task's own root
+   only. The chat's output stays the same. The card's Markdown layer and
+   the gateway's `prose_of` share the `markdown_cases` of
+   `tests/fixtures/task_ref_cases.json`. Fences:
+   `components/markdownChatGolden.test.ts` and `lib/taskRefs.test.ts`.
    **Untrusted HTML has one DOMPurify policy,** `src/lib/untrustedHtml.ts`.
    The email pane and the `.docx` viewer use it. A new raw-HTML sink
    (`dangerouslySetInnerHTML`, an `innerHTML` write, a `srcdoc`) fails

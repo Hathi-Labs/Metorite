@@ -225,6 +225,15 @@ _IN_SUBQUERY = re.compile(
 _TENANT_PROJECTS = re.compile(
     r"SELECT id FROM pm_projects WHERE organization_id\s*=\s*CAST\(:vis_org", re.I
 )
+#: H-304: the unrestricted TASK clause ORs the assignee arm onto that set, so
+#: the D63 hand-over reaches an admin who is the assignee. Read off the text,
+#: so a route that drops the arm stops being mirrored here.
+_TENANT_OR_ASSIGNEE = re.compile(
+    r"SELECT id FROM pm_projects\s+WHERE organization_id\s*=\s*CAST\(:vis_org"
+    r"[^()]*\)[^()]*\)\s*OR EXISTS \(SELECT 1 FROM pm_task_assignees a\s+WHERE"
+    r"\s+a\.task_id\s*=\s*\w+\.id\s+AND\s+lower\(a\.assignee\)\s*=\s*:vis_email",
+    re.I,
+)
 #: The column that subquery restricts: ``t.root_project_id IN ( SELECT id FROM…``
 _IN_TENANT_SUBQUERY = re.compile(
     r"(?:\w+\.)?(\w+)\s+IN\s*\(\s*SELECT id FROM pm_projects WHERE organization_id",
@@ -2165,7 +2174,18 @@ class FakeProjectsDB:
             column_match = _IN_TENANT_SUBQUERY.search(where)
             column = column_match.group(1) if column_match else "id"
             tenant = self.tenant_project_ids(args.get("vis_org"))
-            rows = [r for r in rows if str(r.get(column)) in tenant]
+            # H-304: the assignee arm, ORed onto the set. A second copy of the
+            # set is the agent's narrowing (`core._narrow_for_agent`), an AND
+            # over both arms, so it still binds the assignee arm.
+            escape = bool(_TENANT_OR_ASSIGNEE.search(where))
+            narrowed = len(_TENANT_PROJECTS.findall(where)) > 1
+            me = str(args.get("vis_email") or "").lower()
+            rows = [
+                r for r in rows
+                if str(r.get(column)) in tenant
+                or (escape and not narrowed
+                    and me in self._assignees_of(r.get("id")))
+            ]
 
         # The grant closure — applied ONLY when the statement actually carries
         # the subquery. A route that loses its visibility clause therefore stops

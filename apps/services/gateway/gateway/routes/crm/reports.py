@@ -75,6 +75,7 @@ from gateway.routes.crm.core import (
     StatusModel,
     _tenant_session,
     now,
+    read_statuses,
     router,
     status_wire,
     wire,
@@ -226,9 +227,8 @@ class _Totals:
 
 async def _deal_stages(db: Any) -> list[Any]:
     """The deal lanes in board order — the vocabulary every block joins to."""
-    return (await db.execute(
-        text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
-    )).fetchall()
+    # CRM-C3: the effective values, so `stage_probability` binds the overlay.
+    return await read_statuses(db, "crm_deal_statuses")
 
 
 async def _lane_totals(

@@ -8,6 +8,7 @@ import {
   bindIdentity,
   cacheKey,
   clearAll,
+  guardedPut,
   identity,
   invalidate,
   isFresh,
@@ -277,6 +278,94 @@ describe("🔴 a write that lands while a re-read is in flight (NS-3 review)", (
     await expect(pending).resolves.toMatch(/^answer-/);
     expect(calls).toBe(4);
     expect(peek(key)).toBeUndefined();
+  });
+});
+
+describe("guardedPut — a value that another key's read carried (MD-1b)", () => {
+  /**
+   * My Day's feed answer carries the needs view, and its fetcher stores it
+   * under the needs key. A Done that lands while the feed read is in flight
+   * drops the Projects family. The feed's answer then predates the Done, and
+   * so does the needs view in it. It must not replace the needs entry.
+   *
+   * Mutation, run by hand (2026-10-13): make the returned put call `put`
+   * with no check, and the first, third and fourth tests fail.
+   */
+  const FEED = cacheKey("projects/shell/feed", { limit: 40 });
+  const NEEDS = cacheKey("projects/shell/needs", { limit: 30 });
+
+  /** A feed fetcher whose FIRST request waits for `release`. */
+  function feedFetcher() {
+    let release: (v: string) => void = () => {};
+    const stored: boolean[] = [];
+    let calls = 0;
+    const fetcher = () => {
+      calls += 1;
+      const putNeeds = guardedPut<string>(FEED, NEEDS);
+      if (calls > 1) {
+        stored.push(putNeeds("needs-after"));
+        return Promise.resolve("feed-after");
+      }
+      return new Promise<string>((res) => {
+        release = (v) => {
+          stored.push(putNeeds(`needs-of-${v}`));
+          res(v);
+        };
+      });
+    };
+    return { fetcher, stored, release: (v: string) => release(v) };
+  }
+
+  it("stores nothing when a write lands during the carrier's read", async () => {
+    const feed = feedFetcher();
+    const pending = read(FEED, feed.fetcher);
+    invalidate("projects/"); // a Done, while the feed read is in flight
+    feed.release("before-done");
+    await expect(pending).resolves.toBe("feed-after");
+    // The answer from before the Done stored nothing. The read asked again,
+    // and that answer, from after the Done, stored its needs view.
+    expect(feed.stored).toEqual([false, true]);
+    expect(peek(NEEDS)?.data).toBe("needs-after");
+  });
+
+  it("stores the carried value when no write lands, and wakes its watchers", async () => {
+    let woke = 0;
+    const off = subscribe(NEEDS, () => {
+      woke += 1;
+    });
+    await read(FEED, async () => {
+      const putNeeds = guardedPut<string>(FEED, NEEDS);
+      await Promise.resolve();
+      expect(putNeeds("needs-view")).toBe(true);
+      return "feed";
+    });
+    off();
+    expect(peek(NEEDS)?.data).toBe("needs-view");
+    expect(woke).toBe(1);
+  });
+
+  it("never replaces an answer newer than its own request", async () => {
+    let t = 1_000;
+    setClock(() => t);
+    await read(FEED, async () => {
+      const putNeeds = guardedPut<string>(FEED, NEEDS);
+      t += 10;
+      put(NEEDS, "newer-needs"); // the needs read landed first
+      t += 10;
+      expect(putNeeds("older-needs")).toBe(false);
+      return "feed";
+    });
+    expect(peek(NEEDS)?.data).toBe("newer-needs");
+  });
+
+  it("stores nothing from before a clearAll (a change of member)", async () => {
+    const feed = feedFetcher();
+    const pending = read(FEED, feed.fetcher);
+    clearAll();
+    feed.release("member-a");
+    await pending;
+    expect(feed.stored[0]).toBe(false);
+    expect(peek(NEEDS)?.data).not.toBe("needs-of-member-a");
   });
 });
 

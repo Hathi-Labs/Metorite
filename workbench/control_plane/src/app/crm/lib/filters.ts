@@ -9,6 +9,7 @@
 // because a shared list component is what would send it. So the chips a list
 // offers are derived from the entity, and the query is built from the chips.
 
+import { pickable } from "./emptyStages";
 import { RANGE_KEYS, type CrmView } from "./urlState";
 import type { EntitySlug, Status } from "./types";
 
@@ -188,7 +189,9 @@ export function chipsFor(
 ): Chip[] {
   if (!hasPipeline(entity)) return [];
   const chips: Chip[] = [{ id: "all", label: "All" }];
-  for (const status of [...statuses].sort((a, b) => a.position - b.position)) {
+  // CRM-C3: a hidden stage has no chip, unless the view is filtered to it.
+  const sorted = [...statuses].sort((a, b) => a.position - b.position);
+  for (const status of pickable(sorted, view.statusId)) {
     chips.push({ id: status.id, label: status.name });
   }
   if (entity === "leads") {

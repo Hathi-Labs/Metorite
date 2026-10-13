@@ -60,7 +60,7 @@ const STAGE_LABELS: Record<string, string> = {
   draft: "Writing draft",
 };
 
-/** "agent-sales-assistant" → "sales assistant" */
+/** "agent-task-manager" → "task manager" */
 export function prettyAgent(agent: string): string {
   return agent.replace(/^agent-/, "").replace(/-/g, " ");
 }

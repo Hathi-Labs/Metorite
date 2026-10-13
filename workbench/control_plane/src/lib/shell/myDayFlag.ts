@@ -32,3 +32,30 @@ export function myDayOn(): boolean {
 export function myDayOnServer(): boolean {
   return process.env.NEXT_PUBLIC_MY_DAY === "1";
 }
+
+/**
+ * Whether My Day draws the live feed (`my_day_feed.md` §14.1, MD-1b). The
+ * feed lives inside My Day, so it needs `NEXT_PUBLIC_MY_DAY` too. Off, My
+ * Day is the page of NS-3, unchanged.
+ *
+ * Turning it on in production is owner-only (`my_day_feed.md` §17.1). The
+ * dev-phase window does not open it.
+ */
+export function myDayFeedOn(): boolean {
+  // The literal member expression, the one form Next inlines (publicFlags.test.ts).
+  if (process.env.NEXT_PUBLIC_MY_DAY_FEED === "1") return true;
+  // ⚠️ Development and test builds ONLY: `localStorage["cc-my-day-feed"] = "1"`.
+  if (process.env.NODE_ENV !== "production") {
+    try {
+      return typeof localStorage !== "undefined" && localStorage.getItem("cc-my-day-feed") === "1";
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** The feed flag as the SERVER render sees it: the build-time value only. */
+export function myDayFeedOnServer(): boolean {
+  return process.env.NEXT_PUBLIC_MY_DAY_FEED === "1";
+}

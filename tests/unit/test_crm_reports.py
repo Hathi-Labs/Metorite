@@ -179,9 +179,13 @@ def test_the_parity_fixture_exists_and_is_the_shape_both_runners_read() -> None:
     for row in rows:
         assert set(row) == {
             "name", "amount", "deal_probability", "stage_probability",
-            "stage_type", "expected_weighted",
+            "ui_probability", "stage_type", "expected_weighted",
         }
         assert row["stage_type"] in crm_core.STATUS_TYPES
+    # CRM-C3 (§20.6 item 11): the two kinds of overlay case are present.
+    overlaid = [r for r in rows if r["ui_probability"] is not None]
+    assert any(r["deal_probability"] is None for r in overlaid)
+    assert any(r["deal_probability"] is not None for r in overlaid)
 
 
 @pytest.mark.asyncio
@@ -196,11 +200,15 @@ async def test_weighted_parity_against_the_emitted_sql(
     ``_lane_totals``, which is where the open/ongoing filter is applied, so a
     won/lost/on_hold row asserts the exclusion rather than skipping.
     """
-    lane = stage(
+    seeded = stage(
         db, "Fixture lane", 10,
         kind=row["stage_type"], probability=row["stage_probability"],
     )
-    deal(db, lane, amount=row["amount"], probability=row["deal_probability"])
+    db.rows("crm_deal_statuses")[-1]["ui_probability"] = row["ui_probability"]
+    deal(db, seeded, amount=row["amount"], probability=row["deal_probability"])
+    # CRM-C3: the lane comes through the one effective SELECT list, as in
+    # `reports._deal_stages`, so the overlay reaches `:stage_probability`.
+    (lane,) = await crm_core.read_statuses(db, "crm_deal_statuses")
 
     totals = await crm_reports._lane_totals(db, lane)
 

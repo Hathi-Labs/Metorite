@@ -1,6 +1,6 @@
 # Task references — links, pull requests, commits, pasted images and `#123` pills
 
-**Status:** 🟡 IN PROGRESS. TR-1, TR-2 and TR-3 are BUILT on 2026-10-13 (branch `task-links`, migration 255). TR-4 is BUILT on branch `task-paste`. TR-5 is not built. Proposed 2026-10-13, owner directive. Verified against code on 2026-10-13 at `origin/main` 68e26cad.
+**Status:** ✅ BUILT. TR-1, TR-2 and TR-3 are live since 2026-10-13 (PR #956, migration 255 applied in production). TR-4 is live since 2026-10-13 (PR #955). TR-5 is built on branch `task-pills-v2`, with no migration, and ships in its own PR. Proposed 2026-10-13, owner directive. Verified against code on 2026-10-13 at `origin/main` 68e26cad.
 
 **Board row:** WS-57 (`work_plan.md` §2).
 
@@ -44,7 +44,7 @@ The owner asked for five things on 2026-10-13:
 | The org's GitHub token | `gateway/connections/github.py` `token_or_none` | TR-1 reads a PR's title and state |
 | The pill | `components/ui/EntityPill.tsx` | TR-2 and TR-5 draw with it |
 | The MCP write tool | `external_agent_access.md` EA-6 | `add_task_reference` calls the TR-1 route. EA-6 builds no table and no UI |
-| `#123` parsing | `src/lib/taskRefs.ts` (`findTaskRefs`, `splitTaskRefs`) and the pill `TaskPill` in `components/ChatTaskRef.tsx`, built by the chat session on branch `task-ref-autolink` (not merged on 2026-10-13) | TR-5 imports them. No second parser |
+| `#123` parsing | `src/lib/taskRefs.ts` (`findTaskRefs`, `splitTaskRefs`, `TaskPill`, `TaskRefPill`), merged with #944. `components/ChatTaskRef.tsx` is the chat's wiring | TR-5 imports them. The gateway's copy of the finder is held to it by one case file |
 | Markdown | `MarkdownBody` in `components/MarkdownMessage.tsx`, which draws an image through `MarkdownImage` and `lib/markdownMedia.ts` | TR-4 renders the description |
 | Activity | `pm_activities`, column `type`, value `link` (CHECK in `210_projects_task_merge.sql`, `ACTIVITY_TYPES` in `routes/projects/core.py`) | Each add or remove writes one row |
 
@@ -114,6 +114,20 @@ The owner asked for five things on 2026-10-13:
 - **One grammar, two languages.** The gateway's `#N` finder is Python, and the client's is `findTaskRefs`. One JSON file of cases, `tests/fixtures/task_ref_cases.json`, drives both tests, so the two cannot drift.
 - **Projects.** A project pill links nothing. A task belongs to one project already, so a task-to-project link adds little. A project pill opens the project.
 - **Done when:** `#12` in a description draws as a pill with the task's title, and the task shows "relates to #12". `#9999` that names no task stays text. The shared case file passes in vitest and in pytest.
+- **Built 2026-10-13** (branch `task-pills`, no migration). Review round 1 changed four rules. These are the rules as built:
+  - **The task's own root, and nothing else.** `GET /projects/search/refs` takes an optional `root`. With it, the read answers from that root only. A number that root cannot resolve stays text and links nothing. There is no fallback to another root. A root never gives a number out again, so a #12 that moved roots, was deleted or is hidden leaves a hole for good. A fallback would fill that hole with the wrong task, and write a lasting link. The card sends its task's root (`taskRefResolverFor`). The chat sends none, so its answer does not change. A `root` that is not a uuid answers no rows.
+  - **One read for the pill and the link.** `search.lookup_task_refs` serves the route and the save path. A number with two candidates gives no pill and no link.
+  - **Only what is new in this edit.** A number or a URL links only when the field's old value did not hold it. A PATCH compares each field with its old value, and a comment edit with the old body. A new task, a new comment and a new step have no old value. So a link that a member removed stays removed, until somebody types the `#N` again.
+  - **The card.** `MarkdownBody` with `taskRefs` alone runs the plugin in a `names: false` mode. Only the `#123`s change. A «mark», an email and a bullet stay as written. `markdownChatGolden.test.ts` holds the chat's output byte for byte. The title draws its words in a span and keeps the edit on a pencil button, because a link may not sit inside a button. A link to `/projects?project=<id>` draws as the project pill (`ProjectLinkPill.tsx`). The My Tasks title reads its task's root (`MyTask.rootProjectId`), as the body below it does.
+  - **One Markdown layer.** `prose_of` in the gateway follows what the card draws as words. It skips a code block: a fence at any indent, or an indented block past the list's content indent. It also skips a code span (also across a line), a reference definition and a link's words. The card draws no pill for `\#12`, `&#35;12` or `_#12_`, because the finder refuses them in the source. The `markdown_cases` of `tests/fixtures/task_ref_cases.json` hold the two sides together. Where they cannot agree, the rule is no pill and no link.
+  - **The text path.** `routes/projects/text_links.py` runs after the save commits, in its own transaction. A database failure logs `projects.text_links.failed` and the save stands. Any other exception raises, because it is a defect.
+  - **The caps.** At most 20 numbers and 20 URLs for each task, and at most 25 tasks in one save. A larger bulk edit links nothing and logs one `projects.text_links.capped` line. This was chosen over set-based inserts because a bulk edit of text across many tasks is rare, and the budget keeps the awaited work short.
+  - **Which URLs.** A GitHub pull request, issue, commit, branch or comment, and a document (Google, Figma, Notion). A plain link and a GitLab or Bitbucket link stay text. A URL in code adds nothing.
+  - **No second link.** A pair with a link of any type, in either direction, gets no `relates_to`. A reference is idempotent through its unique key.
+  - **The write paths.** `POST /tasks`, `PATCH /tasks/{id}`, `POST /tasks/{id}/comments`, `PATCH /comments/{id}`, `POST /tasks/bulk`, `POST /my/tasks`, `POST /my/tasks/batch`, `POST /my/tasks/{id}/subtasks` and the steps of `POST /my/tasks/{id}/organize`. The chat tools and the MCP tools reach the same routes. `test_task_refs_text_links.py::HOOKED` names them.
+  - **Not hooked, on purpose.** The import writer, because a number there names the source system's task. Recurrence and merge, because they copy text that was read already. A revert, a workflow automation, intake, and the email or WhatsApp capture (`item_lens.insert_capture`), because no member typed the text.
+  - **One copy of each insert.** `refs.insert_ref` and `relations.insert_task_link` serve the routes and the text path. Each writes the `link` activity its route writes.
+  - Fences: `test_task_refs_text_links.py` (R8 on a private database) and `taskRefs.test.ts`, both over `tests/fixtures/task_ref_cases.json`.
 
 ## 7. Verification commands
 
@@ -141,3 +155,5 @@ R8: run the route test against a private database (`bash scripts/dev_db.sh`), ne
 - 2026-10-13 — Written. Research of Plane, Linear and OpenProject in §2. The table follows `external_agent_access.md` §11, with `issue`, `comment` and `doc` added, and `fetched_at` and `via` as columns.
 - 2026-10-13 — The spec audit (GO-NARROWED) changed six things. The activity table is `pm_activities`. EA-6 keeps only the MCP tool. TR-1 states the disclosure rule and reads GitHub outside the transaction. The chat tools are `add_task_ref` and `remove_task_ref`, with a named test. TR-4 adds one safe image path. TR-5 names the real exports.
 - 2026-10-13 — TR-1 and TR-3 built. Migration 255 holds the table. The status header, §6 and the WS-57 row say so.
+- 2026-10-13 — TR-5 built on branch `task-pills`. §4 names the merged exports. §6 TR-5 records the root rule, the caps and the write paths.
+- 2026-10-13 — TR-5 review round 1. A root resolves a number alone, with no fallback. Only a number that is new in the edit links. The two Markdown layers share one case file. One save links at most 25 tasks. The My Tasks title and the organize steps join.

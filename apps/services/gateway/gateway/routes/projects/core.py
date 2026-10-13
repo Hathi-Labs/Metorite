@@ -1220,9 +1220,14 @@ class Visibility:
     @property
     def params(self) -> dict[str, Any]:
         # `vis_org` is bound even when unrestricted, because the unrestricted
-        # clause is no longer `TRUE` — it is the tenant.
+        # clause is no longer `TRUE` — it is the tenant. `vis_email` is bound
+        # too, because the unrestricted task clause has the assignee arm
+        # (H-304): the D63 hand-over reaches an admin who is the assignee.
         if self.unrestricted:
-            params: dict[str, Any] = {"vis_org": self.organization_id}
+            params: dict[str, Any] = {
+                "vis_email": self.email,
+                "vis_org": self.organization_id,
+            }
         else:
             params = {
                 "vis_email": self.email,
@@ -1280,8 +1285,9 @@ async def resolve_visibility(db: Any, user: UserContext) -> Visibility:
     # person and never does.
     agent = getattr(user, "agent", None)
     if user is not None and user.has_permission(ORG_READ):
+        # The email rides along for the task clause's assignee arm (H-304).
         return Visibility(
-            unrestricted=True, email="", groups=(),
+            unrestricted=True, email=email, groups=(),
             organization_id=organization_id, agent=agent,
         )
     rows = (await db.execute(text(_MY_GROUPS_SQL), {"email": email})).fetchall()
@@ -1353,7 +1359,7 @@ async def resolve_visibility_for(db: Any, email: str) -> Visibility:
     # matching, one implementation.
     if access.has(ORG_READ):
         return Visibility(
-            unrestricted=True, email="", groups=(),
+            unrestricted=True, email=clean, groups=(),
             organization_id=organization_id,
         )
     group_rows = (await db.execute(
@@ -1663,18 +1669,21 @@ def task_visibility_clause(vis: Visibility, alias: str = "t") -> str:
     separately.
     """
     tenant = f"{alias}.organization_id = CAST(:vis_org AS uuid)"
-    if vis.unrestricted:
-        # `data:org:read` is the whole portfolio OF ONE ORGANIZATION. This
-        # answered the literal `TRUE` before WS-29b.
-        clause = tenant
-    else:
-        clause = (
-            f"({tenant}"
-            f" AND ({alias}.project_id IN ({_VISIBLE_PROJECTS_SQL})"
-            f"      OR EXISTS (SELECT 1 FROM pm_task_assignees a"
-            f"                 WHERE a.task_id = {alias}.id"
-            f"                   AND lower(a.assignee) = :vis_email)))"
-        )
+    # `data:org:read` is the whole portfolio OF ONE ORGANIZATION (WS-29b), and
+    # it has the SAME two arms as everybody else (H-304, D63). The grant arm is
+    # `_TENANT_PROJECTS_SQL`, the set `project_clause` already gives this
+    # caller, so it leaves out a departed member's closed tree. The assignee
+    # arm is the hand-over: a task in that tree that was assigned to the
+    # reader stays visible to the reader. Until H-304 this branch was the
+    # tenant alone, so an admin read the whole closed tree.
+    projects = _TENANT_PROJECTS_SQL if vis.unrestricted else _VISIBLE_PROJECTS_SQL
+    clause = (
+        f"({tenant}"
+        f" AND ({alias}.project_id IN ({projects})"
+        f"      OR EXISTS (SELECT 1 FROM pm_task_assignees a"
+        f"                 WHERE a.task_id = {alias}.id"
+        f"                   AND lower(a.assignee) = :vis_email)))"
+    )
     # WS-55 EA-3a: ONE `AND` over both arms, so the assignee arm is narrowed
     # by the agent's pins, its personal opt-out and the seal too (§7.3).
     # Strict `vis.agent` on purpose: a Visibility-like stand-in without the

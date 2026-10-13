@@ -16,7 +16,11 @@ import { fileURLToPath } from "node:url";
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+
+import { createTaskRefResolver } from "@/lib/taskRefs";
 
 import { EditableTaskTitle, TaskHeaderRow, titleKeyDown, titleToSave } from "./TaskPanelHeader";
 
@@ -125,6 +129,25 @@ describe("the title", () => {
     expect(html).toMatch(/^<h2[^>]*><button[^>]*title="Click to edit"[^>]*><span[^>]*>Ship it<\/span>/);
   });
 
+  it("draws a #123 as the task pill, and keeps no link inside a button (WS-57 TR-5)", async () => {
+    const resolver = createTaskRefResolver(async () => [
+      { id: "aaaaaaaa-0000-4000-8000-000000000012", task_number: 12, title: "Twelve", status_name: "To do", category: "todo" },
+    ]);
+    resolver.request("", 12);
+    resolver.request("", 9999);
+    await resolver.flush();
+    const html = renderToStaticMarkup(
+      createElement(EditableTaskTitle, { value: "Ship #12, not #9999", onSave: () => {}, refResolver: resolver }),
+    );
+    expect(html).toMatch(/^<h2/);
+    expect(html).toContain('href="/projects?task=aaaaaaaa-0000-4000-8000-000000000012"');
+    expect(html).toContain("Twelve");
+    expect(html).toContain("not #9999");
+    // A link may not sit inside a button: the pencil is its own Button.
+    expect(html).not.toMatch(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*<a\b/);
+    expect(html).toMatch(/<button\b[^>]*aria-label="Edit title"[^>]*class="[^"]*cc-control/);
+  });
+
   it("saves the trimmed text, and nothing for an empty or unchanged one", () => {
     expect(titleToSave("  New name  ", "Old")).toBe("New name");
     expect(titleToSave("   ", "Old")).toBeNull();
@@ -167,7 +190,10 @@ describe("both apps render it", () => {
   it("Projects' title is editable, through the board's own rename write", () => {
     const src = code(read("app/projects/components/TaskPanel.tsx"));
     expect(src).toMatch(/<TaskHeaderRow\b/);
-    expect(src).toMatch(/<EditableTaskTitle value=\{task\.title\} onSave=\{\(t\) => void rename\(t\)\} \/>/);
+    // WS-57 TR-5: the title's `#123` pills read the task's root store.
+    expect(src).toMatch(
+      /<EditableTaskTitle value=\{task\.title\} onSave=\{\(t\) => void rename\(t\)\}\s+refResolver=\{taskRefResolverFor\(task\.root_project_id\)\} \/>/,
+    );
     // The existing task-update path, and no new endpoint.
     expect(src).toMatch(/onChanged\(await projectsApi\.patchTask\(task\.id, \{ title \}\)\);/);
     // The old read-only title.

@@ -29,6 +29,7 @@
 
 import type React from "react";
 
+import { accentForHue } from "@/lib/statusAccent";
 import type { ParentFact } from "@/lib/taskCard";
 
 import { ParentCrumb } from "./TaskMeta";
@@ -39,6 +40,7 @@ export function TaskCardShell({
   atCursor = false,
   draggable = false,
   completed = false,
+  overdue = false,
   className = "",
   innerRef,
   onActivate,
@@ -56,6 +58,13 @@ export function TaskCardShell({
   draggable?: boolean;
   /** Drawn quieter: a finished task is context, not work. */
   completed?: boolean;
+  /**
+   * A red left edge: the next step is late (WS-53 CRM-X3). The CRM card asks
+   * for it, and CRM-C2 moved that card onto this shell. The hue comes from
+   * `statusAccent`, and the hover keeps the edge red, because the hover
+   * border recolours all four sides.
+   */
+  overdue?: boolean;
   className?: string;
   innerRef?: (element: HTMLDivElement | null) => void;
   /**
@@ -108,6 +117,8 @@ export function TaskCardShell({
         // and "what did I pick" become the same signal.
         atCursor ? "ring-2 ring-ring" : "",
         completed ? "opacity-70" : "",
+        // Literal classes, because Tailwind cannot see a built one.
+        overdue ? `border-l-2 ${accentForHue("red").bar} hover:border-l-destructive` : "",
         className,
       ].join(" ")}
     >

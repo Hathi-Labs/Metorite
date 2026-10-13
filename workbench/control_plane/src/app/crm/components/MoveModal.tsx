@@ -25,6 +25,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import { pickable } from "../lib/emptyStages";
 import { firstField } from "../lib/focus";
 import { useRef, useState } from "react";
 import {
@@ -57,7 +58,10 @@ export default function MoveModal({
   onCancel: () => void;
   onConfirm: (payload: MovePayload) => void;
 }) {
-  const [reasonId, setReasonId] = useState<string>(reasons[0]?.id ?? "");
+  // CRM-C3: a hidden reason is never offered. The dialog opens only for a
+  // deal with no reason, so no hidden reason is a current value here.
+  const offered = pickable(reasons);
+  const [reasonId, setReasonId] = useState<string>(offered[0]?.id ?? "");
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [note, setNote] = useState("");
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -115,7 +119,7 @@ export default function MoveModal({
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {needsReason && (
           <section className="space-y-2">
-            {reasons.length === 0 ? (
+            {offered.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No lost reasons are configured. Add one in Pipeline settings
                 before closing deals as lost — the gateway will refuse the
@@ -123,7 +127,7 @@ export default function MoveModal({
               </p>
             ) : (
               <div className="space-y-1">
-                {[...reasons]
+                {[...offered]
                   .sort((a, b) => a.position - b.position)
                   .map((reason) => (
                     <button

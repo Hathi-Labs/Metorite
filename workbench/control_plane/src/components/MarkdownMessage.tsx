@@ -29,7 +29,9 @@ import { stripDsmlMarkup } from "@/lib/dsmlMarkup";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { isInAppPath } from "@/components/ui/EntityPill";
 import { announceInAppLink, externalHost } from "@/lib/inAppLink";
-import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
+import { buildEntityIndex, projectIdOfHref, type EntityIndex } from "@/lib/entityIndex";
+import ProjectLinkPill from "@/components/ProjectLinkPill";
+import type { TaskRefResolver } from "@/lib/taskRefs";
 import remarkEntityPills, {
   PILL_ATTR,
   PILL_GROUP_CLASS,
@@ -331,8 +333,16 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 //
 // `taskRefs` (owner report, 2026-10-13) turns each bare `#171` into the task
 // pill, when one task the member can see has that number (`ChatTaskRef.tsx`).
-// It is on with `entityPills` unless the caller says otherwise, and it needs
-// `entityPills` or `fences`, because only then does the plugin run.
+// It is on with `entityPills` unless the caller says otherwise. With
+// `entityPills` or `fences` it rides their plugin. `taskRefs={true}` with
+// neither (WS-57 TR-5, the task card) runs the plugin in its `names: false`
+// mode: only the `#171`s change, and no «mark», email or bullet does. The chat
+// always passes `fences`, so its output is the one it was before TR-5
+// (fence: `markdownChatGolden.test.ts`). `taskRefResolver` is the store the
+// pills read: the card passes its task's root store (`taskRefResolverFor`).
+//
+// `projectPills` (WS-57 TR-5) draws a link to `/projects?project=<id>` as the
+// project pill, which opens the project. It adds no link to the task.
 //
 // `inline` draws ONE line of agent text, for a generative-UI field (a list
 // item, a callout, a table cell). Only inline Markdown survives: bold,
@@ -362,6 +372,8 @@ export function MarkdownBody({
   inline = false,
   caret = false,
   plainEmails = false,
+  taskRefResolver,
+  projectPills = false,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -378,12 +390,20 @@ export function MarkdownBody({
   caret?: boolean;
   /** Draw a `mailto:` link as plain text. Off everywhere but the task card. */
   plainEmails?: boolean;
+  /** The store the `#171` pills read. Absent: the app's store. */
+  taskRefResolver?: TaskRefResolver;
+  /** Draw a link to a project as the project pill. Off everywhere but the
+   *  task card. */
+  projectPills?: boolean;
 }) {
   // DeepSeek's DSML tool-call text never shows (owner report, 2026-10-11).
   // The Router turns it into real tool calls. This catches a message stored
   // before that fix, and a box that serves without the Router.
   const visible = stripDsmlMarkup(content);
-  const refs = (taskRefs ?? entityPills) && (entityPills || fences);
+  const named = entityPills || fences;
+  const refs = (taskRefs ?? entityPills) && named;
+  // The task card's mode: the `#171`s and nothing else (WS-57 TR-5).
+  const refsOnly = taskRefs === true && !named;
   // While the answer streams, a number may be half typed: no lookup yet.
   const live = !caret;
   return (
@@ -393,7 +413,9 @@ export function MarkdownBody({
           ? [remarkGfm, [remarkEntityPills, { taskRefs: refs }]]
           : fences
             ? [remarkGfm, [remarkEntityPills, { emails: false, taskRefs: refs }]]
-            : [remarkGfm]
+            : refsOnly
+              ? [remarkGfm, [remarkEntityPills, { names: false, emails: false, taskRefs: true }]]
+              : [remarkGfm]
       }
       rehypePlugins={caret ? [rehypeStreamCaret] : []}
       urlTransform={markdownUrlTransform}
@@ -405,11 +427,11 @@ export function MarkdownBody({
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         span: ({ node: _node, children, ...rest }) => {
           const attrs = rest as Record<string, unknown>;
-          if (refs && typeof attrs[TASK_REF_ATTR] === "string") {
+          if ((refs || refsOnly) && typeof attrs[TASK_REF_ATTR] === "string") {
             return (
               <ChatTaskRef refText={attrs[TASK_REF_ATTR] as string}
                 after={String(attrs[TASK_REF_AFTER_ATTR] ?? "")} index={entityIndex}
-                scope={sessionId} live={live} />
+                scope={sessionId} live={live} resolver={taskRefResolver} />
             );
           }
           if ((entityPills || fences) && attrs[PILL_ATTR] !== undefined) {
@@ -486,12 +508,14 @@ export function MarkdownBody({
         ),
 
         // ── Links ──
-        a: ({ href, children }) =>
-          plainEmails && typeof href === "string" && /^mailto:/i.test(href) ? (
-            <>{children}</>
-          ) : (
-            <MarkdownLink href={href}>{children}</MarkdownLink>
-          ),
+        a: ({ href, children }) => {
+          if (plainEmails && typeof href === "string" && /^mailto:/i.test(href)) {
+            return <>{children}</>;
+          }
+          const project = projectPills ? projectIdOfHref(href) : null;
+          if (project) return <ProjectLinkPill id={project} text={nodeText(children)} href={href} />;
+          return <MarkdownLink href={href}>{children}</MarkdownLink>;
+        },
 
         // ── Blockquote ──
         blockquote: ({ children }) => (
