@@ -2818,6 +2818,9 @@ from a measurement at `be8a5db7e`, which holds C3.
 
 ### 20.4 CRM-C1: Settings sections
 
+**Status.** 🔨 Built 2026-10-13 on branch `crm-c1`. No migration and no
+flag. See "Built as" at the end of this section.
+
 **Gate.** AGENT-SAFE. Frontend only. No migration and no flag, because the
 same cards show in a new place.
 
@@ -2956,6 +2959,33 @@ a measurement at `be8a5db7e`, which holds C3.
 ```bash
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm src/lib/railRows.test.ts
 ```
+
+**Built as (2026-10-13, branch `crm-c1`).**
+
+- `app/crm/lib/settingsSections.ts` holds the table of item 2. It also
+  holds `visibleSections`, `defaultSection`, `shownSection` and
+  `sectionRedirect`. It imports only a type from `connect.ts`, because
+  `urlState.ts` imports it to parse `?section=`.
+- `urlState.ts` adds `section` to `CrmView` as an optional field, and the
+  new `selectSection(view, id)`. That function opens the settings tab and
+  keeps an open record.
+- `CrmRail.tsx` exports `SettingsSectionRows`. It has no hook, so the test
+  reads its element tree. The page passes `settings={railSettings}` at both
+  rail call sites.
+- The redirect effect waits for the access read. Without that wait, an
+  admin's link could open a member's default while the access loads.
+- `SetupLink` is an `<a>` with `href={SETUP_HREF}`. A plain left click
+  calls `pushView`, and a click with a modifier key stays the browser's. So
+  the `href` check at `crmX0.test.ts:239` did not change.
+- The `next/link` fence in `history.test.ts` skips its own file, because its
+  fixtures name `next/link`.
+- page.tsx also changes its import lines. §20.3 does not name them, and
+  the named hunks need them.
+- Fences: `components/crmC1.test.ts` (23 tests) and the new `next/link`
+  test in `lib/history.test.ts`. Eleven mutations each turned a fence red.
+- Not done: the `visual-review` check of done-when 11. The dev stack was not
+  started. A static render shows that each child row has the markup of a
+  saved-view row, with token classes only.
 
 ### 20.5 CRM-C2: One board
 
