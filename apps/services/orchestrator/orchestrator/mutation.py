@@ -597,6 +597,8 @@ def _build_telemetry(
         instr_path = agent_path / "instructions.md"
         if instr_path.exists():
             instructions_md = instr_path.read_text(encoding="utf-8", errors="replace")[:4000]
+        else:
+            instructions_md = _agents_py_purpose(agent_path)
         skills_dir = agent_path / "skills"
         if skills_dir.is_dir():
             skill_lines: list[str] = []
@@ -651,6 +653,24 @@ def _build_telemetry(
         "skills_summary": skills_summary,
         "trigger_summary": trigger_summary,
     }
+
+
+def _agents_py_purpose(agent_path: Any) -> str:
+    """The module docstring of *agent_path*/``agents.py``, or ``""``.
+
+    The purpose context of an agent whose instructions live in code, not in
+    an ``instructions.md`` (the orchestrator, since 2026-10-14). It parses
+    the file and never imports it, so the sandbox prompt runs no agent code.
+    """
+    import ast
+    from pathlib import Path
+
+    path = Path(agent_path) / "agents.py"
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError, ValueError):
+        return ""
+    return (ast.get_docstring(tree) or "")[:4000]
 
 
 def _build_mutation_prompt(telemetry: dict[str, Any]) -> str:

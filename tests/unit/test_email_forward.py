@@ -795,5 +795,5 @@ class TestTheLinks:
         prompt = (REPO / "apps/services/orchestrator/orchestrator/agents.py").read_text(encoding="utf-8")
         assert "Keep each in-app link in the response verbatim" in prompt
         assert "Do not keep a link to another site" in prompt
-        instructions = (REPO / "apps/agents/agent-orchestrator/instructions.md").read_text(encoding="utf-8")
-        assert "/email?email=" in instructions
+        # The orchestrator's one source is agents.py (instructions.md is gone).
+        assert "/email?email=" in prompt

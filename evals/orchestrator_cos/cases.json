@@ -467,5 +467,123 @@
         ]
       ]
     }
+  },
+  {
+    "id": "C13",
+    "kind": "no_tool_names",
+    "ask": "How did you get the pipeline number you gave me?",
+    "history": [
+      {
+        "role": "user",
+        "content": "What is our open pipeline?"
+      },
+      {
+        "role": "assistant",
+        "content": "18 open deals worth Rs 2.4 crore."
+      }
+    ],
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "crm-assistant",
+          "message": "Explain how the open pipeline total of 18 deals and Rs 2.4 crore was computed"
+        },
+        "result": "The total comes from the CRM mirror of Zoho, refreshed at 06:00 today. It counts every deal not in Won or Lost: 18 deals. The value is the sum of the deal amounts, Rs 2.4 crore. Deals with no amount (2) count in the 18 but add nothing to the value."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "lead_any": [
+        "CRM",
+        "Zoho",
+        "18",
+        "sum",
+        "counts"
+      ],
+      "must_mention": [
+        [
+          "Won",
+          "Lost",
+          "open"
+        ],
+        [
+          "no amount",
+          "2 deals",
+          "two deals"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C14",
+    "kind": "no_guillemets",
+    "ask": "Which tasks did Priya finish this week?",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "projects-assistant",
+          "message": "Tasks Priya Raman completed this week"
+        },
+        "result": "Priya Raman completed 3 tasks this week: #5 «Notification engine for projects» (done 12 Oct), #18 «Billing page copy» (done 9 Oct) and #22 «Fix CSV export in Safari» (done 8 Oct)."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "lead_any": [
+        "three",
+        "3",
+        "Priya"
+      ],
+      "must_mention": [
+        [
+          "Notification engine"
+        ],
+        [
+          "Billing page"
+        ],
+        [
+          "CSV export"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "C15",
+    "kind": "one_ask",
+    "ask": "Set up the Q4 board review.",
+    "reads": [
+      {
+        "tool": "call_agent",
+        "args": {
+          "agent_name": "task-manager",
+          "message": "Free slots for a 2-hour board review in the next two weeks, for the founder and the 4 board members"
+        },
+        "result": "Two 2-hour slots are free for all 5 people: Tuesday 20 Oct 15:00 to 17:00, and Thursday 22 Oct 10:00 to 12:00. The agenda and the deck owner are not set. The last board review ran in Board room 2."
+      }
+    ],
+    "checks": {
+      "routine": true,
+      "one_ask": true,
+      "lead_any": [
+        "Two",
+        "two",
+        "20 Oct",
+        "22 Oct",
+        "Tuesday",
+        "Thursday"
+      ],
+      "must_mention": [
+        [
+          "20 Oct",
+          "Tuesday"
+        ],
+        [
+          "22 Oct",
+          "Thursday"
+        ]
+      ]
+    }
   }
 ]

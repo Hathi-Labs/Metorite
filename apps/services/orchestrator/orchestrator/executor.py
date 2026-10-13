@@ -519,6 +519,63 @@ def _current_run_org() -> str | None:
         return None
 
 
+#: The organisation's display name, by org id, with the time it was read.
+#: Process-local, like ``_RUN_ORG``. A rename shows within the TTL.
+_ORG_NAME_CACHE: dict[str, tuple[float, str]] = {}
+_ORG_NAME_TTL_SECONDS = 600.0
+_ORG_NAME_CACHE_MAX = 1024
+
+
+def _read_org_display_name(org: str) -> str:
+    """``organization.display_name`` of *org*, or ``""``. One indexed read.
+
+    *org* is the run's tenant, from :func:`_current_run_org`, never from a
+    request. ``organization`` is the tenant registry and has no row policy,
+    so the read works with or without the tenant bind. It never raises.
+    """
+    opener = _opener_for_org(org)
+    if opener is None:
+        return ""
+    try:
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with opener() as session:
+            row = session.execute(
+                text("SELECT display_name FROM organization WHERE id = CAST(:id AS uuid)"),
+                {"id": org},
+            ).first()
+    except Exception:  # noqa: BLE001
+        return ""
+    return str(row[0] or "").strip() if row else ""
+
+
+def _run_org_display_name() -> str:
+    """The display name of the run's organisation, or ``""`` when unknown.
+
+    The run's tenant comes from :func:`_current_run_org`, on this frame and
+    from the run boundary (R5). The name is cached per org for
+    ``_ORG_NAME_TTL_SECONDS``, so a turn pays at most one read. It goes into
+    the per-turn context (:func:`_context_preamble_parts`), after the cache
+    break, so the static prompt of every agent names no tenant
+    (``tests/unit/test_orchestrator_one_source.py``).
+    """
+    import time  # noqa: PLC0415
+
+    org = _current_run_org()
+    if not org:
+        return ""
+    now = time.monotonic()
+    hit = _ORG_NAME_CACHE.get(org)
+    if hit and now - hit[0] < _ORG_NAME_TTL_SECONDS:
+        return hit[1]
+    name = _read_org_display_name(org)
+    _ORG_NAME_CACHE.pop(org, None)
+    _ORG_NAME_CACHE[org] = (now, name)
+    while len(_ORG_NAME_CACHE) > _ORG_NAME_CACHE_MAX:
+        _ORG_NAME_CACHE.pop(next(iter(_ORG_NAME_CACHE)))
+    return name
+
+
 def _resolve_sub_agent_org() -> str | None:
     """The tenant a delegated sub-run must act in: its PARENT run's org.
 
@@ -7166,7 +7223,8 @@ def _context_preamble_parts(
 ) -> list[str]:
     """The per-turn context blocks, in the order the string prompt carries them.
 
-    The connected and missing integrations, then ``memory_context``, then
+    The run's organisation by name (:func:`_run_org_display_name`), the
+    connected and missing integrations, then ``memory_context``, then
     ``system_context`` (which carries the persona). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
@@ -7174,6 +7232,13 @@ def _context_preamble_parts(
     """
     integration_warnings: dict[str, str] = event_payload.get("integration_warnings", {})
     parts: list[str] = []
+
+    # The run's organisation, by name. From the run boundary, never from the
+    # payload (R5). The static prompts name no tenant, so this line is where
+    # an agent learns whose company it works for.
+    org_name = _run_org_display_name()
+    if org_name:
+        parts.append(f"Organisation: {org_name}.")
 
     # Integration availability context (mirrors old _build_initial_state system message)
     if integrations:

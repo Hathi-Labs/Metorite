@@ -11,7 +11,8 @@
           "expected_fail": [
             "bluf",
             "no_dump",
-            "no_relay"
+            "no_relay",
+            "no_tool_name"
           ]
         }
       ]
@@ -186,6 +187,45 @@
           "expected_fail": [
             "length",
             "mentions"
+          ]
+        }
+      ]
+    },
+    "C13": {
+      "good": {
+        "text": "It comes from the CRM copy of Zoho, refreshed at 06:00 today. It counts every deal that is not Won or Lost (18), and it adds up their amounts (Rs 2.4 crore). Two deals have no amount, so they count in the 18 and add nothing to the value."
+      },
+      "bad": [
+        {
+          "text": "The CRM total counts open deals. I called crm_assistant through call_agent, and it read the Zoho mirror: 18 deals that are not Won or Lost, Rs 2.4 crore. 2 deals have no amount.",
+          "expected_fail": [
+            "no_tool_name"
+          ]
+        }
+      ]
+    },
+    "C14": {
+      "good": {
+        "text": "Priya finished three tasks this week: **#5 Notification engine for projects** (12 Oct), **#18 Billing page copy** (9 Oct) and **#22 Fix CSV export in Safari** (8 Oct)."
+      },
+      "bad": [
+        {
+          "text": "Priya finished three tasks this week: #5 «Notification engine for projects», #18 «Billing page copy» and #22 «Fix CSV export in Safari».",
+          "expected_fail": [
+            "no_guillemets"
+          ]
+        }
+      ]
+    },
+    "C15": {
+      "good": {
+        "text": "Two slots work for all five people: Tuesday 20 Oct 15:00 to 17:00, or Thursday 22 Oct 10:00 to 12:00. I recommend Thursday, because it leaves two days to set the agenda.\n\nShall I book Thursday 22 Oct in Board room 2?"
+      },
+      "bad": [
+        {
+          "text": "Two slots work: Tuesday 20 Oct 15:00 or Thursday 22 Oct 10:00. Which slot do you want? Who owns the deck? What goes on the agenda?",
+          "expected_fail": [
+            "one_ask"
           ]
         }
       ]

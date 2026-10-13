@@ -17,10 +17,11 @@ from evals.orchestrator_cos import run
 
 def test_the_case_set_covers_each_kind_the_owner_named() -> None:
     cases = run.load_cases()
-    assert 8 <= len(cases) <= 12
+    assert 8 <= len(cases) <= 15
     assert len({c["id"] for c in cases}) == len(cases)
     kinds = {c["kind"] for c in cases}
-    for kind in ("status", "attention", "decision", "relay", "fact", "detail", "expand"):
+    for kind in ("status", "attention", "decision", "relay", "fact", "detail", "expand",
+                 "no_tool_names", "no_guillemets", "one_ask"):
         assert kind in kinds, kind
     # A fact stays short, and an explicit request for detail stays long.
     facts = [c for c in cases if c["kind"] == "fact"]
