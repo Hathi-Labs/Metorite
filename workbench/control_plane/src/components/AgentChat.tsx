@@ -2041,6 +2041,8 @@ export default function AgentChat({
                   participants={isRoom ? roomPeople : undefined}
                   // Entity pills for the Projects assistant only (S9).
                   entityPills={currentAgentName === PROJECTS_AGENT}
+                  // Bare `#171` task links, for the task agents (2026-10-13).
+                  taskRefAgent={currentAgentName}
                   onRetryMessage={prevUserMsg ? handleRetryMessage : undefined} />
                 {/* Mailbox switch — everything below this line is about a
                     different inbox, and the assistant's per-account
