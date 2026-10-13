@@ -102,6 +102,11 @@ def test_the_response_shape_and_order(fields_db: _FieldsDB) -> None:
         "key": "tier", "label": "Tier", "type": "select",
         "options": [{"label": "Gold", "value": "gold"}], "position": 0,
         "visible": True, "source": "zoho", "api_name": "tier",
+        # CRM-C4a: the columns of the field studio, at their defaults for a
+        # row that the sync wrote.
+        "section_id": None, "required": False, "help_text": None,
+        "default_value": None, "lookup_target": None, "is_system": False,
+        "retired": False,
     }
     assert body[1]["visible"] is False and body[1]["source"] == "native"
     assert body[1]["options"] is None and body[1]["api_name"] is None
@@ -117,13 +122,17 @@ def test_a_user_without_the_crm_feature_is_refused(fields_db: _FieldsDB) -> None
     assert _client().get("/crm/fields/deals").status_code == 403
 
 
-def test_the_route_is_get_only() -> None:
+def test_the_route_reads_and_only_the_studio_creates() -> None:
+    """CRM-Q4 made this path read only. CRM-C4a adds ``POST``, the create of
+    the field studio (``field_studio.py``, crm_platform.md §20.7 item 4).
+    Nothing else may write here."""
     from tests.unit._routes import served_routes
 
     app = FastAPI()
     app.include_router(crm_package.router)
-    methods = {
-        m for r in served_routes(app.routes)
+    by_method = {
+        m: r for r in served_routes(app.routes)
         if r.path == "/crm/fields/{entity}" for m in r.methods
     }
-    assert methods == {"GET"}
+    assert set(by_method) == {"GET", "POST"}
+    assert by_method["POST"].endpoint.__module__ == "gateway.routes.crm.field_studio"

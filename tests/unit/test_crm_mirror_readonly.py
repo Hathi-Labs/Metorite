@@ -446,7 +446,10 @@ async def test_the_wire_carries_the_mirror_fields(ns, app_engine) -> None:  # no
 _RAW_WRITE = re.compile(
     r"(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(\{[a-z_.]+\}|crm_(leads|deals|contacts|"
     r"companies|activities|deal_statuses|lead_statuses|lost_reasons|pipelines|"
-    r"pipeline_stages|module_records))",
+    r"pipeline_stages|module_records|"
+    # CRM-C4a: the two tables of the field studio. Zoho owns the fields in
+    # Mirror mode until CRM-C5 (crm_platform.md §20.7 item 10).
+    r"field_defs|field_sections))",
     re.IGNORECASE,
 )
 #: Functions that write raw SQL to a guarded table and are not guarded. Each has
@@ -489,6 +492,10 @@ _RAW_ALLOW = {
     # admin check, the typed DELETE and the stop of the sync. Only
     # `settings.py` may call it (`test_crm_upsert_from_source_fence.py`).
     "core.py::reset_crm_from_admin",
+    # CRM-C4a: the two writes of one place in the layout. Only `put_layout`
+    # calls them, after its own `assert_writable`, in the same session.
+    "field_studio.py::write_section_position",
+    "field_studio.py::write_field_position",
 }
 _REFUSES = {"assert_writable", "refuse_in_mirror_mode"}
 
@@ -543,6 +550,13 @@ def test_the_raw_write_fence_catches_a_planted_update() -> None:
         + "    await db.execute(text('DELETE FROM crm_module_records'))" + nl
     )
     assert _unguarded_raw_writes(module_write, "planted.py") == ["planted.py::sneaky"]
+    # CRM-C4a: a write to a studio table with no guard is caught too.
+    for table in ("crm_field_defs", "crm_field_sections"):
+        studio_write = (
+            "async def sneaky(db):" + nl
+            + f"    await db.execute(text('UPDATE {table} SET label = 1'))" + nl
+        )
+        assert _unguarded_raw_writes(studio_write, "planted.py") == ["planted.py::sneaky"]
 
 
 @_DB_GATE
@@ -693,3 +707,41 @@ def test_the_overlay_scan_proves_itself(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert _overlay_sql((tmp_path,)) == []
+
+
+# ── CRM-C4a: the sync never names a column of the field studio ──────────────
+
+#: The seven columns of migration 258 on ``crm_field_defs`` (§20.7). The sync
+#: writes the field definitions with its own list, so it leaves these alone.
+_STUDIO_COLUMNS = re.compile(
+    r"\b(section_id|required|help_text|default_value|lookup_target|is_system|"
+    r"retired_at)\b",
+)
+
+
+def _studio_sql(roots: tuple[Path, ...]) -> list[str]:
+    """``path:line: word`` for each SQL string under *roots* that names one of
+    the seven studio columns."""
+    bad: list[str] = []
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            for line, value in _sql_strings(path.read_text(encoding="utf-8-sig")):
+                for match in _STUDIO_COLUMNS.finditer(value):
+                    bad.append(f"{path.name}:{line}: {match.group(1)}")
+    return bad
+
+
+def test_no_sql_of_the_sync_names_a_studio_column() -> None:
+    """CRM-C4a done when 14: a sync leaves the seven new columns unchanged."""
+    roots = (_GATEWAY / "crm_sync", _GATEWAY / "crm_sources")
+    assert _studio_sql(roots) == []
+
+
+def test_the_studio_scan_proves_itself(tmp_path: Path) -> None:
+    nl = chr(10)
+    (tmp_path / "planted.py").write_text(
+        "_SQL = 'UPDATE crm_field_defs SET retired_at = NULL'" + nl, encoding="utf-8",
+    )
+    assert _studio_sql((tmp_path,)) == ["planted.py:1: retired_at"]
+    found = _studio_sql((_CRM,))
+    assert any(f.startswith("field_studio.py:") and "is_system" in f for f in found), found

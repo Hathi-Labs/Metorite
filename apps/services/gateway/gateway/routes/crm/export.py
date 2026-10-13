@@ -52,6 +52,10 @@ Five rules, each because the obvious implementation is wrong:
    ``app/crm/lib/columns.ts`` by ``test_crm_export.py``, the mechanism
    ``test_crm_stage_discipline_parity.py`` already uses for ``board.ts``: a
    mirror with no fence goes stale and then lies.
+   **The custom fields follow them** (WS-53 CRM-C4a, ``crm_platform.md`` §20.7
+   items 11 and 12): each custom field of the entity in the order of the
+   layout, under its label. A row with ``is_system`` is not a custom field,
+   and a retired field is left out.
 
 5. **This endpoint writes NOTHING.** Not a nicety — the Zoho sync loop is
    RUNNING (spec header, corrected 2026-08-11) and ``core.mark_dirty_on_*``
@@ -107,6 +111,7 @@ from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
     CONTACTS,
     DEALS,
+    FIELD_ENTITY_BY_SLUG,
     LEADS,
     MAX_PAGE_SIZE,
     ORGANIZATIONS,
@@ -266,6 +271,36 @@ def _cell(entity: Entity, key: str, row: dict[str, Any]) -> Any:
     return row.get(key)
 
 
+#: The custom fields of one entity, in the order of the layout. The two
+#: filters below are the rule of §20.7 item 11 for the export.
+_CUSTOM_COLUMNS_SQL = (
+    "SELECT key, label FROM crm_field_defs WHERE entity = :entity "
+    "AND NOT is_system AND retired_at IS NULL ORDER BY position, key"
+)
+
+
+async def custom_columns(db: Any, entity: Entity) -> list[tuple[str, str]]:
+    """``(key, label)`` of each custom column of *entity*'s file."""
+    rows = (await db.execute(
+        text(_CUSTOM_COLUMNS_SQL), {"entity": FIELD_ENTITY_BY_SLUG[entity.slug]},
+    )).fetchall()
+    return [(r.key, r.label or r.key) for r in rows]
+
+
+def custom_cell(value: Any) -> Any:
+    """One custom value as one cell. A lookup gives its name, and a list of
+    options is joined with ``; ``."""
+    if isinstance(value, dict):
+        named = value.get("name")
+        return named if isinstance(named, str) else json.dumps(value, sort_keys=True)
+    if isinstance(value, list):
+        return "; ".join(
+            str(item.get("name")) if isinstance(item, dict) else str(item)
+            for item in value
+        )
+    return value
+
+
 def _too_many(entity: Entity, total: int, *, at_least: bool = False) -> HTTPException:
     """The refusal, and the reason it is a refusal — see rule 3.
 
@@ -336,13 +371,15 @@ async def _export(
         if len(rows) > MAX_EXPORT_ROWS:
             raise _too_many(entity, len(rows), at_least=True)
         exported = [row_to_dict(r, entity.model) for r in rows]
+        extra = await custom_columns(db, entity)
 
     columns = COLUMNS[entity.slug]
     return Response(
         content=csv_document(
-            [header for _, header in columns],
+            [header for _, header in columns] + [label for _, label in extra],
             (
                 [_cell(entity, key, row) for key, _ in columns]
+                + [custom_cell((row.get("custom") or {}).get(key)) for key, _ in extra]
                 for row in exported
             ),
         ),

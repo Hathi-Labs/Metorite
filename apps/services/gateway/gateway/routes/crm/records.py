@@ -41,6 +41,7 @@ from gateway.routes.crm.core import (
     OPEN_LEAD_SQL,
     ORGANIZATIONS,
     ContactIn,
+    CustomMerge,
     DealIn,
     Entity,
     ExtraFilterInput,
@@ -59,6 +60,7 @@ from gateway.routes.crm.core import (
     custom_pairs,
     default_pipeline_id,
     extra_filters,
+    from_jsonb,
     has_column,
     insert_row,
     lead_name_is_derived,
@@ -75,6 +77,7 @@ from gateway.routes.crm.core import (
     update_row,
     validate_source,
 )
+from gateway.routes.crm.field_studio import custom_for_create, custom_for_patch
 from gateway.routes.crm.pipeline import (
     NO_EXISTING_RECORD,
     _require_entry_fields,
@@ -324,6 +327,9 @@ async def create_record(
     entity: Entity, payload: BaseModel, user: UserContext,
 ) -> dict:
     values = clean_payload(payload)
+    # CRM-C4a: `custom` is checked against the field definitions below, in
+    # the session, and never written as the caller sent it.
+    given_custom = values.pop("custom", None)
     validate_source(values)
     missing = [
         name for name in entity.required
@@ -351,6 +357,11 @@ async def create_record(
         if entity is DEALS and chosen_stage:
             await _check_stage_in_pipeline(db, values.get("pipeline_id"), chosen_stage)
         await _resolve_status(db, entity, values)
+        # CRM-C4a (§20.7 item 5): each value checked against its field, the
+        # defaults filled, and each required field present, or 422.
+        custom = await custom_for_create(db, entity.slug, given_custom)
+        if custom:
+            values["custom"] = custom
         row = await insert_row(db, entity.table, values)
         return row_to_dict(row, entity.model)
 
@@ -366,12 +377,23 @@ async def patch_record(
     on which endpoint moved the record.
     """
     values = clean_payload(payload)
+    given_custom = values.pop("custom", None)
     validate_source(values)
     async with _tenant_session() as db:
         record = await require_row(db, entity.table, record_id, entity.label)
         await assert_writable(
             db, current_tenant(), entity, values, row=record,
         )
+        merge: CustomMerge | None = None
+        if given_custom:
+            # CRM-C4a (§20.7 item 5): checked before any other write, so a bad
+            # value moves no stage. One statement merges per key later, and a
+            # key that the PATCH does not name keeps its value.
+            stored = from_jsonb(getattr(record, "custom", None))
+            put, drop = await custom_for_patch(
+                db, entity.slug, given_custom, stored if isinstance(stored, dict) else {},
+            )
+            merge = CustomMerge(put=put, drop=drop)
         if values.get("pipeline_id"):
             await _resolve_pipeline(db, entity, values)
         # Only a CHANGE is checked: a new stage, or a new pipeline. A deal that
@@ -394,6 +416,8 @@ async def patch_record(
             ))
         if entity is LEADS:
             _recompute_lead_name(record, values)
+        if merge is not None and (merge.put or merge.drop):
+            values["custom"] = merge
         if not values:
             return row_to_dict(record, entity.model)
         row = await update_row(db, entity.table, record_id, values)

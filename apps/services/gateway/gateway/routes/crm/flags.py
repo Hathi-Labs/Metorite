@@ -17,6 +17,10 @@ gateway reads them.
   them, or ``*``. An empty list allows no organization, so the mirror fails
   closed. Since the CRM is live for each organization, this list keeps the
   Zoho mirror to the organizations that the owner names.
+* ``CRM_FIELD_STUDIO_ORGS`` — the organization ids that may use the field
+  studio of a Native CRM (WS-53 CRM-C4a). The grammar is the one of
+  ``CRM_ORGS``. An empty list allows no organization, so each studio route
+  answers 404. :func:`require_field_studio` is their dependency.
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -107,6 +111,24 @@ def crm_mirror_allowed(organization_id: str | None) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def crm_field_studio_orgs() -> frozenset[str]:
+    """The organization ids that may use the field studio. Empty means none."""
+    return _parse_orgs(str(get_settings().crm_field_studio_orgs or ""))
+
+
+def field_studio_allowed(organization_id: str | None) -> bool:
+    """True when the field studio may serve this organization.
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_FIELD_STUDIO_ORGS``, or ``*`` there.
+    """
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_field_studio_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
 async def require_crm_enabled(
     user: Annotated[UserContext, Depends(get_current_user)],
 ) -> None:
@@ -115,6 +137,17 @@ async def require_crm_enabled(
     It reads ``user.organization_id`` and nothing else from the request.
     """
     if not crm_org_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_field_studio(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless the field studio may serve the caller's organization.
+
+    It reads ``user.organization_id`` and nothing else from the request.
+    """
+    if not field_studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail="Not Found")
 
 

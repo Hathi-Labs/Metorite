@@ -36,7 +36,14 @@ the shadowing reason above: ``/crm/leads/export.csv`` would sit under
 ``/crm/leads/{record_id}``.
 
 ``fields.py`` is WS-53 CRM-Q4 — ``GET /crm/fields/{entity}``, the field
-definitions that the sync writes. Read only.
+definitions that the sync and the field studio write. Read only. Since CRM-C4a,
+``?layout=1`` returns the sections, the system fields and the custom fields.
+
+``field_studio.py`` is WS-53 CRM-C4a — the field studio of a Native CRM:
+``POST``, ``PATCH`` and ``DELETE`` on ``/crm/fields/{entity}[/{key}]``, the
+restore, ``PUT /crm/field-layout/{entity}`` and ``/crm/field-sections/{entity}``.
+Admin only, behind ``CRM_FIELD_STUDIO_ORGS``, and 409 in Mirror mode. It also
+holds the rules of the ``custom`` write path, which ``records.py`` calls.
 
 ``modules.py`` is WS-53 CRM-Q6b — ``GET /crm/modules`` and the read-only
 record routes of each mirrored generic Zoho module (``crm_module_records``).
@@ -91,6 +98,7 @@ from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
 from gateway.routes.crm import field_rules as _field_rules  # noqa: F401
+from gateway.routes.crm import field_studio as _field_studio  # noqa: F401
 from gateway.routes.crm import fields as _fields  # noqa: F401
 from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
 from gateway.routes.crm import modules as _modules  # noqa: F401

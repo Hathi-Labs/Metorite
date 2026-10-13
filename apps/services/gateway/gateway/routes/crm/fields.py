@@ -1,17 +1,32 @@
-"""CRM · fields — what each custom field means (WS-53 CRM-Q4).
+"""CRM · fields — what each custom field means (WS-53 CRM-Q4, CRM-C4a).
 
-Spec: ``project-docs/specs/crm_platform.md`` §18.3 step 2 item 3 and §18.5.
+Spec: ``project-docs/specs/crm_platform.md`` §18.3 step 2 item 3, §18.5 and
+§20.7 items 11 and 12.
 
     GET  /crm/fields/{entity}
+    GET  /crm/fields/{entity}?layout=1
 
 ``entity`` is one of ``leads``, ``contacts``, ``organizations`` and ``deals``.
-The route reads ``crm_field_defs``, which the sync writes, and it returns the
-rows in order of ``position``. It lets the UI show a custom field with its label,
-its order and its type. Without it, the UI has only the key.
+The route reads ``crm_field_defs``, which the sync and the field studio write,
+and it returns the rows in order of ``position``. It lets the UI show a custom
+field with its label, its order and its type. Without it, the UI has only the
+key.
+
+**The plain read lists the custom keys.** A row with ``is_system = true``
+overlays a fixed column (CRM-C4a), so it is not a custom key and the plain
+read leaves it out. A retired field stays in the list with ``retired: true``,
+because a record keeps its value.
+
+**``?layout=1`` is the one layout** (§20.7 item 12). It returns the sections,
+the system fields of :data:`core.SYSTEM_FIELDS` and the custom fields, in
+order. A system field with no stored row takes its label and its place from
+``SYSTEM_FIELDS``. The forms, the Fields tab, the Columns control, the filter
+bar and the CSV export read this order.
 
 Read only. Any member that the CRM access rule admits may read it. The
 organization comes from the server and the session binds it, so the route
-never takes a tenant from the request (R5).
+never takes a tenant from the request (R5). The writes live in
+``field_studio.py``.
 """
 
 from __future__ import annotations
@@ -19,8 +34,15 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException
-from gateway.routes.crm.core import FIELD_ENTITY_BY_SLUG, _tenant_session, router
+from fastapi import Depends, HTTPException, Query
+from gateway.routes.crm.core import (
+    ENTITIES,
+    FIELD_ENTITY_BY_SLUG,
+    SYSTEM_FIELDS,
+    _tenant_session,
+    from_jsonb,
+    router,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -28,10 +50,28 @@ from sqlalchemy import text
 #: One map, in ``core``, because the list filters read it too.
 ENTITY_BY_SLUG = FIELD_ENTITY_BY_SLUG
 
+_COLUMNS = (
+    "key, label, type, options, source, provider_api_name, position, visible, "
+    "section_id, required, help_text, default_value, lookup_target, is_system, "
+    "retired_at"
+)
+
+#: The custom keys of one entity. A row that overlays a fixed column
+#: (``is_system``) is not one (§20.7 item 11).
 _FIELDS_SQL = (
-    "SELECT key, label, type, options, source, provider_api_name, position, "
-    "visible FROM crm_field_defs WHERE entity = :entity "
+    f"SELECT {_COLUMNS} FROM crm_field_defs WHERE entity = :entity "
+    "AND NOT is_system ORDER BY position, key"
+)
+
+#: Every row of one entity, the system overlays too. The layout reads it.
+_LAYOUT_FIELDS_SQL = (
+    f"SELECT {_COLUMNS} FROM crm_field_defs WHERE entity = :entity "
     "ORDER BY position, key"
+)
+
+_SECTIONS_SQL = (
+    "SELECT id, label, position FROM crm_field_sections WHERE entity = :entity "
+    "ORDER BY position, label, id"
 )
 
 
@@ -44,31 +84,137 @@ class FieldDef(BaseModel):
     visible: bool
     source: Literal["zoho", "native"]
     api_name: str | None = None
+    #: CRM-C4a. ``None`` puts the field in no section.
+    section_id: str | None = None
+    required: bool = False
+    help_text: str | None = None
+    default_value: Any = None
+    #: The entity slug that a lookup names.
+    lookup_target: str | None = None
+    #: True for a fixed column (``core.SYSTEM_FIELDS``). Only the layout lists one.
+    is_system: bool = False
+    #: True after ``DELETE /crm/fields/{entity}/{key}``. A record keeps its value.
+    retired: bool = False
+
+
+class FieldSection(BaseModel):
+    id: str
+    label: str
+    position: int
+
+
+class FieldLayout(BaseModel):
+    """The one layout of an entity (§20.7 item 12)."""
+
+    entity: str
+    sections: list[FieldSection]
+    fields: list[FieldDef]
 
 
 def _source(value: str | None) -> Literal["zoho", "native"]:
     return "zoho" if value == "zoho" else "native"
 
 
-@router.get("/fields/{entity}", response_model=list[FieldDef])
-async def list_fields(
-    entity: str, user: UserContext = Depends(get_current_user),
-) -> list[FieldDef]:
-    """The field definitions of one entity, ordered by position."""
+def _uuid_text(value: Any) -> str | None:
+    return str(value) if value is not None else None
+
+
+def field_wire(row: Any, *, slug: str | None = None) -> FieldDef:
+    """A ``crm_field_defs`` row → its wire model.
+
+    ``getattr`` with a default reads a row from before migration 258 (and a
+    test fake) as a plain custom field. A system row takes ``required`` from
+    the entity: a field that the gateway needs stays required (§20.7 item 3).
+    """
+    is_system = bool(getattr(row, "is_system", False))
+    required = bool(getattr(row, "required", False))
+    if is_system and slug is not None:
+        required = row.key in ENTITIES[slug].required
+    options = from_jsonb(getattr(row, "options", None))
+    return FieldDef(
+        key=row.key, label=row.label, type=row.type,
+        options=options if isinstance(options, list) else None,
+        position=int(row.position or 0), visible=bool(row.visible),
+        source=_source(getattr(row, "source", None)),
+        api_name=getattr(row, "provider_api_name", None),
+        section_id=_uuid_text(getattr(row, "section_id", None)),
+        required=required,
+        help_text=getattr(row, "help_text", None),
+        default_value=from_jsonb(getattr(row, "default_value", None)),
+        lookup_target=getattr(row, "lookup_target", None),
+        is_system=is_system,
+        retired=getattr(row, "retired_at", None) is not None,
+    )
+
+
+def system_wire(slug: str, index: int, field: Any) -> FieldDef:
+    """A system field with no stored row: its label and place from
+    ``SYSTEM_FIELDS``."""
+    return FieldDef(
+        key=field.key, label=field.label, type=field.type, options=None,
+        position=index, visible=True, source="native", api_name=None,
+        required=field.key in ENTITIES[slug].required,
+        lookup_target=field.lookup_target, is_system=True,
+    )
+
+
+def checked_slug(entity: str) -> str:
+    """The stored entity word of *entity*, or 422."""
     stored = ENTITY_BY_SLUG.get(entity)
     if stored is None:
         raise HTTPException(
             status_code=422,
             detail=f"Unknown entity '{entity}'. One of: {list(ENTITY_BY_SLUG)}.",
         )
-    async with _tenant_session() as db:
-        rows = (await db.execute(text(_FIELDS_SQL), {"entity": stored})).fetchall()
-    return [
-        FieldDef(
-            key=r.key, label=r.label, type=r.type,
-            options=r.options if isinstance(r.options, list) else None,
-            position=int(r.position or 0), visible=bool(r.visible),
-            source=_source(r.source), api_name=r.provider_api_name,
-        )
-        for r in rows
+    return stored
+
+
+async def read_layout(db: Any, slug: str) -> FieldLayout:
+    """The sections, the system fields and the custom fields of *slug*, in order.
+
+    The studio routes answer with it too, so a write returns what the next
+    read shows.
+    """
+    stored = ENTITY_BY_SLUG[slug]
+    rows = (await db.execute(text(_LAYOUT_FIELDS_SQL), {"entity": stored})).fetchall()
+    sections = (await db.execute(text(_SECTIONS_SQL), {"entity": stored})).fetchall()
+    kept = {r.key: r for r in rows if getattr(r, "is_system", False)}
+    fields = [
+        field_wire(r, slug=slug) for r in rows if not getattr(r, "is_system", False)
     ]
+    for index, field in enumerate(SYSTEM_FIELDS[slug]):
+        row = kept.get(field.key)
+        if row is None:
+            fields.append(system_wire(slug, index, field))
+        else:
+            # The type and the target of a fixed column never change.
+            fields.append(field_wire(row, slug=slug).model_copy(update={
+                "type": field.type, "lookup_target": field.lookup_target,
+            }))
+    fields.sort(key=lambda f: (f.position, not f.is_system, f.key))
+    return FieldLayout(
+        entity=slug,
+        sections=[
+            FieldSection(id=str(s.id), label=s.label, position=int(s.position or 0))
+            for s in sections
+        ],
+        fields=fields,
+    )
+
+
+@router.get("/fields/{entity}", response_model=list[FieldDef] | FieldLayout)
+async def list_fields(
+    entity: str,
+    layout: bool = Query(False),
+    user: UserContext = Depends(get_current_user),
+) -> list[FieldDef] | FieldLayout:
+    """The custom fields of one entity, ordered by position.
+
+    With ``?layout=1``, the whole layout of :func:`read_layout`.
+    """
+    stored = checked_slug(entity)
+    async with _tenant_session() as db:
+        if layout:
+            return await read_layout(db, entity)
+        rows = (await db.execute(text(_FIELDS_SQL), {"entity": stored})).fetchall()
+    return [field_wire(r) for r in rows]

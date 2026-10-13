@@ -459,19 +459,26 @@ async def crm_get_record(entity: str, record_id: str) -> str:
 @_read_tool
 async def crm_list_fields(entity: str) -> str:
     """The fields of one record type: each label, its key (for the custom
-    filter of crm_list_records), its type and its picklist options."""
+    filter of crm_list_records), its type and its picklist options. A retired
+    field is marked: records keep its values, and no filter takes its key."""
     slug = _entity_slug(entity)
-    defs = await _get(f"/crm/fields/{slug}")
+    # WS-53 CRM-C4a: a row with `is_system` overlays a fixed column, so it is
+    # never offered as a custom key (crm_platform.md §20.7 item 11).
+    defs = [
+        d for d in (await _get(f"/crm/fields/{slug}") or [])
+        if isinstance(d, dict) and not d.get("is_system")
+    ]
     if not defs:
         return f"{ENTITY_LABELS[slug]}s have no custom fields."
     lines = [f"{ENTITY_LABELS[slug]} fields ({len(defs)}):"]
     for d in defs[:MAX_ROWS]:
         options = [
             str(o.get("label")) for o in d.get("options") or []
-            if isinstance(o, dict) and o.get("label")
+            if isinstance(o, dict) and o.get("label") and not o.get("retired")
         ]
         lines.append(
             f"- {d.get('label')} (key {d.get('key')}, {d.get('type')})"
+            + (" - retired" if d.get("retired") else "")
             + (f": {', '.join(options[:20])}" if options else "")
         )
     if len(defs) > MAX_ROWS:
