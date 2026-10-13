@@ -42,12 +42,15 @@ from .base import (
     EmailFolder,
     EmailMessage,
     EstimateCallback,
+    InlineImage,
+    InlineRead,
     ProviderMailTooLarge,
     ProviderRateLimited,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
+    normalize_content_id,
     received_key,
 )
 
@@ -127,6 +130,21 @@ def _iter_gmail_parts(
         return
     for sub in part.get("parts", []) or []:
         yield from _iter_gmail_parts(sub, descend=descend)
+
+
+def _gmail_part_is_inline_image(part: dict) -> bool:
+    """An inline part with an ``image/*`` type: a ``cid:`` picture.
+
+    ``_gmail_part_is_inline`` alone also takes a PDF that a sender gave a
+    ``Content-ID``, and the inline read must never download a real file.
+    """
+    kind = str(part.get("mimeType") or "").lower()
+    return kind.startswith("image/") and _gmail_part_is_inline(part)
+
+
+def _gmail_opens_part(part: dict) -> bool:
+    """False for an attached mail: the inline walk never reads its parts."""
+    return not str(part.get("mimeType") or "").lower().startswith("message/")
 
 
 def _collect_gmail_attachments(part: dict, msg_id: str) -> list[Attachment]:
@@ -2864,6 +2882,84 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
         data = resp.json()
         return base64.urlsafe_b64decode(data["data"])
+
+    async def get_inline_images(
+        self, provider_message_id: str, *, max_count: int, max_bytes: int,
+        max_total: int,
+    ) -> InlineRead:
+        """The inline pictures of one message (WS-17, the inline images fix).
+
+        One read of the whole MIME tree (``format=full``). Then each part
+        that is an inline picture: ``_gmail_part_is_inline`` and an
+        ``image/*`` type (review P2-3). So a PDF with a ``Content-ID`` is
+        never downloaded. A small part carries its bytes in the tree, and a
+        larger one is read by its ``attachmentId``. The parts marked
+        ``inline`` come first. The choice stops at *max_count* parts, and it
+        skips a part that would take the sizes over *max_total*. A skip makes
+        the read incomplete (review P3-a).
+
+        The walk never opens an attached mail, because its parts belong to
+        that mail. A failed read of one part skips that part and makes the
+        read incomplete (review P2-4). A rate limit raises.
+        """
+        client = await self._get_client()
+        resp = await client.get(
+            f"/users/me/messages/{provider_message_id}", params={"format": "full"},
+        )
+        resp.raise_for_status()
+        payload = resp.json().get("payload", {}) or {}
+        # The parts with an ``inline`` disposition first, then the parts
+        # with a Content-ID and no disposition. A part over the budget is
+        # skipped, and a smaller one after it can still fit. Each candidate
+        # is a picture that the body can name, so a skip makes the read
+        # incomplete (review P3-a).
+        candidates = [
+            p for p in _iter_gmail_parts(payload, descend=_gmail_opens_part)
+            if not p.get("parts") and _gmail_part_is_inline_image(p)
+        ]
+        candidates.sort(key=lambda p: not _gmail_part_header(
+            p, "Content-Disposition").strip().lower().startswith("inline"))
+        out: list[InlineImage] = []
+        chosen = 0
+        complete = True
+        for part in candidates:
+            if len(out) >= max_count:
+                complete = False
+                break
+            cid = normalize_content_id(_gmail_part_header(part, "Content-ID"))
+            body = part.get("body", {}) or {}
+            size = int(body.get("size", 0) or 0)
+            if not cid or size > max_bytes:
+                continue
+            if chosen + size > max_total:
+                complete = False
+                continue
+            chosen += size
+            try:
+                if body.get("data"):
+                    raw = str(body["data"])
+                    content = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+                elif body.get("attachmentId"):
+                    content = await self.get_attachment(
+                        provider_message_id, str(body["attachmentId"]))
+                else:
+                    continue
+            except ProviderRateLimited:
+                raise
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    raise
+                complete = False
+                continue
+            except Exception:  # one part fails, and the rest still show
+                complete = False
+                continue
+            if content and len(content) <= max_bytes:
+                out.append(InlineImage(
+                    content_id=cid, content=content,
+                    mime_type=str(part.get("mimeType") or ""),
+                ))
+        return InlineRead(images=out, complete=complete)
 
     # ── Helpers ──────────────────────────────────────────────────────────
 

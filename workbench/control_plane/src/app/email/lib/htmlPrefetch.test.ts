@@ -597,7 +597,7 @@ describe("email-html-pane", () => {
     // `e2e/untrusted-html.spec.ts`. This holds the wiring that it relies on.
     expect(sanitizeEmailHtml("<script>x</script>", false)).toEqual({ clean: "", hasRemote: false });
     const src = codeOnly(read("components/MessageContent.tsx"));
-    expect(src).toContain("return sanitizeEmailHtml(html, showImages);");
+    expect(src).toContain("return sanitizeEmailHtml(html, showImages, inlinePath);");
     expect(src).toContain("<body>${sanitized.clean}</body>");
     expect(src).toContain('sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"');
     expect(src).toContain("if (remote.html) return <HtmlMessage html={remote.html} />;");
