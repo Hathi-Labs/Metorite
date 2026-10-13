@@ -131,6 +131,12 @@ Seven rules on top of the three above. Each one exists because it was broken:
    with `rehype-raw` also runs `rehypeGateRemoteMedia` after it. Both live in
    `src/lib/markdownMedia.ts` and `src/components/MarkdownImage.tsx`. Fence:
    `src/components/markdownImage.test.ts`.
+   Two same-origin API paths load at once: the workspace file proxy, and
+   one task attachment, `/api/projects/attachments/<uuid>/<name>` (WS-57
+   TR-4). The task description and the comments draw through `MarkdownBody`
+   with no `sessionId`. `app/projects/lib/inlineUploads.ts` builds the
+   attachment URL of a pasted image. Fences: `markdownMedia.test.ts` and
+   `app/projects/lib/inlineUploads.test.ts`.
    **Untrusted HTML has one DOMPurify policy,** `src/lib/untrustedHtml.ts`.
    The email pane and the `.docx` viewer use it. A new raw-HTML sink
    (`dangerouslySetInnerHTML`, an `innerHTML` write, a `srcdoc`) fails
