@@ -309,6 +309,14 @@
    ]
   },
   {
+   "name": "a fence at a four-space list indent, with a blank line inside",
+   "text": "1. do #3\n\n    ```\n    #12\n\n    #13\n    ```\n\nAfter #5",
+   "numbers": [
+    3,
+    5
+   ]
+  },
+  {
    "name": "a fence inside a list at two spaces",
    "text": "- a #5\n\n  ```\n  #12\n  ```",
    "numbers": [
