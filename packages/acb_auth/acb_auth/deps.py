@@ -62,27 +62,39 @@ held the identity token and could call /admin/* to grant itself anything.
 
 Empty string disables Bearer auth (never accept all callers — use SSO headers
 instead).
+
+Branch 0 (WS-55 EA-3a, ``external_agent_access.md`` §10.1): a request that
+carries an ``X-Agent-*`` header or an ``mcp:`` actor stamp is an outside
+agent's, signed by the agent edge with an HMAC (``acb_auth.agent_signing``).
+It holds no bearer and no member header. Branch 0 checks the HMAC, reads the
+connection row, and resolves the member FROM THAT ROW. It never falls through
+to the bearer branches. With the flag off or no usable key, it refuses every
+such request. Fence: ``tests/unit/test_mcp_edge_signing.py``.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import secrets
 from collections.abc import Collection
 from typing import Annotated
 
-from acb_common import bind_run_context, get_logger
-from acb_common.db import bind_tenant
+from acb_common import bind_run_context, db_busy, get_logger
+from acb_common.db import bind_tenant, clear_tenant
 from fastapi import Depends, Header, HTTPException, Request
 
+from acb_auth import agent_oauth, agent_signing, agent_tokens
 from acb_auth.access import (
     SERVICE_ACCESS,
     IdentityUnavailable,
     identity_cutover_enabled,
+    identity_read_failed,
     resolve_access,
     resolve_identity,
+    role_read_failed,
 )
 from acb_auth.permissions import NO_ACCESS
-from acb_auth.roles import UserContext, UserRole, _coerce_role
+from acb_auth.roles import AgentScope, UserContext, UserRole, _coerce_role
 
 _log = get_logger("acb_auth.deps")
 
@@ -285,11 +297,16 @@ async def _with_resolved_access(user: UserContext) -> UserContext:
     try:
         return await _resolve_and_bind(user)
     except IdentityUnavailable as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=IDENTITY_UNAVAILABLE_DETAIL,
-            headers={"Retry-After": "2"},
-        ) from exc
+        raise _identity_unavailable() from exc
+
+
+def _identity_unavailable() -> HTTPException:
+    """The ONE 503 of an identity read that timed out. Branch 0 reuses it."""
+    return HTTPException(
+        status_code=503,
+        detail=IDENTITY_UNAVAILABLE_DETAIL,
+        headers={"Retry-After": "2"},
+    )
 
 
 async def _resolve_and_bind(user: UserContext) -> UserContext:
@@ -422,14 +439,245 @@ def _bind_session_member(email: str | None) -> None:
         bind_run_context(user=email, member_verified=True)
 
 
+# ---------------------------------------------------------------------------
+# Branch 0 — the signed request of an outside agent (WS-55 EA-3a, EA3-1)
+# ---------------------------------------------------------------------------
+
+
+def _anonymous() -> UserContext:
+    """The context every refusal returns. Default-deny then answers 401."""
+    return UserContext(email=None, role=UserRole.EMPLOYEE, access=NO_ACCESS)
+
+
+def _is_agent_request(request: Request) -> bool:
+    """True when branch 0 owns this request (spec §10.1, the trigger).
+
+    Any header whose name starts with ``X-Agent-``, or any ``X-Actor-Via``
+    value that starts with ``mcp:`` after strip and lower case. Every value
+    of a repeated header counts, so a second header cannot hide the first.
+    """
+    for name in request.headers:
+        if name.lower().startswith(agent_signing.AGENT_HEADER_PREFIX):
+            return True
+    for value in request.headers.getlist(agent_signing.HEADER_ACTOR_VIA):
+        if value.strip().lower().startswith(agent_signing.MCP_ACTOR_PREFIX):
+            return True
+    return False
+
+
+def _one_header(request: Request, name: str) -> str | None:
+    """The value of *name* when the request sends it exactly once."""
+    values = request.headers.getlist(name)
+    return values[0] if len(values) == 1 else None
+
+
+#: Refusals that anybody on the internet can cause without a key. They log at
+#: info, so a stranger cannot fill the warning log. A refusal after a good
+#: signature logs at warning, because only a key holder reaches it.
+_UNSIGNED_REFUSALS = frozenset({
+    "disabled", "no_key", "headers", "connection_header", "body", "query",
+    "signature",
+})
+
+
+def _refuse_agent(reason: str, **ids: str) -> UserContext:
+    """Log one refusal of branch 0 and answer anonymous. Ids only, no secret."""
+    log = _log.info if reason in _UNSIGNED_REFUSALS else _log.warning
+    log("auth.agent_refused", reason=reason, **ids)
+    return _anonymous()
+
+
+def _verify_signed_request(
+    request: Request, keys: dict[str, str],
+) -> tuple[str, str, str] | str:
+    """Step 2 of branch 0: ``(organization, connection, actor stamp)`` of a
+    well-signed, fresh request, or the reason to refuse it.
+    """
+    # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
+    connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
+    timestamp = _one_header(request, agent_signing.HEADER_TIMESTAMP)
+    signature = _one_header(request, agent_signing.HEADER_SIGNATURE)
+    actor_via = _one_header(request, agent_signing.HEADER_ACTOR_VIA)
+    if not connection_header or not timestamp or not signature or not actor_via:
+        return "headers"
+    organization_id, _, connection_id = connection_header.partition(".")
+    if not organization_id or not connection_id:
+        return "connection_header"
+    # A GET has no body, so the body line is the hash of zero bytes. A request
+    # that announces a body is refused rather than read.
+    if request.headers.get("content-length", "0").strip() not in ("", "0") or (
+        "transfer-encoding" in request.headers
+    ):
+        return "body"
+    # The path and the query come from the ASGI scope, never from `request.url`.
+    # `request.url` is built with the Host header, and this branch reads no
+    # host input (fence: `test_tenant_request_binding.py`). The query parses
+    # strictly, and a repeated key is refused: Starlette keeps the LAST value
+    # of a key, and the signed string sorts every pair, so a reordered replay
+    # would read another value under the same signature.
+    pairs = agent_signing.query_pairs(request.scope.get("query_string") or b"")
+    if pairs is None:
+        return "query"
+    canonical = agent_signing.canonical_string(
+        timestamp=timestamp,
+        organization_id=organization_id,
+        connection_id=connection_id,
+        actor_via=actor_via,
+        method=request.method,
+        path=str(request.scope.get("path") or ""),
+        query=pairs,
+    )
+    if not agent_signing.verify(signature, canonical, keys):
+        return "signature"
+    if not agent_signing.timestamp_is_fresh(timestamp):
+        return "timestamp"
+    return organization_id, connection_id, actor_via
+
+
+async def _read_connection(
+    organization_id: str, connection_id: str,
+) -> agent_tokens.LiveConnection | None:
+    """Step 4 of branch 0: the live connection in the SIGNED organization.
+
+    ``None`` for no live connection and for any other failed read, which is
+    a refusal. A database outage (``db_busy.is_db_outage``) raises the ONE
+    503 of :func:`_identity_unavailable` instead.
+    """
+    try:
+        return await agent_tokens.read_live_connection(
+            organization_id, connection_id,
+        )
+    except Exception as exc:
+        if db_busy.is_db_outage(exc):
+            db_busy.mark()
+            _log.warning("auth.agent_connection_db_unavailable",
+                         error=type(exc).__name__)
+            raise _identity_unavailable() from exc
+        # Any other failed read is a refusal, not a 500. Ids only in the log.
+        _log.exception("auth.agent_connection_read_failed")
+        return None
+
+
+
+async def _agent_user(request: Request) -> UserContext:
+    """Branch 0 of :func:`get_current_user`: the seven steps of spec §10.1.
+
+    Every failed step answers the anonymous context, so default-deny answers
+    401. It NEVER falls through to branch 1a, 1b or 2: a request that
+    triggered branch 0 is decided here, whatever bearer or ``X-User-Email``
+    it also carries. The member comes ONLY from the connection row.
+
+    The order differs from the numbering of §10.1 on purpose: the stamp and
+    both organization checks run BEFORE the member resolve, so a refused
+    request never binds a tenant.
+
+    ⚠️ A database outage is not a refusal. It answers the ONE 503 of
+    :func:`_identity_unavailable`, with ``Retry-After: 2``, and it never
+    falls through to another branch. A 401 there would make an MCP client
+    drop a good token and sign in again.
+
+    * Step 4, the connection read: ``db_busy.is_db_outage``. Every other
+      failed read is a refusal.
+    * Step 6, the member resolve: a pool or connect timeout raises in
+      ``acb_auth.access`` (:class:`IdentityUnavailable`). Any other failed
+      identity read is recorded by ``access.identity_read_failed()``, the
+      same flag ``gateway.main`` reads to answer 503 for an unbound tenant.
+      A role read that failed with an outage (``db_busy.is_db_outage``) is
+      recorded by ``access.role_read_failed()``, which only branch 0 reads.
+      When the seat check would refuse and either flag is set, branch 0
+      answers the 503, not the 401.
+    """
+    # 1. The flag is on, and a usable key is set.
+    if not agent_oauth.enabled():
+        return _refuse_agent("disabled")
+    keys = agent_signing.usable_keys()
+    if not keys:
+        return _refuse_agent("no_key")
+
+    # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
+    signed = _verify_signed_request(request, keys)
+    if isinstance(signed, str):
+        return _refuse_agent(signed)
+    organization_id, connection_id, actor_via = signed
+
+    # 3. GET only, and the matched route template is in MCP_ROUTES. The
+    # template comes from `_matched_template`, which has no URL fallback.
+    method = request.method.upper()
+    if method != "GET":
+        return _refuse_agent("method")
+    if request.scope.get("route") is None or (
+        method, _matched_template(request)
+    ) not in agent_oauth.MCP_ROUTES:
+        return _refuse_agent("route")
+
+    # 4. The live connection, read in the SIGNED organization.
+    connection = await _read_connection(organization_id, connection_id)
+    if connection is None or not connection.member_email:
+        return _refuse_agent("connection")
+    ids = {"connection_id": connection.connection_id}
+    # The organization is the one the ROW holds (the read selects it). The
+    # signed one must equal it. The read also filters on it, so this check
+    # holds even for a read that runs as a role which bypasses RLS and lost
+    # its predicate (R8: test_mcp_edge_authority.py).
+    if connection.organization_id != organization_id:
+        return _refuse_agent("connection_org", **ids)
+
+    # 5. Checked before the resolve, so a bad stamp binds no tenant. The stamp
+    # is the one the connection's origin gives, and it has the stamp's shape.
+    expected_via = agent_oauth.actor_via_for(connection.client_origin)
+    if (
+        not connection.client_origin
+        or actor_via != expected_via
+        or not agent_oauth.ACTOR_VIA_PATTERN.fullmatch(expected_via)
+    ):
+        return _refuse_agent("actor_via", **ids)
+
+    # 6. The member from the ROW, never from a header. Resolved as a request.
+    resolved = await _with_resolved_access(
+        UserContext(email=connection.member_email, role=UserRole.EMPLOYEE)
+    )
+
+    # 7. The seat: the member's organization is the row's, and active.
+    if (
+        resolved.organization_id != connection.organization_id
+        or not resolved.access.is_active
+    ):
+        # `_with_resolved_access` may have bound the member's tenant. A refused
+        # request keeps none.
+        clear_tenant()
+        if identity_read_failed() or role_read_failed():
+            # The database refused a read: an outage, not "no seat".
+            db_busy.mark()
+            raise _identity_unavailable()
+        return _refuse_agent("seat", **ids)
+
+    # Attach the scope LAST. No `_bind_session_member`: no route in
+    # MCP_ROUTES calls a model.
+    return dataclasses.replace(
+        resolved,
+        agent=AgentScope(
+            connection_id=connection.connection_id,
+            scopes=connection.scopes,
+            pinned_projects=connection.pinned_projects,
+            include_personal=connection.include_personal,
+            client_origin=connection.client_origin,
+            actor_via=expected_via,
+        ),
+    )
+
+
 async def get_current_user(
     x_user_email: Annotated[str | None, Header(alias="X-User-Email")] = None,
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    request: Request = None,  # type: ignore[assignment]
 ) -> UserContext:
     """Resolve identity from SSO-injected headers or an internal Bearer token.
 
     Priority:
+    0. A signed request of an outside agent (WS-55 EA-3a, :func:`_agent_user`)
+       → that connection's member, with ``UserContext.agent`` set, or the
+       anonymous context. Branch 0 never falls through to 1 or 2.
     1. If ``Authorization: Bearer <token>`` matches the internal token →
        synthetic ``UserContext(email="system:internal", role=AGENT)``.
     2. If ``X-User-Email`` is set → resolve from SSO headers (normal user flow).
@@ -439,10 +687,19 @@ async def get_current_user(
     per-user overrides) onto the context, so routes can call
     ``user.has_permission(...)`` without a second lookup.
 
+    ``request`` is keyword-only in practice: FastAPI injects it for an HTTP
+    request. A direct caller (the tests) and a WebSocket route pass none, and
+    branch 0 then does not run. Branch 0 reads the method, the path, the
+    query and its own four headers. It reads no host header.
+
     Never raises — missing/wrong headers resolve to the lowest-privilege role
     and an empty permission set. Enforcement is done by require_role() /
     require_permission().
     """
+    # 0. A signed outside-agent request (spec §10.1). Decided here, always.
+    if request is not None and _is_agent_request(request):
+        return await _agent_user(request)
+
     # 1. Internal Bearer token (Next.js proxy, cron jobs, CI)
     bearer_ok = False
     if authorization and authorization.startswith("Bearer "):
@@ -696,11 +953,21 @@ def _route_template(request: Request) -> str:
     for the effective path of the route that matched. Fence:
     ``tests/unit/test_route_template_prefixes.py``.
     """
+    return _matched_template(request) or request.url.path
+
+
+def _matched_template(request: Request) -> str | None:
+    """The template of the route that matched, or None. No URL fallback.
+
+    :func:`_route_template` without its last resort, which reads
+    ``request.url``. Branch 0 of :func:`get_current_user` calls this one,
+    because it reads no host input (``test_tenant_request_binding.py``).
+    """
     route = request.scope.get("route")
     full = _effective_template(request, route)
     if full:
         return full
-    return getattr(route, "path", None) or request.url.path
+    return getattr(route, "path", None)
 
 
 #: ``id(route)`` → (the route, the contexts FastAPI serves it at). The route
