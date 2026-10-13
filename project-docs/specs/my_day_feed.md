@@ -2,8 +2,10 @@
 
 **Status: ACTIVE, 2026-10-13. MD-1a is BUILT (gateway half, merged as
 #964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
-dark behind `NEXT_PUBLIC_MY_DAY_FEED`).** The rest of this file is not
-built. The open AGENT-SAFE tickets are MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7,
+dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
+migration 259, dark by the absence of a caller).**
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-2a to MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7,
 MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -625,6 +627,96 @@ function (`whatsapp_assistant_channel.md`).
 
 ---
 
+### 6.8 How MD-2 runs these rules (decided 2026-10-13)
+
+The MD-2 audit found nine gaps in §6.1 to §6.7. These answers close them.
+Where this section and an earlier one differ, this section wins.
+
+**1. The state fingerprint.** The state compares a fingerprint of the
+entity's own facts. It holds the entity, `due_at`, `note_ids`,
+`waiting_since` and the last message id of a thread. It leaves out the kind,
+the folded kinds and the block facts.
+
+So a dismissed task stays dismissed
+when a block folds in, when the block ends, and when the task turns overdue.
+It comes back when its own facts change: a new due date, a new note or a new
+message. The card answer carries it as `state_fp` (§14.1a).
+
+**2. The rules run at read time.** Rules 5, 6 and 7 of §6.3 run when the
+feed is read, against the member's most recent `day_start_hour`. The read
+writes nothing.
+
+To make that work, `visits` counts only the visits of one
+local day, and the column `visits_day` holds that day. A row whose
+`visits_day` is before today reads as 0 visits. The `my_day` loop of MD-5
+changes nothing here.
+
+**3. Rule 6 in MD-2.** `my_day.resurface` is MD-6a. Until then rule 6 has no
+answer, so a `later` card that rule 5 does not return stays in Later. A test
+asserts exactly this.
+
+**4. `acted` is a record, never a hide.** A tap act that succeeds writes
+`acted`, for the affinity term of §7. An `open` link writes nothing.
+
+`acted` never hides a card. The client's own act marks hide it while the
+write lands (MD-1b). So a task that someone reopens always shows again.
+
+**5. `later` is stored, and it is sticky.** The POST that gives a card its
+third visit of the day writes `later`. Rule 5 returns an overdue card, or a
+`needs_reply` card older than 48 h, to Needs you for that day. The return
+holds while the card's visits of that day stay under 3. Rule 8 then folds it
+again.
+
+**6. Escalation goes into the rules.** Rule 4 lifts a `new` card too, so §6.5
+step 3 is rule 4. Inside a group, a `new` card sorts before a seen card, then
+the score decides (§6.5 step 1). The fixed seed of `test_feed_rank.py`
+changes with this rule only.
+
+**7. Hidden cards take no slot.** The state join runs after the fold and
+before the order. A snoozed, dismissed or expired card leaves the answer
+before `limit`. A `later` card is in the answer, in the `later` group, and it
+counts against `limit`. `PER_APP` binds the providers, before the join.
+
+**8. The zone and the day hours.** The join reads them once for each feed
+read. A member who holds `feature:tasks` gets them from `get_user_settings`
+(`routes/tasks/settings.py:393`). Any other member gets the zone from the
+lens (`stored_zone`, `routes/projects/personal.py`), and the column defaults
+7 and 23.
+
+**9. The needs view does not change.** The state never touches `needs`. A
+dismissed or snoozed needs-kind card still counts in the bell.
+`TestOneRegistry`'s equality must hold with state rows present.
+
+#### The POST contract
+
+`POST /shell/feed/state` takes this body, and nothing else:
+
+```json
+{"items": [{"signal_id": "tasks:9b2e…", "state_fp": "a41f09c2", "kind": "overdue",
+            "action": "seen", "until": null}]}
+```
+
+- `action` is `seen`, `snooze`, `dismiss`, `not_useful` or `acted`. `until`
+  is `later_today`, `tomorrow`, `next_week` or `on_change`, and only a
+  `snooze` carries it.
+- One body holds 50 items at most. A `signal_id` matches
+  `^[a-z_]+:[^\s]{1,200}$`. A `state_fp` is 8 to 64 hex characters.
+- The body never names a member or an organization. The model refuses an
+  unknown key with 422. The member comes from the session (R5e).
+- **The server computes `snoozed_until`.** It uses the member's zone, day
+  hours and working days (`work_schedule.effective_schedule`). It never takes
+  a time from the client.
+  - Later today: 3 hours from now, or the day end, whichever comes first. At
+    or after the day end, it is the next working day's start.
+  - Tomorrow: the next working day's `day_start_hour`.
+  - Next week: the first working day of the next ISO week, at the day start.
+  - On change: no time. The card returns when its `state_fp` changes.
+- **The server applies the visit rule.** Two `seen` items for one card within
+  30 minutes count as one visit.
+- The answer is `{"written": n}`. A bad body gets 422, with no write.
+
+---
+
 ## 7. The order
 
 The order is a score. Code owns time, and `decide` owns judgment.
@@ -654,7 +746,7 @@ Four rules sit on top of the score:
    needs kind may leave the feed on a `drop` answer.
 3. **Today's caps stay.** 15 signals for each app at most. An approval takes
    only the room that the member's own work leaves (`YIELDING_KINDS`,
-   `needs.py:163`).
+   `needs.py:175`).
 4. **The order holds while the member reads.** The client keeps the order of
    the cards it shows during one visit. A new card shows a pill at the top,
    "2 new". It enters on a click, or on the next visit. A card never moves
@@ -1140,7 +1232,7 @@ member from the session, never from the request body. The template is
 `organization_id UUID NOT NULL DEFAULT current_setting('app.tenant_id',
 true)::uuid REFERENCES organization (id) ON DELETE CASCADE`. Each table must
 pass `tests/unit/test_tenant_coverage.py`. Each migration takes the next free
-number at build time (R1). Today that is 253, so check it again at merge.
+number at build time (R1). It was 258 on 2026-10-13, so check it again at merge.
 
 ### 13.1 `my_day_card_state`
 
@@ -1156,8 +1248,9 @@ providers recompute them.
 | `kind` | `TEXT NOT NULL` | The main kind when the row last changed. For affinity (§7) |
 | `state` | `TEXT NOT NULL` | `seen`, `later`, `acted`, `snoozed`, `dismissed` |
 | `dismiss_reason` | `TEXT` | `dismiss` or `not_useful` |
-| `fingerprint` | `TEXT` | The fingerprint at the last state change |
-| `visits` | `INT NOT NULL DEFAULT 0` | Since the card last came back (§6.2) |
+| `fingerprint` | `TEXT` | The state fingerprint (§6.8 item 1) the member saw at the last change |
+| `visits` | `INT NOT NULL DEFAULT 0` | The visits of one local day (§6.8 item 2) |
+| `visits_day` | `DATE` | The member's local day that `visits` counts |
 | `first_seen_at`, `last_seen_at`, `acted_at` | `TIMESTAMPTZ` | |
 | `snoozed_until` | `TIMESTAMPTZ` | Null with `snooze_on_change` true means "until it changes" |
 | `snooze_on_change` | `BOOLEAN NOT NULL DEFAULT false` | |
@@ -1201,9 +1294,11 @@ holds the mutes of §6.6 and the corrections of §10.5.
 - **Its own route.** `PUT /shell/feed/prefs` merges one key at a time on the
   server, with `jsonb_set`. It never replaces the column.
 - **R6.** A nullable column with no default. Nothing reads it before MD-2.
-- **Fence (MD-2).** `tests/unit/test_my_day_prefs.py` saves a correction,
+- **Fence (MD-2).** `tests/unit/test_my_day_prefs_r8.py` saves a correction,
   then saves a layout through `PUT /auth/me/shell`, and asserts that the
   correction is still there. It also asserts the other way round.
+  `tests/unit/test_my_day_prefs.py` is the hermetic half. It holds the keys,
+  the limits and the SQL of the merge.
 
 ### 13.4 What lives in Redis
 
@@ -1285,7 +1380,7 @@ and is off by default (`packages/acb_memory`).
 
 - `needs` is exactly the answer of `GET /shell/needs?limit=30`, from the
   same provider run, before the fold of §4.5. It always uses the needs
-  route's own default limit, 30 (`DEFAULT_LIMIT`, `needs.py:138`), whatever
+  route's own default limit, 30 (`DEFAULT_LIMIT`, `needs.py:150`), whatever
   `limit` the feed request carries. The client stores it under the needs
   cache key, so the bell's counts stay true.
 - **The group ids** are `now`, `needs_you`, `ready`, `fyi`, `later` and
@@ -1307,6 +1402,9 @@ and is off by default (`packages/acb_memory`).
   the overlap ids, the notification ids and the waiting time. A countdown such as `minutes` or
   `days_late` never goes in it, so two polls a minute apart give the same
   fingerprint.
+- **MD-2a adds four card fields.** `state` is `new`, `seen` or `later`.
+  `updated` and `still_open` are booleans for the source line. `visits` is
+  the count of the day. `state_fp` is the state fingerprint of §6.8 item 1.
 - A field that a later ticket adds is optional for the client.
 
 ### 14.2 The card registry
@@ -1486,25 +1584,122 @@ card menu go to MD-2, because each needs its state table. `stale_next` is
 MD-3. Server paging with a cursor goes to MD-5. The keys of §14.3 go to
 MD-9.
 
-### MD-2 · The life of a card — AGENT-SAFE
+**Flag-on follow-ups of MD-1b.** Each one waits on a later ticket. None of
+them shows while `NEXT_PUBLIC_MY_DAY_FEED` is off.
 
-Files: migration `<next free>_my_day_card_state.sql`, the `my_day_prefs`
-column, `POST /shell/feed/state`, `PUT /shell/feed/prefs`, and the seen
-observer in `src/lib/shell/`.
+- **The why-line clock.** `feed.py` `_clock` writes a fixed 24-hour `HH:MM`.
+  The card time and Today follow the browser's locale through `fmtClock`. In
+  a 12-hour locale the two disagree. MD-4 fixes it: the client draws the
+  times of the why line.
+- **A carried needs read can be 5 seconds old.** `carryFeedNeeds` reads the
+  feed key without `force`, and `FRESH_MS` is 5 seconds. MD-5 owns the fix,
+  with the ETag.
+- **A slow feed holds the bell on My Day.** `fetchNeeds` waits on the
+  carrier, and the feed route times out at 8 seconds. MD-2b gives the carrier
+  a limit of its own, about 4 seconds. Then it falls back to `/shell/needs`.
+
+### MD-2 · The life of a card — AGENT-SAFE, in four slices
+
+The MD-2 audit of 2026-10-13 gave GO-NARROWED, and split the ticket in four.
+§6.8 holds the answers that made MD-2a dispatchable.
+
+### MD-2a · Card state on the server — AGENT-SAFE
+
+Files:
+
+- `infra/postgres/<next free>_my_day_card_state.sql`. The next free number
+  was 258 on 2026-10-13. Check it again at merge (R1).
+- The regenerated tenancy set: `uv run python scripts/gen_tenant_migration.py`.
+- `POST /shell/feed/state` in `gateway/routes/shell/`, and its BFF route
+  `src/app/api/shell/feed/state/route.ts`.
+- The state join in `feed.py`, and the sort of §6.8 item 6 in
+  `feed_rank.py`.
 
 Done when:
 
-1. The table passes `test_tenant_coverage.py`, and another org's row is
-   invisible under FORCE RLS (R8).
-2. Seen, snooze (four choices), dismiss and "Not useful" write the table, and
-   the feed honours each.
-3. Each of the eight rules of §6.3 has its own test, and one test holds their
-   order. Each test fails when someone removes its rule.
-4. A failed source and a capped source each keep their cards (§6.1).
-5. Handled reads the `handled` reads of §6.7, and a missing signal never
-   reaches it.
-6. `test_my_day_prefs.py` (§13.3) passes.
-7. The client keeps the order during a visit, and shows the "N new" pill.
+1. The table passes `test_tenant_coverage.py`, with a per-table assertion in
+   the model of `test_the_task_refs_table_is_tenant_scoped`. The R8 suite
+   holds four negative tests:
+   - Org B reads none of org A's rows.
+   - WITH CHECK refuses org A's row from a session bound to B.
+   - Member B cannot change member A's row for the same `signal_id`.
+   - A body that names a member or an org gets 422.
+2. Seen, snooze (four choices), dismiss, "Not useful" and `acted` write the
+   table through the contract of §6.8. The feed honours each.
+3. Each rule of §6.3, as §6.8 runs it, has its own test, and one test holds
+   their order. Each test fails when someone removes its rule. Rule 6 asserts
+   "no answer, stays in Later".
+4. A dismissed task stays dismissed when a block folds in. It also stays
+   dismissed when it turns overdue. A new due date brings it back (§6.8
+   item 1).
+5. A signal that leaves writes no row (§6.1). `needs` is unchanged with state
+   rows present (§6.8 item 9).
+6. Fatigue is −8 for each visit of the day, to −24 at most, in
+   `test_feed_rank.py`.
+7. The R8 suite passes with no skip, and the count is in the PR.
+
+The `feed_rank.py` comment that gives Handled to MD-7 changes to MD-2c.
+
+### MD-2b · The card menu and the seen observer — AGENT-SAFE, after MD-2a
+
+The menu of §4.2 item 6: Snooze with four choices, Dismiss, and "Not
+useful". The seen observer of §6.2 sends one batch every 10 s and on
+`pagehide`. The card shows its dot, "Updated" and "Still open". The client
+keeps a failed source's cards from the last answer (§6.1). The order holds
+during a visit, and new cards wait behind the "N new" pill (§7 rule 4). The
+needs carrier gets its own 4 s limit (the third follow-up above).
+
+### MD-2c · Handled and the honest summary — AGENT-SAFE, after MD-2a
+
+- **Tasks.** The tasks of the member's lens that were completed since the day
+  start. The actor is `created_by` of the newest `pm_activities` row of type
+  `status_change` for that task.
+- **Email.** The rules applied since the day start (`email_executed_rules`,
+  status `APPLIED`), on the mailboxes that the needs email provider reads.
+- **Approvals.** A new read in `action_broker`, beside `read_pending`, of the
+  actions decided since the day start. Only the org admin who passes the
+  approvals gate gets it, as with the approvals provider.
+- **Your own acts.** The `acted` rows of the day.
+- **The shape.** The answer gains `handled`, a list of
+  `{app, title, href, by, at}`. `by` is `you`, a colleague's name,
+  `email_rules` or `agent:<name>`. The client writes the words. Each source
+  gives 15 rows at most.
+- **The summary.** "The rest is handled" shows only when `handled` is not
+  empty and every source read `ok` with no cap.
+
+### MD-2d · Feed preferences — AGENT-SAFE
+
+The column `user_settings.my_day_prefs` (its own migration number, at build
+time), `PUT /shell/feed/prefs`, and `test_my_day_prefs.py` (§13.3).
+
+- **The keys.** There are three:
+  - `mutes`: a list of kinds, 20 at most.
+  - `open_in_app`: a list of kinds, for §11.2 rule 4.
+  - `corrections`: 10 lines at most, 300 characters each, 1,500 in all.
+
+  Any other key gets 422.
+- **The body.** `{key, value}`. The server merges one key with `jsonb_set`,
+  and never replaces the column.
+- **A member with no settings row.** The PUT inserts the calendar seed too
+  (`_seed_from_work_schedule`), as `me.py` `_write_shell` does (D-PC-16). A
+  test holds this case.
+- MD-9 reads `mutes` first. MD-8 reads `open_in_app`. MD-6b reads
+  `corrections`.
+
+**BUILT, 2026-10-13.** Migration 259 adds the column. The routes are in
+`gateway/routes/shell/prefs.py`, and the BFF route is
+`src/app/api/shell/feed/prefs/route.ts`. `GET /shell/feed/prefs` gives the
+stored object, and a key the member never set is absent. The fences are
+`tests/unit/test_my_day_prefs.py` and `tests/unit/test_my_day_prefs_r8.py`.
+Nothing calls the routes yet, so they are dark by the absence of a caller.
+
+The build made three choices that the ticket did not record:
+
+- A kind is a kind that a provider of `needs.REGISTRY` gives. The write
+  refuses another kind, and the read drops a kind that left the registry.
+- `open_in_app` takes 20 kinds at most, the same cap as `mutes`.
+- The server refuses a correction value over a limit with 422, and never
+  clips it. The client clips the list, newest first, before it saves.
 
 ### MD-3 · More signals, and the three link gaps — AGENT-SAFE
 
@@ -1674,6 +1869,7 @@ npx vitest run src/lib/shell/ src/lib/theme/ src/lib/nav.test.ts
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py tests/unit/test_shell_feed_r8.py -q
 uv run ruff check apps/services/gateway/gateway/routes/shell
+uv run pytest tests/unit/test_my_day_state.py tests/unit/test_my_day_state_r8.py -q
 uv run pytest tests/unit/test_my_day_loop.py tests/unit/test_my_day_prefs.py tests/unit/test_feed_decide.py -q
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
