@@ -244,8 +244,8 @@ def test_the_step_sits_between_the_console_restart_and_the_strict_check() -> Non
 
 def test_the_step_is_guarded_by_is_enabled() -> None:
     body = [ln.strip() for ln in _block().splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    assert body[1] == 'if systemctl is-enabled --quiet "$EDGE_UNIT" 2>/dev/null; then'
-    assert body[0] == 'EDGE_UNIT="acb-agent-edge"'
+    assert body[1] == 'if systemctl is-enabled --quiet "$edge_unit" 2>/dev/null; then'
+    assert body[0] == 'edge_unit="acb-agent-edge"'
     # Every act sits inside the guard: no line between the guard and its
     # `else` starts at column 0.
     inside = _block().splitlines()

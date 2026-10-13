@@ -1713,24 +1713,24 @@ echo "==> Restarting the agent edge (systemd, WS-55 EA-10a)"
 # The wait accepts any HTTP answer: with the flag off, every route is a 404.
 # Fence: tests/unit/test_agent_edge_deploy.py.
 # >>> ea10 edge restart
-EDGE_UNIT="acb-agent-edge"
-if systemctl is-enabled --quiet "$EDGE_UNIT" 2>/dev/null; then
-  if ! sudo cmp -s "$APP_DIR/deploy/hostinger/$EDGE_UNIT.service" "/etc/systemd/system/$EDGE_UNIT.service"; then
-    sudo install -m 0644 "$APP_DIR/deploy/hostinger/$EDGE_UNIT.service" "/etc/systemd/system/$EDGE_UNIT.service"
+edge_unit="acb-agent-edge"
+if systemctl is-enabled --quiet "$edge_unit" 2>/dev/null; then
+  if ! sudo cmp -s "$APP_DIR/deploy/hostinger/$edge_unit.service" "/etc/systemd/system/$edge_unit.service"; then
+    sudo install -m 0644 "$APP_DIR/deploy/hostinger/$edge_unit.service" "/etc/systemd/system/$edge_unit.service"
     sudo systemctl daemon-reload
   fi
-  sudo systemctl restart "$EDGE_UNIT"
+  sudo systemctl restart "$edge_unit"
   sleep 3
-  if systemctl is-active --quiet "$EDGE_UNIT" \
+  if systemctl is-active --quiet "$edge_unit" \
     && wait_ready "agent edge" "http://127.0.0.1:8091/.well-known/oauth-authorization-server" 60; then
     echo "    agent edge is active (127.0.0.1:8091)"
   else
     echo "AGENT EDGE FAILED TO START"
-    sudo journalctl -u "$EDGE_UNIT" --no-pager -n 40 || true
+    sudo journalctl -u "$edge_unit" --no-pager -n 40 || true
     exit 1
   fi
 else
-  echo "    $EDGE_UNIT is not enabled here — skipping restart (the edge stays off)"
+  echo "    $edge_unit is not enabled here — skipping restart (the edge stays off)"
 fi
 # <<< ea10 edge restart
 
