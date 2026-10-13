@@ -516,6 +516,10 @@ def world():
                                  "their personal (assignee arm)", assignee=MEMBER)
     t["handover"] = a.task(p["sealed"], p["sealed"], "hand-over (assignee arm)",
                            assignee=MEMBER)
+    # H-304: a sealed task handed over to the READER. The human reader keeps
+    # it through the assignee arm, and the reader's agent must not.
+    t["handover_reader"] = a.task(p["sealed"], p["sealed"],
+                                  "hand-over to the reader", assignee=READER)
     t["b"] = b.task(p["b_root"], p["b_root"], "org B task", assignee=MEMBER)
     a.one("UPDATE pm_projects SET sealed_at = now() WHERE id = CAST(:p AS uuid)"
           " RETURNING id", p=p["sealed"])
@@ -727,10 +731,11 @@ class TestEachNarrowingHidesItsTargetOnBothArms:
         reader is not its assignee, so the hand-over arm does not reach it."""
         rows, _ = await _list(armed, "reader human", email=READER)
         assert armed.t["handover"] not in rows, "data:org:read lists the sealed task"
+        assert armed.t["handover_reader"] in rows, "the reader lost its hand-over"
         agent_rows, agent_total = await _list(armed, "reader agent",
                                               connection=armed.c["reader"])
-        assert armed.t["handover"] not in agent_rows
-        assert agent_rows == rows
+        assert armed.t["handover_reader"] not in agent_rows
+        assert agent_rows == rows - {armed.t["handover_reader"]}
         assert agent_total == len(agent_rows)
 
     async def test_a_pin_hides_a_project_from_the_tree_and_from_a_get(self, armed):
