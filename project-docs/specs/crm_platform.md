@@ -1727,10 +1727,12 @@ that makes a profile.
 2. **With the edition unknown, discovery can run.**
    - `engine.DISCOVERY_ALLOWANCE` is 25 credits. The allowance holds when the
      budget is the floor (no profile, or an edition that Zoho did not name),
-     discovery is due, and the run uses the default budget. Then discovery may
-     spend up to 25 credits, also when the default budget is spent.
-     `_discovery_due` holds it to once in 24 hours. A known edition never
-     gets it (review, 2026-10-13).
+     the profile is absent or 24 hours old, and the run uses the default
+     budget. Then discovery may spend up to 25 credits, also when the default
+     budget is spent. A known edition never gets it (review, 2026-10-13).
+   - The age rule holds it to once in 24 hours. `_discovery_due` alone does
+     not, because pending module fields make discovery due after one hour
+     (re-review, 2026-10-13).
    - When less than the allowance is left, discovery reads first, before the
      estimate and the field definitions. It stores the profile. The pipelines
      wait for the normal discovery slot, after the Stage picklist, so a start
@@ -1804,7 +1806,7 @@ cd workbench/control_plane && npx vitest run src/app/crm/components/crmQ9.test.t
   `fetched_at` of the connection 7 days back. The callback passes
   `keep_profile=verdict is True`.
 - `engine.DISCOVERY_ALLOWANCE = 25`. `_discovery_allowance_due` reads the
-  four conditions. `_execute` runs `_discover` first when they hold, with
+  four conditions, and the profile age is one of them. `_execute` runs `_discover` first when they hold, with
   `ctx.pipelines_deferred` set. `_discover` reads at most once in a run, and
   it sets the edition budget before the module fields.
   `_mirror_deferred_pipelines` writes the pipelines at the normal slot.
