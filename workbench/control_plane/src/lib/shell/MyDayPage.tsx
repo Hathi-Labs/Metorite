@@ -20,6 +20,13 @@
  * It opens with its title bar, `AppTopBar` (owner, 2026-10-10), as every app
  * does. The greeting stays a `PageHeader` under it: a sentence and the date
  * are the page's content, and the bar carries the name only.
+ *
+ * **The live feed** (`my_day_feed.md` §14.1, WS-58 MD-1b) is behind a second
+ * flag, `NEXT_PUBLIC_MY_DAY_FEED` (`myDayFeedOn`), default OFF. With it on,
+ * the cards above give way to one column of feed cards (`FeedColumn`), and
+ * Today stays as the right rail from `xl`. Needs you and Next actions leave:
+ * the feed holds their rows as cards. The greeting, the summary line and the
+ * store's Undo stay. With it off, the page is the page above, unchanged.
  */
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -36,11 +43,18 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { visibleSections } from "@/lib/nav";
 
 import AppLauncher from "./AppLauncher";
+import { FeedColumn, useFeed } from "./FeedCard";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
 import { cardOrderFor, cardsFor, dateLine, failedLines, greetingLine, seesApprovals, summaryLine } from "./myDay";
+import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
 import { BUILT_CARDS } from "./presets";
 import { homePane } from "./shellNav";
 import { useShellPrefs } from "./shellPrefs";
+
+// The feed flag goes through `useSyncExternalStore`, as `/` reads its own:
+// the server render reads the build-time value only, and a browser's dev
+// override takes effect after hydration, with no mismatch.
+const noSubscribe = () => () => {};
 
 /**
  * The clock, by the minute, on the client only. The server renders no time,
@@ -70,6 +84,10 @@ export default function MyDay() {
   const cards = cardsFor(accessLoading ? [] : access.features, access.is_admin);
   const needs = useNeedsYou(!accessLoading && cards.needs, seesApprovals(access.features, access.is_admin));
   const today = useTodayItems(!accessLoading && cards.today, now);
+  const feedOn = useSyncExternalStore(noSubscribe, myDayFeedOn, myDayFeedOnServer);
+  // The feed's sources are the needs sources and Calendar, and Calendar
+  // needs what Today needs, so a member with no needs card gets no feed.
+  const feed = useFeed(feedOn && !accessLoading && cards.needs);
   const sections = visibleSections(accessLoading ? null : access.features, access.is_admin);
   // The member's preset orders the cards (NS-7, §8.1). It hides none: a card
   // the preset does not name follows the named ones. With the shell nav off,
@@ -126,7 +144,7 @@ export default function MyDay() {
         </div>
       </div>
 
-      {accessLoading || layoutPending ? (
+      {accessLoading || (!feedOn && layoutPending) ? (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3" aria-hidden>
           <Skeleton className="h-64 w-full rounded-xl xl:col-span-2" />
           <Skeleton className="h-40 w-full rounded-xl" />
@@ -141,6 +159,20 @@ export default function MyDay() {
             </Link>
             .
           </p>
+        </div>
+      ) : feedOn ? (
+        // The feed (MD-1b): one column, about 720 px, in the order of the
+        // feed's groups. From `xl`, Today is the right rail, and it stays in
+        // view while the member scrolls the column. Below `xl` Today comes
+        // FIRST, so "You are caught up" ends the page (visual review). The
+        // start classes place each one at `xl`, whatever the order.
+        <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
+          {cards.today ? (
+            <TodayCard today={today} now={now} className="xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1" />
+          ) : null}
+          {cards.needs ? (
+            <FeedColumn feed={feed} now={now} className="xl:col-span-2 xl:col-start-1 xl:row-start-1" />
+          ) : null}
         </div>
       ) : (
         // One column in the order of the question. From `xl`, Today is a

@@ -1697,6 +1697,43 @@ else
   echo "    acb-customer-console is not enabled here — skipping restart"
 fi
 
+echo "==> Restarting the agent edge (systemd, WS-55 EA-10a)"
+# The public door for outside agents (mcp.metorite.com), spec
+# external_agent_access.md §15.3. The same pattern as the Customer Console
+# step above: `git reset --hard` moves the code, and only a restart loads it.
+#
+# 🔴 **ONLY WHEN THE UNIT IS ENABLED.** The BO-23 loop below installs the unit
+# file and the BH-7 step installed its drop-in, and neither one enables a
+# service. So a box where the owner has not enabled the edge keeps it OFF, and
+# this step says so. Enabling it is an owner act, after the edge env file
+# exists.
+#
+# When it is enabled, the unit file goes in HERE, before the restart, so the
+# restart runs the unit of this commit and not the one of the last deploy.
+# The wait accepts any HTTP answer: with the flag off, every route is a 404.
+# Fence: tests/unit/test_agent_edge_deploy.py.
+# >>> ea10 edge restart
+edge_unit="acb-agent-edge"
+if systemctl is-enabled --quiet "$edge_unit" 2>/dev/null; then
+  if ! sudo cmp -s "$APP_DIR/deploy/hostinger/$edge_unit.service" "/etc/systemd/system/$edge_unit.service"; then
+    sudo install -m 0644 "$APP_DIR/deploy/hostinger/$edge_unit.service" "/etc/systemd/system/$edge_unit.service"
+    sudo systemctl daemon-reload
+  fi
+  sudo systemctl restart "$edge_unit"
+  sleep 3
+  if systemctl is-active --quiet "$edge_unit" \
+    && wait_ready "agent edge" "http://127.0.0.1:8091/.well-known/oauth-authorization-server" 60; then
+    echo "    agent edge is active (127.0.0.1:8091)"
+  else
+    echo "AGENT EDGE FAILED TO START"
+    sudo journalctl -u "$edge_unit" --no-pager -n 40 || true
+    exit 1
+  fi
+else
+  echo "    $edge_unit is not enabled here — skipping restart (the edge stays off)"
+fi
+# <<< ea10 edge restart
+
 # ── App Workshop T2 (React) build vendor cache ────────────────────
 # Shared, pinned react/react-dom/esbuild/lucide-react the
 # app-builder agent's build script

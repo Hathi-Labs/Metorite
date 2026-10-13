@@ -1231,48 +1231,25 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/maf_coding_engine.md` §12 · `work_plan.md` §6.1 WS-43
 - **Added:** 2026-10-03 · PR #584 fix round 1
 
-### H-211 · Remove `approve_all` from the root `metorite` agent and from `agent-sales-assistant` · [AGENT]
+### H-211 · Remove `approve_all` from the root `metorite` agent · [AGENT]
 - **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
-  `on_permission_request` line means this is open. For the other agent, run
-  `gh api repos/FracktalWorks/agent-sales-assistant/contents/agents.py --jq .content | base64 -d | grep -n approve_all`.
-  A hit means it is open there too.
-- **What happens.** Both factories pass
-  `on_permission_request: PermissionHandler.approve_all`. The root one is
-  `agents.py:102-122`. The external one is `agents.py:676` at `03de684e`.
+  `on_permission_request` line means this is open.
+- **What happens.** The root factory passes
+  `on_permission_request: PermissionHandler.approve_all` (`agents.py:102-122`).
   `GitHubCopilotAgent` stores that handler in `_permission_handler`. The
-  executor installs the B6 handler only when `_permission_handler is None`
-  (`executor.py:919`, `:3346`, `:3878`, `:4787` and `:5307`). So these two
-  agents approve every shell command, file write and fetch, in every
+  executor installs the B6 handler only when `_permission_handler is None`.
+  So this agent approves every shell command, file write and fetch, in every
   `AGENT_PERMISSION_MODE`.
 - **Do.**
   1. Delete `on_permission_request` from the root factory. The executor then
      installs `_copilot_permission_handler()`.
-  2. Open a PR in `FracktalWorks/agent-sales-assistant` that does the same.
-     Do it together with H-212.
-  3. Add a fence that fails when a first-party factory sets `approve_all`.
-  4. `mutation_runner.py:85` also sets it, inside the mutation container.
+  2. Add a fence that fails when a first-party factory sets `approve_all`.
+  3. `mutation_runner.py:85` also sets it, inside the mutation container.
      Allow-list that one site with its reason, or fix it too.
+- **Changed 2026-10-13.** WS-53 CRM-C7 removed the outside sales agent, so its
+  half of this entry and all of H-212 are gone.
 - **Authority:** `permissions_sandbox_b6.md` §"The gap" ·
   `agent_architecture.md` §3.2 · `specs/maf_coding_engine.md` §14
-- **Added:** 2026-10-03 · the WS-43 spec session
-
-### H-212 · Fix the `copilot.types` import in `agent-sales-assistant` · [AGENT]
-- **Check:** `gh api repos/FracktalWorks/agent-sales-assistant/contents/agents.py --jq .content | base64 -d | grep -n "copilot.types"`.
-  A hit means this is open.
-- **What happens.** The agent's `build_agent` runs
-  `from copilot.types import PermissionHandler` (`agents.py:664` at
-  `03de684e`). H-181 moved this repo to `github-copilot-sdk` 1.0.11, and that
-  version has no `copilot.types` module. Measured 2026-10-03: on 1.0.11,
-  `import copilot.types` raises `ModuleNotFoundError`. So the factory raises
-  `ImportError` when the loader builds the agent. Then `@sales` and the email
-  drafting consult of `agent-sales-assistant` fail.
-- **Not measured.** Nobody read the box log. The failure on production comes
-  from the code and the lock, not from a log line.
-- **Do.** In that repo, delete the `copilot.types` import together with the
-  `approve_all` line (H-211). Then load the agent on a dev gateway and run one
-  `@sales` chat.
-- **Authority:** H-181 · `uv.lock` (`github-copilot-sdk` 1.0.11) ·
-  `specs/maf_coding_engine.md` §14
 - **Added:** 2026-10-03 · the WS-43 spec session
 
 ### H-213 · The WS-3 board row says WS-3a and WS-3b shipped, and the code has neither · [AGENT]
@@ -2741,8 +2718,8 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `rg -n "FracktalWorks/" apps/services/gateway/agents.json README.md`
   → hits mean still pending.
 - **Why:** The rebrand moved this repo's slug to `Hathi-Labs/Metorite`, but
-  the satellite agent/skill repos (`FracktalWorks/agent-sales-assistant`,
-  `FracktalWorks/agent-*`, `FracktalWorks/skill-*`) referenced in
+  the satellite agent/skill repos (`FracktalWorks/agent-*`,
+  `FracktalWorks/skill-*`) referenced in
   `agents.json`, `README.md` and `system_architecture.md` are separate real
   repositories that were NOT forked. An agent cannot know whether they stay
   upstream, get forked into Hathi-Labs, or get dropped — that is an org
@@ -2927,12 +2904,12 @@ line — never reclaim a number by deleting the other entry.
   `.github/workflows/phase-0-tripwire.yml`
 - **Added:** 2026-08-26 · guardrails/CI session
 
-### H-49 · D63's seal is BUILT. The dialog and the watched door are not · [AGENT]
-- **Check:** `rg -n "seal_personal_tree" apps/services/gateway/gateway/routes/`
-  → hits in `admin/members.py` mean slice 1 landed. Then
-  `rg -n "seal_counts|unseal_personal_tree" apps/services/gateway --include=*.py`
-  → if the only hits are the definitions in `projects/seal.py`, nothing calls
-  them and this entry is still live.
+### H-49 · D63's seal and dialog are BUILT. The watched door is not · [AGENT]
+- **Check:** `rg -n "unseal_personal_tree" apps/services/gateway --include=*.py`.
+  The entry is open while the only caller is the reactivation branch of
+  `PATCH /admin/members/{email}` (`admin/members.py:362`). That branch gives
+  the tree back to its owner. No owner-only, logged route lets somebody ELSE
+  open a sealed tree yet.
 - ✅ **SLICE 1 LANDED 2026-09-23.** Migration **215** adds
   `pm_projects.sealed_at`. Both visibility clauses filter it on both arms, so
   a sealed tree leaves the grant closure AND the `data:org:read` answer. Both
@@ -2950,15 +2927,15 @@ line — never reclaim a number by deleting the other entry.
   to create the cross-assigned state, so `handed_over` reads 0 on a healthy
   tenant. That is correct, not broken.
 - **What is still owed, and both are D63's own words:**
-  1. **The dialog states the split in numbers BEFORE the click** — *"14 tasks
-     — 3 handed over, 11 sealed, not deleted; later access is recorded"*.
-     `projects/seal.py::seal_counts` computes exactly that and **no route calls
-     it**. A policy nobody is told about at the moment it applies is one they
-     discover by being surprised.
-  2. **One owner-only, LOGGED door** to open or export a sealed tree.
-     `unseal_personal_tree` is the mechanism and no route calls it either.
-     ⚠️ Reactivation already unseals, and that is NOT this door: it returns
-     the tree to its owner. This door lets somebody ELSE read it.
+  1. ✅ **The dialog states the split in numbers BEFORE the click** — *"14
+     tasks — 3 handed over, 11 sealed, not deleted; later access is
+     recorded"*. BUILT: `GET /admin/members/{email}/seal-preview` calls
+     `projects/seal.py::seal_counts` (`admin/members.py:1123`), and
+     `OrganizationAdmin.tsx` reads it through `lib/sealPreview.ts`.
+  2. **One owner-only, LOGGED door** to open or export a sealed tree. Still
+     owed. `unseal_personal_tree` is the mechanism. Its one caller today is
+     reactivation (`admin/members.py:362`), and that is NOT this door: it
+     returns the tree to its owner. This door lets somebody ELSE read it.
 - 📌 `app_user.status` still only ever holds `'active'` on production, so
   nothing has exercised this against real data yet.
 - **Authority:** `work_plan.md` §3 D63 · §6 (member/role writes) · D53.7/D53.8
@@ -5275,28 +5252,6 @@ line — never reclaim a number by deleting the other entry.
   D97
 - **Added:** 2026-10-12 · branch `feat/ws55-ea3-mcp-read-tools`. Renumbered from H-301 to H-302, then to H-303, on 2026-10-13, because
   `origin/main` took H-301 and then H-302. H-303 was free on `origin/main` and in each open pull request.
-
-### H-304 · An org-wide reader sees a SEALED personal tree (D63) · [AGENT]
-- **Check:** read `task_visibility_clause` in
-  `apps/services/gateway/gateway/routes/projects/core.py` (about line 1600).
-  The entry is open while the `vis.unrestricted` branch returns only the
-  tenant filter and does not test `pm_projects.sealed_at`.
-- **Why:** D63 seals the personal tree of a member who leaves. Only the
-  owner-only LOGGED door may open it, and that door is not built. Migration
-  215 filters `sealed_at` on both arms of the restricted clause. The
-  `data:org:read` branch skips the filter, so an admin reads a sealed tree
-  through `/projects/search`, `/projects/search/refs` (#944) and
-  `/projects/tasks/{id}`. The task-ref builder of #944 found this on
-  2026-10-13. The gap is older than #944.
-- **Do:** in the shared clause, make the unrestricted branch exclude tasks
-  whose project is sealed. Keep the second arm of D63: a task that is assigned
-  OUTWARD stays visible to its assignee. Fix it in the one clause, not per
-  route. Add an R8 test with two members, one sealed tree and an admin reader,
-  run as the app role.
-- **Done when:** an admin with `data:org:read` gets no task of a sealed tree
-  from search, refs or the task read. The assignee hand-over still works.
-- **Authority:** `work_plan.md` §3 D63 · H-49 · migration 215
-- **Added:** 2026-10-13 · found in the review of #944
 
 # DONE — deleted, not archived
 

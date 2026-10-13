@@ -297,7 +297,7 @@ describe("every app the member holds, with nothing pinned", () => {
       .filter((i) => i.group === "go")
       .map((i) => i.href);
 
-  it("an admin who pinned nothing finds all twelve live panes, Admin and AI Studio too", () => {
+  it("an admin who pinned nothing finds all thirteen live panes, Admin and AI Studio too", () => {
     const sections = visibleSections([...LIVE_FEATURES, ...PREVIEW_FEATURES], true, false);
     // The sidebar's own input, with nothing starred and every app known: it
     // holds nothing to draw. The bar still lists the FULL held set below.
@@ -316,6 +316,7 @@ describe("every app the member holds, with nothing pinned", () => {
       "/approvals",
       "/settings/organization",
       "/settings/appearance",
+      "/integrations",
     ]);
   });
 

@@ -44,13 +44,21 @@ INJECTABLE_PLATFORM_TOOLS = {
     "get_errors", "run_diagnostics", "install_dependency",
     "save_note", "recall_notes", "query_history",
     "github_search", "github_repo_search",
+    # WS-53 CRM-C7: the `crm` read family (acb_skills/crm_tools.py).
+    "crm_list_records", "crm_get_record", "crm_list_fields", "crm_list_pipelines",
+    "crm_deal_contacts", "crm_list_owners", "crm_report", "crm_aggregate",
+    "crm_stage_dwell", "crm_list_modules", "crm_list_module_records",
+    "crm_get_module_record",
 }
 
 # The agents this item scopes, with a per-agent leanness ceiling.
 SCOPED_AGENTS = {
     "agent-email-assistant": 10,
     "agent-apis-config": 10,
-    "agent-orchestrator": 10,
+    # 20 since CRM-C7 (2026-10-13): the chat reads the CRM directly, by the
+    # owner's report that the chat could not reach the Zoho data. The 12 CRM
+    # read tools sit beside the 8 core tools.
+    "agent-orchestrator": 20,
 }
 
 

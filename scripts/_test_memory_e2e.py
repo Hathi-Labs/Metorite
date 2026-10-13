@@ -225,7 +225,7 @@ async def test_copilot_agent_context(client: httpx.AsyncClient) -> None:
         "so you remember it for our conversation."
     )
     text1, _ = await stream_agent_chat(
-        client, "agent-sales-assistant", msg1, history=history, thread_id=tid,
+        client, "crm-assistant", msg1, history=history, thread_id=tid,
     )
     history.append({"role": "user", "content": msg1})
     history.append({"role": "assistant", "content": text1})
@@ -239,7 +239,7 @@ async def test_copilot_agent_context(client: httpx.AsyncClient) -> None:
     # Turn 2: ask about facts from Turn 1 — requires session continuity
     msg2 = "How many employees does Fracktal Works have?"
     text2, _ = await stream_agent_chat(
-        client, "agent-sales-assistant", msg2, history=history, thread_id=tid,
+        client, "crm-assistant", msg2, history=history, thread_id=tid,
     )
 
     ok(f"Turn 2 response ({len(text2)} chars)")
@@ -252,7 +252,7 @@ async def test_copilot_agent_context(client: httpx.AsyncClient) -> None:
     # Turn 3: ask about client
     msg3 = "Who is our biggest client?"
     text3, _ = await stream_agent_chat(
-        client, "agent-sales-assistant", msg3, history=history, thread_id=tid,
+        client, "crm-assistant", msg3, history=history, thread_id=tid,
     )
 
     if "acme" in text3.lower():

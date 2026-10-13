@@ -45,6 +45,7 @@ from gateway.routes.crm.core import (
     Entity,
     ExtraFilterInput,
     LeadIn,
+    ListQuery,
     ListResponse,
     OrganizationIn,
     _tenant_session,
@@ -158,6 +159,21 @@ class DeleteResponse(BaseModel):
 async def _list(
     entity: Entity, params: ListParams, user: Any = None,
 ) -> ListResponse:
+    async with _tenant_session() as db:
+        query = await list_query(db, entity, params, user)
+        return await run_list(db, entity, query)
+
+
+async def list_query(
+    db: Any, entity: Entity, params: Any, user: Any = None,
+) -> ListQuery:
+    """The ONE builder of a list's WHERE clause and its bound values.
+
+    *params* is a :class:`ListParams` or an ``export.ExportParams``. The list
+    routes, ``export.py`` and ``aggregate.py`` (WS-53 CRM-C7) all call it, so
+    an export and an aggregate cover exactly the rows that the list with the
+    same filters shows. Do not copy a filter into a caller.
+    """
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:
         # §3.3/B6 — a lead is "converted" while the deal it became still
@@ -171,27 +187,25 @@ async def _list(
     )
     extra = (*extra, *related_where)
     extra_params.update(related_params)
-    params.owner = resolve_owner(params.owner, user)
-    async with _tenant_session() as db:
-        # CRM-Q8: the date ranges and the custom field filters. They validate
-        # first, so a bad value is a 422 before the list query runs.
-        more_where, more_params = await extra_filters(
-            db, entity, ExtraFilterInput(
-                created_from=params.created_from, created_to=params.created_to,
-                updated_from=params.updated_from, updated_to=params.updated_to,
-                close_from=params.close_from, close_to=params.close_to,
-                custom=params.custom,
-            ),
-        )
-        query = list_contract(
-            entity,
-            q=params.q, sort=params.sort, direction=params.direction,
-            page=params.page, page_size=params.page_size,
-            status_id=params.status_id, owner=params.owner, source=params.source,
-            pipeline_id=params.pipeline_id, extra_where=(*extra, *more_where),
-            extra_params={**extra_params, **more_params},
-        )
-        return await run_list(db, entity, query)
+    owner = resolve_owner(params.owner, user)
+    # CRM-Q8: the date ranges and the custom field filters. They validate
+    # first, so a bad value is a 422 before the list query runs.
+    more_where, more_params = await extra_filters(
+        db, entity, ExtraFilterInput(
+            created_from=params.created_from, created_to=params.created_to,
+            updated_from=params.updated_from, updated_to=params.updated_to,
+            close_from=params.close_from, close_to=params.close_to,
+            custom=params.custom,
+        ),
+    )
+    return list_contract(
+        entity,
+        q=params.q, sort=params.sort, direction=params.direction,
+        page=params.page, page_size=params.page_size,
+        status_id=params.status_id, owner=owner, source=params.source,
+        pipeline_id=params.pipeline_id, extra_where=(*extra, *more_where),
+        extra_params={**extra_params, **more_params},
+    )
 
 
 async def _get(entity: Entity, record_id: str) -> dict:

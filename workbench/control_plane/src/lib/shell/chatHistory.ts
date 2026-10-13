@@ -36,6 +36,11 @@ export function mergeFileEntry(
   return [...prev.filter((f) => f.path !== entry.path), next];
 }
 
+/** The Artifacts address of one chat's files (NS-6 slice 6c). */
+export function chatFilesHref(sessionId: string): string {
+  return `/artifacts?session=${encodeURIComponent(sessionId)}`;
+}
+
 /** A chat's name in the list: the member's name for it, else its first words. */
 export function sessionTitle(s: Pick<ChatSession, "title">): string {
   return s.title?.trim() || "New chat";

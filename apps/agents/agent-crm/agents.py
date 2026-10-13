@@ -56,6 +56,11 @@ from uuid import UUID
 import httpx
 from acb_common import get_logger, get_settings
 
+# WS-53 CRM-C7: the twelve CRM read tools have ONE implementation, in
+# ``acb_skills.crm_tools``. Every other agent gets the same functions as the
+# ``crm`` skill family. This agent imports them and defines no second copy.
+from acb_skills.crm_tools import CRM_TOOLS
+
 # H-236: the four writes carry ``open_world=True``. Per D-CRM-9 an agent write
 # queues for the live Zoho tenant when ``CRM_ZOHO_SYNC`` is on, so it can carry
 # data off the platform. A run that a covered Projects run delegates to does
@@ -414,7 +419,8 @@ async def search_crm(
     organization name/email/website — not semantic search. Converted leads are
     excluded, matching the app's own lead list."""
     slugs = [_entity_slug(entity)] if entity else list(ENTITY_LABELS)
-    capped = max(1, min(int(limit or 10), 25))
+    # D1 (CRM-C7): a tool answer holds at most 50 rows.
+    capped = max(1, min(int(limit or 10), 50))
     sections: list[str] = []
     total = 0
     for slug in slugs:
@@ -1009,6 +1015,9 @@ _TOOLS = [
     update_deal_status,
     log_activity,
     convert_lead,
+    # CRM-C7: the shared read tools (records, fields, pipelines, contacts,
+    # owners, reports, totals, stage dwell and the mirrored modules).
+    *CRM_TOOLS,
 ]
 
 

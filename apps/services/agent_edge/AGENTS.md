@@ -41,7 +41,9 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 
 ## Deploy
 
-This unit is not deployed. EA-10 writes its unit file, its Caddy block and its DNS record, and those acts are OWNER-GATE. Run it locally with `uv run uvicorn agent_edge.app:app`.
+Spec §15.3 pins the deploy (EA-10). The unit is `deploy/hostinger/acb-agent-edge.service` on `127.0.0.1:8091`. It runs as a systemd `DynamicUser`, never as `acb`, so the edge cannot read a 0600 file of `acb`. systemd loads `apps/services/agent_edge/.env` as root. The process starts in the empty `/run/acb-agent-edge`, so `Settings` opens no `.env`. Never set `WorkingDirectory` to the checkout root or to this directory.
+
+The deploy starts the edge only after the owner enables the unit. Caddy serves it as `mcp.metorite.com`, and the wildcard DNS record already covers that host. Run it locally with `uv run uvicorn agent_edge.app:app`.
 
 ## Fence
 

@@ -42,6 +42,7 @@ import {
 } from "../lib/board";
 import { cardLabel } from "../lib/cardLabel";
 import { isMirrored, type CrmMode } from "../lib/connect";
+import { isRetired } from "../lib/emptyStages";
 import { compactMoney, money, shortEmail, stageAgeLabel } from "../lib/format";
 import { nextActivityChip } from "../lib/nextActivity";
 import type { Deal, Lead, Status } from "../lib/types";
@@ -126,6 +127,9 @@ export default function KanbanBoard({
               icon: stageIcon(lane.status.type),
             }}
             dropTarget={isTarget && !readOnly}
+            // CRM-C3: a hidden stage, or one that Zoho no longer lists, shows
+            // only with records, and says so.
+            hidden={isRetired(lane.status)}
             empty={lane.rows.length === 0 ? "Nothing here" : undefined}
             totals={isDeals ? <LaneTotals lane={lane} /> : undefined}
             onDragOver={(e) => {

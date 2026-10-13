@@ -55,6 +55,7 @@ import Modal, { type ModalPlacement } from "@/components/ui/Modal";
 import { onClear } from "@/lib/dataCache";
 
 import { cardsFor, seesApprovals } from "./myDay";
+import { needsKey } from "./needs";
 import { NeedsList, type NeedsYou, useNeedsYou } from "./NeedsYouCard";
 import { homePane } from "./shellNav";
 
@@ -226,17 +227,41 @@ export const BELL_POLL_MS = 60_000;
 //
 // The bell's host and the sidebar's row counts both want the feed read each
 // minute. Each joins this one poll, so a tab reads the feed once a minute
-// however many surfaces show it. Every reader's `refresh` forces the one
-// cache key (`needsKey`), and the answer reaches every reader through the
-// cache, so one call refreshes them all.
+// however many surfaces show it. Every reader's `refresh` forces its cache
+// key, and the answer reaches every reader of that key through the cache, so
+// one call for each key refreshes them all.
+//
+// **One call for each key** (`my_day_feed.md` §14.1, MD-1b). A tick calls
+// the first refresh of each distinct key. A poller may also COVER other
+// keys: My Day's feed joins with `feedKey()` and covers `needsKey()`, because
+// the feed answer carries the needs view and writes it into the needs key.
+// While a live poller covers a key, the tick calls no refresh of that key.
+// When the cover leaves, the next tick calls the needs refresh again.
 
-const _pollers = new Set<() => void>();
+interface Poller {
+  refresh: () => void;
+  key: string;
+  covers: readonly string[];
+}
+
+const _pollers = new Set<Poller>();
 let _pollTimer: ReturnType<typeof setInterval> | null = null;
 /** A tick came while the tab was hidden, so the feed was not read. */
 let _missed = false;
 
 const _hidden = () => typeof document !== "undefined" && document.visibilityState !== "visible";
-const _tick = () => _pollers.values().next().value?.();
+
+/** Call the first refresh of each distinct key that no live poller covers. */
+function _tick(): void {
+  const covered = new Set<string>();
+  for (const p of _pollers) for (const k of p.covers) if (k !== p.key) covered.add(k);
+  const called = new Set<string>();
+  for (const p of [..._pollers]) {
+    if (called.has(p.key) || covered.has(p.key)) continue;
+    called.add(p.key);
+    p.refresh();
+  }
+}
 
 /**
  * The tab shows again. If a tick came while it was hidden, read once now,
@@ -253,9 +278,17 @@ function _onVisible(): void {
  *
  * A hidden tab reads nothing: its tick is skipped, and the poll reads once
  * when the tab shows again (`visibilitychange`).
+ *
+ * `key` is the cache key that `refresh` forces. `covers` names the other
+ * keys that this refresh fills, so the tick calls no refresh of them.
  */
-export function joinNeedsPoll(refresh: () => void, every = BELL_POLL_MS): () => void {
-  _pollers.add(refresh);
+export function joinNeedsPoll(
+  refresh: () => void,
+  key: string = needsKey(),
+  covers: readonly string[] = [],
+): () => void {
+  const poller: Poller = { refresh, key, covers };
+  _pollers.add(poller);
   if (_pollTimer === null) {
     _missed = false;
     _pollTimer = setInterval(() => {
@@ -264,14 +297,14 @@ export function joinNeedsPoll(refresh: () => void, every = BELL_POLL_MS): () => 
         return;
       }
       _tick();
-    }, every);
+    }, BELL_POLL_MS);
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", _onVisible);
   }
   let left = false;
   return () => {
     if (left) return;
     left = true;
-    _pollers.delete(refresh);
+    _pollers.delete(poller);
     if (_pollers.size === 0 && _pollTimer !== null) {
       clearInterval(_pollTimer);
       _pollTimer = null;

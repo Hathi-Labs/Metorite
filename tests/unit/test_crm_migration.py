@@ -787,7 +787,7 @@ def _altered_not_null_defaults(bare: str, table: str) -> set[str]:
 
 
 def test_the_defaulted_not_null_map_matches_the_migration(
-    bare: str, discipline_bare: str,
+    bare: str, discipline_bare: str, overlay_bare: str,
 ) -> None:
     from gateway.routes.crm.core import NOT_NULL_DEFAULTED
 
@@ -795,6 +795,7 @@ def test_the_defaulted_not_null_map_matches_the_migration(
         declared = (
             _declared_not_null_defaults(bare, table)
             | _altered_not_null_defaults(discipline_bare, table)
+            | _overlay_added(overlay_bare, table, not_null_default=True)
         ) - _PLATFORM_STAMPED
         assert declared == set(declared_map), (
             f"{table}: the migration declares NOT NULL DEFAULT on "
@@ -849,6 +850,72 @@ def discipline_bare() -> str:
         re.sub(r"--.*$", "", line)
         for line in _discipline_migration().read_text(encoding="utf-8").splitlines()
     )
+
+
+def _overlay_migration() -> Path:
+    """The CRM-C3 overlay migration (``crm_platform.md`` §20.6), by CONTENT."""
+    found = [
+        path for path in sorted(MIGRATIONS.glob("*.sql"))
+        if path.name != "schema.generated.sql"
+        and "ADD COLUMN IF NOT EXISTS ui_probability" in path.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, (
+        f"expected exactly one migration adding ui_probability, found "
+        f"{[p.name for p in found]}"
+    )
+    return found[0]
+
+
+@pytest.fixture(scope="module")
+def overlay_bare() -> str:
+    return "\n".join(
+        re.sub(r"--.*$", "", line)
+        for line in _overlay_migration().read_text(encoding="utf-8").splitlines()
+    )
+
+
+#: One ``ADD COLUMN IF NOT EXISTS <name> <rest>`` clause of an ALTER that adds
+#: more than one column. The rest stops at the comma or the semicolon.
+_ADD_CLAUSE_RE = re.compile(r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)([^,;]*)", re.I)
+
+
+def _overlay_added(bare: str, table: str, *, not_null_default: bool = False) -> set[str]:
+    """The columns that the overlay migration adds to *table*.
+
+    Its ALTERs add several columns each, so the one-clause readers above see
+    only the first. ``not_null_default`` keeps the ``NOT NULL DEFAULT`` ones.
+    """
+    found: set[str] = set()
+    for statement in bare.split(";"):
+        head = re.match(r"\s*ALTER\s+TABLE\s+(\w+)", statement, re.I)
+        if head is None or head.group(1) != table:
+            continue
+        for column, rest in _ADD_CLAUSE_RE.findall(statement):
+            if not not_null_default or re.search(r"\bNOT\s+NULL\b.*\bDEFAULT\b", rest, re.I):
+                found.add(column)
+    return found
+
+
+def test_the_overlay_migration_adds_what_the_spec_names(overlay_bare: str) -> None:
+    """CRM-C3: the overlay and the Zoho id, expand only (§20.6 table)."""
+    assert _overlay_added(overlay_bare, "crm_deal_statuses") == {
+        "hidden", "ui_position", "ui_probability", "ui_color", "ext_id",
+        "source_gone_at",
+    }
+    assert _overlay_added(overlay_bare, "crm_lead_statuses") == {
+        "hidden", "ui_position", "ui_color", "ext_id", "source_gone_at",
+    }
+    assert _overlay_added(overlay_bare, "crm_lost_reasons") == {"hidden"}
+    # R6: the one NOT NULL column has a default, and nothing is renamed or dropped.
+    for table in ("crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons"):
+        assert _overlay_added(overlay_bare, table, not_null_default=True) == {"hidden"}
+    assert not re.search(r"\b(DROP\s+COLUMN|RENAME|UPDATE\s+\w+\s+SET)\b", overlay_bare, re.I)
+    for table in ("crm_deal_statuses", "crm_lead_statuses"):
+        assert re.search(
+            rf"CREATE\s+UNIQUE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+\w+\s+ON\s+{table}\s*"
+            r"\(\s*organization_id\s*,\s*ext_id\s*\)\s*WHERE\s+ext_id\s+IS\s+NOT\s+NULL",
+            overlay_bare, re.I,
+        ), table
 
 
 def test_the_discipline_migration_sorts_after_the_spine_it_alters() -> None:
@@ -967,7 +1034,7 @@ def _declared_columns(bare: str, table: str) -> set[str]:
 
 
 def test_the_deal_only_field_set_matches_the_schema(
-    bare: str, discipline_bare: str,
+    bare: str, discipline_bare: str, overlay_bare: str,
 ) -> None:
     """R7 — `admin.DEAL_ONLY_FIELDS` is hand-kept, so it is derived here.
 
@@ -986,8 +1053,10 @@ def test_the_deal_only_field_set_matches_the_schema(
             re.I,
         )
         if altered == "crm_deal_statuses"
-    }
-    lead = _declared_columns(bare, "crm_lead_statuses")
+    } | _overlay_added(overlay_bare, "crm_deal_statuses")
+    lead = _declared_columns(bare, "crm_lead_statuses") | _overlay_added(
+        overlay_bare, "crm_lead_statuses",
+    )
     # Intersected with the payload model: a deal-only column no request body
     # can name needs no refusal, because no request can offer it.
     expected = (deal - lead) & set(StatusIn.model_fields)
