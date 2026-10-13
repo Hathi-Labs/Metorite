@@ -756,21 +756,28 @@ def _with_attachment_rule(instructions: str, holds_reader: bool) -> str:
 # a stricter rule in its own instructions. Fence: ``test_agent_voice.py``.
 
 
-def _with_voice(text: str, *, sub_agent: bool = False) -> str:
+def _with_voice(
+    text: str, *, sub_agent: bool = False, role: str | None = None,
+) -> str:
     """*text* with the house voice after it, once (the heading is the marker).
 
     *sub_agent* gives the core alone (:func:`acb_llm.voice.core_prompt`).
+    *role* (``acb_llm.voice.ROLES``) adds that agent's role to the agent
+    block. A sub-agent never reads a role, because it answers its parent.
     """
     from acb_llm.voice import (  # noqa: PLC0415
         AGENT, VOICE_HEADING, core_prompt, voice_prompt,
     )
     if VOICE_HEADING in text:
         return text
-    block = core_prompt() if sub_agent else voice_prompt(AGENT)
+    block = core_prompt() if sub_agent else voice_prompt(AGENT, role=role)
     return f"{text}\n\n{block}" if text else block
 
 
-def _apply_voice(agents: list[Any], *, is_sub_agent: bool = False) -> None:
+def _apply_voice(
+    agents: list[Any], *, is_sub_agent: bool = False,
+    agent_name: str | None = None,
+) -> None:
     """Give every agent in *agents* the house voice, on each runtime shape.
 
     * GitHubCopilotAgent (``_tools`` list): ``_default_options.system_message``.
@@ -780,9 +787,15 @@ def _apply_voice(agents: list[Any], *, is_sub_agent: bool = False) -> None:
 
     Best-effort per agent, like the rest of the injection: a frozen agent
     keeps its prompt and logs a warning.
+
+    The role comes from ``acb_llm.voice.role_for``, by *agent_name* or
+    else by the agent's own ``name``. Only the orchestrator has one (the
+    chief of staff, ``specs/agent_writing_voice.md`` §11).
     """
+    from acb_llm.voice import role_for  # noqa: PLC0415
     for agent in agents:
         try:
+            _role = role_for(agent_name or getattr(agent, "name", None))
             if hasattr(agent, "_tools") and isinstance(agent._tools, list):
                 opts = getattr(agent, "_default_options", None)
                 if not isinstance(opts, dict):
@@ -790,28 +803,28 @@ def _apply_voice(agents: list[Any], *, is_sub_agent: bool = False) -> None:
                 sys_msg = opts.get("system_message")
                 if isinstance(sys_msg, dict):
                     sys_msg["content"] = _with_voice(
-                        sys_msg.get("content") or "", sub_agent=is_sub_agent,
+                        sys_msg.get("content") or "", sub_agent=is_sub_agent, role=_role,
                     )
                 elif isinstance(sys_msg, str):
                     opts["system_message"] = {
                         "mode": "append",
-                        "content": _with_voice(sys_msg, sub_agent=is_sub_agent),
+                        "content": _with_voice(sys_msg, sub_agent=is_sub_agent, role=_role),
                     }
                 else:
                     opts["system_message"] = {
                         "mode": "append",
-                        "content": _with_voice("", sub_agent=is_sub_agent),
+                        "content": _with_voice("", sub_agent=is_sub_agent, role=_role),
                     }
                 continue
             _do = getattr(agent, "default_options", None)
             if isinstance(_do, dict):
                 _do["instructions"] = _with_voice(
-                    _do.get("instructions") or "", sub_agent=is_sub_agent,
+                    _do.get("instructions") or "", sub_agent=is_sub_agent, role=_role,
                 )
                 continue
             _instr = getattr(agent, "instructions", None)
             if isinstance(_instr, str):
-                agent.instructions = _with_voice(_instr, sub_agent=is_sub_agent)
+                agent.instructions = _with_voice(_instr, sub_agent=is_sub_agent, role=_role)
         except Exception as _exc:  # noqa: BLE001
             _log.warning(
                 "executor.voice_injection_failed",
@@ -1567,7 +1580,7 @@ def _inject_agent_tools(
     right after the agent's own instructions (:func:`_apply_voice`). A
     sub-agent gets the core with no overlay.
     """
-    _apply_voice(agents, is_sub_agent=is_sub_agent)
+    _apply_voice(agents, is_sub_agent=is_sub_agent, agent_name=agent_name)
     _all_tools = _collect_injectable_platform_tools(agent_name)
     if not _all_tools:
         if no_egress:  # H-236 holds even when nothing else is injected
