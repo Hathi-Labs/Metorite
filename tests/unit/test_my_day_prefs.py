@@ -175,6 +175,16 @@ class TestTheLimits:
         assert res.status_code == 422, res.text
         assert fake.sql == []
 
+    def test_a_lone_surrogate_is_refused_before_postgres(self, fake: _FakeDB) -> None:
+        """A JS ``slice()`` through an emoji leaves half of it. jsonb refuses
+        a lone surrogate, so the route must refuse it first, or it answers 503
+        and not 422. The body is raw bytes, because httpx cannot encode it."""
+        raw = b'{"key": "corrections", "value": ["half an emoji \\ud83d"]}'
+        res = _client(_user()).put("/shell/feed/prefs", content=raw,
+                                   headers={"Content-Type": "application/json"})
+        assert res.status_code == 422, res.text
+        assert fake.sql == []
+
     def test_each_limit_admits_its_own_edge(self, fake: _FakeDB) -> None:
         kinds = sorted(prefs.feed_kinds())
         many = (kinds * prefs.MAX_KINDS)[:prefs.MAX_KINDS]

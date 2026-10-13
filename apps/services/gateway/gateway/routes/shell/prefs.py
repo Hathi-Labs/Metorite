@@ -85,7 +85,8 @@ def _kinds(value: Any) -> list[str]:
         raise ValueError("the value is a list of kinds")
     if len(value) > MAX_KINDS:
         raise ValueError(f"at most {MAX_KINDS} kinds")
-    unknown = sorted({v for v in value if v not in feed_kinds()})
+    kinds = feed_kinds()
+    unknown = sorted({v for v in value if v not in kinds})
     if unknown:
         raise ValueError(f"unknown kind: {', '.join(unknown)[:200]}")
     return _unique(value)
@@ -102,9 +103,10 @@ def _corrections(value: Any) -> list[str]:
             raise ValueError("a line is empty")
         if len(line) > CORRECTION_MAX:
             raise ValueError(f"a line is longer than {CORRECTION_MAX} characters")
-        # A line goes into a `decide` prompt, and Postgres stores no NUL.
-        if any(unicodedata.category(ch) == "Cc" for ch in line):
-            raise ValueError("a line holds a control character")
+        # A line goes into a `decide` prompt. Postgres stores no NUL, and
+        # jsonb refuses a lone surrogate (a JS `slice()` through an emoji).
+        if any(unicodedata.category(ch) in ("Cc", "Cs") for ch in line):
+            raise ValueError("a line holds a control character or a lone surrogate")
     if sum(len(line) for line in lines) > CORRECTIONS_CLIP:
         raise ValueError(f"the lines hold more than {CORRECTIONS_CLIP} characters")
     return lines
@@ -234,9 +236,12 @@ async def put_feed_prefs(
     try:
         put = PrefPut.model_validate(body)
     except ValidationError as exc:
+        # No input in the detail: it would echo the member's own text back,
+        # and a lone surrogate in it cannot be encoded, so the 422 became a 500.
         raise HTTPException(
             status_code=422,
-            detail=exc.errors(include_url=False, include_context=False),
+            detail=exc.errors(include_url=False, include_context=False,
+                              include_input=False),
         ) from exc
     try:
         async with _tenant_session() as db:

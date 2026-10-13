@@ -1294,9 +1294,11 @@ holds the mutes of §6.6 and the corrections of §10.5.
 - **Its own route.** `PUT /shell/feed/prefs` merges one key at a time on the
   server, with `jsonb_set`. It never replaces the column.
 - **R6.** A nullable column with no default. Nothing reads it before MD-2.
-- **Fence (MD-2).** `tests/unit/test_my_day_prefs.py` saves a correction,
+- **Fence (MD-2).** `tests/unit/test_my_day_prefs_r8.py` saves a correction,
   then saves a layout through `PUT /auth/me/shell`, and asserts that the
   correction is still there. It also asserts the other way round.
+  `tests/unit/test_my_day_prefs.py` is the hermetic half. It holds the keys,
+  the limits and the SQL of the merge.
 
 ### 13.4 What lives in Redis
 
