@@ -39,6 +39,8 @@
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
 > and statuses you can shape, in both modes (2026-10-13, migration 257).
+> CRM-C4a, the backend of the field studio, dark behind
+> `CRM_FIELD_STUDIO_ORGS` (2026-10-13, migration 258, §20.7).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -3956,6 +3958,55 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_crm_field_studio_r8.py tests/unit/test_crm_field_studio.py tests/unit/test_crm_fields_r8.py tests/unit/test_crm_field_rules.py tests/unit/test_crm_field_rules_r8.py tests/unit/test_crm_export.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_tenant_coverage.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
+
+**Built as (2026-10-13, branch `crm-c4a`).** 🔨 BUILT, not merged. Migration
+258 holds `crm_field_sections` and the seven columns. The flag
+`CRM_FIELD_STUDIO_ORGS` ships empty.
+
+- **The section routes.** A `PATCH` or a `DELETE` of a section names its id:
+  `/crm/field-sections/{entity}/{section_id}`. A delete clears `section_id`
+  on its fields first, in the same transaction.
+- **The key.** A label that gives a route word, a fixed column or a taken key
+  gets a number. So the label "Order" gets the key `order_2`. A taken key in
+  another case counts as a clash.
+- **System fields.** `core.SYSTEM_FIELDS` lists 17 lead, 14 deal, 10 contact
+  and 10 company columns. A system field takes a new label, section, order or
+  `visible` only. A system field that the gateway needs stays visible.
+- **The layout body.** It names each section once. It names each system field
+  and each live custom field once. A retired field can stay out, and it keeps
+  its place. Any other body gives 422 and writes nothing.
+- **A retired key.** A record write that names a retired key gives 422 with
+  the message "<label> is retired. Restore it to write a value." The stored
+  value does not change. A studio `PATCH` of a retired field also gives 422.
+- **An empty value.** A `PATCH` that sends `null`, a blank string or an empty
+  list removes the key. A required field refuses each of them.
+- **Options and targets.** An option leaves the list only with
+  `retired: true`. A list that leaves out an option gives 422
+  `option_removed`. A change of `lookup_target` gives 422 while a record holds
+  a value for the key.
+- **The default value.** Each read casts `default_value` to text. Psycopg
+  gives a scalar jsonb as the value, and asyncpg gives it as JSON text. Without
+  the cast, the text default "007" reads as a number under one of them.
+- **The export.** The CSV adds a column for each custom field that is not
+  retired, in the order of the layout, after the fixed columns. A lookup
+  gives its name. A list of options joins with `; `.
+- **The field definitions in a sync.** Only an import or a reconcile writes
+  them. So "the next sync" in item 1 means the next import or reconcile.
+- **Two anchors moved.** Item 13 names `settings.py:241` as the start over.
+  That line is the change of setup (CRM-U5b). Now it also deletes the
+  `metorite` fields and the sections. The start over (`core.RESET_TABLES`)
+  already deleted every field row, and now it also deletes the sections.
+- **Not in this slice.** The live name of a lookup on a read (item 8) waits
+  for CRM-C4b. The auto-lead step creates a lead through `create_record`. So
+  a required lead field with no default stops it, and the owner must decide
+  that case before the flag goes on.
+
+**Fences.** `test_crm_field_studio_r8.py` (21 cases, R8),
+`test_crm_field_studio.py`, `test_crm_mirror_readonly.py` (the studio
+tables and the scan of the seven columns), `test_crm_fields.py`,
+`test_crm_kill_switch.py` and `crmQ4.test.ts`.
+
+#### CRM-C4b: the record UI
 
 #### CRM-C4p: the shared client
 
