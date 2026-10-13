@@ -25,9 +25,11 @@ of the most recent day start.
 **The lift instant of rule 4** is ``urgent_at`` less 2 hours
 (``feed_rank.SOON``), the instant that the urgency term starts (§7). The
 example of §6.3 rule 4 fixes it: a task due at 15:00 comes back at 13:00. A
-card the member has not seen is lifted from that instant (§6.5 step 3). A
-card the member saw is lifted only when the instant came after the last
-sighting, so a card seen while it was already urgent does not move.
+card the member never saw is lifted only when that instant is at or after the
+start of the member's current day (§6.5 step 3, §6.8 item 6), so last week's
+overdue task stays in Needs you. A card the member saw is lifted only when the
+instant came after the last sighting, so a card seen while it was already
+urgent does not move.
 
 **The state never touches the needs view** (§6.8 item 9). The feed computes
 ``needs`` before the join, so a dismissed or snoozed needs-kind card still
