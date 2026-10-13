@@ -336,3 +336,39 @@ async def test_the_health_route_names_when_a_spent_budget_resumes(q, app_engine)
                        "WHERE organization_id = CAST(:o AS uuid)"), {"o": q.org_a})
     body = (await _req(_admin(q.org_a), "GET", "/crm/sync/health")).json()
     assert body["credits"]["resumes_at"] is None
+
+
+async def test_pipelines_that_a_stopped_run_deferred_land_on_the_next_run(q, app_engine) -> None:
+    """The early discovery stored the profile, and the run stopped before the
+    normal slot. The next run writes the pipelines from the stored profile,
+    after the picklist, with no discovery call."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    _deal(q.a, "d1", 1, Pipeline="Standard")
+    await _sync(q, q.org_a, q.a)
+    with q.p.admin_engine.begin() as c:
+        for table in EMPTIED:
+            c.execute(text(f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
+                      {"o": q.org_a})
+    _spend_the_window(q.p, q.org_a)
+    q.a.org_error = True  # the edition stays unknown, so the import stops early
+    first = await engine.run_org(q.org_a)
+    assert (first.kind, first.status, first.error) == ("import", "stopped", "budget")
+    assert _q(q.p, "SELECT count(*) FROM crm_pipelines WHERE organization_id = "
+                   "CAST(:o AS uuid)", o=q.org_a)[0][0] == 0
+
+    # The window clears. Discovery is not due, so the next run reads no org.
+    with q.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_sync_runs WHERE organization_id = "
+                       "CAST(:o AS uuid) AND credits_used = :n"), {"o": q.org_a, "n": SPENT})
+    reads = q.a.org_reads
+    second = await engine.run_org(q.org_a)
+    assert (second.status, second.error) == ("ok", None), second
+    assert q.a.org_reads == reads
+    pipes = _q(q.p, "SELECT name FROM crm_pipelines WHERE organization_id = "
+                    "CAST(:o AS uuid) ORDER BY position", o=q.org_a)
+    assert [r[0] for r in pipes] == ["Standard", "Renewals"]
+    stages = _q(q.p, "SELECT name, probability FROM crm_deal_statuses WHERE "
+                     "organization_id = CAST(:o AS uuid) ORDER BY position", o=q.org_a)
+    assert [tuple(r) for r in stages][:2] == [("Qualify", 10), ("Won It", 100)]
