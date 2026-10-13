@@ -3999,8 +3999,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
   That line is the change of setup (CRM-U5b). Now it also deletes the
   `metorite` fields and the sections. The start over (`core.RESET_TABLES`)
   already deleted every field row, and now it also deletes the sections.
-- **Not in this slice.** The live name of a lookup on a read (item 8) waits
-  for CRM-C4b. The field map of a conversion is CRM-C6.
+- **Not in this slice.** The field map of a conversion is CRM-C6.
 
 **Review round 1 (2026-10-13).** The owner decided item 1 below. The
 coordinator decided the rest.
@@ -4028,7 +4027,17 @@ coordinator decided the rest.
    key, so a restore brings the filter back. A list request that names a
    retired key still gives 422.
 
-**Fences.** `test_crm_field_studio_r8.py` (25 cases, R8),
+**The C4b and C4c audit (2026-10-13).** Two gaps moved into C4a.
+
+- **The flag on the layout.** `GET /crm/fields/{entity}?layout=1` carries
+  `studio` and `studio_admin`. `studio` is true when the flag allows the
+  org. `studio_admin` also needs `admin:access:manage` and Native mode.
+- **The live name of a lookup** (item 8). A record read and a list read give
+  each lookup value the current name of its target. One tenant-bound query
+  runs for each target entity. A target that is gone, or in another org,
+  keeps the stored name and gets `"missing": true`.
+
+**Fences.** `test_crm_field_studio_r8.py` (27 cases, R8),
 `test_crm_field_studio.py`, `test_crm_mirror_readonly.py` (the studio
 tables and the scan of the seven columns), `test_crm_fields.py`,
 `test_crm_kill_switch.py` and `crmQ4.test.ts`.
