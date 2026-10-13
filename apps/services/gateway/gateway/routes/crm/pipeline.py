@@ -63,6 +63,7 @@ from gateway.routes.crm.core import (
     status_wire,
     update_row,
 )
+from gateway.routes.crm.field_studio import custom_for_create
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -678,7 +679,7 @@ async def _resolve_contact(db: Any, lead: Any, body: ConvertRequest) -> Any | No
             return existing
 
     first = (getattr(lead, "first_name", None) or "").strip()
-    return await insert_row(db, CONTACTS.table, {
+    return await insert_row(db, CONTACTS.table, await _with_defaults(db, CONTACTS, {
         # `first_name` is NOT NULL; a lead with no person name still has a
         # display name, and using it beats inventing 'Unknown'.
         "first_name": first or lead.lead_name,
@@ -688,7 +689,7 @@ async def _resolve_contact(db: Any, lead: Any, body: ConvertRequest) -> Any | No
         "mobile": getattr(lead, "mobile", None),
         "owner_email": getattr(lead, "owner_email", None),
         "source": getattr(lead, "source", "manual"),
-    })
+    }))
 
 
 async def _resolve_organization(
@@ -716,7 +717,7 @@ async def _resolve_organization(
     if existing is not None:
         return existing
 
-    return await insert_row(db, ORGANIZATIONS.table, {
+    return await insert_row(db, ORGANIZATIONS.table, await _with_defaults(db, ORGANIZATIONS, {
         "name": name,
         "website": getattr(lead, "website", None),
         "industry": getattr(lead, "industry", None),
@@ -724,7 +725,20 @@ async def _resolve_organization(
         "annual_revenue": getattr(lead, "annual_revenue", None),
         "owner_email": getattr(lead, "owner_email", None),
         "source": getattr(lead, "source", "manual"),
-    })
+    }))
+
+
+async def _with_defaults(db: Any, entity: Any, values: dict[str, Any]) -> dict[str, Any]:
+    """*values* with the custom defaults of *entity* (WS-53 CRM-C4a).
+
+    A conversion is a platform write: the defaults apply and "required" does
+    not stop it (owner decision, review round 1). The field mapping of each
+    custom value from the lead is CRM-C6.
+    """
+    custom = await custom_for_create(db, entity.slug, None, system=True)
+    if custom:
+        values["custom"] = custom
+    return values
 
 
 async def _create_deal(
@@ -740,7 +754,7 @@ async def _create_deal(
         or (getattr(lead, "organization_name", None) or "").strip()
         or lead.lead_name
     )
-    deal = await insert_row(db, DEALS.table, {
+    deal = await insert_row(db, DEALS.table, await _with_defaults(db, DEALS, {
         "name": name,
         "company_id": str(organization.id) if organization is not None else None,
         "pipeline_id": pipeline_id,
@@ -758,7 +772,7 @@ async def _create_deal(
             wanted.owner_email or getattr(lead, "owner_email", None) or who
         ),
         "source": getattr(lead, "source", "manual"),
-    })
+    }))
     if contact is not None:
         # Through the shared seam, not a bare INSERT: "at most one primary per
         # deal" (§3.5) is enforced in code, and code with two writers is a

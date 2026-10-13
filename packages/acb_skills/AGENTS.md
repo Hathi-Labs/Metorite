@@ -322,7 +322,9 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    `record`, `mod`, `report` or `vocab`. The risk of each tool is in
    `tool_annotations.TOOL_ANNOTATIONS` (`open_world=False`), and the risk
    block does not list them. `crm_mode()` is not a tool: the orchestrator
-   reads it to drop the record writes in Mirror mode. Fences:
+   reads it to drop the record writes in Mirror mode. `crm_list_fields`
+   never offers a row with `is_system`, and it marks a retired field
+   (WS-53 CRM-C4a). Fences:
    `tests/unit/test_crm_agent.py` and `tests/unit/test_skills_registry.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a

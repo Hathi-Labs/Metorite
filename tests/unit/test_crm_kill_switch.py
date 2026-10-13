@@ -351,7 +351,10 @@ async def test_search_crm_relays_a_404_as_a_refusal(
 
 # ── 9. A tenant cannot set either name ───────────────────────────────────────
 
-@pytest.mark.parametrize("name", ["CRM_ENABLED", "CRM_ORGS", "crm_orgs", "CRM_MIRROR", "CRM_MIRROR_ORGS"])
+@pytest.mark.parametrize("name", [
+    "CRM_ENABLED", "CRM_ORGS", "crm_orgs", "CRM_MIRROR", "CRM_MIRROR_ORGS",
+    "CRM_FIELD_STUDIO_ORGS",
+])
 def test_both_names_are_platform_env(name: str) -> None:
     assert is_platform_env(name) is True
 
@@ -362,8 +365,16 @@ _REPO = Path(__file__).resolve().parents[2]
 _READER = _REPO / "apps/services/gateway/gateway/routes/crm/flags.py"
 
 
+#: The CRM settings that only ``flags.py`` may read.
+_SWITCHES = frozenset({
+    "crm_enabled", "crm_orgs", "crm_mirror", "crm_mirror_orgs",
+    # WS-53 CRM-C4a: the field studio list.
+    "crm_field_studio_orgs",
+})
+
+
 def _setting_readers(roots: list[Path]) -> list[str]:
-    """Each file that reads `.crm_enabled`, `.crm_orgs`, `.crm_mirror` or `.crm_mirror_orgs` as an attribute."""
+    """Each file that reads one of the CRM switches as an attribute."""
     hits: list[str] = []
     for root in roots:
         for path in root.rglob("*.py"):
@@ -374,7 +385,7 @@ def _setting_readers(roots: list[Path]) -> list[str]:
             except (SyntaxError, UnicodeDecodeError):
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, ast.Attribute) and node.attr in {"crm_enabled", "crm_orgs", "crm_mirror", "crm_mirror_orgs"}:
+                if isinstance(node, ast.Attribute) and node.attr in _SWITCHES:
                     hits.append(path.resolve().as_posix())
                     break
     return hits

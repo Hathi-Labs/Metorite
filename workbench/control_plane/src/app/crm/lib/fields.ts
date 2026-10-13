@@ -26,7 +26,20 @@ export type FieldDef = {
   visible: boolean;
   source: "zoho" | "native";
   api_name: string | null;
+  /** CRM-C4a: a row that overlays a fixed column. It is never a custom key. */
+  is_system?: boolean;
+  /** CRM-C4a: retired. A record keeps its value, and no picker offers it. */
+  retired?: boolean;
 };
+
+/**
+ * The definitions that describe a custom key (WS-53 CRM-C4a, spec section
+ * 20.7 item 11). A row with `is_system` overlays a fixed column, so it is
+ * left out.
+ */
+function customDefs(defs: FieldDef[] | null | undefined): FieldDef[] {
+  return (defs ?? []).filter((d) => !d.is_system);
+}
 
 /** What a cell shows. The component maps each kind to markup. */
 export type FieldValue =
@@ -145,11 +158,20 @@ export function formatField(def: FieldDef | null, value: unknown): FieldValue {
       const n = toNumber(value);
       return { kind: "text", text: n === null ? customValue(value) : money(n) };
     }
-    case "number": {
+    case "number":
+    case "decimal": {
+      // CRM-C4a: a Zoho double is now `decimal` (spec section 20.7 item 1).
       const n = toNumber(value);
       return {
         kind: "text",
         text: n === null ? customValue(value) : new Intl.NumberFormat("en-IN").format(n),
+      };
+    }
+    case "percent": {
+      const n = toNumber(value);
+      return {
+        kind: "text",
+        text: n === null ? customValue(value) : `${new Intl.NumberFormat("en-IN").format(n)}%`,
       };
     }
     case "boolean": {
@@ -268,9 +290,10 @@ export function fieldRows(
   const custom = record?.custom;
   if (!custom || typeof custom !== "object" || Array.isArray(custom)) return [];
   const values = custom as Row;
-  const byKey = new Map((defs ?? []).map((d) => [d.key, d]));
+  const byKey = new Map(customDefs(defs).map((d) => [d.key, d]));
   const known = [...byKey.values()]
-    .filter((d) => d.visible && d.key in values)
+    // CRM-C4a: a retire keeps `visible`, so the retired flag hides the field.
+    .filter((d) => d.visible && !d.retired && d.key in values)
     .sort((a, b) => a.position - b.position);
   const unknown = Object.keys(values).filter((k) => !byKey.has(k));
   return [
@@ -340,9 +363,14 @@ export function writeColumns(
   }
 }
 
-/** The fields a member may pick: visible ones, in the order of `position`. */
+/**
+ * The fields a member may pick: visible ones, in the order of `position`. A
+ * retired field and a system row are never offered (CRM-C4a).
+ */
 export function pickable(defs: FieldDef[] | null | undefined): FieldDef[] {
-  return [...(defs ?? [])].filter((d) => d.visible).sort((a, b) => a.position - b.position);
+  return customDefs(defs)
+    .filter((d) => d.visible && !d.retired)
+    .sort((a, b) => a.position - b.position);
 }
 
 /**

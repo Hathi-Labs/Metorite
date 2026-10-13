@@ -575,7 +575,13 @@ _RULE_COLUMN_TYPES: Mapping[str, frozenset[str]] = {
     **dict.fromkeys(
         ("text", "textarea", "email", "phone", "url", "select"), frozenset({"TEXT"}),
     ),
-    **dict.fromkeys(("number", "currency"), frozenset({"NUMERIC", "INT", "SMALLINT"})),
+    # CRM-C4a: `decimal` and `percent` change together with `_FIELD_TYPES`.
+    # Without them an approved rule on a Zoho double or percent field goes
+    # `type_mismatch` after the next sync (crm_platform.md §20.7 item 1).
+    **dict.fromkeys(
+        ("number", "decimal", "percent", "currency"),
+        frozenset({"NUMERIC", "INT", "SMALLINT"}),
+    ),
     "date": frozenset({"DATE"}),
     "datetime": frozenset({"TIMESTAMPTZ"}),
 }
@@ -791,9 +797,11 @@ _FIELD_TYPES = {
     "website": "url",
     "integer": "number",
     "bigint": "number",
-    "double": "number",
+    # CRM-C4a (§20.7 item 1): a Zoho double is a decimal and a percent is a
+    # percent, the words of the field studio. The next sync updates the rows.
+    "double": "decimal",
     "currency": "currency",
-    "percent": "number",
+    "percent": "percent",
     "boolean": "boolean",
     "date": "date",
     "datetime": "datetime",

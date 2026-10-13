@@ -1724,6 +1724,11 @@ async def _start_deleted_windows(
 
 # ── Field definitions and the estimate ──────────────────────────────────────
 
+#: ⚠️ CRM-C4a (D95, ``crm_platform.md`` §20.7 item 13): the conflict update
+#: never touches a row that the field studio wrote (``source = 'metorite'``).
+#: A Native field and a Zoho field can have the same key. The statement names
+#: none of the seven studio columns, so a sync leaves them as they are.
+#: Fence: ``tests/unit/test_crm_field_studio_r8.py``.
 _FIELD_DEF_SQL = (
     "INSERT INTO crm_field_defs (entity, key, label, type, options, source, "
     "provider_api_name, position, visible, updated_at) VALUES (:entity, :key, "
@@ -1731,7 +1736,8 @@ _FIELD_DEF_SQL = (
     ":visible, now()) ON CONFLICT (organization_id, entity, key) DO UPDATE SET "
     "label = EXCLUDED.label, type = EXCLUDED.type, options = EXCLUDED.options, "
     "source = EXCLUDED.source, provider_api_name = EXCLUDED.provider_api_name, "
-    "position = EXCLUDED.position, visible = EXCLUDED.visible, updated_at = now()"
+    "position = EXCLUDED.position, visible = EXCLUDED.visible, updated_at = now() "
+    "WHERE crm_field_defs.source IS DISTINCT FROM 'metorite'"
 )
 
 

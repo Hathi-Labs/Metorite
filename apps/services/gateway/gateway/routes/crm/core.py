@@ -218,6 +218,8 @@ class OrganizationIn(BaseModel):
     linkedin_url: str | None = None
     owner_email: str | None = None
     source: str | None = None
+    #: CRM-C4a: a partial map of custom key to value. See :class:`CustomMerge`.
+    custom: dict[str, Any] | None = None
 
 
 class ContactModel(MirrorFields):
@@ -251,6 +253,8 @@ class ContactIn(BaseModel):
     linkedin_url: str | None = None
     owner_email: str | None = None
     source: str | None = None
+    #: CRM-C4a: a partial map of custom key to value. See :class:`CustomMerge`.
+    custom: dict[str, Any] | None = None
 
 
 class LeadModel(MirrorFields):
@@ -305,6 +309,8 @@ class LeadIn(BaseModel):
     lost_reason_id: str | None = None
     lost_note: str | None = None
     source: str | None = None
+    #: CRM-C4a: a partial map of custom key to value. See :class:`CustomMerge`.
+    custom: dict[str, Any] | None = None
 
 
 class DealModel(MirrorFields):
@@ -358,6 +364,8 @@ class DealIn(BaseModel):
     owner_email: str | None = None
     description: str | None = None
     source: str | None = None
+    #: CRM-C4a: a partial map of custom key to value. See :class:`CustomMerge`.
+    custom: dict[str, Any] | None = None
 
 
 class ActivityModel(MirrorFields):
@@ -636,6 +644,101 @@ ENTITIES: dict[str, Entity] = {
 TABLE_BY_ACTIVITY_TARGET: dict[str, str] = {
     e.activity_column: e.table for e in ENTITIES.values()
 }
+
+
+# ── System fields (WS-53 CRM-C4a) ───────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SystemField:
+    """One fixed column of an entity, as the field studio shows it.
+
+    ``type`` is a type word of the studio (``crm_platform.md`` §20.7 item 1).
+    ``lookup_target`` names the entity slug that a lookup column points at.
+    """
+
+    key: str
+    label: str
+    type: str
+    lookup_target: str | None = None
+
+
+def _sf(key: str, label: str, type_: str, target: str | None = None) -> SystemField:
+    return SystemField(key=key, label=label, type=type_, lookup_target=target)
+
+
+#: The fixed columns of each entity that a member can see and edit, in the
+#: order the studio starts with (§20.7 item 3). The studio shows them beside
+#: the custom fields. An admin may change their label, order, section and
+#: ``visible``, and the first such edit writes a ``crm_field_defs`` row with
+#: ``is_system = true``. The studio cannot delete or retype one. A column in
+#: :attr:`Entity.required` stays required. ``test_crm_field_studio.py`` checks
+#: that each key is a field of the entity's input model.
+SYSTEM_FIELDS: dict[str, tuple[SystemField, ...]] = {
+    "leads": (
+        _sf("first_name", "First name", "text"),
+        _sf("last_name", "Last name", "text"),
+        _sf("lead_name", "Lead name", "text"),
+        _sf("email", "Email", "email"),
+        _sf("phone", "Phone", "phone"),
+        _sf("mobile", "Mobile", "phone"),
+        _sf("organization_name", "Company", "text"),
+        _sf("website", "Website", "url"),
+        _sf("industry", "Industry", "text"),
+        _sf("no_of_employees", "Employees", "number"),
+        _sf("annual_revenue", "Annual revenue", "currency"),
+        _sf("status_id", "Status", "select"),
+        _sf("lead_source", "Lead source", "text"),
+        _sf("owner_email", "Owner", "email"),
+        _sf("description", "Description", "textarea"),
+        _sf("lost_reason_id", "Lost reason", "select"),
+        _sf("lost_note", "Lost note", "textarea"),
+    ),
+    "deals": (
+        _sf("name", "Deal name", "text"),
+        _sf("company_id", "Company", "lookup", "organizations"),
+        _sf("pipeline_id", "Pipeline", "select"),
+        _sf("status_id", "Stage", "select"),
+        _sf("amount", "Amount", "currency"),
+        _sf("currency", "Currency", "text"),
+        _sf("probability", "Probability", "percent"),
+        _sf("expected_close_date", "Closing date", "date"),
+        _sf("next_step", "Next step", "text"),
+        _sf("lead_id", "Lead", "lookup", "leads"),
+        _sf("owner_email", "Owner", "email"),
+        _sf("description", "Description", "textarea"),
+        _sf("lost_reason_id", "Lost reason", "select"),
+        _sf("lost_note", "Lost note", "textarea"),
+    ),
+    "contacts": (
+        _sf("first_name", "First name", "text"),
+        _sf("last_name", "Last name", "text"),
+        _sf("email", "Email", "email"),
+        _sf("phone", "Phone", "phone"),
+        _sf("mobile", "Mobile", "phone"),
+        _sf("title", "Title", "text"),
+        _sf("company_id", "Company", "lookup", "organizations"),
+        _sf("linkedin_url", "LinkedIn", "url"),
+        _sf("owner_email", "Owner", "email"),
+        _sf("description", "Description", "textarea"),
+    ),
+    "organizations": (
+        _sf("name", "Company name", "text"),
+        _sf("website", "Website", "url"),
+        _sf("industry", "Industry", "text"),
+        _sf("no_of_employees", "Employees", "number"),
+        _sf("annual_revenue", "Annual revenue", "currency"),
+        _sf("phone", "Phone", "phone"),
+        _sf("email", "Email", "email"),
+        _sf("linkedin_url", "LinkedIn", "url"),
+        _sf("owner_email", "Owner", "email"),
+        _sf("description", "Description", "textarea"),
+    ),
+}
+
+
+def system_field(slug: str, key: str) -> SystemField | None:
+    """The system field *key* of the entity *slug*, or ``None``."""
+    return next((f for f in SYSTEM_FIELDS.get(slug, ()) if f.key == key), None)
 
 
 # ── Wire conversion ─────────────────────────────────────────────────────────
@@ -1156,14 +1259,28 @@ async def extra_filters(
         clauses.append(clause)
         bound[name] = parsed
     if given.custom:
-        known = {
-            r.key for r in (await db.execute(
-                text("SELECT key FROM crm_field_defs WHERE entity = :entity"),
-                {"entity": FIELD_ENTITY_BY_SLUG[entity.slug]},
-            )).fetchall()
+        # CRM-C4a (§20.7 item 11): a row with `is_system` overlays a fixed
+        # column, so it is no custom key. A retired key is refused with 422.
+        rows = (await db.execute(
+            text(
+                "SELECT key, label, is_system, retired_at FROM crm_field_defs "
+                "WHERE entity = :entity"
+            ),
+            {"entity": FIELD_ENTITY_BY_SLUG[entity.slug]},
+        )).fetchall()
+        known = {r.key for r in rows if not getattr(r, "is_system", False)}
+        retired = {
+            r.key: getattr(r, "label", None) or r.key for r in rows
+            if r.key in known and getattr(r, "retired_at", None) is not None
         }
         grouped: dict[tuple[str, bool], list[str]] = {}
         for name, value in given.custom:
+            base = name[:-3] if name.endswith(".in") and name not in known else name
+            if base in retired:
+                raise HTTPException(status_code=422, detail={
+                    "code": "field_retired",
+                    "message": f"{retired[base]} is retired. Restore it to filter by it.",
+                })
             if name in known:
                 grouped.setdefault((name, False), []).append(value)
             elif name.endswith(".in") and name[:-3] in known:
@@ -1663,7 +1780,14 @@ MIRROR_RECORD_TABLES: frozenset[str] = frozenset({
 MIRROR_SETTINGS_TABLES: frozenset[str] = frozenset({
     "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
     "crm_pipelines", "crm_pipeline_stages",
+    # CRM-C4a (§20.7 item 10): the field studio. In Mirror mode Zoho owns the
+    # fields until CRM-C5, so each studio route gives 409. The sync writes
+    # `crm_field_defs` with raw SQL and never calls the guard.
+    "crm_field_defs", "crm_field_sections",
 })
+
+#: The tables of the field studio, for the sentence of their 409.
+FIELD_STUDIO_TABLES: frozenset[str] = frozenset({"crm_field_defs", "crm_field_sections"})
 
 #: The Metorite-only columns of each settings table (WS-53 CRM-C3, migration
 #: 257, ``crm_platform.md`` §20.6 item 1). In Mirror mode an admin may write
@@ -1754,6 +1878,11 @@ async def assert_writable(
         overlay = MIRROR_OVERLAY_COLUMNS.get(table, frozenset())
         if fields and not creating and set(fields) <= overlay:
             return
+        if table in FIELD_STUDIO_TABLES:
+            raise _conflict(
+                "mirror_mode_settings",
+                "The fields come from Zoho. Change them in Zoho.",
+            )
         raise _conflict(
             "mirror_mode_settings",
             "The stages, pipelines and lost reasons come from Zoho. Change them in Zoho.",
@@ -1795,6 +1924,28 @@ async def insert_row(db: Any, table: str, values: dict[str, Any]) -> Any:
     )).fetchone()
 
 
+@dataclass(frozen=True)
+class CustomMerge:
+    """A change to ``custom`` that names some keys and leaves the rest (CRM-C4a).
+
+    ``put`` holds the keys to write and ``drop`` the keys to remove. A plain
+    dict in ``values["custom"]`` replaces the whole object. This merges per
+    key in one statement, with jsonb ``||`` and ``-``, so two edits of two
+    keys never lose one. A key that the write does not name keeps its value,
+    and so does the value of a retired field (``crm_platform.md`` §20.7 item 5).
+    """
+
+    put: dict[str, Any]
+    drop: tuple[str, ...] = ()
+
+
+#: The assignment of a :class:`CustomMerge`. Both values are bound.
+CUSTOM_MERGE_SQL = (
+    "custom = (COALESCE(custom, '{}'::jsonb) || CAST(:custom AS jsonb)) "
+    "- CAST(:custom_drop AS text[])"
+)
+
+
 async def update_row(
     db: Any, table: str, record_id: str, values: dict[str, Any],
     *, touch: bool = True,
@@ -1802,7 +1953,17 @@ async def update_row(
     await assert_writable(db, current_tenant(), table, values, record_id=record_id)
     reject_null_on_defaulted(table, values)
     values = mark_dirty_on_update(table, values, touch=touch)
-    assignments = [f"{c} = {_placeholder(c)}" for c in values]
+    merge = values.get("custom")
+    plain = (
+        {c: v for c, v in values.items() if c != "custom"}
+        if isinstance(merge, CustomMerge) else values
+    )
+    assignments = [f"{c} = {_placeholder(c)}" for c in plain]
+    bound = _bindable(plain)
+    if isinstance(merge, CustomMerge):
+        assignments.append(CUSTOM_MERGE_SQL)
+        bound["custom"] = json.dumps(merge.put)
+        bound["custom_drop"] = list(merge.drop)
     if touch:
         assignments.append("updated_at = now()")
     return (await db.execute(
@@ -1810,7 +1971,7 @@ async def update_row(
             f"UPDATE {table} SET {', '.join(assignments)} "
             f"WHERE id = CAST(:record_id AS uuid) RETURNING *"
         ),
-        {**_bindable(values), "record_id": record_id},
+        {**bound, "record_id": record_id},
     )).fetchone()
 
 
@@ -2367,6 +2528,9 @@ RESET_TABLES: tuple[str, ...] = (
     # CRM-Q7a: a field rule names a field of the old account. It must not
     # apply to the next one.
     "crm_field_rules",
+    # CRM-C4a: the studio sections. ``crm_field_defs`` above holds the
+    # ``source = 'metorite'`` fields too, so the start over takes both.
+    "crm_field_sections",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved

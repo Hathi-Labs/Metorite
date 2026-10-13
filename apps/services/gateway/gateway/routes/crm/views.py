@@ -38,6 +38,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
+    FIELD_ENTITY_BY_SLUG,
     _tenant_session,
     actor,
     checked_uuid,
@@ -110,6 +111,10 @@ class ViewOut(BaseModel):
     position: int = 0
     #: True when the caller made the view. The UI shows edit controls on it.
     mine: bool = False
+    #: WS-53 CRM-C4a: the custom filter keys that this read left out, because
+    #: their field is retired. The stored view keeps them, and they apply
+    #: again after a restore. Without this, each load of the view gives 422.
+    skipped_filters: list[str] = []
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -244,7 +249,37 @@ async def list_views(
             ),
             {"entity": entity, "me": me},
         )).fetchall()
-    return [_wire(r, me) for r in rows]
+        retired = await _retired_keys(db, entity)
+    return [_without_retired(_wire(r, me), retired) for r in rows]
+
+
+async def _retired_keys(db: Any, entity: str) -> frozenset[str]:
+    """The custom keys of *entity* whose field is retired (CRM-C4a)."""
+    rows = (await db.execute(
+        text("SELECT key, retired_at FROM crm_field_defs WHERE entity = :entity"),
+        {"entity": FIELD_ENTITY_BY_SLUG.get(entity, entity)},
+    )).fetchall()
+    return frozenset(r.key for r in rows if getattr(r, "retired_at", None) is not None)
+
+
+def _without_retired(view: ViewOut, retired: frozenset[str]) -> ViewOut:
+    """*view* with each custom filter on a retired key left out, and named.
+
+    The custom filter of the list refuses a retired key with 422 (§20.7 item
+    11). The client sends a view's filters as they are, so the view read
+    drops the key first. A list request that names a retired key is still 422.
+    """
+    custom = view.filters.get("custom")
+    if not retired or not isinstance(custom, dict):
+        return view
+    skipped = sorted(k for k in custom if k in retired)
+    if not skipped:
+        return view
+    kept = {k: v for k, v in custom.items() if k not in retired}
+    return view.model_copy(update={
+        "filters": {**view.filters, "custom": kept},
+        "skipped_filters": skipped,
+    })
 
 
 @router.post("/views", response_model=ViewOut, status_code=201)

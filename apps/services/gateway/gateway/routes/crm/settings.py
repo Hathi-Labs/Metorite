@@ -126,6 +126,8 @@ _RESET_DELETES: tuple[str, ...] = (
     "crm_sync_cursors", "crm_sync_runs",
     # CRM-Q7a: the field rules name the fields of the old Zoho account.
     "crm_field_rules",
+    # CRM-C4a: the sections of the field studio. The fields go below.
+    "crm_field_sections",
 )
 
 _HAS_RECORDS = {
@@ -237,9 +239,11 @@ async def _reset_setup(db: Any, org: str) -> None:
             await db.execute(text(
                 f"DELETE FROM {table} "
                 "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
+        # CRM-C4a (§20.7 item 13): the fields of the field studio go too
+        # (`source = 'metorite'`), because a new setup starts with none.
         await db.execute(text(
             "DELETE FROM crm_field_defs WHERE organization_id = "
-            "CAST(:o AS uuid) AND source = 'zoho'"), {"o": org})
+            "CAST(:o AS uuid) AND source IN ('zoho', 'metorite')"), {"o": org})
     except DBAPIError as exc:
         # A record written after the count names a stage: RESTRICT refuses the
         # delete. That is "has records", not a 500.

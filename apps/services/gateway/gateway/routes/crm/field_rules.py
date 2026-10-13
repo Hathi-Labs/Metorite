@@ -77,9 +77,12 @@ _RULES_SQL = (
     "AND entity = :entity ORDER BY field_api_name"
 )
 _RULE_SQL = f"SELECT {_COLUMNS} FROM crm_field_rules WHERE id = CAST(:id AS uuid)"
+#: CRM-C4a (§20.7 item 11): a row with ``is_system`` overlays a fixed column,
+#: so it is not a field that goes to ``custom``.
 _FIELD_SQL = (
     "SELECT key, label, type, options, visible, position FROM crm_field_defs "
-    "WHERE entity = :entity AND source = :src ORDER BY position, key"
+    "WHERE entity = :entity AND source = :src AND NOT is_system "
+    "ORDER BY position, key"
 )
 _TAKEN_SQL = (
     "SELECT id, field_api_name FROM crm_field_rules WHERE ext_source = :src "

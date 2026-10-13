@@ -266,6 +266,13 @@ class Settings(BaseSettings):
     # organization outside the list gets 404 on the mirror routes, and the
     # sync loop skips it. The one reader is `gateway.routes.crm.flags`.
     crm_mirror_orgs: str = ""
+    # `crm_field_studio_orgs` (WS-53 CRM-C4a, 2026-10-13) lists the
+    # organization ids that may use the field studio of a Native CRM, in the
+    # grammar of `crm_orgs`. Default empty means NO organization (fail
+    # closed): each studio route answers 404. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_crm_field_studio_r8.py.
+    crm_field_studio_orgs: str = ""
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 
