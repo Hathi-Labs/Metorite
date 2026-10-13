@@ -228,8 +228,25 @@ _ID_RE = re.compile(_UUID_PATTERN)
 #: A key-shaped string: a field name, a category, a link type.
 _KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
-#: A member address. No space, so no sentence can hide in it.
-_EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]{1,255}")
+#: A member address: the shape of ``skill_projects/client.py`` (``_EMAIL``),
+#: with length caps. No space and no free punctuation, so no sentence fits.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
+
+#: The ONE rule for an agent name, ``acb_skills.agent_paths.AGENT_NAME_RE``.
+#: The edge does not depend on ``acb_skills``, so it holds a copy, and
+#: ``test_mcp_edge_protocol.py`` fails when the two differ.
+_AGENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+#: The prefix that makes an assignee an agent (D-PM-4).
+_AGENT_PREFIX = "agent:"
+
+#: A task prefix leaves as a plain string only in this shape (§9.1). The
+#: gateway never checks it (``ProjectIn.task_prefix``).
+_PREFIX_RE = re.compile(r"[A-Za-z0-9_-]{1,16}")
+
+#: An IANA zone name. The API checks a zone with ``ZoneInfo``, and the column
+#: has no CHECK, so the edge checks the shape too (§9.1).
+_TIMEZONE_RE = re.compile(r"[A-Za-z0-9_+/-]{1,64}")
 
 
 def _number(value: Any) -> bool:
@@ -262,11 +279,32 @@ def _key(value: Any) -> str | None:
     return value if isinstance(value, str) and _KEY_RE.fullmatch(value) else None
 
 
-def _emails(value: Any) -> list[str]:
-    """The member addresses of a list. Any other item is dropped."""
+def shaped(value: Any, pattern: re.Pattern[str]) -> str | dict[str, str] | None:
+    """*value* as a plain string when it fullmatches *pattern*, else
+    ``untrusted_text``. A null stays null (§9.1, §9.4)."""
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    return text if pattern.fullmatch(text) else untrusted(text)
+
+
+def assignee(value: Any) -> str | dict[str, str]:
+    """One assignee (§9.1). A plain string only for an address or for
+    ``agent:<name>`` with the gateway's agent-name rule. ``AssigneesIn``
+    takes any string, so any other value is ``untrusted_text``."""
+    text = value if isinstance(value, str) else str(value)
+    if _EMAIL_RE.fullmatch(text):
+        return text
+    if text.startswith(_AGENT_PREFIX) and _AGENT_NAME_RE.fullmatch(text[len(_AGENT_PREFIX):]):
+        return text
+    return {"untrusted_text": text}
+
+
+def _assignees(value: Any) -> list[str | dict[str, str]]:
+    """Each string of a list, by :func:`assignee`. Any other item is dropped."""
     if not isinstance(value, list):
         return []
-    return [v for v in value if isinstance(v, str) and _EMAIL_RE.fullmatch(v)]
+    return [assignee(v) for v in value if isinstance(v, str)]
 
 
 def field_value(value: Any) -> Any:
@@ -434,6 +472,11 @@ _STATUS_SCHEMA: dict[str, Any] = {
 }
 _NULLABLE_STRING: dict[str, Any] = {"type": ["string", "null"]}
 _NULLABLE_INTEGER: dict[str, Any] = {"type": ["integer", "null"]}
+#: A value that passed its shape check (a string), or one that did not.
+_SHAPED_OR_NULL: dict[str, Any] = {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA,
+                                             {"type": "null"}]}
+_ASSIGNEES_SCHEMA: dict[str, Any] = {
+    "type": "array", "items": {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]}}
 
 
 # ── list_tasks ──────────────────────────────────────────────────────────────
@@ -484,7 +527,7 @@ _LIST_TASKS_OUTPUT: dict[str, Any] = {
                     "title": _UNTRUSTED_SCHEMA,
                     "project_id": {"type": "string"},
                     "status": _STATUS_SCHEMA,
-                    "assignees": {"type": "array", "items": {"type": "string"}},
+                    "assignees": _ASSIGNEES_SCHEMA,
                     "due_at": _NULLABLE_STRING,
                     "version": _NULLABLE_STRING,
                 },
@@ -578,7 +621,7 @@ def _list_task_row(
             "id": str(status_id) if status_id is not None else "",
             "name": untrusted(names.get(str(status_id))) if status_id is not None else None,
         },
-        "assignees": [str(a) for a in assignees] if isinstance(assignees, list) else [],
+        "assignees": _assignees(assignees),
         "due_at": row.get("due_at"),
         "version": row.get("updated_at"),
     }
@@ -935,7 +978,8 @@ LIST_PROJECTS = Tool(
         " name. Each row has the project id, name, path of names from the"
         " root, parent id and task counts for the whole subtree. Archived and"
         " personal projects are not listed. Send nextCursor back as cursor to"
-        " read the next page." + _UNTRUSTED_NOTE
+        " read the next page. The pages are offsets, so a project that changes"
+        " between two calls can be skipped or shown twice." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_LIST_PROJECTS_INPUT,
@@ -977,8 +1021,8 @@ def _object(properties: dict[str, Any]) -> dict[str, Any]:
 _PROJECT_SCHEMA = _object({
     "id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA, "description": _UNTRUSTED_OR_NULL,
     "parent_id": _NULLABLE_STRING, "kind": _NULLABLE_STRING,
-    "task_prefix": _NULLABLE_STRING, "status": _NULLABLE_STRING,
-    "timezone": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+    "task_prefix": _SHAPED_OR_NULL, "status": _NULLABLE_STRING,
+    "timezone": _SHAPED_OR_NULL, "created_at": _NULLABLE_STRING,
     "updated_at": _NULLABLE_STRING, "archived_at": _NULLABLE_STRING,
 })
 _PROJECT_STATUS_SCHEMA = _object({
@@ -1022,9 +1066,9 @@ def _project(node: Mapping[str, Any]) -> dict[str, Any]:
         "description": untrusted(node.get("description")),
         "parent_id": _str_or_none(node.get("parent_project_id")),
         "kind": _str_or_none(node.get("kind")),
-        "task_prefix": _str_or_none(node.get("task_prefix")),
+        "task_prefix": shaped(node.get("task_prefix"), _PREFIX_RE),
         "status": _str_or_none(node.get("status")),
-        "timezone": _str_or_none(node.get("timezone")),
+        "timezone": shaped(node.get("timezone"), _TIMEZONE_RE),
         "created_at": _str_or_none(node.get("created_at")),
         "updated_at": _str_or_none(node.get("updated_at")),
         "archived_at": _str_or_none(node.get("archived_at")),
@@ -1134,7 +1178,7 @@ _TASK_SCHEMA = _object({
     "parent_task_id": _NULLABLE_STRING, "type_id": _NULLABLE_STRING,
     "title": _UNTRUSTED_SCHEMA, "description": _UNTRUSTED_OR_NULL,
     "status": _STATUS_SCHEMA,
-    "assignees": {"type": "array", "items": {"type": "string"}},
+    "assignees": _ASSIGNEES_SCHEMA,
     "importance": _NULLABLE_INTEGER, "leveraged": {"type": "boolean"},
     "estimate_mins": _NULLABLE_INTEGER, "start_date": _NULLABLE_STRING,
     "due_at": _NULLABLE_STRING, "completed_at": _NULLABLE_STRING,
@@ -1196,7 +1240,7 @@ def _task(row: Mapping[str, Any], names: Mapping[str, str]) -> dict[str, Any]:
             "id": str(status_id) if status_id is not None else "",
             "name": untrusted(names.get(str(status_id))) if status_id is not None else None,
         },
-        "assignees": [str(a) for a in assignees] if isinstance(assignees, list) else [],
+        "assignees": _assignees(assignees),
         "importance": _int_or_none(row.get("importance")),
         "leveraged": _bool(row.get("leveraged")),
         "estimate_mins": _int_or_none(row.get("estimate_mins")),
@@ -1331,7 +1375,7 @@ def _meta_assignment(raw: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for name in ("added", "removed"):
         if name in raw:
-            out[name] = _emails(raw[name])
+            out[name] = _assignees(raw[name])
     if isinstance(raw.get("bulk"), bool):
         out["bulk"] = raw["bulk"]
     return out
@@ -1350,7 +1394,7 @@ def _meta_merge(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _meta_mention(raw: Mapping[str, Any]) -> dict[str, Any]:
-    return {"mentioned": _emails(raw.get("mentioned"))} if "mentioned" in raw else {}
+    return {"mentioned": _assignees(raw.get("mentioned"))} if "mentioned" in raw else {}
 
 
 def _meta_comment(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -1437,9 +1481,12 @@ _TIMELINE_PARAMS: dict[str, str] = {
 
 
 async def _get_task_timeline(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    # The default goes in BEFORE the filter hash, so a cursor made with no
+    # `kind` still pages a call that sends `kind: "all"`, and the reverse.
+    args = {**args, "kind": args.get("kind", TIMELINE_KINDS[0])}
     page, size = _page_of(ctx, "get_task_timeline", args, LIST_LIMIT_DEFAULT,
                           LIST_LIMIT_MAX)
-    query = [("kind", str(args.get("kind", "all"))), ("page", str(page)),
+    query = [("kind", str(args["kind"])), ("page", str(page)),
              ("page_size", str(size))]
     body = await _get(ctx, TIMELINE_ROUTE, TEXT_TASK_NOT_FOUND,
                       path_params={"task_id": str(args["task_id"])}, query=query)
@@ -1463,8 +1510,8 @@ GET_TASK_TIMELINE = Tool(
         " first, one page at a time. Set kind to comments or events to read"
         " one of them. Each row has its id, type, parent comment, body,"
         " author, dates and a small meta object. Send nextCursor back as"
-        " cursor to read the next page. The pages are offsets, so a new row"
-        " between two calls can make a row show twice." + _UNTRUSTED_NOTE
+        " cursor to read the next page. The pages are offsets, so a row that"
+        " changes between two calls can be skipped or shown twice." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_TIMELINE_INPUT,

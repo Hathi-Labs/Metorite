@@ -944,7 +944,10 @@ _MAPPING_FILE = _EDGE_DIR / "tools.py"
 
 #: The attributes that read a request input in Starlette and FastAPI.
 _REQUEST_READ_ATTRIBUTES = frozenset({
-    "headers", "query_params", "form", "cookies", "path_params"})
+    "headers", "query_params", "form", "cookies", "path_params", "scope", "url"})
+
+#: The methods that read a request body (fix round 1).
+_REQUEST_READ_METHODS = frozenset({"body", "json", "form"})
 
 #: The FastAPI parameter markers that read a request input.
 _REQUEST_READ_CALLS = frozenset({"Header", "Query", "Form", "Cookie"})
@@ -978,6 +981,14 @@ def _identity_literal_findings(tree: ast.Module) -> list[str]:
 
 
 def _request_read_findings(tree: ast.Module) -> list[str]:
+    """A HEURISTIC that catches the common shapes of a request read (§9.4).
+
+    It does not catch a literal that reaches a read through a variable, or an
+    attribute name that the code computes without ``getattr``. The real guards
+    are that ``tools.py`` receives no ``Request`` object
+    (:meth:`TestTheStructuralFences.test_the_mapping_module_receives_no_request`)
+    and coverage rule 4.
+    """
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -996,12 +1007,17 @@ def _request_read_findings(tree: ast.Module) -> list[str]:
                 found.append(f"line {node.lineno} names Request")
         elif isinstance(node, ast.Name) and node.id == "Request":
             found.append(f"line {node.lineno} names Request")
-        elif isinstance(node, ast.Call):
+        if isinstance(node, ast.Call):
             func = node.func
             name = (func.id if isinstance(func, ast.Name)
                     else func.attr if isinstance(func, ast.Attribute) else "")
             if name in _REQUEST_READ_CALLS:
                 found.append(f"line {node.lineno} calls {name}")
+            if isinstance(func, ast.Attribute) and func.attr in _REQUEST_READ_METHODS:
+                found.append(f"line {node.lineno} calls .{func.attr}()")
+            if name == "getattr" and len(node.args) >= 2:
+                # Any second argument: a computed name reaches any attribute.
+                found.append(f"line {node.lineno} calls getattr")
     return found
 
 
@@ -1050,6 +1066,20 @@ class TestTheStructuralFences:
         findings = _identity_literal_findings(_module_tree(_MAPPING_FILE))
         assert not findings, "tools.py:\n  " + "\n  ".join(findings)
 
+    def test_the_mapping_module_receives_no_request(self):
+        """The real guard behind the heuristic scan: a tool call gets the
+        parsed arguments and a :class:`Context` of the caller and the key, and
+        never the request object."""
+        import dataclasses
+        import inspect
+
+        from agent_edge import tools
+
+        assert [f.name for f in dataclasses.fields(tools.Context)] == ["caller", "key"]
+        assert list(inspect.signature(tools.call).parameters) == [
+            "tool", "ctx", "arguments"]
+        assert list(inspect.signature(tools.Tool).parameters).count("request") == 0
+
     def test_the_mapping_module_reads_no_request_input(self):
         """EA3-9, §9.4 rules 2 and 3. No header, query, form, cookie or path
         parameter, no ``Request`` and no ``fastapi`` or ``starlette``."""
@@ -1071,6 +1101,13 @@ class TestTheStructuralFences:
         ("from x import Request", "read"),
         ("def f(r: Request): pass", "read"),
         ("def f(e = Header(None)): pass", "read"),
+        ("x = getattr(request, 'head' + 'ers')", "read"),
+        ("x = getattr(row, name)", "read"),
+        ("x = request.scope['headers']", "read"),
+        ("x = request.url.query", "read"),
+        ("x = await request.body()", "read"),
+        ("x = await request.json()", "read"),
+        ("x = await thing.form()", "read"),
     ])
     def test_the_two_scans_see_each_shape(self, source, rule):
         """The scans themselves, on small sources, so a scan that goes blind
