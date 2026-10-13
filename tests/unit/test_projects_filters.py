@@ -267,8 +267,8 @@ def test_the_minimum_is_the_one_search_already_enforces():
 @pytest.mark.parametrize("term", ["abc", "extruder"])
 def test_a_query_at_or_above_the_minimum_still_searches(term):
     clauses, params = build_task_filters(q=term)
-    assert "(t.title ILIKE :q OR t.description ILIKE :q)" in clauses
-    assert params["q"] == f"%{term}%"
+    assert "((t.title ILIKE :q_w0 OR t.description ILIKE :q_w0))" in clauses
+    assert params["q_w0"] == f"%{term}%"
     assert len(term) >= MIN_QUERY == 3
 
 
@@ -685,3 +685,38 @@ class TestSubtasksSetting:
             "subtasks": "hidden", "not_a_key": 1,
         }
         assert set(normalise_view_config(full)) == set(VIEW_CONFIG_KEYS)
+
+
+# ── Words, not one phrase (owner request, 2026-10-13) ───────────────────────
+
+def test_each_word_is_its_own_arm_over_title_and_description():
+    from gateway.routes.projects.filters import text_match_clause
+
+    clause, params = text_match_clause("invoice approval")
+    assert clause == (
+        "((t.title ILIKE :q_w0 OR t.description ILIKE :q_w0)"
+        " AND (t.title ILIKE :q_w1 OR t.description ILIKE :q_w1))"
+    )
+    assert params == {"q_w0": "%invoice%", "q_w1": "%approval%"}
+
+
+def test_a_repeated_word_is_one_arm():
+    from gateway.routes.projects.filters import query_words
+
+    assert query_words("Parser parser PARSER fix") == ["Parser", "fix"]
+
+
+def test_short_words_alone_fall_back_to_the_phrase():
+    """No word reaches 3 letters, so no trigram serves any of them. The whole
+    term is then the one word, the rule before 2026-10-13."""
+    from gateway.routes.projects.filters import query_words
+
+    assert query_words("to do") == ["to do"]
+    assert query_words("v2 firmware") == ["v2", "firmware"]
+
+
+def test_the_word_count_is_capped():
+    from gateway.routes.projects.filters import MAX_QUERY_WORDS, query_words
+
+    many = " ".join(f"word{i}" for i in range(30))
+    assert len(query_words(many)) == MAX_QUERY_WORDS

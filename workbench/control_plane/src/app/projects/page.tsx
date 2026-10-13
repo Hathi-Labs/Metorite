@@ -80,6 +80,7 @@ import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
 import { TaskList } from "./components/TaskList";
 import { TaskPanel } from "./components/TaskPanel";
+import type { TaskWhere } from "@/components/TaskPanelHeader";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
@@ -194,6 +195,7 @@ import {
   nodeKind,
   showsDashboard,
   spaceOf,
+  taskWhere,
 } from "./lib/tree";
 import { forgetFold, markHidden, openFolds, resumeFold } from "./lib/treeFold";
 import ReportsView from "./components/ReportsView";
@@ -4076,9 +4078,29 @@ function ProjectsWorkspace() {
   //
   // `completeRelations` fixes that one body. This makes the NEXT one a named
   // fallback beside a working board, instead of a white page.
+  //
+  // `where` is the card's breadcrumb (owner, 2026-10-12): a card opened from
+  // the chat said nothing about which project holds the task. A crumb opens
+  // its node and closes the card, as `projects.open_project` selects one. A
+  // node the Center filter hides cannot be selected, so that path is text.
+  const openWhere = (task: TaskRow): TaskWhere => {
+    const shown = taskWhere(visibleRoots, task.project_id);
+    if (!shown.length) return { path: taskWhere(roots, task.project_id) };
+    return {
+      path: shown,
+      onOpen: (id) => {
+        const row = flatten(visibleRoots).find((e) => e.node.id === id);
+        if (!row) return;
+        setApp(null);
+        setSelected(row.node as ProjectRow);
+        setOpenTask(null);
+      },
+    };
+  };
   const taskPanel = openTask ? (
     <LayoutBoundary key={`panel-${openTask.id}`} layout="task panel">
     <TaskPanel
+      where={openWhere(openTask)}
       personLabels={personLabels}
       /**
        * ⚠️ People the BOARD never saw.

@@ -9008,12 +9008,12 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
 | **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #682 (2026-10-06). The visual check is H-255. Audited GO-NARROWED. The known limits f3, f5, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
-| **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g4b-cursor`). Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
-| **EM-G2-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B | S | §12.3.12.3 |
-| **EM-G4a-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B | S | §12.3.12.4 |
-| **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
-| **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
-| **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
+| **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | ✅ MERGED #915 (`0c882dec4`, 2026-10-12). Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
+| **EM-G2-f1** | 🟢 AGENT-SAFE | 🔨 Built, not merged (2026-10-12, branch `gmail-pra-fill-bulk`). Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B, which merged as #915 | S | §12.3.12.3 |
+| **EM-G4a-f1** | 🟢 AGENT-SAFE | 🔨 Built, not merged (2026-10-12, branch `gmail-pra-fill-bulk`). Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B, which merged as #915 | S | §12.3.12.4 |
+| **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | ✅ PR-C1a MERGED #919 (`421eeb8f4`, 2026-10-12). ✅ PR-C1b MERGED #925 (`144dc0d1f`, 2026-10-12). Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
+| **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | ✅ MERGED #916 (`c0d776667`, 2026-10-12). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
+| **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #910 (`67b61aa11`, 2026-10-12). Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
 order, and EM-G3b can go at any time after EM-G2. EM-G5a follows, then EM-G5b after its new
@@ -11202,7 +11202,7 @@ and the bullets above give the rules that apply now.
 **Known limit EM-G4b-f1.** The cursor moves only at the end of a read. A backlog that one cycle
 cannot finish can fail on a rate limit before its end, such as a bulk label on 50,000 messages.
 The next cycle then starts again at the old cursor. §12.3.12.2 owns the fix: the cursor moves at
-the end of each finished page. 🔨 The fix is built, not merged (2026-10-12).
+the end of each finished page. ✅ The fix MERGED as #915 (`0c882dec4`, 2026-10-12).
 
 **The fences, as built.** `tests/unit/test_gmail_history_cursor.py` holds 49 cases. A fake Gmail
 on `httpx.MockTransport` answers the client. The provider sends no `authenticate` request, so the
@@ -12482,20 +12482,24 @@ row), and §12.3.12.1 to §12.3.12.7 hold one slice for each open item.
    merged as #651 (2026-10-05). The composers flush a pending save, and a Gmail draft with a
    file waits 10 seconds. A failed save or send shows its reason.
 4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
-   the old cursor (§12.3.5.2). Slice: §12.3.12.2. 🔨 Built 2026-10-12, not merged (branch
-   `gmail-g4b-cursor`).
+   the old cursor (§12.3.5.2). Slice: §12.3.12.2. ✅ MERGED #915 (`0c882dec4`,
+   2026-10-12).
 5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body
-   (§12.3.2). Slice: §12.3.12.3.
+   (§12.3.2). Slice: §12.3.12.3. 🔨 Built 2026-10-12, not merged (PR-A, branch
+   `gmail-pra-fill-bulk`).
 6. **EM-G3a-f7.** An update of a draft made in Gmail web drops its inline images (§12.3.3). The
-   measure of 2026-10-12 found that the update drops the whole HTML body too. Slice: §12.3.12.5.
+   measure of 2026-10-12 found that the update drops the whole HTML body too. Slice: §12.3.12.5. ✅ PR-C1a
+   MERGED #919 (`421eeb8f4`, 2026-10-12). ✅ PR-C1b MERGED #925 (`144dc0d1f`, 2026-10-12). PR-C2 follows.
 7. **EM-G4a-f1.** A `batchModify` that stops on a rate limit falls back to one `modify` for each
-   message (§12.3.5.1). Slice: §12.3.12.4.
+   message (§12.3.5.1). Slice: §12.3.12.4. 🔨 Built 2026-10-12, not merged (PR-A, branch
+   `gmail-pra-fill-bulk`).
 8. **The known limits of EM-G8** (§12.3.10). The rule editor suggests no Gmail user label. The
    reconnect banner does not read the capability read. `provider_unavailable` shows the generic
-   failure. Slice: §12.3.12.7.
+   failure. Slice: §12.3.12.7. ✅ MERGED #910 (`67b61aa11`, 2026-10-12).
 9. **EM-G3b-f7.** The health metric and the repair script miss a Gmail thread that a custom
    `MOVE_FOLDER` rule moved. `DAMAGED_CONVERSATION_THREADS_SQL` compares the rule label with the
    folder. The fix changes SQL text and needs an R8 test (§12.3.4). Slice: §12.3.12.6.
+   ✅ MERGED #916 (`c0d776667`, 2026-10-12).
 10. **EM-G3b-f8 (follow-up, reviewer P2 of PR-E, 2026-10-12).** On Gmail, the alarm and the
     repair cannot tell a message that keeps the rule label from a message that the member filed
     under another label. Both sit in `archive`. So a repair puts a re-filed message back in the
@@ -12544,8 +12548,8 @@ and the rule editor and the banner. So each one carries an Outlook acceptance it
 
 #### 12.3.12.2 EM-G4b-f1 — the history cursor moves at each page
 
-**Status.** 🔨 Built 2026-10-12, not merged. PR-B, branch `gmail-g4b-cursor`. Specified
-2026-10-12.
+**Status.** ✅ MERGED #915 (`0c882dec4`, 2026-10-12). PR-B, branch `gmail-g4b-cursor`.
+Specified 2026-10-12.
 
 **As built (2026-10-12).**
 
@@ -12725,7 +12729,37 @@ stay at or below the counts on main.
 
 #### 12.3.12.3 EM-G2-f1 — a large text part comes by `attachmentId`
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-A, with EM-G4a-f1.
+**Status.** 🔨 Built 2026-10-12, not merged. PR-A, with EM-G4a-f1, branch `gmail-pra-fill-bulk`.
+Specified 2026-10-12.
+
+**As built (2026-10-12).**
+
+- `GmailProvider._fill_attachment_bodies` runs in `get_message`, after `raise_for_status` and
+  before the parse. It fetches the body parts of D-G2-f1-3, with the two bounds of D-G2-f1-7.
+- `_record_body_part_failure` writes the record `gmail.body_part_failed id=<message> part=<part>
+  error=<class> status=<code>` into `fetch_failures`.
+- `_record_body_part_too_large` writes the record `gmail.body_part_too_large id=<message>
+  part=<part> size=<bytes>` into `fetch_failures`.
+- `_fetch_into` takes the length of `fetch_failures` before each fetch. It copies the new records
+  into `result.errors` on success and on failure.
+- Mutation M4 (`_fetch_into` drops the records of the fill) turns the fourth fence red. Each of the
+  six mutations turns its fence red.
+
+**Fix round 1 (2026-10-12, review P2).** The reviewer found that the fill had no bound. It fetched
+each text part by `attachmentId`, with no limit on the size or the count. Each label event fetches
+a message again, and the import runs 10 fetches at once inside acb-gateway. So a few large mails
+could hold their parts in memory several times. D-G2-f1-7 adds two bounds.
+
+**Known limit EM-G2-f1-a (the cap and the `/full-body` route).** `GET
+/email/messages/{id}/full-body` (`transport/messages.py`, `get_full_body`) returns the body with no
+truncation, because it is the read for a stored body that the storage cap cut. A Gmail body part
+over `GMAIL_FILL_MAX_BYTES` (4 MiB) gets no fetch, so that route returns an empty body for it. The
+lazy body fill, the §14 HTML route and the sync cut each body at the storage caps of `persist`
+(500 KB of text and 2 MB of HTML). For a part of 4 MiB or less, the cap does not change what they
+keep. A larger part gives them an empty body, not a cut body.
+
+The cap stays for `/full-body` too. *Reason:* the memory of acb-gateway. One body part over 4 MiB is
+rare, and a larger part would need a stream that the parse does not support.
 
 **Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no flag.
 
@@ -12771,6 +12805,14 @@ The tests call it at `test_email_rekey_reclaim.py:425` and `test_gmail_send_and_
   names no subject and no address.
 - **D-G2-f1-6. A spent rate limit raises `GmailRateLimited`.** The fill does not catch it. Each
   caller handles it as EM-G4a says, and the HTML route answers 503 (§14.4.2 item 7).
+- **D-G2-f1-7. The fill has two bounds (fix round 1, review P2, 2026-10-12).** It amends
+  D-G2-f1-3. (a) Only the FIRST part of each type that holds data or an `attachmentId` is a
+  candidate, because `_gmail_bodies` reads only that part. So one message gets two fetches at most.
+  (b) A candidate whose `body.size` is over `GMAIL_FILL_MAX_BYTES` gets no fetch. The cap is two
+  times the larger storage cap of `persist` (`MAX_BODY_TEXT_BYTES`, `MAX_BODY_HTML_BYTES`), so
+  4 MiB today. The fill logs `gmail.body_part_too_large` with the message id, the part id and the
+  size, and adds one record to `fetch_failures`. That body stays empty. *Reason:* the memory of
+  acb-gateway. A stored body is cut at the storage cap, so a larger part buys nothing that is kept.
 
 **Scope.**
 
@@ -12794,6 +12836,9 @@ fetch for a file part. No change to Outlook or IMAP. No cache of a filled body.
    `gmail.body_part_failed` line, and one record in `SyncResult.errors` on the history path. The
    other body part still parses.
 5. A spent rate limit on the fill raises `GmailRateLimited` from `get_message`.
+6. A mail with two large `text/html` parts by `attachmentId` gives exactly one `attachments.get`
+   (D-G2-f1-7 (a)).
+7. A part over `GMAIL_FILL_MAX_BYTES` gives no `attachments.get` and one record (D-G2-f1-7 (b)).
 
 **Fences (R7).** A new fixture, `tests/unit/fixtures/gmail/j_text_part_by_attachment_id.json`, and
 new cases in `tests/unit/test_gmail_parse.py`. The cases drive the real `get_message` on
@@ -12804,9 +12849,13 @@ new cases in `tests/unit/test_gmail_parse.py`. The cases drive the real `get_mes
 - `test_a_file_part_is_never_fetched_for_the_body` (acceptance 3)
 - `test_a_failed_body_part_fetch_leaves_a_record_and_an_empty_body` (acceptance 4)
 - `test_a_rate_limit_on_the_body_part_fetch_raises` (acceptance 5)
+- `test_only_the_first_body_part_of_each_type_is_fetched` (acceptance 6)
+- `test_a_body_part_over_the_cap_is_not_fetched` (acceptance 7)
 
 **Mutations.** M1: `get_message` skips the fill, and the first fence fails. M2: the fill fetches a
 file part, and the third fence fails. M3: the fill swallows `GmailRateLimited`, and the fifth fence
+fails. M4: `_fetch_into` drops the records of the fill, and the fourth fence fails. M5: each part
+of a type is a candidate, and the sixth fence fails. M6: the size cap goes, and the seventh fence
 fails.
 
 **Verify with.**
@@ -12819,7 +12868,13 @@ uv run ruff check tests/unit/test_gmail_parse.py
 
 #### 12.3.12.4 EM-G4a-f1 — a rate limit in a bulk act
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-A, with EM-G2-f1.
+**Status.** 🔨 Built 2026-10-12, not merged. PR-A, with EM-G2-f1, branch `gmail-pra-fill-bulk`.
+Specified 2026-10-12.
+
+**As built (2026-10-12).** `bulk_apply` catches `GmailRateLimited` before `Exception`. It logs
+`gmail.batch_modify_rate_limited` with `size` (the chunk) and `left` (the chunk and each later
+chunk). A fourth fence, `test_a_rate_limited_batch_modify_with_no_failed_out_returns`, covers scope
+item 1 with no `failed_out`. Both mutations turn their fences red.
 
 **Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no flag.
 
@@ -12877,7 +12932,7 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** 🔨 PR-C1b built, not merged (2026-10-12, branch `gmail-c1b-send`). PR-C1a merged as
+**Status.** ✅ PR-C1b MERGED #925 (`144dc0d1f`, 2026-10-12, branch `gmail-c1b-send`). PR-C1a merged as
 #919 (`421eeb8f4`). PR-C2 is not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
 C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
 widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
@@ -13253,7 +13308,8 @@ The R8 tests must show PASSED, with 0 skips.
 
 #### 12.3.12.6 EM-G3b-f7 — the thread health finds a Gmail custom move
 
-**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`), fix round 1 closed.
+**Status.** ✅ MERGED #916 (`c0d776667`, 2026-10-12, branch `gmail-g3b-health`), fix round 1
+closed.
 PR-E. The `OR` branch reads `email_accounts.provider` through an `EXISTS` on `em.account_id`, so
 the compare of each provider runs as on main. The four fences of
 `test_email_thread_health_gmail.py` pass on a real Postgres, as `acb_app_h3rls`.
@@ -13367,7 +13423,7 @@ The R8 tests must show PASSED, with 0 skips.
 
 #### 12.3.12.7 EM-G8-f1 — the known limits of the connect UI
 
-**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g8-ux`). PR-F. The fences are in `connect.test.ts`, and the mutations M1 to M4 each fail a fence.
+**Status.** ✅ MERGED #910 (`67b61aa11`, 2026-10-12, branch `gmail-g8-ux`). PR-F. The fences are in `connect.test.ts`, and the mutations M1 to M4 each fail a fence.
 
 **Gate.** 🟢 AGENT-SAFE · visual review. UI only. No migration, no flag.
 

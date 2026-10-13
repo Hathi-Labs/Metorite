@@ -19,7 +19,14 @@ touches it.
 **The flag.** :func:`enabled` is the one reader of ``agent_access_enabled``.
 While it is false, every EA-2a route answers 404.
 
-Fence: ``tests/unit/test_agent_oauth_server.py``.
+**The MCP read surface (EA-3a).** :data:`MCP_ROUTES` is the one allowlist of
+gateway routes an outside agent may reach. :func:`actor_via_for` gives the
+``mcp:<slug>`` stamp of a connection. :data:`ACTOR_VIA_PATTERN` is the one
+shape of that stamp, and the Projects routes import it from here.
+
+Fences: ``tests/unit/test_agent_oauth_server.py``,
+``tests/unit/test_mcp_edge_signing.py`` and
+``tests/unit/test_mcp_edge_coverage.py``.
 """
 from __future__ import annotations
 
@@ -70,7 +77,7 @@ def parse_scope(value: str | None) -> tuple[str, ...]:
     for token in tokens:
         if token == "":
             continue
-        if not _SCOPE_TOKEN.match(token):
+        if not _SCOPE_TOKEN.fullmatch(token):
             raise ValueError("scope holds a bad token")
         named.add(token)
     return tuple(s for s in SUPPORTED_SCOPES if s in named)
@@ -127,11 +134,11 @@ S256 = "S256"
 
 
 def is_valid_challenge(challenge: str | None) -> bool:
-    return bool(challenge) and bool(_CHALLENGE.match(challenge or ""))
+    return bool(challenge) and bool(_CHALLENGE.fullmatch(challenge or ""))
 
 
 def is_valid_verifier(verifier: str | None) -> bool:
-    return bool(verifier) and bool(_VERIFIER.match(verifier or ""))
+    return bool(verifier) and bool(_VERIFIER.fullmatch(verifier or ""))
 
 
 def s256(verifier: str) -> str:
@@ -247,7 +254,7 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
     except ValueError:
         return False
     scheme = parts.scheme
-    if not _SCHEME.match(scheme) or scheme in _FORBIDDEN_SCHEMES:
+    if not _SCHEME.fullmatch(scheme) or scheme in _FORBIDDEN_SCHEMES:
         return False
     if "#" in uri or parts.username is not None or parts.password is not None:
         return False
@@ -265,6 +272,57 @@ def redirect_host(uri: str) -> str:
     return ascii_host(parts.hostname) if parts.hostname else f"{parts.scheme}:"
 
 
+# ── The MCP read surface (EA-3a, spec §9.5 and §10.1) ──────────────────────
+
+#: The shape of an ``X-Actor-Via`` value, the provenance stamp of a write
+#: (D-PM-36). It lives here, and ``gateway/routes/projects/core.py`` imports
+#: it, because ``acb_auth`` may not import the gateway and branch 0 of
+#: ``deps.get_current_user`` checks the stamp too. ONE copy.
+ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
+
+#: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
+#: full FastAPI route template. Branch 0 of ``deps.get_current_user`` refuses
+#: every other pair, and the edge client reads this set before it sends a
+#: request. EA-3 lists the GET routes of the seven read tools (§9.1) and no
+#: write. Fence: ``tests/unit/test_mcp_edge_coverage.py``.
+MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/auth/me"),
+    ("GET", "/projects/tree"),
+    ("GET", "/projects/nodes/{project_id}"),
+    ("GET", "/projects/nodes/{project_id}/statuses"),
+    ("GET", "/projects/nodes/{project_id}/types"),
+    ("GET", "/projects/nodes/{project_id}/fields"),
+    ("GET", "/projects/nodes/{project_id}/tags"),
+    ("GET", "/projects/tasks"),
+    ("GET", "/projects/tasks/{task_id}"),
+    ("GET", "/projects/tasks/{task_id}/relations"),
+    ("GET", "/projects/tasks/{task_id}/timeline"),
+    ("GET", "/projects/search"),
+})
+
+
+def actor_via_for(client_origin: str | None) -> str:
+    """The ``X-Actor-Via`` stamp of a connection: ``mcp:<slug>``.
+
+    The slug is the lower-case ASCII host of *client_origin*, with no scheme
+    and no port. When that stamp does not match :data:`ACTOR_VIA_PATTERN`,
+    the slug is the first 16 hex characters of the SHA-256 of the origin. An
+    empty origin gives ``""``, which matches no pattern, so branch 0 refuses
+    it (spec §10.1, step 7).
+    """
+    origin = (client_origin or "").strip()
+    if not origin:
+        return ""
+    try:
+        host = (urlsplit(origin).hostname or "").lower()
+    except ValueError:
+        host = ""
+    stamp = f"mcp:{host}"
+    if host and host.isascii() and ACTOR_VIA_PATTERN.fullmatch(stamp):
+        return stamp
+    return "mcp:" + hashlib.sha256(origin.encode("utf-8")).hexdigest()[:16]
+
+
 def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) -> str:
     """*redirect_uri* with *params* added to its query (RFC 6749 §4.1.2).
 
@@ -279,15 +337,18 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 
 
 __all__ = [
+    "ACTOR_VIA_PATTERN",
     "CONTEXT_READ",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
+    "MCP_ROUTES",
     "OFFLINE_ACCESS",
     "PROJECTS_READ",
     "PROJECTS_WRITE",
     "RESOURCE_SCOPES",
     "S256",
     "SUPPORTED_SCOPES",
+    "actor_via_for",
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
