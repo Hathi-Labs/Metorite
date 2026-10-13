@@ -70,6 +70,11 @@ interface ArtifactSidebarProps {
   /** Which edge of the chat the panel sits on — flips the border and the
    *  collapse-chevron direction. Default "right" (legacy position). */
   side?: "left" | "right";
+  /**
+   * Whether the header offers to collapse the panel. A page that IS the
+   * panel, as the Artifacts app's Chats tab is, has nothing to collapse into.
+   */
+  collapsible?: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -399,6 +404,7 @@ export default function ArtifactSidebar({
   fullWidth = false,
   onOpenInSidePanel,
   side = "right",
+  collapsible = true,
 }: ArtifactSidebarProps) {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -498,10 +504,12 @@ export default function ArtifactSidebar({
             <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={fetchTree} title="Refresh file tree" className="rounded">
               <Icon name="RefreshCw" size={12} className={loading ? "animate-spin" : ""} />
             </Button>
+            {collapsible ? (
             <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={onToggle} title="Collapse file browser" className="rounded">
               {/* Chevron points toward the edge the panel collapses into. */}
               {side === "right" ? <Icon name="ChevronRight" size={14} /> : <Icon name="ChevronLeft" size={14} />}
             </Button>
+            ) : null}
           </div>
         </div>
       )}

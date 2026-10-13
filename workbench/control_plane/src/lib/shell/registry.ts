@@ -221,6 +221,16 @@ export const JOBS: readonly ShellJob[] = [
     href: "/whatsapp",
     icon: "MessageCircle",
   },
+  // A link job (D99, NS-6 slice 6c): Artifacts has no form to open, so the
+  // job opens the app on the member's chats and their files.
+  {
+    id: "find-chat-file",
+    label: "Find a file from a chat",
+    words: ["file", "files", "artifact", "artifacts", "download", "report", "document", "documents"],
+    app: "/artifacts",
+    href: "/artifacts",
+    icon: "FolderOpen",
+  },
   {
     id: "review-approvals",
     label: "Review pending approvals",

@@ -165,7 +165,9 @@ test("the .docx viewer drops a javascript: link and fetches nothing remote", asy
   );
   const hits = await recordAttacker(page);
 
-  await page.goto("/artifacts");
+  // The agents' own files are the second tab since NS-6 slice 6c. The page
+  // opens on the member's chats, so the test asks for the agents' tab.
+  await page.goto("/artifacts?tab=agents");
   const card = page.getByRole("button", { name: /writer\s*1 file/ });
   await expect(card).toBeVisible({ timeout: 120_000 });
   await card.click();
