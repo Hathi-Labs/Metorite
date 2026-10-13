@@ -11,8 +11,8 @@ credits. External calendars come later, and calendar clashes fold in then.
 The owner also asked the feed to use `decide` as much as it can. So §10 is
 now "Decide first".
 
-**The owner answered Q1 and Q6 the same day.** D99: `decide` may serve every
-app, so residency is no longer a gate for My Day. D100: a card acts in place,
+**The owner answered Q1 and Q6 the same day.** D100: `decide` may serve every
+app, so residency is no longer a gate for My Day. D101: a card acts in place,
 unless the act needs more context. §11 is the design of when to do which.
 
 **Repair round 1, 2026-10-13.** The adversarial review of PR #939 found 14 P1
@@ -29,7 +29,7 @@ changes:
 anchor carries a file and a line. Check them again at dispatch, because this
 tree moves every day.
 
-**Board row:** **WS-57**, minted by this spec (`work_plan.md` §2).
+**Board row:** **WS-58**, minted by this spec (`work_plan.md` §2).
 **Owning spec:** this file. **Owner:** vjvarada.
 **Design mockup:** `mockups/my_day_feed.html` (§14.4).
 
@@ -365,7 +365,7 @@ that the kind needs beyond the common pass.
 judge the cards near the top (§10.3). So a row that says "None" still gets
 judged. It needs no detector and no text.
 
-**Acts marked A\* are class A acts beyond done, mark read and snooze.** D100
+**Acts marked A\* are class A acts beyond done, mark read and snooze.** D101
 lets them run in the card as a tap (§11). MD-8 builds them. Until MD-8 lands,
 each renders as a link that opens the owning app at the right place.
 
@@ -1010,9 +1010,9 @@ as the day planner fences its task list (`calendar_ai_review.md` §2, item 1).
 
 ---
 
-## 11. Acts — in the card, or in the app (D100)
+## 11. Acts — in the card, or in the app (D101)
 
-**Decided by the owner, 2026-10-13 (D100).** In the owner's words, actions
+**Decided by the owner, 2026-10-13 (D101).** In the owner's words, actions
 "can happen inside cards, inside my day itself, unless the action needs more
 context". Then "the user can prefer to open it in the app itself". This
 amends the act rule of `navigation_shell.md` §4.3. The owner asked the design
@@ -1326,7 +1326,7 @@ accent, and beside My Tasks.
 **The design mockup is `mockups/my_day_feed.html`** (2026-10-13). It draws the
 groups, ten sample cards, the menu, "Why am I seeing this", the Later and
 Handled groups, and the "2 new" pill. A switch shows the same cards with the
-judged answers and on the old path. It draws the A\* acts as taps, as D100
+judged answers and on the old path. It draws the A\* acts as taps, as D101
 allows. It does not draw the expand panel of §11.3 yet. Where the mockup and
 this spec disagree, this spec wins.
 
@@ -1501,7 +1501,7 @@ Done when:
 6. The measure read of §10.6 item 4 exists.
 
 **Turning on `shadow` for a real organization is the owner's flip** (§17.1),
-because it spends credits. Residency is answered (D99).
+because it spends credits. Residency is answered (D100).
 
 ### MD-6b · `decide` on, with gates — AGENT-SAFE (build), OWNER-GATE (turn on)
 
@@ -1522,7 +1522,7 @@ before the flag goes on.**
 `brief`, `while_away` and `day_end`. `day_end` links to `EndOfDayReview` and
 copies nothing of it.
 
-### MD-8 · Acts in the card — AGENT-SAFE (D100)
+### MD-8 · Acts in the card — AGENT-SAFE (D101)
 
 The A\* acts as taps, and the class B acts in the expand panel of §11.3.
 MD-9 also adds the keys of §14.3. The
@@ -1581,7 +1581,7 @@ late, because it costs the most and waits on H-171 and H-69.
 | Act | Why it is the owner's | Gate |
 |---|---|---|
 | Turn on `NEXT_PUBLIC_MY_DAY_FEED` in production | It changes the first page of every member in every organization at once | Owner only, as `navigation_shell.md` §13.1. The dev-phase window does not open it |
-| Turn on `MY_DAY_COMPOSE`, or set any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` | It spends customer credits | Owner only. CLAUDE.md §3a rule 3. Residency is answered (D99) |
+| Turn on `MY_DAY_COMPOSE`, or set any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` | It spends customer credits | Owner only. CLAUDE.md §3a rule 3. Residency is answered (D100) |
 | MD-10, a message outside the app | It reaches a real person through a third party | Owner only. CLAUDE.md §3a rule 3 |
 
 ⚠️ These bind by prose only. `plan-guard.mjs` names none of these flags (R7,
@@ -1591,12 +1591,12 @@ advisory), the same gap as `navigation_shell.md` §13.1.
 
 | # | Question | Default |
 |---|---|---|
-| Q1 | May a card run, in place, the A\* acts and the class B acts? | **Answered by the owner, 2026-10-13 (D100).** Yes, unless the act needs more context. §11 holds the rule |
+| Q1 | May a card run, in place, the A\* acts and the class B acts? | **Answered by the owner, 2026-10-13 (D101).** Yes, unless the act needs more context. §11 holds the rule |
 | Q2 | Who pays for the AI? | **Answered by the owner, 2026-10-13.** The customer pays for every AI call in AI credits, `decide` and text alike. The feed with no AI is free (§9.3) |
 | Q3 | Does external calendar sync move up, so card A can ship? | **Answered by the owner, 2026-10-13.** Metorite will read Google and Outlook calendars. Clashes fold in then (MD-11). Until then, the feed ships the overlaps it can see |
 | Q4 | Are nudges outside the app opt-in, with three a day at most? | Yes, opt-in, and off for everyone until MD-10 |
 | Q5 | The Projects report template T2 is also called "My day". Rename it? | Rename T2 to "My work today" in MD-4, so one name means one page |
-| Q6 | Does the `decide` residency answer cover My Day? | **Answered by the owner, 2026-10-13 (D99).** Yes, and every other app too. My Day's state sends titles, names and subjects as clipped facts, and no mail body (§10.4) |
+| Q6 | Does the `decide` residency answer cover My Day? | **Answered by the owner, 2026-10-13 (D100).** Yes, and every other app too. My Day's state sends titles, names and subjects as clipped facts, and no mail body (§10.4) |
 
 ---
 
@@ -1630,7 +1630,7 @@ compact density, under a changed accent, and beside My Tasks.
 
 Each document below links here, and adds nothing of its own.
 
-- `work_plan.md` §2, row **WS-57**.
+- `work_plan.md` §2, row **WS-58**.
 - `INDEX.md`, ACTIVE.
 - `navigation_shell.md` §4.3 and §7.2: the feed's content, order and life
   live here. The page frame, the bell, the needs contract and the flags stay
