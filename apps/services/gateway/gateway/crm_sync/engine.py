@@ -216,6 +216,16 @@ DAILY_CREDIT_BUDGET = int(ASSUMED_DAILY_CREDITS * BUDGET_FRACTION)
 #: Stop when the provider reports fewer credits than this.
 CREDITS_FLOOR = 1_000
 
+#: CRM-Q10: the credits that discovery may spend while the edition is unknown
+#: (no profile, or an edition that the provider did not name), the profile is
+#: absent or 24 hours old, and the run uses the default budget. It holds also
+#: when that budget is spent (``_discovery_allowance_due``). One
+#: discovery costs 2 + 2 x 4 calls plus one for each Deals layout, so 11 with
+#: one layout (``test_crm_discovery.py``). 25 covers 15 Deals layouts, or 14
+#: retries. Without it, an org whose profile was dropped after it spent the
+#: 500-credit floor could not discover, and the mirror froze for up to 24 hours.
+DISCOVERY_ALLOWANCE = 25
+
 RECONCILE_EVERY = timedelta(hours=24)
 #: The source profile is read again after this long (CRM-Q1).
 DISCOVERY_EVERY = timedelta(hours=24)
@@ -566,6 +576,11 @@ class _Ctx:
         self.profile: profiles.ProfileRow | None = None
         self.used_24h = 0
         self.budget_is_default = credit_budget is None
+        #: Discovery reads at most once in a run, also when it failed (CRM-Q10).
+        self.discovery_tried = False
+        #: CRM-Q10: the early discovery of the allowance stored the profile but
+        #: left its pipelines to the normal slot, after the Stage picklist.
+        self.pipelines_deferred = False
         #: The local pipelines of the org, loaded once for the deal writes.
         self.pipelines: _PipelineIndex | None = None
         #: The deals whose contact roles are not read yet, oldest first.
@@ -1792,6 +1807,33 @@ def _discovery_due(ctx: _Ctx) -> bool:
     return age >= DISCOVERY_EVERY
 
 
+def _discovery_allowance_due(ctx: _Ctx) -> bool:
+    """CRM-Q10: the edition is not known, the profile is absent or at least
+    :data:`DISCOVERY_EVERY` old, the run uses the default budget, and less than
+    :data:`DISCOVERY_ALLOWANCE` of it is left.
+
+    "Not known" is no profile, or a profile whose edition the provider did not
+    name, so the budget is the floor. Then discovery may spend the allowance,
+    and it reads before the other steps. The age rule holds it to once in 24
+    hours. ``_discovery_due`` alone does not: pending module fields make
+    discovery due after one hour (re-review, 2026-10-13). A known edition never
+    gets it, and neither does a test budget (``credit_budget``).
+    """
+    if not ctx.budget_is_default:
+        return False
+    if profiles.sync_budget(ctx.profile.profile if ctx.profile else None) is not None:
+        return False
+    current = ctx.profile
+    if (
+        current is not None
+        and current.fetched_at is not None
+        and ctx.started - current.fetched_at < DISCOVERY_EVERY
+    ):
+        return False
+    left = ctx._budget_left()
+    return left is not None and left < DISCOVERY_ALLOWANCE
+
+
 _NAMED = (
     "lower(btrim(CASE jsonb_typeof(custom->'Pipeline') "
     "WHEN 'string' THEN custom->>'Pipeline' "
@@ -2132,19 +2174,32 @@ async def _discover(ctx: _Ctx) -> None:
     A fatal failure (a dead token, a spent budget, a throttle) ends the run, and
     any other failure only costs the section.
     """
-    if not _discovery_due(ctx):
+    if ctx.discovery_tried or not _discovery_due(ctx):
         return
+    ctx.discovery_tried = True
+    budget_before = ctx.budget_total
+    if _discovery_allowance_due(ctx):
+        # CRM-Q10: the discovery call may spend the allowance, and no more.
+        # Advisory: the floor check of ``ctx.call`` sees only a count that Zoho
+        # reported earlier in this run, and an early discovery is the first
+        # call of its run. The cap of the allowance bounds it.
+        ctx.budget_total = ctx.credits + DISCOVERY_ALLOWANCE
     try:
         raw = await ctx.call(lambda s: s.discover())
     except (NotConnected, Stopped, ModeChanged):
         raise
     except SourceError as exc:
+        ctx.budget_total = budget_before
         if _fatal(exc):
             raise
         _log.warning("crm.sync.discovery_failed: %s", error_code(exc))
         return
     previous = ctx.profile.profile if ctx.profile is not None else None
     profile = ctx.mapping.build_profile(raw, previous, ctx.handle.scopes)
+    if ctx.budget_is_default:
+        # The edition is known now. The module fields and the rest of the run
+        # obey its budget, and the credits of this run count against it.
+        ctx.budget_total = max(daily_budget(profile) - ctx.used_24h, 0)
     module_fields, fields_skipped = await _read_module_fields(ctx, profile)
     profile = ctx.mapping.with_module_fields(
         profile, module_fields, previous, pending=fields_skipped,
@@ -2162,12 +2217,40 @@ async def _discover(ctx: _Ctx) -> None:
             await field_rules.mark_stale(db, ctx.mapping, EXT_SOURCE, profile),
         )
         await store.merge_provider_meta(db, ctx.org, ctx.handle.connection_id, meta)
-        if "pipelines" not in (profile.get("unreadable") or []):
+        readable = "pipelines" not in (profile.get("unreadable") or [])
+        if readable and not ctx.pipelines_deferred:
             await _mirror_pipelines(ctx, db, profile.get("pipelines") or [])
         await _write_module_field_defs(ctx, db, module_fields)
         ctx.profile = await profiles.latest(db, ctx.org)
-    if ctx.budget_is_default:
-        ctx.budget_total = max(daily_budget(profile) - ctx.used_24h, 0)
+
+
+#: The Zoho pipelines that this org already mirrors (CRM-Q10).
+_ZOHO_PIPELINES_SQL = "SELECT count(*) FROM crm_pipelines WHERE ext_source = :src"
+
+
+async def _mirror_deferred_pipelines(ctx: _Ctx) -> None:
+    """Write the pipelines of the stored profile at the normal discovery slot,
+    after the Stage picklist (CRM-Q10). No provider call.
+
+    Two cases. The early discovery of this run deferred them. Or an earlier run
+    stored the profile and stopped before this slot, so the org mirrors no Zoho
+    pipeline yet (a start over deletes them). An org that already mirrors a
+    Zoho pipeline and deferred nothing is left alone.
+    """
+    current = ctx.profile
+    if current is None or str(current.connection_id) != str(ctx.handle.connection_id):
+        return
+    profile = current.profile or {}
+    pipelines = profile.get("pipelines") or []
+    if "pipelines" in (profile.get("unreadable") or []) or not pipelines:
+        return
+    async with ctx.page() as db:
+        if not ctx.pipelines_deferred and (await db.execute(
+            text(_ZOHO_PIPELINES_SQL), {"src": EXT_SOURCE},
+        )).scalar():
+            return
+        await _mirror_pipelines(ctx, db, pipelines)
+    ctx.pipelines_deferred = False
 
 
 async def _stage_types_from_profile(ctx: _Ctx) -> None:
@@ -2223,6 +2306,14 @@ async def _execute(ctx: _Ctx) -> None:
         ctx.budget_total = max(
             daily_budget(ctx.profile.profile if ctx.profile else None) - ctx.used_24h, 0,
         )
+    if _discovery_allowance_due(ctx):
+        # CRM-Q10: with the edition unknown and too little of the default budget
+        # left, discovery reads first, on its allowance. It finds the edition,
+        # and so the budget that pays for the estimate and the field
+        # definitions. It stores the profile, and the pipelines wait for the
+        # normal slot below, after the Stage picklist.
+        ctx.pipelines_deferred = True
+        await _discover(ctx)
     await _stage_types_from_profile(ctx)
     # CRM-Q7a: before the first provider call, so it costs no credit.
     await _field_rules(ctx)
@@ -2244,6 +2335,7 @@ async def _execute(ctx: _Ctx) -> None:
     # not list is appended and a listed one keeps its place. Before the records,
     # so a deal finds its pipeline.
     await _discover(ctx)
+    await _mirror_deferred_pipelines(ctx)
     # After discovery, so a rule that went stale is not applied.
     await _load_rules(ctx)
     for entity in ENTITY_ORDER:

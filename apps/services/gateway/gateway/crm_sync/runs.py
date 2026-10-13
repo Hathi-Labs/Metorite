@@ -127,6 +127,22 @@ _CREDITS_24H_SQL = (
     "AND started_at > now() - interval '24 hours'"
 )
 
+#: CRM-Q10: when the 24-hour window of :data:`_CREDITS_24H_SQL` falls below
+#: ``:budget``. For each run of the window, ``newer`` is the credits of the
+#: runs that started after it. Once that run and the older ones leave the
+#: window, ``newer`` is what stays. The first run whose ``newer`` is under the
+#: budget leaves the window 24 hours after it started. The same filter as
+#: ``_CREDITS_24H_SQL``, so the two never disagree.
+_RESUMES_AT_SQL = (
+    "SELECT min(started_at) + interval '24 hours' AS at FROM ("
+    "SELECT started_at, COALESCE(sum(COALESCE(credits_used, 0)) OVER ("
+    "ORDER BY started_at DESC, id DESC "
+    "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS newer "
+    "FROM crm_sync_runs WHERE organization_id = CAST(:org AS uuid) "
+    "AND started_at > now() - interval '24 hours') AS w "
+    "WHERE newer < :budget"
+)
+
 _RESUMABLE_IMPORT_SQL = (
     "SELECT counts, estimate FROM crm_sync_runs "
     "WHERE organization_id = CAST(:org AS uuid) AND kind = 'import' "
@@ -265,6 +281,19 @@ async def credits_used_24h(db: Any, org: str) -> int:
     return int(row.used or 0)
 
 
+async def resumes_at(db: Any, org: str, budget: int) -> datetime | None:
+    """When the credits of the last 24 hours fall below *budget* (CRM-Q10).
+
+    ``None`` when they are below it now. Sync health shows the time of a pause.
+    """
+    if await credits_used_24h(db, org) < int(budget):
+        return None
+    row = (await db.execute(
+        text(_RESUMES_AT_SQL), {"org": org, "budget": int(budget)},
+    )).first()
+    return row.at if row is not None else None
+
+
 async def resumable_import(db: Any, org: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """The counts and the estimate of the last import that did not end.
 
@@ -384,6 +413,7 @@ __all__ = [
     "read_cursors",
     "recent",
     "resumable_import",
+    "resumes_at",
     "start",
     "write_cursor",
 ]

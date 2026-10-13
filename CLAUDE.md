@@ -226,6 +226,11 @@ Four acts. `plan-guard.mjs` blocks all four, and **no grant unlocks them**.
    ⚠️ `git add` and `git commit` of that file are fine — they carry what the
    owner wrote. `git checkout --` and `git restore` are **not**, because they
    can revive a grant the calendar already retired.
+   ⚠️ **When the owner must add a line, open the file for them.** Owner
+   directive, 2026-10-13. Run `code -g <path>:<line>` on the exact copy that
+   the pull request uses, which is often a worktree and not the main
+   checkout. Then give the exact line and the line number. Do not only name
+   the path. The owner once wrote a line into the wrong checkout.
 4. **Destroy or restore infrastructure.** The VPS, the DNS zone, the domain.
 
 ### `guard-write` — the guard protects itself

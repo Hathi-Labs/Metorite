@@ -27,6 +27,31 @@ export function pushView(href: string, history: HistoryLike = window.history): v
   history.pushState(null, "", href);
 }
 
+/** The parts of a click that decide who handles it. */
+type ClickLike = Pick<
+  MouseEvent,
+  "button" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey" | "preventDefault"
+>;
+
+/**
+ * The click of an in-app `<a href>` (CRM-C1). A plain left click changes the
+ * view through `pushView`, with no server request. A middle click or a click
+ * with a modifier key stays the browser's, so the link opens a new tab or
+ * window. Returns true when it pushed.
+ */
+export function pushOnPlainClick(
+  event: ClickLike,
+  href: string,
+  history: HistoryLike = window.history,
+): boolean {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+    return false;
+  }
+  event.preventDefault();
+  pushView(href, history);
+  return true;
+}
+
 /** The same entry, rewritten. For a URL the page corrects by itself. */
 export function replaceView(href: string, history: HistoryLike = window.history): void {
   history.replaceState(null, "", href);

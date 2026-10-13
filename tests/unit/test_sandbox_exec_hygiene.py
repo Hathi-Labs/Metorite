@@ -36,7 +36,7 @@ from typing import Any
 import pytest
 from orchestrator import sandbox_broker as sb
 
-from tests.unit._sandbox_broker_fakes import FakeDocker, bound_run, configure_env
+from tests.unit._sandbox_broker_fakes import FakeDocker, bound_run, configure_env, until
 from tests.unit.test_coding_sandbox_image import coding_sandbox_image  # noqa: F401
 
 ORG = "dddddddd-0000-0000-0000-00000000000d"
@@ -260,10 +260,10 @@ async def test_a_cancelled_exec_sweeps_before_the_dir_is_free(
     docker.on_stream = long
     docker.block_sweep = asyncio.Event()
     task = asyncio.create_task(broker.exec(h1, "npm install", 300))
-    await asyncio.sleep(0.05)
+    await until(docker.command_execs, "the command must be running")
     task.cancel()
-    await asyncio.sleep(0.05)
-    assert len(docker.sweeps()) == 1, "the cancel must start the kill sweep"
+    await until(docker.sweeps, "the cancel must start the kill sweep")
+    assert len(docker.sweeps()) == 1, "the cancel must start ONE kill sweep"
     seen: list[int] = []
 
     async def host_call() -> None:
@@ -293,9 +293,9 @@ async def test_a_second_cancel_still_holds_the_dir_until_the_sweep_ends(
     docker.on_stream = long
     docker.block_sweep = asyncio.Event()
     task = asyncio.create_task(broker.exec(h1, "npm install", 300))
-    await asyncio.sleep(0.05)
+    await until(docker.command_execs, "the command must be running")
     task.cancel()
-    await asyncio.sleep(0.05)
+    await until(docker.sweeps, "the first cancel must start the kill sweep")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=5)

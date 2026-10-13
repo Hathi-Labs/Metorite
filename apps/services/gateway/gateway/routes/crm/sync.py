@@ -93,6 +93,10 @@ class HealthModuleModel(BaseModel):
 class HealthCreditsModel(BaseModel):
     budget_24h: int
     used_24h: int
+    #: CRM-Q10: when the credits of the 24-hour window fall below the budget,
+    #: so the card can say when a ``budget`` pause ends. Null while the window
+    #: is below the budget.
+    resumes_at: datetime | None = None
 
 
 class SyncHealthModel(BaseModel):
@@ -290,8 +294,9 @@ async def get_sync_health(
             "org": org, "src": engine.EXT_SOURCE,
         })).fetchall():
             ours[f"{MODULE_KEY_PREFIX}{row.module}"] = int(row.n or 0)
-    body = profile.profile if profile is not None else None
-    budget = engine.daily_budget(body)
+        body = profile.profile if profile is not None else None
+        budget = engine.daily_budget(body)
+        resumes = await runs.resumes_at(db, org, budget) if used >= budget else None
     counts = latest.counts if latest is not None else {}
     estimate = (latest.estimate if latest is not None else None) or {}
     module_ours = {k: v for k, v in ours.items() if k.startswith(MODULE_KEY_PREFIX)}
@@ -328,7 +333,7 @@ async def get_sync_health(
         modules=modules,
         history=[_run_model(r) for r in history],
         running=live,
-        credits=HealthCreditsModel(budget_24h=budget, used_24h=used),
+        credits=HealthCreditsModel(budget_24h=budget, used_24h=used, resumes_at=resumes),
     )
 
 

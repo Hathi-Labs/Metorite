@@ -240,7 +240,8 @@ describe("only the hub offers a change of setup", () => {
     expect(
       renderToStaticMarkup(createElement(SetupLink, { isAdmin: false, children: "x" })),
     ).not.toContain("<a");
-    expect(read("page.tsx")).toContain("onOpenSetup={() => chooseView(\"settings\")}");
+    // CRM-C1: the banner opens the setup section, not the settings tab.
+    expect(read("page.tsx")).toContain("onOpenSetup={() => chooseSection(\"setup\")}");
   });
 
   it("shows the banner for each state where the records stop updating", () => {

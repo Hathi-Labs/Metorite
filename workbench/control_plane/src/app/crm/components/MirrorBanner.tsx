@@ -15,7 +15,6 @@
  * Both strips sit in the page. The shell bar carries nothing of the app.
  */
 
-import Link from "next/link";
 import type { ReactNode } from "react";
 
 import Icon from "@/components/Icon";
@@ -28,6 +27,7 @@ import {
   type ConnectionInfo,
   type SyncStatus,
 } from "../lib/connect";
+import { pushOnPlainClick } from "../lib/history";
 import { SETUP_HREF } from "../lib/setup";
 
 /** The banner's sentence for each stalled status. */
@@ -73,17 +73,23 @@ export function StalledBanner({
 /**
  * The mode part of the title-bar line. For an admin it is a link to the setup
  * hub (CRM-X0), so "Zoho disconnected" leads to the fix. A member gets text.
+ *
+ * A plain click calls `pushView` (CRM-C1). A `next/link` `<Link>` waits on a
+ * server request before the view changes, as `router.push` does
+ * (`lib/history.ts`). The `href` stays, so a click with a modifier key opens
+ * a new tab, and the browser shows the address.
  */
 export function SetupLink({ isAdmin, children }: { isAdmin: boolean; children: ReactNode }) {
   if (!isAdmin) return <>{children}</>;
   return (
-    <Link
+    <a
       href={SETUP_HREF}
+      onClick={(event) => pushOnPlainClick(event, SETUP_HREF)}
       className="underline underline-offset-2 hover:text-foreground"
       title="Open CRM setup"
     >
       {children}
-    </Link>
+    </a>
   );
 }
 

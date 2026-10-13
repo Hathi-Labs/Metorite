@@ -699,15 +699,18 @@ class TestTheParseIsBounded:
         monkeypatch.setattr(tools, "extract_text", _stuck)
         _Harness(monkeypatch, filename="slow.pdf", payload=b"%PDF-1.7")
         try:
-            begun = time.monotonic()
             got = asyncio.run(_text())
-            assert time.monotonic() - begun < 2.0
+            # No clock bound: the reason names the path. The bound's sentence
+            # comes while the worker is still stuck. A route that waited for
+            # the worker would end with it, at "late". A bound of 2 s of
+            # runner time measured the runner too.
             assert got.kind == "unreadable"
             assert "took too long" in (got.reason or "")
             assert _free_slots() == tools.MAX_PARSES - 1, "the stuck worker keeps its slot"
         finally:
             go_on.set()
-        deadline = time.monotonic() + 5
+        # A hang guard: the worker ends at once now, so its slot comes back.
+        deadline = time.monotonic() + 30
         while _free_slots() < tools.MAX_PARSES and time.monotonic() < deadline:
             time.sleep(0.05)
         assert _free_slots() == tools.MAX_PARSES

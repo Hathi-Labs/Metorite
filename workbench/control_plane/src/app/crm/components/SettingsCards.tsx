@@ -4,7 +4,7 @@
  * The small cards of the CRM settings page (WS-53 CRM-Q3, spec section 18.4).
  *
  * The page is one column of cards in a fixed order: Setup (with the Zoho
- * connection, CRM-X0), Access, Pipelines and stages, Lead Status, Lost reasons, Fields, Sync health.
+ * connection, CRM-X0), Access, Deal stages, Lead statuses, Lost reasons, Fields, Sync health.
  * `PipelineSettings` composes them. The editable grids stay in that file, and
  * these are the cards that only read or only wait.
  */
@@ -70,18 +70,21 @@ export function PipelineSections({
   pipelines,
   fallback,
   note,
+  title = "Deal stages",
 }: {
   pipelines: DealPipeline[] | null;
   /** The one implicit pipeline: the deal statuses, when there is no pipeline list. */
   fallback: Status[];
   note: string;
+  /** The card heading. It is the label of the rail row (CRM-C1). */
+  title?: string;
 }) {
   const sections =
     pipelines && pipelines.length > 0
       ? [...pipelines].sort((a, b) => a.position - b.position)
       : null;
   return (
-    <Card title="Pipelines and stages" note={note}>
+    <Card title={title} note={note}>
       {sections ? (
         <div className="divide-y divide-border/60">
           {sections.map((pipeline) => {

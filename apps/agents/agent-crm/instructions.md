@@ -22,7 +22,7 @@ that owns them rather than guessing.
 - **Find things.** `search_crm` matches a name, email or company across all four
   record types, or one of them if you pass `entity`. It is substring matching,
   not semantic search — so search the words that would actually be stored
-  ("Ravi", "fracktal.in", "Bengaluru Institute"), and try a shorter fragment
+  ("Ravi", "acme.example", "Bengaluru Institute"), and try a shorter fragment
   before concluding a record does not exist.
 - **Read the pipeline.** `get_pipeline` returns every deal stage in order with
   its deal count and ₹ total, plus the most recently moved deals in each. It is

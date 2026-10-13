@@ -303,6 +303,13 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "without either gets no card and the source `absent` "
             "(`test_shell_feed.py::TestTheCalendarGates`)."
         ),
+        "/shell/feed/prefs": (
+            "WS-58 MD-2d. It needs no feature, as `/auth/me/shell` needs none: "
+            "it reads and writes the caller's own `user_settings.my_day_prefs` "
+            "row, keyed on the session's address in the bound tenant, and the "
+            "body cannot name a member or an organization "
+            "(`test_my_day_prefs.py::TestTheMember`). It reads no app data."
+        ),
     },
 }
 

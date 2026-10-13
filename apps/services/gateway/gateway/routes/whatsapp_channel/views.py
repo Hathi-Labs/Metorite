@@ -169,6 +169,16 @@ async def _build(kind: str, data: dict[str, Any]) -> Any:
 # ── Small text helpers ──────────────────────────────────────────────────────
 
 
+def _now() -> datetime:
+    """The one clock of the views. It splits overdue work from work due
+    today, and it words "3 days late" and "in 2 h".
+
+    A test freezes THIS, so the rows it builds and the split agree
+    (``test_wac_views.py`` ``TestTheClock``), as #951 did for the needs feed.
+    """
+    return datetime.now(UTC)
+
+
 def _when(at: Any, now: datetime) -> str:
     """"3 days late", "in 2 h", "2 days ago": no zone needed."""
     try:
@@ -282,7 +292,7 @@ async def view_my_day(ctx: Any, *, only: str | None = None) -> View:
         # The one source this view needs did not answer: no false "none".
         raise RuntimeError("the approvals source failed")
     items = [i for i in feed.get("items") or [] if only is None or i.get("kind") == only]
-    now = datetime.now(UTC)
+    now = _now()
     head = "*Approvals*" if only == "approval" else "*My day*"
     note = (f"\n_{', '.join(failed).capitalize()} did not answer in time, so this may "
             "not be all._") if failed and only is None else ""
@@ -324,7 +334,7 @@ async def view_due(ctx: Any, *, kind: str) -> View:
     # due work is small, so read deep, and never say "none" at the cap.
     answer = await my_due_tasks(ctx, limit=DUE_READ)
     at_cap = len(answer.get("rows") or []) >= DUE_READ
-    now = datetime.now(UTC)
+    now = _now()
     rows: list[tuple[datetime, dict]] = []
     for t in answer.get("rows") or []:
         if t.get("completed_at") or t.get("disposition") in HIDDEN_DISPOSITIONS:

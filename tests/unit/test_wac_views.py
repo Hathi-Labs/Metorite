@@ -32,7 +32,11 @@ from tests.unit.test_wac_bot_run import (  # noqa: F401 - `world` is a fixture
     world,
 )
 
-NOW = datetime.now(UTC)
+#: The suite's one instant. It is FIXED, and ``_install`` freezes the views'
+#: clock (``views._now``) to it, so the rows and the split agree. This was
+#: ``datetime.now(UTC)`` at import, against the views' own clock at run
+#: time: the shape that failed ``test_shell_needs.py`` in CI (#951).
+NOW = datetime(2026, 10, 13, 9, 0, tzinfo=UTC)
 
 
 ORG = "11111111-1111-4111-8111-111111111111"
@@ -56,28 +60,34 @@ ALL = {"feature:projects", "feature:tasks", "feature:email", "feature:approvals"
 @pytest.fixture()
 def reads(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The three reads, faked, and a record of who asked."""
+    return _install(monkeypatch, NOW)
+
+
+def _install(monkeypatch: pytest.MonkeyPatch, now: datetime) -> dict[str, Any]:
+    """The reads, built from *now*, and the views' clock frozen to it."""
+    monkeypatch.setattr(views, "_now", lambda: now)
     state: dict[str, Any] = {
         "feed": {"items": [
             {"kind": "overdue", "title": "Fix the extruder", "detail": "Snowflake X1",
-             "at": (NOW - timedelta(days=3)).isoformat()},
+             "at": (now - timedelta(days=3)).isoformat()},
             {"kind": "approval", "title": "Send the vendor email", "detail": "email agent",
-             "at": (NOW - timedelta(hours=5)).isoformat()},
+             "at": (now - timedelta(hours=5)).isoformat()},
             {"kind": "due_today", "title": "Order nozzles", "detail": "Snowflake X1",
-             "at": (NOW + timedelta(hours=3)).isoformat()},
+             "at": (now + timedelta(hours=3)).isoformat()},
         ], "sources": {"tasks": "ok", "email": "failed"}},
         "due": {"rows": [
             {"title": "Fix the extruder", "project_name": "Snowflake X1",
-             "due_at": (NOW - timedelta(days=3)).isoformat()},
+             "due_at": (now - timedelta(days=3)).isoformat()},
             {"title": "Order nozzles", "project_name": "Snowflake X1",
-             "due_at": (NOW + timedelta(hours=3)).isoformat()},
+             "due_at": (now + timedelta(hours=3)).isoformat()},
             {"title": "Someday thing", "disposition": "SOMEDAY",
-             "due_at": (NOW + timedelta(hours=1)).isoformat()},
+             "due_at": (now + timedelta(hours=1)).isoformat()},
         ], "timezone": "Asia/Kolkata"},
-        "day": {"day": NOW.date().isoformat(), "capacity_mins": 480, "scheduled": [
-            {"title": "Stand-up", "start": NOW.replace(hour=3, minute=30).isoformat(),
-             "end": NOW.replace(hour=4, minute=0).isoformat(), "fixed": True},
-            {"title": "Firmware review", "start": NOW.replace(hour=4, minute=30).isoformat(),
-             "end": NOW.replace(hour=6, minute=0).isoformat(), "fixed": False},
+        "day": {"day": now.date().isoformat(), "capacity_mins": 480, "scheduled": [
+            {"title": "Stand-up", "start": now.replace(hour=3, minute=30).isoformat(),
+             "end": now.replace(hour=4, minute=0).isoformat(), "fixed": True},
+            {"title": "Firmware review", "start": now.replace(hour=4, minute=30).isoformat(),
+             "end": now.replace(hour=6, minute=0).isoformat(), "fixed": False},
         ], "overdue_count": 1, "unscheduled_count": 4,
             "one_thing": {"id": "t1", "title": "Ship firmware"}},
         "calls": [],
@@ -100,7 +110,7 @@ def reads(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return state["day"]
 
     async def _today(user: Any) -> dict:
-        return {"today": NOW.date().isoformat(), "timezone": "Asia/Kolkata"}
+        return {"today": now.date().isoformat(), "timezone": "Asia/Kolkata"}
 
     monkeypatch.setattr(needs, "shell_needs", _needs)
     monkeypatch.setattr(personal, "my_due_tasks", _due)
@@ -170,6 +180,47 @@ async def test_calendar_draws_the_day_in_the_members_zone(reads: dict) -> None:
     agenda, link = v.ui
     assert agenda.kind == "image" and "09:00-09:30 Stand-up" in agenda.rendition
     assert link.interactive["action"]["parameters"]["url"] == "https://app.metorite.com/calendar"
+
+
+class TestTheClock:
+    """The rows and the views' split read ONE instant (the #951 pattern).
+
+    The suite built its rows from the import-time clock, and the views split
+    them by the run-time clock. So the split holds at each instant below,
+    and the views read no clock but ``_now``."""
+
+    @pytest.mark.parametrize("instant", [
+        datetime(2026, 10, 12, 18, 29, 59, tzinfo=UTC),   # one second to IST midnight
+        datetime(2026, 10, 12, 18, 30, tzinfo=UTC),       # IST midnight
+        datetime(2026, 10, 12, 23, 59, tzinfo=UTC),       # one minute to UTC midnight
+        datetime(2026, 10, 13, 0, 0, 1, tzinfo=UTC),      # one second after it
+        datetime(2026, 10, 11, 18, 30, tzinfo=UTC),       # Sunday to Monday, in IST
+        datetime(2026, 10, 31, 23, 59, 30, tzinfo=UTC),   # month end
+    ], ids=["18:29:59Z", "18:30Z", "23:59Z", "00:00:01Z", "sun-mon", "month-end"])
+    async def test_the_split_holds_at_every_instant(self, monkeypatch, instant):
+        reads = _install(monkeypatch, instant)
+        my_day = await views.run("my_day", reads["ctx"])
+        due = await views.run("due_today", reads["ctx"])
+        late = await views.run("overdue", reads["ctx"])
+        assert my_day.text.startswith("*My day* — 1 overdue · 1 approval · 1 due today")
+        assert due.text.startswith("*Due today* — 1 task")
+        assert late.text.startswith("*Overdue* — 1 task")
+
+    async def test_the_split_follows_the_views_clock(self, reads, monkeypatch):
+        # Non-vacuity: the freeze reaches the split. Four hours on, the task
+        # due in three hours is late, and none is due today.
+        monkeypatch.setattr(views, "_now", lambda: NOW + timedelta(hours=4))
+        late = await views.run("overdue", reads["ctx"])
+        assert late.text.startswith("*Overdue* — 2 tasks"), late.text
+
+    def test_the_views_read_no_clock_but_now(self):
+        # A second ``datetime.now`` in the module would escape the freeze.
+        import inspect
+
+        source = inspect.getsource(views)
+        for clock in ("datetime.now(", "datetime.utcnow(", "date.today(", "time.time("):
+            assert source.count(clock) == (1 if clock == "datetime.now(" else 0), clock
+        assert "return datetime.now(UTC)" in inspect.getsource(views._now)
 
 
 async def test_an_empty_day_says_so_with_buttons(reads: dict) -> None:
