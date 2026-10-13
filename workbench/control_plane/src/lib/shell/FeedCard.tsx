@@ -44,7 +44,7 @@ import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { accentForHue } from "@/lib/statusAccent";
-import { read } from "@/lib/dataCache";
+import { onClear, read } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
@@ -58,17 +58,18 @@ import {
   actLeavesCard,
   actRows,
   actSpent,
+  allowCarry,
   cappedLinks,
-  cardHidden,
   cardTime,
+  columnView,
   coversNeeds,
   drawnActs,
   feedAppIcon,
   feedFailedLines,
-  feedGroups,
   feedHiddenRows,
   feedKey,
   fetchFeed,
+  forgetCarry,
   needsRowFor,
   overlayAdd,
   overlayDrop,
@@ -78,7 +79,6 @@ import {
   sourceLine,
   startVisit,
   stateMark,
-  visitCards,
 } from "./feed";
 import {
   MENU_CHOICES,
@@ -198,9 +198,19 @@ export function useFeed(enabled: boolean): Feed {
 
   // The queue of the seen observer and of `acted` (`feedState.ts`). One POST
   // each 10 s, and the rest on `pagehide` and when the column leaves.
+  // ⚠️ A queue holds ONE member's items (fix round 1). A change of member
+  // empties the cache, and the clear gives this hook a new, empty queue. The
+  // queue also refuses to send once the member changed (`createStateQueue`).
   const queueRef = useRef<StateQueue | null>(null);
   if (queueRef.current === null) queueRef.current = createStateQueue();
-  useEffect(() => (enabled ? sendStateQueue(queueRef.current!) : undefined), [enabled]);
+  useEffect(
+    () =>
+      onClear(() => {
+        queueRef.current = createStateQueue();
+      }),
+    [],
+  );
+  useEffect(() => (enabled ? sendStateQueue(() => queueRef.current!) : undefined), [enabled]);
 
   const act = useCallback(
     (card: Card, a: FeedAct, from: HTMLElement | null) => {
@@ -249,14 +259,13 @@ export function useFeed(enabled: boolean): Feed {
     (card: Card, choice: MenuChoice) => {
       void runMenuAct(card, choice, {
         overlay: changeMenu,
-        refresh,
         toast: (spec) => {
           toast.show(spec);
         },
         setError: setMenuError,
       });
     },
-    [changeMenu, refresh, toast, setMenuError],
+    [changeMenu, toast, setMenuError],
   );
 
   return {
@@ -276,16 +285,17 @@ export function useFeed(enabled: boolean): Feed {
 
 /**
  * Send the state queue: one batch each `SEEN_FLUSH_MS`, and every item on
- * `pagehide` and at the stop, with `keepalive`. Returns the stop.
+ * `pagehide` and at the stop, with `keepalive`. Returns the stop. It reads
+ * the queue of NOW on each send, because a change of member replaces it.
  */
-export function sendStateQueue(queue: StateQueue): () => void {
-  const tick = window.setInterval(() => void queue.flush(), SEEN_FLUSH_MS);
-  const hide = () => queue.drain();
+export function sendStateQueue(queue: () => StateQueue): () => void {
+  const tick = window.setInterval(() => void queue().flush(), SEEN_FLUSH_MS);
+  const hide = () => queue().drain();
   window.addEventListener("pagehide", hide);
   return () => {
     window.clearInterval(tick);
     window.removeEventListener("pagehide", hide);
-    queue.drain();
+    queue().drain();
   };
 }
 
@@ -349,11 +359,19 @@ export async function runFeedAct(
   const now = deps.now ?? Date.now;
   const mover = feedActMover(rows, from, now);
   const stamp = () => deps.overlay((o) => overlayAdd(o, rows, now()));
-  const clear = () => deps.overlay((o) => overlayDrop(o, rows));
+  // An act that takes the whole card away must not come back from the carry
+  // of a failed source, with a live act (fix round 1, P1-a). Undo, a "no"
+  // and a failure let the carry keep it again.
+  const leaves = actLeavesCard(card, a);
+  const clear = () => {
+    deps.overlay((o) => overlayDrop(o, rows));
+    if (leaves) allowCarry(card.signal_id);
+  };
   const row: DoneRow = {
     hide() {
       mover.hide();
       deps.overlay((o) => overlayAdd(o, rows, PENDING));
+      if (leaves) forgetCarry(card.signal_id);
     },
     show() {
       mover.show();
@@ -371,6 +389,7 @@ export async function runFeedAct(
   const out = await runAct(item, row);
   if (out === "done") {
     deps.overlay((o) => (rows.every((r) => o.has(r)) ? overlayAdd(o, rows, now()) : o));
+    if (leaves) forgetCarry(card.signal_id, now());
     deps.acted?.();
   }
   return out;
@@ -543,23 +562,15 @@ export function FeedColumn({
 
   // The visit (§7 rule 4): it starts with the first answer this column draws,
   // and it holds each card's place until the member takes the new cards in.
+  // `columnView` is the one rule of the visit, the cut and the pill.
   const [visit, setVisit] = useState<Visit | null>(null);
-  const current = visit ?? (feed.answer ? startVisit(feed.answer.cards) : null);
+  const view = columnView(feed.answer, visit, { shown, marked: feed.marked, hidden: feed.hidden });
   // The first answer starts the visit: state from the render, as React's
   // "adjust state while rendering" pattern does it.
-  if (visit === null && current !== null) setVisit(current);
-  const placed = current && feed.answer ? visitCards(current, feed.answer.cards) : { cards: [], fresh: [] };
-  const live = (c: Card) => !feed.hidden.has(c.signal_id) && !cardHidden(c, feed.marked);
-  const fresh = placed.fresh.filter(live).length;
+  if (visit === null && view.visit !== null) setVisit(view.visit);
+  const fresh = view.fresh;
   const takeNew = () => setVisit(feed.answer ? startVisit(feed.answer.cards) : null);
-
-  const { groups: allGroups, hidden } = feed.answer
-    ? feedGroups(
-        { cards: placed.cards.filter((c) => !feed.hidden.has(c.signal_id)), groups: feed.answer.groups },
-        shown,
-        feed.marked,
-      )
-    : { groups: [], hidden: 0 };
+  const { groups: allGroups, hidden } = view;
   const groups = allGroups.filter((g) => g.id !== "later");
   const later = allGroups.find((g) => g.id === "later");
   const sentinel = useRevealOnScroll(reveal, hidden > 0);

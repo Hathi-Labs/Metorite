@@ -26,11 +26,13 @@
  *   - mark the needs row in `runMenuAct`: claim 5, "the bell's count";
  *   - drop `forgetCarry` in `runMenuAct`: claim 6, the carry case.
  */
+import { readFileSync } from "node:fs";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { clearAll } from "@/lib/dataCache";
+import { bindIdentity, clearAll, peek, read } from "@/lib/dataCache";
 
-import { type FeedCard, fetchFeed, readFeedAnswer } from "./feed";
+import { type FeedAnswer, type FeedCard, feedKey, fetchFeed, readFeedAnswer } from "./feed";
 import {
   MENU_CHOICES,
   MENU_PENDING,
@@ -38,6 +40,7 @@ import {
   SEEN_DWELL_MS,
   SEEN_FLUSH_MS,
   STATE_BATCH,
+  STATE_TIMEOUT_MS,
   UNDO_FAILED,
   UNDO_MS,
   type MenuDeps,
@@ -280,7 +283,7 @@ describe("4. one POST each 10 s, and the rest on pagehide", () => {
     const { sendStateQueue } = await import("./FeedCard");
     const { post, bodies } = recorder(200);
     const queue = createStateQueue(post);
-    const stop = sendStateQueue(queue);
+    const stop = sendStateQueue(() => queue);
     queue.see(seenOf("t1"));
     await vi.advanceTimersByTimeAsync(SEEN_FLUSH_MS - 1);
     expect(bodies).toEqual([]);
@@ -318,7 +321,7 @@ describe("5. a menu act (§6.4, §6.6)", () => {
       overlay: (change) => {
         overlay = change(overlay);
       },
-      refresh: () => log.push("refresh"),
+      reread: () => log.push("refresh"),
       toast: (spec) => toasts.push(spec),
       setError: (id, message) => {
         errors[id] = message;
@@ -464,7 +467,7 @@ describe("6. the overlay ends with an answer fetched after the write", () => {
     );
     const first = await fetchFeed();
     expect(first.cards.map((c) => c.signal_id)).toEqual(["tasks:t1"]);
-    const t = { overlay: () => {}, refresh: () => {}, toast: () => {}, setError: () => {} };
+    const t = { overlay: () => {}, reread: () => {}, toast: () => {}, setError: () => {} };
     const at = Date.now() - 1;
     await runMenuAct(first.cards[0], MENU_CHOICES[4], { ...t, post: recorder(200).post, now: () => at });
     // The source fails: the dismissed card is NOT carried from the answer before.
@@ -472,5 +475,104 @@ describe("6. the overlay ends with an answer fetched after the write", () => {
     // It comes back from a sound answer, so the carry may keep it again.
     expect((await fetchFeed()).cards.map((c) => c.signal_id)).toEqual(["tasks:t1"]);
     expect((await fetchFeed()).cards.map((c) => c.signal_id)).toEqual(["tasks:t1"]);
+  });
+});
+
+/**
+ * MD-2b fix round 1 (2026-10-14).
+ *
+ *   - P1-b: an Undo that lands while a feed read runs must not let that read
+ *     store its answer. The answer predates the `restore`, and it would hide
+ *     the card again until the next poll.
+ *   - Identity: a queue never sends one member's items as another member. A
+ *     `pagehide` during an account switch sends nothing.
+ *   - A POST that hangs gives up after 8 s and keeps its batch.
+ */
+describe("7. fix round 1 (MD-2b)", () => {
+  afterEach(() => {
+    bindIdentity(null);
+  });
+
+  it("(P1-b) an Undo during a running feed read stores the read that began after the restore", async () => {
+    const t1 = {
+      signal_id: "tasks:t1",
+      app: "tasks",
+      kind: "overdue",
+      folded: [],
+      group: "needs_you",
+      title: "Card t1",
+      href: "/projects?task=t1",
+      acts: [],
+      state: "seen",
+      state_fp: "a41f09c2",
+    };
+    const body = (cards: unknown[]) => ({ cards, groups: [], sources: { tasks: "ok" }, capped: [] });
+    // F1 began before the restore, so its answer still hides the card.
+    let openF1: (r: Response) => void = () => {};
+    const fetches: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        fetches.push(url);
+        if (fetches.length === 1) return new Promise<Response>((resolve) => (openF1 = resolve));
+        return Promise.resolve(new Response(JSON.stringify(body([t1])), { status: 200 }));
+      }),
+    );
+    const f1 = read(feedKey(), () => fetchFeed());
+    const hook = {
+      overlay: () => {},
+      // What the hook passed before fix round 1: a forced read, which joins F1. The menu acts ignore it now.
+      refresh: () => void read(feedKey(), () => fetchFeed(), { force: true }),
+      toast: () => {},
+      setError: () => {},
+      post: recorder(200).post,
+    };
+    expect(await undoMenuAct(card("t1", { state: "seen" }), hook)).toBe("done");
+    openF1(new Response(JSON.stringify(body([])), { status: 200 }));
+    await f1.catch(() => {});
+    await vi.waitFor(() => expect(peek<FeedAnswer>(feedKey())?.data.cards.map((c) => c.signal_id)).toEqual(["tasks:t1"]));
+  });
+
+  it("(identity) a queue sends nothing once the member changes: pagehide during a switch posts no item", () => {
+    bindIdentity("asha@example.com");
+    const { post } = recorder(200);
+    const queue = createStateQueue(post);
+    queue.see(seenOf("t1"));
+    queue.add({ ...seenOf("t1"), action: "acted" });
+    // The switch: the cache forgets the member, then the page goes.
+    bindIdentity("ravi@example.com");
+    queue.drain();
+    void queue.flush();
+    expect(post).not.toHaveBeenCalled();
+    expect(queue.pending()).toEqual([]);
+  });
+
+  it("(identity) the hook takes a new queue on each clear, and its sender reads the queue of now", () => {
+    const src = readFileSync(new URL("./FeedCard.tsx", import.meta.url), "utf8");
+    expect(src).toMatch(/onClear\(\(\) => \{\s*queueRef\.current = createStateQueue\(\);/);
+    expect(src).toMatch(/sendStateQueue\(\(\) => queueRef\.current!\)/);
+  });
+
+  it("(identity) a switch forgets the member before the page goes", () => {
+    const src = readFileSync(new URL("../accountSwitch.ts", import.meta.url), "utf8");
+    // switchTo, both exits of signOutThis, and the tab that hears another account.
+    expect(src.match(/forgetMember\(\);\s*\n\s*(go\(|window\.location\.assign\()/g)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("(timeout) a POST that hangs gives up after 8 s, and the queue keeps its batch", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) =>
+            init.signal?.addEventListener("abort", () => reject(new DOMException("timed out", "AbortError"))),
+          ),
+      ),
+    );
+    const sent = postState([seenOf("t1")]);
+    await vi.advanceTimersByTimeAsync(STATE_TIMEOUT_MS);
+    expect(await sent).toBe(0);
+    expect(STATE_TIMEOUT_MS).toBe(8_000);
   });
 });

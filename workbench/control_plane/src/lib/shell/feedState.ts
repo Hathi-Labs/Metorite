@@ -28,9 +28,10 @@
  *
  * Fence: `feedState.test.ts`.
  */
+import { identity, invalidate } from "@/lib/dataCache";
 import type { ToastAction, ToastVariant } from "@/lib/toast";
 
-import { type FeedCard, allowCarry, forgetCarry, sendable } from "./feed";
+import { type FeedCard, allowCarry, feedKey, forgetCarry, sendable } from "./feed";
 
 // ── The contract (§6.8) ─────────────────────────────────────────────────────
 
@@ -61,6 +62,11 @@ export const SEEN_RATIO = 0.5;
 export const SEEN_AGAIN_MS = 30 * 60_000;
 /** How long the Undo of a menu act stays, in ms. */
 export const UNDO_MS = 10_000;
+/**
+ * How long one POST may take, in ms. A POST past it counts as no answer, so
+ * the queue keeps its batch, and a hung request never holds the queue.
+ */
+export const STATE_TIMEOUT_MS = 8_000;
 
 /** The item of one act on one card. The card must be `sendable`. */
 export function stateItem(
@@ -78,12 +84,15 @@ export function stateItem(
 }
 
 /**
- * Post the items. The answer is the HTTP status, and 0 for a network failure.
- * `keepalive` lets a POST outlive the page, for `pagehide`.
+ * Post the items. The answer is the HTTP status, and 0 for a network failure
+ * or a POST past `STATE_TIMEOUT_MS`. `keepalive` lets a POST outlive the page,
+ * for `pagehide`.
  */
 export type PostState = (items: StateItem[], keepalive?: boolean) => Promise<number>;
 
 export const postState: PostState = async (items, keepalive = false) => {
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), STATE_TIMEOUT_MS);
   try {
     const res = await fetch("/api/shell/feed/state", {
       method: "POST",
@@ -91,10 +100,13 @@ export const postState: PostState = async (items, keepalive = false) => {
       body: JSON.stringify({ items }),
       cache: "no-store",
       keepalive,
+      signal: stop.signal,
     });
     return res.status;
   } catch {
     return 0;
+  } finally {
+    clearTimeout(timer);
   }
 };
 
@@ -123,18 +135,33 @@ const sameSlot = (a: StateItem, b: StateItem) => a.signal_id === b.signal_id && 
  * The queue. It holds one item for each card and action, and a newer item
  * replaces the older one in place. An item that cannot reach the gateway goes
  * back to the head of the queue, unless a newer one took its slot.
+ *
+ * ⚠️ A queue belongs to the member that the cache holds when it is made
+ * (`identity()`, fix round 1). Once the cache names another member, or none,
+ * the queue drops its items and sends nothing. An account switch changes the
+ * cookie first and then leaves the page, and the `pagehide` send would else
+ * write one member's sightings into the rows of the other.
  */
 export function createStateQueue(post: PostState = postState, now: () => number = Date.now): StateQueue {
   let items: StateItem[] = [];
   const lastSeen = new Map<string, number>();
   let busy = false;
+  const owner = identity();
+  /** Whether the cache still holds this queue's member. Else forget it all. */
+  const ours = () => {
+    if (identity() === owner) return true;
+    items = [];
+    return false;
+  };
 
   const put = (item: StateItem) => {
+    if (!ours()) return;
     const at = items.findIndex((i) => sameSlot(i, item));
     if (at >= 0) items[at] = item;
     else items.push(item);
   };
   const putBack = (batch: StateItem[]) => {
+    if (!ours()) return;
     items = [...batch.filter((b) => !items.some((i) => sameSlot(i, b))), ...items];
   };
   const settle = (batch: StateItem[], status: number) => {
@@ -156,7 +183,7 @@ export function createStateQueue(post: PostState = postState, now: () => number 
       put(item);
     },
     async flush() {
-      if (busy || items.length === 0) return;
+      if (!ours() || busy || items.length === 0) return;
       busy = true;
       const batch = items.slice(0, STATE_BATCH);
       items = items.slice(batch.length);
@@ -167,6 +194,7 @@ export function createStateQueue(post: PostState = postState, now: () => number 
       }
     },
     drain() {
+      if (!ours()) return;
       while (items.length > 0) {
         const batch = items.slice(0, STATE_BATCH);
         items = items.slice(batch.length);
@@ -310,8 +338,13 @@ export interface MenuDeps {
   post?: PostState;
   /** Change the overlay of the menu acts. */
   overlay: (change: (o: MenuOverlay) => MenuOverlay) => void;
-  /** Read the feed again. */
-  refresh: () => void;
+  /**
+   * Read the feed again. The default drops the feed key (`invalidate`), so a
+   * read that began before the write never stores its answer (fix round 1).
+   * A forced read would join that read, and its stale answer would hide the
+   * card again.
+   */
+  reread?: () => void;
   /** The shared toast (`useToast().show`). */
   toast: (spec: { key: string; title: string; variant?: ToastVariant; action?: ToastAction; timeout?: number }) => void;
   /** Show or clear the error line of a card. */
@@ -347,7 +380,7 @@ export async function runMenuAct(
   const at = now();
   forgetCarry(id, at);
   deps.overlay((o) => menuAdd(o, id, at));
-  deps.refresh();
+  (deps.reread ?? rereadFeed)();
   deps.toast({
     key: `feed-menu:${id}`,
     title: choice.done,
@@ -374,6 +407,14 @@ export async function undoMenuAct(card: FeedCard, deps: MenuDeps): Promise<"done
   }
   allowCarry(id);
   deps.overlay((o) => menuDrop(o, id));
-  deps.refresh();
+  (deps.reread ?? rereadFeed)();
   return "done";
+}
+
+/**
+ * Drop the feed key. Its watchers read again, and a read already in flight
+ * does not store its answer (`dataCache.ts`, the write counter).
+ */
+export function rereadFeed(): void {
+  invalidate(feedKey());
 }

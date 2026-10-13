@@ -67,18 +67,22 @@ import { fmtClock } from "@/app/tasks/lib/utils";
 import { applyData, applyError, initialState } from "@/lib/useCachedResource";
 
 import {
+  CARRY_MS,
   FEED_CACHE,
   FEED_SHOWN,
   PENDING,
   type ActOverlay,
   type FeedAnswer,
   type FeedCard as Card,
+  type Visit,
   actLeavesCard,
   actRows,
   cappedLinks,
   cardHidden,
   cardTime,
+  carries,
   carryCards,
+  columnView,
   coversNeeds,
   drawnActs,
   feedAppIcon,
@@ -87,7 +91,7 @@ import {
   feedHiddenRows,
   feedKey,
   fetchFeed,
-  mayRemove,
+  noteOk,
   needsRowFor,
   overlayAdd,
   overlayExpired,
@@ -1104,23 +1108,30 @@ describe("9. the life of a card (MD-2b)", () => {
     fetchedAt: 0,
   });
 
-  it("(d) keeps the cards of a failed, absent or capped source, Calendar too, and only a sound source takes one away", () => {
+  it("(d) carries only a failed source, Calendar too, and never a card that a menu act hid (§6.1, fix round 1)", () => {
     const t = card("tasks:t1", "needs_you");
     const cal = card("calendar:b1", "now", { app: "calendar", kind: "block_soon" });
     const e = card("email:m1", "needs_you", { app: "email", kind: "needs_reply" });
-    const before = answerOf([t, cal, e], { tasks: "ok", calendar: "ok", email: "ok" });
-    const next = carryCards(before, answerOf([], { tasks: "ok", calendar: "failed", email: "ok" }, ["email"]));
+    const ok = noteOk(new Map(), answerOf([t, cal, e], { tasks: "ok", calendar: "ok", email: "ok" }), 0);
+    const next = carryCards(ok, answerOf([], { tasks: "ok", calendar: "failed", email: "failed" }));
     expect(next.cards.map((c) => c.signal_id)).toEqual(["calendar:b1", "email:m1"]);
     expect(next.groups).toEqual([
       { id: "now", count: 1 },
       { id: "needs_you", count: 1 },
     ]);
-    const absent = carryCards(before, answerOf([], { tasks: "absent", calendar: "ok", email: "ok" }));
-    expect(absent.cards.map((c) => c.signal_id)).toEqual(["tasks:t1"]);
+    // A capped source and an absent one carry nothing.
+    expect(carryCards(ok, answerOf([], { tasks: "ok" }, ["tasks"])).cards).toEqual([]);
+    expect(carryCards(ok, answerOf([], { tasks: "absent" })).cards).toEqual([]);
     // A card a menu act hid is never carried.
-    const forgot = carryCards(before, answerOf([], { tasks: "failed" }), new Set(["tasks:t1"]));
+    const forgot = carryCards(ok, answerOf([], { tasks: "failed" }), new Set(["tasks:t1"]));
     expect(forgot.cards.map((c) => c.signal_id)).not.toContain("tasks:t1");
-    expect(mayRemove(answerOf([], { tasks: "ok" }, ["tasks"]), "tasks")).toBe(false);
+    expect(carries(answerOf([], { tasks: "ok" }, ["tasks"]), "tasks")).toBe(false);
+    expect(carries(answerOf([], { tasks: "failed" }), "tasks")).toBe(true);
+    // An absent source forgets its last ok cards, and a failed one keeps them.
+    expect([...noteOk(ok, answerOf([], { tasks: "absent", email: "failed" }), 9).keys()].sort()).toEqual([
+      "calendar",
+      "email",
+    ]);
   });
 
   it("(d2) keeps a failed source's cards across a Projects write, which drops the cache entry", async () => {
@@ -1219,7 +1230,152 @@ describe("9. the life of a card (MD-2b)", () => {
     const src = code(read_("./FeedCard.tsx"));
     expect(src).toMatch(/void runMenuAct\(card, choice, \{\s*overlay: changeMenu,/);
     expect(src).toMatch(/const hidden = useMemo\(\(\) => menuHidden\(menuOverlay, fetchedAt\)/);
-    // The column drops a hidden card by its signal id, before the groups.
-    expect(src).toMatch(/placed\.cards\.filter\(\(c\) => !feed\.hidden\.has\(c\.signal_id\)\)/);
+    // The column drops a hidden card by its signal id, before the groups:
+    // `columnView` takes the menu overlay as `hidden` (section 10 drives it).
+    expect(src).toMatch(/columnView\(feed\.answer, visit, \{ shown, marked: feed\.marked, hidden: feed\.hidden \}\)/);
+  });
+});
+
+/**
+ * MD-2b fix round 1 (2026-10-14). The review and the verifier found these.
+ *
+ *   - P1-a: a Done whose source then fails must not come back with a live
+ *     Done. The store's Undo lets the carry keep it again.
+ *   - P2: the carry rule of §6.1, decided in this round. A capped source
+ *     carries nothing. An absent source carries nothing. A failed source
+ *     carries its cards from the last RAW answer in which it read `ok`, for 5
+ *     minutes at most.
+ *   - The visit of the column (`columnView`): the order holds, and the pill
+ *     counts only the new cards that the next cut draws outside Later.
+ */
+describe("10. fix round 1 (MD-2b)", () => {
+  const T0 = Date.parse("2026-10-14T09:00:00Z");
+  const raw = (sources: Record<string, string>, cards: Record<string, unknown>[], capped: string[] = []) => ({
+    cards,
+    groups: cards.length ? [{ id: "needs_you", count: cards.length }] : [],
+    sources,
+    capped,
+  });
+  const T1 = { ...CARD, signal_id: "tasks:9b2e", state: "seen", state_fp: "a41f09c2" };
+  const T2 = { ...CARD, signal_id: "tasks:aa11", title: "Second", acts: [], state: "seen", state_fp: "b52f1ad3" };
+
+  /** Answer each fetch in turn, at the minute each one names. */
+  function replies(...steps: [number, ReturnType<typeof raw>][]) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const queue = [...steps];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const [, body] = queue.shift()!;
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    return async () => {
+      vi.setSystemTime(T0 + steps[steps.length - queue.length][0] * 60_000);
+      return (await fetchFeed()).cards.map((c) => c.signal_id);
+    };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("(P2) a capped source carries nothing: its answer is the truth for its top 15", async () => {
+    const next = replies([0, raw({ tasks: "ok" }, [T1])], [1, raw({ tasks: "ok" }, [], ["tasks"])]);
+    expect(await next()).toEqual(["tasks:9b2e"]);
+    expect(await next()).toEqual([]);
+  });
+
+  it("(P2) an absent source carries nothing: the member no longer holds the app", async () => {
+    const next = replies([0, raw({ tasks: "ok" }, [T1])], [1, raw({ tasks: "absent" }, [])]);
+    expect(await next()).toEqual(["tasks:9b2e"]);
+    expect(await next()).toEqual([]);
+  });
+
+  it("(P2) a failed source carries its cards from the last answer in which it read ok", async () => {
+    const next = replies(
+      [0, raw({ tasks: "ok" }, [T1])],
+      [1, raw({ tasks: "failed" }, [])],
+      [2, raw({ tasks: "ok" }, [T2])],
+      [3, raw({ tasks: "failed" }, [])],
+    );
+    expect(await next()).toEqual(["tasks:9b2e"]);
+    expect(await next()).toEqual(["tasks:9b2e"]);
+    expect(await next()).toEqual(["tasks:aa11"]);
+    // The last ok answer held only the second card.
+    expect(await next()).toEqual(["tasks:aa11"]);
+  });
+
+  it("(P2) the carry ends 5 minutes after that ok answer, and a carried answer never restarts it", async () => {
+    const next = replies(
+      [0, raw({ tasks: "ok" }, [T1])],
+      [4, raw({ tasks: "failed" }, [])],
+      [5, raw({ tasks: "failed" }, [])],
+      [6, raw({ tasks: "failed", calendar: "ok" }, [])],
+    );
+    expect(await next()).toEqual(["tasks:9b2e"]);
+    expect(await next()).toEqual(["tasks:9b2e"]);
+    expect(await next()).toEqual(["tasks:9b2e"]);
+    expect(await next()).toEqual([]);
+    expect(CARRY_MS).toBe(5 * 60_000);
+  });
+
+  it("(P1-a) a Done that a failed source would carry back stays away, and the store's Undo lets it back", async () => {
+    const next = replies(
+      [0, raw({ tasks: "ok" }, [T1])],
+      [1, raw({ tasks: "failed" }, [])],
+      [2, raw({ tasks: "failed" }, [])],
+    );
+    const shown = readFeedAnswer({ cards: [T1] }).cards[0];
+    expect(await next()).toEqual(["tasks:9b2e"]);
+    const deps: FeedActDeps = { held: () => new Set(), overlay: () => {} };
+    expect(await runFeedAct(shown, shown.acts[0], null, deps)).toBe("done");
+    // The source fails on the read after the Done: no card, no live Done.
+    expect(await next()).toEqual([]);
+    // The store's Undo puts the task back, so the carry may keep it again.
+    const row = markDoneFromHome.mock.calls.at(-1)![1]!;
+    row.show();
+    expect(await next()).toEqual(["tasks:9b2e"]);
+  });
+
+  /** Cards in a group, by id. */
+  const cardsOf = (group: string, ...ids: string[]) => ids.map((id) => card(`tasks:${id}`, group));
+  const view = (
+    answer: { cards: Card[]; groups?: FeedAnswer["groups"] },
+    visit: Visit | null,
+    shown = FEED_SHOWN,
+    hidden: ReadonlySet<string> = new Set(),
+  ) => columnView({ cards: answer.cards, groups: answer.groups ?? [] }, visit, { shown, marked: new Set(), hidden });
+  const ids = (v: ReturnType<typeof columnView>) => v.groups.flatMap((g) => g.cards.map((c) => c.signal_id));
+
+  it("(visit) starts with the first answer, then holds the order of each card, and counts the new one", () => {
+    const first = view({ cards: cardsOf("needs_you", "a", "b", "c") }, null);
+    expect(ids(first)).toEqual(["tasks:a", "tasks:b", "tasks:c"]);
+    expect(first.fresh).toBe(0);
+    // The second poll: a new order, and one new card.
+    const second = view({ cards: cardsOf("needs_you", "c", "d", "a", "b") }, first.visit);
+    expect(ids(second)).toEqual(["tasks:a", "tasks:b", "tasks:c"]);
+    expect(second.fresh).toBe(1);
+    expect(second.visit).toBe(first.visit);
+    // The pill takes the new cards in: a new visit, in the server's order.
+    const taken = view({ cards: cardsOf("needs_you", "c", "d", "a", "b") }, null);
+    expect(ids(taken)).toEqual(["tasks:c", "tasks:d", "tasks:a", "tasks:b"]);
+    expect(taken.fresh).toBe(0);
+  });
+
+  it("(pill) counts no new card that waits in Later, behind the cut, or behind a menu act", () => {
+    const start = view({ cards: cardsOf("needs_you", "a") }, null).visit;
+    const answer = {
+      cards: [
+        ...cardsOf("needs_you", "a", "n1", "n2", "n3"),
+        ...cardsOf("later", "l1"),
+      ],
+    };
+    // Shown 3: a, n1 and n2 are in the cut, and n3 is not. l1 is in Later.
+    expect(view(answer, start, 3).fresh).toBe(2);
+    expect(view(answer, start, 3, new Set(["tasks:n1"])).fresh).toBe(2);
+    expect(view(answer, start, 2, new Set(["tasks:n1"])).fresh).toBe(1);
+    // A card that a menu act hid is not drawn.
+    expect(ids(view(answer, start, 3, new Set(["tasks:a"])))).toEqual([]);
   });
 });

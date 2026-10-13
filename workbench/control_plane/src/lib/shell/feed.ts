@@ -20,9 +20,9 @@
  *
  * **The life of a card** (WS-58 MD-2b, §6). The card keeps the five state
  * fields of MD-2a, so it draws a dot for `new`, "Updated" and "Still open".
- * A source that failed or stopped at its cap keeps its cards from the last
- * answer (`carryCards`, §6.1). The order holds during a visit
- * (`startVisit`, §7 rule 4). `feedState.ts` writes the state.
+ * A source that failed keeps its cards from its last `ok` answer, for 5
+ * minutes at most (`carryCards`, §6.1). The order holds during a visit
+ * (`columnView`, §7 rule 4). `feedState.ts` writes the state.
  *
  * Fence: `feed.test.ts` and `feedState.test.ts`.
  */
@@ -245,8 +245,8 @@ export function readFeedAnswer(raw: unknown): FeedAnswer {
  * `guardedPut`: a write that landed during this request, or a needs answer
  * newer than it, keeps the needs entry as it is.
  *
- * The cards of a source that failed or stopped at its cap come from the
- * answer before (`carryCards`, §6.1).
+ * The cards of a source that failed come from the last answer in which it
+ * read `ok`, for 5 minutes at most (`carryCards`, §6.1).
  */
 export async function fetchFeed(limit = FEED_LIMIT): Promise<FeedAnswer> {
   const putNeeds = guardedPut<NeedsFeed>(feedKey(limit), needsKey());
@@ -263,74 +263,104 @@ export async function fetchFeed(limit = FEED_LIMIT): Promise<FeedAnswer> {
     const at = noCarry.get(c.signal_id);
     if (at !== undefined && fetchedAt > at) noCarry.delete(c.signal_id);
   }
-  const kept = { ...carryCards(lastAnswer.get(limit), answer, noCarry), fetchedAt };
-  lastAnswer.set(limit, kept);
-  return kept;
+  const before = lastOk.get(limit) ?? new Map<string, OkCards>();
+  const carried = carryCards(before, { ...answer, fetchedAt }, noCarry);
+  lastOk.set(limit, noteOk(before, answer, fetchedAt));
+  return carried;
 }
 
-// ── A failed source keeps its cards (§6.1, MD-2b) ───────────────────────────
+// ── A failed source keeps its cards for a while (§6.1, MD-2b) ───────────────
+
+/** How long a failed source keeps the cards of its last `ok` answer (§6.1). */
+export const CARRY_MS = 5 * 60_000;
+
+/** The cards of one source in the last RAW answer in which it read `ok`. */
+export interface OkCards {
+  cards: readonly FeedCard[];
+  /** When that answer was fetched. The carry ends `CARRY_MS` after it. */
+  at: number;
+}
 
 /**
- * The last answer of each limit, the "answer before" of the carry. It is
- * not the cache entry, because a Projects write drops that entry, and the
- * re-read after a Done must still keep a failed source's cards. Nothing
- * reads it as an answer: it only feeds `carryCards`. Memory only, and a new
- * member starts with none.
+ * The last `ok` cards of each source, for each limit. It is not the cache
+ * entry, because a Projects write drops that entry, and the read after a Done
+ * must still carry a failed source. It holds RAW answers only, never a
+ * carried card, so a carry can never restart its own clock. Nothing reads it
+ * as an answer. Memory only, and a new member starts with none.
  */
-const lastAnswer = new Map<number, FeedAnswer>();
+const lastOk = new Map<number, ReadonlyMap<string, OkCards>>();
+
+/** Record the cards of each source that read `ok` in this raw answer. */
+export function noteOk(
+  before: ReadonlyMap<string, OkCards>,
+  raw: Pick<FeedAnswer, "cards" | "sources">,
+  fetchedAt: number,
+): ReadonlyMap<string, OkCards> {
+  const next = new Map(before);
+  for (const [app, state] of Object.entries(raw.sources)) {
+    if (state === "ok") next.set(app, { cards: raw.cards.filter((c) => c.app === app), at: fetchedAt });
+    else if (state !== "failed") next.delete(app);
+  }
+  return next;
+}
 
 /**
- * The cards that a menu act hid (`feedState.ts`), with the time its write
- * landed. The carry never keeps one, so a snoozed card cannot come back from
- * the answer before while its source fails. Undo takes the id out again, and
- * so does an answer fetched after that time that holds the card. Memory only,
- * for one member.
+ * The cards that the member closed, with the time the write landed: a menu
+ * act (`feedState.ts`), or a tap act that takes the whole card away
+ * (`runFeedAct`, fix round 1). The carry never keeps one, so a snoozed or done
+ * card cannot come back while its source fails. Undo takes the id out again,
+ * and so does an answer fetched after that time that holds the card. Memory
+ * only, for one member.
  */
 const noCarry = new Map<string, number>();
 
 /**
- * Stop the carry of this card. A menu act calls it before its write, with no
+ * Stop the carry of this card. An act calls it before its write, with no
  * time, and again with the time its write landed.
  */
 export function forgetCarry(signalId: string, at = Number.POSITIVE_INFINITY): void {
   noCarry.set(signalId, at);
 }
 
-/** Let the carry keep this card again: after a failed menu act, or its Undo. */
+/** Let the carry keep this card again: after a failed act, or its Undo. */
 export function allowCarry(signalId: string): void {
   noCarry.delete(signalId);
 }
 
 onClear(() => {
   noCarry.clear();
-  lastAnswer.clear();
+  lastOk.clear();
 });
 
 /**
- * Whether a source may take a card away: it answered `ok`, and it did not
- * stop at its cap. A card past the cap is unknown, not closed.
+ * Whether a source carries its cards in this answer (§6.1, decided in MD-2b
+ * fix round 1). Only a source that `failed` does. A capped source does not:
+ * its answer is the truth for its top 15, and the rest sit behind "Show all
+ * in <app>". An absent source does not: the member no longer holds the app.
  */
-export function mayRemove(answer: Pick<FeedAnswer, "sources" | "capped">, app: string): boolean {
-  return answer.sources[app as FeedApp] === "ok" && !answer.capped.includes(app as FeedApp);
+export function carries(answer: Pick<FeedAnswer, "sources">, app: string): boolean {
+  return answer.sources[app as FeedApp] === "failed";
 }
 
 /**
- * The answer, with the cards that only a sound answer may take away (§6.1).
- * A card of the answer before that `next` no longer holds stays, when its
- * source failed, was absent, or stopped at its cap. Calendar is a source too.
- * A card in `forget` never stays. The kept cards follow the new ones, and
- * `groups` counts them.
+ * The answer, with the cards of each source that failed (§6.1). They come
+ * from the last raw answer in which that source read `ok`, and only for
+ * `CARRY_MS` after it. After that they leave, and the caveat line stays. A
+ * card that `next` holds, or that `forget` holds, never comes from the carry.
+ * Calendar is a source too. The kept cards follow the new ones, and `groups`
+ * counts them.
  */
 export function carryCards(
-  before: Pick<FeedAnswer, "cards"> | undefined,
+  lastOkCards: ReadonlyMap<string, OkCards>,
   next: FeedAnswer,
   forget: { has(signalId: string): boolean } = new Set<string>(),
 ): FeedAnswer {
-  if (!before || before.cards.length === 0) return next;
   const have = new Set(next.cards.map((c) => c.signal_id));
-  const kept = before.cards.filter(
-    (c) => !have.has(c.signal_id) && !forget.has(c.signal_id) && !mayRemove(next, c.app),
-  );
+  const kept: FeedCard[] = [];
+  for (const [app, ok] of lastOkCards) {
+    if (!carries(next, app) || next.fetchedAt - ok.at > CARRY_MS) continue;
+    for (const c of ok.cards) if (!have.has(c.signal_id) && !forget.has(c.signal_id)) kept.push(c);
+  }
   if (kept.length === 0) return next;
   const cards = [...next.cards, ...kept];
   const order: FeedGroupId[] = next.groups.map((g) => g.id);
@@ -380,6 +410,37 @@ export function visitCards(visit: Visit, cards: readonly FeedCard[]): { cards: F
   }
   known.sort((a, b) => a.index - b.index);
   return { cards: known.map((k) => k.card), fresh };
+}
+
+/**
+ * What the feed column draws, as one pure rule (MD-2b fix round 1).
+ *
+ *   - The visit is the one the column holds, or a new one from this answer
+ *     when it holds none. The column keeps the `visit` it gets back.
+ *   - The groups are the visit's cards, less the cards a menu act hid
+ *     (`hidden`), cut to `shown` (`feedGroups`).
+ *   - `fresh` counts the new cards that the "N new" pill would bring in: only
+ *     those that the cut of a new visit draws outside Later. A new card in
+ *     Later, or past the cut, is not counted.
+ *
+ * The pill starts a new visit: the column passes `null` once.
+ */
+export function columnView(
+  answer: Pick<FeedAnswer, "cards" | "groups"> | undefined,
+  held: Visit | null,
+  opts: { shown: number; marked: ReadonlySet<string>; hidden: ReadonlySet<string> },
+): { visit: Visit | null; groups: ShownGroup[]; hidden: number; fresh: number } {
+  if (!answer) return { visit: held, groups: [], hidden: 0, fresh: 0 };
+  const visit = held ?? startVisit(answer.cards);
+  const live = (cards: readonly FeedCard[]) => cards.filter((c) => !opts.hidden.has(c.signal_id));
+  const placed = visitCards(visit, answer.cards);
+  const { groups, hidden } = feedGroups({ cards: live(placed.cards), groups: answer.groups }, opts.shown, opts.marked);
+  const next = feedGroups({ cards: live(answer.cards), groups: answer.groups }, opts.shown, opts.marked);
+  const drawn = new Set(
+    next.groups.filter((g) => g.id !== "later").flatMap((g) => g.cards.map((c) => c.signal_id)),
+  );
+  const fresh = placed.fresh.filter((c) => drawn.has(c.signal_id)).length;
+  return { visit, groups, hidden, fresh };
 }
 
 // ── The groups ──────────────────────────────────────────────────────────────
