@@ -229,8 +229,14 @@ _ID_RE = re.compile(_UUID_PATTERN)
 _KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
 #: A member address: the shape of ``skill_projects/client.py`` (``_EMAIL``),
-#: with length caps. No space and no free punctuation, so no sentence fits.
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
+#: with caps. The domain has at most 4 labels (fix round 2). With
+#: :data:`MAX_ADDRESS_CHARS` it bounds what a planted address can carry. A
+#: short phrase of up to 64 characters can still fit (spec §9.4, residuals).
+_EMAIL_RE = re.compile(
+    r"[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]{1,63}\.){1,3}[A-Za-z]{2,63}")
+
+#: A plain address is at most this long IN TOTAL (fix round 2).
+MAX_ADDRESS_CHARS = 64
 
 #: The ONE rule for an agent name, ``acb_skills.agent_paths.AGENT_NAME_RE``.
 #: The edge does not depend on ``acb_skills``, so it holds a copy, and
@@ -293,7 +299,7 @@ def assignee(value: Any) -> str | dict[str, str]:
     ``agent:<name>`` with the gateway's agent-name rule. ``AssigneesIn``
     takes any string, so any other value is ``untrusted_text``."""
     text = value if isinstance(value, str) else str(value)
-    if _EMAIL_RE.fullmatch(text):
+    if len(text) <= MAX_ADDRESS_CHARS and _EMAIL_RE.fullmatch(text):
         return text
     if text.startswith(_AGENT_PREFIX) and _AGENT_NAME_RE.fullmatch(text[len(_AGENT_PREFIX):]):
         return text
