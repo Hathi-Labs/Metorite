@@ -2800,7 +2800,7 @@ each drop in the UI. An agent never drops the records of a live org.
 ## 20. CRM configuration and AI reach (2026-10-12)
 
 **Bottom line.** Seven slices answer the owner's eight points of 2026-10-12.
-They are CRM-C1 to CRM-C7, and C4 has three parts, C4a to C4c. Dispatch
+They are CRM-C1 to CRM-C7. C4 has four parts: C4a, C4p, C4b and C4c. Dispatch
 C7, C2 and C3 first, in parallel. §20.3 gives the order of the rest. Only
 C5 writes to a third party, and only the owner turns it on for an org.
 
@@ -2893,17 +2893,22 @@ total. `acb_skills/skill_families.py` has no `crm` family.
 | **CRM-C2** One board | One column primitive for Projects, Tasks and the CRM. A stage colour that does not fight the corner | AGENT-SAFE | M | None | Nothing |
 | **CRM-C3** Stages you can shape | Hide, order, colour and probability in both modes. A Mirror overlay that the sync never writes | AGENT-SAFE | M | 257 | CRM-C2 merged, because both edit three files |
 | **CRM-C4a** Field studio, the backend | The field routes, the `custom` write path, the layout read and the reader filters (Native) | AGENT-SAFE. Flag `CRM_FIELD_STUDIO_ORGS`, shipped empty | L | 258 | Nothing |
-| **CRM-C4b** Field studio, the record UI | Custom fields in the forms, the Fields tab by layout, the Columns control and the filter bar | AGENT-SAFE. The same flag | M | None | CRM-C4a merged |
-| **CRM-C4c** Field studio, the studio UI | Create, rename, order, hide, sections, picklists, required and defaults in the `fields` section | AGENT-SAFE. The same flag | M | None | CRM-C1 and CRM-C4a merged |
+| **CRM-C4p** Field studio, the shared client | The layout read and its hook, one `FieldInput` for each type, the empty value and the Mirror lock | AGENT-SAFE. The same flag | S | None | CRM-C4a merged |
+| **CRM-C4b** Field studio, the record UI | Custom fields in the forms, the Fields tab by layout, the Columns control and the filter bar | AGENT-SAFE. The same flag | M | None | CRM-C4p merged |
+| **CRM-C4c** Field studio, the studio UI | Create, rename, order, hide, sections, picklists, required and defaults in the `fields` section | AGENT-SAFE. The same flag | M | None | CRM-C1 and CRM-C4p merged |
 | **CRM-C5** Field studio to Zoho | The C4 studio and the C3 stage order write to Zoho (Mirror) | AGENT-SAFE to build. 🔴 OWNER-GATE to turn on, and for the first live write | L | None | CRM-C4a and CRM-C4c, the §19.9 consent, its own spec audit |
-| **CRM-C6** Field mapping | Lead conversion mapping, the CRM-Q7a Field map and lookup targets | AGENT-SAFE | M | 259 | CRM-C4a, CRM-Q7a merged |
+| **CRM-C6** Field mapping | Lead conversion mapping, the CRM-Q7a Field map and lookup targets | AGENT-SAFE | M | The next free number at build. WS-58 MD-2d took 259 | CRM-C4a, CRM-Q7a merged |
 | **CRM-C7** AI reach | `crm-assistant` reads what a member can read. Every agent can reach the CRM. `agent-sales-assistant` goes | AGENT-SAFE | M | 256 (254 and 255 were taken) | Nothing |
 
 **Migration numbers (R1).** Measured again on 2026-10-13. 253 to 256 are
 merged, and 256 is CRM-C7 (`256_remove_sales_assistant.sql`). 257 is
 CRM-C3 (`257_crm_stage_overlay.sql`). This section reserves **258** for
-CRM-C4a and **259** for CRM-C6. A reservation is advisory. Each slice takes
-the next free number at build time and checks it again at merge.
+CRM-C4a. A reservation is advisory. Each slice takes the next free number at
+build time and checks it again at merge.
+
+**WS-58 MD-2d took 259 (measured 2026-10-14).** It merged
+`259_user_settings_my_day_prefs.sql`. So CRM-C6 has no reservation. It takes
+the next free number at build.
 
 ### 20.3 Dispatch order and parallel work
 
@@ -2922,13 +2927,21 @@ the next free number at build time and checks it again at merge.
      for that file.
 2. **Wave 2: C1.** It splits `PipelineSettings.tsx`, so it starts after C3
    merges. It does not touch `KanbanBoard.tsx`, so it may run beside C2.
-3. **C4 is three slices (§20.7), with this order.**
+3. **C4 is four slices (§20.7), with this order.**
    - **C4a starts now.** It is the backend, and it may run beside C1. It
      edits no file of C1.
-   - **C4b follows C4a.** It draws the custom fields on the record page and
-     the lists.
-   - **C4c follows C1 and C4a.** It fills the `fields` section that C1
+   - **C4p follows C4a.** It is the shared client: the layout read, its
+     hook and `FieldInput`. C4b and C4c both use it.
+   - **C4b and C4c follow C4p, in parallel.** C4b draws the custom fields on
+     the record page and the lists. C4c fills the `fields` section that C1
      makes.
+   - **The split.** C4b owns the record and list files (§20.7, C4b Files).
+     C4c puts its code in a new `lib/fieldStudio.ts` and in new
+     `components/FieldStudio*.tsx` files. Beyond those, C4c edits only
+     `FieldsCard.tsx`. So no file is in both slices.
+   - **Branching.** Cut C4p from the trunk after C4a merges. Cut C4b and C4c
+     from the trunk after C4p merges. No C4 branch starts from another
+     unmerged C4 branch.
 4. **Wave 4: C6.** It needs the C4a columns and the merged CRM-Q7a card.
 5. **Wave 5: C5.** It needs the C4c studio and the §19.9 consent.
 
@@ -3678,10 +3691,16 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ### 20.7 CRM-C4: Field studio, Native mode
 
 **Audit (2026-10-13).** The spec auditor gave NO-GO. The owner decided each
-finding, and this section holds the result. C4 is now three slices, and each
+finding, and this section holds the result. C4 became three slices, and each
 has its own done-whens: CRM-C4a (the backend), CRM-C4b (the record UI) and
 CRM-C4c (the studio UI). §20.3 gives the order. The anchors below come from a
 measurement at `be8a5db7e`.
+
+**Audit (2026-10-14).** The spec auditor gave NO-GO to C4b and to C4c. The
+owner decided each finding. A new prelude slice, CRM-C4p, now holds the
+client parts that both slices need. So C4 is four slices. The C4p, C4b and
+C4c anchors come from the trunk at `3fe3349f3` and from `crm-c4a` at
+`cf4d6a9c4`.
 
 **Supersedes CRM-S6.** CRM-C4 supersedes CRM-S6, "Custom fields editor"
 (§6 and §18.5). Do not dispatch CRM-S6.
@@ -3799,7 +3818,7 @@ CRM-C3.
      for Mirror mode only, and it waits for CRM-C5.
    - The stored value is `{"id": "<uuid>", "name": "<label at write time>"}`.
      The readers find the live name by `id`. `lookupName`
-     (`app/crm/lib/fields.ts:107`) already reads `{name, id}`.
+     (`app/crm/lib/fields.ts:120` on `crm-c4a`) already reads `{name, id}`.
    - An `id` of a record in another org gives 422.
 9. **The type change matrix.** The gateway allows a change only when each
    stored value stays valid. Any other change gives 422 `field_type_change`.
@@ -3822,13 +3841,13 @@ CRM-C3.
     - the custom filter (`routes/crm/core.py:1161`).
     - `_FIELD_SQL` (`routes/crm/field_rules.py:81`).
     - `crm_list_fields` (`packages/acb_skills/acb_skills/crm_tools.py:460`).
-    - `fieldRows` (`app/crm/lib/fields.ts:271`).
+    - `fieldRows` (`app/crm/lib/fields.ts:286` on `crm-c4a`).
 
     A retired key has these rules:
     - The custom filter (`core.py:1161`) refuses it with 422.
     - The CSV export leaves it out of its columns.
-    - The saved-view column picker (`pickable`, `lib/fields.ts:344`) leaves
-      it out.
+    - The saved-view column picker (`pickable`, `lib/fields.ts:370` on
+      `crm-c4a`) leaves it out.
     - `crm_list_fields` marks it "retired".
 12. **One layout, read everywhere.** `GET /crm/fields/{entity}?layout=1`
     returns the sections, the system fields and the custom fields in order.
@@ -3844,7 +3863,8 @@ CRM-C3.
       it.
     - It shows each visible field, also a field with no value. So a member
       can edit a new field on the record page. Today `fieldRows`
-      (`lib/fields.ts:273`) shows only the keys that the record holds.
+      (`lib/fields.ts:296` on `crm-c4a`) shows only the keys that the record
+      holds.
     - The Overview tab keeps its summary facts.
 13. **The mode switch.** A Native field and a Zoho field can have the same
     key.
@@ -3855,8 +3875,12 @@ CRM-C3.
       `source = 'zoho'` rows today. It also deletes the `source = 'metorite'`
       rows, because start over deletes the records too.
 14. **The Fields section** (CRM-C1) is the studio for an admin of a Native
-    org with the flag on. Every other case shows the read-only list of
-    today. With the flag off, it says "Field editing is not turned on."
+    org with the flag on. The section is for an admin only
+    (`settingsSections.ts:46`, `PipelineSettings.tsx:296`), so a member
+    never sees it. An admin in every
+    other case sees the read-only `FieldsCard` of today. That includes an
+    admin with the flag off, and an admin of a Mirror org (owner,
+    2026-10-14).
 
 **Non-goals.** Formula, rollup, auto-number, file and user-lookup fields.
 Field permissions for each role. Field history (CRM-S10). A layout for each
@@ -3933,77 +3957,333 @@ uv run pytest tests/unit/test_crm_field_studio_r8.py tests/unit/test_crm_field_s
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
 
-#### CRM-C4b: the record UI
+#### CRM-C4p: the shared client
 
-**Follows CRM-C4a.** It reads the C4a layout and writes through the C4a
-custom write path.
+**Follows CRM-C4a.** Cut the branch from the trunk after C4a merges. C4b and
+C4c both use what C4p builds. So C4p merges before either of them starts.
 
-**Scope.** The create and edit forms (items 5 to 8). The Fields tab by
-layout (item 12). The list Columns control and the filter bar for custom
-fields.
+**What C4p reads from C4a.** The C4a fix round adds two facts (owner,
+2026-10-14). The `crm-c4a` worktree holds them, but commit `cf4d6a9c4` does
+not. At dispatch, read the merged `routes/crm/fields.py` and
+`field_studio.py`. If one fact is absent, C4p is NO-GO.
 
-**Files.** `app/crm/components/QuickCreateModal.tsx`, `FieldsPanel.tsx`,
-`RecordSheet.tsx`, `FilterBar.tsx`, `app/crm/lib/fields.ts`,
-`app/crm/lib/filterBar.ts`, `app/crm/lib/columns.ts` and
-`app/crm/components/crmC4b.test.ts` (new).
+- `GET /crm/fields/{entity}?layout=1` returns two booleans. `studio` is true
+  when `CRM_FIELD_STUDIO_ORGS` allows the org. `studio_admin` is true only
+  when the flag allows the org, the caller is an admin, and the mode is
+  Native (`studio_flags` in `fields.py`).
+- A record read gives each lookup value the live name of its target
+  (`attach_lookup_names` in `field_studio.py`). A target that is gone, or
+  that row-level security hides, keeps its stored name and gets
+  `"missing": true`.
+
+**Scope.**
+
+1. **The layout type.** A new `lib/fieldLayout.ts` holds `FieldLayout` and
+   `FieldSection`. They have the shape of `FieldLayout` in `fields.py`
+   (`:110` on `crm-c4a`) and the two booleans. `FieldDef` in `lib/fields.ts`
+   gets `section_id`, `required`, `help_text`, `default_value` and
+   `lookup_target`.
+2. **The read.** `api.getFieldLayout(entity)` calls
+   `GET /crm/fields/{entity}?layout=1`.
+3. **The hook.** `useFieldLayout(entity)` goes in `lib/useCrmMode.ts`,
+   beside `useFieldDefs` (`:259`). It returns the layout, `loading` and
+   `refresh`. A failed read gives `null`, and the caller then draws the view
+   of today.
+4. **The field of a refusal.** `CrmError` (`api.ts:47`) gets `field`. It is
+   the `field` key of an object `detail`. C4a sends it with each refused
+   value (`_unprocessable`, `field_studio.py:155` on `crm-c4a`).
+5. **One way to call the gateway.** `api.ts` exports `call` (`:62`). C4c
+   calls the studio routes through it. A second `fetch` path is a defect.
+6. **`FieldInput`.** A new `components/FieldInput.tsx`. It takes a
+   `FieldDef`, a value, `onChange`, `error` and `locked`. It draws the input
+   of the type from the table below, and it shows `error` under the input.
+7. **The client check.** `checkValue` in `lib/fieldLayout.ts` runs before
+   each save. It mirrors the server limits, so the gateway seldom gets a bad
+   value. The gateway stays the authority.
+8. **The empty value.** A field with no value reads "—". Precedent:
+   `FieldsPanel.tsx:348` and `fieldText` in `lib/fields.ts`.
+9. **The Mirror lock.** With `locked` set, `FieldInput` draws the value read
+   only, with `LOCK_TIP`. Precedent: `FieldsPanel.tsx:359`. A Mirror record
+   stays locked until CRM-C5.
+10. **The read of a value.** `formatField` in `lib/fields.ts` changes for
+    three types. A picklist and a multi-select show the option label, also
+    for a retired option. Today they show the stored `value`. A lookup with
+    `"missing": true` shows its stored name and the note "missing".
+11. **The primitives.** `FieldInput` uses `Input`, `Textarea` and `Select`
+    (`components/ui/Input.tsx`), `SelectButton` and `Checkbox`. It draws no
+    raw control. The `crmX4.test.ts` fence (`:51`) refuses a raw `<input>`,
+    `<textarea>` or `<select>` under `app/crm`.
+
+**The input of each type.** The client check mirrors `field_studio.py` on
+`crm-c4a` (the limits at `:127-134`, the patterns at `:137-143`, the checks
+at `:374-467`). The Read column is what `formatField` shows.
+
+| Type | Primitive | Client check | Read |
+|---|---|---|---|
+| `text` | `Input` | At most 255 characters (`TEXT_MAX`) | The text |
+| `textarea` | `Textarea` | At most 32 000 characters (`TEXTAREA_MAX`) | The text, with its line breaks |
+| `number` | `Input`, `inputMode="numeric"` | A whole number, and its size is less than 10^15 (`NUMBER_LIMIT`) | The number, with `en-IN` groups |
+| `decimal` | `Input`, `inputMode="decimal"` | A finite number, and its size is less than 10^15 | The number, with `en-IN` groups |
+| `currency` | `Input`, `inputMode="decimal"` | The check of `decimal` | `money()` |
+| `percent` | `Input`, `inputMode="decimal"` | The check of `decimal` | The number and "%" |
+| `date` | `Input`, `type="date"` | `YYYY-MM-DD`, and a real day | `shortDate()` |
+| `datetime` | `Input`, `type="datetime-local"` | A real date and time. The client sends `toISOString()`, which has the `Z` that the server needs | `dateTime()`, in local time |
+| `boolean` | `Checkbox` | `true` or `false` | "Yes" or "No" |
+| `email` | `Input`, `type="email"` | At most 254 characters (`EMAIL_MAX`), and `isEmail` | A `mailto:` link |
+| `phone` | `Input`, `type="tel"` | At most 40 characters (`PHONE_MAX`), 4 digits or more, and the pattern of `_PHONE_RE` | A `tel:` link from 6 digits (`TEL_MIN_DIGITS`). A shorter value is text |
+| `url` | `Input`, `type="url"` | At most 2048 characters (`URL_MAX`), and `safeHref` | A link |
+| `select` | `SelectButton` | One active option, or the option that the record holds | The option label |
+| `multiselect` | One `Checkbox` for each option | A list of active options and held options, with no repeat | One chip for each option label |
+| `lookup` | `Input` for the search, and `SelectButton` for the hits | A record of `lookup_target`, from the search | The live name. A missing target shows the stored name and "missing" |
+
+- **A number is a JSON number.** The client sends a number, never text.
+  `_is_number` (`field_studio.py:353`) refuses a string.
+- **The lookup search.** The picker calls
+  `api.listRecords(lookup_target, {q, page_size: 10})`. That is the `?q=`
+  list search of CRM-X1 (`records.py:99`). The picker stores `{id, name}`
+  of the chosen record, and the gateway checks the `id` again.
+- **A retired option.** No picker offers it. A record that holds one shows
+  it, and its input keeps it as a choice. The gateway allows a held value
+  (`_select`, `field_studio.py:449`).
+
+**Files.** `app/crm/lib/fieldLayout.ts` (new),
+`app/crm/components/FieldInput.tsx` (new), `app/crm/lib/api.ts`
+(`getFieldLayout`, `CrmError.field` and the `call` export only),
+`app/crm/lib/useCrmMode.ts` (`useFieldLayout` only), `app/crm/lib/fields.ts`
+(`FieldDef` and `formatField` only), `app/crm/components/crmC4p.test.ts`
+(new) and `tests/unit/test_crm_field_input_parity.py` (new).
 
 **Done when.**
 
-1. The create form shows each visible field of the layout, in section
-   order. A required field blocks the save, and a default fills its input.
-2. An edit sends `custom` as a partial map that holds only the changed key.
-   A cleared value sends a JSON `null`.
-3. The lookup input offers records of the `lookup_target` entity only. It
-   writes `{"id", "name"}`, and the record shows the live name.
-4. The multi-select input writes a JSON array of option values. A retired
-   option shows on a record that holds it, and no picker offers it.
-5. The Fields tab draws each section in order. It shows a visible field
-   with no value, and a member can edit it there.
-6. The Columns control and the filter bar offer custom fields, and neither
-   offers a retired field.
-7. The `visual-review` skill shows the form and the Fields tab. Check light
-   mode, dark mode, compact density, a changed accent and phone width.
+1. `crmC4p.test.ts` draws `FieldInput` for each of the 15 types. Each one
+   draws the primitive of its row in the table.
+2. For each type, the client check passes a good value and refuses a bad
+   one. The test hits each limit: 255, 32 000, 10^15, 254, 40 and 2048.
+3. A `datetime` input sends a value with `Z`. A `number` input sends a JSON
+   number.
+4. An empty value reads "—". A `locked` input draws no control, and it
+   shows `LOCK_TIP`.
+5. `formatField` shows the option label of a picklist and a multi-select,
+   also for a retired option. A missing lookup shows its stored name and
+   "missing".
+6. `useFieldLayout` returns `studio`, `studio_admin`, the sections and the
+   fields. A failed read gives `null`.
+7. A 422 with an object `detail` gives a `CrmError` with its `field`.
+8. `test_crm_field_input_parity.py` reads the limits and the type list from
+   `lib/fieldLayout.ts`. It compares them with `TEXT_MAX`, `TEXTAREA_MAX`,
+   `NUMBER_LIMIT`, `EMAIL_MAX`, `PHONE_MAX`, `URL_MAX` and `FIELD_TYPES` of
+   `field_studio.py`. A change on one side only turns it red.
+9. `crmX4.test.ts` stays green, so `FieldInput.tsx` holds no raw control.
 
-**Fences.** `app/crm/components/crmC4b.test.ts` (new) and
-`app/crm/components/crmX4.test.ts`.
+**Fences.** `app/crm/components/crmC4p.test.ts` (new),
+`tests/unit/test_crm_field_input_parity.py` (new, the limits and the type
+list), `app/crm/components/crmX4.test.ts` and
+`app/crm/components/crmQ4.test.ts`.
 
 **Verification.**
 
 ```bash
+uv run pytest tests/unit/test_crm_field_input_parity.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
+```
+
+#### CRM-C4b: the record UI
+
+**Follows CRM-C4p.** Cut the branch from the trunk after C4p merges. It may
+run beside C4c. It reads the layout through `useFieldLayout`, and it draws
+each custom value with `FieldInput`. It writes through the C4a custom write
+path.
+
+**Dark by default.** Each C4b change draws only when the layout says
+`studio`. With `studio` false, each surface stays as it is today. The 422
+rule (Scope item 4) is the one exception, and it holds in every case.
+
+**Scope.**
+
+1. The create and edit forms (items 5 to 8).
+2. The Fields tab by layout (item 12).
+3. The Columns control, and the filter bar for custom fields.
+4. **The 422 rule.** A form stays open after a refused save. It shows the
+   server `message` beside the field that `detail.field` names. A refusal
+   with no `field` shows at the top of the form. Today the create modal
+   closes on each result: `page.tsx:1185` calls `setCreating(null)` after
+   `store.createRecord`. C4b closes it only when the save returns an id.
+5. **The filter bar** (owner, 2026-10-14). Today it offers picklist custom
+   fields only (`picklistDefs`, `filterBar.ts:151`). C4b adds more types.
+   It uses only the operators of the CRM-Q8 custom filter (`extra_filters`,
+   `core.py:1208` on `crm-c4a`). There are two operators, and neither is a
+   range:
+   - `custom.<key>=<value>`. The text of the stored value equals `<value>`.
+     For an array, the array holds `<value>`.
+   - `custom.<key>.in=a,b`. The value is one of the list. For an array, the
+     array holds one of the list.
+
+   | Type | The filter | The query |
+   |---|---|---|
+   | `select`, `multiselect` | Any of the active options, as today | `custom.<key>.in` |
+   | `boolean` | Yes or No | `custom.<key>=true` or `=false` |
+   | `number`, `decimal`, `currency` | Equal to one number | `custom.<key>=` and `String(Number(text))` |
+   | `date` | Equal to one day | `custom.<key>=YYYY-MM-DD` |
+
+   - The number query matches the text that Postgres gives for a JSON
+     number that the client wrote.
+   - "No" does not find a record that holds no value for the key. The
+     control says so in a hint.
+   - A range on a number or a date needs a new gateway operator. It is not
+     in C4b. It is a follow-up.
+
+**Files.**
+
+- `app/crm/components/QuickCreateModal.tsx`, `FieldsPanel.tsx`,
+  `RecordSheet.tsx` and `FilterBar.tsx`.
+- `app/crm/components/RecordList.tsx:155-317`, the Columns control. The
+  state and the button are at `:155-185`, and `ColumnChooser` is at
+  `:275-317`.
+- `app/crm/lib/fields.ts` (`fieldRows` and `pickable`) and
+  `app/crm/lib/filterBar.ts`.
+- `app/crm/lib/api.ts` and `app/crm/lib/useCrmMode.ts` (owner,
+  2026-10-14). C4c edits neither of them.
+- `app/crm/lib/store.ts`, in `createRecord` (`:602`) and `patchRecord`
+  (`:576`) only. Today they keep only the message of a refusal. The form
+  needs the `field` of the `CrmError` too.
+- `app/crm/page.tsx`, the create modal hunk at `:1177-1188` only.
+- `app/crm/components/crmC4b.test.ts` (new).
+
+**Not `lib/columns.ts`.** It is the list of fixed columns that
+`test_crm_export.py` parses. The custom columns of a list come from
+`pickable` (`RecordList.tsx:164`). The CSV custom columns are C4a's
+(`export.py`). So C4b does not change `columns.ts`.
+
+**Done when.**
+
+1. With `studio` true, the create form shows each visible custom field of
+   the layout through `FieldInput`, in section order. A required field
+   blocks the save, and a default fills its input.
+2. An edit sends `custom` as a partial map that holds only the changed key.
+   A cleared value sends a JSON `null`.
+3. The lookup input searches the `lookup_target` entity only, through
+   `?q=`. It writes `{"id", "name"}`, and the record shows the live name.
+4. The multi-select input writes a JSON array of option values. A retired
+   option shows on a record that holds it, and no picker offers it.
+5. With `studio` true, the Fields tab draws each section in order. It shows
+   a visible field with no value as "—", and a member can edit it there. A
+   Mirror record shows each field locked.
+6. **Already true, so keep it true.** `pickable` leaves out a retired field
+   and a system row (`fields.ts:372` on `crm-c4a`). `picklistDefs` reads
+   `pickable` (`filterBar.ts:151`). So the Columns control and the filter
+   bar offer no retired field today. A C4b test proves that each new filter
+   type keeps this rule.
+7. The filter bar offers the filters of Scope item 5. A test reads the query
+   string of each row.
+8. A refused create or edit keeps the form open. The server message shows
+   beside the field that `detail.field` names, and the typed values stay.
+9. With `studio` false, the forms, the Fields tab, the Columns control and
+   the filter bar draw as today. A test proves it for each one.
+10. The `visual-review` skill shows the form, the Fields tab and the filter
+    bar. Check light mode, dark mode, compact density, a changed accent and
+    phone width.
+
+**Fences.** `app/crm/components/crmC4b.test.ts` (new),
+`app/crm/components/crmC4p.test.ts`, `app/crm/components/crmX4.test.ts` and
+`tests/unit/test_crm_export.py`. The last one shows that `columns.ts` did not
+change.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_crm_export.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
 
 #### CRM-C4c: the studio UI
 
-**Follows CRM-C1 and CRM-C4a.** It fills the `fields` settings section that
+**Follows CRM-C1 and CRM-C4p.** Cut the branch from the trunk after C4p
+merges. It may run beside C4b. It fills the `fields` settings section that
 C1 makes.
 
-**Scope.** The studio of items 2, 3, 4, 6, 9 and 14. The type menu offers the
-allowed changes only. A drag of a section or a field calls
-`PUT /crm/field-layout/{entity}`. A retired field has a Restore control.
+**Where the code goes.** Put the new code in a new `lib/fieldStudio.ts` and
+in new `components/FieldStudio*.tsx` files. Beyond those, C4c edits only
+`FieldsCard.tsx`. `fieldStudio.ts` calls the studio routes through `call`
+of `api.ts`. After each write, it calls `refresh` of `useFieldLayout`.
 
-**Files.** `app/crm/components/FieldsCard.tsx`, new studio components in
-`app/crm/components/`, `app/crm/lib/fields.ts` and
-`app/crm/components/crmC4.test.ts` (new). The docstring at
-`FieldsCard.tsx:9` names CRM-S6. C4c changes it to name CRM-C4.
+**Who sees the studio.** The `fields` section is for an admin only
+(`settingsSections.ts:46`, `PipelineSettings.tsx:296`). So a member never
+sees the studio. `FieldsCard` draws the studio when `studio_admin` is true.
+In each other case, the admin sees the read-only `FieldsCard` of today.
 
-**Done when.**
+**Scope.**
 
-1. `crmC4.test.ts` shows the studio, the option editor, and a type menu that
-   offers the allowed changes only.
-2. A drag calls `PUT /crm/field-layout/{entity}` with the section order and
-   the field order in one body.
-3. With the flag off, the section says "Field editing is not turned on." A
-   member and a Mirror org see the read-only list.
-4. The `visual-review` skill shows the studio. Check light mode, dark mode,
-   compact density, a changed accent and phone width.
+1. The studio of items 2, 3, 4, 6, 9 and 14.
+2. **The type menu.** At create, it offers each of the 15 types. On a field
+   that exists, it offers only the changes of the matrix (item 9). The
+   client keeps the matrix as `TYPE_CHANGES` in `fieldStudio.ts`. A copy by
+   hand goes stale, so a parity fence holds it to `TYPE_CHANGES` in
+   `field_studio.py` (`:102` on `crm-c4a`).
+3. **The lookup target.** A lookup create picks one of the four entity
+   slugs: `leads`, `contacts`, `organizations` or `deals`
+   (`NATIVE_LOOKUP_TARGETS`, `field_studio.py:118`). The studio offers no
+   `module:<ApiName>` target. The gateway refuses a target change while a
+   record holds a value, and the studio shows that message.
+4. **Order by drag.** A section and a field move by HTML5 `draggable`.
+   Precedent: the stage grid at `PipelineSettings.tsx:511`. A drop calls
+   `PUT /crm/field-layout/{entity}` with the whole order in one body.
+5. **The default editor.** It uses `FieldInput` from C4p. So a default takes
+   the client check of its type. A lookup has no default
+   (`field_studio.py:489`).
+6. **The docstring.** `FieldsCard.tsx:9` names CRM-S6. C4c changes it to
+   name CRM-C4.
 
-**Fences.** `app/crm/components/crmC4.test.ts` (new) and
-`app/crm/components/crmC1.test.ts`.
+**Files.** `app/crm/lib/fieldStudio.ts` (new),
+`app/crm/components/FieldStudio*.tsx` (new), `app/crm/components/FieldsCard.tsx`,
+`app/crm/components/crmC4.test.ts` (new) and
+`tests/unit/test_crm_field_type_change_parity.py` (new).
+
+**Done when.** Each case is in `crmC4.test.ts`, except where a case names
+another file.
+
+1. **Create.** The studio creates a field of each of the 15 types, with the
+   type word of item 1. A lookup create sends one of the four slugs as
+   `lookup_target`.
+2. **Rename.** A rename sends `label` only, and the key stays.
+3. **Reorder.** A drag of a field, also into another section, calls
+   `PUT /crm/field-layout/{entity}`. The body holds the section order and
+   the field order of each section.
+4. **Sections.** The studio creates, renames, reorders and deletes a
+   section. Before a delete, it says that the fields move to no section.
+5. **Picklist options.** The option editor adds, renames, reorders and
+   retires an option. A rename keeps the `value`. A retire sends
+   `"retired": true` and keeps the option in the list. The gateway refuses
+   a missing option with 422 `option_removed`.
+6. **Retire and restore.** A retire calls `DELETE /crm/fields/{entity}/{key}`.
+   A retired field shows a Restore control, which calls
+   `POST /crm/fields/{entity}/{key}/restore`.
+7. **Required.** A toggle sends `required`.
+8. **Default.** The default editor is `FieldInput`. It refuses a bad value
+   before the save. It shows a 422 beside the field.
+9. **System fields.** For a system field, the studio offers label, hide
+   and order only. It has no type menu, no retire, no required and no default. A system field
+   that the gateway needs offers no hide.
+10. **The type menu.** On a field that exists, it offers the matrix changes
+    only.
+11. **The parity fence.** `test_crm_field_type_change_parity.py` reads
+    `TYPE_CHANGES` from `lib/fieldStudio.ts`. It compares it with
+    `TYPE_CHANGES` in `field_studio.py`, as
+    `test_crm_stage_discipline_parity.py` does for `REQUIREABLE_FIELDS`. A
+    change on one side only turns it red.
+12. **Who sees it.** A member never sees the `fields` section. An admin
+    with the flag off sees the read-only `FieldsCard` of today. An admin of
+    a Mirror org sees it too.
+13. The `visual-review` skill shows the studio. Check light mode, dark mode,
+    compact density, a changed accent and phone width.
+
+**Fences.** `app/crm/components/crmC4.test.ts` (new),
+`tests/unit/test_crm_field_type_change_parity.py` (new),
+`app/crm/components/crmC1.test.ts` and `app/crm/components/crmC4p.test.ts`.
 
 **Verification.**
 
 ```bash
+uv run pytest tests/unit/test_crm_field_type_change_parity.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
 
@@ -4131,7 +4411,8 @@ them in this order.
 **(a) Lead conversion.** Which lead field fills which Contact, Company and
 Deal field.
 
-1. **Migration 259 (expand only).** `crm_field_defs` gets `convert_mapping
+1. **A new migration (expand only).** Take the next free number at build,
+   because WS-58 MD-2d took 259 (§20.2). `crm_field_defs` gets `convert_mapping
    JSONB NULL`. A lead row holds `{"contact", "company", "deal"}`, each a
    target key or NULL.
 2. **Mirror.** Zoho returns `convert_mapping` on each Leads field of `GET
@@ -4161,7 +4442,7 @@ sets it. A target that the org does not have shows "Not mirrored".
 **Non-goals.** A map between two generic modules. A Zoho write of the
 conversion mapping. Activities on a convert.
 
-**Files.** `infra/postgres/259_crm_convert_mapping.sql` (new),
+**Files.** `infra/postgres/<next free>_crm_convert_mapping.sql` (new),
 `routes/crm/field_studio.py`, `pipeline.py`, `crm_sources/zoho/mapping.py`,
 `crm_sync/engine.py`, the Field mapping section in `app/crm/components/`, and
 the fences below.
