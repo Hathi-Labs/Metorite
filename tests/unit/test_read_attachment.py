@@ -61,6 +61,7 @@ from acb_skills.agent_paths import (  # noqa: E402
 from acb_skills.write_artifact import bind_artifact_context  # noqa: E402
 
 from tests.unit import _xlsx_build as xb  # noqa: E402
+from tests.unit._attachment_clock import TickClock as _TickClock  # noqa: E402
 from tests.unit._linear_time import assert_linear  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -958,6 +959,10 @@ import time  # noqa: E402
 import zlib  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 
+#: A hang guard, never a budget: the outer wait of ``parse_bounded`` in the
+#: fences that hold it, so only the parse's own deadline can answer first.
+HANG_S = 30.0
+
 
 def _raw_pdf(objs: list[bytes]) -> bytes:
     out = bytearray(b"%PDF-1.7\n")
@@ -998,19 +1003,24 @@ def _slow_pdf(form_bytes: int = 256 * 1024, invocations: int = 100) -> bytes:
     ])
 
 
-def test_a_slow_single_page_pdf_stops_at_the_deadline() -> None:
+def test_a_slow_single_page_pdf_stops_at_the_deadline(monkeypatch) -> None:
     """The deadline stops the page in the middle, through pypdf's visitor.
-    Without it this file runs about 50 s and returns its text."""
+    Without it this file runs about 50 s and returns its text.
+
+    The clock moves 10 ms on each read (``_TickClock``), so a deadline of
+    1 s fires at the 100th check. The page has 100 ``Do`` operators and
+    thousands of text operators, so a check between operators is the only
+    way to reach 100 checks. A check per page reads the clock twice, and the
+    page then returns its text. A bound of 3 s failed #739 and #743 at
+    3.02 s, and a bound of 10 s still measured the runner."""
+    clock = _TickClock(per_read=0.01).install(monkeypatch)
     data = _slow_pdf()
     assert len(data) < 4096
-    started = time.monotonic()
     with pytest.raises(at.AttachmentRefused, match="too long"):
         at.extract_text(data, ".pdf", seconds=1.0)
-    # 10 s, not 3 s. The visitor checks the clock between operators, and one
-    # parse of the 256 KB form took about 2 s on a loaded CI runner. A 3 s
-    # bound failed #739 and #743 at 3.02 s. Without the deadline this file
-    # runs about 50 s, so 10 s still fails a broken deadline.
-    assert time.monotonic() - started < 10.0
+    # 1 read sets the deadline, about 100 checks pass it, and the stop lands
+    # at the next operator of the page (pypdf drops an error inside a form).
+    assert 101 <= clock.reads <= 110, clock.reads
 
 
 def _free_slots() -> int:
@@ -1042,18 +1052,21 @@ def test_a_slow_pdf_is_refused_and_frees_its_slot(ws, monkeypatch) -> None:
 
     The fence is what happens, not how many seconds it takes. A bound of
     deadline + ``_WAIT_MARGIN`` + 1.5 s (4.5 s) failed #933 on 2026-10-12
-    at 5.4 s on a loaded CI runner. The clock bound here is five times the
-    longest wait of ``parse_bounded``. It only catches a read that never
-    comes back: with no deadline, this file parses for about 50 s."""
+    at 5.4 s on a loaded CI runner, and #943 made it 15 s. Now no fence here
+    reads the runner's clock: the parse's deadline fires at a count of
+    checks. With no deadline, this file parses for about 50 s and the read
+    returns its text."""
     monkeypatch.setattr(at, "DEADLINE_SECONDS", 1.0)
+    # The parse's own deadline answers, at its 100th check (``_TickClock``).
+    # The outer wait is held long, so its sentence cannot come first.
+    clock = _TickClock(per_read=0.01).install(monkeypatch)
+    monkeypatch.setattr(tools, "_WAIT_MARGIN", HANG_S)
     assert _free_slots() == tools.MAX_PARSES
     _attach(ws, SID_A, "slow.pdf", _slow_pdf())
     _attach(ws, SID_A, "after.txt", b"the slot came back")
-    started = time.monotonic()
     out = _read(ws, SID_A, "slow.pdf")
-    took = time.monotonic() - started
-    assert "took too long" in out, out
-    assert took < 5 * (at.DEADLINE_SECONDS + tools._WAIT_MARGIN), took
+    assert at._TOO_SLOW in out, out
+    assert 101 <= clock.reads <= 110, clock.reads
     # It failed four times in a row on 2026-10-11 with 1 free slot of 2,
     # never with a slot leaked for good, so the wait is bounded and generous.
     assert _wait_for_free_slots() == tools.MAX_PARSES
@@ -1113,25 +1126,23 @@ def test_a_runaway_parse_keeps_its_slot_and_the_parse_threads_stay_capped(ws, mo
     loop = asyncio.new_event_loop()
     loop.set_default_executor(trap)
     try:
+        # No clock bound: the sentence names the path. The outer wait says
+        # "took too long" while the worker is still stuck (go_on is not set).
+        # A wait that did not stop would end with the worker, at "late".
         for name in ("a.txt", "b.txt"):
-            begun = time.monotonic()
             assert "took too long" in loop.run_until_complete(_call(name))
-            assert time.monotonic() - begun < 2.0
         assert _free_slots() == 0
-        begun = time.monotonic()
+        # A call that queued for a slot would wait for the stuck workers, and
+        # then end at "took too long" or "late". The refusal comes at once.
         third = loop.run_until_complete(_call("c.txt"))
         assert third == "I could not read c.txt. Another file is being read now. Try again in a moment."
-        assert time.monotonic() - begun < 0.5
         assert started == [".txt", ".txt"]
         assert _live_parse_threads() <= tools.MAX_PARSES
         assert trap.jobs == []
     finally:
         go_on.set()
         loop.close()
-    deadline = time.monotonic() + 5
-    while _free_slots() < tools.MAX_PARSES and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert _free_slots() == tools.MAX_PARSES
+    assert _wait_for_free_slots() == tools.MAX_PARSES
 
 
 def test_the_tool_never_uses_the_default_executor(ws) -> None:
@@ -1224,21 +1235,29 @@ def test_deep_paragraph_nesting_is_refused_fast() -> None:
 
 def test_the_deadline_stops_a_slow_handler_inside_one_chunk(monkeypatch) -> None:
     """1,800 paragraphs fit in one 64 KB chunk. The check between chunks
-    alone would let a slow handler run to the end of it, 1.8 s here."""
+    alone would let a slow handler run to the end of it, 1.8 s here.
+
+    Each paragraph costs 1 ms of the test's clock (``_TickClock``), so a
+    deadline of 0.3 s passes at paragraph 301. The fence counts the
+    paragraphs, not the runner's seconds."""
+    clock = _TickClock().install(monkeypatch)
     real = at._Body._end_paragraph
+    ended: list[int] = []
 
     def _slow(self: Any) -> None:
-        time.sleep(0.001)
+        ended.append(1)
+        clock.advance(0.001)
         real(self)
 
     monkeypatch.setattr(at._Body, "_end_paragraph", _slow)
     xml = (f"<w:document {_W}><w:body>" + "<w:p><w:r><w:t>x</w:t></w:r></w:p>" * 1800
            + "</w:body></w:document>").encode()
     assert len(xml) < at._CHUNK
-    started = time.monotonic()
     with pytest.raises(at.AttachmentRefused, match="too long"):
         at.extract_text(_zip({"word/document.xml": xml}), ".docx", seconds=0.3)
-    assert time.monotonic() - started < 2.5
+    # The check inside the chunk stops it just past paragraph 300, and a
+    # check between chunks only would end all 1,800 first.
+    assert 300 <= len(ended) < 400, len(ended)
 
 
 def test_a_pdf_cut_inside_its_last_page_says_it_stopped(monkeypatch) -> None:
@@ -1432,33 +1451,54 @@ def _fonts_pdf(entries: int, cmap_entries: int = 0, *, in_form: bool = False) ->
     return _raw_pdf(objs)
 
 
-def test_a_page_with_many_font_entries_is_refused_at_once() -> None:
+def _no_page_text(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record each call of pypdf's page text, where it builds the fonts.
+
+    The font fences assert that the cap refused BEFORE that call, so pypdf
+    never parsed the fonts. A clock bound of 1 s and 1.5 s measured the same
+    thing, and a loaded runner too."""
+    from pypdf import PageObject
+
+    calls: list[int] = []
+    real = PageObject.extract_text
+
+    def _spy(self: Any, *a: Any, **kw: Any) -> Any:
+        calls.append(1)
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(PageObject, "extract_text", _spy)
+    return calls
+
+
+def test_a_page_with_many_font_entries_is_refused_at_once(monkeypatch) -> None:
     """The entry cap: 100 names for one plain font, no CMap at all."""
-    started = time.monotonic()
+    calls = _no_page_text(monkeypatch)
     with pytest.raises(at.AttachmentRefused, match="too many fonts"):
         at.extract_text(_fonts_pdf(100), ".pdf")
-    assert time.monotonic() - started < 1.0
+    assert calls == [], "pypdf built the fonts before the cap refused them"
     # A page under the cap reads.
     assert "Hello world text" in at.extract_text(_fonts_pdf(10), ".pdf").text
 
 
-def test_many_entries_that_share_a_large_cmap_are_refused_within_the_deadline() -> None:
+def test_many_entries_that_share_a_large_cmap_are_refused_within_the_deadline(
+    monkeypatch,
+) -> None:
     """The reviewer's file: 40 names, under the entry cap, that share one
     285 KB CMap. pypdf parses it 40 times before the first operator, about
     3.8 s past a 1-second deadline. The font byte budget refuses it first."""
+    calls = _no_page_text(monkeypatch)
     data = _fonts_pdf(40, cmap_entries=20_000)
-    started = time.monotonic()
     with pytest.raises(at.AttachmentRefused, match="too many fonts"):
         at.extract_text(data, ".pdf", seconds=1.0)
-    assert time.monotonic() - started < 1.0 + 0.5
+    assert calls == [], "pypdf parsed the CMap before the budget refused it"
 
 
-def test_the_fonts_of_a_form_the_page_enters_count_too() -> None:
+def test_the_fonts_of_a_form_the_page_enters_count_too(monkeypatch) -> None:
+    calls = _no_page_text(monkeypatch)
     data = _fonts_pdf(40, cmap_entries=20_000, in_form=True)
-    started = time.monotonic()
     with pytest.raises(at.AttachmentRefused, match="too many fonts"):
         at.extract_text(data, ".pdf", seconds=1.0)
-    assert time.monotonic() - started < 1.0 + 0.5
+    assert calls == [], "pypdf parsed the form's CMap before the budget refused it"
 
 
 def test_a_stop_inside_a_form_on_the_last_page_is_not_a_whole_read() -> None:
@@ -1592,19 +1632,25 @@ def test_an_unclosed_comment_of_several_mb_answers_inside_the_deadline() -> None
 
 
 def test_the_html_deadline_stops_a_parse_between_chunks(monkeypatch) -> None:
-    """A slow handler: the check before each chunk ends the parse."""
+    """A slow handler: the check before each chunk ends the parse.
+
+    Each call costs 50 ms of the test's clock (``_TickClock``), so a
+    deadline of 0.3 s passes after about 6 of the 40 chunks. The fence
+    counts the calls, not the runner's seconds."""
+    clock = _TickClock().install(monkeypatch)
     real = at._Html.handle_data
+    handled: list[int] = []
 
     def _slow(self: Any, data: str) -> None:
-        time.sleep(0.05)
+        handled.append(1)
+        clock.advance(0.05)
         real(self, data)
 
     monkeypatch.setattr(at._Html, "handle_data", _slow)
     body = ("<p>" + "w" * (at._CHUNK - 10) + "</p>") * 40
-    started = time.monotonic()
     with pytest.raises(at.AttachmentRefused, match="too long"):
         at.extract_text(body.encode(), ".html", seconds=0.3)
-    assert time.monotonic() - started < 2.5
+    assert 6 <= len(handled) < 20, len(handled)
 
 
 def test_binary_bytes_named_html_are_refused() -> None:

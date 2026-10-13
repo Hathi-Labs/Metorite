@@ -378,10 +378,26 @@ async def _post(*changes: dict[str, Any]) -> httpx.Response:
                      "X-Hub-Signature-256": _signature(raw)})
 
 
+#: A hang guard, never a budget. A run here takes milliseconds, and a guard
+#: of 5 s failed ``test_wac_react.py`` on a stalled CI runner (TimeoutError,
+#: 2026-10-13): the run waited 5 s for a worker thread of ``to_thread``. #947
+#: measured a stall of 5.4 s on the same runners. So a fence asserts what the
+#: run did, and this only stops a run that never ends.
+HANG_S = 30.0
+
+
 async def _post_and_run(*changes: dict[str, Any]) -> httpx.Response:
     res = await _post(*changes)
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     return res
+
+
+async def _until_called(world: _World) -> None:
+    """Wait until the agent took its first call. A loop of 50 sleeps of 10 ms
+    raced a stalled runner, so this waits for the event under the hang guard."""
+    async with asyncio.timeout(HANG_S):
+        while not world.agent.calls:
+            await asyncio.sleep(0.01)
 
 
 def _request(raw: bytes):
@@ -421,16 +437,13 @@ async def test_a_linked_text_answers_200_before_the_run_and_runs_as_the_link(
     assert response.background is not None
 
     # The background task starts the run and returns while the run waits.
-    await asyncio.wait_for(response.background(), timeout=1)
-    for _ in range(50):
-        if world.agent.calls:
-            break
-        await asyncio.sleep(0.01)
+    await asyncio.wait_for(response.background(), timeout=HANG_S)
+    await _until_called(world)
     assert len(world.agent.calls) == 1
     assert world.sent == [], "the reply went out before the run finished"
 
     world.agent.gate.set()
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
 
     (call,) = world.agent.calls
     assert call["agent"] == "orchestrator"
@@ -527,7 +540,7 @@ async def test_one_payload_delivered_twice_at_once_starts_one_run(
 ) -> None:
     change = _message(wamid="wamid.RACE")
     await asyncio.gather(_post(change), _post(change))
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     assert len(world.store.inbound_rows()) == 1
     assert len(world.agent.calls) == 1
 
@@ -568,7 +581,7 @@ async def test_two_copies_at_once_write_the_thread_one_after_the_other(
     monkeypatch.setattr(bot_run, "_write_turn", _slow)
     change = _message(wamid="wamid.LOCK")
     await asyncio.gather(_post(change), _post(change))
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     assert most == 1, "two thread writes of one member ran at once"
     assert len(world.agent.calls) == 1
 
@@ -661,7 +674,7 @@ async def test_a_member_removed_before_the_run_gets_no_run_and_no_reply(
     world.store.inactive.add((ORG_A, MEMBER))   # removed after the 200
     world.agent.gate.set()
     await response.background()
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     assert world.agent.calls == [] and world.sent == []
     (row,) = world.store.inbound_rows()
     assert row["state"] == "refused" and row["code"] == "inactive"
@@ -689,7 +702,7 @@ async def test_a_link_that_moved_to_another_org_refuses_the_old_row(
                     "is_current": True}]
     world.agent.gate.set()
     await response.background()
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     assert world.agent.calls == [] and world.sent == []
     (row,) = world.store.inbound_rows()
     assert row["state"] == "refused" and row["code"] == "link"
@@ -730,15 +743,12 @@ async def test_a_second_batch_while_the_first_runs_waits_for_it_not_the_sweep(
 ) -> None:
     world.agent.gate = asyncio.Event()
     await _post(_message("First"))
-    for _ in range(50):
-        if world.agent.calls:
-            break
-        await asyncio.sleep(0.01)
+    await _until_called(world)
     await _post(_message("Second"))
     await asyncio.sleep(0.05)
     assert len(world.agent.calls) == 1, "the second run did not wait"
     world.agent.gate.set()
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     assert [c["payload"]["message"] for c in world.agent.calls] == [
         "First", "Second"]
     assert world.agent.most == 1
@@ -827,7 +837,7 @@ async def test_a_thread_shared_before_the_run_is_refused_and_never_read(
     (row,) = world.store.inbound_rows()
     world.store.shared.add(row["sid"])   # a participant added on the web
     await response.background()
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     assert world.agent.calls == []
     assert row["state"] == "refused" and row["code"] == "shared"
     assert world.sent == [(PHONE, FAILED_TEXT)]
@@ -962,8 +972,8 @@ async def test_request_confirmation_denies_at_once_even_when_asked_to_approve(
             non_interactive_default="approve")
 
     with refuse_cards():
-        assert await asyncio.wait_for(_in_a_run(_ask), timeout=1) is False
-        assert await asyncio.wait_for(_in_a_run(_ask_rows), timeout=1) == frozenset()
+        assert await asyncio.wait_for(_in_a_run(_ask), timeout=HANG_S) is False
+        assert await asyncio.wait_for(_in_a_run(_ask_rows), timeout=HANG_S) == frozenset()
     assert relay == [], "a card went to a stream that nobody reads"
     # The web path is unchanged: the same call shows the card.
     assert await _in_a_run(_ask) is True
@@ -976,7 +986,7 @@ async def test_ask_questions_answers_at_once_with_no_card(relay: list[str]) -> N
 
     q = json.dumps({"questions": [{"header": "Which", "question": "Which one?"}]})
     with refuse_cards():
-        out = await asyncio.wait_for(_in_a_run(lambda: ask_questions(q)), timeout=1)
+        out = await asyncio.wait_for(_in_a_run(lambda: ask_questions(q)), timeout=HANG_S)
     assert out == NO_CARD_QUESTIONS and relay == []
 
 
@@ -1003,7 +1013,7 @@ async def test_a_projects_write_tool_in_a_whatsapp_run_writes_nothing(
     calls = fake_gateway(monkeypatch, _responder)
     with refuse_cards():
         out = await asyncio.wait_for(
-            _in_a_run(lambda: W.comment(task_id, "Done today")), timeout=1)
+            _in_a_run(lambda: W.comment(task_id, "Done today")), timeout=HANG_S)
     assert out == W.CANCELLED
     assert writes(calls) == [] and relay == []
 
@@ -1020,7 +1030,7 @@ async def test_the_sdk_user_input_handler_answers_empty_in_a_whatsapp_run(
 
     with refuse_cards():
         handler = _make_user_input_handler("wa-thread-1")
-    out = await asyncio.wait_for(handler({"question": "Which?"}, None), timeout=1)
+    out = await asyncio.wait_for(handler({"question": "Which?"}, None), timeout=HANG_S)
     assert out == {"answer": "", "wasFreeform": True} and relay == []
 
 
@@ -1183,7 +1193,7 @@ async def test_the_sweep_binds_each_org_and_reruns_from_the_thread(
     monkeypatch.setattr(get_settings(), "whatsapp_assistant_orgs",
                         f"{ORG_B}, not-an-org ,{ORG_A}", raising=False)
     assert await bot_run.sweep_once() == 1
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     assert seen == sorted([ORG_A, ORG_B])
     (call,) = world.agent.calls
     assert call["payload"]["message"] == QUESTION
@@ -1240,7 +1250,7 @@ async def test_an_org_taken_off_the_list_before_the_run_gets_no_run(
     monkeypatch.setattr(get_settings(), "whatsapp_assistant_orgs", ORG_B,
                         raising=False)
     await response.background()
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     assert world.agent.calls == [] and world.sent == []
     (row,) = world.store.inbound_rows()
     assert row["state"] == "refused" and row["code"] == "closed"
@@ -1422,14 +1432,11 @@ async def test_a_thread_shared_during_the_run_gets_no_reply_written(
 ) -> None:
     world.agent.gate = asyncio.Event()
     await _post(_message())
-    for _ in range(50):
-        if world.agent.calls:
-            break
-        await asyncio.sleep(0.01)
+    await _until_called(world)
     (row,) = world.store.inbound_rows()
     world.store.shared.add(row["sid"])   # shared on the web, mid-run
     world.agent.gate.set()
-    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=HANG_S)
     assert world.store.reply_writes == 0, "the answer went into a room"
     assert row["state"] == "refused" and row["code"] == "shared"
     assert world.sent == [(PHONE, FAILED_TEXT)]

@@ -28,6 +28,7 @@ from tests.unit._sandbox_broker_fakes import (
     configure_env,
     flag_values,
     mounts_of,
+    until,
 )
 
 ORG_A = "aaaaaaaa-0000-0000-0000-00000000000a"
@@ -650,7 +651,7 @@ async def test_a_cancel_while_a_victim_is_removed_frees_every_slot(
     docker.block_rm = asyncio.Event()
     with bound_run(ORG_A, thread="t2"):
         task = asyncio.create_task(broker.acquire())
-        await asyncio.sleep(0.1)
+        await until(docker.removals, "the victim's rm must be in flight")
         assert docker.removals() == [first.container_id], "the victim's rm must be in flight"
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -674,8 +675,7 @@ async def test_a_cancel_during_docker_run_removes_that_start(
     docker.ps_ids = ["cid-half"]  # the daemon made the container after all
     with bound_run(ORG_A, thread="t-run"):
         task = asyncio.create_task(broker.acquire())
-        await asyncio.sleep(0.1)
-        assert docker.runs(), "docker run must be in flight"
+        await until(docker.runs, "docker run must be in flight")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -700,7 +700,7 @@ async def test_a_cancel_during_the_reuse_wait_gives_the_lease_back(
     docker.block_run = asyncio.Event()
     with bound_run(ORG_A, thread="t-r"):
         starter = asyncio.create_task(broker.acquire())
-        await asyncio.sleep(0.05)
+        await until(docker.runs, "the first start must be in docker run")
         joiner = asyncio.create_task(broker.acquire())
         await asyncio.sleep(0.05)
         joiner.cancel()

@@ -27,6 +27,7 @@ from gateway.routes.whatsapp_channel import bot_run, views
 
 from tests.unit.test_wac_bot_run import (  # noqa: F401 - `world` is a fixture
     ANSWER,
+    HANG_S,
     _message,
     _post_and_run,
     _World,
@@ -236,16 +237,66 @@ async def test_the_provider_quotes_and_reacts_with_metas_shapes(
 # ── The early message: "this takes a while" ─────────────────────────────────
 
 
-class _SlowAgent(_UiAgent):
-    """An agent that works for *delay* seconds after its tool calls."""
+#: The "working" timer's delay in these fences. Only :meth:`_HeldTimer.fire`
+#: ends a sleep of this many seconds. No real delay is this long.
+HELD_S = 1001.0
 
-    def __init__(self, calls: list[tuple[str, dict]], delay: float) -> None:
+
+class _HeldTimer:
+    """``asyncio`` as ``bot_run`` reads it, with one change (#947 ``_Clock``).
+
+    A sleep of :data:`HELD_S` seconds never ends by the clock. The agent ends
+    it with :meth:`fire`, in the middle of its work, so "a long run" is an
+    event and not 0.2 s against 0.01 s. Every other call is the real one.
+
+    The old fences slept 0.2 s in the agent against a timer of 0.01 s. On a
+    stalled CI runner the run then waited 5 s for a worker thread and the
+    5 s guard of ``_post_and_run`` fired (TimeoutError, 2026-10-13)."""
+
+    def __init__(self) -> None:
+        self.armed = asyncio.Event()
+        self.fired = asyncio.Event()
+        self.timer: asyncio.Task[Any] | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+    async def sleep(self, delay: float, result: Any = None) -> Any:
+        if delay != HELD_S:
+            return await asyncio.sleep(delay, result)
+        self.timer = asyncio.current_task()
+        self.armed.set()
+        await self.fired.wait()
+        return result
+
+    async def fire(self) -> None:
+        """End the held sleep, then wait until the timer has done its work."""
+        async with asyncio.timeout(HANG_S):
+            await self.armed.wait()
+        assert self.timer is not None
+        self.fired.set()
+        await asyncio.wait({self.timer}, timeout=HANG_S)
+        assert self.timer.done(), "the working timer never ended"
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> _HeldTimer:
+        monkeypatch.setattr(bot_run, "WORKING_AFTER_S", HELD_S)
+        monkeypatch.setattr(bot_run, "asyncio", self)
+        return self
+
+
+class _SlowAgent(_UiAgent):
+    """An agent whose work outlasts the "working" timer, by events.
+
+    It makes its tool calls, then fires the held timer and waits until the
+    timer has sent its line or chosen to stay quiet. Only then it answers."""
+
+    def __init__(self, calls: list[tuple[str, dict]], clock: _HeldTimer) -> None:
         super().__init__(calls)
-        self.delay = delay
+        self.clock = clock
 
     async def __call__(self, agent: str, payload: dict[str, Any], **kw: Any) -> Any:
         out = await super().__call__(agent, payload, **kw)
-        await asyncio.sleep(self.delay)
+        await self.clock.fire()
         return out
 
 
@@ -271,9 +322,9 @@ async def test_a_long_run_with_no_early_message_gets_one_from_code(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _switch(monkeypatch, True)
-    monkeypatch.setattr(bot_run, "WORKING_AFTER_S", 0.01)
+    clock = _HeldTimer().install(monkeypatch)
     _provider(monkeypatch, world)
-    world.agent = _SlowAgent([], delay=0.2)
+    world.agent = _SlowAgent([], clock)
     await _post_and_run(_message())
     assert [s for _to, s in world.sent] == [bot_run.REPLY_WORKING, ANSWER]
 
@@ -282,9 +333,9 @@ async def test_the_timer_stays_quiet_after_the_ais_own_early_message(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _switch(monkeypatch, True)
-    monkeypatch.setattr(bot_run, "WORKING_AFTER_S", 0.01)
+    clock = _HeldTimer().install(monkeypatch)
     _provider(monkeypatch, world)
-    world.agent = _SlowAgent([_WORKING], delay=0.2)
+    world.agent = _SlowAgent([_WORKING], clock)
     await _post_and_run(_message())
     assert [s for _to, s in world.sent] == [_WORKING[1]["text"], ANSWER]
 
@@ -366,7 +417,7 @@ async def test_an_unclear_early_message_counts_as_sent(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _switch(monkeypatch, True)
-    monkeypatch.setattr(bot_run, "WORKING_AFTER_S", 0.01)
+    clock = _HeldTimer().install(monkeypatch)
     prov = _provider(monkeypatch, world)
     real = prov.send_text
     calls: list[str] = []
@@ -378,7 +429,7 @@ async def test_an_unclear_early_message_counts_as_sent(
         return await real(to, body, **quote)
 
     prov.send_text = _slow_first
-    world.agent = _SlowAgent([_WORKING], delay=0.2)
+    world.agent = _SlowAgent([_WORKING], clock)
     await _post_and_run(_message())
     assert bot_run.REPLY_WORKING not in calls
     assert [s for _to, s in world.sent] == [ANSWER]

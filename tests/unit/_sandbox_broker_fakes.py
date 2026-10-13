@@ -20,6 +20,24 @@ from orchestrator import sandbox_broker as sb
 #: A pinned reference of the right shape. No test pulls it.
 PINNED_IMAGE = "metorite/coding-sandbox@sha256:" + "a" * 64
 
+#: A hang guard, never a budget (#947). A fence waits for an event under it.
+HANG_S = 30.0
+
+
+async def until(ready: Callable[[], object], what: str) -> None:
+    """Wait until ``ready()`` is true, under the hang guard.
+
+    A fixed sleep of 50 ms or 100 ms, then an assert, raced a stalled
+    runner: ``test_a_cancel_during_docker_run_removes_that_start`` failed on
+    main on 2026-10-12 with "docker run must be in flight". So a fence waits
+    for the step it needs, and only a step that never comes fails it."""
+    try:
+        async with asyncio.timeout(HANG_S):
+            while not ready():
+                await asyncio.sleep(0.005)
+    except TimeoutError:
+        raise AssertionError(f"{what}, within the {HANG_S:g} s hang guard") from None
+
 
 class FakeDocker:
     """Records each docker argv and answers like the real CLI."""

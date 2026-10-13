@@ -98,6 +98,8 @@ OTHER_ORG = "66666666-6666-6666-6666-666666666666"
 ACC = "acc-cap-1"
 OTHER_ACC = "acc-cap-2"
 OWNER = "owner@acme-cap.example"
+#: A hang guard, never a budget (#947). A deadlock fails at it.
+HANG_S = 30.0
 
 
 # ── Fixtures and fakes ──────────────────────────────────────────────────────
@@ -287,7 +289,7 @@ async def test_a_nested_slot_completes_with_a_cap_of_one(monkeypatch, tenant, re
             async with llm_cap.llm_slot(), llm_cap.llm_slot():
                 seen.append(llm_cap.permits_in_use())
 
-    await asyncio.wait_for(nested(), timeout=2)
+    await asyncio.wait_for(nested(), timeout=HANG_S)
     assert seen == [1], "the nested slot took a second permit"
     assert redis.store == {_wire_key(ORG, ACC): 1}, "the nested slot counted again"
 
@@ -304,7 +306,7 @@ async def test_a_task_started_in_a_held_slot_runs_under_it(monkeypatch, tenant) 
 
     with llm_cap.automation_scope(ACC):
         async with llm_cap.llm_slot():
-            await asyncio.wait_for(asyncio.create_task(child()), timeout=2)
+            await asyncio.wait_for(asyncio.create_task(child()), timeout=HANG_S)
     assert seen == [1]
 
 
@@ -371,7 +373,7 @@ async def test_two_children_at_a_cap_of_one_never_overlap_and_never_deadlock(
         with llm_cap.automation_scope(ACC):
             await asyncio.gather(_ask_model(), _ask_model())
 
-    await asyncio.wait_for(parent(), timeout=2)
+    await asyncio.wait_for(parent(), timeout=HANG_S)
     assert model.calls == 2
     assert model.peak == 1
     assert model.permits == [1, 1]
@@ -388,7 +390,7 @@ async def test_a_wait_past_one_second_logs_the_cap_wait(monkeypatch, tenant) -> 
     with structlog.testing.capture_logs() as caps, llm_cap.automation_scope(ACC):
         first = asyncio.create_task(hold())
         await asyncio.sleep(0)
-        await asyncio.wait_for(hold(), timeout=2)
+        await asyncio.wait_for(hold(), timeout=HANG_S)
         await first
     waits = _events(caps, "email.llm_cap_wait")
     assert len(waits) == 1 and waits[0]["wait_ms"] >= 20
@@ -637,14 +639,16 @@ async def test_a_redis_that_hangs_costs_the_bound_once_and_the_breaker_closes_af
     redis.hang = True
     with structlog.testing.capture_logs() as caps, llm_cap.automation_scope(ACC):
         started = time.monotonic()
-        await asyncio.wait_for(_ask_model(), timeout=2)
+        # The hang guard only: a missing bound waits for the hung Redis.
+        await asyncio.wait_for(_ask_model(), timeout=HANG_S)
         first = time.monotonic() - started
-        started = time.monotonic()
         for _ in range(5):
             await _ask_model()
-        rest = time.monotonic() - started
-    assert 0.2 <= first < 0.6, f"the first call waited {first:.2f}s"
-    assert rest < 0.1, f"five calls inside the breaker waited {rest:.2f}s"
+    # A lower bound only: a loaded runner makes a wait longer, never shorter.
+    # The upper bounds (0.6 s, and 0.1 s for five calls) measured the runner.
+    # What they meant is an event: the five calls sent no Redis command, so
+    # they waited for nothing, and the one line says the bound fired once.
+    assert first >= 0.2, f"the first call waited {first:.2f}s, not the bound"
     assert len(redis.keys) == 1, "a call inside the breaker sent a Redis command"
     assert model.calls == 6, "enforce refused a call while the breaker was open"
     lines = _events(caps, "email.llm_budget_unavailable")
@@ -820,7 +824,6 @@ async def test_a_full_cap_skips_the_shadow_with_no_extra_wait(
         )
 
     monkeypatch.setattr(decide_mod, "decide", slow_decide)
-    started = time.monotonic()
     with structlog.testing.capture_logs() as caps, llm_cap.automation_scope(ACC):
         out = await df.shadow(
             "email.rule_match",
@@ -830,13 +833,13 @@ async def test_a_full_cap_skips_the_shadow_with_no_extra_wait(
             build=lambda: ({"s": 1}, {"q": object()}),
             compare=lambda old, decision: df.Comparison(old=True, new=True, agree=True, options=2),
         )
-    elapsed = time.monotonic() - started
     assert out == {"index": -1, "consult": [], "kind": "other", "status": "DONE"}
     skipped = [e for e in _events(caps, "decide.shadow_skipped") if e.get("reason") == "cap"]
     if cap == 1:
+        # No ask, so nothing for the old answer to wait on. A bound of 0.4 s
+        # against a decide of 0.5 s measured the runner too.
         assert calls == [], "the shadow asked with no free slot"
         assert len(skipped) == 1
-        assert elapsed < 0.4, f"the old answer waited {elapsed:.2f}s"
     else:
         assert calls == [1] and skipped == []
 
