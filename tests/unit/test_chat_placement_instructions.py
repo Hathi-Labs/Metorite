@@ -18,7 +18,7 @@ The rule reaches an agent in ONE of two ways (§24.4, 2026-10-09):
   read the rule from the directive only all along, and the file is gone.
   Its live text is ``_PULL_INSTRUCTIONS`` (``orchestrator/agents.py``).
 
-Mutations this file catches (R7): delete the section from one of the three;
+Mutations this file catches (R7): delete the section from one of the two;
 edit it in one of them only; put the section back into the Projects or the
 email agent; drop the rule from the injected directive, or take
 ``emit_generative_ui`` away from the Projects or the email agent; bring back

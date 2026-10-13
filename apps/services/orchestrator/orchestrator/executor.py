@@ -524,6 +524,32 @@ def _current_run_org() -> str | None:
 _ORG_NAME_CACHE: dict[str, tuple[float, str]] = {}
 _ORG_NAME_TTL_SECONDS = 600.0
 _ORG_NAME_CACHE_MAX = 1024
+#: The longest org name that reaches a prompt. A name is a member's words.
+_ORG_NAME_MAX_CHARS = 120
+
+
+def _clean_org_name(raw: str) -> str:
+    """*raw* as one short line of plain text (review of #981, P2).
+
+    An org owner sets the display name, and nothing checks it, so it is a
+    member's words in every turn of every member. A newline would forge a
+    context block, and a long name would cost its size on each turn. So:
+    NFKC, then every control (Cc) and format (Cf) character goes (zero
+    width and bidi marks), « and » go, all whitespace becomes one space, and
+    the result stops at ``_ORG_NAME_MAX_CHARS``. The same folding as the
+    gateway's ``chat_recovery._plain_unicode``, which the orchestrator
+    cannot import (it is a gateway module).
+    """
+    import unicodedata  # noqa: PLC0415
+
+    folded = unicodedata.normalize("NFKC", raw or "")
+    folded = "".join(
+        " " if unicodedata.category(ch) == "Cc"
+        else "" if unicodedata.category(ch) == "Cf" or ch in "\u00ab\u00bb"
+        else ch
+        for ch in folded
+    )
+    return " ".join(folded.split())[:_ORG_NAME_MAX_CHARS].strip()
 
 
 def _read_org_display_name(org: str) -> str:
@@ -546,7 +572,7 @@ def _read_org_display_name(org: str) -> str:
             ).first()
     except Exception:  # noqa: BLE001
         return ""
-    return str(row[0] or "").strip() if row else ""
+    return _clean_org_name(str(row[0] or "")) if row else ""
 
 
 def _run_org_display_name() -> str:

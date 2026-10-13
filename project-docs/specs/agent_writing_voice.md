@@ -575,6 +575,12 @@ so the static prefix of each agent stays byte-stable. A run with no org, or
 an org with no name, gets no line. A cache keeps each name for 10 minutes,
 so a turn pays at most one read.
 
+The name is a member's words, and nothing checks it at signup. So
+`_clean_org_name` makes it one line of at most 120 characters. It folds
+the text with NFKC, and it removes each control character, each format
+character and the marks « and ». A name with a newline cannot forge a
+context block, and a long name cannot cost its size on each turn.
+
 The same sweep removed the name from three places. They are the app
 builder's instructions, an example in the email agent's instructions, and
 three examples in the docstrings of the memory tools. `github_org` still defaults to
