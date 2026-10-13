@@ -38,6 +38,8 @@
  * never follows its subtask (`board.optimisticDrop`, fenced).
  */
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import { Board } from "@/components/board/Board";
+import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
 import { DropGap } from "@/components/DropGap";
 import { EmptyState } from "@/components/EmptyState";
@@ -87,7 +89,6 @@ import {
   taskQuickActions,
 } from "../lib/taskMenu";
 import { CardInput } from "./CardInput";
-import { QuickAdd } from "./QuickAdd";
 import { TaskCardActions } from "./TaskCardActions";
 import { useFlash } from "./useFlash";
 import { useAccess } from "@/components/AccessProvider";
@@ -505,6 +506,12 @@ export function TaskBoard({
     flash(created.id);
     onCreated(created);
   }
+
+  /** A card hovers over this target, and the target accepts it (CRM-C2 ring). */
+  const isDropTarget = (laneKey: string | null, colKey: string) =>
+    Boolean(
+      dragging && over?.col === colKey && over?.lane === laneKey && !refusalFor(laneKey),
+    );
 
   const refusalOverlay = (laneKey: string | null, colKey: string) =>
     over?.col === colKey && over?.lane === laneKey && dragging ? (
@@ -939,90 +946,58 @@ export function TaskBoard({
       ) : null}
 
       {!laned ? (
-        <div className="flex w-max min-w-full gap-3 p-3">
-          {columns.map((column, columnIndex) => {
-            const accent = columnAccents[columnIndex];
-            return (
-            <section
+        <Board scroll="parent">
+          {columns.map((column, columnIndex) => (
+            <BoardColumn
               key={column.key}
               {...targetProps(column.key, column.tasks, null)}
-              className="relative flex w-72 shrink-0 flex-col overflow-hidden rounded-lg border border-border bg-card"
+              as="ul"
+              // CRM-C2: the shared lane. The colour is the inset chip, so no
+              // stripe meets the round corner. The count says how many of
+              // the cards drawn are subtasks.
+              header={{
+                accent: columnAccents[columnIndex],
+                title: column.label,
+                count: column.tasks.length,
+                countTitle: columnCountTitle(column.tasks, column.label),
+              }}
+              dropTarget={isDropTarget(null, column.key)}
+              overlay={refusalOverlay(null, column.key)}
+              empty={
+                column.tasks.length > 0
+                  ? undefined
+                  : shelf
+                    ? "Nothing archived in this lane"
+                    : droppable
+                      ? "Drop here"
+                      : "Nothing here"
+              }
+              // No composer on the shelf — see `shelf` above.
+              addLabel={`Add to ${column.label}`}
+              onAdd={shelf ? undefined : (title) => quickAdd(title, column.key, null)}
             >
-              {refusalOverlay(null, column.key)}
-              {/* The accent cap — /tasks' board grammar, now shared: a 1px
-                  band of the lane's colour above a faintly tinted header, so
-                  "where is Done" is a glance rather than a read. */}
-              <div className={`h-1 w-full ${accent.dot}`} />
-              <header
-                className={`flex items-center justify-between px-3 py-2 ${accent.soft}`}
-              >
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span className={`h-2 w-2 shrink-0 rounded-full ${accent.dot}`} />
-                  <span className={`truncate text-sm font-medium ${accent.text}`}>
-                    {column.label}
-                  </span>
-                </span>
-                {/* The cards drawn, and how many of them are subtasks. */}
-                <span
-                  className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground"
-                  title={columnCountTitle(column.tasks, column.label)}
-                >
-                  {column.tasks.length}
-                </span>
-              </header>
-              <ul className="flex-1 space-y-1 p-2">
-                {cellCards(column.key, column.tasks, null)}
-                {column.tasks.length === 0 ? (
-                  <li className="rounded-md border border-dashed border-border p-3 text-center text-xs text-muted-foreground">
-                    {shelf
-                      ? "Nothing archived in this lane"
-                      : droppable
-                        ? "Drop here"
-                        : "Nothing here"}
-                  </li>
-                ) : null}
-              </ul>
-              {/* No composer on the shelf — see `shelf` above. */}
-              {shelf ? null : (
-                <div className="p-2 pt-0">
-                  <QuickAdd
-                    label={`Add to ${column.label}`}
-                    onAdd={(title) => quickAdd(title, column.key, null)}
-                  />
-                </div>
-              )}
-            </section>
-            );
-          })}
-        </div>
+              {cellCards(column.key, column.tasks, null)}
+            </BoardColumn>
+          ))}
+        </Board>
       ) : (
         <div className="w-max min-w-full p-3">
           <div className="min-w-max">
-            {/* Column headers once, up top — every lane below shares them, and
-                they carry the same accent the flat board's headers do. */}
+            {/* Column heads once, up top — every lane below shares them. Each
+                head is the same chip a flat column draws (CRM-C2), with no
+                left bar. */}
             <div className="mb-2 flex gap-3">
-              {columns.map((column, columnIndex) => {
-                const accent = columnAccents[columnIndex];
-                return (
-                  <div
-                    key={column.key}
-                    className={`flex w-72 shrink-0 items-center justify-between rounded-md border-l-2 px-3 py-2 ${accent.soft} ${accent.bar}`}
-                  >
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <span className={`h-2 w-2 shrink-0 rounded-full ${accent.dot}`} />
-                      <span className={`truncate text-sm font-medium ${accent.text}`}>
-                        {column.label}
-                      </span>
-                    </span>
-                    <span
-                      className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground"
-                      title={columnCountTitle(column.tasks, column.label)}
-                    >
-                      {column.tasks.length}
-                    </span>
-                  </div>
-                );
-              })}
+              {columns.map((column, columnIndex) => (
+                <BoardHeaderCell
+                  key={column.key}
+                  header={{
+                    accent: columnAccents[columnIndex],
+                    title: column.label,
+                    count: column.tasks.length,
+                    countTitle: columnCountTitle(column.tasks, column.label),
+                  }}
+                />
+              ))}
             </div>
 
             {(shownLanes ?? []).map((lane) => {
@@ -1046,31 +1021,34 @@ export function TaskBoard({
                       {lane.cells.map((cell, columnIndex) => {
                         const column = columns[columnIndex];
                         return (
-                          <div
+                          // A swimlane cell is a lane with no header: the
+                          // head row above names its column (CRM-C2).
+                          <BoardColumn
                             key={column.key}
                             {...targetProps(column.key, cell, lane.key)}
-                            className="relative flex w-72 shrink-0 flex-col rounded-lg border border-border bg-card"
+                            as="ul"
+                            header={null}
+                            aria-label={`${column.label} · ${lane.label}`}
+                            dropTarget={isDropTarget(lane.key, column.key)}
+                            overlay={refusalOverlay(lane.key, column.key)}
+                            empty={
+                              cell.length > 0
+                                ? undefined
+                                : shelf
+                                  ? "—"
+                                  : droppable
+                                    ? "Drop here"
+                                    : "—"
+                            }
+                            addLabel={`Add to ${column.label} · ${lane.label}`}
+                            onAdd={
+                              shelf
+                                ? undefined
+                                : (title) => quickAdd(title, column.key, lane.key)
+                            }
                           >
-                            {refusalOverlay(lane.key, column.key)}
-                            <ul className="flex-1 space-y-1 p-2">
-                              {cellCards(column.key, cell, lane.key)}
-                              {cell.length === 0 ? (
-                                <li className="rounded-md border border-dashed border-border p-2 text-center text-[11px] text-muted-foreground">
-                                  {shelf ? "—" : droppable ? "Drop here" : "—"}
-                                </li>
-                              ) : null}
-                            </ul>
-                            {shelf ? null : (
-                              <div className="p-2 pt-0">
-                                <QuickAdd
-                                  label={`Add to ${column.label} · ${lane.label}`}
-                                  onAdd={(title) =>
-                                    quickAdd(title, column.key, lane.key)
-                                  }
-                                />
-                              </div>
-                            )}
-                          </div>
+                            {cellCards(column.key, cell, lane.key)}
+                          </BoardColumn>
                         );
                       })}
                     </div>
