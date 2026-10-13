@@ -1114,6 +1114,16 @@ general agent, and a chat bar at the foot of the page opens it. Flag
   state, and it takes no input until the full view closes. The session list
   is at the left, as in ChatGPT and Claude. The chat's files are at the
   right.
+- **A page the member opens makes the full view give way** (owner,
+  2026-10-13). An app picked in the sidebar would open out of sight. So on
+  a wide screen the full view becomes the side panel, and on a narrow one
+  the assistant closes. The member's own choice of form stays
+  (`onPageChange`).
+- **The full view spans the whole width.** The chat centres its text and
+  its composer at a reading width, and its header and borders run edge to
+  edge, as ChatGPT and Claude draw them.
+- **Every chat says "Metorite".** An old chat with a specialist still runs
+  on that specialist, and it shows the one assistant's name.
 - **A switch keeps the chat.** The two forms are one element that changes
   its shape, so a running reply, the draft and the scroll stay.
 - **`/chat` is the address of the full view.** A link to `/chat`, to
