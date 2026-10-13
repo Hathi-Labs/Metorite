@@ -19,6 +19,7 @@ the POST contract, and each case is written so a wrong build fails it:
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -631,6 +632,50 @@ class TestTheMembersOwnActIsNoUpdate:
         _freeze(monkeypatch, fakes.now + timedelta(minutes=60))
         _post(user, [_item("tasks:t-late", after["state_fp"], "seen")])
         assert fakes.state_rows[ME]["tasks:t-late"]["visits"] == 2  # counted on
+
+
+class TestANewNoteAfterTheActIsAnUpdate:
+    """Verifier P3. The reason of a notification card is its newest ASKING
+    note, so ``facts["at"]`` can be older than the newest note. A comment
+    after the member's act must still read as Updated."""
+
+    @staticmethod
+    def _note(nid: str, kind: str, at: datetime) -> dict:
+        return {"id": nid, "task_id": "t1", "kind": kind, "actor": "priya@x.test",
+                "task_title": "Ship the extruder", "task_number": None, "excerpt": None,
+                "created_at": at}
+
+    def _card(self, notes: list[dict]) -> dict:
+        from gateway.routes.shell import needs
+
+        built = feed.build_cards(needs._note_signals(notes), NOW, ZoneInfo("UTC"), TODAY)
+        return state.join(built, {}, CTX)[0]
+
+    def test_a_comment_after_the_act_on_an_unread_mention_is_an_update(self):
+        mention = self._note("n-m", "mention", datetime(2026, 10, 13, 10, 0, tzinfo=UTC))
+        comment = self._note("n-c", "comment", datetime(2026, 10, 13, 12, 30, tzinfo=UTC))
+        before = self._card([mention])
+        row = {"kind": before["kind"], "state": "acted", "dismiss_reason": None,
+               "fingerprint": before["state_fp"], "visits": 1, "visits_day": TODAY,
+               "last_seen_at": datetime(2026, 10, 13, 10, 30, tzinfo=UTC),
+               "acted_at": datetime(2026, 10, 13, 11, 0, tzinfo=UTC),
+               "snoozed_until": None, "snooze_on_change": False}
+        after = self._card([mention, comment])
+        # The reason is still the mention, so `at` is still 10:00.
+        assert after["facts"]["at"] == mention["created_at"].isoformat()
+        assert after["state_fp"] != before["state_fp"]
+        out = state.join([dict(after)], {"tasks:t1": row}, CTX)[0]
+        assert (out["state"], out["updated"]) == ("new", True)
+
+    def test_the_newest_note_time_stays_out_of_both_fingerprints_and_the_needs_view(self):
+        assert "last_note_at" not in feed.STABLE_FACTS
+        assert "last_note_at" not in state.STATE_FACTS
+        mention = self._note("n-m", "mention", datetime(2026, 10, 13, 10, 0, tzinfo=UTC))
+        from gateway.routes.shell import needs
+
+        assert "last_note_at" not in json.dumps(needs._item(
+            id="projects:n-m", app="projects", kind="notification", title="x",
+            detail=None, href="/projects?task=t1", at=mention["created_at"]))
 
 
 class TestNotUsefulKeepsItsHistory:
