@@ -164,6 +164,10 @@ export async function sendSteer(args: {
     history: ChatMessage[];
   }) => Record<string, unknown>;
   fetchImpl?: typeof fetch;
+  /** More marks on the bubble, beside `steered`: a card answer's
+   *  `card_answer` display (`lib/cardAnswer.ts`). They stay on the bubble
+   *  when the steer starts a new run. */
+  marks?: { name: string; value: unknown }[];
 }): Promise<SteerOutcome> {
   const { threadId } = args;
   const text = args.text.trim();
@@ -181,7 +185,7 @@ export async function sendSteer(args: {
     role: "user",
     content: text,
     timestamp: Date.now(),
-    customEvents: [{ name: STEERED, value: {} }],
+    customEvents: [{ name: STEERED, value: {} }, ...(args.marks ?? [])],
     steerAck: "sending",
     // Not saved until the server answers: a refused steer leaves no row.
     awaitingServer: true,

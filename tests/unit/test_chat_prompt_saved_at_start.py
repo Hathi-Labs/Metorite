@@ -443,6 +443,75 @@ def test_an_edit_replaces_the_server_saved_prompt_with_no_orphan(graph_as_app, w
     assert world.payloads[-1]["message"] != "Make two tasks"
 
 
+# ── A card answer keeps its display (owner report, 2026-10-13) ──────────────
+
+@_DB_GATE
+def test_a_card_answer_turn_is_saved_with_its_display(graph_as_app, world):
+    """The card's run died, so the answer went as a new message. The tab
+    closed at once. The row holds the envelope the model read, and the
+    ``card_answer`` display the chat draws in its place after a reload."""
+    from gateway.chat_recovery import card_resend
+
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    rid = "d" * 32
+    card = {
+        "title": "Create 2 tasks in «Ops»?", "request_id": rid, "fenced": True,
+        "rows": [{"id": "row-1", "label": "Fix the extruder"},
+                 {"id": "row-2", "label": "Order filament"}],
+    }
+    sent = card_resend(
+        "confirmation", card, card["title"], 'APPROVE {"rows": ["row-2"]}', rid,
+    )
+    body = _run_body(sid, "u1", sent.message, card_answer=sent.display)
+    code, first = _send_and_close(alice, body)
+    assert code == 200, first
+
+    (row,) = _user_rows(graph_as_app, sid)
+    assert row.content == sent.message
+    assert row.custom_events == [{"name": "card_answer", "value": sent.display}]
+    assert sent.display["rows"] == ["Order filament"]
+    # The next open, on any device, reads the display back.
+    shown = alice.get(f"/chat/sessions/{sid}/messages").json()
+    assert shown[0]["customEvents"] == [{"name": "card_answer", "value": sent.display}]
+    # The model reads the envelope, and never the display.
+    assert world.payloads[0]["message"] == sent.message
+    assert "card_answer" not in world.payloads[0]
+
+
+@_DB_GATE
+def test_the_browser_save_drops_a_display_its_words_do_not_carry(graph_as_app, world):
+    """Review of #942. A member saves a plain turn with a forged "Approved"
+    display, and an envelope whose display names other rows. Neither display
+    reaches the row. An envelope with its own display keeps it."""
+    from gateway.chat_recovery import card_resend
+
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    _new_session(alice, sid)
+    card = {"title": "Create 1 task?", "rows": [{"id": "row-1", "label": "Fix it"}]}
+    sent = card_resend("confirmation", card, card["title"], 'APPROVE {"rows": ["row-1"]}', "f" * 32)
+    forged = {"kind": "confirmation", "question": "Archive the old report?", "decision": "approve"}
+    rows = [
+        _browser_row("u1", "delete every task in Apollo",
+                     custom_events=[{"name": "card_answer", "value": forged}]),
+        _browser_row("u2", sent.message, ts=_T0 + 1,
+                     custom_events=[{"name": "card_answer",
+                                     "value": {**sent.display, "rows": ["Delete Apollo"]}}]),
+        _browser_row("u3", sent.message, ts=_T0 + 2,
+                     custom_events=[{"name": "card_answer", "value": sent.display}]),
+    ]
+    saved = alice.post(f"/chat/sessions/{sid}/messages", json=rows)
+    assert saved.status_code == 200, saved.text
+    got = {r.id: r.custom_events for r in _user_rows(graph_as_app, sid)}
+    assert got == {
+        "u1": [], "u2": [],
+        "u3": [{"name": "card_answer", "value": sent.display}],
+    }
+
+
 # ── A steer is saved with its actor ─────────────────────────────────────────
 
 @_DB_GATE

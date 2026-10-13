@@ -47,6 +47,7 @@ import {
   registerSender,
   retryHeldNow,
   type SendOptions,
+  type SendOutcome,
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
 import {
@@ -56,6 +57,7 @@ import {
 import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
+import { cardAnswerFrom, cardAnswerMarker, CARD_ANSWER_EVENT, type CardAnswer } from "@/lib/cardAnswer";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -75,6 +77,14 @@ const HITL_CONTROL_EVENTS = new Set([
   // off the message so it neither draws a raw-JSON fold nor is saved.
   "frontend_tool",
 ]);
+
+/** The `cardAnswer` field of a chat request: the answered card that the
+ *  turn carries (`lib/cardAnswer.ts`), or nothing. Exported for its test. */
+export function cardAnswerField(m: Pick<ChatMessage, "customEvents">): { cardAnswer?: unknown } {
+  const e = m.customEvents?.find((x) => x.name === CARD_ANSWER_EVENT);
+  const d = e ? cardAnswerFrom(e.value) : null;
+  return d ? { cardAnswer: d } : {};
+}
 
 /**
  * Read an SSE response body and yield each parsed event object.
@@ -170,7 +180,8 @@ interface UseAgentChatReturn {
   /** Send words into the live run (owner, 2026-10-12, `lib/chatSteer.ts`).
    *  It never stops the run and never opens a second stream. A refusal
    *  resolves with the notice, and the caller puts the words back. */
-  steerMessage: (content: string) => Promise<SteerOutcome>;
+  /** `opts.cardAnswer`: a card answer's resend steers with its display. */
+  steerMessage: (content: string, opts?: { cardAnswer?: CardAnswer | null }) => Promise<SteerOutcome>;
   clearMessages: () => void;
   /** Resolves when the server has answered the cancel, so an edit can wait
    *  for the old run to stop before it starts the new one. */
@@ -265,6 +276,13 @@ export function useAgentChat({
     async (content: string, opts?: SendOptions) => {
       const text = content.trim();
       const supersedes = opts?.supersedes;
+      // The caller hears once what became of the send (`opts.onSettled`).
+      let sendSettled = false;
+      const settleSend = (o: SendOutcome) => {
+        if (sendSettled) return;
+        sendSettled = true;
+        opts?.onSettled?.(o);
+      };
       // The steer follow-up has no words and no bubble (`lib/chatSteer.ts`).
       const followUp = !!opts?.steerFollowUp && !supersedes;
       // A steer the server answered with a new run: follow that response.
@@ -284,6 +302,7 @@ export function useAgentChat({
       });
       if (!text && !followUp) {
         answerEdit({ ok: false, reason: EDIT_UNSENT });
+        settleSend("refused");
         return;
       }
       const before = getSessionState(threadId);
@@ -323,10 +342,15 @@ export function useAgentChat({
         : followUp
           ? (before.isLoading || before.outage ? "busy" : "send")
           : planSend(before, text, held?.id);
-      if (plan === "collapse" || plan === "busy") return;
+      if (plan === "collapse" || plan === "busy") {
+        settleSend(plan === "busy" ? "busy" : "held");
+        return;
+      }
       if (plan === "hold") {
         const heldMsg: ChatMessage = {
           id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
+          // A card answer keeps its answered card while it waits.
+          ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
           // A held send has not reached the server either, so it carries the
           // same mark: a later run-cap refusal must leave no row (review of
           // #821). The retry spreads the bubble, so the mark travels with it.
@@ -334,10 +358,12 @@ export function useAgentChat({
         };
         setSessionState(threadId, (prev) => ({ ...prev, messages: [...prev.messages, heldMsg] }));
         holdForUpdate(threadId, text, { resume: opts?.resume });
+        settleSend("held");
         return;
       }
       if (plan === "requeue") {
         holdForUpdate(threadId, text, { front: true, resume: opts?.resume });
+        settleSend("held");
         return;
       }
 
@@ -355,6 +381,10 @@ export function useAgentChat({
         : {
           id: nanoid(), role: "user", content: text, timestamp: turnTs,
           ...(supersedes ? { customEvents: [editedMarker(supersedes)] } : {}),
+          // A card answer that went as a new message: the content is the
+          // envelope the model reads, and the bubble draws this marker. It
+          // persists in `custom_events`, so a reload draws it too.
+          ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
           // WS-51 D-3: on the gateway path the server saves this turn at run
           // start (S4). The chat saves it only once the server answers, so a
           // send the run cap refuses leaves no row behind.
@@ -496,12 +526,19 @@ export function useAgentChat({
             // Continue after an app update: a flag, never words. The gateway
             // writes the note the model reads (gateway/chat_recovery.py).
             ...(opts?.resume ? { resume: true } : {}),
+            // The answered card of a card answer, for the turn the gateway
+            // saves at run start. It never reaches the model.
+            ...cardAnswerField(userMsg),
           }),
         });
         gotResponse = true;
         // Only a 429 can be the run cap, and an update outage is no answer.
         // Any other answer confirms the turn.
         if (res.status !== 429 && !isUpdateOutage({ status: res.status, gotResponse: true })) confirmTurn();
+        // A stream, or a 202 that steered the words into a live run.
+        // A stream: the server took the turn. A 202 is settled below, by
+        // what the server did with it.
+        if (res.ok && res.status !== 202) settleSend("sent");
 
         // ── Stand down: this message was folded into a run already going ──
         // docs/multiplayer/README.md §4.6. A 202 means the gateway steered our
@@ -559,6 +596,8 @@ export function useAgentChat({
           // still going, or stop for "stopped" and "nothing_pending".
           if (outcome.steered) owedAfterSteer(threadId, stopEpochAtSend);
           else if (followUp) settleFollowUpAnswer(threadId, outcome.reason);
+          // The server folded the words into a live run, or ran nothing.
+          settleSend(outcome.steered ? "steered" : "refused");
           // No stream comes for this send, so our placeholder goes. A steer
           // keeps the user's message, attributed. A steer the run has not
           // taken yet marks the turn pending, so a repeat of the same words
@@ -705,6 +744,7 @@ export function useAgentChat({
             userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
           });
           heldAgain = true;
+          settleSend("held");
           return;
         }
         // A follow-up is not a turn the member sent. A refusal of it draws
@@ -745,6 +785,7 @@ export function useAgentChat({
             ),
           }));
           // Don't clear isLoading — let the polling effect handle recovery.
+          settleSend("sent");
           return;
         }
         // One seam decides what the failure leaves in the thread: an error
@@ -759,12 +800,16 @@ export function useAgentChat({
           code: err instanceof ChatRunError ? err.code : null,
           ref: err instanceof ChatRunError ? err.ref : null,
           onSessionRefused: onSessionRefusedRef.current,
-          onRunCapped: onRunCappedRef.current,
+          // A card answer's words are the envelope the model reads: they
+          // never go back to the composer. Its card stays open instead.
+          onRunCapped: opts?.cardAnswer ? undefined : onRunCappedRef.current,
         });
         capped = outcome === "capped";
+        settleSend("refused");
         if (outcome === "error") emitAgentEvent("onError", { error: rawErr, threadId });
       } finally {
         if (!capped && !heldAgain) confirmTurn();
+        settleSend("sent");
         // If a reconnect/replay loop superseded us mid-stream it now owns the
         // message AND the shared loading/abort state. A superseded loop must NOT
         // reset isLoading/abortController or it would kill the live reconnect
@@ -796,12 +841,18 @@ export function useAgentChat({
   // Words sent while a run is live go into that run. The live stream keeps
   // going. If the run had ended, the server starts a new one, and this
   // follows its stream as a normal turn, in place of the steer's bubble.
-  const steerMessage = useCallback(async (content: string): Promise<SteerOutcome> => {
+  const steerMessage = useCallback(async (
+    content: string, opts?: { cardAnswer?: CardAnswer | null },
+  ): Promise<SteerOutcome> => {
     // One id for the reply row, whether the steer folds in or starts a run.
     const replyId = nanoid();
+    const card = opts?.cardAnswer ?? null;
     const out = await sendSteer({
       threadId,
       text: content,
+      // A card answer keeps its answered card in the steer box, and the
+      // gateway saves it with the steer (review of #942).
+      ...(card ? { marks: [cardAnswerMarker(card)] } : {}),
       buildBody: ({ message, userMessageId, userMessageTs, history }) => ({
         agentName: agentNameRef.current,
         message,
@@ -816,6 +867,7 @@ export function useAgentChat({
         assistantMessageId: replyId,
         userMessageId,
         userMessageTs,
+        ...(card ? { cardAnswer: card } : {}),
       }),
     });
     if (out.kind === "started") {

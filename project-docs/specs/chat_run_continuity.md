@@ -331,6 +331,71 @@ the move, the actor filter removed twice, and no neutralising pass.
 - On a Windows checkout, three source-reading vitest files fail on CRLF.
   They fail on `origin/main` too, and none of them is an S2 file.
 
+**The display rule (owner report, 2026-10-13).** After a restart, the owner
+approved a "Create 9 tasks" card. His bubble then showed the fenced envelope,
+`<<<asked-question>>>` and all. The rule is now this:
+
+1. **The model reads the envelope, and the member never does.** The 409
+   `run_restarted` carries two parts. `resumeMessage` is the envelope, and
+   `resumeDisplay` is what the card asked and what the member chose
+   (`gateway/chat_recovery.py`, `CardResend`).
+2. **The display is the `card_answer` custom event on the member's turn.**
+   This is the same seam as the `edited` marker. The chat stamps it, and both
+   saves keep it in `custom_events`: the run route's save at run start
+   (`prompt_to_save`) and the browser's save. The model reads only the
+   turn's content.
+3. **The bubble draws the answered card.** `CardAnswerContent` draws inside
+   the member's normal bubble. It shows "Approved", "Approved 7 of 9",
+   "Rejected" or "Your answer", the question, and then the approved rows by
+   name or the member's own words. A card answer offers no Edit.
+4. **An old row still draws as a card.** A row saved before this rule holds
+   only the envelope. `parseCardAnswerEnvelope` reads that exact shape,
+   anchored at both ends, for display only. Other text stays plain.
+5. **A rows card lists its rows inside the quote.** The answer names row ids
+   (`row-1`), and the next run reads only text. So the quoted block lists each
+   row by id and label. The neutralising pass covers each label. A card with no
+   rows keeps its envelope byte for byte.
+6. **A blocking generative UI stays answered.** Its run died before its tool
+   result kept the answer. The chat reads the answer from the `card_answer`
+   event instead (`genUiAnswersFromTurns`).
+
+The notice now says what has happened: "Your answer went to it as a new
+message."
+
+**Review of #942 (2026-10-13).** One fix round closed four P2 findings:
+
+- **The neutralising pass sees look-alikes.** Before its ASCII patterns, it
+  applies NFKC, removes each format character (zero width, bidi), and maps
+  each Unicode dash to `-`. A row label keeps 500 characters, the card's own
+  `ROW_LABEL_MAX`, so the next run reads the title the member approved.
+- **A display must agree with its words.** A `card_answer` display stays only
+  on an envelope that has the same question, decision, rows and words. The
+  gateway checks it on both writes (`card_answer_marker`). The chat checks it
+  again on read and draws a mismatch as plain text. A generative UI card
+  locks only from the viewer's own turns.
+- **A busy resend steers, and is not lost.** `sendMessage` now reports what
+  became of a send (`onSettled`). After #920, a resend that meets a live run
+  steers it, through the composer's own path (`sendRoute`, `steerMessage`).
+  The live run then reads the answer at once. The steer bubble carries the
+  `card_answer` display, and the gateway saves the row with both marks. The
+  notice follows the server's answer. A folded steer reads "Your answer went
+  into the current reply." A new run reads "went to it as a new
+  message". A refused steer keeps its card open and shows the reason.
+- **An answer whose card left the stream** draws as "Approved" with its row
+  count, never as the raw `APPROVE` JSON.
+
+**After #920 (2026-10-13).** The steer bubble draws the answered card inside the steer box,
+with the steer cue under it. A row with both marks draws the same after a reload.
+
+Nine more mutants, nine killed. Known limit: a resend that the run cap refuses
+keeps its card open. But the durable row is already `answered`, so a second
+answer to a parked card gets the old 409.
+
+**Fences (R7).** `src/lib/cardAnswer.test.ts`,
+`tests/unit/test_card_answer_display.py`, the R8 case in
+`tests/unit/test_chat_prompt_saved_at_start.py`, and
+`e2e/chat-card-restart.spec.ts`.
+
 ### S3 — the top-right activity control
 
 **What.** One control in the shell bar's right side, beside the bell. It shows
