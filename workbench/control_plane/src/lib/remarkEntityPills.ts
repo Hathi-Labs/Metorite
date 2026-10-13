@@ -20,6 +20,9 @@
  *   (owner report, 2026-10-13). `taskRefs.ts` holds the rules of what counts
  *   as one. `ChatTaskRef.tsx` draws it as the same task pill, or as the plain
  *   text when no visible task has that number.
+ * - With `{ names: false, taskRefs: true }`, ONLY the bare `#171`s change
+ *   (WS-57 TR-5). The task card's description and comments use it: a «mark»
+ *   and an email there are the member's own words, and stay as written.
  *
  * The node is `span[data-entity-pill]` in the HTML tree, so `MarkdownBody`
  * draws it through its `span` component, and nothing here knows React.
@@ -34,7 +37,7 @@
  */
 
 import { FENCE_SOURCE, QUOTE_SOURCE } from "@/lib/fencedText";
-import { splitTaskRefs } from "@/lib/taskRefs";
+import { findTaskRefs, splitTaskRefs } from "@/lib/taskRefs";
 
 /** The smallest shape of an mdast node this plugin reads and writes. */
 export interface MdNode {
@@ -42,6 +45,7 @@ export interface MdNode {
   value?: string;
   url?: string;
   children?: MdNode[];
+  position?: { start?: { offset?: number }; end?: { offset?: number } };
   data?: {
     hName?: string;
     hProperties?: Record<string, string>;
@@ -258,13 +262,81 @@ function glueTrailingPunctuation(nodes: MdNode[]): MdNode[] {
   return out;
 }
 
-function walk(node: MdNode, insideLink: boolean, emails: boolean, refs: boolean): void {
+/** The card's source, and where the finder finds a reference in it. */
+interface Source {
+  text: string;
+  /** The offset of each `#` that `findTaskRefs` accepts in the whole source. */
+  refs: Set<number>;
+}
+
+/**
+ * Split one text value into text and `taskRef` nodes, and touch nothing
+ * else: the mode with no names (WS-57 TR-5). Exported for its test.
+ *
+ * With `source`, a reference counts only where the finder also finds it in
+ * the Markdown source, as the gateway reads it (`text_links.py`, review
+ * round 1). `start` is the node's offset in the source. Two cases:
+ *
+ * - The node's source equals its value: the reference must start at a `#`
+ *   the whole-source finder accepts. So `_#11_` draws no pill, because the
+ *   `_` before the `#` rules it out in the source.
+ * - The parser decoded an escape or an entity (`\#12`, `&#35;12`): a
+ *   reference counts only as often as the finder finds its number in the
+ *   node's source. So an escaped `#12` draws no pill.
+ */
+export function splitRefsOnly(value: string, source?: Source, start?: number, end?: number): MdNode[] {
+  const raw = source && start !== undefined && end !== undefined ? source.text.slice(start, end) : value;
+  const left = new Map<number, number>();
+  if (raw !== value) {
+    for (const r of findTaskRefs(raw)) left.set(r.number, (left.get(r.number) ?? 0) + 1);
+  }
+  const keep = (r: { start: number; number: number }): boolean => {
+    if (!source || start === undefined) return true;
+    if (raw === value) return source.refs.has(start + r.start);
+    const n = left.get(r.number) ?? 0;
+    if (n === 0) return false;
+    left.set(r.number, n - 1);
+    return true;
+  };
+  const out: MdNode[] = [];
+  const pushText = (t: string) => {
+    if (!t) return;
+    const prev = out[out.length - 1];
+    if (prev?.type === "text") prev.value = (prev.value ?? "") + t;
+    else out.push({ type: "text", value: t });
+  };
+  const found = findTaskRefs(value).filter(keep);
+  let last = 0;
+  found.forEach((r, k) => {
+    pushText(value.slice(last, r.start));
+    const after = value.slice(r.end, found[k + 1]?.start ?? value.length);
+    out.push(taskRefNode(value.slice(r.start, r.end), after));
+    last = r.end;
+  });
+  pushText(value.slice(last));
+  return glueTrailingPunctuation(out);
+}
+
+function walk(
+  node: MdNode, insideLink: boolean, emails: boolean, refs: boolean, names: boolean,
+  source?: Source,
+): void {
   if (!node.children || SKIP.has(node.type)) return;
-  const kids = insideLink ? node.children : normalise(node.children, emails);
+  const kids = insideLink || !names ? node.children : normalise(node.children, emails);
   const next: MdNode[] = [];
   for (const child of kids) {
     if (child.type === "text") {
-      if (insideLink) {
+      if (!names) {
+        // The task card's text: its words stay as written, «marks» too.
+        // Only a `#171` outside a link becomes a node.
+        next.push(
+          ...(insideLink || !refs
+            ? [child]
+            : splitRefsOnly(
+              child.value ?? "", source, child.position?.start?.offset, child.position?.end?.offset,
+            )),
+        );
+      } else if (insideLink) {
         // No pill inside a link (a control inside a control), and no marks.
         next.push({ ...child, value: (child.value ?? "").replace(/[«»]/g, "") });
       } else {
@@ -272,25 +344,35 @@ function walk(node: MdNode, insideLink: boolean, emails: boolean, refs: boolean)
       }
       continue;
     }
-    walk(child, insideLink || child.type === "link", emails, refs);
+    walk(child, insideLink || child.type === "link", emails, refs, names, source);
     next.push(child);
   }
   node.children = next;
 }
 
 /** The plugin's options. `emails: false` marks only the fenced names.
- *  `taskRefs: true` marks each bare `#171` as well. */
+ *  `taskRefs: true` marks each bare `#171` as well. `names: false` marks no
+ *  fenced name and no email, and changes no word: only the `#171`s, for the
+ *  task card (WS-57 TR-5). */
 export interface EntityPillOptions {
   emails?: boolean;
   taskRefs?: boolean;
+  names?: boolean;
 }
 
 /** The plugin. `remarkPlugins={[remarkGfm, remarkEntityPills]}`. */
 export default function remarkEntityPills(options?: EntityPillOptions) {
   const emails = options?.emails !== false;
   const refs = options?.taskRefs === true;
-  return (tree: MdNode) => {
-    walk(tree, false, emails, refs);
+  const names = options?.names !== false;
+  // The source is read in the card's mode only, so the chat's output does
+  // not change (`markdownChatGolden.test.ts`).
+  return (tree: MdNode, file?: { value?: unknown }) => {
+    const text = !names && typeof file?.value === "string" ? file.value : undefined;
+    const source = text === undefined
+      ? undefined
+      : { text, refs: new Set(findTaskRefs(text).map((r) => r.start)) };
+    walk(tree, false, emails, refs, names, source);
   };
 }
 

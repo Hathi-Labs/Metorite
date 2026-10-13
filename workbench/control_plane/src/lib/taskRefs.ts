@@ -10,8 +10,14 @@
  * ONE module for the concept, so every surface that names a task by number
  * reads the same rules (AGENTS.md: one implementation per concept). The chat
  * imports it through `remarkEntityPills.ts` and `ChatTaskRef.tsx`. The task
- * card's title, description and comments import it too. Nothing chat-only
- * lives here. Three parts:
+ * card's title, description and comments import it too (WS-57 TR-5, through
+ * `taskRefResolverFor` and `TaskRefText`). Nothing chat-only lives here.
+ *
+ * The gateway has ONE copy of part (a), `find_task_refs` in
+ * `gateway/routes/projects/text_links.py`, for the links it saves from the
+ * text. `tests/fixtures/task_ref_cases.json` holds the cases, and both
+ * `taskRefs.test.ts` and `test_task_refs_text_links.py` run them. Change a
+ * rule here and change it there. Three parts:
  *
  * - **(a) `findTaskRefs`**: the pure parser. No React, no fetch.
  * - **(b) `resolveTaskRefs`**, `useTaskRef` and the store under them: the
@@ -307,16 +313,47 @@ export function createTaskRefResolver(
   };
 }
 
-/** The gateway read, through the Projects proxy. */
-async function fetchRefs(numbers: number[]): Promise<TaskRefHit[]> {
-  const res = await fetch(`/api/projects/search/refs?numbers=${numbers.join(",")}`);
-  if (!res.ok) throw new Error(`task refs: ${res.status}`);
-  const body = (await res.json()) as { rows?: TaskRefHit[] };
-  return Array.isArray(body?.rows) ? body.rows : [];
+/** The gateway read, through the Projects proxy. `root` prefers that root's
+ *  task for each number (WS-57 TR-5). Exported for its test. */
+export function refsUrl(numbers: readonly number[], root?: string): string {
+  const base = `/api/projects/search/refs?numbers=${numbers.join(",")}`;
+  return root ? `${base}&root=${encodeURIComponent(root)}` : base;
 }
 
-/** The app's one store. */
-export const taskRefResolver: TaskRefResolver = createTaskRefResolver(fetchRefs);
+function fetcherFor(root?: string): TaskRefFetcher {
+  return async (numbers) => {
+    const res = await fetch(refsUrl(numbers, root));
+    if (!res.ok) throw new Error(`task refs: ${res.status}`);
+    const body = (await res.json()) as { rows?: TaskRefHit[] };
+    return Array.isArray(body?.rows) ? body.rows : [];
+  };
+}
+
+/** The app's one store. The chat uses it: no root. */
+export const taskRefResolver: TaskRefResolver = createTaskRefResolver(fetcherFor());
+
+const rootResolvers = new Map<string, TaskRefResolver>();
+
+/**
+ * The store for a text that belongs to a task (WS-57 TR-5): the task card's
+ * title, description and comments. A number resolves in the task's own root
+ * and nowhere else. A number that root cannot resolve stays text, because a
+ * moved, deleted or hidden #12 must not borrow another root's #12 (review
+ * round 1). The gateway's links from text read the same rule
+ * (`text_links.py`), so a pill and a saved link name one task.
+ *
+ * One store per root, kept for the page's life: a root's answers stay right
+ * for every task in it. No root: the app's store.
+ */
+export function taskRefResolverFor(root?: string | null): TaskRefResolver {
+  if (!root) return taskRefResolver;
+  let resolver = rootResolvers.get(root);
+  if (!resolver) {
+    resolver = createTaskRefResolver(fetcherFor(root));
+    rootResolvers.set(root, resolver);
+  }
+  return resolver;
+}
 
 /** One resolved task reference. */
 export interface TaskRef {
@@ -449,4 +486,48 @@ export function TaskRefPill({
   const task = live ? taskOf(entry, title) : null;
   if (!task) return createElement(Fragment, null, fallback ?? `#${number}`);
   return createElement(TaskPill, { task, label: label ? label(task) : title });
+}
+
+/**
+ * A run of plain text, not Markdown, with each `#n` drawn through
+ * `TaskRefPill` (WS-57 TR-5). The task card's title uses it. The words stay
+ * as written, and a number that names no single task stays text.
+ */
+export function TaskRefText({
+  text,
+  resolver = taskRefResolver,
+  refClassName,
+}: {
+  text: string;
+  resolver?: TaskRefResolver;
+  /** A class on the span around each reference. A heading passes the body
+   *  size, so its pill is the one look of every other pill. */
+  refClassName?: string;
+}) {
+  return createElement(
+    Fragment,
+    null,
+    ...splitTaskRefs(text).map((part, k) =>
+      part.kind === "text"
+        ? createElement(Fragment, { key: k }, part.text)
+        : createElement(RefPart, { key: k, number: part.number, resolver, className: refClassName }),
+    ),
+  );
+}
+
+/** One reference of `TaskRefText`. The class wraps a pill only: a number
+ *  that names no single task stays text in the words' own size. */
+function RefPart({
+  number,
+  resolver,
+  className,
+}: {
+  number: number;
+  resolver: TaskRefResolver;
+  className?: string;
+}) {
+  const task = taskOf(useTaskRef("", number, true, resolver));
+  if (!task) return createElement(Fragment, null, `#${number}`);
+  const pill = createElement(TaskPill, { task });
+  return className ? createElement("span", { className }, pill) : pill;
 }
