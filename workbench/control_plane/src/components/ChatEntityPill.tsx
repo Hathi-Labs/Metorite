@@ -17,6 +17,7 @@
 
 import { createContext, useContext } from "react";
 
+import { FencedTaskRef } from "@/components/ChatTaskRef";
 import EntityPill from "@/components/ui/EntityPill";
 import { EMPTY_INDEX, resolveEntity, type EntityIndex } from "@/lib/entityIndex";
 import { statusAccent } from "@/lib/statusAccent";
@@ -34,16 +35,28 @@ export default function ChatEntityPill({
   text,
   number,
   index,
+  scope,
+  live,
 }: {
   text: string;
   number?: string;
   /** The index to resolve against. Absent: the nearest context's. */
   index?: EntityIndex;
+  /** The chat session, for the task lookup's cache (`ChatTaskRef.tsx`). */
+  scope?: string;
+  /** False while the answer streams. */
+  live?: boolean;
 }) {
   const fromContext = useContext(EntityIndexContext);
   const hit = resolveEntity(index ?? fromContext ?? EMPTY_INDEX, text, number);
   switch (hit.kind) {
     case "task":
+      // A task this message's tools did not read: an earlier turn read it,
+      // or the member wrote its number. Ask the lookup, which links it only
+      // when one visible task has that number AND that title (2026-10-13).
+      if (!hit.href) {
+        return <FencedTaskRef refText={hit.number} title={hit.title} scope={scope} live={live} />;
+      }
       return (
         <EntityPill
           kind="task"

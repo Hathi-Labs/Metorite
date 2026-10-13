@@ -10,8 +10,9 @@
  * card per custom event. A renderer registry keyed by `name` plugs in later.
  */
 
-import { useState } from "react";
 import GenerativeUINode from "@/components/GenerativeUINode";
+import Icon from "@/components/Icon";
+import { ToolCardShell } from "@/components/ToolCardShell";
 
 type Json = unknown;
 
@@ -178,7 +179,6 @@ export default function GenerativeUIPanel({
   agentState,
   customEvents,
 }: GenerativeUIPanelProps): React.ReactElement | null {
-  const [open, setOpen] = useState(false);
   const displayEvents = (customEvents ?? []).filter(
     (ev) => !PANEL_HIDDEN_EVENTS.has(ev.name),
   );
@@ -187,18 +187,14 @@ export default function GenerativeUIPanel({
   const hasCustom = displayEvents.length > 0;
   if (!hasState && !hasCustom) return null;
 
+  // The fold is the shared tool card (`ToolCardShell`): one toggle, one
+  // header and one chevron with every other chat card (owner report,
+  // 2026-10-13: this row drew text triangles on a bare button). Closed at
+  // first, and a closed card mounts nothing.
   return (
-    <div className="mt-3 rounded-lg border border-border/60 bg-card/50">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
-      >
-        <span className="text-[10px]">{open ? "▾" : "▸"}</span>
-        Interactive view
-        <span className="ml-auto text-[10px] text-muted-foreground">AG-UI</span>
-      </button>
-      {open && (
-        <div className="space-y-3 px-3 pb-3">
+    <div className="mt-3">
+      <ToolCardShell title="Interactive view" icon={<Icon name="LayoutTemplate" size={13} />} defaultCollapsed>
+        <div className="space-y-3">
           {hasState && (
             <div className="rounded-md bg-card/50 p-2">
               <JsonView value={shownState} />
@@ -223,7 +219,7 @@ export default function GenerativeUIPanel({
               );
             })}
         </div>
-      )}
+      </ToolCardShell>
     </div>
   );
 }

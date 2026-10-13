@@ -184,6 +184,16 @@ class Found:
     capped: bool
 
 
+def _now() -> datetime:
+    """The one clock of the feed: it splits an overdue task from one due today.
+
+    A test freezes THIS, so the rows it builds and the split agree
+    (``test_shell_needs.py`` ``TestTheClock``). It is an instant, so it has
+    no zone. The member's zone sets only the read's bound, in ``my_due_tasks``.
+    """
+    return datetime.now(UTC)
+
+
 def _instant(value: Any) -> datetime | None:
     """A stored time as an aware datetime, or None. A naive one is UTC."""
     if value is None or value == "":
@@ -222,7 +232,7 @@ async def _tasks(user: UserContext) -> Found:
     # One bounded read: due before the member's tomorrow, in the member's
     # zone, the oldest deadline first, at most PER_APP rows.
     answer = await my_due_tasks(user, limit=PER_APP)
-    now = datetime.now(UTC)
+    now = _now()
     found = answer.get("rows") or []
 
     overdue: list[Item] = []

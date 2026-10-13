@@ -586,7 +586,7 @@ class TestTheRoutePinsItsScope:
 
         from gateway.routes.projects.analytics import history_where
 
-        vis = SimpleNamespace(unrestricted=True)
+        vis = SimpleNamespace(unrestricted=True, agent=None)
         assert history_where("t.project_id = CAST(:pid AS uuid)", vis) == (
             "t.project_id = CAST(:pid AS uuid)"
             " AND (t.organization_id = CAST(:vis_org AS uuid))"

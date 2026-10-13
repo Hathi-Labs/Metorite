@@ -324,6 +324,14 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/search", "find_tasks", "A"),
     Route(
         "GET",
+        "/projects/search/refs",
+        "",
+        "X",
+        "The chat's own pills read it to link a #n in an answer "
+        "(lib/taskRefs.ts). The model finds a task with find_tasks.",
+    ),
+    Route(
+        "GET",
         "/projects/export/tasks.csv",
         "",
         "X",

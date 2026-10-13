@@ -341,6 +341,13 @@ CREATE POLICY crm_module_records_tenant_isolation ON crm_module_records
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE crm_field_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_field_rules FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_field_rules_tenant_isolation ON crm_field_rules;
+CREATE POLICY crm_field_rules_tenant_isolation ON crm_field_rules
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE crm_zoho_tombstones ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm_zoho_tombstones FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS crm_zoho_tombstones_tenant_isolation ON crm_zoho_tombstones;
