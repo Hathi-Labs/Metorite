@@ -424,6 +424,30 @@ class TestTheBudget:
         assert {e["app"] for e in run.entries} == {"tasks"}
         assert "read_decided" not in _names(seeded)
 
+    def test_a_read_with_too_little_budget_left_never_starts(self, seeded, monkeypatch):
+        # The first link leaves about 0.04 s of 0.4 s, under MIN_START_S. The
+        # next read must not take a connection for a read that cannot finish.
+        plain = seeded.my_completed_since
+
+        async def _slow(user, since, *, limit):
+            await asyncio.sleep(0.36)
+            return await plain(user, since, limit=limit)
+
+        from gateway.routes.projects import personal
+
+        monkeypatch.setattr(personal, "my_completed_since", _slow)
+        assert handled.MIN_START_S == 0.05
+
+        async def _go():
+            return await handled.handled_run(admin(*FULL, "approvals"), NOW, budget_s=0.4)
+
+        seeded.calls.clear()
+        run = _bound(_go)
+        assert run.sources["email"] == "failed" and run.sources["approvals"] == "failed"
+        assert not {"feed_mailboxes", "applied_rules_since", "read_decided"} & set(
+            _names(seeded))
+        assert run.ok is False
+
     def test_a_feed_read_holds_two_connections_at_most(self, seeded, monkeypatch):
         """Fix round 1 (P2). The state join holds one connection, and the
         Handled chain holds one. Every fake that stands for a session counts
