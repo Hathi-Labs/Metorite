@@ -133,7 +133,8 @@ def test_the_list_endpoint_escapes_too_not_only_search(
     wrong.
     """
     _, params = build_task_filters(q=term)
-    assert params["q"] == bound_pattern
+    # One word, so one bound pattern (`filters.text_match_clause`).
+    assert params["q_w0"] == bound_pattern
 
 
 # ── task_number ─────────────────────────────────────────────────────────────
@@ -281,7 +282,8 @@ async def test_a_title_prefix_outranks_a_title_mention_outranks_a_description(
         (1, "Parser rewrite"),
         (2, "Newer title mention of parser"),
         (2, "Older title mention of parser"),
-        (3, "Beta unrelated"),
+        # Tier 4 since 2026-10-13: the description holds the whole query.
+        (4, "Beta unrelated"),
     ]
 
 
@@ -443,8 +445,10 @@ async def test_a_word_query_runs_the_text_arm_only(db, events):
     _workspace(db)
     await pm_search.search_tasks(q="parser", user=USER)
     stmt = next(s for s, _a in db.calls if "AS rank" in s)
-    where = stmt.split("END AS rank", 1)[1]
-    assert "t.title ILIKE :term OR t.description ILIKE :term" in where
+    # The ranked step's WHERE only: the snippet step after it SELECTs the
+    # `task_number` column, and that is no match arm.
+    where = stmt.split("END AS rank", 1)[1].split("ORDER BY", 1)[0]
+    assert "(t.title ILIKE :q_w0 OR t.description ILIKE :q_w0)" in where
     assert "task_number" not in where
 
 
@@ -456,3 +460,110 @@ async def test_a_word_query_binds_a_null_number(db, events):
     await pm_search.search_tasks(q="parser", user=USER)
     bound = next(args for stmt, args in db.calls if "AS rank" in stmt)
     assert bound["number"] is None
+
+
+# ── Descriptions, by word, with a snippet (owner request, 2026-10-13) ───────
+#
+# The Projects chat told the owner that a description "is not in that index
+# at all". The route matched descriptions all along, but as ONE substring and
+# with no text to show why. These pin the three repairs at the route. The
+# R8 half (`test_projects_search_description_r8.py`) runs the same SQL on a
+# real Postgres, as the app role, because a fake cannot rank.
+
+@pytest.mark.asyncio
+async def test_words_apart_in_a_description_still_find_the_task(db, events):
+    """The defect: "invoice approval" missed "approval of the invoice"."""
+    project, todo = _workspace(db)
+    db.seed_task(project.id, todo.id, title="Finance chores",
+                 description="Waiting on approval of the invoice from Acme.")
+
+    result = await pm_search.search_tasks(q="invoice approval", user=USER)
+
+    assert [r["title"] for r in result["rows"]] == ["Finance chores"]
+
+
+@pytest.mark.asyncio
+async def test_every_word_must_be_found(db, events):
+    project, todo = _workspace(db)
+    db.seed_task(project.id, todo.id, title="Finance chores",
+                 description="Waiting on approval of the invoice.")
+
+    result = await pm_search.search_tasks(q="invoice extruder", user=USER)
+
+    assert result["rows"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_description_hit_carries_the_matched_words(db, events):
+    project, todo = _workspace(db)
+    filler = "Background text that says nothing. " * 10
+    db.seed_task(project.id, todo.id, title="Finance chores",
+                 description=filler + "The quicksilver supplier is late. " + filler)
+
+    (hit,) = (await pm_search.search_tasks(q="quicksilver", user=USER))["rows"]
+
+    assert "quicksilver" in hit["snippet"]
+    assert hit["snippet"].startswith("…") and hit["snippet"].endswith("…")
+    assert len(hit["snippet"]) <= pm_search.SNIPPET_CHARS
+
+
+@pytest.mark.asyncio
+async def test_a_title_hit_carries_no_snippet(db, events):
+    """The title already says why. A snippet there is payload for nothing."""
+    project, todo = _workspace(db)
+    db.seed_task(project.id, todo.id, title="Quicksilver order",
+                 description="The quicksilver supplier is late.")
+
+    (hit,) = (await pm_search.search_tasks(q="quicksilver", user=USER))["rows"]
+
+    assert hit["rank"] < pm_search.DESCRIPTION_RANK
+    assert hit["snippet"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_title_holding_every_word_outranks_a_description(db, events):
+    project, todo = _workspace(db)
+    db.seed_task(project.id, todo.id, title="Unrelated",
+                 description="invoice approval",
+                 updated_at="2026-08-09T00:00:00Z")
+    db.seed_task(project.id, todo.id, title="Approval for the invoice",
+                 updated_at="2026-07-01T00:00:00Z")
+
+    rows = (await pm_search.search_tasks(q="invoice approval", user=USER))["rows"]
+
+    assert [(r["rank"], r["title"]) for r in rows] == [
+        (3, "Approval for the invoice"),
+        (4, "Unrelated"),
+    ]
+
+
+def test_a_snippet_is_one_line_and_capped() -> None:
+    raw = "line one\n\n<b>bold</b>\tline two " + "word " * 200
+    out = pm_search.snippet_of(raw, starts_inside=False, ends_inside=True)
+    assert "\n" not in out and "\t" not in out
+    assert len(out) <= pm_search.SNIPPET_CHARS
+    assert out.endswith("…")
+
+
+def test_a_short_description_is_the_whole_snippet() -> None:
+    out = pm_search.snippet_of("Call the  quicksilver\nsupplier.",
+                               starts_inside=False, ends_inside=False)
+    assert out == "Call the quicksilver supplier."
+
+
+def test_an_empty_window_is_no_snippet() -> None:
+    assert pm_search.snippet_of("  \n ", starts_inside=False, ends_inside=False) is None
+
+
+def test_a_window_that_starts_on_whitespace_keeps_its_first_word() -> None:
+    """Review of #941: indentation before the hit collapsed away, and the
+    half-word rule then dropped the word that matched."""
+    raw = " " * 50 + "approval of the invoice from finance"
+    out = pm_search.snippet_of(raw, starts_inside=True, ends_inside=False)
+    assert out == "…approval of the invoice from finance"
+
+
+def test_a_window_that_starts_inside_a_word_drops_the_half_word() -> None:
+    out = pm_search.snippet_of("ating the approval of it",
+                               starts_inside=True, ends_inside=False)
+    assert out == "…the approval of it"

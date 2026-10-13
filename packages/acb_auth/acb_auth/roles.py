@@ -41,6 +41,30 @@ def _coerce_role(raw: str | None) -> "UserRole":
 
 
 @dataclass(slots=True, frozen=True)
+class AgentScope:
+    """The narrowing of an outside agent's call (WS-55 EA-3a, spec §7.3).
+
+    Branch 0 of ``deps.get_current_user`` attaches it LAST, after the member's
+    access resolved, and only for a signed request of a live connection. The
+    Projects visibility seam reads it: the pins, the personal opt-out and the
+    seal narrow both arms of its clauses. ``None`` on ``UserContext.agent``
+    means a human request, and every clause is then byte-identical to before.
+
+    Every field comes from the ``agent_connection`` row, never from a header.
+    """
+
+    connection_id: str
+    scopes: tuple[str, ...] = ()
+    #: Project ids. Empty means every project the member sees.
+    pinned_projects: tuple[str, ...] = ()
+    #: D-EA-4. False hides every personal project.
+    include_personal: bool = False
+    client_origin: str = ""
+    #: ``mcp:<slug>``, the value of ``agent_oauth.actor_via_for(client_origin)``.
+    actor_via: str = ""
+
+
+@dataclass(slots=True, frozen=True)
 class UserContext:
     """Resolved identity for one request.
 
@@ -60,6 +84,10 @@ class UserContext:
     user_id: str | None = None
     organization_id: str | None = None
     access: EffectiveAccess = field(default=NO_ACCESS)
+    #: The outside-agent narrowing (WS-55 EA-3a). ``None`` for every request
+    #: that is not a signed agent request. Only branch 0 of
+    #: ``deps.get_current_user`` sets it, with ``dataclasses.replace``.
+    agent: AgentScope | None = None
 
     # ── Legacy coarse role ──────────────────────────────────────────────────
 

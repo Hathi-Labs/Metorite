@@ -26,7 +26,8 @@
  * `src/lib/respondInput.test.ts` (the other account).
  */
 
-import { restartedCardMessage } from "@/lib/chatRecovery";
+import { restartedCardDisplay, restartedCardMessage } from "@/lib/chatRecovery";
+import type { CardAnswer } from "@/lib/cardAnswer";
 
 export type RespondOutcome = "ok" | "drop" | "retry";
 
@@ -34,6 +35,10 @@ export type RespondOutcome = "ok" | "drop" | "retry";
 export interface RespondResult {
   outcome: RespondOutcome;
   resend: string | null;
+  /** What the member sees for `resend`: the answered card (owner report,
+   *  2026-10-13). Null for an old gateway, and the chat then parses the
+   *  envelope (`lib/cardAnswer.ts`). */
+  display?: CardAnswer | null;
   /** The account that drew the card, when the browser is signed in to
    *  another one now (WS-51 S2). The answer was not sent. */
   otherAccount?: string | null;
@@ -119,7 +124,7 @@ export async function sendRespondInputResult(
   const outcome = respondFailure(res.status);
   if (outcome === "drop") {
     const resend = res.status === 409 ? restartedCardMessage(text) : null;
-    if (resend) return { outcome, resend };
+    if (resend) return { outcome, resend, display: restartedCardDisplay(text) };
     console.warn(`respond-input refused (${res.status}), card dropped`, text);
   } else {
     console.error(`respond-input failed (${res.status}) — restoring HITL card`, text);

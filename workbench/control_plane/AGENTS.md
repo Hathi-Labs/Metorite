@@ -179,6 +179,10 @@ Seven rules on top of the three above. Each one exists because it was broken:
    - `src/lib/inAppLink.ts` holds the two rules of a chat link. Each in-app
      click sends `IN_APP_LINK_EVENT`, and a link to another site shows its
      host. Fence: `inAppLink.test.ts`.
+   **A send during a run steers it, through one seam,** `src/lib/chatSteer.ts`
+   (owner, 2026-10-12). The composer has ONE main control, Send or Stop,
+   and no send mode and no queue. Do not add a second send path. Fences:
+   `chatSteer.test.ts` and `e2e/chat-steer.spec.ts`.
    **A long chat card rolls up through one seam,** `components/RollupCard.tsx`
    (owner, 2026-10-10). `src/lib/cardRollup.ts` holds the rules. The newest
    card stays open. A card that waits on the member never folds. A toggle by
@@ -186,6 +190,14 @@ Seven rules on top of the three above. Each one exists because it was broken:
    not add a second fold. The transcript follows its bottom on each change
    of size (`src/lib/stickToBottom.ts`). Fences: `cardRollup.test.ts`,
    `stickToBottom.test.ts` and `e2e/chat-card-rollup.spec.ts`.
+   **Every chat card has one look** (owner, 2026-10-13). Its title row is
+   `RollupHeader` or `CollapsibleCardHeader`, with an icon of the set. A
+   template that has a title uses `TemplateHead`, so its title draws once.
+   No card draws an emoji or a text glyph as an icon. A card that waits,
+   such as a question or an approval, has a short title, and its text is in
+   the body. The server cuts a long text at a word, with an ellipsis.
+   Fences: `chatCardConformance.test.ts`, `elicitationCard.test.ts` and
+   `tests/unit/test_ask_questions_text.py`.
    The body of a card has no hanging indent. It starts at the content
    padding, in line with the chevron (owner, 2026-10-10). A listed row is
    one line: number, title, status pill and open icon. Fence:

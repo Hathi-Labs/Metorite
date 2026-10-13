@@ -484,6 +484,12 @@ The framing's core verb. It must **not** be "send a message", because that cance
 Non-destructive, attributed, works cross-worker on day one because `dispatch_control` already
 handles the local-hit / publish / applied-ack path with a retry for the subscribe race.
 
+**Built since (2026-10-12).** The web chat steers by default: a message sent during a run
+always steers it, and the composer has no stop-and-send. A steer that arrives after the last
+tool boundary goes back to `cc:steer:` at the run's terminal event, and the chat asks for one
+follow-up turn that replays it through ENGAGE. `project-docs/specs/chat_run_continuity.md`
+§4.9 owns the rule and its fences.
+
 ---
 
 ## 5. Q2 — Managing how many people can work with the agents
