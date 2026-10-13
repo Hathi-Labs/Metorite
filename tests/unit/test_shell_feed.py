@@ -613,11 +613,24 @@ class TestTheCalendarKinds:
         answer = run_feed(member(*FULL))
         a = card(answer, "tasks:t-a")
         assert (a["kind"], a["group"], a["folded"]) == ("block_overlap", "needs_you", [])
-        assert a["why"].startswith("It overlaps Review the plan. Both are set for ")
+        # MD-1b visual review, item 3: the time is where the OVERLAP starts,
+        # which is the second block's start, never the first block's.
+        overlap_at = (later + timedelta(minutes=30)).astimezone(ZoneInfo(fakes.zone)).strftime("%H:%M")
+        assert a["why"].startswith(f"It overlaps Review the plan. They overlap from {overlap_at} ")
+        assert "Both are set" not in a["why"]
         assert a["acts"] == [{"id": "open-day", "label": "Open the day", "class": "A",
                               "way": "open", "href": "/calendar"}]
         # One overlap, one card: the block that starts first carries it.
         assert "tasks:t-b" not in [c["signal_id"] for c in answer["cards"]]
+
+    def test_the_why_clock_is_24_hour(self):
+        # MD-1b visual review, item 5. Today and Calendar draw 24-hour times,
+        # so the feed's why lines do too: "17:05", "09:00", never "5:05 PM".
+        utc = ZoneInfo("UTC")
+        assert feed._clock(datetime(2026, 10, 13, 17, 5, tzinfo=utc), utc) == "17:05"
+        assert feed._clock(datetime(2026, 10, 13, 9, 0, tzinfo=utc), utc) == "09:00"
+        assert feed._clock(datetime(2026, 10, 13, 0, 0, tzinfo=utc), utc) == "00:00"
+        assert feed._clock(None, utc) == ""
 
     def test_an_overlap_that_ended_is_left_out(self, fakes):
         past = fakes.now - timedelta(hours=3)
@@ -653,7 +666,8 @@ class TestTheCalendarKinds:
         answer = run_feed(member(*FULL))
         day = card(answer, f"calendar:{fakes._today().isoformat()}")
         assert (day["kind"], day["group"]) == ("no_plan_yet", "needs_you")
-        assert day["why"] == "Your day started at 12:00 AM, and nothing is on the calendar."
+        # One clock on one screen: 24-hour, as Calendar and Today draw it.
+        assert day["why"] == "Your day started at 00:00, and nothing is on the calendar."
         assert day["acts"] == [{"id": "plan-day", "label": "Plan my day", "class": "A",
                                 "way": "open", "href": "/calendar"}]
 
