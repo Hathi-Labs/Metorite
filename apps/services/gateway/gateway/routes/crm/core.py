@@ -1532,7 +1532,7 @@ NOT_NULL_DEFAULTED: dict[str, frozenset[str]] = {
     "crm_contacts": frozenset({"source"}),
     "crm_leads": frozenset({"source"}),
     "crm_deals": frozenset({"source", "currency", "status_changed_at"}),
-    # CRM-C3 (migration 255): `hidden` on the three settings tables. An admin
+    # CRM-C3 (migration 257): `hidden` on the three settings tables. An admin
     # PATCHes it from the settings grid, in both modes.
     "crm_lead_statuses": frozenset({"color", "is_default", "hidden"}),
     # `required_fields` arrives by ALTER in the WS-26h migration rather than in
@@ -1655,7 +1655,7 @@ MIRROR_SETTINGS_TABLES: frozenset[str] = frozenset({
 })
 
 #: The Metorite-only columns of each settings table (WS-53 CRM-C3, migration
-#: 255, ``crm_platform.md`` §20.6 item 1). In Mirror mode an admin may write
+#: 257, ``crm_platform.md`` §20.6 item 1). In Mirror mode an admin may write
 #: these and no other column. The sync never writes them, and no Zoho write
 #: reads them (D95: one store, two writers, fenced doors).
 #: ``max_dwell_days`` is here because UX-Q5 lets a Mirror admin set it (§19.4).

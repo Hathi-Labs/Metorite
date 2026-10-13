@@ -1,6 +1,6 @@
 """R8 — stages and statuses an admin can shape, in both modes (WS-53 CRM-C3).
 
-Spec: ``project-docs/specs/crm_platform.md`` §20.6. Migration 255 adds the
+Spec: ``project-docs/specs/crm_platform.md`` §20.6. Migration 257 adds the
 Metorite-only overlay (``hidden``, ``ui_position``, ``ui_probability``,
 ``ui_color``), the Zoho id of a picklist value (``ext_id``) and
 ``source_gone_at``. D95: one store, two writers, fenced doors. The sync writes

@@ -1,5 +1,5 @@
 -- ============================================================================
--- 255_crm_stage_overlay.sql — a Metorite overlay on each stage, status and
+-- 257_crm_stage_overlay.sql — a Metorite overlay on each stage, status and
 -- lost reason, and the Zoho id of each mirrored stage.
 --
 -- What: expand-only columns on the three tables of the pipeline settings.

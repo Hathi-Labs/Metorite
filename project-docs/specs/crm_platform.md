@@ -36,7 +36,7 @@
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C3, stages and statuses you can shape, in both modes
-> (2026-10-13, migration 255). Two items wait for CRM-C2 (§20.6, "Built as").
+> (2026-10-13, migration 257). Two items wait for CRM-C2 (§20.6, "Built as").
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -2683,7 +2683,7 @@ total. `acb_skills/skill_families.py` has no `crm` family.
 |---|---|---|---|---|---|
 | **CRM-C1** Settings sections | Child rows under the settings row. One section on each page | AGENT-SAFE | S | None | CRM-C3, because both edit `PipelineSettings.tsx` |
 | **CRM-C2** One board | One column primitive for Projects, Tasks and the CRM. A stage colour that does not fight the corner | AGENT-SAFE | M | None | Nothing |
-| **CRM-C3** Stages you can shape | Hide, order, colour and probability in both modes. A Mirror overlay that the sync never writes | AGENT-SAFE | M | 255 | CRM-C2 merged, because both edit three files |
+| **CRM-C3** Stages you can shape | Hide, order, colour and probability in both modes. A Mirror overlay that the sync never writes | AGENT-SAFE | M | 257 | CRM-C2 merged, because both edit three files |
 | **CRM-C4** Field studio | Create, rename, order, hide, sections, picklists, required and defaults (Native) | AGENT-SAFE. Flag `CRM_FIELD_STUDIO_ORGS`, shipped empty | L | 256 | CRM-C1 |
 | **CRM-C5** Field studio to Zoho | The C4 studio and the C3 stage order write to Zoho (Mirror) | AGENT-SAFE to build. 🔴 OWNER-GATE to turn on, and for the first live write | L | None | CRM-C4, the §19.9 consent, its own spec audit |
 | **CRM-C6** Field mapping | Lead conversion mapping, the CRM-Q7a Field map and lookup targets | AGENT-SAFE | M | 257 | CRM-C4, CRM-Q7a merged |
@@ -2972,7 +2972,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app
 
 ### 20.6 CRM-C3: Stages and statuses you can shape, in both modes
 
-**Status.** 🔨 Built 2026-10-13 on branch `crm-c3`, migration 255. Two items
+**Status.** 🔨 Built 2026-10-13 on branch `crm-c3`, migration 257. Two items
 wait for CRM-C2 to merge. See "Built as" at the end of this section.
 
 **Gate.** AGENT-SAFE. No flag. With no overlay value set, each board, list
@@ -2988,7 +2988,7 @@ Native mode. The **overlay values** are Metorite-only. The sync never writes
 them, and no Zoho write reads them. The **effective value** is the overlay
 value when it is set, else the source value.
 
-**Migration 255 (expand only, R6).** Each new column is nullable or has a
+**Migration 257 (expand only, R6).** Each new column is nullable or has a
 default. The three tables already have the tenant key and FORCE RLS (241).
 
 | Table | New columns |
@@ -3148,7 +3148,7 @@ the stage type or the name.
 
 **Files.**
 
-- New: `infra/postgres/255_crm_stage_overlay.sql`, and the new tests below.
+- New: `infra/postgres/257_crm_stage_overlay.sql`, and the new tests below.
 - Gateway: `routes/crm/core.py` (`MIRROR_OVERLAY_COLUMNS`,
   `EFFECTIVE_STATUS_COLUMNS`, `merge_status_from_source`), `admin.py`,
   `pipeline.py`, `pipelines.py`, `reports.py` and `crm_sync/engine.py`.
@@ -3225,7 +3225,7 @@ the stage type or the name.
 `tests/fixtures/crm_weighted_parity.json`, `app/crm/lib/board.test.ts` and
 `app/crm/components/crmC3.test.ts` (new).
 
-**Built as (2026-10-13).** Migration 255 holds the columns and the two
+**Built as (2026-10-13).** Migration 257 holds the columns and the two
 partial unique indexes of the table above.
 
 - **The wire.** `StatusModel` also carries `ui_position`, `ui_probability`
