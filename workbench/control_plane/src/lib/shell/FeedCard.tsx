@@ -21,15 +21,16 @@
  * The act also marks the needs row in `needsActs`, so the bell and the
  * sidebar drop it at once. An `open` act is a link.
  *
- * **The one poll.** `useFeed` joins it with the feed's key and covers the
- * needs key (`joinNeedsPoll`), because the feed answer carries the needs view
- * and `fetchFeed` writes it there.
+ * **The one poll.** `useFeed` joins it with the feed's key. It covers the
+ * needs key (`joinNeedsPoll`) only while its last read held a needs view
+ * (`coversNeeds`), because only then did `fetchFeed` write that key.
  *
  * Fences: `feed.test.ts` and `myDayPage.test.ts`.
  */
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
+import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -41,23 +42,24 @@ import {
   type FeedAct,
   type FeedAnswer,
   type FeedCard as Card,
-  actKey,
   actLeavesCard,
+  actRows,
+  actSpent,
   cardTime,
+  coversNeeds,
   drawnActs,
   feedAppIcon,
   feedFailedLines,
   feedGroups,
   feedKey,
   fetchFeed,
-  heldIds,
   needsRowFor,
   sourceLine,
 } from "./feed";
-import { CardError, HomeCard, keepRemoved, rowMover } from "./HomeCard";
+import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
 import { needsKey, runAct } from "./needs";
-import { removeRow } from "./needsActs";
+import { EMPTY_ACTS, acquireReader, actsSnapshot, removeRow, setRowError, subscribeActs } from "./needsActs";
 import { joinNeedsPoll } from "./ShellBell";
 
 const DANGER = accentForHue("red");
@@ -67,8 +69,9 @@ export interface Feed {
   loading: boolean;
   error: string | null;
   refresh: () => void;
-  /** The cards, and the acts, that an act just took away. */
-  removed: ReadonlySet<string>;
+  /** The needs rows an act took off, from the one store (`needsActs.ts`). */
+  marked: ReadonlySet<string>;
+  /** Each needs row's error, from the same store. */
   errors: Readonly<Record<string, string>>;
   act: (card: Card, act: FeedAct, from: HTMLElement | null) => void;
 }
@@ -76,76 +79,57 @@ export interface Feed {
 /**
  * The feed and its acts. My Day calls it once and hands it to the column.
  *
- * The removed set is the page's own, with `keepRemoved`: `pruneActs` keeps
- * only ids of the needs view, and a card id is not one of them. The needs
- * row is marked in `needsActs` too, for the bell and the sidebar.
+ * ⚠️ The feed keeps no removed set of its own. Each act marks the needs rows
+ * it closes (`actRows`) in the one store that the bell and the sidebar read.
+ * That store forgets a mark when the needs view no longer holds its row, or
+ * after its 30 s hold, so a task that comes back shows again. A card leaves
+ * only while its marked rows close every kind it holds (`cardHidden`).
  */
 export function useFeed(enabled: boolean): Feed {
   const feed = useCachedResource<FeedAnswer>(enabled ? feedKey() : null, () => fetchFeed());
   const { refresh } = feed;
+  const { removed: marked, errors } = useSyncExternalStore(subscribeActs, actsSnapshot, () => EMPTY_ACTS);
 
-  // The one poll: this refresh owns the feed key and covers the needs key.
+  // Count this reader (`needsActs.ts` rule 1), as `useNeedsYou` does.
+  useEffect(() => acquireReader(), []);
+
+  // The one poll: this refresh owns the feed key. It covers the needs key
+  // only while its last read held a needs view (`coversNeeds`). After a
+  // failed read, the needs poller reads for the bell and the sidebar again.
+  const covers = coversNeeds(feed.data, feed.error);
   useEffect(
-    () => (enabled ? joinNeedsPoll(refresh, feedKey(), [needsKey()]) : undefined),
-    [enabled, refresh],
+    () => (enabled ? joinNeedsPoll(refresh, feedKey(), covers ? [needsKey()] : []) : undefined),
+    [enabled, refresh, covers],
   );
 
-  const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
-  const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
-
-  // A new answer forgets each removed id it no longer holds, so a task that
-  // is reopened later shows again (the rule of `NextActionsCard`).
-  const [seen, setSeen] = useState(feed.data);
-  if (feed.data !== seen) {
-    setSeen(feed.data);
-    if (feed.data && removed.size > 0) {
-      const kept = keepRemoved(removed, heldIds(feed.data.cards));
-      if (kept !== removed) setRemoved(kept);
-    }
-  }
-
-  const mark = useCallback((id: string, gone: boolean) => {
-    setRemoved((prev) => {
-      const s = new Set(prev);
-      if (gone) s.add(id);
-      else s.delete(id);
-      return s;
-    });
+  const act = useCallback((card: Card, a: FeedAct, from: HTMLElement | null) => {
+    const item = needsRowFor(card, a);
+    if (item) void runAct(item, feedActMover(actRows(a), from));
   }, []);
-
-  const setError = useCallback((id: string, message: string | null) => {
-    setErrors((prev) => {
-      const e = { ...prev };
-      if (message) e[id] = message;
-      else delete e[id];
-      return e;
-    });
-  }, []);
-
-  const act = useCallback(
-    (card: Card, a: FeedAct, from: HTMLElement | null) => {
-      const item = needsRowFor(card, a);
-      if (!item) return;
-      // A done takes the card away. A read on a task card takes only its act.
-      const id = actLeavesCard(card, a) ? card.signal_id : actKey(card, a);
-      const move = (_: string, gone: boolean) => {
-        mark(id, gone);
-        removeRow(item.id, gone);
-      };
-      void runAct(item, rowMover(id, move, setError, from));
-    },
-    [mark, setError],
-  );
 
   return {
     answer: feed.data,
     loading: feed.loading,
     error: feed.error,
     refresh,
-    removed,
+    marked,
     errors,
     act,
   };
+}
+
+/**
+ * The row half of a feed act (`rowMover`): it marks EVERY needs row the act
+ * closes in the one store, so a merged read takes each `projects:<id>` row
+ * out of the bell at once. A failure puts them all back, with the error on
+ * the first.
+ */
+export function feedActMover(rows: readonly string[], from: HTMLElement | null = null): DoneRow {
+  const move = (_: string, gone: boolean) => {
+    for (const row of rows) removeRow(row, gone);
+  };
+  const fail = (_: string, message: string | null) => setRowError(rows[0], message);
+  return rowMover(rows[0], move, fail, from);
 }
 
 /** Show the next cards when the member scrolls to the end of the column. */
@@ -177,7 +161,7 @@ export function FeedColumn({
   const [shown, setShown] = useState(FEED_SHOWN);
   const reveal = useCallback(() => setShown((n) => n + FEED_SHOWN), []);
   const { groups, hidden } = feed.answer
-    ? feedGroups(feed.answer, shown, feed.removed)
+    ? feedGroups(feed.answer, shown, feed.marked)
     : { groups: [], hidden: 0 };
   const sentinel = useRevealOnScroll(reveal, hidden > 0);
   const nowMs = now?.getTime() ?? null;
@@ -219,8 +203,8 @@ export function FeedColumn({
                   key={card.signal_id}
                   card={card}
                   nowMs={nowMs}
-                  removed={feed.removed}
-                  error={feed.errors[card.signal_id] ?? card.acts.map((a) => feed.errors[actKey(card, a)]).find(Boolean)}
+                  marked={feed.marked}
+                  error={card.acts.flatMap(actRows).map((r) => feed.errors[r]).find(Boolean)}
                   onAct={(a, from) => feed.act(card, a, from)}
                 />
               ))}
@@ -284,20 +268,20 @@ const safeId = (raw: string) => raw.replace(/[^A-Za-z0-9_:-]/g, "-");
 export function FeedCard({
   card,
   nowMs,
-  removed,
+  marked,
   error,
   onAct,
 }: {
   card: Card;
   /** `null` before the client clock exists: the card then prints no time. */
   nowMs: number | null;
-  /** The acts an act took away (`actKey`). */
-  removed?: ReadonlySet<string>;
+  /** The needs rows an act took off. A spent act draws nothing. */
+  marked?: ReadonlySet<string>;
   error?: string;
   onAct: (act: FeedAct, from: HTMLElement) => void;
 }) {
   const time = nowMs === null ? "" : cardTime(card, nowMs);
-  const acts = drawnActs(card).filter((a) => !removed?.has(actKey(card, a)));
+  const acts = drawnActs(card).filter((a) => !marked || !actSpent(a, marked));
   const eyebrow = (
     <span className="flex min-w-0 items-center gap-1.5" data-feed-source="">
       <Icon name={feedAppIcon(card.app)} size={13} className="shrink-0" />

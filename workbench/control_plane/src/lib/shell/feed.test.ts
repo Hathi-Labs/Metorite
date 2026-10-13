@@ -2,7 +2,7 @@
  * My Day's live feed in the browser (`my_day_feed.md` §14.1 and §14.1a,
  * WS-57 MD-1b).
  *
- * Six claims:
+ * Seven claims:
  *
  *   1. An answer in the shape of §14.1a reads whole, and an odd card is
  *      dropped, never a throw.
@@ -12,15 +12,20 @@
  *      and never with an answer from before a write.
  *   4. A `tap` act runs through the owning app's code (`runAct`), as the
  *      needs row of the needs view. An `open` act is a link.
- *   5. A read on a task card takes away its act, not the overdue task.
+ *   5. Every mark keys on the needs rows an act closes, in the one store
+ *      `needsActs.ts`. A card comes back with a live signal, and a mark ends
+ *      by the store's rules (fix round 1, cases a to d).
  *   6. One client: only `feed.ts` fetches `/api/shell/feed`, and nothing
  *      writes the needs key from an effect.
+ *   7. The feed's poll covers the needs key only after a read that held a
+ *      needs view (fix round 1, P2).
  *
  * Mutations, run by hand (2026-10-13):
  *   - drop `if (answer.needs) putNeeds(answer.needs);`: "fills the needs key" fails;
  *   - reverse the cards inside a group in `feedGroups`: "keeps the server's order" fails;
  *   - make `needsRowFor` take the card id: "the needs row of a folded notification" fails;
- *   - make the hook always hide the whole card: "by that rule" fails.
+ *   - make `cardHidden` ignore the folded kinds: cases (a) and (b) fail;
+ *   - make `coversNeeds` always true: both P2 path tests fail.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -28,7 +33,7 @@ import { fileURLToPath } from "node:url";
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const markDoneFromHome = vi.fn(async (id: string) => (id === "parent" ? "kept" : "done"));
 vi.mock("@/app/tasks/lib/completeFromHome", () => ({
@@ -42,21 +47,24 @@ import {
   FEED_CACHE,
   FEED_SHOWN,
   type FeedCard as Card,
-  actKey,
   actLeavesCard,
+  actRows,
+  cardHidden,
+  coversNeeds,
   drawnActs,
   feedAppIcon,
   feedFailedLines,
   feedGroups,
   feedKey,
   fetchFeed,
-  heldIds,
   needsRowFor,
   readFeedAnswer,
   sourceLine,
 } from "./feed";
-import { FeedCard } from "./FeedCard";
+import { FeedCard, feedActMover } from "./FeedCard";
 import { needsKey, runAct } from "./needs";
+import { ACT_HOLD_MS, acquireReader, actsSnapshot, pruneActs, removeRow } from "./needsActs";
+import { BELL_POLL_MS, joinNeedsPoll } from "./ShellBell";
 
 const read_ = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 /** Source with comments removed, so prose about a call is not a call. */
@@ -217,8 +225,13 @@ describe("2. the groups and the cut", () => {
   });
 
   it("leaves out a card an act took away, and holds a group missing from `groups`", () => {
-    const answer = { cards: [card("a", "now"), card("b", "fyi")], groups: [{ id: "fyi" as const, count: 1 }] };
-    const { groups } = feedGroups(answer, FEED_SHOWN, new Set(["b"]));
+    const doneOn = (ref: string) => ({ acts: [{ id: "done", label: "Done", way: "tap", act: "done", act_ref: ref }] });
+    const answer = {
+      cards: [card("a", "now", doneOn("a")), card("b", "fyi", doneOn("b"))],
+      groups: [{ id: "fyi" as const, count: 1 }],
+    };
+    // The mark is the needs row of b's Done, never the card's id.
+    const { groups } = feedGroups(answer, FEED_SHOWN, new Set(["tasks:b"]));
     expect(groups.map((g) => [g.id, g.cards.map((c) => c.signal_id)])).toEqual([["now", ["a"]]]);
   });
 });
@@ -284,8 +297,10 @@ describe("3. the feed answer fills the needs key", () => {
     const card = code(read_("./FeedCard.tsx"));
     expect(card).not.toMatch(/\bput\(|guardedPut|needsKey\(\)\s*,\s*readFeed/);
     expect(card).toMatch(/useCachedResource<FeedAnswer>\(enabled \? feedKey\(\) : null, \(\) => fetchFeed\(\)\)/);
-    // The one poll: the feed's refresh owns its key and covers the needs key.
-    expect(card).toMatch(/joinNeedsPoll\(refresh, feedKey\(\), \[needsKey\(\)\]\)/);
+    // The one poll: the feed's refresh owns its key, and covers the needs
+    // key only by `coversNeeds` (section 7).
+    expect(card).toMatch(/const covers = coversNeeds\(feed\.data, feed\.error\);/);
+    expect(card).toMatch(/joinNeedsPoll\(refresh, feedKey\(\), covers \? \[needsKey\(\)\] : \[\]\)/);
   });
 });
 
@@ -345,12 +360,65 @@ describe("4. the acts go through the owning app", () => {
     expect(needsRowFor(c, c.acts[1])).toBeNull();
   });
 
-  it("wires each act through runAct and rowMover, and marks the needs row for the bell", () => {
+  it("marks EVERY note of a merged read: one post, and each row leaves the bell", async () => {
+    const merged = card("tasks:t5", "needs_you", {
+      kind: "notification",
+      acts: [{ id: "read", label: "Mark read", way: "tap", act: "read", act_ref: "n9", act_refs: ["n9", "n8"] }],
+    });
+    const a = merged.acts[0];
+    expect(actRows(a)).toEqual(["projects:n9", "projects:n8"]);
+    const item = needsRowFor(merged, a);
+    expect(item).toMatchObject({ id: "projects:n9", act: "read", act_ref: "n9", act_refs: ["n9", "n8"] });
+    const calls: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push(init?.body ? JSON.parse(String(init.body)) : null);
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const release = acquireReader();
+    try {
+      expect(await runAct(item!, feedActMover(actRows(a)))).toBe("done");
+      expect(calls).toEqual([{ ids: ["n9", "n8"] }]);
+      expect([...actsSnapshot().removed].sort()).toEqual(["projects:n8", "projects:n9"]);
+    } finally {
+      release();
+    }
+  });
+
+  it("reads a read with no act_refs as [act_ref], and a done by its act_ref only", () => {
+    expect(actRows({ way: "tap", act: "read", act_ref: "n1" })).toEqual(["projects:n1"]);
+    expect(actRows({ way: "tap", act: "done", act_ref: "t1", act_refs: ["x"] })).toEqual(["tasks:t1"]);
+  });
+
+  it("puts every row back, with the error, when the read fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
+    const release = acquireReader();
+    try {
+      const raw = { id: "read", label: "Mark read", way: "tap", act: "read", act_ref: "n9", act_refs: ["n9", "n8"] };
+      const c = card("tasks:t5", "needs_you", { kind: "notification", acts: [raw] });
+      const item = needsRowFor(c, c.acts[0]);
+      expect(await runAct(item!, feedActMover(actRows(c.acts[0])))).toBe("failed");
+      expect(actsSnapshot().removed.size).toBe(0);
+      expect(actsSnapshot().errors["projects:n9"]).toBe("Could not mark it read. Try again.");
+    } finally {
+      release();
+    }
+  });
+
+  it("wires each act through runAct and the one store's marks", () => {
     const src = code(read_("./FeedCard.tsx"));
-    expect(src).toMatch(/void runAct\(item, rowMover\(id, move, setError, from\)\);/);
-    expect(src).toMatch(/removeRow\(item\.id, gone\);/);
+    expect(src).toMatch(/void runAct\(item, feedActMover\(actRows\(a\), from\)\)/);
+    expect(src).toMatch(/for \(const row of rows\) removeRow\(row, gone\);/);
+    // The feed keeps no private removed set: it reads the one store.
+    expect(src).toMatch(/useSyncExternalStore\(subscribeActs, actsSnapshot, \(\) => EMPTY_ACTS\)/);
+    expect(src).not.toMatch(/keepRemoved|useState<ReadonlySet<string>>/);
     // No second act path: the owning app's code runs only through runAct.
-    expect(src).not.toMatch(/markDoneFromHome|notificationsApi|completeFromHome/);
+    expect(src).not.toMatch(/markDoneFromHome|notificationsApi/);
+    // Its one mention of the My Tasks module is a type.
+    expect(src.match(/completeFromHome/g)).toEqual(["completeFromHome"]);
+    expect(src).toContain('import type { DoneRow } from "@/app/tasks/lib/completeFromHome";');
   });
 
   it("draws a tap act as a Button and an open act as a link, in the HomeCard frame", () => {
@@ -373,35 +441,159 @@ describe("4. the acts go through the owning app", () => {
   });
 });
 
-describe("5. what an act takes away", () => {
-  const folded = card("tasks:t1", "needs_you", {
-    kind: "overdue",
-    acts: [
-      { id: "done", label: "Done", way: "tap", act: "done", act_ref: "t1" },
-      { id: "read", label: "Mark read", way: "tap", act: "read", act_ref: "n7" },
-    ],
+describe("5. what an act takes away (fix round 1)", () => {
+  // The page reads its marks from the one store, as `useFeed` does, and
+  // draws the cards that `feedGroups` keeps.
+  let release: () => void = () => {};
+  beforeEach(() => {
+    release = acquireReader();
+  });
+  afterEach(() => release());
+
+  const marked = () => actsSnapshot().removed;
+  const shownIds = (cards: Card[]) =>
+    feedGroups({ cards, groups: [] }, FEED_SHOWN, marked()).groups.flatMap((g) => g.cards.map((c) => c.signal_id));
+  /** Mark an act's rows the way the hook does. */
+  const tap = (c: Card, id: string, at = Date.now()) => {
+    for (const row of actRows(c.acts.find((a) => a.id === id)!)) removeRow(row, true, at);
+  };
+  const draw = (c: Card) =>
+    renderToStaticMarkup(createElement(FeedCard, { card: c, nowMs: null, marked: marked(), onAct: () => {} }));
+  const done = (ref: string) => ({ id: "done", label: "Done", way: "tap", act: "done", act_ref: ref });
+  const readAct = (...refs: string[]) => ({
+    id: "read",
+    label: "Mark read",
+    way: "tap",
+    act: "read",
+    act_ref: refs[0],
+    act_refs: refs,
+  });
+  const openDay = { id: "open-day", label: "Open the day", way: "open", href: "/calendar" };
+
+  it("a Done takes a plain task card away at once, and a Done in the bell does too", () => {
+    const plain = card("tasks:t0", "needs_you", { kind: "overdue", folded: [], acts: [done("t0")] });
+    tap(plain, "done");
+    expect(shownIds([plain])).toEqual([]);
+    // The §14.1a card (a block folded in): the bell's Done marks the same row.
+    const c = readFeedAnswer(ANSWER).cards[0];
+    expect(shownIds([c])).toEqual(["tasks:9b2e"]);
+    removeRow("tasks:9b2e", true);
+    expect(shownIds([c])).toEqual([]);
   });
 
-  it("a done takes the card, a read takes the card only when the notification is the card", () => {
-    expect(actLeavesCard(folded, folded.acts[0])).toBe(true);
-    expect(actLeavesCard(folded, folded.acts[1])).toBe(false);
-    expect(actLeavesCard({ kind: "notification" }, { act: "read" })).toBe(true);
+  it("(a) a Done on a task with an unread note keeps the note, and the note's card comes back", () => {
+    const before = card("tasks:t1", "needs_you", {
+      kind: "overdue",
+      folded: ["notification"],
+      acts: [done("t1"), readAct("n7")],
+    });
+    expect(actLeavesCard(before, before.acts[0])).toBe(false);
+    tap(before, "done");
+    // The card stays, because the note still needs the member. Its Done is spent.
+    expect(shownIds([before])).toEqual(["tasks:t1"]);
+    expect(draw(before)).not.toContain('aria-label="Done:');
+    expect(draw(before)).toContain("Mark read");
+    // The next answer: the task is done, and the note is live. Its bell row is not marked.
+    const after = card("tasks:t1", "needs_you", { kind: "notification", folded: [], acts: [readAct("n7")] });
+    expect(shownIds([after])).toEqual(["tasks:t1"]);
+    expect(marked().has("projects:n7")).toBe(false);
   });
 
-  it("a spent act leaves its card, and the card stays", () => {
-    const removed = new Set([actKey(folded, folded.acts[1])]);
-    const html = renderToStaticMarkup(createElement(FeedCard, { card: folded, nowMs: null, removed, onAct: () => {} }));
-    expect(html).toContain("Card tasks:t1");
-    expect(html).not.toContain("Mark read");
-    expect(html.match(/data-row-act=""/g)).toHaveLength(1);
-    expect(heldIds([folded])).toEqual(["tasks:t1", "tasks:t1#done", "tasks:t1#read"]);
+  it("(b) a Mark read on a note card with a block that starts soon keeps the live block", () => {
+    const note = card("tasks:t2", "now", { kind: "notification", folded: ["block_soon"], acts: [readAct("n1"), openDay] });
+    expect(actLeavesCard(note, note.acts[0])).toBe(false);
+    tap(note, "read");
+    expect(shownIds([note])).toEqual(["tasks:t2"]);
+    const block = card("tasks:t2", "now", { kind: "block_soon", folded: [], acts: [openDay] });
+    expect(shownIds([block])).toEqual(["tasks:t2"]);
+    // A note card with nothing folded does leave.
+    const lone = card("tasks:t6", "fyi", { kind: "notification", folded: [], acts: [readAct("n5")] });
+    expect(actLeavesCard(lone, lone.acts[0])).toBe(true);
+    tap(lone, "read");
+    expect(shownIds([lone])).toEqual([]);
   });
 
-  it("the hook hides the card or only the act, by that rule", () => {
-    const src = code(read_("./FeedCard.tsx"));
-    expect(src).toMatch(/const id = actLeavesCard\(card, a\) \? card\.signal_id : actKey\(card, a\);/);
-    // The page's own set forgets an id the next answer no longer holds.
-    expect(src).toMatch(/keepRemoved\(removed, heldIds\(feed\.data\.cards\)\)/);
+  it("(c) a new note on the same task shows its read act and its card again", () => {
+    const first = card("tasks:t3", "needs_you", {
+      kind: "overdue",
+      folded: ["notification"],
+      acts: [done("t3"), readAct("n1")],
+    });
+    tap(first, "read");
+    expect(draw(first)).not.toContain("Mark read");
+    // n2 arrives: the merged read names n2 and n1, and n2 is not marked.
+    const next = card("tasks:t3", "needs_you", {
+      kind: "overdue",
+      folded: ["notification"],
+      acts: [done("t3"), readAct("n2", "n1")],
+    });
+    expect(draw(next)).toContain("Mark read");
+    const noteOnly = card("tasks:t7", "needs_you", { kind: "notification", folded: [], acts: [readAct("n1")] });
+    tap(noteOnly, "read");
+    expect(shownIds([noteOnly])).toEqual([]);
+    const again = card("tasks:t7", "needs_you", { kind: "notification", folded: [], acts: [readAct("n2", "n1")] });
+    expect(shownIds([again])).toEqual(["tasks:t7"]);
+  });
+
+  it("(d) a Done that never lands, or a task reopened, shows again by the store's own rules", () => {
+    const t0 = 1_000_000;
+    const task = card("tasks:t4", "needs_you", { kind: "overdue", folded: [], acts: [done("t4")] });
+    tap(task, "done", t0);
+    expect(shownIds([task])).toEqual([]);
+    // The needs view still holds the row after the hold window: the write never landed.
+    pruneActs(["tasks:t4"], t0 + ACT_HOLD_MS);
+    expect(shownIds([task])).toEqual(["tasks:t4"]);
+    // Reopened: the needs view lost the row once, then the task came back.
+    tap(task, "done", t0);
+    pruneActs([], t0 + 1_000);
+    expect(shownIds([task])).toEqual(["tasks:t4"]);
+  });
+
+  it("hides by the needs rows, never by a card id", () => {
+    const c = card("tasks:t8", "now", { kind: "overdue", folded: [], acts: [done("t8")] });
+    expect(cardHidden(c, new Set(["tasks:t8#done"]))).toBe(false);
+    expect(cardHidden(c, new Set(["tasks:t8"]))).toBe(true);
+  });
+});
+
+describe("7. the poll covers the needs key only after a needs view (fix round 1, P2)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const withNeeds = readFeedAnswer(ANSWER);
+  const noNeeds = readFeedAnswer({ ...ANSWER, needs: undefined });
+
+  it("covers after a read that held a needs view, and only then", () => {
+    expect(coversNeeds(withNeeds, null)).toBe(true);
+    expect(coversNeeds(withNeeds, "Your feed could not load.")).toBe(false);
+    expect(coversNeeds(noNeeds, null)).toBe(false);
+    expect(coversNeeds(undefined, null)).toBe(false);
+  });
+
+  /** One tick, with the bell on the needs key and the feed on its own key. */
+  function tick(covers: boolean) {
+    vi.useFakeTimers();
+    const bell = vi.fn();
+    const feed = vi.fn();
+    const leaveBell = joinNeedsPoll(bell);
+    const leaveFeed = joinNeedsPoll(feed, feedKey(), covers ? [needsKey()] : []);
+    vi.advanceTimersByTime(BELL_POLL_MS);
+    leaveBell();
+    leaveFeed();
+    return { bell: bell.mock.calls.length, feed: feed.mock.calls.length };
+  }
+
+  it("after a FAILED feed read, the bell's needs poller reads on the next tick", () => {
+    expect(tick(coversNeeds(withNeeds, "Your feed could not load."))).toEqual({ bell: 1, feed: 1 });
+  });
+
+  it("after an answer with NO needs view, the bell's needs poller reads on the next tick", () => {
+    expect(tick(coversNeeds(noNeeds, null))).toEqual({ bell: 1, feed: 1 });
+  });
+
+  it("after a good answer, the feed's read is the only one", () => {
+    expect(tick(coversNeeds(withNeeds, null))).toEqual({ bell: 0, feed: 1 });
   });
 });
 

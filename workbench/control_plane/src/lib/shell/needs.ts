@@ -39,6 +39,11 @@ export interface NeedsItem {
   at: string | null;
   act: NeedsAct | null;
   act_ref: string | null;
+  /**
+   * A `read` from My Day's feed only: every unread notification id of one
+   * task (`my_day_feed.md` §14.1a). The needs view never sends it.
+   */
+  act_refs?: string[];
 }
 
 export interface NeedsFeed {
@@ -236,7 +241,8 @@ export async function runAct(
   if (item.act === "done") return markDoneFromHome(item.act_ref, row, store);
   row.hide();
   try {
-    await notificationsApi.markRead([item.act_ref]);
+    // A feed card's merged read names each unread note of its task.
+    await notificationsApi.markRead(item.act_refs?.length ? item.act_refs : [item.act_ref]);
     return "done";
   } catch {
     row.fail("Could not mark it read. Try again.");

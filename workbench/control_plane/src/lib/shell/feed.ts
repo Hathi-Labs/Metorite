@@ -64,7 +64,13 @@ export interface FeedAct {
   way: FeedWay;
   /** A `tap` act: the needs act it runs, `done` or `read`. */
   act?: string | null;
+  /** The first ref. For a merged `read` act it is the first of `act_refs`. */
   act_ref?: string | null;
+  /**
+   * A `read` act: every unread notification id on the task, newest first
+   * (§14.1a, MD-1a repair round 1). Absent, the act reads as `[act_ref]`.
+   */
+  act_refs?: string[] | null;
   /** An `open` act: where it goes. */
   href?: string | null;
 }
@@ -126,6 +132,7 @@ function readAct(raw: unknown): FeedAct | null {
     way: a.way,
     act: str(a.act),
     act_ref: str(a.act_ref),
+    act_refs: Array.isArray(a.act_refs) ? a.act_refs.filter((r): r is string => typeof r === "string" && !!r) : null,
     href: str(a.href),
   };
 }
@@ -204,13 +211,16 @@ export interface ShownGroup {
  *
  * The cut runs over the whole feed in that order, then groups, so `shown`
  * means cards and not cards per group. `hidden` is what the cut held back.
+ *
+ * `marked` is the needs rows an act took off (`needsActs.ts`). A card an act
+ * closed whole leaves (`cardHidden`).
  */
 export function feedGroups(
   answer: Pick<FeedAnswer, "cards" | "groups">,
   shown: number,
-  removed: ReadonlySet<string> = new Set(),
+  marked: ReadonlySet<string> = new Set(),
 ): { groups: ShownGroup[]; hidden: number } {
-  const cards = answer.cards.filter((c) => !removed.has(c.signal_id));
+  const cards = answer.cards.filter((c) => !cardHidden(c, marked));
   const order: FeedGroupId[] = [];
   for (const g of answer.groups) if (!order.includes(g.id)) order.push(g.id);
   for (const id of GROUP_ORDER) if (!order.includes(id) && cards.some((c) => c.group === id)) order.push(id);
@@ -233,59 +243,109 @@ const TAP_ACTS = new Set(["done", "read"]);
  */
 export function drawnActs(card: Pick<FeedCard, "acts">): FeedAct[] {
   return card.acts.filter((a) =>
-    a.way === "tap" ? !!a.act && TAP_ACTS.has(a.act) && !!a.act_ref : a.way === "open" ? !!a.href : false,
+    a.way === "tap" ? !!a.act && TAP_ACTS.has(a.act) && actRows(a).length > 0 : a.way === "open" ? !!a.href : false,
   );
 }
 
+/** The refs of a `tap` act: `act_refs` for a merged read, else `[act_ref]`. */
+export function actRefs(act: Pick<FeedAct, "act" | "act_ref" | "act_refs">): string[] {
+  if (act.act === "read" && act.act_refs && act.act_refs.length > 0) return act.act_refs;
+  return act.act_ref ? [act.act_ref] : [];
+}
+
 /**
- * The needs row a `tap` act runs as. `runAct` reads only `act` and
- * `act_ref`, and the id is the row of the needs view, so the bell and the
- * sidebar drop the same row.
+ * The needs rows a `tap` act closes, in the id grammar of the gateway
+ * (`routes/shell/needs.py`): a done closes `tasks:<task id>`, and a read
+ * closes `projects:<notification id>` for each id in `act_refs`.
  *
- * ⚠️ The id is NOT the card's id. A notification folded into a task card
- * has the card id `tasks:<task id>`, and its needs row is
- * `projects:<notification id>` (§4.1 rule 3). The id grammar is the
- * gateway's (`routes/shell/needs.py`): a done row is `tasks:<task id>`, a
- * read row is `projects:<notification id>`.
+ * ⚠️ These are NOT the card's id. A notification folded into a task card has
+ * the card id `tasks:<task id>`, and its needs rows are
+ * `projects:<notification id>` (§4.1 rule 3). Every mark keys on these rows,
+ * in the one store `needsActs.ts`, so the bell, the sidebar and the feed
+ * drop the same rows, and the store's 30 s hold ends each mark.
+ */
+export function actRows(act: Pick<FeedAct, "way" | "act" | "act_ref" | "act_refs">): string[] {
+  if (act.way !== "tap") return [];
+  if (act.act === "done") return act.act_ref ? [`tasks:${act.act_ref}`] : [];
+  if (act.act === "read") return actRefs(act).map((id) => `projects:${id}`);
+  return [];
+}
+
+/**
+ * The needs row a `tap` act runs as, for `runAct`. Its id is the act's first
+ * row. A read carries every id in `act_refs`, so `runAct` marks each one read.
  */
 export function needsRowFor(card: FeedCard, act: FeedAct): NeedsItem | null {
-  if (act.way !== "tap" || !act.act_ref || (act.act !== "done" && act.act !== "read")) return null;
+  const rows = actRows(act);
+  if (rows.length === 0) return null;
   const done = act.act === "done";
   const kind: NeedsKind = (KIND_ORDER as readonly string[]).includes(card.kind)
     ? (card.kind as NeedsKind)
     : done
       ? "due_today"
       : "notification";
+  const refs = actRefs(act);
   return {
-    id: done ? `tasks:${act.act_ref}` : `projects:${act.act_ref}`,
+    id: rows[0],
     app: done ? "tasks" : "projects",
     kind,
     title: card.title,
     detail: null,
     href: card.href,
     at: card.at,
-    act: act.act,
-    act_ref: act.act_ref,
+    act: done ? "done" : "read",
+    act_ref: refs[0],
+    ...(done ? {} : { act_refs: refs }),
   };
 }
 
 /**
- * Whether a `tap` act takes its whole card away. A done closes the task, so
- * the card goes. A read closes the card only when the notification IS the
- * card. A read on a task card closes the folded notification only, and the
- * overdue task must stay in view, so only the act goes.
+ * The kinds each act closes. A done closes the task, and a block belongs to
+ * its task (§4.1), so it closes the task's blocks too. A read closes the
+ * task's notifications and nothing else.
  */
-export function actLeavesCard(card: Pick<FeedCard, "kind">, act: Pick<FeedAct, "act">): boolean {
-  return act.act === "done" || card.kind === "notification";
+const CLOSES: Readonly<Record<string, ReadonlySet<string>>> = {
+  done: new Set(["overdue", "due_today", "block_soon", "block_overlap"]),
+  read: new Set(["notification"]),
+};
+
+/**
+ * Whether a `tap` act takes its whole card away: it closes the card's kind
+ * and every kind folded into it. A done on a task with an unread note keeps
+ * the card, because the note still needs the member. A read on a note card
+ * with a block that starts soon keeps the card, because the block is live.
+ */
+export function actLeavesCard(card: Pick<FeedCard, "kind" | "folded">, act: Pick<FeedAct, "act">): boolean {
+  const closes = CLOSES[act.act ?? ""];
+  return !!closes && closes.has(card.kind) && card.folded.every((k) => closes.has(k));
 }
 
-/** The key of one act of one card, for an act that leaves but keeps its card. */
-export const actKey = (card: Pick<FeedCard, "signal_id">, act: Pick<FeedAct, "id">): string =>
-  `${card.signal_id}#${act.id}`;
+/** Whether every needs row of a `tap` act is marked: the act is spent. */
+export function actSpent(act: FeedAct, marked: ReadonlySet<string>): boolean {
+  const rows = actRows(act);
+  return rows.length > 0 && rows.every((r) => marked.has(r));
+}
 
-/** Every id an answer holds: each card, and each act of each card. */
-export function heldIds(cards: readonly FeedCard[]): string[] {
-  return cards.flatMap((c) => [c.signal_id, ...c.acts.map((a) => actKey(c, a))]);
+/**
+ * Whether a card leaves: its spent acts close its kind and every folded kind.
+ * The marks come from the one store, so a Done in the bell hides the card
+ * too. A card that comes back with a live signal keys on new rows, or on a
+ * kind no spent act closes, so it shows.
+ */
+export function cardHidden(card: FeedCard, marked: ReadonlySet<string>): boolean {
+  if (marked.size === 0) return false;
+  const closed = new Set<string>();
+  for (const act of card.acts) if (actSpent(act, marked)) for (const k of CLOSES[act.act ?? ""] ?? []) closed.add(k);
+  return closed.has(card.kind) && card.folded.every((k) => closed.has(k));
+}
+
+/**
+ * Whether the feed's poll covers the needs key. Only an answer that holds a
+ * needs view, from a read that did not fail, fills that key. Else the needs
+ * poller keeps its own read, so the bell's counts keep their poll.
+ */
+export function coversNeeds(answer: Pick<FeedAnswer, "needs"> | undefined, error: string | null): boolean {
+  return !!answer?.needs && error === null;
 }
 
 // ── The words ───────────────────────────────────────────────────────────────
