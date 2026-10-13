@@ -1152,9 +1152,24 @@ They name the open record and the view, and they never instruct.
 
 **The confirm cards must not change.** A specialist's card must reach the
 member through the general agent's run. `_tool_injection.py` says that each
-delegate's own `request_confirmation` gate still asks a human. ⚠️ Nobody
-has checked this in a browser for a Projects write that goes through
-`orchestrator`. Slice 6c checks it, and until then it is a known risk.
+delegate's own `request_confirmation` gate still asks a human.
+
+The server half holds, and a test proves it (slice 6d, 2026-10-14).
+`tests/unit/test_delegated_confirmation_card.py` runs the real
+`orchestrator`, which calls projects-assistant, and projects-assistant calls
+its real `comment` tool. The card is an event of the parent's stream, and
+the parent's thread owns it. The executor refuses an answer for another
+thread. The member's answer opens the specialist's gate: APPROVE posts the
+comment, and REJECT posts nothing. A parent that shows no cards passes that
+on to the sub-run.
+
+⚠️ **Still unproven:**
+
+- **The browser.** Nobody has clicked Approve in the dock on a card of a
+  Projects write that goes through `orchestrator`. It needs the live stack.
+- **A Copilot SDK specialist** (`task-manager`, `app-builder`). Its native
+  `ask_user` parks through `_make_user_input_handler(<parent thread>)`, and
+  no test runs that path through `orchestrator`.
 
 ### 7.2 One bell
 
@@ -2066,7 +2081,7 @@ Done when:
 6. The server checks the grant on every scoped read. A test sends a scope the
    member does not hold and gets nothing back.
 
-### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, ON in production since 2026-10-13 (owner)
+### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, ON in production since 2026-10-13 (owner) · slice 6d (the routing eval) BUILT 2026-10-14
 
 Flag `NEXT_PUBLIC_SHELL_DOCK`. Files: a new dock in `src/lib/shell/`, the three
 rails, `AssistantToggle`, and `NotificationBell`.
@@ -2157,13 +2172,52 @@ Artifacts.
   (`executor.py`, `delegation_target`). A tenant directory is refused with
   a 422 in any case. `test_delegated_artifact_card.py` holds it.
 - **Still open:** the confirm-card check of §7.1 in a browser, through
-  `orchestrator`. It needs the live stack.
+  `orchestrator`. It needs the live stack. Slice 6d closes the server half
+  (`test_delegated_confirmation_card.py`).
 
 Fences: `src/app/artifacts/lib/chatFiles.test.ts`, `nav.test.ts` (fourteen
 live panes), `appBar.test.ts` and `e2e/app-title-bar.spec.ts`.
 
 **Slice 6d — routing.** A test set of member questions, each with the
 specialist that should answer it, run against `orchestrator` in CI.
+
+**Built in slice 6d (2026-10-14).** `evals/routing/` holds 27 member
+questions. Each one has the app of the page, the facts of the page and the
+expected specialist. The expected answer is none when `orchestrator` must
+answer itself, or when it must ask the member first. Every specialist that
+`orchestrator` holds has a case, and so does each live app that names an
+agent. Six cases are cross-app.
+
+- **The scripted run, in CI.** The catalog checks read the real registry,
+  the real orchestrator agent and the shell's own source (`nav.ts`,
+  `assistant.ts`). Then one case of each expected answer runs through the
+  real `run_agent_stream("orchestrator")` with a scripted model. The run must
+  reach the expected specialist's real factory, with the member's words.
+- **A scripted run proves the path, never the choice.** The script makes the
+  choice. `--live` measures it on a local stack, through the Router, and
+  writes `evals/routing/baseline.json`. Nobody has run it yet, so there is
+  no accuracy figure.
+- **Catalog only:** the four `task-manager` cases and the `app-builder` case.
+  Their sub-runs start the Copilot CLI, which a hermetic run cannot start.
+- **The confirm cards of §7.1.** The server half of item 4 of "Done when"
+  holds. The browser half is still open (§7.1).
+
+Fences: `tests/unit/test_routing_eval.py` (the scripted run, and a mutation
+that kills each check) and `tests/unit/test_delegated_confirmation_card.py`
+(two mutations of `_run_sub_agent_streaming`, each run red by hand). The
+`skill-eval.yml` job runs `python -m evals.routing.run --scripted`.
+
+Findings, not fixed here:
+
+- **No live pane names `whatsapp-assistant`.** My WhatsApp is live, and its
+  pane has no `agent`, so a delegation to it does not move the page.
+- **`_PULL_INSTRUCTIONS` names one customer.** Its first line in
+  `orchestrator/agents.py` says "for Fracktal Works", and every tenant's
+  orchestrator reads it.
+- **Two instructions disagree.** `_PULL_INSTRUCTIONS` rule 2 says "Do not
+  ask the user which agent to use". `ASSISTANT_PERSONA` says to ask when
+  the record is not clear. The live run of the three `asks` cases measures
+  which one the model follows.
 
 ### NS-7 · Presets, pins and the first sign-in — AGENT-SAFE · BUILT 2026-10-10, live on merge (owner)
 

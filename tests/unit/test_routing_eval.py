@@ -12,7 +12,9 @@ network, and proves that each check of it can fail:
   the wrong agent, a case with no specialist that delegates, an ``asks``
   case that does not ask, a message that drops the member's words, a page
   context that the model never sees, and a sub-run that never reaches the
-  agent.
+  agent;
+* the live path, with a script in place of the Router: the stand-in records
+  the delegate and no specialist runs, and the score fails a wrong delegate.
 
 Hermetic: the harness stubs the registry reads of the database and traps
 every host HTTP send. Run::

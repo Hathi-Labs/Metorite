@@ -18,6 +18,8 @@ What the harness replaces, and nothing more:
 * The CRM mode read of run assembly (``acb_skills.crm_tools.crm_mode``). It
   answers ``native``, so the CRM writes stay, as in an organization whose CRM
   is its own. It reads the gateway, which a hermetic run does not have.
+* The Custom Apps granted to an agent (``app_tools._granted_live_apps``).
+  It answers none. It reads the database.
 * The Redis relay. ``executor._push_sse_to_stream`` records each line with
   its thread, in :attr:`RoutingHarness.relayed`.
 * Scripted (``models`` given): the model of each agent. :class:`ReplyModel`
@@ -27,6 +29,12 @@ What the harness replaces, and nothing more:
   through the Router, and ``_run_sub_agent_streaming`` records the agent and
   the message and answers with a fixed line, so no specialist runs, writes or
   spends.
+
+Two best-effort reads still try the database: the member's access
+(``acb_auth.resolve_access``) and the tier overrides of ``acb_llm``. With no
+database, as in CI, each one fails closed and logs a warning. Neither one
+changes which tools the orchestrator holds here, because the harness gives
+the run no integration.
 
 A card on the stream is answered through ``executor.resolve_user_input``
 with the run's own thread, as ``POST /agent/respond-input`` answers it.
@@ -349,6 +357,9 @@ class RoutingHarness:
         import acb_skills.crm_tools as crm_tools
 
         mp.setattr(crm_tools, "crm_mode", native_crm)
+        from orchestrator import app_tools
+
+        mp.setattr(app_tools, "_granted_live_apps", lambda _agent: [])
         mp.setitem(sys.modules, "ddgs", None)
         mp.setitem(sys.modules, "duckduckgo_search", None)
         if self.live:
