@@ -209,6 +209,14 @@ DAILY_CREDIT_BUDGET = int(ASSUMED_DAILY_CREDITS * BUDGET_FRACTION)
 #: Stop when the provider reports fewer credits than this.
 CREDITS_FLOOR = 1_000
 
+#: CRM-Q10: the credits that discovery may spend when the org has no profile
+#: and the run uses the default budget, also when that budget is spent. One
+#: discovery costs 2 + 2 x 4 calls plus one for each Deals layout, so 11 with
+#: one layout (``test_crm_discovery.py``). 25 covers 15 Deals layouts, or 14
+#: retries. Without it, an org whose profile was dropped after it spent the
+#: 500-credit floor could not discover, and the mirror froze for up to 24 hours.
+DISCOVERY_ALLOWANCE = 25
+
 RECONCILE_EVERY = timedelta(hours=24)
 #: The source profile is read again after this long (CRM-Q1).
 DISCOVERY_EVERY = timedelta(hours=24)
@@ -559,6 +567,8 @@ class _Ctx:
         self.profile: profiles.ProfileRow | None = None
         self.used_24h = 0
         self.budget_is_default = credit_budget is None
+        #: Discovery reads at most once in a run, also when it failed (CRM-Q10).
+        self.discovery_tried = False
         #: The local pipelines of the org, loaded once for the deal writes.
         self.pipelines: _PipelineIndex | None = None
         #: The deals whose contact roles are not read yet, oldest first.
@@ -1617,6 +1627,19 @@ def _discovery_due(ctx: _Ctx) -> bool:
     return age >= DISCOVERY_EVERY
 
 
+def _discovery_allowance_due(ctx: _Ctx) -> bool:
+    """CRM-Q10: the org has no profile, the run uses the default budget, and
+    less than :data:`DISCOVERY_ALLOWANCE` of it is left.
+
+    Then discovery may spend the allowance, and it runs before the other steps.
+    A test budget (``credit_budget``) never gets it.
+    """
+    if not ctx.budget_is_default or ctx.profile is not None:
+        return False
+    left = ctx._budget_left()
+    return left is not None and left < DISCOVERY_ALLOWANCE
+
+
 _NAMED = (
     "lower(btrim(CASE jsonb_typeof(custom->'Pipeline') "
     "WHEN 'string' THEN custom->>'Pipeline' "
@@ -1957,19 +1980,30 @@ async def _discover(ctx: _Ctx) -> None:
     A fatal failure (a dead token, a spent budget, a throttle) ends the run, and
     any other failure only costs the section.
     """
-    if not _discovery_due(ctx):
+    if ctx.discovery_tried or not _discovery_due(ctx):
         return
+    ctx.discovery_tried = True
+    budget_before = ctx.budget_total
+    if _discovery_allowance_due(ctx):
+        # CRM-Q10: the discovery call may spend the allowance. The floor check
+        # of ``ctx.call`` still runs before it.
+        ctx.budget_total = ctx.credits + DISCOVERY_ALLOWANCE
     try:
         raw = await ctx.call(lambda s: s.discover())
     except (NotConnected, Stopped, ModeChanged):
         raise
     except SourceError as exc:
+        ctx.budget_total = budget_before
         if _fatal(exc):
             raise
         _log.warning("crm.sync.discovery_failed: %s", error_code(exc))
         return
     previous = ctx.profile.profile if ctx.profile is not None else None
     profile = ctx.mapping.build_profile(raw, previous, ctx.handle.scopes)
+    if ctx.budget_is_default:
+        # The edition is known now. The module fields and the rest of the run
+        # obey its budget, and the credits of this run count against it.
+        ctx.budget_total = max(daily_budget(profile) - ctx.used_24h, 0)
     module_fields, fields_skipped = await _read_module_fields(ctx, profile)
     profile = ctx.mapping.with_module_fields(
         profile, module_fields, previous, pending=fields_skipped,
@@ -1987,8 +2021,6 @@ async def _discover(ctx: _Ctx) -> None:
             await _mirror_pipelines(ctx, db, profile.get("pipelines") or [])
         await _write_module_field_defs(ctx, db, module_fields)
         ctx.profile = await profiles.latest(db, ctx.org)
-    if ctx.budget_is_default:
-        ctx.budget_total = max(daily_budget(profile) - ctx.used_24h, 0)
 
 
 async def _stage_types_from_profile(ctx: _Ctx) -> None:
@@ -2044,6 +2076,11 @@ async def _execute(ctx: _Ctx) -> None:
         ctx.budget_total = max(
             daily_budget(ctx.profile.profile if ctx.profile else None) - ctx.used_24h, 0,
         )
+    if _discovery_allowance_due(ctx):
+        # CRM-Q10: with no profile and too little of the default budget left,
+        # discovery goes first, on its allowance. It finds the edition, and so
+        # the budget that pays for the estimate and the field definitions.
+        await _discover(ctx)
     await _stage_types_from_profile(ctx)
     if ctx.kind == runs.KIND_IMPORT:
         await _start_deleted_windows(ctx)
