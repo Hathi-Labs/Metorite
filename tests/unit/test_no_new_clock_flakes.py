@@ -64,8 +64,8 @@ _MODULE_NOW_ALLOWED: dict[str, str] = {
     "test_email_html_tier.py::HOT":
         "10 days back, inside HTML_HOT_DAYS (90): no CI run drifts 80 days",
     "test_projects_assignees.py::TODAY":
-        "the dates sit 3, 10 and 20 days on, and no assertion compares them "
-        "with the code's today",
+        "the dates sit 3, 10 and 20 days on, so each check holds when the "
+        "code's today is a day either side of this one",
     "test_shell_needs_r8.py::NOW":
         "#951: the R8 seeds read this one instant, and an autouse fixture "
         "freezes the feed's _now and the lens read's today to it",
