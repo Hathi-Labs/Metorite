@@ -75,6 +75,9 @@ _DB_GATE = pytest.mark.skipif(
     ),
 )
 
+#: The real client factory, kept before any test patches it (fix round 1).
+_REAL_GET_TENANT_REDIS = tenant_redis.get_tenant_redis
+
 _REDIS_URL = os.environ.get("AGENT_WRITES_REDIS_URL", "").strip()
 _REDIS_GATE = pytest.mark.skipif(
     not (_URL and _REDIS_URL),
@@ -275,7 +278,8 @@ class _Gateway:
 
 @pytest.fixture
 def edge(monkeypatch) -> SimpleNamespace:
-    """The flag on, a usable key, the fake store and the fake gateway."""
+    """The flag and the writes flag on, a usable key, the fake store and the
+    fake gateway. A test turns the writes flag off when it needs to."""
     found: dict[str, Any] = {GOOD: _lookup()}
 
     async def lookup(raw: str, *, kind: str = "access") -> TokenLookup | None:
@@ -284,6 +288,7 @@ def edge(monkeypatch) -> SimpleNamespace:
     monkeypatch.setattr(agent_tokens, "lookup_token", lookup)
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_access_enabled", True)
+    monkeypatch.setattr(settings, "agent_access_writes_enabled", True)
     monkeypatch.setattr(settings, "agent_access_orgs", "*")
     monkeypatch.setattr(settings, "agent_edge_signing_key", KEY)
     monkeypatch.setattr(settings, "agent_edge_signing_key_previous", "")
@@ -482,6 +487,54 @@ class TestTheWriteToolsAtTheEdge:
         edge.gateway.ref_status = 200
         result = await _tool("add_task_reference", {"task_id": TASK, "url": "https://x.io/a"})
         assert result["structuredContent"]["created"] is False
+
+    # ── fix round 1: the writes flag at the edge ──
+
+    async def test_with_the_writes_flag_off_tools_list_leaves_out_the_writes(
+            self, edge, monkeypatch):
+        on = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
+        assert {"set_task_status", "add_task_reference"} <= set(on)
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
+        off = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
+        assert off == [n for n in on if n not in {"set_task_status", "add_task_reference"}]
+        assert len(off) == 7
+
+    @pytest.mark.parametrize("scope,scopes", [
+        ("projects:read projects:write", WRITE_SCOPES),
+        ("projects:read", ("projects:read",)),   # check 8 must not ask for a step-up
+    ])
+    @pytest.mark.parametrize("name,args", [
+        ("set_task_status", _status_args()),
+        ("add_task_reference", {"task_id": TASK, "url": "https://x.io/a"}),
+    ])
+    async def test_with_the_writes_flag_off_a_call_is_a_tool_error_with_no_request(
+            self, edge, monkeypatch, scope, scopes, name, args):
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
+        edge.tokens[GOOD] = _lookup(scope=scope, scopes=scopes)
+        r = await _post(_call(name, args))
+        assert r.status_code == 200, r.text
+        assert "www-authenticate" not in r.headers
+        assert _text(r.json()["result"]) == (
+            "Changes are turned off for agents in this organization.")
+        assert edge.gateway.requests == []
+
+    @pytest.mark.parametrize("name,route,args", [
+        ("set_task_status", ("PATCH", f"/projects/tasks/{TASK}"), _status_args()),
+        ("add_task_reference", ("POST", f"/projects/tasks/{TASK}/refs"),
+         {"task_id": TASK, "url": "https://x.io/a"}),
+    ])
+    async def test_the_gateway_refusal_of_the_flag_is_the_tool_error(
+            self, edge, name, route, args):
+        """The two units can disagree for a moment (a restart of one). The
+        coded 403 of branch 0 is the tool error, never the MCP 401, and a
+        plain 403 keeps its own text."""
+        edge.gateway.answers[route] = (403, {"detail": agent_oauth.WRITES_DISABLED_CODE})
+        r = await _post(_call(name, args))
+        assert r.status_code == 200, r.text
+        assert _text(r.json()["result"]) == (
+            "Changes are turned off for agents in this organization.")
+        edge.gateway.answers[route] = (403, {"detail": "something else"})
+        assert _text(await _tool(name, args)) == "This member cannot change that."
 
     def test_the_human_only_categories_mirror_the_gateway(self):
         from gateway.routes.projects.core import CLOSING_CATEGORIES
@@ -899,18 +952,57 @@ class TestTheGatewayHalf:
         assert (await _send(live, "PATCH", path, headers, swapped)).status_code == 401
         assert _status_of(live, task) == live.s.todo
 
-    async def test_w3_with_the_writes_flag_off_a_write_gets_401(self, live, monkeypatch):
+    async def test_w3_with_the_writes_flag_off_a_write_is_refused(self, live, monkeypatch):
+        """W3 after fix round 1. The gateway answers a SIGNED write the coded
+        403, never 401. The edge leaves the tools out and makes no request,
+        and the client keeps its token: a read goes on working."""
         monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
         task = live.task(live.team, live.s.todo, "w3")
         r = await _patch(live, "write", task, live.s.doing)
-        assert r.status_code == 401, r.text
+        assert r.status_code == 403, r.text
+        assert r.json() == {"detail": agent_oauth.WRITES_DISABLED_CODE}
         assert _status_of(live, task) == live.s.todo
-        result = await _mcp(live, "write", "add_task_reference",
-                            {"task_id": task, "url": "https://github.com/a/b/pull/3"})
-        assert result.status_code == 401, "a gateway 401 on a write is the MCP 401"
+        for tool, args in (
+                ("add_task_reference", {"url": "https://github.com/a/b/pull/3"}),
+                ("set_task_status", {"status_id": live.s.doing,
+                                     "expected_version": "2026-10-14T00:00:00+00:00"})):
+            result = await _result(live, "write", tool, task_id=task, **args)
+            assert result["content"][0]["text"] == (
+                "Changes are turned off for agents in this organization."), tool
+        read = await _result(live, "write", "get_task", task_id=task)
+        assert read["isError"] is False, "the token and the reads stay good"
+        assert _status_of(live, task) == live.s.todo
+
+    async def test_w3_an_unsigned_write_with_the_flag_off_learns_nothing(
+            self, live, monkeypatch):
+        """The coded 403 comes after the signature, so a stranger without the
+        key still gets the plain 401 and cannot read the flag."""
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
+        task = live.task(live.team, live.s.todo, "w3 unsigned")
         path = f"/projects/tasks/{task}"
-        read = await _send(live, "GET", path, _signed(live, "write", "GET", path))
-        assert read.status_code == 200, "the flag gates writes only"
+        body = json.dumps({"status_id": live.s.doing}).encode()
+        headers = _signed(live, "write", "PATCH", path, body=body)
+        headers[agent_signing.HEADER_SIGNATURE] = "v1,deadbeef," + "0" * 64
+        assert (await _send(live, "PATCH", path, headers, body)).status_code == 401
+
+    async def test_w3_when_only_the_gateway_has_writes_off_the_edge_gives_the_tool_error(
+            self, live, monkeypatch):
+        """The units restart one at a time, so for a moment the edge says on
+        and the gateway says off. The coded 403 is the tool error, never the
+        MCP 401 that would make a client drop a good token."""
+        from acb_auth import deps
+
+        gateway_view = SimpleNamespace(
+            **{k: getattr(agent_oauth, k) for k in dir(agent_oauth) if not k.startswith("__")})
+        gateway_view.writes_enabled = lambda: False
+        monkeypatch.setattr(deps, "agent_oauth", gateway_view)
+        task = live.task(live.team, live.s.todo, "w3 split")
+        r = await _mcp(live, "write", "add_task_reference",
+                       {"task_id": task, "url": "https://github.com/a/b/pull/4"})
+        assert r.status_code == 200, r.text
+        assert "www-authenticate" not in r.headers
+        assert r.json()["result"]["content"][0]["text"] == (
+            "Changes are turned off for agents in this organization.")
 
     async def test_a_write_to_a_pair_outside_the_write_list_gets_401(self, live):
         task = live.task(live.team, live.s.todo, "pair")
@@ -952,6 +1044,19 @@ class TestTheGatewayHalf:
     async def test_a_redis_outage_is_503_never_401(self, live):
         live.redis.fail = RedisConnectionError("refused")
         task = live.task(live.team, live.s.todo, "outage")
+        r = await _patch(live, "write", task, live.s.doing)
+        assert r.status_code == 503, r.text
+        assert r.headers["retry-after"] == "2"
+        assert _status_of(live, task) == live.s.todo
+
+    async def test_a_redis_client_that_cannot_be_built_is_503_never_500(
+            self, live, monkeypatch):
+        """Fix round 1. The REAL ``get_tenant_redis`` with a malformed
+        ``redis_url`` raises while it builds the client. That is the 503."""
+        monkeypatch.setattr(tenant_redis, "get_tenant_redis", _REAL_GET_TENANT_REDIS)
+        monkeypatch.setattr(tenant_redis, "_POOL", None)
+        monkeypatch.setattr(get_settings(), "redis_url", "not-a-redis-url")
+        task = live.task(live.team, live.s.todo, "bad url")
         r = await _patch(live, "write", task, live.s.doing)
         assert r.status_code == 503, r.text
         assert r.headers["retry-after"] == "2"

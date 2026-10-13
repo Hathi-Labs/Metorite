@@ -473,11 +473,11 @@ def _one_header(request: Request, name: str) -> str | None:
 
 #: Refusals that anybody on the internet can cause without a key. They log at
 #: info, so a stranger cannot fill the warning log. A refusal after a good
-#: signature logs at warning, because only a key holder reaches it. The three
-#: write refusals of EA-6a come before the signature check.
+#: signature logs at warning, because only a key holder reaches it. The two
+#: write refusals of EA-6a, "method" and "nonce", come before the signature.
 _UNSIGNED_REFUSALS = frozenset({
     "disabled", "no_key", "headers", "connection_header", "body", "query",
-    "signature", "writes_disabled", "method", "nonce",
+    "signature", "method", "nonce",
 })
 
 
@@ -575,6 +575,17 @@ WRITES_UNAVAILABLE_DETAIL = "Metorite could not check this change. Try again."
 WRITE_CAP_DETAIL = "Too many changes from this connection. Wait a few minutes."
 
 
+def _writes_disabled() -> HTTPException:
+    """The 403 of a SIGNED write while ``agent_access_writes_enabled`` is off.
+
+    EA-6a fix round 1. Its ``detail`` is ``agent_oauth.WRITES_DISABLED_CODE``,
+    and the edge maps that code to a tool error. A 401 here made the edge
+    answer the MCP 401, so a client dropped a good token and lost its reads.
+    """
+    _log.info("auth.agent_refused", reason="writes_disabled")
+    return HTTPException(status_code=403, detail=agent_oauth.WRITES_DISABLED_CODE)
+
+
 async def _claim_write(
     connection: agent_tokens.LiveConnection, nonce: str,
 ) -> str | None:
@@ -587,7 +598,8 @@ async def _claim_write(
     the nonce. Each string is a refusal (401). Returns ``None`` when the
     write may go on.
 
-    Raises the 503 of a Redis outage (``Retry-After: 2``), never a 401, and
+    Raises the 503 of a Redis outage or of a client that cannot be built
+    (``Retry-After: 2``), never a 401 or a 500, and
     the 429 of the cap with the seconds left in the window. The counter's
     life starts at the first write of the window. A counter whose expire
     was lost gets one again, so it never pins a connection for good.
@@ -596,9 +608,11 @@ async def _claim_write(
         return "write_scope"
     organization_id = connection.organization_id
     connection_id = connection.connection_id
-    client = tenant_redis.get_tenant_redis()
     over: int | None = None
     try:
+        # Inside the `try` (fix round 1): a client that cannot be built, such
+        # as one with a malformed `redis_url`, is the 503, never a 500.
+        client = tenant_redis.get_tenant_redis()
         with tenant_redis.organization_scope(organization_id):
             fresh = await client.set(
                 tenant_redis.key(agent_signing.NONCE_NAMESPACE, connection_id, nonce),
@@ -616,7 +630,9 @@ async def _claim_write(
                     await client.expire(counter, agent_oauth.WRITE_WINDOW_S)
                     left = agent_oauth.WRITE_WINDOW_S
                 over = max(left, 1)
-    except tenant_redis.OUTAGE_ERRORS as exc:
+    except Exception as exc:
+        # Every failure of the store fails closed as the 503: an outage
+        # (`tenant_redis.OUTAGE_ERRORS`), and a client that cannot be built.
         _log.warning("auth.agent_write_redis_unavailable", error=type(exc).__name__,
                      connection_id=connection_id)
         raise HTTPException(
@@ -645,9 +661,10 @@ async def _agent_user(request: Request) -> UserContext:
     both organization checks run BEFORE the member resolve, so a refused
     request never binds a tenant.
 
-    A write (EA-6a, EA3-28 to EA3-30) is a method other than GET. It needs the
-    writes flag, a pair of ``MCP_WRITE_ROUTES`` and a well-formed nonce
-    before its body is read and signed, then ``projects:write`` on the
+    A write (EA-6a, EA3-28 to EA3-30) is a method other than GET. It needs a
+    pair of ``MCP_WRITE_ROUTES`` and a well-formed nonce before its body is
+    read and signed. After the signature, the writes flag: off answers the
+    coded 403 of :func:`_writes_disabled`. Then ``projects:write`` on the
     connection, a fresh nonce and room under the cap before the resolve. A
     Redis outage answers 503 and the cap answers 429 (:func:`_claim_write`).
 
@@ -680,14 +697,12 @@ async def _agent_user(request: Request) -> UserContext:
     method = request.method.upper()
     pair = (method, _matched_template(request))
 
-    # 2a. A write (EA-6a, EA3-28 and EA3-29). BEFORE the body is read: the
-    # writes flag, a pair of MCP_WRITE_ROUTES and a well-formed nonce. Then
-    # the body, which the signature covers. A GET reads no body.
+    # 2a. A write (EA-6a, EA3-28). BEFORE the body is read: a pair of
+    # MCP_WRITE_ROUTES and a well-formed nonce. Then the body, which the
+    # signature covers. A GET reads no body.
     body = b""
     nonce = None
     if method != "GET":
-        if not agent_oauth.writes_enabled():
-            return _refuse_agent("writes_disabled")
         if pair not in agent_oauth.MCP_WRITE_ROUTES:
             return _refuse_agent("method")
         nonce = _one_header(request, agent_signing.HEADER_NONCE)
@@ -704,6 +719,12 @@ async def _agent_user(request: Request) -> UserContext:
     # 3. The matched route template is in MCP_ROUTES.
     if pair not in agent_oauth.MCP_ROUTES:
         return _refuse_agent("route")
+
+    # 3b. A signed write while the writes flag is off (EA3-29, fix round 1):
+    # the coded 403, never the 401, so the edge keeps the client's token.
+    # After the signature, so only a key holder learns the flag's state.
+    if nonce is not None and not agent_oauth.writes_enabled():
+        raise _writes_disabled()
 
     # 4. The live connection, read in the SIGNED organization.
     connection = await _read_connection(organization_id, connection_id)

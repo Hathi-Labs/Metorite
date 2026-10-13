@@ -110,10 +110,19 @@ def enabled() -> bool:
 def writes_enabled() -> bool:
     """True when ``agent_access_writes_enabled`` is on (EA-6a, EA3-29).
 
-    The ONE reader of the writes flag. Branch 0 refuses every write while it
-    is false. It does not read :func:`enabled`: a write needs both.
+    The ONE reader of the writes flag, for both units. The edge leaves the
+    write tools out of ``tools/list`` and refuses a call of one while it is
+    false. Branch 0 refuses every signed write with
+    :data:`WRITES_DISABLED_CODE`. It does not read :func:`enabled`: a write
+    needs both.
     """
     return bool(get_settings().agent_access_writes_enabled)
+
+
+#: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
+#: writes flag is off (EA-6a fix round 1). The edge maps it to a tool error,
+#: never to the MCP 401, so a client keeps its token and its reads.
+WRITES_DISABLED_CODE = "agent_writes_disabled"
 
 
 # ── The organization allowlist (EA-10p, spec §10.6, decision EA3-27) ────────
@@ -598,6 +607,7 @@ __all__ = [
     "RESOURCE_SCOPES",
     "S256",
     "SUPPORTED_SCOPES",
+    "WRITES_DISABLED_CODE",
     "WRITE_CAP",
     "WRITE_CAP_NAMESPACE",
     "WRITE_WINDOW_S",

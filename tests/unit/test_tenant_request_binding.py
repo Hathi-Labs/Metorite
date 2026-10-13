@@ -1084,10 +1084,13 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: carries the review and the verification of §10.1.
 #:
 #: EA-6a (2026-10-14) changed branch 0 for the writes. The pins before it were
-#: 3.12 ``1eded904…db93e0`` and 3.13 ``2ac62c16…a40f22``.
+#: 3.12 ``1eded904…db93e0`` and 3.13 ``2ac62c16…a40f22``. Its fix round 1 moved
+#: the writes flag after the signature and built the Redis client inside the
+#: ``try``. The pins of the first build were 3.12 ``8de38247…cafdb2`` and
+#: 3.13 ``0cc35491…59e002c``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "8de38247cccac7431f87a478656904e1e2b3c666e971c45a5bd13cbe99cafdb2",
-    (3, 13): "0cc35491d3670faf1d95d56f5165a7b80c4ea6a9219578286cecb033159e002c",
+    (3, 12): "6e8ea0123adca18a5165232771eccf40753d40a0cdaaf0d869e54bb9bc318257",
+    (3, 13): "be0315c701550a8e4c6b01ca15b21223f6d68c931f3c5f18cfb9eb3ace74bc00",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

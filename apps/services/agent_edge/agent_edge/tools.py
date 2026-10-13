@@ -90,6 +90,9 @@ TEXT_WRITE_FORBIDDEN = "This member cannot change that."
 TEXT_STALE = "The task changed. Read it again."
 TEXT_CAP = "Too many changes. Wait a few minutes."
 TEXT_HUMAN_STEP = "Moving a task to done or cancelled stays a human step."
+#: A write while ``agent_access_writes_enabled`` is off (fix round 1). It is a
+#: tool error and never the MCP 401, so the client keeps its token.
+TEXT_WRITES_OFF = "Changes are turned off for agents in this organization."
 #: ``add_task_reference`` only (§9.2). The route answers 409 when a remove
 #: crossed the add, and 422 when the classifier refuses the link.
 TEXT_REF_RETRY = "The link changed while Metorite added it. Add it again."
@@ -104,8 +107,10 @@ READ_ANNOTATIONS: Mapping[str, bool] = {
 }
 
 #: The four annotations of a write tool (EA-6a, §9.2). Class B: it changes
-#: Metorite, it destroys nothing, a second call with the same input changes
-#: nothing more, and it reaches no outside site.
+#: Metorite, it destroys nothing, and a second call with the same input
+#: changes nothing more. The call itself reaches no outside site. ⚠️ A status
+#: move emits ``pm.task.status_changed``, and a published workflow of the
+#: organization can act on it, as it does on a member's own change (§9.2).
 WRITE_ANNOTATIONS: Mapping[str, bool] = {
     "readOnlyHint": False,
     "destructiveHint": False,
@@ -164,10 +169,18 @@ def success_result(structured: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _writes_disabled_answer(answer: Answer) -> bool:
+    """True for the coded 403 of branch 0 while the writes flag is off. The
+    gateway and the edge share the code (``agent_oauth.WRITES_DISABLED_CODE``)."""
+    body = answer.body
+    return isinstance(body, dict) and body.get("detail") == agent_oauth.WRITES_DISABLED_CODE
+
+
 def _body_of(answer: Answer, not_found: str, *, write: bool = False) -> Any:
     """The body of a 2xx answer, or raise the mapping of EA3-16.
 
-    A write (EA-6a) maps three answers of its own: 403, 412 and 429.
+    A write (EA-6a) maps answers of its own: the coded 403 of the writes
+    flag, any other 403, 412 and 429.
     """
     status = answer.status
     if 200 <= status < 300:
@@ -176,6 +189,8 @@ def _body_of(answer: Answer, not_found: str, *, write: bool = False) -> Any:
         return answer.body
     if status == 401:
         raise GatewayUnauthorized()
+    if write and status == 403 and _writes_disabled_answer(answer):
+        raise ToolError(TEXT_WRITES_OFF)
     if status == 403:
         raise ToolError(TEXT_WRITE_FORBIDDEN if write else TEXT_FORBIDDEN)
     if status == 404:
@@ -1824,11 +1839,18 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
 )}
 
 
+def offered(tool: Tool) -> bool:
+    """A read always. A write only while the writes flag is on (fix round 1),
+    read through the ONE reader, ``agent_oauth.writes_enabled``."""
+    return tool.method == "GET" or agent_oauth.writes_enabled()
+
+
 def listed(scopes: frozenset[str]) -> list[dict[str, Any]]:
-    """The ``tools/list`` entries that *scopes* cover. Varies only by scope."""
+    """The ``tools/list`` entries that *scopes* cover. Varies by scope, and a
+    write tool shows only while the writes flag is on (EA-6a)."""
     return [
         t.describe() for t in TOOLS.values()
-        if t.required_scope is None or t.required_scope in scopes
+        if (t.required_scope is None or t.required_scope in scopes) and offered(t)
     ]
 
 
@@ -1837,8 +1859,11 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
 
     Raises :class:`GatewayUnauthorized` for a gateway 401, which the
     transport answers as the MCP 401. Every other failure is a result with
-    ``isError: true``.
+    ``isError: true``. A write tool while the writes flag is off answers
+    :data:`TEXT_WRITES_OFF` and makes no gateway request.
     """
+    if not offered(tool):
+        return error_result(TEXT_WRITES_OFF)
     try:
         args = check_input(tool.input_schema, arguments)
         async with asyncio.timeout(TOOL_TIMEOUT_S):
@@ -1886,6 +1911,7 @@ __all__ = [
     "TEXT_REF_RETRY",
     "TEXT_STALE",
     "TEXT_TASK_NOT_FOUND",
+    "TEXT_WRITES_OFF",
     "TEXT_WRITE_FORBIDDEN",
     "TIMELINE_ROW_KEYS",
     "TOOLS",
@@ -1902,6 +1928,7 @@ __all__ = [
     "check_input",
     "field_value",
     "listed",
+    "offered",
     "reference",
     "timeline_meta",
     "untrusted",
