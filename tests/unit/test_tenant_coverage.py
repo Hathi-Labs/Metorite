@@ -171,6 +171,20 @@ def test_the_task_refs_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE pm_task_refs FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_my_day_card_state_table_is_tenant_scoped() -> None:
+    """WS-58 MD-2a (``my_day_feed.md`` §13.1). ``my_day_card_state`` holds what
+    one member of one organization did with each card. It must never be
+    exempt, and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "my_day_card_state" in gen.discover_tables()
+    assert "my_day_card_state" not in gen.EXEMPT
+    assert "my_day_card_state" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE my_day_card_state FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:
     """FORCE, WITH CHECK and the missing-ok flag each have an incident behind
     them (saas_multitenancy_implementation.md §1.1). Drop any one and the

@@ -310,6 +310,14 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "body cannot name a member or an organization "
             "(`test_my_day_prefs.py::TestTheMember`). It reads no app data."
         ),
+        "/shell/feed/state": (
+            "WS-58 MD-2a. It reads no app data and calls no app. It writes only "
+            "the caller's own rows of `my_day_card_state`, keyed on the session's "
+            "member in the bound tenant, so it needs no feature, as "
+            "`/auth/me/shell` needs none. A body that names a member or an org "
+            "gets 422 (`test_my_day_state.py::TestTheBodyContract`, "
+            "`test_my_day_state_r8.py::TestTheTenancyBoundary`)."
+        ),
     },
 }
 
