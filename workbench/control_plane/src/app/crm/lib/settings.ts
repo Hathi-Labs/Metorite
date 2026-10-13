@@ -17,7 +17,7 @@
 //      to "why can I not save this row".
 
 import { REQUIREABLE_FIELDS } from "./board";
-import type { StageMetadataReport, StatusType } from "./types";
+import type { StageMetadataReport, StatusKind, StatusType } from "./types";
 
 /** Lanes are numbered in tens so a lane can be inserted between two by hand. */
 export const POSITION_STEP = 10;
@@ -262,4 +262,65 @@ function sameValue(before: unknown, after: unknown): boolean {
     );
   }
   return before === after;
+}
+
+// ── The Mirror editor (WS-53 CRM-C3, crm_platform.md §20.6 item 14) ────────
+//
+// In Mirror mode Zoho owns the source values of a stage, and Metorite keeps an
+// overlay beside them that the sync never writes (D95). The gateway takes only
+// the overlay fields there and answers 409 for any other field, so the editor
+// sends only these.
+
+/** The overlay fields a Mirror admin edits on one row, by kind. */
+export const OVERLAY_FIELDS: Record<StatusKind, readonly string[]> = {
+  deal: ["hidden", "ui_probability", "ui_color", "max_dwell_days"],
+  lead: ["hidden", "ui_color"],
+};
+
+/** What changed in the overlay of one row. Only these fields. */
+export function overlayPatch(
+  kind: StatusKind,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of OVERLAY_FIELDS[kind]) {
+    const was = before[key] ?? null;
+    const now = after[key] ?? null;
+    if (!sameValue(was, now)) out[key] = now;
+  }
+  return out;
+}
+
+/**
+ * "Reset to Zoho" on a row: the Metorite probability and colour go, so the
+ * Zoho values apply again. `hidden` and `max_dwell_days` stay. A lead status
+ * has no probability, and the gateway refuses a field it has not got.
+ */
+export function resetToSource(kind: StatusKind): Record<string, null> {
+  return kind === "deal" ? { ui_probability: null, ui_color: null } : { ui_color: null };
+}
+
+/** True when the row carries a Metorite value that "Reset to Zoho" clears. */
+export function hasOverlay(kind: StatusKind, status: Record<string, unknown>): boolean {
+  return Object.keys(resetToSource(kind)).some((key) => status[key] != null);
+}
+
+/** A Metorite probability: empty (the Zoho value applies) or a whole 0 to 100. */
+export function validateOverlayProbability(value: number | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  if (!Number.isInteger(value) || value < 0 || value > 100) {
+    return "A probability is a whole number from 0 to 100, or empty for the Zoho value.";
+  }
+  return null;
+}
+
+/** The ids the order route takes after one drag: every row, in the new order. */
+export function orderAfterDrop<T extends { id: string }>(
+  rows: T[],
+  from: number,
+  to: number
+): string[] | null {
+  const moved = moveItem(rows, from, to);
+  return moved === rows ? null : moved.map((row) => row.id);
 }

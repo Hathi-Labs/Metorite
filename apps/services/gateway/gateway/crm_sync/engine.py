@@ -100,6 +100,7 @@ from gateway.routes.crm.core import (
     compute_lead_name,
     delete_from_source,
     delete_module_records_from_source,
+    merge_status_from_source,
     savepoint,
     set_deal_contacts_from_source,
     set_pipeline_stages_from_source,
@@ -752,12 +753,47 @@ async def _local_id(
 # ``core.insert_row``, which refuses a write in Mirror mode (CRM-Z6). The key
 # is ``(organization_id, name)``: one stage name is one stage (§5.2 row 11).
 # ``table`` is one of two constants of this module, never caller input.
+#
+# D95 (CRM-C3, ``crm_platform.md`` §20.6 item 7): the sync writes the SOURCE
+# columns only. No statement here names an overlay column of
+# ``core.MIRROR_OVERLAY_COLUMNS``, or ``color``. The SQL scan of
+# ``tests/unit/test_crm_mirror_readonly.py`` refuses one.
+#
+# A record pull and a pipeline stage only ADD a row they do not know. They
+# never change the order or the probability of a row that exists.
 _STATUS_INSERT_SQL = (
-    "INSERT INTO {table} (name, position, type{prob_col}) VALUES (:name, "
-    "COALESCE((SELECT max(position) + 1 FROM {table}), 0), :type{prob_val}) "
+    "INSERT INTO {table} (name, position, type) VALUES (:name, "
+    "COALESCE((SELECT max(position) + 1 FROM {table}), 0), :type) "
     "ON CONFLICT (organization_id, name) DO NOTHING"
 )
 _STATUS_ID_SQL = "SELECT id FROM {table} WHERE name = :name"
+
+# The picklist read is the one step that keeps the source values current
+# (CRM-C3, §20.6 items 7 to 9). It matches a row by the Zoho id of the value
+# first, then by name.
+_STATUS_BY_EXT_SQL = "SELECT id, name FROM {table} WHERE ext_id = :ext"
+_STATUS_BY_NAME_SQL = "SELECT id, ext_id FROM {table} WHERE name = :name"
+_PICKLIST_INSERT_SQL = (
+    "INSERT INTO {table} (name, position, type, ext_id{prob_col}) "
+    "VALUES (:name, :position, :type, :ext{prob_val}) RETURNING id"
+)
+#: ``position`` each time. ``probability`` only when Zoho names one. A listed
+#: value is not gone, so ``source_gone_at`` clears.
+_PICKLIST_UPDATE_SQL = (
+    "UPDATE {table} SET name = :name, position = :position, "
+    "ext_id = COALESCE(CAST(:ext AS text), ext_id), source_gone_at = NULL{prob_set} "
+    "WHERE id = CAST(:id AS uuid)"
+)
+#: Two values of one picklist can trade names in one Zoho edit. The row that
+#: holds the name of another value moves aside under this name, and its own
+#: picklist value names it again in the same run.
+_STATUS_PARK_SQL = "UPDATE {table} SET name = :parked WHERE id = CAST(:id AS uuid)"
+#: The gone rule: a row with a Zoho id that the picklist no longer lists.
+#: The sync never deletes it, because its deals keep it.
+_STATUS_GONE_SQL = (
+    "UPDATE {table} SET source_gone_at = now() WHERE ext_id IS NOT NULL "
+    "AND source_gone_at IS NULL AND NOT (ext_id = ANY(CAST(:listed AS text[])))"
+)
 
 
 _FORECAST_SQL = (
@@ -804,31 +840,104 @@ async def _apply_stage_types(db: Any, org: str, pipelines: list[dict[str, Any]])
 
 async def _ensure_status(
     db: Any, table: str, name: str, *, type_: str | None = None,
-    position: int | None = None, probability: int | None = None,
     forecast_category: str | None = None,
 ) -> str:
     """The id of the status called ``name``. A new one is appended.
 
+    A row that exists keeps its order and its probability: a record pull and a
+    pipeline stage never move them (CRM-C3, §20.6 item 7).
     ``forecast_category`` (deal stages only) is kept when the provider names one.
     """
     deal = table == DEAL_STATUSES
-    sql = _STATUS_INSERT_SQL.format(
-        table=table, prob_col=", probability" if deal else "",
-        prob_val=", :probability" if deal else "",
-    )
     params: dict[str, Any] = {"name": name, "type": type_ or guess_status_type(name)}
-    if deal:
-        params["probability"] = probability or 0
-    if position is not None:
-        sql = sql.replace(
-            "COALESCE((SELECT max(position) + 1 FROM " + table + "), 0)", ":position",
-        )
-        params["position"] = position
-    await db.execute(text(sql), params)
+    await db.execute(text(_STATUS_INSERT_SQL.format(table=table)), params)
     row = (await db.execute(text(_STATUS_ID_SQL.format(table=table)), {"name": name})).first()
     if deal and forecast_category:
         await db.execute(text(_FORECAST_SQL), {"id": str(row.id), "category": forecast_category})
     return str(row.id)
+
+
+@dataclass(frozen=True)
+class _PicklistValue:
+    """One value of the Stage or Lead_Status picklist, as the sync reads it."""
+
+    name: str
+    ext_id: str | None
+    position: int
+    type: str
+    probability: int | None
+    forecast_category: str | None
+
+
+async def _source_status(
+    db: Any, table: str, value: _PicklistValue, listed: frozenset[str],
+) -> str:
+    """Keep one status row equal to one picklist value. Returns its id.
+
+    The order of the match (§20.6 items 7 and 8):
+
+    1. The row with the Zoho id of the value. A Zoho rename then changes
+       ``name`` in place, and the row keeps its overlay and its deals.
+    2. Else the row with the name. It takes the Zoho id.
+    3. Else a new row.
+
+    When the name belongs to ANOTHER row than the id row:
+
+    * that row has no Zoho id (a record pull made it before this read): the
+      fenced door ``core.merge_status_from_source`` folds it into the id row;
+    * that row holds the id of another value that Zoho still lists: two
+      values traded names, so it moves aside until its own value names it;
+    * that row holds an id that Zoho no longer lists: it moves aside too, and
+      the gone rule marks it. Its deals keep it.
+
+    No savepoint here catches a failure. A failed merge fails the picklist
+    step, and the run logs it.
+    """
+    deal = table == DEAL_STATUSES
+    by_ext = None
+    if value.ext_id:
+        by_ext = (await db.execute(
+            text(_STATUS_BY_EXT_SQL.format(table=table)), {"ext": value.ext_id},
+        )).first()
+    by_name = (await db.execute(
+        text(_STATUS_BY_NAME_SQL.format(table=table)), {"name": value.name},
+    )).first()
+    target = str(by_ext.id) if by_ext is not None else None
+    if by_name is not None and str(by_name.id) != target:
+        other_ext = getattr(by_name, "ext_id", None)
+        if other_ext is None and target is not None:
+            await merge_status_from_source(db, table, target, str(by_name.id), value.name)
+        elif other_ext is None or (target is None and other_ext not in listed):
+            target = str(by_name.id)  # the row takes the Zoho id of this value
+        else:
+            await db.execute(
+                text(_STATUS_PARK_SQL.format(table=table)),
+                {"id": str(by_name.id), "parked": f"{value.name} [{other_ext}]"},
+            )
+    prob = deal and value.probability is not None
+    if target is None:
+        row = (await db.execute(
+            text(_PICKLIST_INSERT_SQL.format(
+                table=table, prob_col=", probability" if prob else "",
+                prob_val=", :probability" if prob else "",
+            )),
+            {"name": value.name, "position": value.position, "type": value.type,
+             "ext": value.ext_id, "probability": value.probability},
+        )).first()
+        target = str(row.id)
+    else:
+        await db.execute(
+            text(_PICKLIST_UPDATE_SQL.format(
+                table=table, prob_set=", probability = :probability" if prob else "",
+            )),
+            {"id": target, "name": value.name, "position": value.position,
+             "ext": value.ext_id, "probability": value.probability},
+        )
+    if deal and value.forecast_category:
+        await db.execute(
+            text(_FORECAST_SQL), {"id": target, "category": value.forecast_category},
+        )
+    return target
 
 
 async def _status_id(
@@ -854,28 +963,51 @@ def _picklist_type(item: dict[str, Any], name: str) -> str:
     return guess_status_type(name)
 
 
+def _picklist_values(
+    ctx: _Ctx, definition: dict[str, Any],
+) -> list[_PicklistValue]:
+    """The values of one picklist definition, in Zoho order."""
+    items = [i for i in definition.get("pick_list_values") or [] if isinstance(i, dict)]
+    items.sort(key=lambda i: int(i.get("sequence_number") or 0))
+    values: list[_PicklistValue] = []
+    for position, item in enumerate(items):
+        name = str(item.get("actual_value") or item.get("display_value") or "").strip()
+        if not name or name == "-None-":
+            continue
+        raw_prob = item.get("probability")
+        prob = raw_prob if isinstance(raw_prob, int) and 0 <= raw_prob <= 100 else None
+        raw_id = item.get("id")
+        values.append(_PicklistValue(
+            name=name, ext_id=str(raw_id) if raw_id not in (None, "") else None,
+            position=position, type=_picklist_type(item, name), probability=prob,
+            forecast_category=ctx.mapping.forecast_category_of(item),
+        ))
+    return values
+
+
 async def _mirror_statuses(
     ctx: _Ctx, db: Any, entity: str, definitions: list[dict[str, Any]],
 ) -> None:
-    """Mirror the Stage / Lead_Status picklist into the org's status table."""
+    """Mirror the Stage / Lead_Status picklist into the org's status table.
+
+    Only this step runs the gone rule (CRM-C3, §20.6 item 9), and only when
+    the definition was read. A run that could not read it marks nothing. A
+    row with no Zoho id (a stage that only a pipeline lists, and
+    ``UNKNOWN_STATUS``) is never marked. A list with no Zoho id marks nothing.
+    """
     api_name, table = _STATUS_FIELDS[entity]
     for definition in definitions:
         if definition.get("api_name") != api_name:
             continue
-        items = [i for i in definition.get("pick_list_values") or [] if isinstance(i, dict)]
-        items.sort(key=lambda i: int(i.get("sequence_number") or 0))
-        for position, item in enumerate(items):
-            name = str(item.get("actual_value") or item.get("display_value") or "").strip()
-            if not name or name == "-None-":
-                continue
-            raw_prob = item.get("probability")
-            prob = raw_prob if isinstance(raw_prob, int) and 0 <= raw_prob <= 100 else None
+        values = _picklist_values(ctx, definition)
+        listed = frozenset(v.ext_id for v in values if v.ext_id)
+        for value in values:
             async with savepoint(db):
-                await _ensure_status(
-                    db, table, name, type_=_picklist_type(item, name),
-                    position=position, probability=prob,
-                    forecast_category=ctx.mapping.forecast_category_of(item),
-                )
+                await _source_status(db, table, value, listed)
+        if listed:
+            await db.execute(
+                text(_STATUS_GONE_SQL.format(table=table)), {"listed": sorted(listed)},
+            )
 
 
 @dataclass
@@ -1588,11 +1720,18 @@ _FIELD_DEF_SQL = (
 )
 
 
-async def _field_defs(ctx: _Ctx) -> None:
-    """The custom fields of each entity, so the UI knows what ``custom`` holds."""
+async def _field_defs(
+    ctx: _Ctx, entities: tuple[str, ...] = FIELD_DEF_ENTITIES, *,
+    statuses_only: bool = False,
+) -> None:
+    """The custom fields of each entity, so the UI knows what ``custom`` holds.
+
+    ``statuses_only`` reads the Stage and Lead_Status picklists and writes no
+    field definition (CRM-C3, the discovery cadence in :func:`_execute`).
+    """
     import json
 
-    for entity in FIELD_DEF_ENTITIES:
+    for entity in entities:
         try:
             definitions = await ctx.call(lambda s, e=entity: s.list_field_defs(e))
         except (NotConnected, Stopped):
@@ -1607,6 +1746,8 @@ async def _field_defs(ctx: _Ctx) -> None:
         async with ctx.page() as db:
             if entity in _STATUS_FIELDS:
                 await _mirror_statuses(ctx, db, entity, definitions)
+            if statuses_only:
+                continue
             for position, definition in enumerate(definitions):
                 mapped = ctx.mapping.map_field_def(entity, definition, position)
                 if mapped is None:
@@ -2091,6 +2232,14 @@ async def _execute(ctx: _Ctx) -> None:
             await _estimate(ctx)
     if ctx.kind in (runs.KIND_IMPORT, runs.KIND_RECONCILE):
         await _field_defs(ctx)
+    elif _discovery_due(ctx):
+        # CRM-C3 (crm_platform.md §20.6 item 7): the Stage and Lead_Status
+        # picklists on the discovery cadence too, in every run kind. Most
+        # runs are incremental, and a reconcile can stop on its budget, so
+        # without this a Zoho reorder, a Zoho probability and the Zoho id of
+        # each value would wait for a reconcile that may not come. Two calls
+        # once in 24 hours. Read before `_discover`, which makes it not due.
+        await _field_defs(ctx, tuple(_STATUS_FIELDS), statuses_only=True)
     # After the stages are mirrored, so a pipeline stage that the picklist did
     # not list is appended and a listed one keeps its place. Before the records,
     # so a deal finds its pipeline.

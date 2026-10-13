@@ -10,10 +10,13 @@
     "not parity — that is the whole reason this file exists rather than a",
     "comment pointing one implementation at the other.",
     "",
-    "A row is (amount, deal_probability, stage_probability, stage_type) and the",
-    "single number both sides must produce for it. `null` means the column is",
-    "NULL / the field is absent, which is a distinct case from 0 on three of",
-    "these rows and is the case most of the live board is in."
+    "A row is (amount, deal_probability, stage_probability, ui_probability,",
+    "stage_type) and the single number both sides must produce for it.",
+    "`ui_probability` is the Metorite overlay of a stage (WS-53 CRM-C3,",
+    "crm_platform.md §20.6 item 11). The stage value is the overlay when it is",
+    "set, else `stage_probability`. `null` means the column is NULL / the field",
+    "is absent, which is a distinct case from 0 on three of these rows and is",
+    "the case most of the live board is in."
   ],
   "rows": [
     {
@@ -21,6 +24,7 @@
       "amount": 200000,
       "deal_probability": 20,
       "stage_probability": 50,
+      "ui_probability": null,
       "stage_type": "open",
       "expected_weighted": 40000
     },
@@ -29,6 +33,7 @@
       "amount": 200000,
       "deal_probability": null,
       "stage_probability": 50,
+      "ui_probability": null,
       "stage_type": "ongoing",
       "expected_weighted": 100000
     },
@@ -37,6 +42,7 @@
       "amount": 200000,
       "deal_probability": 0,
       "stage_probability": 50,
+      "ui_probability": null,
       "stage_type": "open",
       "expected_weighted": 0
     },
@@ -45,6 +51,7 @@
       "amount": 200000,
       "deal_probability": 100,
       "stage_probability": 50,
+      "ui_probability": null,
       "stage_type": "open",
       "expected_weighted": 200000
     },
@@ -53,6 +60,7 @@
       "amount": null,
       "deal_probability": 80,
       "stage_probability": 50,
+      "ui_probability": null,
       "stage_type": "open",
       "expected_weighted": 0
     },
@@ -61,6 +69,7 @@
       "amount": 200000,
       "deal_probability": null,
       "stage_probability": null,
+      "ui_probability": null,
       "stage_type": "open",
       "expected_weighted": 0
     },
@@ -69,6 +78,7 @@
       "amount": 0,
       "deal_probability": 50,
       "stage_probability": 50,
+      "ui_probability": null,
       "stage_type": "open",
       "expected_weighted": 0
     },
@@ -77,6 +87,7 @@
       "amount": 100000,
       "deal_probability": null,
       "stage_probability": 33,
+      "ui_probability": null,
       "stage_type": "ongoing",
       "expected_weighted": 33000
     },
@@ -85,6 +96,7 @@
       "amount": 125000,
       "deal_probability": 35,
       "stage_probability": 10,
+      "ui_probability": null,
       "stage_type": "ongoing",
       "expected_weighted": 43750
     },
@@ -93,6 +105,7 @@
       "amount": 75000,
       "deal_probability": 7,
       "stage_probability": 20,
+      "ui_probability": null,
       "stage_type": "open",
       "expected_weighted": 5250
     },
@@ -101,6 +114,7 @@
       "amount": 500000,
       "deal_probability": 100,
       "stage_probability": 100,
+      "ui_probability": null,
       "stage_type": "won",
       "expected_weighted": 0
     },
@@ -109,6 +123,7 @@
       "amount": 300000,
       "deal_probability": 0,
       "stage_probability": 0,
+      "ui_probability": null,
       "stage_type": "lost",
       "expected_weighted": 0
     },
@@ -117,6 +132,7 @@
       "amount": 400000,
       "deal_probability": 40,
       "stage_probability": 40,
+      "ui_probability": null,
       "stage_type": "on_hold",
       "expected_weighted": 0
     },
@@ -125,7 +141,44 @@
       "amount": 1000000,
       "deal_probability": null,
       "stage_probability": 90,
+      "ui_probability": null,
       "stage_type": "on_hold",
+      "expected_weighted": 0
+    },
+    {
+      "name": "a deal with no probability follows the stage overlay",
+      "amount": 200000,
+      "deal_probability": null,
+      "stage_probability": 50,
+      "ui_probability": 20,
+      "stage_type": "open",
+      "expected_weighted": 40000
+    },
+    {
+      "name": "a deal with its own probability ignores the stage overlay",
+      "amount": 200000,
+      "deal_probability": 70,
+      "stage_probability": 50,
+      "ui_probability": 20,
+      "stage_type": "open",
+      "expected_weighted": 140000
+    },
+    {
+      "name": "an overlay of 0 is a value, not a missing overlay",
+      "amount": 200000,
+      "deal_probability": null,
+      "stage_probability": 50,
+      "ui_probability": 0,
+      "stage_type": "ongoing",
+      "expected_weighted": 0
+    },
+    {
+      "name": "an overlay on a won stage moves no forecast",
+      "amount": 200000,
+      "deal_probability": null,
+      "stage_probability": 100,
+      "ui_probability": 60,
+      "stage_type": "won",
       "expected_weighted": 0
     }
   ]

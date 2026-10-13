@@ -23,12 +23,20 @@
  * for a second pipeline are not in this build, so the grid edits the stages of
  * the one implicit pipeline only.
  *
+ * **Mirror mode** (WS-53 CRM-C3, crm_platform.md §20.6 item 14). Zoho owns the
+ * stages, and an admin edits the Metorite overlay beside them: the order, the
+ * probability, the colour, hide and the rot threshold. Each row shows the Zoho
+ * value beside the Metorite value. A drag calls the order route. The sync never
+ * writes the overlay, and nothing here writes Zoho (D95). A member who is not an
+ * admin still reads the lists.
+ *
  * Everything server-shaped is pure and lives in ../lib/settings.ts: what a
  * drop renumbers, which rows that actually PATCHes, and the client half of
  * D-CRM-10's won=100 / lost=0 rule.
  */
 
 import Icon from "@/components/Icon";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -45,11 +53,17 @@ import { useCrmModeValue } from "../lib/modeContext";
 import { showPicker } from "../lib/pipelines";
 import {
   changedFields,
+  hasOverlay,
+  orderAfterDrop,
+  overlayPatch,
   reorder,
+  resetToSource,
   validateLostReasonDraft,
+  validateOverlayProbability,
   validateStatusDraft,
   type PositionPatch,
 } from "../lib/settings";
+import { useCrmStore } from "../lib/store";
 import FieldMapCard from "./FieldMapCard";
 import FieldsCard from "./FieldsCard";
 import { Card, NameList, PipelineSections } from "./SettingsCards";
@@ -70,6 +84,15 @@ const TYPE_OPTIONS: SelectOption[] = STATUS_TYPES.map((type) => ({
   value: type,
   label: type,
 }));
+
+/**
+ * The colour of a Mirror row (CRM-C3, item 16): `colorOptions`, and "by type"
+ * for no Metorite colour. Zoho has no stage colour, so with none the board
+ * colours the lane by its type.
+ */
+function overlayColorOptions(stored: string | null | undefined): SelectOption[] {
+  return [{ value: "", label: "by type" }, ...colorOptions(stored)];
+}
 
 export default function PipelineSettings({
   dealStatuses,
@@ -122,11 +145,42 @@ export default function PipelineSettings({
   onPullStages?: unknown;
 }) {
   const several = showPicker(pipelines);
+  const orderStatuses = useCrmStore((state) => state.orderStatuses);
+  const resetStatusOrder = useCrmStore((state) => state.resetStatusOrder);
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
       {setup}
       {access}
-      {readOnly ? (
+      {readOnly && showAdminCards ? (
+        <>
+          <PipelineSections
+            pipelines={pipelines}
+            fallback={dealStatuses}
+            note="Stages come from Zoho."
+          />
+          <MirrorStatusGrid
+            kind="deal"
+            title="Deal stages"
+            blurb="Zoho owns the stages. The Metorite order, probability, colour and hide stay in Metorite, and the sync never changes them. A Metorite probability moves the forecast only of a deal with no probability of its own, and most Zoho deals have one."
+            statuses={dealStatuses}
+            saving={saving}
+            onSave={onSaveStatus}
+            onOrder={orderStatuses}
+            onResetOrder={resetStatusOrder}
+          />
+          <MirrorStatusGrid
+            kind="lead"
+            title="Lead Status"
+            blurb="Zoho owns the Lead Status values. The Metorite order, colour and hide stay in Metorite."
+            statuses={leadStatuses}
+            saving={saving}
+            onSave={onSaveStatus}
+            onOrder={orderStatuses}
+            onResetOrder={resetStatusOrder}
+          />
+          <MirrorReasonGrid reasons={lostReasons} saving={saving} onSave={onSaveLostReason} />
+        </>
+      ) : readOnly ? (
         <>
           <PipelineSections
             pipelines={pipelines}
@@ -465,6 +519,11 @@ function StatusRow({
         default
       </label>
 
+      <HideBox
+        checked={Boolean(draft.hidden)}
+        onChange={(hidden) => setDraft({ ...draft, hidden })}
+      />
+
       <Button
         size="icon-sm"
         variant="ghost"
@@ -553,6 +612,322 @@ function StatusRow({
         <p className="w-full text-xs text-destructive">{invalid}</p>
       )}
     </div>
+  );
+}
+
+/** The "hidden" box of a row (CRM-C3). No picker offers a hidden row. */
+function HideBox({
+  checked,
+  disabled = false,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (hidden: boolean) => void;
+}) {
+  return (
+    <label
+      className="flex items-center gap-1 text-xs text-muted-foreground"
+      title="No picker offers a hidden row. A board shows its lane only when the lane holds records."
+    >
+      <Checkbox
+        size="sm"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      hidden
+    </label>
+  );
+}
+
+// ── CRM-C3 · the Mirror editor ──────────────────────────────────────────────
+
+/**
+ * The stages or the Lead Status values of a Mirror org, for an admin.
+ *
+ * A drag sends every id of the kind, in the new order, to the order route,
+ * which writes the Metorite order in one transaction. "Reset order to Zoho"
+ * clears that order, so the Zoho order applies again.
+ */
+export function MirrorStatusGrid({
+  kind,
+  title,
+  blurb,
+  statuses,
+  saving,
+  onSave,
+  onOrder,
+  onResetOrder,
+}: {
+  kind: StatusKind;
+  title: string;
+  blurb: string;
+  statuses: Status[];
+  saving: boolean;
+  onSave: (
+    kind: StatusKind,
+    statusId: string | null,
+    body: Record<string, unknown>
+  ) => Promise<boolean>;
+  onOrder: (kind: StatusKind, ids: string[]) => Promise<boolean>;
+  onResetOrder: (kind: StatusKind) => Promise<boolean>;
+}) {
+  const [rows, setRows] = useState<Status[]>(statuses);
+  const [served, setServed] = useState<Status[]>(statuses);
+  const [dragging, setDragging] = useState<number | null>(null);
+  // The server's answer is the truth, as in `StatusGrid`.
+  if (served !== statuses) {
+    setServed(statuses);
+    setRows(statuses);
+  }
+  const ordered = statuses.some((status) => status.admin_order);
+
+  async function drop(to: number) {
+    if (dragging === null) return;
+    const ids = orderAfterDrop(rows, dragging, to);
+    setDragging(null);
+    if (!ids) return;
+    setRows(ids.map((id) => rows.find((row) => row.id === id)!));
+    await onOrder(kind, ids);
+  }
+
+  return (
+    <section className="rounded-xl border border-border bg-card/40" aria-label={title}>
+      <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">{blurb}</p>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="RotateCcw"
+          disabled={!ordered || saving}
+          onClick={() => void onResetOrder(kind)}
+        >
+          Reset order to Zoho
+        </Button>
+      </header>
+      <ul>
+        {rows.map((status, index) => (
+          <li
+            key={status.id}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              void drop(index);
+            }}
+            className="border-b border-border/60 last:border-b-0"
+          >
+            <MirrorStatusRow
+              kind={kind}
+              status={status}
+              saving={saving}
+              onDragStart={(e) => {
+                e.dataTransfer.setData("text/plain", status.id);
+                e.dataTransfer.effectAllowed = "move";
+                setDragging(index);
+              }}
+              onDragEnd={() => setDragging(null)}
+              onSave={(body) => onSave(kind, status.id, body)}
+            />
+          </li>
+        ))}
+        {rows.length === 0 && (
+          <li className="px-4 py-6 text-center text-xs text-muted-foreground">
+            No values from Zoho yet. The next sync brings them.
+          </li>
+        )}
+      </ul>
+    </section>
+  );
+}
+
+function MirrorStatusRow({
+  kind,
+  status,
+  saving,
+  onDragStart,
+  onDragEnd,
+  onSave,
+}: {
+  kind: StatusKind;
+  status: Status;
+  saving: boolean;
+  onDragStart: (e: React.DragEvent<HTMLElement>) => void;
+  onDragEnd: () => void;
+  onSave: (body: Record<string, unknown>) => Promise<boolean>;
+}) {
+  const [draft, setDraft] = useState(status);
+  const [served, setServed] = useState(status);
+  const [invalid, setInvalid] = useState<string | null>(null);
+  if (served !== status) {
+    setServed(status);
+    setDraft(status);
+  }
+  const patch = overlayPatch(
+    kind,
+    status as unknown as Record<string, unknown>,
+    draft as unknown as Record<string, unknown>
+  );
+  const dirty = Object.keys(patch).length > 0;
+  const gone = Boolean(status.source_gone_at);
+
+  async function save() {
+    const message = validateOverlayProbability(draft.ui_probability);
+    setInvalid(message);
+    if (message) return;
+    await onSave(patch);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-4 py-2">
+      <span
+        draggable
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        className="cursor-grab text-muted-foreground hover:text-foreground"
+        title="Drag to set the Metorite order"
+      >
+        <Icon name="GripVertical" className="w-4 h-4" />
+      </span>
+      <span
+        className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, "mirror").dot}`}
+      />
+      <span className="min-w-32 flex-1 truncate text-sm text-foreground">{status.name}</span>
+      {gone && (
+        <Badge tone="warning" title="The Zoho picklist no longer lists this value. Its records keep it.">
+          Removed in Zoho
+        </Badge>
+      )}
+
+      {kind === "deal" && (
+        <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          <span title="The probability in Zoho">Zoho {status.source_probability ?? 0}%</span>
+          <span aria-hidden>·</span>
+          Metorite
+          <Input
+            inputSize="sm"
+            type="number"
+            min={0}
+            max={100}
+            value={draft.ui_probability ?? ""}
+            placeholder={String(status.source_probability ?? 0)}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                ui_probability: e.target.value === "" ? null : Number(e.target.value),
+              })
+            }
+            className="w-16"
+            aria-label="Metorite probability"
+          />
+          %
+        </label>
+      )}
+
+      <SelectButton
+        label="Colour"
+        value={draft.ui_color ?? ""}
+        options={overlayColorOptions(draft.ui_color)}
+        defaultValue=""
+        onChange={(color) => setDraft({ ...draft, ui_color: color || null })}
+        widthClass="w-24"
+      />
+
+      <HideBox
+        checked={Boolean(draft.hidden)}
+        onChange={(hidden) => setDraft({ ...draft, hidden })}
+      />
+
+      {kind === "deal" && (
+        <label
+          className="flex items-center gap-1 text-xs text-muted-foreground"
+          title="Days in this stage before a card's age badge warns. Empty = never rots."
+        >
+          rots after
+          <Input
+            inputSize="sm"
+            type="number"
+            min={1}
+            max={32767}
+            value={draft.max_dwell_days ?? ""}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                max_dwell_days: e.target.value === "" ? null : Number(e.target.value),
+              })
+            }
+            className="w-16"
+            aria-label="Rot threshold in days"
+          />
+          days
+        </label>
+      )}
+
+      <Button
+        size="icon-sm"
+        variant="ghost"
+        icon="Check"
+        aria-label="Save"
+        disabled={!dirty || saving}
+        onClick={() => void save()}
+      />
+      <Button
+        size="sm"
+        variant="ghost"
+        icon="RotateCcw"
+        disabled={!hasOverlay(kind, status as unknown as Record<string, unknown>) || saving}
+        onClick={() => void onSave(resetToSource(kind))}
+      >
+        Reset to Zoho
+      </Button>
+
+      {invalid && <p className="w-full text-xs text-destructive">{invalid}</p>}
+    </div>
+  );
+}
+
+/** The lost reasons of a Mirror org: the labels come from Zoho, and hide stays here. */
+export function MirrorReasonGrid({
+  reasons,
+  saving,
+  onSave,
+}: {
+  reasons: LostReason[];
+  saving: boolean;
+  onSave: (reasonId: string | null, body: Record<string, unknown>) => Promise<boolean>;
+}) {
+  return (
+    <Card
+      title="Lost reasons"
+      note="The reasons come from Zoho. A hidden reason stays on its deals, and no picker offers it."
+    >
+      {reasons.length === 0 ? (
+        <p className="px-4 py-3 text-xs text-muted-foreground">None yet.</p>
+      ) : (
+        <ul>
+          {[...reasons]
+            .sort((a, b) => a.position - b.position)
+            .map((reason) => (
+              <li
+                key={reason.id}
+                className="flex items-center gap-2 border-b border-border/60 px-4 py-2 last:border-b-0"
+              >
+                <span className="min-w-32 flex-1 truncate text-sm text-foreground">
+                  {reason.label}
+                </span>
+                <HideBox
+                  checked={Boolean(reason.hidden)}
+                  disabled={saving}
+                  onChange={(hidden) => void onSave(reason.id, { hidden })}
+                />
+              </li>
+            ))}
+        </ul>
+      )}
+    </Card>
   );
 }
 
@@ -652,6 +1027,7 @@ function ReasonGrid({
               }}
               onDragEnd={() => setDragging(null)}
               onSave={(label) => onSave(reason.id, { label })}
+              onHide={(hidden) => onSave(reason.id, { hidden })}
               onRemove={() => onRemove(reason.id)}
             />
           </li>
@@ -673,6 +1049,7 @@ function ReasonRow({
   onDragStart,
   onDragEnd,
   onSave,
+  onHide,
   onRemove,
 }: {
   reason: LostReason;
@@ -680,6 +1057,7 @@ function ReasonRow({
   onDragStart: (e: React.DragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
   onSave: (label: string) => Promise<boolean>;
+  onHide: (hidden: boolean) => Promise<boolean>;
   onRemove: () => Promise<boolean>;
 }) {
   const [label, setLabel] = useState(reason.label);
@@ -722,6 +1100,11 @@ function ReasonRow({
         aria-label="Save"
         disabled={label === reason.label || saving}
         onClick={() => void save()}
+      />
+      <HideBox
+        checked={Boolean(reason.hidden)}
+        disabled={saving}
+        onChange={(hidden) => void onHide(hidden)}
       />
       <Button
         size="icon-sm"

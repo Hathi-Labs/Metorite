@@ -34,12 +34,39 @@ export type Status = {
   required_fields?: string[];
   /** Deal statuses only (WS-26h) — days before a card rots. Null = never. */
   max_dwell_days?: number | null;
+  // ── WS-53 CRM-C3, crm_platform.md §20.6 ──
+  // `position`, `probability` and `color` above carry the EFFECTIVE value: the
+  // Metorite overlay when an admin set one, else the source value. The source
+  // is Zoho in Mirror mode and the admin in Native mode. Optional for the R6
+  // window in which a newer bundle meets an older gateway.
+  /** The values the source gave. */
+  source_position?: number;
+  source_probability?: number | null;
+  source_color?: string;
+  /** The overlay as stored. Null means "not set", so the source value applies. */
+  ui_position?: number | null;
+  ui_probability?: number | null;
+  ui_color?: string | null;
+  /** No picker offers a hidden row, except as the current value of a record. */
+  hidden?: boolean;
+  /** When the Zoho picklist stopped listing the value. Settings: "Removed in Zoho". */
+  source_gone_at?: string | null;
+  /** The id of the Zoho picklist value, or null. */
+  ext_id?: string | null;
+  /** True when an admin ordered this kind, so the admin order applies. */
+  admin_order?: boolean;
 };
 
 /** The two status vocabularies, and the URL segment each lives at. */
 export type StatusKind = "deal" | "lead";
 
-export type LostReason = { id: string; label: string; position: number };
+export type LostReason = {
+  id: string;
+  label: string;
+  position: number;
+  /** CRM-C3: no picker offers a hidden reason. */
+  hidden?: boolean;
+};
 
 // ── The WS-26f f1 stage-metadata report ───────────────────────────────────
 //

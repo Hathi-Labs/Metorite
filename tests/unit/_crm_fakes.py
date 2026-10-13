@@ -124,6 +124,12 @@ _INNER_JOIN = re.compile(
 )
 #: ``org.name AS organization_name`` — one projected column.
 _ALIASED_COL = re.compile(r"\b(\w+)\.(\w+)\s+AS\s+(\w+)", re.I)
+#: ``COALESCE(s.ui_color, s.color) AS color`` — an overlay over a source column
+#: (CRM-C3). Both arguments are qualified columns, so ``COALESCE(SUM(x), 0)``
+#: and every other COALESCE of the package never match.
+_COALESCE_COLS = re.compile(
+    r"COALESCE\(\s*(\w+)\.(\w+)\s*,\s*(\w+)\.(\w+)\s*\)\s+AS\s+(\w+)", re.I,
+)
 
 # ── WS-53 CRM-T5: the settings upsert, the native seed, the caller's groups ─
 
@@ -852,6 +858,21 @@ class FakeCrmDB:
         }
         joins.update(inner)
         projected = _ALIASED_COL.findall(statement)
+        overlaid = _COALESCE_COLS.findall(statement)
+        if overlaid and not joins:
+            # CRM-C3: `COALESCE(s.ui_probability, s.probability) AS probability`
+            # in `core.EFFECTIVE_STATUS_COLUMNS`. Read from the statement, so an
+            # effective rule that drifts changes the answer here too.
+            out_rows = []
+            for row in rows:
+                merged = dict(row)
+                for _alias, column, name in projected:
+                    merged[name] = row.get(column)
+                for _a, first, _b, second, name in overlaid:
+                    value = row.get(first)
+                    merged[name] = value if value is not None else row.get(second)
+                out_rows.append(merged)
+            return out_rows
         if not joins and not projected:
             return rows
 

@@ -33,6 +33,7 @@ from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
+    EFFECTIVE_STATUS_COLUMNS,
     _tenant_session,
     assert_writable,
     checked_uuid,
@@ -103,9 +104,11 @@ _PIPELINES_SQL = (
     "FROM crm_pipelines ORDER BY is_default DESC, position, created_at, id"
 )
 
+#: CRM-C3: the stage columns come from the one SELECT list, so
+#: ``probability`` is the effective value (§20.6 item 6). CRM-C7 reads this.
 _STAGES_SQL = (
-    "SELECT ps.pipeline_id, ps.position AS stage_position, s.id, s.name, s.type, "
-    "s.probability, s.forecast_category "
+    "SELECT ps.pipeline_id, ps.position AS stage_position, "
+    f"{EFFECTIVE_STATUS_COLUMNS['crm_deal_statuses']} "
     "FROM crm_pipeline_stages ps JOIN crm_deal_statuses s ON s.id = ps.status_id "
     "ORDER BY ps.pipeline_id, ps.position, s.name"
 )

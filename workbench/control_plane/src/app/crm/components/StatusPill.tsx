@@ -22,6 +22,7 @@ import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { stageAccent } from "../lib/board";
+import { pickable } from "../lib/emptyStages";
 import { useCrmModeValue } from "../lib/modeContext";
 import type { Status } from "../lib/types";
 
@@ -41,9 +42,10 @@ export default function StatusPill({
   // State, not a ref, so the panel measures again when the trigger mounts.
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
   const menuId = useId();
+  // CRM-C3: a hidden stage is offered only when it is the current one.
   const sorted = useMemo(
-    () => [...statuses].sort((a, b) => a.position - b.position),
-    [statuses],
+    () => pickable([...statuses].sort((a, b) => a.position - b.position), status?.id),
+    [statuses, status?.id],
   );
   // The option the keyboard is on. Focus stays on the pill: the menu is
   // portalled outside the record sheet's focus trap, so moving DOM focus
