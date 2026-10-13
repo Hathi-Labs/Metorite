@@ -54,7 +54,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { needsKey, type NeedsItem } from "./needs";
-import { BellButton, ShellBell, bellBadge, bellLabel, shownOfTotal } from "./ShellBell";
+import { BELL_POLL_MS, BellButton, ShellBell, bellBadge, bellLabel, joinNeedsPoll, shownOfTotal } from "./ShellBell";
 import { shellDockOn } from "./dockFlag";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
@@ -215,6 +215,117 @@ describe("the flag decides where the bell is", () => {
     const shell = code(read("../../components/AppShell.tsx"));
     expect(shell).toMatch(/\{dockOn \? <ShellBell onBeforeOpen=\{close\}/);
     expect(shell.match(/\{dockOn \? <ShellBellHost placement=/g)?.length).toBe(2);
+  });
+});
+
+describe("the one poll calls each key (my_day_feed.md §14.1, MD-1b)", () => {
+  // My Day's feed joins the poll with its own key, and covers the needs key,
+  // because its answer carries the needs view. The bell's host and the
+  // sidebar join on the needs key, as before.
+  //
+  // Mutation, run by hand (2026-10-13): put back
+  // `const _tick = () => _pollers.values().next().value?.();` and (a) fails.
+  const FEED = "projects/shell/feed?limit=40";
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("(a) two keys both refresh on one tick", () => {
+    vi.useFakeTimers();
+    const needs = vi.fn();
+    const feed = vi.fn();
+    const leaveNeeds = joinNeedsPoll(needs);
+    const leaveFeed = joinNeedsPoll(feed, FEED);
+    try {
+      vi.advanceTimersByTime(BELL_POLL_MS);
+      expect(needs).toHaveBeenCalledTimes(1);
+      expect(feed).toHaveBeenCalledTimes(1);
+      // Two readers of one key still make one call for that key.
+      const second = vi.fn();
+      const leaveSecond = joinNeedsPoll(second);
+      vi.advanceTimersByTime(BELL_POLL_MS);
+      expect(needs.mock.calls.length + second.mock.calls.length).toBe(2);
+      expect(feed).toHaveBeenCalledTimes(2);
+      leaveSecond();
+    } finally {
+      leaveNeeds();
+      leaveFeed();
+    }
+  });
+
+  it("(b) a needs poller stays quiet while the feed covers its key", () => {
+    vi.useFakeTimers();
+    const bell = vi.fn();
+    const sidebar = vi.fn();
+    const feed = vi.fn();
+    const leaveBell = joinNeedsPoll(bell);
+    const leaveSidebar = joinNeedsPoll(sidebar, needsKey());
+    const leaveFeed = joinNeedsPoll(feed, FEED, [needsKey()]);
+    try {
+      vi.advanceTimersByTime(BELL_POLL_MS * 3);
+      expect(feed).toHaveBeenCalledTimes(3);
+      expect(bell).not.toHaveBeenCalled();
+      expect(sidebar).not.toHaveBeenCalled();
+    } finally {
+      leaveBell();
+      leaveSidebar();
+      leaveFeed();
+    }
+  });
+
+  it("(c) the needs poller runs on the next tick after the feed leaves", () => {
+    vi.useFakeTimers();
+    const bell = vi.fn();
+    const feed = vi.fn();
+    const leaveBell = joinNeedsPoll(bell);
+    const leaveFeed = joinNeedsPoll(feed, FEED, [needsKey()]);
+    try {
+      vi.advanceTimersByTime(BELL_POLL_MS);
+      expect(bell).not.toHaveBeenCalled();
+      leaveFeed();
+      vi.advanceTimersByTime(BELL_POLL_MS);
+      expect(bell).toHaveBeenCalledTimes(1);
+      expect(feed).toHaveBeenCalledTimes(1);
+    } finally {
+      leaveBell();
+      leaveFeed();
+    }
+  });
+
+  it("(d) a hidden tab reads no key, and reads each key once when it shows", () => {
+    vi.useFakeTimers();
+    const doc = Object.assign(new EventTarget(), { visibilityState: "hidden" as DocumentVisibilityState });
+    vi.stubGlobal("document", doc);
+    const bell = vi.fn();
+    const other = vi.fn();
+    const feed = vi.fn();
+    const leaveBell = joinNeedsPoll(bell);
+    const leaveOther = joinNeedsPoll(other, "projects/other");
+    const leaveFeed = joinNeedsPoll(feed, FEED, [needsKey()]);
+    try {
+      vi.advanceTimersByTime(BELL_POLL_MS * 3);
+      expect(bell).not.toHaveBeenCalled();
+      expect(other).not.toHaveBeenCalled();
+      expect(feed).not.toHaveBeenCalled();
+      doc.visibilityState = "visible";
+      doc.dispatchEvent(new Event("visibilitychange"));
+      // The same rule as a tick: each key once, and the covered key not at all.
+      expect(feed).toHaveBeenCalledTimes(1);
+      expect(other).toHaveBeenCalledTimes(1);
+      expect(bell).not.toHaveBeenCalled();
+    } finally {
+      leaveBell();
+      leaveOther();
+      leaveFeed();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("the default key is the needs key, so the old callers need no edit", () => {
+    const src = code(read("./ShellBell.tsx"));
+    expect(src).toMatch(/key: string = needsKey\(\),\s*covers: readonly string\[\] = \[\],/);
+    expect(src).toMatch(/useNeedsPoll\(allowed, refresh\)/);
   });
 });
 

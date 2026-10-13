@@ -1631,6 +1631,7 @@ the agents that still run on Copilot.
 `agent-apis-config` (PR #585). §15 moves the root `metorite` agent, the
 self-mutation runner and the agents that a repo registers. The external
 `agent-sales-assistant` needs a change in its own repo (WS43-G11).
+Moot since 2026-10-13: WS-53 CRM-C7 removed that agent.
 
 **The order after D84.** WS-43t1 and WS-43t2 come first of all, because the
 move of `agent-task-manager` (WS-8i) waits on them. ⚠️ No agent with a confirm
@@ -4315,7 +4316,7 @@ An agent refuses each of these by name:
 | WS43-G8 | Un-park anything else that D16 parks: P5-c, P5-d, P5-b.3, or T2 for the pooled cutover |
 | WS43-G9 | Merge a Copilot removal slice: WS-43p, WS-43q, WS-43r or WS-43s. The migration of WS-43s is one-way |
 | WS43-G10 | Set the `mutation:*` or `metorite:*` target on production. WS43-G3 covers the setting, and this row names the targets. `metorite:*` and `app_builder` wait on the soak of WS43-G13 (§15.9.8) |
-| WS43-G11 | Change a repo outside this one, such as `FracktalWorks/agent-sales-assistant` |
+| WS43-G11 | Change a repo outside this one, such as `FracktalWorks/agent-sales-assistant`. The example is moot since 2026-10-13: WS-53 CRM-C7 removed that agent |
 | WS43-G12 | Edit `scripts/vps_apply.sh`. It lies outside `deploy/`, so no plan-guard rule matches it, and this text gates it. 2026-10-08: the owner approved `vps_apply.sh` edits for WS-49 (`box_hardening.md`) and #729 |
 | WS43-G13 | Set `MAF_NATIVE_SESSIONS` on production. The one-week soak of §15.9.8 starts then, and WS-8i, the confirm-turn scopes and WS-43q wait on its end |
 
@@ -5448,7 +5449,7 @@ Each slice keeps its text, its done-when and its gate. Its heading now says
 | task-manager | `GitHubCopilotAgent` (`apps/agents/agent-task-manager/agents.py:37`) | `"maf"` in its `config.json`, and `"github-copilot"` in `_AGENT_REGISTRY` (`gateway/routes/agent.py:439`) | WS-8i |
 | app-builder | `GitHubCopilotAgent` (`apps/agents/agent-app-builder/agents.py:18`) | `"maf"` in its `config.json`, and `"github-copilot"` in `_AGENT_REGISTRY` (`:496`) | WS-43h |
 | `metorite` (root) | `GitHubCopilotAgent` (root `agents.py:104-108`) | `"github-copilot"` in the root `config.json` | WS-43m |
-| agent-sales-assistant | Loaded from its repo | `"github-copilot"` in `gateway/agents.json:11` | WS-43n builds the fence. The label goes in WS-43q, after WS43-G11, because the sub-agent path reads only the label |
+| agent-sales-assistant | Loaded from its repo | `"github-copilot"` in `gateway/agents.json:11` | WS-43n builds the fence. The label goes in WS-43q, after WS43-G11, because the sub-agent path reads only the label. Moot since 2026-10-13: WS-53 CRM-C7 removed the agent and its `agents.json` entry |
 
 ⚠️ **The `config.json` label of the first two agents is wrong.** The executor
 takes the Copilot path for an agent when the label says `github-copilot`, or

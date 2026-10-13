@@ -195,6 +195,10 @@ type CrmState = {
     kind: StatusKind,
     patches: PositionPatch[]
   ) => Promise<void>;
+  /** CRM-C3: the Metorite order of a Mirror kind, every id in order, in one request. */
+  orderStatuses: (kind: StatusKind, ids: string[]) => Promise<boolean>;
+  /** CRM-C3: "Reset order to Zoho". */
+  resetStatusOrder: (kind: StatusKind) => Promise<boolean>;
   saveLostReason: (
     reasonId: string | null,
     body: Record<string, unknown>
@@ -708,6 +712,34 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       if (failures.length) {
         set({ error: reorderFailureMessage(failures, patches.length) });
       }
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
+  },
+
+  async orderStatuses(kind, ids) {
+    set({ saving: true, error: null });
+    try {
+      await api.orderStatuses(kind, ids);
+      return true;
+    } catch (err) {
+      set({ error: message(err) });
+      return false;
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
+  },
+
+  async resetStatusOrder(kind) {
+    set({ saving: true, error: null });
+    try {
+      await api.resetStatusOrder(kind);
+      return true;
+    } catch (err) {
+      set({ error: message(err) });
+      return false;
     } finally {
       set({ saving: false });
       await get().loadVocabulary();

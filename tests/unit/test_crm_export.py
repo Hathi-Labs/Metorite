@@ -258,15 +258,24 @@ def test_the_filters_come_from_the_one_shared_builder() -> None:
     is not the same as handing it the caller's values, and a source grep for
     ``list_contract(`` alone would pass on a call that reparsed ``params`` into
     its own vocabulary first.
+
+    Since WS-53 CRM-C7 the one builder is ``records.list_query``: the export
+    hands it the caller's whole ``params`` and builds no filter itself, and
+    ``list_query`` hands each field to ``list_contract``.
     """
     source = SOURCE.read_text(encoding="utf-8")
-    assert "list_contract(" in source
-    for field in ("q", "sort", "direction", "status_id", "owner", "source"):
-        assert f"{field}=params.{field}" in source, (
+    assert "await list_query(db, entity, params, user)" in source
+    for builder in ("list_contract(", "extra_filters(", "related_filters(",
+                    "resolve_owner(", "OPEN_LEAD_SQL"):
+        assert builder not in source, f"the export builds a filter itself: {builder}"
+    records = (SOURCE.parent / "records.py").read_text(encoding="utf-8")
+    body = records[records.index("async def list_query"):]
+    for field in ("q", "sort", "direction", "status_id", "source"):
+        assert f"{field}=params.{field}" in body, (
             f"`{field}` is not handed to `list_contract` off the caller's "
             f"params — the export and the screen would disagree about it"
         )
-    assert "extra_where=extra" in source
+    assert "owner=owner" in body and "extra_where=(*extra, *more_where)" in body
 
 
 def test_there_is_no_partial_file_path_at_all() -> None:

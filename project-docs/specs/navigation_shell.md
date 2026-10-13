@@ -28,7 +28,7 @@ NS-3 slice B (2026-10-09) builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`.
 The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
 (2026-10-10) adds Approvals to the needs feed and to My Day.
 
-**NS-6 slice 6b BUILT 2026-10-13, dark: the chat bar and the one
+**NS-6 slice 6b BUILT 2026-10-13, ON in production since 2026-10-13 (owner): the chat bar and the one
 assistant** (D99, §7.1). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
 counts as on only with both shell flags on. Migration 254 adds
 `chat_session.archived_at`. Only the owner turns the flag on in production
@@ -937,6 +937,14 @@ Nobody edits navigation, and no team gets a separate home.
 ## 6. The command bar (D88)
 
 ### 6.1 Place and keys
+
+> ⚠️ **Amended 2026-10-13 by D102.** With `NEXT_PUBLIC_SHELL_CHAT` on, the
+> command bar has no field in the shell bar. Its field is the chat bar at
+> the foot of the page (§7.1). The results rise above that field, Enter asks
+> Metorite, and a highlighted result opens on Enter. ⌘K and `/` put the
+> cursor there. The modal below opens only on a phone, and on a desktop
+> while the assistant is open.
+
 
 The command bar is always visible in the shell bar. `Ctrl K` and `⌘K` focus it
 from any surface. The shell holds the only listener (§5.2 rule 2).
@@ -2058,7 +2066,7 @@ Done when:
 6. The server checks the grant on every scoped read. A test sends a scope the
    member does not hold and gets nothing back.
 
-### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, dark
+### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, ON in production since 2026-10-13 (owner)
 
 Flag `NEXT_PUBLIC_SHELL_DOCK`. Files: a new dock in `src/lib/shell/`, the three
 rails, `AssistantToggle`, and `NotificationBell`.
@@ -2129,11 +2137,30 @@ Fences: `src/lib/shell/assistant.test.ts`, `chatHistory.test.ts`,
 `tests/unit/test_chat_session_archive_r8.py`, which is in the pr-check list
 of suites that must not skip. Three mutants of the archive SQL were killed.
 
-**Slice 6c — history and artifacts.** The full view lists each chat's
-files from `agent_file_history.session_id`, and each opens in the file
-viewer. A search over the session list. The confirm-card check of §7.1 in a
-browser. A sub-agent that writes a file must not move the parent chat's
-files root (`write_artifact._notify`, a suspected defect).
+**Slice 6c — history and artifacts. BUILT 2026-10-13, live on merge.** The
+owner asked that a chat's files be "accessed via the artifacts app", and
+then said "do whatever it takes to go live". That is the H-21 decision for
+Artifacts.
+
+- **Artifacts is a live app** (`launch_surface.md` §2). It opens on the
+  member's chats, listed by the assistant's own picker (`SessionPicker.tsx`).
+  The files of the chosen chat show beside the list. `?session=<id>` picks a
+  chat, so a link opens it. The agents' own workspaces are the second tab.
+- **The files come from `/api/agent/workspace/{session}`.** That route
+  applies the tenant, room and thread rules. A read of
+  `agent_file_history` would skip them, so the app does not read it.
+- **The assistant's side panel has a Files button.** It opens the chat's
+  files in Artifacts, and the chat stays open beside them. The full view
+  keeps its own files column.
+- **Not a defect:** `write_artifact._notify` sends the parent chat's own
+  files root, because a delegated write goes to the parent
+  (`executor.py`, `delegation_target`). A tenant directory is refused with
+  a 422 in any case. `test_delegated_artifact_card.py` holds it.
+- **Still open:** the confirm-card check of §7.1 in a browser, through
+  `orchestrator`. It needs the live stack.
+
+Fences: `src/app/artifacts/lib/chatFiles.test.ts`, `nav.test.ts` (fourteen
+live panes), `appBar.test.ts` and `e2e/app-title-bar.spec.ts`.
 
 **Slice 6d — routing.** A test set of member questions, each with the
 specialist that should answer it, run against `orchestrator` in CI.

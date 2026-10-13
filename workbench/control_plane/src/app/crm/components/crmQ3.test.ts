@@ -338,7 +338,9 @@ describe("CRM settings", () => {
   });
 
   it("reads every stage and says where they come from in Mirror mode", () => {
-    const html = draw({ readOnly: true, pipelines });
+    // A member reads. CRM-C3 gives an ADMIN the overlay editor in Mirror mode
+    // (crmC3.test.ts), so the read-only lists are the member's view now.
+    const html = draw({ readOnly: true, pipelines, showAdminCards: false });
     expect(html).toContain("Stages come from Zoho.");
     expect(html).toContain("Renew now");
     expect(html).toContain("Price");
