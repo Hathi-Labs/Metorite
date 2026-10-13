@@ -64,6 +64,10 @@ MAX_PAGE = 50
 #: ``tests/unit/test_projects_search_minimum_lockstep.py`` holds it equal to
 #: the route and to the browser. A task number passes at any length.
 MIN_QUERY = 3
+#: The longest description snippet a search hit prints. The route caps at
+#: 160 (``search.SNIPPET_CHARS``). This is the tool's own guard, so a route
+#: that grew the snippet cannot grow the model's context with it.
+SNIPPET_MAX = 160
 #: How many timeline rows a detail read carries.
 TIMELINE_ROWS = 12
 
@@ -279,12 +283,14 @@ def _short_query(term: str) -> str:
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_tasks(query: str, limit: int = 10) -> str:
-    """Search tasks by words in the title, or by task number, across every
-    project the member can see. Words need at least 3 characters. A task
-    number works at any length: "#7" finds task 7 exactly. A query of only
-    digits finds that task number and no titles, so add a word to find a
-    title that holds a number. Returns ranked hits with the project and
-    status, each with a `full_id` for task_detail."""
+    """Search tasks by the words in their title AND description, or by task
+    number, across every project the member can see. Each word must appear
+    in the title or the description, in any order. Words need at least 3
+    characters. A task number works at any length: "#7" finds task 7 exactly.
+    A query of only digits finds that task number and no text. Title hits
+    rank first. A description hit carries the matched description text, so
+    do not open tasks one by one to search descriptions. Each hit has a
+    `full_id` for task_detail."""
     term = _clean(query or "")
     if not term or _short_text(term):
         return _short_query(term)
@@ -293,9 +299,13 @@ async def find_tasks(query: str, limit: int = 10) -> str:
     rows = (payload or {}).get("rows") or []
     if not rows:
         return f"No task matches {data(term)}. Try a shorter fragment."
-    out = [legend(), f"Tasks matching {data(term)} ({len(rows)}):"]
+    out = [legend(), f"Tasks matching {data(term)} in title or description ({len(rows)}):"]
     for row in rows:
         out.extend(_task_line(row))
+        # The route cuts this only for a description hit. It goes AFTER the
+        # `full_id` line, so the card's row-and-id pair stays adjacent.
+        if row.get("snippet"):
+            out.append(f"  description match: {data(str(row['snippet'])[:SNIPPET_MAX])}")
     if payload.get("truncated"):
         out.append("(more matches exist — narrow the words)")
     return "\n".join(out)
@@ -322,7 +332,8 @@ async def list_tasks(
     project the member can see. status_category is one of todo, in_progress,
     done, cancelled (comma-separated for several). assignee is an email.
     tags is comma-separated. watching=true lists only tasks the member
-    watches. query needs 3 characters, or a task number such as #7. The
+    watches. query matches each word in the title or description, needs 3
+    characters, or takes a task number such as #7. The
     total is the server's count, and page_size caps at 50."""
     params: dict[str, Any] = {
         "page": max(1, int(page or 1)),
@@ -409,6 +420,33 @@ async def _attachments_block(task_id: str) -> list[str]:
     return [f"Attachments ({len(files)}): " + ", ".join(data(f.get("name")) for f in files)]
 
 
+async def _refs_block(task_id: str) -> list[str]:
+    """The task's URL references (WS-57 TR-3), one line each with its ref id.
+
+    A failed read says so. It never reads as "no references", because the
+    model would then tell the member that a linked pull request is absent.
+    """
+    tid = uuid_of(task_id, "task_id")
+    try:
+        # `refresh=false`: the stored rows, and no GitHub read, so this read
+        # stays `open_world=False`. The card's own list refreshes the state.
+        listed = await get(f"/projects/tasks/{tid}/refs", {"refresh": False})
+    except GatewayRefusal:
+        return ["References: unknown, the list could not be read."]
+    rows = (listed or {}).get("rows") or []
+    if not rows:
+        return []
+    out = [f"References ({len(rows)}):"]
+    for row in rows:
+        line = f"- {data(row.get('kind'))} {data(row.get('label') or row.get('url'))}"
+        if row.get("title"):
+            line += f" {data(row.get('title'))}"
+        if row.get("state"):
+            line += f" ({data(row.get('state'))})"
+        out.append(f"{line} {data(row.get('url'))} (ref id {row.get('id')})")
+    return out
+
+
 async def _timeline_block(task_id: str) -> list[str]:
     """The latest timeline rows, newest first, bodies fenced."""
     tid = uuid_of(task_id, "task_id")
@@ -436,7 +474,8 @@ async def _timeline_block(task_id: str) -> list[str]:
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_detail(task_id: str) -> str:
     """Everything about one task: fields, assignees, subtasks, links and
-    blockers, attachments, and the latest timeline entries. Read this before
+    blockers, URL references (pull requests, issues, docs) with their ref
+    ids, attachments, and the latest timeline entries. Read this before
     answering a specific question about a task, and before proposing a
     change to it. task_id is the `full_id` from a list or a search."""
     tid = uuid_of(task_id, "task_id")
@@ -487,6 +526,7 @@ async def task_detail(task_id: str) -> str:
             out.append(f"  Repeats: {_rule_text(rule)}")
 
     out.extend(await _relations_block(tid))
+    out.extend(await _refs_block(tid))
     out.extend(await _attachments_block(tid))
     out.extend(await _timeline_block(tid))
     return "\n".join(out)

@@ -4,7 +4,8 @@
  * `?tab=settings` — CRM settings (WS-26f f2, WS-53 CRM-Q3).
  *
  * One column of cards, in this order: Setup, Access, Connection, Pipelines and
- * stages, Lead Status, Lost reasons, Fields, Sync health. The first three are
+ * stages, Lead Status, Lost reasons, Fields, Field map, Sync health. The
+ * Field map (CRM-Q7a) is for an admin in Mirror mode. The first three are
  * nodes the page passes in for an admin. Fields and Sync health wait for
  * CRM-Q4 and CRM-Q9, and say so.
  *
@@ -37,9 +38,10 @@ import { useState } from "react";
 import {
   REQUIREABLE_FIELD_LABELS,
   REQUIREABLE_FIELDS,
-  statusTone,
-  TONE_COLORS,
+  stageAccent,
 } from "../lib/board";
+import { colorOptions } from "../lib/colorOptions";
+import { useCrmModeValue } from "../lib/modeContext";
 import { showPicker } from "../lib/pipelines";
 import {
   changedFields,
@@ -48,6 +50,7 @@ import {
   validateStatusDraft,
   type PositionPatch,
 } from "../lib/settings";
+import FieldMapCard from "./FieldMapCard";
 import FieldsCard from "./FieldsCard";
 import { Card, NameList, PipelineSections } from "./SettingsCards";
 import SyncHealthCard from "./SyncHealthCard";
@@ -61,11 +64,8 @@ import type {
 
 const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"];
 
-/** The two pickers of a status row, as `SelectButton` options (CRM-U2). */
-const COLOR_OPTIONS: SelectOption[] = TONE_COLORS.map((color) => ({
-  value: color,
-  label: color,
-}));
+/** The type picker of a status row, as `SelectButton` options (CRM-U2). The
+ *  colour picker is `colorOptions` (`lib/colorOptions.ts`). */
 const TYPE_OPTIONS: SelectOption[] = STATUS_TYPES.map((type) => ({
   value: type,
   label: type,
@@ -184,7 +184,9 @@ export default function PipelineSettings({
       {showAdminCards && (
         <>
           <FieldsCard readOnly={readOnly} />
-          {/* Sync health reads the mirror, so Native mode does not draw it. */}
+          {/* The Field map and Sync health read the mirror, so Native mode
+              does not draw them. */}
+          {readOnly && <FieldMapCard />}
           {readOnly && <SyncHealthCard />}
         </>
       )}
@@ -358,6 +360,8 @@ function StatusRow({
 }) {
   const [draft, setDraft] = useState(status);
   const [served, setServed] = useState(status);
+  // CRM-C2: the dot shows the colour the board shows, so it reads the mode.
+  const mode = useCrmModeValue();
   const [invalid, setInvalid] = useState<string | null>(null);
   // A re-read replaces the draft: every write here re-reads the vocabulary,
   // and a row that kept showing what was typed after the server answered
@@ -404,7 +408,7 @@ function StatusRow({
       >
         <Icon name="GripVertical" className="w-4 h-4" />
       </span>
-      <span className={`w-2 h-2 shrink-0 rounded-full ${statusTone(draft)}`} />
+      <span className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, mode).dot}`} />
 
       <Input
         inputSize="sm"
@@ -416,7 +420,7 @@ function StatusRow({
       <SelectButton
         label="Colour"
         value={draft.color || "gray"}
-        options={COLOR_OPTIONS}
+        options={colorOptions(draft.color)}
         defaultValue="gray"
         onChange={(color) => setDraft({ ...draft, color })}
         widthClass="w-24"

@@ -68,6 +68,13 @@ export interface AgentSubscriber {
   onToolEnd?: (payload: AgentEventPayload) => void;
   /** An error occurred. */
   onError?: (payload: AgentEventPayload) => void;
+  /**
+   * The live run named a tool or a specialist: `name` is a tool name from a
+   * `tool_start`, or an agent name from a `sub_agent_*` event. The one
+   * assistant reads it to move the page to the specialist's app (D99). Never
+   * emitted on a reconnect replay.
+   */
+  onDelegate?: (payload: AgentEventPayload) => void;
 }
 
 // ── Global subscriber registry ─────────────────────────────────────────────

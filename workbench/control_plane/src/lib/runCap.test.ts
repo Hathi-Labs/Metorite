@@ -183,7 +183,9 @@ describe("the wiring", () => {
   });
 
   it("the hook hands the refusal to the one seam, and confirms every other turn", () => {
-    expect(hook).toContain("onRunCapped: onRunCappedRef.current,");
+    // A card answer's words are the envelope the model reads, so only they
+    // stay out of the composer (review of #942, `lib/cardAnswer.ts`).
+    expect(hook).toContain("onRunCapped: opts?.cardAnswer ? undefined : onRunCappedRef.current,");
     expect(hook).toContain('capped = outcome === "capped";');
     expect(hook).toContain("if (!capped && !heldAgain) confirmTurn();");
     // The new turn waits for the server on the gateway path only.

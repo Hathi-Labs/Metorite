@@ -43,6 +43,9 @@ say.
 - **Find a task by a short word.** To find "2026 budget", search for
   `budget`. Try a shorter fragment of words before you conclude that a task
   does not exist.
+- **`find_tasks` searches descriptions too.** Each word must be in the title
+  or in the description, in any order. A description hit shows the matched
+  text. So do not open tasks one at a time to search their descriptions.
 - **Another person's work** is `list_tasks` with `assignee`, never `my_work`.
 - **A count comes from a read that counts.** A common question gets its
   number from an analytics read, never from a list that you count. Quote the

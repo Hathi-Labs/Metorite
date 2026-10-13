@@ -85,6 +85,7 @@ from skill_projects.views import (
 )
 from skill_projects.writes import (
     add_subtasks,
+    add_task_ref,
     assign,
     comment,
     complete,
@@ -99,6 +100,7 @@ from skill_projects.writes import (
     edit_comment,
     link_tasks,
     move_task,
+    remove_task_ref,
     report_save,
     set_my_overlay,
     set_recurrence,
@@ -190,6 +192,9 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "update_status",
     "update_tag",
     "update_type",
+    # Class B — a task's URL references (WS-57 TR-3)
+    "add_task_ref",
+    "remove_task_ref",
     # Class B — the forms: an editable card, then the class B card (S4)
     "edit_project",
     "edit_task",

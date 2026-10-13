@@ -110,12 +110,13 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Admin** | Approvals | `/approvals` | `feature:approvals` | |
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** · **Email** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
+| **Admin** | Integrations | `/integrations` | `feature:integrations` | 🆕 **Live on 2026-10-13**, by owner decision in chat ("I still don't see the integrations app on my sidebar ... turn it on"). WS-54 built the org connections (IN-0 to IN-4, IN-7, IN-8a). ⚠️ `feature:integrations` is `is_default false`, so a member without the grant still sees no pane. A personal connection is a later ticket |
 
-**Twelve** entries, four sections, in that order. The set held eight until 2026-08-24,
+**Thirteen** entries, four sections, in that order. The set held eight until 2026-08-24,
 nine until 2026-09-20, ten until 2026-10-02, eleven until 2026-10-05, ten until
-2026-10-08 and eleven until 2026-10-11. D54 added Calendar. The owner then promoted
-People, Email, WhatsApp and the CRM. `nav.test.ts`'s count fence moved
-8 → 9 → 10 → 11 → 10 → 11 → 12 in the same pull request as each pane. That is what
+2026-10-08, eleven until 2026-10-11 and twelve until 2026-10-13. D54 added Calendar. The owner then promoted
+People, Email, WhatsApp, the CRM and Integrations. `nav.test.ts`'s count fence moved
+8 → 9 → 10 → 11 → 10 → 11 → 12 → 13 in the same pull request as each pane. That is what
 the fence is for.
 
 **My Access left the sidebar on 2026-10-05** (owner directive: "remove my access from
@@ -152,11 +153,10 @@ answer rather than a diff:
 | AI Studio | Agent Workshop | `/build/agents` | Incomplete |
 | Admin | Models | ~~`/settings/models`~~ | ✅ **GONE — deleted 2026-08-28 (CP-5).** The route, the page, `TierCard`, `ProviderCard`, `model-types` and five BFF routes are all removed, and the operator console's `/models` is where this lives now. The history below is kept because it explains WHY. 🗑️ **LEFT THE PRODUCT ENTIRELY — D56, 2026-08-26.** Not "held back": it is a **three-tab model-operations console in the customer's app** (providers + API keys, per-model enable, tier assignment). D32.7 ruled the customer never chooses a model. D56 relocated this surface to the **operator** console. **CP-10 slice 4 deletes the pane**, and must move `nav.test.ts`'s preview count in the same PR — the D54 precedent |
 | Admin | Agent Registry | `/agents` | Operator concern |
-| Admin | Integrations | `/integrations` | Incomplete |
 | Admin | Live Activity | `/observability` | Operator concern |
 
-**The count is the fence.** `nav.test.ts` asserts that exactly the **ten** rows
-above are `live`. A pane added without a launch status fails the suite.
+**The count is the fence.** `nav.test.ts` asserts that exactly the **thirteen** rows
+of the live table are `live`. A pane added without a launch status fails the suite.
 Promoting one is a deliberate edit that also updates the test.
 
 *(It worked three times. The Calendar pane, the People pane and the Email pane

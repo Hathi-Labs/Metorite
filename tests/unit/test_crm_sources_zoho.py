@@ -981,7 +981,10 @@ async def test_users_paging_stops_at_the_budget() -> None:
 def test_the_credential_is_provider_neutral() -> None:
     """Zoho's data-centre words live in ``provider_meta``, not in the shape."""
     names = {f.name for f in fields(SourceCredential)}
-    assert names == {"access_token", "refresh_token", "expires_at", "scopes", "provider_meta"}
+    # ``client_secret`` (WS-54 IN-8a) is the sealed secret of a DCR client.
+    # It names no provider either, and it is empty for Zoho.
+    assert names == {"access_token", "refresh_token", "expires_at", "scopes",
+                     "provider_meta", "client_secret"}
     params = inspect.signature(CrmSource.finish_consent).parameters
     assert set(params) == {"self", "params", "scopes"}
 

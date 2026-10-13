@@ -244,6 +244,9 @@ describe("IN-2 visual fixes", () => {
     expect(testMessage({ ok: false, error: "server_error" })).toBe("The server returned an error.");
     expect(testMessage({ ok: false, error: "no_url" })).toBe("This server has no URL.");
     expect(testMessage({ ok: false, error: "stdio_unsupported" })).toBe("Metorite cannot test a stdio server.");
+    expect(testMessage({ ok: false, error: "token_expired" })).toBe(
+      "The sign-in to this server has expired. Connect it again.",
+    );
     expect(testMessage({ ok: false, error: "request_failed" })).toBe("The test failed.");
     expect(testMessage({ ok: false, error: "weird" })).toBe("The test failed.");
     expect(testMessage({ ok: false, error: null })).toBe("The test failed.");

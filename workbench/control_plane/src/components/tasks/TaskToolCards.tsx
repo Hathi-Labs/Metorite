@@ -30,6 +30,7 @@ import type { ToolEvent } from "@/components/MarkdownMessage";
 import { apiPatchItem, apiAgentPlanToday } from "@/app/tasks/lib/api";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
 
@@ -444,10 +445,16 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
     .filter((l) => !/^\s*full_id:/.test(l))
     .join("\n")
     .trim();
-  const detail =
-    detailLines.length > 200 ? detailLines.slice(0, 200) + "…" : detailLines;
+  // The whole detail, never cut in a word (owner report, 2026-10-13: a
+  // `slice(0, 200)` and a three-line clamp hid the end of a receipt). A
+  // long receipt folds like any long card instead.
+  const detail = detailLines;
+  const tone = failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success";
 
+  // One look with the Projects receipts: a `RollupCard` whose title row is
+  // the shared header, with the icon in the card's tone.
   return (
+    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={iconName} summary={detail.split(/\r?\n/)[0]} header="own">
     <div
       className={`rounded-lg border px-2.5 py-2 ${
         failed
@@ -457,32 +464,27 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
             : "border-sidebar-border bg-secondary/40"
       }`}
     >
-      <div className="flex items-start gap-2">
-        <span
-          className={`mt-0.5 flex-shrink-0 ${
-            failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success"
-          }`}
-        >
-          <AppIcon name={iconName} size={13} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">{meta.label}</div>
+      <RollupHeader className={`text-[11px] ${tone}`} />
+      <RollupBody>
           {detail && (
-            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-3">
+            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap break-words">
               {detail}
             </div>
           )}
           {!failed && itemId && (
-            <button
+            <Button
+              variant="text"
+              size="none"
+              icon="ExternalLink"
               onClick={() => openTask(itemId)}
-              className="mt-1 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+              className="mt-1 gap-1 text-[10px] text-primary"
             >
-              <AppIcon name="ExternalLink" size={10} /> Open in My Tasks
-            </button>
+              Open in My Tasks
+            </Button>
           )}
-        </div>
-      </div>
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 

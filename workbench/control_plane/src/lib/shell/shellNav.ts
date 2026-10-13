@@ -22,12 +22,14 @@
  *    keeps the foot as it was.
  * 2. Chat and Approvals keep a sidebar door until NS-6 builds the dock and
  *    the bell that would replace them. Before that, moving them away would
- *    hide the assistant and an approver's queue.
+ *    hide the assistant and an approver's queue. With the chat bar on (D99,
+ *    `NEXT_PUBLIC_SHELL_CHAT`), Chat leaves the sidebar (`shellSidebar`).
  * 3. A group with no item is dropped, and Home is called "Home" until My
  *    Day is on (NS-3, `homePane`). A heading over nothing, or a name the
  *    page does not keep, costs trust.
  */
 import type { NavPane, NavSection } from "@/lib/nav";
+import { shellChatOn } from "@/lib/shell/chatFlag";
 import { myDayOn } from "@/lib/shell/myDayFlag";
 import { starredHrefs, type Stars } from "@/lib/shell/presets";
 
@@ -129,11 +131,23 @@ function byTeam(panes: readonly NavPane[]): NavSection[] {
  * `starredHrefs` picks from `sections` alone, so a star never draws a pane
  * the member does not hold or that is not live.
  */
-export function shellSidebar(sections: readonly NavSection[], stars?: Stars | null): NavSection[] {
-  const doors = held(sections).filter((p) => (p.door ?? "sidebar") === "sidebar");
+export function shellSidebar(
+  sections: readonly NavSection[],
+  stars?: Stars | null,
+  chatBar: boolean = shellChatOn(),
+): NavSection[] {
+  const doors = held(sections)
+    .filter((p) => (p.door ?? "sidebar") === "sidebar")
+    // D99: with the chat bar on, the assistant opens from the foot of every
+    // page, so Chat leaves the sidebar. It stays a live pane: `/chat` is the
+    // full view's address, and All apps and the command bar still list it.
+    .filter((p) => !(chatBar && p.href === CHAT_PANE_HREF));
   const shown = starredHrefs(stars, sections);
   return byTeam(shown === null ? doors : doors.filter((p) => shown.has(p.href)));
 }
+
+/** The Chat pane, which the chat bar takes out of the sidebar (D99). */
+export const CHAT_PANE_HREF = "/chat";
 
 /** The line All apps shows when the sidebar's "Add apps" opens it. */
 export const ADD_APPS_HINT = "Star the apps you want in your sidebar.";

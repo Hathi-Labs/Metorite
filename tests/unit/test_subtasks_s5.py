@@ -919,7 +919,7 @@ async def test_load_subtree_binds_the_callers_visibility():
                     return []
             return _R()
 
-    vis = SimpleNamespace(params={"vis_org": "org-1"}, unrestricted=True)
+    vis = SimpleNamespace(params={"vis_org": "org-1"}, unrestricted=True, agent=None)
     await cascade.load_subtree(_DB(), vis, "parent")
     assert "CAST(:vis_org AS uuid)" in seen["sql"]
     assert seen["params"]["vis_org"] == "org-1"

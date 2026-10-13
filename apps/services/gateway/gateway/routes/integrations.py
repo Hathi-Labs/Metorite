@@ -1945,6 +1945,15 @@ async def register_mcp_server(
             agent_scope=req.agent_scope, enabled=req.enabled,
             always_confirm=req.always_confirm,
         )
+    except mcp_registry.OAuthUrlChange:
+        # WS-54 IN-8a (review of #931): the token of an OAuth server is for
+        # its URL. A new URL is another server, so the admin disconnects it
+        # first. The row stays as it was.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This server is connected over OAuth. Disconnect it first "
+                   "to change its URL.",
+        ) from None
     except Exception as exc:
         # The class of the error only: a DB message can echo a bound header.
         _log.warning("mcp.register_failed", name=req.name, error=type(exc).__name__)

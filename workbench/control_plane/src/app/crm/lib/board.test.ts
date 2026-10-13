@@ -12,13 +12,16 @@ import {
   REQUIREABLE_FIELDS,
   ROT_TONES,
   rotLevel,
-  statusTone,
+  stageAccent,
+  stageIcon,
   toBoardLanes,
   weightedDeal,
   weightedRows,
   WEIGHTED_TYPES,
   type BoardLane,
 } from "./board";
+import { accentForHue } from "@/lib/statusAccent";
+
 import type { Deal, Pipeline, Status, StatusType } from "./types";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
@@ -133,19 +136,52 @@ describe("toBoardLanes", () => {
   });
 });
 
-describe("statusTone", () => {
-  it("maps the stored colour onto a semantic token", () => {
-    // `color` is free text the owner (and the Zoho importer) writes, so
-    // `bg-${color}-500` would be a class Tailwind never saw at build time and
-    // every lane would render colourless.
-    expect(statusTone({ color: "amber", type: "ongoing" })).toBe("bg-warning");
-    expect(statusTone({ color: "red", type: "lost" })).toBe("bg-destructive");
+describe("stageAccent (WS-53 CRM-C2)", () => {
+  const stage = (color: string, type: StatusType, name = "Stage") => ({ color, type, name });
+
+  it("maps the stored colour through the shared vocabulary", () => {
+    // `color` is free text the owner (and the Zoho importer) writes. The
+    // shared module turns it into token classes, so no class is built here.
+    expect(stageAccent(stage("amber", "ongoing"), "native")).toBe(accentForHue("amber"));
+    expect(stageAccent(stage("red", "lost"), "native")).toBe(accentForHue("red"));
+  });
+
+  it("draws the seeded Proposal lane violet, not the orange of the old map", () => {
+    expect(stageAccent(stage("violet", "ongoing", "Proposal"), "native").dot).toBe("bg-violet");
+  });
+
+  it("never paints a blue lane with the member's accent", () => {
+    expect(stageAccent(stage("sky", "open"), "native").dot).toBe("bg-info");
   });
 
   it("falls back by status TYPE, not to grey", () => {
     // An unrecognised colour on a won lane should still read as won.
-    expect(statusTone({ color: "chartreuse", type: "won" })).toBe("bg-success");
-    expect(statusTone({ color: "", type: "lost" })).toBe("bg-destructive");
+    expect(stageAccent(stage("chartreuse", "won"), "native")).toBe(accentForHue("green"));
+    expect(stageAccent(stage("", "lost"), null)).toBe(accentForHue("red"));
+  });
+
+  // Done-when 4: every mirrored row is `gray` (§20.1 fact 6), and Mirror mode
+  // must still show what a lane means.
+  it.each([
+    ["won", "green"],
+    ["lost", "red"],
+    ["on_hold", "amber"],
+    ["ongoing", "blue"],
+    ["open", "gray"],
+  ] as const)("a gray Mirror %s stage draws %s", (type, hue) => {
+    expect(stageAccent(stage("gray", type), "mirror")).toBe(accentForHue(hue));
+  });
+
+  it("keeps a Native admin's gray, because a person chose it", () => {
+    expect(stageAccent(stage("gray", "won"), "native")).toBe(accentForHue("gray"));
+  });
+
+  it("gives a closed or a paused stage an icon, so colour is not alone", () => {
+    expect(stageIcon("won")).toBe("CircleCheck");
+    expect(stageIcon("lost")).toBe("CircleX");
+    expect(stageIcon("on_hold")).toBe("CirclePause");
+    expect(stageIcon("open")).toBeNull();
+    expect(stageIcon("ongoing")).toBeNull();
   });
 });
 
@@ -428,7 +464,6 @@ describe("applyMove", () => {
         count: 0,
         amount: 0,
         weighted: 0,
-        tone: "bg-primary",
       },
       {
         status: PROPOSAL,
@@ -436,7 +471,6 @@ describe("applyMove", () => {
         count: 0,
         amount: 0,
         weighted: 0,
-        tone: "bg-warning",
       },
     ];
     const next = applyMove(empty, {

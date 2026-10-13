@@ -28,6 +28,12 @@
  *   • `/` focuses the page's own filter (`[data-page-filter]`) when the page
  *     has one, and opens the command bar when it does not (§6.1, owner
  *     decision 2026-10-07). Never while the member types in a field.
+ *   • `⌘J` / `Ctrl J`, with `NEXT_PUBLIC_SHELL_CHAT` on (D99, §7.1): the
+ *     cursor goes to the chat bar. With the assistant open it goes to the
+ *     assistant, and pressed again in the assistant it closes it.
+ *
+ * **With `NEXT_PUBLIC_SHELL_CHAT` on, the activity control leaves this bar**
+ * for the chat bar at the foot of the page (D99, `ChatBar.tsx`).
  *
  * Anything may open the bar with words already in it:
  * `window.dispatchEvent(new CustomEvent(OPEN_COMMAND_BAR, { detail: { query } }))`.
@@ -59,6 +65,9 @@ import { useAccess } from "@/components/AccessProvider";
 import { BarAccount } from "@/components/AccountSwitcher";
 import { visibleSections } from "@/lib/nav";
 import { ActivityControl } from "./ActivityControl";
+import { assistantState, closeAssistant, focusAssistant } from "./assistant";
+import { FOCUS_CHAT_BAR } from "./ChatBar";
+import { shellChatOn } from "./chatFlag";
 import { CommandBar } from "./CommandBar";
 import { shellDockOn } from "./dockFlag";
 import { focusPageFilter, pageFilterTarget } from "./pageFilter";
@@ -95,6 +104,9 @@ export function ShellFrame({
     setOpen(true);
   }, []);
 
+  // D99: the chat bar's key. Read once, as the flags below are.
+  const [chatOn] = useState(() => shellChatOn());
+
   // ── The one listener ──────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -103,6 +115,18 @@ export function ShellFrame({
         e.stopImmediatePropagation();
         setSeed("");
         setOpen((o) => !o);
+        return;
+      }
+      if (chatOn && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "j" || e.key === "J")) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!assistantState().open) {
+          window.dispatchEvent(new Event(FOCUS_CHAT_BAR));
+          return;
+        }
+        const inside = (e.target as HTMLElement | null)?.closest?.("[data-assistant]");
+        if (inside) closeAssistant();
+        else focusAssistant();
         return;
       }
       if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
@@ -116,7 +140,7 @@ export function ShellFrame({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [openWith]);
+  }, [openWith, chatOn]);
 
   useEffect(() => {
     const onOpen = (e: Event) => openWith((e as CustomEvent<{ query?: string }>).detail?.query ?? "");
@@ -151,7 +175,7 @@ export function ShellFrame({
           onOpen={() => openWith("")}
           lead={lead}
           bell={dockOn ? <ShellBell /> : null}
-          activity={<ActivityControl />}
+          activity={chatOn ? null : <ActivityControl />}
           account={<BarAccount />}
         />
       ) : null}

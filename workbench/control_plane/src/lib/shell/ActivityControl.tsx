@@ -47,6 +47,8 @@ import { shouldPollWorkspace } from "@/lib/access";
 import { onClear } from "@/lib/dataCache";
 import { wantLiveSteps } from "@/lib/liveRuns";
 import { visibleSections, type NavSection } from "@/lib/nav";
+import { openAssistant } from "./assistant";
+import { shellChatOn } from "./chatFlag";
 import {
   agentLabel,
   chatLink,
@@ -205,6 +207,7 @@ export function ActivityList({
   visibleHrefs,
   sections,
   onNavigate,
+  onOpenChat,
 }: {
   rows: readonly ActivityRow[];
   now: number;
@@ -212,6 +215,11 @@ export function ActivityList({
   visibleHrefs: ReadonlySet<string> | null;
   sections?: readonly NavSection[];
   onNavigate?: () => void;
+  /**
+   * D99: open the row's chat in the one assistant instead of following the
+   * link. The link stays, so a new tab or a copied address still works.
+   */
+  onOpenChat?: (row: ActivityRow) => void;
 }) {
   if (rows.length === 0) {
     return (
@@ -233,7 +241,15 @@ export function ActivityList({
           <li key={row.threadId}>
             <Link
               href={chatLink(row.agentName, row.threadId, visibleHrefs, sections)}
-              onClick={onNavigate}
+              onClick={(e) => {
+                // A plain press opens in the assistant. A modified press is
+                // the browser's: a new tab or a new window.
+                if (onOpenChat && !e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+                  e.preventDefault();
+                  onOpenChat(row);
+                }
+                onNavigate?.();
+              }}
               data-activity-row={row.state}
               aria-label={`${agent}${pane ? ` in ${pane.label}` : ""}: ${title}. ${status}`}
               className="flex items-start gap-3 px-3 py-2.5 tech-transition hover:bg-secondary focus-visible:bg-secondary focus-visible:outline-none"
@@ -279,6 +295,7 @@ export function ActivityPanel({
   rows,
   visibleHrefs,
   placement = "end",
+  onOpenChat,
 }: {
   open: boolean;
   onClose: () => void;
@@ -286,6 +303,8 @@ export function ActivityPanel({
   visibleHrefs: ReadonlySet<string> | null;
   /** `end` under the shell bar's right end, `top` beside a sidebar, `sheet` on a phone. */
   placement?: ModalPlacement;
+  /** D99: a row opens its chat in the one assistant. */
+  onOpenChat?: (row: ActivityRow) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -314,7 +333,7 @@ export function ActivityPanel({
       className="max-h-[70vh]"
     >
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <ActivityList rows={rows} now={now} visibleHrefs={visibleHrefs} onNavigate={onClose} />
+        <ActivityList rows={rows} now={now} visibleHrefs={visibleHrefs} onNavigate={onClose} onOpenChat={onOpenChat} />
       </div>
     </Modal>
   );
@@ -346,6 +365,8 @@ export function ActivityHost({ placement }: { placement: ModalPlacement }) {
   const rows = useActivityRows(workspace);
   const open = useActivityOpen();
   const heldHrefs = useHeldHrefs();
+  // D99: with the chat bar on, a row opens in the one assistant. Read once.
+  const [chatOn] = useState(() => shellChatOn());
   if (!workspace) return null;
   return (
     <ActivityPanel
@@ -354,6 +375,7 @@ export function ActivityHost({ placement }: { placement: ModalPlacement }) {
       rows={rows}
       visibleHrefs={heldHrefs}
       placement={placement}
+      onOpenChat={chatOn ? (row) => openAssistant({ sessionId: row.threadId }) : undefined}
     />
   );
 }

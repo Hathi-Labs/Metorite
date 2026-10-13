@@ -28,6 +28,12 @@ NS-3 slice B (2026-10-09) builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`.
 The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
 (2026-10-10) adds Approvals to the needs feed and to My Day.
 
+**NS-6 slice 6b BUILT 2026-10-13, dark: the chat bar and the one
+assistant** (D99, §7.1). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
+counts as on only with both shell flags on. Migration 254 adds
+`chat_session.archived_at`. Only the owner turns the flag on in production
+(§13.1).
+
 **NS-6 slice 6a BUILT 2026-10-10, dark: the one bell** (§7.2). The shell draws
 "Needs you" at the right end of the shell bar, before Activity. It is behind
 `NEXT_PUBLIC_SHELL_DOCK`, which is off by default. With the flag on, Projects
@@ -277,10 +283,10 @@ over the page column, as NS-1 built it. `desktopFrame` in
 | Scope chip | The shell | Personal, a team, or all my teams (§4). A team app shows its own team, locked. Today the command bar's "in <App>" chip holds this place |
 | Command bar | The shell | Search, do or ask (§6). It sits in the centre and takes the free width |
 | ~~App actions~~ | — | Not in the bar. They are in the app's own title bar |
-| Activity | The shell | Every live assistant run, across apps (WS-51 S3), at the right end |
+| Activity | The shell | Every live assistant run, across apps (WS-51 S3), at the right end. With `NEXT_PUBLIC_SHELL_CHAT` on, it moves into the chat bar (D99, §7.1) |
 | New | The shell | The jobs of the apps the member holds, in preset order (§8). Not built |
 | Bell | The shell | "Needs you", from every app (§7.2). BUILT in NS-6 slice 6a, dark behind `NEXT_PUBLIC_SHELL_DOCK`. It sits before Activity (owner, 2026-10-10, §13.3 Q7). An app's own bell never moves into this bar |
-| Assistant | The shell | The dock toggle (§7.1). Not built, NS-6 slice 6b. It goes at the right end beside the bell (owner, 2026-10-10, §13.3 Q7). Today each app's assistant toggle is a tool in its own title bar |
+| Assistant | The shell | ~~The dock toggle at the right end (owner, 2026-10-10, §13.3 Q7).~~ **Amended by D99 (2026-10-12):** the chat bar at the foot of the page opens the assistant, so the shell bar holds no assistant toggle (§7.1) |
 | Account | The shell | The avatar and the email. It opens the account menu: switch, add, sign out (owner, 2026-10-12, §3.3). The last item of the bar. Until 2026-10-12, the account menu was the sidebar's foot (NS-2 slice 1) |
 
 **The command bar's "in <App>" chip stays.** It is the command bar's own
@@ -736,6 +742,13 @@ the top. The risk is a third view of the same tasks, so each app gets one job.
 **No second ritual.** Calendar has `StartupRitual`. The first open of My Day
 each day offers that ritual. My Day does not copy it.
 
+**What goes into the feed lives in `my_day_feed.md` (WS-58, ACTIVE
+2026-10-13).** That spec owns the signals, the cards, the order, the life of
+a card and the AI that prepares one. **D101 (owner, 2026-10-13) widens the
+acts in the table above for that feed:** a card acts in place, unless the act
+needs more context. `my_day_feed.md` §11 holds the rule. This spec keeps the
+page frame, the bell, the manifest and the flags.
+
 ### 4.4 Cards
 
 An app declares its cards in its manifest (§5.1). Each card names the
@@ -1059,19 +1072,71 @@ two:
 
 ## 7. The assistant dock and the bell
 
-### 7.1 One dock
+### 7.1 One assistant, opened from the chat bar (D99)
 
-- **One panel on the right**, `w-[380px]`, the side-panel width of
-  `DESIGN_SYSTEM.md` §6a. Below 1280 px there is no dock, and the toggle opens
-  the chat in the full slot. That is the rule `app/projects/lib/chatDock.ts`
-  holds today.
-- **The agent follows the app.** The dock opens the manifest's `agent`. On
-  Home, or in an app with no agent, it opens the agent that `/chat` opens by
-  default.
-- **Sessions stay shared with `/chat`.** The dock mounts the shared
-  `AgentChat`. It adds no chat seam.
-- **The confirm cards do not change.** Projects chat's cards work in the dock
-  as they work in the rail today.
+⚠️ **Amended on 2026-10-12 by D99.** The dock opened the app's own agent,
+and a toggle in the shell bar opened it. Now the member always talks to one
+general agent, and a chat bar at the foot of the page opens it. Flag
+`NEXT_PUBLIC_SHELL_CHAT`, default off.
+
+**The chat bar.**
+
+- **One row at the foot of the page column, on every page.** It is a real
+  row of the frame, under `<main>`, not a layer over the page. So an app's
+  own bottom controls stay inside `<main>`, above it, and the bar never
+  covers them.
+- **It holds a field, the context chip and the activity control.** The
+  field reads "Ask Metorite…". Enter opens the assistant and sends the
+  words. The chip names where the member is, for example "Projects ·
+  Website relaunch".
+- **⌘J or Ctrl J** puts the cursor in the field. With the assistant open,
+  it puts the cursor in the assistant. Pressed again in the assistant, it
+  closes the assistant. The shell's one listener in `ShellBar.tsx` holds
+  the key (§5.2 rule 2).
+- **The bar hides while the assistant is open.** The assistant has its own
+  composer.
+- **On a phone, an Ask tab replaces the bar** (owner, 2026-10-13). It sits
+  at the right end of the bottom nav on every page, so the thumb learns one
+  place. A tap opens the assistant as a full-screen sheet, with the cursor
+  in its composer. Its badge is the activity control: green while a chat
+  runs, amber when one waits on the member. A bar above the nav took a row
+  from every screen. A floating button met the Calendar, Focus and
+  recording buttons (§9).
+
+**Two forms, one chat.**
+
+- **The side panel.** A panel on the right of the page, 400 px wide by
+  default. The member drags its left edge between 320 px and 720 px, and the
+  width stays. The page beside it keeps working. Below 1280 px there is no
+  side panel, and the assistant opens as the full view.
+- **The full view.** The assistant covers the page column, under the shell
+  bar and beside the sidebar. The page under it stays mounted and keeps its
+  state, and it takes no input until the full view closes. The session list
+  is at the left, as in ChatGPT and Claude. The chat's files are at the
+  right.
+- **A switch keeps the chat.** The two forms are one element that changes
+  its shape, so a running reply, the draft and the scroll stay.
+- **`/chat` is the address of the full view.** A link to `/chat`, to
+  `/chat?q=…` or to the open-chat job opens the full view.
+
+**The agent.** Every new chat goes to `orchestrator` (D99). An old chat with
+a specialist opens with that specialist. The app's own agent is a tool of
+the general agent, and the manifest's `agent` names the specialist that
+knows the app best.
+
+**The context.** Each turn carries the app the member is in, and the facts
+that the app publishes through `useAssistantContext`. The facts are data.
+They name the open record and the view, and they never instruct.
+
+**Sessions stay shared with `/chat`.** The panel mounts the shared
+`AgentChat`. It adds no chat seam. `seams.test.ts` allows one file in
+`src/lib/shell/` to import it, `AssistantDock.tsx`.
+
+**The confirm cards must not change.** A specialist's card must reach the
+member through the general agent's run. `_tool_injection.py` says that each
+delegate's own `request_confirmation` gate still asks a human. ⚠️ Nobody
+has checked this in a browser for a Projects write that goes through
+`orchestrator`. Slice 6c checks it, and until then it is a known risk.
 
 ### 7.2 One bell
 
@@ -1198,6 +1263,11 @@ display order stays as below.
   when one mailbox failed and the others answered.
 - `total` is unchanged. It counts the rows before the cut, so the bell's
   number is still a floor of 60 at most.
+
+**The My Day feed reads the same providers (WS-58, ACTIVE 2026-10-13).**
+`my_day_feed.md` §4.4 owns the feed. This contract keeps its five kinds. A
+new kind joins it only by an amendment of this section, in the PR that adds
+the kind.
 
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent
@@ -1595,7 +1665,8 @@ and a Menu tab opens a drawer (`AppShell.tsx:186-236`).
 - **Add one row at the top of every screen**: the command bar and the scope
   chip.
 - **The drawer takes the sidebar shape of §3.2.** My Day comes first.
-- **The dock opens as a full-screen sheet.**
+- **The dock opens as a full-screen sheet.** With `NEXT_PUBLIC_SHELL_CHAT`
+  on, the Ask tab at the right end of the bottom nav opens it (D99, §7.1).
 
 ---
 
@@ -1977,7 +2048,7 @@ Done when:
 6. The server checks the grant on every scoped read. A test sends a scope the
    member does not hold and gets nothing back.
 
-### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark
+### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, dark
 
 Flag `NEXT_PUBLIC_SHELL_DOCK`. Files: a new dock in `src/lib/shell/`, the three
 rails, `AssistantToggle`, and `NotificationBell`.
@@ -1995,6 +2066,67 @@ Done when:
 and all of item 3 (§7.2). The dock half of items 1, 2 and 4 is slice 6b.
 `SEAM_DEBT` does not change: with the flag off, both apps still mount
 `NotificationBell`, so the debt falls only when NS-9 deletes the mounts.
+
+⚠️ **D99 (2026-10-12) reshaped the dock half.** The dock half has its own
+flag, `NEXT_PUBLIC_SHELL_CHAT`, so the owner can turn on the bell without
+the assistant. Item 1 now reads: the assistant opens `orchestrator`, and it
+shares sessions with `/chat`. §7.1 holds the shape.
+
+**Slice 6b — the chat bar, the two forms and the context.** Files:
+`src/lib/shell/chatFlag.ts`, `assistant.ts`, `ChatBar.tsx`,
+`AssistantDock.tsx` and `chatHistory.ts`, then `AppShell`, `ShellBar`,
+`shellNav`, `ActivityControl`, `AgentChat` (one prop), `lib/sessions.ts`
+(rename), `/chat`, and the Projects, My Tasks and Email pages.
+
+Done when, with the flag on:
+
+1. Every desktop page draws the chat bar at the foot of the page column,
+   and every phone page draws an Ask tab in the bottom nav.
+2. From any app, one press or one Enter opens the assistant, and the first
+   turn names the app the member is in.
+3. The side panel and the full view switch, and a running reply survives
+   the switch.
+4. The side panel resizes between 320 px and 720 px, and the width stays.
+5. ⌘J and Ctrl J reach the bar, and the assistant, from the keyboard.
+6. The activity control sits in the bar, not in the shell bar, and a row
+   opens its chat in the assistant.
+7. Chat is not in the sidebar or the phone drawer, and `/chat` opens the
+   full view.
+8. Projects, My Tasks and Email mount no rail and no assistant toggle, and
+   Projects and My Tasks publish their facts.
+9. A member renames a chat, and the name reaches the server.
+
+With the flag off, every surface renders as it does today.
+
+**Built in slice 6b (2026-10-13).** Items 1 to 9 hold in code. The
+session picker follows Claude Code's (owner, 2026-10-12): a search, one list
+newest first with each chat's age, and "Archived chats" folded under its
+count. A row renames and archives, and an archived row restores or deletes.
+
+- **Only the owner** of a chat renames, archives, restores or deletes it in
+  the picker. The server refuses an archive from anybody else
+  (`_MAY_DELETE_SQL`). The archive is a column of the chat, so a room the
+  owner archives is archived for every member.
+- **The bar joins only the member's own private chat** (`barMayJoin`). It
+  sends the member's words and the facts of their page, so it never joins a
+  room or an archived chat. It joins a chat only while it is recent.
+- **The app switch fires only while the assistant is open.** A closed
+  assistant never moves the page.
+- **An archive alone does not move the chat to the top.**
+
+Fences: `src/lib/shell/assistant.test.ts`, `chatHistory.test.ts`,
+`assistantFacts.test.ts`, `activityControl.test.ts`, and
+`tests/unit/test_chat_session_archive_r8.py`, which is in the pr-check list
+of suites that must not skip. Three mutants of the archive SQL were killed.
+
+**Slice 6c — history and artifacts.** The full view lists each chat's
+files from `agent_file_history.session_id`, and each opens in the file
+viewer. A search over the session list. The confirm-card check of §7.1 in a
+browser. A sub-agent that writes a file must not move the parent chat's
+files root (`write_artifact._notify`, a suspected defect).
+
+**Slice 6d — routing.** A test set of member questions, each with the
+specialist that should answer it, run against `orchestrator` in CI.
 
 ### NS-7 · Presets, pins and the first sign-in — AGENT-SAFE · BUILT 2026-10-10, live on merge (owner)
 
@@ -2166,7 +2298,7 @@ compact density, under a changed accent, and beside the neighbouring app.
 
 | Act | Why it is the owner's | Gate id |
 |---|---|---|
-| Turn on any `NEXT_PUBLIC_SHELL_*` flag or `NEXT_PUBLIC_MY_DAY` in production | It changes what every customer sees on day one. The flags are build-time, so one flip reaches every organization at once, and it answers Q2 for all of them | Owner-only. The dev-phase window does NOT open it, and `enforcement-flip` does not cover it |
+| Turn on any `NEXT_PUBLIC_SHELL_*` flag or `NEXT_PUBLIC_MY_DAY` in production. `NEXT_PUBLIC_SHELL_CHAT` (D99) is one of them | It changes what every customer sees on day one. The flags are build-time, so one flip reaches every organization at once, and it answers Q2 for all of them | Owner-only. The dev-phase window does NOT open it, and `enforcement-flip` does not cover it |
 | Turn on `COMMAND_BAR_AI` in production | It spends customer credits | Owner-only. The window does NOT open it (CLAUDE.md §3a rule 3) |
 | Promote a `preview` app so its manifest renders | It is the decision "this is finished enough to sell" | **H-21** |
 

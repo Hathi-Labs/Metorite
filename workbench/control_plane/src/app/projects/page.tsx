@@ -68,6 +68,10 @@ import { BulkBar } from "./components/BulkBar";
 import { FilterBar } from "./components/FilterBar";
 import { NotificationBell } from "./components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { useAssistantFacts } from "@/lib/shell/assistant";
+import { projectsAssistantFacts } from "./lib/assistantFacts";
+import { describeFilters } from "./lib/assistantPersona";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
 import type { ProjectMenuHandlers } from "./lib/projectMenu";
 import { CalendarView } from "./components/CalendarView";
@@ -80,6 +84,7 @@ import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
 import { TaskList } from "./components/TaskList";
 import { TaskPanel } from "./components/TaskPanel";
+import type { TaskWhere } from "@/components/TaskPanelHeader";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
@@ -194,6 +199,7 @@ import {
   nodeKind,
   showsDashboard,
   spaceOf,
+  taskWhere,
 } from "./lib/tree";
 import { forgetFold, markHidden, openFolds, resumeFold } from "./lib/treeFold";
 import ReportsView from "./components/ReportsView";
@@ -219,9 +225,19 @@ import {
  * (WS-27bm — `NEXT_PUBLIC_PROJECTS_CHAT` flips "AI chat" to live). Read once:
  * `NEXT_PUBLIC_*` is inlined at build time, so this cannot change at runtime.
  */
-const PROJECT_APP_SECTIONS = projectAppSections();
+/**
+ * D99: with the chat bar on, the one assistant replaces this app's chat. The
+ * "AI chat" destination leaves the sidebar, the dock and its toggle never
+ * draw, and the page tells the assistant what it shows instead.
+ */
+const ONE_ASSISTANT = shellChatOn();
+const PROJECT_APP_SECTIONS = ONE_ASSISTANT
+  ? projectAppSections()
+      .map((s) => ({ ...s, items: s.items.filter((i) => i.id !== "ai-chat") }))
+      .filter((s) => s.items.length > 0)
+  : projectAppSections();
 /** The same flag, as the dock reads it (`lib/chatDock.ts`). */
-const CHAT_LIVE = chatEnabled();
+const CHAT_LIVE = chatEnabled() && !ONE_ASSISTANT;
 /**
  * WS-41 I-4 — the file import (`NEXT_PUBLIC_PROJECTS_IMPORT`, default off).
  * Read once, at module scope, for the same reason as the chat flag.
@@ -3382,6 +3398,25 @@ function ProjectsWorkspace() {
     };
   }, [loading, railOpen, chatDocked, app]);
 
+  // D99: the page tells the one assistant where the member is. It runs
+  // before the early return below, so the hook order never changes.
+  const assistantFacts = useMemo(
+    () =>
+      ONE_ASSISTANT
+        ? projectsAssistantFacts({
+            node: selected
+              ? { id: selected.id, name: selected.name, level: selectedLevel, archived: Boolean(selected.archived_at) }
+              : null,
+            view: mode,
+            app,
+            filterSummary: describeFilters(filters),
+            openTask: openTask ? { id: openTask.id, title: openTask.title, number: openTask.task_number ?? null } : null,
+            selectedTaskIds: Array.from(picked),
+          })
+        : null,
+    [selected, selectedLevel, mode, app, filters, openTask, picked],
+  );
+  useAssistantFacts(assistantFacts);
   if (loading) return renderState("loading", LOADING_COPY, "page");
 
   // ── The parts both layouts render ────────────────────────────────────────
@@ -4076,9 +4111,29 @@ function ProjectsWorkspace() {
   //
   // `completeRelations` fixes that one body. This makes the NEXT one a named
   // fallback beside a working board, instead of a white page.
+  //
+  // `where` is the card's breadcrumb (owner, 2026-10-12): a card opened from
+  // the chat said nothing about which project holds the task. A crumb opens
+  // its node and closes the card, as `projects.open_project` selects one. A
+  // node the Center filter hides cannot be selected, so that path is text.
+  const openWhere = (task: TaskRow): TaskWhere => {
+    const shown = taskWhere(visibleRoots, task.project_id);
+    if (!shown.length) return { path: taskWhere(roots, task.project_id) };
+    return {
+      path: shown,
+      onOpen: (id) => {
+        const row = flatten(visibleRoots).find((e) => e.node.id === id);
+        if (!row) return;
+        setApp(null);
+        setSelected(row.node as ProjectRow);
+        setOpenTask(null);
+      },
+    };
+  };
   const taskPanel = openTask ? (
     <LayoutBoundary key={`panel-${openTask.id}`} layout="task panel">
     <TaskPanel
+      where={openWhere(openTask)}
       personLabels={personLabels}
       /**
        * ⚠️ People the BOARD never saw.

@@ -23,7 +23,7 @@ const ADMIN = {
   email: "admin@example.com",
   name: "Asha Rao",
   is_admin: true,
-  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals", "crm"],
+  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals", "crm", "integrations"],
   permissions: ["admin:members:read", "admin:members:manage"],
   capabilities: ["admin:members:read", "admin:members:manage"],
   roles: ["owner"],
@@ -161,6 +161,8 @@ const PAGES: Array<[string, string]> = [
   ["Approvals", "/approvals"],
   ["Organisation", "/settings/organization"],
   ["Appearance", "/settings/appearance"],
+  // Live since 2026-10-13 (owner, WS-54).
+  ["Integrations", "/integrations"],
   ["Teams", "/settings/groups"],
   ["Roles", "/settings/roles"],
   ["Billing", "/settings/billing"],

@@ -45,6 +45,7 @@ from gateway.routes.projects.notifications import (
     notify,
     task_audience,
 )
+from gateway.routes.projects.text_links import link_from_text
 from gateway.routes.projects.watchers import ensure_watchers
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -284,6 +285,10 @@ async def add_comment(
         result["not_notified"] = mention_result["skipped"]
 
     await emit("pm.task.comment_added", {"task_id": task_id})
+    # WS-57 TR-5 — `#N` and GitHub or document URLs in the comment, after the
+    # commit and in a transaction of its own (`text_links.py`). A new comment
+    # has no old body, so every number in it is new.
+    await link_from_text(user, [(task_id, [(body, True, None)])])
     return result
 
 
@@ -354,7 +359,13 @@ async def edit_comment(
             )
         result = row_to_dict(row, ActivityModel)
         result["not_notified"] = mention_result["skipped"]
-        return result
+    # WS-57 TR-5 — the edited words may name new tasks and URLs. A link the
+    # old words made stays, and a number the old words held adds nothing,
+    # so a link a member removed stays removed (`text_links.py`, rule 4).
+    await link_from_text(
+        user, [(task_id, [(body, True, getattr(comment, "body", None))])],
+    )
+    return result
 
 
 @router.delete("/comments/{activity_id}")
