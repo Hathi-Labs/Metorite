@@ -518,7 +518,9 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: "Plug",
         note: "Connections · API keys · MCP servers",
         feature: "integrations",
-        launch: "preview",
+        // Live on 2026-10-13, by owner decision in chat ("I still don't see
+        // the integrations app ... turn it on"). launch_surface.md §2.
+        launch: "live",
       },
       {
         href: "/observability",

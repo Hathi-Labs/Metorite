@@ -70,6 +70,9 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   ["admin", "/approvals"],
   ["admin", "/settings/organization"],
   ["admin", "/settings/appearance"],
+  // Added 2026-10-13 by owner decision in chat (WS-54), taking the live set
+  // from TWELVE to THIRTEEN. Integrations sits after Appearance, in nav order.
+  ["admin", "/integrations"],
 ];
 
 /** Every pane, paired with the id of the section it sits in. */
@@ -119,7 +122,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the twelve panes launch_surface.md §2 names", () => {
+  it("ships exactly the thirteen panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);

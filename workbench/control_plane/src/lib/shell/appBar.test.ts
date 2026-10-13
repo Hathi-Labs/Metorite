@@ -125,6 +125,8 @@ const APP_BAR_HOME: Record<string, string> = {
   "/approvals": "app/approvals/page.tsx",
   "/settings/organization": "app/settings/organization/OrganizationAdmin.tsx",
   "/settings/appearance": "app/settings/appearance/page.tsx",
+  // Live since 2026-10-13 (owner, WS-54).
+  "/integrations": "app/integrations/page.tsx",
 };
 
 /**
