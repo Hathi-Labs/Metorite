@@ -2,8 +2,10 @@
 
 **Status: ACTIVE, 2026-10-13. MD-1a is BUILT (gateway half, merged as
 #964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
-dark behind `NEXT_PUBLIC_MY_DAY_FEED`).** The rest of this file is not
-built. The open AGENT-SAFE tickets are MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7,
+dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
+migration 259, dark by the absence of a caller).**
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-2a to MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7,
 MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -1681,6 +1683,21 @@ time), `PUT /shell/feed/prefs`, and `test_my_day_prefs.py` (§13.3).
   test holds this case.
 - MD-9 reads `mutes` first. MD-8 reads `open_in_app`. MD-6b reads
   `corrections`.
+
+**BUILT, 2026-10-13.** Migration 259 adds the column. The routes are in
+`gateway/routes/shell/prefs.py`, and the BFF route is
+`src/app/api/shell/feed/prefs/route.ts`. `GET /shell/feed/prefs` gives the
+stored object, and a key the member never set is absent. The fences are
+`tests/unit/test_my_day_prefs.py` and `tests/unit/test_my_day_prefs_r8.py`.
+Nothing calls the routes yet, so they are dark by the absence of a caller.
+
+The build made three choices that the ticket did not record:
+
+- A kind is a kind that a provider of `needs.REGISTRY` gives. The write
+  refuses another kind, and the read drops a kind that left the registry.
+- `open_in_app` takes 20 kinds at most, the same cap as `mutes`.
+- The server refuses a correction value over a limit with 422, and never
+  clips it. The client clips the list, newest first, before it saves.
 
 ### MD-3 · More signals, and the three link gaps — AGENT-SAFE
 
