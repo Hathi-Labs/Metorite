@@ -15,8 +15,10 @@ phase-4 rehearsal:
 - with no profile and a spent default budget, an incremental run and a
   reconcile run each discover, store the profile, use the edition budget, and
   end ``ok`` (red on the code before CRM-Q10: ``stopped`` with ``budget``);
-- the allowance pays for discovery only: an account whose edition stays
-  unknown stops after discovery, with the profile stored;
+- the allowance is for an unknown edition, at most once in 24 hours, and a
+  known edition with a spent window never gets it;
+- after a start over, the early discovery leaves the pipelines until after
+  the Stage picklist, so the picklist order and probabilities hold;
 - ``GET /crm/sync/health`` names when a spent window resumes.
 """
 
@@ -36,6 +38,7 @@ from sqlalchemy import text
 
 from tests.unit.test_crm_pipelines_r8 import (  # noqa: F401  (q and ns are fixtures)
     _admin,
+    _age_profile,
     _deal,
     _req,
     _sync,
@@ -43,6 +46,7 @@ from tests.unit.test_crm_pipelines_r8 import (  # noqa: F401  (q and ns are fixt
     q,
 )
 from tests.unit.test_crm_reset_r8 import (  # noqa: F401  (x0 is a fixture)
+    EMPTIED,
     OrgZoho,
     _connect,
     _counts,
@@ -92,7 +96,9 @@ async def _reconsent(org: str, z: Any, *, keep_profile: bool) -> None:
             scopes=("ZohoCRM.modules.leads.READ",), keep_profile=keep_profile)
 
 
-def _spend_the_window(p: Any, org: str, *, gap: bool = False) -> None:
+def _spend_the_window(
+    p: Any, org: str, *, gap: bool = False, spent: int = SPENT, keep_profile: bool = False,
+) -> None:
     """The prod state of 2026-10-12: no profile, and 950 credits spent in 24 hours.
 
     The earlier runs leave the window. With ``gap`` they also end more than 50
@@ -100,8 +106,9 @@ def _spend_the_window(p: Any, org: str, *, gap: bool = False) -> None:
     """
     age = "51 days" if gap else "2 days"
     with p.admin_engine.begin() as c:
-        c.execute(text("DELETE FROM crm_source_profiles "
-                       "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
+        if not keep_profile:
+            c.execute(text("DELETE FROM crm_source_profiles "
+                           "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
         c.execute(text(
             f"UPDATE crm_sync_runs SET started_at = now() - interval '{age}', "
             f"finished_at = now() - interval '{age}' "
@@ -114,7 +121,7 @@ def _spend_the_window(p: Any, org: str, *, gap: bool = False) -> None:
             "started_at, finished_at, credits_used, error) VALUES (CAST(:o AS uuid), "
             ":c, 'incremental', 'stopped', now() - interval '1 hour', "
             "now() - interval '1 hour', :n, 'shutdown')"),
-            {"o": org, "c": conn, "n": SPENT})
+            {"o": org, "c": conn, "n": spent})
 
 
 # ── 1. The consent keeps the profile of the same account ─────────────────────
@@ -220,9 +227,11 @@ async def test_no_profile_and_a_spent_default_budget_still_discovers(
         assert await profiles.budget_for(db, q.org_a) == EDITION_BUDGET
 
 
-async def test_the_allowance_pays_for_discovery_only(q, app_engine) -> None:
-    """An account whose edition stays unknown keeps the floor. The run stores the
-    profile, then stops on ``budget``. It does not read the records."""
+async def test_an_unknown_edition_gets_the_allowance_once_in_24_hours(q, app_engine) -> None:
+    """GET org fails during the recovery discovery. The run stores a profile
+    with ``unreadable: ["org"]`` and stops on ``budget``. The next run gets no
+    allowance, because discovery is not due. 24 hours later discovery is due
+    again, the edition is still the floor, and the allowance recovers it."""
     from gateway.crm_sync import engine
 
     _assert_non_priv(app_engine)
@@ -230,12 +239,69 @@ async def test_the_allowance_pays_for_discovery_only(q, app_engine) -> None:
     await _sync(q, q.org_a, q.a)
     _spend_the_window(q.p, q.org_a)
     q.a.org_error = True
-    result = await engine.run_org(q.org_a)
-    assert (result.status, result.error) == ("stopped", "budget"), result
-    assert 0 < result.credits_used <= engine.DISCOVERY_ALLOWANCE
+    first = await engine.run_org(q.org_a)
+    assert (first.status, first.error) == ("stopped", "budget"), first
+    assert 0 < first.credits_used <= engine.DISCOVERY_ALLOWANCE
     rows = _q(q.p, "SELECT profile->'unreadable' FROM crm_source_profiles "
                    "WHERE organization_id = CAST(:o AS uuid)", o=q.org_a)
     assert [r[0] for r in rows] == [["org"]]
+
+    reads = q.a.org_reads
+    second = await engine.run_org(q.org_a)
+    assert (second.status, second.error, second.credits_used) == ("stopped", "budget", 0)
+    assert q.a.org_reads == reads, "no allowance while discovery is not due"
+
+    q.a.org_error = False
+    _age_profile(q.p, q.org_a, hours=25)
+    third = await engine.run_org(q.org_a)
+    assert (third.status, third.error) == ("ok", None), third
+    assert q.a.org_reads == reads + 1
+
+
+async def test_a_known_edition_with_a_spent_window_gets_no_allowance(q, app_engine) -> None:
+    """The guard: the allowance is for an unknown edition only. A known edition
+    that spent its own budget stops on ``budget`` with no call, also when
+    discovery is due."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    await _sync(q, q.org_a, q.a)
+    _spend_the_window(q.p, q.org_a, spent=EDITION_BUDGET, keep_profile=True)
+    _age_profile(q.p, q.org_a, hours=25)
+    reads = q.a.org_reads
+    result = await engine.run_org(q.org_a)
+    assert (result.status, result.error, result.credits_used) == ("stopped", "budget", 0)
+    assert q.a.org_reads == reads
+
+
+async def test_a_start_over_keeps_the_picklist_order_and_probabilities(q, app_engine) -> None:
+    """Review P1: a start over deletes the statuses and the profile, and the
+    window keeps the old runs. The import then reads discovery early, on the
+    allowance. The pipelines must wait for the Stage picklist, or each stage
+    is appended with probability 0 and the picklist insert keeps that row."""
+    from gateway.crm_sync import engine
+
+    _assert_non_priv(app_engine)
+    _deal(q.a, "d1", 1, Pipeline="Standard")
+    await _sync(q, q.org_a, q.a)
+    with q.p.admin_engine.begin() as c:
+        for table in EMPTIED:
+            c.execute(text(f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
+                      {"o": q.org_a})
+    _spend_the_window(q.p, q.org_a)
+
+    result = await engine.run_org(q.org_a)
+
+    assert (result.kind, result.status) == ("import", "ok"), result
+    stages = _q(q.p, "SELECT name, probability FROM crm_deal_statuses WHERE "
+                     "organization_id = CAST(:o AS uuid) ORDER BY position", o=q.org_a)
+    # The picklist order (sequence 1, 2, 3) and its probabilities, then the one
+    # stage that only a pipeline lists, appended.
+    assert [tuple(r) for r in stages] == [
+        ("Qualify", 10), ("Won It", 100), ("Gone", 0), ("Renewal Review", 0)]
+    pipes = _q(q.p, "SELECT name FROM crm_pipelines WHERE organization_id = "
+                    "CAST(:o AS uuid) ORDER BY position", o=q.org_a)
+    assert [r[0] for r in pipes] == ["Standard", "Renewals"]
 
 
 # ── 3. Sync health names the pause ───────────────────────────────────────────
