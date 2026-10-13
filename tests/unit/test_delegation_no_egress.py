@@ -98,9 +98,6 @@ EXPECTED_OPEN_WORLD = frozenset({
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
-    # projects-assistant: the TR-1 route reads a GitHub title and state on an
-    # add (WS-57). The chat's reads send `refresh=false` and stay closed.
-    "add_task_ref",
 })
 
 #: Registry entries that live in another repo. CI cannot read their tools,
@@ -697,7 +694,7 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: working dir through the safe opener and under the broker's dir lock, so it
 #: is no `_HOST_FILE_TOOLS` member, and it says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
-    "add_subtasks", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
+    "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
     "ask_questions", "assign", "bulk_update", "calendar", "call_agent",
     "capture_intake", "comment",

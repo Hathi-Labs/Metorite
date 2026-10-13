@@ -365,11 +365,16 @@ async def list_refs(
 
 @router.post("/tasks/{task_id}/refs", status_code=201)
 async def add_ref(
-    task_id: str, payload: RefIn, response: Response,
+    task_id: str, payload: RefIn, response: Response, refresh: bool = True,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Attach one URL to a task. 201 with the new row, or 200 with the row
-    that already holds this reference."""
+    that already holds this reference.
+
+    ``refresh=false`` stores the row and calls nothing outside. The chat's
+    ``add_task_ref`` sends it, so every Projects chat tool stays
+    ``open_world=False`` and a no-egress run keeps it. ``fetched_at`` stays
+    NULL, so the card's next GET reads the title and state."""
     task_id = _parse_uuid(task_id, "Task")
     try:
         found = classify(payload.url)
@@ -418,6 +423,8 @@ async def add_ref(
                     "provider": found.provider, "ref": found.ref, "url": found.url,
                 },
             )
+    if not refresh:
+        return row
     rows = await refresh_from_github(task_id, [row])
     return rows[0]
 

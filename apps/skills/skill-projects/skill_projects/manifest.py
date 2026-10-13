@@ -654,6 +654,8 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("POST", "/projects/tasks/{task_id}/refs"): {
         "url": "add_task_ref.url",
         "title": "add_task_ref.title",
+        # The chat stores the link and reads no GitHub (open_world=False).
+        "refresh": "add_task_ref",
     },
     ("POST", "/projects/tasks/bulk"): {
         "task_ids": "bulk_update.task_ids",

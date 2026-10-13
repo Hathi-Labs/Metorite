@@ -94,6 +94,9 @@ async def test_add_posts_url_and_title_to_the_route_for_the_resolved_task(monkey
          "json": {"url": PR_URL, "title": "Fix the login"}},
     ]
     assert m.route_for("POST", sent[0]["path"]).tool == "add_task_ref"
+    # No GitHub read from the chat: the tool stays closed-world.
+    assert sent[0]["params"] == {"refresh": False}
+    assert skill_projects.add_task_ref.__tool_risk__["open_world"] is False
     assert sent[0]["headers"].get("X-Actor-Via") == "chat:projects-assistant"
     assert len(asked) == 1 and "#7" in asked[0]["detail"]
     assert "Linked" in out and f"full_id: {TASK_ID}" in out

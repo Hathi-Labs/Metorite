@@ -1699,12 +1699,12 @@ def _ref_line(row: dict[str, Any]) -> str:
     return line
 
 
-#: ⚠️ `open_world=True`, and it is the honest value: the TR-1 route reads a
-#: GitHub pull request's or issue's title and state from api.github.com when
-#: it adds one. So a run that may not reach the outside (`no_egress`) is not
-#: offered this tool. `remove_task_ref` and `task_detail` read the list with
-#: `refresh=false`, so they call nothing outside and stay `open_world=False`.
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=True)
+#: `open_world=False`, and it is the honest value: the tool posts with
+#: `refresh=false`, so the route stores the link and calls nothing outside.
+#: The card's next read fetches a GitHub title and state. Every Projects
+#: chat tool is closed-world (`test_projects_agent_refusals.py`), so a run
+#: that may not reach the outside (`no_egress`) keeps this tool too.
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
     """Attach a URL to a task: a GitHub pull request, issue, commit, branch or
     comment, a GitLab merge request, a Google Doc, Sheet or Slides, a Figma
@@ -1732,7 +1732,7 @@ async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
         context=_fields_block(shown),
     ):
         return CANCELLED
-    row = await post(f"/projects/tasks/{tid}/refs", payload)
+    row = await post(f"/projects/tasks/{tid}/refs", payload, {"refresh": False})
     return (
         f"Linked {_ref_line(row)} to {_ref(task)} (ref id {row.get('id')})."
         f"\n  full_id: {tid}"
