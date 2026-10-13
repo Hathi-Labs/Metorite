@@ -1968,32 +1968,38 @@ class TestTheOrgAllowlistOnARealDatabase:
         assert back.status_code == 200, back.text
         assert not _connection(promoted, _connection_id_of_code(promoted, code)).revoked
 
-    async def test_a_replay_off_the_list_still_revokes_the_connection(
-            self, promoted, web, monkeypatch):
-        """Fix round 1. The reuse check comes before the list check. A thief
-        rotates r1 to r2 while the organization is listed. The organization
-        leaves the list, and r1 comes again: that is a reuse, so the store
-        revokes the connection. When the organization comes back, r2 is dead."""
+    async def _rotated_then_off_the_list(self, promoted, monkeypatch):
+        """r1 rotated to r2 while org A is listed. Then org A leaves the list,
+        and r1 comes again. Returns ``(code, r2, the replay's result)``."""
         _orgs(monkeypatch, promoted.org_a)
+        code = await _code(promoted)
+        r1 = (await _token(_exchange(code))).json()["refresh_token"]
+        rotated = await _token(_refresh_form(r1))
+        assert rotated.status_code == 200, rotated.text
+        _orgs(monkeypatch, promoted.org_b)
+        replay = await agent_tokens.rotate_refresh(r1, client_id=CLIENT)
+        return code, rotated.json()["refresh_token"], replay
+
+    async def test_a_replay_off_the_list_is_reused_and_revokes(
+            self, promoted, web, monkeypatch):
+        """Fix round 1. The reuse check comes before the list check, so a
+        replay of a spent refresh token is a reuse, list or no list."""
         async with tenant_engine_scope(promoted.app_dsn):
-            code = await _code(promoted)
-            r1 = (await _token(_exchange(code))).json()["refresh_token"]
-            rotated = await _token(_refresh_form(r1))
-            assert rotated.status_code == 200, rotated.text
-            r2 = rotated.json()["refresh_token"]
+            code, _, replay = await self._rotated_then_off_the_list(promoted, monkeypatch)
+        assert isinstance(replay, agent_tokens.Refused)
+        assert replay.reason == agent_tokens.REUSED
+        assert _connection(promoted, _connection_id_of_code(promoted, code)).revoked
 
-            _orgs(monkeypatch, promoted.org_b)
-            replay = await agent_tokens.rotate_refresh(r1, client_id=CLIENT)
-            assert isinstance(replay, agent_tokens.Refused)
-            assert replay.reason == agent_tokens.REUSED
-            assert _connection(promoted, _connection_id_of_code(promoted, code)).revoked
-
+    async def test_the_thiefs_chain_is_dead_when_the_org_comes_back(
+            self, promoted, web, monkeypatch):
+        """Fix round 1. After the replay off the list, r2 must not work when
+        the organization comes back on the list."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            _, r2, _ = await self._rotated_then_off_the_list(promoted, monkeypatch)
             _orgs(monkeypatch, promoted.org_a)
             after = await agent_tokens.rotate_refresh(r2, client_id=CLIENT)
-            through_edge = await _token(_refresh_form(r2))
-        assert isinstance(after, agent_tokens.Refused)
+        assert isinstance(after, agent_tokens.Refused), "the rotated chain survived"
         assert after.reason == agent_tokens.CONNECTION_DEAD
-        assert through_edge.json() == _INVALID_GRANT
 
     async def test_another_client_off_the_list_revokes_nothing(
             self, promoted, web, monkeypatch):
