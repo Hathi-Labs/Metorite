@@ -319,7 +319,7 @@ describe("/ with the My Day feed flag", () => {
       capped: ["tasks"],
     });
     // Later draws folded: its count, and none of its cards until it opens.
-    expect(html).toMatch(/aria-expanded="false"[^>]*>.*?Later.*?data-feed-later-count="">2</s);
+    expect(html).toMatch(/aria-expanded="false"[^>]*>[\s\S]*?Later[\s\S]*?data-feed-later-count="">2</);
     expect(html).not.toContain("Card folded1");
     expect(html).toContain("Card open1");
     expect(html).toContain("Show all in My Tasks");

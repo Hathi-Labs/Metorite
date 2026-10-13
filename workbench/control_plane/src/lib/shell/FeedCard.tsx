@@ -621,8 +621,15 @@ export function FeedColumn({
             </div>
             <div className="flex flex-col gap-3">{group.cards.map(drawCard)}</div>
             {cappedLinks(group, capped).map((link) => (
-              <div key={link.app} className="flex justify-center pt-2">
-                <Button href={link.href} variant="text" size="sm" icon="ArrowRight" data-feed-show-all={link.app}>
+              <div key={link.app} className="flex justify-center pt-1">
+                <Button
+                  href={link.href}
+                  variant="text"
+                  size="none"
+                  icon="ArrowRight"
+                  data-feed-show-all={link.app}
+                  className="min-h-8 gap-1 text-xs font-medium"
+                >
                   {link.label}
                 </Button>
               </div>
@@ -639,13 +646,15 @@ export function FeedColumn({
         {later ? (
           // Later draws folded, with its count (MD-2b).
           <div role="group" aria-labelledby="feed-group-later" data-feed-group="later">
+            {/* The same size and weight as the other group labels. */}
             <Button
-              variant="ghost"
-              size="sm"
+              variant="text"
+              size="none"
               icon={laterOpen ? "ChevronDown" : "ChevronRight"}
               aria-expanded={laterOpen}
               aria-controls="feed-later-cards"
               onClick={() => setLaterOpen((open) => !open)}
+              className="min-h-8 gap-1 px-1 text-xs font-medium"
             >
               <span id="feed-group-later">{later.label}</span>
               <span className="text-muted-foreground" data-feed-later-count="">
