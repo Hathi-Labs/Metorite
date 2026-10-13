@@ -51,6 +51,7 @@ import { useChatMemories } from "@/hooks/useChatMemories";
 import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
 import { useAgentEvents } from "@/lib/agentEvents";
 import { visibleSections } from "@/lib/nav";
+import { SidePanelFitContext } from "@/lib/sidePanelFit";
 import {
   NO_PICK,
   carriedText,
@@ -787,6 +788,11 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         <div className="flex min-w-0 flex-1 flex-col">
           <div className={`flex min-h-0 w-full flex-1 flex-col ${form === "full" ? "mx-auto max-w-4xl" : ""}`}>
             {active ? (
+              // No page under the assistant renders the side-panel editor
+              // (Projects mounts it only with its own chat on, and the flag
+              // turns that off). So a file card opens the chat's own viewer,
+              // never a store that nothing draws (review of 2026-10-13).
+              <SidePanelFitContext.Provider value={false}>
               <AgentChat
                 key={active.id}
                 agentName={agent}
@@ -810,6 +816,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 assistantName={agent === ASSISTANT_AGENT ? ASSISTANT_NAME : undefined}
                 onAutoSendConsumed={consumeAsk}
               />
+              </SidePanelFitContext.Provider>
             ) : (
               <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground" aria-busy="true">
                 <Icon name="Loader2" size={16} className="animate-spin" />

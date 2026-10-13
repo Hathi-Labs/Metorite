@@ -84,7 +84,7 @@ const ALL_FEATURES = PANES.map((p) => p.feature).filter(
 
 describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
   it("covers exactly the doorway — sign-in and sign-up, with their subpaths", () => {
-    expect(CHROMELESS_ROUTES).toEqual(["/signin", "/signup", "/oauth/approved"]);
+    expect(CHROMELESS_ROUTES).toEqual(["/signin", "/signup", "/oauth/approved", "/connect"]);
     expect(isChromeless("/signup")).toBe(true);
     expect(isChromeless("/signin")).toBe(true);
     expect(isChromeless("/signin/code")).toBe(true);
@@ -95,6 +95,11 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
     // "you are inside a workspace", and that admin is not.
     expect(isChromeless("/oauth/approved")).toBe(true);
     expect(isChromeless("/oauth")).toBe(false);
+  });
+
+  it("the consent page of an outside agent has no chrome (WS-55 EA-4a)", () => {
+    expect(isChromeless("/connect/authorize")).toBe(true);
+    expect(isChromeless("/connector")).toBe(false);
   });
 
   it("matches path SEGMENTS, never prefixes of other routes", () => {

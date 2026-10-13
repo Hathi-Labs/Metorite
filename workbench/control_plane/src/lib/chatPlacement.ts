@@ -167,6 +167,9 @@ const WRITE: readonly string[] = [
   "add_subtasks",
   "link_tasks",
   "unlink_tasks",
+  // WS-57 TR-3: a task's URL references.
+  "add_task_ref",
+  "remove_task_ref",
   "move_task",
   "watch",
   "complete",

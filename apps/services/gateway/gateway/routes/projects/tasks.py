@@ -106,8 +106,10 @@ from gateway.routes.projects.notifications import (
 from gateway.routes.projects.relations import (
     DIRECTED_TYPES,
     assert_no_block_cycle,
+    insert_task_link,
 )
 from gateway.routes.projects.tags import apply_task_tags
+from gateway.routes.projects.text_links import link_from_text, saved_texts
 from gateway.routes.projects.watchers import ensure_watchers
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -473,6 +475,9 @@ async def create_task(
     await emit("pm.task.created", {
         "task_id": task_id, "project_id": str(project_id), "title": title,
     })
+    # WS-57 TR-5 — `#N` and GitHub or document URLs in the new text, after
+    # the commit and in a transaction of its own (`text_links.py`).
+    await link_from_text(user, [(task_id, [(title, False, None), (values.get("description"), True, None)])])
     return result
 
 
@@ -613,6 +618,10 @@ async def patch_task(
         })
     if cascade is not None:
         await emit_all(cascade.events)
+    # WS-57 TR-5 — the numbers and URLs this PATCH ADDS to the title or the
+    # description, against `before` (`text_links.py`, rule 4). A PATCH that
+    # writes neither reads nothing.
+    await link_from_text(user, [(task_id, saved_texts(values, before))])
     return result
 
 
@@ -1251,30 +1260,14 @@ async def create_link(
         # finishing something, and every walk over it runs forever.
         if payload.link_type in DIRECTED_TYPES:
             await assert_no_block_cycle(db, task_id, str(payload.target_task_id))
-        row = (await db.execute(
-            text(
-                "INSERT INTO pm_task_links "
-                "(source_task_id, target_task_id, link_type, created_by) "
-                "VALUES (CAST(:src AS uuid), CAST(:tgt AS uuid), :kind, :who) "
-                "ON CONFLICT (source_task_id, target_task_id, link_type) "
-                "DO UPDATE SET link_type = EXCLUDED.link_type RETURNING id"
-            ),
-            {
-                "src": task_id, "tgt": str(payload.target_task_id),
-                "kind": payload.link_type, "who": actor(user),
-            },
-        )).fetchone()
-        await record_activity(
-            db, activity_type="link", created_by=actor(user), task_id=task_id,
-            meta={"target": str(payload.target_task_id), "type": payload.link_type},
+        # The ONE insert, shared with the links from text (TR-5): the row,
+        # the `link` activity on the source and the bump of the target.
+        link_id = await insert_task_link(
+            db, task_id, str(payload.target_task_id), payload.link_type,
+            by=actor(user),
         )
-        # WS-27ae / P-27 — the activity above bumps the SOURCE. A link is
-        # readable from both ends (`attach_relation_counts` draws "blocked" on
-        # the target), so the target changed too and a delta client watching
-        # only the blocked task would otherwise never learn it is blocked.
-        await touch_task(db, str(payload.target_task_id))
         return {
-            "id": str(row.id), "source_task_id": task_id,
+            "id": link_id, "source_task_id": task_id,
             "target_task_id": str(payload.target_task_id),
             "link_type": payload.link_type,
         }

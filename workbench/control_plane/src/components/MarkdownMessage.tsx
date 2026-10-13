@@ -20,6 +20,7 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatEntityPill from "@/components/ChatEntityPill";
+import ChatTaskRef from "@/components/ChatTaskRef";
 import { FencedName } from "@/components/FencedText";
 import { ControlLink } from "@/components/ControlLink";
 import MarkdownImage from "@/components/MarkdownImage";
@@ -28,11 +29,16 @@ import { stripDsmlMarkup } from "@/lib/dsmlMarkup";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { isInAppPath } from "@/components/ui/EntityPill";
 import { announceInAppLink, externalHost } from "@/lib/inAppLink";
-import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
+import { buildEntityIndex, projectIdOfHref, type EntityIndex } from "@/lib/entityIndex";
+import ProjectLinkPill from "@/components/ProjectLinkPill";
+import type { TaskRefResolver } from "@/lib/taskRefs";
 import remarkEntityPills, {
   PILL_ATTR,
+  PILL_GROUP_CLASS,
   PILL_NUMBER_ATTR,
   PILL_TEXT_ATTR,
+  TASK_REF_AFTER_ATTR,
+  TASK_REF_ATTR,
   spaceBeforeBold,
   typedBulletsToList,
 } from "@/lib/remarkEntityPills";
@@ -99,6 +105,9 @@ interface MarkdownMessageProps {
    *  2026-10-07). The chat turns it on for every agent answer. A document
    *  does not. */
   fences?: boolean;
+  /** Draw each bare `#171` as the task pill when it is a task the member can
+   *  see (owner report, 2026-10-13). Absent: on with `entityPills`. */
+  taskRefs?: boolean;
   /** A read's receipt for its step in the trail (`ThinkingContainer`,
    *  spec `projects_ai_chat.md` §24 rule 2). `MessageBubble` supplies it. */
   evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
@@ -322,12 +331,31 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 // pills: a «name» draws as a quiet emphasis, and the marks never show. An
 // email stays a mailto link. A document keeps its text as written.
 //
+// `taskRefs` (owner report, 2026-10-13) turns each bare `#171` into the task
+// pill, when one task the member can see has that number (`ChatTaskRef.tsx`).
+// It is on with `entityPills` unless the caller says otherwise. With
+// `entityPills` or `fences` it rides their plugin. `taskRefs={true}` with
+// neither (WS-57 TR-5, the task card) runs the plugin in its `names: false`
+// mode: only the `#171`s change, and no «mark», email or bullet does. The chat
+// always passes `fences`, so its output is the one it was before TR-5
+// (fence: `markdownChatGolden.test.ts`). `taskRefResolver` is the store the
+// pills read: the card passes its task's root store (`taskRefResolverFor`).
+//
+// `projectPills` (WS-57 TR-5) draws a link to `/projects?project=<id>` as the
+// project pill, which opens the project. It adds no link to the task.
+//
 // `inline` draws ONE line of agent text, for a generative-UI field (a list
 // item, a callout, a table cell). Only inline Markdown survives: bold,
 // italic, strikethrough, inline code and links. Every other element is
 // unwrapped to its text, and an image is dropped, so a field can never load a
 // remote file or draw a block. The link rules are the ones above, and HTML
 // stays text, because this renderer has no `rehype-raw`.
+//
+// `plainEmails` (WS-57 TR-4) draws a `mailto:` link as its text. The task
+// card's description and comments use it, so an @mention such as
+// `@asha@example.com` stays the plain text it was before they drew Markdown.
+// The chat never passes it. A backslash before the `@` does not stop GFM's
+// email autolink, so the link is unwrapped here instead.
 
 /** The elements an `inline` body keeps. Exported for its test. */
 export const INLINE_ELEMENTS = ["p", "strong", "em", "del", "code", "a", "span", "br"];
@@ -340,8 +368,12 @@ export function MarkdownBody({
   entityPills = false,
   entityIndex,
   fences = false,
+  taskRefs,
   inline = false,
   caret = false,
+  plainEmails = false,
+  taskRefResolver,
+  projectPills = false,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -350,23 +382,40 @@ export function MarkdownBody({
   entityPills?: boolean;
   entityIndex?: EntityIndex;
   fences?: boolean;
+  /** Absent: the same as `entityPills`. */
+  taskRefs?: boolean;
   inline?: boolean;
   /** Draw the streaming caret at the end of the last line of words
    *  (`lib/streamCaret.ts`). Never after the body: that is a line of its own. */
   caret?: boolean;
+  /** Draw a `mailto:` link as plain text. Off everywhere but the task card. */
+  plainEmails?: boolean;
+  /** The store the `#171` pills read. Absent: the app's store. */
+  taskRefResolver?: TaskRefResolver;
+  /** Draw a link to a project as the project pill. Off everywhere but the
+   *  task card. */
+  projectPills?: boolean;
 }) {
   // DeepSeek's DSML tool-call text never shows (owner report, 2026-10-11).
   // The Router turns it into real tool calls. This catches a message stored
   // before that fix, and a box that serves without the Router.
   const visible = stripDsmlMarkup(content);
+  const named = entityPills || fences;
+  const refs = (taskRefs ?? entityPills) && named;
+  // The task card's mode: the `#171`s and nothing else (WS-57 TR-5).
+  const refsOnly = taskRefs === true && !named;
+  // While the answer streams, a number may be half typed: no lookup yet.
+  const live = !caret;
   return (
     <ReactMarkdown
       remarkPlugins={
         entityPills
-          ? [remarkGfm, remarkEntityPills]
+          ? [remarkGfm, [remarkEntityPills, { taskRefs: refs }]]
           : fences
-            ? [remarkGfm, [remarkEntityPills, { emails: false }]]
-            : [remarkGfm]
+            ? [remarkGfm, [remarkEntityPills, { emails: false, taskRefs: refs }]]
+            : refsOnly
+              ? [remarkGfm, [remarkEntityPills, { names: false, emails: false, taskRefs: true }]]
+              : [remarkGfm]
       }
       rehypePlugins={caret ? [rehypeStreamCaret] : []}
       urlTransform={markdownUrlTransform}
@@ -378,16 +427,29 @@ export function MarkdownBody({
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         span: ({ node: _node, children, ...rest }) => {
           const attrs = rest as Record<string, unknown>;
+          if ((refs || refsOnly) && typeof attrs[TASK_REF_ATTR] === "string") {
+            return (
+              <ChatTaskRef refText={attrs[TASK_REF_ATTR] as string}
+                after={String(attrs[TASK_REF_AFTER_ATTR] ?? "")} index={entityIndex}
+                scope={sessionId} live={live} resolver={taskRefResolver} />
+            );
+          }
           if ((entityPills || fences) && attrs[PILL_ATTR] !== undefined) {
             const number = attrs[PILL_NUMBER_ATTR];
             const text = String(attrs[PILL_TEXT_ATTR] ?? "");
             const n = typeof number === "string" ? number : undefined;
             return entityPills ? (
-              <ChatEntityPill text={text} number={n} index={entityIndex} />
+              <ChatEntityPill text={text} number={n} index={entityIndex} scope={sessionId} live={live} />
             ) : (
               <FencedName text={text} number={n} />
             );
           }
+          // A name with no pill is a run of words, and it must wrap like
+          // words (owner report, 2026-10-13: a long «task title» and its
+          // full stop ran past the right edge of the question card). The
+          // group's `whitespace-nowrap` keeps a short PILL with its comma.
+          // A word and the mark that touches it never part anyway.
+          if (!entityPills && attrs.className === PILL_GROUP_CLASS) return <>{children}</>;
           return <span {...rest}>{children}</span>;
         },
 
@@ -446,7 +508,14 @@ export function MarkdownBody({
         ),
 
         // ── Links ──
-        a: ({ href, children }) => <MarkdownLink href={href}>{children}</MarkdownLink>,
+        a: ({ href, children }) => {
+          if (plainEmails && typeof href === "string" && /^mailto:/i.test(href)) {
+            return <>{children}</>;
+          }
+          const project = projectPills ? projectIdOfHref(href) : null;
+          if (project) return <ProjectLinkPill id={project} text={nodeText(children)} href={href} />;
+          return <MarkdownLink href={href}>{children}</MarkdownLink>;
+        },
 
         // ── Blockquote ──
         blockquote: ({ children }) => (
@@ -571,6 +640,7 @@ export default function MarkdownMessage({
   entityPills = false,
   entityIndex: givenIndex,
   fences = false,
+  taskRefs,
   evidenceFor,
 }: MarkdownMessageProps) {
   // The names this message's tools printed, for the pills (WS-27bm S9).
@@ -638,6 +708,7 @@ export default function MarkdownMessage({
         entityPills={entityPills}
         entityIndex={entityIndex}
         fences={fences}
+        taskRefs={taskRefs}
         // The streaming caret, only once text streams. It draws INSIDE the
         // last line of words. A span here, after the body, drew a lone "|"
         // on its own line between the answer and the next card (2026-10-07).

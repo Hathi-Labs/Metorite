@@ -392,6 +392,7 @@ jobs:
             tests/unit/test_operator_door.py \
             tests/unit/test_shell_needs_r8.py \
             tests/unit/test_chat_session_archive_r8.py \
+            tests/unit/test_projects_search_description_r8.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Customer Console suites skipped — R8 gate is disarmed."

@@ -66,6 +66,11 @@ const PUBLIC_PAGES = new Set([
   // Microsoft. That admin has no Metorite session. The page reads one token
   // from a fixed set, makes no fetch and renders fixed copy only.
   "/oauth/approved",
+  // WS-54 IN-8a: Metorite's OAuth client metadata document (CIMD) for MCP
+  // servers. An auth server fetches it with no session, and its URL is the
+  // client id. It is the same public JSON for every caller and names nobody.
+  // With MCP_OAUTH_ENABLED off the route answers 404.
+  "/oauth/mcp-client.json",
 ]);
 
 /**

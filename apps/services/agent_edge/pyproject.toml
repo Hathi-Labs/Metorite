@@ -1,7 +1,7 @@
 [project]
 name = "agent-edge"
 version = "0.0.1"
-description = "The public edge for outside agents: OAuth metadata, token and revoke (WS-55 EA-2a). EA-3 adds /mcp."
+description = "The public edge for outside agents: OAuth metadata, token, revoke (WS-55 EA-2a) and /mcp (EA-3b)."
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "fastapi>=0.141",
@@ -10,6 +10,9 @@ dependencies = [
     # (`acb_auth.agent_oauth`). The edge never imports the gateway.
     "acb-auth",
     "acb-common",
+    # EA-3b-1. `agent_edge/gateway_client.py` calls the gateway with it. The
+    # edge declares it itself, and does not rely on `acb-auth` to bring it.
+    "httpx>=0.28",
 ]
 
 [build-system]

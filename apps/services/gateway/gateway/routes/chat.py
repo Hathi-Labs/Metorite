@@ -867,6 +867,8 @@ def _upsert_messages(
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
+    from gateway.chat_recovery import gate_card_answer_events  # noqa: PLC0415
+
     if not messages:
         return []
 
@@ -889,10 +891,14 @@ def _upsert_messages(
             # are the server, and they may insert an agent row.
             may_insert = kind == "human" or bool(author_from_run) or bool(mint)
             # The ids stay as sent: the client matches its rows by them.
+            # A card answer's display must agree with the turn's words, or
+            # it goes (review of #942): a member could otherwise show every
+            # viewer an "Approved" card that the model never read.
+            events = gate_card_answer_events(m.role, m.content, m.custom_events)
             body = storable({
                 "content": m.content, "tool_events": m.tool_events,
                 "progress_lines": m.progress_lines, "reasoning": m.reasoning,
-                "agent_state": m.agent_state, "custom_events": m.custom_events,
+                "agent_state": m.agent_state, "custom_events": events,
             })
             result = s.execute(
                 text(_MESSAGE_UPSERT_SQL),

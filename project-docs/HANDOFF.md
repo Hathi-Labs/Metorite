@@ -646,6 +646,9 @@ line — never reclaim a number by deleting the other entry.
 - **Why.** The HTML route of EM-S1 caches up to 2 MB of HTML for each message for 1 hour. The
   file cache of `transport/attachments.py` caches up to 15 MB for each file. The TTL is their only
   bound, so a burst of opens can fill the memory of the box.
+  The inline picture cache of `transport/inline_images.py` (`email-inline` and `email-inline-ids`,
+  `email_app_master_plan.md` §16.6) caches up to 20 MB for each message for 1 hour. It is the
+  third cache that a member's opens grow, so count it in the number you choose.
 - **Do.** Set `maxmemory` and `maxmemory-policy volatile-lru` (or `allkeys-lru`) for the Redis of
   the gateway. First check that no key without a TTL is state that must stay, such as a stream
   or a consumer group. Measure the memory of Redis on the box before you choose the number.
@@ -5244,6 +5247,56 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/saas_multitenancy.md` MT-1k "Org-aware links" ·
   `navigation_shell.md` §5.2
 - **Added:** 2026-10-12 · shell follow-ups of #918
+
+### H-303 · Put the MCP edge signing key on both units, and strip identity headers at Caddy · [OWNER]
+- **Check:** two parts. This entry is done only when both pass.
+  1. `grep -cE "header_up -X-(User-Email|User-Role|Actor-Via)" deploy/hostinger/caddy/Caddyfile`
+     → a count below 3 means the strip is open.
+  2. `ssh metorite "grep -c '^AGENT_EDGE_SIGNING_KEY=.' /opt/acb/app/.env"` → 0 means the
+     gateway has no key. The command prints no value.
+- **Why.** WS-55 EA-3 makes the MCP edge sign each call to the gateway with an HMAC (spec
+  §10.1). Until both units hold the key, the gateway refuses every agent call, and the feature
+  stays inert. The Caddy block of `api.metorite.com` sends `X-User-Email`, `X-User-Role` and
+  `X-Actor-Via` from the internet to the gateway. No entry carried that strip before.
+- **Do this (owner, EA-10):**
+  1. Make one random key of at least 32 bytes. It must differ from `GATEWAY_INTERNAL_TOKEN`
+     and from `LITELLM_MASTER_KEY`.
+  2. Set it as `AGENT_EDGE_SIGNING_KEY` in the env of `acb-gateway` and of the edge unit.
+     Restart both units.
+  3. Confirm that no internal caller reaches the gateway through `api.metorite.com`. The strip
+     would break such a caller.
+  4. Add one `header_up -<name>` line for each of the three headers to the `reverse_proxy`
+     of `api.metorite.com`.
+  5. Decide in EA-10 if Caddy strips `X-Agent-*` too. The edge calls the gateway on loopback,
+     so it never passes Caddy.
+- **Gate.** The key is an `env-write` act, and the Caddyfile is under `deploy/`. D97 makes
+  both of them owner gates. Do them after EA-3a merges and before the flag turns on.
+- **Authority:** `specs/external_agent_access.md` §10.1 and §15 EA-10 · `work_plan.md` WS-55 ·
+  D97
+- **Added:** 2026-10-12 · branch `feat/ws55-ea3-mcp-read-tools`. Renumbered from H-301 to H-302, then to H-303, on 2026-10-13, because
+  `origin/main` took H-301 and then H-302. H-303 was free on `origin/main` and in each open pull request.
+
+### H-304 · An org-wide reader sees a SEALED personal tree (D63) · [AGENT]
+- **Check:** read `task_visibility_clause` in
+  `apps/services/gateway/gateway/routes/projects/core.py` (about line 1600).
+  The entry is open while the `vis.unrestricted` branch returns only the
+  tenant filter and does not test `pm_projects.sealed_at`.
+- **Why:** D63 seals the personal tree of a member who leaves. Only the
+  owner-only LOGGED door may open it, and that door is not built. Migration
+  215 filters `sealed_at` on both arms of the restricted clause. The
+  `data:org:read` branch skips the filter, so an admin reads a sealed tree
+  through `/projects/search`, `/projects/search/refs` (#944) and
+  `/projects/tasks/{id}`. The task-ref builder of #944 found this on
+  2026-10-13. The gap is older than #944.
+- **Do:** in the shared clause, make the unrestricted branch exclude tasks
+  whose project is sealed. Keep the second arm of D63: a task that is assigned
+  OUTWARD stays visible to its assignee. Fix it in the one clause, not per
+  route. Add an R8 test with two members, one sealed tree and an admin reader,
+  run as the app role.
+- **Done when:** an admin with `data:org:read` gets no task of a sealed tree
+  from search, refs or the task read. The assignee hand-over still works.
+- **Authority:** `work_plan.md` §3 D63 · H-49 · migration 215
+- **Added:** 2026-10-13 · found in the review of #944
 
 # DONE — deleted, not archived
 

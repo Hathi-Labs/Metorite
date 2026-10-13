@@ -12,9 +12,13 @@
  *
  * One order now, in both apps:
  *
- *   #ref [copy link] · app chips … · app actions · [expand] [close]
+ *   Space › Project › #ref [copy link] · app chips … · app actions · [expand] [close]
  *   Title (click to edit)
  *
+ * - `where` — the task's place in the tree, from its space down to its
+ *   project. A card opened from the chat or a link says nothing else about
+ *   where the task lives (owner, 2026-10-12). Omit it, or pass an empty
+ *   path, and the row starts at the ref.
  * - `taskRef` — the task's reference ("#42"), or "Task" when it has none.
  * - `linkFor` — the URL the copy button puts on the clipboard. Omit it and
  *   the button is absent.
@@ -32,6 +36,7 @@ import { type ReactNode, useState } from "react";
 import AppIcon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { CLOSE_TASK_LABEL, EXPAND_ICONS, EXPAND_LABELS } from "@/lib/taskPanel";
+import { findTaskRefs, TaskRefText, type TaskRefResolver } from "@/lib/taskRefs";
 
 export interface TaskHeaderExpand {
   /** The panel is the full card now. */
@@ -39,7 +44,21 @@ export interface TaskHeaderExpand {
   onToggle: () => void;
 }
 
+/** One step of a task's place in the tree: a space, a folder or a project. */
+export interface TaskCrumb {
+  id: string;
+  name: string;
+}
+
+export interface TaskWhere {
+  /** From the space down to the task's own project. */
+  path: readonly TaskCrumb[];
+  /** Opens that node. Omit it and the crumbs are plain text. */
+  onOpen?: (id: string) => void;
+}
+
 export function TaskHeaderRow({
+  where,
   taskRef,
   linkFor,
   chips,
@@ -47,6 +66,7 @@ export function TaskHeaderRow({
   expand,
   onClose,
 }: {
+  where?: TaskWhere;
   taskRef: string;
   linkFor?: () => string;
   chips?: ReactNode;
@@ -72,22 +92,30 @@ export function TaskHeaderRow({
 
   const stop = expand?.expanded ? "full" : "side";
 
+  const ref = (
+    <>
+      <p className="truncate text-xs text-muted-foreground">{taskRef}</p>
+      {linkFor ? (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          icon={copied ? "Check" : "Link"}
+          aria-label="Copy a link to this task"
+          title="Copy a link that opens this task"
+          onClick={() => void copy()}
+        />
+      ) : null}
+    </>
+  );
+
   return (
     <div className="mb-1.5 flex items-start justify-between gap-2">
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <div className="flex min-w-0 items-center gap-0.5">
-          <p className="truncate text-xs text-muted-foreground">{taskRef}</p>
-          {linkFor ? (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              icon={copied ? "Check" : "Link"}
-              aria-label="Copy a link to this task"
-              title="Copy a link that opens this task"
-              onClick={() => void copy()}
-            />
-          ) : null}
-        </div>
+        {where && where.path.length > 0 ? (
+          <TaskWhereCrumbs where={where} current={ref} />
+        ) : (
+          <div className="flex min-w-0 items-center gap-0.5">{ref}</div>
+        )}
         {chips}
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
@@ -119,6 +147,64 @@ export function TaskHeaderRow({
   );
 }
 
+/** The breadcrumb's separator. It LEADS its item, so a wrapped line starts
+ *  with "›" and no line ends on a dangling one. */
+function Chevron() {
+  return <AppIcon name="ChevronRight" aria-hidden className="h-3 w-3 shrink-0 text-muted-foreground" />;
+}
+
+/**
+ * Where the task lives: Space › Folder › Project › Subproject › #ref. The
+ * ref and its copy-link are the LAST crumb (`aria-current`), as a breadcrumb
+ * ends on the current page, so a wrapped line keeps the ref beside its
+ * project instead of on a line of its own. The task's own project is in the
+ * foreground colour, because that is the answer the reader came for. Each
+ * crumb opens its node when the host passes `onOpen`.
+ *
+ * A long name truncates at `max-w-40`, with the full name in its tooltip, and
+ * the row wraps rather than pushing the close button off the panel.
+ */
+function TaskWhereCrumbs({ where, current }: { where: TaskWhere; current: ReactNode }) {
+  const last = where.path.length - 1;
+  return (
+    <nav aria-label="Where this task is" className="min-w-0">
+      <ol className="flex min-w-0 flex-wrap items-center gap-0.5 text-xs text-muted-foreground">
+        {where.path.map((crumb, i) => {
+          const tone = i === last ? "font-medium text-foreground" : "";
+          return (
+            <li key={crumb.id} className="flex min-w-0 items-center gap-0.5">
+              {i > 0 ? <Chevron /> : null}
+              {where.onOpen ? (
+                <Button
+                  variant="ghost"
+                  size="none"
+                  radius="keep"
+                  layout="block"
+                  title={`Open ${crumb.name}`}
+                  onClick={() => where.onOpen?.(crumb.id)}
+                  className="max-w-40 truncate rounded-md px-1 py-0.5 text-xs"
+                >
+                  {/* The tone on a span: a Button's className is for layout
+                      only, and the ghost variant owns the colour. */}
+                  <span className={tone}>{crumb.name}</span>
+                </Button>
+              ) : (
+                <span title={crumb.name} className={`max-w-40 truncate px-1 ${tone}`}>
+                  {crumb.name}
+                </span>
+              )}
+            </li>
+          );
+        })}
+        <li aria-current="page" className="flex min-w-0 items-center gap-0.5">
+          <Chevron />
+          {current}
+        </li>
+      </ol>
+    </nav>
+  );
+}
+
 /**
  * The task title, edited in place. Click it, type, then Enter or click away
  * to save. Escape puts it back. Shift+Enter is a new line.
@@ -127,16 +213,55 @@ export function TaskHeaderRow({
  * the heading, because a heading is not allowed inside a button.
  *
  * `onSave` gets the trimmed text, and only when it is new and not empty.
+ *
+ * A `#123` in the title draws as the task pill (WS-57 TR-5), through
+ * `refResolver`, the task's root store. A pill is a link, and a link may not
+ * sit inside a button. So a title with a reference puts its words in a span
+ * that a click edits, and the edit button is the pencil beside them. A title
+ * with no reference keeps the one button.
  */
 export function EditableTaskTitle({
   value,
   onSave,
+  refResolver,
 }: {
   value: string;
   onSave: (next: string) => void;
+  /** The store the `#123` pills read. Absent: the app's store. */
+  refResolver?: TaskRefResolver;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  const start = () => {
+    setDraft(value);
+    setEditing(true);
+  };
+
+  if (!editing && findTaskRefs(value).length > 0) {
+    return (
+      <h2 className="text-base font-semibold leading-snug text-foreground">
+        <span className="group flex w-full items-start gap-2">
+          <span
+            className="min-w-0 flex-1 cursor-text"
+            onClick={(e) => {
+              if (!(e.target as HTMLElement | null)?.closest("a, button")) start();
+            }}
+          >
+            <TaskRefText text={value} resolver={refResolver} refClassName="text-sm font-medium" />
+          </span>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="Pencil"
+            aria-label="Edit title"
+            title="Edit title"
+            className="shrink-0 reveal-on-hover"
+            onClick={start}
+          />
+        </span>
+      </h2>
+    );
+  }
 
   if (!editing) {
     return (

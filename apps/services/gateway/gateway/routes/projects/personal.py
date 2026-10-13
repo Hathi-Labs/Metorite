@@ -91,6 +91,7 @@ from gateway.routes.projects.tasks import (
     delete_task_in,
     move_task_in,
 )
+from gateway.routes.projects.text_links import Saved, link_from_text
 from gateway.routes.tasks.priority import important_from_importance
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -644,7 +645,10 @@ async def capture(
                 "due_at": payload.due_at,
                 "source": "manual",
             }, overlay)
-        return row_to_dict(task, TaskModel)
+        result = row_to_dict(task, TaskModel)
+    # WS-57 TR-5 — the captured title and notes, after the commit.
+    await link_from_text(user, [(str(task.id), [(title, False, None), (payload.notes, True, None)])])
+    return result
 
 
 async def create_personal_task(
@@ -748,6 +752,7 @@ async def capture_batch(
         project_id = str(project.id)
         status = await load_default_status(db, project_id)
         rows: list[dict[str, Any]] = []
+        saved: list[tuple[str, list[Saved]]] = []
         for item in items:
             # The ONE capture path: `create_personal_task` owns the row, the
             # assignee, the overlay and the `pm.task.created` event.
@@ -763,6 +768,9 @@ async def capture_batch(
                     "source": "manual",
                 }, overlay)
             rows.append(await _read_my_task(db, email, str(task.id)))
+            saved.append((str(task.id), [(_clean_title(item), False, None), (item.notes, True, None)]))
+    # WS-57 TR-5 — each captured title and its notes, after the commit.
+    await link_from_text(user, saved)
     return ListResponse(rows=rows, total=len(rows))
 
 
@@ -2329,6 +2337,16 @@ async def step_overlay(db: Any, email: str, parent: Any) -> dict[str, Any] | Non
     return None
 
 
+def step_texts(created: list[str], titles: list[str]) -> list[tuple[str, list[Saved]]]:
+    """The new steps as ``link_from_text`` takes them (WS-57 TR-5).
+
+    ``_add_subtasks`` skips a blank title and keeps the order, so its ids pair
+    with the titles that are not blank. A new step has no old title.
+    """
+    named = [t.strip() for t in titles if (t or "").strip()]
+    return [(tid, [(t, False, None)]) for tid, t in zip(created, named, strict=False)]
+
+
 async def _add_subtasks(
     db: Any, email: str, parent: Any, titles: list[str],
 ) -> list[str]:
@@ -2371,6 +2389,7 @@ async def _add_subtasks(
 async def _organize(
     db: Any, vis: Any, email: str, task: Any, payload: OrganizeIn,
     moved_subtasks: list[str] | None = None,
+    created_steps: list[tuple[str, list[Saved]]] | None = None,
 ) -> str:
     """Apply one decision to ``task`` inside the caller's transaction.
 
@@ -2494,7 +2513,9 @@ async def _organize(
 
     # ── 4. The steps — children of the task where it now lives ─────────────
     if payload.subtasks:
-        await _add_subtasks(db, email, task, payload.subtasks)
+        made = await _add_subtasks(db, email, task, payload.subtasks)
+        if created_steps is not None:
+            created_steps.extend(step_texts(made, payload.subtasks))
     return disposition
 
 
@@ -2522,8 +2543,10 @@ async def organize_my_task(
         title = str(getattr(task, "title", "") or "")
         before = str(getattr(task, "project_id", "") or "")
         moved_subtasks: list[str] = []
+        created_steps: list[tuple[str, list[Saved]]] = []
         disposition = await _organize(
             db, vis, email, task, payload, moved_subtasks=moved_subtasks,
+            created_steps=created_steps,
         )
         result = await _read_my_task(db, email, task_id)
     # S6g — a decision that changed the project IS a move, and says so the
@@ -2551,6 +2574,8 @@ async def organize_my_task(
         await emit("pm.task.moved", {"task_id": task_id})
     for child_id in moved_subtasks:
         await emit("pm.task.moved", {"task_id": child_id})
+    # WS-57 TR-5 — the new steps' titles, as `add_my_steps` reads them.
+    await link_from_text(user, created_steps)
     return result
 
 
@@ -2593,6 +2618,9 @@ async def add_my_steps(
         parent = await load_visible_task(db, vis, task_id)
         # `create_personal_task` emits `pm.task.created` for each step.
         created = await _add_subtasks(db, email, parent, titles)
+    # WS-57 TR-5 — each step's title. `_add_subtasks` skips a blank title and
+    # keeps the order, so the ids pair with the titles that are not blank.
+    await link_from_text(user, step_texts(created, titles))
     return {"created": created}
 
 

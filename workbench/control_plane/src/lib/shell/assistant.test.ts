@@ -346,6 +346,10 @@ describe("the source keeps the flag's two sides apart", () => {
     expect(shell).toContain("{!isChatPage && !chatOn && tabBadge && (");
   });
 
+  it("a file card in the assistant opens the chat's own viewer, never a side panel nothing draws", () => {
+    expect(read("lib/shell/AssistantDock.tsx")).toMatch(/<SidePanelFitContext\.Provider value=\{false\}>\s*<AgentChat/);
+  });
+
   it("the app switch listens to the live loop only, never to a replay", () => {
     const hook = read("hooks/useAgentChat.ts");
     expect((hook.match(/emitAgentEvent\("onDelegate"/g) ?? []).length).toBe(2);

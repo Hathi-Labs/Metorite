@@ -6044,6 +6044,50 @@ likely to be what somebody is hunting by name; a comment hit would also have to 
 task, which makes ranking across the two incomparable. Recorded so the absence reads as a
 decision rather than an oversight.
 
+#### Words, descriptions and snippets (owner request, 2026-10-13)
+
+**The search matches each word in the title or the description.** Both
+`/projects/search` and the list endpoint's `?q=` use one predicate,
+`filters.text_match_clause`. Before this change, the query was one
+substring. "invoice approval" then missed "approval of the invoice".
+
+The rules:
+
+1. Each word must be in the title or in the description, in any order. A
+   match of the whole query is also a match of each word, so the change
+   only adds hits.
+2. A word repeats only once. At most 8 words count (`MAX_QUERY_WORDS`).
+3. A word shorter than 3 characters still counts, as a filter on the rows
+   that the longer words find. When no word has 3 characters ("to do"),
+   the whole query is the one word. That is the rule from before.
+4. A task number is still an exact lookup (D-PM-31). Words do not apply.
+5. The search stays substring-based with `pg_trgm` (WS-27be). There is no
+   stemming and no `tsvector`.
+
+**Six rank tiers.** 0 is the task number. 1 is a title that starts with the
+query. 2 is a title that holds the query. 3 is a title that holds every
+word. 4 is a description that holds the query. 5 is every word, across the
+title and the description. Tiers 0 to 3 are title matches. Ties sort by
+`updated_at` and then by `id`.
+
+**A description hit (tier 4 or 5) carries `snippet`.** The SQL cuts a
+window around the first needle that the description holds: the whole
+query first, then each word. `search.snippet_of` makes it one line of
+plain text, at most 160 characters (`SNIPPET_CHARS`), with "…" at a cut
+edge. A title hit has `snippet: null`. The snippet comes from the rows that
+the visibility clause already let through, so it adds no second
+visibility path.
+
+**No migration.** Migration 170 already put `idx_pm_tasks_title_trgm` and
+`idx_pm_tasks_description_trgm` on `pm_tasks`, and each word arm has the
+shape that those two indexes serve.
+
+**The fences.** `test_projects_search_description_r8.py` runs the route on
+a real Postgres, as the app role. It checks a description-only word, the
+rank of a title match, the task number, the org boundary, a private task,
+and the snippet cap. `test_projects_search.py` and
+`test_projects_filters.py` hold the hermetic half.
+
 #### The palette
 
 `⌘K` from anywhere in Projects, not a search page: the question is *"where is that task"*,

@@ -24,6 +24,7 @@ import json
 import os
 import re
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -241,6 +242,56 @@ async def _route_incoming_turn(
     )
 
 
+def _followup_refused(thread_id: str, reason: str) -> Response:
+    """The 202 of a steer follow-up that starts no run. The chat drops its
+    placeholder on it, as it does for a steer."""
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "steered": False, "followUp": False,
+            "reason": reason, "threadId": thread_id,
+        },
+    )
+
+
+async def _steer_followup_gate(thread_id: str) -> Response | None:
+    """``None`` when a steer follow-up may start its run, else its 202.
+
+    Owner, 2026-10-12: a message sent during a run always steers it, and it
+    always gets an answer. A steer rides the next tool result, so a steer
+    that arrives while the model writes its last answer is never read in
+    that run. The run gives it back to the durable store at its end
+    (``steer.return_unconsumed``), and the chat then asks for this follow-up.
+
+    * A run still going: ``run_in_flight``. Its own steers reach it.
+    * No steer stored: ``nothing_pending``. The run read every one.
+    * A store or probe that fails: ``probe_failed``. The steer stays stored,
+      and the next message replays it through ENGAGE.
+    """
+    if not thread_id:
+        return _followup_refused(thread_id, "no_thread")
+    try:
+        from orchestrator.steer import has_pending_steers  # noqa: PLC0415
+        from orchestrator.stream_relay import is_active  # noqa: PLC0415
+
+        if await is_active(thread_id):
+            return _followup_refused(thread_id, "run_in_flight")
+        # A Stop asks for no follow-up: the stopped run's steers go, for
+        # every tab and every member (review of #920, round 2).
+        from orchestrator.steer import discard_pending, was_stopped  # noqa: PLC0415
+
+        if await was_stopped(thread_id):
+            await discard_pending(thread_id)
+            return _followup_refused(thread_id, "stopped")
+        if not await has_pending_steers(thread_id):
+            return _followup_refused(thread_id, "nothing_pending")
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.steer_followup_probe_failed", thread_id=thread_id[:12])
+        return _followup_refused(thread_id, "probe_failed")
+    _log.info("agent.steer_followup", thread_id=thread_id[:12])
+    return None
+
+
 async def _resume_note_for(
     thread_id: str, member: str, organization_id: str | None,
 ) -> str | None:
@@ -298,6 +349,14 @@ def _run_kind_for_source(source: str) -> str:
     )
 
 
+#: The steers that this request's ENGAGE took from the durable store. The
+#: route reads it after a refusal and gives them back (review of #920). A
+#: context variable, so ``_apply_turn_decision`` keeps its signature.
+_TAKEN_STEERS: "ContextVar[list[dict[str, Any]] | None]" = ContextVar(
+    "agent_taken_steers", default=None,
+)
+
+
 async def _apply_turn_decision(
     decision: "TurnDecision",
     req: AgentRunRequest,
@@ -321,14 +380,26 @@ async def _apply_turn_decision(
     """
     from orchestrator.steer import (
         Route, format_replayed, is_inside_run_floor, send_steer,
-        take_pending_steers,
+        take_pending_steers, without_replayed,
     )
 
     thread_id = req.thread_id or ""
 
     if decision.route is Route.ENGAGE:
         if thread_id:
+            from orchestrator.steer import (  # noqa: PLC0415
+                clear_stopped, discard_pending, was_stopped,
+            )
+            # The member stopped the last run: its steers are not replayed.
+            # Their words stay in the transcript, so the history carries
+            # them. This run starts clean (review of #920, round 2).
+            if await was_stopped(thread_id):
+                await discard_pending(thread_id)
+                await clear_stopped(thread_id)
             pending = await take_pending_steers(thread_id)
+            _taken = _TAKEN_STEERS.get()
+            if _taken is not None:
+                _taken.extend(pending)
             replayed = format_replayed(pending)
             if replayed:
                 _log.info(
@@ -343,6 +414,12 @@ async def _apply_turn_decision(
                 req.payload["message"] = (
                     f"{replayed}\n\n{existing}" if existing else replayed
                 )
+                # The chat also sends each steered message as a user turn of
+                # the history. The model reads each steer once (2026-10-12).
+                if isinstance(req.payload.get("messages"), list):
+                    req.payload["messages"] = without_replayed(
+                        req.payload["messages"], pending,
+                    )
         return None
 
     if decision.route is Route.DROP:
@@ -2230,7 +2307,7 @@ class PromptToSave(BaseModel):
 
 def prompt_to_save(
     *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
-    actor: str, room: Any, supersedes: str = "",
+    actor: str, room: Any, supersedes: str = "", card_answer: Any = None,
 ) -> PromptToSave | None:
     """The turn to save at run start, or ``None`` when the server saves nothing.
 
@@ -2268,6 +2345,15 @@ def prompt_to_save(
     # An edit keeps its "Edited" marker after a reload, as the browser's own
     # save writes it (lib/chatEdit.ts `editedMarker`).
     marker = [{"name": "edited", "value": {"supersedes": supersedes}}] if supersedes else []
+    # A card answer that went as a new message keeps its display (owner
+    # report, 2026-10-13), as the browser's own save writes it
+    # (`lib/cardAnswer.ts`). Only an envelope that says the same thing takes
+    # one, so no other turn can draw as an answered card (review of #942).
+    from gateway.chat_recovery import card_answer_marker  # noqa: PLC0415
+
+    card = card_answer_marker(words, card_answer) if card_answer is not None else None
+    if card is not None:
+        marker.append(card)
     return PromptToSave(
         message_id=mid, content=words, timestamp_ms=ts, custom_events=marker,
     )
@@ -2445,6 +2531,9 @@ async def run_agent_stream_endpoint(
     _superseded_ids: list[str] = []
     _supersedes = str(req.payload.pop("supersedes", "") or "").strip()
     _new_user_id = str(req.payload.pop("user_message_id", "") or "").strip()
+    # The display of a card answer that went as a new message. It is for the
+    # saved turn only, and never reaches the executor.
+    _card_answer = req.payload.pop("card_answer", None)
     _edit_keep = [_new_user_id, req.assistant_message_id or ""]
     # WS-51 S4: the member's turn, as they typed it. The server saves it
     # below, before the run starts, so a tab closed at once keeps it. The
@@ -2455,6 +2544,7 @@ async def run_agent_stream_endpoint(
         text=str(req.payload.get("message") or req.payload.get("user_query") or ""),
         timestamp=req.payload.pop("user_message_ts", None),
         actor=actor_email, room=room, supersedes=_supersedes,
+        card_answer=_card_answer,
     )
     _edit_shared = bool(room is not None and room.is_shared)
     if _supersedes and req.thread_id:
@@ -2503,12 +2593,29 @@ async def run_agent_stream_endpoint(
         if _note is not None:
             req.payload["message"] = _note
 
-    _incoming_text = str(
-        req.payload.get("message") or req.payload.get("user_query") or ""
-    )
-    _decision = await _route_incoming_turn(
-        req.thread_id or "", actor_email, _incoming_text,
-    )
+    # ── The steer follow-up (owner, 2026-10-12) ──────────────────────────────
+    # The chat asks for it once the run it steered has ended. It carries no
+    # words: the ENGAGE seam below takes the steers that the run never read
+    # from the durable store and makes them the run's message. Nothing owed
+    # (or a run still going) answers 202 and starts nothing.
+    from orchestrator.steer import Route as _FuRoute  # noqa: PLC0415
+    from orchestrator.steer import TurnDecision as _FuDecision  # noqa: PLC0415
+
+    _followup = bool(req.payload.pop("steer_followup", None)) and not _supersedes
+    if _followup:
+        _room_event = None
+        _gate = await _steer_followup_gate(req.thread_id or "")
+        if _gate is not None:
+            return _gate
+        req.payload["message"] = ""
+        _decision = _FuDecision(_FuRoute.ENGAGE, "steer_followup")
+    else:
+        _incoming_text = str(
+            req.payload.get("message") or req.payload.get("user_query") or ""
+        )
+        _decision = await _route_incoming_turn(
+            req.thread_id or "", actor_email, _incoming_text,
+        )
     # Edit, step 2: an edit is never a steer. A run that started since step 1
     # (another member's) refuses the edit, and no row has gone yet.
     if _supersedes and _decision.route.name != "ENGAGE":
@@ -2560,9 +2667,19 @@ async def run_agent_stream_endpoint(
     if _room_event is not None:
         await publish_room_event(req.thread_id or "", _room_event)
 
+    _taken_steers: list[dict[str, Any]] = []
+    _TAKEN_STEERS.set(_taken_steers)
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
+
+    async def _give_back_taken() -> None:
+        # A refusal after ENGAGE starts no run: the steers it took go back.
+        if _taken_steers and req.thread_id:
+            from orchestrator.steer import give_back  # noqa: PLC0415
+
+            await give_back(req.thread_id, list(_taken_steers))
+            _taken_steers.clear()
     if _steered is not None:
         # WS-51 S4: a steer is stored for the live run (#797), and the
         # member's words show on a reload too, as their own turn. The spec
@@ -2571,6 +2688,11 @@ async def run_agent_stream_endpoint(
         # It runs as a background task, after the 202 is sent, so a slow
         # database never holds the answer to a steer.
         if _decision.route.name == "STEER" and _prompt is not None:
+            # The row carries the steer mark, so a reload in any browser
+            # draws it as "added to the reply" (lib/chatSteer.ts STEERED).
+            _prompt = _prompt.model_copy(update={
+                "custom_events": [*_prompt.custom_events, {"name": "steered", "value": {}}],
+            })
             background_tasks.add_task(
                 _save_steered_prompt, req.thread_id or "", _prompt,
                 member=actor_email, agent_name=agent_name,
@@ -2581,6 +2703,12 @@ async def run_agent_stream_endpoint(
         if _decision.route.name == "ENGAGE":
             await _release_cap_slot()
         return _steered
+
+    # A second follow-up, or a new run, took the steers between the gate and
+    # here. With no words there is nothing to answer, so no run starts.
+    if _followup and not str(req.payload.get("message") or "").strip():
+        await _release_cap_slot()
+        return _followup_refused(req.thread_id or "", "nothing_pending")
 
     # ── Set user + agent context for memory tools ─────────────────────────
     # user_id scopes THIS user's private memory (remember/save_memory); the
@@ -2854,6 +2982,7 @@ async def run_agent_stream_endpoint(
     except HTTPException:
         # The run will not start, so its cap reservation goes too.
         await _release_cap_slot()
+        await _give_back_taken()
         raise
 
     # Edit, step 3: every refusal is behind us, so the old turn and its
@@ -2873,6 +3002,7 @@ async def run_agent_stream_endpoint(
             )
         except _EditRefused as _refused:
             await _release_cap_slot()
+            await _give_back_taken()
             raise HTTPException(
                 status_code=_refused.status, detail=_refused.detail(),
             ) from None
@@ -2972,6 +3102,7 @@ async def run_agent_stream_endpoint(
                 agent=agent_name, thread_id=thread_id[:12],
             )
             await _release_cap_slot()
+            await _give_back_taken()
             yield "data: " + json.dumps({
                 "type": "RUN_ERROR",
                 "message": (
@@ -3010,8 +3141,8 @@ async def run_agent_stream_endpoint(
 
 async def _late_answer_from_row(
     req: UserInputResponseRequest, user: UserContext,
-) -> tuple[str | None, bool]:
-    """``(message to resend, the card has a row)`` for an answer no run took.
+) -> tuple[Any, bool]:
+    """``(CardResend, the card has a row)`` for an answer no run took.
 
     WS-51 S2 (``CHAT_DURABLE_ASKS``, default OFF; OFF returns
     ``(None, False)`` and the route keeps its old path). The row is read under
@@ -3158,10 +3289,15 @@ async def respond_user_input(
                 detail={
                     "error": "run_restarted",
                     "message": (
-                        "The assistant restarted. Your answer will be sent "
-                        "as a new message."
+                        "The assistant restarted, so your answer goes as "
+                        "a new message."
                     ),
-                    "resumeMessage": resend,
+                    # What the model reads: the fenced envelope.
+                    "resumeMessage": resend.message,
+                    # What the member reads (owner report, 2026-10-13). The
+                    # chat draws the answered card from it, and the saved
+                    # turn keeps it as the ``card_answer`` custom event.
+                    "resumeDisplay": resend.display,
                     "threadId": req.thread_id,
                 },
             )

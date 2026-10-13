@@ -556,6 +556,18 @@ async def run_stored_mcp_test(
     if not url:
         return McpTestOut(ok=False, error="no_url")
     headers = dict(srv.headers)
+    if srv.oauth:
+        # WS-54 IN-8a (review of #931): the Test of an OAuth server sends the
+        # stored bearer, the header that a run sends. With the flag off it
+        # sends none, as before.
+        try:
+            bearer, extra = await mcp_registry.oauth_test_header(org, name)
+        except Exception as exc:  # the class only
+            _log.warning("mcp.test_read_failed", name=name, error=type(exc).__name__)
+            return McpTestOut(ok=False, error="request_failed")
+        if bearer == mcp_registry.TEST_BEARER_EXPIRED:
+            return McpTestOut(ok=False, error="token_expired")
+        headers.update(extra)
     headers.setdefault("Accept", "application/json")
     headers["Accept-Encoding"] = "identity"  # the guard keeps raw bytes
     try:

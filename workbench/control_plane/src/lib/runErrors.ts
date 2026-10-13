@@ -39,6 +39,7 @@ export type RunErrorCode =
   | "updating"
   | "interrupted"
   | "run_restarted"
+  | "run_restarted_steered"
   | "answer_in_other_account"
   | "too_many_runs"
   | "unknown";
@@ -129,9 +130,19 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     tone: "notice",
     action: "Continue",
   },
+  // The chat sends the answer when it draws this notice, so the words say
+  // what HAS happened (owner report, 2026-10-13).
   run_restarted: {
     title: "The assistant restarted",
-    body: "Your answer will be sent as a new message.",
+    body: "Your answer went to it as a new message.",
+    retry: false,
+    tone: "notice",
+  },
+  // The resend met a live run, so it steered that run (#920, review of
+  // #942). The server folded it into the reply that runs now.
+  run_restarted_steered: {
+    title: "The assistant restarted",
+    body: "Your answer went into the current reply.",
     retry: false,
     tone: "notice",
   },

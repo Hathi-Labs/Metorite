@@ -54,7 +54,7 @@
 import Badge from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
-import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
+import { EditableTaskTitle, TaskHeaderRow, type TaskWhere } from "@/components/TaskPanelHeader";
 import { useEffect, useState } from "react";
 
 import { lensMyOverlay } from "@/app/tasks/lib/lens";
@@ -71,6 +71,7 @@ import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
 import { useAccess } from "@/components/AccessProvider";
+import { taskRefResolverFor } from "@/lib/taskRefs";
 
 interface Props {
   task: TaskRow;
@@ -120,6 +121,11 @@ interface Props {
    * is the local part of their email.
    */
   onPeopleSeen?: (who: string[]) => void;
+  /**
+   * Where the task lives, from its space down to its project. The page owns
+   * it because the page holds the tree, and opening a crumb selects a node.
+   */
+  where?: TaskWhere;
 }
 
 /** The viewer's own overlay on this task, or null when they hold none. */
@@ -138,6 +144,7 @@ export function TaskPanel({
   onMode,
   personLabels,
   onPeopleSeen,
+  where,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -233,6 +240,7 @@ export function TaskPanel({
             2026-09-23), hidden where the page passed no `onMode` (the phone,
             where the panel is always the whole screen). */}
         <TaskHeaderRow
+          where={where}
           taskRef={taskRef(task) ?? "Task"}
           linkFor={() => taskDeepLink(task, window.location.origin, orgId)}
           expand={
@@ -247,7 +255,10 @@ export function TaskPanel({
         />
         {/* Wraps rather than truncates: the title is the one thing on the
             panel nobody can afford to have cut off. Click it to rename. */}
-        <EditableTaskTitle value={task.title} onSave={(t) => void rename(t)} />
+        {/* WS-57 TR-5 — a `#123` in it draws as the task pill, read in this
+            task's root only. */}
+        <EditableTaskTitle value={task.title} onSave={(t) => void rename(t)}
+          refResolver={taskRefResolverFor(task.root_project_id)} />
         {/* The chip row. The status is drawn through the shared `StatusChip`,
             in the accent `accentForStatus` resolves; the Details block in the
             body carries the CONTROL that changes it. */}

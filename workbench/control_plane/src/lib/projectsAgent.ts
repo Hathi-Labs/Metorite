@@ -42,3 +42,28 @@ export function pillsForTurn(
   if (turn.authorKind && turn.authorKind !== "agent") return false;
   return true;
 }
+
+/**
+ * The agents whose answers name Projects tasks by number (owner report,
+ * 2026-10-13). Their bare `#171` draws as the task pill when it is a task
+ * (`ChatTaskRef.tsx`). Every task is one `pm_tasks` row, so the My Tasks
+ * assistant names the same tasks. Another agent's `#4521` is an invoice or an
+ * issue number, so it stays text.
+ */
+export const TASK_REF_AGENTS: ReadonlySet<string> = new Set([PROJECTS_AGENT, "task-manager"]);
+
+/**
+ * True when one turn may link its bare task references. `threadAgent` is the
+ * caller's agent. As with `pillsForTurn`, a turn that names another author
+ * must name one of `TASK_REF_AGENTS`, and a human turn links nothing.
+ * Exported for its test.
+ */
+export function taskRefsForTurn(
+  threadAgent: string | undefined,
+  turn: { authorKind?: string; authorEmail?: string | null },
+): boolean {
+  if (!threadAgent || !TASK_REF_AGENTS.has(threadAgent)) return false;
+  if (turn.authorKind && turn.authorKind !== "agent") return false;
+  if (turn.authorEmail && !TASK_REF_AGENTS.has(turn.authorEmail)) return false;
+  return true;
+}
