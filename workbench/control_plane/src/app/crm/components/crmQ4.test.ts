@@ -318,6 +318,15 @@ describe("the field studio rows in the readers", () => {
     expect(rows.map((r) => r.label)).toEqual(["Region"]);
   });
 
+  it("hides a retired field on the record, also when it is still visible", () => {
+    // A retire keeps `visible` (review round 1), so the flag must hide it.
+    const rows = fieldRows({ custom: { old: "x", live: "y" } }, [
+      def("old", "text", { retired: true, visible: true }),
+      def("live", "text", { label: "Live" }),
+    ]);
+    expect(rows.map((r) => r.label)).toEqual(["Live"]);
+  });
+
   it("offers no retired field and no system row in the column picker", () => {
     const picked = pickable([
       def("tier", "select", { position: 2 }),
