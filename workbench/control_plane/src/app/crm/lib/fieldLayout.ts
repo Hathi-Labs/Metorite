@@ -155,7 +155,9 @@ export function isDateTimeValue(value: string): boolean {
   const s = m[6] === undefined ? 0 : Number(m[6]);
   const offH = m[7] === undefined ? 0 : Number(m[7]);
   const offM = m[8] === undefined ? 0 : Number(m[8]);
-  return realDay(y, mo, d) && h <= 23 && mi <= 59 && s <= 59 && offH <= 23 && offM <= 59;
+  // Python takes an offset strictly inside one day, so `+00:99` passes and
+  // `+23:60` does not. `crm_field_check_cases.json` holds both.
+  return realDay(y, mo, d) && h <= 23 && mi <= 59 && s <= 59 && offH * 60 + offM < 24 * 60;
 }
 
 /** `_phone`: at most 40 characters, 4 digits or more, and `_PHONE_RE`. */
@@ -186,6 +188,9 @@ function allowedValues(def: FieldDef, held: unknown): Set<string> {
   return allowed;
 }
 
+/** The refusal of a number with a comma that is not a grouping, such as "1,5". */
+export const DOT_FOR_DECIMALS = "Use a dot for decimals.";
+
 /**
  * Why the gateway would refuse `value` for `def`, or null when it passes
  * (CRM-C4p item 7). `value` is the JSON value that the save sends, so run
@@ -205,11 +210,13 @@ export function checkValue(def: FieldDef, value: unknown, held?: unknown): strin
       return textLength(value) > limit ? `Use at most ${limit} characters.` : null;
     }
     case "number":
+      if (typeof value === "string" && value.includes(",")) return DOT_FOR_DECIMALS;
       if (!isNumber(value) || !Number.isInteger(value)) return "Give a whole number.";
       return Math.abs(value) >= NUMBER_LIMIT ? "Give a number smaller than 10^15." : null;
     case "decimal":
     case "currency":
     case "percent":
+      if (typeof value === "string" && value.includes(",")) return DOT_FOR_DECIMALS;
       if (!isNumber(value)) return "Give a number.";
       return Math.abs(value) >= NUMBER_LIMIT ? "Give a number smaller than 10^15." : null;
     case "date":
@@ -259,6 +266,25 @@ export function checkValue(def: FieldDef, value: unknown, held?: unknown): strin
 /** A number as a member types it: an optional sign, digits, a point, an exponent. */
 const NUMBER_TEXT = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
 
+/** A Western grouping: `1,234` and `1,234,567.5`. */
+const WESTERN_GROUPS = /^-?\d{1,3}(,\d{3})+(\.\d+)?$/;
+
+/** An Indian grouping: `1,234`, `12,34,567` and `1,20,000.5`. */
+const INDIAN_GROUPS = /^-?\d{1,2}(,\d{2})*,\d{3}(\.\d+)?$/;
+
+/**
+ * The value a form holds for a field before the member changes it
+ * (review P2). A boolean has no empty state in a form: it is the stored
+ * value, else the default, else `false`, and the form sends it. So a required
+ * boolean that nobody ticked saves as `false`, and the save does not refuse
+ * it. Each other type keeps the stored value.
+ */
+export function formValue(def: FieldDef, stored: unknown): unknown {
+  if (def.type !== "boolean") return stored;
+  if (typeof stored === "boolean") return stored;
+  return typeof def.default_value === "boolean" ? def.default_value : false;
+}
+
 function pad(n: number, width = 2): string {
   return String(n).padStart(width, "0");
 }
@@ -278,8 +304,14 @@ export function toWire(def: FieldDef, text: string): unknown {
     case "decimal":
     case "currency":
     case "percent": {
-      // `en-IN` groups (`1,20,000`) are how a member reads a number here.
-      const plain = text.trim().replace(/,/g, "");
+      // A comma goes only from a real grouping: `1,234.5` or the `en-IN`
+      // `12,34,567`. Any other comma stays, so "1,5" never saves as 15, and
+      // `checkValue` asks for a dot (review P1).
+      const trimmed = text.trim();
+      const plain =
+        WESTERN_GROUPS.test(trimmed) || INDIAN_GROUPS.test(trimmed)
+          ? trimmed.replace(/,/g, "")
+          : trimmed;
       if (!NUMBER_TEXT.test(plain)) return text;
       const n = Number(plain);
       return Number.isFinite(n) ? n : text;

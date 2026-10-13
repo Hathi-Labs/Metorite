@@ -266,19 +266,32 @@ export function useFieldDefs(entity: EntitySlug | null): FieldDefsState {
 }
 
 export type FieldLayoutState = {
-  /** `null` while unread, and after a failed read. */
+  /**
+   * `null` while unread, and when no read has given a layout. The caller then
+   * draws the view of today. A failed re-read keeps the last good layout.
+   */
   layout: FieldLayout | null;
+  /** The message of the last failed read, or null. */
+  error: string | null;
   loading: boolean;
   refresh: () => void;
 };
 
+/** The cache key of the layout of one entity. */
+export function fieldLayoutKey(entity: EntitySlug): string {
+  return `crm:field-layout:${entity}`;
+}
+
 /**
- * The layout read of one entity (CRM-C4p item 3). Every failure reads as
- * `null`, and the caller then draws the view of today. A record that fails to
- * open because its layout failed is worse.
+ * The layout read of one entity (CRM-C4p item 3).
+ *
+ * ⚠️ It THROWS on a failure, and it must not turn one into `null` (review
+ * P2). `useCachedResource` keeps `prev.data` over a failed read, so a re-read
+ * that fails in the middle of an edit keeps the good layout. A `null` from
+ * here would be a good answer, and it would replace the layout.
  */
-export function readFieldLayout(entity: EntitySlug): Promise<FieldLayout | null> {
-  return api.getFieldLayout(entity).catch(() => null);
+export function readFieldLayout(entity: EntitySlug): Promise<FieldLayout> {
+  return api.getFieldLayout(entity);
 }
 
 /**
@@ -287,12 +300,13 @@ export function readFieldLayout(entity: EntitySlug): Promise<FieldLayout | null>
  * wakes every other CRM read.
  */
 export function useFieldLayout(entity: EntitySlug | null): FieldLayoutState {
-  const res = useCachedResource<FieldLayout | null>(
-    entity ? `crm:field-layout:${entity}` : null,
+  const res = useCachedResource<FieldLayout>(
+    entity ? fieldLayoutKey(entity) : null,
     () => readFieldLayout(entity!),
   );
   return {
     layout: res.data ?? null,
+    error: res.error,
     loading: entity !== null && res.loading,
     refresh: res.refresh,
   };
