@@ -6,9 +6,12 @@ dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
 migration 259, dark by the absence of a caller). MD-2a is BUILT (the card
 state on the server, migration 258).**
 
+**The server half of MD-2c is BUILT, 2026-10-14** (Handled in
+`GET /shell/feed`, no migration, dark by the absence of a caller).
+
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-2b,
-MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and
-MD-12. Each ships dark.
+the client half of MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only),
+MD-7, MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -31,7 +34,7 @@ changes:
 - One entity gives one card (§4.5).
 - My Day adds no commitment detector of its own (§5.3).
 
-**Verified against code on 2026-10-13** at `origin/main` `1ba914c1c`. Each
+**Verified against code on 2026-10-14** at `origin/main` `b0a45a34e`. Each
 anchor carries a file and a line. Check them again at dispatch, because this
 tree moves every day.
 
@@ -617,12 +620,14 @@ function (`whatsapp_assistant_channel.md`).
   - Email: the rules applied today on the member's mailboxes
     (`email_executed_rules`, status `APPLIED`).
   - Approvals: the actions an admin decided today.
-  - My Day: the member's own acts today (`my_day_card_state.acted_at`).
+
+  The `acted` rows of `my_day_card_state` are not a source. They hold no
+  title and no link (the MD-2c ticket, §16).
 - **Each row names who closed it**: "You", a colleague, "Email rules", or the
   agent's name.
 - **The summary line counts real rows.** "3 things need you" is the count of
   open cards in Now and Needs you. "The rest is handled" shows only when
-  Handled is not empty, and every source answered `ok` with no cap.
+  Handled is not empty and no Handled read failed (`handled_ok`, §14.1a).
 - **A failed source silences the claim.** The rule of NS-3 stays: when a
   source failed, the summary says nothing about needs, and the card names the
   gap.
@@ -704,9 +709,11 @@ dismissed or snoozed needs-kind card still counts in the bell.
             "action": "seen", "until": null}]}
 ```
 
-- `action` is `seen`, `snooze`, `dismiss`, `not_useful` or `acted`. `until`
-  is `later_today`, `tomorrow`, `next_week` or `on_change`, and only a
-  `snooze` carries it.
+- `action` is `seen`, `snooze`, `dismiss`, `not_useful`, `acted` or
+  `restore`. `restore` clears a snooze or a dismiss, and leaves the row
+  `seen` (MD-2b).
+- `until` is `later_today`, `tomorrow`, `next_week` or `on_change`, and only
+  a `snooze` carries it.
 - One body holds 50 items at most. A `signal_id` matches
   `^[a-z_]+:[^\s]{1,200}$`. A `state_fp` is 8 to 64 hex characters.
 - The body never names a member or an organization. The model refuses an
@@ -1383,7 +1390,12 @@ and is off by default (`packages/acb_memory`).
   "groups": [{"id": "now", "count": 1}, {"id": "needs_you", "count": 4}],
   "needs": {"count": 5, "total": 5, "items": [], "sources": {}, "totals": {}, "capped": []},
   "sources": {"tasks": "ok", "projects": "ok", "email": "absent", "approvals": "absent", "calendar": "ok"},
-  "capped": []
+  "capped": [],
+  "handled": [
+    {"app": "tasks", "title": "File the VAT return", "href": "/projects?task=4c1d…",
+     "by": {"kind": "person", "name": "ravi"}, "at": "2026-10-14T10:20:00+00:00"}
+  ],
+  "handled_ok": true
 }
 ```
 
@@ -1414,6 +1426,12 @@ and is off by default (`packages/acb_memory`).
 - **MD-2a adds five card fields.** `state` is `new`, `seen` or `later`.
   `updated` and `still_open` are booleans for the source line. `visits` is
   the count of the day. `state_fp` is the state fingerprint of §6.8 item 1.
+- **MD-2c adds two answer fields.** `handled` is what the apps closed for the
+  member since the start of the member's day, the newest first. Each entry is
+  `{app, title, href, by, at}`, and `by` is `{kind, name}` (the `by` table of
+  MD-2c). `handled_ok` is true when no Handled read that ran failed. A source
+  that the member does not hold does not count as failed. `cards` and
+  `groups` never hold `handled`, and it does not count against `limit`.
 - A field that a later ticket adds is optional for the client.
 
 ### 14.2 The card registry
@@ -1707,30 +1725,179 @@ build made these choices, which this file did not fix:
 
 ### MD-2b · The card menu and the seen observer — AGENT-SAFE, after MD-2a
 
-The menu of §4.2 item 6: Snooze with four choices, Dismiss, and "Not
-useful". The seen observer of §6.2 sends one batch every 10 s and on
-`pagehide`. The card shows its dot, "Updated" and "Still open". The client
-keeps a failed source's cards from the last answer (§6.1). The order holds
-during a visit, and new cards wait behind the "N new" pill (§7 rule 4). The
-needs carrier gets its own 4 s limit (the third follow-up above).
+The audit of 2026-10-14 gave GO-NARROWED. These answers close its three gaps.
+
+**What is in MD-2b:**
+
+- **The state fields reach the card.** `readCard` keeps `state`, `updated`,
+  `still_open`, `visits` and `state_fp`. The card draws a dot for `new`,
+  "Updated" for `updated`, and "Still open" for `still_open`.
+- **The seen observer (§6.2).** Only the feed column observes, never the bell.
+  A card is seen when half of it is in view for 1.5 s on a visible tab. One
+  POST goes each 10 s, and one on `pagehide` with `keepalive`. A body holds 50
+  items at most. A card with no `state_fp` is not sent. A 422 drops the batch.
+  A 5xx keeps it for the next send.
+- **The menu.** Snooze with its four choices, Dismiss and "Not useful", on the
+  one menu primitive, `src/components/ContextMenu.tsx`. A second menu is a
+  defect.
+- **A menu act hides the card through an overlay of its own.** The overlay is
+  keyed on `signal_id`, and it is never `needsActs`. So the bell and the
+  sidebar counts do not change (§6.3, §6.8 item 9). The overlay ends when a
+  feed answer fetched after the POST lands. A failed POST shows the card
+  again, with an error line.
+- **Undo for a menu act.** The shared toast (`src/lib/toast.ts`) offers Undo
+  for 10 seconds. Undo posts the new action `restore`. It clears a snooze or a
+  dismiss, and leaves the row `seen`. The POST contract of §6.8 gains it.
+- **`acted` is written.** A tap act that succeeds also posts `acted` for its
+  card (§6.8 item 4).
+- **A failed or capped source keeps its cards** from the last answer (§6.1).
+  Calendar is a source too. Only a source that answered `ok`, and is not in
+  `capped`, may remove a card. A capped group ends with "Show all in <app>".
+- **The order holds during a visit (§7 rule 4).** A visit is the life of one
+  mounted feed column. It ends at a click on the "N new" pill, or at a
+  remount. A card that a new answer would move stays in its place until the
+  visit ends. A card that leaves goes at once.
+- **Later draws folded**, with its count.
+- **The carrier's limit.** `fetchNeeds` waits 4 s at most on the carrier, then
+  reads `/api/shell/needs`.
+
+**Not in MD-2b.** "Why am I seeing this", "Tell My Day why" and "Stop showing
+<kind>" go to MD-9. "Open in <app>" goes to MD-8.
+
+Done when:
+
+1. Each item above has a test that fails when someone removes it.
+2. A menu act leaves the bell's count and the sidebar counts unchanged.
+3. `restore` passes the gateway's own POST tests, and the R8 state suite
+   holds one `restore` case.
+4. `e2e/my-day-feed.spec.ts` follows the pattern of `e2e/shell-bell.spec.ts`.
+   It asserts the POST bodies and the batch on `pagehide`. It also asserts a
+   menu act with no bell change, and the fallback after 4 seconds.
+5. The `visual-review` skill runs in light mode, at compact density, under a
+   changed accent and beside My Tasks. `conformance.test.ts` adds no budget.
 
 ### MD-2c · Handled and the honest summary — AGENT-SAFE, after MD-2a
 
-- **Tasks.** The tasks of the member's lens that were completed since the day
-  start. The actor is `created_by` of the newest `pm_activities` row of type
-  `status_change` for that task.
-- **Email.** The rules applied since the day start (`email_executed_rules`,
-  status `APPLIED`), on the mailboxes that the needs email provider reads.
-- **Approvals.** A new read in `action_broker`, beside `read_pending`, of the
-  actions decided since the day start. Only the org admin who passes the
-  approvals gate gets it, as with the approvals provider.
-- **Your own acts.** The `acted` rows of the day.
-- **The shape.** The answer gains `handled`, a list of
-  `{app, title, href, by, at}`. `by` is `you`, a colleague's name,
-  `email_rules` or `agent:<name>`. The client writes the words. Each source
-  gives 15 rows at most.
-- **The summary.** "The rest is handled" shows only when `handled` is not
-  empty and every source read `ok` with no cap.
+The audit of 2026-10-14 gave NO-GO for want of these answers. They close it.
+The server half may build beside MD-2b. The client half follows MD-2b,
+because it shares `feed.ts`, `FeedCard.tsx`, `MyDayPage.tsx` and `myDay.ts`.
+
+**The sources.** There are three. The `acted` rows are not a source, because
+they hold no title and no link, and the app histories already record what
+the member closed.
+
+- **Tasks.** A new read beside `my_due_tasks` in
+  `routes/projects/personal.py`. It reads the tasks of the member's lens with
+  `completed_at` since the day start. The actor is `created_by` of the newest
+  `pm_activities` row of type `status_change` for that task. A tie of
+  `created_at` goes to the higher `seq` (migration 213).
+- **Email rules.** The rows of `email_executed_rules` with status `APPLIED`
+  since the day start, on the mailboxes the needs email provider reads (owned,
+  and `in_all_inboxes`). A row on a message in the trash counts, because the
+  rule may have put it there. The title is the subject, or else the rule
+  name. The link is the message, or else the email app (`/email`). The app
+  has no link to its rules history.
+- **Approvals.** A new read in `action_broker`, `read_decided(since)`, beside
+  `read_pending`. It reads the statuses `approved`, `applied` and `rejected`.
+  `failed` is not handled. Only the org admin who passes the approvals gate
+  gets it. No new index: the read is bounded by the tenant, the status and 15
+  rows.
+
+**The shape.** Each provider may carry a `handled` callable on
+`needs.Provider`. The answer gains `handled`, a list of
+`{app, title, href, by, at}`, newest first, 15 for each source and one entry
+for each entity. `by` is `{kind, name}`:
+
+| `created_by` or `reviewed_by` | `kind` | `name` |
+|---|---|---|
+| The member's own address | `you` | null |
+| Another member's address | `person` | the local part, as the bell's `_who` does |
+| `agent:<name>` | `agent` | the agent's name |
+| `system:sync`, `system:workflow:<id>`, `system`, `operator` | `system` | null |
+| An email rule | `rules` | null |
+
+The client writes the words, for example "You", "Ravi", "Email rules",
+"Metorite".
+
+**The budget.** The handled reads run at the same time as the state join,
+after the providers, inside the same 1.5 seconds. So the feed's worst case
+stays at 7.5 seconds, under the 8 seconds of the BFF route. A read past its
+limit counts as failed.
+
+**The render.** `cards` and `groups` never hold `handled`. The list does not
+count against `limit`. The client draws it as the folded Handled group, after
+Later.
+
+**The summary.** "N things need you" counts the open cards of Now and Needs
+you in the feed answer, and not the bell's `needs.count`. The two can differ,
+because the bell still counts a snoozed card. "The rest is handled" shows
+only when `handled` is not empty and no handled read failed. A source that
+reads `absent` does not count as failed.
+
+Done when:
+
+1. `tests/unit/test_feed_handled.py` holds the shape, the `by` table, the
+   dedup, the 15 cap, the budget and the summary rule.
+2. `tests/unit/test_feed_handled_r8.py` has `pytestmark = _DB_GATE`. It holds
+   four negatives:
+   - Member B never sees member A's completed lens tasks.
+   - Org B sees no rule rows of org A.
+   - Org B's admin sees no approval of org A.
+   - A member who is not an admin gets no approval row.
+3. The R8 suite passes with no skip, and the count is in the PR.
+
+**BUILT (server half), 2026-10-14, on branch `my-day-feed-md2c`.** No
+migration. `gateway/routes/shell/handled.py` runs the three reads. Each read
+is a new function in the app that owns its table:
+
+- `personal.my_completed_since`, beside `my_due_tasks`.
+- `runner.applied_rules_since`, beside `rules_history`.
+- `action_broker.read_decided`, beside `read_pending`.
+
+`needs.Provider` gains `handled`, and the tasks, email and approvals
+providers carry one. The fences are `test_feed_handled.py` (51 tests) and
+`test_feed_handled_r8.py` (13 tests, R8). The client half is still open,
+and it follows MD-2b. The build made these choices, which this file did not
+fix:
+
+- **The claim field is `handled_ok`.** It is true when no Handled read that
+  ran failed. §14.1a holds it.
+- **The day** comes from `state._hours` and `Day.day_start`, the functions
+  of the state join. A member with no Calendar pane gets the zone from the
+  lens and the start hour 07:00 (§6.8 item 8).
+- **The budget** is `state.STATE_TIMEOUT_S`. The day read counts inside it.
+  A read that is not done at the limit reads as failed. A read that did not
+  start before the limit reads as failed, and it never starts.
+- **One read at a time** (fix round 1). The reads run as one chain beside
+  the state join, so a feed read holds two pool connections at most. Three
+  reads at once held four, and at a peak the join then missed its own limit.
+  `test_a_feed_read_holds_two_connections_at_most` holds the rule.
+- **One cut to 15.** Each read asks for 15 rows, and `handled_run` cuts each
+  source to 15. The providers do not cut again.
+- **A failed or slow read never fails the feed.** The cards and `needs` do
+  not change, and `handled_ok` goes false.
+- **One entry for each entity.** The email read keeps the newest rule row
+  for each message in its SQL, before its `LIMIT`. So many runs on one
+  message never push other messages out. The run also keeps the newest entry
+  for each entity. A read that gives two rows for one entity gives one entry.
+- **A rule row with no message** opens `/email`. The email app has no link
+  to its rules history.
+- **The `by` table.** An actor with no `@` that is not `agent:<name>` reads
+  as `system`. This covers `system`, `system:*`, `operator` and an empty
+  value.
+- **Projects carries no Handled read.** A closed task is a row of My Tasks,
+  and a notification that the member read closed nothing.
+
+**Known limits of the server half.** A later ticket owns each one.
+
+- **An entry does not say how an approval ended.** The shape of the ticket
+  has no status, so a rejected action and an applied action look the same.
+  The client half must decide if the words need it.
+- **The feed reads the hours of the day three times** for a member with the
+  Calendar pane. The Calendar provider, the state join and Handled each
+  read them. The read cache of MD-5 can share them.
+- **`completed_at` has no index.** The membership join of the lens bounds
+  the read, as the ticket records.
 
 ### MD-2d · Feed preferences — AGENT-SAFE
 
@@ -1935,7 +2102,9 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py tests/unit/test_shell_feed_r8.py -q
 uv run ruff check apps/services/gateway/gateway/routes/shell
 uv run pytest tests/unit/test_my_day_state.py tests/unit/test_my_day_state_r8.py -q
-uv run pytest tests/unit/test_my_day_loop.py tests/unit/test_my_day_prefs.py tests/unit/test_feed_decide.py -q
+uv run pytest tests/unit/test_my_day_prefs.py tests/unit/test_my_day_prefs_r8.py -q
+uv run pytest tests/unit/test_feed_handled.py tests/unit/test_feed_handled_r8.py -q  # MD-2c
+# MD-5 adds tests/unit/test_my_day_loop.py, and MD-6a adds tests/unit/test_feed_decide.py
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 

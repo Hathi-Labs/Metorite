@@ -394,11 +394,11 @@ def test_the_queue_opens_no_unbound_session() -> None:
     from action_broker import broker
 
     for fn in (broker.enqueue, broker.list_pending, broker.read_pending,
-               broker._load_proposal, broker._mark):
+               broker.read_decided, broker._load_proposal, broker._mark):
         src = inspect.getsource(fn)
         assert "get_session" not in src, fn.__name__
         assert "tenant_session(" in src, fn.__name__
     # The tenant comes from the bound context, never from an argument.
     for fn in (broker.enqueue, broker.list_pending, broker.read_pending,
-               broker.approve, broker.reject):
+               broker.read_decided, broker.approve, broker.reject):
         assert "organization_id" not in inspect.signature(fn).parameters, fn.__name__
