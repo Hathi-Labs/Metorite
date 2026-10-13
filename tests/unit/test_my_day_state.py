@@ -573,8 +573,9 @@ class TestTheStateReadHasATimeLimit:
     def test_a_slow_state_read_keeps_the_feed_and_the_bell(self, fakes, monkeypatch):  # noqa: F811
         # Fix round 1, P2-c.
         async def slow(db, member, ids, *, lock=False):
+            # The rows would hide the card, so only the time limit shows it.
             await asyncio.sleep(2)
-            return {}
+            return await fakes.read_state(db, member, ids, lock=lock)
 
         user = member(*FULL)
         late = card(run_feed(user), "tasks:t-late")
