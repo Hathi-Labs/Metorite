@@ -838,6 +838,13 @@ CREATE POLICY pm_task_links_tenant_isolation ON pm_task_links
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE pm_task_refs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_task_refs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_task_refs_tenant_isolation ON pm_task_refs;
+CREATE POLICY pm_task_refs_tenant_isolation ON pm_task_refs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_task_personal ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_task_personal FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_task_personal_tenant_isolation ON pm_task_personal;

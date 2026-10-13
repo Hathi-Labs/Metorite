@@ -2384,6 +2384,55 @@ export const attachmentsApi = {
     }),
 };
 
+/** What a task reference points at (WS-57, `pm_task_refs`, migration 255). */
+export type TaskRefKind =
+  | "pull_request"
+  | "issue"
+  | "commit"
+  | "branch"
+  | "comment"
+  | "doc"
+  | "url";
+
+/**
+ * One link on a task: a pull request, an issue, a commit, a doc or a plain
+ * URL. The gateway classifies the URL (`routes/projects/refs_classify.py`)
+ * and, for a GitHub pull request or issue, reads its title and state through
+ * the organization's GitHub connection.
+ */
+export interface TaskRefRow {
+  id: string;
+  task_id: string;
+  kind: TaskRefKind;
+  provider: "github" | "gitlab" | "bitbucket" | "google" | "figma" | "notion" | "other";
+  ref: string;
+  url: string;
+  /** The short name, derived from the URL: `metorite#927`, `docs.google.com`. */
+  label: string;
+  title: string | null;
+  /** `open`, `draft`, `merged` or `closed` for a pull request or issue. */
+  state: string | null;
+  fetched_at: string | null;
+  via: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Task references (WS-57 TR-1). A second add of one URL returns its row. */
+export const refsApi = {
+  list: (taskId: string) => call<{ rows: TaskRefRow[] }>(`tasks/${taskId}/refs`),
+
+  add: (taskId: string, url: string, title?: string) =>
+    call<TaskRefRow>(`tasks/${taskId}/refs`, {
+      method: "POST",
+      body: JSON.stringify(title ? { url, title } : { url }),
+    }),
+
+  remove: (taskId: string, refId: string) =>
+    call<{ deleted: string }>(`tasks/${taskId}/refs/${refId}`, { method: "DELETE" }),
+};
+
 export interface NotificationRow {
   id: string;
   kind: "assigned" | "mention" | "comment";

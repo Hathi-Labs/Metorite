@@ -52,6 +52,7 @@ import SelectButton from "@/components/ui/SelectButton";
 import { Input, Textarea } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
+import { TaskLinks } from "./TaskLinks";
 import { useEffect, useRef, useState } from "react";
 
 import { accentForStatus } from "../lib/accent";
@@ -352,6 +353,8 @@ export function TaskBody({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [files, setFiles] = useState<AttachmentRow[]>([]);
+  // The Links section's row count, for its header (WS-57 TR-2).
+  const [linkCount, setLinkCount] = useState(0);
   // The names of the files currently going up (S5) — what is IN FLIGHT.
   const [uploading, setUploading] = useState<string[]>([]);
   const filePicker = useRef<HTMLInputElement | null>(null);
@@ -943,8 +946,12 @@ export function TaskBody({
         <CustomFieldValues task={task} fields={fields} onChanged={onChanged} />
 
         <div className={SECTION_COLUMN}>
+          {/* Other tasks: subtasks, and the blocks / relates / duplicates
+              links of WS-27p. Named "Links & subtasks" until 2026-10-13,
+              when the Links section below took that word for URLs. The fold
+              id stays "links" so a member's folded state survives. */}
           <CollapsibleSection
-            label="Links & subtasks"
+            label="Subtasks & related"
             icon="GitBranch"
             className={twoColumn ? "min-w-0" : undefined}
             {...fold("links")}
@@ -973,6 +980,21 @@ export function TaskBody({
                 aria-label="Add a subtask"
               />
             </div>
+          </CollapsibleSection>
+
+          {/* WS-57 TR-2: pull requests, issues, commits, docs and URLs. */}
+          <CollapsibleSection
+            label="Links"
+            icon="Link"
+            count={linkCount}
+            className={twoColumn ? "min-w-0" : undefined}
+            // Mounted while folded: the list reports the header's count, and
+            // a folded, unmounted list left the last task's count behind
+            // (review of WS-57 TR-2).
+            keepMounted
+            {...fold("refs")}
+          >
+            <TaskLinks key={task.id} taskId={task.id} onCount={setLinkCount} />
           </CollapsibleSection>
 
           <CollapsibleSection

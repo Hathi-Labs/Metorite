@@ -694,7 +694,7 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: working dir through the safe opener and under the broker's dir lock, so it
 #: is no `_HOST_FILE_TOOLS` member, and it says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
-    "add_subtasks", "analytics_finished", "analytics_load", "analytics_outlook",
+    "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
     "ask_questions", "assign", "bulk_update", "calendar", "call_agent",
     "capture_intake", "comment",

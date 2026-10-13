@@ -1669,6 +1669,111 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
     return f"Removed the link: {label}.\n  full_id: {tid}"
 
 
+# ── WS-57 TR-3 — a task's URL references ────────────────────────────────────
+#
+# A reference is a URL on a task (`task_references.md` §6). The names stay
+# clear of `link_tasks`, which links two TASKS. Both tools write through the
+# TR-1 route, so the chat and a person write one path, and the gateway's
+# classifier decides what the URL is.
+
+
+def _link_key(value: Any) -> str:
+    """A URL in the form two writers of one link agree on: the scheme and the
+    host in lower case, and no trailing slash. Anything else is kept as is,
+    so a stored ``ref`` (``owner/repo#12``) or a row id still matches."""
+    raw = str(value or "").strip()
+    if "://" not in raw:
+        return raw.lower()
+    scheme, _, rest = raw.partition("://")
+    host, slash, tail = rest.partition("/")
+    return f"{scheme.lower()}://{host.lower()}{slash}{tail}".rstrip("/")
+
+
+def _ref_line(row: dict[str, Any]) -> str:
+    """``«metorite#927» «Fix the login» (merged)`` — how a card names a reference."""
+    line = data(row.get("label") or row.get("url"))
+    if row.get("title"):
+        line += f" {data(row.get('title'))}"
+    if row.get("state"):
+        line += f" ({data(row.get('state'))})"
+    return line
+
+
+#: `open_world=False`, and it is the honest value: the tool posts with
+#: `refresh=false`, so the route stores the link and calls nothing outside.
+#: The card's next read fetches a GitHub title and state. Every Projects
+#: chat tool is closed-world (`test_projects_agent_refusals.py`), so a run
+#: that may not reach the outside (`no_egress`) keeps this tool too.
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
+    """Attach a URL to a task: a GitHub pull request, issue, commit, branch or
+    comment, a GitLab merge request, a Google Doc, Sheet or Slides, a Figma
+    file, a Notion page, or any other http or https link. title is optional,
+    and a GitHub pull request or issue takes its own title and state. To
+    link two TASKS, use link_tasks. Adding the same link twice changes
+    nothing. remove_task_ref takes a link off."""
+    link = str(url or "").strip()
+    if not link:
+        return "Give the link to add."
+    if not link.lower().startswith(("http://", "https://")):
+        return "Only http and https links can be added to a task."
+    tid, task = await _task(task_id)
+    payload: dict[str, Any] = {"url": link}
+    if str(title or "").strip():
+        payload["title"] = str(title).strip()
+    # The card's keys are product words (`cardFields.ts`): the URL shows as
+    # the link. The wire carries `url`, and that is what gets written.
+    shown = {"task": _ref(task), "link": link}
+    if "title" in payload:
+        shown["title"] = payload["title"]
+    if not await _confirm(
+        title="Add this link to the task?",
+        detail=f"{_ref(task)}: {data(link)}",
+        context=_fields_block(shown),
+    ):
+        return CANCELLED
+    row = await post(f"/projects/tasks/{tid}/refs", payload, {"refresh": False})
+    return (
+        f"Linked {_ref_line(row)} to {_ref(task)} (ref id {row.get('id')})."
+        f"\n  full_id: {tid}"
+    )
+
+
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+async def remove_task_ref(task_id: str, url: str) -> str:
+    """Take a URL reference off a task. url is the link as task_detail's
+    References list shows it, or its ref id. The card names the task and the
+    link. It removes the reference only, never a linked task."""
+    tid, task = await _task(task_id)
+    want = _link_key(url)
+    if not want:
+        return "Give the link to remove."
+    # `refresh=false`: the stored rows, and no GitHub read (open_world=False).
+    listed = await get(f"/projects/tasks/{tid}/refs", {"refresh": False})
+    rows = (listed or {}).get("rows") or []
+    found = [
+        row for row in rows
+        if want in {_link_key(row.get("url")), _link_key(row.get("ref")), _link_key(row.get("id"))}
+    ]
+    if not found:
+        return f"{_ref(task)} has no link {data(url)}. task_detail lists its references."
+    if len(found) > 1:
+        return (
+            f"{_ref(task)} has {len(found)} links that match {data(url)}. "
+            "Give the ref id from task_detail."
+        )
+    row = found[0]
+    rid = uuid_of(row.get("id"), "ref_id")
+    if not await _confirm(
+        title="Remove this link from the task?",
+        detail=f"{_ref(task)}: {_ref_line(row)}",
+        context=_fields_block({"task": _ref(task), "link": f"{_ref_line(row)} {data(row.get('url'))}"}),
+    ):
+        return CANCELLED
+    await delete(f"/projects/tasks/{tid}/refs/{rid}")
+    return f"Removed the link {_ref_line(row)} from {_ref(task)}.\n  full_id: {tid}"
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def move_task(
     task_ids: str,
@@ -3795,4 +3900,7 @@ __all__ = [  # noqa: RUF022 — S2 first, then S2b, the way the spec lists them
     "update_status",
     "update_tag",
     "update_type",
+    # WS-57 TR-3
+    "add_task_ref",
+    "remove_task_ref",
 ]
