@@ -23,6 +23,10 @@ import {
   autosaveWait, createAutosave, failedSaveStatus, saveFailureText, sendFailureText,
   type DraftStatus,
 } from "../lib/draftAutosave";
+import {
+  draftSavePayload, draftText, isHtmlUnavailable, needsHtmlRead, noticeAfterSave,
+  noticeWords, sendAfterPreSave, showsFormattingNotice,
+} from "../lib/draftSave";
 
 const isDraft = (m: Email) =>
   (m.folder || "").toLowerCase() === "drafts" ||
@@ -333,6 +337,12 @@ export function DraftCard({
   const sendingAddress = accounts
     .find((a) => a.id === (draft.accountId || selectedAccountId))
     ?.emailAddress;
+  // The provider of the mailbox. Only a Gmail draft keeps its HTML, reads it,
+  // or shows the notice (EM-G3a-f7, D-G3a-f7-5).
+  const provider = accounts
+    .find((a) => a.id === (draft.accountId || selectedAccountId))
+    ?.provider;
+  const gmail = provider === "gmail";
   // A real inbound message to reply to (vs a from-scratch / compose draft) —
   // gates the Reply / Reply All toggle and the reply-all recipient maths.
   const hasReplyTarget = !!replyTo && replyTo.id !== draft.id;
@@ -357,6 +367,16 @@ export function DraftCard({
   const [hydratedBody, setHydratedBody] = useState<string | null>(null);
   const [body, setBody] = useState(initSplit.main);
   const [quote, setQuote] = useState(initSplit.quoted || "");
+  // The text of the card at open (EM-G3a-f7, D-G3a-f7-2). A save with this
+  // text keeps the HTML of a Gmail draft. For a draft that came with no body,
+  // the text at open is the text that the hydrate put in the card.
+  const [initialText] = useState(() => draftText(initSplit.main, initSplit.quoted || ""));
+  const openedText = hydratedBody === null
+    ? initialText
+    : (() => {
+        const sp = splitQuotedText(hydratedBody);
+        return draftText(sp.main, sp.quoted || "");
+      })();
   // The card starts with the To, Cc and Bcc of its draft, and with the button
   // that matches them, or neither (EM-T10). Before, it started on Reply All
   // and wrote those lists over a reply that the member had narrowed.
@@ -398,6 +418,27 @@ export function DraftCard({
   const [sending, setSending] = useState(false);
   // The text of a failed send. Before EM-G3c-2 the card dropped it (item 14).
   const [sendError, setSendError] = useState<string | null>(null);
+  // EM-G3a-f7: the HTML that the card read for a Gmail draft with none, a
+  // save that answered `lost`, and a stopped send. The member saw the notice
+  // after a stop, so the next press sends the text only (D-G3a-f7-11, -12).
+  const [htmlRead, setHtmlRead] = useState<{ html: string | null; failed: boolean } | null>(null);
+  const htmlReadStarted = useRef(false);
+  const [htmlLost, setHtmlLost] = useState(false);
+  // The send reads the loss through a ref. A press during an autosave that
+  // answers `lost` then still sees it after the drain (review round 1, P2).
+  const htmlLostRef = useRef(false);
+  const markLost = () => {
+    htmlLostRef.current = true;
+    setHtmlLost(true);
+  };
+  const [textOnlyConfirmed, setTextOnlyConfirmed] = useState(false);
+  // A stopped send shows its own words, until the next send or a text edit.
+  const [sendStopped, setSendStopped] = useState(false);
+  /** Stop the send: the next press sends the text only, and the card says so. */
+  const stopSend = () => {
+    setTextOnlyConfirmed(true);
+    setSendStopped(true);
+  };
   const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
   // The pending autosave. An unmount and a change of draft run it at once
   // (EM-G3c-2 item 11).
@@ -421,13 +462,14 @@ export function DraftCard({
   const ai = useDraftSession({
     onBody: (next) => {
       dirty.current = true;
+      setSendStopped(false);
       setBody(next);
     },
   });
 
   /** The full outgoing body: the editable text plus the quoted trailing chain. */
   const combinedBody = () =>
-    quote ? `${body.replace(/\s+$/, "")}\n\n${quote}` : body;
+    draftText(body, quote);
 
   const ccList = () => cc.split(",").map((s) => s.trim()).filter(Boolean);
   const bccList = () => bcc.split(",").map((s) => s.trim()).filter(Boolean);
@@ -467,6 +509,17 @@ export function DraftCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.id]);
 
+  // EM-G3a-f7 (B5): a Gmail draft that came with no HTML reads it once, so
+  // the card knows to show the notice. The hydrate above returns early for a
+  // draft with text, so this read is an effect of its own.
+  useEffect(() => {
+    if (!needsHtmlRead(provider, draft.bodyHtml, htmlReadStarted.current)) return;
+    htmlReadStarted.current = true;
+    fetchFullBody(draft.id)
+      .then((fb) => setHtmlRead({ html: fb.body_html, failed: false }))
+      .catch(() => setHtmlRead({ html: null, failed: true }));
+  }, [provider, draft.id, draft.bodyHtml]);
+
   const recipients = () =>
     to.split(",").map((s) => s.trim()).filter(Boolean);
 
@@ -481,15 +534,15 @@ export function DraftCard({
     autosave.schedule(async () => {
       try {
         setDraftStatus("saving");
-        await saveDraft({
+        const saved = await saveDraft(draftSavePayload({
           accountId,
           draftId: draft.id,
           to: recipients(),
           cc: ccList(),
           bcc: bccList(),
           subject: draft.subject || "",
-          body: combinedBody(),
-        });
+        }, openedText, combinedBody(), provider));
+        if (noticeAfterSave(saved)) markLost();
         setDraftStatus("saved");
       } catch (err) {
         // The next edit tries again (EM-G3c-2 item 13).
@@ -514,6 +567,7 @@ export function DraftCard({
     if (!accountId || recipients().length === 0) return;
     setSending(true);
     setSendError(null);
+    setSendStopped(false);
     // The send carries the last edit, so each queued autosave goes. A save
     // that runs settles first, so no older text lands after this save
     // (EM-G3c-2 review round 2). The key gives each draft its own card, so
@@ -524,16 +578,27 @@ export function DraftCard({
       // draft — then send THIS draft natively (Drafts → Sent, no duplicate).
       // sendDraft removes it from the list. No more full-send detour for a Cc'd
       // reply, which used to start a fresh (unthreaded) message.
-      await saveDraft({
+      // A save with the text at open keeps the HTML of a Gmail draft
+      // (EM-G3a-f7, D-G3a-f7-2).
+      const saved = await saveDraft(draftSavePayload({
         accountId,
         draftId: draft.id,
         to: recipients(),
         cc: ccList(),
         bcc: bccList(),
         subject: draft.subject || "",
-        body: combinedBody(),
-      });
-      await sendDraft(accountId, draft.id);
+      }, openedText, combinedBody(), provider));
+      if (noticeAfterSave(saved)) markLost();
+      // A `lost` stops the first press, and the card shows the notice. The
+      // next press sends the text only (D-G3a-f7-12). A `lost` of an earlier
+      // autosave stops it too, because this save then answers `none`.
+      if (sendAfterPreSave(saved, textOnlyConfirmed, htmlLostRef.current) === "stop") {
+        stopSend();
+        return;
+      }
+      // A Gmail send asks for a 409 when the gateway cannot read the HTML,
+      // until the member saw the notice. Each other send is as on main.
+      await sendDraft(accountId, draft.id, gmail ? textOnlyConfirmed : undefined);
       // Surface the reply in the conversation at once + pull the real copy.
       const sentThreadId = replyTo?.threadId || draft.threadId;
       onSent?.(
@@ -562,7 +627,10 @@ export function DraftCard({
     } catch (err) {
       // The draft stays in Drafts so the user can retry. The card shows why,
       // and a 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
-      setSendError(sendFailureText(err));
+      // The 409 of a Gmail draft whose HTML the gateway cannot read shows the
+      // notice, and the next press sends the text only (D-G3a-f7-11).
+      if (isHtmlUnavailable(err)) stopSend();
+      else setSendError(sendFailureText(err));
     } finally {
       setSending(false);
     }
@@ -607,6 +675,16 @@ export function DraftCard({
 
   // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
   const saveFailure = saveFailureText(draftStatus);
+  // The notice of a Gmail draft with HTML (EM-G3a-f7, D-G3a-f7-3). It also
+  // shows after a save that lost the HTML, and after a stopped send. It shows
+  // while the HTML read runs, so the member knows before the first edit.
+  const showNotice =
+    showsFormattingNotice(
+      provider,
+      draft.bodyHtml || htmlRead?.html,
+      htmlRead?.failed ?? false,
+      needsHtmlRead(provider, draft.bodyHtml, htmlRead !== null),
+    ) || htmlLost || textOnlyConfirmed;
 
   return (
     <div className="border border-primary/40 rounded-lg bg-primary/5 px-3 py-3">
@@ -679,9 +757,18 @@ export function DraftCard({
             />
           </>
         )}
+        {showNotice && (
+          <p
+            role={sendStopped ? "alert" : "status"}
+            className="flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-[11px] leading-snug text-warning"
+          >
+            <AppIcon name="AlertTriangle" size={12} className="mt-px flex-shrink-0" />
+            <span>{noticeWords(sendStopped)}</span>
+          </p>
+        )}
         <textarea
           value={body}
-          onChange={(e) => { dirty.current = true; setBody(e.target.value); }}
+          onChange={(e) => { dirty.current = true; setSendStopped(false); setBody(e.target.value); }}
           rows={7}
           placeholder="Write your reply…"
           className={`${INPUT} resize-y leading-relaxed`}
