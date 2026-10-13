@@ -432,3 +432,13 @@ def test_the_run_route_takes_the_display_out_of_the_payload():
     src = inspect.getsource(agent.run_agent_stream_endpoint)
     assert '_card_answer = req.payload.pop("card_answer", None)' in src
     assert "card_answer=_card_answer," in src
+
+
+def test_a_steered_card_answer_keeps_both_markers():
+    """#920 saves a steer with ``steered`` beside the display. The gate keeps
+    both, in order, so the chat draws the answered card in the steer box."""
+    from gateway.chat_recovery import CARD_ANSWER_EVENT, gate_card_answer_events
+
+    sent = _resend()
+    events = [{"name": CARD_ANSWER_EVENT, "value": sent.display}, {"name": "steered", "value": {}}]
+    assert gate_card_answer_events("user", sent.message, events) == events

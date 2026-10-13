@@ -16,13 +16,24 @@ in-process ``httpx.MockTransport`` under the REAL pinned client and the REAL
 * **Slow DELETE.** The end of a run closes the servers at the same time,
   under a short cap. A 40 s session DELETE does not hold it, and the run is
   marked inactive BEFORE the close starts (the executor ``finally``).
+* **A late owner.** When the MAF task ends after the wait of ``_stop_owner``,
+  its own cancel fails the close. That is a failed close, not a Stop.
+
+**No fence here reads a wall clock against a budget.** CI run 38301866619
+failed ``took < 2.5`` at 3.04 s on a stalled runner: the same test call took
+8.5 s, against 1.2 s in a healthy run, and 5.4 s of it was outside the
+measured window. 350 local runs, 150 of them under 84 busy processes, never
+saw the close wait on the connect. So each fence asserts the ORDER of the
+events (:func:`_trace_close`), and fires a budget at an event, not at a time
+(:class:`_Clock`). A budget that a fence does not fire is set long, so a slow
+runner cannot reach it, and a regression fails on the order, not on a timer.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import json
-import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -54,14 +65,22 @@ def _init_result(body: dict[str, Any]) -> dict[str, Any]:
 
 
 class _Server:
-    """An MCP server behind ``httpx.MockTransport``. Each knob is one repro."""
+    """An MCP server behind ``httpx.MockTransport``. Each knob is one repro.
 
-    def __init__(self, *, slow_init: float = 0.0, endless: bool = False,
-                 tools_per_page: int = 1, slow_delete: float = 0.0) -> None:
-        self.slow_init = slow_init
+    ``hang_init`` holds the ``initialize`` until the request is cancelled, and
+    calls ``on_init`` when it arrives. ``events`` gets ``init.start``,
+    ``init.cancelled``, ``delete.start`` and ``delete.end``, in order."""
+
+    def __init__(self, *, hang_init: bool = False, endless: bool = False,
+                 tools_per_page: int = 1, slow_delete: float = 0.0,
+                 events: list[str] | None = None,
+                 on_init: Callable[[], None] | None = None) -> None:
+        self.hang_init = hang_init
         self.endless = endless
         self.tools_per_page = tools_per_page
         self.slow_delete = slow_delete
+        self.events = events if events is not None else []
+        self.on_init = on_init
         self.pages = 0
         self.deletes = 0
 
@@ -69,14 +88,24 @@ class _Server:
         sid = {"mcp-session-id": "s1"}
         if request.method == "DELETE":
             self.deletes += 1
+            self.events.append("delete.start")
             await asyncio.sleep(self.slow_delete)
+            self.events.append("delete.end")
             return httpx.Response(204)
         if request.method == "GET":
             return httpx.Response(405)
         body = json.loads(request.content or b"{}")
         rid, method = body.get("id"), body.get("method")
+        if method == "initialize" and self.hang_init:
+            self.events.append("init.start")
+            if self.on_init is not None:
+                self.on_init()
+            try:
+                await asyncio.Event().wait()  # no answer, ever
+            except asyncio.CancelledError:
+                self.events.append("init.cancelled")
+                raise
         if method == "initialize":
-            await asyncio.sleep(self.slow_init)
             return httpx.Response(200, headers=sid, json={
                 "jsonrpc": "2.0", "id": rid, "result": _init_result(body)})
         if rid is None:
@@ -119,23 +148,125 @@ def fast_budgets(monkeypatch):
     monkeypatch.setattr(_maf_mcp, "CLOSE_TOTAL_S", 5.0)
 
 
+#: A budget that only :meth:`_Clock.fire` spends. No real budget is this long.
+HELD_CONNECT_S = 1001.0
+HELD_STOP_S = 1002.0
+#: A budget that a fence does not fire. A slow runner cannot reach it, so the
+#: fence passes on the order alone. A regression costs this long, then fails.
+LONG_S = 30.0
+
+
+class _Clock:
+    """``asyncio`` as ``_maf_mcp`` reads it, with one change.
+
+    A timeout of a HELD number of seconds never fires by the clock. The fence
+    fires it at an event with :meth:`fire`. Every other timeout is the real
+    one. This is the lesson of #921: compare events, not a wall clock."""
+
+    def __init__(self, *held: float) -> None:
+        self.held = set(held)
+        self.made: list[tuple[float, Any]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+    def timeout(self, delay: float | None) -> Any:
+        if delay not in self.held:
+            return asyncio.timeout(delay)
+        cm = asyncio.timeout(None)
+        self.made.append((delay, cm))
+        return cm
+
+    def fire(self, delay: float) -> None:
+        """Spend each entered timeout of *delay* seconds, at the next loop turn."""
+        now = asyncio.get_running_loop().time()
+        for held, cm in self.made:
+            if held == delay and not cm.expired():
+                with contextlib.suppress(RuntimeError):  # not entered, or done
+                    cm.reschedule(now)
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> _Clock:
+        monkeypatch.setattr(_maf_mcp, "asyncio", self)
+        return self
+
+
+def _trace_close(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
+    """Record each step of the close of a failed server in *events*, in order.
+
+    ``client.closed``: the pinned client closed. ``stop.called`` and
+    ``owner.ended``: ``_stop_owner`` cancelled a MAF task that ran, and the
+    task ended. ``stop.returned``: ``_stop_owner`` gave the run back.
+    ``close.returned ok=<bool>``: ``_close_tool`` ended, and ``ok=False``
+    says that ``tool.close()`` did not finish in its budget."""
+    real_client = outbound_guard.mcp_client
+    real_stop = _maf_mcp._stop_owner
+    real_close_tool = _maf_mcp._close_tool
+
+    async def _client(url: str) -> Any:
+        client = await real_client(url)
+        real_aclose = client.aclose
+
+        async def _aclose() -> None:
+            await real_aclose()
+            events.append("client.closed")
+
+        client.aclose = _aclose
+        return client
+
+    async def _stop(tool: Any) -> None:
+        task = getattr(tool, "_lifecycle_owner_task", None)
+        if task is not None and not task.done():
+            events.append("stop.called")
+            task.add_done_callback(lambda _t: events.append("owner.ended"))
+        await real_stop(tool)
+        events.append("stop.returned")
+
+    async def _close_tool(tool: Any) -> bool:
+        ok = await real_close_tool(tool)
+        events.append(f"close.returned ok={ok}")
+        return ok
+
+    monkeypatch.setattr(outbound_guard, "mcp_client", _client)
+    monkeypatch.setattr(_maf_mcp, "_stop_owner", _stop)
+    monkeypatch.setattr(_maf_mcp, "_close_tool", _close_tool)
+
+
+#: The close of a server whose connect ran past its budget, as #869 round 2
+#: wrote it: the client closes FIRST, then the MAF task is cancelled and ends
+#: (and the held ``initialize`` with it), and only then does the tool close.
+#: The tool close does not reach its budget, because no connect holds it.
+FAILURE_CLOSE = [
+    "init.start", "client.closed", "stop.called", "init.cancelled",
+    "owner.ended", "stop.returned", "close.returned ok=True",
+]
+
+
+def _long_close_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_maf_mcp, "CLOSE_BUDGET_S", LONG_S)
+    monkeypatch.setattr(_maf_mcp, "STOP_WAIT_S", LONG_S)
+
+
 # ── slow_connect.py and leak.py ─────────────────────────────────────────────
 
 
-@pytest.mark.usefixtures("fast_budgets")
 async def test_a_slow_initialize_costs_the_budget_and_leaks_no_task(monkeypatch):
-    srv = _Server(slow_init=8.0).install(monkeypatch)
+    """The connect budget fires when the server holds the ``initialize``.
+
+    The fence reads no clock. A close that waited behind the connect would
+    show ``close.returned ok=False``, after :data:`LONG_S`."""
+    clock = _Clock(HELD_CONNECT_S).install(monkeypatch)
+    monkeypatch.setattr(_maf_mcp, "CONNECT_BUDGET_S", HELD_CONNECT_S)
+    _long_close_budgets(monkeypatch)
+    events: list[str] = []
+    srv = _Server(hang_init=True, events=events,
+                  on_init=lambda: clock.fire(HELD_CONNECT_S)).install(monkeypatch)
+    _trace_close(monkeypatch, events)
     agent, opened = native_agent(), []
-    t0 = time.monotonic()
     with structlog.testing.capture_logs() as logs:
         names = await _maf_mcp.attach_mcp_tools(agent, _server_spec(), opened)
-    took = time.monotonic() - t0
     assert names == [] and opened == [] and agent.mcp_tools == []
-    assert took < _maf_mcp.CONNECT_BUDGET_S + 1.5, (
-        f"attach took {took:.1f}s against a {_maf_mcp.CONNECT_BUDGET_S}s budget: the "
-        "close waited behind the connect")
+    assert events == FAILURE_CLOSE, events
     assert [e for e in logs if e["event"] == "mcp.unreachable"]
-    await asyncio.sleep(0.2)
     assert _live_owner_tasks() == [], "the lifecycle task of MAF outlived the attach"
     assert srv.pages == 0
 
@@ -176,21 +307,96 @@ async def test_a_server_inside_the_caps_attaches(monkeypatch):
 # ── Stop during the attach ──────────────────────────────────────────────────
 
 
-@pytest.mark.usefixtures("fast_budgets")
 async def test_a_cancel_during_the_attach_reaches_the_run(monkeypatch):
-    monkeypatch.setattr(_maf_mcp, "CONNECT_BUDGET_S", 30.0)
-    _Server(slow_init=20.0).install(monkeypatch)
+    """The Stop arrives while the server holds the ``initialize``. The close
+    takes the same steps as a spent budget, and the cancel reaches the run."""
+    monkeypatch.setattr(_maf_mcp, "CONNECT_BUDGET_S", LONG_S)
+    _long_close_budgets(monkeypatch)
+    events: list[str] = []
+    held = asyncio.Event()
+    _Server(hang_init=True, events=events, on_init=held.set).install(monkeypatch)
+    _trace_close(monkeypatch, events)
     agent, opened = native_agent(), []
     task = asyncio.create_task(_maf_mcp.attach_mcp_tools(agent, _server_spec(), opened))
-    await asyncio.sleep(0.5)
+    await asyncio.wait_for(held.wait(), LONG_S)  # a guard against a hang only
     task.cancel()
-    t0 = time.monotonic()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert time.monotonic() - t0 < 5, "the cancel waited on the half-open server"
+    assert events == FAILURE_CLOSE, f"the cancel waited on the half-open server: {events}"
     assert opened == [] and agent.mcp_tools == []
-    await asyncio.sleep(0.2)
     assert _live_owner_tasks() == []
+
+
+async def test_a_late_owner_fails_the_close_and_never_stops_the_run(monkeypatch):
+    """The MAF task ends AFTER the wait of ``_stop_owner`` runs out.
+
+    The close is then in the queue of that task, and the task fails it with
+    its own ``CancelledError``. Before this fix, that error went up, and an
+    unreachable server stopped the run as a Stop does. A loaded box can
+    make the wait run out. Here the wait is spent at an event, so the order
+    is the same on each run."""
+    clock = _Clock(HELD_CONNECT_S, HELD_STOP_S).install(monkeypatch)
+    monkeypatch.setattr(_maf_mcp, "CONNECT_BUDGET_S", HELD_CONNECT_S)
+    monkeypatch.setattr(_maf_mcp, "STOP_WAIT_S", HELD_STOP_S)
+    monkeypatch.setattr(_maf_mcp, "CLOSE_BUDGET_S", LONG_S)
+    events: list[str] = []
+    _Server(hang_init=True, events=events,
+            on_init=lambda: clock.fire(HELD_CONNECT_S)).install(monkeypatch)
+    _trace_close(monkeypatch, events)
+    tool_cls = _maf_mcp._run_scoped_tool_class()
+    real_cleanup = tool_cls._close_and_check_cancelled
+
+    async def _late_cleanup(self: Any, ex: BaseException) -> Any:
+        # The MAF task is in its cancel. Spend the stop wait, and go on only
+        # when the close of the attach is in this task's queue.
+        clock.fire(HELD_STOP_S)
+        for _ in range(10_000):
+            queue = self._lifecycle_queue
+            if queue is not None and not queue.empty():
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("the close never reached the queue of the MAF task")
+        events.append("owner.cleanup")
+        return await real_cleanup(self, ex)
+
+    monkeypatch.setattr(tool_cls, "_close_and_check_cancelled", _late_cleanup)
+    agent, opened = native_agent(), []
+    with structlog.testing.capture_logs() as logs:
+        names = await _maf_mcp.attach_mcp_tools(agent, _server_spec(), opened)
+    assert names == [] and opened == [] and agent.mcp_tools == []
+    # The MAF task fails the queued close in its ``finally``, and ends in the
+    # same step. Its done callback (``owner.ended``) runs at the next loop
+    # turn, after the attach returned, so the live-task check below proves it.
+    assert events == [
+        "init.start", "client.closed", "stop.called", "stop.returned",
+        "owner.cleanup", "init.cancelled", "close.returned ok=False",
+    ], events
+    assert [e for e in logs if e["event"] == "mcp.unreachable"]
+    assert [e for e in logs if e["event"] == "mcp.close_owner_stopped"]
+    assert _live_owner_tasks() == []
+
+
+async def test_close_tool_still_lets_a_stop_through_with_an_owner_that_runs() -> None:
+    """The quiet path of a late owner never swallows a Stop of the CALLER."""
+
+    class _Tool:
+        name = "probe"
+
+        def __init__(self) -> None:
+            self._lifecycle_owner_task = asyncio.create_task(asyncio.Event().wait())
+
+        async def close(self) -> None:
+            await asyncio.Event().wait()
+
+    tool = _Tool()
+    closer = asyncio.create_task(_maf_mcp._close_tool(tool))
+    await asyncio.sleep(0)
+    tool._lifecycle_owner_task.cancel()
+    await asyncio.sleep(0)
+    closer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closer
 
 
 async def test_close_one_lets_a_cancel_through() -> None:
@@ -209,18 +415,18 @@ async def test_close_one_lets_a_cancel_through() -> None:
 
 @pytest.mark.usefixtures("fast_budgets")
 async def test_a_slow_session_delete_does_not_hold_the_close(monkeypatch):
+    """The close returns while the 40 s DELETE still runs. No clock is read:
+    a close that waited for the DELETE would return after ``delete.end``."""
     monkeypatch.setattr(_maf_mcp, "CLOSE_BUDGET_S", 1.0)
     monkeypatch.setattr(_maf_mcp, "CLOSE_TOTAL_S", 3.0)
+    monkeypatch.setattr(_maf_mcp, "STOP_WAIT_S", LONG_S)
     srv = _Server(slow_delete=40.0).install(monkeypatch)
     agent, opened = native_agent(), []
     assert await _maf_mcp.attach_mcp_tools(agent, _server_spec(), opened) == ["probe"]
-    t0 = time.monotonic()
     await _maf_mcp.close_mcp_tools(opened)
-    took = time.monotonic() - t0
     assert srv.deletes == 1
-    assert took < _maf_mcp.CLOSE_BUDGET_S + 1.0, f"close took {took:.1f}s"
+    assert srv.events == ["delete.start"], f"the close waited for the DELETE: {srv.events}"
     assert opened == []
-    await asyncio.sleep(0.2)
     assert _live_owner_tasks() == []
 
 
@@ -232,14 +438,18 @@ async def test_the_close_of_a_run_has_one_total_cap(monkeypatch):
         async def close(self) -> None:
             return None
 
+    steps: list[str] = []
+
     class _HangingClient:
         async def aclose(self) -> None:
-            await asyncio.sleep(30)
+            steps.append("aclose.start")
+            await asyncio.sleep(LONG_S)
+            steps.append("aclose.end")
 
     opened: list[Any] = [(_Tool(), _HangingClient()), (_Tool(), _HangingClient())]
-    t0 = time.monotonic()
     await _maf_mcp.close_mcp_tools(opened)
-    assert time.monotonic() - t0 < _maf_mcp.CLOSE_TOTAL_S + 1.5
+    # No clock is read: a close with no cap returns after an ``aclose.end``.
+    assert "aclose.start" in steps and "aclose.end" not in steps, steps
     assert opened == []
 
 
@@ -250,19 +460,17 @@ def test_a_40s_delete_never_keeps_the_run_live_end_to_end(monkeypatch):
     from orchestrator import stream_relay
 
     order: list[str] = []
-    stamps: dict[str, float] = {}
+    real_close = _maf_mcp.close_mcp_tools
 
     async def _mark_inactive(*_a: Any, **_k: Any) -> None:
         order.append("mark_inactive")
-        stamps["mark_inactive"] = time.monotonic()
-
-    real_close = _maf_mcp.close_mcp_tools
 
     async def _close(opened: Any) -> None:
         order.append("close")
-        stamps["close_start"] = time.monotonic()
         await real_close(opened)
-        stamps["close_end"] = time.monotonic()
+        # No clock is read: a close that waited for the DELETE logs it here.
+        order.extend(f"server:{e}" for e in srv.events)
+        order.append("close.returned")
 
     monkeypatch.setattr(stream_relay, "mark_inactive", _mark_inactive)
     monkeypatch.setattr(_maf_mcp, "close_mcp_tools", _close)
@@ -270,17 +478,14 @@ def test_a_40s_delete_never_keeps_the_run_live_end_to_end(monkeypatch):
     set_flag(monkeypatch, "*")
     RegistrySpy([row("probe-srv", org="org-native-maf-probe", url=URL)]).install(monkeypatch)
     model = ScriptedModel([text_turn("done")])
-    t0 = time.monotonic()
     events, built = drive_native(
         "apis-config", "apps/agents/agent-apis-config", monkeypatch, model,
         thread_id="thread-ws8c-slow-delete",
     )
-    took = time.monotonic() - t0
     assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
     assert [t.name for t in built[0].mcp_tools] == ["probe-srv"]
-    assert order == ["mark_inactive", "close"], order
-    assert stamps["close_end"] - stamps["close_start"] < _maf_mcp.CLOSE_TOTAL_S + 1.5
-    assert took < 30, f"the run took {took:.1f}s: the 40 s DELETE held it"
+    assert order == ["mark_inactive", "close", "server:delete.start", "close.returned"], (
+        f"the 40 s DELETE held the end of the run: {order}")
     assert srv.deletes == 1
 
 

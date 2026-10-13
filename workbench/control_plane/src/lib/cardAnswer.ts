@@ -22,6 +22,7 @@
  * Fence: `cardAnswer.test.ts`.
  */
 import type { ChatMessage } from "@/lib/chatStore";
+import type { SteerOutcome } from "@/lib/chatSteer";
 
 /** The custom event that marks a member's turn as a card answer. */
 export const CARD_ANSWER_EVENT = "card_answer";
@@ -287,26 +288,46 @@ export function genUiAnswersFromTurns(
  * What the chat does once it knows what became of a card answer's resend
  * (review of #942, P2). The notice says only what HAS happened:
  *
- * - `sent`: the server took the turn, or steered it into a live run. The card
- *   closes, and the notice says the answer went.
- * - `busy`: a run in this tab is live, so the send never left. The answer
- *   waits in the composer queue and goes when that reply ends. The card
- *   closes, and the notice says so. Before this, the send was dropped and
- *   the notice still said "went": the answer was lost.
- * - `held`: the app is updating. The send waits, and the "Metorite is
- *   updating" notice already says so.
- * - `refused`: the server refused it (the run cap, a failed turn). Its own
- *   notice says why, and the card stays open.
+ * - `sent`: the server took the turn as a new run. The card closes, and the
+ *   notice says the answer went as a new message.
+ * - `steered`: a run is live in this thread, so the answer STEERED it (#920,
+ *   `lib/chatSteer.ts`), and the server folded it into that run. The card
+ *   closes, and the notice says the answer went into the running reply.
+ *   Before this, a resend that met a live run was dropped, and the notice
+ *   still said "went": the answer was lost.
+ * - `held`: the app is updating, or the same words are already on their way.
+ *   The "Metorite is updating" notice already speaks for the first.
+ * - `refused`: the server refused it (the run cap, a failed turn, a refused
+ *   steer). Its own notice says why, and the card stays open.
  */
-export function resendPlan(outcome: "sent" | "held" | "busy" | "refused"): {
-  notice: "run_restarted" | "run_restarted_queued" | null;
-  queue: boolean;
+export type ResendOutcome = "sent" | "steered" | "held" | "refused";
+
+export function resendPlan(outcome: ResendOutcome): {
+  notice: "run_restarted" | "run_restarted_steered" | null;
   card: "close" | "keep";
 } {
   switch (outcome) {
-    case "sent": return { notice: "run_restarted", queue: false, card: "close" };
-    case "busy": return { notice: "run_restarted_queued", queue: true, card: "close" };
-    case "held": return { notice: null, queue: false, card: "close" };
-    default: return { notice: null, queue: false, card: "keep" };
+    case "sent": return { notice: "run_restarted", card: "close" };
+    case "steered": return { notice: "run_restarted_steered", card: "close" };
+    case "held": return { notice: null, card: "close" };
+    default: return { notice: null, card: "keep" };
   }
 }
+
+/**
+ * What became of a resend that went through the steer path. A steer that
+ * found its run ended starts a new run (`started`), which is a send.
+ */
+export function resendOutcomeOfSteer(kind: SteerOutcome["kind"]): ResendOutcome {
+  switch (kind) {
+    case "folded": return "steered";
+    case "started": return "sent";
+    case "collapsed": return "held";
+    default: return "refused";
+  }
+}
+
+/** The direct model path takes no steer, so a card answer cannot go while
+ *  it replies. The card stays open for the member to answer again. */
+export const STEER_UNSUPPORTED_CARD =
+  "This model cannot take your answer while it replies. Answer the card again when the reply ends.";

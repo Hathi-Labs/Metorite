@@ -141,6 +141,31 @@ def test_the_author_supersedes_the_last_turn_and_its_reply(graph_as_app):
     assert _ids(graph_as_app, sid) == ["u1", "a1", "u2-edit"]
 
 
+def test_an_edit_supersedes_the_turn_and_its_steer_row(graph_as_app):
+    """Review of #920, round 2. The member steered the old turn's run, so a
+    steer row sits after its reply. It is part of that turn: the edit removes
+    it with the turn, and the note quotes it. Read from Postgres, so the
+    SELECT carries ``custom_events``."""
+    from gateway.chat_supersede import compose_supersede_note, supersede_rows
+
+    a = graph_as_app.org_a
+    sid = _seed(a)
+    alice = _client(_user(_ALICE, a))
+    steer_row = {**_user_row("s1", _T0 + 12, "also add a due date"),
+                 "custom_events": [{"name": "steered", "value": {}}]}
+    saved = alice.post(f"/chat/sessions/{sid}/messages", json=[steer_row])
+    assert saved.status_code == 200, saved.text
+    alice.post(f"/chat/sessions/{sid}/messages",
+               json=[_user_row("u2-edit", _T0 + 20, "Create two bootloader tasks")])
+
+    plan = supersede_rows(sid, "u2", actor=_ALICE, keep_ids=["u2-edit"],
+                          organization_id=a)
+    assert plan.removed_ids == ["u2", "a2", "s1"]
+    assert plan.steers == ["also add a due date"]
+    assert 'added_while_running: "also add a due date"' in compose_supersede_note(plan)
+    assert _ids(graph_as_app, sid) == ["u1", "a1", "u2-edit"]
+
+
 def test_an_earlier_message_cannot_be_superseded(graph_as_app):
     from gateway.chat_supersede import SupersedeRefused, supersede_rows
 

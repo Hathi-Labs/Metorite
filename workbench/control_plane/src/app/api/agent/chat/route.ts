@@ -100,6 +100,10 @@ interface ChatRequest {
    *  report, 2026-10-13, `lib/cardAnswer.ts`). The gateway checks it and
    *  saves it on the member's turn. It never reaches the model. */
   cardAnswer?: unknown;
+  /** The steer follow-up (owner, 2026-10-12). The chat sends it once a run
+   *  it steered has ended, with no words. The gateway answers a steer that
+   *  run never read, or 202 when nothing is owed (`lib/chatSteer.ts`). */
+  steerFollowUp?: boolean;
 }
 
 const LITELLM_BASE_URL =
@@ -654,8 +658,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, cardAnswer } = body;
-  if (!agentName || !message) {
+  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp, cardAnswer } = body;
+  // A steer follow-up has no words of its own: the gateway's ENGAGE seam
+  // makes the stored steers its message. It runs on the gateway path only.
+  const followUp = steerFollowUp === true && mode === "copilot" && !!threadId;
+  if (!agentName || (!message && !followUp)) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", content: "agentName and message are required" })}\n\n`,
       { status: 400, headers: sseHeaders() }
@@ -801,6 +808,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             ),
             think_mode: thinkMode ?? "auto",
             ...(resume === true ? { resume: true } : {}),
+            ...(followUp ? { steer_followup: true } : {}),
             // Forward the caller's system context (persona / persistent memory /
             // app-specific context like the email app's selected account + open
             // email) so named agents — not just the orchestrator — receive it.

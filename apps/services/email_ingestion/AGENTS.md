@@ -162,6 +162,20 @@ All providers implement the `BaseEmailProvider` abstract interface:
      records it (contract 9).
    - A part with a file name, a part with the disposition `attachment` and a
      `message/*` part are files. The body walk skips them.
+   - **A body part by `attachmentId` (EM-G2-f1).** Gmail can send a large
+     `text/plain` or `text/html` part with `body.attachmentId` and no
+     `body.data`. `get_message` runs `_fill_attachment_bodies` before the
+     parse. It fetches such a part once through the client seam, and it
+     uses the file rule of the body walk, so a file never gets a fetch.
+   - **The fill has two bounds**, because each fetch holds the part in the
+     memory of acb-gateway. Only the first part of each type that holds data
+     or an `attachmentId` is a candidate, as in the parse. A candidate over
+     `GMAIL_FILL_MAX_BYTES` gets no fetch and logs
+     `gmail.body_part_too_large`. The cap is two times the larger storage
+     cap of `persist`. Do not lift it for one route.
+   - A failed or skipped part leaves that body empty and one record in
+     `fetch_failures`, and `_fetch_into` copies it into `SyncResult.errors`.
+     A spent rate limit raises. The parse stays synchronous.
    - `_parse_headers` keys each header by its lower-case name. Read a header
      by that name.
    - `internet_message_id` is the `Message-ID` value, trimmed. It keeps its
@@ -200,6 +214,11 @@ All providers implement the `BaseEmailProvider` abstract interface:
      raises it again through `_raise_rate_limit`. So the sync fails and
      backs off, and the cursor stays. The history read is the one exception
      after a finished page (contract 10, EM-G4b-f1).
+   - **A bulk act (EM-G4a-f1).** A spent rate limit on `batchModify` makes
+     no call for each message. `bulk_apply` puts the ids of the chunk and of
+     each later chunk into `failed_out` and returns. The caller retries them
+     with a back-off. Any other error keeps the fallback to one `modify` for
+     each message.
    - A fetch that fails for another reason calls `_record_fetch_failure`. It
      logs `gmail.fetch_failed` with the message id, the class of the error
      and the status, never a subject or an address. The record goes into

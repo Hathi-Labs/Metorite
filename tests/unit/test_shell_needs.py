@@ -53,11 +53,26 @@ ME = "member@customer.example"
 OTHER = "other@customer.example"
 ORG = "org-mine"
 ORG_OTHER = "org-other"
-NOW = datetime.now(UTC)
-#: Later today in UTC, whatever the hour the suite runs at.
-LATER_TODAY = NOW + (datetime.combine(NOW.date() + timedelta(days=1), datetime.min.time(),
-                                      tzinfo=UTC) - NOW) / 2
-TOMORROW = datetime.combine(NOW.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+#: The suite's one instant. It is FIXED, and the ``fakes`` fixture freezes the
+#: route's clock (``shell._now``) to it, so the rows and the route's split
+#: agree. This was ``datetime.now(UTC)`` at import, against the route's real
+#: clock at run time. CI imports at collection and ran this file 26 minutes
+#: later, at 23:42 UTC, past ``LATER_TODAY``. So "t-soon" read overdue and the
+#: order test failed (#920, #948). This is 23:42 UTC, the failing instant.
+NOW = datetime(2026, 10, 12, 23, 42, tzinfo=UTC)
+
+
+def _tomorrow(now: datetime) -> datetime:
+    """The start of the UTC day after *now*: the fake lens read's bound."""
+    return datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+
+
+def _later_today(now: datetime) -> datetime:
+    """Halfway from *now* to the end of its UTC day: due today, and not yet."""
+    return now + (_tomorrow(now) - now) / 2
+
+
+LATER_TODAY = _later_today(NOW)
 
 
 def member(*features: str, email: str = ME) -> UserContext:
@@ -108,7 +123,12 @@ class Fakes:
     reads keep their real contract: due before tomorrow and the oldest
     deadline first, and the longest wait first, each up to ``limit``."""
 
-    def __init__(self) -> None:
+    def __init__(self, now: datetime = NOW) -> None:
+        #: The instant every row is built from. The fixture freezes the
+        #: route's clock to it (``_install``).
+        self.now = now
+        self.tomorrow = _tomorrow(now)
+        later_today = _later_today(now)
         self.calls: list[tuple[str, object, dict]] = []
         #: The pending actions, by organization. The broker reads the
         #: tenant the request bound, so the fake does too.
@@ -117,16 +137,16 @@ class Fakes:
                 {"id": "pa-new", "actor": "agent:email-assistant",
                  "action": "crm.zoho_update", "target": "lead:z-1",
                  "payload": {"args": {}}, "status": "pending",
-                 "created_at": NOW - timedelta(minutes=10)},
+                 "created_at": now - timedelta(minutes=10)},
                 {"id": "pa-old", "actor": "user:priya@customer.example",
                  "action": "whatsapp.broadcast", "target": "account:wa-1",
                  "payload": {"targets": [{"chat_id": "c1"}, {"chat_id": "c2"}]},
-                 "status": "pending", "created_at": NOW - timedelta(hours=3)},
+                 "status": "pending", "created_at": now - timedelta(hours=3)},
             ],
             ORG_OTHER: [
                 {"id": "pa-theirs", "actor": "agent:other", "action": "crm.zoho_delete",
                  "target": "lead:z-9", "payload": {}, "status": "pending",
-                 "created_at": NOW},
+                 "created_at": now},
             ],
         }
         self.active = 0
@@ -136,25 +156,25 @@ class Fakes:
         self.slow_mailbox: set[str] = set()
         self.tasks: dict[str, list[dict]] = {
             ME: [
-                _task("t-late", "Ship the extruder", NOW - timedelta(hours=2)),
-                _task("t-old", "File the VAT return", NOW - timedelta(days=3)),
-                _task("t-soon", "Call the supplier", LATER_TODAY),
-                _task("t-next", "Plan the launch", NOW + timedelta(days=3)),
+                _task("t-late", "Ship the extruder", now - timedelta(hours=2)),
+                _task("t-old", "File the VAT return", now - timedelta(days=3)),
+                _task("t-soon", "Call the supplier", later_today),
+                _task("t-next", "Plan the launch", now + timedelta(days=3)),
             ],
-            OTHER: [_task("t-theirs", "Their private overdue task", NOW - timedelta(days=1))],
+            OTHER: [_task("t-theirs", "Their private overdue task", now - timedelta(days=1))],
         }
         self.notes: dict[str, list[dict]] = {
             ME: [
                 {"id": "n-1", "task_id": "t-9", "kind": "assigned", "actor": "priya@x.test",
                  "task_title": "Fix the hopper", "task_number": 12, "excerpt": None,
-                 "created_at": NOW - timedelta(hours=5)},
+                 "created_at": now - timedelta(hours=5)},
                 {"id": "n-2", "task_id": "t-8", "kind": "mention", "actor": "agent:builder",
                  "task_title": "Wire the sensor", "task_number": None,
-                 "excerpt": "Can you check this?", "created_at": NOW - timedelta(hours=1)},
+                 "excerpt": "Can you check this?", "created_at": now - timedelta(hours=1)},
             ],
             OTHER: [{"id": "n-theirs", "task_id": "t-7", "kind": "comment", "actor": ME,
                      "task_title": "Their notification", "task_number": 3, "excerpt": None,
-                     "created_at": NOW}],
+                     "created_at": now}],
         }
         self.accounts: dict[str, list[dict]] = {
             ME: [{"id": "a-mine", "in_all_inboxes": True},
@@ -163,11 +183,11 @@ class Fakes:
         }
         self.threads: dict[str, list[dict]] = {
             "a-mine": [
-                _thread("th-new", "m-new", "Invoice March", NOW - timedelta(hours=1)),
-                _thread("th-old", "m-old", "Quote for 40 units", NOW - timedelta(days=4)),
+                _thread("th-new", "m-new", "Invoice March", now - timedelta(hours=1)),
+                _thread("th-old", "m-old", "Quote for 40 units", now - timedelta(days=4)),
             ],
-            "a-separate": [_thread("th-sep", "m-sep", "Board papers", NOW)],
-            "a-theirs": [_thread("th-theirs", "m-theirs", "Their secret", NOW)],
+            "a-separate": [_thread("th-sep", "m-sep", "Board papers", now)],
+            "a-theirs": [_thread("th-theirs", "m-theirs", "Their secret", now)],
         }
 
     async def _enter(self, name: str, user: object, kwargs: dict) -> None:
@@ -182,11 +202,12 @@ class Fakes:
     async def my_due_tasks(self, user, *, limit):
         await self._enter("my_due_tasks", user, {"user": user, "limit": limit})
         due = [t for t in self.tasks.get(user.email, [])
-               if t["due_at"] and datetime.fromisoformat(t["due_at"]) < TOMORROW]
+               if t["due_at"] and datetime.fromisoformat(t["due_at"]) < self.tomorrow]
         due.sort(key=lambda t: t["due_at"])
         # ⚠️ No SOMEDAY filter here, on purpose: the provider's own check of
         # the row's disposition is what this suite fences.
-        return {"rows": due[:limit], "today": NOW.date().isoformat(), "timezone": "UTC"}
+        return {"rows": due[:limit], "today": self.now.date().isoformat(),
+                "timezone": "UTC"}
 
     async def list_notifications(self, **kw):
         await self._enter("list_notifications", kw["user"], kw)
@@ -247,9 +268,23 @@ class Fakes:
         return rows[:limit]
 
 
+def _freeze(monkeypatch, instant: datetime) -> None:
+    """The route's one clock (``shell._now``) answers *instant*.
+
+    ``TestTheClock`` fences that the route reads no other clock.
+    """
+    monkeypatch.setattr(shell, "_now", lambda: instant)
+
+
 @pytest.fixture()
 def fakes(monkeypatch) -> Fakes:
-    f = Fakes()
+    return _install(monkeypatch, Fakes())
+
+
+def _install(monkeypatch, f: Fakes) -> Fakes:
+    """Swap the app functions for *f*, and freeze the route's clock to
+    ``f.now``, the instant its rows are built from."""
+    _freeze(monkeypatch, f.now)
     import gateway.routes.email.transport.accounts as accounts
     import gateway.routes.projects.notifications as notifications
 
@@ -530,6 +565,47 @@ class TestTheAnswer:
         assert answer["count"] == len(answer["items"]) == 7
         assert answer["sources"] == {"tasks": "ok", "approvals": "absent",
                                      "projects": "ok", "email": "ok"}
+
+
+class TestTheClock:
+    """The rows and the route's overdue split read ONE instant (#920, #948).
+
+    The suite built its rows from the import-time clock, and the route split
+    them by the run-time clock. A run that came late enough in the UTC day
+    called "due today, and not yet" overdue. So the order holds at each
+    instant below, and the route reads no clock but ``_now``.
+    """
+
+    @pytest.mark.parametrize("instant", [
+        datetime(2026, 10, 12, 23, 42, tzinfo=UTC),       # the CI failure (#948)
+        datetime(2026, 10, 12, 23, 59, 59, tzinfo=UTC),   # one second to UTC midnight
+        datetime(2026, 10, 13, 0, 0, 1, tzinfo=UTC),      # one second after it
+        datetime(2026, 10, 12, 18, 29, 59, tzinfo=UTC),   # one second to IST midnight
+        datetime(2026, 10, 12, 18, 31, tzinfo=UTC),       # just after IST midnight
+        datetime(2026, 10, 31, 23, 59, 30, tzinfo=UTC),   # month end
+    ], ids=["23:42Z", "23:59:59Z", "00:00:01Z", "18:29:59Z", "18:31Z", "month-end"])
+    def test_the_contracts_order_holds_at_every_instant(self, monkeypatch, instant):
+        _install(monkeypatch, Fakes(now=instant))
+        assert ids(run(admin(*ALL, "approvals"))) == [
+            "tasks:t-old", "tasks:t-late", "approvals:pa-old", "approvals:pa-new",
+            "tasks:t-soon", "projects:n-2", "projects:n-1",
+            "email:a-mine:th-old", "email:a-mine:th-new",
+        ]
+
+    def test_the_split_follows_the_routes_clock(self, monkeypatch, fakes):
+        # Non-vacuity: the freeze reaches the split. One minute past t-soon's
+        # deadline, the route calls it overdue. This was the CI failure.
+        _freeze(monkeypatch, LATER_TODAY + timedelta(minutes=1))
+        rows = {i["id"]: i for i in run(member(*ALL))["items"]}
+        assert rows["tasks:t-soon"]["kind"] == "overdue"
+
+    def test_the_route_reads_no_clock_but_now(self):
+        # A second ``datetime.now`` in the module would escape the freeze,
+        # and the flake would come back.
+        source = inspect.getsource(shell)
+        for clock in ("datetime.now(", "datetime.utcnow(", "date.today(", "time.time("):
+            assert source.count(clock) == (1 if clock == "datetime.now(" else 0), clock
+        assert "return datetime.now(UTC)" in inspect.getsource(shell._now)
 
 
 class TestTheCaps:

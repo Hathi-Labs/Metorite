@@ -39,7 +39,7 @@ export type RunErrorCode =
   | "updating"
   | "interrupted"
   | "run_restarted"
-  | "run_restarted_queued"
+  | "run_restarted_steered"
   | "answer_in_other_account"
   | "too_many_runs"
   | "unknown";
@@ -138,11 +138,11 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     retry: false,
     tone: "notice",
   },
-  // The resend met a live run in this tab, so it waits in the queue
-  // (review of #942). It goes when that reply ends.
-  run_restarted_queued: {
+  // The resend met a live run, so it steered that run (#920, review of
+  // #942). The server folded it into the reply that runs now.
+  run_restarted_steered: {
     title: "The assistant restarted",
-    body: "Your answer goes as a new message when this reply ends.",
+    body: "Your answer went into the current reply.",
     retry: false,
     tone: "notice",
   },
