@@ -238,7 +238,7 @@ async def recall_timeline(entity_name: str, query: str) -> str:
 
     Returns:
         Timestamped facts like:
-        "2026-05-12: Deal Fracktal-ABC moved to Awaiting PO [source: agent-sales]"
+        "2026-05-12: Deal Acme-ABC moved to Awaiting PO [source: agent-sales]"
         "2026-05-28: Follow-up sent by Vijay after 16 days stale"
         Returns "(no timeline facts found)" if Graphiti is disabled or nothing matches.
 
@@ -333,7 +333,7 @@ async def save_episode(
     Examples:
         await save_episode(
             "Deal closed",
-            "ABC Corp signed the PO worth ₹50L for 10 Fracktal Works printers. Contact: Rahul Kumar.",
+            "ABC Corp signed the PO worth ₹50L for 10 printers. Contact: Rahul Kumar.",
             source="agent-sales",
         )
         await save_episode(
@@ -494,7 +494,7 @@ async def save_org_memory(fact: str) -> str:
         "Organisation memory saved." or an error description.
 
     Examples:
-        await save_org_memory("Fracktal's fiscal year runs April-March")
+        await save_org_memory("Our fiscal year runs April-March")
         await save_org_memory("All customer refunds above 1L need finance approval")
     """
     if not _may("memory:write_org"):
