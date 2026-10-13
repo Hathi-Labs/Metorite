@@ -2927,12 +2927,12 @@ line — never reclaim a number by deleting the other entry.
   `.github/workflows/phase-0-tripwire.yml`
 - **Added:** 2026-08-26 · guardrails/CI session
 
-### H-49 · D63's seal is BUILT. The dialog and the watched door are not · [AGENT]
-- **Check:** `rg -n "seal_personal_tree" apps/services/gateway/gateway/routes/`
-  → hits in `admin/members.py` mean slice 1 landed. Then
-  `rg -n "seal_counts|unseal_personal_tree" apps/services/gateway --include=*.py`
-  → if the only hits are the definitions in `projects/seal.py`, nothing calls
-  them and this entry is still live.
+### H-49 · D63's seal and dialog are BUILT. The watched door is not · [AGENT]
+- **Check:** `rg -n "unseal_personal_tree" apps/services/gateway --include=*.py`.
+  The entry is open while the only caller is the reactivation branch of
+  `PATCH /admin/members/{email}` (`admin/members.py:362`). That branch gives
+  the tree back to its owner. No owner-only, logged route lets somebody ELSE
+  open a sealed tree yet.
 - ✅ **SLICE 1 LANDED 2026-09-23.** Migration **215** adds
   `pm_projects.sealed_at`. Both visibility clauses filter it on both arms, so
   a sealed tree leaves the grant closure AND the `data:org:read` answer. Both
@@ -2950,15 +2950,15 @@ line — never reclaim a number by deleting the other entry.
   to create the cross-assigned state, so `handed_over` reads 0 on a healthy
   tenant. That is correct, not broken.
 - **What is still owed, and both are D63's own words:**
-  1. **The dialog states the split in numbers BEFORE the click** — *"14 tasks
-     — 3 handed over, 11 sealed, not deleted; later access is recorded"*.
-     `projects/seal.py::seal_counts` computes exactly that and **no route calls
-     it**. A policy nobody is told about at the moment it applies is one they
-     discover by being surprised.
-  2. **One owner-only, LOGGED door** to open or export a sealed tree.
-     `unseal_personal_tree` is the mechanism and no route calls it either.
-     ⚠️ Reactivation already unseals, and that is NOT this door: it returns
-     the tree to its owner. This door lets somebody ELSE read it.
+  1. ✅ **The dialog states the split in numbers BEFORE the click** — *"14
+     tasks — 3 handed over, 11 sealed, not deleted; later access is
+     recorded"*. BUILT: `GET /admin/members/{email}/seal-preview` calls
+     `projects/seal.py::seal_counts` (`admin/members.py:1123`), and
+     `OrganizationAdmin.tsx` reads it through `lib/sealPreview.ts`.
+  2. **One owner-only, LOGGED door** to open or export a sealed tree. Still
+     owed. `unseal_personal_tree` is the mechanism. Its one caller today is
+     reactivation (`admin/members.py:362`), and that is NOT this door: it
+     returns the tree to its owner. This door lets somebody ELSE read it.
 - 📌 `app_user.status` still only ever holds `'active'` on production, so
   nothing has exercised this against real data yet.
 - **Authority:** `work_plan.md` §3 D63 · §6 (member/role writes) · D53.7/D53.8
@@ -5275,25 +5275,6 @@ line — never reclaim a number by deleting the other entry.
   D97
 - **Added:** 2026-10-12 · branch `feat/ws55-ea3-mcp-read-tools`. Renumbered from H-301 to H-302, then to H-303, on 2026-10-13, because
   `origin/main` took H-301 and then H-302. H-303 was free on `origin/main` and in each open pull request.
-
-### H-305 · A person's open-task count includes a SEALED tree (D63) · [OWNER]
-- **Check:** read `compute_load` in
-  `apps/services/gateway/gateway/routes/people/core.py` (about line 290).
-  The entry is open while its count does not test `pm_projects.sealed_at`.
-- **Why:** H-304 closed the seal gap in `task_visibility_clause`. An audit of
-  the readers that do not use the clause found one more. `compute_load` counts
-  the open tasks and hours of one person by assignee row. It shows on the
-  person record, in people search and in the assignee picker. It gives only
-  numbers, never a title.
-- **The question:** a task in a sealed tree that is assigned to the departed
-  member still counts in their load. A task handed over to a colleague counts
-  in the load of that colleague. The second is correct by D63, because the
-  work is theirs now. Is the first acceptable?
-- **Recommended default:** filter the sealed tree out of the count for the
-  departed member only. Keep the hand-over task in the load of its assignee.
-  So the filter is `sealed_at IS NULL OR lower(a.assignee) <> personal_owner`.
-- **Authority:** `work_plan.md` §3 D63 · H-49 · migration 215
-- **Added:** 2026-10-13 · the caller audit of H-304
 
 # DONE — deleted, not archived
 
