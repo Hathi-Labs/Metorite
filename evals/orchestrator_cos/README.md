@@ -50,7 +50,7 @@ address ends in `.example`.
 
 2. Record the live arms by hand, through the Router. Put the key that the
    Router accepts in `LITELLM_API_KEY`. `prompt_before.txt` is the prompt of
-   the orchestrator before the role, built on 2026-10-13 from `6ea6b3e8c`.
+   the orchestrator before the role, built on 2026-10-14 from `52172693e`.
    The `after` arm builds the current prompt itself:
 
    ```bash

@@ -29,7 +29,8 @@ The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
 (2026-10-10) adds Approvals to the needs feed and to My Day.
 
 **NS-6 slice 6b BUILT 2026-10-13, ON in production since 2026-10-13 (owner): the chat bar and the one
-assistant** (D99, §7.1). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
+assistant** (D99, §7.1). On 2026-10-14 the owner moved the one field into the
+shell bar, and the bar at the foot of the page is gone (D102, amended). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
 counts as on only with both shell flags on. Migration 254 adds
 `chat_session.archived_at`. Only the owner turns the flag on in production
 (§13.1).
@@ -283,10 +284,10 @@ over the page column, as NS-1 built it. `desktopFrame` in
 | Scope chip | The shell | Personal, a team, or all my teams (§4). A team app shows its own team, locked. Today the command bar's "in <App>" chip holds this place |
 | Command bar | The shell | Search, do or ask (§6). It sits in the centre and takes the free width |
 | ~~App actions~~ | — | Not in the bar. They are in the app's own title bar |
-| Activity | The shell | Every live assistant run, across apps (WS-51 S3), at the right end. With `NEXT_PUBLIC_SHELL_CHAT` on, it moves into the chat bar (D99, §7.1) |
+| Activity | The shell | Every live assistant run, across apps (WS-51 S3), at the right end. It shows the running count and opens the list of runs. It stays here with `NEXT_PUBLIC_SHELL_CHAT` on (owner, 2026-10-14, §7.1) |
 | New | The shell | The jobs of the apps the member holds, in preset order (§8). Not built |
 | Bell | The shell | "Needs you", from every app (§7.2). BUILT in NS-6 slice 6a, dark behind `NEXT_PUBLIC_SHELL_DOCK`. It sits before Activity (owner, 2026-10-10, §13.3 Q7). An app's own bell never moves into this bar |
-| Assistant | The shell | ~~The dock toggle at the right end (owner, 2026-10-10, §13.3 Q7).~~ **Amended by D99 (2026-10-12):** the chat bar at the foot of the page opens the assistant, so the shell bar holds no assistant toggle (§7.1) |
+| Assistant | The shell | The panel button, first of the right group, with `NEXT_PUBLIC_SHELL_CHAT` on. It opens the side panel and closes the assistant (owner, 2026-10-14, §7.1). From 2026-10-12 to 2026-10-14 the chat bar at the foot of the page opened it instead (D99) |
 | Account | The shell | The avatar and the email. It opens the account menu: switch, add, sign out (owner, 2026-10-12, §3.3). The last item of the bar. Until 2026-10-12, the account menu was the sidebar's foot (NS-2 slice 1) |
 
 **The command bar's "in <App>" chip stays.** It is the command bar's own
@@ -938,6 +939,12 @@ Nobody edits navigation, and no team gets a separate home.
 
 ### 6.1 Place and keys
 
+> ⚠️ **Amended again 2026-10-14 (D102, owner).** The one field is back in
+> the shell bar: `AskField`, in the middle of the row. The results drop below
+> it, Enter asks Metorite, and a highlighted result opens on Enter. ⌘K and
+> `/` put the cursor there. The modal opens only on a phone. The note below
+> records the place of 2026-10-13.
+
 > ⚠️ **Amended 2026-10-13 by D102.** With `NEXT_PUBLIC_SHELL_CHAT` on, the
 > command bar has no field in the shell bar. Its field is the chat bar at
 > the foot of the page (§7.1). The results rise above that field, Enter asks
@@ -1080,29 +1087,38 @@ two:
 
 ## 7. The assistant dock and the bell
 
-### 7.1 One assistant, opened from the chat bar (D99)
+### 7.1 One assistant, opened from the one field (D99)
+
+⚠️ **Amended on 2026-10-14 by the owner (D102).** The field moved into the
+shell bar, and no bar sits at the foot of the page. The text below says
+where each rule now lives.
 
 ⚠️ **Amended on 2026-10-12 by D99.** The dock opened the app's own agent,
 and a toggle in the shell bar opened it. Now the member always talks to one
 general agent, and a chat bar at the foot of the page opens it. Flag
 `NEXT_PUBLIC_SHELL_CHAT`, default off.
 
-**The chat bar.**
+**The one field** (`AskField` in `ChatBar.tsx`).
 
-- **One row at the foot of the page column, on every page.** It is a real
-  row of the frame, under `<main>`, not a layer over the page. So an app's
-  own bottom controls stay inside `<main>`, above it, and the bar never
-  covers them.
-- **It holds a field, the context chip and the activity control.** The
-  field reads "Ask Metorite…". Enter opens the assistant and sends the
-  words. The chip names where the member is, for example "Projects ·
-  Website relaunch".
-- **⌘J or Ctrl J** puts the cursor in the field. With the assistant open,
-  it puts the cursor in the assistant. Pressed again in the assistant, it
-  closes the assistant. The shell's one listener in `ShellBar.tsx` holds
-  the key (§5.2 rule 2).
-- **The bar hides while the assistant is open.** The assistant has its own
-  composer.
+- **It is in the middle of the shell bar, on every desktop page.** The
+  shell bar sits above the assistant, so the field shows in every form of
+  it.
+- **It holds the field, the context chip and the key.** The field reads
+  "Ask Metorite, or search and open anything…". Enter opens the assistant
+  and sends the words. Enter on an empty field opens the assistant. The
+  chip names where the member is, for example "Projects · Website
+  relaunch".
+- **Words typed while the assistant is open go into the chat on screen**
+  (`AssistantAsk.join`). They never go into a room or an archived chat.
+- **The panel button** is first of the right group of the shell bar. It
+  opens the side panel, and closes the assistant when it is open.
+- **⌘J or Ctrl J** opens the assistant. With the assistant open, it puts
+  the cursor in the assistant. Pressed again in the assistant, it closes
+  the assistant. The shell's one listener in `ShellBar.tsx` holds the key
+  (§5.2 rule 2).
+- **The activity control stays in the shell bar.** It shows the running
+  count and opens the list of runs. A row opens its chat in the assistant.
+  The control never opens a chat by itself.
 - **On a phone, an Ask tab replaces the bar** (owner, 2026-10-13). It sits
   at the right end of the bottom nav on every page, so the thumb learns one
   place. A tap opens the assistant as a full-screen sheet, with the cursor
@@ -1115,18 +1131,23 @@ general agent, and a chat bar at the foot of the page opens it. Flag
 
 - **The side panel.** A panel on the right of the page, 400 px wide by
   default. The member drags its left edge between 320 px and 720 px, and the
-  width stays. The page beside it keeps working. Below 1280 px there is no
-  side panel, and the assistant opens as the full view.
+  width stays. The page beside it keeps working. Below 1280 px the panel
+  floats over the right of the page (owner, 2026-10-14). The width never
+  picks the form.
+- **Every open from closed is the side panel.** The full view opens only
+  when the member asks for it, and the next open does not start there. The
+  "Open" of a finished-run toast opens the chat in place too. A new tab or
+  a link to `/chat` opens the full view, because `/chat` is its address. A
+  stored form made one press open two different things (owner,
+  2026-10-14).
 - **The full view.** The assistant covers the page column, under the shell
   bar and beside the sidebar. The page under it stays mounted and keeps its
   state, and it takes no input until the full view closes. The session list
   is at the left, as in ChatGPT and Claude. The chat's files are at the
   right.
 - **A page the member opens makes the full view give way** (owner,
-  2026-10-13). An app picked in the sidebar would open out of sight. So on
-  a wide screen the full view becomes the side panel, and on a narrow one
-  the assistant closes. The member's own choice of form stays
-  (`onPageChange`).
+  2026-10-13). An app picked in the sidebar would open out of sight. So
+  the full view becomes the side panel, on every desktop (`onPageChange`).
 - **The full view spans the whole width.** The chat centres its text and
   its composer at a reading width, and its header and borders run edge to
   edge, as ChatGPT and Claude draw them.
@@ -1152,9 +1173,24 @@ They name the open record and the view, and they never instruct.
 
 **The confirm cards must not change.** A specialist's card must reach the
 member through the general agent's run. `_tool_injection.py` says that each
-delegate's own `request_confirmation` gate still asks a human. ⚠️ Nobody
-has checked this in a browser for a Projects write that goes through
-`orchestrator`. Slice 6c checks it, and until then it is a known risk.
+delegate's own `request_confirmation` gate still asks a human.
+
+The server half holds, and a test proves it (slice 6d, 2026-10-14).
+`tests/unit/test_delegated_confirmation_card.py` runs the real
+`orchestrator`, which calls projects-assistant, and projects-assistant calls
+its real `comment` tool. The card is an event of the parent's stream, and
+the parent's thread owns it. The executor refuses an answer for another
+thread. The member's answer opens the specialist's gate: APPROVE posts the
+comment, and REJECT posts nothing. A parent that shows no cards passes that
+on to the sub-run.
+
+⚠️ **Still unproven:**
+
+- **The browser.** Nobody has clicked Approve in the dock on a card of a
+  Projects write that goes through `orchestrator`. It needs the live stack.
+- **A Copilot SDK specialist** (`task-manager`, `app-builder`). Its native
+  `ask_user` parks through `_make_user_input_handler(<parent thread>)`, and
+  no test runs that path through `orchestrator`.
 
 ### 7.2 One bell
 
@@ -2066,7 +2102,7 @@ Done when:
 6. The server checks the grant on every scoped read. A test sends a scope the
    member does not hold and gets nothing back.
 
-### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, ON in production since 2026-10-13 (owner)
+### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, ON in production since 2026-10-13 (owner) · slice 6d (the routing eval) BUILT 2026-10-14
 
 Flag `NEXT_PUBLIC_SHELL_DOCK`. Files: a new dock in `src/lib/shell/`, the three
 rails, `AssistantToggle`, and `NotificationBell`.
@@ -2157,13 +2193,52 @@ Artifacts.
   (`executor.py`, `delegation_target`). A tenant directory is refused with
   a 422 in any case. `test_delegated_artifact_card.py` holds it.
 - **Still open:** the confirm-card check of §7.1 in a browser, through
-  `orchestrator`. It needs the live stack.
+  `orchestrator`. It needs the live stack. Slice 6d closes the server half
+  (`test_delegated_confirmation_card.py`).
 
 Fences: `src/app/artifacts/lib/chatFiles.test.ts`, `nav.test.ts` (fourteen
 live panes), `appBar.test.ts` and `e2e/app-title-bar.spec.ts`.
 
 **Slice 6d — routing.** A test set of member questions, each with the
 specialist that should answer it, run against `orchestrator` in CI.
+
+**Built in slice 6d (2026-10-14).** `evals/routing/` holds 27 member
+questions. Each one has the app of the page, the facts of the page and the
+expected specialist. The expected answer is none when `orchestrator` must
+answer itself, or when it must ask the member first. Every specialist that
+`orchestrator` holds has a case, and so does each live app that names an
+agent. Six cases are cross-app.
+
+- **The scripted run, in CI.** The catalog checks read the real registry,
+  the real orchestrator agent and the shell's own source (`nav.ts`,
+  `assistant.ts`). Then one case of each expected answer runs through the
+  real `run_agent_stream("orchestrator")` with a scripted model. The run must
+  reach the expected specialist's real factory, with the member's words.
+- **A scripted run proves the path, never the choice.** The script makes the
+  choice. `--live` measures it on a local stack, through the Router, and
+  writes `evals/routing/baseline.json`. Nobody has run it yet, so there is
+  no accuracy figure.
+- **Catalog only:** the four `task-manager` cases and the `app-builder` case.
+  Their sub-runs start the Copilot CLI, which a hermetic run cannot start.
+- **The confirm cards of §7.1.** The server half of item 4 of "Done when"
+  holds. The browser half is still open (§7.1).
+
+Fences: `tests/unit/test_routing_eval.py` (the scripted run, and a mutation
+that kills each check) and `tests/unit/test_delegated_confirmation_card.py`
+(two mutations of `_run_sub_agent_streaming`, each run red by hand). The
+`skill-eval.yml` job runs `python -m evals.routing.run --scripted`.
+
+Findings, not fixed here:
+
+- **No live pane names `whatsapp-assistant`.** My WhatsApp is live, and its
+  pane has no `agent`, so a delegation to it does not move the page.
+- **FIXED by #978: `_PULL_INSTRUCTIONS` named one customer.** No shared
+  prompt names a tenant now. Fence:
+  `tests/unit/test_no_tenant_name_in_prompts.py`.
+- **Two instructions may disagree.** `_PULL_INSTRUCTIONS` rule 2 says "Do not
+  ask the user which agent to use". `ASSISTANT_PERSONA` says to ask when
+  the record is not clear. The live run of the three `asks` cases measures
+  which one the model follows.
 
 ### NS-7 · Presets, pins and the first sign-in — AGENT-SAFE · BUILT 2026-10-10, live on merge (owner)
 

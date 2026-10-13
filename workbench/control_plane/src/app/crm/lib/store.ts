@@ -35,6 +35,7 @@ import {
   listQuery,
   queryString,
 } from "./filters";
+import type { SettingsDraft } from "./settings";
 import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
@@ -108,6 +109,13 @@ type CrmState = {
   loading: boolean;
   saving: boolean;
   error: string | null;
+  /**
+   * CRM-C1: the unsaved edits of the settings rows, by row key. A section
+   * change unmounts the rows, and this keeps the edits (`draftOf`).
+   */
+  settingsDrafts: Record<string, SettingsDraft>;
+  /** Keep a draft, or drop it with `null`. */
+  setSettingsDraft: (key: string, draft: SettingsDraft | null) => void;
   /**
    * The view the visible collection was loaded for.
    *
@@ -257,8 +265,16 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   saving: false,
   error: null,
   lastView: null,
+  settingsDrafts: {},
 
   setError: (error) => set({ error }),
+  setSettingsDraft: (key, draft) =>
+    set((state) => {
+      const next = { ...state.settingsDrafts };
+      if (draft) next[key] = draft;
+      else delete next[key];
+      return { settingsDrafts: next };
+    }),
 
   async refreshCollection() {
     const view = get().lastView;

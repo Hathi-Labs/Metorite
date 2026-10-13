@@ -46,6 +46,11 @@ export type CrmModeState = {
   mode: CrmMode;
   /** `null` when the mirror is off. */
   connection: ConnectionInfo | null;
+  /**
+   * The connection read failed, so the page opened on a guess and `mode` may
+   * be wrong (CRM-C1 review). A rewrite of the URL waits for a real answer.
+   */
+  readFailed: boolean;
   refresh: () => void;
 };
 
@@ -106,6 +111,7 @@ export function useCrmMode(isAdmin: boolean, accessLoading: boolean): CrmModeSta
     phase,
     mode: effectiveMode(connection, settingsMode),
     connection,
+    readFailed,
     refresh: conn.refresh,
   };
 }

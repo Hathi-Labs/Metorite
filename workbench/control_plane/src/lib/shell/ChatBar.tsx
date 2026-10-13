@@ -1,30 +1,31 @@
 "use client";
 
 /**
- * The chat bar: the one way into the assistant, at the foot of every page
- * (D99, `navigation_shell.md` §7.1, NS-6 slice 6b, flag
- * `NEXT_PUBLIC_SHELL_CHAT`).
+ * THE one field (D99, D102 as amended 2026-10-14): ask Metorite, search and
+ * open, from the middle of the shell bar at the top of every desktop page.
  *
- *   [ ✦ Ask Metorite…                     ]  [ Projects · Website relaunch ]  [ Ctrl J ]  [ activity ]  [ ⤢ ]
+ *   [ ✦ Ask Metorite, or search and open anything…   in Projects   ⌘K ]
  *
- * **A row of the frame, not a layer.** `AppShell` puts it under `<main>` in
- * the page column, so an app's own bottom controls sit in `<main>`, above
- * it, and the bar never covers them. The phone has no bar: its bottom nav
- * holds an Ask tab, which opens the assistant as a full-screen sheet
- * (`AppShell.tsx`, `data-ask-tab`).
+ * The owner's words, 2026-10-14: "remove the bar at the bottom and have it at
+ * the title bar … because we have space in the top bar in any case. The
+ * functionality should be as expected by the user." So the field kept every
+ * act of the chat bar, and only moved.
  *
- * **Enter sends.** The words go to the assistant, which opens and sends them
- * (`openAssistant({ text })`). The expand control opens it with nothing sent.
- * ⌘J or Ctrl J puts the cursor here (`ShellBar.tsx` holds the key).
+ * - **Typing drops the results below the field:** Do, Go to, Find and In this
+ *   page (`useBarResults`, the engine the modal reads too).
+ * - **Enter asks Metorite.** The top row of the results says so. Enter opens a
+ *   result only after the member moves the highlight onto it, with ↓ or the
+ *   mouse. ↑ from the top row returns to the field. Esc closes the results,
+ *   and a second Esc clears the field.
+ * - **Enter on an empty field opens the assistant.**
+ * - **With the assistant open, the words go into the chat on screen**
+ *   (`AssistantAsk.join`), not into a new one.
+ * - **The chip names where the member is,** the search's own app and what the
+ *   assistant sees. It is a label, not a control (owner, 2026-10-12).
  *
- * **The chip is a label, not a control** (owner, 2026-10-12: no extra UI for
- * the member). It names what the assistant sees: the app and the page's own
- * label (`useAssistantFacts`).
- *
- * **The activity control lives here** (D99, amends WS-51 S3). One run opens
- * its chat at once. More than one opens the shell's one panel.
- *
- * The bar hides while the assistant is open, which has its own composer.
+ * `AssistantWorkArea` holds the page and the assistant beside it or over it.
+ * The phone has no shell row: its bottom nav holds an Ask tab, and its Menu
+ * drawer opens the modal (`AppShell.tsx`).
  */
 
 import { usePathname } from "next/navigation";
@@ -33,13 +34,8 @@ import { useSession } from "next-auth/react";
 
 import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
-import Button from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { useActivityRows, useRunActivity } from "@/hooks/useActiveSessions";
-import { shouldPollWorkspace } from "@/lib/access";
 import { visibleSections } from "@/lib/nav";
 
-import { ActivityButton, openActivity, useActivityOpen } from "./ActivityControl";
 import { ResultList, resultOptionId, useBarResults } from "./CommandBar";
 import { heldPanes } from "./registry";
 import { useShellPrefs } from "./shellPrefs";
@@ -51,26 +47,23 @@ import {
   paneAt,
   useAssistant,
   useCurrentFacts,
-  useViewportWidth,
 } from "./assistant";
 
 /**
- * The page column with the bar under it, and the assistant beside it or over
- * it. `AppShell` passes the assistant in, loaded on demand, so this file
- * never pulls the chat into the shell's bundle.
+ * The page column and the assistant beside it or over it. `AppShell` passes
+ * the assistant in, loaded on demand, so this file never pulls the chat into
+ * the shell's bundle.
  *
  * While the full view covers the page, the page stays mounted, keeps its
  * state, and takes no input (`inert`).
  */
 export function AssistantWorkArea({ children, assistant }: { children: ReactNode; assistant: ReactNode }) {
   const st = useAssistant();
-  const vw = useViewportWidth();
-  const covered = st.open && effectiveMode(st.mode, vw, false) === "full";
+  const covered = st.open && effectiveMode(st.mode, 0, false) === "full";
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" inert={covered} data-assistant-covered={covered ? "" : undefined}>
         {children}
-        <ChatBar />
       </div>
       {assistant}
     </div>
@@ -78,13 +71,13 @@ export function AssistantWorkArea({ children, assistant }: { children: ReactNode
 }
 
 /**
- * The event that puts the cursor in the bar's field (`ShellBar.tsx` sends it).
+ * The event that puts the cursor in the field (`ShellBar.tsx` sends it).
  * `detail.query` puts words in the field. `detail.results` opens the results
- * at once, as ⌘K and "search everywhere for …" do (D100).
+ * at once, as ⌘K and "search everywhere for …" do.
  */
-export const FOCUS_CHAT_BAR = "cc-focus-chat-bar";
+export const FOCUS_ASK_FIELD = "cc-focus-ask-field";
 
-export interface FocusChatBarDetail {
+export interface FocusAskFieldDetail {
   query?: string;
   results?: boolean;
 }
@@ -103,19 +96,18 @@ export function useBarKeyLabel(): string {
   return label;
 }
 
-/** The placeholder: one field asks, searches and opens (D100). */
+/** The placeholder: one field asks, searches and opens. */
 export const BAR_PLACEHOLDER = `Ask ${ASSISTANT_NAME}, or search and open anything…`;
 
 /**
  * The highlight after an arrow key. -1 is the field itself, where Enter asks.
- * The results sit ABOVE the field, so ↑ steps up into them from the bottom
- * row, and ↓ steps back down to the field.
+ * The results drop BELOW the field, so ↓ steps down into them from the top
+ * row, and ↑ from the top row steps back up to the field.
  */
 export function moveHighlight(current: number, key: "ArrowUp" | "ArrowDown", count: number): number {
   if (count === 0) return -1;
-  if (key === "ArrowUp") return current < 0 ? count - 1 : Math.max(0, current - 1);
-  if (current < 0) return -1;
-  return current + 1 >= count ? -1 : current + 1;
+  if (key === "ArrowDown") return current < 0 ? 0 : Math.min(count - 1, current + 1);
+  return current <= 0 ? -1 : current - 1;
 }
 
 /** Where the member is, for the chip and the search's own app. */
@@ -129,46 +121,8 @@ function useHere() {
   return { here: paneAt(pathname, sections), panes: heldPanes(sections) };
 }
 
-/**
- * The activity control, as the bar draws it. One run opens its chat in the
- * assistant. More than one opens the one panel, whose rows open in the
- * assistant too (`ActivityHost`).
- */
-function BarActivity({ className = "" }: { className?: string }) {
-  const { access, loading } = useAccess();
-  const workspace = shouldPollWorkspace(access, loading);
-  const { total, needsTotal, unreadTotal } = useRunActivity(null, workspace);
-  const rows = useActivityRows(workspace);
-  const open = useActivityOpen();
-  if (!workspace) return null;
-  return (
-    <ActivityButton
-      running={total}
-      needsInput={needsTotal}
-      unread={unreadTotal}
-      open={open}
-      onOpen={() => {
-        if (rows.length === 1) openAssistant({ sessionId: rows[0].threadId });
-        else openActivity();
-      }}
-      className={className}
-    />
-  );
-}
-
-/**
- * THE one bar (D100): ask, search and open, from one field at the foot of
- * the page. It replaced the command bar's field at the top of the shell.
- *
- * - Typing shows the results above the field: Do, Go to, Find, In this page
- *   (`useBarResults`, the engine the modal reads too).
- * - **Enter asks Metorite**, unless the member moved the highlight onto a
- *   result. The bottom row of the results says so: "↵ Ask Metorite".
- * - ↑ steps into the results, ↓ steps back to the field, Esc closes them.
- * - A click in an empty field opens nothing: it is a chat box first.
- */
-export function ChatBar() {
-  const { open } = useAssistant();
+/** The one field, in the middle of the shell bar. */
+export function AskField() {
   const { here, panes } = useHere();
   const facts = useCurrentFacts();
   const chip = contextChipText(here, facts);
@@ -204,30 +158,21 @@ export function ChatBar() {
 
   useEffect(() => {
     const onFocus = (e: Event) => {
-      const detail = (e as CustomEvent<FocusChatBarDetail | undefined>).detail ?? {};
+      const detail = (e as CustomEvent<FocusAskFieldDetail | undefined>).detail ?? {};
       if (typeof detail.query === "string") setText(detail.query);
       setActiveKey(null);
       if (detail.results) setShowing(true);
       fieldRef.current?.focus();
     };
-    window.addEventListener(FOCUS_CHAT_BAR, onFocus);
-    return () => window.removeEventListener(FOCUS_CHAT_BAR, onFocus);
+    window.addEventListener(FOCUS_ASK_FIELD, onFocus);
+    return () => window.removeEventListener(FOCUS_ASK_FIELD, onFocus);
   }, []);
-
-  // While the bar shows, the toasts rise above it (`globals.css`).
-  useEffect(() => {
-    if (open) return;
-    const root = document.documentElement;
-    root.setAttribute("data-chat-bar", "desktop");
-    return () => root.removeAttribute("data-chat-bar");
-  }, [open]);
-
-  if (open) return null;
 
   const ask = () => {
     const words = text.trim();
     setShowing(false);
     setActiveKey(null);
+    fieldRef.current?.blur();
     if (!words) {
       openAssistant();
       return;
@@ -238,17 +183,20 @@ export function ChatBar() {
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-      if (!showing && e.key === "ArrowDown") return;
+      if (!showing && e.key === "ArrowUp") return;
       e.preventDefault();
       if (!showing) setShowing(true);
       const next = moveHighlight(held, e.key, rows.length);
       setActiveKey(next >= 0 ? rows[next].key : null);
     } else if (e.key === "Escape") {
+      e.preventDefault();
+      // The first Esc closes the results. The next one clears the field and
+      // gives the page its keys back.
       if (showing) {
-        e.preventDefault();
         setShowing(false);
         setActiveKey(null);
       } else {
+        setText("");
         fieldRef.current?.blur();
       }
     } else if (e.key === "Enter" && held >= 0) {
@@ -261,64 +209,23 @@ export function ChatBar() {
   const panel = showing && (words.length > 0 || rows.length > 0);
 
   return (
-    <div data-chat-bar-row="desktop" className="shrink-0 border-t border-border bg-card px-4 py-2">
-      <form
-        role="search"
-        aria-label={`Ask ${ASSISTANT_NAME}, or search`}
-        onSubmit={(e) => {
-          e.preventDefault();
-          ask();
-        }}
-        className="relative mx-auto flex w-full max-w-3xl items-center gap-2"
-      >
-        {panel ? (
-          <div
-            data-chat-bar-results=""
-            className="absolute inset-x-0 bottom-full z-30 mb-2 flex max-h-[60vh] flex-col overflow-hidden rounded-lg border border-border bg-popover shadow-lg"
-          >
-            <ResultList
-              rows={rows}
-              active={held}
-              onHover={(key) => {
-                if (key !== activeKey) setActiveKey(key);
-              }}
-              prefix="chatbar"
-              query={text}
-              finding={finding}
-              className="min-h-0 flex-1"
-            />
-            {/* The field's own act, nearest the field: Enter asks. A click
-                here asks too. It is not an option of the list, so the list
-                stays one kind of thing for a screen reader. */}
-            {words ? (
-              <button
-                type="submit"
-                onMouseDown={(e) => e.preventDefault()}
-                data-chat-bar-ask=""
-                className={`flex shrink-0 items-center gap-3 border-t border-border px-4 py-2.5 text-left text-[13px] tech-transition ${
-                  held < 0 ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-secondary"
-                }`}
-              >
-                <Icon name="Sparkles" size={16} className="shrink-0 text-primary" />
-                <span className="min-w-0 flex-1 truncate">
-                  Ask {ASSISTANT_NAME}: “{words}”
-                </span>
-                <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] text-muted-foreground">
-                  Enter
-                </kbd>
-              </button>
-            ) : null}
-            <div className="flex shrink-0 items-center gap-3 border-t border-border px-4 py-1.5 text-[11px] text-muted-foreground">
-              <span>↑ ↓ to choose</span>
-              <span>Enter to {held >= 0 ? "open" : "ask"}</span>
-              <span>Esc to close</span>
-            </div>
-          </div>
-        ) : null}
-        <Input
+    <form
+      role="search"
+      aria-label={`Ask ${ASSISTANT_NAME}, or search`}
+      data-ask-field=""
+      onSubmit={(e) => {
+        e.preventDefault();
+        ask();
+      }}
+      className="relative w-full max-w-xl shrink"
+    >
+      <div className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-3 tech-transition focus-within:border-primary/50 hover:border-primary/40">
+        <Icon name="Sparkles" size={15} className="shrink-0 text-primary" />
+        {/* A bare field inside the bar's own box: the box is the control's
+            border and focus ring, so the field draws neither (as the old
+            fake field did). */}
+        <input
           ref={fieldRef}
-          icon="Sparkles"
-          inputSize="lg"
           value={text}
           onChange={(e) => {
             setText(e.target.value);
@@ -333,37 +240,71 @@ export function ChatBar() {
           placeholder={BAR_PLACEHOLDER}
           role="combobox"
           aria-expanded={panel}
-          aria-controls="chatbar-list"
-          aria-activedescendant={held >= 0 ? resultOptionId("chatbar", rows[held].key) : undefined}
+          aria-controls="askfield-list"
+          aria-activedescendant={held >= 0 ? resultOptionId("askfield", rows[held].key) : undefined}
           aria-label={`Ask ${ASSISTANT_NAME}, or search and open anything (${keyLabel})`}
-          aria-keyshortcuts="Control+K Meta+K Control+J Meta+J"
+          aria-keyshortcuts="Control+K Meta+K"
           autoComplete="off"
-          className="min-w-0 flex-1"
+          className="h-full min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
         />
         {chip ? (
           <span
-            data-chat-bar-context=""
+            data-ask-field-context=""
             title="The assistant sees where you are"
-            className="hidden max-w-60 shrink-0 truncate rounded-md bg-secondary px-2 py-1 text-[11px] text-muted-foreground lg:inline"
+            className="hidden max-w-48 shrink-0 truncate rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground lg:inline"
           >
             {chip}
           </span>
         ) : null}
-        <kbd className="hidden shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] text-muted-foreground md:inline">
+        <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] text-muted-foreground">
           {keyLabel}
         </kbd>
-        <BarActivity className="shrink-0" />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          icon="PanelRightOpen"
-          aria-label={`Open ${ASSISTANT_NAME}`}
-          title={`Open ${ASSISTANT_NAME}`}
-          onClick={() => openAssistant()}
-          className="shrink-0"
-        />
-      </form>
-    </div>
+      </div>
+
+      {panel ? (
+        <div
+          data-ask-field-results=""
+          className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-[70vh] flex-col overflow-hidden rounded-lg border border-border bg-popover shadow-lg"
+        >
+          {/* The field's own act, nearest the field: Enter asks. A click here
+              asks too. It is not an option of the list, so the list stays one
+              kind of thing for a screen reader. */}
+          {words ? (
+            <button
+              type="submit"
+              onMouseDown={(e) => e.preventDefault()}
+              data-ask-field-ask=""
+              className={`flex shrink-0 items-center gap-3 border-b border-border px-4 py-2.5 text-left text-[13px] tech-transition ${
+                held < 0 ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-secondary"
+              }`}
+            >
+              <Icon name="Sparkles" size={16} className="shrink-0 text-primary" />
+              <span className="min-w-0 flex-1 truncate">
+                Ask {ASSISTANT_NAME}: “{words}”
+              </span>
+              <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] text-muted-foreground">
+                Enter
+              </kbd>
+            </button>
+          ) : null}
+          <ResultList
+            rows={rows}
+            active={held}
+            onHover={(key) => {
+              if (key !== activeKey) setActiveKey(key);
+            }}
+            prefix="askfield"
+            query={text}
+            finding={finding}
+            className="min-h-0 flex-1"
+          />
+          <div className="flex shrink-0 items-center gap-3 border-t border-border px-4 py-1.5 text-[11px] text-muted-foreground">
+            <span>↑ ↓ to choose</span>
+            <span>Enter to {held >= 0 ? "open" : "ask"}</span>
+            <span>Esc to close</span>
+          </div>
+        </div>
+      ) : null}
+    </form>
   );
 }

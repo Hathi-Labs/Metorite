@@ -90,3 +90,34 @@ def assert_linear(
         f"{FACTOR} calls at size {small} took {best_b * 1000:.2f} ms. The ratio "
         f"is {best_a / best_b:.1f} and the bound is {MAX_RATIO:g}"
     )
+
+
+def assert_linear_count(work: Callable[[int], int], n: int) -> None:
+    """Fail when a COUNT of work grows faster than linearly from ``n // 8`` to ``n``.
+
+    ``work(size)`` runs the code once at that size and returns how much work
+    it did, in a unit that a spy counts: the characters handed to a regex,
+    the rows read. The count reads no clock, so load cannot move it, and the
+    same input gives the same count on every run. Use this in place of
+    :func:`assert_linear` when a spy can see the work that the fence is about.
+
+    Block A is one call at size ``n``. Block B is 8 calls at size ``n / 8``.
+    Linear code counts about the same in both. A rescan of the whole input on
+    each step counts about 8 times more in block A. The bound is the same
+    :data:`MAX_RATIO` as the timed fence.
+
+    ``test_router_dsml_tool_calls.py`` failed :func:`assert_linear` at 2.1 and
+    2.2 against 2 on CI (2026-10-12 and 2026-10-13). The rescans it fences
+    are bounded. What the clock also saw is a copy of the region on each
+    character, which no rescan fence is about."""
+    small = n // FACTOR
+    assert small > 0, f"n={n} is too small to divide by {FACTOR}"
+    block_a = work(n)
+    block_b = sum(work(small) for _ in range(FACTOR))
+    assert block_b > 0, "the spy counted no work, so the fence proves nothing"
+    if block_a > MAX_RATIO * block_b:
+        raise AssertionError(
+            f"not linear: 1 call at size {n} did {block_a} units of work, and "
+            f"{FACTOR} calls at size {small} did {block_b}. The ratio is "
+            f"{block_a / block_b:.1f} and the bound is {MAX_RATIO:g}"
+        )
