@@ -217,7 +217,7 @@ describe("a missing, unknown or hidden section", () => {
     );
     expect(page).toContain("const { loading: accessLoading, stale: accessStale } = useAccess();");
     expect(page).toContain("modeReadFailed: readFailed,");
-    expect(read("../lib/useCrmMode.ts")).toMatch(/\n    readFailed,\n/);
+    expect(read("../lib/useCrmMode.ts")).toMatch(/^ {4}readFailed,\r?$/m);
     // `lib/history.test.ts` refuses router.push and router.replace in each CRM file.
   });
 });
