@@ -163,11 +163,15 @@ export default function MyDay() {
       ) : feedOn ? (
         // The feed (MD-1b): one column, about 720 px, in the order of the
         // feed's groups. From `xl`, Today is the right rail, and it stays in
-        // view while the member scrolls the column.
+        // view while the member scrolls the column. Below `xl` Today comes
+        // FIRST, so "You are caught up" ends the page (visual review). The
+        // start classes place each one at `xl`, whatever the order.
         <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
-          {cards.needs ? <FeedColumn feed={feed} now={now} className="xl:col-span-2" /> : null}
           {cards.today ? (
             <TodayCard today={today} now={now} className="xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1" />
+          ) : null}
+          {cards.needs ? (
+            <FeedColumn feed={feed} now={now} className="xl:col-span-2 xl:col-start-1 xl:row-start-1" />
           ) : null}
         </div>
       ) : (

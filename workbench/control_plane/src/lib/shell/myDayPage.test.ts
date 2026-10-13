@@ -257,6 +257,12 @@ describe("/ with the My Day feed flag", () => {
     // Today keeps the right rail from `xl`, beside the column.
     expect(html).toMatch(/data-testid="today"[^>]*class="[^"]*xl:col-start-3/);
     expect(html).toMatch(/data-testid="my-day-feed"[^>]*class="[^"]*xl:col-span-2/);
+    // Below `xl` the page is one column, and Today comes FIRST, so "You are
+    // caught up" ends the page (visual review, item 6). From `xl` the grid
+    // places each one by its start classes, whatever the order.
+    expect(html.indexOf('data-testid="today"')).toBeLessThan(html.indexOf('data-testid="my-day-feed"'));
+    expect(html).toMatch(/data-testid="my-day-feed"[^>]*class="[^"]*xl:col-start-1 xl:row-start-1/);
+    expect(html).toMatch(/data-testid="today"[^>]*class="[^"]*xl:row-start-1/);
     // A true miss is a skeleton, never "Loading…".
     expect(html).toContain('aria-busy="true"');
     expect(html).not.toMatch(/Loading…/);

@@ -63,6 +63,7 @@ vi.mock("@/app/tasks/lib/completeFromHome", () => ({
 
 import { PROJECTS_CACHE } from "@/app/projects/lib/api";
 import { cacheKey, clearAll, invalidate, peek, read } from "@/lib/dataCache";
+import { fmtClock } from "@/app/tasks/lib/utils";
 import { applyData, applyError, initialState } from "@/lib/useCachedResource";
 
 import {
@@ -75,6 +76,7 @@ import {
   actLeavesCard,
   actRows,
   cardHidden,
+  cardTime,
   coversNeeds,
   drawnActs,
   feedAppIcon,
@@ -209,6 +211,25 @@ describe("1. the answer of §14.1a", () => {
     expect(answer.cards.map((c) => c.signal_id)).toEqual(["tasks:9b2e"]);
     expect(answer.groups.map((g) => g.id)).toEqual(["needs_you"]);
     expect(answer.needs).toBeNull();
+  });
+
+  it("shows a clock time or a day at the right, never a duration (visual review, item 4)", () => {
+    // The why line already says "Due in 1 h 5 min.", so the right-hand time
+    // says WHEN, through the clock Today draws (`fmtClock`): "17:00",
+    // "Yesterday", "Mon". Local times, so the test holds in any zone.
+    const now = new Date(2026, 9, 14, 12, 0).getTime();
+    const at = (d: Date) => ({ kind: "overdue", at: d.toISOString() });
+    const today = new Date(2026, 9, 14, 17, 0);
+    expect(cardTime(at(today), now)).toBe(fmtClock(today));
+    expect(cardTime({ kind: "due_today", at: today.toISOString() }, now)).toBe(fmtClock(today));
+    expect(cardTime(at(new Date(2026, 9, 13, 9, 0)), now)).toBe("Yesterday");
+    expect(cardTime(at(new Date(2026, 9, 15, 9, 0)), now)).toBe("Tomorrow");
+    const monday = new Date(2026, 9, 12, 9, 0);
+    expect(cardTime(at(monday), now)).toBe(monday.toLocaleDateString(undefined, { weekday: "short" }));
+    const far = new Date(2026, 8, 30, 9, 0);
+    expect(cardTime(at(far), now)).toBe(far.toLocaleDateString(undefined, { day: "numeric", month: "short" }));
+    expect(cardTime({ kind: "overdue", at: null }, now)).toBe("");
+    for (const d of [today, monday, far]) expect(cardTime(at(d), now)).not.toMatch(/ago|^in |Due/);
   });
 
   it("names Calendar, which the needs view does not know", () => {

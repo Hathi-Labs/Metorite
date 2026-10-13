@@ -21,9 +21,9 @@
  * Fence: `feed.test.ts`.
  */
 import { PROJECTS_CACHE } from "@/app/projects/lib/api";
+import { fmtClock } from "@/app/tasks/lib/utils";
 import { cacheKey, guardedPut } from "@/lib/dataCache";
 import { NAV_SECTIONS } from "@/lib/nav";
-import { relativeTime } from "@/lib/taskCard";
 
 import { APP_NAMES, appIcon, failedLines } from "./myDay";
 import {
@@ -466,11 +466,27 @@ export function sourceLine(card: Pick<FeedCard, "app" | "kind">): string {
   return state ? `${app} · ${state}` : app;
 }
 
-/** The time at the right of the source line. A due card says when it is due. */
+/**
+ * The time at the right of the source line: WHEN, never how long. The why
+ * line already says "Due in 1 h 5 min.", so a duration here only repeats it
+ * in a second format (MD-1b visual review).
+ *
+ * The member's own day gives the clock, through `fmtClock`, the one clock
+ * that Today draws. Yesterday and tomorrow give the word. Six days either
+ * side give the short weekday, such as "Mon", and older gives "12 Oct".
+ */
 export function cardTime(card: Pick<FeedCard, "kind" | "at">, nowMs: number): string {
-  const rel = relativeTime(card.at, nowMs);
-  if (!rel) return "";
-  return card.kind === "overdue" || card.kind === "due_today" ? `Due ${rel}` : rel;
+  if (!card.at) return "";
+  const at = new Date(card.at);
+  if (Number.isNaN(at.getTime())) return "";
+  const now = new Date(nowMs);
+  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(at) - day(now)) / 86_400_000);
+  if (days === 0) return fmtClock(at);
+  if (days === -1) return "Yesterday";
+  if (days === 1) return "Tomorrow";
+  if (Math.abs(days) <= 6) return at.toLocaleDateString(undefined, { weekday: "short" });
+  return at.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
 /** One muted line per source that failed, Calendar included. */
