@@ -84,7 +84,7 @@ The anchors below were read again on 2026-10-11, at commit `0bd098f18`, for the 
 | Project and task visibility | `Visibility`, `resolve_visibility`, `resolve_visibility_for`, `load_visible_project`, `load_visible_task`, `task_visibility_clause` | `gateway/routes/projects/core.py:1190`, `:1264`, `:1313`, `:1405`, `:1426`, `:1644` |
 | A tool allowlist with a coverage fence | the `skill_projects` manifest, classes A, B, C and X | `apps/skills/skill-projects/skill_projects/manifest.py`, `tests/unit/test_projects_chat_coverage.py` |
 | MCP tool hints | `read_only`, `destructive`, `idempotent`, `open_world` | `packages/acb_skills/acb_skills/tool_annotations.py`. The edge tools do **not** go into its `TOOL_ANNOTATIONS`. They carry their own annotations (§9.5) |
-| Provenance stamp | `X-Actor-Via`, stored in `pm_activities.meta.via` | `gateway/routes/projects/core.py:75-98`. `acb_auth/agent_oauth.py:281` defines `ACTOR_VIA_PATTERN`, and `core.py:47` imports it |
+| Provenance stamp | `X-Actor-Via`, stored in `pm_activities.meta.via` | `gateway/routes/projects/core.py:75-98`. `acb_auth/agent_oauth.py:388` defines `ACTOR_VIA_PATTERN`, and `core.py:47` imports it |
 | Audit write | `acb_audit.record` | `packages/acb_audit/acb_audit/log.py` |
 | Optimistic concurrency | `If-Match` on `PATCH /projects/tasks/{id}` | `gateway/routes/projects/tasks.py:483`. The token is `updated_at` (`core.py:1809-1852`) |
 | The public routes of the gateway | `PUBLIC_ROUTES` | `gateway/main.py:644` |
@@ -658,7 +658,7 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 
 **`actor_via_for`.** EA-3a adds it to `agent_oauth.py`. It returns `mcp:` plus the lower-case ASCII host of the origin, with no scheme and no port. When that value does not match `ACTOR_VIA_PATTERN`, it returns `mcp:` plus the first 16 hex characters of the SHA-256 of the origin. An empty `client_origin` fails step 5.
 
-**One copy of the pattern.** `acb_auth` may not import the gateway. So `ACTOR_VIA_PATTERN` moves to `agent_oauth.py:281`, and `core.py:47` imports it from there. One copy stays.
+**One copy of the pattern.** `acb_auth` may not import the gateway. So `ACTOR_VIA_PATTERN` moves to `agent_oauth.py:388`, and `core.py:47` imports it from there. One copy stays.
 
 **Never a fall-through.** Branch 0 never falls through to branch 1a, 1b or 2. These all fail with 401:
 
@@ -711,7 +711,7 @@ The token lookup happens **before** the tenant is known. A row-level-security ta
 
 ### 10.4 A loopback redirect on any port (EA3-23, slice EA-2c)
 
-**The problem.** The orchestrator fetched the Claude Code metadata document on 2026-10-13, at `https://claude.ai/oauth/claude-code-client-metadata`. Its `redirect_uris` are `http://localhost/callback` and `http://127.0.0.1/callback`, with NO port. The client really sends `http://localhost:<random port>/callback`. The authorize check of EA-2a matches the redirect URI exactly, as a string (`gateway/routes/agent_access.py:347`). So today it refuses Claude Code.
+**The problem.** The orchestrator fetched the Claude Code metadata document on 2026-10-13, at `https://claude.ai/oauth/claude-code-client-metadata`. Its `redirect_uris` are `http://localhost/callback` and `http://127.0.0.1/callback`, with NO port. The client really sends `http://localhost:<random port>/callback`. Before EA-2c, the authorize check of EA-2a matched the redirect URI exactly, as a string, so it refused Claude Code. EA-2c replaces that test with `agent_oauth.redirect_uri_matches` (`gateway/routes/agent_access.py:349`).
 
 **The rule.** RFC 8252 §7.3 says that a server must allow any port on a loopback redirect. The authorize check accepts a requested URI against a registered URI when ALL of these hold:
 
@@ -720,7 +720,7 @@ The token lookup happens **before** the tenant is known. A row-level-security ta
 3. The requested URI has a port from 1 to 65535. The match compares RAW strings: the requested `netloc` must equal the registered `netloc`, a colon, and `str(port)`. So the host keeps its case and its form, and a port has no leading zero. It has no user name and no password. The exact string match runs first, so a request with no port against a registration with no port still passes.
 4. The query of the two URIs is identical, as a string. The requested URI has no fragment.
 
-Every other registered URI keeps the exact string match. An `https` loopback URI keeps the exact match too. `agent_oauth.is_allowed_redirect_uri` (`agent_oauth.py:238`) still runs on the requested URI.
+Every other registered URI keeps the exact string match. An `https` loopback URI keeps the exact match too. `agent_oauth.is_allowed_redirect_uri` (`agent_oauth.py:239`) still runs on the requested URI.
 
 **The code binds the exact URI.** `mint_code` stores the redirect URI that the request used, with its port. The code spend matches that string exactly (`agent_tokens.py:293`). So the token request must present the same string, port included. The rule widens the authorize check only.
 
