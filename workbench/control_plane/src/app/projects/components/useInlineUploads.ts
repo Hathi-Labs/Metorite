@@ -30,12 +30,13 @@ import { useToast } from "@/components/ui/Toast";
 
 import { attachmentsApi } from "../lib/api";
 import {
+  holdsPending,
   imageMarkdown,
   insertAtCaret,
   onOwnLine,
   partitionFiles,
   pastePlan,
-  replaceFirst,
+  settleUpload,
   uploadPlaceholder,
 } from "../lib/inlineUploads";
 
@@ -62,10 +63,24 @@ function carriesFiles(e: DragEvent): boolean {
   return Array.from(e.dataTransfer?.types ?? []).includes("Files");
 }
 
+/** One upload in flight. `token` is its placeholder, when it has one. */
+interface Pending {
+  id: number;
+  name: string;
+  token: string | null;
+}
+
+/** The number in the next placeholder. Module-wide, so two bodies never
+ *  hand out the same token. */
+let nextUpload = 0;
+
 export function useInlineUploads({ taskId, onUploaded }: Options) {
   const toast = useToast();
-  //: The names going up now, for the Files list's "uploading" rows.
-  const [pending, setPending] = useState<string[]>([]);
+  //: Every upload in flight, for the Files list and the save guard.
+  const [pending, setPending] = useState<Pending[]>([]);
+  //: The placeholders still waited on, as of now. A late callback reads
+  //: this, because the state it closed over is stale.
+  const tokensNow = useRef(new Set<string>());
   const chain = useRef<Promise<void>>(Promise.resolve());
   const currentTask = useRef(taskId);
   const uploaded = useRef(onUploaded);
@@ -85,19 +100,23 @@ export function useInlineUploads({ taskId, onUploaded }: Options) {
         ? partitionFiles(files)
         : { images: [] as File[], others: files };
 
+      // One entry per file. An image going into a field gets its OWN token,
+      // so two uploads of one name never trade places.
+      const entries: (Pending & { file: File })[] = [...images, ...others].map((file) => {
+        const id = ++nextUpload;
+        const token = target && images.includes(file) ? uploadPlaceholder(file.name, id) : null;
+        return { id, name: file.name, token, file };
+      });
+      const tokens = entries.flatMap((e) => (e.token ? [e.token] : []));
+
       // The placeholders go in NOW, at the caret, so the member sees where
       // each image will land while it uploads.
-      if (target && images.length) {
+      if (target && tokens.length) {
         const box = target.box();
         const text = target.read();
         const start = box ? box.selectionStart : text.length;
         const end = box ? box.selectionEnd : text.length;
-        const insertion = onOwnLine(
-          text,
-          start,
-          end,
-          images.map((f) => uploadPlaceholder(f.name)).join("\n"),
-        );
+        const insertion = onOwnLine(text, start, end, tokens.join("\n"));
         const next = insertAtCaret(text, start, end, insertion);
         target.write(next.value);
         requestAnimationFrame(() => {
@@ -106,38 +125,34 @@ export function useInlineUploads({ taskId, onUploaded }: Options) {
         });
       }
 
-      const names = files.map((f) => f.name);
-      setPending((now) => [...now, ...names]);
+      for (const token of tokens) tokensNow.current.add(token);
+      setPending((now) => [...now, ...entries.map(({ id, name, token }) => ({ id, name, token }))]);
 
       const run = async () => {
         let changed = false;
-        for (const file of [...images, ...others]) {
-          const inline = images.includes(file);
-          const token = uploadPlaceholder(file.name);
+        for (const entry of entries) {
+          const { file, token } = entry;
+          const swap = (markdown: string | null) => {
+            if (!target || !token || currentTask.current !== forTask) return;
+            const next = settleUpload(target.read(), token, markdown);
+            tokensNow.current.delete(token);
+            target.write(next);
+            target.settled?.(next);
+          };
           try {
             const row = await attachmentsApi.upload(forTask, file);
             changed = true;
-            if (target && inline && currentTask.current === forTask) {
-              const next = replaceFirst(target.read(), token, imageMarkdown(file.name, row));
-              target.write(next);
-              target.settled?.(next);
-            }
+            swap(imageMarkdown(file.name, row));
           } catch (err) {
-            if (target && inline && currentTask.current === forTask) {
-              const next = replaceFirst(target.read(), token, "");
-              target.write(next);
-              target.settled?.(next);
-            }
+            swap(null);
             toast.show({
               variant: "error",
               title: `Couldn't attach ${file.name}`,
               description: String((err as Error)?.message ?? err),
             });
           } finally {
-            setPending((now) => {
-              const at = now.indexOf(file.name);
-              return at < 0 ? now : [...now.slice(0, at), ...now.slice(at + 1)];
-            });
+            if (token) tokensNow.current.delete(token);
+            setPending((now) => now.filter((p) => p.id !== entry.id));
           }
         }
         if (changed && currentTask.current === forTask) uploaded.current();
@@ -182,5 +197,17 @@ export function useInlineUploads({ taskId, onUploaded }: Options) {
     [attach],
   );
 
-  return { pending, pasteInto, allowDrop, dropInto };
+  const pendingTokens = pending.flatMap((p) => (p.token ? [p.token] : []));
+
+  return {
+    /** The names going up now, for the Files list's "uploading" rows. */
+    pending: pending.map((p) => p.name),
+    /** For a render: does the text hold a placeholder this client waits on? */
+    waiting: (text: string) => holdsPending(text, pendingTokens),
+    /** The same answer, as of now. For a handler or a late callback. */
+    waitingNow: (text: string) => holdsPending(text, tokensNow.current),
+    pasteInto,
+    allowDrop,
+    dropInto,
+  };
 }

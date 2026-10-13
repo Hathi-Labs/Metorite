@@ -9,7 +9,8 @@
  * 1. A paste or a drop brings files. `pastePlan` decides whether the browser
  *    keeps the paste (text) or the files win.
  * 2. Each image that `previewKind` calls an image gets a placeholder at the
- *    caret, `![Uploading name…]()`, and goes up through the attachment route.
+ *    caret, `![Uploading name… (n)]()`, and goes up through the attachment
+ *    route. `n` keeps two uploads of one name apart.
  * 3. When the upload ends, `replaceFirst` swaps the placeholder for
  *    `![name](<served url>)`. A failure removes the placeholder.
  * 4. Any other file uploads as an attachment and inserts nothing.
@@ -75,17 +76,50 @@ export function altText(name: string): string {
   return clean || "image";
 }
 
-/** The text the field holds while one image uploads. */
-export function uploadPlaceholder(name: string): string {
-  return `![Uploading ${altText(name)}…]()`;
+/**
+ * The text the field holds while ONE upload runs: `![Uploading name… (n)]()`.
+ *
+ * ⚠️ `n` makes each placeholder unique. Chrome names every pasted screenshot
+ * `image.png`, so two pastes without it hold the same string, and the first
+ * upload to end would take the place of the other.
+ */
+export function uploadPlaceholder(name: string, seq: number): string {
+  return `![Uploading ${altText(name)}… (${seq})]()`;
 }
 
-/** Any upload placeholder, wherever it sits in the text. */
-const ANY_PLACEHOLDER = /!\[Uploading ([^\]\n]*)…\]\(\)/g;
+/** An upload placeholder, wherever it sits in the text. For the view only. */
+const ANY_PLACEHOLDER = /!\[Uploading ([^\]\n]*)…(?: \(\d+\))?\]\(\)/g;
 
-/** True while the text still holds an upload placeholder. */
-export function hasUploadPlaceholder(text: string): boolean {
-  return new RegExp(ANY_PLACEHOLDER.source).test(text);
+/**
+ * True when the text holds one of `tokens`, the placeholders THIS client
+ * still waits on. A string that only looks like a placeholder (an agent can
+ * write one) never blocks a save.
+ */
+export function holdsPending(text: string, tokens: Iterable<string>): boolean {
+  for (const token of tokens) if (text.includes(token)) return true;
+  return false;
+}
+
+/**
+ * The text after one upload ends. `markdown` is the image, or `null` for a
+ * failure, which removes the placeholder and the line break `onOwnLine` put
+ * after it. Only `token` changes, so a same-name upload stays where it is.
+ */
+export function settleUpload(text: string, token: string, markdown: string | null): string {
+  if (markdown !== null) return replaceFirst(text, token, markdown);
+  return text.includes(`${token}\n`)
+    ? replaceFirst(text, `${token}\n`, "")
+    : replaceFirst(text, token, "");
+}
+
+/**
+ * Text for a one-line excerpt: each image becomes `[alt]`, or `[image]` when
+ * it has no alt text, so raw Markdown never shows in "Replying to …".
+ */
+export function withoutImages(text: string): string {
+  return text.replace(/!\[([^\]\n]*)\]\([^)\n]*\)/g, (_m, alt: string) =>
+    alt.trim() ? `[${alt.trim()}]` : "[image]",
+  );
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

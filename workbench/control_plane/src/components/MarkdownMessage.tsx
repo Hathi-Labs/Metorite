@@ -328,6 +328,12 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 // unwrapped to its text, and an image is dropped, so a field can never load a
 // remote file or draw a block. The link rules are the ones above, and HTML
 // stays text, because this renderer has no `rehype-raw`.
+//
+// `plainEmails` (WS-57 TR-4) draws a `mailto:` link as its text. The task
+// card's description and comments use it, so an @mention such as
+// `@asha@example.com` stays the plain text it was before they drew Markdown.
+// The chat never passes it. A backslash before the `@` does not stop GFM's
+// email autolink, so the link is unwrapped here instead.
 
 /** The elements an `inline` body keeps. Exported for its test. */
 export const INLINE_ELEMENTS = ["p", "strong", "em", "del", "code", "a", "span", "br"];
@@ -342,6 +348,7 @@ export function MarkdownBody({
   fences = false,
   inline = false,
   caret = false,
+  plainEmails = false,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -354,6 +361,8 @@ export function MarkdownBody({
   /** Draw the streaming caret at the end of the last line of words
    *  (`lib/streamCaret.ts`). Never after the body: that is a line of its own. */
   caret?: boolean;
+  /** Draw a `mailto:` link as plain text. Off everywhere but the task card. */
+  plainEmails?: boolean;
 }) {
   // DeepSeek's DSML tool-call text never shows (owner report, 2026-10-11).
   // The Router turns it into real tool calls. This catches a message stored
@@ -446,7 +455,12 @@ export function MarkdownBody({
         ),
 
         // ── Links ──
-        a: ({ href, children }) => <MarkdownLink href={href}>{children}</MarkdownLink>,
+        a: ({ href, children }) =>
+          plainEmails && typeof href === "string" && /^mailto:/i.test(href) ? (
+            <>{children}</>
+          ) : (
+            <MarkdownLink href={href}>{children}</MarkdownLink>
+          ),
 
         // ── Blockquote ──
         blockquote: ({ children }) => (

@@ -16,7 +16,7 @@ import {
   altText,
   attachmentImageUrl,
   forView,
-  hasUploadPlaceholder,
+  holdsPending,
   imageMarkdown,
   insertAtCaret,
   isInlineImage,
@@ -25,7 +25,9 @@ import {
   partitionFiles,
   pastePlan,
   replaceFirst,
+  settleUpload,
   uploadPlaceholder,
+  withoutImages,
 } from "./inlineUploads";
 
 const APP = "https://app.metorite.com";
@@ -72,23 +74,38 @@ describe("pastePlan", () => {
 });
 
 describe("the placeholder", () => {
-  it("reads as the spec writes it", () => {
-    expect(uploadPlaceholder("image.png")).toBe("![Uploading image.png…]()");
+  it("reads as the spec writes it, with the number of its upload", () => {
+    expect(uploadPlaceholder("image.png", 1)).toBe("![Uploading image.png… (1)]()");
   });
 
   it("keeps a name from breaking the Markdown", () => {
     expect(altText("a [b] c\\d\ne.png")).toBe("a b cde.png");
     expect(altText("[]")).toBe("image");
-    expect(uploadPlaceholder("[x].png")).toBe("![Uploading x.png…]()");
+    expect(uploadPlaceholder("[x].png", 2)).toBe("![Uploading x.png… (2)]()");
   });
 
-  it("is found while it is in the text, and not after", () => {
-    const text = `before ${uploadPlaceholder("image.png")} after`;
-    expect(hasUploadPlaceholder(text)).toBe(true);
-    expect(hasUploadPlaceholder("![image.png](/x.png)")).toBe(false);
-    expect(hasUploadPlaceholder("plain")).toBe(false);
-    // The check holds no state between calls.
-    expect(hasUploadPlaceholder(text)).toBe(true);
+  it("is unique for two uploads of one name", () => {
+    expect(uploadPlaceholder("image.png", 1)).not.toBe(uploadPlaceholder("image.png", 2));
+  });
+});
+
+describe("holdsPending (the save guard)", () => {
+  const mine = uploadPlaceholder("image.png", 7);
+
+  it("is true while the text holds a placeholder this client waits on", () => {
+    expect(holdsPending(`before ${mine} after`, [mine])).toBe(true);
+    expect(holdsPending(`before ${mine} after`, new Set([mine]))).toBe(true);
+  });
+
+  it("is false once the upload ended, whatever the text holds", () => {
+    expect(holdsPending(`before ${mine} after`, [])).toBe(false);
+  });
+
+  it("never blocks a save for text that only looks like a placeholder", () => {
+    // An agent, or a member, can write this string. It is not ours.
+    const written = "Notes ![Uploading x…]() and ![Uploading image.png… (3)]()";
+    expect(holdsPending(written, [mine])).toBe(false);
+    expect(holdsPending(written, [])).toBe(false);
   });
 });
 
@@ -108,7 +125,7 @@ describe("insertAtCaret", () => {
 });
 
 describe("onOwnLine", () => {
-  const P = uploadPlaceholder("image.png");
+  const P = uploadPlaceholder("image.png", 1);
 
   it("adds nothing in an empty field or on an empty line", () => {
     expect(onOwnLine("", 0, 0, P)).toBe(P);
@@ -126,27 +143,88 @@ describe("onOwnLine", () => {
   });
 });
 
-describe("replaceFirst", () => {
-  it("swaps the first placeholder only, so several images keep their order", () => {
-    const one = uploadPlaceholder("image.png");
-    const text = `${one}\n${one}`;
-    const first = replaceFirst(text, one, "![a](/1)");
-    expect(first).toBe(`![a](/1)\n${one}`);
-    expect(replaceFirst(first, one, "![b](/2)")).toBe("![a](/1)\n![b](/2)");
+describe("two uploads of one name (review finding P2)", () => {
+  /** Paste one image at `at`, the way the hook does. */
+  const paste = (text: string, at: number, token: string) =>
+    insertAtCaret(text, at, at, onOwnLine(text, at, at, token)).value;
+
+  // Chrome names every pasted screenshot `image.png`.
+  const first = uploadPlaceholder("image.png", 1);
+  const second = uploadPlaceholder("image.png", 2);
+  const md1 = "![image.png](/api/projects/attachments/a/1.png)";
+  const md2 = "![image.png](/api/projects/attachments/b/2.png)";
+
+  // The first goes at the end, the second ABOVE it, at the top.
+  let text = paste("Intro\nOutro", "Intro\nOutro".length, first);
+  text = paste(text, 0, second);
+
+  it("puts the second placeholder above the first", () => {
+    expect(text).toBe(`${second}\nIntro\nOutro\n${first}`);
   });
 
+  it("lands each image in its own place when they end out of order", () => {
+    // The first upload ends first, though its placeholder is the LOWER one.
+    const afterFirst = settleUpload(text, first, md1);
+    expect(afterFirst).toBe(`${second}\nIntro\nOutro\n${md1}`);
+    expect(settleUpload(afterFirst, second, md2)).toBe(`${md2}\nIntro\nOutro\n${md1}`);
+    // And the other way round.
+    const afterSecond = settleUpload(text, second, md2);
+    expect(settleUpload(afterSecond, first, md1)).toBe(`${md2}\nIntro\nOutro\n${md1}`);
+  });
+
+  it("removes only its own placeholder when one upload fails", () => {
+    const failed = settleUpload(text, second, null);
+    expect(failed).toBe(`Intro\nOutro\n${first}`);
+    expect(settleUpload(failed, first, md1)).toBe(`Intro\nOutro\n${md1}`);
+    expect(settleUpload(text, first, null)).toBe(`${second}\nIntro\nOutro\n`);
+  });
+});
+
+describe("replaceFirst", () => {
   it("removes a placeholder when the replacement is empty", () => {
-    expect(replaceFirst(`a ${uploadPlaceholder("x.png")} b`, uploadPlaceholder("x.png"), "")).toBe(
-      "a  b",
-    );
+    const P = uploadPlaceholder("x.png", 1);
+    expect(replaceFirst(`a ${P} b`, P, "")).toBe("a  b");
   });
 
   it("leaves the text alone when the member deleted the placeholder", () => {
-    expect(replaceFirst("typed over", uploadPlaceholder("x.png"), "![x](/1)")).toBe("typed over");
+    expect(replaceFirst("typed over", uploadPlaceholder("x.png", 1), "![x](/1)")).toBe("typed over");
+    expect(settleUpload("typed over", uploadPlaceholder("x.png", 1), null)).toBe("typed over");
   });
 
   it("pastes a $ in the replacement as it is", () => {
     expect(replaceFirst("a T b", "T", "$`$&$'")).toBe("a $`$&$' b");
+  });
+});
+
+describe("withoutImages (the reply excerpt)", () => {
+  it("shows an image as its alt text, or as [image]", () => {
+    expect(withoutImages("Look ![screen](/api/x/1.png) here")).toBe("Look [screen] here");
+    expect(withoutImages("![](/api/x/1.png)")).toBe("[image]");
+  });
+
+  it("leaves a link and plain text alone", () => {
+    expect(withoutImages("see [spec](https://example.com)")).toBe("see [spec](https://example.com)");
+  });
+});
+
+describe("mentions stay plain text on the task card (review finding P2)", () => {
+  const render = (content: string, plainEmails: boolean) =>
+    renderToStaticMarkup(createElement(MarkdownBody, { content, plainEmails }));
+
+  it("draws an @mention and a bare email as text, with no mailto link", () => {
+    const html = render("Thanks @asha@example.com, ask bob@example.com", true);
+    expect(html).not.toContain("mailto:");
+    expect(html).not.toContain("<a");
+    expect(html).toContain("@asha@example.com");
+    expect(html).toContain("bob@example.com");
+  });
+
+  it("keeps a web link a link", () => {
+    expect(render("see [spec](https://example.com/spec)", true)).toContain('href="https://example.com/spec"');
+  });
+
+  it("leaves the chat's rendering as it was: an email is a mailto link there", () => {
+    expect(render("ask bob@example.com", false)).toContain('href="mailto:bob@example.com"');
   });
 });
 
@@ -193,7 +271,7 @@ describe("the rendered view", () => {
   });
 
   it("draws a placeholder as words, never as a broken image", () => {
-    const view = forView(`a ${uploadPlaceholder("image.png")} b`);
+    const view = forView(`a ${uploadPlaceholder("image.png", 4)} b`);
     expect(view).toBe("a *Uploading image.png…* b");
     expect(render(view)).not.toContain("<img");
   });

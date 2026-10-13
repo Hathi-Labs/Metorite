@@ -75,7 +75,7 @@ import {
   writeFolded,
 } from "../lib/sectionFold";
 import { previewKind, readableSize } from "../lib/preview";
-import { forView, hasUploadPlaceholder, keepLineBreaks } from "../lib/inlineUploads";
+import { forView, keepLineBreaks, withoutImages } from "../lib/inlineUploads";
 import { type TextTarget, useInlineUploads } from "./useInlineUploads";
 import { isAutomated } from "../lib/lifecycle";
 import { labelWith } from "../lib/grouping";
@@ -235,7 +235,7 @@ export function FieldCell({
 
 /** The first few words of a comment, for the "Replying to …" line. */
 function excerpt(body: string, max = 60): string {
-  const flat = body.replace(/\s+/g, " ").trim();
+  const flat = withoutImages(body).replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
@@ -276,7 +276,10 @@ function Entry({
           stays plain text. The byline above is the same for both. */}
       {activity.type === "comment" ? (
         <div className="min-w-0 break-words text-foreground">
-          <MarkdownBody content={keepLineBreaks(describeActivity(activity, fields))} />
+          <MarkdownBody
+            content={keepLineBreaks(describeActivity(activity, fields))}
+            plainEmails
+          />
         </div>
       ) : (
         <p className="whitespace-pre-wrap text-foreground">
@@ -505,12 +508,14 @@ export function TaskBody({
   }
 
   /**
-   * Save the draft when it changed. TR-4: never while an image placeholder is
-   * still in it, or the stored text would hold `![Uploading …]()`. The
-   * upload saves the text when it ends (`descriptionTarget.settled`).
+   * Save the draft when it changed. TR-4: never while a placeholder of an
+   * upload THIS body waits on is in it, or the stored text would hold
+   * `![Uploading …]()`. The upload saves the text when it ends
+   * (`descriptionTarget.settled`). Text that only looks like a placeholder
+   * saves as usual.
    */
   function saveDescription(text: string = descriptionText.current) {
-    if (hasUploadPlaceholder(text)) return;
+    if (inline.waitingNow(text)) return;
     const next = text.trim();
     if (next === (task.description ?? "").trim()) return;
     void patch({ description: next || null });
@@ -1046,7 +1051,7 @@ export function TaskBody({
                     if (clickEdits(e)) editDescription(true);
                   }}
                 >
-                  <MarkdownBody content={keepLineBreaks(forView(description))} />
+                  <MarkdownBody content={keepLineBreaks(forView(description))} plainEmails />
                 </div>
                 <Button
                   className="shrink-0"
@@ -1434,7 +1439,7 @@ export function TaskBody({
           icon={replyTo ? "CornerDownRight" : "MessageSquare"}
           onClick={addComment}
           // TR-4: not while an image in the text is still going up.
-          disabled={busy || !comment.trim() || hasUploadPlaceholder(comment)}
+          disabled={busy || !comment.trim() || inline.waiting(comment)}
         >
           {replyTo ? "Reply" : "Comment"}
         </Button>
