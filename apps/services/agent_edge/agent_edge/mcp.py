@@ -56,7 +56,11 @@ LEGACY_VERSION = "2025-03-26"
 #: The answer of ``initialize`` when the client asks for another revision.
 LATEST_VERSION = "2025-11-25"
 
-#: The biggest body the edge parses. It reads at most one byte more.
+#: The biggest body the edge parses. A declared ``Content-Length`` over it is
+#: refused before any read. Otherwise the edge reads the stream until the
+#: total passes the cap, so it holds at most one ASGI chunk more than the cap.
+#: This is the cap of ``/mcp`` only. ``token`` and ``revoke`` use
+#: ``agent_oauth_max_body_bytes``.
 MAX_BODY_BYTES = 1024 * 1024
 
 #: The ``Retry-After`` of a missing signing key (EA3-18).
@@ -202,7 +206,10 @@ async def endpoint(request: Request) -> Response:
         return http_error(413, INVALID_REQUEST, "The body is too large.")
     try:
         message = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: a body of deeply nested arrays passes the size cap
+        # and overflows the parser. It is a body that is not JSON we can read,
+        # so it is the same 400, never a 500 (fix round 1).
         return http_error(400, PARSE_ERROR, "Parse error")
     kind = _kind(message)
     if kind is None:

@@ -1016,6 +1016,80 @@ class TestTheGatewayAnswers:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Fix round 1: the order fence gap, and four inputs that gave a 500
+# ═══════════════════════════════════════════════════════════════════════════
+
+_UUID_NL = _uuid(1) + "\n"
+
+
+class TestFixRoundOne:
+
+    async def test_a_foreign_origin_with_an_oversized_body_is_403_not_413(self, armed):
+        """Verifier F1 (R7). Check 4 (``Origin``) comes before check 5 (the
+        body). A body over the cap with a foreign origin must get the 403, so
+        moving the origin check below the read turns this red."""
+        raw = b"[" + b" " * mcp.MAX_BODY_BYTES + b"]"
+        r = await _post(None, token=None, headers={"origin": "https://evil.example"},
+                        raw=raw)
+        _assert_error_body(r, 403, -32600)
+        assert armed.store.calls == 0
+
+    async def test_a_deeply_nested_body_is_a_parse_error_not_a_500(self, armed):
+        """Reviewer P2. 300000 brackets fit under the cap and overflow the
+        parser's recursion limit."""
+        raw = b"[" * 300000 + b"]" * 300000
+        assert len(raw) <= mcp.MAX_BODY_BYTES
+        r = await _post(None, raw=raw)
+        _assert_error_body(r, 400, -32700)
+        assert armed.store.calls == 0
+
+    @pytest.mark.parametrize("tool,args,name", [
+        ("search_tasks", {"query": "\ud800abc"}, "query"),
+        ("list_tasks", {"text": "\ud800abc"}, "text"),
+        ("list_tasks", {"tag": "\ud800abc"}, "tag"),
+        ("list_tasks", {"assignee": "\ud800abc"}, "assignee"),
+    ])
+    async def test_a_lone_surrogate_is_an_input_error_that_names_it(
+            self, armed, tool, args, name):
+        """Reviewer P2. A lone surrogate is valid JSON, and urlencode cannot
+        encode it. The tool refuses it before any gateway request."""
+        r = await _post(_call(tool, args))
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert result["isError"] is True
+        assert repr(name) in result["content"][0]["text"]
+        assert not armed.gateway.requests
+
+    async def test_a_value_the_client_cannot_encode_never_escapes_as_a_500(self, armed):
+        """Reviewer P2, the second guard: the client maps it to busy."""
+        with pytest.raises(gateway_client.GatewayUnreachable):
+            await gateway_client.get(KEY, _lookup(), "/projects/search",
+                                     query=[("q", "\ud800abc")])
+        assert not armed.gateway.requests
+
+    async def test_a_signing_failure_is_busy_and_the_log_holds_no_value(
+            self, armed, monkeypatch, capsys):
+        def boom(*_a, **_k):
+            raise RuntimeError("SECRET-ARGUMENT-VALUE")
+
+        monkeypatch.setattr(gateway_client.agent_signing, "signed_headers", boom)
+        result = await _tool("search_tasks", {"query": "SECRET-ARGUMENT-VALUE"})
+        assert result == {"content": [{"type": "text", "text": tools.TEXT_BUSY}],
+                          "isError": True}
+        captured = capsys.readouterr()
+        assert "SECRET-ARGUMENT-VALUE" not in captured.out + captured.err
+        assert "gateway_request_unbuildable" in captured.out + captured.err
+
+    @pytest.mark.parametrize("name", ["project_id", "status_id"])
+    async def test_a_trailing_newline_does_not_pass_the_id_pattern(self, armed, name):
+        """Reviewer P2. ``$`` matches before a final newline under re.search."""
+        result = await _tool("list_tasks", {name: _UUID_NL})
+        assert result["isError"] is True
+        assert repr(name) in result["content"][0]["text"]
+        assert not armed.gateway.requests
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # R8: the real gateway app on a phase-4-promoted catalog, as a NON-privileged
 # role (D13, D14)
 # ═══════════════════════════════════════════════════════════════════════════

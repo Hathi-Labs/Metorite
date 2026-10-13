@@ -392,7 +392,7 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 
 **The opaque cursor.** A cursor is `<payload>.<tag>`. `<payload>` is the base64url form of a JSON object with four keys: `page`, `size`, `filter` and `connection`. `filter` is the hex SHA-256 of the sorted-key JSON of every input except `limit` and `cursor`. `<tag>` is the base64url HMAC-SHA256 of `<payload>`. Its key is the HMAC-SHA256 of `agent_edge_signing_key` over the label `cursor-v1`.
 
-**A bad cursor.** A cursor fixes the page size, so the edge ignores a `limit` sent with a cursor. A cursor with a bad tag, another filter or another connection gives `isError: true`. A key rotation ends every open cursor in the same way, and the agent lists again.
+**A bad cursor.** A cursor fixes the page size, so the edge ignores a `limit` sent with a cursor. A cursor with a bad tag, another filter or another connection gives `isError: true`. A key rotation ends every open cursor in the same way, and the agent lists again. The payload carries no tool name, so EA-3b-2 must bind the tool name into the cursor before a second paged tool ships.
 
 **Offset pages can skip or repeat a row.** The routes page by offset. A task that changes between two calls can move across a page boundary. Each list tool description says so.
 
@@ -526,7 +526,7 @@ After the eight checks, the edge dispatches the method. A notification, or a JSO
 4. `2026-07-28` gets 400 in EA-3. EA-3c adds it.
 5. D8 sends `server/discover` with no header, and expects `-32601`.
 
-**The body size.** A request body over 1 MiB gets 413 before the edge parses it. The edge reads at most 1 MiB and one byte.
+**The body size.** A request body over 1 MiB gets 413 before the edge parses it. A declared `Content-Length` over 1 MiB gets the 413 before the edge reads the body. Otherwise the edge reads the stream until the total passes 1 MiB, so it holds at most 1 MiB and one more ASGI chunk.
 
 **Authorization errors.**
 
@@ -996,3 +996,4 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The tools.** `tools.py` holds `list_tasks` and `search_tasks`, with the pinned keys, the `untrusted_text` shape and the gateway answer table. `cursor.py` signs the page cursor.
   - **Choices this slice made.** `nextCursor` is null on the last page. A status read that answers 403, 404 or another 4xx gives a null status name, and a 5xx or a timeout ends the call with the busy text. A status name comes only from the read of the task's own project. A 413 and a 405 carry the JSON-RPC error body too.
   - **The fences.** `tests/unit/test_mcp_edge_protocol.py` holds D5 to D19, and its R8 classes hold D13 and the MCP half of D14 through the real gateway app. `test_mcp_edge_coverage.py` holds rules 3 and 4. Each rule was red first under a named mutation.
+- 2026-10-13 — Fix round 1 of EA-3b-1. A test now holds the origin check above the body read. A deeply nested body answers 400 `-32700`, and a lone surrogate in an input is a tool error that names the input. The input patterns use `fullmatch`, so a trailing newline fails. A gateway request that the edge cannot sign or encode gives the busy text, never a 500.

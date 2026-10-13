@@ -127,9 +127,17 @@ async def get(
     """
     path = _path(template, path_params or {})
     pairs = [(str(k), str(v)) for k, v in query]
-    headers = signed_request_headers(key, caller, path, pairs)
-    base = str(get_settings().agent_edge_gateway_url).rstrip("/")
-    url = base + path + (f"?{urlencode(pairs)}" if pairs else "")
+    try:
+        headers = signed_request_headers(key, caller, path, pairs)
+        base = str(get_settings().agent_edge_gateway_url).rstrip("/")
+        url = base + path + (f"?{urlencode(pairs)}" if pairs else "")
+    except Exception as exc:  # nothing here may become a 500
+        # A value the signed string or the URL cannot carry, such as a lone
+        # surrogate. The tool input check refuses the known cases first. The
+        # log names the error type only, never an argument value (fix round 1).
+        _log.warning("agent_edge.gateway_request_unbuildable", route=template,
+                     error=type(exc).__name__)
+        raise GatewayUnreachable(template) from None
     try:
         # Two limits, on purpose. httpx enforces its timeout on a socket only,
         # and an in-process transport has none, so the asyncio limit is the
@@ -141,7 +149,7 @@ async def get(
             trust_env=False,
         ) as client:
             response = await client.get(url, headers=headers)
-    except (httpx.HTTPError, TimeoutError) as exc:
+    except Exception as exc:  # a timeout, a transport error, or any other
         _log.warning("agent_edge.gateway_unreachable", route=template,
                      error=type(exc).__name__)
         raise GatewayUnreachable(template) from None

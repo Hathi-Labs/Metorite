@@ -172,6 +172,14 @@ def _type_ok(value: Any, kind: str) -> bool:
     return False
 
 
+def _is_utf8(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
     """The arguments, when they match *schema*, else raise :class:`ToolError`.
 
@@ -195,20 +203,31 @@ def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
         value = arguments.get(name)
         if value is None:
             continue
-        if not _type_ok(value, rule["type"]):
-            raise ToolError(f"The input {name!r} must be a {rule['type']}.")
-        if "minimum" in rule and value < rule["minimum"]:
-            raise ToolError(f"The input {name!r} must be at least {rule['minimum']}.")
-        if "maximum" in rule and value > rule["maximum"]:
-            raise ToolError(f"The input {name!r} must be at most {rule['maximum']}.")
-        if "minLength" in rule and len(value) < rule["minLength"]:
-            raise ToolError(f"The input {name!r} is too short.")
-        if "maxLength" in rule and len(value) > rule["maxLength"]:
-            raise ToolError(f"The input {name!r} is too long.")
-        if "pattern" in rule and not re.search(rule["pattern"], value):
-            raise ToolError(f"The input {name!r} has the wrong form.")
+        _check_value(name, rule, value)
         out[name] = value
     return out
+
+
+def _check_value(name: str, rule: Mapping[str, Any], value: Any) -> None:
+    """One input against its rule, or raise :class:`ToolError` that names it."""
+    if not _type_ok(value, rule["type"]):
+        raise ToolError(f"The input {name!r} must be a {rule['type']}.")
+    if "minimum" in rule and value < rule["minimum"]:
+        raise ToolError(f"The input {name!r} must be at least {rule['minimum']}.")
+    if "maximum" in rule and value > rule["maximum"]:
+        raise ToolError(f"The input {name!r} must be at most {rule['maximum']}.")
+    if "minLength" in rule and len(value) < rule["minLength"]:
+        raise ToolError(f"The input {name!r} is too short.")
+    if "maxLength" in rule and len(value) > rule["maxLength"]:
+        raise ToolError(f"The input {name!r} is too long.")
+    if isinstance(value, str) and not _is_utf8(value):
+        # A lone surrogate is valid JSON and is not UTF-8, so neither the
+        # signed string nor the URL can carry it (fix round 1).
+        raise ToolError(f"The input {name!r} is not valid text.")
+    # fullmatch, not search: a pattern that ends in `$` lets a trailing
+    # newline through `re.search` (fix round 1).
+    if "pattern" in rule and not re.fullmatch(rule["pattern"], value):
+        raise ToolError(f"The input {name!r} has the wrong form.")
 
 
 # ── The tool record ─────────────────────────────────────────────────────────

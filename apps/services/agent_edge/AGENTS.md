@@ -28,7 +28,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 5. **No token in a URL.** `token` and `revoke` refuse any query string. Every route refuses `access_token` in the query.
 6. **One error for a bad grant.** Every refused code or refresh token answers `invalid_grant`. The log names the reason, and the response does not. The code spend matches four values: the client, the redirect URI, the S256 of the verifier and the resource. A wrong presentation spends nothing.
 7. **No token, code or hash goes into a log line.** Log ids and reasons only.
-8. **No rate limit yet.** EA-7 owns the limits. Do not add a limiter here before EA-7. The body cap is `agent_oauth_max_body_bytes`.
+8. **No rate limit yet.** EA-7 owns the limits. Do not add a limiter here before EA-7. The body cap of `token` and `revoke` is `agent_oauth_max_body_bytes`. The body cap of `/mcp` is `mcp.MAX_BODY_BYTES`, which is 1 MiB.
 9. **No control character.** A C0 control character or DEL in a form field is `invalid_request`. Postgres refuses a NUL in text, so the edge must refuse it first.
 10. **The edge holds no bearer.** A gateway request carries the four signed headers and nothing else that the edge sets. Never send an `Authorization` header or a member header to the gateway. Never copy a header of the client request into a gateway request.
 11. **Keep the order of the checks.** The order of spec §9.6 is the flag, the key, the method, the origin, the body, the token, the version and the scope. Do not move a check.
