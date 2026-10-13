@@ -297,6 +297,14 @@ def world():
     assert asyncio.run(_seal()) == 2, "the root and the Area are both sealed"
     a.one("UPDATE app_user SET status = 'removed' WHERE lower(email) = :e"
           " RETURNING id", e=LEAVER)
+    # The delta feed reads nothing newer than `now()` minus its horizon
+    # (`delta.HORIZON_LAG_SECONDS`). A fast runner reaches the delta test
+    # inside that window, and the feed is then empty. Put every task an hour
+    # back, so the delta test does not depend on the speed of the runner.
+    with eng.begin() as c:
+        c.execute(text("UPDATE pm_tasks SET updated_at = now() - interval '1 hour'"
+                       " WHERE organization_id = ANY(CAST(:o AS uuid[]))"),
+                  {"o": [org_a, org_b]})
 
     w.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
