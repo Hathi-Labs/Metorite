@@ -99,7 +99,7 @@ export function EmailPreviewModal({
           ) : err ? (
             <div className="text-xs text-destructive">{err}</div>
           ) : e && (e.bodyHtml || e.bodyText) ? (
-            <MessageContent html={e.bodyHtml} text={e.bodyText} remoteId={remoteHtmlId(e)} />
+            <MessageContent html={e.bodyHtml} text={e.bodyText} remoteId={remoteHtmlId(e)} messageId={e.id} />
           ) : (
             <div className="text-xs text-muted-foreground italic py-2">
               No preview text.

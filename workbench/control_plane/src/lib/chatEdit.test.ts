@@ -222,7 +222,8 @@ describe("an edit held during an app update is sent as a supersede (#797 + #795)
     expect(src).toMatch(/if \(opts\?\.fromHold\) holdEdit\(true\);/);
     expect(src).toMatch(/!accepted && isUpdateOutage\(\{ status: res\.status, gotResponse: true \}\)/);
     expect(src).toMatch(/if \(isUpdateOutage\(\{ status: failedStatus, gotResponse, err \}\)\) holdEdit\(!!opts\?\.fromHold\);/);
-    // An edit is never collapsed into a held plain send.
-    expect(src).toMatch(/const plan = supersedes \? "send" : planSend\(before, text, held\?\.id\);/);
+    // An edit is never collapsed into a held plain send. A steer that
+    // started a run (`adopt`) plans for itself too (lib/chatSteer.ts).
+    expect(src).toMatch(/const plan = supersedes \|\| adopt\s*\?\s*"send"\s*:\s*followUp[\s\S]{0,120}?:\s*planSend\(before, text, held\?\.id\);/);
   });
 });

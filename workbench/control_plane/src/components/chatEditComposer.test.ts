@@ -53,6 +53,9 @@ describe("the edit composer is a variant of the chat composer", () => {
 
   it("the composer and the edit draw the same Send button", () => {
     const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf8");
-    expect(chat).toContain("<ChatSendButton disabled={!input.trim() || loadingHistory} />");
+    // One control, Send or Stop (owner, 2026-10-12, `lib/chatSteer.ts`).
+    expect(chat).toMatch(/<ChatSendButton\s+action=\{primary\}/);
+    expect(chat).toContain('disabled={primary === "send" ? !input.trim() || loadingHistory : false}');
+    expect(chat.match(/<ChatSendButton\b/g)).toHaveLength(1);
   });
 });

@@ -230,14 +230,15 @@ describe("the composer's wiring", () => {
 
   it("sends no model field for a covered agent (done-when 3)", () => {
     expect(chat).toMatch(/model: modelPlan\.sendModel \? currentModel : null/);
-    expect(hook.match(/\.\.\.chatModelField\(modelRef\.current\)/g)).toHaveLength(2);
+    // The send, the reconnect and the steer (lib/chatSteer.ts) each name it.
+    expect(hook.match(/\.\.\.chatModelField\(modelRef\.current\)/g)).toHaveLength(3);
     expect(hook).not.toMatch(/model: modelRef\.current \?\? "auto"/);
     // A covered orchestrator does not take the direct LiteLLM path.
     expect(chat).toMatch(/isOrchestrator && !modelPlan\.covered \? currentRuntime : "copilot"/);
   });
 
   it("sends the effort as before, so it reaches payload.think_mode (done-when 2)", () => {
-    expect(hook.match(/thinkMode: thinkModeRef\.current \?\? "auto"/g)).toHaveLength(2);
+    expect(hook.match(/thinkMode: thinkModeRef\.current \?\? "auto"/g)).toHaveLength(3);
     const route = code(read("../app/api/agent/chat/route.ts"));
     expect(route).toMatch(/think_mode: thinkMode \?\? "auto"/);
     // The server still takes `model` (R6 expand/contract, §8).

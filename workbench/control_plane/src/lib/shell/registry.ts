@@ -136,6 +136,33 @@ export const JOBS: readonly ShellJob[] = [
     href: "/crm?do=new-lead",
     icon: "UserPlus",
   },
+  // CRM-X2 (crm_platform.md section 19.6) builds the other three. Each opens a
+  // form or a list in the CRM, and none saves. ⚠️ Not "contact": Find a
+  // colleague owns that word. Not "crm" or "sales": New lead owns them.
+  {
+    id: "new-deal",
+    label: "New deal",
+    words: ["deal", "deals", "opportunity", "pipeline", "sale"],
+    app: "/crm",
+    href: "/crm?do=new-deal",
+    icon: "Handshake",
+  },
+  {
+    id: "log-call",
+    label: "Log a call",
+    words: ["call", "phone", "rang", "dial", "spoke", "log"],
+    app: "/crm",
+    href: "/crm?do=log-call",
+    icon: "PhoneCall",
+  },
+  {
+    id: "find-record",
+    label: "Find a record",
+    words: ["record", "records", "company", "companies", "account", "lookup"],
+    app: "/crm",
+    href: "/crm?do=find-record",
+    icon: "Search",
+  },
   {
     // IN-2. Opens the "MCP server" form of the Integrations console. It saves
     // nothing. ⚠️ The registry gates a job by PANE only, not by capability. A

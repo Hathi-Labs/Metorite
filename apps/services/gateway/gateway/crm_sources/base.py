@@ -65,6 +65,15 @@ class SourceCredential:
     ``api_domain`` and ``location``. The adapter checks each host against its
     allowlist before a request. The shape names no provider's words, so a
     second provider adds keys and no fields.
+
+    ⚠️ ``provider_meta`` is copied into a PLAIN column by the store
+    (``connections/store.py``), so it holds public facts only. A secret that
+    must stay with the tokens goes in ``client_secret``.
+
+    ``client_secret`` (WS-54 IN-8a) is the secret of a client that an MCP
+    OAuth flow registered by DCR (``integrations_console.md`` §3.6.6). It is
+    kept out of ``repr``, it lives in the sealed blob only, and no SQL
+    parameter reads it. Empty for every other connection.
     """
 
     access_token: str = field(repr=False)
@@ -72,6 +81,7 @@ class SourceCredential:
     expires_at: datetime
     scopes: tuple[str, ...] = ()
     provider_meta: Mapping[str, str] = field(default_factory=dict)
+    client_secret: str = field(default="", repr=False)
 
 
 # ── Records and paging ──────────────────────────────────────────────────────

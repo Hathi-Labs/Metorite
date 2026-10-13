@@ -28,6 +28,7 @@
  * `apps/services/orchestrator/orchestrator/run_liveness.py`, fenced by
  * `tests/unit/test_chat_deploy_recovery.py`.
  */
+import { cardAnswerFrom, type CardAnswer } from "@/lib/cardAnswer";
 import { getSessionState, setSessionState } from "@/lib/chatStore";
 import type { ChatMessage, SessionStreamState } from "@/lib/chatStore";
 import type { EditOutcome } from "@/lib/chatEdit";
@@ -198,6 +199,21 @@ export function restartedCardMessage(body: string): string | null {
   return null;
 }
 
+/**
+ * The display that comes with that message (owner report, 2026-10-13): what
+ * the card asked and what the member chose, or null. The chat draws the
+ * answered card from it, and never the message (`lib/cardAnswer.ts`).
+ */
+export function restartedCardDisplay(body: string): CardAnswer | null {
+  try {
+    const d = (JSON.parse(body) as { detail?: { error?: unknown; resumeDisplay?: unknown } })?.detail;
+    if (d && d.error === "run_restarted") return cardAnswerFrom(d.resumeDisplay);
+  } catch {
+    /* not the gateway's JSON */
+  }
+  return null;
+}
+
 // ── The held sends: one per text, sent when the app is back ─────────────────
 //
 // The store is module-level (`chatStore`), so a hold outlives a remount and a
@@ -217,7 +233,26 @@ export interface SendOptions {
   onEditOutcome?: (o: EditOutcome) => void;
   /** Set by `flushHeld`: a held send that meets a running turn waits again. */
   fromHold?: boolean;
+  /** A card answer that went as a new message (`lib/cardAnswer.ts`). The
+   *  text is the envelope the model reads, and the bubble draws this. */
+  cardAnswer?: CardAnswer | null;
+  /** Hears once what became of this send (review of #942): the server took
+   *  it (`sent`), folded it into a live run (`steered`), it waits for the app
+   *  (`held`), a run in this tab is live so it never left (`busy`), or the
+   *  server refused it or ran nothing. */
+  onSettled?: (outcome: SendOutcome) => void;
+  /** The steer follow-up (`lib/chatSteer.ts`): a turn with no words of its
+   *  own and no user bubble. The server answers the steers the run never
+   *  read, or 202 when nothing is owed. */
+  steerFollowUp?: boolean;
+  /** A steer that the server answered with a stream: it started a new run
+   *  (`lib/chatSteer.ts`). The send follows THIS response, under THIS
+   *  controller, and fetches nothing. Use with `heldId`, the steer's bubble. */
+  adopt?: { response: Response; controller: AbortController; assistantId?: string };
 }
+
+/** What became of one send. */
+export type SendOutcome = "sent" | "steered" | "held" | "busy" | "refused";
 
 /** What a held edit keeps: its target and its answer. It keeps no bubble,
  *  because the old turn stays visible until the server accepts the edit. */

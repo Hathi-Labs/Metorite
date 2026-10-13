@@ -40,9 +40,11 @@ from gateway.routes.projects.core import (
     MAX_DEPTH,
     _tenant_session,
     load_visible_task,
+    record_activity,
     resolve_visibility,
     router,
     task_visibility_clause,
+    touch_task,
     wire,
 )
 from sqlalchemy import text
@@ -123,6 +125,39 @@ async def assert_no_block_cycle(db: Any, source_id: str, target_id: str) -> None
         status_code=422,
         detail="This dependency chain is longer than the supported maximum.",
     )
+
+
+async def insert_task_link(
+    db: Any, source_id: str, target_id: str, link_type: str, *, by: str,
+) -> str:
+    """Write one task link inside the caller's transaction. Returns its id.
+
+    The ONE insert of ``pm_task_links``. ``POST /tasks/{id}/links`` calls it
+    after its checks, and so do the links from text (TR-5, ``text_links.py``).
+    It writes the ``link`` activity on the source and bumps the target,
+    because a link is readable from both ends. The caller has checked that
+    both tasks are visible, and the cycle rule for ``blocks``.
+    """
+    row = (await db.execute(
+        text(
+            "INSERT INTO pm_task_links "
+            "(source_task_id, target_task_id, link_type, created_by) "
+            "VALUES (CAST(:src AS uuid), CAST(:tgt AS uuid), :kind, :who) "
+            "ON CONFLICT (source_task_id, target_task_id, link_type) "
+            "DO UPDATE SET link_type = EXCLUDED.link_type RETURNING id"
+        ),
+        {"src": source_id, "tgt": target_id, "kind": link_type, "who": by},
+    )).fetchone()
+    await record_activity(
+        db, activity_type="link", created_by=by, task_id=source_id,
+        meta={"target": target_id, "type": link_type},
+    )
+    # WS-27ae / P-27 — the activity above bumps the SOURCE. A link is
+    # readable from both ends (`attach_relation_counts` draws "blocked" on
+    # the target), so the target changed too and a delta client watching
+    # only the blocked task would otherwise never learn it is blocked.
+    await touch_task(db, target_id)
+    return str(row.id)
 
 
 #: Subtasks, with the one status field the panel needs to draw progress.
@@ -244,5 +279,6 @@ __all__ = [
     "LINK_TYPES",
     "assert_no_block_cycle",
     "blocked_by_open",
+    "insert_task_link",
     "subtask_progress",
 ]

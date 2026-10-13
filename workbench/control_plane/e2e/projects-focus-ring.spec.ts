@@ -59,6 +59,11 @@ test("the Description field's focus ring is not clipped", async ({ page }) => {
   });
 
   await page.goto("/projects?task=t2");
+  // WS-57 TR-4: a saved description draws as Markdown, and its edit button
+  // opens the field.
+  const edit = page.getByRole("button", { name: "Edit description" });
+  await expect(edit).toBeVisible({ timeout: 20_000 });
+  await edit.click();
   const field = page.getByRole("textbox", { name: "Description" });
   await expect(field).toBeVisible({ timeout: 20_000 });
   await field.scrollIntoViewIfNeeded();

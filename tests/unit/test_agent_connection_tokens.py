@@ -121,6 +121,16 @@ _REDIRECT = "http://127.0.0.1:33418/callback"
 _RESOURCE = "https://mcp.metorite.com/mcp"
 
 
+@pytest.fixture(autouse=True)
+def _all_orgs(monkeypatch):
+    """EA-10p: the store refuses an organization off ``agent_access_orgs``.
+    The allowlist has its own tests (``test_agent_oauth_server.py``). Here it
+    allows each organization, so these tests prove the store's own rules."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "agent_access_orgs", "*")
+
+
 def _migration() -> Path:
     """The migration that creates ``agent_token``, found by its content."""
     hits = [

@@ -66,6 +66,9 @@ export async function GET(
         "content-disposition",
         "content-length",
         "cache-control",
+        // An inline picture of a mail sets both (WS-17, the inline images fix).
+        "x-content-type-options",
+        "content-security-policy",
       ]) {
         const v = res.headers.get(h);
         if (v) headers.set(h, v);

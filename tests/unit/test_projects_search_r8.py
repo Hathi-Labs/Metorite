@@ -212,8 +212,16 @@ def test_the_exact_arm_is_served_by_an_index(seeded):
         triage=triage_exclusion_clause(),
         exclude="",
         match=route._NUMBER_MATCH,
+        # Tier 3 of the rank (2026-10-13). A number query binds its one
+        # "word" too, because the CASE reads it.
+        title_words=route._title_words_clause(["#7"]),
     )
-    params = {**vis.params, "term": "%#7%", "prefix": "#7%", "number": 7, "cap": 51}
+    params = {
+        **vis.params, "term": "%#7%", "prefix": "#7%", "number": 7, "cap": 51,
+        "q_w0": "%#7%", "needles": ["#7"],
+        "description_rank": route.DESCRIPTION_RANK,
+        "snippet_lead": route.SNIPPET_LEAD, "snippet_window": route.SNIPPET_WINDOW,
+    }
     eng = create_engine(_TENANT_URL, future=True)
     try:
         with eng.begin() as c:

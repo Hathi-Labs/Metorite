@@ -59,8 +59,18 @@ import { CENTERS } from "@/lib/centers";
  * `/oauth/approved` (WS-17 EM-T3c) is the landing page of an IT admin who
  * approved Metorite in Microsoft. That admin has no session and may never
  * join, so the page carries no chrome. It is public in `proxy.ts` as well.
+ *
+ * `/connect` (WS-55 EA-4a) holds the consent page an outside agent opens,
+ * `/connect/authorize`. It is a standalone screen that another app opened,
+ * so it carries no chrome. It is NOT public: the member must be signed in,
+ * so `proxy.ts` sends a signed-out member to `/signin` and back.
  */
-export const CHROMELESS_ROUTES: readonly string[] = ["/signin", "/signup", "/oauth/approved"];
+export const CHROMELESS_ROUTES: readonly string[] = [
+  "/signin",
+  "/signup",
+  "/oauth/approved",
+  "/connect",
+];
 
 export function isChromeless(pathname: string): boolean {
   return CHROMELESS_ROUTES.some(
@@ -345,6 +355,10 @@ export const NAV_SECTIONS: NavSection[] = [
         // now"), taking the live set from ELEVEN to TWELVE (WS-53 CRM-L2).
         // This line, `launch_surface.md` section 2 and `nav.test.ts` move together.
         launch: "live",
+        // WS-53 CRM-X2. Today this feeds the run badge only: a run of the CRM
+        // assistant counts on the CRM, not on Chat. The shell's assistant
+        // dock (NS-6 slice 6b) is not built, so nothing docks it yet.
+        agent: "crm-assistant",
       },
       {
         href: "/people",

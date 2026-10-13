@@ -153,6 +153,19 @@ Every number a read returns is a **server aggregate**. The tool never sums a
 page of tasks in the agent. §9.12.7 gives the reason. The list is paginated,
 and a count of one page looks right and is wrong.
 
+**`find_tasks` searches the title and the description** (owner request,
+2026-10-13). The rule is in `project_management_app.md` §11.18. Each word
+must be in the title or in the description. Title hits rank first. A
+description hit prints one more line, `description match: «…»`, after its
+`full_id` line. That line holds at most 160 characters around the match.
+So the agent does not open tasks one at a time to search descriptions.
+
+Why this record exists: the tool text said "words in the title". The
+agent then told the owner that a description is not searched, and offered
+to open 120 tasks one at a time. The route matched descriptions all along.
+`test_find_tasks_says_it_searches_descriptions` fails if the tool text
+loses the description again.
+
 ### 3.2 Create and update — reversible writes, one card
 
 | Ask | Tool | Route it calls | Why it is reversible |
