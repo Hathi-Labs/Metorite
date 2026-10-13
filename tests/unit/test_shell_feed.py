@@ -56,7 +56,9 @@ CARD_KEYS = {"signal_id", "app", "kind", "folded", "group", "score", "entity", "
              "href", "acts",
              # The state fields of MD-2a (§14.1a).
              "state", "updated", "still_open", "visits", "state_fp"}
-ANSWER_KEYS = {"cards", "groups", "needs", "sources", "capped"}
+ANSWER_KEYS = {"cards", "groups", "needs", "sources", "capped",
+               # The Handled group and its claim flag (MD-2c, §14.1a).
+               "handled", "handled_ok"}
 NEEDS_KINDS = set(shell.KIND_ORDER)
 CALENDAR_CALLS = {"day_summary", "get_user_settings", "my_calendar", "get_me"}
 
@@ -123,6 +125,14 @@ class FeedFakes(Fakes):
         self.state_reads: list[tuple[str, list[str]]] = []
         #: The order of the state writes: the claim, the locked read, the upsert.
         self.state_log: list[tuple[str, list[str]]] = []
+        #: The three Handled reads (MD-2c). Empty by default, so a test of
+        #: the cards sees no Handled entry. ``test_feed_handled.py`` fills them.
+        #: The lens tasks closed, by member.
+        self.completed: dict[str, list[dict]] = {}
+        #: The rule rows, each with its ``account_id``.
+        self.applied: list[dict] = []
+        #: The decided actions, by organization.
+        self.decided: dict[str, list[dict]] = {}
 
     def _today(self):
         return self.now.astimezone(ZoneInfo(self.zone)).date()
@@ -179,6 +189,40 @@ class FeedFakes(Fakes):
     async def stored_zone(self, db, email):
         return self.zone
 
+    # ── The Handled reads (MD-2c). Each answers by its own contract: the
+    # member's rows, at or after ``since``, the newest first, ``limit`` rows.
+
+    async def my_completed_since(self, user, since, *, limit):
+        await self._enter("my_completed_since", user,
+                          {"user": user, "since": since, "limit": limit})
+        rows = [dict(r) for r in self.completed.get(user.email, [])
+                if datetime.fromisoformat(r["completed_at"]) >= since]
+        rows.sort(key=lambda r: r["completed_at"], reverse=True)
+        return {"rows": rows[:limit]}
+
+    async def applied_rules_since(self, user, account_ids, since, *, limit):
+        await self._enter("applied_rules_since", user,
+                          {"user": user, "account_ids": list(account_ids),
+                           "since": since, "limit": limit})
+        owned = {a["id"] for a in self.accounts.get(user.email, [])} & set(account_ids)
+        rows = [dict(r) for r in self.applied if r["account_id"] in owned
+                and datetime.fromisoformat(r["created_at"]) >= since]
+        rows.sort(key=lambda r: r["created_at"], reverse=True)
+        return rows[:limit]
+
+    def read_decided(self, since, limit=15):
+        from acb_common.db import current_tenant
+
+        org = current_tenant()
+        self.calls.append(("read_decided", None, {"org": org, "since": since,
+                                                  "limit": limit}))
+        if "read_decided" in self.fail:
+            raise self.fail["read_decided"]
+        rows = [dict(r) for r in self.decided.get(str(org or ""), [])
+                if r["reviewed_at"] >= since]
+        rows.sort(key=lambda r: r["reviewed_at"], reverse=True)
+        return rows[:limit]
+
 
 class _NoSession:
     """The state module's session, with no database: each read goes through
@@ -233,6 +277,13 @@ def fakes(monkeypatch) -> FeedFakes:
     monkeypatch.setattr(state, "_read_rows", f.read_state)
     monkeypatch.setattr(state, "_tenant_session", lambda: _NoSession(f))
     monkeypatch.setattr(personal, "stored_zone", f.stored_zone)
+    # The three Handled reads (MD-2c).
+    import action_broker
+    from gateway.routes.email.automation import runner
+
+    monkeypatch.setattr(personal, "my_completed_since", f.my_completed_since)
+    monkeypatch.setattr(runner, "applied_rules_since", f.applied_rules_since)
+    monkeypatch.setattr(action_broker, "read_decided", f.read_decided)
     return f
 
 
@@ -876,11 +927,12 @@ class TestTheCalendarGates:
         answer = run_feed(member("tasks", "email"))
         assert answer["sources"]["calendar"] == "absent"
         assert not [c for c in answer["cards"] if c["app"] == "calendar"]
-        # The state join (MD-2a) reads the day hours of a Calendar holder
-        # once (my_day_feed.md §6.8 item 8). No other Calendar read runs.
+        # The state join (MD-2a) and the Handled run (MD-2c) each read the
+        # day hours of a Calendar holder once, through `state._hours`
+        # (my_day_feed.md §6.8 item 8). No other Calendar read runs.
         calls = [n for n, _, _ in fakes.calls]
         assert not set(calls) & (CALENDAR_CALLS - {"get_user_settings"})
-        assert calls.count("get_user_settings") == 1
+        assert calls.count("get_user_settings") == 2
 
     def test_a_member_with_both_gets_the_calendar(self, fakes):
         answer = run_feed(member("tasks", "projects"))
