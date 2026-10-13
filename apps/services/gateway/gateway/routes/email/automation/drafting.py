@@ -1188,7 +1188,7 @@ async def _draft_consult_plan(
     consult — a consult costs a 10-18s agent round-trip, so the default answer
     is an empty list, not "might help".
 
-    Returns [{"agent": "agent-sales-assistant"|"task-manager", "question": "..."}], capped at 2.
+    Returns [{"agent": "crm-assistant"|"task-manager", "question": "..."}], capped at 2.
     """
     try:
         sys_prompt = (
@@ -1199,7 +1199,7 @@ async def _draft_consult_plan(
             "newsletter/notification | sales/commercial | project/delivery | "
             "support/technical | other.\n"
             "Step 2 — decide consults. Available agents:\n"
-            "- agent-sales-assistant: CRM — deals, pipeline, quotes, customer/account status (Zoho).\n"
+            "- crm-assistant: CRM — leads, deals, pipeline, contacts, account status.\n"
             "- task-manager: projects, tasks, deadlines, delivery status (ClickUp).\n"
             "Consult an agent ONLY when the reply must state facts that the "
             "email thread itself does not contain AND that agent's system "
@@ -1228,7 +1228,7 @@ async def _draft_consult_plan(
         consult = data.get("consult", []) if isinstance(data, dict) else []
         out = []
         for c in consult:
-            if isinstance(c, dict) and c.get("agent") in ("agent-sales-assistant", "task-manager") \
+            if isinstance(c, dict) and c.get("agent") in ("crm-assistant", "task-manager") \
                     and c.get("question"):
                 out.append({"agent": c["agent"], "question": str(c["question"])})
         out = out[:2]

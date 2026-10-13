@@ -80,6 +80,13 @@ and streams chat responses as AG-UI events.
    - The batch path and the sub-agent path attach no policy yet (S4).
    - Fence: `tests/unit/test_tier_policy.py`.
 
+19. **A Mirror run gets no CRM record write** (WS-53 CRM-C7, `project-docs/specs/crm_platform.md` §20.10 item 4).
+   - `_tool_injection._drop_mirror_record_writes` runs right after `_apply_own_tool_scope`, at all three sites: the sub-agent, the batch run and the stream run.
+   - It reads `GET /crm/mode` as the run's member, through `acb_skills.crm_tools.crm_mode`, and only for an agent that holds a record write.
+   - In Mirror mode it drops `create_lead`, `update_deal_status` and `convert_lead` (`MIRROR_RECORD_WRITES`). `log_activity` stays, because a Metorite-only note saves in Mirror mode.
+   - A failed read keeps the tools, and the 409 relay is the fallback. A `no_egress` run reads nothing, because the egress control drops the three writes there.
+   - Fence: `tests/unit/test_crm_mirror_run_tools.py`.
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature

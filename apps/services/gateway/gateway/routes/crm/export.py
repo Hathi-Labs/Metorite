@@ -12,7 +12,8 @@ records whose only export route today is the Zoho UI we are retiring.
 Five rules, each because the obvious implementation is wrong:
 
 1. **The filters are the caller's, built by the SAME contract the list endpoint
-   uses** (:func:`core.list_contract`). A second filter parser would drift, and
+   uses** (:func:`records.list_query`, over :func:`core.list_contract`). A second
+   filter parser would drift, and
    then the file and the screen would disagree about what "Priya's open leads"
    means. The refusals come with it: ``?status_id`` on contacts or
    organizations is a 422 rather than a silent whole-table answer, and an
@@ -107,21 +108,17 @@ from gateway.routes.crm.core import (
     CONTACTS,
     DEALS,
     LEADS,
-    OPEN_LEAD_SQL,
+    MAX_PAGE_SIZE,
     ORGANIZATIONS,
     Entity,
-    ExtraFilterInput,
     _tenant_session,
     custom_pairs,
-    extra_filters,
-    list_contract,
     project_joined,
     qualify,
-    related_filters,
-    resolve_owner,
     router,
     row_to_dict,
 )
+from gateway.routes.crm.records import list_query
 from sqlalchemy import text
 
 #: The most rows one export may contain.
@@ -240,6 +237,10 @@ class ExportParams:
         self.close_from = close_from
         self.close_to = close_to
         self.custom = tuple(custom_pairs(request.query_params if request else None))
+        #: Read by ``records.list_query`` only. The export reads no page: its
+        #: cap is a refusal (rule 2 above), and the clamp is never read here.
+        self.page = 1
+        self.page_size = MAX_PAGE_SIZE
 
 
 def _cell(entity: Entity, key: str, row: dict[str, Any]) -> Any:
@@ -291,44 +292,13 @@ async def _export(
 ) -> Response:
     """The caller's current filter, as a CSV file. One implementation, four
     entities — the shape ``records._list`` uses for the same reason."""
-    extra: tuple[str, ...] = ()
-    if entity.hides_converted and not params.include_converted:
-        # §3.3/B6, `records._list`'s clause verbatim: a lead is "converted"
-        # while the deal it became still exists.
-        extra = (OPEN_LEAD_SQL,)
-    # CRM-Q3: the related-list filters travel with the export, so the file is
-    # the list that is on screen.
-    related_where, related_params = related_filters(
-        entity, company_id=params.company_id, contact_id=params.contact_id,
-    )
-    extra = (*extra, *related_where)
-    # `me` is the caller (CRM-Q8). The email comes from the session.
-    params.owner = resolve_owner(params.owner, user)
-
     async with _tenant_session() as db:
-        # CRM-Q8: the date ranges and the custom field filters, validated
-        # before the count runs.
-        more_where, more_params = await extra_filters(
-            db, entity, ExtraFilterInput(
-                created_from=params.created_from, created_to=params.created_to,
-                updated_from=params.updated_from, updated_to=params.updated_to,
-                close_from=params.close_from, close_to=params.close_to,
-                custom=params.custom,
-            ),
-        )
-        extra = (*extra, *more_where)
-        related_params = {**related_params, **more_params}
-        # Reused for the WHERE clause and the ORDER BY — and for the 422s it raises
-        # on an unknown sort key, an unknown direction and a status filter on an
-        # entity with no pipeline. Its `limit` is the PAGE clamp and is never read
-        # here; see rule 2 in the module docstring.
-        query = list_contract(
-            entity,
-            q=params.q, sort=params.sort, direction=params.direction,
-            status_id=params.status_id, owner=params.owner, source=params.source,
-            pipeline_id=params.pipeline_id, extra_where=extra,
-            extra_params=related_params,
-        )
+        # WS-53 CRM-C7: the ONE list builder (``records.list_query``) — the
+        # converted-lead rule, the related lists, ``me``, the CRM-Q8 filters,
+        # the WHERE clause and the ORDER BY, with each of their 422s. So the
+        # file is the list on screen. Its `limit` is the PAGE clamp and is
+        # never read here; see rule 2 in the module docstring.
+        query = await list_query(db, entity, params, user)
         total = int((await db.execute(
             text(f"SELECT count(*) FROM {entity.table}{query.where}"),
             query.params,

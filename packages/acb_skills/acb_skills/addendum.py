@@ -254,6 +254,9 @@ _DELEGATION = ("call_agent", "call_agents_parallel", "call_agent_background")
 #: All eight memory tools — one family, one section.
 _MEMORY = tuple(SKILL_FAMILIES["memory"]["tools"])
 
+#: The twelve CRM read tools (WS-53 CRM-C7) — one family, one section.
+_CRM = tuple(SKILL_FAMILIES["crm"]["tools"])
+
 #: The kinds that ``read_attachment`` reads, from the ONE sentence that
 #: lists them (``attachment_text.SUPPORTED_SENTENCE``), so a new kind needs
 #: no edit here.
@@ -372,6 +375,12 @@ Workflow: need a new capability → ``code_task``; repeat a known job → ``run_
 """),
     Section("history", ("query_history",), """### Conversation history
 - **query_history(search?, thread_id?, agent_name?, since_days?, limit?)** — Recall past conversations by search criteria.  Use to remember what was discussed in prior sessions, find a decision that was made before, or resume work on a known thread.  Takes **search terms, not SQL** — e.g. ``query_history(search="pricing", since_days=30)``.
+"""),
+    Section("crm", _CRM, """### CRM (read only)
+- **crm_list_records / crm_get_record / crm_list_fields / crm_list_pipelines / crm_deal_contacts / crm_list_owners** — Read the company CRM as the member you act for. A record shows each custom field under its label.
+- **crm_aggregate(entity, group_by, measure?)** and **crm_report(kind)** — The server computes every count, sum and weighted forecast; report the numbers as given and never add them up yourself. **crm_stage_dwell(days?)** gives the days in each deal stage and the deals past their limit.
+- **crm_list_modules / crm_list_module_records / crm_get_module_record** — The other mirrored Zoho modules.
+A tool that answers that the CRM is off, or not open to the member, is the answer: say so and stop.
 """),
     Section("coding", ("github_search", "github_repo_search"), """### GitHub code search
 - **github_search(query, scope?, maxResults?)** — Lexical search across public GitHub repositories.  Supports ``language:python``, ``repo:owner/name``, ``path:src/`` filters.
@@ -499,6 +508,11 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     )),
     Section("history", ("query_history",), (
         "query_history(search?,thread_id?,agent_name?,since_days?,limit?) — recall past conversations"
+    )),
+    Section("crm", _CRM, (
+        "crm_list_records/crm_get_record/crm_aggregate/crm_report/"
+        "crm_stage_dwell/... — read the CRM as the member; the server "
+        "computes every number"
     )),
     Section("coding", ("github_search", "github_repo_search"), (
         "github_search(q,scope?,max?), github_repo_search(repo,q?) — code search"

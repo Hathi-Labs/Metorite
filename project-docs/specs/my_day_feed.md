@@ -1,8 +1,9 @@
 # My Day as a live feed — the chief of staff
 
-**Status: ACTIVE, 2026-10-13. MD-1a is BUILT (gateway half, dark by the
-absence of a caller).** The rest of this file is not built. The open
-AGENT-SAFE tickets are MD-1b, MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7,
+**Status: ACTIVE, 2026-10-13. MD-1a is BUILT (gateway half, merged as
+#964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
+dark behind `NEXT_PUBLIC_MY_DAY_FEED`).** The rest of this file is not
+built. The open AGENT-SAFE tickets are MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7,
 MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -378,10 +379,10 @@ each renders as a link that opens the owning app at the right place.
 
 | Kind | Signal | Why line | Body | Acts | AI | Phase |
 |---|---|---|---|---|---|---|
-| `block_overlap` | Two of my scheduled blocks overlap today or this week | Template: "Both are set for 2:00 PM on Tuesday." | A day strip of the two blocks | "Move X to <slot>" (A\*), "Open the day" | `my_day.slot` picks the slot | MD-1 |
+| `block_overlap` | Two of my scheduled blocks overlap today or this week | Template: "They overlap from 14:00 on Tuesday." | A day strip of the two blocks | "Move X to <slot>" (A\*), "Open the day" | `my_day.slot` picks the slot | MD-1 |
 | `day_overbooked` | Planned hours exceed the working hours of the day | Template: "7 h planned in a 5 h day." | A bar of planned against free time | "Fit what's left" (opens Calendar's replan) | None | MD-1 |
 | `no_plan_yet` | It is past the day start and nothing is scheduled today | Template | — | "Plan my day" (link to Calendar) | None | MD-1 |
-| `free_slot_for_overdue` | A free slot of 30 minutes or more today, and an overdue task that fits it | Template: "You have 90 min free at 3:00 PM." | The slot and the task | "Block it" (A\*) | `my_day.slot` | MD-4. When the task has its own card, this folds into it (§4.5) |
+| `free_slot_for_overdue` | A free slot of 30 minutes or more today, and an overdue task that fits it | Template: "You have 90 min free at 15:00." | The slot and the task | "Block it" (A\*) | `my_day.slot` | MD-4. When the task has its own card, this folds into it (§4.5) |
 | `block_soon` | A block starts within 30 minutes | Template | The block and its task | "Open task" | None | MD-1 |
 | `meeting_overlap` | A meeting overlaps a meeting or a block (card A) | Template from the two events | The two-day strip of card A | "Move to <slot>" (class B), "See options" | `my_day.slot` | **MD-11, waits on calendar P4** |
 
@@ -1463,6 +1464,22 @@ Done when:
    `open` act is a link.
 4. The card draws through `HomeCard`, `Skeleton` and the house tokens, and
    `conformance.test.ts` passes with no new budget.
+
+**Built 2026-10-13** on the branch `my-day-feed-md1b`. The client is
+`src/lib/shell/feed.ts`, and its fence is `feed.test.ts`. The poll fence is
+`shellBell.test.ts`, and the cache fence is `dataCache.test.ts`
+(`guardedPut`).
+
+**Two accepted limits of MD-1b.** The verifier accepted both on 2026-10-13.
+
+- A feed read can land after `keep()` and before the PATCH answers. That
+  read counts as the truth for one PATCH round trip. The re-read after the
+  invalidate heals it.
+- Suppose a feed answer shows a reopened task, and the bell then marks that
+  task Done within the 30 s hold. The feed card stays until the hold ends.
+- A row stays pending from the tap until the act calls `keep`, `show` or
+  `fail`. If the store's first load never settles, the card stays hidden
+  for that page visit. A reload shows it again.
 
 **Not in MD-1b, and where each part went.** The honest counts of §6.7 and the
 card menu go to MD-2, because each needs its state table. `stale_next` is

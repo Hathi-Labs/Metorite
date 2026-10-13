@@ -83,6 +83,15 @@ export function removeRow(id: string, gone: boolean, now = Date.now()): void {
   publish();
 }
 
+/**
+ * When a row was taken off, or `undefined` for a row with no mark. My Day's
+ * feed reads it, so the end of its own act never clears a newer mark that
+ * the bell set on the same row (`expireFeedActs`).
+ */
+export function markedAt(id: string): number | undefined {
+  return removedAt.get(id);
+}
+
 /** Show a row's error, or clear it. Ignored while no reader is mounted. */
 export function setRowError(id: string, message: string | null, now = Date.now()): void {
   if (readers === 0) return;

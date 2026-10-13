@@ -207,3 +207,32 @@ def test_build_catalog_caches_per_registry_hash():
     second = sf.build_catalog(**kwargs)
     assert counter["n"] == calls_after_first, "second build must hit the cache"
     assert first == second
+
+
+# ── WS-53 CRM-C7: the crm family (crm_platform.md §20.10 item 5) ──────────
+
+
+def test_the_crm_family_is_the_crm_tools_module() -> None:
+    """One implementation: the family holds exactly ``crm_tools.CRM_TOOLS``,
+    and the injection chain offers each of them."""
+    from acb_skills import crm_tools
+
+    fam = sf.SKILL_FAMILIES["crm"]
+    assert set(fam["tools"]) == set(crm_tools.CRM_TOOL_NAMES)
+    assert fam["scope_governed"] is True and fam["core"] is False
+    assert set(fam["tools"]) <= _injectable_names()
+
+
+def test_the_default_profile_carries_the_crm_family() -> None:
+    """Owner decision D2 (2026-10-13): the CRM data is there for any agent."""
+    assert "crm" in sf.DEFAULT_PROFILE
+    assert set(sf.SKILL_FAMILIES["crm"]["tools"]) <= sf.default_profile_tools()
+
+
+def test_a_scope_that_names_the_crm_tools_gets_them() -> None:
+    """Scope-governed: a scoped agent gets the family only by naming it."""
+    names = list(sf.SKILL_FAMILIES["crm"]["tools"])
+    scoped = ti._resolve_injected_scope(["remember", *names])
+    assert scoped is not None and set(names) <= scoped
+    narrow = ti._resolve_injected_scope(["remember"])
+    assert narrow is not None and not set(names) & narrow

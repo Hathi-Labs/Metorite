@@ -1,7 +1,7 @@
 {
   "name": "CRM Assistant",
   "app": "crm",
-  "description": "Works the native CRM — finds leads, deals, contacts and organizations, reads the pipeline by stage, opens a record and reads its history; and creates a lead, moves a deal between stages, logs a note/call/meeting/task and converts a lead into a deal. Every write asks the acting user to approve it first and does nothing if nobody is there to ask. It cannot delete a CRM record.",
+  "description": "Works the native CRM — finds leads, deals, contacts and organizations, reads the pipeline by stage, opens a record and reads its history, totals and reports; and creates a lead, moves a deal between stages, logs a note/call/meeting/task and converts a lead into a deal. Every write asks the acting user to approve it first and does nothing if nobody is there to ask. It cannot delete a CRM record.",
   "version": "0.1.0",
   "author": "Metorite",
   "tags": [
@@ -38,6 +38,18 @@
     "create_lead",
     "update_deal_status",
     "log_activity",
-    "convert_lead"
+    "convert_lead",
+    "crm_list_records",
+    "crm_get_record",
+    "crm_list_fields",
+    "crm_list_pipelines",
+    "crm_deal_contacts",
+    "crm_list_owners",
+    "crm_report",
+    "crm_aggregate",
+    "crm_stage_dwell",
+    "crm_list_modules",
+    "crm_list_module_records",
+    "crm_get_module_record"
   ]
 }
