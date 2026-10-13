@@ -790,7 +790,9 @@ def _apply_function(name: str) -> str:
 
 
 class TestCaddyHoldsTheRequest:
-    @pytest.mark.parametrize("upstream", ["127.0.0.1:3001", "127.0.0.1:8080", "127.0.0.1:3002"])
+    @pytest.mark.parametrize(
+        "upstream", ["127.0.0.1:3001", "127.0.0.1:8080", "127.0.0.1:3002", "127.0.0.1:8091"]
+    )
     def test_every_upstream_is_retried_through_a_restart(self, upstream: str) -> None:
         block = _caddy_proxy_block(upstream)
         opts = {ln.split()[0]: ln.split()[1] for ln in block.splitlines() if ln.split()}
@@ -1257,6 +1259,8 @@ class TestEveryCaddyHostIsProved:
         assert set(res.stdout.split()) == {
             "api.metorite.com", "app.metorite.com", "metorite.com",
             "www.metorite.com", "operator.metorite.com",
+            # WS-55 EA-10b: the MCP edge (external_agent_access.md §15.3).
+            "mcp.metorite.com",
         }, res.stdout
 
     def test_every_host_answering_passes(self, tmp_path: pathlib.Path) -> None:
