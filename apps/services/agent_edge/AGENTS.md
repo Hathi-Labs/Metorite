@@ -40,7 +40,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 
 ## Deploy
 
-This unit is not deployed. EA-10 writes its unit file, its Caddy block and its DNS record, and those acts are OWNER-GATE. Run it locally with `uv run uvicorn agent_edge.app:app`.
+This unit is not deployed. EA-10 writes its unit file and its Caddy block, and spec §15.3 pins both. The wildcard DNS record already covers `mcp.metorite.com`, so EA-10 adds no record. Run it locally with `uv run uvicorn agent_edge.app:app`.
 
 ## Fence
 

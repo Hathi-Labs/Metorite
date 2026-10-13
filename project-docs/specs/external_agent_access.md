@@ -8,7 +8,7 @@
 
 **EA-3, 2026-10-11.** The spec audit of EA-3 gave NO-GO. The engineering decisions EA3-1 to EA3-8 (§6.1) answer it. EA-3 now splits into EA-3a (the gateway) and EA-3b (the edge), with EA-3c as a later follow-up.
 
-**What is built.** EA-1 is the three tables, the token store and the `agent_access_enabled` flag, default OFF. EA-2a is the authorization server core: the edge unit `apps/services/agent_edge` (not deployed) and the gateway route `/agent-access`. EA-3a is the gateway half of the read tools: branch 0 of `get_current_user`, the signing module and the agent scope in the Projects visibility seam. EA-3b-1 is the edge transport `/mcp` with two tools, `list_tasks` and `search_tasks`. It is merged (#954, `355c18bcf`). EA-3b-2 adds the other five read tools and the fence edit of EA3-9. It is not merged.
+**What is built.** EA-1 is the three tables, the token store and the `agent_access_enabled` flag, default OFF. EA-2a is the authorization server core: the edge unit `apps/services/agent_edge` (not deployed) and the gateway route `/agent-access`. EA-3a is the gateway half of the read tools: branch 0 of `get_current_user`, the signing module and the agent scope in the Projects visibility seam. EA-3b-1 is the edge transport `/mcp` with two tools, `list_tasks` and `search_tasks`. It is merged (#954, `355c18bcf`). EA-3b-2 adds the other five read tools and the fence edit of EA3-9. It merged in #957 (`97ab64e96`).
 
 Written 2026-10-10 from a read-only survey of the tree at commit `f62f2bb16`. Every anchor below came from that survey. Re-verify each one at dispatch (work_plan.md §1, item 4).
 
@@ -136,7 +136,7 @@ D-EA-2 chose the separate unit. The edge calls the gateway over HTTP on loopback
 
 ### 5.2 The host (D-EA-1)
 
-**Recommended:** the edge lives on its own host, `mcp.metorite.com`. No session cookie is ever sent there. The consent page stays on `app.metorite.com`. The canonical resource identifier is `https://mcp.metorite.com/mcp`. A DNS record is an owner gate (work_plan.md §6).
+**Recommended:** the edge lives on its own host, `mcp.metorite.com`. No session cookie is ever sent there. The consent page stays on `app.metorite.com`. The canonical resource identifier is `https://mcp.metorite.com/mcp`. The wildcard record `*.metorite.com` already sends `mcp.metorite.com` to the box (`marketing_site.md` §2). So EA-10 needs no new DNS record.
 
 ### 5.3 Protocol facts, and the revision each one came from
 
@@ -823,7 +823,7 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-7 | **Limits.** A per-connection and per-member limiter on the tenant-prefixed Redis wrapper. A 100-row cap | A test shows the 429 and the `Retry-After` value | AGENT-SAFE |
 | EA-8 | **Audit.** One `acb_audit.record` row per call, with `organization_id` set on the event. An admin read route and view | A denied call writes a row. The admin view lists calls by connection | AGENT-SAFE |
 | EA-9 | **Fences.** A tenant fence, a "no client header reaches the gateway" fence, a "no token forwarded" fence. `test_mcp_edge_coverage.py` lands earlier, in EA-3 (D15) | Each fence fails when a mutation breaks its rule (verified red first) | AGENT-SAFE |
-| EA-10 | **Deploy.** The unit file, the Caddy block, the DNS record, the Caddy header strip (§10.1, other control 3), the proof that `GATEWAY_INTERNAL_TOKEN` is provisioned (§10.1, other control 4), `agent_edge_signing_key` on both units and `agent_edge_gateway_url` on the edge (H-303), the flag | The flag turns ON for one test organization. The evidence is the deployed SHA and a real client round trip | OWNER-GATE |
+| EA-10 | **Deploy, as a pilot.** §15.3 pins each part. EA-10a is the unit, its sandbox and its deploy step. EA-10b is the Caddy site `mcp.metorite.com` and the header strip on `api.metorite.com` (§10.1, other control 3). EA-10c is the smoke. A check proves that the box holds `GATEWAY_INTERNAL_TOKEN` before the flag turns on (§10.1, other control 4). The signing key goes on both units (H-303). The wildcard DNS record already covers the host (§5.2). **Go-live limits (EA3-25).** Until EA-4b, no member screen revokes a connection, so a member revokes through the client or asks an admin. Until EA-4c, approve binds the organization of the member's session. **What gates the pilot.** EA-10p, the organization allowlist, gates it. EA-5 to EA-9 and EA-11 do not gate it | The flag turns on for the organizations in `AGENT_ACCESS_ORGS` (EA-10p), Fracktal first. The evidence is the deployed SHA, the smoke of §15.3 and a real client round trip | EA-10a: AGENT-SAFE (`deploy-write`). EA-10b: OWNER-GATE, gate (a). The env writes, the unit enable and the flag: OWNER-GATE |
 | EA-11 | **Hardening review.** An adversarial review of §10, then a second pass with a real outside client | Both reviews are recorded in this file | AGENT-SAFE |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4 and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree.
@@ -909,6 +909,111 @@ Each line is one test, or one set of tests. The parentheses name the slice that 
 - **D18** (EA-3b-1). A database outage in the token lookup answers 503 with `Retry-After: 2`, never 401. The test raises an error that `db_busy.is_db_outage` accepts, such as `ConnectionRefusedError`. A second test raises a `ValueError` and gets 401.
 - **D19** (EA-3b-1). Each row of the gateway answer table of §9.6 holds. A gateway 403 gives `isError: true` with "This member cannot read that.", and never a `WWW-Authenticate` header. A gateway request past 10 seconds, and a tool call past 25 seconds, give the busy text. `list_tasks` makes at most 11 gateway requests. `get_task` makes three gateway requests, and `get_project` makes five (EA-3b-2).
 - **D20** (EA-3b-2). The fence edit of §9.4 holds. `tools.py` may hold an identity literal in the three positions of §9.4. The AST tests are a heuristic that catches the common shapes, and §9.4 names what they miss. A mutation that reads a request header, query or form in a common shape in `tools.py` turns a new AST test red, and so does `getattr(request, "head" + "ers")`. A mutation that adds an identity literal to another edge module turns the old test red. A test holds that a tool call receives no request object.
+
+### 15.3 EA-10 pins
+
+EA-10 puts the edge on the box as a pilot. The flag turns on for the organizations in `AGENT_ACCESS_ORGS` (EA-10p), Fracktal first. A separate slice, EA-10p, builds that allowlist. This section pins each file and each command of EA-10. The tests of EA-10a and EA-10b hold each pin.
+
+**EA-10a. The unit, its sandbox and its deploy step (AGENT-SAFE, gate `deploy-write`).**
+
+The unit file is `deploy/hostinger/acb-agent-edge.service`. It holds these four lines:
+
+```
+User=acb
+WorkingDirectory=/opt/acb/app/apps/services/agent_edge
+EnvironmentFile=/opt/acb/app/apps/services/agent_edge/.env
+ExecStart=/opt/acb/app/.venv/bin/uvicorn agent_edge.app:app --host 127.0.0.1 --port 8091
+```
+
+- `acb` is the user of `acb-gateway.service`.
+- Port 8091 is free. On 2026-10-13 no unit, compose file or Caddy site in the repo uses it. The Customer Console uses 8090.
+- The edge listens on loopback only. Caddy is its only public door.
+- `uv sync` already installs the edge into the shared venv, because the root `pyproject.toml` lists `agent-edge`.
+
+The sandbox is `deploy/hostinger/acb-agent-edge.service.d/50-hardening.conf`. It has the BH-2 shape of `acb-gateway`, and it adds `InaccessiblePaths=/opt/acb/app/.env`.
+
+- **Why the sandbox hides the root `.env`.** `Settings` reads `env_file=".env"`, and that path is relative to the working directory. The root `.env` holds `GATEWAY_INTERNAL_TOKEN`, and the edge holds no bearer (EA3-1). So a wrong working directory must never load it.
+- The sandbox also hides the env files of the workbench and the two consoles, the Git checkout, the SSH keys and Copilot tokens of `acb`, and the Docker socket.
+- It sets no `ReadWritePaths`, because the edge writes no file.
+
+The deploy step is in `scripts/vps_apply.sh`, after the Customer Console step, in the same pattern:
+
+1. When `acb-agent-edge` is enabled, the step installs the unit file if it changed. Then it restarts the unit.
+2. It waits for an HTTP answer on `http://127.0.0.1:8091/.well-known/oauth-authorization-server`. A 404 counts, because the flag is off by default.
+3. An enabled unit that does not answer fails the deploy.
+4. When the unit is not enabled, the step does nothing and says so. A unit that is not enabled stays off.
+
+The BO-23 loop installs the unit file, and the BH-7 step installs the drop-in. Neither one enables a service. So the first deploy puts the files on the box and starts nothing.
+
+**The env file of the edge.** The path is `/opt/acb/app/apps/services/agent_edge/.env`, owner `acb`, mode 0600.
+
+| Name | Value |
+|---|---|
+| `AGENT_ACCESS_ENABLED` | `true` at the pilot. While it is not set, every route answers 404 |
+| `AGENT_EDGE_SIGNING_KEY` | The same key as the gateway. At least 32 bytes, and not equal to `GATEWAY_INTERNAL_TOKEN` or `LITELLM_MASTER_KEY` |
+| `DATABASE_URL` | The DSN and the role of the gateway's `DATABASE_URL`. `lookup_token` and the other token acts read it through `acb_common.db` |
+| `DB_STATEMENT_CACHE_SIZE` | The value of the root `.env`, when it sets one. A transaction pooler needs `0` |
+| `AGENT_EDGE_GATEWAY_URL` | Not set. The default `http://127.0.0.1:8080` is the gateway on loopback |
+| `AGENT_ISSUER`, `AGENT_RESOURCE` | Not set. The defaults are `https://mcp.metorite.com` and `https://mcp.metorite.com/mcp` |
+
+- The edge file must not hold `GATEWAY_INTERNAL_TOKEN`, `LITELLM_MASTER_KEY` or a provider key.
+- EA-10p decides if the edge reads `AGENT_ACCESS_ORGS`. If it does, the edge file holds the value of the root `.env`.
+
+**The root `.env` of the gateway** gets three names. A writer of that file keeps its inode (`deploy/AGENTS.md`).
+
+| Name | Value |
+|---|---|
+| `AGENT_EDGE_SIGNING_KEY` | The same key as the edge |
+| `AGENT_ACCESS_ENABLED` | `true` at the pilot |
+| `AGENT_ACCESS_ORGS` | The organization ids of the pilot, Fracktal first (EA-10p) |
+
+**EA-10b. The Caddy site and the header strip (OWNER-GATE, gate (a)).**
+
+The Caddyfile gets the site `mcp.metorite.com`:
+
+```
+mcp.metorite.com {
+	request_body {
+		max_size 1MiB
+	}
+	reverse_proxy 127.0.0.1:8091 {
+		lb_try_duration 30s
+		lb_try_interval 250ms
+	}
+}
+```
+
+- `1MiB` is 1048576 bytes, the value of `mcp.MAX_BODY_BYTES`. Caddy reads `1MB` as 1000000 bytes, so `1MB` refuses a body that the edge accepts.
+- TLS works as on the other sites. Caddy gets the certificate by itself.
+- The `lb_try_*` lines follow the H-60 rule of the file. A restart of the edge then holds a request, and it does not answer 502.
+
+The `reverse_proxy` of `api.metorite.com` gets six lines:
+
+```
+header_up -X-User-Email
+header_up -X-User-Role
+header_up -X-Actor-Via
+header_up -X-Agent-Connection
+header_up -X-Agent-Timestamp
+header_up -X-Agent-Signature
+```
+
+- A public request then names no member and no agent connection. Only the edge reaches branch 0, and it calls the gateway on loopback.
+- **No internal caller uses the public host.** On 2026-10-13 the repo shows that each caller of these headers calls the gateway on loopback. These are the workbench BFF (`GATEWAY_BASE_URL`), the agents and skills (`GATEWAY_URL`), the WhatsApp bridge and the edge. `GATEWAY_PUBLIC_URL` builds callback links only. The CI and health probes send no identity header.
+- The repo cannot see the env files of the box. Before the merge, the owner checks that no `GATEWAY_URL` or `GATEWAY_BASE_URL` on the box names `api.metorite.com`.
+- **Done when** `tests/unit/test_caddy_auth_gate.py` passes after the owner adds `CADDY-AUTH-APPROVED <sha>` to `.claude/OWNER_GRANTS.md`. The H-303 grep also counts 3 or more: `grep -cE "header_up -X-(User-Email|User-Role|Actor-Via)" deploy/hostinger/caddy/Caddyfile`.
+
+**EA-10c. The smoke (OWNER-GATE, gate `deploy`).** Run it after the flag turns on.
+
+1. `curl -s https://mcp.metorite.com/.well-known/oauth-authorization-server` prints the RFC 8414 document with HTTP 200. Its `issuer` is `https://mcp.metorite.com`. A 404 prints `{"detail":"Not Found"}`, and that means the flag is off.
+2. `curl -si -X POST https://mcp.metorite.com/mcp -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'` answers HTTP 401. Its header is `WWW-Authenticate: Bearer resource_metadata="https://mcp.metorite.com/.well-known/oauth-protected-resource/mcp"` (§9.6).
+3. On the box, this line fetches the metadata document of Claude Code through the CIMD fetch of `agent_access.py` (`_fetch_document`, about line 235). It writes nothing to the database, and it prints `Claude Code`:
+
+```
+cd /opt/acb/app && sudo -u acb .venv/bin/python -c "import asyncio; from gateway.routes import agent_access as a; u='https://claude.ai/oauth/claude-code-client-metadata'; print(a._validated_metadata(u, asyncio.run(a._fetch_document(u)))['client_name'])"
+```
+
+⚠️ Step 2 sends a JSON-RPC body on purpose. A POST with no body fails check 5 of §9.6 (the body) before check 6 (the token), so it answers 400 and not 401.
 
 ## 16. Shell manifest (R9)
 
