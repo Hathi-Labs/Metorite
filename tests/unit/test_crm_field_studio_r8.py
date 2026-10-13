@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 import uuid
 from pathlib import Path
@@ -1115,3 +1116,74 @@ async def test_a_saved_view_skips_a_retired_custom_filter(studio) -> None:
     await _as_admin(p.org_a, "DELETE", f"/crm/fields/deals/{tier['key']}")
     direct = await _as_admin(p.org_a, "GET", f"/crm/deals?custom.{tier['key']}=gold")
     assert direct.status_code == 422
+
+
+# ── Gap A: the UI reads the flag from the layout ────────────────────────────
+
+
+async def test_the_layout_names_the_studio_flag_for_the_caller(studio, monkeypatch) -> None:
+    from acb_common import get_settings
+
+    p = studio
+
+    async def flags(user: Any) -> tuple[bool, bool]:
+        got = await _req(user, "GET", "/crm/fields/deals?layout=1")
+        assert got.status_code == 200, got.text
+        return got.json()["studio"], got.json()["studio_admin"]
+
+    monkeypatch.setattr(get_settings(), "crm_field_studio_orgs", p.org_b, raising=False)
+    assert await flags(_admin_of(p.org_a)) == (False, False), "flag off"
+    monkeypatch.setattr(get_settings(), "crm_field_studio_orgs", p.org_a, raising=False)
+    assert await flags(_admin_of(p.org_a)) == (True, True), "flag on, admin, Native"
+    assert await flags(_member_of(p.org_a)) == (True, False), "flag on, a member"
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_settings SET mode = 'mirror' WHERE organization_id = "
+                       "CAST(:o AS uuid)"), {"o": p.org_a})
+    assert await flags(_admin_of(p.org_a)) == (True, False), "Mirror mode"
+    # The plain read keeps its list shape.
+    plain = await _as_admin(p.org_a, "GET", "/crm/fields/deals")
+    assert isinstance(plain.json(), list)
+
+
+# ── Gap B: the live name of a lookup ────────────────────────────────────────
+
+
+async def test_a_lookup_reads_the_live_name_and_never_org_b(studio) -> None:
+    p = studio
+    acme = await _record(p.org_a, "organizations", {"name": "Acme"})
+    beta = await _record(p.org_a, "organizations", {"name": "Beta"})
+    other = await _record(p.org_b, "organizations", {"name": "Org B secret"})
+    partner = await _field(p.org_a, "deals", {"label": "Partner", "type": "lookup",
+                                              "lookup_target": "organizations"})
+    owner = await _field(p.org_a, "deals", {"label": "Reseller", "type": "lookup",
+                                            "lookup_target": "organizations"})
+    key, second = partner["key"], owner["key"]
+    deal = await _record(p.org_a, "deals", {"name": "D", "custom": {
+        key: {"id": acme["id"]}, second: {"id": beta["id"]}}})
+
+    renamed = await _as_admin(p.org_a, "PATCH", f"/crm/organizations/{acme['id']}",
+                              {"name": "Acme Two"})
+    assert renamed.status_code == 200, renamed.text
+    read = (await _as_admin(p.org_a, "GET", f"/crm/deals/{deal['id']}")).json()
+    assert read["custom"][key] == {"id": acme["id"], "name": "Acme Two"}
+    assert read["custom"][second] == {"id": beta["id"], "name": "Beta"}
+    assert _custom(p, "deals", deal["id"])[key]["name"] == "Acme", "a read writes nothing"
+    listed = (await _as_admin(p.org_a, "GET", "/crm/deals")).json()["rows"]
+    assert [r["custom"][key]["name"] for r in listed if r["id"] == deal["id"]] == ["Acme Two"]
+
+    # A target that is gone keeps the stored name and says so.
+    assert (await _as_admin(p.org_a, "DELETE", f"/crm/organizations/{beta['id']}")).status_code == 200
+    read = (await _as_admin(p.org_a, "GET", f"/crm/deals/{deal['id']}")).json()
+    assert read["custom"][second] == {"id": beta["id"], "name": "Beta", "missing": True}
+
+    # A value that names a record of org B (planted past the write check)
+    # never reads org B: row level security hides it, so it reads as missing.
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_deals SET custom = jsonb_set(custom, ARRAY[CAST(:k AS text)], "
+            "CAST(:v AS jsonb)) WHERE id = CAST(:i AS uuid)"),
+            {"k": key, "i": deal["id"],
+             "v": json.dumps({"id": other["id"], "name": "Planted"})})
+    read = (await _as_admin(p.org_a, "GET", f"/crm/deals/{deal['id']}")).json()
+    assert read["custom"][key] == {"id": other["id"], "name": "Planted", "missing": True}
+    assert "Org B secret" not in json.dumps(read)

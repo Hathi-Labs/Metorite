@@ -79,6 +79,7 @@ from gateway.routes.crm.fields import (
     checked_slug,
     field_wire,
     read_layout,
+    studio_flags,
 )
 from gateway.routes.crm.flags import require_field_studio
 from pydantic import BaseModel, ConfigDict, Field
@@ -519,6 +520,77 @@ async def _lookup_value(db: Any, field: CustomField, value: Any) -> dict[str, st
     if row is None:
         raise _bad(field, f"no {ENTITIES[target].label.lower()} has that id.")
     return {"id": str(row.id), "name": str(row.name or "")}
+
+
+# ── The live name of a lookup (item 8) ─────────────────────────────────────
+
+_LOOKUP_DEFS_SQL = (
+    "SELECT key, type, lookup_target, is_system FROM crm_field_defs "
+    "WHERE entity = :entity"
+)
+
+
+def _lookup_id(value: Any) -> str | None:
+    """The canonical id of a stored lookup value ``{"id", "name"}``, or None."""
+    if not isinstance(value, dict) or not isinstance(value.get("id"), str):
+        return None
+    try:
+        return checked_uuid(value["id"], "id")
+    except HTTPException:
+        return None
+
+
+async def attach_lookup_names(db: Any, slug: str, rows: list[dict[str, Any]]) -> None:
+    """Give each lookup value in ``custom`` the current name of its target.
+
+    A record stores ``{"id", "name"}`` with the name at write time (item 8).
+    A read asks one query for each target entity, never one for each field.
+    The read runs in the caller's bound session, so row level security keeps
+    a record of another organization out: its value keeps the stored name and
+    gets ``"missing": true``, as a deleted target does. A row with no lookup
+    value costs no query. *rows* change in place, and nothing is written.
+    """
+    if not any(
+        _lookup_id(v) for r in rows
+        for v in (r.get("custom") or {}).values()
+    ):
+        return
+    defs = (await db.execute(
+        text(_LOOKUP_DEFS_SQL), {"entity": ENTITY_BY_SLUG[slug]},
+    )).fetchall()
+    targets = {
+        d.key: d.lookup_target for d in defs
+        if d.type == "lookup" and not getattr(d, "is_system", False)
+        and d.lookup_target in _LOOKUP_NAMES
+    }
+    wanted: dict[str, set[str]] = {}
+    for row in rows:
+        for key, value in (row.get("custom") or {}).items():
+            ident = _lookup_id(value) if key in targets else None
+            if ident:
+                wanted.setdefault(targets[key], set()).add(ident)
+    live: dict[str, dict[str, str]] = {}
+    for target, ids in wanted.items():
+        table, name = _LOOKUP_NAMES[target]
+        found = (await db.execute(
+            text(f"SELECT id, {name} AS name FROM {table} "
+                 "WHERE id = ANY(CAST(:ids AS uuid[]))"),
+            {"ids": sorted(ids)},
+        )).fetchall()
+        live[target] = {str(r.id): str(r.name or "") for r in found}
+    for row in rows:
+        custom = row.get("custom") or {}
+        changed = dict(custom)
+        for key, value in custom.items():
+            ident = _lookup_id(value) if key in targets else None
+            if not ident:
+                continue
+            names = live.get(targets[key], {})
+            if ident in names:
+                changed[key] = {**value, "name": names[ident]}
+            else:
+                changed[key] = {**value, "missing": True}
+        row["custom"] = changed
 
 
 # ── The custom write path (item 5) ──────────────────────────────────────────
@@ -1230,7 +1302,8 @@ async def put_layout(
                 bool(kept.visible) if kept is not None else True,
                 section,
             )
-        return await read_layout(db, entity)
+        found = await read_layout(db, entity)
+        return found.model_copy(update=await studio_flags(db, user))
 
 
 _LAYOUT_ROWS_SQL = (

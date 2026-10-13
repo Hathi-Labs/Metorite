@@ -77,7 +77,11 @@ from gateway.routes.crm.core import (
     update_row,
     validate_source,
 )
-from gateway.routes.crm.field_studio import custom_for_create, custom_for_patch
+from gateway.routes.crm.field_studio import (
+    attach_lookup_names,
+    custom_for_create,
+    custom_for_patch,
+)
 from gateway.routes.crm.pipeline import (
     NO_EXISTING_RECORD,
     _require_entry_fields,
@@ -164,7 +168,11 @@ async def _list(
 ) -> ListResponse:
     async with _tenant_session() as db:
         query = await list_query(db, entity, params, user)
-        return await run_list(db, entity, query)
+        found = await run_list(db, entity, query)
+        # CRM-C4a: the live name of each lookup value, one query for each
+        # target entity.
+        await attach_lookup_names(db, entity.slug, found.rows)
+        return found
 
 
 async def list_query(
@@ -216,6 +224,7 @@ async def _get(entity: Entity, record_id: str) -> dict:
         row = await require_row(db, entity.table, record_id, entity.label)
         wired = row_to_dict(row, entity.model)
         await attach_ext_urls(db, entity.table, [wired])
+        await attach_lookup_names(db, entity.slug, [wired])
         return wired
 
 

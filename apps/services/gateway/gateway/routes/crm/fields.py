@@ -35,6 +35,7 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.crm.access import ADMIN_PERMISSION, read_settings
 from gateway.routes.crm.core import (
     ENTITIES,
     FIELD_ENTITY_BY_SLUG,
@@ -43,6 +44,7 @@ from gateway.routes.crm.core import (
     from_jsonb,
     router,
 )
+from gateway.routes.crm.flags import field_studio_allowed
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -113,6 +115,12 @@ class FieldLayout(BaseModel):
     entity: str
     sections: list[FieldSection]
     fields: list[FieldDef]
+    #: True when ``CRM_FIELD_STUDIO_ORGS`` allows the caller's organization.
+    #: The UI reads it, because it cannot read the setting (CRM-C4b, C4c).
+    studio: bool = False
+    #: True only when the caller may write fields: the flag allows the org,
+    #: the caller holds ``admin:access:manage``, and the mode is Native.
+    studio_admin: bool = False
 
 
 def _source(value: str | None) -> Literal["zoho", "native"]:
@@ -173,6 +181,21 @@ def checked_slug(entity: str) -> str:
     return stored
 
 
+async def studio_flags(db: Any, user: UserContext) -> dict[str, bool]:
+    """``studio`` and ``studio_admin`` of :class:`FieldLayout` for *user*.
+
+    The organization comes from the session (R5). The flag has one reader,
+    ``flags.field_studio_allowed``.
+    """
+    org = user.organization_id
+    studio = field_studio_allowed(org)
+    admin = False
+    if studio and user.has_permission(ADMIN_PERMISSION):
+        row = await read_settings(db, str(org))
+        admin = getattr(row, "mode", None) == "native"
+    return {"studio": studio, "studio_admin": admin}
+
+
 async def read_layout(db: Any, slug: str) -> FieldLayout:
     """The sections, the system fields and the custom fields of *slug*, in order.
 
@@ -219,6 +242,7 @@ async def list_fields(
     stored = checked_slug(entity)
     async with _tenant_session() as db:
         if layout:
-            return await read_layout(db, entity)
+            found = await read_layout(db, entity)
+            return found.model_copy(update=await studio_flags(db, user))
         rows = (await db.execute(text(_FIELDS_SQL), {"entity": stored})).fetchall()
     return [field_wire(r) for r in rows]
