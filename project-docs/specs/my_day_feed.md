@@ -1816,6 +1816,11 @@ The build made these choices, which this file did not fix:
   sound answer that its fetch began after the write, or after Undo.
 - **The overlay of a menu act ends** when an answer lands whose fetch began
   after the write landed.
+- **Later is outside the cut of 20 cards.** It draws after the other groups,
+  folded, with all its cards.
+- **A card with no `state_fp` has no menu**, and the observer never sends it.
+- **After a menu act, the focus goes back to the "···" button.** When the card
+  left, the focus goes to the column's heading.
 
 **Fix round 1, 2026-10-14.** The review and the verifier found these, and
 this round fixed each one:
@@ -1829,18 +1834,33 @@ this round fixed each one:
   the write then never stores its answer, so an Undo does not hide the card
   again.
 - **The state queue belongs to one member.** It sends nothing once the cache
-  names another. Each account switch forgets the member before the page goes
-  (`forgetMember` in `accountSwitch.ts`). So a `pagehide` during a switch
-  sends nothing.
+  names another member. A change of member gives the hook a new queue.
 - **`columnView` in `feed.ts` is the one rule** of the visit, the cut and the
   pill. The pill counts only new cards that the next cut draws outside Later.
 - **A POST gives up after 8 seconds** (`STATE_TIMEOUT_MS`), and the queue
   keeps its batch.
-- **Later is outside the cut of 20 cards.** It draws after the other groups,
-  folded, with all its cards.
-- **A card with no `state_fp` has no menu**, and the observer never sends it.
-- **After a menu act, the focus goes back to the "···" button.** When the card
-  left, the focus goes to the column's heading.
+
+**Fix round 2, 2026-10-14.** A focused verification found two defects in
+the account-switch change of round 1. This round fixed both:
+
+- **An account switch clears no cache.** Round 1 called `bindIdentity(null)`
+  before each navigation. That woke every reader of the leaving page, and
+  each read went out under the new cookie. It also closed open panes, for
+  every member and with the flag off. That call is gone.
+- **One narrow signal takes its place.** `src/lib/accountLeave.ts` holds
+  `onAccountLeave` and `leaveAccount`. The 4 exits call `leaveAccount` just
+  before they navigate: `switchTo`, both exits of `signOutThis`, and the tab
+  that hears another account. The signal touches no cache, wakes no reader
+  and closes no pane. A listener that throws never blocks the navigation.
+- **The state queue seals itself on the signal.** It drops its items, takes
+  no new item, and sends nothing on `pagehide` or at the unmount until the
+  page reloads. The seal also holds each queue that the page makes after it.
+  The seal does not depend on `identity()`.
+- **The fences.** `accountSwitchLeave.test.ts` proves with module mocks that
+  each exit calls `leaveAccount` and never `bindIdentity`, `clearAll` or
+  `invalidate`. `feedState.test.ts` holds the seal probe. The
+  `shell-account.spec.ts` check holds the new document for 2.5 seconds, and
+  the leaving page makes no read.
 
 **Known limits of MD-2b.** A later ticket owns each one.
 
