@@ -490,6 +490,18 @@ def test_the_list_filters_text_and_the_calendar_view_in_python(gw: Recorder):
     assert "1 item(s) in calendar" in out and "Dentist" in out
 
 
+def test_the_list_text_filter_matches_words_apart(gw: Recorder):
+    """The Projects search's rule (2026-10-13): every word, in the title or
+    the description, in any order."""
+    gw.inbox_pages = [{"rows": [
+        {**TASK, "id": "a" * 32, "title": "Finance",
+         "description": "approval of the invoice"},
+        {**TASK, "id": "b" * 32, "title": "Invoice", "description": "paid"},
+    ], "total": 2}]
+    out = run(core.my_tasks_list(view="all", query="invoice approval"))
+    assert "1 item(s)" in out and "Finance" in out
+
+
 def test_the_list_ranks_before_it_cuts_to_thirty(gw: Recorder):
     """`ordering.ts`: `sort_key` ASC NULLS LAST, then `created_at` DESC. Forty
     rows arrive in a shuffled order; the thirty shown are the first thirty
@@ -949,3 +961,14 @@ def test_detail_fences_comments_always(gw: Recorder):
     assert out.startswith(core._UNTRUSTED_NOTE)
     assert "comment (bob@fracktal.in): «hi»" in out
     assert "its statuses: Triage (Triage), To do (To do), Done (Done)" in out
+
+
+@pytest.mark.parametrize("query", [
+    "invoice approval", "Parser parser PARSER fix", "to do", "v2 firmware",
+    " ".join(f"word{i}" for i in range(30)),
+])
+def test_the_word_rule_is_the_gateways(query: str):
+    """The skill's copy of `filters.query_words` (review of #941)."""
+    from gateway.routes.projects.filters import query_words
+
+    assert core._query_words(query) == [w.lower() for w in query_words(query)]
