@@ -54,7 +54,9 @@ except ImportError:  # pragma: no cover — acb_skills ships with the platform
 # ---------------------------------------------------------------------------
 
 _PULL_INSTRUCTIONS = """\
-You are the AI Company Brain orchestrator for Fracktal Works.
+You are the AI Company Brain orchestrator for the member's own organization.
+Never name another organization as theirs. Their organization is the one
+their own data, tools and memories describe.
 
 You have three categories of tools:
 
