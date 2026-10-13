@@ -236,6 +236,81 @@ test.describe("the consent page of an outside agent", () => {
     expect(approvals.map((a) => a.postDataJSON().consent_ticket)).toEqual([VIEW.consent_ticket, "F".repeat(43)]);
   });
 
+  test("a lost approve answer ends the flow, and no second approve goes out", async ({ page }) => {
+    const approvals: Request[] = [];
+    await stub(page);
+    await page.route("**/api/agent-access/authorize/approve", (r) => {
+      approvals.push(r.request());
+      // The gateway may have made the connection. The browser never hears.
+      return r.abort("connectionreset");
+    });
+    await page.goto(PAGE);
+    await page.getByRole("button", { name: "Approve" }).click();
+    await expect(
+      page.getByText(
+        "We could not confirm the answer. Start again from the agent, and check your connections if it asks twice.",
+      ),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve" })).toHaveCount(0);
+    await page.waitForTimeout(300);
+    expect(approvals).toHaveLength(1);
+  });
+
+  test("an approve answer that is not JSON ends the flow too", async ({ page }) => {
+    const approvals: Request[] = [];
+    await stub(page);
+    await page.route("**/api/agent-access/authorize/approve", (r) => {
+      approvals.push(r.request());
+      return r.fulfill({ status: 503, contentType: "text/html", body: "<html>gateway</html>" });
+    });
+    await page.goto(PAGE);
+    await page.getByRole("button", { name: "Approve" }).click();
+    await expect(page.getByText("We could not confirm the answer.", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve" })).toHaveCount(0);
+    expect(approvals).toHaveLength(1);
+  });
+
+  test("a busy fresh check allows one more try, and sends no approve", async ({ page }) => {
+    const approvals: Request[] = [];
+    let checks = 0;
+    let approveAnswers = [503, 200];
+    await stub(page);
+    await page.route("**/api/agent-access/authorize/check", (r) => {
+      checks += 1;
+      if (checks === 2) {
+        return r.fulfill({ status: 503, contentType: "application/json", body: "{}" });
+      }
+      const ticket = checks === 1 ? VIEW.consent_ticket : "G".repeat(43);
+      return r.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...VIEW, consent_ticket: ticket }),
+      });
+    });
+    await page.route("**/api/agent-access/authorize/approve", (r) => {
+      approvals.push(r.request());
+      const [status, ...rest] = approveAnswers;
+      approveAnswers = rest;
+      return r.fulfill(
+        status === 503
+          ? { status: 503, contentType: "application/json", body: "{}" }
+          : { status: 200, contentType: "application/json", body: JSON.stringify({ redirect_to: APPROVED }) },
+      );
+    });
+    await page.goto(PAGE);
+    const approve = page.getByRole("button", { name: "Approve" });
+    await approve.click();
+    await expect(page.getByText("Metorite is busy. Try again in a moment.")).toBeVisible();
+    await approve.click();
+    await expect.poll(() => checks).toBe(2);
+    await expect(approve).toBeEnabled();
+    expect(approvals).toHaveLength(1);
+    await approve.click();
+    await page.waitForURL(APPROVED);
+    expect(checks).toBe(3);
+    expect(approvals.map((x) => x.postDataJSON().consent_ticket)).toEqual([VIEW.consent_ticket, "G".repeat(43)]);
+  });
+
   test("the page carries the frame headers", async ({ page }) => {
     await stub(page);
     const res = await page.goto(PAGE);

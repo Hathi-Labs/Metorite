@@ -58,6 +58,16 @@ type Phase =
   | { kind: "leaving"; message: string };
 
 const CHECK_URL = "/api/agent-access/authorize/check";
+
+/**
+ * The end of the flow when approve's answer is lost (fix round 2). The
+ * gateway may have made the connection, so the page must not try again.
+ */
+const UNCONFIRMED: Refusal = {
+  message:
+    "We could not confirm the answer. Start again from the agent, and check your connections if it asks twice.",
+  redirectTo: null,
+};
 const APPROVE_URL = "/api/agent-access/authorize/approve";
 
 async function postJson(url: string, body: unknown, signal?: AbortSignal) {
@@ -69,12 +79,14 @@ async function postJson(url: string, body: unknown, signal?: AbortSignal) {
     signal,
   });
   let json: unknown = null;
+  let parsed = false;
   try {
     json = await res.json();
+    parsed = true;
   } catch {
     json = null;
   }
-  return { status: res.status, ok: res.ok, json };
+  return { status: res.status, ok: res.ok, json, parsed };
 }
 
 /**
@@ -286,8 +298,21 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
   const ready = canApprove(view, chosen) && !!orgName && !sending && gate.open;
 
   /** A fresh ticket for the same screen, or null when the flow must end. */
+  /** The fresh check is busy: no approve went out, so one more try is safe. */
+  function checkBusy(): null {
+    setProblem(refusalFor(503, null).message);
+    setSending(false);
+    return null;
+  }
+
   async function freshTicket(): Promise<CheckView | null> {
-    const res = await postJson(CHECK_URL, request);
+    let res: Awaited<ReturnType<typeof postJson>>;
+    try {
+      res = await postJson(CHECK_URL, request);
+    } catch {
+      return checkBusy();
+    }
+    if (res.status === 503) return checkBusy();
     if (!res.ok || !isCheckView(res.json)) {
       onRefused(refusalFor(res.ok ? 502 : res.status, res.json));
       return null;
@@ -305,33 +330,41 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
     if (!ready || !gate.openNow()) return;
     setSending(true);
     setProblem(null);
+    // Redis may have spent the old ticket before its reply timed out, so a
+    // retry after a gateway 503 starts with a fresh ticket.
+    const ticketView = needsFreshTicket ? await freshTicket() : shown;
+    if (!ticketView) return;
+    let res: Awaited<ReturnType<typeof postJson>>;
     try {
-      // Redis may have spent the old ticket before its reply timed out, so a
-      // retry after a 503 or a lost answer starts with a fresh ticket.
-      const ticketView = needsFreshTicket ? await freshTicket() : shown;
-      if (!ticketView) return;
-      const res = await postJson(
+      res = await postJson(
         APPROVE_URL,
         approveBody(request, ticketView, { scopes: chosen, pins, includePersonal }),
       );
-      const redirectTo = (res.json as { redirect_to?: unknown } | null)?.redirect_to;
-      if (res.ok && typeof redirectTo === "string") {
-        onLeave(`${view.client.host} is connected.`, redirectTo);
-        return;
-      }
-      const refusal = refusalFor(res.ok ? 502 : res.status, res.json);
-      if (res.status === 503) {
-        setNeedsFreshTicket(true);
-        setProblem(refusal.message);
-        setSending(false);
-        return;
-      }
-      onRefused(refusal);
     } catch {
-      setNeedsFreshTicket(true);
-      setProblem(refusalFor(0, null).message);
-      setSending(false);
+      // ⚠️ The answer is lost, and the gateway may have made the connection.
+      // A retry would make a SECOND one, so the flow ends (fix round 2).
+      onRefused(UNCONFIRMED);
+      return;
     }
+    const redirectTo = (res.json as { redirect_to?: unknown } | null)?.redirect_to;
+    if (res.ok && typeof redirectTo === "string") {
+      onLeave(`${view.client.host} is connected.`, redirectTo);
+      return;
+    }
+    if (!res.parsed || res.ok) {
+      // Not JSON, or a 2xx with no redirect: nobody knows what happened.
+      onRefused(UNCONFIRMED);
+      return;
+    }
+    if (res.status === 503) {
+      // Every 503 of approve comes BEFORE `create_connection` (the ticket
+      // spend), so a retry with a fresh ticket makes no second connection.
+      setNeedsFreshTicket(true);
+      setProblem(refusalFor(503, res.json).message);
+      setSending(false);
+      return;
+    }
+    onRefused(refusalFor(res.status, res.json));
   }
 
   return (

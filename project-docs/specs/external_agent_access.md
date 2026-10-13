@@ -764,7 +764,8 @@ The consent page is `/connect/authorize` on the control plane. A member sees it 
 - `approve` spends the ticket with one `GETDEL`, before every other check of the request. So a ticket that `approve` reads is gone, whatever the result.
 - A missing, spent, expired or unmatched ticket gives 400 `invalid_request`, with no `redirect_to`.
 - A Redis outage gives 503 with `Retry-After`, never 400. This holds for `check` too, because `check` cannot give a ticket without Redis.
-- Redis can spend a ticket and then lose the reply. So after a 503 or a lost answer on `approve`, the page calls `check` again before the retry. It uses the fresh ticket only when the fresh screen is the same (`sameScreen` in `consent.ts`). Any other answer ends the flow.
+- Redis can spend a ticket and then lose the reply. So after a gateway 503 on `approve`, the page calls `check` again before the retry. It uses the fresh ticket only when the fresh screen is the same (`sameScreen` in `consent.ts`). A 503 from that `check` allows one more try.
+- ⚠️ The retry applies to a JSON 503 from `approve` ONLY. Every such 503 comes before `create_connection`. After a thrown fetch, an answer that is not JSON, or a 2xx with no `redirect_to`, the gateway may have made the connection. So the page ends the flow, and a retry cannot make a second connection.
 
 **What the screen shows of the redirect.** `AuthorizeView.redirect_display` replaces `redirect_host`.
 
@@ -1093,3 +1094,4 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The fences.** `test_agent_oauth_server.py` holds the ticket, the display and the redirect forms. `relay.test.ts` holds the BFF rules, `sessionCookie.test.ts` holds `SameSite=Lax`, and `e2e/connect-authorize.spec.ts` holds the page and the frame headers. Each rule was red first under a named mutation.
   - **Choices this slice made.** A URI with no port shows `scheme://host`, with no port. The pin picker lists the nodes of `GET /projects/tree` in tree order, folders and spaces too, because a pin covers its subtree. `test_mcp_edge_signing.py` reads `_PRIVATE_SCHEME` in place of the removed `_SCHEME`.
 - 2026-10-13 — Fix round 1 of EA-4a, after the adversarial review. Approve waits for 500 ms of focus. The headline names the verified host, and the client name is a claim. A port 0 redirect is refused. A lost session is a 401. A retry after a 503 gets a fresh ticket. §17 records the Cursor decision.
+- 2026-10-13 — Fix round 2 of EA-4a. Only a JSON 503 from `approve` gets a fresh ticket and a retry. A lost answer or an answer that is not JSON ends the flow, so a retry never makes a second connection.
