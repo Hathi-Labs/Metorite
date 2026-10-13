@@ -1,6 +1,6 @@
 # Task references — links, pull requests, commits, pasted images and `#123` pills
 
-**Status:** 🟡 IN PROGRESS. TR-1 and TR-3 are BUILT on 2026-10-13 (branch `task-links`, migration 255). TR-2, TR-4 and TR-5 are not built. Proposed 2026-10-13, owner directive. Verified against code on 2026-10-13 at `origin/main` 68e26cad.
+**Status:** 🟡 IN PROGRESS. TR-1, TR-2 and TR-3 are BUILT on 2026-10-13 (branch `task-links`, migration 255). TR-4 is BUILT on branch `task-paste`. TR-5 is not built. Proposed 2026-10-13, owner directive. Verified against code on 2026-10-13 at `origin/main` 68e26cad.
 
 **Board row:** WS-57 (`work_plan.md` §2).
 
@@ -89,6 +89,7 @@ The owner asked for five things on 2026-10-13:
 - Each reference is one row. It shows the provider icon and the label (`metorite#927`, or the title when known). A PR or an issue also shows a state chip. Merged is the done colour and closed is the muted one. The row opens the URL in a new tab. A remove button sits at the end of the row.
 - The section shows in both hosts, Projects' `TaskPanel` and My Tasks' `ItemDetail`, because `TaskBody` is shared.
 - **Done when:** a pasted GitHub PR URL shows as `repo#N` with its state. A Google Doc shows its icon. A remove takes the row away. The visual rig shows the section in dark, light and compact, and at 390 px.
+- **Built 2026-10-13.** `components/TaskLinks.tsx` draws the section, and `lib/taskLinks.ts` holds the rules for the icon, the state chip and the names (fence: `taskLinks.test.ts`). A paste of one link into the empty field adds it at once. The section's fold id is `refs`. The section that holds other tasks was named "Links & subtasks". It is now "Subtasks & related", so the word "Links" means one thing on the card. Its fold id stays `links`.
 
 ### TR-3 — the chat tools (AGENT-SAFE)
 
