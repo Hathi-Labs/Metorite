@@ -16,6 +16,11 @@ import { expect, test, type Page, type Request, type Route } from "@playwright/t
  *      comes back.
  *   4. A slow feed holds the bell's needs read for 4 seconds at most. Then
  *      the read goes to `/api/shell/needs`, before the feed answers.
+ *   5. The order holds during a visit (§7 rule 4, fix round 1): a second
+ *      answer in a new order, with one new card, moves nothing on screen.
+ *      The pill says "1 new", and a click takes the server's order in.
+ *      Mutation, run by hand (2026-10-14): start a new visit on each answer,
+ *      and this test fails.
  */
 
 const SESSION = {
@@ -141,10 +146,29 @@ interface Store {
   needsAt: number[];
   /** How long the feed route waits before it answers. */
   feedDelayMs: number;
+  /** While true, the server's order changes and one card is new. The test turns it on. */
+  reorder: boolean;
 }
 
+/** The new card of the second read, in test 5. */
+const NEW_CARD = {
+  ...CARDS[0],
+  signal_id: "tasks:t3",
+  title: "Approve the purchase order",
+  href: "/projects?task=t3",
+  acts: [{ id: "done", label: "Done", class: "A", way: "tap", act: "done", act_ref: "t3" }],
+  state_fp: "c63f2be4",
+};
+
 async function setup(page: Page, opts: { feedDelayMs?: number } = {}): Promise<Store> {
-  const store: Store = { posts: [], hidden: new Set(), feedAt: [], needsAt: [], feedDelayMs: opts.feedDelayMs ?? 0 };
+  const store: Store = {
+    posts: [],
+    hidden: new Set(),
+    feedAt: [],
+    needsAt: [],
+    feedDelayMs: opts.feedDelayMs ?? 0,
+    reorder: false,
+  };
   await page.addInitScript(() => {
     localStorage.setItem("cc-shell-bar", "1");
     localStorage.setItem("cc-shell-nav", "1");
@@ -172,7 +196,8 @@ async function setup(page: Page, opts: { feedDelayMs?: number } = {}): Promise<S
     if (path === "/api/shell/feed") {
       store.feedAt.push(Date.now());
       if (store.feedDelayMs > 0) await new Promise((r) => setTimeout(r, store.feedDelayMs));
-      const cards = CARDS.filter((c) => !store.hidden.has(c.signal_id));
+      const all = store.reorder ? [CARDS[2], NEW_CARD, CARDS[1], CARDS[0]] : CARDS;
+      const cards = all.filter((c) => !store.hidden.has(c.signal_id));
       return json({
         cards,
         groups: cards.length ? [{ id: "needs_you", count: cards.length }] : [],
@@ -301,5 +326,38 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
     expect(wait).toBeGreaterThan(3_500);
     expect(wait).toBeLessThan(7_000);
     await expect(feed(page)).toBeVisible();
+  });
+
+  test("the order holds during a visit, a new card waits behind the pill, and a click takes it in", async ({ page }) => {
+    test.setTimeout(60_000);
+    const store = await setup(page);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    const order = () =>
+      feed(page)
+        .locator('[data-testid^="feed-card-"]')
+        .evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.testid));
+    const first = ["feed-card-tasks:t1", "feed-card-tasks:t2", "feed-card-email:acc1:a"];
+    expect(await order()).toEqual(first);
+    // The server now answers in a new order, with one new card. Past the
+    // cache's fresh window, a return to the tab reads the feed again.
+    store.reorder = true;
+    const reads = store.feedAt.length;
+    await page.waitForTimeout(5_500);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect.poll(() => store.feedAt.length).toBeGreaterThan(reads);
+    const pill = feed(page).getByRole("button", { name: "1 new" });
+    await expect(pill).toBeVisible();
+    // Nothing moved under the pointer, and the new card waits.
+    expect(await order()).toEqual(first);
+    await expect(feedCard(page, "tasks:t3")).toHaveCount(0);
+    await pill.click();
+    await expect(pill).toHaveCount(0);
+    expect(await order()).toEqual([
+      "feed-card-email:acc1:a",
+      "feed-card-tasks:t3",
+      "feed-card-tasks:t2",
+      "feed-card-tasks:t1",
+    ]);
   });
 });
