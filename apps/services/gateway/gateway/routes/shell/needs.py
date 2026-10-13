@@ -121,6 +121,11 @@ needs view. ``PROVIDERS`` is the needs subset, in the order above, and
 feed-only providers. A provider gives its needs rows AND a thunk for its
 feed signals. The needs route never calls the thunk, so the needs answer
 runs no feed code. Fence: ``tests/unit/test_shell_feed.py::TestOneRegistry``.
+
+**Handled** (``my_day_feed.md`` MD-2c). The tasks, email and approvals
+entries also carry a ``handled`` read: what the app closed for the member
+since an instant, through a new function in the app that owns the table.
+Only the feed calls it (``handled.py``). ``closed_by`` is the ``by`` table.
 """
 
 from __future__ import annotations
@@ -390,6 +395,24 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
     return out
 
 
+async def _tasks_handled(user: UserContext, since: datetime) -> list[Closed]:
+    """My Tasks' Handled read: the lens tasks closed since ``since``, each
+    with who closed it (``personal.my_completed_since``)."""
+    from gateway.routes.projects.personal import my_completed_since
+
+    answer = await my_completed_since(user, since, limit=PER_APP)
+    out: list[Closed] = []
+    for row in answer.get("rows") or []:
+        task_id = str(row["id"])
+        out.append(Closed(
+            key=f"tasks:{task_id}", app="tasks",
+            title=task_entity(task_id, row.get("title"))["label"],
+            href=task_href(task_id), by=closed_by(row.get("closed_by"), user.email or ""),
+            at=_iso(row.get("completed_at")),
+        ))
+    return out
+
+
 # ── Projects: unread notifications, through the bell's read ─────────────────
 
 #: The bell's verbs (`app/projects/lib/notifications.ts` `VERB`).
@@ -405,6 +428,52 @@ def _who(actor: Any) -> str:
     if raw.startswith("agent:"):
         return raw[len("agent:"):] or raw
     return raw.split("@")[0] or raw
+
+
+def closed_by(actor: Any, member: str) -> dict[str, str | None]:
+    """The ``by`` of a Handled entry (``my_day_feed.md`` MD-2c, the ``by``
+    table), from ``created_by`` or ``reviewed_by``.
+
+    * The member's own address is ``you``.
+    * Another address is ``person``, named by its local part, as ``_who``
+      names it.
+    * ``agent:<name>`` is ``agent``, named by the agent's name.
+    * Every other value is ``system``: ``system``, ``system:sync``,
+      ``system:workflow:<id>``, ``operator``, or nothing.
+
+    An email rule has no actor value. Its read writes ``rules`` itself. The
+    client writes the words ("You", "Ravi", "Metorite").
+    """
+    raw = str(actor or "").strip()
+    if raw.startswith("agent:") and raw[len("agent:"):]:
+        return {"kind": "agent", "name": raw[len("agent:"):]}
+    if "@" in raw:
+        if raw.lower() == str(member or "").strip().lower():
+            return {"kind": "you", "name": None}
+        return {"kind": "person", "name": _who(raw)}
+    return {"kind": "system", "name": None}
+
+
+#: The ``by`` of a row that an email rule closed (the ``by`` table).
+BY_RULES: dict[str, str | None] = {"kind": "rules", "name": None}
+
+
+@dataclass(frozen=True)
+class Closed:
+    """One thing that an app closed for the member (``my_day_feed.md``
+    MD-2c). ``key`` is the entity, so the Handled group keeps one entry for
+    each. :meth:`entry` is the shape of the answer, and ``key`` is not in it."""
+
+    key: str
+    app: str
+    title: str
+    href: str
+    by: dict[str, str | None]
+    at: str | None
+
+    def entry(self) -> dict[str, Any]:
+        return {"app": self.app, "title": self.title, "href": self.href,
+                "by": dict(self.by), "at": self.at}
 
 
 def _sentence(row: dict[str, Any]) -> str:
@@ -503,6 +572,13 @@ def _email_href(message_id: str, account_id: str) -> str:
     return "/email?" + urlencode({"email": message_id.lower(), "account": account_id.lower()})
 
 
+def _in_all_inboxes(row: dict[str, Any]) -> bool:
+    """Whether the feed reads this mailbox. A mailbox that the member keeps
+    separate leaves every read of more than one mailbox (D-EM-30). The needs
+    rows and the Handled rows apply this one rule."""
+    return bool(row.get("in_all_inboxes", True))
+
+
 async def _email(user: UserContext) -> Found:
     from gateway.routes.email.digest import needs_reply_count, needs_reply_threads
     from gateway.routes.email.transport.accounts import feed_mailboxes
@@ -517,7 +593,7 @@ async def _email(user: UserContext) -> Found:
     total = 0
     capped = False
     for row in accounts:
-        if not row.get("in_all_inboxes", True):
+        if not _in_all_inboxes(row):
             continue  # D-EM-30, see the module note
         account_id = str(row["id"])
         asked += 1
@@ -591,6 +667,37 @@ def _thread_signal(row: Item, message_id: str | None = None) -> Signal:
         href=row["href"], acts=(link("open-thread", "Open thread", row["href"]),),
         at=row.get("at"),
     )
+
+
+#: Where a rule row with no message opens. The email app has no link to its
+#: rules history (``app/email`` reads only ``?email=`` and ``?account=``), so
+#: the row opens the app.
+EMAIL_HOME = "/email"
+
+
+async def _email_handled(user: UserContext, since: datetime) -> list[Closed]:
+    """Email's Handled read: the rules applied since ``since`` on the
+    mailboxes that the needs rows read (``runner.applied_rules_since``).
+    The title is the subject, or else the rule name. The link opens the
+    message, or else the email app."""
+    from gateway.routes.email.automation.runner import applied_rules_since
+    from gateway.routes.email.transport.accounts import feed_mailboxes
+
+    accounts = [str(r["id"]) for r in await feed_mailboxes(user) if _in_all_inboxes(r)]
+    if not accounts:
+        return []
+    out: list[Closed] = []
+    for row in await applied_rules_since(user, accounts, since, limit=PER_APP):
+        message = row.get("message_id")
+        title = (str(row.get("subject") or "").strip()
+                 or str(row.get("rule_name") or "").strip() or "(no subject)")
+        out.append(Closed(
+            key=f"email:{message}" if message else f"email:rule:{row['id']}",
+            app="email", title=title,
+            href=_email_href(str(message), str(row["account_id"])) if message else EMAIL_HOME,
+            by=BY_RULES, at=_iso(row.get("created_at")),
+        ))
+    return out
 
 
 # ── Approvals: the pending actions of the member's organization ─────────────
@@ -692,6 +799,20 @@ async def _approvals(user: UserContext) -> Found:
                  signals=signals)
 
 
+async def _approvals_handled(user: UserContext, since: datetime) -> list[Closed]:
+    """Approvals' Handled read: the actions that a person approved or
+    rejected since ``since`` (``action_broker.read_decided``). It runs in a
+    thread, as ``read_pending`` does, and the thread takes the tenant."""
+    import action_broker
+
+    rows = await asyncio.to_thread(action_broker.read_decided, since, PER_APP)
+    return [Closed(
+        key=f"approvals:{row['id']}", app="approvals", title=_action_title(row),
+        href="/approvals", by=closed_by(row.get("reviewed_by"), user.email or ""),
+        at=_iso(row.get("reviewed_at")),
+    ) for row in rows]
+
+
 # ── The one registry (``my_day_feed.md`` §4.4) ─────────────────────────────
 
 
@@ -704,6 +825,11 @@ class Provider:
     ``kinds`` are the kinds the provider may give. ``needs`` says if it
     serves the needs view of ``GET /shell/needs``, and a needs provider may
     give only the kinds of ``KIND_ORDER``.
+
+    ``handled`` is the app's Handled read (``my_day_feed.md`` MD-2c): what
+    the app closed for the member since an instant, through the app's own
+    authorized read. Only the feed calls it (``handled.handled_run``), with
+    the same gate as ``run``. The needs view never does.
     """
 
     source: str
@@ -712,6 +838,7 @@ class Provider:
     kinds: frozenset[str]
     admin: bool = False
     needs: bool = True
+    handled: Callable[[UserContext, datetime], Awaitable[list[Closed]]] | None = None
 
     def held_by(self, user: UserContext) -> bool:
         """The gate the app's router would have applied (the module note)."""
@@ -741,12 +868,16 @@ def register(provider: Provider) -> Provider:
     return provider
 
 
-# Approvals runs LAST of the needs providers (the module note).
-register(Provider("tasks", ("projects",), _tasks, frozenset({"overdue", "due_today"})))
+# Approvals runs LAST of the needs providers (the module note). Three of them
+# also carry a Handled read (MD-2c). Projects has none: a closed task is
+# My Tasks' row, and a read notification closed nothing.
+register(Provider("tasks", ("projects",), _tasks, frozenset({"overdue", "due_today"}),
+                  handled=_tasks_handled))
 register(Provider("projects", ("projects",), _projects, frozenset({"notification"})))
-register(Provider("email", ("email",), _email, frozenset({"needs_reply"})))
+register(Provider("email", ("email",), _email, frozenset({"needs_reply"}),
+                  handled=_email_handled))
 register(Provider("approvals", ("approvals",), _approvals, frozenset({"approval"}),
-                  admin=True))
+                  admin=True, handled=_approvals_handled))
 
 
 def needs_providers() -> list[Provider]:

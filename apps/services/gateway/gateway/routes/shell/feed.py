@@ -29,6 +29,11 @@ order (``state.apply_state``). It reads the member's rows of
 card leaves there, so it takes no slot of ``limit``. ``needs`` is computed
 BEFORE the join, so the state never changes the bell (§6.8 item 9).
 
+**Handled** (MD-2c) runs at the same time as the state join, inside its 1.5
+seconds (``handled.handled_run``). The answer gains ``handled``, what the
+apps closed for the member today, and ``handled_ok``, the claim flag. Neither
+is a card or a group, and neither counts against ``limit``.
+
 **The Calendar provider** (§5.1, feed only) needs ``feature:tasks`` (the
 Calendar pane) AND ``feature:projects`` (the lens read of blocks). It calls
 the apps' own reads, each of which opens its own tenant session (R5b):
@@ -56,6 +61,7 @@ and ``tests/unit/test_shell_feed_r8.py``.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import json
@@ -68,7 +74,7 @@ from zoneinfo import ZoneInfo
 from acb_auth import UserContext, get_current_user
 from acb_common.priority import task_cell
 from fastapi import Depends, HTTPException
-from gateway.routes.shell import feed_rank, needs, state
+from gateway.routes.shell import feed_rank, handled, needs, state
 from gateway.routes.shell.needs import (
     PER_APP,
     Found,
@@ -542,8 +548,13 @@ async def shell_feed(
     now = needs._now()  # the feed's one clock (needs._now)
     tz = _zone(next((a.zone for a in found.values() if a.zone), None))
     today = now.astimezone(tz).date()
-    # The state join: after the fold, before the order (§6.8 item 7).
-    joined = await state.apply_state(user, build_cards(signals, now, tz, today), now)
+    # The state join: after the fold, before the order (§6.8 item 7). The
+    # Handled reads run at the same time, inside the join's own budget
+    # (MD-2c), so the feed's worst case does not grow.
+    joined, closed = await asyncio.gather(
+        state.apply_state(user, build_cards(signals, now, tz, today), now),
+        handled.handled_run(user, now, budget_s=state.STATE_TIMEOUT_S),
+    )
     cards = feed_rank.order(joined, size)
     counts = {g: sum(1 for c in cards if c["group"] == g) for g in feed_rank.GROUPS}
     return {
@@ -552,4 +563,7 @@ async def shell_feed(
         "needs": needs_view,
         "sources": sources,
         "capped": capped,
+        # Never a card and never a group, and not counted in `limit` (MD-2c).
+        "handled": closed.entries,
+        "handled_ok": closed.ok,
     }

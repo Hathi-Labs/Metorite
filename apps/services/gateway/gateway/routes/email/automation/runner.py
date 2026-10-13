@@ -186,6 +186,61 @@ async def test_rules_recent(
         return {"results": results}
 
 
+#: The rules applied at or after ``:since`` on the named mailboxes of the
+#: member, one row for each message (the newest), the newest first. A row
+#: with no message stands for itself. The status index
+#: ``(account_id, status, created_at DESC)`` (migration 86) serves it.
+_APPLIED_SINCE_SQL = """
+SELECT id, account_id, message_id, subject, rule_name, created_at FROM (
+    SELECT DISTINCT ON (COALESCE(er.message_id, er.id))
+           er.id, er.account_id, er.message_id, er.subject, er.rule_name,
+           er.created_at
+      FROM email_executed_rules er
+     WHERE er.account_id IN (SELECT id FROM email_accounts
+                              WHERE user_id = :uid
+                                AND id = ANY(CAST(:ids AS uuid[])))
+       AND er.status = 'APPLIED'
+       AND er.created_at >= CAST(:since AS timestamptz)
+     ORDER BY COALESCE(er.message_id, er.id), er.created_at DESC, er.id DESC
+) newest
+ORDER BY created_at DESC, id DESC
+LIMIT :limit"""
+
+
+async def applied_rules_since(
+    user: UserContext, account_ids: list[str], since: datetime, *, limit: int,
+) -> list[dict[str, Any]]:
+    """The rules that ran on my mail at or after ``since``: one bounded read.
+
+    For the shell's Handled group (``my_day_feed.md`` MD-2c). It reads
+    ``email_executed_rules`` with status ``APPLIED`` on the mailboxes in
+    ``account_ids`` that the member OWNS, the owner predicate of
+    :func:`rules_history`. A mailbox in ``account_ids`` that is not the
+    member's gives no row. It keeps a row whose message is in the trash,
+    because the rule may have put it there. :func:`rules_history` hides such
+    a row, and this read must not.
+
+    Not a route. The shell calls it after its own ``feature:email`` check.
+    It writes nothing, and the address is the authenticated one.
+    """
+    ids = [str(a) for a in account_ids]
+    if not ids:
+        return []
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(_APPLIED_SINCE_SQL), {
+            "uid": user.email or "anonymous", "ids": ids, "since": since,
+            "limit": max(1, int(limit)),
+        })).fetchall()
+    return [{
+        "id": str(r.id),
+        "account_id": str(r.account_id),
+        "message_id": str(r.message_id) if r.message_id else None,
+        "subject": r.subject,
+        "rule_name": r.rule_name,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    } for r in rows]
+
+
 @router.get("/rules/history")
 async def rules_history(
     account_id: str | None = Query(None),
