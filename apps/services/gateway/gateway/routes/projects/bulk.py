@@ -546,6 +546,8 @@ async def bulk_edit(
     failed: list[dict[str, str]] = []
     #: address → the tasks they were newly put on, for one notification each.
     newly_assigned: dict[str, list[str]] = {}
+    #: WS-57 TR-5 — each task's row before the patch, for its old text.
+    before_rows: dict[str, Any] = {}
     changed_ids: list[str] = []
     #: D-PM-38 — what the subtree cascades did, across the whole selection.
     cascaded = Cascade()
@@ -584,6 +586,7 @@ async def bulk_edit(
                 continue
 
             try:
+                before_rows[task_id] = task
                 outcome, newly = await _apply_to_one(
                     db, task,
                     patch=patch, add_people=add_people, drop_people=drop_people,
@@ -635,9 +638,12 @@ async def bulk_edit(
     await emit_all(cascaded.events)
     # WS-57 TR-5 — a bulk patch that writes a title or a description names
     # the same tasks and URLs for each task it changed. Each task reads them
-    # against its OWN root (`text_links.py`). An action carries no patch, so
-    # it reads nothing.
-    await link_from_text(user, [(task_id, saved_texts(patch)) for task_id in changed_ids])
+    # against its OWN root, and only what is new against the task's old text
+    # (`text_links.py`). An action carries no patch, so it reads nothing.
+    # Past `MAX_TASKS_PER_SAVE` tasks the module links nothing and logs.
+    await link_from_text(user, [
+        (task_id, saved_texts(patch, before_rows.get(task_id))) for task_id in changed_ids
+    ])
 
     answer: dict[str, Any] = {
         "requested": len(ids),

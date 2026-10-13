@@ -1,5 +1,5 @@
 {
- "about": "WS-57 TR-5. The one grammar of a task reference (#123), as cases. workbench/control_plane/src/lib/taskRefs.test.ts runs findTaskRefs over them, and tests/unit/test_task_refs_text_links.py runs gateway/routes/projects/text_links.py find_task_refs over them. Each case gives the numbers found, in order. Change a rule in one language and one of the two suites fails.",
+ "about": "WS-57 TR-5. The one grammar of a task reference (#123), as cases. workbench/control_plane/src/lib/taskRefs.test.ts runs findTaskRefs over them, and tests/unit/test_task_refs_text_links.py runs gateway/routes/projects/text_links.py find_task_refs over them. Each case gives the numbers found, in order. \"cases\" are plain text, read by the finder alone. \"markdown_cases\" are a description or a comment: vitest renders them through the card (keepLineBreaks, MarkdownBody with taskRefs) and counts the pills, and pytest reads them through prose_of and the finder. Where the two cannot agree, the rule is no pill and no link. Change a rule in one language and one of the two suites fails.",
  "cases": [
   {
    "name": "a bare reference",
@@ -247,6 +247,267 @@
    "numbers": [
     1,
     2
+   ]
+  }
+ ],
+ "markdown_cases": [
+  {
+   "name": "a paragraph",
+   "text": "Blocked on #12, then #34.",
+   "numbers": [
+    12,
+    34
+   ]
+  },
+  {
+   "name": "indented code at the start",
+   "text": "    run #12",
+   "numbers": []
+  },
+  {
+   "name": "indented code after a blank line",
+   "text": "Intro #3\n\n    run #12\n\nAfter #4",
+   "numbers": [
+    3,
+    4
+   ]
+  },
+  {
+   "name": "a tab-indented code line",
+   "text": "\t#12 here",
+   "numbers": []
+  },
+  {
+   "name": "an indented line inside a paragraph is words",
+   "text": "Intro #3\n    more #12",
+   "numbers": [
+    3,
+    12
+   ]
+  },
+  {
+   "name": "an indented code block of two lines",
+   "text": "Intro #3\n\n    one #12\n    two #13\n\nEnd #5",
+   "numbers": [
+    3,
+    5
+   ]
+  },
+  {
+   "name": "a list item's second paragraph at four spaces",
+   "text": "- item #3\n\n    more #12",
+   "numbers": [
+    3,
+    12
+   ]
+  },
+  {
+   "name": "a fence at a four-space list indent",
+   "text": "1. step #3\n\n    ```\n    #12\n    ```\n\nAfter #5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a fence inside a list at two spaces",
+   "text": "- a #5\n\n  ```\n  #12\n  ```",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a fence with a language",
+   "text": "```js\nlet a = #12\n```\n#5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a tilde fence",
+   "text": "~~~\n#12\n~~~\n#5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "an unclosed fence hides the rest",
+   "text": "#5\n```\n#12\n#13",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a nested list paragraph",
+   "text": "- a\n  - b #3\n\n      more #12",
+   "numbers": [
+    3,
+    12
+   ]
+  },
+  {
+   "name": "a code span",
+   "text": "`#12` and #5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a code span across two lines",
+   "text": "Use `run\n#12` now and #4",
+   "numbers": [
+    4
+   ]
+  },
+  {
+   "name": "a double-backtick code span",
+   "text": "``a `#12` b`` and #6",
+   "numbers": [
+    6
+   ]
+  },
+  {
+   "name": "an unmatched backtick",
+   "text": "a ` #12 and #5",
+   "numbers": [
+    12,
+    5
+   ]
+  },
+  {
+   "name": "the words of an inline link",
+   "text": "[see #12](https://example.com/x) and #5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "the alt of an image",
+   "text": "![#12](https://example.com/a.png) and #5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "the words of a full reference link",
+   "text": "[see #12][ref] and #4\n\n[ref]: https://example.com",
+   "numbers": [
+    4
+   ]
+  },
+  {
+   "name": "a collapsed reference link",
+   "text": "[#12][] and #5\n\n[#12]: https://example.com",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a shortcut reference link",
+   "text": "[#12] and #5\n\n[#12]: https://example.com",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "brackets with no definition are words",
+   "text": "[#12] and #5",
+   "numbers": [
+    12,
+    5
+   ]
+  },
+  {
+   "name": "a definition alone",
+   "text": "[#12]: https://example.com\n\n#5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "an escaped hash",
+   "text": "\\#12 and #5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "an escaped hash beside a real one in one run",
+   "text": "\\* note #7",
+   "numbers": [
+    7
+   ]
+  },
+  {
+   "name": "a numeric entity",
+   "text": "&#35;12 and #5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a named entity",
+   "text": "&num;12 and #5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a heading",
+   "text": "## Fix #7",
+   "numbers": [
+    7
+   ]
+  },
+  {
+   "name": "a block quote",
+   "text": "> see #9",
+   "numbers": [
+    9
+   ]
+  },
+  {
+   "name": "a table cell",
+   "text": "| a |\n|---|\n| #8 |",
+   "numbers": [
+    8
+   ]
+  },
+  {
+   "name": "emphasis around a reference",
+   "text": "**#10** and _#11_",
+   "numbers": [
+    10
+   ]
+  },
+  {
+   "name": "an autolink",
+   "text": "<https://example.com/#12> and #5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a bare URL fragment",
+   "text": "https://example.com/page#12 and #5",
+   "numbers": [
+    5
+   ]
+  },
+  {
+   "name": "a list of references",
+   "text": "- #1\n- #2\n- #3",
+   "numbers": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "name": "two lines kept as two",
+   "text": "first #21\nsecond #22",
+   "numbers": [
+    21,
+    22
    ]
   }
  ]

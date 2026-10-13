@@ -5,27 +5,33 @@ Spec: ``project-docs/specs/task_references.md`` §6 TR-5. The module is
 
 Three halves.
 
-**The shared grammar.** ``tests/fixtures/task_ref_cases.json`` holds the
-cases of a ``#N``. This file runs the Python finder over them, and
+**The shared grammar.** ``tests/fixtures/task_ref_cases.json`` holds two
+kinds of case. ``cases`` are plain text, and this file runs the Python finder
+over them. ``markdown_cases`` are a description or a comment, and this file
+reads them through ``prose_of`` and the finder.
 ``workbench/control_plane/src/lib/taskRefs.test.ts`` runs ``findTaskRefs``
-over the same file. A rule changed in one language fails one of the two.
+over the first kind, and the card's own Markdown pipeline over the second. A
+rule changed on one side fails one of the two suites.
 
-**Hermetic.** The Markdown rules (no pill in code, none in a link's words),
-the URL rules, the two caps, the pick, the one insert of each table, the
-write paths that call the module, and "never fails the save".
+**Hermetic.** The URL rules, the caps, the "new in this edit" rule, the pick,
+the one insert of each table, the write paths that call the module, and
+"never fails the save".
 
 **R8** (a real Postgres, through the real ``/projects`` router, as the
 non-privileged role of the phase-4 rehearsal). A hermetic fake agrees with
 any SQL, so these need the database:
 
-* (a) ``#12`` names #12 of the task's own root before a #12 elsewhere, and a
-  number that only another root holds links when it is the one task;
+* (a) ``#12`` names #12 of the task's own root, and NOTHING when that root
+  cannot resolve it: no fallback to another root (review round 1). A #12
+  that moved roots, a #12 that was deleted and a #12 the caller cannot see
+  each link nothing and draw no pill;
 * (b) a task the caller cannot see is never linked, and the refs read does
   not show it;
 * (c) a GitHub URL in a comment becomes a reference with ``via = 'text'``,
   with no ``fetched_at`` and no call to GitHub;
 * (d) saving the same text again adds nothing, a link in the other
-  direction counts, and an edit that drops ``#12`` keeps the link.
+  direction counts, an edit that drops ``#12`` keeps the link, and a link a
+  member removed stays removed until somebody types ``#12`` again.
 
 The R8 class carries ``_DB_GATE``, so it skips where no ladder URL is set.
 """
@@ -47,6 +53,7 @@ pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
 
 from gateway.routes.projects import refs, text_links
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -63,18 +70,20 @@ _PROJECTS = _REPO / "apps" / "services" / "gateway" / "gateway" / "routes" / "pr
 # ── The shared grammar ──────────────────────────────────────────────────────
 
 
-def _cases() -> list[dict[str, Any]]:
-    return json.loads(_CASES.read_text(encoding="utf-8"))["cases"]
+def _shared() -> dict[str, Any]:
+    return json.loads(_CASES.read_text(encoding="utf-8"))
 
 
 def test_the_case_file_is_present_and_not_trivial() -> None:
     """A case file that quietly emptied would leave both suites green."""
-    cases = _cases()
-    assert len(cases) >= 30
-    assert any(c["numbers"] for c in cases) and any(not c["numbers"] for c in cases)
+    shared = _shared()
+    for kind in ("cases", "markdown_cases"):
+        cases = shared[kind]
+        assert len(cases) >= 30, kind
+        assert any(c["numbers"] for c in cases) and any(not c["numbers"] for c in cases), kind
 
 
-@pytest.mark.parametrize("case", _cases(), ids=lambda c: c["name"])
+@pytest.mark.parametrize("case", _shared()["cases"], ids=lambda c: c["name"])
 def test_the_python_finder_agrees_with_the_case_file(case: dict[str, Any]) -> None:
     found = text_links.find_task_refs(case["text"])
     assert [m.number for m in found] == case["numbers"]
@@ -82,26 +91,24 @@ def test_the_python_finder_agrees_with_the_case_file(case: dict[str, Any]) -> No
         assert case["text"][m.start:m.end] == f"#{m.number}"
 
 
-# ── Hermetic: the Markdown and the URLs ─────────────────────────────────────
+@pytest.mark.parametrize("case", _shared()["markdown_cases"], ids=lambda c: c["name"])
+def test_the_markdown_layer_agrees_with_the_card(case: dict[str, Any]) -> None:
+    """The card's pills, as `taskRefs.test.ts` counts them through remark,
+    are the numbers the gateway reads."""
+    words = text_links.prose_of(case["text"])
+    assert [m.number for m in text_links.find_task_refs(words)] == case["numbers"]
 
 
-def _numbers(markdown: str) -> list[int]:
-    return text_links.scan([(markdown, True)]).numbers
+# ── Hermetic: the URLs ──────────────────────────────────────────────────────
 
 
-def test_no_reference_in_code_or_in_a_links_words() -> None:
-    """The card draws no pill there, so the server links nothing there."""
-    body = (
-        "Real #12.\n\n```\n#13 in a fence\n```\n\n~~~\n#14\n~~~\n"
-        "Inline `#15` and ``a `#16` b``. [see #17](https://example.com/x) "
-        "and ![#18](https://example.com/y.png)."
-    )
-    assert _numbers(body) == [12]
+def _new(value: str, markdown: bool = True, old: str | None = None) -> text_links.Scan:
+    return text_links.scan([(value, markdown, old)])
 
 
 def test_a_title_is_plain_text() -> None:
     """A title is not Markdown: backticks in it are characters."""
-    assert text_links.scan([("Fix `#12` now", False)]).numbers == [12]
+    assert _new("Fix `#12` now", markdown=False).numbers == [12]
 
 
 def test_the_urls_lose_a_sentences_marks_and_a_links_bracket() -> None:
@@ -133,26 +140,23 @@ def test_the_urls_lose_a_sentences_marks_and_a_links_bracket() -> None:
     ],
 )
 def test_only_a_github_shape_or_a_document_becomes_a_reference(url: str, kept: bool) -> None:
-    found = text_links.scan([(f"see {url} now", True)])
-    assert bool(found.refs) is kept, url
+    assert bool(_new(f"see {url} now").refs) is kept, url
 
 
 def test_a_url_in_code_adds_no_reference() -> None:
-    body = "`https://github.com/a/b/pull/1`\n```\nhttps://github.com/a/b/pull/2\n```"
-    assert text_links.scan([(body, True)]).refs == []
+    body = "`https://github.com/a/b/pull/1`\n```\nhttps://github.com/a/b/pull/2\n```\n\n    https://github.com/a/b/pull/3"
+    assert _new(body).refs == []
 
 
 def test_a_refused_url_is_skipped_and_the_rest_still_count() -> None:
-    found = text_links.scan([
-        ("https://github.com/../../pull/1 and https://github.com/a/b/pull/3", True),
-    ])
+    found = _new("https://github.com/../../pull/1 and https://github.com/a/b/pull/3")
     assert [r.ref for r in found.refs] == ["a/b#3"]
 
 
 def test_one_number_and_one_reference_count_once_across_the_texts() -> None:
     found = text_links.scan([
-        ("#12 and https://github.com/a/b/pull/3", False),
-        ("again #12 and https://github.com/A/B/pull/3/files", True),
+        ("#12 and https://github.com/a/b/pull/3", False, None),
+        ("again #12 and https://github.com/A/B/pull/3/files", True, None),
     ])
     assert found.numbers == [12]
     assert [r.ref for r in found.refs] == ["a/b#3"]
@@ -161,16 +165,39 @@ def test_one_number_and_one_reference_count_once_across_the_texts() -> None:
 def test_each_cap_holds_and_counts_what_it_left() -> None:
     many = " ".join(f"#{n}" for n in range(1, 26))
     urls = " ".join(f"https://github.com/a/b/pull/{n}" for n in range(1, 26))
-    found = text_links.scan([(many + " " + urls, True)])
+    found = _new(many + " " + urls)
     assert found.numbers == list(range(1, 21)) and found.numbers_left == 5
     assert len(found.refs) == 20 and found.refs_left == 5
     assert text_links.MAX_TASK_REFS == 20 and text_links.MAX_URL_REFS == 20
 
 
-def test_saved_texts_reads_the_title_and_the_description_only() -> None:
-    assert text_links.saved_texts({"title": "a", "importance": 3}) == [("a", False)]
-    assert text_links.saved_texts({"description": "b"}) == [("b", True)]
-    assert text_links.saved_texts({"due_at": None}) == []
+# ── Hermetic: only what is new in this edit (review round 1) ────────────────
+
+
+def test_a_number_or_url_the_old_value_held_is_not_new() -> None:
+    old = "Blocked on #12, see https://github.com/a/b/pull/3"
+    assert _new(old, old=old).numbers == [] and _new(old, old=old).refs == []
+    grown = _new(old + " and #13 and https://github.com/a/b/pull/4", old=old)
+    assert grown.numbers == [13]
+    assert [r.ref for r in grown.refs] == ["a/b#4"]
+
+
+def test_a_number_that_left_and_came_back_is_new() -> None:
+    assert _new("Blocked on #12", old="Blocked").numbers == [12]
+
+
+def test_the_old_value_is_read_by_the_same_markdown_rules() -> None:
+    """`#12` in old code and in new words is new: the card drew no pill
+    before, and draws one now."""
+    assert _new("#12 now", old="`#12` then").numbers == [12]
+
+
+def test_saved_texts_pairs_each_field_with_its_old_value() -> None:
+    before = SimpleNamespace(title="Old #1", description="Old #2")
+    assert text_links.saved_texts({"title": "a", "importance": 3}, before) == [("a", False, "Old #1")]
+    assert text_links.saved_texts({"description": "b"}, before) == [("b", True, "Old #2")]
+    assert text_links.saved_texts({"description": "b"}) == [("b", True, None)]
+    assert text_links.saved_texts({"due_at": None}, before) == []
     assert text_links.saved_texts(None) == []
 
 
@@ -214,7 +241,7 @@ HOOKED: dict[str, set[str]] = {
     "tasks.py": {"create_task", "patch_task"},
     "activities.py": {"add_comment", "edit_comment"},
     "bulk.py": {"bulk_edit"},
-    "personal.py": {"capture", "capture_batch", "add_my_steps"},
+    "personal.py": {"capture", "capture_batch", "add_my_steps", "organize_my_task"},
 }
 
 
@@ -233,24 +260,57 @@ def test_the_write_paths_call_the_module() -> None:
         assert routes <= calling, (name, routes - calling)
 
 
-async def test_text_with_nothing_to_link_opens_no_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _no_session(*_a: Any, **_k: Any) -> Any:
-        raise AssertionError("a session was opened for text that names nothing")
+def _no_session(*_a: Any, **_k: Any) -> Any:
+    raise AssertionError("a session was opened")
 
+
+async def test_text_with_nothing_new_opens_no_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(text_links, "_tenant_session", _no_session)
     user = SimpleNamespace(email="a@x.test")
-    await text_links.link_from_text(user, [("t", [("plain words", False), (None, True)])])
+    await text_links.link_from_text(user, [
+        ("t", [("plain words", False, None), (None, True, None), ("see #12", True, "see #12")]),
+    ])
 
 
-async def test_a_failure_never_fails_the_save(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_save_of_more_than_the_budget_links_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bulk edit of 26 tasks with `#12` in the patch reads nothing and
+    opens no transaction, so the client does not wait on it (P2-4)."""
+    monkeypatch.setattr(text_links, "_tenant_session", _no_session)
+    logged: list[dict[str, Any]] = []
+    monkeypatch.setattr(text_links, "_log", SimpleNamespace(
+        info=lambda event, **kw: logged.append({"event": event, **kw}),
+        warning=lambda event, **kw: logged.append({"event": event, **kw}),
+    ))
+    user = SimpleNamespace(email="a@x.test")
+    many = [(f"t{n}", [("see #12", True, None)]) for n in range(text_links.MAX_TASKS_PER_SAVE + 1)]
+    await text_links.link_from_text(user, many)
+    assert logged == [{"event": "projects.text_links.capped", "tasks": 26, "tasks_left": 26}]
+    assert text_links.MAX_TASKS_PER_SAVE == 25
+
+
+async def test_a_database_failure_never_fails_the_save(monkeypatch: pytest.MonkeyPatch) -> None:
     @contextlib.asynccontextmanager
     async def _broken(*_a: Any, **_k: Any):
-        raise RuntimeError("database down")
+        raise OperationalError("SELECT 1", {}, Exception("database down"))
         yield  # pragma: no cover
 
     monkeypatch.setattr(text_links, "_tenant_session", _broken)
     user = SimpleNamespace(email="a@x.test")
-    await text_links.link_from_text(user, [("t", [("see #12", False)])])
+    await text_links.link_from_text(user, [("t", [("see #12", False, None)])])
+
+
+async def test_a_defect_is_not_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a database failure is swallowed. A programming error raises, so
+    it shows as a defect and not as a class name in a log line."""
+    @contextlib.asynccontextmanager
+    async def _buggy(*_a: Any, **_k: Any):
+        raise TypeError("a defect")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(text_links, "_tenant_session", _buggy)
+    user = SimpleNamespace(email="a@x.test")
+    with pytest.raises(TypeError):
+        await text_links.link_from_text(user, [("t", [("see #12", False, None)])])
 
 
 # ── R8: the links on a real database ────────────────────────────────────────
@@ -260,8 +320,11 @@ M_EMAIL = "tr5-m@text-links-r8.test"
 PR_URL = "https://github.com/acme/widgets/pull/7"
 
 
-def _seed_root(p: Any, org: str, email: str, *, grant: str | None = None) -> tuple[str, str]:
-    """A root project with one lane, as the RLS-bypassing admin."""
+def _seed_root(
+    p: Any, org: str, email: str, *, grant: str | None = None, parent: str | None = None,
+) -> tuple[str, str]:
+    """A project with one lane, as the RLS-bypassing admin. With ``parent``,
+    a child project that uses its parent's lane."""
     project, status = str(uuid.uuid4()), str(uuid.uuid4())
     with p.admin_engine.begin() as c:
         c.execute(text(
@@ -269,29 +332,34 @@ def _seed_root(p: Any, org: str, email: str, *, grant: str | None = None) -> tup
             "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid)) ON CONFLICT DO NOTHING"),
             {"e": email, "o": org})
         c.execute(text(
-            "INSERT INTO pm_projects (id, organization_id, name, created_by, owns_statuses) "
-            "VALUES (:id, :o, 'tr5', :e, true)"), {"id": project, "o": org, "e": email})
+            "INSERT INTO pm_projects (id, organization_id, name, created_by, owns_statuses, "
+            "parent_project_id) VALUES (:id, :o, 'tr5', :e, :own, :parent)"),
+            {"id": project, "o": org, "e": email, "own": parent is None, "parent": parent})
         if grant is not None:
             c.execute(text(
                 "INSERT INTO pm_project_grants (organization_id, project_id, subject, "
                 "created_by) VALUES (:o, :p, :s, :e)"),
                 {"o": org, "p": project, "s": grant, "e": email})
-        c.execute(text(
-            "INSERT INTO pm_task_statuses (id, organization_id, project_id, name, category, "
-            "position) VALUES (:id, :o, :p, 'To do', 'todo', 10)"),
-            {"id": status, "o": org, "p": project})
+        if parent is None:
+            c.execute(text(
+                "INSERT INTO pm_task_statuses (id, organization_id, project_id, name, "
+                "category, position) VALUES (:id, :o, :p, 'To do', 'todo', 10)"),
+                {"id": status, "o": org, "p": project})
     return project, status
 
 
-def _seed_task(p: Any, org: str, root: tuple[str, str], number: int, title: str) -> str:
+def _seed_task(
+    p: Any, org: str, root: tuple[str, str], number: int, title: str,
+    *, project: str | None = None,
+) -> str:
     task = str(uuid.uuid4())
     with p.admin_engine.begin() as c:
         c.execute(text(
             "INSERT INTO pm_tasks (id, organization_id, project_id, root_project_id, "
             "task_number, status_id, title, created_by) "
-            "VALUES (:id, :o, :p, :p, :n, :s, :t, :e)"),
-            {"id": task, "o": org, "p": root[0], "n": number, "s": root[1], "t": title,
-             "e": A_EMAIL})
+            "VALUES (:id, :o, :p, :r, :n, :s, :t, :e)"),
+            {"id": task, "o": org, "p": project or root[0], "r": root[0], "n": number,
+             "s": root[1], "t": title, "e": A_EMAIL})
     return task
 
 
@@ -315,13 +383,20 @@ def _link_activities(p: Any, task: str) -> int:
         "AND type = 'link'", t=task))
 
 
+async def _pills(w: Any, user: Any, root: str, numbers: str) -> set[str]:
+    """The tasks the card's pills would name: the refs read with the root."""
+    read = await _call(w.p, user, "GET", f"/projects/search/refs?numbers={numbers}&root={root}")
+    assert read.status_code == 200, read.text
+    return {r["id"] for r in read.json()["rows"]}
+
+
 @pytest.fixture(scope="module")
 def world(promoted):  # noqa: F811 — a fixture
     """Org A, with three roots and one hidden root.
 
     * root 1 holds the source task #1 and #12;
     * root 2 holds another #12 and the only #13, and one #14;
-    * root 3 holds another #14, so #14 names two tasks;
+    * root 3 holds another #14;
     * the hidden root holds #40, and the restricted member M has no grant on
       it. M's own root holds M's task #5.
     """
@@ -334,12 +409,15 @@ def world(promoted):  # noqa: F811 — a fixture
         a=_principal(A_EMAIL, org),
         m=_principal(M_EMAIL, org, unrestricted=False),
         r1=r1[0],
+        r2=r2,
         source=_seed_task(p, org, r1, 1, "The source"),
         own12=_seed_task(p, org, r1, 12, "Twelve in my root"),
         other12=_seed_task(p, org, r2, 12, "Twelve elsewhere"),
         only13=_seed_task(p, org, r2, 13, "Thirteen"),
         two14=(_seed_task(p, org, r2, 14, "Fourteen A"), _seed_task(p, org, r3, 14, "Fourteen B")),
         hidden40=_seed_task(p, org, hidden, 40, "Hidden forty"),
+        m_root=mine[0],
+        m_rt=mine,
         m_task=_seed_task(p, org, mine, 5, "M's own task"),
     )
 
@@ -363,55 +441,103 @@ def w(world, monkeypatch):
         c.execute(text(
             "DELETE FROM pm_activities WHERE type = 'link' "
             "AND task_id = ANY(CAST(:t AS uuid[]))"), {"t": tasks})
+        c.execute(text(
+            "UPDATE pm_tasks SET title = 'The source', description = NULL "
+            " WHERE id = CAST(:t AS uuid)"), {"t": world.source})
     return world
 
 
 @_DB_GATE
 class TestTextLinksOnARealDatabase:
-    async def test_the_own_root_wins_and_a_unique_number_elsewhere_links(self, w):
-        """(a) #12 names #12 of this root, not the #12 of root 2. #13 is only
-        in root 2, so it links. #14 names two tasks and links neither. #1 is
-        the task itself. #9999 names nothing."""
+    async def test_only_the_own_root_resolves_a_number(self, w):
+        """(a) #12 names #12 of this root. #13 lives only in root 2, and #14
+        in two other roots: with no fallback, neither links. #1 is the task
+        itself. #9999 names nothing."""
         saved = await _call(w.p, w.a, "PATCH", f"/projects/tasks/{w.source}",
                             {"description": "See #12, #13, #14, #1 and #9999."})
         assert saved.status_code == 200, saved.text
-        assert _links_of(w.p, w.source) == {
-            (w.source, w.own12, "relates_to"), (w.source, w.only13, "relates_to"),
-        }
-        assert _link_activities(w.p, w.source) == 2
+        assert _links_of(w.p, w.source) == {(w.source, w.own12, "relates_to")}
+        assert _link_activities(w.p, w.source) == 1
         with w.p.admin_engine.connect() as c:
-            metas = [r[0] for r in c.execute(text(
+            meta = c.execute(text(
                 "SELECT meta FROM pm_activities WHERE task_id = CAST(:t AS uuid) "
-                "AND type = 'link'"), {"t": w.source})]
-        assert sorted(m["target"] for m in metas) == sorted([w.own12, w.only13])
-        assert {m["type"] for m in metas} == {"relates_to"}
+                "AND type = 'link'"), {"t": w.source}).scalar()
+        assert (meta["target"], meta["type"]) == (w.own12, "relates_to")
 
-    async def test_the_refs_read_prefers_the_root_it_is_given(self, w):
-        """The card's pills read the same rule through the route."""
+    async def test_the_refs_read_with_a_root_answers_that_root_only(self, w):
+        """The card's pills read the same rule through the route. The chat's
+        read, with no root, keeps its organization-wide answer."""
         plain = await _call(w.p, w.a, "GET", "/projects/search/refs?numbers=12,13")
-        rooted = await _call(w.p, w.a, "GET", f"/projects/search/refs?numbers=12,13&root={w.r1}")
-        assert plain.status_code == rooted.status_code == 200
+        assert plain.status_code == 200
         assert {r["id"] for r in plain.json()["rows"]} == {w.own12, w.other12, w.only13}
-        assert {r["id"] for r in rooted.json()["rows"]} == {w.own12, w.only13}
+        assert await _pills(w, w.a, w.r1, "12,13") == {w.own12}
         junk = await _call(w.p, w.a, "GET", "/projects/search/refs?numbers=12&root=nope")
-        assert {r["id"] for r in junk.json()["rows"]} == {w.own12, w.other12}
+        assert junk.status_code == 200 and junk.json()["rows"] == []
 
-    async def test_a_task_the_caller_cannot_see_is_never_linked_or_shown(self, w):
-        """(b) M has no grant on the hidden root. #40 links nothing, and the
-        read M's pills use does not show it."""
+    async def test_a_number_that_moved_roots_links_nothing_and_draws_no_pill(self, w):
+        """(a) #12 moved to another root, which renumbers it. Root X now has
+        no #12, and the #12 of root Y is not it."""
+        org = w.p.org_a
+        rx, ry = _seed_root(w.p, org, A_EMAIL), _seed_root(w.p, org, A_EMAIL)
+        source = _seed_task(w.p, org, rx, 1, "Source X")
+        x12 = _seed_task(w.p, org, rx, 12, "Twelve, to move")
+        y12 = _seed_task(w.p, org, ry, 12, "Twelve of Y")
+        moved = await _call(w.p, w.a, "POST", f"/projects/tasks/{x12}/move", {"project_id": ry[0]})
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["task_number"] != 12
+        saved = await _call(w.p, w.a, "PATCH", f"/projects/tasks/{source}",
+                            {"description": "After #12."})
+        assert saved.status_code == 200
+        assert _links_of(w.p, source) == set()
+        assert _links_of(w.p, y12) == set()
+        assert await _pills(w, w.a, rx[0], "12") == set()
+
+    async def test_a_deleted_number_links_nothing_and_draws_no_pill(self, w):
+        """(a) #12 was deleted. The counter never gives #12 out again, so the
+        hole stays, and a fallback would fill it for good."""
+        org = w.p.org_a
+        rx, ry = _seed_root(w.p, org, A_EMAIL), _seed_root(w.p, org, A_EMAIL)
+        source = _seed_task(w.p, org, rx, 1, "Source X")
+        x12 = _seed_task(w.p, org, rx, 12, "Twelve, to delete")
+        y12 = _seed_task(w.p, org, ry, 12, "Twelve of Y")
+        gone = await _call(w.p, w.a, "DELETE", f"/projects/tasks/{x12}")
+        assert gone.status_code == 200, gone.text
+        saved = await _call(w.p, w.a, "PATCH", f"/projects/tasks/{source}",
+                            {"description": "After #12."})
+        assert saved.status_code == 200
+        assert _links_of(w.p, source) == set() and _links_of(w.p, y12) == set()
+        assert await _pills(w, w.a, rx[0], "12") == set()
+
+    async def test_a_number_hidden_from_the_caller_links_nothing(self, w):
+        """(a) and (b). M sees one project of root P through a grant, and not
+        the #12 that sits in P itself. M's own other root holds a #12 M can
+        see. M's text links neither, and M's pill names neither."""
+        org = w.p.org_a
+        rp = _seed_root(w.p, org, A_EMAIL)
+        child = _seed_root(w.p, org, A_EMAIL, grant=M_EMAIL, parent=rp[0])
+        m_source = _seed_task(w.p, org, rp, 1, "M's task in P", project=child[0])
+        p12 = _seed_task(w.p, org, rp, 12, "Twelve, hidden from M")
+        m12 = _seed_task(w.p, org, w.m_rt, 12, "Twelve M can see")
+        saved = await _call(w.p, w.m, "PATCH", f"/projects/tasks/{m_source}",
+                            {"description": "Blocked on #12."})
+        assert saved.status_code == 200, saved.text
+        assert _links_of(w.p, m_source) == set()
+        assert _links_of(w.p, p12) == set() and _links_of(w.p, m12) == set()
+        assert await _pills(w, w.m, rp[0], "12") == set()
+        # A sees P's #12, and the same words link it.
+        seen = await _call(w.p, w.a, "POST", f"/projects/tasks/{m_source}/comments",
+                           {"body": "Blocked on #12."})
+        assert seen.status_code == 201
+        assert _links_of(w.p, m_source) == {(m_source, p12, "relates_to")}
+
+    async def test_a_hidden_task_of_another_root_is_not_shown(self, w):
+        """(b) M has no grant on the hidden root, so #40 names nothing for M."""
         saved = await _call(w.p, w.m, "POST", f"/projects/tasks/{w.m_task}/comments",
                             {"body": "Is this #40?"})
         assert saved.status_code == 201, saved.text
-        assert _links_of(w.p, w.m_task) == set()
-        assert _links_of(w.p, w.hidden40) == set()
-        assert _link_activities(w.p, w.m_task) == 0
+        assert _links_of(w.p, w.m_task) == set() and _links_of(w.p, w.hidden40) == set()
         read = await _call(w.p, w.m, "GET", "/projects/search/refs?numbers=40")
         assert read.status_code == 200 and read.json()["rows"] == []
-        # A, who can see it, links it from the same kind of comment.
-        seen = await _call(w.p, w.a, "POST", f"/projects/tasks/{w.source}/comments",
-                           {"body": "Is this #40?"})
-        assert seen.status_code == 201
-        assert (w.source, w.hidden40, "relates_to") in _links_of(w.p, w.source)
 
     async def test_a_github_url_in_a_comment_becomes_a_text_reference(self, w):
         """(c) The reference is stored with `via = 'text'` and no read of
@@ -435,15 +561,15 @@ class TestTextLinksOnARealDatabase:
         """(d) A second save of the same words writes no link, no reference
         and no activity. A link in the other direction counts as a link, and
         an edit that drops #12 keeps the link."""
-        words = f"Blocked on #12 and #13, see {PR_URL}"
+        words = f"Blocked on #12, see {PR_URL}"
         for _ in range(2):
             saved = await _call(w.p, w.a, "PATCH", f"/projects/tasks/{w.source}",
                                 {"description": words})
             assert saved.status_code == 200, saved.text
-        assert len(_links_of(w.p, w.source)) == 2
+        assert _links_of(w.p, w.source) == {(w.source, w.own12, "relates_to")}
         assert int(_scalar(w.p, "SELECT count(*) FROM pm_task_refs WHERE task_id = "
                                 "CAST(:t AS uuid)", t=w.source)) == 1
-        assert _link_activities(w.p, w.source) == 3
+        assert _link_activities(w.p, w.source) == 2
 
         # A link from the other end, made by hand, then a title that names it.
         back = await _call(w.p, w.a, "POST", f"/projects/tasks/{w.other12}/links",
@@ -453,39 +579,64 @@ class TestTextLinksOnARealDatabase:
                              {"title": "Thirteen, after #12"})
         assert titled.status_code == 200
         # #12 in root 2 is `other12`, which already links to #13.
-        assert _links_of(w.p, w.only13) == {
-            (w.source, w.only13, "relates_to"), (w.other12, w.only13, "blocks"),
-        }
+        assert _links_of(w.p, w.only13) == {(w.other12, w.only13, "blocks")}
 
         dropped = await _call(w.p, w.a, "PATCH", f"/projects/tasks/{w.source}",
                               {"description": "No numbers now."})
         assert dropped.status_code == 200
-        assert len(_links_of(w.p, w.source)) == 2
+        assert _links_of(w.p, w.source) == {(w.source, w.own12, "relates_to")}
+
+    async def test_a_removed_link_stays_removed_until_the_number_is_typed_again(self, w):
+        """(d, P2-2) A member removes the link. A save of the same words, as
+        the inbox card sends on each save, does not bring it back. Typing #12
+        into words that did not hold it does."""
+        words = "Blocked on #12"
+        made = await _call(w.p, w.a, "PATCH", f"/projects/tasks/{w.source}", {"description": words})
+        assert made.status_code == 200
+        link_id = str(_scalar(
+            w.p, "SELECT id FROM pm_task_links WHERE source_task_id = CAST(:t AS uuid)",
+            t=w.source))
+        removed = await _call(w.p, w.a, "DELETE", f"/projects/tasks/{w.source}/links/{link_id}")
+        assert removed.status_code == 200
+        again = await _call(w.p, w.a, "PATCH", f"/projects/tasks/{w.source}",
+                            {"title": "The source", "description": words})
+        assert again.status_code == 200
+        assert _links_of(w.p, w.source) == set()
+        # A comment edit compares with the comment's old body too.
+        posted = await _call(w.p, w.a, "POST", f"/projects/tasks/{w.source}/comments",
+                             {"body": "See #12"})
+        assert posted.status_code == 201
+        assert _links_of(w.p, w.source) == {(w.source, w.own12, "relates_to")}
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM pm_task_links WHERE source_task_id = CAST(:t AS uuid)"),
+                      {"t": w.source})
+        edited = await _call(w.p, w.a, "PATCH", f"/projects/comments/{posted.json()['id']}",
+                             {"body": "See #12, really"})
+        assert edited.status_code == 200
+        assert _links_of(w.p, w.source) == set()
+        # Typed again: the words lose #12, then gain it.
+        for text_now in ("Blocked", "Blocked on #12"):
+            step = await _call(w.p, w.a, "PATCH", f"/projects/tasks/{w.source}",
+                               {"description": text_now})
+            assert step.status_code == 200
+        assert _links_of(w.p, w.source) == {(w.source, w.own12, "relates_to")}
 
     async def test_a_new_task_and_a_bulk_title_link_from_their_text(self, w):
-        """The create and the bulk paths call the same module. The new task
-        sits in a root of its own, whose counter starts at #1, so `#13`
-        resolves org-wide to the one #13."""
-        fresh = _seed_root(w.p, w.p.org_a, A_EMAIL)
+        """The create and the bulk paths call the same module."""
+        org = w.p.org_a
+        fresh = _seed_root(w.p, org, A_EMAIL)
+        fresh13 = _seed_task(w.p, org, fresh, 13, "Thirteen of the fresh root")
         made = await _call(w.p, w.a, "POST", "/projects/tasks", {
             "project_id": fresh[0], "title": "New, about #13",
             "description": "and https://docs.google.com/document/d/1AbCdEfGhIjK/edit",
         })
         assert made.status_code == 201, made.text
         new_id = made.json()["id"]
-        try:
-            assert _links_of(w.p, new_id) == {(new_id, w.only13, "relates_to")}
-            assert int(_scalar(w.p, "SELECT count(*) FROM pm_task_refs WHERE task_id = "
-                                    "CAST(:t AS uuid) AND via = 'text'", t=new_id)) == 1
-            bulk = await _call(w.p, w.a, "POST", "/projects/tasks/bulk", {
-                "task_ids": [w.source], "patch": {"title": "Source, see #13"},
-            })
-            assert bulk.status_code == 200, bulk.text
-            assert (w.source, w.only13, "relates_to") in _links_of(w.p, w.source)
-        finally:
-            with w.p.admin_engine.begin() as c:
-                c.execute(text(
-                    "DELETE FROM pm_task_links WHERE source_task_id = CAST(:t AS uuid) "
-                    "OR target_task_id = CAST(:t AS uuid)"), {"t": new_id})
-                c.execute(text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
-                          {"t": new_id})
+        assert _links_of(w.p, new_id) == {(new_id, fresh13, "relates_to")}
+        assert int(_scalar(w.p, "SELECT count(*) FROM pm_task_refs WHERE task_id = "
+                                "CAST(:t AS uuid) AND via = 'text'", t=new_id)) == 1
+        bulk = await _call(w.p, w.a, "POST", "/projects/tasks/bulk", {
+            "task_ids": [w.source], "patch": {"title": "Source, see #12"},
+        })
+        assert bulk.status_code == 200, bulk.text
+        assert (w.source, w.own12, "relates_to") in _links_of(w.p, w.source)

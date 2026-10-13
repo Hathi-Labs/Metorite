@@ -17,6 +17,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { MarkdownBody } from "@/components/MarkdownMessage";
+import { forView, keepLineBreaks } from "@/app/projects/lib/inlineUploads";
 import { projectPillLabel } from "@/components/ProjectLinkPill";
 import { projectIdOfHref } from "@/lib/entityIndex";
 import {
@@ -207,14 +208,18 @@ describe("TaskPill and TaskRefPill", () => {
 
 // ── WS-57 TR-5: one grammar in two languages ────────────────────────────────
 
+type SharedCase = { name: string; text: string; numbers: number[] };
+
+// …/src/lib → …/src → control_plane → workbench → repo
+const SHARED: { cases: SharedCase[]; markdown_cases: SharedCase[] } = JSON.parse(
+  readFileSync(
+    fileURLToPath(new URL("../../../../tests/fixtures/task_ref_cases.json", import.meta.url)),
+    "utf-8",
+  ),
+);
+
 describe("the shared case file (tests/fixtures/task_ref_cases.json)", () => {
-  // …/src/lib → …/src → control_plane → workbench → repo
-  const CASES: { name: string; text: string; numbers: number[] }[] = JSON.parse(
-    readFileSync(
-      fileURLToPath(new URL("../../../../tests/fixtures/task_ref_cases.json", import.meta.url)),
-      "utf-8",
-    ),
-  ).cases;
+  const CASES = SHARED.cases;
 
   it("is present and not trivial", () => {
     // A file that quietly emptied would leave this block and the pytest half
@@ -227,6 +232,39 @@ describe("the shared case file (tests/fixtures/task_ref_cases.json)", () => {
   for (const c of CASES) {
     it(`agrees with the gateway: ${c.name}`, () => {
       expect(findTaskRefs(c.text).map((r) => r.number)).toEqual(c.numbers);
+    });
+  }
+});
+
+describe("the shared Markdown cases, through the card's own pipeline", () => {
+  // Every number from 1 to 100 is one task, so each pill drawn is a number
+  // the Markdown layer let through. The card draws a description through
+  // `keepLineBreaks(forView(…))` and `MarkdownBody` with `taskRefs`, and so
+  // does this. The gateway reads the same cases through `prose_of`.
+  const every = createTaskRefResolver(async (ns) =>
+    ns.map((n) => ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`, task_number: n, title: `T${n}` })),
+  );
+  beforeAll(async () => {
+    for (let n = 1; n <= 100; n += 1) every.request("", n);
+    await every.flush();
+  });
+  const pills = (text: string) => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: keepLineBreaks(forView(text)), plainEmails: true, taskRefs: true,
+        taskRefResolver: every, projectPills: true,
+      }),
+    );
+    return [...html.matchAll(/href="\/projects\?task=0+-0+-4000-8000-0*(\d+)"/g)].map((m) => Number(m[1]));
+  };
+
+  it("is present and not trivial", () => {
+    expect(SHARED.markdown_cases.length).toBeGreaterThanOrEqual(30);
+  });
+
+  for (const c of SHARED.markdown_cases) {
+    it(`agrees with the gateway: ${c.name}`, () => {
+      expect(pills(c.text)).toEqual(c.numbers);
     });
   }
 });

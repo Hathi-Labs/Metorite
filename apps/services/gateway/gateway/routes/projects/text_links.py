@@ -12,32 +12,44 @@ the text:
 * **Each GitHub or document URL.** It adds a reference with ``via = 'text'``
   through ``refs.insert_ref``, the insert of ``POST /tasks/{id}/refs``.
 
-Six rules:
+Eight rules:
 
 1. **One grammar, two languages.** :func:`find_task_refs` is the Python copy
    of ``findTaskRefs`` in ``workbench/control_plane/src/lib/taskRefs.ts``.
-   ``tests/fixtures/task_ref_cases.json`` drives both, so a change to one
-   rule fails ``test_task_refs_text_links.py`` or ``taskRefs.test.ts``.
-2. **The task's own root first.** ``search.lookup_task_refs`` with the
-   task's root is the read the card's pills use, so a pill and a saved link
-   name the same task. A number with two candidates links nothing, as the
-   pill draws nothing.
+   :func:`prose_of` follows what ``remarkEntityPills.ts`` draws as words.
+   ``tests/fixtures/task_ref_cases.json`` drives both languages, for the plain
+   finder (``cases``) and for the Markdown layer (``markdown_cases``). A
+   change to one side fails ``test_task_refs_text_links.py`` or
+   ``taskRefs.test.ts``. Where the two cannot agree, both draw no pill and
+   make no link.
+2. **The task's own root, and nothing else.** ``search.lookup_task_refs``
+   with the task's root is the read the card's pills use, so a pill and a
+   saved link name the same task. A number that root cannot resolve links
+   nothing. There is no fallback to another root: a number is never used
+   again in a root, so a moved, deleted or hidden #12 leaves a hole that a
+   fallback would fill with the wrong task for good (review round 1).
 3. **Only what the caller can see.** The lookup applies
    ``task_visibility_clause`` for the caller. A task the caller cannot see is
    never linked, and its number is never told apart from a number that names
    nothing.
-4. **Never removed by an edit.** This module only adds. A person removes a
+4. **Only what is new in this edit.** Each text comes with the value it had
+   before the write. A number or a URL that the old value held already adds
+   nothing. So a link that a member removed stays removed until somebody
+   types the ``#N`` again. A new task and a new comment have no old value.
+5. **Never removed by an edit.** This module only adds. A person removes a
    link from the card.
-5. **No second link.** A pair that already has a link in either direction,
+6. **No second link.** A pair that already has a link in either direction,
    of any type, gets no ``relates_to``. A reference is idempotent through
    the unique key of ``pm_task_refs``.
-6. **Bounded, and after the save.** At most :data:`MAX_TASK_REFS` numbers and
-   :data:`MAX_URL_REFS` URLs for each task in one save. Past the cap the
-   rest of the text is not read, and one ``projects.text_links.capped`` line
-   says how many were left. The work runs in its own transaction after the
-   save commits. A failure logs ``projects.text_links.failed`` and never
-   fails the save. It calls no network: a new GitHub reference has no
-   ``fetched_at``, so the next list of the card reads its title.
+7. **Bounded.** At most :data:`MAX_TASK_REFS` numbers and
+   :data:`MAX_URL_REFS` URLs for each task, and at most
+   :data:`MAX_TASKS_PER_SAVE` tasks in one save. Past a cap nothing more is
+   read, and one ``projects.text_links.capped`` line counts what was left.
+8. **After the save.** The work runs in its own transaction after the save
+   commits. A database failure logs ``projects.text_links.failed`` and never
+   fails the save. Any other exception is a defect and raises. It calls no
+   network: a new GitHub reference has no ``fetched_at``, so the next list
+   of the card reads its title.
 """
 
 from __future__ import annotations
@@ -48,6 +60,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from acb_common import get_logger
+from acb_common.db import TenantUnbound
 from fastapi import HTTPException
 from gateway.routes.projects.core import (
     _tenant_session,
@@ -60,6 +73,7 @@ from gateway.routes.projects.refs_classify import Classified, RefRefused, classi
 from gateway.routes.projects.relations import insert_task_link
 from gateway.routes.projects.search import lookup_task_refs
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 _log = get_logger("gateway.projects.text_links")
 
@@ -67,9 +81,24 @@ _log = get_logger("gateway.projects.text_links")
 MAX_TASK_REFS = 20
 #: The most URLs one save reads for one task.
 MAX_URL_REFS = 20
+#: The most tasks one save links from. A bulk edit of more tasks links
+#: nothing: one awaited transaction of about six statements a task must stay
+#: short, or the client times out on a save that committed (review round 1).
+MAX_TASKS_PER_SAVE = 25
 
 #: The ``via`` of a reference this module adds (§5 of the spec).
 VIA_TEXT = "text"
+
+#: The failures that cost the links of one save and never the save itself.
+#: A failed connection, a refused statement, or no tenant bound. Anything else
+#: is a defect in this module and raises.
+LINK_FAILURES: tuple[type[BaseException], ...] = (
+    SQLAlchemyError, OSError, TimeoutError, TenantUnbound,
+)
+
+#: One text of a save: ``(text, markdown, old)``. ``old`` is the value before
+#: the write, or ``None`` when there was none (a new task, a new comment).
+Saved = tuple[str | None, bool, str | None]
 
 
 # ── (a) The ``#N`` finder: the Python copy of ``findTaskRefs`` ──────────────
@@ -153,42 +182,114 @@ def find_task_refs(value: str) -> list[TaskRefMatch]:
 
 # ── (b) Markdown: what the card draws as words ──────────────────────────────
 #
-# The description and a comment are Markdown. The card draws no pill in code
-# and none inside a link's words (`remarkEntityPills.ts`), so the server reads
-# neither. A title is plain text and is read as it is.
+# The description and a comment are Markdown. The card draws no pill in code,
+# in a link's words or in a reference definition (`remarkEntityPills.ts`), so
+# the server reads none of them. A title is plain text and is read as it is.
+#
+# This is not a Markdown parser. It follows CommonMark where the card's
+# remark tree and a plain reading disagree, and the `markdown_cases` of the
+# shared file pin each rule:
+#
+# * a fence opens at ANY indent, so a fence inside a list item counts;
+# * an indented code block is 4 columns past the list's content indent, and
+#   it starts only after a blank line, never inside a paragraph;
+# * a code span can cross a line, but not a blank line;
+# * a reference definition hides its label, and `[words][label]`,
+#   `[label][]` and `[label]` hide their words when `label` is defined;
+# * `\#12` and `&#35;12` are no reference: the finder's own rules skip them,
+#   and the card checks the source of a text node for the same reason.
 
-_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-_CODE_SPAN = re.compile(r"(`+)(?!`)(.+?)(?<!`)\1(?!`)")
+_FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})(.*)$")
+_LIST_ITEM = re.compile(r"^( *)([-*+]|[0-9]{1,9}[.)])( +|$)")
+_DEFINITION = re.compile(r"^ {0,3}\[([^\]\n]+)\]:[ \t]*\S")
+_CODE_SPAN = re.compile(r"(`+)(?!`)((?:(?!\n[ \t]*\n).)+?)(?<!`)\1(?!`)", re.DOTALL)
 #: `[words](url)` and `![alt](url)`: the words go, the URL stays.
 _MD_LINK = re.compile(r"!?\[[^\]\n]*\]\(([^)\s]*)[^)\n]*\)")
+_MD_FULL_REF = re.compile(r"!?\[([^\]\n]*)\]\[([^\]\n]*)\]")
+_MD_SHORT_REF = re.compile(r"!?\[([^\]\n]+)\](?![\[(:])")
 #: A URL in text. It stops at a space, a quote, an angle bracket and a
 #: bracket, so `[x](https://…)` and `<https://…>` both end at the right mark.
 _URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+", re.IGNORECASE)
 _URL_TAIL = ".,;:!?*_~"
 
 
-def without_code(markdown: str) -> str:
-    """The Markdown with its fenced blocks and its code spans blanked."""
-    lines: list[str] = []
+def _label(value: str) -> str:
+    return " ".join(value.split()).lower()
+
+
+def _blocks(markdown: str) -> tuple[list[str], set[str]]:
+    """The lines with every code line and definition line blanked, and the
+    defined labels."""
+    out: list[str] = []
+    labels: set[str] = set()
     fence: str | None = None
+    prev_blank = True
+    prev_code = False
+    list_base: int | None = None
     for line in markdown.split("\n"):
-        mark = _FENCE.match(line)
+        expanded = line.expandtabs(4)
         if fence is not None:
-            if mark and mark.group(1)[0] == fence[0] and len(mark.group(1)) >= len(fence):
+            m = _FENCE.match(expanded)
+            if m and m.group(2)[0] == fence[0] and len(m.group(2)) >= len(fence) \
+                    and not m.group(3).strip():
                 fence = None
-            lines.append("")
+            out.append("")
+            prev_blank = False
             continue
-        if mark:
-            fence = mark.group(1)
-            lines.append("")
+        if not expanded.strip():
+            out.append(line)
+            prev_blank = True
             continue
-        lines.append(_CODE_SPAN.sub(" ", line))
-    return "\n".join(lines)
+        indent = len(expanded) - len(expanded.lstrip(" "))
+        base = list_base or 0
+        if (prev_blank or prev_code) and indent >= base + 4:
+            out.append("")
+            prev_code, prev_blank = True, False
+            continue
+        prev_code = False
+        m = _FENCE.match(expanded)
+        if m and not (m.group(2)[0] == "`" and "`" in m.group(3)):
+            fence = m.group(2)
+            out.append("")
+            prev_blank = False
+            continue
+        definition = _DEFINITION.match(expanded) if prev_blank else None
+        if definition:
+            labels.add(_label(definition.group(1)))
+            out.append("")
+            prev_blank = False
+            continue
+        item = _LIST_ITEM.match(expanded)
+        if item and indent < base + 4:
+            list_base = len(item.group(0)) if item.group(3) else len(item.group(1)) + len(item.group(2)) + 1
+        elif prev_blank and indent < base:
+            list_base = None
+        out.append(line)
+        prev_blank = False
+    return out, labels
+
+
+def without_code(markdown: str) -> str:
+    """The Markdown with its code blocks, its code spans and its reference
+    definitions blanked. Pure."""
+    lines, _labels = _blocks(markdown)
+    return _CODE_SPAN.sub(" ", "\n".join(lines))
 
 
 def prose_of(markdown: str) -> str:
-    """What the card draws as words: no code, and no link's words."""
-    return _MD_LINK.sub(lambda m: f" {m.group(1)} ", without_code(markdown))
+    """What the card draws as words: no code, no definition, and no link's
+    words. A link's URL stays, so the URL rules still read it. Pure."""
+    lines, labels = _blocks(markdown)
+    words = _CODE_SPAN.sub(" ", "\n".join(lines))
+    words = _MD_LINK.sub(lambda m: f" {m.group(1)} ", words)
+
+    def full(m: re.Match[str]) -> str:
+        return " " if _label(m.group(2) or m.group(1)) in labels else m.group(0)
+
+    def short(m: re.Match[str]) -> str:
+        return " " if _label(m.group(1)) in labels else m.group(0)
+
+    return _MD_SHORT_REF.sub(short, _MD_FULL_REF.sub(full, words))
 
 
 def find_urls(value: str) -> list[str]:
@@ -211,13 +312,17 @@ def text_ref(found: Classified) -> bool:
     return found.provider == "github" and found.kind != "url"
 
 
-def saved_texts(values: Any) -> list[tuple[str | None, bool]]:
+def saved_texts(values: Any, before: Any = None) -> list[Saved]:
     """The title and the description that a write sets, as ``scan`` takes
-    them: the title is plain and the description is Markdown. A write that
-    sets neither gives ``[]``, and then nothing is read."""
+    them: the title is plain and the description is Markdown. ``before`` is
+    the row before the write, and gives each field its old value. A write
+    that sets neither gives ``[]``, and then nothing is read."""
     if not isinstance(values, dict):
         return []
-    return [(values[k], k == "description") for k in ("title", "description") if k in values]
+    return [
+        (values[k], k == "description", getattr(before, k, None) if before is not None else None)
+        for k in ("title", "description") if k in values
+    ]
 
 
 @dataclass(frozen=True)
@@ -230,37 +335,58 @@ class Scan:
     refs_left: int
 
 
-def scan(texts: Iterable[tuple[str | None, bool]]) -> Scan:
-    """Find the numbers and the references in one save's texts. Pure.
+def _numbers_in(value: str | None, markdown: bool) -> list[int]:
+    if not value:
+        return []
+    return [m.number for m in find_task_refs(prose_of(value) if markdown else value)]
 
-    Each item is ``(text, markdown)``: a title is plain, a description and a
-    comment are Markdown. Each number and each reference counts once, in the
-    order the texts give them, up to the two caps.
+
+def _refs_in(value: str | None, markdown: bool) -> list[Classified]:
+    if not value:
+        return []
+    out: list[Classified] = []
+    for url in find_urls(without_code(value) if markdown else value):
+        try:
+            found = classify(url)
+        except RefRefused:
+            continue
+        if text_ref(found):
+            out.append(found)
+    return out
+
+
+def _key(found: Classified) -> tuple[str, str, str]:
+    return (found.kind, found.provider, found.ref)
+
+
+def scan(texts: Iterable[Saved]) -> Scan:
+    """Find the NEW numbers and references in one save's texts. Pure.
+
+    Each item is ``(text, markdown, old)``. A number or a reference that
+    ``old`` held already is not new, and adds nothing (rule 4). Each new one
+    counts once, in the order the texts give them, up to the two caps.
     """
     numbers: list[int] = []
     refs: list[Classified] = []
     seen_numbers: set[int] = set()
     seen_refs: set[tuple[str, str, str]] = set()
     numbers_left = refs_left = 0
-    for value, markdown in texts:
+    for value, markdown, old in texts:
         if not value:
             continue
-        words = prose_of(value) if markdown else value
-        for match in find_task_refs(words):
-            if match.number in seen_numbers:
+        had_numbers = set(_numbers_in(old, markdown))
+        had_refs = {_key(r) for r in _refs_in(old, markdown)}
+        for number in _numbers_in(value, markdown):
+            if number in seen_numbers or number in had_numbers:
                 continue
-            seen_numbers.add(match.number)
+            seen_numbers.add(number)
             if len(numbers) < MAX_TASK_REFS:
-                numbers.append(match.number)
+                numbers.append(number)
             else:
                 numbers_left += 1
-        for url in find_urls(without_code(value) if markdown else value):
-            try:
-                found = classify(url)
-            except RefRefused:
-                continue
-            key = (found.kind, found.provider, found.ref)
-            if not text_ref(found) or key in seen_refs:
+        for found in _refs_in(value, markdown):
+            key = _key(found)
+            if key in seen_refs or key in had_refs:
                 continue
             seen_refs.add(key)
             if len(refs) < MAX_URL_REFS:
@@ -316,23 +442,26 @@ async def _linked_ids(db: Any, task_id: str, others: list[str]) -> set[str]:
 
 async def _link_one(db: Any, vis: Any, task_id: str, found: Scan, by: str) -> dict[str, int]:
     task = await load_visible_task(db, vis, task_id)
-    root = str(task.root_project_id) if getattr(task, "root_project_id", None) else None
-    hits: dict[int, list[Any]] = {}
-    for row in await lookup_task_refs(db, vis, found.numbers, root):
-        hits.setdefault(int(row.task_number), []).append(row)
-    targets: list[str] = []
-    for number in found.numbers:
-        picked = pick_task(hits.get(number, []))
-        if picked is None or str(picked.id) == task_id or str(picked.id) in targets:
-            continue
-        targets.append(str(picked.id))
-    already = await _linked_ids(db, task_id, targets)
     linked = 0
-    for target in targets:
-        if target in already:
-            continue
-        await insert_task_link(db, task_id, target, "relates_to", by=by)
-        linked += 1
+    root = str(task.root_project_id) if getattr(task, "root_project_id", None) else None
+    if root is not None and found.numbers:
+        # Rule 2: the task's root only. A task always has a root, so the
+        # org-wide answer is never read here.
+        hits: dict[int, list[Any]] = {}
+        for row in await lookup_task_refs(db, vis, found.numbers, root):
+            hits.setdefault(int(row.task_number), []).append(row)
+        targets: list[str] = []
+        for number in found.numbers:
+            picked = pick_task(hits.get(number, []))
+            if picked is None or str(picked.id) == task_id or str(picked.id) in targets:
+                continue
+            targets.append(str(picked.id))
+        already = await _linked_ids(db, task_id, targets)
+        for target in targets:
+            if target in already:
+                continue
+            await insert_task_link(db, task_id, target, "relates_to", by=by)
+            linked += 1
     referenced = 0
     for ref in found.refs:
         _row, made = await insert_ref(db, task_id, ref, title=None, via=VIA_TEXT, by=by)
@@ -341,15 +470,20 @@ async def _link_one(db: Any, vis: Any, task_id: str, found: Scan, by: str) -> di
 
 
 async def link_from_text(
-    user: Any, saved: Sequence[tuple[str, Sequence[tuple[str | None, bool]]]],
+    user: Any, saved: Sequence[tuple[str, Sequence[Saved]]],
 ) -> None:
-    """Add the links and the references that the saved texts name.
+    """Add the links and the references that the saved texts name for the
+    first time.
 
     ``saved`` is one item for each task the save wrote: ``(task_id,
-    [(text, markdown), …])``. Call it AFTER the save's transaction closes.
-    It opens one transaction of its own for the whole save, and it never
-    raises: a failure rolls back the links of this save and logs.
+    [(text, markdown, old), …])``. Call it AFTER the save's transaction
+    closes. It opens one transaction of its own for the whole save. A
+    database failure rolls back the links of this save and logs, and the
+    save stands.
     """
+    if len(saved) > MAX_TASKS_PER_SAVE:
+        _log.info("projects.text_links.capped", tasks=len(saved), tasks_left=len(saved))
+        return
     work = [(str(task_id), scan(texts)) for task_id, texts in saved]
     work = [(task_id, found) for task_id, found in work if found.numbers or found.refs]
     if not work:
@@ -371,14 +505,17 @@ async def link_from_text(
                     # The task left the caller's sight between the save and
                     # this read. Nothing to link from.
                     continue
-    except Exception as exc:  # best effort: the save already committed
+    except LINK_FAILURES as exc:  # the save already committed
         _log.warning("projects.text_links.failed", error=type(exc).__name__)
 
 
 __all__ = [
+    "LINK_FAILURES",
+    "MAX_TASKS_PER_SAVE",
     "MAX_TASK_REFS",
     "MAX_URL_REFS",
     "VIA_TEXT",
+    "Saved",
     "Scan",
     "TaskRefMatch",
     "find_task_refs",

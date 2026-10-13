@@ -51,6 +51,7 @@ import { useCardActions } from "../lib/useCardActions";
 import { ProjectLabel } from "./ProjectLabel";
 import { PromoteDialog } from "./PromoteDialog";
 import { useAccess } from "@/components/AccessProvider";
+import { taskRefResolverFor } from "@/lib/taskRefs";
 
 // ── Two compositions, one under the lens (WS-39 S6e) ───────────────────────
 //
@@ -972,9 +973,12 @@ export function TaskDetail({
             onClose={!focused ? onClose : undefined}
           />
         </div>
+        {/* WS-57 TR-5 — the same root store the body below reads, so the
+            title and the description draw the same `#123` alike. */}
         <EditableTaskTitle
           value={item.title}
           onSave={(t) => updateItem(item.id, { title: t })}
+          refResolver={taskRefResolverFor(item.rootProjectId)}
         />
         {/* AI affordances — re-clarify (break down / refine) + fill missing
             details. Available for every task, local or ClickUp. Hidden for

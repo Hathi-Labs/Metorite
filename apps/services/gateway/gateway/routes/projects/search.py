@@ -476,13 +476,15 @@ async def search_tasks(
 # Archived tasks are included: an answer can name finished work, and the task
 # panel opens an archived task. They sort after the open ones.
 #
-# **The task's own root first** (WS-57 TR-5). The task card sends ``root``,
-# the root project of the task it shows. For a number that a visible task in
-# that root carries, the read returns only the tasks of that root. For any
-# other number it returns what it returns with no root. So `#12` on a card
-# names #12 of the same space, and a #12 elsewhere does not make it "two".
-# The chat sends no root, and its answer does not change. The root narrows
-# what the visibility clause already allows. It never widens it.
+# **The task's own root, and nothing else** (WS-57 TR-5, review round 1).
+# The task card sends ``root``, the root project of the task it shows. Then
+# the read answers only with that root's tasks. A number that root cannot
+# resolve answers nothing, and the card draws text. It does NOT fall back to
+# a #12 in another root. A number in a root is never used again: a task that
+# moved roots, was deleted or is hidden leaves a hole, and a fallback would
+# fill that hole with the wrong task for good. The chat sends no root, and
+# its answer does not change. The root narrows what the visibility clause
+# already allows. It never widens it.
 
 #: The most numbers one lookup takes. The client sends at most this many.
 MAX_REFS = 50
@@ -491,32 +493,24 @@ MAX_REFS = 50
 #: leaves room for an archived twin beside two open tasks.
 REF_HITS_PER_NUMBER = 3
 
-# `in_root` sorts first inside each number, so the cap of `:per` never cuts a
-# task of the root in favour of one outside it. `has_root` is true for a
-# number when one visible task of the root carries it, and then the outer
-# WHERE keeps only those. With no root, `:root` is NULL, both are false and
-# the read is the one it was before TR-5.
+# With no root, `:root` is NULL and the read is the one it was before TR-5.
 _REFS_SQL = """
 SELECT id, title, task_number, status_name, category, archived
   FROM (
     SELECT t.id, t.title, t.task_number, s.name AS status_name, s.category,
            (t.archived_at IS NOT NULL) AS archived,
-           COALESCE(t.root_project_id = CAST(:root AS uuid), false) AS in_root,
-           bool_or(COALESCE(t.root_project_id = CAST(:root AS uuid), false))
-             OVER (PARTITION BY t.task_number) AS has_root,
            row_number() OVER (
              PARTITION BY t.task_number
-             ORDER BY COALESCE(t.root_project_id = CAST(:root AS uuid), false) DESC,
-                      (t.archived_at IS NOT NULL), t.updated_at DESC, t.id
+             ORDER BY (t.archived_at IS NOT NULL), t.updated_at DESC, t.id
            ) AS k
       FROM pm_tasks t
       JOIN pm_task_statuses s ON s.id = t.status_id
      WHERE {visible}
        AND {triage}
        AND t.task_number = ANY(CAST(:numbers AS bigint[]))
+       AND (CAST(:root AS uuid) IS NULL OR t.root_project_id = CAST(:root AS uuid))
   ) hits
  WHERE k <= :per
-   AND (in_root OR NOT has_root)
  ORDER BY task_number, k
 """
 
@@ -524,8 +518,8 @@ SELECT id, title, task_number, status_name, category, archived
 def ref_root(raw: str | None) -> str | None:
     """The ``root`` filter as a uuid string, or ``None`` for none.
 
-    A value that is not a uuid is dropped, not refused: it can only narrow
-    the answer, so a bad one costs the caller its preference and no more.
+    The route answers no rows for a value that is not a uuid, because a
+    dropped root would widen the answer to the whole organization.
     """
     if not raw:
         return None
@@ -542,7 +536,7 @@ async def lookup_task_refs(
 
     The search route below and the links from text (``text_links.py``) both
     call it, so a pill and a saved link can never name two tasks. ``root``
-    prefers that root's task for each number (see the note above).
+    limits the answer to that root, with no fallback (see the note above).
     """
     if not numbers:
         return []
@@ -586,10 +580,10 @@ async def task_refs(
 
     ``?numbers=171,87``. Each row is ``{id, title, task_number, status_name,
     category, archived}``. A number with no visible task has no row.
-    ``&root=<uuid>`` prefers that root's task for each number (TR-5).
+    ``&root=<uuid>`` answers with that root's tasks only (TR-5).
     """
     wanted = ref_numbers(numbers)
-    if not wanted:
+    if not wanted or (root and ref_root(root) is None):
         return {"rows": []}
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)

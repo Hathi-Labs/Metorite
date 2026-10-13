@@ -477,7 +477,7 @@ async def create_task(
     })
     # WS-57 TR-5 — `#N` and GitHub or document URLs in the new text, after
     # the commit and in a transaction of its own (`text_links.py`).
-    await link_from_text(user, [(task_id, [(title, False), (values.get("description"), True)])])
+    await link_from_text(user, [(task_id, [(title, False, None), (values.get("description"), True, None)])])
     return result
 
 
@@ -618,9 +618,10 @@ async def patch_task(
         })
     if cascade is not None:
         await emit_all(cascade.events)
-    # WS-57 TR-5 — the saved title and description name tasks and URLs. A
-    # PATCH that does not write either reads nothing (`text_links.py`).
-    await link_from_text(user, [(task_id, saved_texts(values))])
+    # WS-57 TR-5 — the numbers and URLs this PATCH ADDS to the title or the
+    # description, against `before` (`text_links.py`, rule 4). A PATCH that
+    # writes neither reads nothing.
+    await link_from_text(user, [(task_id, saved_texts(values, before))])
     return result
 
 

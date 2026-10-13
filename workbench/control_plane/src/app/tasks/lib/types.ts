@@ -154,6 +154,9 @@ export interface MyTask {
   /** the user dismissed the delegate/schedule suggestion ("this one's mine") */
   keptMine?: boolean;
   projectId?: string;
+  /** WS-57 TR-5 — the task's root project (`pm_tasks.root_project_id`). The
+   *  title's `#123` pills read this root first, as the body below it does. */
+  rootProjectId?: string;
   /** The task's number in its root project (`pm_tasks.task_number`), which
    *  Projects shows as "#42". Absent on a demo row. */
   taskNumber?: number;
