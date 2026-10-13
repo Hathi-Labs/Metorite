@@ -20,8 +20,14 @@ folded into the card: its facts, a clause of the why line, and its acts.
 **No model, no write, no flag.** Code writes every why line from a template
 (§4.2). Each act names its way (§11.1): ``done`` and ``read`` are ``tap``,
 and run through the owning app's route, as the needs rows do. Every other
-act is ``open``, a link. The route goes live on merge and is read-only.
-Nothing calls it until MD-1b, so it is dark by the absence of a caller.
+act is ``open``, a link. The route is read-only. The client reads it only
+behind ``NEXT_PUBLIC_MY_DAY_FEED`` (MD-1b).
+
+**The state join** (MD-2a, §6.8 item 7) runs after the fold and before the
+order (``state.apply_state``). It reads the member's rows of
+``my_day_card_state`` and writes nothing. A snoozed, dismissed or expired
+card leaves there, so it takes no slot of ``limit``. ``needs`` is computed
+BEFORE the join, so the state never changes the bell (§6.8 item 9).
 
 **The Calendar provider** (§5.1, feed only) needs ``feature:tasks`` (the
 Calendar pane) AND ``feature:projects`` (the lens read of blocks). It calls
@@ -62,7 +68,7 @@ from zoneinfo import ZoneInfo
 from acb_auth import UserContext, get_current_user
 from acb_common.priority import task_cell
 from fastapi import Depends, HTTPException
-from gateway.routes.shell import feed_rank, needs
+from gateway.routes.shell import feed_rank, needs, state
 from gateway.routes.shell.needs import (
     PER_APP,
     Found,
@@ -536,7 +542,9 @@ async def shell_feed(
     now = needs._now()  # the feed's one clock (needs._now)
     tz = _zone(next((a.zone for a in found.values() if a.zone), None))
     today = now.astimezone(tz).date()
-    cards = feed_rank.order(build_cards(signals, now, tz, today), size)
+    # The state join: after the fold, before the order (§6.8 item 7).
+    joined = await state.apply_state(user, build_cards(signals, now, tz, today), now)
+    cards = feed_rank.order(joined, size)
     counts = {g: sum(1 for c in cards if c["group"] == g) for g in feed_rank.GROUPS}
     return {
         "cards": cards,

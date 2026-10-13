@@ -115,9 +115,14 @@ class TestWeight:
 
 
 class TestTheOtherTerms:
-    def test_affinity_and_fatigue_are_zero_until_md9_and_md2(self):
+    def test_affinity_is_zero_until_md9(self):
         assert feed_rank.affinity({"priority": "critical"}) == 0
-        assert feed_rank.fatigue({"priority": "critical"}) == 0
+
+    @pytest.mark.parametrize(("visits", "points"),
+                             [(0, 0), (1, 8), (2, 16), (3, 24), (4, 24), (9, 24), (-1, 0)])
+    def test_fatigue_is_8_for_each_visit_to_24(self, visits, points):
+        # MD-2a, §7: "-8 for each visit with no act, to -24 at most".
+        assert feed_rank.fatigue(visits) == points
 
     def test_the_score_is_the_sum(self):
         facts = {"priority": "important", "days_late": 2}

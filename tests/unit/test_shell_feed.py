@@ -53,7 +53,9 @@ FULL = ("projects", "email", "tasks")
 #: The §14.1a keys of one card, and of the answer.
 CARD_KEYS = {"signal_id", "app", "kind", "folded", "group", "score", "entity", "title",
              "why", "why_key", "facts", "fingerprint", "urgent_at", "expires_at", "at",
-             "href", "acts"}
+             "href", "acts",
+             # The state fields of MD-2a (§14.1a).
+             "state", "updated", "still_open", "visits", "state_fp"}
 ANSWER_KEYS = {"cards", "groups", "needs", "sources", "capped"}
 NEEDS_KINDS = set(shell.KIND_ORDER)
 CALENDAR_CALLS = {"day_summary", "get_user_settings", "my_calendar", "get_me"}
@@ -115,6 +117,10 @@ class FeedFakes(Fakes):
         self.work_days: dict[str, list[int]] = {ME: [1, 2, 3, 4, 5, 6, 7],
                                                 OTHER: [1, 2, 3, 4, 5, 6, 7]}
         self.slow_calendar = 0.0
+        #: The rows of ``my_day_card_state``, by member, then by signal id.
+        #: The state join reads them through ``state._read_rows`` (MD-2a).
+        self.state_rows: dict[str, dict[str, dict]] = {}
+        self.state_reads: list[tuple[str, list[str]]] = []
 
     def _today(self):
         return self.now.astimezone(ZoneInfo(self.zone)).date()
@@ -162,6 +168,35 @@ class FeedFakes(Fakes):
         return SimpleNamespace(state="resolved", email=user.email,
                                person={"schedule": {"days": self.work_days.get(user.email)}})
 
+    async def read_state(self, db, member, ids, *, lock=False):
+        self.state_reads.append((member, list(ids)))
+        mine = self.state_rows.get(member, {})
+        return {sid: dict(mine[sid]) for sid in ids if sid in mine}
+
+    async def stored_zone(self, db, email):
+        return self.zone
+
+
+class _NoSession:
+    """The state module's session, with no database: each read goes through
+    ``FeedFakes.read_state``, and each write is recorded on ``writes``."""
+
+    def __init__(self, fakes: FeedFakes) -> None:
+        self.fakes = fakes
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, sql, params=None):
+        sql = str(sql)
+        assert "INSERT INTO my_day_card_state" in sql, sql
+        row = {k: v for k, v in (params or {}).items() if k not in ("member", "signal_id")}
+        self.fakes.state_rows.setdefault(params["member"], {})[params["signal_id"]] = row
+        return SimpleNamespace(rowcount=1)
+
 
 @pytest.fixture()
 def fakes(monkeypatch) -> FeedFakes:
@@ -177,6 +212,11 @@ def fakes(monkeypatch) -> FeedFakes:
     monkeypatch.setattr(settings, "get_user_settings", f.get_user_settings)
     monkeypatch.setattr(personal, "my_calendar", f.my_calendar)
     monkeypatch.setattr(selfservice, "get_me", f.get_me)
+    from gateway.routes.shell import state
+
+    monkeypatch.setattr(state, "_read_rows", f.read_state)
+    monkeypatch.setattr(state, "_tenant_session", lambda: _NoSession(f))
+    monkeypatch.setattr(personal, "stored_zone", f.stored_zone)
     return f
 
 
@@ -820,7 +860,11 @@ class TestTheCalendarGates:
         answer = run_feed(member("tasks", "email"))
         assert answer["sources"]["calendar"] == "absent"
         assert not [c for c in answer["cards"] if c["app"] == "calendar"]
-        assert not {n for n, _, _ in fakes.calls} & CALENDAR_CALLS
+        # The state join (MD-2a) reads the day hours of a Calendar holder
+        # once (my_day_feed.md §6.8 item 8). No other Calendar read runs.
+        calls = [n for n, _, _ in fakes.calls]
+        assert not set(calls) & (CALENDAR_CALLS - {"get_user_settings"})
+        assert calls.count("get_user_settings") == 1
 
     def test_a_member_with_both_gets_the_calendar(self, fakes):
         answer = run_feed(member("tasks", "projects"))
