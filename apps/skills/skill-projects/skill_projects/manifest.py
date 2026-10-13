@@ -640,6 +640,8 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "target_task_id": "link_tasks.other_task_id",
         "link_type": "link_tasks.link_type",
     },
+    # WS-57 TR-3: the chat's reads take the stored rows and call no GitHub.
+    ("GET", "/projects/tasks/{task_id}/refs"): {"refresh": "task_detail"},
     # WS-57 TR-3: the URL and the optional title the member gave.
     ("POST", "/projects/tasks/{task_id}/refs"): {
         "url": "add_task_ref.url",
@@ -1213,6 +1215,10 @@ UI_ACTIONS: dict[str, str] = {
     # ── attachmentsApi ───────────────────────────────────────────────────
     "attachmentsApi.list": "task_detail",
     "attachmentsApi.detach": "delete_attachment",
+    # ── refsApi (WS-57 TR-2): a task's URL references ────────────────────
+    "refsApi.list": "task_detail",
+    "refsApi.add": "add_task_ref",
+    "refsApi.remove": "remove_task_ref",
     # ── notificationsApi ─────────────────────────────────────────────────
     "notificationsApi.list": "notifications",
     "notificationsApi.markRead": "mark_notifications_read",

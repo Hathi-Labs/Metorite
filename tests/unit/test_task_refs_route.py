@@ -233,14 +233,66 @@ async def test_with_no_token_no_request_is_built_and_the_rows_stay(monkeypatch) 
         (200, ["not", "an", "object"]),
     ],
 )
-async def test_a_failed_read_leaves_the_rows_as_they_were(answer: Any, monkeypatch) -> None:
+async def test_a_failed_read_keeps_title_and_state_and_stamps_the_attempt(
+    answer: Any, monkeypatch,
+) -> None:
+    """A failed attempt writes ONLY `fetched_at`, so it is not tried again for
+    15 minutes and it does not hold a read slot (review P2, 2026-10-13)."""
     log, opened = _fake_sessions(monkeypatch)
     calls = _github(monkeypatch, answer, opened=opened)
     rows = [_row(1, title="Mine", state="open")]
     out = await refs.refresh_from_github(TASK, rows)
-    assert out == rows
     assert len(calls) == 1
-    assert log == [], "a failed read wrote something"
+    assert (out[0]["title"], out[0]["state"]) == ("Mine", "open")
+    assert out[0]["fetched_at"], "a failed attempt was not stamped"
+    assert len(log) == 1
+    assert "SET fetched_at = now()" in log[0]["sql"]
+    assert "title" not in log[0]["sql"] and "state" not in log[0]["sql"]
+
+
+@pytest.mark.parametrize("status", [404, 301, 410, 403, 429])
+async def test_a_refusal_is_not_read_again_inside_fifteen_minutes(status: int, monkeypatch) -> None:
+    _fake_sessions(monkeypatch)
+    calls = _github(monkeypatch, (status, {"message": "no"}))
+    now = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
+    first = await refs.refresh_from_github(TASK, [_row(1, title="Mine")], now=now)
+    assert len(calls) == 1
+    later = now + timedelta(minutes=14)
+    await refs.refresh_from_github(TASK, first, now=later)
+    assert len(calls) == 1, "a refused row was read again inside 15 minutes"
+    await refs.refresh_from_github(TASK, first, now=now + timedelta(minutes=15))
+    assert len(calls) == 2, "a refused row was never read again"
+
+
+async def test_failing_rows_cannot_starve_a_readable_one(monkeypatch) -> None:
+    """Ten never-read rows that GitHub refuses come first in the order. The
+    eleventh, a good row, is read on the NEXT call, because the ten were
+    stamped. Unstamped, they would hold all ten slots on every call."""
+    _fake_sessions(monkeypatch)
+    calls: list[str] = []
+
+    class _Mixed(_FakeGitHub):
+        async def get(self, url: str, headers: dict | None = None) -> httpx.Response:
+            self.calls.append(url)
+            status = 200 if url.endswith("/11") else 404
+            body = {"title": "Good", "state": "open"} if status == 200 else {}
+            return httpx.Response(status, json=body, request=httpx.Request("GET", url))
+
+    async def _token() -> str:
+        return "tok"
+
+    monkeypatch.setattr(refs, "_github_token", _token)
+    monkeypatch.setattr(
+        refs, "httpx", SimpleNamespace(AsyncClient=lambda **_kw: _Mixed(None, calls, None)),
+    )
+    now = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
+    rows = [_row(i) for i in range(1, 12)]  # ten that fail, then the good one
+    rows = await refs.refresh_from_github(TASK, rows, now=now)
+    assert len(calls) == 10 and not any(c.endswith("/11") for c in calls)
+    rows = await refs.refresh_from_github(TASK, rows, now=now + timedelta(minutes=1))
+    assert calls[-1].endswith("/11") and len(calls) == 11
+    good = next(r for r in rows if r["ref"] == "acme/widgets#11")
+    assert (good["title"], good["state"]) == ("Good", "open")
 
 
 async def test_the_read_runs_with_no_session_open_and_one_session_saves(monkeypatch) -> None:
@@ -321,12 +373,12 @@ def _migration() -> Path:
     return found[0]
 
 
-def _principal(email: str, org: str) -> Any:
+def _principal(email: str, org: str, *, unrestricted: bool = True) -> Any:
     from acb_auth import UserContext, UserRole, build_access
 
+    perms = ["feature:projects", "data:org:read"] if unrestricted else ["feature:projects"]
     return UserContext(
-        email=email, role=UserRole.EMPLOYEE,
-        access=build_access(["feature:projects", "data:org:read"]),
+        email=email, role=UserRole.EMPLOYEE, access=build_access(perms),
         organization_id=org,
     )
 
@@ -363,9 +415,11 @@ async def _call(
         release_tenant(scope)
 
 
-def _seed_task(p: Any, org: str, email: str) -> str:
+def _seed_task(p: Any, org: str, email: str, *, grant: str | None = None) -> str:
     """A member, a project, a lane and a task in *org*, as the RLS-bypassing
-    admin. Every INSERT stamps ``organization_id`` itself."""
+    admin. Every INSERT stamps ``organization_id`` itself. *grant* names the
+    one subject the project is granted to, for a member without
+    ``data:org:read``."""
     project, status, task = (str(uuid.uuid4()) for _ in range(3))
     with p.admin_engine.begin() as c:
         c.execute(text(
@@ -375,6 +429,11 @@ def _seed_task(p: Any, org: str, email: str) -> str:
         c.execute(text(
             "INSERT INTO pm_projects (id, organization_id, name, created_by, owns_statuses) "
             "VALUES (:id, :o, 'refs', :e, true)"), {"id": project, "o": org, "e": email})
+        if grant is not None:
+            c.execute(text(
+                "INSERT INTO pm_project_grants (organization_id, project_id, subject, "
+                "created_by) VALUES (:o, :p, :s, :e)"),
+                {"o": org, "p": project, "s": grant, "e": email})
         c.execute(text(
             "INSERT INTO pm_task_statuses (id, organization_id, project_id, name, category, "
             "position) VALUES (:id, :o, :p, 'To do', 'todo', 10)"),
@@ -407,12 +466,18 @@ def _refs_of(p: Any, task: str) -> int:
 def world(promoted):  # noqa: F811 — a fixture
     """One member and one task in each of the two organizations."""
     a_email, b_email = "tr1-a@refs-r8.test", "tr1-b@refs-r8.test"
+    m_email = "tr1-m@refs-r8.test"
     ns = SimpleNamespace(
         p=promoted,
         a=_principal(a_email, promoted.org_a),
         b=_principal(b_email, promoted.org_b),
+        # A member of org A WITHOUT `data:org:read`: they see a project only
+        # through a grant (review note 4, the same-org DELETE scoping).
+        m=_principal(m_email, promoted.org_a, unrestricted=False),
         task_a=_seed_task(promoted, promoted.org_a, a_email),
         task_b=_seed_task(promoted, promoted.org_b, b_email),
+        task_mine=_seed_task(promoted, promoted.org_a, m_email, grant=m_email),
+        task_private=_seed_task(promoted, promoted.org_a, a_email, grant=a_email),
     )
     return ns
 
@@ -536,9 +601,13 @@ class TestTheRouteOnARealDatabase:
         assert listed.status_code == 200 and len(listed.json()["rows"]) == 1
 
     @pytest.mark.parametrize(
-        "answer", [httpx.ConnectTimeout("slow"), (502, {"message": "bad gateway"})],
+        "answer",
+        [httpx.ConnectTimeout("slow"), (502, {"message": "bad gateway"}),
+         (404, {"message": "Not Found"}), (429, {"message": "rate limited"})],
     )
     async def test_a_github_failure_keeps_the_row_and_answers(self, w, monkeypatch, answer):
+        """The row keeps its title and state, the attempt is stamped, and a
+        list inside 15 minutes does not try again (review P2)."""
         calls = _github(monkeypatch, answer)
         made = await _call(w.p, w.a, "POST", f"/projects/tasks/{w.task_a}/refs",
                            {"url": PR_URL, "title": "Mine"})
@@ -546,8 +615,70 @@ class TestTheRouteOnARealDatabase:
         listed = await _call(w.p, w.a, "GET", f"/projects/tasks/{w.task_a}/refs")
         assert listed.status_code == 200
         row = listed.json()["rows"][0]
-        assert (row["title"], row["state"], row["fetched_at"]) == ("Mine", None, None)
-        assert len(calls) == 2, "the add and the list each tried once"
+        assert (row["title"], row["state"]) == ("Mine", None)
+        assert row["fetched_at"] is not None, "the failed attempt was not stamped"
+        assert len(calls) == 1, "the list read GitHub again inside 15 minutes"
+        with w.p.admin_engine.connect() as c:
+            title, state, fetched = c.execute(text(
+                "SELECT title, state, fetched_at FROM pm_task_refs WHERE id = CAST(:r AS uuid)"),
+                {"r": made.json()["id"]}).one()
+        assert (title, state) == ("Mine", None) and fetched is not None
+
+    async def test_refresh_false_reads_the_stored_rows_only(self, w, monkeypatch):
+        """The chat's reads send `refresh=false`, so they call nothing
+        outside and stay `open_world=False`."""
+        made = await _call(w.p, w.a, "POST", f"/projects/tasks/{w.task_a}/refs", {"url": PR_URL})
+        assert made.status_code == 201
+        calls = _github(monkeypatch, (200, {"title": "t", "state": "open"}))
+        listed = await _call(w.p, w.a, "GET",
+                             f"/projects/tasks/{w.task_a}/refs?refresh=false")
+        assert listed.status_code == 200 and len(listed.json()["rows"]) == 1
+        assert calls == []
+
+    async def test_a_second_add_in_another_case_returns_the_first_row(self, w):
+        """GitHub names are case-insensitive, so the key is lower case. The
+        stored URL keeps the case the member typed."""
+        first = await _call(w.p, w.a, "POST", f"/projects/tasks/{w.task_a}/refs",
+                            {"url": "https://github.com/Acme/Widgets/pull/12"})
+        second = await _call(w.p, w.a, "POST", f"/projects/tasks/{w.task_a}/refs",
+                             {"url": "https://github.com/acme/widgets/pull/12/files"})
+        assert first.status_code == 201 and second.status_code == 200
+        assert second.json()["id"] == first.json()["id"]
+        assert first.json()["ref"] == "acme/widgets#12"
+        assert first.json()["url"] == "https://github.com/Acme/Widgets/pull/12"
+        assert _refs_of(w.p, w.task_a) == 1 and _links(w.p, w.task_a) == 1
+
+    async def test_a_task_id_that_is_not_a_uuid_is_404(self, w):
+        for method, body in (("GET", None), ("POST", {"url": PR_URL}), ("DELETE", None)):
+            path = "/projects/tasks/not-a-uuid/refs"
+            if method == "DELETE":
+                path += f"/{uuid.uuid4()}"
+            answer = await _call(w.p, w.a, method, path, body)
+            assert answer.status_code == 404, (method, answer.status_code, answer.text)
+
+    async def test_in_one_org_a_hidden_tasks_ref_cannot_be_removed(self, w):
+        """Review note 4. RLS does not separate two tasks of ONE org, so the
+        route's own checks are the only guard here. The member sees their own
+        task and not the private one."""
+        theirs = await _call(w.p, w.a, "POST", f"/projects/tasks/{w.task_private}/refs",
+                             {"url": PR_URL})
+        assert theirs.status_code == 201
+        ref = theirs.json()["id"]
+        mine = await _call(w.p, w.m, "GET", f"/projects/tasks/{w.task_mine}/refs")
+        assert mine.status_code == 200, "the member cannot see their own task"
+
+        # (1) The hidden task's ref, named through the member's OWN task. The
+        # `AND task_id = …` of the DELETE is what refuses it.
+        crossed = await _call(w.p, w.m, "DELETE", f"/projects/tasks/{w.task_mine}/refs/{ref}")
+        assert crossed.status_code == 404
+        # (2) The hidden task named directly. `load_visible_task` refuses it.
+        direct = await _call(w.p, w.m, "DELETE", f"/projects/tasks/{w.task_private}/refs/{ref}")
+        assert direct.status_code == 404
+        for method, body in (("GET", None), ("POST", {"url": "https://example.com/x"})):
+            answer = await _call(w.p, w.m, method, f"/projects/tasks/{w.task_private}/refs", body)
+            assert answer.status_code == 404, method
+        assert _refs_of(w.p, w.task_private) == 1
+        assert _links(w.p, w.task_private) == 1 and _links(w.p, w.task_mine) == 0
 
     async def test_a_github_read_is_saved_outside_the_transaction(self, w, monkeypatch):
         opened = _count_sessions(monkeypatch, refs._tenant_session)

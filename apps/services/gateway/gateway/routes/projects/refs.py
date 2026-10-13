@@ -198,13 +198,20 @@ def github_state(kind: str, body: dict[str, Any]) -> str | None:
     return state if state in ("open", "closed") else None
 
 
+#: One read's result: ``(id, title, state)``, or ``(id, None)`` for an
+#: attempt that failed. A failed attempt is stamped too (see
+#: :func:`refresh_from_github`), and it keeps its title and state.
+_Read = tuple[str, str | None, str | None]
+
+
 async def _read_one(
     client: httpx.AsyncClient, token: str, row: dict[str, Any],
-) -> tuple[str, str | None, str | None] | None:
-    """``(id, title, state)`` for one row, or ``None`` on any failure."""
+) -> _Read | tuple[str, None]:
+    """``(id, title, state)`` for one row, or ``(id, None)`` on any failure."""
+    failed = (row["id"], None)
     path = github_target(row["ref"], row["kind"])
     if path is None:
-        return None
+        return failed
     try:
         resp = await asyncio.wait_for(
             client.get(
@@ -219,16 +226,18 @@ async def _read_one(
         )
     except Exception as exc:  # a timeout, a refused connection, anything
         _log.info("projects.refs.github_unreachable", error=type(exc).__name__)
-        return None
+        return failed
     if resp.status_code != 200:
+        # A 404 (no access, or an issue number under /pull/), a 301 (a renamed
+        # repository, and redirects are off), a 410, a 403 or 429 rate limit.
         _log.info("projects.refs.github_refused", status=resp.status_code)
-        return None
+        return failed
     try:
         body = resp.json()
     except ValueError:
-        return None
+        return failed
     if not isinstance(body, dict):
-        return None
+        return failed
     title = _clean_title(str(body.get("title") or "")) or None
     return row["id"], title, github_state(row["kind"], body)
 
@@ -251,8 +260,24 @@ async def refresh_from_github(
 ) -> list[dict[str, Any]]:
     """Read the title and the state of the rows that need it, and save them.
 
-    Called with NO session open. It opens one only to write what it read. A
-    row it could not read is returned as it came in.
+    Called with NO session open. It opens one only to write what it read.
+
+    ⚠️ **Every ATTEMPT stamps ``fetched_at``, a failed one too.** A failed
+    row keeps its title and its state, and it is not tried again for
+    :data:`STALE_AFTER`. Two reasons:
+
+    * a row that GitHub refuses (a 404, a 301, a 410, a 403 or 429 rate
+      limit) would otherwise be read again by every list, every
+      ``task_detail`` and every remove, and each would wait for it;
+    * the due rows sort never-read first. An unstamped failure stays
+      never-read, so ten of them would fill :data:`MAX_READS` on every call
+      and no readable row would ever refresh.
+
+    A timeout and a connection error are stamped as well, for the second
+    reason: a stuck row must not hold a slot. The cost is that a GitHub
+    outage leaves a state up to 15 minutes old, which is what a successful
+    read costs too. With no token nothing is attempted and nothing is
+    stamped, because nothing waited.
     """
     clock = now or datetime.now(UTC)
     due = sorted(
@@ -266,31 +291,41 @@ async def refresh_from_github(
         return rows
     async with httpx.AsyncClient(timeout=READ_TIMEOUT, follow_redirects=False) as client:
         results = await asyncio.gather(*(_read_one(client, token, r) for r in due))
-    read = [r for r in results if r is not None]
-    if not read:
-        return rows
     try:
         async with _tenant_session() as db:
-            for ref_id, title, state in read:
-                await db.execute(
-                    text(
-                        "UPDATE pm_task_refs "
-                        "   SET title = COALESCE(:title, title), state = :state, "
-                        "       fetched_at = now(), updated_at = now() "
-                        " WHERE id = CAST(:rid AS uuid) AND task_id = CAST(:tid AS uuid)"
-                    ),
-                    {"title": title, "state": state, "rid": ref_id, "tid": task_id},
-                )
+            for result in results:
+                if len(result) == 3:
+                    ref_id, title, state = result
+                    await db.execute(
+                        text(
+                            "UPDATE pm_task_refs "
+                            "   SET title = COALESCE(:title, title), state = :state, "
+                            "       fetched_at = now(), updated_at = now() "
+                            " WHERE id = CAST(:rid AS uuid) AND task_id = CAST(:tid AS uuid)"
+                        ),
+                        {"title": title, "state": state, "rid": ref_id, "tid": task_id},
+                    )
+                else:
+                    await db.execute(
+                        text(
+                            "UPDATE pm_task_refs SET fetched_at = now() "
+                            " WHERE id = CAST(:rid AS uuid) AND task_id = CAST(:tid AS uuid)"
+                        ),
+                        {"rid": result[0], "tid": task_id},
+                    )
     except Exception as exc:
         _log.warning("projects.refs.save_failed", error=type(exc).__name__)
         return rows
     stamp = wire(clock)
-    by_id = {ref_id: (title, state) for ref_id, title, state in read}
+    by_id = {result[0]: result for result in results}
     out: list[dict[str, Any]] = []
     for row in rows:
-        if row["id"] in by_id:
-            title, state = by_id[row["id"]]
+        got = by_id.get(row["id"])
+        if got is not None and len(got) == 3:
+            _, title, state = got
             row = {**row, "title": title or row.get("title"), "state": state, "fetched_at": stamp}
+        elif got is not None:
+            row = {**row, "fetched_at": stamp}
         out.append(row)
     return out
 
@@ -300,10 +335,16 @@ async def refresh_from_github(
 
 @router.get("/tasks/{task_id}/refs")
 async def list_refs(
-    task_id: str, user: UserContext = Depends(get_current_user),
+    task_id: str, refresh: bool = True, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """One task's references, oldest first. A GitHub pull request or issue
-    whose last read is older than 15 minutes is read again."""
+    whose last read is older than 15 minutes is read again.
+
+    ``refresh=false`` returns the stored rows and calls nothing outside. The
+    chat's reads (``task_detail``, ``remove_task_ref``) send it, so those
+    tools stay ``open_world=False``. The card's list reads GitHub.
+    """
+    task_id = _parse_uuid(task_id, "Task")
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
@@ -317,6 +358,8 @@ async def list_refs(
                 {"tid": task_id},
             )).fetchall()
         ]
+    if not refresh:
+        return {"rows": rows}
     return {"rows": await refresh_from_github(task_id, rows)}
 
 
@@ -327,6 +370,7 @@ async def add_ref(
 ) -> dict[str, Any]:
     """Attach one URL to a task. 201 with the new row, or 200 with the row
     that already holds this reference."""
+    task_id = _parse_uuid(task_id, "Task")
     try:
         found = classify(payload.url)
     except RefRefused as exc:
@@ -383,6 +427,7 @@ async def delete_ref(
     task_id: str, ref_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Remove one reference from a task. Writes one ``link`` activity."""
+    task_id = _parse_uuid(task_id, "Task")
     rid = _parse_uuid(ref_id, "Reference")
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)

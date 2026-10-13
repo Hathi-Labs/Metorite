@@ -417,7 +417,9 @@ async def _refs_block(task_id: str) -> list[str]:
     """
     tid = uuid_of(task_id, "task_id")
     try:
-        listed = await get(f"/projects/tasks/{tid}/refs")
+        # `refresh=false`: the stored rows, and no GitHub read, so this read
+        # stays `open_world=False`. The card's own list refreshes the state.
+        listed = await get(f"/projects/tasks/{tid}/refs", {"refresh": False})
     except GatewayRefusal:
         return ["References: unknown, the list could not be read."]
     rows = (listed or {}).get("rows") or []

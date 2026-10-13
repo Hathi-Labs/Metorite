@@ -44,7 +44,7 @@ CASES: list[tuple[str, str, str, str, str]] = [
     ("https://github.com/acme/widgets/pull/12/files", "pull_request", "github",
      "acme/widgets#12", "widgets#12"),
     ("https://www.github.com/Acme/Widgets.js/pull/7?diff=split", "pull_request", "github",
-     "Acme/Widgets.js#7", "Widgets.js#7"),
+     "acme/widgets.js#7", "Widgets.js#7"),
     ("https://github.com/acme/widgets/issues/88", "issue", "github",
      "acme/widgets#88", "widgets#88"),
     ("https://github.com/acme/widgets/commit/9F3C2B1d0aa", "commit", "github",
@@ -94,7 +94,69 @@ CASES: list[tuple[str, str, str, str, str]] = [
     ("HTTPS://Example.COM", "url", "other", "https://example.com/", "example.com"),
     ("https://example.com:443/a?b=1#c", "url", "other", "https://example.com/a?b=1#c",
      "example.com"),
+    # A port that is not the default is not the provider's site.
+    ("https://github.com:8443/acme/widgets/pull/1", "url", "other",
+     "https://github.com:8443/acme/widgets/pull/1", "github.com"),
+    # The names are case-insensitive on each provider, so the key is lower case.
+    ("https://GitHub.com/ACME/Widgets/issues/4", "issue", "github",
+     "acme/widgets#4", "Widgets#4"),
+    ("https://gitlab.com/Acme/API/-/merge_requests/3/diffs", "pull_request", "gitlab",
+     "acme/api!3", "API!3"),
+    ("https://bitbucket.org/Acme/Widgets/pull-requests/9/overview", "pull_request",
+     "bitbucket", "acme/widgets#9", "Widgets#9"),
 ]
+
+
+#: (pasted, stored). A known code shape stores the URL REBUILT from what the
+#: classifier read, so the link opens the thing the card names. The owner and
+#: the repository keep the case the member typed.
+CANONICAL: list[tuple[str, str]] = [
+    ("https://github.com/Acme/Widgets/pull/12/files#diff-1",
+     "https://github.com/Acme/Widgets/pull/12"),
+    ("https://www.github.com/acme/widgets/issues/88?x=1#issuecomment-55",
+     "https://github.com/acme/widgets/issues/88#issuecomment-55"),
+    ("https://github.com/acme/widgets/pull/12/commits/ABCDEF1234567",
+     "https://github.com/acme/widgets/commit/abcdef1234567"),
+    ("https://github.com/acme/widgets.git/tree/Feature/X",
+     "https://github.com/acme/widgets/tree/Feature/X"),
+    ("https://gitlab.com/acme/api/-/merge_requests/3/diffs",
+     "https://gitlab.com/acme/api/-/merge_requests/3"),
+    ("https://bitbucket.org/acme/widgets/pull-requests/9/overview",
+     "https://bitbucket.org/acme/widgets/pull-requests/9"),
+]
+
+
+@pytest.mark.parametrize(("pasted", "stored"), CANONICAL)
+def test_a_known_code_shape_stores_its_canonical_url(pasted: str, stored: str) -> None:
+    assert classify(pasted).url == stored
+
+
+def test_two_cases_of_one_repository_share_the_ref() -> None:
+    """`Org/Repo#1` and `org/repo#1` are one pull request on GitHub."""
+    assert (
+        classify("https://github.com/Org/Repo/pull/1").ref
+        == classify("https://github.com/org/repo/pull/1").ref
+        == "org/repo#1"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # A dot segment the browser would resolve to another repository.
+        "https://github.com/a/b/pull/1/../../../../evil/repo/pull/2",
+        "https://github.com/a/b/pull/1/%2e%2e/%2E%2E/%2e%2e/%2e%2e/evil/repo/pull/2",
+        "https://github.com/a/b/pull/1/./files",
+        "https://example.com/docs/../admin",
+        # An IP literal, in either family.
+        "https://[::1]/a",
+        "https://[2001:db8::1]:8443/x",
+        "http://10.0.0.5/wiki",
+    ],
+)
+def test_a_dot_segment_or_an_ip_host_is_refused(url: str) -> None:
+    with pytest.raises(RefRefused):
+        classify(url)
 
 
 def test_the_table_holds_at_least_twenty_urls() -> None:

@@ -1699,7 +1699,12 @@ def _ref_line(row: dict[str, Any]) -> str:
     return line
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+#: ⚠️ `open_world=True`, and it is the honest value: the TR-1 route reads a
+#: GitHub pull request's or issue's title and state from api.github.com when
+#: it adds one. So a run that may not reach the outside (`no_egress`) is not
+#: offered this tool. `remove_task_ref` and `task_detail` read the list with
+#: `refresh=false`, so they call nothing outside and stay `open_world=False`.
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=True)
 async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
     """Attach a URL to a task: a GitHub pull request, issue, commit, branch or
     comment, a GitLab merge request, a Google Doc, Sheet or Slides, a Figma
@@ -1743,7 +1748,8 @@ async def remove_task_ref(task_id: str, url: str) -> str:
     want = _link_key(url)
     if not want:
         return "Give the link to remove."
-    listed = await get(f"/projects/tasks/{tid}/refs")
+    # `refresh=false`: the stored rows, and no GitHub read (open_world=False).
+    listed = await get(f"/projects/tasks/{tid}/refs", {"refresh": False})
     rows = (listed or {}).get("rows") or []
     found = [
         row for row in rows

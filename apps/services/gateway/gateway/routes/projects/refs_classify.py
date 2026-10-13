@@ -25,6 +25,7 @@ The module imports nothing from its siblings, like ``conflicts.py``.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
@@ -116,6 +117,15 @@ def _canonical(raw: str) -> tuple[str, str, str, str, str, str]:
     hostname = (parts.hostname or "").rstrip(".")
     if not hostname:
         raise RefRefused("That link has no host.")
+    # An IP literal (`https://[::1]/`, `http://10.0.0.5/`) is refused. A task
+    # reference names a site, and `urlsplit` drops an IPv6 host's brackets,
+    # so the stored URL would not be the one the member pasted.
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        raise RefRefused("A link to an IP address cannot be added to a task.")
     try:
         host = hostname.encode("idna").decode("ascii").lower()
     except UnicodeError as exc:
@@ -129,10 +139,29 @@ def _canonical(raw: str) -> tuple[str, str, str, str, str, str]:
 
 
 def _segments(path: str) -> list[str]:
-    return [s for s in path.split("/") if s]
+    """The path's segments. A dot segment (``.``, ``..``, ``%2e%2e``) is
+    refused for every URL: a browser resolves it, so the link would open a
+    place other than the one the classifier read."""
+    segs = [s for s in path.split("/") if s]
+    if any(unquote(s) in (".", "..") for s in segs):
+        raise RefRefused("A link cannot hold a '.' or '..' path segment.")
+    return segs
 
 
-def _github(segs: list[str], fragment: str, url: str) -> Classified | None:
+# ⚠️ **The stored URL of a known code shape is REBUILT from what the
+# classifier read**, never kept as pasted. A tail after `/pull/N` (`/files`,
+# `/commits`, anything) is dropped, so the link that opens is the thing the
+# card names. The owner and the repository keep the case the member typed in
+# the URL, so the link reads as they wrote it. The `ref` holds them in LOWER
+# case, because GitHub, GitLab and Bitbucket all treat the names as
+# case-insensitive (Bitbucket stores its slugs in lower case), so
+# `Org/Repo#1` and `org/repo#1` are one key.
+_GITHUB_URL = "https://github.com"
+_GITLAB_URL = "https://gitlab.com"
+_BITBUCKET_URL = "https://bitbucket.org"
+
+
+def _github(segs: list[str], fragment: str) -> Classified | None:
     """A GitHub shape, or ``None`` for a GitHub URL of no known shape."""
     if len(segs) < 4:
         return None
@@ -141,6 +170,8 @@ def _github(segs: list[str], fragment: str, url: str) -> Classified | None:
         return None
     owner = _name(segs[0], "owner")
     repo = _name(segs[1].removesuffix(".git"), "repository")
+    key = f"{owner}/{repo}".lower()
+    base = f"{_GITHUB_URL}/{owner}/{repo}"
     rest = segs[3:]
     if verb in ("pull", "issues"):
         if not _NUMBER_RE.match(rest[0]):
@@ -149,33 +180,43 @@ def _github(segs: list[str], fragment: str, url: str) -> Classified | None:
         # A pull request's own commit: /pull/N/commits/SHA.
         if verb == "pull" and len(rest) >= 3 and rest[1] == "commits" and _SHA_RE.match(rest[2]):
             sha = rest[2].lower()
-            return Classified("commit", "github", f"{owner}/{repo}@{sha}", f"{repo}@{sha[:7]}", url)
+            return Classified(
+                "commit", "github", f"{key}@{sha}", f"{repo}@{sha[:7]}", f"{base}/commit/{sha}",
+            )
         comment = _COMMENT_RE.match(fragment)
         if comment:
             cid = comment.group(1)
             return Classified(
-                "comment", "github", f"{owner}/{repo}#{number}/comment-{cid}",
-                f"{repo}#{number} comment", url,
+                "comment", "github", f"{key}#{number}/comment-{cid}",
+                f"{repo}#{number} comment", f"{base}/{verb}/{number}#issuecomment-{cid}",
             )
         kind = "pull_request" if verb == "pull" else "issue"
-        return Classified(kind, "github", f"{owner}/{repo}#{number}", f"{repo}#{number}", url)
+        return Classified(
+            kind, "github", f"{key}#{number}", f"{repo}#{number}", f"{base}/{verb}/{number}",
+        )
     if verb == "commit":
         if not _SHA_RE.match(rest[0]):
             return None
         sha = rest[0].lower()
-        return Classified("commit", "github", f"{owner}/{repo}@{sha}", f"{repo}@{sha[:7]}", url)
+        return Classified(
+            "commit", "github", f"{key}@{sha}", f"{repo}@{sha[:7]}", f"{base}/commit/{sha}",
+        )
     # verb == "tree": the branch is the rest of the path. A branch may hold a
-    # slash, so the whole remainder is the name.
+    # slash, so the whole remainder is the name. A branch name IS case
+    # sensitive, so it keeps its case in the ref.
     branch = unquote("/".join(rest))
     if (
         not branch or len(branch) > 255 or ".." in branch
         or any(ord(ch) < 33 or ord(ch) == 127 for ch in branch)
     ):
         raise RefRefused("The branch name in this link is not valid.")
-    return Classified("branch", "github", f"{owner}/{repo}:{branch}", f"{repo}:{branch}", url)
+    return Classified(
+        "branch", "github", f"{key}:{branch}", f"{repo}:{branch}",
+        f"{base}/tree/{'/'.join(rest)}",
+    )
 
 
-def _gitlab(segs: list[str], url: str) -> Classified | None:
+def _gitlab(segs: list[str]) -> Classified | None:
     """``group/sub/project/-/merge_requests/N`` and ``…/-/issues/N``."""
     if "-" not in segs:
         return None
@@ -188,15 +229,17 @@ def _gitlab(segs: list[str], url: str) -> Classified | None:
     for seg in namespace:
         _name(seg, "group or project")
     project = "/".join(namespace)
+    key = project.lower()
     number = int(rest[1])
+    url = f"{_GITLAB_URL}/{project}/-/{rest[0]}/{number}"
     if rest[0] == "merge_requests":
         return Classified(
-            "pull_request", "gitlab", f"{project}!{number}", f"{namespace[-1]}!{number}", url,
+            "pull_request", "gitlab", f"{key}!{number}", f"{namespace[-1]}!{number}", url,
         )
-    return Classified("issue", "gitlab", f"{project}#{number}", f"{namespace[-1]}#{number}", url)
+    return Classified("issue", "gitlab", f"{key}#{number}", f"{namespace[-1]}#{number}", url)
 
 
-def _bitbucket(segs: list[str], url: str) -> Classified | None:
+def _bitbucket(segs: list[str]) -> Classified | None:
     """``owner/repo/pull-requests/N``."""
     if len(segs) < 4 or segs[2] != "pull-requests" or not _NUMBER_RE.match(segs[3]):
         return None
@@ -204,7 +247,8 @@ def _bitbucket(segs: list[str], url: str) -> Classified | None:
     repo = _name(segs[1], "repository")
     number = int(segs[3])
     return Classified(
-        "pull_request", "bitbucket", f"{owner}/{repo}#{number}", f"{repo}#{number}", url,
+        "pull_request", "bitbucket", f"{owner}/{repo}#{number}".lower(), f"{repo}#{number}",
+        f"{_BITBUCKET_URL}/{owner}/{repo}/pull-requests/{number}",
     )
 
 
@@ -254,15 +298,19 @@ def classify(raw: str) -> Classified:
 
     provider = "other"
     found: Classified | None = None
-    if host in _GITHUB_HOSTS:
+    if netloc != host:
+        # A port that is not the scheme's default (`github.com:8443`) is not
+        # the provider's site, so the URL is a plain link.
+        pass
+    elif host in _GITHUB_HOSTS:
         provider = "github"
-        found = _github(segs, fragment, url)
+        found = _github(segs, fragment)
     elif host in _GITLAB_HOSTS:
         provider = "gitlab"
-        found = _gitlab(segs, url)
+        found = _gitlab(segs)
     elif host in _BITBUCKET_HOSTS:
         provider = "bitbucket"
-        found = _bitbucket(segs, url)
+        found = _bitbucket(segs)
     elif host in ("docs.google.com", "drive.google.com"):
         provider = "google"
         found = _google(host, segs, url)
