@@ -270,6 +270,15 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "INSERT INTO crm_field_defs (organization_id, entity, key, label, "
             "source) VALUES (CAST(:o AS uuid), 'deal', 'zk', 'ZK', 'zoho'), "
             "(CAST(:o AS uuid), 'deal', 'mk', 'MK', 'manual')"), o)
+        # CRM-C4a: a studio section, and a studio field in it. The start
+        # over takes both.
+        section = c.execute(text(
+            "INSERT INTO crm_field_sections (organization_id, entity, label) "
+            "VALUES (CAST(:o AS uuid), 'deal', 'Main') RETURNING id"), o).scalar()
+        c.execute(text(
+            "INSERT INTO crm_field_defs (organization_id, entity, key, label, "
+            "source, section_id) VALUES (CAST(:o AS uuid), 'deal', 'studio', "
+            "'Studio', 'metorite', CAST(:s AS uuid))"), {**o, "s": str(section)})
         c.execute(text(
             "INSERT INTO crm_sync_cursors (organization_id, module, "
             "initial_done_at) VALUES (CAST(:o AS uuid), 'zoho:deal', now())"), o)
