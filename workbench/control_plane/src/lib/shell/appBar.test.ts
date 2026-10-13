@@ -117,6 +117,8 @@ const APP_BAR_HOME: Record<string, string> = {
   "/people/me": "app/people/layout.tsx",
   "/email": "app/email/page.tsx",
   "/whatsapp": "app/whatsapp/layout.tsx",
+  // Live since 2026-10-13 (D99, NS-6 slice 6c).
+  "/artifacts": "app/artifacts/page.tsx",
   "/projects": "app/projects/page.tsx",
   // Live since 2026-10-11 (WS-53 CRM-L2). It was in `PREVIEW_BAR_HOME` before.
   "/crm": "app/crm/page.tsx",

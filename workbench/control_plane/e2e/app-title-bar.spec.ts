@@ -153,6 +153,8 @@ const PAGES: Array<[string, string]> = [
   ["My Profile", "/people/me"],
   ["My Email", "/email"],
   ["My WhatsApp", "/whatsapp"],
+  // Live since 2026-10-13 (D99, NS-6 slice 6c).
+  ["Artifacts", "/artifacts"],
   ["Projects", "/projects"],
   // Live since 2026-10-11 (WS-53 CRM-L2).
   ["CRM", "/crm"],
