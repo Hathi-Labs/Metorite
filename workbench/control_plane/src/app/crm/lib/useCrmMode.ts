@@ -15,6 +15,7 @@ import { denialOf, isNotFound, type Denial } from "./access";
 import { startPoller } from "./poller";
 import { isRunning, type SyncHealth } from "./syncHealth";
 import type { FieldDef } from "./fields";
+import type { FieldLayout } from "./fieldLayout";
 import type { CrmOwner } from "./filterBar";
 import type { RecordCounts } from "./setup";
 import type { DealPipeline, EntitySlug } from "./types";
@@ -262,6 +263,39 @@ export function useFieldDefs(entity: EntitySlug | null): FieldDefsState {
     () => api.listFields(entity!).catch(() => null),
   );
   return { defs: res.data ?? null, loading: entity !== null && res.loading };
+}
+
+export type FieldLayoutState = {
+  /** `null` while unread, and after a failed read. */
+  layout: FieldLayout | null;
+  loading: boolean;
+  refresh: () => void;
+};
+
+/**
+ * The layout read of one entity (CRM-C4p item 3). Every failure reads as
+ * `null`, and the caller then draws the view of today. A record that fails to
+ * open because its layout failed is worse.
+ */
+export function readFieldLayout(entity: EntitySlug): Promise<FieldLayout | null> {
+  return api.getFieldLayout(entity).catch(() => null);
+}
+
+/**
+ * The one layout of an entity (CRM-C4a item 12), with `studio` and
+ * `studio_admin`. C4b and C4c read it. `invalidateCrmMode` wakes it, as it
+ * wakes every other CRM read.
+ */
+export function useFieldLayout(entity: EntitySlug | null): FieldLayoutState {
+  const res = useCachedResource<FieldLayout | null>(
+    entity ? `crm:field-layout:${entity}` : null,
+    () => readFieldLayout(entity!),
+  );
+  return {
+    layout: res.data ?? null,
+    loading: entity !== null && res.loading,
+    refresh: res.refresh,
+  };
 }
 
 const KEY_RECORD_COUNTS = "crm:record-counts";

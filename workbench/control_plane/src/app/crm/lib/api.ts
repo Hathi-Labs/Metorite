@@ -14,6 +14,7 @@ import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type { FieldDef } from "./fields";
+import { asFieldLayout, type FieldLayout } from "./fieldLayout";
 import type { FieldMap, FieldRule } from "./fieldMap";
 import type { CrmOwner } from "./filterBar";
 import type { SavedView, SavedViewBody } from "./savedViews";
@@ -51,15 +52,28 @@ export class CrmError extends Error {
    * `code` of an object `detail` (`mirrored_record`, `mirror_mode_create`).
    */
   code?: string;
-  constructor(message: string, status: number, code?: string) {
+  /**
+   * The custom field that a refusal names (CRM-C4p item 4): the `field` key
+   * of an object `detail`. The C4a write path sends it with each refused
+   * value, so a form can show the message beside that input.
+   */
+  field?: string;
+  constructor(message: string, status: number, code?: string, field?: string) {
     super(message);
     this.name = "CrmError";
     this.status = status;
     this.code = code;
+    this.field = field;
   }
 }
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * The one way to call the gateway (CRM-C4p item 5). Each CRM route goes
+ * through it, so a refusal keeps its status, its code and its field. A second
+ * `fetch` path to `/api/crm` is a defect. The CSV and ZIP downloads below
+ * are the exceptions, because their bodies are not JSON.
+ */
+export async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/crm${path}`, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -72,7 +86,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     throw new CrmError(
       detailOf(body) || `Gateway error ${res.status}`,
       res.status,
-      codeOf(body)
+      codeOf(body),
+      fieldOf(body)
     );
   }
   if (res.status === 204) return undefined as T;
@@ -111,6 +126,16 @@ function codeOf(body: { detail?: unknown }): string | undefined {
   if (detail && typeof detail === "object" && !Array.isArray(detail)) {
     const code = (detail as { code?: unknown }).code;
     if (typeof code === "string") return code;
+  }
+  return undefined;
+}
+
+/** The `field` of an object `detail`, or undefined (CRM-C4p item 4). */
+function fieldOf(body: { detail?: unknown }): string | undefined {
+  const { detail } = body;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const field = (detail as { field?: unknown }).field;
+    if (typeof field === "string" && field) return field;
   }
   return undefined;
 }
@@ -158,6 +183,15 @@ export function deleteRecord(
 /** What each custom field of one entity means. Read only. */
 export function listFields(entity: EntitySlug): Promise<FieldDef[]> {
   return call<FieldDef[]>(`/fields/${entity}`);
+}
+
+/**
+ * The one layout of an entity (CRM-C4a item 12): the sections, the system
+ * fields and the custom fields, in order, with `studio` and `studio_admin`.
+ * A body that is not a layout throws, so the caller falls back.
+ */
+export async function getFieldLayout(entity: EntitySlug): Promise<FieldLayout> {
+  return asFieldLayout(await call<unknown>(`/fields/${entity}?layout=1`));
 }
 
 // ── The owner filter (CRM-X1) ─────────────────────────────────────────────
