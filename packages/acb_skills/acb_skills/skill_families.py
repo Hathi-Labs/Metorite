@@ -22,7 +22,7 @@ tasks-gtd / calendar / notes / web-research / diagrams families, but
   registry until the WS-8 manifest work lands;
 * ``diagrams`` was explicitly "(future)" in the spec and stays out.
 
-What remains outside the core floor: memory, history, coding extras,
+What remains outside the core floor: memory, history, crm, coding extras,
 workflows, and the dynamic Custom-App action tools.
 
 This module is pure data + dependency-injected helpers: it never imports the
@@ -142,6 +142,40 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-53 CRM-C7 (crm_platform.md §20.10 item 5): the CRM read tools of
+    # ``acb_skills.crm_tools``. Each one reads a ``/crm`` route as the member,
+    # so the kill switch, ``feature:crm`` and the access rule decide.
+    "crm": {
+        "label": "CRM",
+        "summary": (
+            "Read the CRM as the member: records, fields, pipelines, deal "
+            "contacts, owners, reports, totals by group and stage dwell."
+        ),
+        "description": (
+            "Read-only CRM tools over the /crm routes, called as the acting "
+            "member: list and open records with field labels, the fields, "
+            "pipelines, deal contacts and owners, the four reports, "
+            "server-side totals by group, stage dwell, and the mirrored Zoho "
+            "modules. A member without CRM access gets a refusal."
+        ),
+        "tools": (
+            "crm_aggregate",
+            "crm_deal_contacts",
+            "crm_get_module_record",
+            "crm_get_record",
+            "crm_list_fields",
+            "crm_list_module_records",
+            "crm_list_modules",
+            "crm_list_owners",
+            "crm_list_pipelines",
+            "crm_list_records",
+            "crm_report",
+            "crm_stage_dwell",
+        ),
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # There is no "attachments" family since 2026-10-09: read_attachment is
     # in the core floor, because every chat can attach a file. A stored
     # toggle row for the old slug is ignored (``_resolve_declared_scope``
@@ -219,13 +253,16 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
 #   profile documents the real default surface.
 # * ``apps``      — dynamic, governed by app_grants (its own surface), never
 #   by profiles; listed so "what does a default agent get" reads complete.
+# * ``crm``       — the CRM read tools (WS-53 CRM-C7). Owner decision D2,
+#   2026-10-13: "ensure the data is available for any agent". The gateway
+#   (kill switch, ``feature:crm``, the access rule) is the only gate.
 #
 # Deliberately EXCLUDED (specialised — per-agent tool_scope/toggle only):
 # ``history`` (only the orchestrator declares query_history) and ``coding``
 # extras (only apis-config declares install_dependency; nobody declares the
 # GitHub search pair).
 
-DEFAULT_PROFILE: tuple[str, ...] = ("core", "memory", "workflows", "apps")
+DEFAULT_PROFILE: tuple[str, ...] = ("core", "memory", "crm", "workflows", "apps")
 
 
 def default_profile_tools() -> frozenset[str]:

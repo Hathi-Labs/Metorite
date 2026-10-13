@@ -121,6 +121,20 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "recall_org":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "save_agent_memory":     {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "save_org_memory":       {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-53 CRM-C7: the CRM read tools (`crm_tools.py`). Each one reads a
+    # `/crm` route as the member, and nothing leaves the platform.
+    "crm_list_records":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_get_record":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_fields":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_pipelines":    {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_deal_contacts":     {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_owners":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_report":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_aggregate":         {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_stage_dwell":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_modules":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_list_module_records": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "crm_get_module_record": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
     # `bot_run` sends it to the member who asked, so it reaches no third party.
     "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
@@ -146,6 +160,20 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # Not H-236's, and left out for the same reason: only a WhatsApp run holds
     # it, so the block of every other agent stays byte-identical.
     "whatsapp_ui",
+    # WS-53 CRM-C7: the twelve CRM reads. They only read, so the risk block
+    # gains nothing from them, and it stays byte-identical for every agent.
+    "crm_list_records",
+    "crm_get_record",
+    "crm_list_fields",
+    "crm_list_pipelines",
+    "crm_deal_contacts",
+    "crm_list_owners",
+    "crm_report",
+    "crm_aggregate",
+    "crm_stage_dwell",
+    "crm_list_modules",
+    "crm_list_module_records",
+    "crm_get_module_record",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They

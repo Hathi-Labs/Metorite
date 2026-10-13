@@ -33,8 +33,8 @@ def agent() -> Any:
     from orchestrator.copilot_agent import MetoriteCopilotAgent
 
     a = MetoriteCopilotAgent(
-        name="agent-sales-assistant",
-        instructions="You are SALES ASSISTANT, a Fracktal Works sales agent.",
+        name="email-assistant",
+        instructions="You are EMAIL ASSISTANT, a Fracktal Works email agent.",
     )
     a._started = True
     return a
@@ -57,7 +57,7 @@ class TestResumeReappliesIdentity:
         )
         sm = cfg["system_message"]
         content = sm["content"] if isinstance(sm, dict) else sm
-        assert "SALES ASSISTANT" in content
+        assert "EMAIL ASSISTANT" in content
 
     async def test_resume_forwards_byok_provider_and_model(
         self, agent: Any,

@@ -471,11 +471,11 @@ def test_an_agent_turn_is_attributed_to_the_agent(clean) -> None:
 
     sid = _seed_session(_ALICE)
     # S14: the gateway mints the row, and the checkpoint then fills it.
-    _mint(sid, "a1", _ALICE, "agent-sales-assistant")
+    _mint(sid, "a1", _ALICE, "email-assistant")
     _upsert_messages(
         sid,
         [MessageRecord(id="a1", role="assistant", content="hi", timestamp=1001)],
-        actor_email=_ALICE, agent_name="agent-sales-assistant",
+        actor_email=_ALICE, agent_name="email-assistant",
         organization_id=_ORG,
     )
 
@@ -484,7 +484,7 @@ def test_an_agent_turn_is_attributed_to_the_agent(clean) -> None:
         "WHERE session_id = :i AND id = 'a1'", i=sid,
     )
     assert rows[0].author_kind == "agent"
-    assert rows[0].author_email == "agent-sales-assistant"
+    assert rows[0].author_email == "email-assistant"
 
 
 @_needs_db
@@ -526,7 +526,7 @@ def test_a_checkpoint_author_wins_over_the_room_agent(clean) -> None:
 
 
 def _addressed_turn(sid: str) -> None:
-    """An ``@sales`` turn: the checkpoint claims no author (S10 fix round 1),
+    """An ``@crm`` turn: the checkpoint claims no author (S10 fix round 1),
     and then the gateway's fold writes with the addressed agent."""
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
@@ -545,7 +545,7 @@ def _addressed_turn(sid: str) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="c2", role="assistant", content="final", timestamp=1005)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
 
@@ -587,7 +587,7 @@ def test_an_addressed_turn_is_stamped_with_the_agent_that_ran(clean) -> None:
     sid = _seed_session(_ALICE)
     _addressed_turn(sid)
     row = _author(sid, "c2")
-    assert row.author_email == "sales-assistant"
+    assert row.author_email == "crm-assistant"
     assert row.author_kind == "agent"
     # An agent row still takes the fold's content (fix round 1 keeps it).
     assert _content(sid, "c2") == "final"
@@ -611,7 +611,7 @@ def test_a_client_save_after_the_fold_keeps_the_agent_that_ran(clean) -> None:
         actor_email=_ALICE, agent_name="orchestrator",
         organization_id=_ORG,
     )
-    assert _author(sid, "c2").author_email == "sales-assistant"
+    assert _author(sid, "c2").author_email == "crm-assistant"
 
 
 @_needs_db
@@ -631,7 +631,7 @@ def test_the_fold_never_rewrites_a_human_turn(clean) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="h1", role="assistant", content="answer", timestamp=1008)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     row = _author(sid, "h1")
@@ -709,7 +709,7 @@ def test_the_fold_cannot_overwrite_a_members_turn(clean) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="u1", role="assistant", content="forged", timestamp=2003)],
-        actor_email=_BOB, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_BOB, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert _content(sid, "u1") == "hello"
@@ -750,12 +750,12 @@ def test_an_agent_turn_still_updates_by_checkpoint_and_by_fold(clean) -> None:
     declined = _upsert_messages(
         sid,
         [MessageRecord(id="a9", role="assistant", content="done", timestamp=2007)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert declined == []
     assert _content(sid, "a9") == "done"
-    assert _author(sid, "a9").author_email == "sales-assistant"
+    assert _author(sid, "a9").author_email == "crm-assistant"
 
 
 def _legacy_row(sid: str, mid: str, role: str, content: str) -> None:
@@ -780,7 +780,7 @@ def test_a_legacy_human_turn_with_no_kind_is_protected(clean) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="old-u", role="assistant", content="forged", timestamp=2102)],
-        actor_email=_BOB, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_BOB, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert _content(sid, "old-u") == "the old words"
@@ -797,12 +797,12 @@ def test_a_legacy_agent_turn_with_no_kind_takes_the_fold(clean) -> None:
     _upsert_messages(
         sid,
         [MessageRecord(id="old-a", role="assistant", content="final", timestamp=2103)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert _content(sid, "old-a") == "final"
     row = _author(sid, "old-a")
-    assert (row.author_kind, row.author_email) == ("agent", "sales-assistant")
+    assert (row.author_kind, row.author_email) == ("agent", "crm-assistant")
 
 
 @_needs_db
@@ -823,7 +823,7 @@ def test_the_fold_keeps_a_legacy_system_row(clean) -> None:
     declined = _upsert_messages(
         sid,
         [MessageRecord(id="old-s", role="assistant", content="final", timestamp=2104)],
-        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        actor_email=_ALICE, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
     assert declined == ["old-s"]
@@ -851,7 +851,7 @@ def _fold(sid: str, mid: str, starter: str, content: str) -> list[str]:
     return _upsert_messages(
         sid,
         [MessageRecord(id=mid, role="assistant", content=content, timestamp=3009)],
-        actor_email=starter, agent_name="sales-assistant", author_from_run=True,
+        actor_email=starter, agent_name="crm-assistant", author_from_run=True,
         organization_id=_ORG,
     )
 
@@ -965,7 +965,7 @@ def test_the_real_fold_logs_a_declined_write_and_returns_the_message(
 
     with structlog.testing.capture_logs() as caps:
         out = asyncio.run(chat_fold.persist_final_assistant_message(
-            sid, "r1", user_id=_BOB, agent_name="sales-assistant",
+            sid, "r1", user_id=_BOB, agent_name="crm-assistant",
             organization_id=_ORG,
         ))
     assert out == folded
@@ -977,7 +977,7 @@ def test_the_real_fold_logs_a_declined_write_and_returns_the_message(
     # Alice's own run folds through the same call.
     with structlog.testing.capture_logs() as caps:
         asyncio.run(chat_fold.persist_final_assistant_message(
-            sid, "r1", user_id=_ALICE, agent_name="sales-assistant",
+            sid, "r1", user_id=_ALICE, agent_name="crm-assistant",
             organization_id=_ORG,
         ))
     assert "chat_fold.persisted" in [c.get("event") for c in caps]
@@ -1085,7 +1085,7 @@ def test_a_run_with_no_message_id_cannot_be_preempted(clean) -> None:
     out = _save_as(sid, _BOB, [
         MessageRecord(id=guessed, role="assistant", content="forged",
                       timestamp=3013, author_kind="agent",
-                      author_email="sales-assistant"),
+                      author_email="crm-assistant"),
     ])
     assert out["unchanged"] == [guessed]
     assert not _rows(sid, guessed)
@@ -1097,7 +1097,7 @@ def test_a_run_with_no_message_id_cannot_be_preempted(clean) -> None:
     assert _fold(sid, mid, _ALICE, "the real reply") == []
     assert _content(sid, mid) == "the real reply"
     row = _author(sid, mid)
-    assert (row.author_kind, row.author_email) == ("agent", "sales-assistant")
+    assert (row.author_kind, row.author_email) == ("agent", "crm-assistant")
     assert _run_state(sid, mid).run_member_email == _ALICE.lower()
 
 
@@ -1224,7 +1224,7 @@ def test_the_fold_takes_and_seals_a_minted_row(clean) -> None:
     assert _fold(sid, "m1", _ALICE, "the final answer") == []
     row = _mint_state(sid, "m1")
     assert row.content == "the final answer"
-    assert row.author_email == "sales-assistant"
+    assert row.author_email == "crm-assistant"
     assert row.run_final_at is not None
 
 
@@ -1274,7 +1274,7 @@ def test_a_mint_on_an_existing_id_changes_nothing(clean) -> None:
     ])
     before = {mid: _mint_state(sid, mid) for mid in ("u1", "s1", "r1", "r2")}
     for mid in before:
-        _mint(sid, mid, _ALICE, "sales-assistant")
+        _mint(sid, mid, _ALICE, "crm-assistant")
     for mid, row in before.items():
         assert _mint_state(sid, mid) == row, mid
     assert before["r1"].content == "bob's"
@@ -1583,7 +1583,7 @@ def test_a_run_of_another_agent_adds_no_second_primary(clean) -> None:
         "INSERT INTO chat_session_agent (session_id, agent_name, role) "
         "VALUES (:i, 'orchestrator', 'primary')", i=sid,
     )
-    _mint(sid, "p1", _ALICE, "sales-assistant")
+    _mint(sid, "p1", _ALICE, "crm-assistant")
     assert _agents(sid) == {"orchestrator": "primary"}
 
 
@@ -1856,7 +1856,7 @@ def test_a_turn_above_your_clearance_comes_back_as_a_stub(clean) -> None:
         reasoning = "checked Zoho"
         agent_state = None
         custom_events: list = []
-        author_email, author_kind = "agent-sales-assistant", "agent"
+        author_email, author_kind = "email-assistant", "agent"
         authority = {"members": [_ALICE], "caps": ["integrations:use:zoho-crm"]}
 
     # Alice was in the room when it ran — she has already seen it.
