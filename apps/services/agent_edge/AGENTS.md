@@ -40,7 +40,9 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 
 ## Deploy
 
-Spec §15.3 pins the deploy (EA-10). The unit is `deploy/hostinger/acb-agent-edge.service` on `127.0.0.1:8091`, and its drop-in hides the root `.env`. The edge loads `apps/services/agent_edge/.env` only, because `Settings` reads `.env` from the working directory. Never set `WorkingDirectory` to the checkout root. The deploy starts the edge only after the owner enables the unit. Caddy serves it as `mcp.metorite.com`, and the wildcard DNS record already covers that host. Run it locally with `uv run uvicorn agent_edge.app:app`.
+Spec §15.3 pins the deploy (EA-10). The unit is `deploy/hostinger/acb-agent-edge.service` on `127.0.0.1:8091`, and its drop-in hides the root `.env`. The edge loads `apps/services/agent_edge/.env` only, because `Settings` reads `.env` from the working directory. Never set `WorkingDirectory` to the checkout root.
+
+The deploy starts the edge only after the owner enables the unit. Caddy serves it as `mcp.metorite.com`, and the wildcard DNS record already covers that host. Run it locally with `uv run uvicorn agent_edge.app:app`.
 
 ## Fence
 
