@@ -35,6 +35,7 @@ import hashlib
 import hmac
 import re
 from collections.abc import Iterable, Mapping
+from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from acb_common import get_settings
@@ -241,7 +242,8 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
     ``https`` always. ``http`` only to a loopback host (RFC 8252 §7.3). A
     private-use scheme of a native app (RFC 8252 §7.1), except the schemes in
     :data:`_FORBIDDEN_SCHEMES`. Never a fragment, a user name or a password.
-    The exact match against the client's own list is a separate check. ASCII
+    The match against the client's own list is a separate check,
+    :func:`redirect_uri_matches`. ASCII
     only, for the reason :func:`is_cimd_client_id` gives.
     """
     if not uri or len(uri) > MAX_URL_CHARS or not uri.isascii():
@@ -264,6 +266,111 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
         return (parts.hostname or "") in _LOOPBACK_HOSTS
     # A private-use scheme needs something after it.
     return bool(parts.netloc or parts.path)
+
+
+# ── The redirect match (EA-2c, spec §10.4, decision EA3-23) ─────────────────
+
+#: The registered loopback hosts that accept any port, as RAW netloc strings.
+#: Case and form count: ``LOCALHOST``, ``localhost.``, ``127.0.0.2`` and
+#: ``[0:0:0:0:0:0:0:1]`` are not in this set, so they keep the exact match.
+_LOOPBACK_NETLOCS = frozenset({"localhost", "127.0.0.1", "[::1]"})
+
+#: A port in its one spelling: no sign, no leading zero, not ``0``. The upper
+#: bound 65535 is a separate check.
+_PORT = re.compile(r"[1-9][0-9]{0,4}")
+_MAX_PORT = 65535
+
+
+class _RawParts(NamedTuple):
+    """The parts of a URI, cut by hand and never normalised.
+
+    ``query`` and ``fragment`` keep their mark (``?``, ``#``), so a URI that
+    ends in a bare ``?`` or ``#`` differs from one with no mark.
+    """
+
+    scheme: str
+    netloc: str
+    path: str
+    query: str
+    fragment: str
+
+
+def _raw_parts(uri: str) -> _RawParts | None:
+    """*uri* cut into its parts as RAW strings, or ``None`` with no ``://``.
+
+    ⚠️ Not ``urlsplit``. It lowers the case of the scheme and removes a tab
+    or a line break from the URL, so two different strings could compare equal.
+    """
+    scheme, sep, after = uri.partition("://")
+    if not sep:
+        return None
+    end = len(after)
+    for mark in "/?#":
+        found = after.find(mark)
+        if found != -1:
+            end = min(end, found)
+    netloc, rest = after[:end], after[end:]
+    cut = rest.find("#")
+    rest, fragment = (rest, "") if cut == -1 else (rest[:cut], rest[cut:])
+    cut = rest.find("?")
+    path, query = (rest, "") if cut == -1 else (rest[:cut], rest[cut:])
+    return _RawParts(scheme, netloc, path, query, fragment)
+
+
+def _loopback_any_port(requested: str, registered: str) -> bool:
+    """True when *requested* is the loopback *registered* URI on some port.
+
+    The four rules of spec §10.4, each on RAW strings:
+
+    1. *registered* has the scheme ``http``, the netloc ``localhost``,
+       ``127.0.0.1`` or ``[::1]`` exactly, and so no port and no user name.
+    2. *requested* has the same scheme and the same path.
+    3. The netloc of *requested* is the registered netloc, a colon and a
+       port from 1 to 65535 with no leading zero.
+    4. The two queries are identical, and neither URI has a fragment.
+    """
+    reg = _raw_parts(registered)
+    req = _raw_parts(requested)
+    if reg is None or req is None:
+        return False
+    # Rule 1.
+    if reg.scheme != "http" or reg.netloc not in _LOOPBACK_NETLOCS:
+        return False
+    # Rule 2.
+    if req.scheme != reg.scheme or req.path != reg.path:
+        return False
+    # Rule 4.
+    if req.query != reg.query:
+        return False
+    if req.fragment or reg.fragment:
+        return False
+    # Rule 3.
+    host, colon, port = req.netloc.rpartition(":")
+    if not colon or host != reg.netloc:
+        return False
+    return _PORT.fullmatch(port) is not None and int(port) <= _MAX_PORT
+
+
+def redirect_uri_matches(requested: str | None, registered: Iterable[object]) -> bool:
+    """True when *requested* matches one URI of the client's *registered* list.
+
+    The ONE place that compares redirect URIs (spec §10.4). The exact string
+    match runs first. Then a loopback ``http`` registration with no port
+    accepts any port (RFC 8252 §7.3), by :func:`_loopback_any_port`. Every
+    other registration needs the exact string.
+
+    This widens the authorize check only. ``mint_code`` stores the requested
+    URI with its port, and the code spend matches that string exactly. The
+    caller still runs :func:`is_allowed_redirect_uri` on *requested*.
+    """
+    if not isinstance(requested, str) or not requested:
+        return False
+    for uri in registered:
+        if not isinstance(uri, str):
+            continue
+        if requested == uri or _loopback_any_port(requested, uri):
+            return True
+    return False
 
 
 def redirect_host(uri: str) -> str:
@@ -362,6 +469,7 @@ __all__ = [
     "parse_scope",
     "pkce_matches",
     "redirect_host",
+    "redirect_uri_matches",
     "resource",
     "revocation_endpoint",
     "s256",

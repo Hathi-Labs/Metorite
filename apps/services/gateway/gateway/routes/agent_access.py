@@ -45,7 +45,9 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
    one SSRF seam, with a size cap and a time cap of its own. Only this half
    fetches. The edge never imports the guard. The document must name its own
    URL as ``client_id``, and the redirect URI must match one of its
-   ``redirect_uris`` exactly, as a string. The fetch asks for
+   ``redirect_uris`` by ``agent_oauth.redirect_uri_matches``: the exact
+   string, or any port on a loopback ``http`` URI with no port (EA-2c, spec
+   §10.4). The code keeps the exact URI, port included. The fetch asks for
    ``Accept-Encoding: identity`` and refuses a compressed body, because the
    guard reads raw bytes and never decompresses.
 8. **No code, token or hash goes into a log line.**
@@ -344,9 +346,9 @@ async def _validate(req: AuthorizeRequest) -> _Validated:
         metadata = await verified_client(req.client_id)
     except ClientRefused as exc:
         raise _error("invalid_client", f"The client was refused: {exc.reason}.") from None
-    if req.redirect_uri not in metadata.get("redirect_uris", []) or (
-        not agent_oauth.is_allowed_redirect_uri(req.redirect_uri)
-    ):
+    if not agent_oauth.redirect_uri_matches(
+        req.redirect_uri, metadata.get("redirect_uris", [])
+    ) or not agent_oauth.is_allowed_redirect_uri(req.redirect_uri):
         raise _error("invalid_request", "redirect_uri is not registered for this client.")
 
     def fail(error: str, description: str) -> HTTPException:
