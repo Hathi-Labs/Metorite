@@ -30,7 +30,53 @@ export type FieldDef = {
   is_system?: boolean;
   /** CRM-C4a: retired. A record keeps its value, and no picker offers it. */
   retired?: boolean;
+  /** CRM-C4a: the section of the layout. `null` puts the field in no section. */
+  section_id?: string | null;
+  /** CRM-C4a: a member write must give a value. */
+  required?: boolean;
+  /** CRM-C4a: the line under the input. */
+  help_text?: string | null;
+  /** CRM-C4a: the value that a new record gets. */
+  default_value?: unknown;
+  /** CRM-C4a: the entity slug that a lookup names. */
+  lookup_target?: string | null;
 };
+
+/** One option of a picklist, with its retired flag (CRM-C4p). */
+export type FieldOption = { value: string; label: string; retired: boolean };
+
+/**
+ * The options of a picklist definition, in order. The studio writes
+ * `{label, value, retired?}`, and an older sync row can hold a plain string.
+ * A retired option stays in the list, so a record that holds it reads its
+ * label (spec section 20.7, CRM-C4p item 10).
+ */
+export function fieldOptions(def: FieldDef | null | undefined): FieldOption[] {
+  const out: FieldOption[] = [];
+  for (const raw of def?.options ?? []) {
+    if (typeof raw === "string") {
+      out.push({ value: raw, label: raw, retired: false });
+    } else if (raw && typeof raw === "object") {
+      const o = raw as Row;
+      const value =
+        typeof o.value === "string" ? o.value : typeof o.label === "string" ? o.label : null;
+      if (value) {
+        const label = typeof o.label === "string" && o.label ? o.label : value;
+        out.push({ value, label, retired: o.retired === true });
+      }
+    }
+  }
+  return out;
+}
+
+/** The label of a stored option value. A value with no option reads as it is. */
+function optionText(def: FieldDef, item: unknown): string {
+  if (typeof item === "string") {
+    const found = fieldOptions(def).find((o) => o.value === item);
+    if (found) return found.label;
+  }
+  return itemText(item);
+}
 
 /**
  * The definitions that describe a custom key (WS-53 CRM-C4a, spec section
@@ -145,6 +191,9 @@ function itemText(item: unknown): string {
   return lookupName(item) ?? customValue(item);
 }
 
+/** The note after the name of a lookup whose target is gone (CRM-C4p item 10). */
+export const LOOKUP_MISSING = "missing";
+
 /** A value, by the type of its definition. A null definition reads as before. */
 export function formatField(def: FieldDef | null, value: unknown): FieldValue {
   if (isBlank(value)) return EMPTY;
@@ -180,9 +229,14 @@ export function formatField(def: FieldDef | null, value: unknown): FieldValue {
       return { kind: "text", text: customValue(value) };
     }
     case "multiselect": {
-      const items = (Array.isArray(value) ? value : [value]).map(itemText).filter(Boolean);
+      // CRM-C4p: the option label, also for a retired option.
+      const items = (Array.isArray(value) ? value : [value])
+        .map((item) => optionText(def, item))
+        .filter(Boolean);
       return items.length > 0 ? { kind: "chips", items } : EMPTY;
     }
+    case "select":
+      return { kind: "text", text: optionText(def, value) };
     case "url": {
       const href = safeHref(value);
       // An address that is not http or https stays text. It is never a link.
@@ -198,12 +252,18 @@ export function formatField(def: FieldDef | null, value: unknown): FieldValue {
     }
     case "phone":
       return contactValue("phone", value);
-    case "lookup":
-      return { kind: "text", text: itemText(value) };
+    case "lookup": {
+      // CRM-C4a gives a target that is gone, or that RLS hides, `missing: true`.
+      // The record keeps the stored name, and the note says why it is stale.
+      const missing =
+        !!value && typeof value === "object" && (value as Row).missing === true;
+      const text = itemText(value);
+      return { kind: "text", text: missing ? `${text} (${LOOKUP_MISSING})` : text };
+    }
     case "textarea":
       return { kind: "text", text: customValue(value), wrap: true };
     default:
-      // text, select and any type a later provider adds.
+      // text and any type a later provider adds.
       return { kind: "text", text: itemText(value) };
   }
 }
