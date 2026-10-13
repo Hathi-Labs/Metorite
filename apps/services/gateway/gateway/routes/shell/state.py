@@ -250,10 +250,18 @@ def _rule_2_dismiss_holds(card, row, fp, ctx):
 
 def _last_event(card: dict[str, Any]) -> datetime | None:
     """The time of the newest event on the card that the server knows: the
-    newest unread note, or the last message of a thread."""
+    newest unread note, or the last message of a thread.
+
+    ⚠️ ``facts["at"]`` of a notification is the REASON note, the newest
+    asking one, and a later comment can be newer. So the newest note reads
+    ``last_note_at``. A card without it falls back to the reason's time, and
+    then to the card's ``at``."""
     facts = card.get("facts") or {}
-    times = [t for t in (_instant(facts.get("at")) if facts.get("note_ids") else None,
-                         _instant(facts.get("waiting_since"))) if t is not None]
+    note = None
+    if facts.get("note_ids"):
+        note = (_instant(facts.get("last_note_at")) or _instant(facts.get("at"))
+                or _instant(card.get("at")))
+    times = [t for t in (note, _instant(facts.get("waiting_since"))) if t is not None]
     return max(times) if times else None
 
 

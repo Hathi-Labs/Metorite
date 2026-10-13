@@ -1411,7 +1411,7 @@ and is off by default (`packages/acb_memory`).
   the overlap ids, the notification ids and the waiting time. A countdown such as `minutes` or
   `days_late` never goes in it, so two polls a minute apart give the same
   fingerprint.
-- **MD-2a adds four card fields.** `state` is `new`, `seen` or `later`.
+- **MD-2a adds five card fields.** `state` is `new`, `seen` or `later`.
   `updated` and `still_open` are booleans for the source line. `visits` is
   the count of the day. `state_fp` is the state fingerprint of §6.8 item 1.
 - A field that a later ticket adds is optional for the client.
@@ -1665,8 +1665,8 @@ build made these choices, which this file did not fix:
 - **The member's own act is no update.** Mark read takes ids out of
   `note_ids`, so the state fingerprint moves. An `acted` row whose act came
   at or after the newest event on the card takes the new fingerprint as
-  seen. The newest event is the newest unread note, or the last message of a
-  thread.
+  seen. The newest event is the newest unread note (`last_note_at`), or the
+  last message of a thread.
 - **The member's day** starts at `day_start_hour`. So `visits_day` is the
   local date of the most recent day start. The snooze times count from that
   day too. At 00:30 the member's Monday still runs, so "Tomorrow" is
@@ -1685,8 +1685,11 @@ build made these choices, which this file did not fix:
   that debt.
 - **The thread signal** gains the fact `message_id`, for the state
   fingerprint.
-- **§14.1a names five state fields**, not four: `state`, `updated`,
-  `still_open`, `visits` and `state_fp`.
+- **§14.1a names five state fields**: `state`, `updated`, `still_open`,
+  `visits` and `state_fp`.
+- **A notification signal carries `last_note_at`**, the time of its newest
+  note. The reason note of `at` can be older. The own-act rule reads it, and
+  it is in no fingerprint and not in the needs view.
 
 **Known limits of MD-2a.** A later ticket owns each one.
 

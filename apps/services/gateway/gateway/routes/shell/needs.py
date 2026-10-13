@@ -482,7 +482,11 @@ def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
             facts={"notification": str(reason.get("kind") or ""),
                    "who": _who(reason.get("actor")), "excerpt": reason.get("excerpt"),
                    "at": _iso(reason.get("created_at")), "note_ids": ids,
-                   "unread": len(ids)},
+                   "unread": len(ids),
+                   # The newest note, which may not be the reason. The state
+                   # join reads it to tell another person's note from the
+                   # member's own act (my_day_feed.md §6.8, MD-2a).
+                   "last_note_at": _iso(rows[0].get("created_at"))},
             href=task_href(task_id),
             acts=(tap("read", "Mark read", "read", ids[0], act_refs=ids),
                   link("open", "Open", task_href(task_id))),
