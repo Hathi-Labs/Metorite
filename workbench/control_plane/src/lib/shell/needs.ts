@@ -39,6 +39,11 @@ export interface NeedsItem {
   at: string | null;
   act: NeedsAct | null;
   act_ref: string | null;
+  /**
+   * A `read` from My Day's feed only: every unread notification id of one
+   * task (`my_day_feed.md` §14.1a). The needs view never sends it.
+   */
+  act_refs?: string[];
 }
 
 export interface NeedsFeed {
@@ -210,11 +215,54 @@ function isItem(v: unknown): v is NeedsItem {
   );
 }
 
-/** Fetch the feed. A refusal or an outage throws, so the card can say so. */
+/**
+ * A source that already carries the needs view, or null (MD-1b visual
+ * review). While My Day's live feed is mounted, its answer holds exactly
+ * `GET /shell/needs?limit=30` (`my_day_feed.md` §14.1a). So a needs read on
+ * that page asks the feed, which is one provider run, and never runs the
+ * providers a second time. The bell, the sidebar and My Day itself all read
+ * through `fetchNeeds`, so one switch covers every reader, whichever of
+ * them mounts first.
+ */
+let carrier: (() => Promise<NeedsFeed | null>) | null = null;
+
+/** Make `source` the carrier of the needs view. Returns the release. */
+export function carryNeeds(source: () => Promise<NeedsFeed | null>): () => void {
+  carrier = source;
+  return () => {
+    if (carrier === source) carrier = null;
+  };
+}
+
+/**
+ * Fetch the feed. A refusal or an outage throws, so the card can say so.
+ *
+ * With a carrier (`carryNeeds`), the default read takes the carried view.
+ * A carrier that fails, or carries no view, falls back to the needs route,
+ * so the bell's counts never wait on a broken feed.
+ */
 export async function fetchNeeds(limit = NEEDS_LIMIT): Promise<NeedsFeed> {
+  const carried = limit === NEEDS_LIMIT ? carrier : null;
+  if (carried) {
+    try {
+      const view = await carried();
+      if (view) return view;
+    } catch {
+      // The feed failed: read the needs route below.
+    }
+  }
   const res = await fetch(`/api/shell/needs?limit=${limit}`, { cache: "no-store" });
   if (!res.ok) throw new Error("What needs you could not load.");
   return readFeed(await res.json());
+}
+
+/**
+ * The ids of a merged read, only when they are a non-empty list of non-empty
+ * strings. Anything else is `null`, and the read falls back to `[act_ref]`.
+ */
+function readRefs(refs: unknown): string[] | null {
+  if (!Array.isArray(refs) || refs.length === 0) return null;
+  return refs.every((r) => typeof r === "string" && r.length > 0) ? (refs as string[]) : null;
 }
 
 /**
@@ -236,7 +284,8 @@ export async function runAct(
   if (item.act === "done") return markDoneFromHome(item.act_ref, row, store);
   row.hide();
   try {
-    await notificationsApi.markRead([item.act_ref]);
+    // A feed card's merged read names each unread note of its task.
+    await notificationsApi.markRead(readRefs(item.act_refs) ?? [item.act_ref]);
     return "done";
   } catch {
     row.fail("Could not mark it read. Try again.");

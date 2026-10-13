@@ -12,6 +12,9 @@ import { EmailToolbar } from "./components/EmailToolbar";
 import { QuickFilters } from "./components/QuickFilters";
 import { ShellJob } from "@/lib/shell/doJob";
 import { OPEN_CHAT_JOB } from "@/lib/runActivity";
+import { openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { emailAssistantFacts } from "./lib/assistantFacts";
 import { askRailSession } from "@/lib/railSessions";
 import { shellBarOn } from "@/lib/shell/registry";
 import { SearchBar } from "./components/SearchBar";
@@ -66,6 +69,9 @@ import {
 } from "./lib/mailbox";
 import { keepStorage, readStorageKept, withRemovalMeter } from "./lib/storage";
 import { isSearchActive } from "./lib/searchFilters";
+
+/** D99: the chat bar's one assistant replaces this app's chat scene. */
+const ONE_ASSISTANT = shellChatOn();
 
 export default function EmailPage() {
   const { isMobile } = useViewMode();
@@ -289,6 +295,20 @@ export default function EmailPage() {
   const selectedEmail =
     emails.find((e) => e.id === selectedEmailId) ??
     (selectedEmailOverride?.id === selectedEmailId ? selectedEmailOverride : null);
+  // D99: the page tells the one assistant which mailbox and which message
+  // the member has open.
+  const assistantFacts = useMemo(
+    () =>
+      ONE_ASSISTANT
+        ? emailAssistantFacts({
+            viewAll,
+            account: accounts.find((a) => a.id === selectedAccountId) ?? null,
+            email: selectedEmail,
+          })
+        : null,
+    [viewAll, accounts, selectedAccountId, selectedEmail],
+  );
+  useAssistantFacts(assistantFacts);
   // Unread badge: for a real folder, count the mail that belongs to it; for a
   // pseudo-folder (All/Starred) or a search, the displayed list already spans
   // folders, so match against selectedFolder would count nothing — count every
@@ -496,6 +516,12 @@ export default function EmailPage() {
   const handleOpenAutomation = useCallback(
     (feature: AutomationFeature) => {
       setProcessPastFrom(null);
+      // D99: the one assistant replaces the email chat scene.
+      if (feature === "chat" && ONE_ASSISTANT) {
+        openAssistant();
+        if (isMobile) closeDrawer();
+        return;
+      }
       setAutomationFeature(feature);
       if (isMobile) closeDrawer();
     },
@@ -559,6 +585,9 @@ export default function EmailPage() {
       } else if (tab === "email-automation" && automationDrawerRef.current) {
         // "Automation" — the email-automation app list.
         openDrawer(automationDrawerRef.current);
+      } else if (tab === "email-ai" && ONE_ASSISTANT) {
+        closeDrawer();
+        openAssistant();
       } else if (tab === "email-ai") {
         // "AI Chat" — jump straight to the email chat agent (a full scene,
         // like Assistant / Reply Zero), not a bottom drawer.
@@ -591,8 +620,14 @@ export default function EmailPage() {
   // desktop, so open it the same way.
   useEffect(() => {
     if (!pendingChatPrompt) return;
-    setAutomationFeature("chat");
     closeDrawer();
+    // D99: the prompt waits in the one assistant's composer instead.
+    if (ONE_ASSISTANT) {
+      openAssistant({ draft: pendingChatPrompt });
+      useEmailStore.getState().setPendingChatPrompt(null);
+      return;
+    }
+    setAutomationFeature("chat");
   }, [pendingChatPrompt, closeDrawer]);
 
   const handleEmailSelect = useCallback(
@@ -836,6 +871,11 @@ export default function EmailPage() {
         ready={surface !== "loading"}
         onOpen={(f) => {
           if (!f.session) return;
+          // D99: an old link opens the chat in the one assistant.
+          if (ONE_ASSISTANT) {
+            openAssistant({ sessionId: f.session });
+            return;
+          }
           askRailSession("email-assistant", f.session);
           setAutomationFeature("chat");
           closeDrawer();

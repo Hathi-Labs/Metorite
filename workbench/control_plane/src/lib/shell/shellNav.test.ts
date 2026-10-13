@@ -25,10 +25,10 @@ const shape = (sections: NavSection[]) => sections.map((s) => [s.id, s.items.map
 describe("the sidebar holds places to work, by team", () => {
   it("for a fully granted admin: four groups, Organisation in Admin, and no page about the member", () => {
     expect(shape(shellSidebar(visibleSections(ALL, true)))).toEqual([
-      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp"]],
+      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]],
       ["across", ["/projects", "/crm", "/people"]],
       ["studio", ["/chat"]],
-      ["admin", ["/approvals", "/settings/organization"]],
+      ["admin", ["/approvals", "/settings/organization", "/integrations"]],
     ]);
   });
 
@@ -108,10 +108,10 @@ describe("the account menu holds pages about the member", () => {
 describe("All apps lists every app the member holds, never a preference", () => {
   it("for an admin: every held app, Organisation too, and no setting", () => {
     expect(shape(launcherGroups(visibleSections(ALL, true)))).toEqual([
-      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp"]],
+      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]],
       ["across", ["/projects", "/crm", "/people"]],
       ["studio", ["/chat"]],
-      ["admin", ["/approvals", "/settings/organization"]],
+      ["admin", ["/approvals", "/settings/organization", "/integrations"]],
     ]);
   });
 

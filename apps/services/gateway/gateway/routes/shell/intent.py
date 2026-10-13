@@ -137,6 +137,9 @@ JOBS: tuple[Job, ...] = (
         None, "/settings/appearance"),
     Job("whatsapp-reply", "Reply on WhatsApp", "answer the customers who wrote to the business on WhatsApp",
         "whatsapp", "/whatsapp"),
+    # NS-6 slice 6c (D99): Artifacts lists each chat's files. A link job.
+    Job("find-chat-file", "Find a file from a chat", "find a file, report or document the assistant made in a chat",
+        "artifacts", "/artifacts"),
     Job("review-approvals", "Review pending approvals", "check and approve what the AI wants to send before it goes out",
         "approvals", "/approvals"),
 )

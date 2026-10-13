@@ -297,6 +297,23 @@ export function deleteStatus(
   return call(`/statuses/${kind}/${statusId}`, { method: "DELETE" });
 }
 
+/**
+ * The lane order of one kind, in one transaction (WS-53 CRM-C3, §20.6 item 4).
+ * `ids` is every id of the kind, in the new order. Mirror mode writes the
+ * Metorite order (`ui_position`) and never Zoho. Native mode writes `position`.
+ */
+export function orderStatuses(kind: StatusKind, ids: string[]): Promise<Status[]> {
+  return call<Status[]>(`/statuses/${kind}/order`, {
+    method: "PUT",
+    body: JSON.stringify({ ids }),
+  });
+}
+
+/** "Reset order to Zoho" (CRM-C3, item 14): the Metorite order goes. Mirror only. */
+export function resetStatusOrder(kind: StatusKind): Promise<Status[]> {
+  return call<Status[]>(`/statuses/${kind}/order/reset`, { method: "POST" });
+}
+
 export function createLostReason(body: {
   label: string;
   position?: number;

@@ -33,6 +33,8 @@ import Icon from "@/components/Icon";
 import Modal from "@/components/ui/Modal";
 import type { NavPane } from "@/lib/nav";
 import Button from "@/components/ui/Button";
+import { openAssistant } from "./assistant";
+import { shellChatOn } from "./chatFlag";
 import { fillPageFilter, pageFilterName } from "./pageFilter";
 import { buildItems, rank, readRecent, rememberRecent, type BarItem } from "./registry";
 
@@ -106,55 +108,59 @@ export function worthAsking(query: string): boolean {
   return words.length >= 2 || (words.length === 1 && words[0].length >= 4);
 }
 
-export function CommandBar({
-  open,
-  seed,
-  onClose,
-  panes,
+
+/** One row of results: the words, the hint, the icon, and what it does. */
+export type ResultRow = Row;
+
+/**
+ * THE result engine of the one bar (D100): the rows for some words, from the
+ * registry, the record search and the coordinator. Both surfaces read it: the
+ * chat bar at the foot of the page (`ChatBar.tsx`), and this file's modal,
+ * which the phone and the flag-off desktop still open. One engine, so the two
+ * can never answer the same words two ways.
+ *
+ * `active` is whether the surface shows results now. `onDone` runs before a
+ * row moves the member anywhere. `askRow` adds "Ask the assistant: …". The
+ * chat bar leaves it out, because its Enter IS the ask.
+ */
+export function useBarResults({
+  active,
+  query,
+  token,
   here,
+  panes,
   email,
   jobOrder,
+  onDone,
+  askRow = true,
 }: {
-  open: boolean;
-  seed: string;
-  onClose: () => void;
-  panes: NavPane[];
+  active: boolean;
+  query: string;
+  token: NavPane | null;
   here: NavPane | null;
+  panes: NavPane[];
   email: string | null;
-  /** The member's preset job order, for the empty bar (NS-7). */
   jobOrder?: readonly string[];
-}) {
+  onDone: () => void;
+  askRow?: boolean;
+}): { rows: Row[]; finding: boolean } {
   const router = useRouter();
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [query, setQuery] = useState(seed);
-  const [token, setToken] = useState<NavPane | null>(here);
-  // ⚠️ The highlighted row by its KEY, not its place. Find rows arrive a
-  // moment later and push the rows below them down. A highlight held by
-  // index then sat on a different row, and Enter ran the wrong one.
-  const [activeKey, setActiveKey] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>([]);
   const [filterName, setFilterName] = useState<string | null>(null);
   const [found, setFound] = useState<{ query: string; groups: FindGroup[] }>({ query: "", groups: [] });
   const [finding, setFinding] = useState(false);
   const [intent, setIntent] = useState<{ query: string; answer: Intent } | null>(null);
 
-  // A fresh start on every open: the words it was opened with, and the token
-  // of the app the member is in.
-  // ⚠️ Only at the moment it OPENS. It reset whenever `here` changed too, and
-  // `here` changes when access finishes loading after the bar opened, which
-  // wiped what the member had already typed (a 1-in-5 flake that was a real
-  // bug on a slow load).
-  const wasOpen = useRef(false);
+  // What the surface needs each time it starts showing results: the member's
+  // recent picks, and whether this page has a filter of its own.
+  const wasActive = useRef(false);
   useEffect(() => {
-    if (open && !wasOpen.current) {
-      setQuery(seed);
-      setToken(here);
-      setActiveKey(null);
+    if (active && !wasActive.current) {
       setRecent(readRecent(email));
       setFilterName(pageFilterName());
     }
-    wasOpen.current = open;
-  }, [open, seed, here, email]);
+    wasActive.current = active;
+  }, [active, email]);
 
   const items = useMemo(() => buildItems(panes), [panes]);
 
@@ -163,7 +169,7 @@ export function CommandBar({
   const scope = token?.href ?? "";
   useEffect(() => {
     const words = query.trim();
-    if (!open || words.length < 2) {
+    if (!active || words.length < 2) {
       setFound({ query: "", groups: [] });
       setFinding(false);
       return;
@@ -187,12 +193,12 @@ export function CommandBar({
       ctrl.abort();
       clearTimeout(timer);
     };
-  }, [open, query, scope]);
+  }, [active, query, scope]);
 
   // Tier 2, the coordinator: only on a sentence, only after a real pause.
   useEffect(() => {
     const words = query.trim();
-    if (!open || words.split(/\s+/).length < 2) {
+    if (!active || words.split(/\s+/).length < 2) {
       setIntent(null);
       return;
     }
@@ -215,12 +221,12 @@ export function CommandBar({
       ctrl.abort();
       clearTimeout(timer);
     };
-  }, [open, query, scope]);
+  }, [active, query, scope]);
 
   const rows: Row[] = useMemo(() => {
     const go = (item: BarItem) => () => {
       rememberRecent(email, item.key);
-      onClose();
+      onDone();
       // ⚠️ On the SAME page, change the address directly. A router push of a
       // new query asks the server to render the page again first, and the job
       // opened seconds late, or after the test gave up. Next follows the
@@ -251,7 +257,7 @@ export function CommandBar({
             hint: hit.hint,
             icon: FIND_ICONS[hit.kind] ?? "Search",
             run: () => {
-              onClose();
+              onDone();
               // The apps read their deep link when the page loads. On the
               // same page that load must be a real one, or the link is ignored.
               const url = new URL(hit.href, window.location.origin);
@@ -270,7 +276,7 @@ export function CommandBar({
         hint: `Filter ${filterName} by “${words}”`,
         icon: "ListFilter",
         run: () => {
-          onClose();
+          onDone();
           void fillPageFilter(words);
         },
       });
@@ -286,7 +292,7 @@ export function CommandBar({
           : "Suggested by AI. It opens the form for you.",
         icon: "Sparkles",
         run: () => {
-          onClose();
+          onDone();
           const url = new URL(coordinator.href, window.location.origin);
           if (url.pathname === window.location.pathname) {
             window.history.pushState(null, "", `${url.pathname}${url.search}`);
@@ -305,7 +311,7 @@ export function CommandBar({
         run: () => undefined,
       });
     }
-    if (worthAsking(words)) {
+    if (askRow && worthAsking(words)) {
       out.push({
         key: "ask",
         group: "Ask",
@@ -313,13 +319,146 @@ export function CommandBar({
         hint: "Opens the assistant with your question typed in. You check it and send it.",
         icon: "Sparkles",
         run: () => {
-          onClose();
-          router.push(`/chat?q=${encodeURIComponent(words)}`);
+          onDone();
+          // D99: the one assistant opens where the member is, so the page
+          // and its context stay. Off, the words go to Chat as before.
+          if (shellChatOn()) openAssistant({ draft: words });
+          else router.push(`/chat?q=${encodeURIComponent(words)}`);
         },
       });
     }
     return out;
-  }, [items, query, token, recent, jobOrder, filterName, here, email, onClose, router, found, intent]);
+  }, [items, query, token, recent, jobOrder, filterName, here, email, onDone, router, found, intent, askRow]);
+
+  return { rows, finding };
+}
+
+/** A stable DOM id for one row, under a surface's own prefix. */
+export function resultOptionId(prefix: string, key: string): string {
+  return `${prefix}-${key.replace(/[^a-z0-9]/gi, "-")}`;
+}
+
+/**
+ * The rows, in their named groups, as one listbox. Both surfaces draw it.
+ * `active` is the highlighted row's index, or -1 for none.
+ */
+export function ResultList({
+  rows,
+  active,
+  onHover,
+  prefix,
+  query,
+  finding,
+  className = "",
+}: {
+  rows: readonly Row[];
+  active: number;
+  onHover: (key: string) => void;
+  prefix: string;
+  query: string;
+  finding: boolean;
+  className?: string;
+}) {
+  return (
+    <div id={`${prefix}-list`} role="listbox" aria-label="Results" className={`overflow-y-auto py-1 ${className}`}>
+      {rows.length === 0 ? (
+        <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+          {finding
+            ? "Looking in your apps…"
+            : `Nothing matches “${query.trim()}”. Try other words, or one word like “email”.`}
+        </p>
+      ) : (
+        // One `group` per kind, named, so a screen reader announces "Do",
+        // "Go to" and so on, and the listbox holds only options and groups.
+        groupsOf([...rows]).map(({ group, items }) => (
+          <div key={group} role="group" aria-labelledby={`${prefix}-g-${group.replace(/\s+/g, "-")}`}>
+            <div
+              id={`${prefix}-g-${group.replace(/\s+/g, "-")}`}
+              className="px-4 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+            >
+              {group === "Do" && !query.trim() ? "Suggested" : group}
+            </div>
+            {items.map(({ row, index: i }) => {
+              const on = i === active;
+              return (
+                <div
+                  key={row.key}
+                  id={resultOptionId(prefix, row.key)}
+                  role="option"
+                  aria-selected={on}
+                  onMouseMove={() => onHover(row.key)}
+                  // Keep the cursor in the field: a press here would blur it,
+                  // and the bar at the foot of the page closes on blur.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={row.run}
+                  className={`mx-1 flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 ${
+                    on ? "bg-primary/10 text-foreground" : "text-foreground"
+                  }`}
+                >
+                  <Icon name={row.icon} size={16} className={`shrink-0 ${on ? "text-primary" : "text-muted-foreground"}`} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px]">{row.label}</span>
+                    <span className="block truncate text-[11px] text-muted-foreground">{row.hint}</span>
+                  </span>
+                  {on ? <Icon name="CornerDownLeft" size={13} className="shrink-0 text-muted-foreground" /> : null}
+                </div>
+              );
+            })}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+/**
+ * The modal form of the one bar. With the chat bar on, a desktop never opens
+ * it: the bar at the foot of the page answers the same words (D100). The
+ * phone, and a desktop with the chat bar off, still do.
+ */
+export function CommandBar({
+  open,
+  seed,
+  onClose,
+  panes,
+  here,
+  email,
+  jobOrder,
+}: {
+  open: boolean;
+  seed: string;
+  onClose: () => void;
+  panes: NavPane[];
+  here: NavPane | null;
+  email: string | null;
+  /** The member's preset job order, for the empty bar (NS-7). */
+  jobOrder?: readonly string[];
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState(seed);
+  const [token, setToken] = useState<NavPane | null>(here);
+  // ⚠️ The highlighted row by its KEY, not its place. Find rows arrive a
+  // moment later and push the rows below them down. A highlight held by
+  // index then sat on a different row, and Enter ran the wrong one.
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+
+  // A fresh start on every open: the words it was opened with, and the token
+  // of the app the member is in.
+  // ⚠️ Only at the moment it OPENS. It reset whenever `here` changed too, and
+  // `here` changes when access finishes loading after the bar opened, which
+  // wiped what the member had already typed (a 1-in-5 flake that was a real
+  // bug on a slow load).
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      setQuery(seed);
+      setToken(here);
+      setActiveKey(null);
+    }
+    wasOpen.current = open;
+  }, [open, seed, here]);
+
+  const { rows, finding } = useBarResults({ active: open, query, token, here, panes, email, jobOrder, onDone: onClose });
 
   // The highlight: the held row while it exists, else the first row.
   const held = activeKey ? rows.findIndex((r) => r.key === activeKey) : -1;
@@ -341,8 +480,6 @@ export function CommandBar({
       setToken(null);
     }
   };
-
-  const optionId = (key: string) => `cmdbar-${key.replace(/[^a-z0-9]/gi, "-")}`;
 
   return (
     <Modal
@@ -385,7 +522,7 @@ export function CommandBar({
           role="combobox"
           aria-expanded={rows.length > 0}
           aria-controls="cmdbar-list"
-          aria-activedescendant={rows[active] ? optionId(rows[active].key) : undefined}
+          aria-activedescendant={rows[active] ? resultOptionId("cmdbar", rows[active].key) : undefined}
           aria-label="Search or ask anything"
           className="h-12 min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
         />
@@ -394,53 +531,17 @@ export function CommandBar({
         ) : null}
       </div>
 
-      <div id="cmdbar-list" role="listbox" aria-label="Results" className="max-h-[60vh] overflow-y-auto py-1">
-        {rows.length === 0 ? (
-          <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-            {finding
-              ? "Looking in your apps…"
-              : `Nothing matches “${query.trim()}”. Try other words, or one word like “email”.`}
-          </p>
-        ) : (
-          // One `group` per kind, named, so a screen reader announces "Do",
-          // "Go to" and so on, and the listbox holds only options and groups.
-          groupsOf(rows).map(({ group, items }) => (
-            <div key={group} role="group" aria-labelledby={`cmdbar-g-${group.replace(/\s+/g, "-")}`}>
-              <div
-                id={`cmdbar-g-${group.replace(/\s+/g, "-")}`}
-                className="px-4 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
-              >
-                {group === "Do" && !query.trim() ? "Suggested" : group}
-              </div>
-              {items.map(({ row, index: i }) => {
-                const on = i === active;
-                return (
-                  <div
-                    key={row.key}
-                    id={optionId(row.key)}
-                    role="option"
-                    aria-selected={on}
-                    onMouseMove={() => {
-                      if (row.key !== activeKey) setActiveKey(row.key);
-                    }}
-                    onClick={row.run}
-                    className={`mx-1 flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 ${
-                      on ? "bg-primary/10 text-foreground" : "text-foreground"
-                    }`}
-                  >
-                    <Icon name={row.icon} size={16} className={`shrink-0 ${on ? "text-primary" : "text-muted-foreground"}`} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px]">{row.label}</span>
-                      <span className="block truncate text-[11px] text-muted-foreground">{row.hint}</span>
-                    </span>
-                    {on ? <Icon name="CornerDownLeft" size={13} className="shrink-0 text-muted-foreground" /> : null}
-                  </div>
-                );
-              })}
-            </div>
-          ))
-        )}
-      </div>
+      <ResultList
+        rows={rows}
+        active={active}
+        onHover={(key) => {
+          if (key !== activeKey) setActiveKey(key);
+        }}
+        prefix="cmdbar"
+        query={query}
+        finding={finding}
+        className="max-h-[60vh]"
+      />
 
       {/* Keyboard hints. A phone has no arrows and no Esc, so it shows none. */}
       <div className="hidden items-center gap-3 border-t border-border px-4 py-2 text-[11px] text-muted-foreground sm:flex">

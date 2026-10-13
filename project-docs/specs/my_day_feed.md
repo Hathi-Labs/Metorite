@@ -1,7 +1,9 @@
 # My Day as a live feed — the chief of staff
 
-**Status: ACTIVE, 2026-10-13.** Nothing in this file is built. The
-AGENT-SAFE tickets are MD-1a, MD-1b, MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7,
+**Status: ACTIVE, 2026-10-13. MD-1a is BUILT (gateway half, merged as
+#964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
+dark behind `NEXT_PUBLIC_MY_DAY_FEED`).** The rest of this file is not
+built. The open AGENT-SAFE tickets are MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7,
 MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -345,6 +347,10 @@ entity.
     11:00" is one of its acts.
   - An overdue task that falls on my absence is one `overdue` card. The
     absence is a fact in its why line.
+  - The card takes the most urgent group of all its kinds, so a folded block
+    that starts soon keeps the card in Now. The order is Now, Needs you,
+    Ready for you, then For your information. Fence:
+    `test_shell_feed.py::TestTheMostUrgentGroup`.
 - **The NS-3 rule stays.** Next actions leaves out each task that a feed card
   already shows (`myDay.test.ts`).
 
@@ -373,10 +379,10 @@ each renders as a link that opens the owning app at the right place.
 
 | Kind | Signal | Why line | Body | Acts | AI | Phase |
 |---|---|---|---|---|---|---|
-| `block_overlap` | Two of my scheduled blocks overlap today or this week | Template: "Both are set for 2:00 PM on Tuesday." | A day strip of the two blocks | "Move X to <slot>" (A\*), "Open the day" | `my_day.slot` picks the slot | MD-1 |
+| `block_overlap` | Two of my scheduled blocks overlap today or this week | Template: "They overlap from 14:00 on Tuesday." | A day strip of the two blocks | "Move X to <slot>" (A\*), "Open the day" | `my_day.slot` picks the slot | MD-1 |
 | `day_overbooked` | Planned hours exceed the working hours of the day | Template: "7 h planned in a 5 h day." | A bar of planned against free time | "Fit what's left" (opens Calendar's replan) | None | MD-1 |
 | `no_plan_yet` | It is past the day start and nothing is scheduled today | Template | — | "Plan my day" (link to Calendar) | None | MD-1 |
-| `free_slot_for_overdue` | A free slot of 30 minutes or more today, and an overdue task that fits it | Template: "You have 90 min free at 3:00 PM." | The slot and the task | "Block it" (A\*) | `my_day.slot` | MD-4. When the task has its own card, this folds into it (§4.5) |
+| `free_slot_for_overdue` | A free slot of 30 minutes or more today, and an overdue task that fits it | Template: "You have 90 min free at 15:00." | The slot and the task | "Block it" (A\*) | `my_day.slot` | MD-4. When the task has its own card, this folds into it (§4.5) |
 | `block_soon` | A block starts within 30 minutes | Template | The block and its task | "Open task" | None | MD-1 |
 | `meeting_overlap` | A meeting overlaps a meeting or a block (card A) | Template from the two events | The two-day strip of card A | "Move to <slot>" (class B), "See options" | `my_day.slot` | **MD-11, waits on calendar P4** |
 
@@ -1408,6 +1414,34 @@ Done when:
 The old-path weight reads `packages/acb_common/acb_common/priority.py`
 (`task_cell`, `priority_rank`). No second port of the D78 matrix.
 
+**BUILT 2026-10-13, on branch `my-day-feed-md1`.** The route serves on merge.
+Nothing calls it until MD-1b. The build made four choices that this file did
+not fix:
+
+- **The level of a D78 cell** is `round((7 - rank) * 4 / 6)`. So Critical is
+  4 and Low Priority is 0 (`feed_rank.LEVEL_BY_CELL`).
+- **The working day of `no_plan_yet`** comes from the People app's own self
+  read, `get_me`. A member with no directory row gets the default policy's
+  days. The read runs only when the other conditions hold.
+- **A done block counts as a plan.** `no_plan_yet` stays quiet when the
+  member has any block today, done or open.
+- **The card's score** is the highest score of its folded signals, on the
+  main kind's base.
+
+**Known limits of MD-1a.** The review of round 1 found these two. They do not
+block MD-1a, and a later ticket owns each one.
+
+- **The Calendar window.** `day_summary` reads only today's window, from
+  `day_start_hour` to `day_end_hour`. So a block before the day starts, or a
+  block across midnight, gives no `block_soon`. The week read of `my_calendar`
+  starts at the member's local midnight. `_working_day` falls back to the
+  default policy, not to the org's own policy (`load_policy`).
+- **The cost of a poll.** `day_summary` costs about 20 queries and 5 sessions
+  on each feed poll. The read cache of MD-5 must cover it.
+- **Mark read covers one page.** `act_refs` covers the unread notifications
+  on the first page of the bell read (15). Older unread notes on the same
+  task stay unread after Mark read, and the card comes back.
+
 ### MD-1b · The feed column and the one poll, the frontend half — AGENT-SAFE (build), OWNER-GATE (turn on)
 
 Files: `src/app/api/shell/feed/route.ts`, `src/lib/shell/FeedCard.tsx`,
@@ -1430,6 +1464,22 @@ Done when:
    `open` act is a link.
 4. The card draws through `HomeCard`, `Skeleton` and the house tokens, and
    `conformance.test.ts` passes with no new budget.
+
+**Built 2026-10-13** on the branch `my-day-feed-md1b`. The client is
+`src/lib/shell/feed.ts`, and its fence is `feed.test.ts`. The poll fence is
+`shellBell.test.ts`, and the cache fence is `dataCache.test.ts`
+(`guardedPut`).
+
+**Two accepted limits of MD-1b.** The verifier accepted both on 2026-10-13.
+
+- A feed read can land after `keep()` and before the PATCH answers. That
+  read counts as the truth for one PATCH round trip. The re-read after the
+  invalidate heals it.
+- Suppose a feed answer shows a reopened task, and the bell then marks that
+  task Done within the 30 s hold. The feed card stays until the hold ends.
+- A row stays pending from the tap until the act calls `keep`, `show` or
+  `fail`. If the store's first load never settles, the card stays hidden
+  for that page visit. A reload shows it again.
 
 **Not in MD-1b, and where each part went.** The honest counts of §6.7 and the
 card menu go to MD-2, because each needs its state table. `stale_next` is

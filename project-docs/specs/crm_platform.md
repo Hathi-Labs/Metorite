@@ -27,7 +27,7 @@
 > CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
 > (2026-10-12, migration 247). The other slices are not built yet.
 >
-> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5).
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix).
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
@@ -36,6 +36,9 @@
 > **Built later:** CRM-Q7a, the rule table and the Field map (2026-10-12, migration 253). See §18.7.
 >
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
+>
+> **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
+> and statuses you can shape, in both modes (2026-10-13, migration 257).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -1207,7 +1210,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q7** | The AI mapping assistant and CRM settings → Field map | P0 |
 | **CRM-Q8** | ✅ built 2026-10-12. Built as: migration 250 adds `crm_views`. The list routes and `GET /crm/pipeline` take `owner` (or `me`), `source`, the created, updated and close date ranges, and `custom.<key>=<value>` or `custom.<key>.in=a,b`. A custom key that `crm_field_defs` does not list gives 422. The export takes the same parameters. `GET`, `POST`, `PATCH` and `DELETE /crm/views` save a view of the filters, sort, columns, layout and pipeline. A view is private to its owner, and only an admin shares it. A view works in Mirror mode. Saved views nest under each entity in the rail, `?view=` opens one, and the column choice moves into the view while one is active. Filters on a board and a list use one filter bar. A multiselect field matches when any chosen option is in its array. In Mirror mode the updated range uses the Zoho modified time, and the created range gives 422 `created_range_mirror`. Follow-up: a mirrored created column, so that a created range works in Mirror mode. This also builds CRM-S2 | P0 |
 | **CRM-Q9** | ✅ built 2026-10-12. Sync health: the Zoho count against ours, skipped records, unsupported modules, last error | P0 |
-| **CRM-Q10** | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
+| **CRM-Q14** (was CRM-Q10 until 2026-10-13, when the hotfix "a reconnect never freezes the mirror" took that id) | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
 | **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
 | **CRM-Q12** | Per-owner visibility in the mirror | P1 |
 | **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
@@ -1730,6 +1733,139 @@ and the target list as its only arguments.
 4. The call goes through `acompletion_with_fallback` with
    `feature="crm.field_map"`, and with the org bound.
 5. A second press for the same profile version makes no model call.
+
+#### CRM-Q10: a reconnect never freezes the mirror
+
+**Gate.** AGENT-SAFE. This is a production hotfix (2026-10-13). It adds no
+migration, no route and no flag. `CRM_MIRROR` already gates the sync.
+
+**The id.** The §18.5 P1 row "Layouts and sections" had the id CRM-Q10 until
+2026-10-13. It is now CRM-Q14, and this hotfix keeps CRM-Q10.
+
+**The incident (Fracktal, Mirror mode, measured on prod 2026-10-12).**
+
+1. At 15:10 UTC the owner used "Reconnect Zoho (keeps the records)" to grant
+   the module scopes of CRM-Q6a. It was the same Zoho account and the same
+   connection id.
+2. Each consent ran `_DROP_PROFILES_SQL` in `store.save_credential`. So
+   `crm_source_profiles` held 0 rows.
+3. With no profile, `profiles.budget_for` returns `None`, and the run budget
+   falls to the floor `DAILY_CREDIT_BUDGET` (500 credits).
+4. The org had spent about 950 credits in 24 hours. So the run budget,
+   `max(500 - used_24h, 0)`, was 0.
+5. From 15:00 UTC each run stopped at once with the code `budget` and 0
+   credits. Discovery restores the profile and the edition budget, but
+   discovery needs credits. So the mirror froze until the 24-hour window fell
+   below 500 credits.
+
+**The root cause in the code.** A new consent always dropped the profile, also
+for the same account. And a run with no profile had no credit for the one step
+that makes a profile.
+
+**Scope.**
+
+1. **A consent to the same account keeps the profile.**
+   - `store.save_credential` takes `keep_profile`. The default is `False`, and
+     it drops the profile as before.
+   - The callback (`routes/crm/connection.py`) passes `True` only when
+     `_same_account` confirms the account (step 1, 2 or 3 of CRM-X0).
+   - The save marks the profile stale: its `fetched_at` moves 7 days back. So
+     `_discovery_due` is true at the next run, and discovery reads the new
+     scopes.
+   - An account that the callback cannot confirm still drops the profile. A
+     different account still gets `needs_reset` and saves nothing (CRM-X0).
+2. **With the edition unknown, discovery can run.**
+   - `engine.DISCOVERY_ALLOWANCE` is 25 credits. The allowance holds when the
+     budget is the floor (no profile, or an edition that Zoho did not name),
+     the profile is absent or 24 hours old, and the run uses the default
+     budget. Then discovery may spend up to 25 credits, also when the default
+     budget is spent. A known edition never gets it (review, 2026-10-13).
+   - The age rule holds it to once in 24 hours. `_discovery_due` alone does
+     not, because pending module fields make discovery due after one hour
+     (re-review, 2026-10-13).
+   - When less than the allowance is left, discovery reads first, before the
+     estimate and the field definitions. It stores the profile. The pipelines
+     wait for the normal discovery slot, after the Stage picklist, so a start
+     over keeps the picklist order and probabilities (review P1). A run that
+     stops before that slot leaves them to the next run, which writes them
+     from the stored profile while the org mirrors no Zoho pipeline.
+   - When discovery has read the account, the run budget becomes the edition
+     budget minus `used_24h`, as before. The credits of this run, discovery
+     included, count against it. The module fields and the rest of the run
+     obey that budget.
+   - A discovery that fails sets the budget back.
+   - ⚠️ **Advisory, not fenced: the provider floor.** The check of `ctx.call`
+     against `CREDITS_FLOOR` runs only on a count that Zoho reported earlier
+     in the same run. The early discovery is the first call of its run, so no
+     count exists yet. The 25-credit cap of the allowance bounds it, and the
+     floor does not. A fence needs the last reported count kept across runs.
+     That is not built.
+3. **Sync health names the pause.**
+   - `GET /crm/sync/health` returns `credits.resumes_at`. It is the time when
+     the credits of the 24-hour window fall below the budget. It is null when
+     the window is already below the budget.
+   - When the last run stopped with `budget` and `resumes_at` is set, the card
+     says "Paused: the daily Zoho API budget is spent. It resumes at HH:MM."
+4. **Not changed.** `BUDGET_FRACTION`, `ASSUMED_DAILY_CREDITS` and the runs that
+   count toward `used_24h` stay as they are.
+
+**The cost of one discovery (measured).** `ZohoSource.discover` makes 2 + 2 × 4
+calls, plus one for each Deals layout. That is 11 credits with one Deals layout
+(`test_crm_discovery.py` asserts 11). The allowance of 25 covers 15 Deals
+layouts, or 14 retries.
+
+**Done when.**
+
+1. An R8 test reconnects the same account through the real callback. The
+   profile row stays, and it is stale. A save with `keep_profile=False` drops
+   it. A different account keeps it and gets `needs_reset`.
+2. An R8 test starts with no profile and 950 credits spent in 24 hours. An
+   incremental run and a reconcile run each discover, store the profile, use
+   the edition budget, and end `ok`.
+3. That test fails without the fix: the run stops with `budget` and 0 credits.
+4. A hermetic test shows that a reported credit count under `CREDITS_FLOOR`
+   still stops discovery before its call. This guards the order in
+   `ctx.call` only. Production does not reach that state (see the advisory
+   note above).
+5. An R8 test shows `credits.resumes_at` for a spent window, and null for a
+   window under the budget.
+6. A vitest shows the pause sentence with its time.
+7. Review, 2026-10-13. An R8 test does a start over, spends the window, then
+   imports. The picklist order and probabilities hold. A second test shows
+   that a run that stopped early leaves the pipelines to the next run.
+8. Review, 2026-10-13. An R8 test shows that an unknown edition gets the
+   allowance once in 24 hours. Another shows that a known edition with a
+   spent window gets none, and stops on `budget`.
+
+**Fences.** `tests/unit/test_crm_q10_reconnect_r8.py` (R8, `_DB_GATE`),
+`tests/unit/test_crm_reset_r8.py`, `tests/unit/test_crm_discovery.py`,
+`tests/unit/test_crm_sync_health_r8.py` and
+`src/app/crm/components/crmQ9.test.ts`.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_crm_q10_reconnect_r8.py tests/unit/test_crm_reset_r8.py \
+  tests/unit/test_crm_discovery.py tests/unit/test_crm_sync_health_r8.py -q
+cd workbench/control_plane && npx vitest run src/app/crm/components/crmQ9.test.ts
+```
+
+**Built as (2026-10-13).** ✅ Built. No migration and no flag.
+
+- `store.save_credential(keep_profile=...)`. `_STALE_PROFILES_SQL` moves each
+  `fetched_at` of the connection 7 days back. The callback passes
+  `keep_profile=verdict is True`.
+- `engine.DISCOVERY_ALLOWANCE = 25`. `_discovery_allowance_due` reads the
+  four conditions, and the profile age is one of them. `_execute` runs `_discover` first when they hold, with
+  `ctx.pipelines_deferred` set. `_discover` reads at most once in a run, and
+  it sets the edition budget before the module fields.
+  `_mirror_deferred_pipelines` writes the pipelines at the normal slot.
+- `runs.resumes_at` reads the window with one window function, on the filter
+  of `credits_used_24h`. `GET /crm/sync/health` returns it as
+  `credits.resumes_at`, and `statusLines` in `lib/syncHealth.ts` writes the
+  pause sentence.
+- `test_crm_reset_r8.py` now expects the first same-account consent to keep the
+  profile.
 
 ---
 
@@ -2658,3 +2794,1323 @@ each drop in the UI. An agent never drops the records of a live org.
 **Fences.** `tests/unit/test_crm_reset_r8.py` (R8, `_DB_GATE`),
 `tests/unit/test_crm_upsert_from_source_fence.py`, and
 `src/app/crm/components/crmX0.test.ts`.
+
+---
+
+## 20. CRM configuration and AI reach (2026-10-12)
+
+**Bottom line.** Seven slices answer the owner's eight points of 2026-10-12.
+They are CRM-C1 to CRM-C7. Dispatch C7, C2 and C3 first, in parallel. Then
+dispatch C1, C4, C6 and C5, in that order. Only C5 writes to a third party,
+and only the owner turns it on for an org.
+
+| Owner's point (2026-10-12) | The slice that answers it |
+|---|---|
+| 1. Settings is one wall of cards | **CRM-C1** Settings sections in the rail |
+| 2. Stage order and probability, and the lead sequence | **CRM-C3** Stages and statuses you can shape |
+| 3. Fields for Deals and Leads, synced to Zoho | **CRM-C4** Field studio, and **CRM-C5** the Zoho write |
+| 4. A sound system of fields and mappings | **CRM-C4** and **CRM-C6** Field mapping |
+| 5. One Kanban board, with a stage colour that shows properly | **CRM-C2** One board |
+| 6. Any agent can work on the CRM data | **CRM-C7** AI reach |
+| 7. Remove `agent-sales-assistant` | **CRM-C7** item 7 |
+| 8. What the CRM still lacks | §20.11. No contract |
+
+The ids CRM-C1 to CRM-C7 were free. No `CRM-C<n>` id was in this spec or in
+`work_plan.md` on 2026-10-12. The owner answers of §19.4 bind here too.
+"Build it, flag off" covers the Zoho write of C5. "Metorite-only setting
+(idle days)" sets the pattern of the C3 overlay.
+
+### 20.1 Measured state (2026-10-12, at `144dc0d1f`)
+
+Frontend paths are relative to `workbench/control_plane/src/`. Gateway paths
+are relative to `apps/services/gateway/gateway/`.
+
+**Settings.** `?tab=settings` is in `NON_ENTITY_TABS` (`app/crm/lib/urlState.ts:82`).
+The URL has no `section` parameter. `app/crm/components/PipelineSettings.tsx:74`
+draws every card on one page: Setup, Access, the stage cards, Fields and Sync
+health. `CrmRail.tsx:172` draws the settings row last. Saved views already
+nest at depth 1 through `RailRow`.
+
+**Stages.** No status table has a column that hides a row.
+`core.assert_writable` (`routes/crm/core.py:1584`) refuses every Mirror write
+to `MIRROR_SETTINGS_TABLES` (`core.py:1539`). `orderLanes`
+(`app/crm/lib/board.ts:115`) sorts the open group of a Mirror board by
+probability.
+
+**Fields.** `crm_field_defs` (`244_crm_mirror_columns.sql:92`) describes custom
+fields only, and only the sync writes it. `options` is a list of
+`{label, value}`, and a record stores the `value`. `GET /crm/fields/{entity}`
+(`routes/crm/fields.py:53`) is read only. `POST /crm/leads/{id}/convert`
+(`routes/crm/pipeline.py:608`) copies the fixed columns only.
+
+**Boards.** `app/projects/components/TaskBoard.tsx:949` and
+`app/tasks/components/TaskBoard.tsx:282` draw a column with `overflow-hidden
+rounded-lg`. A `h-1 w-full` stripe sits on top (`:955` and `:294`). The
+rounded corner clips the stripe into a sliver at each end. That is the
+owner's complaint. `app/crm/components/KanbanBoard.tsx:124` draws a third
+column shape, and its card at `:257` is not `TaskCardShell`.
+
+**Agents.** `crm-assistant` (`apps/agents/agent-crm/agents.py:1003`) has 4
+read tools and 4 write tools. `search_crm` caps a page at 25 (`agents.py:417`).
+The gateway allows 100 (`core.MAX_PAGE_SIZE`). No tool reads the modules, the
+reports, the field labels, the pipelines, the deal contacts, the owners or a
+total. `acb_skills/skill_families.py` has no `crm` family.
+
+**Nine facts that differ from the audit notes.** The code is the fact.
+
+1. `ZOHO_READ_SCOPES` is at `routes/crm/connection.py:143`. Its uses are at
+   `:422`, `:511` and `:547`. §19.9 cites `:98-115`, `:312`, `:354` and
+   `:365`, which are old.
+2. **H-171 is closed.** #439 serves the product's own AI through the Router.
+   So `acompletion_with_fallback` bills, and the warning in §9 is old.
+3. `agent-sales-assistant` is named in 23 files outside the docs, not 3.
+   It also has a row in `dynamic_agents`. CRM-C7 item 7 lists them all.
+4. **A Mirror stage keeps its first order.** `_STATUS_INSERT_SQL`
+   (`crm_sync/engine.py:740`) ends in `ON CONFLICT ... DO NOTHING`. A later
+   Zoho reorder or probability change never reaches the mirror. Only
+   `_FORECAST_SQL` (`:748`) and `_STAGE_TYPE_SQL` (`:756`) update a row
+   that exists, and they write `forecast_category` and `type` only.
+5. **A stage probability does not move a mirrored forecast.** A Zoho deal
+   carries its own `Probability` (`mapping.py:307`). `weightedDeal`
+   (`board.ts:243`) reads the deal value first. CRM-C3 item 10 keeps that
+   rule.
+6. **Every mirrored stage is `gray`.** The sync never writes `color`, and the
+   column default is `gray`. So the type fallback never colours a Mirror lane.
+7. **The sync resets field order and visibility.** `_FIELD_DEF_SQL`
+   (`engine.py:1551`) overwrites `position` and `visible` on each run.
+8. **A member cannot read the mode.** `GET /crm/settings`
+   (`routes/crm/settings.py:277`) needs an admin.
+9. **The palette exemption is written down.** `src/lib/sharedTaskUi.test.ts:471`
+   names the CRM map in `board.ts:26` and asks for the exemption to go.
+
+### 20.2 The slices
+
+| Id | What the user gets | Gate | Size | Migration | Waits for |
+|---|---|---|---|---|---|
+| **CRM-C1** Settings sections | Child rows under the settings row. One section on each page | AGENT-SAFE | S | None | CRM-C3, because both edit `PipelineSettings.tsx` |
+| **CRM-C2** One board | One column primitive for Projects, Tasks and the CRM. A stage colour that does not fight the corner | AGENT-SAFE | M | None | Nothing |
+| **CRM-C3** Stages you can shape | Hide, order, colour and probability in both modes. A Mirror overlay that the sync never writes | AGENT-SAFE | M | 257 | CRM-C2 merged, because both edit three files |
+| **CRM-C4** Field studio | Create, rename, order, hide, sections, picklists, required and defaults (Native) | AGENT-SAFE. Flag `CRM_FIELD_STUDIO_ORGS`, shipped empty | L | 256 | CRM-C1 |
+| **CRM-C5** Field studio to Zoho | The C4 studio and the C3 stage order write to Zoho (Mirror) | AGENT-SAFE to build. 🔴 OWNER-GATE to turn on, and for the first live write | L | None | CRM-C4, the §19.9 consent, its own spec audit |
+| **CRM-C6** Field mapping | Lead conversion mapping, the CRM-Q7a Field map and lookup targets | AGENT-SAFE | M | 257 | CRM-C4, CRM-Q7a merged |
+| **CRM-C7** AI reach | `crm-assistant` reads what a member can read. Every agent can reach the CRM. `agent-sales-assistant` goes | AGENT-SAFE | M | 256 (254 and 255 were taken) | Nothing |
+
+**Migration numbers (R1).** 252 is on `main`. 253 is on the unmerged branch
+`crm-q7a` (`253_crm_field_rules.sql`). This section reserves **254 to 257**
+in dispatch order. A reservation is advisory. Each slice takes the next free
+number at build time and checks it again at merge.
+
+### 20.3 Dispatch order and parallel work
+
+1. **Wave 1, in parallel: C7, C2 and C3.**
+   - C7 touches the agent, `acb_skills`, the orchestrator and new gateway
+     files. It edits no file of C2 or C3.
+   - C2 owns the colour half of `app/crm/lib/board.ts` and `KanbanBoard.tsx`.
+     The colour half is `TONES`, `TYPE_TONES`, `TONE_COLORS` and `statusTone`.
+   - C3 owns `orderLanes` and `weightedDeal` in `board.ts`, and the grids in
+     `PipelineSettings.tsx`. C3 takes its colour list from `ACCENT_HUES`,
+     never from `TONE_COLORS`, which C2 deletes.
+   - C2 and C3 both edit `board.ts`, in hunks that do not overlap. The one
+     that merges second rebases.
+   - **C2 merges before C3 for `PipelineSettings.tsx`.** C2 changes only its
+     colour imports and three colour lines (§20.5 item 9). C3 rebases on C2
+     for that file.
+2. **Wave 2: C1.** It splits `PipelineSettings.tsx`, so it starts after C3
+   merges. It does not touch `KanbanBoard.tsx`, so it may run beside C2.
+3. **Wave 3: C4.** It fills the Fields section that C1 makes.
+4. **Wave 4: C6.** It needs the C4 columns and the merged CRM-Q7a card.
+5. **Wave 5: C5.** It needs the C4 studio and the §19.9 consent.
+
+`app/crm/page.tsx` is the hot file. C2 changes only the `KanbanBoard` props.
+C3 changes only the quick create job (`page.tsx:1025`) and the move and lost
+dialog (`:1054`). C1 edits the settings branch, and it starts after C3
+merges. So no two slices edit `page.tsx` at the same time.
+
+### 20.4 CRM-C1: Settings sections
+
+**Gate.** AGENT-SAFE. Frontend only. No migration and no flag, because the
+same cards show in a new place.
+
+**Scope.**
+
+1. While `?tab=settings` is open, the rail row "CRM settings" shows child
+   rows. Each child is a `RailRow` with `depth={1}`, as a saved view is.
+   While a child is selected, the parent row is not highlighted.
+2. The sections:
+
+   | Id | Label | Shows for | Mode |
+   |---|---|---|---|
+   | `setup` | Setup and sync | Admin | Both |
+   | `access` | Access | Admin | Both |
+   | `stages` | Deal stages | Each member with CRM access | Both |
+   | `lead-statuses` | Lead statuses | Each member with CRM access | Both |
+   | `lost-reasons` | Lost reasons | Each member with CRM access | Both |
+   | `fields` | Fields | Admin | Both |
+   | `field-mapping` | Field mapping | Admin | Mirror. Native too after CRM-C6 |
+   | `sync-health` | Sync health | Admin | Mirror |
+
+   A row that the caller or the mode cannot use does not show. One list in
+   the new `app/crm/lib/settingsSections.ts` holds this table. The rail and
+   the page both read it.
+3. The URL is `?tab=settings&section=<id>`. `urlState.ts` drops an unknown
+   value.
+4. The default section is `setup` for an admin and `stages` for a member.
+   A missing, unknown or hidden section opens the default through
+   `replaceView`. So Back does not return to the bad URL.
+5. A click on a child row calls `pushView`. No code calls `router.push` or
+   `router.replace` (#914).
+6. The page shows one section, with the section label as its title. The
+   cards do not change. `PipelineSettings` takes a `section` prop and draws
+   the cards of that section only.
+7. The mirror banner and the title-bar line link to `section=setup`. Only
+   the hub offers "Change setup" (CRM-X0 item 1).
+8. On a phone, the child rows show in the phone rail, as saved views do.
+
+**Non-goals.** No change to a card. No new route. No search in settings.
+
+**Files.** `app/crm/components/CrmRail.tsx`, `PipelineSettings.tsx`,
+`app/crm/page.tsx` (the settings branch only), `app/crm/lib/urlState.ts`,
+`app/crm/lib/settingsSections.ts` (new) and `app/crm/components/crmC1.test.ts`
+(new).
+
+**Done when.**
+
+1. A vitest shows the visible sections for an admin and a member, in each
+   mode.
+2. A vitest shows that `section=sync-health` in Native mode resolves to the
+   default through `replaceView`.
+3. A vitest shows that a child-row click calls `pushView` with the section.
+4. `railRows.test.ts` passes, and the child rows are `RailRow`.
+5. The `visual-review` skill shows the rail and one section. Check light
+   mode, dark mode, compact density, a changed accent and phone width.
+
+**Fences.** `app/crm/components/crmC1.test.ts`, `app/crm/lib/history.test.ts`
+and `src/lib/railRows.test.ts`.
+
+**Verification.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm src/lib/railRows.test.ts
+```
+
+### 20.5 CRM-C2: One board
+
+**Gate.** AGENT-SAFE. Frontend only. No migration and no flag. The change is
+the look of three boards, and the `visual-review` skill is its gate.
+
+**The decision: an inset stage chip, and no stripe.** The column header holds
+one chip inside the column's own padding. The chip holds a dot, the stage
+name and the count. The column frame stays neutral.
+
+**Why this design.**
+
+- **A top stripe** is the defect. A bar under `overflow-hidden rounded-lg`
+  meets the curve of the corner, and the clip leaves a sliver at each end.
+  No radius fixes it, because a cap must touch the edge.
+- **A coloured left edge on the column** collides with CRM-X3. A red left
+  edge already marks an overdue card.
+- **A tinted block across the top of the column** fixes the clip. But twelve
+  lanes then read as twelve colour blocks, and the cards lose the eye.
+- **The inset chip** never touches the column edge, so no corner clips it.
+  Its radius is `rounded-md`, one step under the column's `rounded-lg`, so
+  the two curves nest. Colour stays in one small area of each lane.
+
+**The chip tones.** A coloured hue uses `soft` for the fill and `text` for
+the name. The gray hue uses its `chip` tone (`statusAccent.ts:93`). That
+tone is `bg-secondary text-muted-foreground`. The gray `soft` is
+`bg-muted/40` (`:90`), and that fill is too faint to read as a chip. The dot
+uses `dot` in every hue.
+
+**How it meets `DESIGN_SYSTEM.md`.**
+
+- Rule 4 of `AGENTS.md`: the hue comes from `statusAccent()` only.
+- §4: every radius is a named utility, never `rounded-[..]`.
+- §7: colour is never alone. The name is always text. A won, a lost and an
+  on-hold lane also show an icon that `Icon` already serves.
+- Light and dark mode: `soft` is a 10 % tint of a status token.
+  `src/lib/theme/contrast.test.ts` measures `text` on that tint in both
+  modes.
+- Compact density: the chip uses `px-2 py-1` and the root font size, and no
+  fixed height. So it scales with the density.
+- A changed accent: a lane hue never follows the member accent, because
+  `blue` maps to `info`. The drop-target ring and the focus ring use
+  `primary`, so they do follow the accent.
+
+**Three colours change on the CRM board.** These are the visible results of
+the move from `TONES` to `statusAccent`. They are intended.
+
+| Stored colour | Before (`TONES`) | After (`statusAccent`) | What a member sees |
+|---|---|---|---|
+| `blue`, `sky`, `cyan` | `bg-primary` | `info` | A blue lane stops following the member accent |
+| `violet`, `purple`, `pink` | `bg-accent`, which is orange | `violet` | The seeded "Proposal" lane changes from orange to violet |
+| `orange` | `bg-accent` | `amber`, the `warning` token | An orange lane reads as amber |
+
+**Scope.**
+
+1. **The primitive.** New `src/components/board/Board.tsx`, the horizontal
+   scroller, and `src/components/board/BoardColumn.tsx`, one lane. It is a
+   shared component, not a headless primitive. So it lives beside
+   `TaskCardShell`, not in `src/components/ui/`.
+2. **The props of `BoardColumn`.**
+   - `header`: an object with `accent` (a `StatusAccent`), `title`, `count`
+     and an optional `icon`. `header={null}` draws a column with no header.
+   - `totals`, an optional slot under the chip, for the CRM money line.
+   - `empty`, the text of an empty column.
+   - `dropTarget`, a boolean.
+   - `onAdd`, which draws "+ Add" at the foot when it is set.
+   - `headerActions` and `children`.
+3. **The frame.** `w-72` in all three apps, `rounded-lg border border-border
+   bg-muted/30` and `p-2`. The body scrolls down, and the board scrolls
+   across.
+4. **The states.** Empty shows a dashed `rounded-md` box with the `empty`
+   text. A drop target adds `ring-2 ring-primary/40`. The frame keeps its
+   size during a drag.
+5. **Projects swimlanes.** A swimlane cell (`projects/.../TaskBoard.tsx:1052`)
+   is a column with no header. It renders `BoardColumn` with `header={null}`.
+   The swimlane header row (`:1009`) draws the column headers once, above
+   all lanes. It stays a row of its own. It drops its `border-l-2` bar, and
+   each header uses the same chip as `BoardColumn`. New
+   `src/components/board/StageChip.tsx` holds the chip, and both read it.
+6. **The cards.** Every card renders through `TaskCardShell`. The CRM keeps
+   its card content. If the shell lacks a prop that a CRM card needs,
+   extend the shell. The overdue edge of CRM-X3 is one such prop. The CRM
+   card passes these two props, which `sharedTaskUi.test.ts:574` requires:
+   - `completed={false}`, as a literal with a comment. A won or a lost deal
+     is closed, not done. The lane chip says so, and the card is not struck
+     through.
+   - `atCursor`, true for the card whose record the sheet shows. CRM-X4
+     `j` and `k` move it. Else false.
+7. **The CRM colours.** Delete `TONES`, `TYPE_TONES`, `TONE_COLORS` and
+   `statusTone` from `app/crm/lib/board.ts`. A new `stageAccent(status,
+   mode)` in `board.ts` calls `statusAccent()` and holds no class string.
+   Extend `statusAccent.ts`:
+   - Add the aliases that `TONES` offered: `slate` to gray, `sky` and
+     `cyan` to blue, `emerald` and `teal` to green, `rose` to red, `pink`
+     to violet.
+   - Add an input for the CRM stage type: `won` green, `lost` red,
+     `on_hold` amber, `ongoing` blue. It comes after the stored colour and
+     before the name. An `open` stage falls through to the name and the
+     position.
+   - In Mirror mode, `stageAccent` passes no stored colour, because every
+     mirrored row is `gray` (§20.1 fact 6). CRM-C3 owns the Metorite colour
+     of a Mirror stage. C2 adds no column.
+8. **Every caller of the deleted names.** `npx tsc --noEmit` fails until
+   each one changes. Each caller moves to `stageAccent(...).dot`:
+   - `app/crm/components/PipelineSettings.tsx:40-41`, `:65` and `:407`. The
+     colour list at `:65` reads `ACCENT_HUES`.
+   - `app/crm/components/RecordList.tsx:36` and `:77`.
+   - `app/crm/components/Reports.tsx:28`, `:146` and `:203`.
+   - `app/crm/components/StatusPill.tsx:24`, `:120` and `:173`.
+   - `app/crm/components/mirror.test.ts:195`, and the `statusTone` tests
+     at `app/crm/lib/board.test.ts:15` and `:136-148`.
+9. **`PipelineSettings.tsx` has two owners.** C2 owns its colour imports
+   and the three colour lines of item 8 only. C3 owns the grids. **C2
+   merges first.** C3 rebases on C2 for that file. There is no re-export of
+   `statusTone`, because a kept alias is the second palette that rule 4
+   forbids.
+10. **The palette fence.** In `sharedTaskUi.test.ts`, widen `SCOPE` to
+    `app/(projects|tasks|crm)/` and delete the exemption at `:471-477`.
+11. **The registry fence.** New `src/lib/boards.test.ts`, in the shape of
+    `railRows.test.ts`. `BOARDS` lists the three board files:
+    `app/projects/components/TaskBoard.tsx`,
+    `app/tasks/components/TaskBoard.tsx` and
+    `app/crm/components/KanbanBoard.tsx`. The test reads each class list as
+    a set of tokens, so the order of the classes does not matter.
+    - Each board file imports `BoardColumn` from
+      `@/components/board/BoardColumn`.
+    - No class list in a board file holds `shrink-0`, `flex-col` and a
+      width token together. A width token is `w-<n>` or `w-[...]`.
+    - Each board file renders `<TaskCardShell`, or imports one component
+      file that renders it. One level of indirection is allowed, because
+      Tasks reaches the shell through `TaskCard.tsx:364`.
+    - **The stripe.** No class list in a board file, or in
+      `src/components/board/`, holds `w-full` together with `h-0.5`, `h-1`
+      or `h-1.5`. The scope is these files only. So the progress bars at
+      `email/components/automation/AISettingsView.tsx:151` and
+      `projects/components/RelationsBlock.tsx:212` stay legal.
+    - The radius test at `sharedTaskUi.test.ts:633` moves here, over the
+      three boards.
+
+**Non-goals.** No change to the drag logic, `DropGap` or `lib/boardDrop.ts`.
+No CRM-X8 feature, such as card fields or a folded lane. The CRM keeps
+native HTML5 drag.
+
+**Files.**
+
+- New: `src/components/board/Board.tsx`, `BoardColumn.tsx` and
+  `StageChip.tsx`, and `src/lib/boards.test.ts`.
+- Shared: `src/components/TaskCardShell.tsx`, `src/lib/statusAccent.ts`,
+  `src/lib/statusAccent.test.ts` and `src/lib/sharedTaskUi.test.ts`.
+- Boards: the two `TaskBoard.tsx` files and
+  `app/crm/components/KanbanBoard.tsx`.
+- CRM colour callers: `app/crm/lib/board.ts`, `board.test.ts`,
+  `PipelineSettings.tsx` (item 9), `RecordList.tsx`, `Reports.tsx`,
+  `StatusPill.tsx` and `mirror.test.ts`.
+
+**Done when.**
+
+1. `boards.test.ts` passes. It fails when a board draws its own column, in
+   any class order. The PR shows it red first.
+2. `sharedTaskUi.test.ts` passes with `app/crm` in `SCOPE`, and it fails
+   while `TONES` exists.
+3. `statusAccent.test.ts` shows each new alias and each stage type. The
+   test "category %s and the name %j resolve to the same hue"
+   (`statusAccent.test.ts:117-124`) still passes.
+4. A Mirror board with every stage `gray` shows won green, lost red and
+   on-hold amber.
+5. `npx tsc --noEmit` passes, and no file names `statusTone` from
+   `app/crm/lib/board`.
+6. The `visual-review` skill shows the three boards side by side, and the
+   Projects swimlanes. Check light mode, dark mode, compact density, a
+   changed accent and phone width. No chip has a clipped corner. The
+   "Proposal" lane is violet.
+
+**Fences.** `src/lib/boards.test.ts`, `src/lib/sharedTaskUi.test.ts`,
+`src/lib/statusAccent.test.ts`, `src/lib/theme/contrast.test.ts` and
+`app/crm/lib/board.test.ts`.
+
+**Verification.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib src/app/crm src/app/projects src/app/tasks
+```
+
+**Built as (2026-10-13, branch `crm-c2`).**
+
+- `src/components/board/` holds `Board.tsx`, `BoardColumn.tsx` and
+  `StageChip.tsx`. `Board` takes `scroll="own"` (My Tasks, the CRM) or
+  `scroll="parent"` (Projects, where the canvas scrolls).
+- `BoardColumn` has the props of item 2. It also has five more:
+  `addLabel`, `overlay` (the refused-drop layer), `as` (`ul` for Projects),
+  the drag handlers, and `hidden`. CRM-C3 wires `hidden`, which draws a
+  muted "Hidden" word beside the chip.
+- `BoardHeaderCell` in `BoardColumn.tsx` draws the Projects swimlane head
+  row. Each head has the lane width and padding, so its chip stands over
+  the chip of a lane.
+- The chip uses the `chip` slot of the hue. For a coloured hue that slot is
+  `soft` plus `text`. For gray it is `bg-secondary text-secondary-foreground`.
+  The review changed the gray ink, because `text-muted-foreground` on
+  `bg-secondary` measured 4.33 : 1 in light mode. `contrast.test.ts` now
+  fails a chip that draws a pair it does not measure at AA.
+- A lane is `role="group"` with the lane name. It is not a `<section>`
+  landmark.
+- The CRM card is a `role="button"`, so `cardLabel` (`lib/cardLabel.ts`)
+  gives it a full name. That name holds the money or the company, the next
+  step, "Overdue" and the lost-reason warning.
+- The settings colour picker shows a stored name that it does not offer
+  (`orange`, `teal`, `sky`) first, marked "custom", with the hue it draws
+  (`lib/colorOptions.ts`).
+- The radius check in `boards.test.ts` is advisory. `--radius-lg` and
+  `--radius-xl` are one value, so it cannot catch a change that shows.
+- A lane with an icon (won, lost, on hold) shows the icon in the place of
+  the dot. `stageIcon` in `board.ts` holds the three names.
+- `stageAccent` passes no index. So an open stage with no keyword in its
+  name is gray on every surface. A lane that the board hides changes the
+  colour of no other lane.
+- `RecordList`, `Reports`, `StatusPill` and the settings dot read the mode
+  from `CrmModeContext` (`lib/modeContext.ts`). `page.tsx` provides it from
+  `ctx.mode`. So a mirrored won stage is green on each of them and on the
+  board. Fence: `components/crmC2.test.ts`.
+- `TaskCardShell` has a new `overdue` prop, for the red edge of CRM-X3.
+
+### 20.6 CRM-C3: Stages and statuses you can shape, in both modes
+
+**Status.** 🔨 Built 2026-10-13 on branch `crm-c3`, migration 257. The two
+items that waited for CRM-C2 are built after its merge. See "Built as" at
+the end of this section.
+
+**Gate.** AGENT-SAFE. No flag. With no overlay value set, each board, list
+and report shows what it shows today. Item 7 is a fix of the sync.
+
+**Waits for.** CRM-C2 merged. C2 and C3 share `PipelineSettings.tsx`,
+`StatusPill.tsx` and `app/crm/lib/board.ts`. C2 merges first, and C3
+rebases on it.
+
+**The model.** Each stage, status and lost reason has two sets of values.
+The **source values** come from Zoho in Mirror mode, and from the admin in
+Native mode. The **overlay values** are Metorite-only. The sync never writes
+them, and no Zoho write reads them. The **effective value** is the overlay
+value when it is set, else the source value.
+
+**Migration 257 (expand only, R6).** Each new column is nullable or has a
+default. The three tables already have the tenant key and FORCE RLS (241).
+
+| Table | New columns |
+|---|---|
+| `crm_deal_statuses` | `hidden BOOLEAN NOT NULL DEFAULT false`, `ui_position INT NULL`, `ui_probability SMALLINT NULL` (0 to 100), `ui_color TEXT NULL`, `ext_id TEXT NULL`, `source_gone_at TIMESTAMPTZ NULL` |
+| `crm_lead_statuses` | `hidden`, `ui_position`, `ui_color`, `ext_id`, `source_gone_at` |
+| `crm_lost_reasons` | `hidden` |
+
+The migration also adds one partial unique index on each status table:
+`(organization_id, ext_id) WHERE ext_id IS NOT NULL`. `ext_id` holds the id
+of the Zoho picklist value. `ui_color` is the Metorite colour of a Mirror
+stage, which CRM-C2 leaves to this slice.
+
+**Scope.**
+
+1. **The overlay door.** New `core.MIRROR_OVERLAY_COLUMNS` maps each of the
+   three tables to its overlay columns. The deal set is `hidden`,
+   `ui_position`, `ui_probability`, `ui_color` and `max_dwell_days`.
+   `max_dwell_days` is in it because UX-Q5 allows it (§19.4). The lead set
+   is `hidden`, `ui_position` and `ui_color`. The lost reason set is
+   `hidden`.
+2. **The guard.** In Mirror mode, `assert_writable` lets a settings write
+   pass only when each written column is in `MIRROR_OVERLAY_COLUMNS`. Any
+   other column still gives 409 `mirror_mode_settings`.
+3. **The edit routes.** `StatusIn` (`routes/crm/admin.py:63`) and
+   `LostReasonIn` take the new fields.
+   - Mirror mode accepts the overlay fields only.
+   - Native mode accepts `hidden` and every source field. It refuses a
+     `ui_*` field with 422, because a Native admin edits the source columns
+     directly.
+4. **The order route.** New `PUT /crm/statuses/{kind}/order`. Only an admin
+   calls it.
+   - The body is `{"ids": [uuid, ...]}`, the full ordered list of that
+     kind.
+   - It writes `position` in Native mode. In Mirror mode it writes
+     `ui_position` on every row of the kind. All in one transaction.
+   - It gives 422 when the list is not exactly the org's ids of that kind.
+   - CRM-C5 (§20.8 item 2) sends this route to Zoho when its flag is on.
+5. **The wire contract.** `StatusModel` keeps its fields `position`,
+   `probability` and `color`. They now carry the **effective** value. So
+   each reader of today gets the effective value with no change. New
+   fields serve the settings UI: `source_position`, `source_probability`,
+   `source_color`, `hidden`, `source_gone_at`, `ext_id` and `admin_order`.
+   `admin_order` is true when a row of that kind has `ui_position`.
+6. **One SQL helper.** New `core.EFFECTIVE_STATUS_COLUMNS` is the one SELECT
+   list of the effective and the source columns. No route computes an
+   effective value on its own. These reads use it:
+   - the lanes of `GET /crm/pipeline` (`routes/crm/pipeline.py:417`, `:422`
+     and `:432`).
+   - the stage list of the reports (`routes/crm/reports.py:230`).
+   - `GET /crm/pipelines` (`routes/crm/pipelines.py:108`), which reads raw
+     `s.probability` today. CRM-C7 reads this route.
+   - `GET /crm/statuses/{kind}` (`admin.py:289`).
+   The probability binds at `pipeline.py:530` and `reports.py:263` then
+   carry the effective value with no change.
+7. **The sync keeps the source values current.** `_ensure_status`
+   (`crm_sync/engine.py:790`) has three callers. Only the picklist call
+   (`:859`) updates a row that exists.
+   - The picklist call writes `position` each time. It writes `probability`
+     only when Zoho names one.
+   - The pipeline stages call (`:1871`) and the record call through
+     `_status_id` (`:825`) keep `DO NOTHING`. So a record pull never
+     changes the order or the probability.
+   - The picklist call matches a row by `ext_id` first, then by name. A
+     Zoho rename then changes `name` in place. The row keeps its overlay
+     and its deals.
+   - No SQL of the sync names an overlay column or `color`.
+     `_STAGE_TYPE_SQL` (`:756`) and `_FORECAST_SQL` (`:748`) keep their
+     work.
+8. **A rename that collides.** A record pull can run before the picklist
+   read. It then inserts a row under the new name with a NULL `ext_id`.
+   The picklist call finds the `ext_id` row with the old name, and a rename
+   would break `uq_crm_deal_statuses_org_name`. The rule:
+   - The `ext_id` row survives, because it holds the overlay.
+   - A new fenced door, `core.merge_status_from_source`, does the merge in
+     one transaction. Only `gateway/crm_sync/` may call it.
+   - It repoints each reference from the name row to the `ext_id` row:
+     `crm_deals.status_id` or `crm_leads.status_id`, and
+     `crm_pipeline_stages.status_id`. A pipeline that holds both rows keeps
+     one membership, at the place of the `ext_id` row.
+   - `crm_status_changes` holds names as text and has no foreign key. The
+     merge needs no repoint there, because the new name stays the name.
+   - A saved view (`crm_views`) whose `status` filter holds the id of the
+     name row gets the id of the `ext_id` row.
+   - It then deletes the name row and renames the `ext_id` row.
+   - The savepoint never swallows a failed merge. A failure fails the
+     picklist step, and the sync logs it.
+9. **A stage that leaves Zoho.** The gone rule runs only in a run that read
+   the Stage or Lead_Status picklist definition (`engine.py:1566-1575`). A
+   run that could not read it marks nothing.
+   - It applies only to a row with a non-null `ext_id`. A stage that only a
+     pipeline lists (`engine.py:1854`) and `UNKNOWN_STATUS` never get
+     `source_gone_at`.
+   - A row with an `ext_id` that the picklist no longer lists gets
+     `source_gone_at = now()`. The sync never deletes it.
+   - A value that comes back clears `source_gone_at`.
+10. **Weighted totals.** `WEIGHTED_SQL` (`core.py:130`) keeps its text. Its
+    `:stage_probability` now binds the effective stage probability. A deal
+    with its own probability keeps it. The stage value applies only to a
+    deal with none, which is the rule of today.
+    - In Mirror mode most deals carry a Zoho `Probability` (§20.1 fact 5).
+      So a `ui_probability` moves the forecast of the deals with no value
+      only. The settings row says so.
+    - A `ui_probability` on a won or a lost stage moves no forecast,
+      because `WEIGHTED_TYPES` leaves those stages out.
+    - `weightedDeal` in `board.ts` reads the effective value from the wire,
+      with no code change.
+11. **The parity fixture.** `tests/fixtures/crm_weighted_parity.json` gets a
+    `ui_probability` column. Two new kinds of case hold:
+    - A deal with no probability of its own, in a stage with
+      `ui_probability`. The result follows `ui_probability`.
+    - A deal with its own probability, in the same stage. The result does
+      not change.
+12. **The lane order.** `orderLanes` keeps its four groups: open, on hold,
+    won and lost.
+    - In Mirror mode with `admin_order`, each group sorts by the key
+      `(ui_position IS NULL, ui_position, source position)`. A row with no
+      `ui_position` sorts after each ordered row, in Zoho order.
+    - The order route writes `ui_position` on every row of the kind. So
+      after an admin order, only a new Zoho stage has none, and it goes to
+      the end of its group.
+    - In Mirror mode without `admin_order`, open stages sort by the
+      effective probability, as today. Native mode sorts by `position`.
+    - The Leads board takes the same key.
+13. **Hidden.** These rules hold for a row with `hidden = true`, and for a
+    row with `source_gone_at` set.
+    - No picker offers it, except as the current value of a record. The
+      pickers are the move dialog (`MoveModal.tsx`), quick create
+      (`QuickCreateModal.tsx`), the filter bar (`FilterBar.tsx`), the lost
+      dialog and `StatusPill.tsx`.
+    - A board shows its lane only when the lane holds records in the
+      current view. The lane sits at the end of its group
+      (`lib/emptyStages.ts`, `visibleLanes`). `KanbanBoard.tsx` passes a
+      `hidden` prop, and `BoardColumn.tsx` (CRM-C2) draws the "Hidden" mark.
+    - Reports count the deals in it, because data stays data.
+    - The server does not refuse a move into it, because Zoho can move a
+      deal there.
+    - Settings shows a row with `source_gone_at` as "Removed in Zoho".
+14. **Mirror mode gets an editor.** For an admin, the Deal stages, Lead
+    statuses and Lost reasons sections become editable in Mirror mode. Each
+    row shows the Zoho value beside the Metorite value. A drag calls the
+    order route.
+    - "Reset to Zoho" on a row sets `ui_probability` and `ui_color` to
+      NULL. It does not change `hidden` or `max_dwell_days`.
+    - "Reset order to Zoho" on a section sets `ui_position` to NULL on every
+      row of that kind.
+15. **Native mode adds hide.** A hide of the default stage, or of the only
+    `won` or `lost` stage, gives 422. The same holds for the default lead
+    status.
+16. **Colour.** The picker offers `ACCENT_HUES`. Mirror writes `ui_color`.
+    Native writes `color`. C3 changes `stageAccent` in `board.ts`: in Mirror
+    mode a set `ui_color` wins, else the C2 type rule applies.
+
+**Non-goals.** No write to Zoho (CRM-C5). No order for each pipeline: a
+pipeline is an ordered subset of the one stage list (§18.1). No overlay of
+the stage type or the name.
+
+**Files.**
+
+- New: `infra/postgres/257_crm_stage_overlay.sql`, and the new tests below.
+- Gateway: `routes/crm/core.py` (`MIRROR_OVERLAY_COLUMNS`,
+  `EFFECTIVE_STATUS_COLUMNS`, `merge_status_from_source`), `admin.py`,
+  `pipeline.py`, `pipelines.py`, `reports.py` and `crm_sync/engine.py`.
+- Frontend, after C2: `app/crm/components/PipelineSettings.tsx` (the grids),
+  `StatusPill.tsx`, `app/crm/lib/board.ts` (`orderLanes` and
+  `stageAccent`), and `src/components/board/BoardColumn.tsx` (the `hidden`
+  prop and its mark).
+- Frontend: `MoveModal.tsx`, `QuickCreateModal.tsx`, `FilterBar.tsx`,
+  `KanbanBoard.tsx`, `app/crm/lib/emptyStages.ts`, `types.ts`, `api.ts`, and
+  `app/crm/page.tsx` at `:1025` and `:1054` only.
+- Fixture: `tests/fixtures/crm_weighted_parity.json`.
+- Fence: `tests/unit/test_crm_upsert_from_source_fence.py`.
+
+**Done when.**
+
+1. An R8 test starts a Mirror org. An admin sets each overlay column, and
+   each call gives 200. A PATCH of `name` or `probability` still gives 409.
+   In Native mode a PATCH of a `ui_*` field gives 422.
+2. The same test runs a full sync. The overlay columns keep their values.
+   `position` and `probability` follow the Zoho picklist fixture. A second
+   org does not change.
+3. **Record pulls do not reorder.** A sync run that pulls records after the
+   picklist leaves each stage's `position` and `probability` as the
+   picklist gave them.
+4. **Rename.** A Zoho fixture renames a stage and keeps its id. After the
+   sync, the row has the new name, the same `id`, its overlay, and its
+   deals.
+5. **A rename that collides.** A record pull first inserts a row under the
+   new name, and a deal points to it. The next picklist read merges it. One
+   row remains, with the `ext_id`, the overlay and the new name. Each deal
+   and pipeline membership of the name row now points to it. No error is
+   swallowed.
+6. **Removal.** A Zoho fixture drops a stage. After the sync, the row
+   exists with `source_gone_at` set, and its deals keep it. Settings shows
+   "Removed in Zoho". A fixture that brings it back clears `source_gone_at`.
+7. **No picklist read.** A run whose picklist read fails marks no row. A
+   pipeline-only stage and `UNKNOWN_STATUS` never get `source_gone_at`.
+8. The order route writes `ui_position` on every row in Mirror mode, and
+   `position` in Native mode. A list with a missing, extra or foreign id
+   gives 422.
+9. **The order key.** After an admin order, a new Zoho stage arrives. It
+   sorts at the end of its group, and the other rows keep the admin order.
+   `board.test.ts` shows the key in both modes.
+10. **Reset.** "Reset to Zoho" on a row clears `ui_probability` and
+    `ui_color`, and keeps `hidden` and `max_dwell_days`. "Reset order to
+    Zoho" clears `ui_position` on every row of the kind.
+11. `GET /crm/pipelines`, the lanes and the reports return the effective
+    probability. The parity fixture passes on both sides, with the new
+    cases of item 11.
+12. A Native org hides a stage. A hide of the default stage gives 422.
+13. **Hidden.** A vitest shows each picker without a hidden stage, and with
+    it when it is the current value. A vitest shows a hidden lane with
+    records at the end of its group with the "Hidden" mark. An R8 test
+    counts a deal in a hidden stage in the pipeline report. An R8 test
+    moves a deal into a hidden stage with 200.
+14. **Colour.** A vitest shows a Mirror lane with `ui_color` set in that
+    colour, and a Mirror won lane with no `ui_color` in green.
+15. **The SQL scan.** `test_crm_mirror_readonly.py` names
+    `MIRROR_OVERLAY_COLUMNS` exactly. An AST scan of `routes/crm/` and
+    `crm_sync/` reads each module-level `str` constant and each literal
+    argument of `text()`. In `crm_sync/` and `crm_sources/`, no such string
+    names an overlay column. Python names are out of scope, because
+    `engine.py:1192-1289` uses `hidden` as a local name.
+16. **The scan proves itself.** A self-test plants a literal that names
+    `ui_position` in a temporary module, and the scan finds it.
+17. `test_crm_upsert_from_source_fence.py` puts `merge_status_from_source`
+    in `NAMES`. Its allowlist names `gateway/crm_sync/` only, and a planted
+    call from a route fails.
+18. `crmC3.test.ts` shows the Mirror editor and both reset actions.
+
+**Fences.** `tests/unit/test_crm_stage_overlay_r8.py` (new, R8, `_DB_GATE`),
+`tests/unit/test_crm_mirror_readonly.py`,
+`tests/unit/test_crm_upsert_from_source_fence.py`,
+`tests/fixtures/crm_weighted_parity.json`, `app/crm/lib/board.test.ts` and
+`app/crm/components/crmC3.test.ts` (new).
+
+**Built as (2026-10-13).** Migration 257 holds the columns and the two
+partial unique indexes of the table above.
+
+- **The wire.** `StatusModel` also carries `ui_position`, `ui_probability`
+  and `ui_color`, so the lane order and the colour rule read the overlay as
+  stored. The effective `position` folds the admin order key into one
+  number. An ordered row gives its `ui_position`. Once a kind has an admin
+  order, a row with none gives `1000000 + position`.
+  `core.ADMIN_ORDER_TAIL` holds that number.
+- **The reads.** `core.read_statuses` and `core.read_status` run the one
+  SELECT list. `LostReasonModel` carries `hidden`.
+- **The reset of the order.** "Reset order to Zoho" is `POST
+  /crm/statuses/{kind}/order/reset`. Mirror mode only, and Native mode gets
+  422. A `DELETE` on `/order` would meet `DELETE /statuses/{kind}/{status_id}`.
+- **The colour.** `ui_color` must be a short colour name, else 422. The
+  Native `color` keeps its rules.
+- **Native hide.** The rule of item 15 binds in Native mode only. It judges
+  the state after the write, on a create and on a PATCH: the payload over the
+  stored row. A hidden row cannot be the default, for a stage or a lead
+  status. A write that hides or retypes the only visible `won` or `lost`
+  stage gets 422.
+- **Two values that trade names.** The spec names the merge for a name row
+  with no `ext_id`. When the name row holds the `ext_id` of another value,
+  the sync renames it to `<name> [<ext_id>]`. Its own value names it again
+  in the same run. A value that Zoho no longer lists keeps that name, and
+  the gone rule marks it.
+- **A picklist with no Zoho id.** The gone rule marks nothing when no value
+  of the read has an id.
+- **The pickers.** `lib/emptyStages.ts` holds `pickable` and `isRetired`.
+  The filter chips are `chipsFor` in `lib/filters.ts`, because `FilterBar.tsx`
+  draws chips that it does not build. `QuickCreateModal.tsx` has no status
+  picker, so it needs no change, and `page.tsx` is not changed.
+- **The order of a hidden lane.** `orderLanes` puts it last in its group.
+  `visibleLanes` shows it only with records.
+- **The Leads board has no groups by type.** It sorts by the effective
+  `position`, with a hidden or a gone status last. So a lost lead status
+  stays where Zoho puts it.
+- **The Mirror editor.** `PipelineSettings.tsx` reads `orderStatuses` and
+  `resetStatusOrder` from the store, because the page wiring is CRM-C1's.
+  The Native drag keeps its PATCH of each moved row.
+- **After CRM-C2 merged.** `KanbanBoard.tsx` passes `hidden` to
+  `BoardColumn`, which draws the "Hidden" mark. In Mirror mode a set
+  `ui_color` wins in `stageAccent`, else the C2 type rule applies (item 16).
+  The Mirror colour picker takes `lib/colorOptions.ts`, with "by type" first.
+- **When the sync reads the picklists.** An import and a reconcile read them
+  with the field definitions. Every other run reads the Stage and Lead_Status
+  picklists when discovery is due (`_discovery_due`, once in 24 hours). So a
+  Zoho reorder, a Zoho probability and the Zoho id of each value reach the
+  mirror within a day, with no wait for a reconcile.
+
+**Verification.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_crm_stage_overlay_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_crm_upsert_from_source_fence.py tests/unit/test_crm_pipelines_r8.py tests/unit/test_crm_discovery.py tests/unit/test_crm_migration.py tests/unit/test_crm_reports.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
+```
+
+### 20.7 CRM-C4: Field studio, Native mode
+
+**Gate.** AGENT-SAFE. The write routes sit behind the new flag
+`CRM_FIELD_STUDIO_ORGS` in `routes/crm/flags.py`. It has the grammar of
+`CRM_MIRROR_ORGS` and ships empty. To turn it on is the gate
+`enforcement-flip`. Name the flag and the box in the same message.
+
+**Which entities.** Leads, Contacts, Companies and Deals. Native mode has no
+generic module, because `crm_module_records` has no native writer (§18.7).
+
+**Migration 256 (expand only, R6).**
+
+- New table `crm_field_sections`: `id`, `organization_id`, `entity`,
+  `label`, `position`, `created_at` and `updated_at`. It takes the tenant
+  shape of `251_crm_module_records.sql`: an inline `REFERENCES` before
+  `DEFAULT`, FORCE RLS, and one policy with USING and WITH CHECK.
+- Seven new columns on `crm_field_defs`:
+  - `section_id UUID NULL`, with `ON DELETE SET NULL`.
+  - `required BOOLEAN NOT NULL DEFAULT false`.
+  - `help_text TEXT NULL` and `default_value JSONB NULL`.
+  - `lookup_target TEXT NULL`.
+  - `is_system BOOLEAN NOT NULL DEFAULT false`.
+  - `retired_at TIMESTAMPTZ NULL`.
+- `_FIELD_DEF_SQL` of the sync names none of these columns, so the sync
+  leaves them alone.
+
+**Scope.**
+
+1. **The types.** The record stores a value in `custom`, under the field
+   `key`.
+
+   | Studio label | Type word |
+   |---|---|
+   | Text, Long text | `text`, `textarea` |
+   | Whole number, Decimal, Percent | `number`, `decimal`, `percent` |
+   | Currency | `currency` |
+   | Date, Date and time | `date`, `datetime` |
+   | Checkbox | `boolean` |
+   | Email, Phone, URL | `email`, `phone`, `url` |
+   | Picklist, Multi-select | `select`, `multiselect` |
+   | Lookup | `lookup`, with `lookup_target` (an entity slug or `module:<ApiName>`) |
+
+   `decimal` and `percent` are new words. In `mapping._FIELD_TYPES`, Zoho
+   `double` becomes `decimal` and `percent` becomes `percent`. The next sync
+   updates the mirrored rows. `app/crm/lib/fields.ts` draws both words.
+2. **The key.** At create, the gateway makes `key` from the label. It uses
+   `a-z`, `0-9` and `_`, at most 40 characters, with `_2` on a clash. A key
+   never equals a fixed column. The key never changes, and a rename changes
+   `label` only.
+3. **System fields.** `core.SYSTEM_FIELDS` lists the fixed columns of each
+   entity, with a label and a type. The studio shows them beside the custom
+   fields. An admin may change their label, order, section and `visible`.
+   The first such edit writes a row with `is_system = true`. A system field
+   cannot be deleted or retyped. A field that the gateway needs stays
+   required, such as a deal name.
+4. **The routes.** A new `routes/crm/field_studio.py`. Only an admin calls
+   them.
+   - `POST /crm/fields/{entity}` creates a field.
+   - `PATCH /crm/fields/{entity}/{key}` changes `label`, `section_id`,
+     `required`, `help_text`, `default_value`, `visible` and the options.
+   - `PATCH /crm/fields/{entity}/order` sets the order of the sections and
+     of the fields in each, in one transaction.
+   - `POST`, `PATCH` and `DELETE /crm/field-sections/{entity}` manage the
+     sections. A delete moves its fields to no section.
+   - `DELETE /crm/fields/{entity}/{key}` retires the field. It sets
+     `retired_at` and `visible = false`, and it keeps each value in
+     `custom`. A retired field can come back.
+5. **Picklist options.** Add, rename, reorder and retire. An option keeps
+   its `value` for life, and a rename changes `label`. A retire adds
+   `"retired": true`. A record that holds a retired value still shows it,
+   and no picker offers it.
+6. **The type change matrix.** A change is allowed only when each stored
+   value stays valid. Any other change gives 422 `field_type_change`.
+
+   | From | Allowed to |
+   |---|---|
+   | `text` | `textarea` |
+   | `number` | `decimal`, `currency`, `percent` |
+   | `decimal`, `percent`, `currency` | Each other |
+   | `select` | `multiselect`. A value becomes a list of one, in one transaction |
+   | `email`, `phone`, `url` | `text` |
+   | Any other | None |
+
+7. **Mode guard.** `crm_field_sections` and `crm_field_defs` join
+   `MIRROR_SETTINGS_TABLES`. So each studio route gives 409 in Mirror mode
+   until CRM-C5. The sync writes with raw SQL and does not call the guard.
+8. **One layout, read everywhere.** `GET /crm/fields/{entity}?layout=1`
+   returns the sections, the system fields and the custom fields in order.
+   A required field blocks a save with 422 and its name. A default value
+   fills a new record. Five places read the layout:
+   - the create and edit forms.
+   - the Fields tab of the record page (CRM-X4).
+   - the Columns control (CRM-Q4) and the filter bar (CRM-Q8).
+   - the CSV export.
+9. **The Fields section** (CRM-C1) is the studio for an admin of a Native
+   org with the flag on. Every other case shows the read-only list of
+   today. With the flag off, it says "Field editing is not turned on."
+
+**Non-goals.** Formula, rollup, auto-number, file and user-lookup fields.
+Field permissions for each role. Field history (CRM-S10). A layout for each
+pipeline. A Zoho write (CRM-C5).
+
+**Files.** `infra/postgres/256_crm_field_studio.sql` (new),
+`routes/crm/field_studio.py` (new), `routes/crm/fields.py`, `core.py`,
+`records.py`, `flags.py`, `export.py`, `crm_sources/zoho/mapping.py`, the
+record forms and Fields tab in `app/crm/components/`, `app/crm/lib/fields.ts`,
+and the fences below.
+
+**Done when.**
+
+1. An R8 test creates a field of each type. It renames, orders, sections,
+   hides and retires each one. The values in `custom` survive each step,
+   and org B sees none of it.
+2. The same test walks the type matrix. A refused change gives 422 and
+   changes no row.
+3. A required custom field makes `POST /crm/deals` give 422 with its name.
+   A default value fills a new deal.
+4. Each route gives 403 for a member who is not an admin. It gives 404 for
+   an org that the flag does not allow, and 409 in Mirror mode.
+5. A sync over a Mirror org leaves the seven new columns unchanged.
+6. `crmC4.test.ts` shows the studio, the option editor, and a type menu
+   that offers the allowed changes only.
+
+**Fences.** `tests/unit/test_crm_field_studio_r8.py` (new, R8, `_DB_GATE`),
+`tests/unit/test_crm_field_studio.py` (new, the key rule and the matrix),
+`tests/unit/test_crm_mirror_readonly.py`, `tests/unit/test_tenant_coverage.py`
+and `app/crm/components/crmC4.test.ts` (new).
+
+**Verification.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_crm_field_studio_r8.py tests/unit/test_crm_field_studio.py tests/unit/test_crm_fields_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_tenant_coverage.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
+```
+
+### 20.8 CRM-C5: Field studio and stage order written to Zoho (Mirror)
+
+**Gate.** AGENT-SAFE to build, with the flag off. 🔴 **OWNER-GATE** to turn
+the flag on for an org, and for the first write to a live Zoho. A write to a
+customer's Zoho is a write to a third party (`CLAUDE.md` §3a rule 3). C5
+needs its own spec audit before dispatch, as CRM-Z9 does.
+
+**The flag.** `CRM_ZOHO_CONFIG_WRITE_ORGS` in `routes/crm/flags.py`, with the
+grammar of `CRM_MIRROR_ORGS`. It ships empty. It is separate from the record
+flag of CRM-Z9, because a field change reaches every user of that Zoho.
+
+**The consent.** C5 extends the second consent of §19.9. The read consent
+does not change, and `ZOHO_READ_SCOPES` gets no write scope. If CRM-Z9 has
+not built the second consent route, C5 builds it to the rules of §19.9. The
+slice that comes second adds its scopes to the same route.
+
+C5 asks for the narrowest scopes, never `.ALL`. Each name is on a Zoho v8
+page:
+
+| Scope | Why | Source |
+|---|---|---|
+| `ZohoCRM.settings.fields.CREATE` | Create a custom field | [create-custom-field](https://www.zoho.com/crm/developer/docs/api/v8/create-custom-field.html) |
+| `ZohoCRM.settings.fields.UPDATE` | Label, help text, default, picklist add and rename | [update-custom-fields](https://www.zoho.com/crm/developer/docs/api/v8/update-custom-fields.html) |
+| `ZohoCRM.settings.layouts.UPDATE` | Sections, required, and a move to Unused | [update-custom-layout](https://www.zoho.com/crm/developer/docs/api/v8/update-custom-layout.html) |
+| `ZohoCRM.settings.pipeline.UPDATE` | Stage order in a pipeline | [update-pipeline](https://www.zoho.com/crm/developer/docs/api/v8/update-pipeline.html) |
+
+C5 never asks for `ZohoCRM.settings.fields.DELETE`. A retire in Metorite
+moves the field to Unused in Zoho. It never deletes a Zoho field or its data.
+
+**What Zoho allows, and what C5 offers.** Paths are under `/crm/v8`.
+
+| Edit | Zoho API | C5 offers it |
+|---|---|---|
+| Create a custom field | `POST /settings/fields?module=`, 5 fields at most for each call | Yes |
+| Rename, help text, default value | `PATCH /settings/fields/{id}?module=` | Yes |
+| Add or rename a picklist option | `PATCH` with `pick_list_values`, by `id` or `actual_value` | Yes |
+| Retire an option, hide a field | `PATCH /settings/layouts/{id}?module=` with `_delete: {permanent: false}` | Yes |
+| Add a section, set required | `PATCH /settings/layouts/{id}?module=` | Yes |
+| Stage order in a pipeline | `PUT /settings/pipeline/{id}?layout_id=` with `maps[].sequence_number` | Yes |
+| Change a type | Zoho refuses it | No |
+| Change an API name | Zoho allows it in its own UI only | No |
+| Order fields or sections | No documented write. **UNVERIFIED** | No. The UI says "Order in Zoho" |
+| Order picklist options and Lead Status | `sequence_number` shows in reads only. **UNVERIFIED** | No. The C3 overlay holds it |
+| Stage probability and forecast type | No documented write. **UNVERIFIED** | No. The C3 overlay holds it |
+| Lead conversion mapping | `convert_mapping` is read only. **UNVERIFIED** | No |
+
+Before the build, test each "Yes" row against a Zoho sandbox org. A row that
+fails moves to "No". The sandbox is the owner's to set up (§12).
+
+**Scope.**
+
+1. **The writer.** New `crm_sources/zoho/config_writer.py`, inside the
+   source seam. It is the one code path that writes Zoho metadata. It
+   refuses an edit when the stored scopes lack the scope of that edit
+   (§19.9 rule 6).
+2. **The routes.** The C4 studio routes and the C3 order route
+   (`PUT /crm/statuses/{kind}/order`) check the
+   mode. In Mirror mode with the flag on, they call the writer and write
+   nothing to Postgres. In Mirror mode with the flag off, they give 409.
+3. **Zoho first, then the mirror.** After a 2xx from Zoho, the route reads
+   `GET /settings/fields?module=` for that one module, at 1 credit. It
+   writes the result through the sync's field path, and returns the new
+   definitions.
+4. **Errors.** A Zoho error gives 502 with the Zoho `code` and `message`,
+   and writes no local row. The studio shows the message beside the field.
+   `LIMIT_EXCEEDED` shows "Zoho allows N custom fields in this module on
+   your edition."
+5. **The limit.** N comes from the edition in the source profile: Standard
+   10, Professional 155, Enterprise 300, Ultimate 500, for each module. An
+   unknown edition shows the Zoho message only.
+6. **Without the flag.** The Mirror studio is read only. Each field shows
+   "Edit in Zoho", a link from `deep_link` and the org domain (CRM-Q1).
+7. **The audit and the budget.** Each Zoho write writes one audit line: the
+   admin, the module, the edit and the Zoho code. It holds no record value
+   and no token. Each write counts against the sync budget of the org.
+
+**Non-goals.** Record write-back (CRM-Z9). A path through Zoho's MCP (§7.2).
+The `ingestion` writer stays for records only. Custom modules in Zoho.
+
+**Files.** `crm_sources/zoho/config_writer.py` (new), and
+`routes/crm/connection.py` if CRM-Z9 has not built the consent. Also
+`flags.py`, `field_studio.py`, `admin.py`, `crm_sync/engine.py` (a field
+read of one module), the Fields and Deal stages sections, and the fences.
+
+**Done when.**
+
+1. A fake-Zoho test sends a create, a rename and a stage reorder. Each is
+   one request with the body of the table. A 400 `LIMIT_EXCEEDED` gives
+   502 and writes no row.
+2. The same test sends no request with the flag off, or for a connection
+   that lacks the scope.
+3. An R8 test shows that the field read writes the new definition, and
+   that org B does not change.
+4. A test shows that `ZOHO_READ_SCOPES` holds no `CREATE`, `UPDATE` or
+   `DELETE` scope.
+5. `crmC5.test.ts` shows "Edit in Zoho" with the flag off, and the error
+   line under a field.
+6. **Owner act, not the build.** The owner turns the flag on for a test
+   Zoho org and makes one write. The evidence is the field in Zoho and the
+   audit line.
+
+**Fences.** `tests/unit/test_crm_zoho_config_write.py` (new),
+`tests/unit/test_crm_zoho_config_write_r8.py` (new, R8, `_DB_GATE`),
+`tests/unit/test_crm_upsert_from_source_fence.py` and
+`app/crm/components/crmC5.test.ts` (new).
+
+**Verification.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_crm_zoho_config_write.py tests/unit/test_crm_zoho_config_write_r8.py tests/unit/test_crm_upsert_from_source_fence.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
+```
+
+### 20.9 CRM-C6: Field mapping across modules
+
+**Gate.** AGENT-SAFE. The Native write sits behind `CRM_FIELD_STUDIO_ORGS`.
+
+**One section, three cards.** The "Field mapping" section of CRM-C1 holds
+them in this order.
+
+**(a) Lead conversion.** Which lead field fills which Contact, Company and
+Deal field.
+
+1. **Migration 257 (expand only).** `crm_field_defs` gets `convert_mapping
+   JSONB NULL`. A lead row holds `{"contact", "company", "deal"}`, each a
+   target key or NULL.
+2. **Mirror.** Zoho returns `convert_mapping` on each Leads field of `GET
+   /settings/fields?module=Leads`. Its form is `{"Contacts", "Accounts",
+   "Deals"}`, each a Zoho API name
+   ([field-meta](https://www.zoho.com/crm/developer/docs/api/v8/field-meta.html)).
+   The sync stores it with our keys. The card shows it read only, with "Edit
+   in Zoho". No write API is documented (**UNVERIFIED**).
+3. **Native.** An admin picks a target for each custom lead field. The
+   default target has the same key and a compatible type. A pair is
+   compatible when the types are equal, or when C4 item 6 allows the change.
+4. **The convert route.** `POST /crm/leads/{id}/convert` copies each mapped
+   custom value onto the new contact, company and deal, in the same
+   transaction. An unmapped value stays on the lead. The fixed columns keep
+   their mapping in code, and the card shows them read only.
+
+**(b) The Field map.** The CRM-Q7a card moves into this section with no
+change. Its "Suggest mappings" button is CRM-Q7b, which keeps its contract
+(§18.7). Q7b calls `acompletion_with_fallback` with `feature="crm.field_map"`,
+so the Router meters it (§20.1 fact 2).
+
+**(c) Lookups.** A read-only table of each lookup field and its target, for
+each entity and mirrored module. In Mirror mode the sync fills
+`lookup_target` from the Zoho `lookup.module`. In Native mode the C4 studio
+sets it. A target that the org does not have shows "Not mirrored".
+
+**Non-goals.** A map between two generic modules. A Zoho write of the
+conversion mapping. Activities on a convert.
+
+**Files.** `infra/postgres/257_crm_convert_mapping.sql` (new),
+`routes/crm/field_studio.py`, `pipeline.py`, `crm_sources/zoho/mapping.py`,
+`crm_sync/engine.py`, the Field mapping section in `app/crm/components/`, and
+the fences below.
+
+**Done when.**
+
+1. An R8 test maps two custom lead fields in a Native org and converts a
+   lead. The contact and the deal hold the two values. An unmapped value
+   stays on the lead. Org B does not change.
+2. The same test refuses a map between two incompatible types with 422.
+3. A sync test stores `convert_mapping` and `lookup_target` from a Zoho
+   fixture. A Mirror write of either gives 409.
+4. `crmC6.test.ts` shows the three cards, and the read-only Mirror state.
+
+**Fences.** `tests/unit/test_crm_convert_mapping_r8.py` (new, R8,
+`_DB_GATE`), `tests/unit/test_crm_discovery.py`,
+`tests/unit/test_crm_field_rules_r8.py` and `app/crm/components/crmC6.test.ts`
+(new).
+
+**Verification.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_crm_convert_mapping_r8.py tests/unit/test_crm_discovery.py tests/unit/test_crm_field_rules_r8.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
+```
+
+### 20.10 CRM-C7: AI reach
+
+**Gate.** AGENT-SAFE. Each new tool reads only. Each read goes through a
+`/crm` route as the member, so the access rule and the tenant apply (§10.8).
+No agent gets SQL. `acb_skills/history_tools.py` records that rule.
+
+**Scope.**
+
+1. **One implementation of the read tools.** New
+   `packages/acb_skills/acb_skills/crm_tools.py`. `crm-assistant` imports its
+   read tools from there, and `agent-crm` already depends on `acb-skills`.
+
+   | Tool | Route | Notes |
+   |---|---|---|
+   | `crm_list_records` | `GET /crm/{entity}` | Status, owner, pipeline, date ranges and `custom.<key>` (CRM-Q8). `page_size` up to 50 |
+   | `crm_get_record` | `GET /crm/{entity}/{id}` and `/crm/fields/{entity}` | Labels for each custom key and option value |
+   | `crm_list_modules`, `crm_list_module_records`, `crm_get_module_record` | `GET /crm/modules...` (CRM-Q6b) | Native gets an empty list |
+   | `crm_report` | `GET /crm/reports/{kind}` | `pipeline`, `funnel`, `win-loss` or `owners` |
+   | `crm_list_fields` | `GET /crm/fields/{entity}` | Labels, types and options |
+   | `crm_list_pipelines` | `GET /crm/pipelines` | With the effective stage probability (CRM-C3) |
+   | `crm_deal_contacts` | `GET /crm/deals/{id}/contacts` | With the roles |
+   | `crm_list_owners` | `GET /crm/owners` | |
+   | `crm_aggregate` | `GET /crm/aggregate` (new) | Item 2 |
+   | `crm_stage_dwell` | `GET /crm/aggregate/stage-dwell` (new) | Item 2 |
+
+2. **One row cap.** A list tool takes `page` and `page_size`, and
+   `page_size` is 50 at most. A tool answer holds 50 rows at most. When
+   more rows exist, it ends with "More: page=N". `search_crm` and
+   `get_pipeline` take the same cap of 50, in place of 25.
+3. **The aggregate routes.** New `routes/crm/aggregate.py`. Any member that
+   the access rule admits may call them.
+   - `GET /crm/aggregate` takes `entity`, `measure` and `group_by`, plus
+     each CRM-Q8 filter. `measure` is `count`, `sum_amount` or `weighted`.
+     `group_by` is `status`, `owner`, `pipeline`, `source`, or a `month` of
+     `created`, `updated` or `close`. Any other value gives 422. The SQL is
+     fixed text with bound values. `weighted` uses the C3 effective value.
+     If C3 has not merged, C7 reads `probability`, and C3 changes it.
+   - The filters come from the one Q8 builder: `ExtraFilterInput` and
+     `extra_filters` (`routes/crm/core.py:982` and `:994`). `aggregate.py`
+     holds no second copy of the filter SQL.
+   - `GET /crm/aggregate/stage-dwell` reads `crm_status_changes`. It gives
+     the median and 90th percentile days in each stage. It lists the open
+     deals past `max_dwell_days`, or past a `days` argument. It is the read
+     half of CRM-I1, which still owns the UI.
+   - **Mirror mode has no stage history.** The sync writes no row to
+     `crm_status_changes`. So in Mirror mode `stage-dwell` returns an empty
+     result with `reason: "mirror_no_history"`. The tool then says "Zoho
+     does not send the stage history, so the CRM cannot measure time in a
+     stage."
+   - `routes/crm/__init__.py` imports `aggregate`, as it imports the other
+     route modules.
+4. **The mode, for a member.** New `GET /crm/mode` returns `{mode}` to any
+   member that the access rule admits. `GET /crm/settings` stays admin only.
+5. **No record-write tool in Mirror mode.** At run assembly, after
+   `_apply_own_tool_scope` (`orchestrator/executor.py:1189` and its two
+   siblings), a filter reads `GET /crm/mode` as the member. In Mirror mode
+   it drops `create_lead`, `update_deal_status` and `convert_lead`.
+   `log_activity` stays, because a Metorite-only note saves in Mirror mode
+   (CRM-Z6). If the read fails, the tools stay, and the 409 relay of today
+   is the fallback.
+6. **Every agent can reach the CRM (owner decision, 2026-10-12).** The owner
+   asked that the data is open to any agent.
+   - A new family `crm` in `skill_families.py` holds the read tools.
+     `_tool_injection.py` injects it as it injects `query_history`.
+   - `crm` joins `DEFAULT_PROFILE` (`skill_families.py:228`). An agent with
+     no `tool_scope` gets the CRM read tools, as it gets each other
+     injectable tool. The orchestrator's `config.json` scope names them.
+   - The gateway stays the only gate: the kill switch `CRM_ENABLED`,
+     `feature:crm`, and the access rule.
+   - The tool message tells the two refusals apart. A 404 says "The CRM is
+     off for this organization." A 403 says "The CRM is not open to you."
+   - `acb_skills/addendum.py` gets the family text, as each family has.
+7. **Remove `agent-sales-assistant`.** The owner said on 2026-10-12 that it
+   does not exist and is not needed. Remove each reference, and do not
+   point it at another agent.
+   **Item 7 exception (decision, 2026-10-13): email drafting consults
+   `crm-assistant` with the member's identity.** The consult sends
+   `user_email`, so the CRM tools read as that member, and a draft gets
+   real CRM context. The meeting copilot gets no CRM row: its
+   `call_agent` carries no member, and a CRM tool refuses such a run.
+   - `apps/services/gateway/agents.json`, the registry entry. The same PR
+     deletes it. `_load_dynamic_agents` copies each `agents.json` entry into
+     the database on each call (`routes/agent.py:786`). So a kept entry
+     brings the row back after migration 256.
+   - **Migration 256** runs `DELETE FROM dynamic_agents WHERE name =
+     'agent-sales-assistant'`. No foreign key points to that table.
+   - `gateway/routes/agent.py:596` (a comment) and `:1135` (the `@sales`
+     example).
+   - `orchestrator/agents.py:67`, `:271` and `:279`, and
+     `apps/agents/agent-orchestrator/instructions.md:11`.
+   - `gateway/routes/notes/copilot_context.py:57` and `:261`.
+   - `gateway/routes/email/automation/drafting.py:1191`, `:1202` and `:1231`.
+   - `src/components/AgentChat.tsx:146`, `src/app/api/agent/chat/route.ts:764`
+     and `src/app/email/lib/useDraftSession.ts:63`.
+   - `tests/unit/test_agent_config_runtime.py:95` and the `_AT_BUILD` entry
+     at `:110`. Both held the label for WS43-G11. The removal ends that wait.
+   - Seven unit tests, `assistantCheckpoint.test.ts`, `e2e/chat.spec.ts` and
+     two scripts use the name as a sample. Give each another live agent
+     name. `grep -rlE "sales[-_]assistant"` lists them.
+   - The docs that hold WS43-G11 open get one line each, which says that
+     the agent is gone and the item is moot: `work_plan.md:5399`, and
+     `specs/maf_coding_engine.md:1633`, `:4318` and `:5451`.
+   - Migrations 15 and 16 name it in two comments. They are history and do
+     not change.
+8. **WS-55 stays out.** The inbound MCP server excludes the CRM in v1.
+9. **The AI cost.** A read tool calls no model. The agent's own model calls
+   already go through the Router. CRM-I3 and CRM-I4 still wait for UX-Q3.
+
+**Non-goals.** A new sales agent. The owner configures one later. A new
+write tool.
+
+**Files.**
+
+- New: `packages/acb_skills/acb_skills/crm_tools.py`,
+  `routes/crm/aggregate.py`, `infra/postgres/256_remove_sales_assistant.sql`,
+  and the new tests below.
+- Skills: `acb_skills/skill_families.py` (the family and `DEFAULT_PROFILE`)
+  and `acb_skills/addendum.py`.
+- Orchestrator: `orchestrator/_tool_injection.py`, `orchestrator/executor.py`
+  and `apps/agents/agent-orchestrator/config.json`.
+- Agent: `apps/agents/agent-crm/agents.py`, `config.json` (`own_tool_scope`)
+  and `instructions.md`.
+- Gateway: `routes/crm/__init__.py` (the router import) and
+  `routes/crm/settings.py` (`GET /crm/mode`).
+- The files of item 7.
+
+**Done when.**
+
+1. `test_crm_agent.py` shows each new tool calling its route with the member
+   headers. The answer shows labels, not raw keys.
+2. `test_crm_agent.py` shows that a list tool sends `page_size` 50 at most.
+   It shows that an answer of 60 rows holds 50 and ends with "More: page=2".
+3. `test_crm_agent.py` shows the 404 message and the 403 message apart.
+4. An R8 test shows each measure and group, and a 422 for an unknown value.
+   It shows the effective probability and the dwell numbers. A second org
+   sees no row. A Mirror org gets an empty dwell result with its reason.
+5. A test in `test_crm_aggregate.py` proves that `aggregate.py` calls
+   `extra_filters`. It holds no custom-field filter SQL of its own.
+6. An R8 test calls `GET /crm/mode` as two members. The member that the
+   access rule admits gets the mode. The other member gets 403.
+   `GET /crm/settings` still gives 403 to that member.
+7. `tests/unit/test_crm_agent_mode_filter.py` shows that a Mirror member's
+   run lacks the three record-write tools and keeps `log_activity`. A
+   failed mode read keeps all four.
+8. `test_skills_registry.py` passes with the `crm` family. A test shows an
+   agent with no `tool_scope` gets the CRM read tools.
+9. The new `test_no_sales_assistant.py` scans the tree with the pattern
+   `\b(agent[-_])?sales[-_]assistant\b`. That matches
+   `agent-sales-assistant`, `agent_sales_assistant`, `sales-assistant` and
+   `sales_assistant`. It fails on a match outside `project-docs/`, `docs/`,
+   `infra/postgres/` and the fence itself.
+10. An R8 test applies migration 256, then calls `_load_dynamic_agents`. The
+    row of `agent-sales-assistant` does not come back.
+11. After the deploy, the ledger shows 256. A count of the row in
+    `dynamic_agents` gives 0.
+
+**Fences.** `tests/unit/test_crm_agent.py`, `tests/unit/test_crm_aggregate.py`
+(new), `tests/unit/test_crm_aggregate_r8.py` (new, R8, `_DB_GATE`),
+`tests/unit/test_crm_agent_mode_filter.py` (new),
+`tests/unit/test_skills_registry.py`, `tests/unit/test_no_sales_assistant.py`
+(new), `tests/unit/test_remove_sales_assistant_r8.py` (new, R8, `_DB_GATE`)
+and `tests/unit/test_agent_config_runtime.py`.
+
+**Verification.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_crm_agent.py tests/unit/test_crm_agent_write.py tests/unit/test_crm_aggregate.py tests/unit/test_crm_aggregate_r8.py tests/unit/test_crm_agent_mode_filter.py tests/unit/test_no_sales_assistant.py tests/unit/test_remove_sales_assistant_r8.py tests/unit/test_agent_config_runtime.py -q
+uv run pytest tests/unit/test_copilot_resume.py tests/unit/test_delegation_no_egress.py tests/unit/test_h201_readers_under_rls.py tests/unit/test_memory_authorization.py tests/unit/test_notes_copilot_context.py tests/unit/test_resolve_agent_for_run.py tests/unit/test_rooms.py -q
+uv run pytest tests/unit/test_skills_registry.py tests/unit/test_generated_addendum.py tests/unit/test_skill_index.py tests/unit/test_skill_toggle_enforcement.py tests/unit/test_integrations_skills_route.py tests/unit/test_crm_kill_switch.py tests/unit/test_crm_access.py -q
+uv run ruff check packages/acb_skills/acb_skills/crm_tools.py packages/acb_skills/acb_skills/skill_families.py packages/acb_skills/acb_skills/addendum.py apps/services/gateway/gateway/routes/crm/aggregate.py apps/services/gateway/gateway/routes/crm/settings.py apps/services/orchestrator/orchestrator/_tool_injection.py apps/agents/agent-crm/agents.py
+uv run mypy packages/acb_skills/acb_skills/crm_tools.py apps/services/gateway/gateway/routes/crm/aggregate.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/assistantCheckpoint.test.ts
+```
+
+**Built as (2026-10-13, branch `crm-c7`).** 🔨 BUILT, not merged. The
+build follows the resolutions D1 to D11 of the dispatch.
+
+- **The tools.** `packages/acb_skills/acb_skills/crm_tools.py` holds the 12
+  read tools. An answer holds 50 rows at most, and `page_size` goes up to 50
+  (D1). `search_crm` caps at 50. A 404 from the kill switch and a 403 from
+  the access rule each come back as a sentence (D3). A missing record is
+  still an error.
+- **The family.** `crm` is `scope_governed` and in `DEFAULT_PROFILE` (D2).
+  The `tool_scope` of the orchestrator and the `own_tool_scope` of
+  `crm-assistant` name the 12 tools. `tool_annotations.TOOL_ANNOTATIONS`
+  holds their risk, and the risk block does not list them.
+- **The routes.** `routes/crm/aggregate.py`. The month groups are
+  `created_month`, `updated_month` and `close_month`. In Mirror mode
+  `created_month` is a 422, as the Q8 created filter is. The aggregate builds
+  its filters through `records.list_query`, the one list builder (D10).
+  Weighted reuses `core.WEIGHTED_SQL`, one lane at a time. Stage dwell takes
+  `days`, `page` and `page_size`. In Mirror mode it gives an empty result
+  with a `reason` (D9). `GET /crm/mode` is in `settings.py`.
+- **The Mirror filter.** `_tool_injection._drop_mirror_record_writes` runs
+  after `_apply_own_tool_scope` at the three sites. A `no_egress` run reads
+  nothing, because the egress control drops the three writes there anyway.
+- **The removal.** The migration is **256**, not 254. The open PR #938 holds
+  254, and the CRM-C3 worktree holds 255. ⚠️ `dynamic_agents` has FORCE row
+  level security in production (`generated/04_policies.sql`). So the
+  migration binds each tenant in turn, as 221 does. The email draft
+  consult names `crm-assistant` (the item 7 exception). The meeting
+  copilot has no CRM row. WS43-G11 is moot.
+- **Review round 1.** A tool refuses an identity with no `@` (a shared
+  room's compartment), and it sends nothing. The export also builds its
+  filters through `records.list_query`. The refusal test covers each of
+  the 12 tools.
+- **The fences.** `test_crm_aggregate_r8.py`, `test_crm_aggregate.py`,
+  `test_crm_agent.py`, `test_crm_mirror_run_tools.py`,
+  `test_skills_registry.py`, `test_no_sales_assistant.py`,
+  `test_no_sales_assistant_r8.py` and `test_agent_config_runtime.py`.
+- **Open.** Done-when 6 waits for the deploy: the ledger shows 256, and a
+  count of the row in `dynamic_agents` gives 0.
+
+### 20.11 What the CRM still lacks against Zoho
+
+This list reads §6, §9, §13.7, §18.5, §19.2 and §19.3. It names what stays
+unbuilt after CRM-C1 to CRM-C7. It writes no contract.
+
+**Planned in this spec, not built.**
+
+- **Daily work.** Activities view (CRM-X5), follow-ups in the task store
+  (CRM-S1), notifications (CRM-S11) and the onboarding list (CRM-X13).
+- **Pipeline.** Pipeline health and idle days (CRM-I1), and targets with
+  the forecast by month (CRM-I2). Win moments (CRM-X6 and CRM-X7), a board
+  you can shape (CRM-X8) and win likelihood (CRM-X14).
+- **Data.** CSV import (CRM-S3), bulk edit (CRM-S4), and duplicate check and
+  merge (CRM-S5 and CRM-I6). Web forms (CRM-S8), field history (CRM-S10),
+  multi-currency (CRM-S12 and CRM-Q11), and tags (CRM-Q13).
+- **Zoho.** Record write-back (CRM-Z9), near-real-time sync (CRM-Z8),
+  per-owner visibility (CRM-Q12), and the Zoho layout on the record page
+  (CRM-Q10). C4 builds the Native half of CRM-Q10.
+- **Process.** Stage transition forms and cadences (§19.3). A cadence waits
+  for UX-Q4.
+- **AI.** Deal brief and weekly digest (CRM-I3 and CRM-I4). They wait for
+  UX-Q3.
+
+**Not in this spec at all (new).**
+
+| Gap | What Zoho has |
+|---|---|
+| Validation rules | A rule on a field value that blocks a save |
+| Assignment rules | Round robin, or a rule by source or region, for a new lead or deal |
+| Workflow rules | On a create, an edit or a date: update a field, make a task, send a mail or call a webhook |
+| Blueprints | A required process for each stage, with checks at each move |
+| Email templates and mass email | Templates with merge fields, and a send to a list |
+| Approval processes | A record waits for an approver before it moves |
+| Territories | Records grouped by region, with their own access |
+| Lead scoring | Points from fields and activity. CRM-X14 scores deals only |
+| Field permissions for each role | Who sees and edits each field |
+| A recycle bin | A deleted record comes back within a time limit |
+
+**Recommended order after CRM-C1 to CRM-C7.**
+
+1. **CRM-I1.** C3 and C7 already build its two halves.
+2. **CRM-S1, then CRM-X5.** Follow-ups in the task store, then the view.
+3. **CRM-I2.** The owner answered UX-Q2.
+4. **CRM-Z9**, flag off. The owner answered UX-Q6.
+5. **Validation rules (new).** Small, and the C4 layout is their home.
+6. **CRM-S3, then CRM-S5.** Import, then duplicate check and merge.
+7. **CRM-S4**, with CRM-X9 first.
+8. **Assignment rules (new).** They need the owner list of CRM-X1 only.
+9. **CRM-X8, then CRM-X6 and CRM-X7.**
+10. **Workflow rules and email templates (new).** A field update and a task
+    need no owner answer. A mail action waits for UX-Q4.
+11. **CRM-S8** web forms.
+12. **CRM-Q11, CRM-Q12 and CRM-Q13.**
+13. **Blueprints, approvals, territories and lead scoring (new).** Last,
+    because they matter most to large sales teams.

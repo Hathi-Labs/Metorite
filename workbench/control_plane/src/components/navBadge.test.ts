@@ -129,8 +129,10 @@ describe("the phone nav wears the run badge on every page", () => {
 
   it("the Menu tab carries the total off /chat, and the Chats tab on it", () => {
     expect(shell).toContain("const tabBadge = runBadge(activeCount, needsTotal, unreadTotal);");
+    // D99: with the chat bar on, the Ask tab carries the total instead
+    // (`assistant.test.ts`), so the Menu tab gives it up.
     expect(shell).toMatch(
-      /<AppIcon name="Menu" size=\{20\} \/>\s*\{!isChatPage && tabBadge && \(\s*<NavBadge count=\{tabBadge\.count\} tone=\{tabBadge\.tone\} label=\{tabBadge\.label\} placement="tab"/,
+      /<AppIcon name="Menu" size=\{20\} \/>\s*\{!isChatPage && !chatOn && tabBadge && \(\s*<NavBadge count=\{tabBadge\.count\} tone=\{tabBadge\.tone\} label=\{tabBadge\.label\} placement="tab"/,
     );
     expect(shell).toMatch(
       /<AppIcon name="MessageCircle" size=\{20\} \/>\s*\{tabBadge && \(\s*<NavBadge count=\{tabBadge\.count\} tone=\{tabBadge\.tone\} label=\{tabBadge\.label\} placement="tab"/,

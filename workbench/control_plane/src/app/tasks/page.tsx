@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import AssistantToggle from "@/components/AssistantToggle";
 import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
@@ -46,6 +46,9 @@ import { isOpenShortcut } from "../projects/lib/search";
 import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
 import { ShellJob } from "@/lib/shell/doJob";
+import { openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { tasksAssistantFacts } from "./lib/assistantFacts";
 import { OPEN_CHAT_JOB } from "@/lib/runActivity";
 import { askRailSession } from "@/lib/railSessions";
 
@@ -59,6 +62,9 @@ export default function TasksPage() {
   // Read once, as the shell reads its flags: the dev override is in
   // `localStorage`, which the server render cannot see.
   const [dockOn] = useState(() => shellDockOn());
+  // D99: with the chat bar on, the one assistant replaces this app's rail,
+  // and the page tells it what the member is looking at.
+  const [chatOn] = useState(() => shellChatOn());
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   const selectedView = useTaskStore((s) => s.selectedView);
   const selectView = useTaskStore((s) => s.selectView);
@@ -88,6 +94,12 @@ export default function TasksPage() {
   // away (deleting the task from the overlay is the ordinary way), and a stale
   // one would open the next task the user clicked straight into the overlay.
   const [maximisedFor, setMaximisedFor] = useState<string | null>(null);
+  const taskItems = useTaskStore((s) => s.items);
+  const assistantFacts = useMemo(
+    () => (chatOn ? tasksAssistantFacts({ items: taskItems, selectedView, openItemId: selectedItemId }) : null),
+    [chatOn, taskItems, selectedView, selectedItemId],
+  );
+  useAssistantFacts(assistantFacts);
   const isInbox = selectedView === "inbox";
   const isEngage = selectedView === "engage";
   // S6e — a project I lead, opened from the sidebar. Its own surface: my
@@ -165,11 +177,16 @@ export default function TasksPage() {
   const openChat = useCallback(
     (f: Record<string, string>) => {
       if (!f.session) return;
+      // D99: an old link opens the chat in the one assistant.
+      if (chatOn) {
+        openAssistant({ sessionId: f.session });
+        return;
+      }
       askRailSession("task-manager", f.session);
       if (isMobile) openDrawer(<AssistantRail />);
       else setAssistantOpen(true);
     },
-    [isMobile, openDrawer],
+    [chatOn, isMobile, openDrawer],
   );
 
   // Search opens from ⌘K and from the top bar's Search button, through ONE
@@ -324,10 +341,13 @@ export default function TasksPage() {
             {/* NS-6: with the shell's one bell on, this app mounts no bell
                 of its own. Off, nothing changes. NS-9 deletes it. */}
             {dockOn ? null : <NotificationBell onOpenTask={openHit} />}
-            <AssistantToggle
-              open={assistantOpen}
-              onToggle={() => setAssistantOpen((v) => !v)}
-            />
+            {/* D99: the chat bar opens the one assistant. NS-9 deletes this. */}
+            {chatOn ? null : (
+              <AssistantToggle
+                open={assistantOpen}
+                onToggle={() => setAssistantOpen((v) => !v)}
+              />
+            )}
           </>
         }
       />
@@ -338,7 +358,7 @@ export default function TasksPage() {
         {lists.open && (
           <aside className={`w-60 shrink-0 border-r border-border bg-card ${railClass(lists.settled)}`}>
             <ListsSidebar
-              onOpenAssistant={() => setAssistantOpen(true)}
+              onOpenAssistant={chatOn ? undefined : () => setAssistantOpen(true)}
               assistantActive={assistantOpen}
             />
           </aside>

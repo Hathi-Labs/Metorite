@@ -15,11 +15,17 @@
  *
  * The geometry, the move plan and the optimistic re-tally are pure and live
  * in ../lib/board.ts — this file is the pixels and the HTML5 drag events.
+ *
+ * WS-53 CRM-C2: a lane is the shared `BoardColumn`, and a card is the shared
+ * `TaskCardShell`. So this board has the shape of the Projects and My Tasks
+ * boards. The lane colour is `stageAccent`, in the inset chip of the header.
  */
 
+import { Board } from "@/components/board/Board";
+import { BoardColumn } from "@/components/board/BoardColumn";
 import Icon from "@/components/Icon";
+import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import { TaskMeta } from "@/components/TaskMeta";
-import { accentForHue } from "@/lib/statusAccent";
 import type { MetaChip } from "@/lib/taskCard";
 import { useState } from "react";
 import {
@@ -27,12 +33,16 @@ import {
   planMove,
   rotLevel,
   ROT_TONES,
+  stageAccent,
+  stageIcon,
   type BoardLane,
   type DealMove,
   type LeadLane,
   type RotLevel,
 } from "../lib/board";
-import { isMirrored } from "../lib/connect";
+import { cardLabel } from "../lib/cardLabel";
+import { isMirrored, type CrmMode } from "../lib/connect";
+import { isRetired } from "../lib/emptyStages";
 import { compactMoney, money, shortEmail, stageAgeLabel } from "../lib/format";
 import { nextActivityChip } from "../lib/nextActivity";
 import type { Deal, Lead, Status } from "../lib/types";
@@ -48,6 +58,8 @@ export default function KanbanBoard({
   onOpen,
   onCreate,
   hiddenEmpty = 0,
+  mode = null,
+  cursorId = null,
 }: {
   /** Which record the cards are. Deals unless stated. */
   entity?: "deals" | "leads";
@@ -63,6 +75,10 @@ export default function KanbanBoard({
   onCreate?: () => void;
   /** How many empty stages the page hid (`lib/emptyStages.ts`). */
   hiddenEmpty?: number;
+  /** The CRM mode. In Mirror mode a lane colour skips the stored `gray` (CRM-C2). */
+  mode?: CrmMode;
+  /** The record that the sheet shows. Its card wears the cursor ring (CRM-X4). */
+  cursorId?: string | null;
 }) {
   const [dragging, setDragging] = useState<Card | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -98,119 +114,110 @@ export default function KanbanBoard({
   }
 
   return (
-    <div className="flex-1 overflow-x-auto overflow-y-hidden p-4">
-      <div className="flex h-full items-start gap-3">
-        {(lanes as Array<BoardLane | LeadLane>).map((lane) => {
-          const isTarget = over === lane.status.id;
-          return (
-            <section
-              key={lane.status.id}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setOver(lane.status.id);
-              }}
-              onDragLeave={() => setOver((v) => (v === lane.status.id ? null : v))}
-              onDrop={(e) => {
-                e.preventDefault();
-                setOver(null);
-                if (!dragging || readOnly) return;
-                const move = planMove(dragging, lane.status.id);
-                setDragging(null);
-                // A drop back into the same lane is not a transition: sending
-                // it would write a dwell of zero and a "Proposal → Proposal"
-                // line onto the timeline.
-                if (move) onMove(move, lane.status);
-              }}
-              className={`flex h-full w-[264px] shrink-0 flex-col rounded-xl border tech-transition ${
-                isTarget
-                  ? "border-primary bg-primary/5"
-                  : "border-border bg-card/40"
-              }`}
-            >
-              <header className="flex items-center gap-2 border-b border-border px-3 py-2">
-                <span className={`w-2 h-2 rounded-full ${lane.tone}`} />
-                <h2 className="flex-1 truncate text-sm font-semibold text-foreground">
-                  {lane.status.name}
-                </h2>
-                <span className="text-[10px] text-muted-foreground">
-                  {lane.count}
-                </span>
-              </header>
-              {isDeals && (
-                <div className="flex items-center gap-1 border-b border-border px-3 py-1.5 text-[10px] text-muted-foreground">
-                  <Icon name="IndianRupee" className="w-3 h-3" />
-                  {/* The lane total covers the whole lane; the cards below are
-                      one page of it. A header that counted only what it
-                      returned would lie about the busy lane somebody is
-                      actually looking at. */}
-                  <span>{compactMoney(lane.amount).replace("₹", "")}</span>
-                  {/* Weighted ₹ under the raw total (§5.1). Rendered only where
-                      it means something — a won lane's revenue is closed and a
-                      lost lane forecasts nothing, so the gateway sends 0 and
-                      printing "0 weighted" there would read as a bug. */}
-                  {lane.weighted > 0 && (
-                    <span className="opacity-70" title="Weighted by probability">
-                      · {compactMoney(lane.weighted).replace("₹", "")} wtd
-                    </span>
-                  )}
-                  {lane.rows.length < lane.count && (
-                    <span className="ml-auto opacity-70">
-                      showing {lane.rows.length}
-                    </span>
-                  )}
-                </div>
-              )}
-              <div className="flex-1 space-y-2 overflow-y-auto p-2">
-                {(lane.rows as Card[]).map((card) => (
-                  <RecordCard
-                    key={card.id}
-                    entity={entity}
-                    card={card}
-                    locked={readOnly}
-                    warnLost={needsLostReason(card, lane.status)}
-                    // WS-26h rot: presentation only. The card's EXISTING
-                    // stage-age badge changes colour and nothing else moves,
-                    // closes or hides — discipline by visibility, not locks.
-                    rot={rotLevel(
-                      (card as Deal).status_changed_at,
-                      isDeals ? lane.status.max_dwell_days : null,
-                    )}
-                    maxDwellDays={isDeals ? (lane.status.max_dwell_days ?? null) : null}
-                    // CRM-X3: overdue, today, later or none. A won or lost
-                    // lane gets no chip.
-                    next={nextActivityChip(card.next_activity, lane.status.type)}
-                    onDragStart={(e) => {
-                      // ⚠️ Firefox refuses to START a drag unless dragstart
-                      // sets something on the dataTransfer — without this the
-                      // board is inert there while working everywhere else.
-                      e.dataTransfer.setData("text/plain", card.id);
-                      e.dataTransfer.effectAllowed = "move";
-                      setDragging(card);
-                    }}
-                    onDragEnd={() => setDragging(null)}
-                    onOpen={() => onOpen(card.id)}
-                  />
-                ))}
-                {lane.rows.length === 0 && (
-                  <p className="px-1 py-6 text-center text-[10px] text-muted-foreground">
-                    Nothing here
-                  </p>
-                )}
-              </div>
-            </section>
-          );
-        })}
-        {onCreate && (
-          <button
-            onClick={onCreate}
-            className="flex h-9 w-[180px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground tech-transition"
+    <Board className="flex-1">
+      {(lanes as Array<BoardLane | LeadLane>).map((lane) => {
+        const isTarget = over === lane.status.id;
+        return (
+          <BoardColumn
+            key={lane.status.id}
+            header={{
+              accent: stageAccent(lane.status, mode),
+              title: lane.status.name,
+              count: lane.count,
+              icon: stageIcon(lane.status.type),
+            }}
+            dropTarget={isTarget && !readOnly}
+            // CRM-C3: a hidden stage, or one that Zoho no longer lists, shows
+            // only with records, and says so.
+            hidden={isRetired(lane.status)}
+            empty={lane.rows.length === 0 ? "Nothing here" : undefined}
+            totals={isDeals ? <LaneTotals lane={lane} /> : undefined}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setOver(lane.status.id);
+            }}
+            onDragLeave={() => setOver((v) => (v === lane.status.id ? null : v))}
+            onDrop={(e) => {
+              e.preventDefault();
+              setOver(null);
+              if (!dragging || readOnly) return;
+              const move = planMove(dragging, lane.status.id);
+              setDragging(null);
+              // A drop back into the same lane is not a transition: sending
+              // it would write a dwell of zero and a "Proposal → Proposal"
+              // line onto the timeline.
+              if (move) onMove(move, lane.status);
+            }}
           >
-            <Icon name="Plus" className="w-3.5 h-3.5" />
-            {isDeals ? "New deal" : "New lead"}
-          </button>
-        )}
-      </div>
-    </div>
+            {(lane.rows as Card[]).map((card) => (
+              <RecordCard
+                key={card.id}
+                entity={entity}
+                card={card}
+                locked={readOnly}
+                atCursor={card.id === cursorId}
+                warnLost={needsLostReason(card, lane.status)}
+                // WS-26h rot: presentation only. The card's EXISTING
+                // stage-age badge changes colour and nothing else moves,
+                // closes or hides — discipline by visibility, not locks.
+                rot={rotLevel(
+                  (card as Deal).status_changed_at,
+                  isDeals ? lane.status.max_dwell_days : null,
+                )}
+                maxDwellDays={isDeals ? (lane.status.max_dwell_days ?? null) : null}
+                // CRM-X3: overdue, today, later or none. A won or lost
+                // lane gets no chip.
+                next={nextActivityChip(card.next_activity, lane.status.type)}
+                onDragStart={(e) => {
+                  // ⚠️ Firefox refuses to START a drag unless dragstart
+                  // sets something on the dataTransfer — without this the
+                  // board is inert there while working everywhere else.
+                  e.dataTransfer.setData("text/plain", card.id);
+                  e.dataTransfer.effectAllowed = "move";
+                  setDragging(card);
+                }}
+                onDragEnd={() => setDragging(null)}
+                onOpen={() => onOpen(card.id)}
+              />
+            ))}
+          </BoardColumn>
+        );
+      })}
+      {onCreate && (
+        <button
+          onClick={onCreate}
+          className="flex h-9 w-[180px] shrink-0 items-center justify-center gap-1.5 self-start rounded-lg border border-dashed border-border text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground tech-transition"
+        >
+          <Icon name="Plus" className="w-3.5 h-3.5" />
+          {isDeals ? "New deal" : "New lead"}
+        </button>
+      )}
+    </Board>
+  );
+}
+
+/** The money line under a deal lane's chip. */
+function LaneTotals({ lane }: { lane: BoardLane | LeadLane }) {
+  return (
+    <span className="flex items-center gap-1">
+      <Icon name="IndianRupee" className="w-3 h-3" />
+      {/* The lane total covers the whole lane; the cards below are one page
+          of it. A header that counted only what it returned would lie about
+          the busy lane somebody is actually looking at. */}
+      <span>{compactMoney(lane.amount).replace("₹", "")}</span>
+      {/* Weighted ₹ under the raw total (§5.1). Rendered only where it means
+          something — a won lane's revenue is closed and a lost lane forecasts
+          nothing, so the gateway sends 0 and printing "0 weighted" there would
+          read as a bug. */}
+      {lane.weighted > 0 && (
+        <span title="Weighted by probability">
+          · {compactMoney(lane.weighted).replace("₹", "")} wtd
+        </span>
+      )}
+      {lane.rows.length < lane.count && (
+        <span className="ml-auto">showing {lane.rows.length}</span>
+      )}
+    </span>
   );
 }
 
@@ -218,6 +225,7 @@ function RecordCard({
   entity,
   card,
   locked,
+  atCursor,
   warnLost,
   rot,
   maxDwellDays,
@@ -230,12 +238,14 @@ function RecordCard({
   card: Card;
   /** Mirror mode: the card never drags. */
   locked: boolean;
+  /** The sheet shows this record. `j` and `k` move it (CRM-X4). */
+  atCursor: boolean;
   warnLost: boolean;
   rot: RotLevel;
   maxDwellDays: number | null;
   /** The next-activity chip, or null for none (`lib/nextActivity.ts`). */
   next: MetaChip | null;
-  onDragStart: (e: React.DragEvent<HTMLElement>) => void;
+  onDragStart: (e: React.DragEvent) => void;
   onDragEnd: () => void;
   onOpen: () => void;
 }) {
@@ -245,33 +255,46 @@ function RecordCard({
   const detail = deal ? deal.organization_name : (lead?.organization_name ?? lead?.email);
   const overdue = next?.tone === "danger";
   return (
-    <article
+    <TaskCardShell
       // A record that Zoho owns does not move here (CRM-Z7): the write would
       // be refused, and a card that snaps back reads as a bug. In Mirror mode
       // no card moves at all.
       draggable={!locked && !isMirrored(card as unknown as Record<string, unknown>)}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      onClick={onOpen}
-      // An overdue card wears a red left edge, from the shared status colours.
-      className={`cursor-pointer rounded-lg border border-border bg-card p-2.5 hover:border-primary/40 hover:bg-secondary/30 tech-transition ${
-        // The hover border recolours all four sides, so the red edge repeats
-        // it. A literal class, because Tailwind cannot see a built one.
-        overdue ? `border-l-2 ${accentForHue("red").bar} hover:border-l-destructive` : ""
-      }`}
+      onActivate={() => onOpen()}
+      // A `role="button"` is read by its name only, so the name carries the
+      // card: the money or the company, the next step and the warnings.
+      ariaLabel={cardLabel({
+        title,
+        amount: deal ? money(deal.amount, deal.currency) : null,
+        detail,
+        next,
+        overdue,
+        stageAge: deal ? stageAgeLabel(deal.status_changed_at) : null,
+        rot: deal ? rot : undefined,
+        needsReason: warnLost,
+      })}
+      atCursor={atCursor}
+      // A won or a lost deal is closed, not done. The lane chip says so, so
+      // the card is not dimmed and not struck through.
+      completed={false}
+      // CRM-X3: an overdue card wears a red left edge. The shell draws it,
+      // from the shared status colours.
+      overdue={overdue}
     >
-      <h3 className="truncate text-xs font-medium text-foreground">{title}</h3>
+      <TaskCardTitle>{title}</TaskCardTitle>
       {/* organization_name is projected by the gateway's LEFT JOIN — the
           browser never joins the org list, which is paged at 100. */}
       {detail && (
-        <p className="mt-1 flex items-center gap-1 truncate text-[10px] text-muted-foreground">
+        <p className="flex items-center gap-1 truncate text-[10px] text-muted-foreground">
           <Icon name="Building2" className="w-3 h-3 shrink-0" />
           {detail}
         </p>
       )}
-      {next && <TaskMeta chips={[next]} className="mt-1.5" />}
+      {next && <TaskMeta chips={[next]} />}
       {deal ? (
-        <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-foreground">
             {money(deal.amount, deal.currency)}
           </span>
@@ -288,10 +311,10 @@ function RecordCard({
         </div>
       ) : (
         lead?.lead_source && (
-          <p className="mt-2 truncate text-[10px] text-muted-foreground">{lead.lead_source}</p>
+          <p className="truncate text-[10px] text-muted-foreground">{lead.lead_source}</p>
         )
       )}
-      <div className="mt-1.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
         <Icon name="User" className="w-3 h-3 shrink-0" />
         <span className="truncate">{shortEmail(card.owner_email)}</span>
         {warnLost && (
@@ -300,6 +323,6 @@ function RecordCard({
           </span>
         )}
       </div>
-    </article>
+    </TaskCardShell>
   );
 }

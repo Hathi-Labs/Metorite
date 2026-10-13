@@ -72,14 +72,47 @@ export function showEmptyStages(mode: CrmMode, stored: boolean | null): boolean 
   return stored ?? defaultShowEmpty(mode);
 }
 
+// ── Hidden stages (WS-53 CRM-C3, crm_platform.md §20.6 item 13) ───────────
+//
+// An admin can hide a stage, a lead status or a lost reason. Zoho can also
+// stop listing a stage (`source_gone_at`). The two act the same here: no
+// picker offers the row, except as the current value of a record, and a board
+// shows its lane only when the lane holds records. The server never refuses a
+// move into it, because Zoho can move a deal there.
+
+/** The two flags that take a row out of the pickers. */
+export type RetiredFlags = { hidden?: boolean; source_gone_at?: string | null };
+
+/** True for a row that an admin hid, or that Zoho no longer lists. */
+export function isRetired(row: RetiredFlags | null | undefined): boolean {
+  return Boolean(row && (row.hidden || row.source_gone_at));
+}
+
+/**
+ * The rows a picker offers, in their order: each row that is not retired, and
+ * the current value of the record even when it is retired. A picker that
+ * dropped the current value would show a record in no stage at all.
+ */
+export function pickable<T extends RetiredFlags & { id: string }>(
+  rows: readonly T[],
+  current?: string | null
+): T[] {
+  return rows.filter((row) => !isRetired(row) || (current != null && row.id === current));
+}
+
 /**
  * The lanes the board draws. A lane that holds no deal under the current
  * filters is hidden unless `showEmpty` is on. `count` covers the whole lane
  * under those filters, so it is the right test, and `rows` is not.
+ *
+ * CRM-C3: a retired lane shows only when it holds records, whatever
+ * `showEmpty` says. `orderLanes` puts it at the end of its group.
  */
-export function visibleLanes<T extends { count: number }>(
+export function visibleLanes<T extends { count: number; status?: RetiredFlags }>(
   lanes: readonly T[],
   showEmpty: boolean
 ): T[] {
-  return showEmpty ? [...lanes] : lanes.filter((lane) => lane.count > 0);
+  return lanes.filter(
+    (lane) => lane.count > 0 || (showEmpty && !isRetired(lane.status))
+  );
 }

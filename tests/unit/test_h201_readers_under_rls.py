@@ -398,7 +398,7 @@ def test_the_one_agent_name_rule() -> None:
         is_valid_agent_name,
     )
 
-    for good in ("orchestrator", "email-assistant", "agent-sales-assistant",
+    for good in ("orchestrator", "email-assistant", "agent-email-assistant",
                  "Metorite-Dev", "app_builder", "a.b", "a" * 64):
         assert is_valid_agent_name(good), good
     for bad in _BAD_AGENT_NAMES:

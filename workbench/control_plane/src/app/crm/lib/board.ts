@@ -6,70 +6,60 @@
 //
 // Spec: project-docs/specs/crm_app.md §5 surface 1.
 
+import { statusAccent, type StatusAccent } from "@/lib/statusAccent";
+
 import type { CrmMode } from "./connect";
+import { isRetired, visibleLanes } from "./emptyStages";
 import { stageAgeDays } from "./format";
 import type { Deal, Lead, Pipeline, PipelineLane, Status, StatusType } from "./types";
 
-/** A lane as the board renders it — the wire lane plus its display totals. */
-export type BoardLane = PipelineLane & {
-  /** Lane colour token (see statusTone) resolved once, not per card. */
-  tone: string;
-};
+/** A lane as the board renders it: the wire lane. Its colour is `stageAccent`. */
+export type BoardLane = PipelineLane;
 
 /**
- * `crm_*_statuses.color` is free text managed by the owner (and by the Zoho
- * importer, which copies real stage names in). So it is mapped to a semantic
- * token here rather than interpolated into a class name — Tailwind v4 cannot
- * see a class it never saw in source, and `bg-${color}-500` would render as
- * nothing for every lane.
- */
-const TONES: Record<string, string> = {
-  gray: "bg-muted-foreground",
-  slate: "bg-muted-foreground",
-  blue: "bg-primary",
-  sky: "bg-primary",
-  cyan: "bg-primary",
-  green: "bg-success",
-  emerald: "bg-success",
-  teal: "bg-success",
-  amber: "bg-warning",
-  yellow: "bg-warning",
-  orange: "bg-accent",
-  red: "bg-destructive",
-  rose: "bg-destructive",
-  purple: "bg-accent",
-  violet: "bg-accent",
-  pink: "bg-accent",
-};
-
-/**
- * Fallback by status TYPE, not to grey: an unrecognised colour on a won lane
- * should still read as won. The type is a closed CHECK vocabulary; the colour
- * is not.
- */
-const TYPE_TONES: Record<string, string> = {
-  open: "bg-muted-foreground",
-  ongoing: "bg-primary",
-  on_hold: "bg-warning",
-  won: "bg-success",
-  lost: "bg-destructive",
-};
-
-/**
- * The colour names a lane can be set to.
+ * The colour of one CRM stage or status (WS-53 CRM-C2).
  *
- * Derived from TONES rather than typed out again: the settings grid must not
- * offer a colour the board cannot draw, and a second hand-kept list is how it
- * would end up doing exactly that.
+ * The CRM kept its own colour-name map here until CRM-C2. It drew `blue` with
+ * the member's accent and `violet` as orange, and it was a second palette
+ * beside `statusAccent.ts`, which `AGENTS.md` rule 4 forbids. Now this asks
+ * the shared module, and it holds no class string.
+ *
+ * - **Native mode, and a mode not yet known.** The stored colour answers
+ *   first. Then the stage type: won green, lost red, on hold amber, ongoing
+ *   blue. Then the name, then the position.
+ * - **Mirror mode.** The stored colour is not passed. The sync never writes
+ *   it, so every mirrored row is `gray` (`crm_platform.md` §20.1 fact 6), and
+ *   a gray that nobody chose must not hide a won or a lost lane. The
+ *   Metorite colour of a Mirror stage (`ui_color`, CRM-C3 item 16) wins when
+ *   an admin set one. Else the type rule applies.
+ *
+ * No index is passed. So an open stage with no keyword in its name is gray on
+ * every surface, and a lane that the board hides repaints no other lane.
  */
-export const TONE_COLORS: readonly string[] = Object.keys(TONES);
+export function stageAccent(
+  status: Pick<Status, "color" | "type" | "name"> & Pick<Partial<Status>, "ui_color">,
+  mode: CrmMode,
+): StatusAccent {
+  return statusAccent({
+    color: mode === "mirror" ? (status.ui_color ?? null) : status.color,
+    stageType: status.type,
+    name: status.name,
+  });
+}
 
-export function statusTone(status: Pick<Status, "color" | "type">): string {
-  return (
-    TONES[(status.color || "").toLowerCase()] ??
-    TYPE_TONES[status.type] ??
-    "bg-muted-foreground"
-  );
+/**
+ * The icon of a closed or a paused stage, drawn in the chip in the place of
+ * its dot. Colour is never the only signal (`DESIGN_SYSTEM.md` §7). An open
+ * and an ongoing stage have none.
+ */
+const STAGE_ICONS: Partial<Record<StatusType, string>> = {
+  won: "CircleCheck",
+  lost: "CircleX",
+  on_hold: "CirclePause",
+};
+
+export function stageIcon(type: StatusType): string | null {
+  return STAGE_ICONS[type] ?? null;
 }
 
 /** The group of a stage type on the board: open work, then won, then lost. */
@@ -95,15 +85,35 @@ function comparePlaces(
 }
 
 /**
+ * The admin order of a Mirror kind (WS-53 CRM-C3, §20.6 item 12). The key is
+ * `(ui_position IS NULL, ui_position, source position)`: each ordered row by
+ * its `ui_position`, then each row with none, in Zoho order. The order route
+ * writes `ui_position` on every row, so only a stage that Zoho adds later has
+ * none, and it goes to the end of its group.
+ */
+function compareAdminOrder(a: Status, b: Status): number {
+  const left = typeof a.ui_position === "number" ? a.ui_position : null;
+  const right = typeof b.ui_position === "number" ? b.ui_position : null;
+  if (left === null && right !== null) return 1;
+  if (left !== null && right === null) return -1;
+  if (left !== null && right !== null && left !== right) return left - right;
+  return (a.source_position ?? a.position) - (b.source_position ?? b.position);
+}
+
+/**
  * THE order of the Deals board columns (owner decision, 2026-10-12). This is
  * the one place that decides it, and the mode is a parameter.
  *
  * The groups, in both modes: open and ongoing stages, then `on_hold`, then
- * won, then lost at the far end.
+ * won, then lost at the far end. A hidden stage, and one that Zoho no longer
+ * lists, goes to the end of its group (CRM-C3).
  *
- * - **Mirror mode.** Inside the open group, `probability` from low to high.
- *   A tie, and every other group, goes to the place in the chosen pipeline,
- *   then to the global `position`.
+ * - **Mirror mode, after an admin order** (`admin_order`). The admin order
+ *   key of `compareAdminOrder`, in each group. The pipeline place does not
+ *   apply: a pipeline is an ordered subset of the one stage list.
+ * - **Mirror mode, no admin order.** Inside the open group, the effective
+ *   `probability` from low to high. A tie, and every other group, goes to the
+ *   place in the chosen pipeline, then to the global `position`.
  * - **Native mode, and a mode not yet known.** The admin's stage order, the
  *   global `position`, then the pipeline place. Probability never reorders a
  *   Native board: a new Native stage has probability 0 and would jump first.
@@ -117,10 +127,16 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
   mode: CrmMode
 ): T[] {
   const mirror = mode === "mirror";
+  const adminOrder = mirror && lanes.some((lane) => lane.status.admin_order);
   return [...lanes].sort((a, b) => {
     const group = (LANE_GROUP[a.status.type] ?? 0) - (LANE_GROUP[b.status.type] ?? 0);
     if (group !== 0) return group;
-    if (mirror) {
+    const retired = Number(isRetired(a.status)) - Number(isRetired(b.status));
+    if (retired !== 0) return retired;
+    if (adminOrder) {
+      const key = compareAdminOrder(a.status, b.status);
+      if (key !== 0) return key;
+    } else if (mirror) {
       if ((LANE_GROUP[a.status.type] ?? 0) === 0) {
         const odds = (a.status.probability ?? 0) - (b.status.probability ?? 0);
         if (odds !== 0) return odds;
@@ -149,10 +165,7 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
  */
 export function toBoardLanes(pipeline: Pipeline | null): BoardLane[] {
   if (!pipeline) return [];
-  return orderLanes(pipeline.lanes, null).map((lane) => ({
-    ...lane,
-    tone: statusTone(lane.status),
-  }));
+  return orderLanes(pipeline.lanes, null);
 }
 
 // ── The Leads board (CRM-Q3) ──────────────────────────────────────────────
@@ -164,7 +177,6 @@ export function toBoardLanes(pipeline: Pipeline | null): BoardLane[] {
 /** A Leads board column. */
 export type LeadLane = Omit<PipelineLane, "rows"> & {
   rows: Lead[];
-  tone: string;
 };
 
 /**
@@ -172,13 +184,22 @@ export type LeadLane = Omit<PipelineLane, "rows"> & {
  *
  * `total` is the count of the WHOLE status. `rows` is one page of it, as on the
  * deals board. A status with no page reads as an empty lane.
+ *
+ * CRM-C3: the Leads board keeps the order of the statuses, with no groups by
+ * type, so "Junk Lead" stays where Zoho puts it. The effective `position`
+ * decides, and the gateway already folds the admin order into it: the
+ * `ui_position` after an admin order, else the source order. A hidden status,
+ * and one that Zoho no longer lists, goes last and shows only with leads in it.
  */
 export function toLeadLanes(
   statuses: readonly Status[],
   pages: Readonly<Record<string, { rows: Lead[]; total: number } | undefined>>,
 ): LeadLane[] {
-  return [...statuses]
-    .sort((a, b) => a.position - b.position)
+  const lanes = [...statuses]
+    .sort(
+      (a, b) =>
+        Number(isRetired(a)) - Number(isRetired(b)) || a.position - b.position
+    )
     .map((status) => {
       const page = pages[status.id];
       return {
@@ -187,9 +208,9 @@ export function toLeadLanes(
         count: page?.total ?? 0,
         amount: 0,
         weighted: 0,
-        tone: statusTone(status),
       };
     });
+  return visibleLanes(lanes, true);
 }
 
 /** The leads board as it should look the instant a card is dropped. */

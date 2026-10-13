@@ -28,6 +28,12 @@
  *   • `/` focuses the page's own filter (`[data-page-filter]`) when the page
  *     has one, and opens the command bar when it does not (§6.1, owner
  *     decision 2026-10-07). Never while the member types in a field.
+ *   • `⌘J` / `Ctrl J`, with `NEXT_PUBLIC_SHELL_CHAT` on (D99, §7.1): the
+ *     cursor goes to the chat bar. With the assistant open it goes to the
+ *     assistant, and pressed again in the assistant it closes it.
+ *
+ * **With `NEXT_PUBLIC_SHELL_CHAT` on, the activity control leaves this bar**
+ * for the chat bar at the foot of the page (D99, `ChatBar.tsx`).
  *
  * Anything may open the bar with words already in it:
  * `window.dispatchEvent(new CustomEvent(OPEN_COMMAND_BAR, { detail: { query } }))`.
@@ -59,6 +65,9 @@ import { useAccess } from "@/components/AccessProvider";
 import { BarAccount } from "@/components/AccountSwitcher";
 import { visibleSections } from "@/lib/nav";
 import { ActivityControl } from "./ActivityControl";
+import { assistantState, closeAssistant, focusAssistant } from "./assistant";
+import { FOCUS_CHAT_BAR, type FocusChatBarDetail } from "./ChatBar";
+import { shellChatOn } from "./chatFlag";
 import { CommandBar } from "./CommandBar";
 import { shellDockOn } from "./dockFlag";
 import { focusPageFilter, pageFilterTarget } from "./pageFilter";
@@ -95,14 +104,50 @@ export function ShellFrame({
     setOpen(true);
   }, []);
 
+  // D99: the chat bar's key. Read once, as the flags below are.
+  const [chatOn] = useState(() => shellChatOn());
+  // D100: with the chat bar on, a desktop has ONE field, at the foot of the
+  // page. ⌘K, `/` and "search everywhere for …" put the cursor there with
+  // the results open. While the assistant is open the bar is hidden, so the
+  // modal answers instead. It runs the same engine (`useBarResults`).
+  const unified = chatOn && bar;
+  const search = useCallback(
+    (query: string) => {
+      if (unified && !assistantState().open) {
+        window.dispatchEvent(
+          new CustomEvent<FocusChatBarDetail>(FOCUS_CHAT_BAR, { detail: { query, results: true } }),
+        );
+        return;
+      }
+      openWith(query);
+    },
+    [unified, openWith],
+  );
+
   // ── The one listener ──────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         e.stopImmediatePropagation();
+        if (unified && !assistantState().open) {
+          search("");
+          return;
+        }
         setSeed("");
         setOpen((o) => !o);
+        return;
+      }
+      if (chatOn && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "j" || e.key === "J")) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!assistantState().open) {
+          window.dispatchEvent(new Event(FOCUS_CHAT_BAR));
+          return;
+        }
+        const inside = (e.target as HTMLElement | null)?.closest?.("[data-assistant]");
+        if (inside) closeAssistant();
+        else focusAssistant();
         return;
       }
       if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
@@ -111,18 +156,18 @@ export function ShellFrame({
         // The page's filter when it has one (opened first if it is closed),
         // the command bar when it has none.
         if (pageFilterTarget()) void focusPageFilter();
-        else openWith("");
+        else search("");
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [openWith]);
+  }, [chatOn, unified, search]);
 
   useEffect(() => {
-    const onOpen = (e: Event) => openWith((e as CustomEvent<{ query?: string }>).detail?.query ?? "");
+    const onOpen = (e: Event) => search((e as CustomEvent<{ query?: string }>).detail?.query ?? "");
     window.addEventListener(OPEN_COMMAND_BAR, onOpen);
     return () => window.removeEventListener(OPEN_COMMAND_BAR, onOpen);
-  }, [openWith]);
+  }, [search]);
 
   const pathname = usePathname() ?? "/";
   const { access, loading } = useAccess();
@@ -149,9 +194,10 @@ export function ShellFrame({
         <ShellBarRow
           here={here}
           onOpen={() => openWith("")}
+          search={!unified}
           lead={lead}
           bell={dockOn ? <ShellBell /> : null}
-          activity={<ActivityControl />}
+          activity={chatOn ? null : <ActivityControl />}
           account={<BarAccount />}
         />
       ) : null}
@@ -189,6 +235,7 @@ function useShortcutLabel(): string {
 export function ShellBarRow({
   here,
   onOpen,
+  search = true,
   lead,
   bell,
   activity,
@@ -197,6 +244,11 @@ export function ShellBarRow({
   /** The command bar's scope chip, "in <App>". Its only use of the app. */
   here: { label: string; icon: string } | null;
   onOpen: () => void;
+  /**
+   * Whether the row draws the search field. D100: with the chat bar on, the
+   * one field is at the foot of the page, and this row holds none.
+   */
+  search?: boolean;
   lead?: ReactNode;
   /** The shell's one bell (NS-6), before the activity control. */
   bell?: ReactNode;
@@ -217,7 +269,9 @@ export function ShellBarRow({
       <div aria-hidden className="min-w-0 flex-1 basis-0" />
 
       {/* A fake field, on purpose: it looks like the place to type, and a
-          press opens the real one. Every member reads it as "search here". */}
+          press opens the real one. Every member reads it as "search here".
+          D100: none with the chat bar on, which is the one field. */}
+      {search ? (
       <button
         type="button"
         onClick={onOpen}
@@ -236,6 +290,7 @@ export function ShellBarRow({
           {shortcut}
         </kbd>
       </button>
+      ) : null}
 
       {/* The shell's own controls, the same on every page: the bell, the
           activity control, then the account. An app's tools sit at the

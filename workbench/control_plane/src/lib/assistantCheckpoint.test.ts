@@ -120,7 +120,7 @@ describe("route.ts wires the agent into the live path only", () => {
 
 describe("checkpointAgent", () => {
   it("claims no author for a room address", () => {
-    for (const message of ["@sales draft the reply", "  @sales-assistant hi", "@crm.bot"]) {
+    for (const message of ["@crm draft the reply", "  @crm-assistant hi", "@crm.bot"]) {
       expect(checkpointAgent("projects-assistant", message)).toBeUndefined();
       const row = assistantCheckpointRow({
         ...BASE, agentName: checkpointAgent("projects-assistant", message),

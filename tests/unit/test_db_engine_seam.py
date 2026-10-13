@@ -1038,6 +1038,44 @@ class TestThePoolCeilingFitsThePoolerInFront:
             "to no organization."
         )
 
+    #: The headroom of the WHOLE database once the MCP edge runs beside the
+    #: gateway (WS-55 EA-10, orchestrator decision 2026-10-13). It serves a
+    #: migration run and the backup job at the same time. An ad-hoc `psql`
+    #: waits while both run.
+    HEADROOM_WITH_EDGE = 2
+
+    #: The edge pins its pool in the env table of this spec section, and this
+    #: test reads it from there, so the spec and the fence hold one value.
+    EDGE_SPEC = (Path(__file__).resolve().parents[2]
+                 / "project-docs/specs/external_agent_access.md")
+
+    @classmethod
+    def _edge_pin(cls, name: str) -> int:
+        text = cls.EDGE_SPEC.read_text(encoding="utf-8")
+        section = text[text.index("### 15.3 EA-10 pins"):text.index("## 16.")]
+        found = re.findall(rf"^\| `{name}` \| `(\d+)`", section, re.MULTILINE)
+        assert len(found) == 1, f"§15.3 must pin {name} exactly once: {found}"
+        return int(found[0])
+
+    def test_the_gateway_and_the_mcp_edge_fit_the_pooler_together(self):
+        """WS-55 EA-10. The edge (`acb-agent-edge`) is a SECOND process on the
+        same session pooler. Its env file pins its async pool, and it never
+        builds the sync engine (tests/unit/test_agent_edge_deploy.py). So the
+        database sees the gateway's two engines plus the edge's one pool."""
+        from acb_common.settings import Settings
+
+        s = Settings()
+        gateway = (s.db_pool_size + s.db_max_overflow
+                   + s.db_sync_pool_size + s.db_sync_max_overflow)
+        edge = self._edge_pin("DB_POOL_SIZE") + self._edge_pin("DB_MAX_OVERFLOW")
+        assert edge >= 1, "the edge needs a connection for the token lookup"
+        assert gateway + edge <= self.POOLER_SESSION_CAP - self.HEADROOM_WITH_EDGE, (
+            f"the gateway may open {gateway} and the MCP edge {edge}, so "
+            f"{gateway + edge} of the pooler's {self.POOLER_SESSION_CAP}. "
+            f"{self.HEADROOM_WITH_EDGE} must stay free for a migration and the "
+            "backup job. Take the slot from somewhere else, or ask the owner."
+        )
+
     def test_the_sync_engine_takes_its_bounded_pool(self):
         """The sync ``acb_graph`` engine must read the budget, not the defaults.
 

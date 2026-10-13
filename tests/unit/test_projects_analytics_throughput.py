@@ -587,9 +587,17 @@ class TestTheRoutePinsItsScope:
         from gateway.routes.projects.analytics import history_where
 
         vis = SimpleNamespace(unrestricted=True, agent=None)
+        # H-304: the unrestricted clause has the grant arm over the tenant's
+        # open (not sealed) projects, and the assignee arm.
         assert history_where("t.project_id = CAST(:pid AS uuid)", vis) == (
             "t.project_id = CAST(:pid AS uuid)"
-            " AND (t.organization_id = CAST(:vis_org AS uuid))"
+            " AND ((t.organization_id = CAST(:vis_org AS uuid)"
+            " AND (t.project_id IN (\nSELECT id FROM pm_projects\n"
+            "WHERE organization_id = CAST(:vis_org AS uuid)\n"
+            "  AND sealed_at IS NULL\n)"
+            "      OR EXISTS (SELECT 1 FROM pm_task_assignees a"
+            "                 WHERE a.task_id = t.id"
+            "                   AND lower(a.assignee) = :vis_email))))"
             " AND (NOT EXISTS (SELECT 1 FROM pm_task_statuses s_triage"
             " WHERE s_triage.id = t.status_id AND s_triage.category = 'triage'))"
         )

@@ -1233,6 +1233,52 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
                 )
 
 
+#: The CRM record write tools that Mirror mode takes from a run (WS-53
+#: CRM-C7 item 4). Zoho owns the records there, so each would answer 409.
+#: ``log_activity`` stays: a Metorite-only note saves in Mirror mode (CRM-Z6).
+MIRROR_RECORD_WRITES: frozenset[str] = frozenset({
+    "create_lead", "update_deal_status", "convert_lead",
+})
+
+
+async def _drop_mirror_record_writes(
+    agents: list[Any], *, no_egress: bool = False,
+) -> None:
+    """Take the CRM record writes from this run's agents in Mirror mode.
+
+    It runs at assembly, after :func:`_apply_own_tool_scope`, and only for an
+    agent that holds one of :data:`MIRROR_RECORD_WRITES`. It reads
+    ``GET /crm/mode`` as the run's member (``acb_skills.crm_tools.crm_mode``),
+    never a request field. If the read fails, the tools stay, and the 409
+    relay of the write tools is the fallback. A change in place holds for
+    this run only (:func:`_own_tool_pools`).
+
+    A ``no_egress`` run (H-236) reads nothing: the egress control drops the
+    three writes there anyway (each says ``open_world=True``), and a covered
+    run sends no request that it does not need.
+    """
+    if no_egress:
+        return
+    held = {
+        _tool_name(t)
+        for agent in agents for _attr, pool in _own_tool_pools(agent) for t in pool
+    }
+    if not held & MIRROR_RECORD_WRITES:
+        return
+    try:
+        from acb_skills.crm_tools import crm_mode
+        mode = await crm_mode()
+    except Exception as exc:  # the 409 relay of the write tools is the fallback
+        _log.info("executor.crm_mode_unread", error=str(exc)[:200])
+        return
+    if mode == "mirror":
+        _drop_own_tools(agents, MIRROR_RECORD_WRITES)
+        _log.info(
+            "executor.crm_mirror_writes_dropped",
+            tools=sorted(held & MIRROR_RECORD_WRITES),
+        )
+
+
 def _whatsapp_withheld() -> frozenset[str]:
     """The tools a WhatsApp run does not get, or nothing outside one (WAC-10a).
 
@@ -1483,6 +1529,16 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     try:
         from acb_skills.history_tools import query_history  # noqa: PLC0415
         _all_tools = _all_tools + [query_history]
+    except ImportError:
+        pass
+
+    # CRM reads (WS-53 CRM-C7) — the twelve read tools of the ``crm`` family.
+    # Each one reads a ``/crm`` route as the member, so the gateway's kill
+    # switch, ``feature:crm`` and access rule decide. A scoped agent gets
+    # them when its tool_scope names them, as with query_history.
+    try:
+        from acb_skills.crm_tools import CRM_TOOLS
+        _all_tools = [*_all_tools, *CRM_TOOLS]
     except ImportError:
         pass
 

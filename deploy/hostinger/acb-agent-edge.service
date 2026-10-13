@@ -1,0 +1,50 @@
+[Unit]
+Description=Metorite agent edge (MCP for outside agents, WS-55)
+# Spec: project-docs/specs/external_agent_access.md §15.3 EA-10a.
+#
+# The public door for outside agents. Caddy proxies mcp.metorite.com to this
+# unit on loopback. The edge calls the gateway on loopback with a signed
+# request (spec §10.1), so it needs the gateway, but a gateway restart must
+# not restart it. So this unit uses After= and no Requires=.
+#
+# ⚠️ The deploy installs this file and starts NOTHING. scripts/vps_apply.sh
+# restarts the edge only when the unit is ENABLED. Enabling it is an owner
+# act (gate `deploy`), after the edge env file below exists and the
+# pre-enable check of spec §15.3 passes.
+After=network-online.target acb-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ── The identity (EA-10 fix round 1, P1) ──────────────────────────────────
+# The edge does NOT run as acb. Every acb file at 0600 is then closed to it
+# by plain file permissions: the root .env, each .env.bak-<stamp> and
+# .env-edit.* copy beside it, and any other secret that acb owns. A path
+# sandbox cannot do that alone, because InaccessiblePaths takes no glob.
+# DynamicUser gives the unit a fresh uid at each start, with no home and no
+# file of its own on the box. The name below only labels it. A unit with no
+# User= reads as a ROOT unit to tests/unit/test_root_units_root_owned.py.
+DynamicUser=yes
+User=acb-agent-edge
+# systemd reads EnvironmentFile as root, before it drops to the dynamic
+# user. So the edge env file stays owned by acb at 0600, and the edge
+# process itself can never open it.
+EnvironmentFile=/opt/acb/app/apps/services/agent_edge/.env
+# Settings reads env_file=".env" from the working directory. The edge process
+# cannot read its own env file (above), and pydantic raises on a .env it
+# cannot open. So the working directory is an EMPTY runtime directory that
+# the unit owns: Settings finds no .env there and reads the process env,
+# which systemd filled from EnvironmentFile. It is never the checkout root,
+# where .env holds the internal bearer.
+RuntimeDirectory=acb-agent-edge
+WorkingDirectory=/run/acb-agent-edge
+Environment=PATH=/opt/acb/app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+# The venv binary, not `uv run`: `uv run` syncs the venv, and the sandbox
+# makes the venv read-only. 8091 is free (the Customer Console holds 8090).
+# uv sync installs agent-edge into the venv, so the import needs no cwd.
+ExecStart=/opt/acb/app/.venv/bin/uvicorn agent_edge.app:app --host 127.0.0.1 --port 8091
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
