@@ -5193,6 +5193,86 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/integrations_console.md` §7.2 (IN-4) · R6
 - **Added:** 2026-10-12 · IN-4
 
+### H-302 · Every page mounts twice on a cold load (OrgLinkGate's Suspense fallback) · [AGENT]
+- **Check:** in `workbench/control_plane/e2e/shell-bar.spec.ts`, remove
+  `.fixme` from "a cold load of /tasks mounts the app bar once". Run that
+  test. "Expected: 1, Received: 2" means this entry is open.
+- **Cause.** `OrgLinkGate` wraps every page in
+  `<Suspense fallback={<>{children}</>}>`
+  (`workbench/control_plane/src/components/OrgLinkGate.tsx:168`). On a cold
+  load, React draws the fallback copy of the page. Then it throws that copy
+  away and draws the real one. The title bar flickers, and the first copy
+  loses its state and its requests.
+- **Measured on a production build** (2026-10-12, `next build` and
+  `next start`, a minted session, stubbed APIs, a fresh context per run).
+  "Empty main" is the time from when `<main>` appears to when it gets
+  content. The sidebar draws at the same moment as `<main>`.
+
+  | Fallback | Page | CPU | Empty main | First paint to app bar | Mounts |
+  |---|---|---|---|---|---|
+  | page (today) | /tasks | 1× | 0 ms | 429 ms | 2, the swap 50 ms later |
+  | page (today) | /projects | 1× | 0 ms | 466 ms | 1 |
+  | page (today) | /tasks | 4× | 0 ms | 2582 ms | 2, the swap 620 ms later |
+  | `null` | /tasks | 1× | 310 ms | 715 ms | 1 |
+  | `null` | /projects | 1× | 304 ms | 736 ms | 1 |
+  | `null` | /tasks | 4× | 1099 ms | 3800 ms | 1 |
+  | `null` | /projects | 4× | 381 ms | 3258 ms | 1 |
+
+- **What suspends is not known.** In production, `useSearchParams` does not
+  suspend on the client. Its `use()` call runs only when `NODE_ENV` is not
+  production (`next/dist/client/components/navigation.js:118`). The boundary
+  still shows its fallback, so something else in the subtree suspends. The
+  page's own lazy chunk is a likely suspect. The steady 300 ms at 1× matches
+  the 300 ms reveal throttle of React's Suspense.
+- **Refused fixes.**
+  1. `fallback={null}` removes the second mount. It leaves `<main>` empty for
+     300 ms and more, and the content arrives about 290 ms later than today.
+     The orchestrator refused it on 2026-10-12.
+  2. A param lifted into state removes the Suspense. An in-app `?org=` link
+     then mounts the page as the wrong account for one commit. The review of
+     2026-10-10 refused it.
+- **An idea that nobody has tested.** Read `window.location.search` through
+  `useSyncExternalStore`, and remove the Suspense. The gate does not render
+  on the server, so the first client render sees the correct `org`. ⚠️ An
+  in-app navigation to a `?org=` link fires no event that this store hears,
+  so it needs its own subscription. Without one, that link skips the gate.
+- **Do this:** find the suspender first, for example with the React profiler
+  on a production build. Then fix it with no added blank in `<main>`, and
+  remove the `fixme`.
+- **Done when:** the suspender is known, a fix lands that adds no blank, and
+  the cold-load test runs without `fixme`.
+- **Authority:** `specs/saas_multitenancy.md` MT-1k "Org-aware links" ·
+  `navigation_shell.md` §5.2
+- **Added:** 2026-10-12 · shell follow-ups of #918
+
+### H-303 · Put the MCP edge signing key on both units, and strip identity headers at Caddy · [OWNER]
+- **Check:** two parts. This entry is done only when both pass.
+  1. `grep -cE "header_up -X-(User-Email|User-Role|Actor-Via)" deploy/hostinger/caddy/Caddyfile`
+     → a count below 3 means the strip is open.
+  2. `ssh metorite "grep -c '^AGENT_EDGE_SIGNING_KEY=.' /opt/acb/app/.env"` → 0 means the
+     gateway has no key. The command prints no value.
+- **Why.** WS-55 EA-3 makes the MCP edge sign each call to the gateway with an HMAC (spec
+  §10.1). Until both units hold the key, the gateway refuses every agent call, and the feature
+  stays inert. The Caddy block of `api.metorite.com` sends `X-User-Email`, `X-User-Role` and
+  `X-Actor-Via` from the internet to the gateway. No entry carried that strip before.
+- **Do this (owner, EA-10):**
+  1. Make one random key of at least 32 bytes. It must differ from `GATEWAY_INTERNAL_TOKEN`
+     and from `LITELLM_MASTER_KEY`.
+  2. Set it as `AGENT_EDGE_SIGNING_KEY` in the env of `acb-gateway` and of the edge unit.
+     Restart both units.
+  3. Confirm that no internal caller reaches the gateway through `api.metorite.com`. The strip
+     would break such a caller.
+  4. Add one `header_up -<name>` line for each of the three headers to the `reverse_proxy`
+     of `api.metorite.com`.
+  5. Decide in EA-10 if Caddy strips `X-Agent-*` too. The edge calls the gateway on loopback,
+     so it never passes Caddy.
+- **Gate.** The key is an `env-write` act, and the Caddyfile is under `deploy/`. D97 makes
+  both of them owner gates. Do them after EA-3a merges and before the flag turns on.
+- **Authority:** `specs/external_agent_access.md` §10.1 and §15 EA-10 · `work_plan.md` WS-55 ·
+  D97
+- **Added:** 2026-10-12 · branch `feat/ws55-ea3-mcp-read-tools`. Renumbered from H-301 to H-302, then to H-303, on 2026-10-13, because
+  `origin/main` took H-301 and then H-302. H-303 was free on `origin/main` and in each open pull request.
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

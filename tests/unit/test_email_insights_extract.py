@@ -200,15 +200,28 @@ def test_parse_amount_is_linear_on_a_long_text(make: Callable[[int], str]) -> No
     assert_linear(lambda k: partial(X.parse_amount, make(k)), 25000)
 
 
-def test_a_long_claim_never_reaches_the_parser() -> None:
+def test_a_long_claim_never_reaches_the_parser(monkeypatch: pytest.MonkeyPatch) -> None:
     """Review round 2 (P3): a claim of 100k characters returns at once. Code
-    refuses a claim longer than a quote before it parses it."""
+    refuses a claim longer than a quote before it parses it.
+
+    The fence is that the parser never sees the claim, not how many seconds
+    the check takes. Before round 2, a long claim took 26 s. The clock bound
+    stays only to catch that, so it is generous for a loaded CI runner."""
     claim = ("1 Oct 2026 Friday " * 6000)[:100_000]
+    seen: list[int] = []
+    real = X.parse_due
+
+    def _spy(text: str) -> Any:
+        seen.append(len(text))
+        return real(text)
+
+    monkeypatch.setattr(X, "parse_due", _spy)
     start = time.perf_counter()
     (fact,) = _one(due_on=claim).facts
-    # 0.5 s leaves room for a slow CI runner. Before round 2, a long claim took 26 s.
-    assert time.perf_counter() - start < 0.5
+    assert time.perf_counter() - start < 5.0
     assert fact.due_on is None
+    # The parser read the quote, and never the claim.
+    assert seen and max(seen) <= X.CAPS["quote"], seen
 
 
 def test_a_claim_longer_than_a_quote_stores_no_date() -> None:

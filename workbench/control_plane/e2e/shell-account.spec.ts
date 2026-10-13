@@ -114,6 +114,39 @@ const foot = (page: Page) => aside(page).locator("[data-metorite-foot]");
 const metorite = (page: Page) => aside(page).getByRole("button", { name: "Metorite settings" });
 const metoriteMenu = (page: Page) => page.getByRole("dialog", { name: "Metorite" });
 const box = async (l: ReturnType<Page["locator"]>) => (await l.boundingBox())!;
+type Loc = ReturnType<Page["locator"]>;
+
+/** The outline a focused element draws, as one comparable string. */
+const ringOf = (l: Loc) =>
+  l.evaluate((el) => {
+    const s = getComputedStyle(el);
+    return JSON.stringify({ style: s.outlineStyle, width: s.outlineWidth, color: s.outlineColor, offset: s.outlineOffset });
+  });
+
+/**
+ * The ring, once it has settled. Controls ease their outline in
+ * (`tech-transition`, the control state layer), so a first frame reads a
+ * value between two rings. Read it only once two reads 150ms apart agree.
+ */
+async function settledRing(page: Page, l: Loc) {
+  let last = "";
+  for (let i = 0; i < 30; i++) {
+    const now = await ringOf(l);
+    if (now === last) return JSON.parse(now) as Record<string, string>;
+    last = now;
+    await page.waitForTimeout(150);
+  }
+  throw new Error(`the ring never settled: ${last}`);
+}
+
+/** Focus from the keyboard, so `:focus-visible` matches. */
+async function keyFocusOn(page: Page, l: Loc) {
+  await l.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(l).toBeFocused();
+  expect(await l.evaluate((el) => el.matches(":focus-visible"))).toBe(true);
+}
 
 test.describe("the top-right account widget", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
@@ -387,32 +420,8 @@ test.describe("the sidebar foot is the Metorite menu", () => {
     await flags(page);
     await stub(page);
     await page.goto("/settings/appearance");
-    const ring = (l: ReturnType<Page["locator"]>) =>
-      l.evaluate((el) => {
-        const s = getComputedStyle(el);
-        return JSON.stringify({ style: s.outlineStyle, width: s.outlineWidth, color: s.outlineColor, offset: s.outlineOffset });
-      });
-    // Both ease their outline in (`tech-transition`, the control state
-    // layer), so a first frame reads a value between two rings. Read each one
-    // only once two reads 150ms apart agree.
-    const settled = async (l: ReturnType<Page["locator"]>) => {
-      let last = "";
-      for (let i = 0; i < 30; i++) {
-        const now = await ring(l);
-        if (now === last) return JSON.parse(now) as Record<string, string>;
-        last = now;
-        await page.waitForTimeout(150);
-      }
-      throw new Error(`the ring never settled: ${last}`);
-    };
-    // From the keyboard, so `:focus-visible` matches.
-    const keyFocus = async (l: ReturnType<Page["locator"]>) => {
-      await l.focus();
-      await page.keyboard.press("Shift+Tab");
-      await page.keyboard.press("Tab");
-      await expect(l).toBeFocused();
-      expect(await l.evaluate((el) => el.matches(":focus-visible"))).toBe(true);
-    };
+    const settled = (l: Loc) => settledRing(page, l);
+    const keyFocus = (l: Loc) => keyFocusOn(page, l);
     await keyFocus(trigger(page));
     const house = await settled(trigger(page));
     expect(house.style).toBe("solid");
@@ -456,6 +465,44 @@ test.describe("the sidebar foot is the Metorite menu", () => {
     await page.keyboard.press("Escape");
     await expect(m).toHaveCount(0);
     await expect(metorite(page)).toBeFocused();
+  });
+
+  // Owner follow-up of #918 (2026-10-12): "All apps" and "Add apps" wear
+  // the same ring as the Metorite foot, in the open rail, in the folded rail
+  // and in the phone drawer. Each button gets `cc-link`. Without it, the
+  // button shows the browser's own ring, and this fails.
+  test("All apps and Add apps wear the foot's focus ring, open and in the phone drawer", async ({ page }) => {
+    await flags(page);
+    await stub(page);
+    await page.goto("/settings/appearance");
+    await keyFocusOn(page, metorite(page));
+    const house = await settledRing(page, metorite(page));
+    expect(house.style).toBe("solid");
+    for (const l of [aside(page).getByRole("button", { name: "All apps" }), aside(page).locator("[data-nav-add-apps] button")]) {
+      await keyFocusOn(page, l);
+      expect(await settledRing(page, l)).toEqual(house);
+    }
+    // The phone drawer, at the same page: the frame follows the width.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "Menu" }).click();
+    for (const l of [page.locator("button[data-nav-add-apps]"), page.locator("button[data-nav-all-apps]")]) {
+      await expect(l).toBeVisible();
+      await keyFocusOn(page, l);
+      expect(await settledRing(page, l)).toEqual(house);
+    }
+  });
+
+  test("folded: All apps and Add apps wear the foot's focus ring", async ({ page }) => {
+    await flags(page, { extra: { "cc-sidebar-collapsed": "1" } });
+    await stub(page);
+    await page.goto("/settings/appearance");
+    await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
+    await keyFocusOn(page, metorite(page));
+    const house = await settledRing(page, metorite(page));
+    for (const l of [aside(page).getByRole("button", { name: "All apps" }), aside(page).locator("[data-nav-add-apps] button")]) {
+      await keyFocusOn(page, l);
+      expect(await settledRing(page, l)).toEqual(house);
+    }
   });
 
   test("Change my layout asks the first sign-in question again", async ({ page }) => {

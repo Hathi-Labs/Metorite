@@ -48,7 +48,19 @@ interface FindGroup {
   items: FindItem[];
 }
 
-const FIND_ICONS: Record<string, string> = { task: "CircleCheck", email: "Mail", person: "User" };
+/**
+ * The icon of each kind of Find row. The CRM's four (WS-53 CRM-X2) are the
+ * icons of their rows in the CRM rail (`app/crm/lib/views.ts`).
+ */
+export const FIND_ICONS: Record<string, string> = {
+  task: "CircleCheck",
+  email: "Mail",
+  person: "User",
+  lead: "Target",
+  deal: "Handshake",
+  contact: "Contact",
+  company: "Building2",
+};
 /** Tier 2 waits for a real pause on a sentence (§6.3: two words, 900 ms). */
 const INTENT_PAUSE_MS = 900;
 
