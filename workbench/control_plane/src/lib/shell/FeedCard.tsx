@@ -25,14 +25,24 @@
  * needs key (`joinNeedsPoll`) only while its last read held a needs view
  * (`coversNeeds`), because only then did `fetchFeed` write that key.
  *
- * Fences: `feed.test.ts` and `myDayPage.test.ts`.
+ * **The life of a card** (WS-58 MD-2b, `feedState.ts`). The column is the
+ * ONLY seen observer, and the bell never observes. A tap act that succeeds
+ * also records `acted`. The menu snoozes, dismisses or marks a card "Not
+ * useful" through `ContextMenu`, the one menu, and it hides the card through
+ * an overlay of its own. It never sets a needs mark, so the bell's count does
+ * not change. The order holds during a visit, and new cards wait behind the
+ * "N new" pill (§7 rule 4). Later draws folded, with its count.
+ *
+ * Fences: `feed.test.ts`, `feedState.test.ts` and `myDayPage.test.ts`.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
-import Icon from "@/components/Icon";
+import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { useToast } from "@/components/ui/Toast";
 import { accentForHue } from "@/lib/statusAccent";
 import { read } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -44,9 +54,12 @@ import {
   type FeedAct,
   type FeedAnswer,
   type FeedCard as Card,
+  type Visit,
   actLeavesCard,
   actRows,
   actSpent,
+  cappedLinks,
+  cardHidden,
   cardTime,
   coversNeeds,
   drawnActs,
@@ -61,8 +74,26 @@ import {
   overlayDrop,
   overlayExpired,
   overlayNextEnd,
+  sendable,
   sourceLine,
+  startVisit,
+  stateMark,
+  visitCards,
 } from "./feed";
+import {
+  MENU_CHOICES,
+  SEEN_FLUSH_MS,
+  SEEN_RATIO,
+  type MenuChoice,
+  type MenuOverlay,
+  type StateQueue,
+  createDwell,
+  createStateQueue,
+  menuHidden,
+  menuSettle,
+  runMenuAct,
+  stateItem,
+} from "./feedState";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
 import { carryNeeds, needsKey, runAct } from "./needs";
@@ -82,6 +113,9 @@ const DANGER = accentForHue("red");
 /** The empty overlay. Never written: each change makes a new map. */
 const NO_ACTS: ActOverlay = new Map();
 
+/** The empty overlay of the menu acts. Never written either. */
+const NO_MENU: MenuOverlay = new Map();
+
 export interface Feed {
   answer: FeedAnswer | undefined;
   loading: boolean;
@@ -92,6 +126,14 @@ export interface Feed {
   /** Each needs row's error, from the same store. */
   errors: Readonly<Record<string, string>>;
   act: (card: Card, act: FeedAct, from: HTMLElement | null) => void;
+  /** The cards that a menu act hid (`menuHidden`), by `signal_id`. Never a needs row. */
+  hidden: ReadonlySet<string>;
+  /** The error line of a failed menu act, by `signal_id`. */
+  menuErrors: Readonly<Record<string, string>>;
+  /** Run one menu act (`runMenuAct`). */
+  menu: (card: Card, choice: MenuChoice) => void;
+  /** The column saw this card (§6.2). Only the column calls it. */
+  seen: (card: Card) => void;
 }
 
 /**
@@ -154,14 +196,67 @@ export function useFeed(enabled: boolean): Feed {
 
   const marked = useMemo(() => feedHiddenRows(needsMarks, overlay, fetchedAt), [needsMarks, overlay, fetchedAt]);
 
+  // The queue of the seen observer and of `acted` (`feedState.ts`). One POST
+  // each 10 s, and the rest on `pagehide` and when the column leaves.
+  const queueRef = useRef<StateQueue | null>(null);
+  if (queueRef.current === null) queueRef.current = createStateQueue();
+  useEffect(() => (enabled ? sendStateQueue(queueRef.current!) : undefined), [enabled]);
+
   const act = useCallback(
     (card: Card, a: FeedAct, from: HTMLElement | null) => {
       void runFeedAct(card, a, from, {
         held: () => feedHiddenRows(actsSnapshot().removed, overlayRef.current, fetchedRef.current),
         overlay: changeOverlay,
+        acted: () => {
+          if (sendable(card)) queueRef.current?.add(stateItem(card, "acted"));
+        },
       });
     },
     [changeOverlay],
+  );
+
+  const seen = useCallback((card: Card) => {
+    if (sendable(card)) queueRef.current?.see(stateItem(card, "seen"));
+  }, []);
+
+  // The overlay of the menu acts. It is NOT `needsActs`: the bell and the
+  // sidebar counts never change for a menu act (§6.3, §6.8 item 9).
+  const menuRef = useRef<MenuOverlay>(NO_MENU);
+  const [menuOverlay, setMenuOverlay] = useState<MenuOverlay>(NO_MENU);
+  const changeMenu = useCallback((change: (o: MenuOverlay) => MenuOverlay) => {
+    const next = change(menuRef.current);
+    if (next === menuRef.current) return;
+    menuRef.current = next;
+    setMenuOverlay(next);
+  }, []);
+  // A feed answer fetched after the write ends the hide of that card.
+  useEffect(() => changeMenu((o) => menuSettle(o, fetchedAt)), [fetchedAt, changeMenu]);
+  const hidden = useMemo(() => menuHidden(menuOverlay, fetchedAt), [menuOverlay, fetchedAt]);
+
+  const [menuErrors, setMenuErrors] = useState<Readonly<Record<string, string>>>({});
+  const setMenuError = useCallback((id: string, message: string | null) => {
+    setMenuErrors((now) => {
+      if (!message && !(id in now)) return now;
+      const next = { ...now };
+      if (message) next[id] = message;
+      else delete next[id];
+      return next;
+    });
+  }, []);
+
+  const toast = useToast();
+  const menu = useCallback(
+    (card: Card, choice: MenuChoice) => {
+      void runMenuAct(card, choice, {
+        overlay: changeMenu,
+        refresh,
+        toast: (spec) => {
+          toast.show(spec);
+        },
+        setError: setMenuError,
+      });
+    },
+    [changeMenu, refresh, toast, setMenuError],
   );
 
   return {
@@ -172,6 +267,25 @@ export function useFeed(enabled: boolean): Feed {
     marked,
     errors,
     act,
+    hidden,
+    menuErrors,
+    menu,
+    seen,
+  };
+}
+
+/**
+ * Send the state queue: one batch each `SEEN_FLUSH_MS`, and every item on
+ * `pagehide` and at the stop, with `keepalive`. Returns the stop.
+ */
+export function sendStateQueue(queue: StateQueue): () => void {
+  const tick = window.setInterval(() => void queue.flush(), SEEN_FLUSH_MS);
+  const hide = () => queue.drain();
+  window.addEventListener("pagehide", hide);
+  return () => {
+    window.clearInterval(tick);
+    window.removeEventListener("pagehide", hide);
+    queue.drain();
   };
 }
 
@@ -201,6 +315,8 @@ export interface FeedActDeps {
   held: () => ReadonlySet<string>;
   /** Change the overlay of the feed's own acts. */
   overlay: (change: (o: ActOverlay) => ActOverlay) => void;
+  /** Record `acted` for the card (§6.8 item 4). It runs only after a success. */
+  acted?: () => void;
   now?: () => number;
 }
 
@@ -216,6 +332,8 @@ export interface FeedActDeps {
  *     the write began ends the overlay.
  *   - A show (Undo, a question answered no) or a failure takes the rows back
  *     out of both.
+ *   - An act that succeeds records `acted` (`deps.acted`, §6.8 item 4). A
+ *     kept or failed act records nothing.
  */
 export async function runFeedAct(
   card: Card,
@@ -251,7 +369,10 @@ export async function runFeedAct(
     },
   };
   const out = await runAct(item, row);
-  if (out === "done") deps.overlay((o) => (rows.every((r) => o.has(r)) ? overlayAdd(o, rows, now()) : o));
+  if (out === "done") {
+    deps.overlay((o) => (rows.every((r) => o.has(r)) ? overlayAdd(o, rows, now()) : o));
+    deps.acted?.();
+  }
   return out;
 }
 
@@ -336,6 +457,75 @@ function useRevealOnScroll(onReveal: () => void, active: boolean) {
   return ref;
 }
 
+/**
+ * The seen observer (§6.2). THE one: only the feed column calls it, and the
+ * bell never does. Each card that the client may write wears
+ * `data-feed-seen`. Half of it in view for 1.5 s on a visible tab is a
+ * sighting (`createDwell`), and `feed.seen` puts it in the queue.
+ */
+function useSeenObserver(feed: Pick<Feed, "answer" | "seen">, active: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const io = useRef<IntersectionObserver | null>(null);
+  const watched = useRef(new Map<Element, string>());
+  const dwell = useRef<ReturnType<typeof createDwell> | null>(null);
+  const latest = useRef(feed);
+  useEffect(() => {
+    latest.current = feed;
+  });
+
+  useEffect(() => {
+    if (!active || typeof IntersectionObserver === "undefined") return;
+    const d = createDwell((id) => {
+      const card = latest.current.answer?.cards.find((c) => c.signal_id === id);
+      if (card) latest.current.seen(card);
+    });
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const id = watched.current.get(e.target);
+          if (!id) continue;
+          if (e.isIntersecting && e.intersectionRatio >= SEEN_RATIO) d.enter(id);
+          else d.leave(id);
+        }
+      },
+      { threshold: [0, SEEN_RATIO, 1] },
+    );
+    const onVisibility = () => d.visibility(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVisibility);
+    dwell.current = d;
+    io.current = observer;
+    const seen = watched.current;
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      observer.disconnect();
+      d.stop();
+      seen.clear();
+      io.current = null;
+      dwell.current = null;
+    };
+  }, [active]);
+
+  // After each render: watch each new card, and forget each card that left.
+  useEffect(() => {
+    const observer = io.current;
+    const root = ref.current;
+    if (!observer || !root) return;
+    for (const [el, id] of [...watched.current]) {
+      if (el.isConnected && root.contains(el)) continue;
+      observer.unobserve(el);
+      watched.current.delete(el);
+      dwell.current?.leave(id);
+    }
+    for (const el of root.querySelectorAll<HTMLElement>("[data-feed-seen]")) {
+      const id = el.dataset.feedSeen;
+      if (!id || watched.current.get(el) === id) continue;
+      watched.current.set(el, id);
+      observer.observe(el);
+    }
+  });
+  return ref;
+}
+
 /** THE column of My Day's feed. */
 export function FeedColumn({
   feed,
@@ -349,12 +539,47 @@ export function FeedColumn({
 }) {
   const [shown, setShown] = useState(FEED_SHOWN);
   const reveal = useCallback(() => setShown((n) => n + FEED_SHOWN), []);
-  const { groups, hidden } = feed.answer
-    ? feedGroups(feed.answer, shown, feed.marked)
+  const [laterOpen, setLaterOpen] = useState(false);
+
+  // The visit (§7 rule 4): it starts with the first answer this column draws,
+  // and it holds each card's place until the member takes the new cards in.
+  const [visit, setVisit] = useState<Visit | null>(null);
+  const current = visit ?? (feed.answer ? startVisit(feed.answer.cards) : null);
+  // The first answer starts the visit: state from the render, as React's
+  // "adjust state while rendering" pattern does it.
+  if (visit === null && current !== null) setVisit(current);
+  const placed = current && feed.answer ? visitCards(current, feed.answer.cards) : { cards: [], fresh: [] };
+  const live = (c: Card) => !feed.hidden.has(c.signal_id) && !cardHidden(c, feed.marked);
+  const fresh = placed.fresh.filter(live).length;
+  const takeNew = () => setVisit(feed.answer ? startVisit(feed.answer.cards) : null);
+
+  const { groups: allGroups, hidden } = feed.answer
+    ? feedGroups(
+        { cards: placed.cards.filter((c) => !feed.hidden.has(c.signal_id)), groups: feed.answer.groups },
+        shown,
+        feed.marked,
+      )
     : { groups: [], hidden: 0 };
+  const groups = allGroups.filter((g) => g.id !== "later");
+  const later = allGroups.find((g) => g.id === "later");
   const sentinel = useRevealOnScroll(reveal, hidden > 0);
   const nowMs = now?.getTime() ?? null;
   const failed = feed.answer ? feedFailedLines(feed.answer.sources) : [];
+  const capped = feed.answer?.capped ?? [];
+  const columnRef = useSeenObserver(feed, feed.answer !== undefined);
+
+  const drawCard = (card: Card) => (
+    <div key={card.signal_id} data-feed-seen={sendable(card) ? card.signal_id : undefined}>
+      <FeedCard
+        card={card}
+        nowMs={nowMs}
+        marked={feed.marked}
+        error={feed.menuErrors[card.signal_id] ?? card.acts.flatMap(actRows).map((r) => feed.errors[r]).find(Boolean)}
+        onAct={(a, from) => feed.act(card, a, from)}
+        onMenu={(choice) => feed.menu(card, choice)}
+      />
+    </div>
+  );
 
   let body: React.ReactNode;
   if (feed.answer === undefined) {
@@ -369,35 +594,39 @@ export function FeedColumn({
         <CardError message="Your day could not load." onRetry={feed.refresh} />
       </div>
     );
-  } else if (groups.length === 0) {
-    body = (
-      <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-4">
-        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${accentForHue("green").soft}`}>
-          <Icon name="Check" size={14} className={accentForHue("green").text} />
-        </span>
-        <span className="text-sm text-muted-foreground">{emptyNeedsLine(failed.length > 0)}</span>
-      </div>
-    );
   } else {
     body = (
       <div className="flex flex-col gap-5">
+        {fresh > 0 ? (
+          // §7 rule 4: a new card never moves the cards under the pointer.
+          // It waits here, and enters on a click or on the next visit.
+          <div className="sticky top-2 z-10 flex justify-center">
+            <Button variant="primary" size="sm" icon="ArrowUp" onClick={takeNew} data-feed-new-pill="">
+              {fresh} new
+            </Button>
+          </div>
+        ) : null}
+        {groups.length === 0 ? (
+          <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-4">
+            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${accentForHue("green").soft}`}>
+              <Icon name="Check" size={14} className={accentForHue("green").text} />
+            </span>
+            <span className="text-sm text-muted-foreground">{emptyNeedsLine(failed.length > 0)}</span>
+          </div>
+        ) : null}
         {groups.map((group) => (
           <div key={group.id} role="group" aria-labelledby={`feed-group-${group.id}`} data-feed-group={group.id}>
             <div id={`feed-group-${group.id}`} className="px-1 pb-2 text-xs font-medium text-muted-foreground">
               {group.label}
             </div>
-            <div className="flex flex-col gap-3">
-              {group.cards.map((card) => (
-                <FeedCard
-                  key={card.signal_id}
-                  card={card}
-                  nowMs={nowMs}
-                  marked={feed.marked}
-                  error={card.acts.flatMap(actRows).map((r) => feed.errors[r]).find(Boolean)}
-                  onAct={(a, from) => feed.act(card, a, from)}
-                />
-              ))}
-            </div>
+            <div className="flex flex-col gap-3">{group.cards.map(drawCard)}</div>
+            {cappedLinks(group, capped).map((link) => (
+              <div key={link.app} className="flex justify-center pt-2">
+                <Button href={link.href} variant="text" size="sm" icon="ArrowRight" data-feed-show-all={link.app}>
+                  {link.label}
+                </Button>
+              </div>
+            ))}
           </div>
         ))}
         {hidden > 0 ? (
@@ -406,9 +635,33 @@ export function FeedColumn({
               Show {Math.min(hidden, FEED_SHOWN)} more
             </Button>
           </div>
-        ) : (
+        ) : null}
+        {later ? (
+          // Later draws folded, with its count (MD-2b).
+          <div role="group" aria-labelledby="feed-group-later" data-feed-group="later">
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={laterOpen ? "ChevronDown" : "ChevronRight"}
+              aria-expanded={laterOpen}
+              aria-controls="feed-later-cards"
+              onClick={() => setLaterOpen((open) => !open)}
+            >
+              <span id="feed-group-later">{later.label}</span>
+              <span className="text-muted-foreground" data-feed-later-count="">
+                {later.cards.length}
+              </span>
+            </Button>
+            {laterOpen ? (
+              <div id="feed-later-cards" className="flex flex-col gap-3 pt-2">
+                {later.cards.map(drawCard)}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {hidden === 0 && groups.length > 0 ? (
           <p className="px-1 text-center text-xs text-muted-foreground">You are caught up.</p>
-        )}
+        ) : null}
       </div>
     );
   }
@@ -416,7 +669,7 @@ export function FeedColumn({
   // A stale feed under a failed refresh keeps its cards, and says so.
   const stale = feed.answer !== undefined && feed.error;
   return (
-    <div data-feed="" data-testid="my-day-feed" className={`flex min-w-0 flex-col gap-3 ${className}`}>
+    <div ref={columnRef} data-feed="" data-testid="my-day-feed" className={`flex min-w-0 flex-col gap-3 ${className}`}>
       {/* Focus lands here when the last act of the feed leaves. */}
       <h2 tabIndex={-1} data-leave-focus="" className="sr-only">
         Your day
@@ -450,9 +703,30 @@ export function FeedColumn({
 /** An id that is safe in `id` and `aria-labelledby`: no spaces, no odd marks. */
 const safeId = (raw: string) => raw.replace(/[^A-Za-z0-9_:-]/g, "-");
 
+/** The menu's items (§4.2 item 6, MD-2b): Snooze and its four choices, then Dismiss and "Not useful". */
+export function cardMenuItems(onMenu: (choice: MenuChoice) => void): CtxItem[] {
+  const item = (c: MenuChoice): CtxItem => ({
+    kind: "item",
+    label: c.label,
+    icon: themedIcon(c.icon),
+    onSelect: () => onMenu(c),
+  });
+  return [
+    { kind: "label", label: "Snooze" },
+    ...MENU_CHOICES.filter((c) => c.action === "snooze").map(item),
+    { kind: "sep" },
+    ...MENU_CHOICES.filter((c) => c.action !== "snooze").map(item),
+  ];
+}
+
 /**
  * One card of the feed (§4.2): the source line, the headline as the door,
- * the why line and the acts. Pure: it draws what it gets.
+ * the why line, the acts and the menu. It draws what it gets. Its one state
+ * is whether its menu is open.
+ *
+ * The source line ends with a dot for a `new` card, and "Updated" or "Still
+ * open" (§6.3 rules 3 and 4). The menu is `ContextMenu`, THE menu, and a card
+ * the client may not write (`sendable`) has none.
  */
 export function FeedCard({
   card,
@@ -460,6 +734,7 @@ export function FeedCard({
   marked,
   error,
   onAct,
+  onMenu,
 }: {
   card: Card;
   /** `null` before the client clock exists: the card then prints no time. */
@@ -468,15 +743,61 @@ export function FeedCard({
   marked?: ReadonlySet<string>;
   error?: string;
   onAct: (act: FeedAct, from: HTMLElement) => void;
+  /** A menu act. With none, the card draws no menu. */
+  onMenu?: (choice: MenuChoice) => void;
 }) {
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
   const time = nowMs === null ? "" : cardTime(card, nowMs);
   const acts = drawnActs(card).filter((a) => !marked || !actSpent(a, marked));
+  const mark = stateMark(card);
+  const withMenu = !!onMenu && sendable(card);
+  const closeMenu = () => {
+    setMenuAt(null);
+    const from = opener.current;
+    const column = from?.closest<HTMLElement>("[data-feed]") ?? null;
+    // Back to the opener. If a menu act took the card away, to the column's heading.
+    requestAnimationFrame(() => {
+      if (from?.isConnected) from.focus();
+      else column?.querySelector<HTMLElement>("[data-leave-focus]")?.focus();
+    });
+  };
   const eyebrow = (
     <span className="flex min-w-0 items-center gap-1.5" data-feed-source="">
       <Icon name={feedAppIcon(card.app)} size={13} className="shrink-0" />
-      <span className="truncate">{sourceLine(card)}</span>
+      <span className="truncate">
+        {sourceLine(card)}
+        {mark ? (
+          <>
+            {" · "}
+            <span className="font-medium text-foreground" data-feed-mark="">
+              {mark}
+            </span>
+          </>
+        ) : null}
+      </span>
+      {card.state === "new" ? (
+        <span role="img" aria-label="New" data-feed-new="" className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+      ) : null}
       {time ? (
         <span className={`ml-auto shrink-0 ${card.kind === "overdue" ? DANGER.text : ""}`}>{time}</span>
+      ) : null}
+      {withMenu ? (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          icon="MoreHorizontal"
+          aria-label={`More for ${card.title}`}
+          aria-haspopup="menu"
+          aria-expanded={menuAt !== null}
+          data-feed-menu=""
+          className={`-my-1 shrink-0 ${time ? "" : "ml-auto"}`}
+          onClick={(e) => {
+            opener.current = e.currentTarget;
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenuAt({ x: Math.max(4, r.right - 200), y: r.bottom + 4 });
+          }}
+        />
       ) : null}
     </span>
   );
@@ -533,6 +854,9 @@ export function FeedCard({
         <p role="alert" className={`px-2 pb-1 text-xs ${DANGER.text}`}>
           {error}
         </p>
+      ) : null}
+      {withMenu && menuAt ? (
+        <ContextMenu x={menuAt.x} y={menuAt.y} autoFocus items={cardMenuItems(onMenu)} onClose={closeMenu} />
       ) : null}
     </HomeCard>
   );

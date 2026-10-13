@@ -18,11 +18,17 @@
  * a needs row, and `runAct` in `needs.ts` runs it. An `open` act is a link.
  * A way this client does not know draws nothing.
  *
- * Fence: `feed.test.ts`.
+ * **The life of a card** (WS-58 MD-2b, §6). The card keeps the five state
+ * fields of MD-2a, so it draws a dot for `new`, "Updated" and "Still open".
+ * A source that failed or stopped at its cap keeps its cards from the last
+ * answer (`carryCards`, §6.1). The order holds during a visit
+ * (`startVisit`, §7 rule 4). `feedState.ts` writes the state.
+ *
+ * Fence: `feed.test.ts` and `feedState.test.ts`.
  */
 import { PROJECTS_CACHE } from "@/app/projects/lib/api";
 import { fmtClock } from "@/app/tasks/lib/utils";
-import { cacheKey, guardedPut } from "@/lib/dataCache";
+import { cacheKey, guardedPut, onClear } from "@/lib/dataCache";
 import { NAV_SECTIONS } from "@/lib/nav";
 
 import { APP_NAMES, appIcon, failedLines } from "./myDay";
@@ -33,6 +39,7 @@ import {
   type NeedsItem,
   type NeedsKind,
   type SourceState,
+  NEEDS_APP_HREF,
   needsKey,
   readFeed,
 } from "./needs";
@@ -89,8 +96,7 @@ export interface FeedCard {
   href: string;
   acts: FeedAct[];
   // The state fields of MD-2a (`my_day_feed.md` §14.1a, §6.8). Optional: an
-  // older gateway sends none, and `readCard` keeps none of them until MD-2b
-  // draws the dot, "Updated" and "Still open".
+  // older gateway sends none. MD-2b draws the dot, "Updated" and "Still open".
   /** `new`, `seen` or `later`. */
   state?: "new" | "seen" | "later";
   /** The card came back because its own facts changed (§6.3 rule 3). */
@@ -157,6 +163,37 @@ function readAct(raw: unknown): FeedAct | null {
   };
 }
 
+/** The three states a shown card can have (§14.1a). */
+const CARD_STATES = new Set(["new", "seen", "later"]);
+
+/** The patterns of the gateway's POST contract (§6.8). */
+export const STATE_FP = /^[0-9a-f]{8,64}$/;
+export const SIGNAL_ID = /^[a-z_]+:[^\s]{1,200}$/;
+
+/**
+ * The state fields of a card, only when each is well formed (MD-2b). A
+ * `state_fp` outside the gateway's pattern is dropped, because one bad item
+ * makes the gateway refuse the whole batch with 422.
+ */
+function readState(c: Record<string, unknown>): Partial<FeedCard> {
+  const out: Partial<FeedCard> = {};
+  if (typeof c.state === "string" && CARD_STATES.has(c.state)) out.state = c.state as FeedCard["state"];
+  if (c.updated === true) out.updated = true;
+  if (c.still_open === true) out.still_open = true;
+  if (typeof c.visits === "number" && Number.isFinite(c.visits)) out.visits = c.visits;
+  if (typeof c.state_fp === "string" && STATE_FP.test(c.state_fp)) out.state_fp = c.state_fp;
+  return out;
+}
+
+/**
+ * Whether the client may write state for this card: it has a `state_fp`, and
+ * its id and fingerprint pass the gateway's patterns. A card that may not
+ * gets no menu, and the seen observer never sends it.
+ */
+export function sendable(card: Pick<FeedCard, "signal_id" | "state_fp">): boolean {
+  return !!card.state_fp && STATE_FP.test(card.state_fp) && SIGNAL_ID.test(card.signal_id);
+}
+
 function readCard(raw: unknown): FeedCard | null {
   const c = raw as Record<string, unknown> | null;
   if (!c || typeof c !== "object") return null;
@@ -174,6 +211,7 @@ function readCard(raw: unknown): FeedCard | null {
     at: str(c.at),
     href: c.href,
     acts: Array.isArray(c.acts) ? c.acts.map(readAct).filter((a): a is FeedAct => a !== null) : [],
+    ...readState(c),
   };
 }
 
@@ -206,6 +244,9 @@ export function readFeedAnswer(raw: unknown): FeedAnswer {
  * When the answer lands, its needs view goes into the needs key, through
  * `guardedPut`: a write that landed during this request, or a needs answer
  * newer than it, keeps the needs entry as it is.
+ *
+ * The cards of a source that failed or stopped at its cap come from the
+ * answer before (`carryCards`, §6.1).
  */
 export async function fetchFeed(limit = FEED_LIMIT): Promise<FeedAnswer> {
   const putNeeds = guardedPut<NeedsFeed>(feedKey(limit), needsKey());
@@ -216,7 +257,129 @@ export async function fetchFeed(limit = FEED_LIMIT): Promise<FeedAnswer> {
   if (!res.ok) throw new Error("Your feed could not load.");
   const answer = readFeedAnswer(await res.json());
   if (answer.needs) putNeeds(answer.needs);
-  return { ...answer, fetchedAt };
+  // A card that a sound answer from after the menu act holds again is back
+  // for real, for example after a snooze ended: the carry may keep it again.
+  for (const c of answer.cards) {
+    const at = noCarry.get(c.signal_id);
+    if (at !== undefined && fetchedAt > at) noCarry.delete(c.signal_id);
+  }
+  const kept = { ...carryCards(lastAnswer.get(limit), answer, noCarry), fetchedAt };
+  lastAnswer.set(limit, kept);
+  return kept;
+}
+
+// ── A failed source keeps its cards (§6.1, MD-2b) ───────────────────────────
+
+/**
+ * The last answer of each limit, the "answer before" of the carry. It is
+ * not the cache entry, because a Projects write drops that entry, and the
+ * re-read after a Done must still keep a failed source's cards. Nothing
+ * reads it as an answer: it only feeds `carryCards`. Memory only, and a new
+ * member starts with none.
+ */
+const lastAnswer = new Map<number, FeedAnswer>();
+
+/**
+ * The cards that a menu act hid (`feedState.ts`), with the time its write
+ * landed. The carry never keeps one, so a snoozed card cannot come back from
+ * the answer before while its source fails. Undo takes the id out again, and
+ * so does an answer fetched after that time that holds the card. Memory only,
+ * for one member.
+ */
+const noCarry = new Map<string, number>();
+
+/**
+ * Stop the carry of this card. A menu act calls it before its write, with no
+ * time, and again with the time its write landed.
+ */
+export function forgetCarry(signalId: string, at = Number.POSITIVE_INFINITY): void {
+  noCarry.set(signalId, at);
+}
+
+/** Let the carry keep this card again: after a failed menu act, or its Undo. */
+export function allowCarry(signalId: string): void {
+  noCarry.delete(signalId);
+}
+
+onClear(() => {
+  noCarry.clear();
+  lastAnswer.clear();
+});
+
+/**
+ * Whether a source may take a card away: it answered `ok`, and it did not
+ * stop at its cap. A card past the cap is unknown, not closed.
+ */
+export function mayRemove(answer: Pick<FeedAnswer, "sources" | "capped">, app: string): boolean {
+  return answer.sources[app as FeedApp] === "ok" && !answer.capped.includes(app as FeedApp);
+}
+
+/**
+ * The answer, with the cards that only a sound answer may take away (§6.1).
+ * A card of the answer before that `next` no longer holds stays, when its
+ * source failed, was absent, or stopped at its cap. Calendar is a source too.
+ * A card in `forget` never stays. The kept cards follow the new ones, and
+ * `groups` counts them.
+ */
+export function carryCards(
+  before: Pick<FeedAnswer, "cards"> | undefined,
+  next: FeedAnswer,
+  forget: { has(signalId: string): boolean } = new Set<string>(),
+): FeedAnswer {
+  if (!before || before.cards.length === 0) return next;
+  const have = new Set(next.cards.map((c) => c.signal_id));
+  const kept = before.cards.filter(
+    (c) => !have.has(c.signal_id) && !forget.has(c.signal_id) && !mayRemove(next, c.app),
+  );
+  if (kept.length === 0) return next;
+  const cards = [...next.cards, ...kept];
+  const order: FeedGroupId[] = next.groups.map((g) => g.id);
+  for (const id of GROUP_ORDER) if (!order.includes(id) && cards.some((c) => c.group === id)) order.push(id);
+  const groups = order
+    .map((id) => ({ id, count: cards.filter((c) => c.group === id).length }))
+    .filter((g) => g.count > 0);
+  return { ...next, cards, groups };
+}
+
+// ── The order holds during a visit (§7 rule 4, MD-2b) ───────────────────────
+
+/**
+ * The place of each card at the start of a visit. A visit is the life of one
+ * mounted feed column. It ends at a click on the "N new" pill, or at a
+ * remount.
+ */
+export interface Visit {
+  readonly place: ReadonlyMap<string, { index: number; group: FeedGroupId }>;
+}
+
+/** A new visit, in the order and the groups of these cards. */
+export function startVisit(cards: readonly FeedCard[]): Visit {
+  const place = new Map<string, { index: number; group: FeedGroupId }>();
+  cards.forEach((c, index) => {
+    if (!place.has(c.signal_id)) place.set(c.signal_id, { index, group: c.group });
+  });
+  return { place };
+}
+
+/**
+ * The cards of a new answer, as the visit draws them. A card that the visit
+ * knows keeps its place and its group, and takes the new content. A card that
+ * the visit does not know waits: it is `fresh`, and the pill counts it. A card
+ * that left the answer goes at once.
+ */
+export function visitCards(visit: Visit, cards: readonly FeedCard[]): { cards: FeedCard[]; fresh: FeedCard[] } {
+  const known: { card: FeedCard; index: number }[] = [];
+  const fresh: FeedCard[] = [];
+  const taken = new Set<string>();
+  for (const card of cards) {
+    if (taken.has(card.signal_id)) continue;
+    taken.add(card.signal_id);
+    const at = visit.place.get(card.signal_id);
+    if (at) known.push({ card: at.group === card.group ? card : { ...card, group: at.group }, index: at.index });
+    else fresh.push(card);
+  }
+  known.sort((a, b) => a.index - b.index);
+  return { cards: known.map((k) => k.card), fresh };
 }
 
 // ── The groups ──────────────────────────────────────────────────────────────
@@ -235,6 +398,8 @@ export interface ShownGroup {
  *
  * The cut runs over the whole feed in that order, then groups, so `shown`
  * means cards and not cards per group. `hidden` is what the cut held back.
+ * The Later group is outside the cut: it draws folded, with all its cards
+ * (MD-2b).
  *
  * `marked` is the needs rows an act took off (`needsActs.ts`). A card an act
  * closed whole leaves (`cardHidden`).
@@ -248,12 +413,36 @@ export function feedGroups(
   const order: FeedGroupId[] = [];
   for (const g of answer.groups) if (!order.includes(g.id)) order.push(g.id);
   for (const id of GROUP_ORDER) if (!order.includes(id) && cards.some((c) => c.group === id)) order.push(id);
-  const sorted = order.flatMap((id) => cards.filter((c) => c.group === id));
+  const sorted = order.flatMap((id) => (id === "later" ? [] : cards.filter((c) => c.group === id)));
   const cut = sorted.slice(0, Math.max(0, shown));
   const groups = order
-    .map((id) => ({ id, label: GROUP_LABELS[id], cards: cut.filter((c) => c.group === id) }))
+    .map((id) => ({
+      id,
+      label: GROUP_LABELS[id],
+      cards: id === "later" ? cards.filter((c) => c.group === id) : cut.filter((c) => c.group === id),
+    }))
     .filter((g) => g.cards.length > 0);
   return { groups, hidden: sorted.length - cut.length };
+}
+
+/** Where "Show all in <app>" goes, for each feed app. */
+const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = { ...NEEDS_APP_HREF, calendar: "/calendar" };
+
+/**
+ * The "Show all in <app>" links at the end of a group (§6.1, MD-2b): one for
+ * each app of the group's cards that stopped at its cap. A card past the cap
+ * is unknown, so the member opens the app to see the rest.
+ */
+export function cappedLinks(
+  group: Pick<ShownGroup, "cards">,
+  capped: readonly string[],
+): { app: FeedApp; label: string; href: string }[] {
+  const apps: FeedApp[] = [];
+  for (const c of group.cards) {
+    const app = c.app as FeedApp;
+    if (capped.includes(app) && app in FEED_APP_HREF && !apps.includes(app)) apps.push(app);
+  }
+  return apps.map((app) => ({ app, label: `Show all in ${FEED_APP_NAMES[app]}`, href: FEED_APP_HREF[app] }));
 }
 
 // ── The acts ────────────────────────────────────────────────────────────────
@@ -471,6 +660,17 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   day_overbooked: "Day is full",
   no_plan_yet: "No plan yet",
 };
+
+/**
+ * The mark after the source line (§6.3 rules 3 and 4, MD-2b): "Updated" for a
+ * card whose own facts changed, "Still open" for a seen card that turned
+ * urgent. Else null.
+ */
+export function stateMark(card: Pick<FeedCard, "updated" | "still_open">): string | null {
+  if (card.updated) return "Updated";
+  if (card.still_open) return "Still open";
+  return null;
+}
 
 /** "My Tasks · Overdue": the app's name, a dot, and the state of the card. */
 export function sourceLine(card: Pick<FeedCard, "app" | "kind">): string {

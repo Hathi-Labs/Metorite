@@ -302,6 +302,35 @@ describe("/ with the My Day feed flag", () => {
     expect(html).not.toContain("You are caught up.");
   });
 
+  it("folds Later with its count, ends a capped group with Show all, and dots a new card (MD-2b)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY_FEED", "1");
+    const html = await renderWithFeed({
+      cards: [
+        { ...card("open1", "needs_you"), state: "new", state_fp: "a41f09c2" },
+        card("folded1", "later"),
+        card("folded2", "later"),
+      ],
+      groups: [
+        { id: "needs_you", count: 1 },
+        { id: "later", count: 2 },
+      ],
+      sources: { tasks: "ok" },
+      capped: ["tasks"],
+    });
+    // Later draws folded: its count, and none of its cards until it opens.
+    expect(html).toMatch(/aria-expanded="false"[^>]*>.*?Later.*?data-feed-later-count="">2</s);
+    expect(html).not.toContain("Card folded1");
+    expect(html).toContain("Card open1");
+    expect(html).toContain("Show all in My Tasks");
+    expect(html).toMatch(/<a\b(?=[^>]*data-feed-show-all="tasks")(?=[^>]*href="\/tasks")/);
+    expect(html).toContain('aria-label="New"');
+    // A card the client may write carries the observer's mark, and its menu.
+    expect(html).toContain('data-feed-seen="tasks:open1"');
+    expect(html).toContain('aria-label="More for Card open1"');
+    expect(html).not.toContain('data-feed-seen="tasks:folded1"');
+  });
+
   it("asks for the feed once, at the default limit", async () => {
     const src = readFileSync(new URL("./FeedCard.tsx", import.meta.url), "utf8");
     expect(src).toMatch(/useCachedResource<FeedAnswer>\(enabled \? feedKey\(\) : null, \(\) => fetchFeed\(\)\)/);
