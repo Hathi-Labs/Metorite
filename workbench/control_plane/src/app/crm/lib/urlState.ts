@@ -9,6 +9,7 @@
 // All of it is parse/serialize over URLSearchParams, so it is pure and the
 // deep-link behaviour is testable without a browser.
 
+import { isSettingsSection, type SettingsSectionId } from "./settingsSections";
 import { ENTITIES, type EntitySlug } from "./types";
 
 /**
@@ -168,6 +169,12 @@ export type CrmView = {
    * shares the screen with `record`: opening one closes the other.
    */
   moduleRecord?: OpenModuleRecord | null;
+  /**
+   * The section of the settings tab (`?section=`, WS-53 CRM-C1). Optional, so
+   * a view built before CRM-C1 still type-checks: absent reads as none, and
+   * the page opens the default section.
+   */
+  section?: SettingsSectionId | null;
 };
 
 export type OpenModuleRecord = { module: string; id: string };
@@ -190,6 +197,7 @@ export const DEFAULT_VIEW: CrmView = {
   viewId: null,
   module: null,
   moduleRecord: null,
+  section: null,
 };
 
 export function isEntity(value: string | null): value is EntitySlug {
@@ -255,7 +263,15 @@ export function parseView(search: string | URLSearchParams): CrmView {
     viewId: params.get("view") || null,
     module: tab === "module" ? moduleName : null,
     moduleRecord: record ? null : moduleRecord,
+    // Only the settings tab has a section, as only a module tab has a module.
+    // An unknown value parses as null, and the page opens the default.
+    section: tab === "settings" ? parseSection(params.get("section")) : null,
   };
+}
+
+/** `?section=`, or null for a value that is not a section. */
+function parseSection(value: string | null): SettingsSectionId | null {
+  return isSettingsSection(value) ? value : null;
 }
 
 /** `?mrec=Products:<id>`, or null for a value that is not one. */
@@ -340,6 +356,7 @@ export function serializeView(view: CrmView): string {
   const params = new URLSearchParams();
   if (view.tab !== "deals") params.set("tab", view.tab);
   if (view.tab === "module" && view.module) params.set("module", view.module);
+  if (view.tab === "settings" && view.section) params.set("section", view.section);
   // A board that carries a filter says so, or the link would reopen as a list
   // (parseLayout): the filter is what the reader sent.
   const filtered = Boolean(view.q.trim() || view.statusId || view.sort);
@@ -450,7 +467,17 @@ export function selectTab(view: CrmView, tab: CrmView["tab"]): CrmView {
     viewId: null,
     module: null,
     moduleRecord: null,
+    section: null,
   };
+}
+
+/**
+ * A section of the settings tab (WS-53 CRM-C1). It opens the settings tab
+ * when another tab is on screen, and it keeps an open record, as a change of
+ * record tab does.
+ */
+export function selectSection(view: CrmView, section: SettingsSectionId): CrmView {
+  return { ...selectTab(view, "settings"), section };
 }
 
 /**
