@@ -5273,6 +5273,28 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-12 · branch `feat/ws55-ea3-mcp-read-tools`. Renumbered from H-301 to H-302, then to H-303, on 2026-10-13, because
   `origin/main` took H-301 and then H-302. H-303 was free on `origin/main` and in each open pull request.
 
+### H-304 · An org-wide reader sees a SEALED personal tree (D63) · [AGENT]
+- **Check:** read `task_visibility_clause` in
+  `apps/services/gateway/gateway/routes/projects/core.py` (about line 1600).
+  The entry is open while the `vis.unrestricted` branch returns only the
+  tenant filter and does not test `pm_projects.sealed_at`.
+- **Why:** D63 seals the personal tree of a member who leaves. Only the
+  owner-only LOGGED door may open it, and that door is not built. Migration
+  215 filters `sealed_at` on both arms of the restricted clause. The
+  `data:org:read` branch skips the filter, so an admin reads a sealed tree
+  through `/projects/search`, `/projects/search/refs` (#944) and
+  `/projects/tasks/{id}`. The task-ref builder of #944 found this on
+  2026-10-13. The gap is older than #944.
+- **Do:** in the shared clause, make the unrestricted branch exclude tasks
+  whose project is sealed. Keep the second arm of D63: a task that is assigned
+  OUTWARD stays visible to its assignee. Fix it in the one clause, not per
+  route. Add an R8 test with two members, one sealed tree and an admin reader,
+  run as the app role.
+- **Done when:** an admin with `data:org:read` gets no task of a sealed tree
+  from search, refs or the task read. The assignee hand-over still works.
+- **Authority:** `work_plan.md` §3 D63 · H-49 · migration 215
+- **Added:** 2026-10-13 · found in the review of #944
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
