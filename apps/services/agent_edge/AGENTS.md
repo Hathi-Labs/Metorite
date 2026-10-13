@@ -22,6 +22,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 ## Local contract
 
 1. **The flag.** While `agent_access_enabled` is false, every request answers 404 and does nothing else. That covers every path and every method, `OPTIONS` and `HEAD` too. The ASGI middleware `EdgeGate` in `app.py` answers first, before the router. A wrong method then cannot leak a 405 with an `Allow` header.
+   **The organization allowlist (EA-10p, spec §10.6).** `agent_access_orgs` limits the flag to the organizations that it names, and the default names none. The token endpoint answers `invalid_grant` for an organization off the list, because the store refuses the issue. The bearer check of `/mcp` answers 401 with `invalid_token`. Take the rule from `agent_oauth.org_allowed`, and take the organization from the token row. `/oauth/revoke` does not check the list.
 2. **No import of the gateway.** This package never imports `gateway`, and never imports `gateway.outbound_guard`. The gateway half fetches a client's metadata. The edge reads the cache in `agent_client` only.
 3. **The rules live in `acb_auth`.** Take the scopes, the addresses, the PKCE check and the flag from `acb_auth.agent_oauth`. Take every token act from `acb_auth.agent_tokens`. Do not copy a rule here.
 4. **The tenant comes from a token row.** No route reads an organization or a member from a header, a query or a form field. The store binds the tenant from the row it finds.

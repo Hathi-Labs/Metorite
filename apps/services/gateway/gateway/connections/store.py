@@ -28,8 +28,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -211,11 +211,55 @@ _LIST_PREFIX_SQL = (
 
 #: The blob of each row of one provider family, by provider. Any status: a
 #: disabled MCP server keeps its headers, so a test of it still sends them.
+#: A row that an OAuth consent wrote (IN-8a, ``provider_meta.auth = 'oauth'``)
+#: holds the token shape, not a header map, so this read leaves it out.
 _BLOBS_PREFIX_SQL = (
     "SELECT provider, credentials_encrypted FROM integration_connections "
     "WHERE organization_id = CAST(:org AS uuid) AND owning_app = :owning_app "
     "AND scope_kind = :scope_kind AND COALESCE(member_email, '') = :member "
-    "AND left(provider, length(CAST(:prefix AS text))) = CAST(:prefix AS text)"
+    "AND left(provider, length(CAST(:prefix AS text))) = CAST(:prefix AS text) "
+    "AND COALESCE(provider_meta->>'auth', '') <> 'oauth'"
+)
+
+# ── The OAuth shape on a static-header row (WS-54 IN-8a, MCP OAuth) ─────────
+#
+# An MCP server that needs a consent keeps its registry row. The consent
+# replaces the header blob with the token shape, and it MERGES the public
+# facts into ``provider_meta``, so the url, the label and the H-300 switch of
+# the row stay. The row is read with ``FOR UPDATE``, so two callbacks at one
+# time each see the token that the other one replaced.
+
+#: ``provider_meta.auth`` of a row whose blob holds OAuth tokens.
+AUTH_OAUTH = "oauth"
+
+_LOCK_ROW_SQL = (
+    f"SELECT {_PUBLIC_COLUMNS}, credentials_encrypted FROM integration_connections "
+    f"WHERE {_KEY_WHERE} FOR UPDATE"
+)
+
+#: A disabled MCP server stays disabled: its status is the admin's switch.
+_ATTACH_OAUTH_SQL = (
+    "UPDATE integration_connections SET credentials_encrypted = :blob, "
+    "provider_meta = provider_meta || CAST(:provider_meta AS jsonb), "
+    "scopes = :scopes, connected_by = :connected_by, last_error = NULL, "
+    "status = CASE WHEN status = 'disconnected' THEN 'disconnected' "
+    "ELSE 'connected' END, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+#: A re-register of an OAuth row (review of #931, P2 1). The public keys
+#: merge in, the blob and ``auth`` stay. *enabled* false disables the row.
+#: True enables a disabled row and keeps any other status, such as
+#: ``needs_reconnect``.
+_UPDATE_OAUTH_PUBLIC_SQL = (
+    "UPDATE integration_connections SET "
+    "provider_meta = provider_meta || CAST(:extra AS jsonb), "
+    "status = CASE WHEN NOT :enabled THEN 'disconnected' "
+    "WHEN status = 'disconnected' THEN 'connected' ELSE status END, "
+    "updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"RETURNING {_PUBLIC_COLUMNS}"
 )
 
 _UPSERT_HEADERS_SQL = (
@@ -319,17 +363,18 @@ def legacy_keys() -> Any:
 
 
 def _seal(credential: SourceCredential) -> str:
-    plain = json.dumps(
-        {
-            "access_token": credential.access_token,
-            "refresh_token": credential.refresh_token,
-            "expires_at": credential.expires_at.isoformat(),
-            "scopes": list(credential.scopes),
-            "provider_meta": dict(credential.provider_meta),
-        },
-        separators=(",", ":"),
-    )
-    return _keys().encrypt(plain)
+    """The token shape. ``client_secret`` (IN-8a) is written only when it is
+    set, so a Zoho or GitHub blob keeps its shape."""
+    sealed: dict[str, Any] = {
+        "access_token": credential.access_token,
+        "refresh_token": credential.refresh_token,
+        "expires_at": credential.expires_at.isoformat(),
+        "scopes": list(credential.scopes),
+        "provider_meta": dict(credential.provider_meta),
+    }
+    if credential.client_secret:
+        sealed["client_secret"] = credential.client_secret
+    return _keys().encrypt(json.dumps(sealed, separators=(",", ":")))
 
 
 def _unseal(blob: str) -> SourceCredential:
@@ -354,6 +399,7 @@ def _unseal(blob: str) -> SourceCredential:
             provider_meta={
                 str(k): str(v) for k, v in (data.get("provider_meta") or {}).items()
             },
+            client_secret=str(data.get("client_secret") or ""),
         )
     # ValueError covers binascii.Error, UnicodeDecodeError and a bad JSON.
     except (InvalidToken, ValueError, KeyError, TypeError) as exc:
@@ -707,6 +753,124 @@ async def save_headers(
     )
     row = (await db.execute(text(sql), params)).first()
     return _connection(row) if row is not None else None
+
+
+@dataclass(frozen=True)
+class OAuthAttach:
+    """What :func:`attach_oauth_credential` did. ``previous`` is the token
+    that the consent replaced, so the caller can revoke it after the commit.
+    It is ``None`` when the row held headers or a blob that does not open."""
+
+    before: Connection
+    after: Connection
+    previous: SourceCredential | None = field(default=None, repr=False)
+
+
+async def attach_oauth_credential(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    credential: SourceCredential,
+    *,
+    connected_by: str,
+    scopes: Sequence[str] = (),
+    check: Callable[[Connection], bool] | None = None,
+) -> OAuthAttach | None:
+    """Seal *credential* on the row that exists, under its row lock (IN-8a).
+
+    ``None`` when *org* holds no such row, or when *check* refuses the row
+    that the lock read. The blob becomes the token shape. ``provider_meta`` of
+    the row keeps its keys, and ``credential.provider_meta`` plus
+    ``auth = 'oauth'`` merge in. ⚠️ That map goes to a PLAIN column, so it
+    must hold public facts only. ``credential.client_secret`` goes in the
+    blob only, and no SQL parameter reads it.
+    """
+    params = _key(org, provider, owning_app, SCOPE_ORG, None)
+    row = (await db.execute(text(_LOCK_ROW_SQL), params)).first()
+    if row is None:
+        return None
+    before = _connection(row)
+    if check is not None and not check(before):
+        return None
+    previous: SourceCredential | None = None
+    if before.provider_meta.get("auth") == AUTH_OAUTH and row.credentials_encrypted:
+        try:
+            previous = _unseal(row.credentials_encrypted)
+        except Undecryptable as exc:
+            _log.warning("connection blob does not open (%s)", exc)
+    meta = {**{str(k): str(v) for k, v in credential.provider_meta.items()},
+            "auth": AUTH_OAUTH}
+    after_row = (await db.execute(text(_ATTACH_OAUTH_SQL), {
+        "id": before.id,
+        "org": before.organization_id,
+        "blob": _seal(credential),
+        "provider_meta": json.dumps(meta),
+        "scopes": list(scopes),
+        "connected_by": (connected_by or "").strip().lower() or None,
+    })).first()
+    return OAuthAttach(before=before, after=_connection(after_row), previous=previous)
+
+
+async def lock_row(
+    db: Any, org: str, provider: str, owning_app: str,
+) -> tuple[Connection, SourceCredential | None] | None:
+    """The org row of *provider*, with ``FOR UPDATE``, or ``None``.
+
+    The second value is the OAuth credential of an OAuth row (``auth =
+    'oauth'``), so the caller can revoke it after its commit. It is ``None``
+    for a header row, and for a blob that does not open.
+    """
+    params = _key(org, provider, owning_app, SCOPE_ORG, None)
+    row = (await db.execute(text(_LOCK_ROW_SQL), params)).first()
+    if row is None:
+        return None
+    conn = _connection(row)
+    credential: SourceCredential | None = None
+    if conn.provider_meta.get("auth") == AUTH_OAUTH and row.credentials_encrypted:
+        try:
+            credential = _unseal(row.credentials_encrypted)
+        except Undecryptable as exc:
+            _log.warning("connection blob does not open (%s)", exc)
+    return conn, credential
+
+
+async def update_oauth_public(
+    db: Any, conn: Connection, extra: dict[str, Any], *, enabled: bool,
+) -> Connection:
+    """Merge public keys into an OAuth row that :func:`lock_row` read.
+
+    The blob, ``auth`` and ``connected_by`` stay: the connection still acts
+    as the admin who gave the consent (D98). *extra* must hold no secret and
+    no ``auth`` key.
+    """
+    kept = {str(k): v for k, v in extra.items() if k != "auth"}
+    row = (await db.execute(text(_UPDATE_OAUTH_PUBLIC_SQL), {
+        "id": conn.id, "org": conn.organization_id,
+        "extra": json.dumps(kept), "enabled": bool(enabled),
+    })).first()
+    return _connection(row)
+
+
+# ── A short-lived sealed value (WS-54 IN-8a) ────────────────────────────────
+
+
+def seal_value(value: str) -> str:
+    """Fernet ciphertext of *value*, with the one key of this module.
+
+    The MCP OAuth flow seals a DCR ``client_secret`` before the pending flow
+    goes to Redis for ten minutes, so no plain secret sits there.
+    """
+    return _keys().encrypt(value)
+
+
+def open_value(sealed: str) -> str | None:
+    """The plain text of :func:`seal_value`, or ``None`` when it does not open."""
+    keys = _keys()
+    try:
+        return str(keys.decrypt(sealed))
+    except (InvalidToken, ValueError, TypeError):
+        return None
 
 
 async def delete(

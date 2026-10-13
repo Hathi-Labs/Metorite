@@ -394,6 +394,8 @@ const TEST_TEXT: Record<string, string> = {
   server_error: "The server returned an error.",
   no_url: "This server has no URL.",
   stdio_unsupported: "Metorite cannot test a stdio server.",
+  // WS-54 IN-8a: the stored OAuth token of the server has ended.
+  token_expired: "The sign-in to this server has expired. Connect it again.",
 };
 
 /** The toast line of an MCP test. A code never reaches the screen. */

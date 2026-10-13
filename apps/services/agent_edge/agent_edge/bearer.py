@@ -4,6 +4,9 @@ Spec ``project-docs/specs/external_agent_access.md`` §7.1 and §9.6, check 6.
 
 1. Read the bearer token of the request. No token, or a token that
    ``agent_tokens.lookup_token`` does not find live, is a 401.
+   A token whose organization ``agent_oauth.org_allowed`` refuses is a 401
+   too (EA-10p, spec §10.6). The lookup does not check the list, because
+   ``/oauth/revoke`` must still find such a token.
 2. **An outage is a 503 (EA3-10).** When the lookup raises and
    ``acb_common.db_busy.is_db_outage`` says the database could not be reached,
    the answer is HTTP 503 with ``Retry-After: 2``. It is never a 401, because
@@ -115,6 +118,11 @@ async def authenticate(header_value: str | None) -> Caller:
         raise BearerRefused(401, sent=True, reason="lookup_failed") from None
     if found is None:
         raise BearerRefused(401, sent=True, reason="not_live")
+    # EA-10p: an organization off ``agent_access_orgs`` has no live token.
+    # The organization is the token row's, never a request input.
+    if not agent_oauth.org_allowed(found.organization_id):
+        _log.info("agent_edge.token_org_not_allowed", connection_id=found.connection_id)
+        raise BearerRefused(401, sent=True, reason="org_not_allowed")
     if found.resource != agent_oauth.resource():
         _log.info("agent_edge.token_wrong_audience", connection_id=found.connection_id)
         raise BearerRefused(401, sent=True, reason="audience")

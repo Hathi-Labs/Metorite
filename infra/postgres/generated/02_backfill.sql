@@ -366,6 +366,9 @@ UPDATE pm_task_counters SET organization_id = (SELECT id FROM organization WHERE
 UPDATE pm_task_links SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE pm_task_refs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE pm_task_personal SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 

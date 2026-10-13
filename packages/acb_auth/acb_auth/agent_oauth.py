@@ -19,6 +19,12 @@ touches it.
 **The flag.** :func:`enabled` is the one reader of ``agent_access_enabled``.
 While it is false, every EA-2a route answers 404.
 
+**The organization allowlist (EA-10p).** :func:`org_allowed` is the one
+reader of ``agent_access_orgs``. Agent access is live for an organization
+only when the flag is on AND the list allows it. The default allows none.
+Four doors check it (spec §10.6): the consent routes, the store's token
+issue, the edge bearer check and the connection read of branch 0.
+
 **The MCP read surface (EA-3a).** :data:`MCP_ROUTES` is the one allowlist of
 gateway routes an outside agent may reach. :func:`actor_via_for` gives the
 ``mcp:<slug>`` stamp of a connection. :data:`ACTOR_VIA_PATTERN` is the one
@@ -31,9 +37,11 @@ Fences: ``tests/unit/test_agent_oauth_server.py``,
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac
 import re
+import uuid
 from collections.abc import Iterable, Mapping
 from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -96,6 +104,62 @@ def scope_string(scopes: Iterable[str]) -> str:
 def enabled() -> bool:
     """True when ``agent_access_enabled`` is on. The ONE reader of the flag."""
     return bool(get_settings().agent_access_enabled)
+
+
+# ── The organization allowlist (EA-10p, spec §10.6, decision EA3-27) ────────
+
+#: The entry of ``agent_access_orgs`` that allows each organization.
+ALL_ORGS = "*"
+
+
+def _canonical_org(value: object) -> str | None:
+    """*value* as a canonical lower-case UUID string, else ``None``."""
+    text = str(value or "").strip().lower()
+    try:
+        canonical = str(uuid.UUID(text))
+    except ValueError:
+        return None
+    return canonical if canonical == text else None
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_orgs(raw: str) -> frozenset[str]:
+    """The entries of *raw*: canonical organization ids, and ``*``.
+
+    The entries have a comma between them. Each entry loses its spaces and
+    goes to lower case. An entry that is not ``*`` and not a canonical UUID
+    is dropped, so it allows nothing. An empty *raw* gives an empty set.
+    Cached on the raw value.
+    """
+    entries: set[str] = set()
+    for part in raw.split(","):
+        entry = part.strip().lower()
+        if entry == ALL_ORGS:
+            entries.add(ALL_ORGS)
+        elif (org := _canonical_org(entry)) is not None:
+            entries.add(org)
+    return frozenset(entries)
+
+
+def allowed_orgs() -> frozenset[str]:
+    """The parsed ``agent_access_orgs``. Empty means no organization."""
+    return _parse_orgs(str(get_settings().agent_access_orgs or ""))
+
+
+def org_allowed(organization_id: object) -> bool:
+    """True when ``agent_access_orgs`` allows *organization_id*.
+
+    The ONE reader of the allowlist. It does not read the flag: agent access
+    is live for an organization only when :func:`enabled` and this are both
+    true. A value that is not a UUID is false, also with ``*``. The caller
+    passes an organization from the session or from a token row, never from
+    request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = allowed_orgs()
+    return ALL_ORGS in orgs or org in orgs
 
 
 def issuer() -> str:
@@ -224,27 +288,41 @@ def ascii_host(host: str) -> str:
 
 # ── Redirect URIs ───────────────────────────────────────────────────────────
 
-#: Schemes a redirect may never use. A consent page that navigates to one of
-#: these on its own origin runs script there.
-_FORBIDDEN_SCHEMES = frozenset({
-    "javascript", "data", "vbscript", "file", "blob", "about", "ftp", "ws",
-    "wss", "filesystem", "view-source", "jar", "chrome", "intent",
-})
-
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
-_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*$")
+#: A private-use scheme of a native app (RFC 8252 §7.1): a reverse domain
+#: name, so it holds a dot, in lower case. ``com.example.app`` passes.
+#: ``cursor``, ``javascript`` and ``Com.Example`` do not.
+_PRIVATE_SCHEME = re.compile(r"[a-z][a-z0-9+-]*(?:\.[a-z0-9+-]+)+")
+
+
+def _is_private_use_redirect(uri: str) -> bool:
+    """True when *uri* is ``scheme:/path`` with a reverse-DNS *scheme*.
+
+    RFC 8252 §7.1 gives the form with ONE slash and no authority, such as
+    ``com.example.app:/oauth/callback``. Read on the RAW string, because
+    ``urlsplit`` lowers the case of the scheme.
+    """
+    scheme, colon, rest = uri.partition(":")
+    if not colon or not _PRIVATE_SCHEME.fullmatch(scheme):
+        return False
+    # One slash, then a path. ``scheme://...`` names an authority.
+    return rest.startswith("/") and not rest.startswith("//") and len(rest) > 1
 
 
 def is_allowed_redirect_uri(uri: str | None) -> bool:
     """True when *uri* may carry an authorization response.
 
-    ``https`` always. ``http`` only to a loopback host (RFC 8252 §7.3). A
-    private-use scheme of a native app (RFC 8252 §7.1), except the schemes in
-    :data:`_FORBIDDEN_SCHEMES`. Never a fragment, a user name or a password.
-    The match against the client's own list is a separate check,
-    :func:`redirect_uri_matches`. ASCII
-    only, for the reason :func:`is_cimd_client_id` gives.
+    An ALLOW list of the three forms of RFC 8252 (EA-4a, spec §10.5), and
+    nothing else:
+
+    1. ``https``, with a host.
+    2. ``http`` to a loopback host (RFC 8252 §7.3).
+    3. A private-use scheme that holds a dot, as ``scheme:/path`` (§7.1).
+
+    Never a fragment, a user name or a password. The match against the
+    client's own list is a separate check, :func:`redirect_uri_matches`.
+    ASCII only, for the reason :func:`is_cimd_client_id` gives.
     """
     if not uri or len(uri) > MAX_URL_CHARS or not uri.isascii():
         return False
@@ -252,20 +330,52 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
         return False
     try:
         parts = urlsplit(uri)
-        _ = parts.port  # a bad port raises here
+        port = parts.port  # a bad port raises here
     except ValueError:
         return False
-    scheme = parts.scheme
-    if not _SCHEME.fullmatch(scheme) or scheme in _FORBIDDEN_SCHEMES:
+    # An explicit port must be 1 to 65535. ``urlsplit`` reads ``:0`` as the
+    # port 0, and a later ``if port`` reads 0 as "no port" (fix round 1).
+    if port is not None and not 1 <= port <= _MAX_PORT:
         return False
     if "#" in uri or parts.username is not None or parts.password is not None:
         return False
-    if scheme == "https":
+    # The raw scheme, because ``urlsplit`` lowers its case.
+    raw_scheme = uri.partition(":")[0]
+    if raw_scheme == "https":
         return bool(parts.hostname)
-    if scheme == "http":
+    if raw_scheme == "http":
         return (parts.hostname or "") in _LOOPBACK_HOSTS
-    # A private-use scheme needs something after it.
-    return bool(parts.netloc or parts.path)
+    return _is_private_use_redirect(uri)
+
+
+def redirect_display(uri: str) -> tuple[str, bool]:
+    """What the consent screen shows of *uri*, and whether it is an app.
+
+    EA-4a, spec §10.5. For ``http`` and ``https``: ``scheme://host:port``,
+    with the port of the FULL redirect URI, so a loopback client on port
+    53122 shows that port. No port in the URI shows ``scheme://host``. The
+    host is ASCII (:func:`ascii_host`), and an IPv6 host keeps its brackets.
+
+    For any other scheme: ``scheme://authority``, or ``scheme:`` with no
+    authority, and the second value is True, so the page adds "an app on
+    this computer". ``x-evil://claude.ai/cb`` shows as
+    ``x-evil://claude.ai``, never as ``claude.ai``.
+    """
+    parts = urlsplit(uri)
+    scheme = parts.scheme
+    if scheme in ("http", "https") and parts.hostname:
+        host = ascii_host(parts.hostname)
+        if ":" in host:
+            host = f"[{host}]"
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        shown = f"{scheme}://{host}" if port is None else f"{scheme}://{host}:{port}"
+        return shown, False
+    if parts.netloc:
+        return f"{scheme}://{parts.netloc}", True
+    return f"{scheme}:", True
 
 
 # ── The redirect match (EA-2c, spec §10.4, decision EA3-23) ─────────────────
@@ -445,6 +555,7 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 
 __all__ = [
     "ACTOR_VIA_PATTERN",
+    "ALL_ORGS",
     "CONTEXT_READ",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
@@ -456,6 +567,7 @@ __all__ = [
     "S256",
     "SUPPORTED_SCOPES",
     "actor_via_for",
+    "allowed_orgs",
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
@@ -466,8 +578,10 @@ __all__ = [
     "is_valid_challenge",
     "is_valid_verifier",
     "issuer",
+    "org_allowed",
     "parse_scope",
     "pkce_matches",
+    "redirect_display",
     "redirect_host",
     "redirect_uri_matches",
     "resource",

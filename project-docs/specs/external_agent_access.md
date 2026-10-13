@@ -2,13 +2,15 @@
 
 **Status: DECIDED (D97, 2026-10-10). Updated 2026-10-13. EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
 
-**EA-3a is MERGED and dark (#946, `d5d8244f5`, 2026-10-13), after fix rounds 1 to 5. EA-2c is MERGED and dark (#953, 2026-10-13). EA-3b-1 is MERGED and dark (#954, `355c18bcf`, 2026-10-13), after fix rounds 1 and 2. EA-3b-2 is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-10a and EA-10b are BUILT in the repo, dark, and not merged (§15.3). The owner adds the `CADDY-AUTH-APPROVED` line of gate (a). EA-2b, EA-3c, EA-4 to EA-9, EA-10c and EA-11 are not built.**
+**EA-3a is MERGED and dark (#946, `d5d8244f5`, 2026-10-13), after fix rounds 1 to 5. EA-2c is MERGED and dark (#953, 2026-10-13). EA-3b-1 is MERGED and dark (#954, `355c18bcf`, 2026-10-13), after fix rounds 1 and 2. EA-3b-2 is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-4a is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-10p, the organization allowlist (EA3-27), is MERGED and dark (2026-10-13), after fix round 1. EA-10a and EA-10b are MERGED and dark (2026-10-13), after fix rounds 1 and 2: the unit is installed and not enabled (§15.3). EA-2b, EA-3c, EA-4b, EA-4c, EA-5 to EA-9, EA-10c and EA-11 are not built.**
 
 **EA-3b, 2026-10-13.** The spec audit of EA-3b gave NO-GO. The decisions EA3-9 to EA3-23 (§6.1) answer it. EA-3b now splits into EA-3b-1 and EA-3b-2. A new slice, EA-2c, accepts a loopback redirect on any port, and it comes before EA-4.
 
 **EA-3, 2026-10-11.** The spec audit of EA-3 gave NO-GO. The engineering decisions EA3-1 to EA3-8 (§6.1) answer it. EA-3 now splits into EA-3a (the gateway) and EA-3b (the edge), with EA-3c as a later follow-up.
 
-**What is built.** EA-1 is the three tables, the token store and the `agent_access_enabled` flag, default OFF. EA-2a is the authorization server core: the edge unit `apps/services/agent_edge` (not deployed) and the gateway route `/agent-access`. EA-3a is the gateway half of the read tools: branch 0 of `get_current_user`, the signing module and the agent scope in the Projects visibility seam. EA-3b-1 is the edge transport `/mcp` with two tools, `list_tasks` and `search_tasks`. It is merged (#954, `355c18bcf`). EA-3b-2 adds the other five read tools and the fence edit of EA3-9. It merged in #957 (`97ab64e96`).
+**EA-4, 2026-10-13.** The spec audit of EA-4 gave NO-GO. The decisions EA3-25 and EA3-26 (§6.1) answer it. EA-4 now splits into EA-4a, EA-4b and EA-4c, and §10.5 holds the rules of the consent page. **EA-4a is MERGED and dark (2026-10-13), after fix rounds 1 and 2.** EA-4b and EA-4c are not built.
+
+**What is built.** EA-1 is the three tables, the token store and the `agent_access_enabled` flag, default OFF. EA-2a is the authorization server core: the edge unit `apps/services/agent_edge` (not deployed) and the gateway route `/agent-access`. EA-3a is the gateway half of the read tools: branch 0 of `get_current_user`, the signing module and the agent scope in the Projects visibility seam. EA-3b-1 is the edge transport `/mcp` with two tools, `list_tasks` and `search_tasks`. It is merged (#954, `355c18bcf`). EA-3b-2 adds the other five read tools and the fence edit of EA3-9. It is merged (#957, `97ab64e96`).
 
 Written 2026-10-10 from a read-only survey of the tree at commit `f62f2bb16`. Every anchor below came from that survey. Re-verify each one at dispatch (work_plan.md §1, item 4).
 
@@ -195,13 +197,13 @@ The owner suggested on 2026-10-11 that the Integrations app should list inbound 
 1. The app sits in the Admin section today, so a member who is not an admin may not reach it. A member must reach their own agents. WS-54 must show the app to every member and hide the admin tabs from non-admins. `launch_surface.md` §2 and `nav.test.ts` own that change.
 2. The app is `preview`. Promoting it to `live` is an owner decision (H-21).
 
-**If WS-54 is late.** EA-4 builds the member pane as one component. The component first mounts in Settings and later mounts in the Integrations app. No code moves except the mount point.
+**If WS-54 is late.** EA-4b builds the member pane as one component. The component first mounts in Settings and later mounts in the Integrations app. No code moves except the mount point.
 
 ### 5.5 Where the code lives, and the fixed addresses
 
 - **Issuer:** `https://mcp.metorite.com`. RFC 8414 and RFC 9207 need one fixed value.
 - **Public endpoints** run with the edge unit (D-EA-2): `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/token` and `/oauth/revoke`. They are not in the gateway `PUBLIC_ROUTES` list.
-- **Authorize page** at `https://app.metorite.com/connect/authorize`. EA-4 builds it.
+- **Authorize page** at `https://app.metorite.com/connect/authorize`. EA-4a builds it (§10.5).
 - **Store:** `packages/acb_auth/acb_auth/agent_tokens.py`. It follows `acb_auth/email_otp.py`.
 - **Authenticated half:** `apps/services/gateway/gateway/routes/agent_access.py`, prefix `/agent-access`, behind default-deny.
 - **Edge unit:** a new uv member `apps/services/agent_edge/`. EA-3b adds `/mcp` to it, in `agent_edge/mcp.py`, `tools.py`, `bearer.py`, `gateway_client.py` and `cursor.py`. EA-3b adds `httpx` to the dependencies in `apps/services/agent_edge/pyproject.toml`, because `gateway_client.py` calls the gateway with it. Today the edge gets `httpx` only through `acb-auth`.
@@ -209,7 +211,7 @@ The owner suggested on 2026-10-11 that the Integrations app should list inbound 
 - **Allowlist:** `MCP_ROUTES` in `packages/acb_auth/acb_auth/agent_oauth.py` (EA-3a, §9.5). The edge client and branch 0 of the gateway both read it.
 - **Flag:** a `Settings` field `agent_access_enabled`, default false, which reads `AGENT_ACCESS_ENABLED`. The edge and the gateway read the same flag through `agent_oauth.enabled()`.
 - **EA-3 Settings:** `agent_edge_signing_key` and `agent_edge_signing_key_previous`, both default empty. `agent_edge_gateway_url`, default `http://127.0.0.1:8080`. §10.1 gives their rules.
-- **Do not touch:** `routes/oauth.py` (a different OAuth client, retired by WS-54), `routes/integrations.py`, `integration_connections`, `outbound_guard.py`, `nav.ts` and `launch_surface.md`. Reuse `outbound_guard.py` and never edit it. Do not name a new module `oauth.py`.
+- **Do not touch:** `routes/oauth.py` (a different OAuth client, retired by WS-54), `routes/integrations.py`, `integration_connections`, `outbound_guard.py`, `nav.ts` and `launch_surface.md`. One exception: `CHROMELESS_ROUTES` in `nav.ts` gains `/connect` (EA-4a). `/connect/authorize` gets no `PUBLIC_PAGES` entry in `proxy.ts`, because the page needs a signed-in member. Reuse `outbound_guard.py` and never edit it. Do not name a new module `oauth.py`.
 - **Lifetimes** are `Settings` defaults, so a test can assert them.
   - Access token: 3600 seconds.
   - Refresh token: 30 days.
@@ -269,6 +271,14 @@ A spec audit of EA-3 on 2026-10-11 gave NO-GO. The spec had no testable done-whe
 | EA3-22 | EA-3b splits into EA-3b-1 and EA-3b-2 | §15 |
 | EA3-23 | A registered loopback redirect URI with no port accepts any port (RFC 8252 §7.3). The new slice EA-2c builds it, before EA-4 | §10.4, §15 (EA-2c) |
 | EA3-24 | `list_projects` drops each archived project. `get_project` still returns an archived project, and its pinned `archived_at` key says so. The orchestrator took this decision on 2026-10-13, at the audit of EA-3b-2 | §9.1 |
+
+**The third audit, 2026-10-13.** A spec audit of EA-4 gave NO-GO. It narrowed the dispatch to EA-4a, the consent page, after this doc change. The orchestrator took the two decisions below on the same day. Neither is a product or pricing call.
+
+| # | Decision | Where |
+|---|---|---|
+| EA3-25 | EA-4 splits into EA-4a, EA-4b and EA-4c. EA-4b and EA-4c are NOT go-live gates for a pilot. Until EA-4c, approve binds the organization of the member's current session, and the consent page names that organization. Until EA-4b, a member revokes through the client (`/oauth/revoke`), or asks an admin. The go-live note of EA-10 must list both limits | §15 |
+| EA3-26 | The consent ticket lives in Redis, through the tenant-prefixed wrapper `acb_common.tenant_redis`. It adds no raw Redis client. `check` gives the ticket, and `approve` spends it with one `GETDEL` | §10.5 |
+| EA3-27 | **Owner decision, 2026-10-13.** Go-live is a pilot behind an organization allowlist, Fracktal first. `AGENT_ACCESS_ORGS` holds organization ids with a comma between them, and `*` allows each organization. An empty list allows none, so the default is fail-closed. Agent access is live for an organization only when the flag is on AND the list allows it. Four doors check the list: the consent routes, the token endpoint, the bearer check of `/mcp` and branch 0 | §10.6, §15 (EA-10p) |
 
 ## 7. The connection model
 
@@ -746,6 +756,97 @@ Every other registered URI keeps the exact string match. An `https` loopback URI
 
 **Where it lives.** One function in `agent_oauth.py`, beside `is_allowed_redirect_uri`, decides the match. `agent_access._validate` calls it in place of the `in` test. No other module compares redirect URIs.
 
+### 10.5 The consent page (EA-4a)
+
+The consent page is `/connect/authorize` on the control plane. A member sees it when an outside agent asks to connect. EA-4a builds it, dark, behind the flag of §5.5.
+
+**The flow.** Each hop is a rule.
+
+1. The agent reads the authorization server metadata. Its `authorization_endpoint` is `https://app.metorite.com/connect/authorize` (`agent_edge/metadata.py`).
+2. `proxy.ts` sends a signed-out member to `/signin?callbackUrl=<path and query>`. After the sign-in, the browser comes back to the same URL, query included.
+3. The page sends the query to the BFF route `POST /api/agent-access/authorize/check`. The BFF calls the gateway route `POST /agent-access/authorize/check` as the member.
+4. On Approve, the page sends the request, the member's choices and the consent ticket to `POST /api/agent-access/authorize/approve`. The gateway answers JSON `redirect_to` with HTTP 200, never a 3xx.
+5. The page navigates with `window.location.assign(redirect_to)`. On Deny, it navigates to `deny_redirect_to` from the check answer.
+
+**The BFF routes and the CSRF rules.**
+
+- The BFF has two routes, `POST /api/agent-access/authorize/check` and `POST /api/agent-access/authorize/approve`. The gateway has no deny route, so the BFF has none.
+- Each BFF route refuses with 403 a request whose `Sec-Fetch-Site` is not `same-origin`. A request with no such header gets 403 too. The check is `sameOrigin` in `lib/accountsServer.ts`.
+- The gateway does not check `Origin`, because it sees only the server call of the BFF.
+- The session cookie stays `SameSite=Lax`, the Auth.js default. A test asserts it.
+- No BFF route answers with a 3xx. The BFF does not follow a redirect from the gateway, and it turns a gateway 3xx into a 502.
+- Each response of `/connect/*` carries `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`. So no other site can put the page in a frame.
+
+**The consent ticket (EA3-26).** The ticket proves that the member saw the screen before the approval.
+
+- `check` returns `consent_ticket`, 32 random bytes in base64url.
+- The gateway keeps only the SHA-256 of the ticket, as a Redis key, with a life of 300 seconds. The key goes through `acb_common.tenant_redis`, so it carries the organization. The wrapper gains the command `getdel`. EA-4a adds no raw Redis client.
+- The ticket binds the member, the organization, `client_id`, `redirect_uri`, `code_challenge`, `state`, `resource` and `scope`. `scope` is the requested scope string, not the member's choice.
+- `approve` spends the ticket with one `GETDEL`, before every other check of the request. So a ticket that `approve` reads is gone, whatever the result.
+- A missing, spent, expired or unmatched ticket gives 400 `invalid_request`, with no `redirect_to`.
+- A Redis outage gives 503 with `Retry-After`, never 400. This holds for `check` too, because `check` cannot give a ticket without Redis.
+- Redis can spend a ticket and then lose the reply. So after a gateway 503 on `approve`, the page calls `check` again before the retry. It uses the fresh ticket only when the fresh screen is the same (`sameScreen` in `consent.ts`). A 503 from that `check` allows one more try.
+- ⚠️ The retry applies to a JSON 503 from `approve` ONLY. Every such 503 comes before `create_connection`. After a thrown fetch, an answer that is not JSON, or a 2xx with no `redirect_to`, the gateway may have made the connection. So the page ends the flow, and a retry cannot make a second connection.
+
+**What the screen shows of the redirect.** `AuthorizeView.redirect_display` replaces `redirect_host`.
+
+- For `http` and `https`, it is `scheme://host:port`. The port comes from the full redirect URI of the request, not from the registered URI. A URI with no port shows `scheme://host`.
+- For any other scheme, it is `scheme://authority`, or `scheme:` when the URI has no authority. Then `redirect_app` is true, and the page adds the label "an app on this computer".
+- So the screen shows `x-evil://claude.ai/cb` as `x-evil://claude.ai`, and never as `claude.ai`.
+- The page names the organization of the session. It reads the name from `GET /api/auth/me`, through `useAccess`. Approve binds the tenant of the same session (EA3-25), so the page keeps Approve off until it can name the organization.
+
+**The redirect forms (RFC 8252).** `is_allowed_redirect_uri` changes from a deny list to an allow list. It accepts three forms, and no other:
+
+1. `https`, with a host.
+2. Loopback `http`, to `localhost`, `127.0.0.1` or `[::1]`. EA-2c (§10.4) keeps its match on any port.
+3. A private-use scheme that holds a dot, in the form `scheme:/path` (RFC 8252 §7.1). An example is `com.example.app:/oauth/callback`. The scheme is lower case, the path starts with one slash, and the URI has no authority.
+
+`redirect_uri_matches` stays the one comparison, and EA-4a does not change it. The check refuses a scheme with no dot, and a private-use URI with an authority.
+
+**What the page shows and takes.**
+
+- The headline names the VERIFIED host, for example "claude.ai wants to connect to Metorite". The `client_name` of the document is only a claim. The page shows it second, as `It calls itself: "<name>"`, or not at all.
+- `_clean_name` refuses a name with no visible letter or digit, such as a name of Hangul fillers (U+3164, U+115F). The view then carries no name.
+- It also shows the verified origin, `redirect_display`, the organization name and each requested scope.
+- It takes a checkbox for each scope. A member can clear a box and never add a scope. The member cannot clear `offline_access`, so it shows with no box.
+- It takes a project pin picker. The picker lists up to 50 visible projects that are not personal. No pin means every project the member sees (§7).
+- It takes `include_personal`, a checkbox that is off by default (D-EA-4).
+- It has an Approve button and a Deny button. Deny navigates to `deny_redirect_to`.
+- ⚠️ **The approve gate (double-clickjacking).** An attacker's page can move its opener to this page between the two clicks of a double-click. So Approve stays off until the page is visible and has focus, and then for 500 ms more. A `blur` or a change to hidden starts the wait again. The click checks the gate again. Fences: `consent.test.ts` and `e2e/connect-authorize.spec.ts`.
+
+### 10.6 The organization allowlist (EA3-27, slice EA-10p)
+
+The flag of §5.5 is global, so when it is on, each organization can connect an agent. The owner wants a pilot. A second setting limits agent access to the organizations that it names.
+
+**The setting.** `AGENT_ACCESS_ORGS` is the Setting `agent_access_orgs`, a string with the default `""`.
+
+- It holds organization ids with a comma between them. The parser removes the spaces around each id and compares the ids in lower case.
+- `*` allows each organization.
+- An empty value allows no organization. This is fail-closed: with the flag on and no list, no organization can connect.
+- The parser ignores an entry that is not a UUID and not `*`. Such an entry allows nothing.
+- `acb_auth.agent_oauth.org_allowed(organization_id)` is the one reader. It does not read the flag. Agent access is live for an organization only when `enabled()` and `org_allowed()` are both true.
+
+**The four doors.** Each door takes the organization from the session or from a token row, never from request input.
+
+1. **The consent routes.** `check` and `approve` refuse a session whose organization is not on the list. The refusal comes before the client fetch, the consent ticket and the code. The answer is 403 with the error `org_not_enabled`. The consent page shows "Your organization has not turned on agent connections yet."
+2. **The token endpoint.** The store refuses a code exchange and a refresh for an organization that is not on the list, and the edge answers `invalid_grant`. The refresh check comes before the spend, so a refused refresh spends nothing.
+3. **The bearer check of `/mcp`.** A token whose organization is not on the list counts as no live token. The answer is 401 with `invalid_token`.
+4. **Branch 0 of the gateway.** `agent_tokens.read_live_connection` finds no connection for an organization that is not on the list. Branch 0 then refuses the request as it refuses a dead connection. The code of branch 0 does not change.
+
+**What the list does not stop.** `/oauth/revoke` still revokes a token of an organization that is not on the list, because a revoke only removes access.
+
+**Both units read it.** The gateway checks doors 1 and 4, and the edge checks doors 2 and 3. So the gateway unit and the edge unit must hold the same value. A change of the value is gate `enforcement-flip`. When an id leaves the list, the next call of that organization gets 401 and its next refresh gets `invalid_grant`.
+
+⚠️ **A unit reads the list once, at process start.** `get_settings` is `lru_cache`d, so an edit of the env file changes nothing in a running unit. To change the list:
+
+1. Set the same `AGENT_ACCESS_ORGS` in the env of the gateway and of the edge.
+2. Restart the gateway (`acb-gateway`).
+3. Restart the edge (`acb-agent-edge`).
+
+Until both units restart, the old list stays in force on the unit that did not restart.
+
+**A replay still revokes.** The refresh path runs the reuse check before the list check (fix round 1). So a replay of a spent refresh token revokes its connection, also when the organization is off the list.
+
 ## 11. Schema addition: task references
 
 A pull request, a commit and a branch are structured facts. A comment hides them, and a custom field cannot hold several. This spec proposes one table.
@@ -817,16 +918,19 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-3b-1 | **MERGED 2026-10-13 (#954, `355c18bcf`), dark, after fix rounds 1 and 2.** **The edge transport and two task tools (EA3-22).** `agent_edge/mcp.py`, `bearer.py`, `gateway_client.py`, `cursor.py`, and `tools.py` with `list_tasks` and `search_tasks` only. The wire contract of §9.6, with the order of checks. The `httpx` dependency of the edge (§5.5). It ships dark, and it does not stamp `last_used_at` | D5, D6, D7, D8, D10, D11, D16, D17, D18 and D19. The MCP half of D14. D15 rules 3 and 4. D9, D12 and D13 for `list_tasks` and `search_tasks` | AGENT-SAFE |
 | EA-3b-2 | **MERGED 2026-10-13, dark, after fix rounds 1 and 2.** **The other five read tools, and the fence edit (EA3-9).** `whoami`, `list_projects`, `get_project`, `get_task` and `get_task_timeline`, with the field lists and the `meta` allowlist of §9.1. The edit of `test_agent_oauth_server.py` of §9.4 | D9, D12 and D13 for the five tools. D20 | AGENT-SAFE |
 | EA-3c | **Accept the 2026-07-28 revision, after a copy of its text is in the tree.** Its requests are stateless with required `_meta` fields, and its results carry a `resultType` (§5.3) | A test with the pinned text shows a `2026-07-28` client can list and call each tool. EA-11 repeats it with a real client | AGENT-SAFE |
-| EA-4 | **Consent and admin.** The consent page, the Connected agents list in the Integrations app (§5.4), the org switch, the client allow list, revoke. The consent page checks `Origin` and uses a `SameSite` session. It never answers approve with a 3xx. `check` mints a one-time consent ticket, and `approve` must present it, so an approval cannot skip the screen. The redirect URI rules move from a deny list to the forms of RFC 8252: `https`, loopback `http`, and a reverse-DNS private-use scheme. EA-4 or EA-2b makes that change. EA-2c already builds the match on any loopback port (§10.4) | A revoked connection gets 401 on the next call. A suspended member gets 401. The gateway refuses a cross-site approve and an approve with no ticket | AGENT-SAFE |
+| EA-4a | **MERGED 2026-10-13, dark, after fix rounds 1 and 2** (branch `ws55-ea4-consent`). **The consent page (§10.5).** The page `/connect/authorize`, the two BFF routes, the consent ticket, the CSRF and frame rules, `redirect_display` and the RFC 8252 redirect forms. It ships dark | `test_agent_oauth_server.py`: approve with no ticket, a spent ticket or a tampered ticket gives 400. A test checks each binding field. A Redis outage gives 503. The display cases hold, `x-evil://claude.ai/cb` included. Each RFC 8252 form passes or fails as §10.5 says. vitest: each BFF route refuses `Sec-Fetch-Site: cross-site` and a missing header with 403, and never answers a 3xx. A test asserts the `SameSite=Lax` session cookie. Playwright `e2e/connect-authorize.spec.ts`, with the BFF mocked through `page.route`: the page renders, narrowing works, approve navigates, deny navigates, and the frame headers are present | AGENT-SAFE |
+| EA-4b | **Connections and revoke.** The member's list of connections in the Integrations app (§5.4), and Revoke. It waits for D-EA-9. It is not a go-live gate for a pilot (EA3-25) | A revoked connection gets 401 on the next call. A suspended member gets 401 | AGENT-SAFE |
+| EA-4c | **The organization switch and the client allow list (D-EA-8).** It is not a go-live gate for a pilot (EA3-25) | With the switch off, `check` and `approve` refuse. They also refuse a client outside the allow list | AGENT-SAFE |
 | EA-5 | **Company context.** `get_company_context` and the three resources, after D-EA-6 is answered | The result holds no data that the member could not read in the app | AGENT-SAFE |
-| EA-6 | **References and write tools.** The `pm_task_refs` migration, the `mcp` source, the write tools, the Projects UI for references | The coding scenario of §12 passes end to end on a real database. A stale version is refused | AGENT-SAFE |
+| EA-6 | **Write tools.** The `mcp` source and the write tools. `add_task_reference` calls the WS-57 route. The `pm_task_refs` table and the Projects UI for references moved to `task_references.md` (WS-57) on 2026-10-13 | The coding scenario of §12 passes end to end on a real database. A stale version is refused | AGENT-SAFE |
 | EA-7 | **Limits.** A per-connection and per-member limiter on the tenant-prefixed Redis wrapper. A 100-row cap | A test shows the 429 and the `Retry-After` value | AGENT-SAFE |
 | EA-8 | **Audit.** One `acb_audit.record` row per call, with `organization_id` set on the event. An admin read route and view | A denied call writes a row. The admin view lists calls by connection | AGENT-SAFE |
 | EA-9 | **Fences.** A tenant fence, a "no client header reaches the gateway" fence, a "no token forwarded" fence. `test_mcp_edge_coverage.py` lands earlier, in EA-3 (D15) | Each fence fails when a mutation breaks its rule (verified red first) | AGENT-SAFE |
-| EA-10 | **EA-10a and EA-10b BUILT 2026-10-13, dark, not merged.** **Deploy, as a pilot.** §15.3 pins each part. EA-10a is the unit, its sandbox and its deploy step. EA-10b is the Caddy site `mcp.metorite.com` and the header strip on `api.metorite.com` (§10.1, other control 3). EA-10c is the smoke. A check proves that the box holds `GATEWAY_INTERNAL_TOKEN` before the flag turns on (§10.1, other control 4). The signing key goes on both units (H-303). The wildcard DNS record already covers the host (§5.2). **Go-live limits (EA3-25).** Until EA-4b, no member screen revokes a connection, so a member revokes through the client or asks an admin. Until EA-4c, approve binds the organization of the member's session. **What gates the pilot.** EA-10p, the organization allowlist, gates it. EA-5 to EA-9 and EA-11 do not gate it | The flag turns on for the organizations in `AGENT_ACCESS_ORGS` (EA-10p), Fracktal first. The evidence is the deployed SHA, the smoke of §15.3 and a real client round trip | EA-10a: AGENT-SAFE (`deploy-write`). EA-10b: OWNER-GATE, gate (a). The env writes, the unit enable and the flag: OWNER-GATE |
+| EA-10p | **MERGED 2026-10-13, dark, after fix round 1.** **The organization allowlist (EA3-27, §10.6).** The Setting `agent_access_orgs`, the predicate `org_allowed` in `agent_oauth.py`, and a check at each of the four doors of §10.6. It ships dark, and the default allows no organization. EA-10 turns the flag on with `AGENT_ACCESS_ORGS=<the organization id of Fracktal>` on both units. Then it restarts `acb-gateway` and `acb-agent-edge`, because each unit reads the list only at process start | The parser: an empty value allows no organization, `*` allows each, a list works, the spaces go, and a bad entry allows nothing. Each door refuses an organization off the list and accepts one on it, and `*` accepts any. With the flag off, each door still refuses. R8, end to end: an allowed organization connects and lists tasks. Then it leaves the list, the next `tools/call` gets 401, and a refresh gets `invalid_grant`. Each door and the fail-closed rule go red under a named mutation | AGENT-SAFE |
+| EA-10 | **EA-10a and EA-10b MERGED 2026-10-13, dark, after fix rounds 1 and 2.** **Deploy, as a pilot.** §15.3 pins each part. EA-10a is the unit, its sandbox and its deploy step. EA-10b is the Caddy site `mcp.metorite.com` and the header strip on `api.metorite.com` (§10.1, other control 3). EA-10c is the smoke. A check proves that the box holds `GATEWAY_INTERNAL_TOKEN` before the flag turns on (§10.1, other control 4). The signing key goes on both units (H-303). The wildcard DNS record already covers the host (§5.2). **Go-live limits (EA3-25).** Until EA-4b, no member screen revokes a connection, so a member revokes through the client or asks an admin. Until EA-4c, approve binds the organization of the member's session. **What gates the pilot.** EA-10p, the organization allowlist, gates it. EA-5 to EA-9 and EA-11 do not gate it | The flag turns on for the organizations in `AGENT_ACCESS_ORGS` (EA-10p), Fracktal first. The evidence is the deployed SHA, the smoke of §15.3 and a real client round trip | EA-10a: AGENT-SAFE (`deploy-write`). EA-10b: OWNER-GATE, gate (a). The env writes, the unit enable and the flag: OWNER-GATE |
 | EA-11 | **Hardening review.** An adversarial review of §10, then a second pass with a real outside client | Both reviews are recorded in this file | AGENT-SAFE |
 
-Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4 and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree.
+Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4a and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-4b and EA-4c come later, and neither gates a pilot (EA3-25). EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree.
 
 ### 15.1 Verification commands
 
@@ -872,6 +976,15 @@ npx @modelcontextprotocol/inspector --cli http://127.0.0.1:<edge port>/mcp --tra
 The command must print seven tools, and no other tool. The names are `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline` and `search_tasks`. Each tool shows its `inputSchema`. After EA-3b-1 alone, the list holds `list_tasks` and `search_tasks` only. This shell has no `jq`, so check each name with `grep`.
 
 **What we know about the flags.** The repo holds no copy of the Inspector and pins no version of it. The flags `--cli`, `--transport http`, `--method tools/list` and `--header` come from the README of the Inspector CLI client (`clients/cli/README.md` on `main` of `modelcontextprotocol/inspector`, read on 2026-10-13). That README also names `--format json`, and an older release may not have it. So the builder confirms the flags with the installed version first. If the installed version does not have a flag, this check is MANUAL: run the Inspector in its browser mode, connect with the token, list the tools, and record the result in the pull request.
+
+**EA-4a (§10.5).** Run these two lines. The first runs in `workbench/control_plane`:
+
+```
+npx tsc --noEmit && npx vitest run && npx playwright test e2e/connect-authorize.spec.ts
+uv run pytest tests/unit/test_agent_oauth_server.py -v -rs
+```
+
+Six vitest failures are known and come from CRLF line ends only: `layoutBoundary` (two), `railSessions`, `emailLink` and `reportsLiveOverview` (two). Any other failure is real.
 
 Every file in these pytest lines existed on 2026-10-11, except the four new ones. With `-rs`, a skipped R8 test shows its reason. A skip is not a pass. Name the files you mean when you run pytest. Do not run `tests/unit/` as a directory.
 
@@ -1079,6 +1192,8 @@ This spec adds **no app**. Its screens join the Integrations app (§5.4, D-EA-9)
 
 Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bell, assistant rail or command-bar listener. The consent page is a standalone screen on the control plane and uses the same design system.
 
+**The consent page (EA-4a).** The page follows rules 1 to 3 and rule 8 of `workbench/control_plane/AGENTS.md`. It writes no colour, it uses `<Icon>`, it uses the primitives of `src/components/ui/`, and it imports no headless library. The builder checks it by eye in light mode, at compact density and with a changed accent.
+
 ## 17. Open risks
 
 - The MCP specification moves. EA-3 accepts only `2025-06-18` and `2025-11-25` (§5.3). A client that speaks only `2026-07-28` cannot connect until EA-3c. EA-11 must test with real clients.
@@ -1094,10 +1209,15 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 - The company context is thin today (D-EA-6).
 - **Follow-up: the backup dumps are 0664.** `backup_db.sh` sets no umask, so each nightly dump under `/opt/acb/backups` is readable by any local user. The edge sandbox hides the folder. The backup job must still write its dumps at 0600, and fix the old ones. This belongs to WS-49 (box hardening), and no slice owns it yet.
 - **Follow-up: check assignees at the gateway.** `AssigneesIn` takes any string, so a member can store a short phrase as an assignee, and the edge can only bound it (§9.4). The gateway must check each new assignee against the member directory, or against the agent registry for `agent:<name>`, before it stores the value. This belongs to the Projects app (WS-27), not to the edge. No slice owns it yet.
-- A connection has no absolute maximum life. A thief who rotates a stolen refresh token at least once in 30 days keeps the connection alive until somebody revokes it. Proposal: an absolute cap, for example 365 days from `created_at`, as a `Settings` default. EA-4 decides it. EA-1 and EA-2a do not build it.
-- The consent routes of EA-2a trust the session alone. A cross-site request could drive `approve` while a member is signed in. EA-4 closes this with an `Origin` check, a `SameSite` session, no 3xx from approve and a one-time consent ticket from `check` (§15 EA-4).
-- For a private-use scheme, `redirect_host` shows the URI authority as if it were a web host. A client can list `x-evil://claude.ai/cb`, and the consent screen then shows `claude.ai`, although the browser gives the code to the native app that claims `x-evil`. EA-4 must show the scheme with the authority for every scheme other than http and https.
-- The redirect URI rules of EA-2a are a deny list of dangerous schemes. A deny list is never complete. EA-4 or EA-2b moves them to the RFC 8252 forms.
+- A connection has no absolute maximum life. A thief who rotates a stolen refresh token at least once in 30 days keeps the connection alive until somebody revokes it. Proposal: an absolute cap, for example 365 days from `created_at`, as a `Settings` default. A later slice decides it, not EA-4. EA-1, EA-2a and EA-4a do not build it.
+- The consent routes of EA-2a trust the session alone. A cross-site request could drive `approve` while a member is signed in. EA-4a closes this with a `Sec-Fetch-Site` check, a `SameSite` session, no 3xx from approve and a one-time consent ticket from `check` (§10.5).
+- For a private-use scheme, `redirect_host` shows the URI authority as if it were a web host. A client can list `x-evil://claude.ai/cb`, and the consent screen then shows `claude.ai`, although the browser gives the code to the native app that claims `x-evil`. EA-4a shows the scheme with the authority for every scheme other than http and https (`redirect_display`, §10.5).
+- The redirect URI rules of EA-2a are a deny list of dangerous schemes. A deny list is never complete. EA-4a moves them to the RFC 8252 forms (§10.5).
+- The allow list of EA-4a refuses a private-use scheme with no dot. A client that registers such a scheme cannot connect, until it registers a loopback or `https` URI. EA-11 checks the real clients.
+- **The Cursor decision (EA-4a fix round 1).** The allow list refuses Cursor's `cursor://anysphere.cursor-retrieval/oauth/callback`, so Cursor cannot connect today.
+  - RFC 8252 §8.4 says that a server SHOULD refuse a private-use scheme with no dot. It does not say MUST.
+  - The refusal of the authority form (`scheme://authority/path`) is stricter than the RFC.
+  - Cursor registers through Dynamic Client Registration. So look at this decision again when EA-2b is built.
 - **Follow-up before GA, not for the pilot: the transaction pooler for the edge.** At GA one connection may be too few for the edge. The transaction pooler (port 6543) has more client slots, and the tenant bind of the edge is transaction-local (`acb_common/db.py:298`, `agent_tokens.py:239`). But no config in the repo uses that port. The seam sends `idle_in_transaction_session_timeout` in the startup packet (`db.py:132`). And `settings.py` makes the move its own decision. A real-database test of the edge's token acts through that pooler comes first.
 - **Follow-up before GA, not for the pilot: a narrower database role for the edge.** The edge connects with the DSN and the role of the gateway (§15.3). So code execution in the edge reaches each table that the gateway reaches, whatever the sandbox hides. The edge needs `agent_token`, `agent_client` and `agent_connection` only. The first two are RLS-exempt (§10.3). A role with grants on those three tables alone takes the database out of the blast radius. No slice owns it yet.
 - D-EA-2 says the edge unit has a smaller blast radius. That is true only after the EA-10 sandbox. The edge holds the database DSN, and EA-3 adds the signing key, not the internal bearer. A thief with the key can act as any member who holds a live connection, on the GET routes of `MCP_ROUTES` (§10.2). A thief with the DSN reaches the database directly.
@@ -1210,6 +1330,24 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The AST tests (P2).** The request-read scan also refuses `getattr` with two arguments, `.scope`, `.url`, `.body()`, `.json()` and `.form()`. §9.4 and D20 now call the scans a heuristic and name what they miss. A new test holds that a tool call receives no request object.
   - **Pages.** The `list_projects` description warns that offset pages can skip or repeat a row. A test pins the warning in the three paged tools. The timeline puts the default `kind` into the filter hash, so a cursor made with no `kind` pages a call that sends `kind: "all"`.
 - 2026-10-13 — Fix round 2 of EA-3b-2. The address shape let about 120 characters of dot-joined words leave as a plain string. Now a plain address is at most 64 characters in total, and its domain has at most 4 labels. Anything longer is `untrusted_text`. A test went red when each cap was reverted. A residual stays: a shaped value of up to 64 characters (an address, an agent name or a `field_key`) can still carry a short phrase (§9.4). The real fix is a gateway check of each assignee against the member directory, and §17 holds it as a follow-up.
+- 2026-10-13 — The spec audit of EA-4 gave NO-GO, and it narrowed the dispatch to EA-4a. This change writes the decisions EA3-25 and EA3-26 (§6.1) in. No code changed.
+  - **The slices (§15).** EA-4 splits into EA-4a (the consent page), EA-4b (the list of connections and revoke) and EA-4c (the organization switch and the client allow list). EA-4b and EA-4c do not gate a pilot.
+  - **The consent page (§10.5).** The flow, the two BFF routes, the `Sec-Fetch-Site` check, the `SameSite=Lax` session, the frame headers, the consent ticket in Redis, `redirect_display` and the RFC 8252 allow list.
+  - **Other edits.** §5.5 lets `CHROMELESS_ROUTES` gain `/connect`. §16 names the design rules of the page. §17 moves the absolute cap on the life of a connection out of EA-4. §15.1 holds the EA-4a commands.
+- 2026-10-13 — EA-4a is built, and it ships dark. It is not merged. No migration.
+  - **The gateway.** `check` gives the consent ticket, and `approve` spends it with one `GETDEL` before every other check. `TenantRedis` gains `getdel` and `OUTAGE_ERRORS`, so the route imports no Redis client. `redirect_display` and `redirect_app` replace `redirect_host`. `is_allowed_redirect_uri` is now the allow list of §10.5.
+  - **The control plane.** The page `/connect/authorize`, the BFF routes `check` and `approve` with the `Sec-Fetch-Site` check, the frame headers in `next.config.ts`, and `/connect` in `CHROMELESS_ROUTES`. The page reads the organization name from `GET /api/auth/me`, so `AuthorizeView` carries no organization field.
+  - **The fences.** `test_agent_oauth_server.py` holds the ticket, the display and the redirect forms. `relay.test.ts` holds the BFF rules, `sessionCookie.test.ts` holds `SameSite=Lax`, and `e2e/connect-authorize.spec.ts` holds the page and the frame headers. Each rule was red first under a named mutation.
+  - **Choices this slice made.** A URI with no port shows `scheme://host`, with no port. The pin picker lists the nodes of `GET /projects/tree` in tree order, folders and spaces too, because a pin covers its subtree. `test_mcp_edge_signing.py` reads `_PRIVATE_SCHEME` in place of the removed `_SCHEME`.
+- 2026-10-13 — Fix round 1 of EA-4a, after the adversarial review. Approve waits for 500 ms of focus. The headline names the verified host, and the client name is a claim. A port 0 redirect is refused. A lost session is a 401. A retry after a 503 gets a fresh ticket. §17 records the Cursor decision.
+- 2026-10-13 — Fix round 2 of EA-4a. Only a JSON 503 from `approve` gets a fresh ticket and a retry. A lost answer or an answer that is not JSON ends the flow, so a retry never makes a second connection.
+- 2026-10-13 — The owner took EA3-27 (§6.1): go-live is a pilot behind an organization allowlist, Fracktal first. §10.6 holds the rules, and §15 adds the slice EA-10p. No code changed.
+- 2026-10-13 — EA-10p is built, and it ships dark. It is not merged. No migration. The default of `agent_access_orgs` allows no organization.
+  - **The rule.** `agent_oauth.org_allowed` is the one reader of the list. The parser keeps `*` and canonical lower-case UUIDs, and it drops every other entry.
+  - **The doors.** `agent_access.py` refuses `check` and `approve` with 403 `org_not_enabled` before the client fetch and the ticket. `agent_tokens` refuses a code exchange and a refresh with `ORG_NOT_ALLOWED`, and the refresh check comes before the spend. `bearer.py` answers 401. `read_live_connection` checks the organization of the row, so branch 0 refuses. Branch 0 and its digest do not change. The consent page shows the text of `org_not_enabled`.
+  - **The fences.** `test_agent_oauth_server.py` holds the parser and doors 1 and 2. `test_mcp_edge_protocol.py` holds door 3 and the R8 round trip: connect, list, leave the list, get 401 and `invalid_grant`, come back. `test_mcp_edge_authority.py` holds door 4. `consent.test.ts` holds the page text. Each door and the fail-closed rule went red under a named mutation.
+  - **Choices this slice made.** A code exchange for an organization that left the list spends the code. The refresh check comes before the spend, so the client can refresh again when the organization comes back. `lookup_token` does not check the list, so `/oauth/revoke` still works.
+- 2026-10-13 — Fix round 1 of EA-10p, after the review. The refresh path now runs the reuse check before the list check. So a replay of a spent refresh token revokes the connection, also when the organization is off the list. §10.6 and the EA-10p row now say that each unit reads the list at process start, so a change needs a restart of `acb-gateway` and `acb-agent-edge`.
 - 2026-10-13 — The spec audit of EA-10 gave NO-GO, and the owner answered it. The pilot runs behind the allowlist `AGENT_ACCESS_ORGS` (EA-10p), Fracktal first. §15.3 now pins EA-10a, EA-10b and EA-10c. The wildcard DNS record already covers `mcp.metorite.com`, so EA-10 needs no record.
 - 2026-10-13 — EA-10a and EA-10b are built, and they ship dark. They are not merged.
   - **The unit.** `deploy/hostinger/acb-agent-edge.service` runs the edge on `127.0.0.1:8091` as `acb`, with its own env file. Its drop-in `50-hardening.conf` has the BH-2 shape and hides the root `.env`.

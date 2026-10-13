@@ -470,6 +470,8 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "projectsApi",
         "attachmentsApi",
         "notificationsApi",
+        # WS-57 TR-2: a task's URL references.
+        "refsApi",
         "watchersApi",
         "projectWatchersApi",
         "intakeApi",
