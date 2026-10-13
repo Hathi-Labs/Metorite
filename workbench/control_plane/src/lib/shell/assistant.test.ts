@@ -394,7 +394,7 @@ describe("the source keeps the flag's two sides apart", () => {
     // runs. It never opens a chat by itself. The panel button opens the chat.
     const bar = read("lib/shell/ShellBar.tsx");
     expect(bar).toContain("activity={<ActivityControl />}");
-    expect(bar).toContain("assistant={chatOn ? <AssistantToggle /> : null}");
+    expect(bar).toContain("assistant={chatOn ? <ShellAssistantButton /> : null}");
     expect(bar).toMatch(/onClick=\{\(\) => \(st\.open \? closeAssistant\(\) : openAssistant\(\)\)\}/);
   });
 
@@ -402,6 +402,20 @@ describe("the source keeps the flag's two sides apart", () => {
     expect(read("app/projects/page.tsx")).toContain("const CHAT_LIVE = chatEnabled() && !ONE_ASSISTANT;");
     expect(read("app/tasks/page.tsx")).toMatch(/chatOn \? null : \(\s*<AssistantToggle/);
     expect(read("app/email/page.tsx")).toMatch(/feature === "chat" && ONE_ASSISTANT/);
+  });
+
+  it("an ask the chat refuses waits in the composer, never vanishes (review, 2026-10-14)", () => {
+    // The field clears on Enter. A live run that cannot take a steer refuses
+    // the words, so they go back into the composer with the notice.
+    expect(read("components/AgentChat.tsx")).toContain(
+      "if (!submitText(autoSend.text)) setInput((prev) => mergeCappedText(prev, autoSend.text));",
+    );
+  });
+
+  it("a finished-run toast opens its chat in place, as the side panel", () => {
+    expect(read("lib/shell/RunSignals.tsx")).toMatch(
+      /chatOn \? openAssistant\(\{ sessionId: run\.threadId \}\) : router\.push\(chatLink/,
+    );
   });
 
   it("no bar sits at the foot of the desktop page any more (owner, 2026-10-14)", () => {

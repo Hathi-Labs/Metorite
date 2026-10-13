@@ -25,7 +25,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
@@ -57,6 +57,8 @@ import {
 } from "@/lib/runSignals";
 
 import { openActivity, useHeldHrefs } from "./ActivityControl";
+import { openAssistant } from "./assistant";
+import { shellChatOn } from "./chatFlag";
 
 function tabVisible(): boolean {
   return typeof document === "undefined" || document.visibilityState !== "hidden";
@@ -80,6 +82,10 @@ export function RunSignalsHost() {
   const heldHrefs = useHeldHrefs();
   const toast = useToast();
   const router = useRouter();
+  // D99: with the one assistant, "Open" opens the chat where the member is,
+  // as the side panel. A trip to /chat would leave their page for the full
+  // view (owner, 2026-10-14). Read once, as the other shell flags are.
+  const [chatOn] = useState(() => shellChatOn());
 
   // One toast per finished run, up to two. "Open" takes the open-chat job's
   // link, the same link as a row of the activity panel. Three or more in one
@@ -105,11 +111,15 @@ export function RunSignalsHost() {
           title: t.title,
           description: t.description,
           timeout: t.timeout,
-          action: { label: t.actionLabel, onClick: () => router.push(chatLink(run.agent, run.threadId, held)) },
+          action: {
+            label: t.actionLabel,
+            onClick: () =>
+              chatOn ? openAssistant({ sessionId: run.threadId }) : router.push(chatLink(run.agent, run.threadId, held)),
+          },
         });
       }
     },
-    [toast, router],
+    [toast, router, chatOn],
   );
 
   // Each new list: compare it with the last one.

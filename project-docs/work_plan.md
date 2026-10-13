@@ -5211,7 +5211,10 @@ acts. D101 widens that for the feed of WS-58.
 >   every desktop.
 > - **The activity control has one job.** It shows the running count and
 >   opens the list of runs. A panel button beside it opens and closes the
->   assistant, and ⌘J does the same.
+>   assistant. ⌘J opens it, and closes it when the cursor is in it.
+> - **A finished-run toast opens its chat in place,** as the side panel. A
+>   new tab or a link to `/chat` still opens the full view, because that is
+>   a page of its own.
 >
 > Fences: `oneBar.test.ts`, `assistant.test.ts`, `appBar.test.ts` and
 > `activityControl.test.ts`.

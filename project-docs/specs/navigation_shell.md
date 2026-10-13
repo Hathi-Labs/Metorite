@@ -1135,7 +1135,9 @@ general agent, and a chat bar at the foot of the page opens it. Flag
   floats over the right of the page (owner, 2026-10-14). The width never
   picks the form.
 - **Every open from closed is the side panel.** The full view opens only
-  when the member asks for it, and the next open does not start there. A
+  when the member asks for it, and the next open does not start there. The
+  "Open" of a finished-run toast opens the chat in place too. A new tab or
+  a link to `/chat` opens the full view, because `/chat` is its address. A
   stored form made one press open two different things (owner,
   2026-10-14).
 - **The full view.** The assistant covers the page column, under the shell

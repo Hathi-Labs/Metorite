@@ -211,7 +211,7 @@ export function ShellFrame({
           onOpen={() => openWith("")}
           field={unified ? <AskField /> : undefined}
           lead={lead}
-          assistant={chatOn ? <AssistantToggle /> : null}
+          assistant={chatOn ? <ShellAssistantButton /> : null}
           bell={dockOn ? <ShellBell /> : null}
           activity={<ActivityControl />}
           account={<BarAccount />}
@@ -250,7 +250,7 @@ function useShortcutLabel(): string {
  * press will do (owner, 2026-10-14: "I'm not sure when to expect the sidebar
  * or the full screen").
  */
-function AssistantToggle() {
+function ShellAssistantButton() {
   const st = useAssistant();
   const key = useBarKeyLabel().replace("K", "J");
   const label = st.open ? `Close ${ASSISTANT_NAME} (${key})` : `Open ${ASSISTANT_NAME} (${key})`;

@@ -1574,7 +1574,10 @@ export default function AgentChat({
     if (!autoSend || loadingHistory) return;
     if (autoSend.seq <= autoSentRef.current) return;
     autoSentRef.current = autoSend.seq;
-    submitText(autoSend.text);
+    // Refused (a live run that cannot take a steer): the words wait in the
+    // composer with the notice, as a refused steer does. The field that sent
+    // them has already cleared, so they must not vanish (review, 2026-10-14).
+    if (!submitText(autoSend.text)) setInput((prev) => mergeCappedText(prev, autoSend.text));
     onAutoSendConsumed?.(autoSend.seq);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSend?.seq, loadingHistory]);
