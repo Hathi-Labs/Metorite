@@ -207,6 +207,41 @@ describe("a run that crashed", () => {
   });
 });
 
+describe("a run that stopped on the daily budget (CRM-Q10)", () => {
+  // 07:30 in the local time of the runner, so the test holds in any time zone.
+  const resumes = new Date(2026, 9, 13, 7, 30).toISOString();
+  const paused = (resumesAt: string | null) =>
+    healthy({
+      last_run: {
+        kind: "reconcile",
+        status: "stopped",
+        started_at: minutesAgo(5),
+        finished_at: minutesAgo(5),
+        error: "budget",
+        credits_used: 0,
+      },
+      credits: { budget_24h: 500, used_24h: 950, resumes_at: resumesAt },
+    });
+
+  it("says that the sync is paused, and when it resumes", () => {
+    const html = draw(paused(resumes));
+    expect(html).toContain("Paused: the daily Zoho API budget is spent. It resumes at 07:30.");
+    expect(statusLines(paused(resumes), NOW).error).toBe(
+      "Paused: the daily Zoho API budget is spent. It resumes at 07:30.",
+    );
+  });
+
+  it("keeps the plain sentence when the gateway gives no time", () => {
+    expect(statusLines(paused(null), NOW).error).toBe(errorSentence("budget"));
+  });
+
+  it("names the time only for a budget stop", () => {
+    const other = paused(resumes);
+    other.last_run = { ...other.last_run!, error: "transport" };
+    expect(statusLines(other, NOW).error).toBe(errorSentence("transport"));
+  });
+});
+
 describe("the helpers", () => {
   it("reads the time", () => {
     expect(agoLabel(minutesAgo(0), NOW)).toBe("just now");
