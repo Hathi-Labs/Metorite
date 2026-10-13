@@ -1995,8 +1995,10 @@ async def _discover(ctx: _Ctx) -> None:
     ctx.discovery_tried = True
     budget_before = ctx.budget_total
     if _discovery_allowance_due(ctx):
-        # CRM-Q10: the discovery call may spend the allowance. The floor check
-        # of ``ctx.call`` still runs before it.
+        # CRM-Q10: the discovery call may spend the allowance, and no more.
+        # Advisory: the floor check of ``ctx.call`` sees only a count that Zoho
+        # reported earlier in this run, and an early discovery is the first
+        # call of its run. The cap of the allowance bounds it.
         ctx.budget_total = ctx.credits + DISCOVERY_ALLOWANCE
     try:
         raw = await ctx.call(lambda s: s.discover())

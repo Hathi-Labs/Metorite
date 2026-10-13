@@ -412,7 +412,11 @@ async def test_the_allowance_never_passes_the_provider_floor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Zoho reports fewer than CREDITS_FLOOR credits: discovery makes no call,
-    also on the allowance, and the budget goes back to what it was."""
+    also on the allowance, and the budget goes back to what it was.
+
+    This guards the order in ``ctx.call`` only. In production the early
+    discovery is the first call of its run, so no count exists yet. The spec
+    marks the floor claim advisory (``crm_platform.md`` §18, CRM-Q10)."""
     ctx = _ctx_with_no_profile(monkeypatch)
     ctx.credits_left = engine.CREDITS_FLOOR - 100
     made: list[int | None] = []
