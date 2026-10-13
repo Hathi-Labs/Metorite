@@ -5,14 +5,17 @@ Spec ``project-docs/specs/external_agent_access.md`` §5.1, §9.5, §9.6 and
 
 **What a request carries.** The four headers of
 ``acb_auth.agent_signing.signed_headers`` and nothing else that this module
-sets. No ``Authorization`` header, no member header, and no header copied
-from the client request. The gateway reads the member from the connection
-row (branch 0 of ``get_current_user``). ``trust_env`` is off, so no proxy
-setting and no ``.netrc`` entry can add a credential either.
+sets. A write (EA-6a) also carries the fifth signed header,
+``X-Agent-Nonce``, a ``Content-Type`` of JSON, and ``If-Match`` when the
+tool sends a version. No ``Authorization`` header, no member header, and no
+header copied from the client request. The gateway reads the member from the
+connection row (branch 0 of ``get_current_user``). ``trust_env`` is off, so no
+proxy setting and no ``.netrc`` entry can add a credential either.
 
 **What a request may reach.** A ``GET`` whose route template is in
-``agent_oauth.MCP_ROUTES``. The client checks the pair before it sends, and
-branch 0 checks it again.
+``agent_oauth.MCP_ROUTES``, or a write whose pair is in
+``agent_oauth.MCP_WRITE_ROUTES``. The client checks the pair before it sends,
+and branch 0 checks it again.
 
 **Where it goes.** ``agent_edge_gateway_url``, the loopback address of the
 gateway (default ``http://127.0.0.1:8080``). A test points that URL at the
@@ -29,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -45,11 +49,15 @@ _log = get_logger("agent_edge.gateway_client")
 #: The limit of each gateway request, in seconds (EA3-17).
 REQUEST_TIMEOUT_S = 10.0
 
-#: The one method the edge sends in EA-3.
+#: The method of every read.
 _GET = "GET"
 
 #: A path parameter is an id. Anything else is refused before the send.
 _ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+#: An ``If-Match`` value: the characters of an ISO-8601 timestamp, and no
+#: other. The gateway parses it strictly. This only keeps a header value plain.
+_VERSION = re.compile(r"[0-9][0-9:.+TZ-]{9,39}")
 
 #: The transport of the next requests. ``None`` is the network. A test sets
 #: the gateway app here (:func:`use_transport`).
@@ -83,9 +91,11 @@ def use_transport(transport: httpx.AsyncBaseTransport | None) -> Iterator[None]:
         _TRANSPORT[0] = prior
 
 
-def _path(template: str, path_params: Mapping[str, str]) -> str:
-    if (_GET, template) not in agent_oauth.MCP_ROUTES:
-        raise RouteRefused(f"{template} is not in MCP_ROUTES")
+def _path(template: str, path_params: Mapping[str, str], method: str = _GET) -> str:
+    if (method, template) not in agent_oauth.MCP_ROUTES:
+        raise RouteRefused(f"{method} {template} is not in MCP_ROUTES")
+    if method != _GET and (method, template) not in agent_oauth.MCP_WRITE_ROUTES:
+        raise RouteRefused(f"{method} {template} is not in MCP_WRITE_ROUTES")
     path = template
     for name, value in path_params.items():
         if not _ID.fullmatch(value):
@@ -98,16 +108,19 @@ def _path(template: str, path_params: Mapping[str, str]) -> str:
 
 def signed_request_headers(
     key: str, caller: TokenLookup, path: str, query: Sequence[tuple[str, str]],
+    *, method: str = _GET, body: bytes = b"",
 ) -> dict[str, str]:
-    """The headers of one gateway request: the four signed ones, and no other."""
+    """The signed headers of one gateway request: four for a read, and five
+    for a write, whose fifth is a fresh ``X-Agent-Nonce`` (EA3-28)."""
     return agent_signing.signed_headers(
         key,
         organization_id=caller.organization_id,
         connection_id=caller.connection_id,
         actor_via=agent_oauth.actor_via_for(caller.client_origin),
-        method=_GET,
+        method=method,
         path=path,
         query=list(query),
+        body=body,
     )
 
 
@@ -129,8 +142,7 @@ async def get(
     pairs = [(str(k), str(v)) for k, v in query]
     try:
         headers = signed_request_headers(key, caller, path, pairs)
-        base = str(get_settings().agent_edge_gateway_url).rstrip("/")
-        url = base + path + (f"?{urlencode(pairs)}" if pairs else "")
+        url = _url(path, pairs)
     except Exception as exc:  # nothing here may become a 500
         # A value the signed string or the URL cannot carry, such as a lone
         # surrogate. The tool input check refuses the known cases first. The
@@ -138,6 +150,55 @@ async def get(
         _log.warning("agent_edge.gateway_request_unbuildable", route=template,
                      error=type(exc).__name__)
         raise GatewayUnreachable(template) from None
+    return await _send(_GET, url, headers, b"", template)
+
+
+async def write(
+    key: str,
+    caller: TokenLookup,
+    method: str,
+    template: str,
+    *,
+    json_body: Mapping[str, Any],
+    path_params: Mapping[str, str] | None = None,
+    query: Sequence[tuple[str, str]] = (),
+    if_match: str | None = None,
+) -> Answer:
+    """One signed write to the gateway (EA-6a), or raise
+    :class:`GatewayUnreachable`.
+
+    The pair must be in ``MCP_WRITE_ROUTES``. The body is the compact JSON
+    of *json_body*, and the signature covers its bytes and a fresh nonce
+    (EA3-28). *if_match* goes out as ``If-Match`` when it is set, and only
+    in the shape of a timestamp. Nothing else of the client request goes out.
+    """
+    path = _path(template, path_params or {}, method)
+    pairs = [(str(k), str(v)) for k, v in query]
+    if if_match is not None and not _VERSION.fullmatch(if_match):
+        raise RouteRefused("the version is not a timestamp")
+    try:
+        body = json.dumps(dict(json_body), ensure_ascii=False,
+                          separators=(",", ":")).encode("utf-8")
+        headers = signed_request_headers(key, caller, path, pairs,
+                                         method=method, body=body)
+        headers["Content-Type"] = "application/json"
+        if if_match is not None:
+            headers["If-Match"] = if_match
+        url = _url(path, pairs)
+    except Exception as exc:  # nothing here may become a 500
+        _log.warning("agent_edge.gateway_request_unbuildable", route=template,
+                     error=type(exc).__name__)
+        raise GatewayUnreachable(template) from None
+    return await _send(method, url, headers, body, template)
+
+
+def _url(path: str, pairs: Sequence[tuple[str, str]]) -> str:
+    base = str(get_settings().agent_edge_gateway_url).rstrip("/")
+    return base + path + (f"?{urlencode(pairs)}" if pairs else "")
+
+
+async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
+                template: str) -> Answer:
     try:
         # Two limits, on purpose. httpx enforces its timeout on a socket only,
         # and an in-process transport has none, so the asyncio limit is the
@@ -148,16 +209,20 @@ async def get(
             follow_redirects=False,
             trust_env=False,
         ) as client:
-            response = await client.get(url, headers=headers)
+            if method == _GET:
+                response = await client.get(url, headers=dict(headers))
+            else:
+                response = await client.request(method, url, headers=dict(headers),
+                                                content=body)
     except Exception as exc:  # a timeout, a transport error, or any other
         _log.warning("agent_edge.gateway_unreachable", route=template,
                      error=type(exc).__name__)
         raise GatewayUnreachable(template) from None
     try:
-        body = response.json() if response.content else None
+        parsed = response.json() if response.content else None
     except ValueError:
-        body = None
-    return Answer(status=response.status_code, body=body)
+        parsed = None
+    return Answer(status=response.status_code, body=parsed)
 
 
 __all__ = [
@@ -168,4 +233,5 @@ __all__ = [
     "get",
     "signed_request_headers",
     "use_transport",
+    "write",
 ]

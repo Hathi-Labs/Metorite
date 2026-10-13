@@ -10,8 +10,11 @@ What a wrapped request answers, and nothing else:
 
 * ``method``, ``headers`` and ``scope``. Any other attribute is a recorded
   violation: ``url``, ``base_url``, ``client``, ``state``, ``app``,
-  ``cookies``, ``query_params``, ``path_params``, ``stream``, ``body``,
-  ``form``, ``_real`` and every other name.
+  ``cookies``, ``query_params``, ``path_params``, ``stream``, ``form``,
+  ``_real`` and every other name.
+* ``body()``, for a write only (EA-6a, EA3-28). Branch 0 hashes the body of a
+  write for the signature. A GET that calls ``body()`` is a recorded
+  violation.
 * ``headers.get``, ``getlist``, ``[name]`` and ``name in`` for the names of
   :data:`ALLOWED_HEADERS`. The name must be an exact ``str``: a ``str``
   subclass (which can change its own ``lower()``) is a violation. ``items``,
@@ -48,10 +51,11 @@ from typing import Annotated, Any
 
 from fastapi import Header, Request
 
-#: The four signed headers, and the two that tell branch 0 to refuse a body.
+#: The four signed headers, the two that tell branch 0 to refuse a body on a
+#: GET, and the nonce of a write (EA-6a).
 ALLOWED_HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature",
-    "x-actor-via", "content-length", "transfer-encoding",
+    "x-actor-via", "content-length", "transfer-encoding", "x-agent-nonce",
 })
 
 #: ``route`` and ``app`` find the matched template. ``path`` and
@@ -230,6 +234,13 @@ def wrap(real: Any, log: dict[str, list[str]] | None = None) -> Any:
     scope = _scope(real.scope, log["scope"])
     method = real.method
 
+    async def body() -> bytes:
+        # EA-6a: only a write reads its body. A GET that asks is a violation.
+        if str(method).upper() == "GET":
+            _violate("request.body() on a GET")
+        log.setdefault("body", []).append("body")
+        return await real.body()
+
     class _TripwireRequest:
         __slots__ = ()
 
@@ -240,6 +251,8 @@ def wrap(real: Any, log: dict[str, list[str]] | None = None) -> Any:
                 return headers
             if name == "scope":
                 return scope
+            if name == "body":
+                return body
             return _violate(f"request.{name}")
 
         def __repr__(self) -> str:

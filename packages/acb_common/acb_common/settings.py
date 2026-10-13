@@ -1173,6 +1173,12 @@ class Settings(BaseSettings):
     # the edge both read it, so both units need the same value. 🔴 A change
     # on a box is gate `enforcement-flip`.
     agent_access_orgs: str = ""
+    # EA-6a (EA3-29, spec §6.1 and §9.2): the second switch, for the WRITE
+    # tools. Default OFF. While it is false, branch 0 refuses every method
+    # other than GET with 401, so the read tools work and no write lands.
+    # `acb_auth.agent_oauth.writes_enabled` is the one reader. Only the
+    # gateway reads it. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_access_writes_enabled: bool = False
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

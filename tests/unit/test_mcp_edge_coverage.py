@@ -9,21 +9,25 @@ manifest, so a change to any of the three cannot drift silently.
 
 The four rules of §9.5. EA-3a built rules 1 and 2, the gateway half. EA-3b-1
 adds rules 3 and 4, which read the edge's tool records
-(``agent_edge/tools.py``).
+(``agent_edge/tools.py``). EA-6a widens each rule for a listed write pair.
 
-1. Each pair in ``MCP_ROUTES`` is a route the gateway serves, and its method
-   is ``GET``.
+1. Each pair in ``MCP_ROUTES`` is a route the gateway serves. Its method is
+   ``GET``, or ``PATCH`` or ``POST`` for a pair of ``MCP_WRITE_ROUTES``, which
+   is a subset of ``MCP_ROUTES`` and holds no GET (EA-6a).
 2. Each pair is class A in ``skill_projects.manifest.MANIFEST``, or it is a
-   named exception. EA-3 has one exception, ``GET /auth/me``. No class B, C
-   or X route appears.
+   named exception. EA-3 has one exception, ``GET /auth/me``. A pair of
+   ``MCP_WRITE_ROUTES`` may be class B (EA-6a). No class C or X route appears.
 3. Each tool of ``agent_edge.tools.TOOLS`` declares a ``required_scope`` (a
-   resource scope, or ``None`` for any live token), the four annotations of
-   a read, an ``inputSchema`` and an ``outputSchema`` (EA-3b-1).
-4. Each tool input maps to a parameter of its route. The parameters come
-   from ``route.dependant``, as ``test_projects_field_parity.py`` reads them.
-   Each route a tool reads is in ``MCP_ROUTES`` (EA-3b-1). An input that the
-   edge applies itself is a named exception, listed in the tool record's
-   ``edge_inputs`` and in :data:`NAMED_EDGE_INPUTS` (EA-3b-2).
+   resource scope, or ``None`` for any live token), the four annotations, an
+   ``inputSchema`` and an ``outputSchema`` (EA-3b-1). A read has the hints of
+   a read. A write has ``readOnlyHint: false`` and needs ``projects:write``.
+4. Each tool input maps to a parameter of its route: a path, query or
+   header parameter, or a field of a body model in ``dependant.body_params``
+   (EA-6a). The parameters come from ``route.dependant``, as
+   ``test_projects_field_parity.py`` reads them. Each route a tool reads or
+   writes is in ``MCP_ROUTES`` (EA-3b-1). An input that the edge applies
+   itself is a named exception, listed in the tool record's ``edge_inputs``
+   and in :data:`NAMED_EDGE_INPUTS` (EA-3b-2).
 
 Database-free. The gateway app imports, and the manifest is a tuple.
 """
@@ -33,7 +37,7 @@ import pytest
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
-from acb_auth.agent_oauth import MCP_ROUTES
+from acb_auth.agent_oauth import MCP_ROUTES, MCP_WRITE_ROUTES
 from skill_projects import manifest as m
 
 from tests.unit._routes import served_routes
@@ -58,9 +62,26 @@ def _gateway_routes() -> set[tuple[str, str]]:
     return out
 
 
-def test_the_allowlist_is_not_empty_and_is_get_only():
+#: The methods a write pair may have (EA-6a, §9.5 rule 1).
+WRITE_METHODS = frozenset({"PATCH", "POST"})
+
+
+def test_the_allowlist_is_not_empty_and_is_get_only_outside_the_write_pairs():
+    """Rule 1, the method half. Every pair outside ``MCP_WRITE_ROUTES`` is a
+    GET. Every write pair is a PATCH or a POST, and sits in ``MCP_ROUTES``."""
     assert MCP_ROUTES, "an empty allowlist would make every rule below vacuous"
-    assert {method for method, _ in MCP_ROUTES} == {"GET"}
+    assert MCP_WRITE_ROUTES <= MCP_ROUTES
+    assert {method for method, _ in MCP_ROUTES - MCP_WRITE_ROUTES} == {"GET"}
+    assert {method for method, _ in MCP_WRITE_ROUTES} <= WRITE_METHODS
+
+
+def test_the_write_pairs_are_the_two_of_ea_6a():
+    """A new write pair needs a spec amendment (§9.2, EA3-31)."""
+    expected = {
+        ("PATCH", "/projects/tasks/{task_id}"),
+        ("POST", "/projects/tasks/{task_id}/refs"),
+    }
+    assert expected == set(MCP_WRITE_ROUTES)
 
 
 def test_rule_1_each_pair_is_a_route_the_gateway_serves():
@@ -81,11 +102,13 @@ def test_rule_2_each_pair_is_class_a_or_a_named_exception():
             assert pair not in classes or classes[pair] == "A", pair
             continue
         cls = classes.get(pair)
-        if cls != "A":
+        allowed = {"A", "B"} if pair in MCP_WRITE_ROUTES else {"A"}
+        if cls not in allowed:
             wrong.append(f"{pair[0]} {pair[1]} (class {cls or 'none'})")
     assert not wrong, (
-        "MCP_ROUTES may hold only class A reads of the Projects manifest, or a "
-        "named exception. EA-3 is read-only:\n  " + "\n  ".join(wrong)
+        "MCP_ROUTES may hold only class A reads of the Projects manifest, a "
+        "class B write of MCP_WRITE_ROUTES, or a named exception:\n  "
+        + "\n  ".join(wrong)
     )
 
 
@@ -104,6 +127,9 @@ READ_HINTS = {
     "openWorldHint": False,
 }
 
+#: The four annotations of a write tool of EA-6a (§9.2).
+WRITE_HINTS = {**READ_HINTS, "readOnlyHint": False}
+
 
 def _tools() -> list:
     from agent_edge.tools import TOOLS
@@ -112,27 +138,48 @@ def _tools() -> list:
     return list(TOOLS.values())
 
 
-def _route_parameters() -> dict[str, set[str]]:
-    """``{template: names}`` of each GET route, from FastAPI's ``dependant``:
-    the path parameters and the query parameters, its dependencies too."""
+def _body_fields(dependant) -> set[str]:
+    """The names a body may carry: each field of each body MODEL, or the
+    alias of a body parameter that is not a model (EA-6a, rule 4)."""
+    from pydantic import BaseModel
+
+    names: set[str] = set()
+    for field in dependant.body_params:
+        kind = getattr(field, "type_", None) or field.field_info.annotation
+        if isinstance(kind, type) and issubclass(kind, BaseModel):
+            names |= {f.alias or n for n, f in kind.model_fields.items()}
+        else:
+            names.add(field.alias)
+    return names
+
+
+def _route_parameters() -> dict[tuple[str, str], set[str]]:
+    """``{(method, template): names}`` of each route, from FastAPI's
+    ``dependant``: the path, query and header parameters, its dependencies
+    too, and the fields of its body models (EA-6a)."""
     from gateway import main
 
-    def query(dependant) -> set[str]:
+    def nested(dependant) -> set[str]:
         names = {q.alias for q in dependant.query_params}
+        names |= {h.alias for h in dependant.header_params}
         for sub in dependant.dependencies:
-            names |= query(sub)
+            names |= nested(sub)
         return names
 
-    out: dict[str, set[str]] = {}
+    out: dict[tuple[str, str], set[str]] = {}
     for route in served_routes(main.app.routes):
-        if "GET" in (getattr(route, "methods", None) or ()):
-            dependant = route.dependant
-            out[route.path] = {p.alias for p in dependant.path_params} | query(dependant)
+        dependant = getattr(route, "dependant", None)
+        if dependant is None:  # a route with no FastAPI dependant, such as a mount
+            continue
+        names = ({p.alias for p in dependant.path_params} | nested(dependant)
+                 | _body_fields(dependant))
+        for method in getattr(route, "methods", None) or ():
+            out[(method, route.path)] = names
     return out
 
 
 def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
-    from acb_auth.agent_oauth import RESOURCE_SCOPES
+    from acb_auth.agent_oauth import PROJECTS_WRITE, RESOURCE_SCOPES
 
     wrong: list[str] = []
     for tool in _tools():
@@ -140,8 +187,11 @@ def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
             wrong.append(f"{tool.name}: no required_scope")
         elif tool.required_scope is not None and tool.required_scope not in RESOURCE_SCOPES:
             wrong.append(f"{tool.name}: required_scope {tool.required_scope!r}")
-        if dict(tool.annotations) != READ_HINTS:
+        write = tool.method != "GET"
+        if dict(tool.annotations) != (WRITE_HINTS if write else READ_HINTS):
             wrong.append(f"{tool.name}: annotations {dict(tool.annotations)}")
+        if write and tool.required_scope != PROJECTS_WRITE:
+            wrong.append(f"{tool.name}: a write needs {PROJECTS_WRITE}")
         for name in ("input_schema", "output_schema"):
             schema = getattr(tool, name, None)
             if not isinstance(schema, dict) or schema.get("type") != "object":
@@ -176,15 +226,25 @@ def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
         if set(tool.params) | edge != inputs:
             wrong.append(f"{tool.name}: inputs {sorted(inputs)} but params "
                          f"{sorted(tool.params)} and edge inputs {sorted(edge)}")
-        served = params.get(tool.route)
+        served = params.get((tool.method, tool.route))
         if served is None:
-            wrong.append(f"{tool.name}: GET {tool.route} is not a gateway route")
+            wrong.append(f"{tool.name}: {tool.method} {tool.route} is not a gateway route")
             continue
         for name, parameter in sorted(tool.params.items()):
             if parameter not in served:
                 wrong.append(f"{tool.name}: {name} maps to {parameter!r}, which "
-                             f"GET {tool.route} does not take")
+                             f"{tool.method} {tool.route} does not take")
     assert not wrong, "\n  ".join(["A tool input breaks §9.5 rule 4:", *wrong])
+
+
+def test_rule_4_reads_the_body_fields_of_a_write():
+    """EA-6a. Rule 4 sees the body model of each write route, so a write
+    input that names no field of the body fails it."""
+    params = _route_parameters()
+    assert "status_id" in params[("PATCH", "/projects/tasks/{task_id}")]
+    assert "If-Match" in params[("PATCH", "/projects/tasks/{task_id}")]
+    assert {"url", "title"} <= params[("POST", "/projects/tasks/{task_id}/refs")]
+    assert "no_such_field" not in params[("PATCH", "/projects/tasks/{task_id}")]
 
 
 def test_rule_4_the_edge_inputs_are_exactly_the_named_exceptions():
@@ -198,6 +258,8 @@ def test_rule_4_the_edge_inputs_are_exactly_the_named_exceptions():
 
 def test_rule_4_each_route_a_tool_reads_is_in_the_allowlist():
     for tool in _tools():
-        reads = (tool.route, *tool.routes)
-        missing = sorted(r for r in reads if ("GET", r) not in MCP_ROUTES)
-        assert not missing, f"{tool.name} reads routes outside MCP_ROUTES: {missing}"
+        pairs = [(tool.method, tool.route), *(("GET", r) for r in tool.routes)]
+        missing = sorted(p for p in pairs if p not in MCP_ROUTES)
+        assert not missing, f"{tool.name} reaches pairs outside MCP_ROUTES: {missing}"
+        if tool.method != "GET":
+            assert (tool.method, tool.route) in MCP_WRITE_ROUTES, tool.name

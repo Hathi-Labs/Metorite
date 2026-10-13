@@ -396,8 +396,9 @@ async def test_a_method_other_than_get_refuses(world):
 
 
 async def test_a_non_get_pair_in_the_allowlist_still_refuses(world, monkeypatch):
-    """Until EA-6 adds a nonce, branch 0 serves GET only, even for a pair that
-    a future change puts into ``MCP_ROUTES`` (§10.1, replay)."""
+    """A method other than GET needs a pair of ``MCP_WRITE_ROUTES`` and the
+    writes flag (EA-6a, EA3-29). A pair that a change puts into ``MCP_ROUTES``
+    alone stays refused (§10.1, replay)."""
     widened = agent_oauth.MCP_ROUTES | {("POST", "/projects/tasks")}
     monkeypatch.setattr(agent_oauth, "MCP_ROUTES", widened)
     headers = _signed("/projects/tasks", method="POST")
