@@ -1423,6 +1423,17 @@ not fix:
 - **The card's score** is the highest score of its folded signals, on the
   main kind's base.
 
+**Known limits of MD-1a.** The review of round 1 found these two. They do not
+block MD-1a, and a later ticket owns each one.
+
+- **The Calendar window.** `day_summary` reads only today's window, from
+  `day_start_hour` to `day_end_hour`. So a block before the day starts, or a
+  block across midnight, gives no `block_soon`. The week read of `my_calendar`
+  starts at the member's local midnight. `_working_day` falls back to the
+  default policy, not to the org's own policy (`load_policy`).
+- **The cost of a poll.** `day_summary` costs about 20 queries and 5 sessions
+  on each feed poll. The read cache of MD-5 must cover it.
+
 ### MD-1b · The feed column and the one poll, the frontend half — AGENT-SAFE (build), OWNER-GATE (turn on)
 
 Files: `src/app/api/shell/feed/route.ts`, `src/lib/shell/FeedCard.tsx`,
