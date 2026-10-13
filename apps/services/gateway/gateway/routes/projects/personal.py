@@ -1753,6 +1753,56 @@ async def my_due_tasks(user: UserContext, *, limit: int) -> dict[str, Any]:
     return {"rows": items, "today": today.isoformat(), "timezone": zone}
 
 
+#: Who closed the task: ``created_by`` of its newest ``status_change`` row
+#: (``apply_status_transition`` writes it beside ``completed_at``). An
+#: email, ``agent:<name>``, ``system:sync`` or ``system:workflow:<id>``.
+_CLOSED_BY_SQL = (
+    "(SELECT a.created_by FROM pm_activities a"
+    " WHERE a.task_id = t.id AND a.type = 'status_change'"
+    " ORDER BY a.created_at DESC, a.id DESC LIMIT 1)"
+)
+
+#: The lens rows closed at or after ``:since``, the newest first. One row
+#: for each task, so the shell's Handled group needs no dedup of its own.
+_COMPLETED_SINCE_SQL = (
+    "SELECT t.id, t.title, t.completed_at, " + _CLOSED_BY_SQL + " AS closed_by"
+    + MY_TASKS_FROM
+    + " AND t.completed_at IS NOT NULL"
+    " AND t.completed_at >= CAST(:since AS timestamptz)"
+    " ORDER BY t.completed_at DESC, t.id LIMIT :limit"
+)
+
+
+async def my_completed_since(
+    user: UserContext, since: datetime, *, limit: int,
+) -> dict[str, Any]:
+    """My tasks that closed at or after ``since``: one bounded read of the lens.
+
+    For the shell's Handled group (``my_day_feed.md`` MD-2c). It reads the
+    one membership fragment, ``MY_TASKS_FROM``, through
+    :func:`my_tasks_binds`, so a task that is not in my lens never returns.
+    ``closed_by`` is who moved the task into its closing lane.
+
+    Not a route. The shell calls it after its own ``feature:projects``
+    check. It writes nothing, and the address is the authenticated one.
+    ``pm_tasks.completed_at`` has no index: the membership join bounds the
+    read, and ``limit`` bounds the answer.
+    """
+    email = actor(user).lower()
+    size = max(1, int(limit))
+    async with _tenant_session() as db:
+        params = await my_tasks_binds(
+            db, email, archived=False, since=since, limit=size,
+        )
+        rows = (await db.execute(text(_COMPLETED_SINCE_SQL), params)).fetchall()
+    return {"rows": [{
+        "id": str(r.id),
+        "title": r.title,
+        "completed_at": _iso(r, "completed_at"),
+        "closed_by": r.closed_by,
+    } for r in rows]}
+
+
 # ── The projects I lead (WS-39 S6e, §4.8 point 1) ───────────────────────────
 #
 # `pm_projects.lead` is one address, indexed (`idx_pm_projects_lead`). A

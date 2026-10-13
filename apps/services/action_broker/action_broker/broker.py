@@ -51,6 +51,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
@@ -340,6 +341,47 @@ def read_pending(limit: int = READ_PENDING_MAX) -> list[dict[str, Any]]:
                 "ORDER BY created_at ASC, id LIMIT :limit"
             ),
             {"limit": size},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+#: The statuses of an action that a person decided. ``approved`` runs now,
+#: ``applied`` ran and ``rejected`` never runs. ``failed`` is not here: the
+#: write did not happen, so nothing was handled.
+DECIDED_STATUSES: tuple[str, ...] = ("approved", "applied", "rejected")
+#: The most rows :func:`read_decided` returns.
+READ_DECIDED_MAX = 15
+
+
+def read_decided(since: datetime, limit: int = READ_DECIDED_MAX) -> list[dict[str, Any]]:
+    """The bound tenant's actions decided at or after ``since``, the newest first.
+
+    The sibling of :func:`read_pending` for the shell's Handled group
+    (``my_day_feed.md`` MD-2c). ``reviewed_at`` is the decision: approve and
+    reject stamp it, and the later ``applied`` keeps it. ``reviewed_by`` is
+    who decided. It RAISES when the database fails, so the group reads a
+    failure and never a false empty. With no bound tenant it answers ``[]``.
+    No index serves it: the tenant, the status and ``READ_DECIDED_MAX`` rows
+    bound it.
+    """
+    org = _bound_tenant("read_decided")
+    if org is None:
+        return []
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    size = max(1, min(int(limit), READ_DECIDED_MAX))
+    statuses = ", ".join(f"'{s}'" for s in DECIDED_STATUSES)
+    with tenant_session(org) as sess:
+        rows = sess.execute(
+            text(
+                "SELECT id, actor, action, target, payload, status, "
+                "       reviewed_by, reviewed_at "
+                f"FROM pending_actions WHERE status IN ({statuses}) "
+                "AND reviewed_at >= :since "
+                "ORDER BY reviewed_at DESC, id LIMIT :limit"
+            ),
+            {"since": since, "limit": size},
         ).mappings().all()
     return [dict(r) for r in rows]
 
