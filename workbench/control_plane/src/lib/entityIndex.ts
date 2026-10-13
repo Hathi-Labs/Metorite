@@ -231,6 +231,32 @@ export function projectHref(id: string): string {
   return `/projects?project=${encodeURIComponent(id)}`;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The project a link opens, or null: the inverse of `projectHref` (WS-57
+ * TR-5). It reads `/projects?project=<uuid>`, and the same path on this
+ * app's own origin as a full URL (a link copied from the address bar). A
+ * link to any other site, or with no uuid, is null.
+ */
+export function projectIdOfHref(
+  href: string | undefined,
+  origin: string | undefined = typeof window !== "undefined" ? window.location.origin : undefined,
+): string | null {
+  if (!href) return null;
+  let url: URL;
+  try {
+    url = new URL(href, "http://in-app.invalid");
+  } catch {
+    return null;
+  }
+  const local = href.startsWith("/") && !href.startsWith("//");
+  if (!local && (!origin || url.origin !== origin)) return null;
+  if (url.pathname !== "/projects") return null;
+  const id = url.searchParams.get("project") ?? "";
+  return UUID_RE.test(id) ? id.toLowerCase() : null;
+}
+
 function distinct<T>(items: T[], key: (item: T) => string): T[] {
   const seen = new Set<string>();
   return items.filter((item) => {

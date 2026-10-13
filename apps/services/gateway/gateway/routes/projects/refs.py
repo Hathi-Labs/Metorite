@@ -60,7 +60,7 @@ from gateway.routes.projects.core import (
     router,
     wire,
 )
-from gateway.routes.projects.refs_classify import NAME_RE, RefRefused, classify
+from gateway.routes.projects.refs_classify import NAME_RE, Classified, RefRefused, classify
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -100,7 +100,7 @@ def _via() -> str:
 
     ``chat:<agent>`` is ``chat`` and ``mcp:<client>`` stays as it is. Every
     other value, and no header, is ``ui``. ``text`` belongs to TR-5, which
-    does not call this route.
+    does not call this route: it calls :func:`insert_ref` itself.
     """
     value = ACTOR_VIA.get("")
     if value.startswith("mcp:") and len(value) > 4:
@@ -363,6 +363,58 @@ async def list_refs(
     return {"rows": await refresh_from_github(task_id, rows)}
 
 
+async def insert_ref(
+    db: Any, task_id: str, found: Classified, *, title: str | None, via: str, by: str,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Write one reference inside the caller's transaction: ``(row, made)``.
+
+    The ONE insert of ``pm_task_refs``. ``POST …/refs`` calls it, and so do
+    the links from text (TR-5, ``text_links.py``, with ``via = 'text'``). A
+    new row writes one ``link`` activity. A row that already holds this
+    reference is returned with ``made`` false and writes nothing. ``row`` is
+    ``None`` only when that row was deleted between the two statements.
+
+    The caller has checked that the task is visible. This calls no network:
+    a new row has no ``fetched_at``, so the next list reads GitHub.
+    """
+    made = (await db.execute(
+        text(
+            "INSERT INTO pm_task_refs "
+            "(task_id, kind, provider, ref, url, title, via, created_by) "
+            "VALUES (CAST(:tid AS uuid), :kind, :provider, :ref, :url, :title, "
+            "        :via, :who) "
+            "ON CONFLICT (organization_id, task_id, kind, provider, ref) DO NOTHING "
+            f"RETURNING {_COLUMNS}"
+        ),
+        {
+            "tid": task_id, "kind": found.kind, "provider": found.provider,
+            "ref": found.ref, "url": found.url, "title": title,
+            "via": via, "who": by,
+        },
+    )).fetchone()
+    if made is None:
+        existing = (await db.execute(
+            text(
+                f"SELECT {_COLUMNS} FROM pm_task_refs "
+                " WHERE task_id = CAST(:tid AS uuid) AND kind = :kind "
+                "   AND provider = :provider AND ref = :ref"
+            ),
+            {"tid": task_id, "kind": found.kind, "provider": found.provider,
+             "ref": found.ref},
+        )).fetchone()
+        return (_row(existing) if existing is not None else None), False
+    row = _row(made)
+    await record_activity(
+        db, activity_type="link", created_by=by, task_id=task_id,
+        body=f"Added a reference: {found.label}",
+        meta={
+            "ref_action": "added", "ref_id": row["id"], "kind": found.kind,
+            "provider": found.provider, "ref": found.ref, "url": found.url,
+        },
+    )
+    return row, True
+
+
 @router.post("/tasks/{task_id}/refs", status_code=201)
 async def add_ref(
     task_id: str, payload: RefIn, response: Response, refresh: bool = True,
@@ -384,45 +436,13 @@ async def add_ref(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
-        made = (await db.execute(
-            text(
-                "INSERT INTO pm_task_refs "
-                "(task_id, kind, provider, ref, url, title, via, created_by) "
-                "VALUES (CAST(:tid AS uuid), :kind, :provider, :ref, :url, :title, "
-                "        :via, :who) "
-                "ON CONFLICT (organization_id, task_id, kind, provider, ref) DO NOTHING "
-                f"RETURNING {_COLUMNS}"
-            ),
-            {
-                "tid": task_id, "kind": found.kind, "provider": found.provider,
-                "ref": found.ref, "url": found.url, "title": title,
-                "via": _via(), "who": actor(user),
-            },
-        )).fetchone()
-        if made is None:
-            existing = (await db.execute(
-                text(
-                    f"SELECT {_COLUMNS} FROM pm_task_refs "
-                    " WHERE task_id = CAST(:tid AS uuid) AND kind = :kind "
-                    "   AND provider = :provider AND ref = :ref"
-                ),
-                {"tid": task_id, "kind": found.kind, "provider": found.provider,
-                 "ref": found.ref},
-            )).fetchone()
-            if existing is None:  # deleted between the two statements
-                raise HTTPException(status_code=409, detail="Add the link again.")
-            row = _row(existing)
+        row, made = await insert_ref(
+            db, task_id, found, title=title, via=_via(), by=actor(user),
+        )
+        if row is None:  # deleted between the two statements
+            raise HTTPException(status_code=409, detail="Add the link again.")
+        if not made:
             response.status_code = 200
-        else:
-            row = _row(made)
-            await record_activity(
-                db, activity_type="link", created_by=actor(user), task_id=task_id,
-                body=f"Added a reference: {found.label}",
-                meta={
-                    "ref_action": "added", "ref_id": row["id"], "kind": found.kind,
-                    "provider": found.provider, "ref": found.ref, "url": found.url,
-                },
-            )
     if not refresh:
         return row
     rows = await refresh_from_github(task_id, [row])
@@ -468,5 +488,6 @@ __all__ = [
     "RefIn",
     "github_state",
     "github_target",
+    "insert_ref",
     "refresh_from_github",
 ]
