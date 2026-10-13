@@ -3,7 +3,10 @@
 Spec ``project-docs/specs/external_agent_access.md`` §9.1, §9.4, §9.5 and
 §9.6. EA-3b-1 built ``list_tasks`` and ``search_tasks``. EA-3b-2 adds the
 other five read tools: ``whoami``, ``list_projects``, ``get_project``,
-``get_task`` and ``get_task_timeline``.
+``get_task`` and ``get_task_timeline``. EA-6a adds the references to
+``get_task`` and the first two write tools, ``set_task_status`` and
+``add_task_reference`` (§9.2). Each write needs ``projects:write``, and branch
+0 of the gateway checks the nonce, the scope, the writes flag and the cap.
 
 **The tool record (§9.5).** Each :class:`Tool` declares its ``name``,
 ``title``, ``required_scope``, ``inputSchema``, ``outputSchema``, the four
@@ -61,6 +64,7 @@ from agent_edge import cursor as cursor_mod
 from agent_edge.bearer import Caller
 from agent_edge.gateway_client import Answer, GatewayUnreachable, RouteRefused
 from agent_edge.gateway_client import get as gateway_get
+from agent_edge.gateway_client import write as gateway_write
 
 _log = get_logger("agent_edge.tools")
 
@@ -81,6 +85,19 @@ TEXT_PROJECT_NOT_FOUND = "Project not found."
 TEXT_TASK_NOT_FOUND = "Task not found."
 TEXT_BAD_CURSOR = "The cursor is not valid. List again with no cursor."
 
+#: The fixed texts of a write (EA-6a, §9.2 and §9.6).
+TEXT_WRITE_FORBIDDEN = "This member cannot change that."
+TEXT_STALE = "The task changed. Read it again."
+TEXT_CAP = "Too many changes. Wait a few minutes."
+TEXT_HUMAN_STEP = "Moving a task to done or cancelled stays a human step."
+#: A write while ``agent_access_writes_enabled`` is off (fix round 1). It is a
+#: tool error and never the MCP 401, so the client keeps its token.
+TEXT_WRITES_OFF = "Changes are turned off for agents in this organization."
+#: ``add_task_reference`` only (§9.2). The route answers 409 when a remove
+#: crossed the add, and 422 when the classifier refuses the link.
+TEXT_REF_RETRY = "The link changed while Metorite added it. Add it again."
+TEXT_REF_BAD_URL = "The input 'url' is not a link that Metorite can add."
+
 #: The four annotations of every EA-3 tool (§9.5).
 READ_ANNOTATIONS: Mapping[str, bool] = {
     "readOnlyHint": True,
@@ -88,6 +105,24 @@ READ_ANNOTATIONS: Mapping[str, bool] = {
     "idempotentHint": True,
     "openWorldHint": False,
 }
+
+#: The four annotations of a write tool (EA-6a, §9.2). Class B: it changes
+#: Metorite, it destroys nothing, and a second call with the same input
+#: changes nothing more. The call itself reaches no outside site. ⚠️ A status
+#: move emits ``pm.task.status_changed``, and a published workflow of the
+#: organization can act on it, as it does on a member's own change (§9.2).
+WRITE_ANNOTATIONS: Mapping[str, bool] = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
+#: The status categories that only a person moves a task into (§9.2). A copy
+#: of ``CLOSING_CATEGORIES`` in ``gateway/routes/projects/core.py``, because
+#: the edge may not import the gateway. ``test_mcp_edge_writes.py`` pins the
+#: two equal.
+HUMAN_ONLY_CATEGORIES: frozenset[str] = frozenset({"done", "cancelled"})
 
 _UNTRUSTED_NOTE = (
     " Each value of the form {\"untrusted_text\": ...} is text that other"
@@ -134,8 +169,19 @@ def success_result(structured: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _body_of(answer: Answer, not_found: str) -> Any:
-    """The body of a 2xx answer, or raise the mapping of EA3-16."""
+def _writes_disabled_answer(answer: Answer) -> bool:
+    """True for the coded 403 of branch 0 while the writes flag is off. The
+    gateway and the edge share the code (``agent_oauth.WRITES_DISABLED_CODE``)."""
+    body = answer.body
+    return isinstance(body, dict) and body.get("detail") == agent_oauth.WRITES_DISABLED_CODE
+
+
+def _body_of(answer: Answer, not_found: str, *, write: bool = False) -> Any:
+    """The body of a 2xx answer, or raise the mapping of EA3-16.
+
+    A write (EA-6a) maps answers of its own: the coded 403 of the writes
+    flag, any other 403, 412 and 429.
+    """
     status = answer.status
     if 200 <= status < 300:
         if answer.body is None:
@@ -143,10 +189,16 @@ def _body_of(answer: Answer, not_found: str) -> Any:
         return answer.body
     if status == 401:
         raise GatewayUnauthorized()
+    if write and status == 403 and _writes_disabled_answer(answer):
+        raise ToolError(TEXT_WRITES_OFF)
     if status == 403:
-        raise ToolError(TEXT_FORBIDDEN)
+        raise ToolError(TEXT_WRITE_FORBIDDEN if write else TEXT_FORBIDDEN)
     if status == 404:
         raise ToolError(not_found)
+    if write and status == 412:
+        raise ToolError(TEXT_STALE)
+    if write and status == 429:
+        raise ToolError(TEXT_CAP)
     if 400 <= status < 500:
         raise ToolError(TEXT_BAD_REQUEST)
     raise ToolError(TEXT_BUSY)
@@ -164,6 +216,28 @@ async def _get(ctx: Context, template: str, not_found: str, *,
     except RouteRefused:
         raise ToolError(not_found) from None
     return _body_of(answer, not_found)
+
+
+async def _write(ctx: Context, method: str, template: str, not_found: str, *,
+                 json_body: Mapping[str, Any],
+                 path_params: Mapping[str, str] | None = None,
+                 query: list[tuple[str, str]] | None = None,
+                 if_match: str | None = None,
+                 texts: Mapping[int, str] | None = None) -> tuple[int, Any]:
+    """One write through ``gateway_client.write``: ``(status, body)`` of a
+    2xx answer, or raise the write mapping of :func:`_body_of`. *texts* gives
+    a tool its own fixed text for a status of its route (§9.2)."""
+    try:
+        answer = await gateway_write(
+            ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
+            path_params=path_params, query=query or [], if_match=if_match)
+    except GatewayUnreachable:
+        raise ToolError(TEXT_BUSY) from None
+    except RouteRefused:
+        raise ToolError(TEXT_BAD_REQUEST) from None
+    if texts and answer.status in texts:
+        raise ToolError(texts[answer.status])
+    return answer.status, _body_of(answer, not_found, write=True)
 
 
 async def _together(*reads: Coroutine[Any, Any, Any]) -> list[Any]:
@@ -444,8 +518,12 @@ class Tool:
     #: The text of a gateway 404.
     not_found: str
     run: Callable[[Context, dict[str, Any]], Awaitable[dict[str, Any]]]
-    #: Every route the tool reads, :attr:`route` first.
+    #: Every GET route the tool reads. A read lists :attr:`route` first. A
+    #: write lists only the reads it makes before its write.
     routes: tuple[str, ...] = ()
+    #: The method of :attr:`route`: ``GET`` for a read. A write (EA-6a) names
+    #: ``PATCH`` or ``POST``, and its pair is in ``MCP_WRITE_ROUTES``.
+    method: str = "GET"
     #: The inputs that the edge applies itself, because :attr:`route` takes no
     #: such parameter (§9.5 rule 4). Each one needs a spec amendment.
     edge_inputs: frozenset[str] = frozenset()
@@ -1216,10 +1294,60 @@ _TASK_ID_INPUT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+#: The keys of one reference (EA-6a, §9.1 and §9.2).
+REF_KEYS: tuple[str, ...] = (
+    "id", "kind", "provider", "ref", "url", "label", "title", "state",
+)
+REFS_ROUTE = "/projects/tasks/{task_id}/refs"
+
+#: The shapes of (S) for a reference (§9.1). A value that fails its shape
+#: leaves as ``untrusted_text``. Each shape bounds what a planted phrase can
+#: carry, and does not remove it (§9.4).
+MAX_LINK_CHARS = 160
+MAX_LABEL_CHARS = 64
+_URL_RE = re.compile(
+    r"https?://[a-z0-9.-]{1,253}(?::[0-9]{1,5})?(?:[/?#][A-Za-z0-9._~%/:@!?&+=#-]*)?")
+_REF_RE = re.compile(r"[A-Za-z0-9._~%/:@!?&+=#-]{1,160}")
+_LABEL_RE = re.compile(r"[A-Za-z0-9._~%/:@!+=#-]{1,64}(?: [A-Za-z]{1,16}){0,2}")
+
+_REF_SCHEMA_PROPERTIES: dict[str, Any] = {
+    "id": {"type": "string"}, "kind": _NULLABLE_STRING, "provider": _NULLABLE_STRING,
+    "ref": _SHAPED_OR_NULL, "url": _SHAPED_OR_NULL, "label": _SHAPED_OR_NULL,
+    "title": _UNTRUSTED_OR_NULL, "state": _NULLABLE_STRING,
+}
+_REF_SCHEMA = _object(_REF_SCHEMA_PROPERTIES)
+
+
+def _capped(value: Any, pattern: re.Pattern[str], cap: int) -> str | dict[str, str] | None:
+    """:func:`shaped` with a cap on the length of the plain string."""
+    if isinstance(value, str) and len(value) > cap:
+        return untrusted(value)
+    return shaped(value, pattern)
+
+
+def reference(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One reference of ``pm_task_refs`` (§9.1). The pinned keys, and no other.
+
+    A database CHECK shapes ``kind``, ``provider`` and ``state``. ``ref``,
+    ``url`` and ``label`` are (S). ``title`` is free text, so it is (U).
+    """
+    return {
+        "id": str(row.get("id")),
+        "kind": _key(row.get("kind")),
+        "provider": _key(row.get("provider")),
+        "ref": _capped(row.get("ref"), _REF_RE, MAX_LINK_CHARS),
+        "url": _capped(row.get("url"), _URL_RE, MAX_LINK_CHARS),
+        "label": _capped(row.get("label"), _LABEL_RE, MAX_LABEL_CHARS),
+        "title": untrusted(row.get("title")),
+        "state": _key(row.get("state")),
+    }
+
+
 _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "task": _TASK_SCHEMA,
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "links": {"type": "array", "items": _LINK_SCHEMA},
+    "refs": {"type": "array", "items": _REF_SCHEMA},
 })
 
 
@@ -1295,13 +1423,17 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise ToolError(TEXT_BUSY)
     project = str(row.get("project_id"))
+    # EA-6a: the references, with `refresh=false`, so no call reads GitHub.
     reads: list[Coroutine[Any, Any, Any]] = [
-        _get(ctx, RELATIONS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)]
+        _get(ctx, RELATIONS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where),
+        _get(ctx, REFS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
+             query=[("refresh", "false")]),
+    ]
     if _id(project) is not None:
         reads.append(_status_names(ctx, [project]))
     found = await _together(*reads)
-    relations = found[0]
-    names = found[1].get(project, {}) if len(found) > 1 else {}
+    relations, refs = found[0], found[1]
+    names = found[2].get(project, {}) if len(found) > 2 else {}
     if not isinstance(relations, dict):
         raise ToolError(TEXT_BUSY)
     subtasks, links = relations.get("subtasks"), relations.get("links")
@@ -1311,6 +1443,7 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if isinstance(subtasks, list) else [],
         "links": [_link(r) for r in links or () if isinstance(r, dict)]
         if isinstance(links, list) else [],
+        "refs": [reference(r) for r in _rows_of(refs)],
     }
 
 
@@ -1320,9 +1453,10 @@ GET_TASK = Tool(
     description=(
         "Read one task this member can see: its title, description, status,"
         " assignees, priority, dates, tags, custom fields and version, with"
-        " its subtasks and its links to other tasks. version is the token a"
-        " later write sends back. The status name is null when the member"
-        " cannot open the task's project." + _UNTRUSTED_NOTE
+        " its subtasks, its links to other tasks and its references (pull"
+        " requests, commits, branches and documents). version is the token"
+        " that set_task_status sends back as expected_version. The status name"
+        " is null when the member cannot open the task's project." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_TASK_ID_INPUT,
@@ -1331,7 +1465,7 @@ GET_TASK = Tool(
     params={"task_id": "task_id"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_get_task,
-    routes=(TASK_ROUTE, RELATIONS_ROUTE, STATUSES_ROUTE),
+    routes=(TASK_ROUTE, RELATIONS_ROUTE, REFS_ROUTE, STATUSES_ROUTE),
 )
 
 
@@ -1530,20 +1664,193 @@ GET_TASK_TIMELINE = Tool(
 )
 
 
+# ── set_task_status (EA-6a, §9.2) ───────────────────────────────────────────
+
+#: The keys of the result of ``set_task_status`` (§9.2).
+SET_STATUS_KEYS: tuple[str, ...] = ("id", "status", "version")
+
+#: An ``expected_version``: the ``version`` that ``get_task`` returned, an
+#: ISO-8601 timestamp. The gateway parses it strictly (``core.py:1837``).
+_VERSION_PATTERN = "^[0-9][0-9:.+TZ-]{9,39}$"
+
+_SET_STATUS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks or get_task."},
+        "status_id": {"type": "string", "pattern": _UUID_PATTERN,
+                      "description": "The new status. An id from get_project."},
+        "expected_version": {
+            "type": "string", "pattern": _VERSION_PATTERN,
+            "description": "The version that get_task returned for this task."},
+    },
+    "required": ["task_id", "status_id", "expected_version"],
+    "additionalProperties": False,
+}
+
+_SET_STATUS_OUTPUT: dict[str, Any] = _object({
+    "id": {"type": "string"}, "status": _STATUS_SCHEMA, "version": _NULLABLE_STRING,
+})
+
+
+async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """Read the task and the categories of its statuses, then PATCH the status.
+
+    The edge refuses a move into a category of :data:`HUMAN_ONLY_CATEGORIES`
+    before the write. When the member cannot open the task's project, the
+    edge cannot read the category, so it refuses too (§9.2).
+    """
+    where = {"task_id": str(args["task_id"])}
+    row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)
+    project = _id(row.get("project_id")) if isinstance(row, dict) else None
+    if project is None:
+        raise ToolError(TEXT_BUSY)
+    try:
+        body = await _get(ctx, STATUSES_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          path_params={"project_id": project})
+    except ToolError as exc:
+        if exc.text == TEXT_BUSY:
+            raise
+        raise ToolError(TEXT_WRITE_FORBIDDEN) from None
+    statuses = {str(r.get("id")).lower(): r for r in _rows_of(body)}
+    target = statuses.get(str(args["status_id"]).lower())
+    if target is None:
+        raise ToolError(TEXT_BAD_REQUEST)
+    if target.get("category") in HUMAN_ONLY_CATEGORIES:
+        raise ToolError(TEXT_HUMAN_STEP)
+    _, after = await _write(
+        ctx, "PATCH", TASK_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
+        json_body={"status_id": str(target.get("id"))},
+        if_match=str(args["expected_version"]))
+    if not isinstance(after, dict):
+        raise ToolError(TEXT_BUSY)
+    status_id = after.get("status_id")
+    named = statuses.get(str(status_id).lower()) if status_id is not None else None
+    name = named.get("name") if named is not None else None
+    return {
+        "id": str(after.get("id")),
+        "status": {
+            "id": str(status_id) if status_id is not None else "",
+            "name": untrusted(name) if isinstance(name, str) else None,
+        },
+        "version": _str_or_none(after.get("updated_at")),
+    }
+
+
+SET_TASK_STATUS = Tool(
+    name="set_task_status",
+    title="Set a task status",
+    description=(
+        "Move one task this member can see to another status of its project."
+        " Send the version that get_task returned as expected_version. When the"
+        " task changed after that read, the tool refuses, and you read the task"
+        " again. A move into a done or cancelled status stays a human step, so"
+        " the tool refuses it. Returns the task id, its status and its new"
+        " version." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_SET_STATUS_INPUT,
+    output_schema=_SET_STATUS_OUTPUT,
+    route=TASK_ROUTE,
+    params={"task_id": "task_id", "status_id": "status_id",
+            "expected_version": "If-Match"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_set_task_status,
+    routes=(TASK_ROUTE, STATUSES_ROUTE),
+    method="PATCH",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
+# ── add_task_reference (EA-6a, §9.2) ────────────────────────────────────────
+
+#: The keys of the result of ``add_task_reference`` (§9.2).
+ADD_REF_KEYS: tuple[str, ...] = (*REF_KEYS, "created")
+
+_ADD_REF_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks or get_task."},
+        "url": {"type": "string", "minLength": 1, "maxLength": 2048,
+                "description": "The link: a pull request, an issue, a commit,"
+                               " a branch or a document, with http or https."},
+        "title": {"type": "string", "minLength": 1, "maxLength": 300,
+                  "description": "A short title for the link."},
+    },
+    "required": ["task_id", "url"],
+    "additionalProperties": False,
+}
+
+_ADD_REF_OUTPUT: dict[str, Any] = _object({
+    **_REF_SCHEMA_PROPERTIES, "created": {"type": "boolean"},
+})
+
+
+async def _add_task_reference(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST the link to the WS-57 route with ``refresh=false`` (§9.2).
+
+    A new row answers 201 and a row that already holds the link answers 200,
+    so ``created`` tells the two apart.
+    """
+    payload: dict[str, Any] = {"url": str(args["url"])}
+    if "title" in args:
+        payload["title"] = str(args["title"])
+    status, row = await _write(
+        ctx, "POST", REFS_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])}, json_body=payload,
+        query=[("refresh", "false")],
+        texts={409: TEXT_REF_RETRY, 422: TEXT_REF_BAD_URL})
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    return {**reference(row), "created": status == 201}
+
+
+ADD_TASK_REFERENCE = Tool(
+    name="add_task_reference",
+    title="Add a task reference",
+    description=(
+        "Attach one link to a task this member can see: a pull request, an"
+        " issue, a commit, a branch or a document. The same link twice keeps"
+        " one row, and created is false the second time. Metorite reads no"
+        " outside site for this call. Returns the reference with its kind,"
+        " provider, short label and title." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_ADD_REF_INPUT,
+    output_schema=_ADD_REF_OUTPUT,
+    route=REFS_ROUTE,
+    params={"task_id": "task_id", "url": "url", "title": "title"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_add_task_reference,
+    routes=(),
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
 # ── The registry ────────────────────────────────────────────────────────────
 
-#: Every tool of the edge, by name, in the order of ``tools/list``.
+#: Every tool of the edge, by name, in the order of ``tools/list``. The two
+#: write tools of EA-6a come last.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
-    SEARCH_TASKS,
+    SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE,
 )}
 
 
+def offered(tool: Tool) -> bool:
+    """A read always. A write only while the writes flag is on (fix round 1),
+    read through the ONE reader, ``agent_oauth.writes_enabled``."""
+    return tool.method == "GET" or agent_oauth.writes_enabled()
+
+
 def listed(scopes: frozenset[str]) -> list[dict[str, Any]]:
-    """The ``tools/list`` entries that *scopes* cover. Varies only by scope."""
+    """The ``tools/list`` entries that *scopes* cover. Varies by scope, and a
+    write tool shows only while the writes flag is on (EA-6a)."""
     return [
         t.describe() for t in TOOLS.values()
-        if t.required_scope is None or t.required_scope in scopes
+        if (t.required_scope is None or t.required_scope in scopes) and offered(t)
     ]
 
 
@@ -1552,8 +1859,11 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
 
     Raises :class:`GatewayUnauthorized` for a gateway 401, which the
     transport answers as the MCP 401. Every other failure is a result with
-    ``isError: true``.
+    ``isError: true``. A write tool while the writes flag is off answers
+    :data:`TEXT_WRITES_OFF` and makes no gateway request.
     """
+    if not offered(tool):
+        return error_result(TEXT_WRITES_OFF)
     try:
         args = check_input(tool.input_schema, arguments)
         async with asyncio.timeout(TOOL_TIMEOUT_S):
@@ -1566,11 +1876,14 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "ADD_REF_KEYS",
+    "ADD_TASK_REFERENCE",
     "FIELD_KEYS",
     "GET_PROJECT",
     "GET_TASK",
     "GET_TASK_KEYS",
     "GET_TASK_TIMELINE",
+    "HUMAN_ONLY_CATEGORIES",
     "LINK_KEYS",
     "LIST_PROJECTS",
     "LIST_TASKS",
@@ -1579,23 +1892,34 @@ __all__ = [
     "PROJECT_KEYS",
     "PROJECT_ROW_KEYS",
     "READ_ANNOTATIONS",
+    "REF_KEYS",
     "SEARCH_HIT_KEYS",
     "SEARCH_TASKS",
+    "SET_STATUS_KEYS",
+    "SET_TASK_STATUS",
     "STATUS_KEYS",
     "SUBTASK_KEYS",
     "TAG_KEYS",
     "TEXT_BAD_CURSOR",
     "TEXT_BAD_REQUEST",
     "TEXT_BUSY",
+    "TEXT_CAP",
     "TEXT_FORBIDDEN",
+    "TEXT_HUMAN_STEP",
     "TEXT_PROJECT_NOT_FOUND",
+    "TEXT_REF_BAD_URL",
+    "TEXT_REF_RETRY",
+    "TEXT_STALE",
     "TEXT_TASK_NOT_FOUND",
+    "TEXT_WRITES_OFF",
+    "TEXT_WRITE_FORBIDDEN",
     "TIMELINE_ROW_KEYS",
     "TOOLS",
     "TOOL_TIMEOUT_S",
     "TYPE_KEYS",
     "WHOAMI",
     "WHOAMI_KEYS",
+    "WRITE_ANNOTATIONS",
     "Context",
     "GatewayUnauthorized",
     "Tool",
@@ -1604,6 +1928,8 @@ __all__ = [
     "check_input",
     "field_value",
     "listed",
+    "offered",
+    "reference",
     "timeline_meta",
     "untrusted",
 ]

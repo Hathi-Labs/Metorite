@@ -22,7 +22,9 @@ gives the answer, and no later check runs:
 7. Version: after ``initialize``, ``MCP-Protocol-Version`` must be absent
    (served as ``2025-03-26``) or one of :data:`SUPPORTED_VERSIONS`, or 400.
 8. Scope: a ``tools/call`` of a known tool that the effective scopes do not
-   cover is 403 ``insufficient_scope``. ONLY this check sends that error.
+   cover is 403 ``insufficient_scope``. ONLY this check sends that error. A
+   write tool while the writes flag is off skips it, and the call answers a
+   tool error (EA-6a fix round 1).
 
 **The error body (EA3-13).** Each 4xx and each 503 carries a JSON-RPC error
 with ``id: null``. The code is ``-32700`` for a body that is not JSON,
@@ -253,7 +255,10 @@ async def endpoint(request: Request) -> Response:
     if kind == "request" and method == "tools/call":
         name = params.get("name")
         tool = tools.TOOLS.get(name) if isinstance(name, str) else None
-        if tool is not None and not bearer.covers(caller.scopes, tool.required_scope):
+        # A write tool that the writes flag turns off needs no scope: the call
+        # answers the tool error, so a client never steps up for it (EA-6a).
+        if (tool is not None and tools.offered(tool)
+                and not bearer.covers(caller.scopes, tool.required_scope)):
             _log.info("agent_edge.insufficient_scope", tool=tool.name,
                       connection_id=caller.lookup.connection_id)
             return challenge_403(tool.required_scope or "")

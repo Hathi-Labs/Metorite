@@ -25,8 +25,9 @@ only when the flag is on AND the list allows it. The default allows none.
 Four doors check it (spec §10.6): the consent routes, the store's token
 issue, the edge bearer check and the connection read of branch 0.
 
-**The MCP read surface (EA-3a).** :data:`MCP_ROUTES` is the one allowlist of
-gateway routes an outside agent may reach. :func:`actor_via_for` gives the
+**The MCP surface (EA-3a, EA-6a).** :data:`MCP_ROUTES` is the one allowlist of
+gateway routes an outside agent may reach. :data:`MCP_WRITE_ROUTES` names its
+write pairs, and :func:`writes_enabled` is the one reader of the writes flag. :func:`actor_via_for` gives the
 ``mcp:<slug>`` stamp of a connection. :data:`ACTOR_VIA_PATTERN` is the one
 shape of that stamp, and the Projects routes import it from here.
 
@@ -104,6 +105,24 @@ def scope_string(scopes: Iterable[str]) -> str:
 def enabled() -> bool:
     """True when ``agent_access_enabled`` is on. The ONE reader of the flag."""
     return bool(get_settings().agent_access_enabled)
+
+
+def writes_enabled() -> bool:
+    """True when ``agent_access_writes_enabled`` is on (EA-6a, EA3-29).
+
+    The ONE reader of the writes flag, for both units. The edge leaves the
+    write tools out of ``tools/list`` and refuses a call of one while it is
+    false. Branch 0 refuses every signed write with
+    :data:`WRITES_DISABLED_CODE`. It does not read :func:`enabled`: a write
+    needs both.
+    """
+    return bool(get_settings().agent_access_writes_enabled)
+
+
+#: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
+#: writes flag is off (EA-6a fix round 1). The edge maps it to a tool error,
+#: never to the MCP 401, so a client keeps its token and its reads.
+WRITES_DISABLED_CODE = "agent_writes_disabled"
 
 
 # ── The organization allowlist (EA-10p, spec §10.6, decision EA3-27) ────────
@@ -497,11 +516,22 @@ def redirect_host(uri: str) -> str:
 #: ``deps.get_current_user`` checks the stamp too. ONE copy.
 ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 
+#: The write pairs of the MCP edge (EA-6a, EA3-29). A subset of
+#: :data:`MCP_ROUTES`, and no pair here is a GET. Branch 0 admits a method
+#: other than GET only for one of these pairs, and only with the writes flag,
+#: ``projects:write`` on the connection, a fresh nonce and room under the cap.
+#: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
+MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("PATCH", "/projects/tasks/{task_id}"),
+    ("POST", "/projects/tasks/{task_id}/refs"),
+})
+
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
 #: full FastAPI route template. Branch 0 of ``deps.get_current_user`` refuses
 #: every other pair, and the edge client reads this set before it sends a
-#: request. EA-3 lists the GET routes of the seven read tools (§9.1) and no
-#: write. Fence: ``tests/unit/test_mcp_edge_coverage.py``.
+#: request. EA-3 listed the GET routes of the seven read tools (§9.1). EA-6a
+#: adds the references read and the two write pairs of
+#: :data:`MCP_WRITE_ROUTES` (§9.2). Fence: ``tests/unit/test_mcp_edge_coverage.py``.
 MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/auth/me"),
     ("GET", "/projects/tree"),
@@ -514,8 +544,18 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks/{task_id}"),
     ("GET", "/projects/tasks/{task_id}/relations"),
     ("GET", "/projects/tasks/{task_id}/timeline"),
+    ("GET", "/projects/tasks/{task_id}/refs"),
     ("GET", "/projects/search"),
+    *MCP_WRITE_ROUTES,
 })
+
+#: The cap of EA3-30: a connection makes at most :data:`WRITE_CAP` writes in
+#: :data:`WRITE_WINDOW_S` seconds, counted from its first write of the window.
+#: Branch 0 counts in the tenant Redis wrapper, under the namespace
+#: :data:`WRITE_CAP_NAMESPACE`, and the 121st write gets 429.
+WRITE_CAP = 120
+WRITE_WINDOW_S = 600
+WRITE_CAP_NAMESPACE = "agent_writes"
 
 
 def actor_via_for(client_origin: str | None) -> str:
@@ -560,12 +600,17 @@ __all__ = [
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
     "MCP_ROUTES",
+    "MCP_WRITE_ROUTES",
     "OFFLINE_ACCESS",
     "PROJECTS_READ",
     "PROJECTS_WRITE",
     "RESOURCE_SCOPES",
     "S256",
     "SUPPORTED_SCOPES",
+    "WRITES_DISABLED_CODE",
+    "WRITE_CAP",
+    "WRITE_CAP_NAMESPACE",
+    "WRITE_WINDOW_S",
     "actor_via_for",
     "allowed_orgs",
     "ascii_host",
@@ -589,4 +634,5 @@ __all__ = [
     "s256",
     "scope_string",
     "token_endpoint",
+    "writes_enabled",
 ]

@@ -79,7 +79,7 @@ import secrets
 from collections.abc import Collection
 from typing import Annotated
 
-from acb_common import bind_run_context, db_busy, get_logger
+from acb_common import bind_run_context, db_busy, get_logger, tenant_redis
 from acb_common.db import bind_tenant, clear_tenant
 from fastapi import Depends, Header, HTTPException, Request
 
@@ -473,10 +473,11 @@ def _one_header(request: Request, name: str) -> str | None:
 
 #: Refusals that anybody on the internet can cause without a key. They log at
 #: info, so a stranger cannot fill the warning log. A refusal after a good
-#: signature logs at warning, because only a key holder reaches it.
+#: signature logs at warning, because only a key holder reaches it. The two
+#: write refusals of EA-6a, "method" and "nonce", come before the signature.
 _UNSIGNED_REFUSALS = frozenset({
     "disabled", "no_key", "headers", "connection_header", "body", "query",
-    "signature",
+    "signature", "method", "nonce",
 })
 
 
@@ -488,10 +489,13 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 
 def _verify_signed_request(
-    request: Request, keys: dict[str, str],
+    request: Request, keys: dict[str, str], body: bytes, nonce: str | None,
 ) -> tuple[str, str, str] | str:
     """Step 2 of branch 0: ``(organization, connection, actor stamp)`` of a
     well-signed, fresh request, or the reason to refuse it.
+
+    A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
+    ``_agent_user`` read and the nonce it checked, and both are signed.
     """
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
@@ -503,10 +507,14 @@ def _verify_signed_request(
     organization_id, _, connection_id = connection_header.partition(".")
     if not organization_id or not connection_id:
         return "connection_header"
-    # A GET has no body, so the body line is the hash of zero bytes. A request
+    # A GET has no nonce and a write has one. Anything else never signs.
+    if (request.method.upper() == "GET") != (nonce is None):
+        return "nonce"
+    # A GET has no body, so the body line is the hash of zero bytes. A GET
     # that announces a body is refused rather than read.
-    if request.headers.get("content-length", "0").strip() not in ("", "0") or (
-        "transfer-encoding" in request.headers
+    if nonce is None and (
+        request.headers.get("content-length", "0").strip() not in ("", "0")
+        or "transfer-encoding" in request.headers
     ):
         return "body"
     # The path and the query come from the ASGI scope, never from `request.url`.
@@ -526,6 +534,8 @@ def _verify_signed_request(
         method=request.method,
         path=str(request.scope.get("path") or ""),
         query=pairs,
+        body=body,
+        nonce=nonce,
     )
     if not agent_signing.verify(signature, canonical, keys):
         return "signature"
@@ -558,6 +568,86 @@ async def _read_connection(
         return None
 
 
+#: The detail of the 503 of a Redis outage on a write (EA3-28).
+WRITES_UNAVAILABLE_DETAIL = "Metorite could not check this change. Try again."
+
+#: The detail of the 429 of the cap (EA3-30).
+WRITE_CAP_DETAIL = "Too many changes from this connection. Wait a few minutes."
+
+
+def _writes_disabled() -> HTTPException:
+    """The 403 of a SIGNED write while ``agent_access_writes_enabled`` is off.
+
+    EA-6a fix round 1. Its ``detail`` is ``agent_oauth.WRITES_DISABLED_CODE``,
+    and the edge maps that code to a tool error. A 401 here made the edge
+    answer the MCP 401, so a client dropped a good token and lost its reads.
+    """
+    _log.info("auth.agent_refused", reason="writes_disabled")
+    return HTTPException(status_code=403, detail=agent_oauth.WRITES_DISABLED_CODE)
+
+
+async def _claim_write(
+    connection: agent_tokens.LiveConnection, nonce: str,
+) -> str | None:
+    """Steps 5b to 5d of branch 0, for a write (EA-6a, EA3-28 to EA3-30).
+
+    5b: the connection's scopes hold ``projects:write``, else
+    ``"write_scope"``. Then, in the tenant Redis wrapper bound to the ROW's
+    organization: 5c ``SET NX EX`` of the nonce, and 5d ``INCR`` of the
+    connection's counter. Returns ``"replay"`` when the key already holds
+    the nonce. Each string is a refusal (401). Returns ``None`` when the
+    write may go on.
+
+    Raises the 503 of a Redis outage or of a client that cannot be built
+    (``Retry-After: 2``), never a 401 or a 500, and
+    the 429 of the cap with the seconds left in the window. The counter's
+    life starts at the first write of the window. A counter whose expire
+    was lost gets one again, so it never pins a connection for good.
+    """
+    if agent_oauth.PROJECTS_WRITE not in connection.scopes:
+        return "write_scope"
+    organization_id = connection.organization_id
+    connection_id = connection.connection_id
+    over: int | None = None
+    try:
+        # Inside the `try` (fix round 1): a client that cannot be built, such
+        # as one with a malformed `redis_url`, is the 503, never a 500.
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(organization_id):
+            fresh = await client.set(
+                tenant_redis.key(agent_signing.NONCE_NAMESPACE, connection_id, nonce),
+                "1", nx=True, ex=agent_signing.NONCE_TTL_S,
+            )
+            if not fresh:
+                return "replay"
+            counter = tenant_redis.key(agent_oauth.WRITE_CAP_NAMESPACE, connection_id)
+            count = int(await client.incr(counter))
+            if count == 1:
+                await client.expire(counter, agent_oauth.WRITE_WINDOW_S)
+            if count > agent_oauth.WRITE_CAP:
+                left = int(await client.ttl(counter))
+                if left < 0:
+                    await client.expire(counter, agent_oauth.WRITE_WINDOW_S)
+                    left = agent_oauth.WRITE_WINDOW_S
+                over = max(left, 1)
+    except Exception as exc:
+        # Every failure of the store fails closed as the 503: an outage
+        # (`tenant_redis.OUTAGE_ERRORS`), and a client that cannot be built.
+        _log.warning("auth.agent_write_redis_unavailable", error=type(exc).__name__,
+                     connection_id=connection_id)
+        raise HTTPException(
+            status_code=503, detail=WRITES_UNAVAILABLE_DETAIL,
+            headers={"Retry-After": "2"},
+        ) from exc
+    if over is not None:
+        _log.warning("auth.agent_write_cap", connection_id=connection_id)
+        raise HTTPException(
+            status_code=429, detail=WRITE_CAP_DETAIL,
+            headers={"Retry-After": str(over)},
+        )
+    return None
+
+
 
 async def _agent_user(request: Request) -> UserContext:
     """Branch 0 of :func:`get_current_user`: the seven steps of spec §10.1.
@@ -570,6 +660,13 @@ async def _agent_user(request: Request) -> UserContext:
     The order differs from the numbering of §10.1 on purpose: the stamp and
     both organization checks run BEFORE the member resolve, so a refused
     request never binds a tenant.
+
+    A write (EA-6a, EA3-28 to EA3-30) is a method other than GET. It needs a
+    pair of ``MCP_WRITE_ROUTES`` and a well-formed nonce before its body is
+    read and signed. After the signature, the writes flag: off answers the
+    coded 403 of :func:`_writes_disabled`. Then ``projects:write`` on the
+    connection, a fresh nonce and room under the cap before the resolve. A
+    Redis outage answers 503 and the cap answers 429 (:func:`_claim_write`).
 
     ⚠️ A database outage is not a refusal. It answers the ONE 503 of
     :func:`_identity_unavailable`, with ``Retry-After: 2``, and it never
@@ -594,21 +691,40 @@ async def _agent_user(request: Request) -> UserContext:
     if not keys:
         return _refuse_agent("no_key")
 
+    # The pair of the method and the matched route template. The template
+    # comes from `_matched_template`, which has no URL fallback. With no
+    # matched route it is None, and no pair holds None.
+    method = request.method.upper()
+    pair = (method, _matched_template(request))
+
+    # 2a. A write (EA-6a, EA3-28). BEFORE the body is read: a pair of
+    # MCP_WRITE_ROUTES and a well-formed nonce. Then the body, which the
+    # signature covers. A GET reads no body.
+    body = b""
+    nonce = None
+    if method != "GET":
+        if pair not in agent_oauth.MCP_WRITE_ROUTES:
+            return _refuse_agent("method")
+        nonce = _one_header(request, agent_signing.HEADER_NONCE)
+        if not agent_signing.nonce_is_well_formed(nonce):
+            return _refuse_agent("nonce")
+        body = await request.body()
+
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
-    signed = _verify_signed_request(request, keys)
+    signed = _verify_signed_request(request, keys, body, nonce)
     if isinstance(signed, str):
         return _refuse_agent(signed)
     organization_id, connection_id, actor_via = signed
 
-    # 3. GET only, and the matched route template is in MCP_ROUTES. The
-    # template comes from `_matched_template`, which has no URL fallback.
-    method = request.method.upper()
-    if method != "GET":
-        return _refuse_agent("method")
-    if request.scope.get("route") is None or (
-        method, _matched_template(request)
-    ) not in agent_oauth.MCP_ROUTES:
+    # 3. The matched route template is in MCP_ROUTES.
+    if pair not in agent_oauth.MCP_ROUTES:
         return _refuse_agent("route")
+
+    # 3b. A signed write while the writes flag is off (EA3-29, fix round 1):
+    # the coded 403, never the 401, so the edge keeps the client's token.
+    # After the signature, so only a key holder learns the flag's state.
+    if nonce is not None and not agent_oauth.writes_enabled():
+        raise _writes_disabled()
 
     # 4. The live connection, read in the SIGNED organization.
     connection = await _read_connection(organization_id, connection_id)
@@ -631,6 +747,13 @@ async def _agent_user(request: Request) -> UserContext:
         or not agent_oauth.ACTOR_VIA_PATTERN.fullmatch(expected_via)
     ):
         return _refuse_agent("actor_via", **ids)
+
+    # 5b to 5d, a write only: `projects:write` on the connection (EA3-29), a
+    # fresh nonce (EA3-28) and room under the cap (EA3-30). They run before
+    # the resolve, so a refused write binds no tenant.
+    refused = None if nonce is None else await _claim_write(connection, nonce)
+    if refused is not None:
+        return _refuse_agent(refused, **ids)
 
     # 6. The member from the ROW, never from a header. Resolved as a request.
     resolved = await _with_resolved_access(

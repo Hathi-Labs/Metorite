@@ -1,6 +1,10 @@
 # External agent access — Metorite as an MCP server
 
-**Status: DECIDED (D97, 2026-10-10). Updated 2026-10-13. EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
+**Status: DECIDED (D97, 2026-10-10). Updated 2026-10-14. EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
+
+**Verified against code on 2026-10-14 at 2295c9bf9.** The EA-6 audit read the anchors of §6.1 (EA3-28 to EA3-31), §9.2, §9.5, §9.6 and §15 at that commit.
+
+**EA-6, 2026-10-14.** The spec audit of EA-6 gave NO-GO, and it narrowed the dispatch to EA-6a. The decisions EA3-28 to EA3-31 (§6.1) answer it. EA-6 now splits into EA-6a, EA-6b, EA-6c and EA-6d. **EA-6a is MERGED and dark (2026-10-14), after fix round 1.** It changes branch 0, and it passed an adversarial review and an independent verification (§10.1). The writes flag `agent_access_writes_enabled` stays off. EA-6b, EA-6c and EA-6d are not built.
 
 **EA-3a is MERGED and dark (#946, `d5d8244f5`, 2026-10-13), after fix rounds 1 to 5. EA-2c is MERGED and dark (#953, 2026-10-13). EA-3b-1 is MERGED and dark (#954, `355c18bcf`, 2026-10-13), after fix rounds 1 and 2. EA-3b-2 is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-4a is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-10p, the organization allowlist (EA3-27), is MERGED and dark (2026-10-13), after fix round 1. EA-10a and EA-10b are MERGED and dark (2026-10-13), after fix rounds 1 and 2: the unit is installed and not enabled (§15.3). EA-2b, EA-3c, EA-4b, EA-4c, EA-5 to EA-9, EA-10c and EA-11 are not built.**
 
@@ -280,6 +284,15 @@ A spec audit of EA-3 on 2026-10-11 gave NO-GO. The spec had no testable done-whe
 | EA3-26 | The consent ticket lives in Redis, through the tenant-prefixed wrapper `acb_common.tenant_redis`. It adds no raw Redis client. `check` gives the ticket, and `approve` spends it with one `GETDEL` | §10.5 |
 | EA3-27 | **Owner decision, 2026-10-13.** Go-live is a pilot behind an organization allowlist, Fracktal first. `AGENT_ACCESS_ORGS` holds organization ids with a comma between them, and `*` allows each organization. An empty list allows none, so the default is fail-closed. Agent access is live for an organization only when the flag is on AND the list allows it. Four doors check the list: the consent routes, the token endpoint, the bearer check of `/mcp` and branch 0 | §10.6, §15 (EA-10p) |
 
+**The fourth audit, 2026-10-14.** A spec audit of EA-6 gave NO-GO, because the spec had no nonce, no write scope check at the gateway and no cap. It narrowed the dispatch to EA-6a. The orchestrator took the four decisions below on the same day. None of them is a product or pricing call.
+
+| # | Decision | Where |
+|---|---|---|
+| EA3-28 | **The nonce.** A write carries the header `X-Agent-Nonce`, 16 random bytes in base64url with no padding (22 characters). It is a 9th line of the signed string on a request that is not GET, and only there. So the signed string of a GET stays byte-identical. The gateway runs `SET NX EX 120` on `tenant_redis.key("agent_nonce", <connection>, <nonce>)` inside `organization_scope` of the connection row's organization. A nonce that the key already holds is a replay, and it gets 401. A Redis outage gets 503 with `Retry-After: 2`. Branch 0 reads the body of a write to hash it. So the two fence layers of §10.1 each gain one name: the header `x-agent-nonce`, and one `await request.body()` in `_agent_user` for a listed write pair. A GET that reads the body stays a violation | §10.1, §15 (EA-6a) |
+| EA3-29 | **The write scope and the flag.** Branch 0 admits a method other than GET only for a pair in `MCP_WRITE_ROUTES`, and only when all three hold: the connection's scopes include `projects:write`, the nonce is fresh, and the Setting `agent_access_writes_enabled` (default false) is true. Otherwise the answer is 401, with one exception since fix round 1: a SIGNED write while the flag is off gets 403 with the detail `agent_writes_disabled`, which the edge maps to a tool error. Both units read the flag through `agent_oauth.writes_enabled()`. While it is off, the edge leaves the write tools out of `tools/list`, and a call of one answers "Changes are turned off for agents in this organization." with no gateway request. While it is on, the edge refuses a write tool without `projects:write`, as the existing `insufficient_scope` 403 of check 8 | §7.1, §9.5, §9.6, §10.1, §15.3 |
+| EA3-30 | **The cap.** After the nonce, the gateway runs `INCR` on the tenant key `agent_writes:<connection>`, with a life of 600 seconds from the first write. A connection makes at most 120 writes in that window. The 121st write gets 429 with `Retry-After`. The edge maps a 429 to the tool error "Too many changes. Wait a few minutes." | §9.6, §10.1 |
+| EA3-31 | **The split.** EA-6a builds `set_task_status`, `add_task_reference` and the references in `get_task`. EA-6b builds `claim_task`, which needs a new add-only route `POST /projects/tasks/{task_id}/assignees/self`, because the PUT of the assignees replaces the set. EA-6c builds `add_comment`, with a required `idempotency_key`. EA-6d builds `create_task`, `update_task` and the migration for the task source `mcp` | §9.2, §15 |
+
 ## 7. The connection model
 
 A **connection** is one agent client that one member has authorized in one organization.
@@ -385,7 +398,7 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 | `list_projects` | `projects:read` | `parent_id?`, `text?`, `limit`, `cursor` | `GET /projects/tree` (`tree.py:253`), through `Visibility.project_clause`. The route takes no parameter. The edge flattens the tree, filters by `parent_id` and `text`, and pages it, after the gateway narrowed the rows. The route never returns a personal project (EA3-19). The edge drops each archived project (EA3-24). `parent_id`, `text`, `limit` and `cursor` are edge inputs (§9.5, rule 4) | `id`, `name`, `path` (the names from the root down), `parent_id` and `task_counts` (`tasks`, `done`, `cancelled`), plus `total` and `nextCursor`. The rules below the table say how the edge filters and orders the rows |
 | `get_project` | `projects:read` | `project_id` | Five reads, each through `load_visible_project`: `GET /projects/nodes/{project_id}` (`tree.py:395`), and its `/statuses` (`admin.py:155`), `/types` (`admin.py:914`), `/fields` (`custom_fields.py:385`) and `/tags` (`tags.py:316`) | The pinned project fields, its statuses, task types, custom field definitions and tags. "Pinned output fields" below lists each key |
 | `list_tasks` | `projects:read` | `project_id?`, `status_id?`, `tag?`, `assignee?`, `text?`, `limit` (1 to 100, default 50), `cursor` | `GET /projects/tasks` (`tasks.py:180`), through `task_visibility_clause`. `tag` maps to `tags`, `text` maps to `q`, and `limit` and `cursor` map to `page_size` and `page` | A page of tasks with `id`, `task_number`, `title`, `project_id`, `status`, `assignees`, `due_at` and `version`, plus `total` and `nextCursor` |
-| `get_task` | `projects:read` | `task_id` | `GET /projects/tasks/{task_id}` (`tasks.py:335`) and `GET /projects/tasks/{task_id}/relations` (`relations.py:193`), each through `load_visible_task` | The pinned task fields, with its `description`, `status`, `assignees`, subtasks, links and `version` |
+| `get_task` | `projects:read` | `task_id` | `GET /projects/tasks/{task_id}` (`tasks.py:335`), `GET /projects/tasks/{task_id}/relations` (`relations.py:193`) and, since EA-6a, `GET /projects/tasks/{task_id}/refs?refresh=false` (`refs.py:336`), each through `load_visible_task` | The pinned task fields, with its `description`, `status`, `assignees`, subtasks, links, references and `version` |
 | `get_task_timeline` | `projects:read` | `task_id`, `kind?` (`all`, `comments` or `events`, default `all`), `limit` (1 to 100, default 50), `cursor` | `GET /projects/tasks/{task_id}/timeline` (`activities.py:158`), through `load_visible_task`. `kind` and the `Page` parameters pass through | Comments and events, newest first, with the pinned row fields and the `meta` allowlist, plus `total` and `nextCursor` |
 | `search_tasks` | `projects:read` | `query`, `limit` (1 to 50, default 50) | `GET /projects/search` (`search.py:353`), through `task_visibility_clause`. `query` maps to `q`. The route caps the hits at `MAX_HITS`, 50 (`search.py:111`), and has no pages | Ranked hits with `id`, `task_number`, `title`, `project_id`, `project_name`, `status` and `due_at`, plus `truncated` |
 
@@ -395,7 +408,7 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 - **`task_number`, not `key`.** A task returns its `task_number` until EA-6 decides the key format (§11).
 - **`version` is `updated_at`.** It is the token that `If-Match` compares (`core.py:1809-1852`). EA-6 sends it back.
 - **`status` is an object with `id` and `name`.** For `list_tasks` and `get_task`, the edge reads `/statuses` once for each distinct project on the page, inside one tool call, and keeps no cache. A task that reaches the member only as its assignee has a project the member cannot open. Its status `name` is then null.
-- **References move to EA-6.** EA-3 returns none, because `pm_task_refs` does not exist yet.
+- **References.** `task_references.md` §5 owns the table `pm_task_refs` (WS-57, migration 255). EA-6a adds the references to `get_task`, and the edge sends `refresh=false`, so no tool call reads GitHub. The rule for a task key stays in §11.
 - **The edge drops the `task_count` of each tag in `get_project`.** That count covers every task of the root (`tags.py:339-344`), and the visibility seam does not narrow it.
 - **One not-found text.** Any gateway 404 becomes `isError: true` with the text `Project not found.` or `Task not found.`. The text is the same whether the record does not exist, a pin hides it, or the member cannot see it.
 
@@ -426,6 +439,7 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 - **`list_tasks` and `get_task`, the task.** From `TaskModel` (`core.py:656`): `id`, `task_number`, `project_id`, `root_project_id`, `parent_task_id`, `type_id`, `title` (U), `importance`, `leveraged`, `estimate_mins`, `start_date`, `due_at`, `completed_at`, `tags` (each item U), `created_by`, `created_at` and `archived_at`. `version` is `updated_at`. `status` is the object of the rule above. `assignees` is the list that the route adds, and each item is (S). `list_tasks` returns only the keys of its row in the table.
 - **`get_task` only.** `description` (U) and `custom_fields`. `custom_fields` is a map from `field_key` to a value. A string value is U. A list keeps each number and wraps each string as U. A number, a boolean and null stay as they are. Any other shape becomes U, as its compact JSON text.
 - **`get_task`, the relations** (`relations.py:193`). A subtask keeps `id`, `task_number`, `title` (U), `status_id`, `status_name` (U), `category`, `due_at` and `completed_at`. A link (`relations.py:172`) keeps `id`, `link_type`, `direction`, `title` (U), `task_number`, `status_name` (U), `category` and `completed_at`. The `id` of a link is the id of the other task (`relations.py:174`). The edge drops `link_id`.
+- **`get_task`, the references (EA-6a)** (`refs.py:129`). A reference keeps `id`, `kind`, `provider`, `ref` (S), `url` (S), `label` (S), `title` (U) and `state`. A database CHECK shapes `kind`, `provider` and `state`. The shapes of (S) are these. A `url` is a plain string only when it is at most 160 characters and fullmatches `https?://[a-z0-9.-]{1,253}(:[0-9]{1,5})?([/?#][A-Za-z0-9._~%/:@!?&+=#-]*)?`. A `ref` is plain only at most 160 characters of `[A-Za-z0-9._~%/:@!?&+=#-]`. A `label` is plain only at most 64 characters, as one token of `[A-Za-z0-9._~%/:@!+=#-]` and at most two more words of letters. Any other value is `untrusted_text`. The edge drops `task_id`, `fetched_at`, `via`, `created_by`, `created_at` and `updated_at`.
 - **`get_task_timeline`, a row.** From `ActivityModel` (`core.py:772`): `id`, `type`, `parent_id`, `body` (U), `created_by`, `created_at`, `updated_at` and `meta`. `meta` is the allowlist below.
 - **`search_tasks`, a hit.** The keys of its row in the table, with `title` (U) and `project_name` (U).
 
@@ -453,7 +467,7 @@ On `attachment`, `system`, `agent_run` and `sync` rows the edge keeps only `via`
 **Gateway calls and time (EA3-17).** Each gateway request has a 10 second limit. Each tool call has a 25 second limit for all its requests.
 
 - `whoami`, `list_projects`, `get_task_timeline` and `search_tasks` make one request each.
-- `get_task` makes three: the task, its relations, and the `/statuses` of its project.
+- `get_task` makes four: the task, its relations, its references, and the `/statuses` of its project. It made three before EA-6a.
 - `get_project` makes five.
 - `list_tasks` makes at most 1 + N. N is the count of distinct projects on the page, and the edge caps N at 10. The 10 are the first 10 distinct `project_id` values, in page order. The edge reads those statuses at most four at a time. A task in a project past the cap gets a status `name` of null, as a task in a project that the member cannot open does.
 
@@ -461,14 +475,45 @@ On `attachment`, `system`, `agent_run` and `sync` rows the edge keeps only `via`
 
 ### 9.2 Writes (class B, undoable, and class C, hard to undo)
 
-| Tool | Class | Input | Effect |
-|---|---|---|---|
-| `create_task` | B | `project_id`, `title`, `description?`, `type?`, `status?`, `tags?`, `due_at?`, `idempotency_key?` | Creates one task. The same `idempotency_key` returns the first result |
-| `update_task` | B | `task_id`, `expected_version`, fields | Changes title, description, tags, due date and custom fields. Refused with a text reason when the version is old |
-| `set_task_status` | B | `task_id`, `expected_version`, `status` | Uses the existing transition path that stamps `completed_at` and the timeline |
-| `add_comment` | B | `task_id`, `body`, `parent_id?` | Adds a comment. The author stays the member. `meta.via` names the client |
-| `claim_task` | B | `task_id`, `expected_version` | Assigns the member and moves the task to the first "in progress" status |
-| `add_task_reference` | B | `task_id`, `kind`, `provider`, `ref`, `url?`, `title?`, `state?` | Adds or updates a reference. See §11. The same `(task, kind, provider, ref)` updates the row |
+EA-6a builds two write tools (EA3-31). Each needs `projects:write`, and each write passes the nonce, the scope check, the flag and the cap of branch 0 (EA3-28 to EA3-30).
+
+| Tool | Class | Input | Gateway route | Returns |
+|---|---|---|---|---|
+| `set_task_status` | B | `task_id`, `status_id`, `expected_version` | First `GET /projects/tasks/{task_id}` and `GET /projects/nodes/{project_id}/statuses`, to find the category of the target status. Then `PATCH /projects/tasks/{task_id}` (`tasks.py:484`) with the body `{status_id}` only and `If-Match: <expected_version>`. It never sends `include_subtasks` | `id`, `status` (an object with `id` and `name` (U)) and `version` |
+| `add_task_reference` | B | `task_id`, `url`, `title?` | `POST /projects/tasks/{task_id}/refs?refresh=false` (`refs.py:418`) with the body `{url, title?}` | `id`, `kind`, `provider`, `ref` (S), `url` (S), `label` (S), `title` (U), `state` and `created` |
+
+**Rules of `set_task_status`.**
+
+- The edge refuses a target status whose category is `done` or `cancelled` (`core.py`, `CLOSING_CATEGORIES`), with the text "Moving a task to done or cancelled stays a human step." The refusal comes before the PATCH, so nothing changes.
+- A target status that is not in the status set of the task's project gets the bad-request text of §9.6, before the PATCH.
+- When the member cannot open the task's project, the edge cannot read the category. It then refuses with "This member cannot change that.", before the PATCH.
+- `expected_version` is the `version` that `get_task` returned. The gateway compares it with `If-Match` (`core.py:1860`). A stale version gets 412, and the edge maps it to "The task changed. Read it again."
+- The transition path of the PATCH stamps `completed_at` and the timeline row, and `record_activity` stamps `meta.via` with `mcp:<slug>`.
+
+**Rules of `add_task_reference`.**
+
+- The route is WS-57's (`task_references.md` §6 TR-1). The edge builds no table and no second store.
+- An add is idempotent. A new row answers 201, and the edge returns `created: true`. A row that already holds the reference answers 200, and the edge returns `created: false`. The second add writes no activity row.
+- `refresh=false` keeps the call off GitHub, so the tool keeps `openWorldHint: false`.
+- `_via()` of `refs.py` keeps `mcp:<slug>` in the column `via`. The router dependency `capture_actor_via` binds it from the signed `X-Actor-Via` of the write, so branch 0 binds no second stamp.
+- A 409 (a remove crossed the add) gives "The link changed while Metorite added it. Add it again." It is never the text of a 412.
+- A 422 (the classifier refused the link) gives "The input 'url' is not a link that Metorite can add."
+- EA-6a does not expose `DELETE /projects/tasks/{task_id}/refs/{ref_id}`.
+
+**Annotations of a write tool.** `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. Both tools are idempotent: a second call with the same input changes nothing more.
+
+⚠️ **A write can reach an outside site through a workflow (fix round 1).** The tool call itself calls no outside site, and that is all `openWorldHint: false` says. But `patch_task` emits `pm.task.updated` and `pm.task.status_changed`. Through `workflows.triggers.dispatch_event`, such an event can start a published workflow of the organization, and that workflow can send mail or call a webhook. This is the same as for a member's own change in the app. A member who connects an agent with `projects:write` lets it start those workflows.
+
+**The writes flag (fix round 1).** While `agent_access_writes_enabled` is off, `tools/list` leaves out both write tools. A call of one answers `isError: true` with "Changes are turned off for agents in this organization." and the edge makes no gateway request. Check 8 skips such a tool, so a client never steps up for it. The gateway stays the second guard: a signed write gets 403 with the detail `agent_writes_disabled`, and the edge maps that code to the same text. A gateway 401 on a write would make a client drop a good token and lose its reads too.
+
+**Later rows (EA3-31).**
+
+| Slice | Tool | Class | Input | Note |
+|---|---|---|---|---|
+| EA-6b | `claim_task` | B | `task_id`, `expected_version` | Assigns the member and moves the task to the first "in progress" status. It needs a new add-only route `POST /projects/tasks/{task_id}/assignees/self`, because the PUT of the assignees replaces the set |
+| EA-6c | `add_comment` | B | `task_id`, `body`, `parent_id?`, `idempotency_key` | Adds a comment. The author stays the member. `meta.via` names the client. The tool needs the key |
+| EA-6d | `create_task` | B | `project_id`, `title`, `description?`, `type?`, `status?`, `tags?`, `due_at?`, `idempotency_key?` | Creates one task. The same `idempotency_key` returns the first result. It comes with the migration for the task source `mcp` |
+| EA-6d | `update_task` | B | `task_id`, `expected_version`, fields | Changes title, description, tags, due date and custom fields. Refused with a text reason when the version is old |
 
 The first version has **no class C tool**. A move across projects, an archive, an unassign of another person and a bulk change are not exposed. When one is added, it needs a human confirmation step. The MCP spec supports this with a multi-round input request (elicitation), and a client that lacks it must get a refusal that says so.
 
@@ -509,16 +554,18 @@ A task title, a description and a comment come from other people. An outside age
 - `/projects/tasks`, `/projects/tasks/{task_id}`, with its `/relations` and `/timeline`
 - `/projects/search`
 
+EA-6a adds three pairs. `GET /projects/tasks/{task_id}/refs` is a read. `PATCH /projects/tasks/{task_id}` and `POST /projects/tasks/{task_id}/refs` are writes. A second frozenset, `MCP_WRITE_ROUTES`, names each write pair, and it is a subset of `MCP_ROUTES`. Branch 0 admits a method other than GET only for a pair in `MCP_WRITE_ROUTES` (EA3-29).
+
 **What stays untouched.** Do not edit `apps/skills/skill-projects/skill_projects/manifest.py`. Do not edit `tests/unit/test_projects_chat_coverage.py` or `tests/unit/test_projects_field_parity.py`. Do not put the edge tools into `TOOL_ANNOTATIONS` of `acb_skills`. Exclusion is the default: branch 0 refuses every route that `MCP_ROUTES` does not list.
 
-**The tool record.** Each tool in `agent_edge/tools.py` declares `name`, `title`, `required_scope`, `inputSchema`, `outputSchema`, `annotations` and its routes. `required_scope` is a scope string, or `None` for "any live token". The annotations are `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`.
+**The tool record.** Each tool in `agent_edge/tools.py` declares `name`, `title`, `required_scope`, `inputSchema`, `outputSchema`, `annotations` and its routes. `required_scope` is a scope string, or `None` for "any live token". A read has the annotations `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. A write (EA-6a) declares its `method`, and it has `readOnlyHint: false` with the other three the same.
 
 **The fence.** `tests/unit/test_mcp_edge_coverage.py` fails when any of these rules breaks:
 
-1. Each pair in `MCP_ROUTES` is a route that the gateway serves, and its method is `GET`.
-2. Each pair is class A in `MANIFEST`, or it is a named exception. EA-3 has one exception, `GET /auth/me`. No class B, C or X route appears.
-3. Each tool declares a `required_scope` key, the four annotations, an `inputSchema` and an `outputSchema`.
-4. Each tool input maps to a parameter of its route. The fence reads the parameters from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does. The tool record declares each map, such as `text` to `q`. An input that the edge applies itself is a named exception, and the tool record lists it in `edge_inputs`. EA-3 has four: `parent_id`, `text`, `limit` and `cursor` of `list_projects`, because `GET /projects/tree` takes no parameter. A new edge input needs a spec amendment.
+1. Each pair in `MCP_ROUTES` is a route that the gateway serves. Its method is `GET`, or it is `PATCH` or `POST` for a pair in `MCP_WRITE_ROUTES`. `MCP_WRITE_ROUTES` holds no GET pair.
+2. Each pair is class A in `MANIFEST`, or it is a named exception. EA-3 has one exception, `GET /auth/me`. A pair in `MCP_WRITE_ROUTES` may be class B. No class C or X route appears.
+3. Each tool declares a `required_scope` key, the four annotations, an `inputSchema` and an `outputSchema`. A write tool has `readOnlyHint: false` and needs `projects:write`.
+4. Each tool input maps to a parameter of its route. The fence reads the parameters from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does: the path, query and header parameters, and the fields of each model in `dependant.body_params`. The tool record declares each map, such as `text` to `q` and `expected_version` to `If-Match`. An input that the edge applies itself is a named exception, and the tool record lists it in `edge_inputs`. EA-3 has four: `parent_id`, `text`, `limit` and `cursor` of `list_projects`, because `GET /projects/tree` takes no parameter. A new edge input needs a spec amendment.
 
 This is R7. The rule names its fence.
 
@@ -537,7 +584,7 @@ This is R7. The rule names its fence.
 5. **Body.** A body that is not JSON gets HTTP 400 with `-32700`. A JSON-RPC batch, or a body that is not a JSON-RPC message, gets HTTP 400 with `-32600`.
 6. **Token.** §7.1 steps 1 and 2. A failure gets 401. A database outage in the lookup gets 503 with `Retry-After: 2` (EA3-10).
 7. **Version.** The rule below. A value that the edge does not accept gets 400 with `-32600`.
-8. **Scope.** A `tools/call` of a known tool that the effective scopes do not cover gets 403.
+8. **Scope.** A `tools/call` of a known tool that the effective scopes do not cover gets 403. A write tool while the writes flag is off skips this check, and its call answers the tool error of §9.2 (EA-6a fix round 1).
 
 After the eight checks, the edge dispatches the method. A notification, or a JSON-RPC response that a client posts, gets 202 with no body.
 
@@ -578,10 +625,15 @@ After the eight checks, the edge dispatches the method. A notification, or a JSO
 
 | Gateway answer | Tool result |
 |---|---|
-| 2xx | The mapped result of §9.1 |
-| 401 | The MCP 401 above. Not a tool result |
-| 403 | `isError: true` with the text "This member cannot read that." |
+| 2xx | The mapped result of §9.1 or §9.2 |
+| 401 | The MCP 401 above. Not a tool result. A gateway 401 on a write stays the MCP 401 too |
+| 403 on a read | `isError: true` with the text "This member cannot read that." |
+| 403 on a write with the detail `agent_writes_disabled` (EA-6a fix round 1) | `isError: true` with the text "Changes are turned off for agents in this organization." Never the MCP 401 |
+| Any other 403 on a write (EA-6a) | `isError: true` with the text "This member cannot change that." |
+| No answer: a write tool while the writes flag is off at the edge (fix round 1) | `isError: true` with the text "Changes are turned off for agents in this organization." The edge sends no request |
 | 404 | `isError: true` with `Project not found.` or `Task not found.` (§9.1) |
+| 412 on a write (EA-6a) | `isError: true` with the text "The task changed. Read it again." |
+| 429 on a write (EA-6a, EA3-30) | `isError: true` with the text "Too many changes. Wait a few minutes." |
 | Any other 4xx | `isError: true` with the text "Metorite could not answer that request. Check the input." |
 | 5xx, or no answer within the limit | `isError: true` with the text "Metorite is busy. Try again." |
 
@@ -632,6 +684,7 @@ v1
 - The gateway refuses a query with a repeated key. Starlette keeps the last value of a key, and the signed string sorts every pair. So a replay with the pairs in another order would read another value under the same signature. The edge cannot sign such a query either.
 - The gateway refuses a query that is not ASCII, or whose `%XX` sequences do not decode as UTF-8. Then `%FF` and `%FE` cannot share one signature.
 - A GET has an empty body, so its hash is the SHA-256 of zero bytes.
+- A write (EA-6a, EA3-28) adds a 9th line, the value of `X-Agent-Nonce`, after the body hash. A GET has no 9th line, so its signed string is the eight lines above, byte for byte. The body line of a write is the SHA-256 of the body bytes as sent.
 
 **The keys.**
 
@@ -658,7 +711,7 @@ v1
 
 1. The flag `agent_access_enabled` is on, and a usable key is set.
 2. The `kid` names a usable key, and `hmac.compare_digest` matches the signature. The timestamp is within 60 seconds of the gateway clock, before or after.
-3. The method is `GET`. The pair of the method and the matched route template (`deps._matched_template` at `deps.py:959`, which has no URL fallback) is in `MCP_ROUTES`.
+3. The pair of the method and the matched route template (`deps._matched_template` at `deps.py:959`, which has no URL fallback) is in `MCP_ROUTES`. Until EA-6a the method had to be `GET`. Since EA-6a a method other than GET needs a pair in `MCP_WRITE_ROUTES`, a nonce and the read of the body before the signature check. After this step, a signed write while the writes flag is off gets 403 with the detail `agent_writes_disabled` (fix round 1). After the stamp check it needs `projects:write` on the connection, a fresh nonce and room under the cap (EA3-28 to EA3-30).
 4. A function in `agent_tokens.py`, `read_live_connection`, reads the connection by its id. It reuses `_session` and `_BIND_SQL`, and it binds the signed organization. The connection must be live: not revoked, and not past `expires_at`. The read returns the organization of the ROW, and that organization must equal the signed one.
 5. `X-Actor-Via` must equal `agent_oauth.actor_via_for(client_origin)` for that row, and match `ACTOR_VIA_PATTERN`.
 6. The member email comes from that row, never from a header. Branch 0 then calls `_with_resolved_access` with that email.
@@ -696,7 +749,7 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 - the same request with `GATEWAY_TRUST_UNVERIFIED_SSO_HEADERS=1`,
 - the same request on a box where the internal token falls back to the LLM key.
 
-**Replay.** A replay inside the 60 second window repeats an identical GET, and it changes nothing. A write needs more. EA-6 must add a nonce before any write route joins `MCP_ROUTES`.
+**Replay.** A replay inside the 60 second window repeats an identical GET, and it changes nothing. A write needs more, so EA-6a adds the nonce of EA3-28. The gateway keeps each nonce for 120 seconds, twice the skew of the timestamp. So a replay of a write inside its window always finds its nonce, and it gets 401.
 
 **The HMAC is the boundary.** The Caddy block of `api.metorite.com` proxies every request to the gateway with no header strip (`deploy/hostinger/caddy/Caddyfile:47-51`). So branch 0 is reachable from the internet. Only the HMAC stands between a stranger and the identity of an agent.
 
@@ -717,7 +770,7 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 | Stolen refresh token | Rotation on every use. A reused token revokes the whole connection |
 | Token for another service replayed here | Audience check on `resource`. The edge refuses any other token |
 | The edge replays a client token to the gateway | Never. The edge calls the gateway with the signed headers of §10.1 only. It never forwards the client token, and it sends no member header |
-| A stolen signing key | The thief can act only as a member who holds a live connection, because the gateway reads the member from that row. It reaches only the GET routes of `MCP_ROUTES`. A rotation (§10.1) ends it |
+| A stolen signing key | The thief can act only as a member who holds a live connection, because the gateway reads the member from that row. It reaches the GET routes of `MCP_ROUTES`. Since EA-6a it also reaches the write pairs, for a connection that holds `projects:write`, while the writes flag is on. A nonce stops a replay, not a forgery, and the cap of EA3-30 bounds the damage. A rotation (§10.1) ends it |
 | A holder of the internal bearer forges an `mcp:*` stamp | Branch 0 refuses the request, and never falls through to branch 1a (§10.1) |
 | Consent phishing (a fake client with a trusted name) | Show the verified origin from the client metadata. Show the redirect host. An admin may restrict to an allow list (D-EA-8) |
 | Open registration abuse | Client ID Metadata Documents need a fetch with a size, time and address limit (no private addresses). Dynamic registration is rate limited and expires unused clients after one day |
@@ -849,27 +902,7 @@ Until both units restart, the old list stays in force on the unit that did not r
 
 ## 11. Schema addition: task references
 
-A pull request, a commit and a branch are structured facts. A comment hides them, and a custom field cannot hold several. This spec proposes one table.
-
-`pm_task_refs`
-
-| Column | Type | Note |
-|---|---|---|
-| `id` | uuid | |
-| `organization_id` | uuid | Tenant scope |
-| `task_id` | uuid | |
-| `kind` | text | `pull_request`, `commit`, `branch`, `url` |
-| `provider` | text | `github`, `gitlab`, `bitbucket`, `other` |
-| `ref` | text | PR number, commit SHA or branch name |
-| `url`, `title`, `state` | text | `state` is `open`, `merged`, `closed` for a pull request |
-| `via` | text | The actor-via stamp |
-| `created_by`, `created_at`, `updated_at` | | |
-
-- A unique key on `(organization_id, task_id, kind, provider, ref)` makes the tool idempotent.
-- Each add or state change writes a `link` activity. The `link` type already exists, so no change to the activity CHECK is needed.
-- `pm_tasks.source` gains the value `mcp` in the same migration, with the `TASK_SOURCES` constant and its fence updated by hand. Without it a task made by an agent reads as `manual`.
-- The migration is an expand-only change (R6). Take the number at build time (R1). The next free number is **not** named here.
-- The task detail screen shows the references. That is a Projects UI slice. See EA-6.
+**The table is WS-57's.** `task_references.md` §5 owns `pm_task_refs` (migration 255), its route and the task card. This spec proposed the table, and WS-57 built it on 2026-10-13. EA-6a calls its route and builds no second store (§9.2). The task source `mcp` moves to EA-6d (EA3-31).
 
 **A human-readable task key.** A commit message or a pull request title should carry the task key, so a person can read the link. Until EA-6, `get_task` returns `task_number` and no `key` (§9.1). The survey did not confirm the key format, so EA-6 must read `pm_tasks.task_number` and the project key rules first.
 
@@ -922,7 +955,10 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-4b | **Connections and revoke.** The member's list of connections in the Integrations app (§5.4), and Revoke. It waits for D-EA-9. It is not a go-live gate for a pilot (EA3-25) | A revoked connection gets 401 on the next call. A suspended member gets 401 | AGENT-SAFE |
 | EA-4c | **The organization switch and the client allow list (D-EA-8).** It is not a go-live gate for a pilot (EA3-25) | With the switch off, `check` and `approve` refuse. They also refuse a client outside the allow list | AGENT-SAFE |
 | EA-5 | **Company context.** `get_company_context` and the three resources, after D-EA-6 is answered | The result holds no data that the member could not read in the app | AGENT-SAFE |
-| EA-6 | **Write tools.** The `mcp` source and the write tools. `add_task_reference` calls the WS-57 route. The `pm_task_refs` table and the Projects UI for references moved to `task_references.md` (WS-57) on 2026-10-13 | The coding scenario of §12 passes end to end on a real database. A stale version is refused | AGENT-SAFE |
+| EA-6a | **MERGED 2026-10-14, dark, after fix round 1.** **The first write tools (EA3-28 to EA3-31).** The nonce line in `agent_signing.py`. In branch 0: the write method for a pair in `MCP_WRITE_ROUTES`, the `projects:write` check, the nonce `SET NX` through the tenant Redis wrapper, the flag `agent_access_writes_enabled` (default false) and the cap. Three pairs join `MCP_ROUTES`. The edge client sends a write with the nonce, `If-Match` and a JSON body. The tools `set_task_status` and `add_task_reference`, and the references in `get_task` (§9.2). Coverage rules 1 to 4 accept a listed write pair. No migration. It ships dark | `tests/unit/test_mcp_edge_writes.py`, each check red first under a named mutation, on a real database (R8) through the real gateway app: **W1** a `projects:read` connection gets 401 at the gateway on the PATCH. **W2** a replayed nonce gets 401. **W3** (fix round 1) with the writes flag off, `tools/list` leaves out both write tools, a call of one gives "Changes are turned off for agents in this organization." with no gateway request, a signed write gets 403 with the detail `agent_writes_disabled`, an unsigned one still gets 401, the edge maps the coded 403 to the same tool error and never to the MCP 401, and the token keeps its reads. **W4** a stale `expected_version` gets 412, and the edge gives "The task changed. Read it again." **W5** a task that a pin hides gets 404, and the edge gives `Task not found.` **W6** a second add of one reference returns `created: false`, and the task holds one `link` activity row for it. **W7** `meta.via` of the status change and `via` of the reference equal `mcp:<slug>`. **W8** the signed string of a GET is byte-identical to the string before EA-6a, by a golden test. Also: the edge refuses a move into `done` or `cancelled`, the 121st write in the window gets 429, and a Redis outage or a Redis client that cannot be built gets 503 | AGENT-SAFE |
+| EA-6b | **`claim_task`.** A new add-only route `POST /projects/tasks/{task_id}/assignees/self`, because the PUT of the assignees replaces the set (EA3-31) | The member becomes an assignee, and no other assignee leaves. The task moves to the first "in progress" status | AGENT-SAFE |
+| EA-6c | **`add_comment`**, with a required `idempotency_key` (EA3-31) | The same key returns the first comment, and writes one row | AGENT-SAFE |
+| EA-6d | **`create_task`, `update_task` and the task source `mcp`.** One expand-only migration adds `mcp` to `pm_tasks.source`, with the `TASK_SOURCES` constant and its fence. Take the number at build time (R1) | A task that an agent makes reads `mcp`, not `manual`. The coding scenario of §12 passes end to end on a real database | AGENT-SAFE |
 | EA-7 | **Limits.** A per-connection and per-member limiter on the tenant-prefixed Redis wrapper. A 100-row cap | A test shows the 429 and the `Retry-After` value | AGENT-SAFE |
 | EA-8 | **Audit.** One `acb_audit.record` row per call, with `organization_id` set on the event. An admin read route and view | A denied call writes a row. The admin view lists calls by connection | AGENT-SAFE |
 | EA-9 | **Fences.** A tenant fence, a "no client header reaches the gateway" fence, a "no token forwarded" fence. `test_mcp_edge_coverage.py` lands earlier, in EA-3 (D15) | Each fence fails when a mutation breaks its rule (verified red first) | AGENT-SAFE |
@@ -985,6 +1021,14 @@ uv run pytest tests/unit/test_agent_oauth_server.py -v -rs
 ```
 
 Six vitest failures are known and come from CRLF line ends only: `layoutBoundary` (two), `railSessions`, `emailLink` and `reportsLiveOverview` (two). Any other failure is real.
+
+**EA-6a (§9.2, EA3-28 to EA3-31).** `tests/unit/test_task_refs_route.py` is the WS-57 fence of the route that `add_task_reference` calls. Run it on the R8 database:
+
+```
+uv run pytest tests/unit/test_mcp_edge_writes.py tests/unit/test_task_refs_route.py -v -rs
+```
+
+The R8 classes of `test_mcp_edge_writes.py` need `TENANT_LADDER_DATABASE_URL`, and they run the nonce and the cap on a fake under the real `TenantRedis`. One more class runs them on a real Redis 7 when `AGENT_WRITES_REDIS_URL` names one. CI has no Redis service, so that class skips there. Also run the D3 line, `tests/unit/test_tenant_request_binding.py` with the digest, and the lint and type lines above.
 
 Every file in these pytest lines existed on 2026-10-11, except the four new ones. With `-rs`, a skipped R8 test shows its reason. A skip is not a pass. Name the files you mean when you run pytest. Do not run `tests/unit/` as a directory.
 
@@ -1116,8 +1160,10 @@ The BO-23 loop installs the unit file, and the BH-7 step installs the drop-in. N
 | `DB_STATEMENT_CACHE_SIZE` | The value of the root `.env`, when it sets one |
 | `AGENT_EDGE_GATEWAY_URL` | Not set. The default `http://127.0.0.1:8080` is the gateway on loopback |
 | `AGENT_ISSUER`, `AGENT_RESOURCE` | Not set. The defaults are `https://mcp.metorite.com` and `https://mcp.metorite.com/mcp` |
+| `AGENT_ACCESS_WRITES_ENABLED` | Not set at the pilot, so the write tools stay off. Set it to `true` only when writes turn on, and set the same value in the root `.env` (EA-6a) |
 
 - The edge file must not hold `GATEWAY_INTERNAL_TOKEN`, `LITELLM_MASTER_KEY` or a provider key.
+- ⚠️ **The writes flag lives in both files (EA-6a fix round 1).** The edge reads it to list the write tools and to refuse a call of one. The gateway reads it in branch 0. To turn writes on, set `AGENT_ACCESS_WRITES_ENABLED=true` in the edge file AND the root `.env`, then restart `acb-gateway` and `acb-agent-edge`. While only one unit has restarted, the edge maps the gateway's coded 403 to a tool error, never to the MCP 401. A change of the value is gate `enforcement-flip`.
 - EA-10p decides if the edge reads `AGENT_ACCESS_ORGS`. If it does, the edge file holds the value of the root `.env`.
 
 **The pooler budget (orchestrator decision, 2026-10-13).** The session pooler in front of the database allows 15 clients for the whole database. The gateway and the edge share it.
@@ -1136,6 +1182,7 @@ The BO-23 loop installs the unit file, and the BH-7 step installs the drop-in. N
 | `AGENT_EDGE_SIGNING_KEY` | The same key as the edge |
 | `AGENT_ACCESS_ENABLED` | `true` at the pilot |
 | `AGENT_ACCESS_ORGS` | The organization ids of the pilot, Fracktal first (EA-10p) |
+| `AGENT_ACCESS_WRITES_ENABLED` | Not set at the pilot. `true` only when writes turn on, with the same value in the edge file (EA-6a) |
 
 **EA-10b. The Caddy site and the header strip (OWNER-GATE, gate (a)).**
 
@@ -1203,7 +1250,10 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 - Branch 0 of §10.1 changes the gateway auth path. It is the riskiest change in this spec. It needs the adversarial review of EA-11. It needs no `guard-write` grant, because `plan-guard.mjs` protects no file in `acb_auth`.
 - Branch 0 is reachable from the internet, because the Caddy block of `api.metorite.com` strips no header. The HMAC is the boundary. The edge calls the gateway on loopback, so EA-10 can also strip `X-Agent-*` at Caddy. EA-10 decides that.
 - The gateway does not check the scopes of a connection. EA3-3 puts that check at the edge. So a thief with the signing key can read Projects as any member who holds a live connection, whatever its scopes. The key is the boundary. Rotate it at once on any suspicion (§10.1, HANDOFF H-303).
-- A replay inside the 60 second window repeats an identical GET and changes nothing. A write tool needs a nonce, so EA-6 must add one first.
+- A replay inside the 60 second window repeats an identical GET and changes nothing. A write carries the nonce of EA3-28, so its replay gets 401.
+- **The category check of `set_task_status` is at the edge (EA-6a).** The edge reads the category of the target status, and then the gateway applies the PATCH. An admin who changes the category of that status between the two calls can let one move into `done` pass. The gateway does not repeat the check for an agent. A later slice can move it into the route.
+- **A write of an agent can start a workflow (EA-6a fix round 1).** `patch_task` emits `pm.task.status_changed`. Through `workflows.triggers.dispatch_event`, a published workflow of the organization can act on it, and send mail or call a webhook, as it does for a member's own change. So `openWorldHint: false` is true of the tool call and not of what follows it (§9.2). The organization's workflows decide that, and EA-6a does not change them.
+- **Follow-up, not for EA-6a: narrow an agent's PATCH at the gateway.** Today the edge alone sends the PATCH body `{status_id}` only, and never `include_subtasks`. A thief with the signing key can sign a PATCH with any field of `TaskIn`, or with `include_subtasks=true`, and skip the edge's rules: the done refusal, the body limit and the cascade. The gateway should refuse, for a request with `UserContext.agent` set, a PATCH body with any key but `status_id`, the query `include_subtasks`, and a move into `done` or `cancelled`. No slice owns it yet. EA-6d (`update_task`) must decide the field list first.
 - The edge allows only the origin of the issuer in `Origin` (§9.6). A client that runs in a browser on another origin gets 403. EA-11 checks the real clients.
 - Data that an agent reads goes to its provider. That is the customer's choice, and it is not a Metorite sub-processor. The terms page must say so. This is an owner and legal point (work_plan.md WS-37).
 - The company context is thin today (D-EA-6).
@@ -1365,3 +1415,14 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The sync engine.** The edge never builds it. A test proves that no edge module imports `acb_graph`, and that the edge app builds no sync engine.
   - **The box check.** Step 4 of the pre-enable check reads the two pool lines of the edge env file. §17 holds the transaction pooler and the narrower database role for GA.
 - 2026-10-13 — Fix round 2 of the EA-10 deploy. The drop-in also hides `/opt/acb/backups` and `/opt/acb/data`. The nightly dumps there are 0664, so the dynamic uid could read the data of every tenant. Pre-enable check 2b proves the line on the box. A follow-up in §17 asks the backup job to write its dumps at 0600.
+- 2026-10-14 — The spec audit of EA-6 gave NO-GO, and it narrowed the dispatch to EA-6a. This change writes the decisions EA3-28 to EA3-31 (§6.1) in. No code changed.
+  - **The nonce, the scope, the flag and the cap.** A write carries a nonce as a 9th signed line, and a GET keeps its eight lines. Branch 0 admits a write only for a listed pair, with `projects:write`, a fresh nonce and `agent_access_writes_enabled` on. A connection makes at most 120 writes in 600 seconds.
+  - **The tools (§9.2).** `set_task_status` and `add_task_reference`, each with its route, and the references in `get_task`. EA-6b, EA-6c and EA-6d are later rows.
+  - **The fences (§9.5, §9.6, §15).** Coverage rules 1 to 4 accept a listed write pair. The answer table gains the write rows. §15 splits EA-6 into four rows, and the acceptance of EA-6a is W1 to W8. §15.1 adds its line.
+  - **WS-57.** §9.1 and §11 point to `task_references.md` §5, which owns `pm_task_refs`.
+- 2026-10-14 — EA-6a is built, and it ships dark. It is not merged. No migration. The writes flag `agent_access_writes_enabled` defaults off.
+  - **The gateway.** `agent_signing.py` signs the nonce as a 9th line on a write. Branch 0 reads the body of a write, and `deps._claim_write` holds the scope check, the nonce and the cap in `TenantRedis`. `agent_oauth.MCP_WRITE_ROUTES` names the two write pairs, and `MCP_ROUTES` adds them and the references read.
+  - **The edge.** `gateway_client.write` sends the body, the nonce and `If-Match`. `tools.py` adds `set_task_status`, `add_task_reference` and `refs` in `get_task`. A 409 of the references route asks for a retry, and a 422 names `url` (a request of the WS-57 session).
+  - **The fences.** The scan and the tripwire each gain the header `x-agent-nonce` and one `await request.body()` in `_agent_user`. Five new bypass shapes (84 in all) and one tripwire mutant hold the body read to that one shape. The digest also covers `_read_connection` and `_claim_write` now. The pins moved from 3.12 `1eded904…` and 3.13 `2ac62c16…` to 3.12 `8de38247…` and 3.13 `0cc35491…`. Coverage rules 1 to 4 accept a listed write pair.
+  - **Fix round 1, after the review.** While `agent_access_writes_enabled` was off, the edge still listed the write tools, and a call met branch 0's 401, which the edge turned into the MCP 401. A client then dropped a good token and lost its reads. Now both units read the flag through `agent_oauth.writes_enabled()`. While it is off, the edge leaves the write tools out of `tools/list`, check 8 skips them, and a call answers a tool error with no gateway request. Branch 0 checks the flag after the signature and answers a signed write 403 with the detail `agent_writes_disabled`, which the edge maps to the same tool error. `_claim_write` builds the Redis client inside its `try`, so a client that cannot be built is the 503. §9.2 and §17 say that a write can start a workflow, and §17 holds a follow-up to narrow an agent's PATCH at the gateway. §15.3 puts the flag in both env files. The digest pins moved to 3.12 `6e8ea012…` and 3.13 `be0315c7…`. Six mutations each turned their test red: the list filter, the call refusal, the map of the coded 403, the coded 403 itself, the check 8 skip and the client build inside the `try`.
+  - **The proof.** `tests/unit/test_mcp_edge_writes.py` holds W1 to W8 on R8, through the real gateway app. Each of eight mutations turned its test red: the scope check, the nonce, the flag, the cap, `If-Match`, the done refusal, the pin and the GET golden.

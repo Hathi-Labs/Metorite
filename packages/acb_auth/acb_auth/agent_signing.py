@@ -29,6 +29,12 @@ The signature is the lower-case hex HMAC-SHA256 of the UTF-8 bytes of that
 string, with the UTF-8 bytes of the key. The header is ``v1,<kid>,<hex>``. The
 ``kid`` is the first 8 hex characters of the SHA-256 of the key.
 
+**A write adds a 9th line (EA-6a, EA3-28).** A request that is not a GET
+carries ``X-Agent-Nonce``, 16 random bytes in base64url with no padding, and
+its value is the 9th line. A GET has no 9th line, so its signed string is the
+eight lines above, byte for byte. Branch 0 keeps each nonce for
+:data:`NONCE_TTL_S` seconds, so a replay of a write gets 401.
+
 **The keys.** ``agent_edge_signing_key`` and ``agent_edge_signing_key_previous``.
 A key under 32 bytes, or equal to ``GATEWAY_INTERNAL_TOKEN`` or to
 ``LITELLM_MASTER_KEY``, counts as unset. With no usable key, branch 0 refuses
@@ -42,6 +48,7 @@ import hashlib
 import hmac
 import os
 import re
+import secrets
 import time
 from collections.abc import Iterable, Mapping
 from urllib.parse import parse_qsl, urlencode
@@ -56,6 +63,9 @@ HEADER_CONNECTION = "X-Agent-Connection"
 HEADER_TIMESTAMP = "X-Agent-Timestamp"
 HEADER_SIGNATURE = "X-Agent-Signature"
 HEADER_ACTOR_VIA = "X-Actor-Via"
+
+#: The nonce of a write (EA-6a, EA3-28). A GET never carries it.
+HEADER_NONCE = "X-Agent-Nonce"
 
 #: Any header whose name starts with this sends the request to branch 0.
 AGENT_HEADER_PREFIX = "x-agent-"
@@ -72,7 +82,19 @@ MIN_KEY_BYTES = 32
 #: The SHA-256 of zero bytes: the body hash of every GET.
 EMPTY_BODY_SHA256 = hashlib.sha256(b"").hexdigest()
 
+#: The random bytes of one nonce. In base64url with no padding they are 22
+#: characters.
+NONCE_BYTES = 16
+
+#: How long branch 0 keeps a nonce: twice the skew, so a replay inside the
+#: window of its timestamp always finds it (EA3-28).
+NONCE_TTL_S = 2 * MAX_SKEW_S
+
+#: The namespace of a nonce key in the tenant Redis wrapper (EA3-28).
+NONCE_NAMESPACE = "agent_nonce"
+
 _KID = re.compile(r"[0-9a-f]{8}")
+_NONCE = re.compile(r"[A-Za-z0-9_-]{22}")
 _HEX = re.compile(r"[0-9a-f]{64}")
 _DIGITS = re.compile(r"[0-9]{1,12}")
 
@@ -188,9 +210,15 @@ def canonical_string(
     path: str,
     query: str | Iterable[tuple[str, str]] = "",
     body: bytes = b"",
+    nonce: str | None = None,
 ) -> str:
-    """The ONE signed string of spec §10.1. Both sides call this function."""
-    return "\n".join((
+    """The ONE signed string of spec §10.1. Both sides call this function.
+
+    A GET takes no *nonce* and has eight lines. Any other method takes a
+    well-formed *nonce* as the 9th line (EA3-28). A mismatch raises
+    ``ValueError``, so neither side can sign a write without a nonce.
+    """
+    lines = [
         VERSION,
         timestamp,
         organization_id,
@@ -199,7 +227,25 @@ def canonical_string(
         method.upper(),
         canonical_target(path, query),
         hashlib.sha256(body).hexdigest(),
-    ))
+    ]
+    if method.upper() == "GET":
+        if nonce is not None:
+            raise ValueError("a GET carries no nonce")
+    else:
+        if not nonce_is_well_formed(nonce):
+            raise ValueError("a write needs a well-formed nonce")
+        lines.append(str(nonce))
+    return "\n".join(lines)
+
+
+def new_nonce() -> str:
+    """A fresh nonce: :data:`NONCE_BYTES` random bytes in base64url."""
+    return secrets.token_urlsafe(NONCE_BYTES)
+
+
+def nonce_is_well_formed(value: str | None) -> bool:
+    """True when *value* is 22 base64url characters (EA3-28)."""
+    return isinstance(value, str) and _NONCE.fullmatch(value) is not None
 
 
 def signature(key: str, canonical: str) -> str:
@@ -263,13 +309,19 @@ def signed_headers(
     query: str | Iterable[tuple[str, str]] = "",
     body: bytes = b"",
     now: float | None = None,
+    nonce: str | None = None,
 ) -> dict[str, str]:
-    """The four headers of one signed gateway request (spec §10.1).
+    """The headers of one signed gateway request (spec §10.1).
 
-    The edge (EA-3b) calls this with :func:`signing_key`. It sends no
-    ``Authorization`` header and no ``X-User-Email``.
+    The four signed headers, and for a write the fifth, ``X-Agent-Nonce``
+    (EA3-28). A write with no *nonce* gets a fresh one. The edge (EA-3b)
+    calls this with :func:`signing_key`. It sends no ``Authorization``
+    header and no ``X-User-Email``.
     """
     timestamp = str(int(time.time() if now is None else now))
+    write = method.upper() != "GET"
+    if write and nonce is None:
+        nonce = new_nonce()
     canonical = canonical_string(
         timestamp=timestamp,
         organization_id=organization_id,
@@ -279,13 +331,17 @@ def signed_headers(
         path=path,
         query=query,
         body=body,
+        nonce=nonce,
     )
-    return {
+    headers = {
         HEADER_CONNECTION: f"{organization_id}.{connection_id}",
         HEADER_TIMESTAMP: timestamp,
         HEADER_ACTOR_VIA: actor_via,
         HEADER_SIGNATURE: signature_header(key, canonical),
     }
+    if write:
+        headers[HEADER_NONCE] = str(nonce)
+    return headers
 
 
 __all__ = [
@@ -293,15 +349,21 @@ __all__ = [
     "EMPTY_BODY_SHA256",
     "HEADER_ACTOR_VIA",
     "HEADER_CONNECTION",
+    "HEADER_NONCE",
     "HEADER_SIGNATURE",
     "HEADER_TIMESTAMP",
     "MAX_SKEW_S",
     "MCP_ACTOR_PREFIX",
     "MIN_KEY_BYTES",
+    "NONCE_BYTES",
+    "NONCE_NAMESPACE",
+    "NONCE_TTL_S",
     "VERSION",
     "canonical_string",
     "canonical_target",
     "key_id",
+    "new_nonce",
+    "nonce_is_well_formed",
     "parse_signature_header",
     "query_pairs",
     "signature",

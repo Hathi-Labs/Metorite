@@ -246,15 +246,21 @@ _ALLOWED_CHAINS = frozenset({
     ("method",), ("method", "upper"),
     ("headers",), ("headers", "get"), ("headers", "getlist"),
     ("scope",), ("scope", "get"),
+    ("body",),
 })
 #: ``route`` and ``app`` find the matched route template. ``path`` and
 #: ``query_string`` are the signed path and query (§10.1).
 _SCOPE_KEYS = frozenset({"route", "app", "path", "query_string"})
-#: The four signed headers, and the two that tell branch 0 to refuse a body.
+#: The four signed headers, the two that tell branch 0 to refuse a body on a
+#: GET, and the nonce of a write (EA-6a, EA3-28).
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
-    "content-length", "transfer-encoding",
+    "content-length", "transfer-encoding", "x-agent-nonce",
 })
+#: EA-6a (EA3-28): the ONE function that may read the body, and only as
+#: ``await request.body()`` with no argument. It hashes the body of a write
+#: for the signature. The runtime tripwire refuses the read on a GET.
+_BODY_READER = "_agent_user"
 #: A header or scope key that names where the request came from.
 _HOST_NAMES = frozenset({
     "host", "x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",
@@ -777,6 +783,12 @@ class _InvertedScan:
             if isinstance(use, ast.Subscript) and use.value is top:
                 self.literal(use.slice, _HEADERS, "header")
                 return
+        # EA-6a: `await request.body()`, no argument, in `_BODY_READER` only.
+        if (key == ("body",) and self.name == _BODY_READER
+                and isinstance(use, ast.Call) and use.func is top
+                and not use.args and not use.keywords
+                and isinstance(self.parents.get(use), ast.Await)):
+            return
         if key == ("scope",):
             if isinstance(use, ast.Subscript) and use.value is top:
                 self.literal(use.slice, _SCOPE_KEYS, "scope key")
@@ -881,6 +893,20 @@ def test_every_allow_list_entry_is_used():
                 used.add((name, ast.unparse(node)))
     assert set(_ALLOWED_GETATTR) == used
     assert _ALLOWED_ATTRS == {}
+
+
+def test_the_body_is_read_once_and_in_one_function():
+    """EA-6a. Exactly one ``request.body`` in all the scanned code, in
+    ``_BODY_READER``. The scan checks the shape, and this pins the count."""
+    import ast
+
+    found = []
+    for name, source in _sources().items():
+        for node in ast.walk(ast.parse(source)):
+            if (isinstance(node, ast.Attribute) and node.attr == "body"
+                    and isinstance(node.value, ast.Name) and node.value.id == "request"):
+                found.append(name)
+    assert found == [_BODY_READER]
 
 
 def test_every_scanned_branch_zero_function_reads_the_request():
@@ -1051,14 +1077,27 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 
 # ── RULE 5: the digest fence of the process control (R7) ────────────────────
 
-#: SHA-256 of the normalised AST of every scanned function, of
-#: ``agent_signing.py`` and of ``_branch_zero_tripwire.py``, keyed by the Python
-#: minor version, because ``ast.dump`` differs between versions. Update it
-#: ONLY in the commit that carries the review and the verification of §10.1.
+#: SHA-256 of the normalised AST of every scanned function, of the helpers of
+#: :data:`_BRANCH_ZERO_HELPERS`, of ``agent_signing.py`` and of
+#: ``_branch_zero_tripwire.py``, keyed by the Python minor version, because
+#: ``ast.dump`` differs between versions. Update it ONLY in the commit that
+#: carries the review and the verification of §10.1.
+#:
+#: EA-6a (2026-10-14) changed branch 0 for the writes. The pins before it were
+#: 3.12 ``1eded904…db93e0`` and 3.13 ``2ac62c16…a40f22``. Its fix round 1 moved
+#: the writes flag after the signature and built the Redis client inside the
+#: ``try``. The pins of the first build were 3.12 ``8de38247…cafdb2`` and
+#: 3.13 ``0cc35491…59e002c``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "1eded904eb5cec2ba4f4bb0db9ad0819c16d4950ab8ac03d83a2bcad6adb93e0",
-    (3, 13): "2ac62c160612d156f99f29d44c97429eb9607238b53374a9a4cfaa8c15a40f22",
+    (3, 12): "6e8ea0123adca18a5165232771eccf40753d40a0cdaaf0d869e54bb9bc318257",
+    (3, 13): "be0315c701550a8e4c6b01ca15b21223f6d68c931f3c5f18cfb9eb3ace74bc00",
 }
+
+#: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
+#: the request, so the scan does not read them. The connection read and the
+#: write guard (nonce and cap) are part of the boundary all the same, so the
+#: digest covers them, and an edit to either one fails the digest test.
+_BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write")
 
 
 def _branch_zero_digest() -> str:
@@ -1068,8 +1107,13 @@ def _branch_zero_digest() -> str:
 
     from acb_auth import agent_signing
 
+    text = _module_text(deps)
+    defs = _top_level_defs(deps)
+    sources = dict(_sources())
+    for name in _BRANCH_ZERO_HELPERS:
+        sources["helper:" + name] = ast.get_source_segment(text, defs[name])  # type: ignore[arg-type]
     digest = hashlib.sha256()
-    for name, source in sorted(_sources().items()):
+    for name, source in sorted(sources.items()):
         digest.update(name.encode())
         digest.update(ast.dump(ast.parse(source)).encode())
     tripwire = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1287,6 +1331,14 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
         {}),
     "B75 a Formatter from a helper calls get_field": (
         "_agent_user", _A_AGENT, ["_h = _fmt.get_field('0.__class__', (_x,), {})"], {}),
+    # ── EA-6a: the one body read stays one exact shape in one function ──
+    "B76 the body read in another function": (
+        "_verify_signed_request", _A_VERIFY, ["_b = await request.body()"], {}),
+    "B77 the body method as a value": ("_agent_user", _A_AGENT, ["_b = request.body"], {}),
+    "B78 the body read not awaited": ("_agent_user", _A_AGENT, ["_b = request.body()"], {}),
+    "B79 the body read with an argument": (
+        "_agent_user", _A_AGENT, ["_b = await request.body(1)"], {}),
+    "B80 the request stream": ("_agent_user", _A_AGENT, ["_b = request.stream()"], {}),
 }
 
 
@@ -1319,7 +1371,8 @@ def test_the_scan_turns_red_for_each_bypass(label):
 
 
 def test_the_bypass_list_has_the_count_the_spec_names():
-    assert len(_BYPASSES) == 79
+    """79 until EA-6a, which added B76 to B80 for the body read."""
+    assert len(_BYPASSES) == 84
 
 
 # ── The runtime tripwire ─────────────────────────────────────────────────────
@@ -1378,6 +1431,11 @@ _TRIPWIRE_MUTANTS: dict[str, tuple[str, str, list[str]]] = {
          "    _fr.APIRoute.matches(_Fake(), request.scope)",
          "except Exception:",
          "    pass"]),
+    # ── EA-6a: a GET never reads its body, even when the error is caught ──
+    "a GET reads the body, error caught": (
+        "_agent_user", _A_AGENT,
+        ["try:", "    _b = await request.body()", "except BaseException:",
+         "    _b = b''"]),
 }
 
 
