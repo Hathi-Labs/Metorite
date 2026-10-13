@@ -19,6 +19,12 @@ compares by what it does: each side runs the same table of sample strings, and
 the verdicts must agree. A compare of the regex text would fail on a change
 that keeps the meaning.
 
+A check that is code, not a pattern, cannot be read out of the TypeScript:
+the real day, the year, the time and offset ranges, and the digits of a
+phone. So ``tests/fixtures/crm_field_check_cases.json`` holds one table of
+cases. This file runs ``field_studio._CHECKS`` on it, and ``crmC4p.test.ts``
+runs ``checkValue`` on it.
+
 ⚠️ The TypeScript patterns compile here with ``re.ASCII``, because JS ``\\d``
 matches ASCII digits only. Python ``\\d`` also matches other scripts, so the
 samples stay ASCII. The client then refuses a few values that the gateway

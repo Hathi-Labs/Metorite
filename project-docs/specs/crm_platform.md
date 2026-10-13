@@ -4110,10 +4110,10 @@ at `:374-467`). The Read column is what `formatField` shows.
 |---|---|---|---|
 | `text` | `Input` | At most 255 characters (`TEXT_MAX`) | The text |
 | `textarea` | `Textarea` | At most 32 000 characters (`TEXTAREA_MAX`) | The text, with its line breaks |
-| `number` | `Input`, `inputMode="numeric"` | A whole number, and its size is less than 10^15 (`NUMBER_LIMIT`) | The number, with `en-IN` groups |
-| `decimal` | `Input`, `inputMode="decimal"` | A finite number, and its size is less than 10^15 | The number, with `en-IN` groups |
-| `currency` | `Input`, `inputMode="decimal"` | The check of `decimal` | `money()` |
-| `percent` | `Input`, `inputMode="decimal"` | The check of `decimal` | The number and "%" |
+| `number` | `Input`, `inputMode="text"` | A whole number, and its size is less than 10^15 (`NUMBER_LIMIT`) | The number, with `en-IN` groups |
+| `decimal` | `Input`, `inputMode="text"` | A finite number, and its size is less than 10^15 | The number, with `en-IN` groups |
+| `currency` | `Input`, `inputMode="text"` | The check of `decimal` | `money()` |
+| `percent` | `Input`, `inputMode="text"` | The check of `decimal` | The number and "%" |
 | `date` | `Input`, `type="date"` | `YYYY-MM-DD`, and a real day | `shortDate()` |
 | `datetime` | `Input`, `type="datetime-local"` | A real date and time. The client sends `toISOString()`, which has the `Z` that the server needs | `dateTime()`, in local time |
 | `boolean` | `Checkbox` | `true` or `false` | "Yes" or "No" |
@@ -4207,6 +4207,36 @@ migration, no flag and no new surface.
   limits, `FIELD_TYPES` and `LOOKUP_TARGETS` as literals. It runs the five
   patterns of both sides on one table of samples. It compiles the TypeScript
   patterns with `re.ASCII`, because JS `\d` matches only ASCII digits.
+
+**Review round 1 (2026-10-14).** The coordinator decided each item.
+
+1. **Commas (P1).** `toWire` removes the commas of a Western grouping
+   (`1,234.5`) or an Indian grouping (`12,34,567`) only. Any other comma
+   stays in the text, so "1,5" never saves as 15. `checkValue` then gives
+   "Use a dot for decimals."
+2. **A failed re-read.** `readFieldLayout` throws on a failure.
+   `useCachedResource` then keeps the last good layout, and
+   `useFieldLayout` gives the message in `error`.
+3. **The error belongs to its control.** Each control names the help text
+   and the error in `aria-describedby`, and it sets `aria-invalid`.
+   `SelectButton` takes an optional `id`, `describedBy` and `invalid`. The
+   multi-select is a `role="group"` with `aria-labelledby`.
+4. **The keyboard.** The four number types use `inputMode="text"`, because
+   the numeric keypad of iOS has no minus key.
+5. **A boolean.** A boolean has no empty state in a form. `formValue` gives
+   the stored value, else the default, else `false`. C4b sends that value,
+   so a required boolean that nobody ticks saves as `false`.
+6. **What a picker sends.** `toggleOption` gives an array of option values,
+   and `pickLookup` gives the `{id, name}` of the hit. A failed search shows
+   "Search failed".
+7. **The shared cases.** `tests/fixtures/crm_field_check_cases.json` holds
+   date, datetime and phone cases. The parity test runs `field_studio` on
+   it, and `crmC4p.test.ts` runs `checkValue` on it. It found one drift: Python
+   takes an offset such as `+00:99`, so the client now takes an offset
+   strictly inside one day. The parity test also fences `PHONE_MIN_DIGITS`.
+8. **A missing lookup is a C4b duty.** A form sends only the keys that
+   changed. So a lookup with `"missing": true` that the member does not
+   touch never reaches a save, and the gateway never checks its old id again.
 
 #### CRM-C4b: the record UI
 
