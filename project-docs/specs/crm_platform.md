@@ -581,7 +581,7 @@ When CRM-Z5 is live and Fracktal has chosen its mode, retire the global path
 | CRM-S3 | **CSV import** | The first thing a new customer does | The D80 file-importer rule. Reuse `project_import.md`'s seam. Dedupe by email and by domain |
 | CRM-S4 | **Bulk edit** | Moving 50 deals one by one is not a product | The WS-26i-bulk contract in `crm_app.md` §9 exists. Re-audit it first |
 | CRM-S5 | **Duplicate detection and merge** | Imports make duplicates | Native only. In Mirror the merge happens in the source CRM |
-| CRM-S6 | **Custom fields editor** | Every company has its own fields | Native only. It writes `crm_field_defs` from CRM-Z3 |
+| CRM-S6 | **Custom fields editor** | Every company has its own fields | **Superseded by CRM-C4 (§20.7), 2026-10-13.** Do not dispatch it |
 | CRM-S7 | **More than one pipeline** | CR-16. Sales and service often differ | Reopens D-CRM-11, which was agent-proposed |
 | CRM-S8 | **Lead capture** | Leads must arrive without a person typing them | A public form endpoint per org, with a signed key and a rate limit. WhatsApp inbound. Auto-lead as a per-org setting, not a global flag |
 | CRM-S9 | **Products, line items and quotes** | D22 scope | **Spec slice only.** No ticket until it has a section |
@@ -1238,7 +1238,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 - `GET /crm/fields/{entity}` serves leads, contacts, organizations and deals. It maps them to the `crm_field_defs.entity` values `lead`, `contact`, `company` and `deal`. Any member that the CRM access rule admits may read it. An unknown entity gives 422. It returns `key`, `label`, `type`, `options`, `position`, `visible`, `source` and `api_name`, in the order of `position`. It adds no write route and no migration. Fences: `tests/unit/test_crm_fields.py` and `tests/unit/test_crm_fields_r8.py`.
 - The record page draws each custom field from its definition: the label, the order, and only visible fields. The rules for each type are in `src/app/crm/lib/fields.ts`. A key with no definition keeps its humanised key. In Mirror mode the fields stay read only.
 - A URL becomes a link only for an http or https address, with `rel="noopener noreferrer"`. Any other value stays text.
-- The Fields card on CRM settings lists the fields of each entity. It says "Fields come from Zoho." in Mirror mode and "Field editing comes later." in Native mode. It has no editor. CRM-S6 builds the editor.
+- The Fields card on CRM settings lists the fields of each entity. It says "Fields come from Zoho." in Mirror mode and "Field editing comes later." in Native mode. It has no editor. CRM-C4 (§20.7) builds the editor. It supersedes CRM-S6.
 - Each list has a Columns control. A member picks up to 5 custom fields. The browser keeps the choice for each entity in local storage. While a saved view is active, the view holds the choice (CRM-Q8).
 
 **CRM-Q3 built as (2026-10-12).**
@@ -2667,9 +2667,9 @@ each drop in the UI. An agent never drops the records of a live org.
 ## 20. CRM configuration and AI reach (2026-10-12)
 
 **Bottom line.** Seven slices answer the owner's eight points of 2026-10-12.
-They are CRM-C1 to CRM-C7. Dispatch C7, C2 and C3 first, in parallel. Then
-dispatch C1, C4, C6 and C5, in that order. Only C5 writes to a third party,
-and only the owner turns it on for an org.
+They are CRM-C1 to CRM-C7, and C4 has three parts, C4a to C4c. Dispatch
+C7, C2 and C3 first, in parallel. §20.3 gives the order of the rest. Only
+C5 writes to a third party, and only the owner turns it on for an org.
 
 | Owner's point (2026-10-12) | The slice that answers it |
 |---|---|
@@ -2693,8 +2693,9 @@ Frontend paths are relative to `workbench/control_plane/src/`. Gateway paths
 are relative to `apps/services/gateway/gateway/`.
 
 **Settings.** `?tab=settings` is in `NON_ENTITY_TABS` (`app/crm/lib/urlState.ts:82`).
-The URL has no `section` parameter. `app/crm/components/PipelineSettings.tsx:74`
-draws every card on one page: Setup, Access, the stage cards, Fields and Sync
+The URL has no `section` parameter.
+`app/crm/components/PipelineSettings.tsx:150` (measured 2026-10-13) draws
+every card on one page: Setup, Access, the stage cards, Fields and Sync
 health. `CrmRail.tsx:172` draws the settings row last. Saved views already
 nest at depth 1 through `RailRow`.
 
@@ -2744,7 +2745,8 @@ total. `acb_skills/skill_families.py` has no `crm` family.
 6. **Every mirrored stage is `gray`.** The sync never writes `color`, and the
    column default is `gray`. So the type fallback never colours a Mirror lane.
 7. **The sync resets field order and visibility.** `_FIELD_DEF_SQL`
-   (`engine.py:1551`) overwrites `position` and `visible` on each run.
+   (`engine.py:1712`, measured 2026-10-13) overwrites `position` and
+   `visible` on each run.
 8. **A member cannot read the mode.** `GET /crm/settings`
    (`routes/crm/settings.py:277`) needs an admin.
 9. **The palette exemption is written down.** `src/lib/sharedTaskUi.test.ts:471`
@@ -2757,15 +2759,18 @@ total. `acb_skills/skill_families.py` has no `crm` family.
 | **CRM-C1** Settings sections | Child rows under the settings row. One section on each page | AGENT-SAFE | S | None | CRM-C3, because both edit `PipelineSettings.tsx` |
 | **CRM-C2** One board | One column primitive for Projects, Tasks and the CRM. A stage colour that does not fight the corner | AGENT-SAFE | M | None | Nothing |
 | **CRM-C3** Stages you can shape | Hide, order, colour and probability in both modes. A Mirror overlay that the sync never writes | AGENT-SAFE | M | 257 | CRM-C2 merged, because both edit three files |
-| **CRM-C4** Field studio | Create, rename, order, hide, sections, picklists, required and defaults (Native) | AGENT-SAFE. Flag `CRM_FIELD_STUDIO_ORGS`, shipped empty | L | 256 | CRM-C1 |
-| **CRM-C5** Field studio to Zoho | The C4 studio and the C3 stage order write to Zoho (Mirror) | AGENT-SAFE to build. 🔴 OWNER-GATE to turn on, and for the first live write | L | None | CRM-C4, the §19.9 consent, its own spec audit |
-| **CRM-C6** Field mapping | Lead conversion mapping, the CRM-Q7a Field map and lookup targets | AGENT-SAFE | M | 257 | CRM-C4, CRM-Q7a merged |
+| **CRM-C4a** Field studio, the backend | The field routes, the `custom` write path, the layout read and the reader filters (Native) | AGENT-SAFE. Flag `CRM_FIELD_STUDIO_ORGS`, shipped empty | L | 258 | Nothing |
+| **CRM-C4b** Field studio, the record UI | Custom fields in the forms, the Fields tab by layout, the Columns control and the filter bar | AGENT-SAFE. The same flag | M | None | CRM-C4a merged |
+| **CRM-C4c** Field studio, the studio UI | Create, rename, order, hide, sections, picklists, required and defaults in the `fields` section | AGENT-SAFE. The same flag | M | None | CRM-C1 and CRM-C4a merged |
+| **CRM-C5** Field studio to Zoho | The C4 studio and the C3 stage order write to Zoho (Mirror) | AGENT-SAFE to build. 🔴 OWNER-GATE to turn on, and for the first live write | L | None | CRM-C4a and CRM-C4c, the §19.9 consent, its own spec audit |
+| **CRM-C6** Field mapping | Lead conversion mapping, the CRM-Q7a Field map and lookup targets | AGENT-SAFE | M | 259 | CRM-C4a, CRM-Q7a merged |
 | **CRM-C7** AI reach | `crm-assistant` reads what a member can read. Every agent can reach the CRM. `agent-sales-assistant` goes | AGENT-SAFE | M | 256 (254 and 255 were taken) | Nothing |
 
-**Migration numbers (R1).** 252 is on `main`. 253 is on the unmerged branch
-`crm-q7a` (`253_crm_field_rules.sql`). This section reserves **254 to 257**
-in dispatch order. A reservation is advisory. Each slice takes the next free
-number at build time and checks it again at merge.
+**Migration numbers (R1).** Measured again on 2026-10-13. 253 to 256 are
+merged, and 256 is CRM-C7 (`256_remove_sales_assistant.sql`). 257 is
+CRM-C3 (`257_crm_stage_overlay.sql`). This section reserves **258** for
+CRM-C4a and **259** for CRM-C6. A reservation is advisory. Each slice takes
+the next free number at build time and checks it again at merge.
 
 ### 20.3 Dispatch order and parallel work
 
@@ -2784,25 +2789,47 @@ number at build time and checks it again at merge.
      for that file.
 2. **Wave 2: C1.** It splits `PipelineSettings.tsx`, so it starts after C3
    merges. It does not touch `KanbanBoard.tsx`, so it may run beside C2.
-3. **Wave 3: C4.** It fills the Fields section that C1 makes.
-4. **Wave 4: C6.** It needs the C4 columns and the merged CRM-Q7a card.
-5. **Wave 5: C5.** It needs the C4 studio and the §19.9 consent.
+3. **C4 is three slices (§20.7), with this order.**
+   - **C4a starts now.** It is the backend, and it may run beside C1. It
+     edits no file of C1.
+   - **C4b follows C4a.** It draws the custom fields on the record page and
+     the lists.
+   - **C4c follows C1 and C4a.** It fills the `fields` section that C1
+     makes.
+4. **Wave 4: C6.** It needs the C4a columns and the merged CRM-Q7a card.
+5. **Wave 5: C5.** It needs the C4c studio and the §19.9 consent.
 
 `app/crm/page.tsx` is the hot file. C2 changes only the `KanbanBoard` props.
 C3 changes only the quick create job (`page.tsx:1025`) and the move and lost
-dialog (`:1054`). C1 edits the settings branch, and it starts after C3
-merges. So no two slices edit `page.tsx` at the same time.
+dialog (`:1054`). C1 starts after C3 merges. So no two slices edit `page.tsx`
+at the same time.
+
+C1 may edit these hunks of `page.tsx` and no other. The line numbers come
+from a measurement at `be8a5db7e`, which holds C3.
+
+- `viewLine`, the settings text at `:600-601`.
+- One new section handler beside `chooseView` (`:622`).
+- The two `CrmRail` call sites: the phone drawer at `:773` and the desktop
+  column at `:802`.
+- The banner `onOpenSetup` at `:812`.
+- The settings branch at `:925-956`.
+- One new effect that sends a missing, unknown or hidden section to the
+  default through `replaceView`.
 
 ### 20.4 CRM-C1: Settings sections
 
 **Gate.** AGENT-SAFE. Frontend only. No migration and no flag, because the
 same cards show in a new place.
 
+**Audit (2026-10-13).** The spec auditor gave GO-NARROWED. The owner decided
+each finding, and this section holds the result. The anchors below come from
+a measurement at `be8a5db7e`, which holds C3.
+
 **Scope.**
 
 1. While `?tab=settings` is open, the rail row "CRM settings" shows child
    rows. Each child is a `RailRow` with `depth={1}`, as a saved view is.
-   While a child is selected, the parent row is not highlighted.
+   While a child row is open, the rail does not highlight the parent row.
 2. The sections:
 
    | Id | Label | Shows for | Mode |
@@ -2819,40 +2846,110 @@ same cards show in a new place.
    A row that the caller or the mode cannot use does not show. One list in
    the new `app/crm/lib/settingsSections.ts` holds this table. The rail and
    the page both read it.
-3. The URL is `?tab=settings&section=<id>`. `urlState.ts` drops an unknown
-   value.
-4. The default section is `setup` for an admin and `stages` for a member.
-   A missing, unknown or hidden section opens the default through
-   `replaceView`. So Back does not return to the bad URL.
-5. A click on a child row calls `pushView`. No code calls `router.push` or
-   `router.replace` (#914).
-6. The page shows one section, with the section label as its title. The
-   cards do not change. `PipelineSettings` takes a `section` prop and draws
-   the cards of that section only.
-7. The mirror banner and the title-bar line link to `section=setup`. Only
-   the hub offers "Change setup" (CRM-X0 item 1).
-8. On a phone, the child rows show in the phone rail, as saved views do.
+3. **A `null` mode reads as Native.** `CrmMode` can be `null`
+   (`lib/connect.ts:15`), and `useCrmMode` returns it
+   (`lib/useCrmMode.ts:107`). The page treats only `"mirror"` as Mirror
+   (`page.tsx:949`). So `settingsSections.ts` treats `null` as `native`.
+4. **The cards of each section.**
+
+   | Section | The cards it draws |
+   |---|---|
+   | `setup` | `SetupHub`, for an admin |
+   | `access` | `AccessPanel`, for an admin |
+   | `stages` | `PipelineSections` and the deal grid |
+   | `lead-statuses` | The lead grid |
+   | `lost-reasons` | The reason grid, or the reason card |
+   | `fields` | `FieldsCard` |
+   | `field-mapping` | `FieldMapCard`, for an admin in Mirror mode |
+   | `sync-health` | `SyncHealthCard`, for an admin in Mirror mode |
+
+   No section is empty for an admin or a member, in Mirror, Native or `null`
+   mode. The page hides a section that the caller or the mode cannot use.
+5. **The URL** is `?tab=settings&section=<id>`. `urlState.ts` parses
+   `section` only when the tab is `settings`, as it does `module`
+   (`urlState.ts:231` and `:256`). `selectTab` (`:434`) clears `section`.
+   An unknown value parses as `null`.
+6. **The default section** is `setup` for an admin and `stages` for a
+   member. A missing, unknown or hidden section opens the default through
+   `replaceView`. One new effect in `page.tsx` does this. So Back does not
+   return to the bad URL.
+7. **A click on a child row** calls `pushView`. No code calls `router.push`
+   or `router.replace` (#914). On a phone, the click also closes the drawer,
+   as `chooseView` does (`page.tsx:622`).
+8. **`section` is an optional prop of `PipelineSettings`.** With a value,
+   the component draws the cards of that section only. With no value, it
+   draws every card, as it does today. So `crmQ9.test.ts`,
+   `crmQ7a.test.ts`, `crmC3.test.ts` and `mirror.test.ts` keep working.
+9. **The title.** The page draws one section, and the cards do not change.
+   The section label shows in the `AppTopBar` subtitle, for example
+   "Settings · Deal stages". `viewLine` (`page.tsx:600-601`) gives this text
+   in place of "Setup, access, pipelines and statuses".
+10. **The error boundary.** `boundaryKey` (`lib/boundary.ts:25`) adds
+    `section` to the key that it returns at `:30-31`. So an error clears
+    when the member opens another section.
+11. **The setup link.** The mirror banner and the title-bar line open
+    `?tab=settings&section=setup`. Only the hub offers "Change setup"
+    (CRM-X0 item 1).
+    - `SETUP_HREF` (`lib/setup.ts:18`) becomes
+      `/crm?tab=settings&section=setup`.
+    - `SetupLink` (`components/MirrorBanner.tsx:80`) draws a `next/link`
+      `<Link>`. That is the server round trip that #914 removed. C1 makes
+      its click call `pushView` with `SETUP_HREF`.
+    - The banner `onOpenSetup` (`page.tsx:812`) opens the `setup` section.
+      It does not call `chooseView("settings")`.
+    - `crmX0.test.ts:243` looks for `chooseView("settings")` at
+      `page.tsx:812`. C1 changes that line, so C1 changes the fence in the
+      same slice. If the `href` of `SetupLink` goes, C1 also changes the
+      check at `crmX0.test.ts:239`.
+12. On a phone, the child rows show in the phone rail, as saved views do.
 
 **Non-goals.** No change to a card. No new route. No search in settings.
 
-**Files.** `app/crm/components/CrmRail.tsx`, `PipelineSettings.tsx`,
-`app/crm/page.tsx` (the settings branch only), `app/crm/lib/urlState.ts`,
-`app/crm/lib/settingsSections.ts` (new) and `app/crm/components/crmC1.test.ts`
-(new).
+**Files.** Paths are relative to `workbench/control_plane/src/`.
+
+- `app/crm/components/CrmRail.tsx`.
+- `app/crm/components/PipelineSettings.tsx`. The cards start at `:150`.
+  The docstring at `:6-10` names a Connection card, and it says that
+  Fields and Sync health wait. The Setup hub holds the connection, and both
+  cards exist. C1 corrects the docstring.
+- `app/crm/page.tsx`, in the hunks that §20.3 names and no other.
+- `app/crm/lib/urlState.ts`.
+- `app/crm/lib/setup.ts:18`.
+- `app/crm/components/MirrorBanner.tsx:80`.
+- `app/crm/lib/boundary.ts:25`.
+- `app/crm/components/crmX0.test.ts:243`.
+- `app/crm/lib/history.test.ts`, for the `next/link` fence.
+- `app/crm/lib/settingsSections.ts` (new) and
+  `app/crm/components/crmC1.test.ts` (new).
 
 **Done when.**
 
-1. A vitest shows the visible sections for an admin and a member, in each
-   mode.
-2. A vitest shows that `section=sync-health` in Native mode resolves to the
+1. A vitest shows the visible sections for an admin and a member, in
+   Mirror, Native and `null` mode. Each visible section draws at least one
+   card.
+2. A vitest shows that a member in Native or `null` mode sees `stages`,
+   `lead-statuses` and `lost-reasons` only. Each of the three draws its grid
+   or its card.
+3. A vitest shows that `section=sync-health` in Native mode resolves to the
    default through `replaceView`.
-3. A vitest shows that a child-row click calls `pushView` with the section.
-4. `railRows.test.ts` passes, and the child rows are `RailRow`.
-5. The `visual-review` skill shows the rail and one section. Check light
-   mode, dark mode, compact density, a changed accent and phone width.
+4. A vitest shows that a child-row click calls `pushView` with the section.
+   On a phone, the click also closes the drawer.
+5. A vitest shows that `selectTab` clears `section`, and that `section` on
+   another tab parses as `null`.
+6. A vitest shows that `PipelineSettings` with no `section` draws every card
+   of today.
+7. A vitest shows that `boundaryKey` changes when only the section changes.
+8. A vitest renders `CrmRail` with the settings tab open. It finds the
+   depth-1 child rows, and each row is a `RailRow`.
+9. A fence refuses a `next/link` `<Link>` under `src/app/crm`. It lives in
+   `history.test.ts` or in a new test. `SetupLink` calls `pushView`.
+10. `railRows.test.ts` passes.
+11. The `visual-review` skill shows the rail and one section. Check light
+    mode, dark mode, compact density, a changed accent and phone width.
 
-**Fences.** `app/crm/components/crmC1.test.ts`, `app/crm/lib/history.test.ts`
-and `src/lib/railRows.test.ts`.
+**Fences.** `app/crm/components/crmC1.test.ts`,
+`app/crm/components/crmX0.test.ts`, `app/crm/lib/history.test.ts` and
+`src/lib/railRows.test.ts`.
 
 **Verification.**
 
@@ -3396,6 +3493,15 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 
 ### 20.7 CRM-C4: Field studio, Native mode
 
+**Audit (2026-10-13).** The spec auditor gave NO-GO. The owner decided each
+finding, and this section holds the result. C4 is now three slices, and each
+has its own done-whens: CRM-C4a (the backend), CRM-C4b (the record UI) and
+CRM-C4c (the studio UI). §20.3 gives the order. The anchors below come from a
+measurement at `be8a5db7e`.
+
+**Supersedes CRM-S6.** CRM-C4 supersedes CRM-S6, "Custom fields editor"
+(§6 and §18.5). Do not dispatch CRM-S6.
+
 **Gate.** AGENT-SAFE. The write routes sit behind the new flag
 `CRM_FIELD_STUDIO_ORGS` in `routes/crm/flags.py`. It has the grammar of
 `CRM_MIRROR_ORGS` and ships empty. To turn it on is the gate
@@ -3404,7 +3510,8 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 **Which entities.** Leads, Contacts, Companies and Deals. Native mode has no
 generic module, because `crm_module_records` has no native writer (§18.7).
 
-**Migration 256 (expand only, R6).**
+**Migration 258 (expand only, R6).** 256 is CRM-C7, merged, and 257 is
+CRM-C3.
 
 - New table `crm_field_sections`: `id`, `organization_id`, `entity`,
   `label`, `position`, `created_at` and `updated_at`. It takes the tenant
@@ -3417,8 +3524,11 @@ generic module, because `crm_module_records` has no native writer (§18.7).
   - `lookup_target TEXT NULL`.
   - `is_system BOOLEAN NOT NULL DEFAULT false`.
   - `retired_at TIMESTAMPTZ NULL`.
-- `_FIELD_DEF_SQL` of the sync names none of these columns, so the sync
-  leaves them alone.
+- A field that the studio writes has `source = 'metorite'`. The sync writes
+  `'zoho'`. The `source` column exists, so this needs no DDL.
+- `_FIELD_DEF_SQL` of the sync (`crm_sync/engine.py:1712`) names none of the
+  seven columns, so the sync leaves them alone. Item 13 adds a guard to its
+  conflict update.
 
 **Scope.**
 
@@ -3434,39 +3544,79 @@ generic module, because `crm_module_records` has no native writer (§18.7).
    | Checkbox | `boolean` |
    | Email, Phone, URL | `email`, `phone`, `url` |
    | Picklist, Multi-select | `select`, `multiselect` |
-   | Lookup | `lookup`, with `lookup_target` (an entity slug or `module:<ApiName>`) |
+   | Lookup | `lookup`, with `lookup_target` (item 8) |
 
-   `decimal` and `percent` are new words. In `mapping._FIELD_TYPES`, Zoho
-   `double` becomes `decimal` and `percent` becomes `percent`. The next sync
-   updates the mirrored rows. `app/crm/lib/fields.ts` draws both words.
+   `decimal` and `percent` are new words. In `mapping._FIELD_TYPES`
+   (`crm_sources/zoho/mapping.py:786`), Zoho `double` becomes `decimal` and
+   `percent` becomes `percent`. The next sync updates the mirrored rows.
+   `app/crm/lib/fields.ts` draws both words.
+
+   **The same change extends `_RULE_COLUMN_TYPES`** (`mapping.py:574-582`).
+   `decimal` and `percent` get the column types of `number`. Without this,
+   an approved CRM-Q7a rule on a `double` or `percent` field goes
+   `type_mismatch` after the next sync.
 2. **The key.** At create, the gateway makes `key` from the label. It uses
    `a-z`, `0-9` and `_`, at most 40 characters, with `_2` on a clash. A key
-   never equals a fixed column. The key never changes, and a rename changes
-   `label` only.
+   never equals a fixed column. The validator also refuses `order`, `layout`
+   and `restore`, because they are route words (item 4). The key never
+   changes, and a rename changes `label` only.
 3. **System fields.** `core.SYSTEM_FIELDS` lists the fixed columns of each
    entity, with a label and a type. The studio shows them beside the custom
    fields. An admin may change their label, order, section and `visible`.
-   The first such edit writes a row with `is_system = true`. A system field
-   cannot be deleted or retyped. A field that the gateway needs stays
+   The first such edit writes a row with `is_system = true`. The studio
+   cannot delete or retype a system field. A field that the gateway needs stays
    required, such as a deal name.
 4. **The routes.** A new `routes/crm/field_studio.py`. Only an admin calls
    them.
    - `POST /crm/fields/{entity}` creates a field.
    - `PATCH /crm/fields/{entity}/{key}` changes `label`, `section_id`,
-     `required`, `help_text`, `default_value`, `visible` and the options.
-   - `PATCH /crm/fields/{entity}/order` sets the order of the sections and
-     of the fields in each, in one transaction.
+     `required`, `help_text`, `default_value`, `visible`, the options,
+     `type` and `lookup_target`. A `type` change follows the matrix of item
+     9. A `lookup_target` follows item 8.
+   - `PUT /crm/field-layout/{entity}` sets the order of the sections and the
+     order of the fields in each. One body holds both, and one transaction
+     writes it. A `PATCH /crm/fields/{entity}/order` route would collide
+     with `/{key}`, so it does not exist.
    - `POST`, `PATCH` and `DELETE /crm/field-sections/{entity}` manage the
      sections. A delete moves its fields to no section.
    - `DELETE /crm/fields/{entity}/{key}` retires the field. It sets
      `retired_at` and `visible = false`, and it keeps each value in
-     `custom`. A retired field can come back.
-5. **Picklist options.** Add, rename, reorder and retire. An option keeps
-   its `value` for life, and a rename changes `label`. A retire adds
-   `"retired": true`. A record that holds a retired value still shows it,
-   and no picker offers it.
-6. **The type change matrix.** A change is allowed only when each stored
-   value stays valid. Any other change gives 422 `field_type_change`.
+     `custom`.
+   - `POST /crm/fields/{entity}/{key}/restore` brings a retired field back.
+     It clears `retired_at` and sets `visible = true`.
+5. **The custom write path.** It is new. `LeadIn` (`routes/crm/core.py:289`),
+   `DealIn` (`:345`), `ContactIn` (`:242`) and `OrganizationIn` (`:208`)
+   have no `custom`. `update_row` (`core.py:1798`) writes each column whole,
+   so a `custom` value replaces the whole object today.
+   - A create and a PATCH take `custom` as a partial map of key to value.
+   - The write merges per key, with jsonb `||`. A JSON `null` removes that
+     key.
+   - A write never touches a key that it does not name. So the stored value
+     of a retired field stays.
+   - The gateway checks each value against the type of its field. A bad
+     value gives 422, and the detail names the field label.
+   - A create enforces "required". A PATCH enforces it only when it sets the
+     key to `null` or to an empty value.
+   - On create, a field with a `default_value` fills an absent key.
+   - The same rules apply to leads, deals, contacts and organizations.
+6. **Picklist options.** Add, rename, reorder and retire.
+   - A new option takes a `value` that is a slug of its label. The `value`
+     is unique in the field, and a suffix `-2`, `-3` resolves a clash.
+   - The `value` never changes after create. A rename changes `label` only.
+   - A retire adds `"retired": true`. A record keeps a retired value and
+     shows it. The pickers hide a retired option.
+7. **Multi-select.** The stored value is a JSON array of option `value`
+   strings. The custom filter (`core.py:1181`) already reads this shape.
+8. **Lookup.**
+   - In Native mode, `lookup_target` is one of the entity slugs `leads`,
+     `contacts`, `organizations` or `deals`. A `module:<ApiName>` target is
+     for Mirror mode only, and it waits for CRM-C5.
+   - The stored value is `{"id": "<uuid>", "name": "<label at write time>"}`.
+     The readers find the live name by `id`. `lookupName`
+     (`app/crm/lib/fields.ts:107`) already reads `{name, id}`.
+   - An `id` of a record in another org gives 422.
+9. **The type change matrix.** The gateway allows a change only when each
+   stored value stays valid. Any other change gives 422 `field_type_change`.
 
    | From | Allowed to |
    |---|---|
@@ -3477,56 +3627,195 @@ generic module, because `crm_module_records` has no native writer (§18.7).
    | `email`, `phone`, `url` | `text` |
    | Any other | None |
 
-7. **Mode guard.** `crm_field_sections` and `crm_field_defs` join
-   `MIRROR_SETTINGS_TABLES`. So each studio route gives 409 in Mirror mode
-   until CRM-C5. The sync writes with raw SQL and does not call the guard.
-8. **One layout, read everywhere.** `GET /crm/fields/{entity}?layout=1`
-   returns the sections, the system fields and the custom fields in order.
-   A required field blocks a save with 422 and its name. A default value
-   fills a new record. Five places read the layout:
-   - the create and edit forms.
-   - the Fields tab of the record page (CRM-X4).
-   - the Columns control (CRM-Q4) and the filter bar (CRM-Q8).
-   - the CSV export.
-9. **The Fields section** (CRM-C1) is the studio for an admin of a Native
-   org with the flag on. Every other case shows the read-only list of
-   today. With the flag off, it says "Field editing is not turned on."
+10. **Mode guard.** `crm_field_sections` and `crm_field_defs` join
+    `MIRROR_SETTINGS_TABLES`. So each studio route gives 409 in Mirror mode
+    until CRM-C5. The sync writes with raw SQL and does not call the guard.
+11. **System rows and retired fields in the readers.** Five readers list the
+    custom keys. Each one leaves out the rows with `is_system = true`:
+    - `_FIELDS_SQL` (`routes/crm/fields.py:31`), except under `?layout=1`.
+    - the custom filter (`routes/crm/core.py:1161`).
+    - `_FIELD_SQL` (`routes/crm/field_rules.py:81`).
+    - `crm_list_fields` (`packages/acb_skills/acb_skills/crm_tools.py:460`).
+    - `fieldRows` (`app/crm/lib/fields.ts:271`).
+
+    A retired key has these rules:
+    - The custom filter (`core.py:1161`) refuses it with 422.
+    - The CSV export leaves it out of its columns.
+    - The saved-view column picker (`pickable`, `lib/fields.ts:344`) leaves
+      it out.
+    - `crm_list_fields` marks it "retired".
+12. **One layout, read everywhere.** `GET /crm/fields/{entity}?layout=1`
+    returns the sections, the system fields and the custom fields in order.
+    Five places read the layout:
+    - the create and edit forms.
+    - the Fields tab of the record page (CRM-X4).
+    - the Columns control (CRM-Q4) and the filter bar (CRM-Q8).
+    - the CSV export.
+
+    **The Fields tab draws the layout.** Today the `fields` part of
+    `FieldsPanel.tsx` (`:242`) lists the custom keys that the record holds.
+    - It draws each section in order, with the system and custom fields in
+      it.
+    - It shows each visible field, also a field with no value. So a member
+      can edit a new field on the record page. Today `fieldRows`
+      (`lib/fields.ts:273`) shows only the keys that the record holds.
+    - The Overview tab keeps its summary facts.
+13. **The mode switch.** A Native field and a Zoho field can have the same
+    key.
+    - The conflict update of `_FIELD_DEF_SQL` (`engine.py:1712`) gets
+      `WHERE crm_field_defs.source IS DISTINCT FROM 'metorite'`. So the
+      sync never updates a Metorite field row.
+    - Start over (`routes/crm/settings.py:241`, CRM-X0) deletes the
+      `source = 'zoho'` rows today. It also deletes the `source = 'metorite'`
+      rows, because start over deletes the records too.
+14. **The Fields section** (CRM-C1) is the studio for an admin of a Native
+    org with the flag on. Every other case shows the read-only list of
+    today. With the flag off, it says "Field editing is not turned on."
 
 **Non-goals.** Formula, rollup, auto-number, file and user-lookup fields.
 Field permissions for each role. Field history (CRM-S10). A layout for each
 pipeline. A Zoho write (CRM-C5).
 
-**Files.** `infra/postgres/256_crm_field_studio.sql` (new),
+#### CRM-C4a: the backend
+
+**Starts now.** It edits no file of CRM-C1.
+
+**Scope.**
+
+- Migration 258 and the flag `CRM_FIELD_STUDIO_ORGS`.
+- `field_studio.py` and `core.SYSTEM_FIELDS` (items 3 and 4).
+- The custom write path (item 5), with the rules of items 6, 7 and 8.
+- The `?layout=1` read (item 12) and the five reader filters (item 11).
+- The `_FIELD_TYPES` and `_RULE_COLUMN_TYPES` change (item 1).
+- Restore, the field layout route and the mode-switch guard (items 4
+  and 13).
+
+**Files.** `infra/postgres/258_crm_field_studio.sql` (new),
 `routes/crm/field_studio.py` (new), `routes/crm/fields.py`, `core.py`,
-`records.py`, `flags.py`, `export.py`, `crm_sources/zoho/mapping.py`, the
-record forms and Fields tab in `app/crm/components/`, `app/crm/lib/fields.ts`,
-and the fences below.
+`records.py`, `flags.py`, `export.py`, `field_rules.py`, `settings.py`,
+`crm_sync/engine.py`, `crm_sources/zoho/mapping.py`,
+`packages/acb_skills/acb_skills/crm_tools.py`, `app/crm/lib/fields.ts` (the
+reader filter only) and the fences below.
 
 **Done when.**
 
 1. An R8 test creates a field of each type. It renames, orders, sections,
-   hides and retires each one. The values in `custom` survive each step,
-   and org B sees none of it.
+   hides, retires and restores each one. The values in `custom` survive
+   each step, and org B sees none of it.
 2. The same test walks the type matrix. A refused change gives 422 and
    changes no row.
-3. A required custom field makes `POST /crm/deals` give 422 with its name.
-   A default value fills a new deal.
-4. Each route gives 403 for a member who is not an admin. It gives 404 for
-   an org that the flag does not allow, and 409 in Mirror mode.
-5. A sync over a Mirror org leaves the seven new columns unchanged.
-6. `crmC4.test.ts` shows the studio, the option editor, and a type menu
-   that offers the allowed changes only.
+3. A required custom field makes `POST /crm/deals` give 422 with its label.
+   A PATCH that sets it to `null` gives 422. A PATCH that does not name it
+   passes. A default value fills a new deal.
+4. An R8 test PATCHes one key of `custom`. The other keys stay, and the
+   value of a retired field stays. A JSON `null` removes its key. The test
+   runs for leads, deals, contacts and organizations.
+5. A bad value for a type gives 422 that names the field label.
+6. A lookup write stores `{"id", "name"}`. An `id` from org B gives 422. A
+   `module:<ApiName>` target in Native mode gives 422.
+7. A multi-select write stores a JSON array of option values. The custom
+   filter finds the record by one of them.
+8. A new option takes a slug `value`, with `-2` on a clash. A rename keeps
+   the `value`.
+9. `PUT /crm/field-layout/{entity}` sets the section order and the field
+   order in one transaction. The key validator refuses `order`, `layout`
+   and `restore`.
+10. Each of the five readers of item 11 leaves out an `is_system` row. The
+    custom filter refuses a retired key with 422. The export leaves it out.
+    `crm_list_fields` marks it "retired".
+11. An R8 case: an approved CRM-Q7a rule on a Zoho `double` field survives
+    the `_FIELD_TYPES` change. Its status is not `type_mismatch`.
+12. An R8 case: a sync over a key that a `source = 'metorite'` row holds
+    leaves that row unchanged. Start over deletes the `metorite` rows.
+13. Each route gives 403 for a member who is not an admin. It gives 404 for
+    an org that the flag does not allow, and 409 in Mirror mode.
+14. A sync over a Mirror org leaves the seven new columns unchanged.
 
 **Fences.** `tests/unit/test_crm_field_studio_r8.py` (new, R8, `_DB_GATE`),
 `tests/unit/test_crm_field_studio.py` (new, the key rule and the matrix),
-`tests/unit/test_crm_mirror_readonly.py`, `tests/unit/test_tenant_coverage.py`
-and `app/crm/components/crmC4.test.ts` (new).
+`tests/unit/test_crm_field_rules.py`, `tests/unit/test_crm_field_rules_r8.py`,
+`tests/unit/test_crm_mirror_readonly.py` and
+`tests/unit/test_tenant_coverage.py`.
 
 **Verification.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_crm_field_studio_r8.py tests/unit/test_crm_field_studio.py tests/unit/test_crm_fields_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_tenant_coverage.py -q
+uv run pytest tests/unit/test_crm_field_studio_r8.py tests/unit/test_crm_field_studio.py tests/unit/test_crm_fields_r8.py tests/unit/test_crm_field_rules.py tests/unit/test_crm_field_rules_r8.py tests/unit/test_crm_export.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_tenant_coverage.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
+```
+
+#### CRM-C4b: the record UI
+
+**Follows CRM-C4a.** It reads the C4a layout and writes through the C4a
+custom write path.
+
+**Scope.** The create and edit forms (items 5 to 8). The Fields tab by
+layout (item 12). The list Columns control and the filter bar for custom
+fields.
+
+**Files.** `app/crm/components/QuickCreateModal.tsx`, `FieldsPanel.tsx`,
+`RecordSheet.tsx`, `FilterBar.tsx`, `app/crm/lib/fields.ts`,
+`app/crm/lib/filterBar.ts`, `app/crm/lib/columns.ts` and
+`app/crm/components/crmC4b.test.ts` (new).
+
+**Done when.**
+
+1. The create form shows each visible field of the layout, in section
+   order. A required field blocks the save, and a default fills its input.
+2. An edit sends `custom` as a partial map that holds only the changed key.
+   A cleared value sends a JSON `null`.
+3. The lookup input offers records of the `lookup_target` entity only. It
+   writes `{"id", "name"}`, and the record shows the live name.
+4. The multi-select input writes a JSON array of option values. A retired
+   option shows on a record that holds it, and no picker offers it.
+5. The Fields tab draws each section in order. It shows a visible field
+   with no value, and a member can edit it there.
+6. The Columns control and the filter bar offer custom fields, and neither
+   offers a retired field.
+7. The `visual-review` skill shows the form and the Fields tab. Check light
+   mode, dark mode, compact density, a changed accent and phone width.
+
+**Fences.** `app/crm/components/crmC4b.test.ts` (new) and
+`app/crm/components/crmX4.test.ts`.
+
+**Verification.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
+```
+
+#### CRM-C4c: the studio UI
+
+**Follows CRM-C1 and CRM-C4a.** It fills the `fields` settings section that
+C1 makes.
+
+**Scope.** The studio of items 2, 3, 4, 6, 9 and 14. The type menu offers the
+allowed changes only. A drag of a section or a field calls
+`PUT /crm/field-layout/{entity}`. A retired field has a Restore control.
+
+**Files.** `app/crm/components/FieldsCard.tsx`, new studio components in
+`app/crm/components/`, `app/crm/lib/fields.ts` and
+`app/crm/components/crmC4.test.ts` (new). The docstring at
+`FieldsCard.tsx:9` names CRM-S6. C4c changes it to name CRM-C4.
+
+**Done when.**
+
+1. `crmC4.test.ts` shows the studio, the option editor, and a type menu that
+   offers the allowed changes only.
+2. A drag calls `PUT /crm/field-layout/{entity}` with the section order and
+   the field order in one body.
+3. With the flag off, the section says "Field editing is not turned on." A
+   member and a Mirror org see the read-only list.
+4. The `visual-review` skill shows the studio. Check light mode, dark mode,
+   compact density, a changed accent and phone width.
+
+**Fences.** `app/crm/components/crmC4.test.ts` (new) and
+`app/crm/components/crmC1.test.ts`.
+
+**Verification.**
+
+```bash
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
 
@@ -3654,7 +3943,7 @@ them in this order.
 **(a) Lead conversion.** Which lead field fills which Contact, Company and
 Deal field.
 
-1. **Migration 257 (expand only).** `crm_field_defs` gets `convert_mapping
+1. **Migration 259 (expand only).** `crm_field_defs` gets `convert_mapping
    JSONB NULL`. A lead row holds `{"contact", "company", "deal"}`, each a
    target key or NULL.
 2. **Mirror.** Zoho returns `convert_mapping` on each Leads field of `GET
@@ -3684,7 +3973,7 @@ sets it. A target that the org does not have shows "Not mirrored".
 **Non-goals.** A map between two generic modules. A Zoho write of the
 conversion mapping. Activities on a convert.
 
-**Files.** `infra/postgres/257_crm_convert_mapping.sql` (new),
+**Files.** `infra/postgres/259_crm_convert_mapping.sql` (new),
 `routes/crm/field_studio.py`, `pipeline.py`, `crm_sources/zoho/mapping.py`,
 `crm_sync/engine.py`, the Field mapping section in `app/crm/components/`, and
 the fences below.
