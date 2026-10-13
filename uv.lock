@@ -324,6 +324,7 @@ dependencies = [
     { name = "acb-auth" },
     { name = "acb-common" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -332,6 +333,7 @@ requires-dist = [
     { name = "acb-auth", editable = "packages/acb_auth" },
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "fastapi", specifier = ">=0.141" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54" },
 ]
 

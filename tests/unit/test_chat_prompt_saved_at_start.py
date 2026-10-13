@@ -457,6 +457,11 @@ def test_a_steer_saves_the_turn_with_its_actor(graph_as_app, world):
     rows = _user_rows(graph_as_app, sid)
     assert [(r.id, r.content, r.author_email) for r in rows] == [
         ("u-steer", "Also add a due date", _ALICE)]
+    # The row carries the steer mark, so a reload in any browser draws it as
+    # "added to the reply" (owner, 2026-10-12, lib/chatSteer.ts STEERED).
+    events = rows[0].custom_events
+    events = json.loads(events) if isinstance(events, str) else events
+    assert {"name": "steered", "value": {}} in events
     assert world.payloads == []   # a steer starts no run
 
 

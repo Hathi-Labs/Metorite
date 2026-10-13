@@ -20,7 +20,7 @@ import { unfenced } from "@/lib/fencedText";
 import RollupCard from "@/components/RollupCard";
 import { answersFromTools } from "@/lib/askAnswers";
 import { genUiTarget } from "@/lib/askPin";
-import GenerativeUINode, { genUiRootIsCard } from "@/components/GenerativeUINode";
+import GenerativeUINode, { genUiRootOwnsHead } from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
 import { DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
@@ -34,6 +34,7 @@ import { pillsForTurn } from "@/lib/projectsAgent";
 import AnswerDetails from "@/components/AnswerDetails";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
+import { STEER_WAITING, isSteered } from "@/lib/chatSteer";
 import ChatSendButton from "@/components/ChatSendButton";
 import Button from "@/components/ui/Button";
 
@@ -332,6 +333,7 @@ function MessageBubble({
       // Retry re-sends the member's last message (`lib/chatRetry.ts`).
       return (
         <ErrorCard
+          id={`error:${message.id}`}
           error={parseStoredRunError(content.slice(9))}
           onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
         />
@@ -346,9 +348,7 @@ function MessageBubble({
       return (
         <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-[11px] text-primary/80">
           <div className="flex items-center gap-1.5 font-medium mb-1">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 8h10M8 3l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <Icon name="ArrowRight" size={12} className="shrink-0" />
             {header}
           </div>
           {body && (
@@ -494,6 +494,33 @@ function MessageBubble({
               )}
             </div>
           </div>
+        ) : isSteered(message) ? (
+          /* ═══ A steer (owner, 2026-10-12, lib/chatSteer.ts) ═══
+             Words the member added to a reply while the agent worked. A
+             small note, not a new turn: a quiet tinted box, the words, and
+             one line under it that says what the server did with them. */
+          <div className="max-w-[88%] sm:max-w-[78%]" data-chat-steer={message.steerAck ?? "added"}>
+            <div className="flex items-start gap-1.5 rounded-xl border border-primary/20 bg-primary/5 px-3 py-1.5 text-[13px] sm:text-sm leading-relaxed text-foreground">
+              <Icon name="MessageSquarePlus" size={13} className="mt-1 shrink-0 text-primary" />
+              <p className="min-w-0 whitespace-pre-wrap break-words">{message.content}</p>
+            </div>
+            <div className="mt-1 flex items-center justify-end gap-1.5 pr-0.5 text-[10px] text-muted-foreground">
+              {message.steerAck === "sending" ? (
+                <>
+                  <Icon name="Loader2" size={10} className="animate-spin shrink-0" />
+                  <span>Adding to the reply…</span>
+                </>
+              ) : message.steerWaiting ? (
+                <span data-steer-waiting>{STEER_WAITING}</span>
+              ) : (
+                <>
+                  <Icon name="Check" size={10} className="shrink-0 text-success" />
+                  <span>Added to the reply</span>
+                </>
+              )}
+              <span>{timestamp}</span>
+            </div>
+          </div>
         ) : (
           /* ═══ Normal user bubble — compact, right-aligned, no avatar ═══ */
           <div className="max-w-[88%] sm:max-w-[78%]">
@@ -548,32 +575,32 @@ function MessageBubble({
       const title = typeof rec.title === "string" && rec.title
         ? rec.title : "Interactive view";
       return (
-        <button
+        <Button
           key={i}
           type="button"
+          variant="secondary"
+          size="sm"
+          icon="AppWindow"
           onClick={() => openGenUI({
             id: `${message.id}:${i}`,
             title,
             sessionId,
             spec,
           })}
-          className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/50 px-3 py-2 text-xs text-foreground hover:bg-secondary/60 transition-colors"
         >
-          <Icon name="AppWindow" size={13} className="text-primary" />
-          <span className="font-medium">{title}</span>
-          <span className="text-muted-foreground">
-            — open in side panel
-          </span>
-        </button>
+          <span className="font-medium text-foreground">{title}</span>
+          <span>· Open in the side panel</span>
+        </Button>
       );
     }
     // A long card rolls up when a newer card arrives (`components/RollupCard`).
     // An ask that still waits never does: the pin's own rule says when.
-    // A root `card` has its own title row, and that row is the one toggle.
-    // It never wore an icon, so it does not get one. A frame does.
+    // A root `card`, and a template with its own head, has its own title
+    // row, and that row is the one toggle. A root card never wore an icon,
+    // and a template draws its own, so neither gets one. A frame does.
     const target = genUiTarget(message.id, i, spec);
     const title = unfenced(genUiTitle(spec)) || "Card";
-    const header = genUiRootIsCard(spec) ? "own" : "frame";
+    const header = genUiRootOwnsHead(spec) ? "own" : "frame";
     const icon = header === "own" ? undefined : "LayoutTemplate";
     if (ask) {
       return (

@@ -228,6 +228,69 @@ def _steer_key(thread_id: str) -> str:
     return f"{STEER_PREFIX}:{thread_id}"
 
 
+#: A run that a member STOPPED (round 2 of the review of #920). The mark is
+#: per thread, so every tab and every member of a room reads one answer: a
+#: Stop asks for no follow-up. It lives as long as a stored steer, and the
+#: next run start clears it (:func:`clear_stopped`).
+STOPPED_PREFIX = "cc:steer-stopped"
+
+
+def _stopped_key(thread_id: str) -> str:
+    return f"{STOPPED_PREFIX}:{thread_id}"
+
+
+async def mark_stopped(thread_id: str) -> None:
+    """Record that a member stopped the run of *thread_id*. Never raises."""
+    if not thread_id:
+        return
+    try:
+        from orchestrator.stream_relay import _get_client  # noqa: PLC0415
+
+        r = await _get_client()
+        await r.set(_stopped_key(thread_id), "1", ex=STEER_TTL_SECONDS)
+    except Exception:  # noqa: BLE001
+        _log.warning("steer.mark_stopped_failed", thread_id=thread_id[:12])
+
+
+async def was_stopped(thread_id: str) -> bool:
+    """True when the last run of *thread_id* ended by a Stop. False on error."""
+    if not thread_id:
+        return False
+    try:
+        from orchestrator.stream_relay import _get_client  # noqa: PLC0415
+
+        r = await _get_client()
+        return bool(await r.get(_stopped_key(thread_id)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def clear_stopped(thread_id: str) -> None:
+    """Forget the Stop mark: a new run starts on the thread. Never raises."""
+    if not thread_id:
+        return
+    try:
+        from orchestrator.stream_relay import _get_client  # noqa: PLC0415
+
+        r = await _get_client()
+        await r.delete(_stopped_key(thread_id))
+    except Exception:  # noqa: BLE001
+        _log.debug("steer.clear_stopped_failed", thread_id=thread_id[:12])
+
+
+async def discard_pending(thread_id: str) -> int:
+    """Take every stored steer of *thread_id* and drop it. Returns the count.
+
+    A Stop asks for no follow-up, and the stopped run's steers are not
+    replayed either. Their words stay in the transcript and in the saved
+    row, so the next message's history still carries them.
+    """
+    taken = await take_pending_steers(thread_id)
+    if taken:
+        _log.info("steer.discarded_after_stop", thread_id=thread_id[:12], count=len(taken))
+    return len(taken)
+
+
 def make_signal(
     *, thread_id: str, author: str, text: str, run_id: str | None = None,
 ) -> dict[str, Any]:
@@ -292,14 +355,43 @@ async def take_pending_steers(thread_id: str) -> list[dict[str, Any]]:
         return []
 
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for item in raw or []:
         try:
             parsed = json.loads(item)
         except (json.JSONDecodeError, TypeError):
             continue
-        if isinstance(parsed, dict):
-            out.append(parsed)
+        if not isinstance(parsed, dict):
+            continue
+        # One steer, one answer. A steer that the run gave back at its end
+        # (:func:`return_unconsumed`) keeps its id, and its first copy can
+        # still be in the list if the applier's discard had not run yet.
+        sid = str(parsed.get("id") or "")
+        if sid and sid in seen:
+            continue
+        if sid:
+            seen.add(sid)
+        out.append(parsed)
     return out
+
+
+async def has_pending_steers(thread_id: str) -> bool:
+    """True when the durable store holds a steer for *thread_id*.
+
+    The steer follow-up asks this before it starts a run, so a follow-up for
+    a steer that the run already took costs one read and starts nothing.
+    Fails closed to False: a store that cannot be read has nothing to replay.
+    """
+    if not thread_id:
+        return False
+    try:
+        from orchestrator.stream_relay import _get_client  # noqa: PLC0415
+
+        r = await _get_client()
+        return bool(await r.lrange(_steer_key(thread_id), 0, 0))
+    except Exception:  # noqa: BLE001
+        _log.warning("steer.pending_probe_failed", thread_id=thread_id[:12])
+        return False
 
 
 async def discard_signal(thread_id: str, signal_id: str) -> None:
@@ -341,24 +433,77 @@ async def discard_signal(thread_id: str, signal_id: str) -> None:
 # Cross-worker delivery is the control bus's job (dispatch_control), not this
 # dict's — by the time text lands here it has already reached the right worker.
 
-_PENDING_GUIDANCE: dict[str, list[str]] = {}
+#: Each entry keeps the signal it came from (id, author, text), so a note the
+#: run never read can go back to the durable store as the same steer.
+_PENDING_GUIDANCE: dict[str, list[dict[str, Any]]] = {}
+
+#: Threads whose run can read no more guidance: it has sent its terminal
+#: event. A steer that arrives now stays in the durable store, and the steer
+#: follow-up answers it (owner, 2026-10-12). The next run start reopens it.
+_CLOSED: set[str] = set()
 
 
-def buffer_guidance(thread_id: str, author: str, text: str) -> None:
-    """Queue one attributed note for injection at the run's next tool boundary."""
+def buffer_guidance(
+    thread_id: str, author: str, text: str, *, signal_id: str = "",
+) -> bool:
+    """Queue one attributed note for injection at the run's next tool boundary.
+
+    Returns False when nothing was queued: no thread, no text, or a run that
+    has already ended (:func:`return_unconsumed`). The caller then keeps the
+    durable signal, so the steer is answered by the follow-up turn.
+    """
     if not thread_id or not (text or "").strip():
-        return
+        return False
+    if thread_id in _CLOSED:
+        return False
     who = (author or "someone").strip()
     note = f"[steer from {who}] {text.strip()}"
     buf = _PENDING_GUIDANCE.setdefault(thread_id, [])
     if len(buf) >= MAX_PENDING_STEERS:
         buf.pop(0)
-    buf.append(note)
+    entry: dict[str, Any] = {
+        "note": note, "id": signal_id, "author": who, "text": text.strip(),
+    }
+    # The loop of the owner, so a drain on a worker thread can still drop
+    # the durable copy (:func:`decorate_tool_result`).
+    try:
+        import asyncio  # noqa: PLC0415
+
+        entry["loop"] = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    buf.append(entry)
+    return True
+
+
+def _forget_durable(thread_id: str, entries: list[dict[str, Any]]) -> None:
+    """Drop the durable copy of each note the model has now READ.
+
+    Round 2 of the review of #920: the applier used to drop it when it
+    BUFFERED the note. A note in the buffer then died with the process (a
+    deploy restart), because the store no longer held it. Now the store
+    holds each steer until a tool result carries it to the model. Best
+    effort: a miss costs one duplicate, which ``take_pending_steers`` drops
+    by id.
+    """
+    for e in entries:
+        sid = str(e.get("id") or "")
+        loop = e.get("loop")
+        if not sid or loop is None:
+            continue
+        try:
+            loop.call_soon_threadsafe(
+                lambda sid=sid, loop=loop: loop.create_task(discard_signal(thread_id, sid)),
+            )
+        except Exception:  # noqa: BLE001 — a closed loop, never a failed tool
+            continue
 
 
 def drain_guidance(thread_id: str) -> list[str]:
     """Take every pending note for *thread_id*. Empty list when there is none."""
-    return _PENDING_GUIDANCE.pop(thread_id, []) if thread_id else []
+    if not thread_id:
+        return []
+    return [e["note"] for e in _PENDING_GUIDANCE.pop(thread_id, [])]
 
 
 def has_guidance(thread_id: str) -> bool:
@@ -366,8 +511,84 @@ def has_guidance(thread_id: str) -> bool:
 
 
 def clear_guidance(thread_id: str) -> None:
-    """Run-boundary cleanup so a note never leaks into an unrelated later run."""
+    """Run-boundary cleanup so a note never leaks into an unrelated later run.
+
+    Called at run START, so it also reopens the thread for steering.
+    """
     _PENDING_GUIDANCE.pop(thread_id, None)
+    _CLOSED.discard(thread_id)
+
+
+async def return_unconsumed(thread_id: str) -> int:
+    """Close the run to guidance, and give back every note it never read.
+
+    A steer rides the next tool result (:func:`decorate_tool_result`). A
+    steer that arrives while the model writes its last answer meets no tool
+    result, and before 2026-10-12 it died in this buffer: the applier had
+    already discarded its durable copy. So the run's terminal event calls
+    this (``stream_relay.push_event``), and each unread note goes back to the
+    durable store under its own id. The follow-up turn replays it through
+    the ENGAGE seam, so the member's words always get an answer.
+
+    Returns the count given back. Never raises: a run must end whatever
+    happens here.
+    """
+    if not thread_id:
+        return 0
+    _CLOSED.add(thread_id)
+    entries = _PENDING_GUIDANCE.pop(thread_id, [])
+    given = 0
+    for e in entries:
+        try:
+            signal = {
+                "id": e.get("id") or uuid.uuid4().hex,
+                "threadId": thread_id,
+                "author": e.get("author") or "someone",
+                "text": e.get("text") or "",
+                "targetRunId": None,
+                "ts": int(time.time() * 1000),
+                "returned": True,
+            }
+            if signal["text"] and await persist_signal(thread_id, signal):
+                given += 1
+        except Exception:  # noqa: BLE001 — never fail a run's end
+            continue
+    if given:
+        _log.info("steer.returned_unconsumed", thread_id=thread_id[:12], count=given)
+    return given
+
+
+async def give_back(thread_id: str, signals: list[dict[str, Any]]) -> int:
+    """Put taken steers back in the durable store, under their own ids.
+
+    The route takes the stored steers at ENGAGE, before its last refusals
+    (another member's run, a supersede race). A refusal there starts no
+    run, so the steers go back and the next ENGAGE replays them (review of
+    #920). Returns the count given back. Never raises.
+    """
+    given = 0
+    for s in signals or []:
+        try:
+            if str(s.get("text") or "").strip() and await persist_signal(thread_id, dict(s)):
+                given += 1
+        except Exception:  # noqa: BLE001
+            continue
+    if given:
+        _log.info("steer.given_back_after_refusal", thread_id=thread_id[:12], count=given)
+    return given
+
+
+async def end_of_run(thread_id: str) -> int:
+    """The run's last cleanup, after its steer applier is gone.
+
+    It gives back anything still buffered (a run that ended with no terminal
+    event), then forgets the closed mark: no applier can buffer for this run
+    any more, so the mark has done its work and the set stays small.
+    """
+    try:
+        return await return_unconsumed(thread_id)
+    finally:
+        _CLOSED.discard(thread_id)
 
 
 def decorate_tool_result(result: Any, thread_id: str | None = None) -> Any:
@@ -398,9 +619,11 @@ def decorate_tool_result(result: Any, thread_id: str | None = None) -> Any:
             tid = resolve_relay_thread_id()
         if not tid or not has_guidance(tid):
             return result
-        notes = drain_guidance(tid)
+        entries = _PENDING_GUIDANCE.pop(tid, [])
+        notes = [e["note"] for e in entries]
         if not notes:
             return result
+        _forget_durable(tid, entries)
         block = (
             "\n\n[The following arrived from a participant while you were "
             "working. Treat it as instruction from the user, and adjust what "
@@ -424,6 +647,40 @@ def format_replayed(signals: list[dict[str, Any]]) -> str:
         if (s.get("text") or "").strip()
     ]
     return "\n".join(lines)
+
+
+def without_replayed(
+    history: list[Any], signals: list[dict[str, Any]],
+) -> list[Any]:
+    """*history* without the user turns that the replayed *signals* repeat.
+
+    The chat sends each steered message as a user turn of the history, and
+    the replay puts the same words in the run's message. Each signal drops
+    at most ONE user turn with its exact words, so the model reads each steer
+    once. Pure, and the input list is not changed.
+
+    Only the user turns AFTER the last assistant turn count (review of
+    #920). A steer bubble sits there. An older turn with the same short
+    words ("yes", "go ahead") is the member's real context, and it stays.
+    """
+    out = list(history or [])
+    last_reply = max(
+        (i for i, m in enumerate(out) if isinstance(m, dict) and m.get("role") == "assistant"),
+        default=-1,
+    )
+    for s in signals:
+        words = str(s.get("text") or "").strip()
+        if not words:
+            continue
+        for i in range(len(out) - 1, last_reply, -1):
+            m = out[i]
+            if (
+                isinstance(m, dict) and m.get("role") == "user"
+                and str(m.get("content") or "").strip() == words
+            ):
+                del out[i]
+                break
+    return out
 
 
 # ---------------------------------------------------------------------------

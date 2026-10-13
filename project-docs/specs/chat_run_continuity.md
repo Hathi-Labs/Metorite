@@ -14,6 +14,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | S6 — the activity of the other signed-in accounts | Spec only |
 | S7 — browser push for "needs your answer" and "finished" | Spec only. D-2 is decided: opt-in per member |
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
+| §4.9 — a message sent during a run always steers it | **BUILT** 2026-10-12, branch `composer-always-steer`, no flag |
 | D-1 — a separate run worker | **OWNER-GATE** |
 
 **This spec owns** how a member sees and resumes an assistant run that they
@@ -748,6 +749,167 @@ in the client seam.
   sends that mode, so only a hand-made request reaches it. The cap is a
   fairness limit, not a security boundary, so this stays open.
 
+### §4.9 — a message sent during a run always steers it (BUILT 2026-10-12)
+
+**The owner's ask (2026-10-12).** "By default, we should always steer the
+messages, so don't even give the option for stopping and sending." The
+agent must go on with its reply, and it must use the new words as more
+context for that reply.
+
+**The rule.** A message that the member sends while a run is live steers
+that run. The client POSTs it the normal way, and the gateway folds it in
+(§QM-1, the STEER route of `orchestrator/steer.py::route_turn`). The live
+stream goes on. The client does not stop the run, does not drop the partial
+reply and does not open a second stream.
+
+**What is gone.** The send-mode menu (Send, Queue, Steer), the
+stop-and-send path and the local send queue. An old queued item in a
+browser goes into the box once, and it never sends by itself
+(`takeLeftoverQueue`).
+
+**The composer.** One box. The message takes the full width. One bar inside
+the box holds Attach, the agent's controls and ONE round control:
+
+- Stop, while a run is live and the box is empty. Esc does the same.
+- Send, as soon as the box has text. Then the status row says "Adds to the
+  current reply".
+- On a phone, the agent's controls take their own row above Attach and the
+  round control.
+
+**How a steer flows.**
+
+1. `AgentChat.submitText` asks `sendRoute`. A live run on the gateway path
+   gives `steer`.
+2. `useAgentChat.steerMessage` calls `sendSteer` (`lib/chatSteer.ts`). The
+   bubble draws at once with the `steered` mark, as "Adding to the reply".
+3. `/api/agent/chat` sends the turn to `POST /agent/run/stream`.
+   `_route_incoming_turn` gives STEER, and `_apply_turn_decision` answers
+   `202 {steered: true}` with no stream. The bubble then says "Added to the
+   reply". The saved row carries the `steered` mark.
+4. `send_steer` writes the steer to `cc:steer:` first, then sends it on the
+   control bus. The owner's applier buffers it, and the next tool result
+   carries it to the model (`decorate_tool_result`).
+
+**A steer after the last tool call.** Before 2026-10-12 such a steer was
+lost. The applier had discarded its durable copy, and the next run start
+cleared the buffer. Now three steps answer it:
+
+1. `stream_relay.push_event` calls `steer.return_unconsumed` before it writes
+   a terminal event (`RUN_FINISHED` or `RUN_ERROR`). Each unread note goes
+   back to `cc:steer:` under its own id. The run then takes no more notes,
+   and a late steer stays in the store.
+2. Once the stream ends, the chat asks once for the steer follow-up
+   (`steerFollowUp: true`, with no words).
+3. The route's gate starts no run while a run is live or when nothing is
+   stored. Otherwise the ENGAGE seam takes the stored steers, makes them the
+   run's message, and drops their copy from the history (`without_replayed`).
+
+**A Stop asks for no follow-up, from any tab or member.** `cancel_run`
+records the Stop for the thread (`cc:steer-stopped:`, through the same
+prefixed Redis client). It does this first, because the cancelled run's own
+end gives its unread steers back, maybe later and on another worker. Then:
+
+- The gate answers `202 stopped` to every follow-up, and drops the stored
+  steers.
+- The member's next real message drops them too, and it does not replay
+  them. The next run start clears the mark.
+- We DROP the stopped run's steers, and we do not keep them for a replay.
+  The member said stop after the steer. A replay would make the agent act on
+  the steer again. The words are not lost: the transcript and the saved row
+  keep them, and the next message's history carries them.
+- The client clears the owed follow-up on Stop and on a `stopped` answer. It
+  cancels a waiting retry, and it ignores a steer answer that lands after a
+  Stop (`stopEpoch`).
+
+**Review of #920.** Four rules close the gaps the review found:
+
+- Any 202 with `steered: true` owes a follow-up. That covers a plain send
+  that the gateway steered, for example into another member's run in a room.
+- A follow-up that meets `run_in_flight` asks again. The wait doubles from
+  2 s to 30 s, for 20 tries (`followUpRetryDelay`).
+- A refusal after ENGAGE (another member's run, a supersede race) gives the
+  taken steers back to the store (`steer.give_back`).
+- `without_replayed` drops only user turns after the last assistant turn. An
+  older turn with the same short words stays.
+
+**Round 2 of the review.**
+
+- The durable copy of a steer goes when a tool result carries it to the
+  model, not when the owner buffers it. A steer in the buffer then survives
+  the owner process dying, for example in a deploy restart.
+- A follow-up that gets 409 or 429 draws no card and no run-cap notice. It
+  asks again with the same wait. After the last try, the steer says "Your
+  added message waits for the next reply."
+- Edit after a steer works. A steer row is part of the turn it joined. Edit
+  offers the prompt, and `plan_supersede` removes the turn with its own
+  steer rows. The note quotes them as `added_while_running`. Another
+  member's steer still refuses the edit.
+
+**Round 3 of the review.** The edit note keeps the steps that already ran.
+The steer quotes once came before the step budget, so a few of them pushed
+the steps out, and the model could repeat a side effect. Now:
+
+- The completed steps have first claim on the budget, as before #920.
+- The added messages fit into what is left. Each is cut at 120 characters,
+  and one line counts the rest.
+- The closing instruction is always whole (`_cap_keeping`).
+- A note with no added message is byte for byte the note of `main`.
+
+Round 3 adds three mutants, and all three are killed: steer quotes placed
+before the step budget, a cap that cuts the closing instruction, and an
+added message that is not cut at 120 characters.
+
+**The fallbacks.**
+
+| The server answers | The client does |
+|---|---|
+| `202 {steered: true}` | The bubble says "Added to the reply". The run owes a follow-up |
+| `202 {aborted}` or `{dropped}` (a bare "stop") | The bubble goes, as the server saved no row |
+| A stream (the run had ended, or a dead run was closed) | It follows that stream as a normal turn, in place of the bubble |
+| A refusal (409, 429 or a network error) | The bubble goes, the words go back to the box, and a plain notice says why |
+| The direct model path (`litellm`) | It sends nothing. The words stay in the box with a notice |
+
+**Fences (R7).**
+
+| Fence | What it holds |
+|---|---|
+| `src/lib/chatSteer.test.ts` | One control by box state, no send-mode menu, a steer that never stops, enqueues or drops the reply, the acknowledgement, a refusal that keeps the words, the follow-up rule, and the queue migration |
+| `tests/unit/test_steer_routing.py` §8 | The give-back at the terminal event, the store before the event, a closed run, and one replay per steer id |
+| `tests/unit/test_steer_follow_up.py` | The route: a second message steers and starts no run, a late steer gets ONE follow-up run that reads it once, and a follow-up with nothing owed starts nothing |
+| `tests/unit/test_chat_prompt_saved_at_start.py` | R8: the steered row carries the `steered` mark in Postgres |
+| `e2e/chat-steer.spec.ts` | The browser: the stream goes on, the words show as added, the follow-up answer draws below the steer, and Stop and Esc halt the run |
+
+**Mutation record (2026-10-12).** Round 2 adds ten mutants, and all ten
+are killed:
+
+- no Stop mark, a gate that ignores the mark, and a mark that a new run never
+  clears.
+- an ENGAGE that replays a stopped run's steers.
+- a client that owes a follow-up after a Stop, and a `stopped` answer that
+  keeps the retry.
+- a drop of the durable copy at buffer time.
+- a follow-up refusal that draws a card.
+- a steer row that refuses the edit on the server, and Edit on the steer row
+  in the client.
+
+Round 1 had eleven mutants, eleven killed: the client
+stops on send, the client enqueues, the button ignores the box, no give-back
+at the terminal event, a give-back that saves nothing, no follow-up gate, a
+replay that keeps the history copy, no follow-up from the hook, a steered
+row with no mark, no give-back after a refusal, and a replay that matches an
+older turn.
+
+**Known limits.**
+
+- A follow-up needs an open chat. If the member closes the tab, the steer
+  stays in the store for 30 minutes, and the next message replays it.
+- The steer bubble sits below the reply it joins, in time order. That is
+  also the order of a reload.
+- The follow-up gate reads a stale `cc:active` of a dead owner as
+  `run_in_flight`. It does not run the dead-run recovery of
+  `_route_incoming_turn`. The steer stays stored, and the next message
+  replays it.
+
 ---
 
 ## 5. Deferred — owner decisions
@@ -786,6 +948,8 @@ An agent must refuse D-1 by name until the owner decides.
 | `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `list_live_runs`, `drop_run_slot` |
 | `apps/services/orchestrator/orchestrator/run_cap.py` | The run cap: the count, the lock and the reservation (D-3) |
 | `workbench/control_plane/src/lib/chatTurnFailure.ts` | The capped turn leaves the thread with one notice (D-3) |
+| `workbench/control_plane/src/lib/chatSteer.ts` | A send during a run steers it: the one control, the steer send, the follow-up rule (§4.9) |
+| `apps/services/orchestrator/orchestrator/steer.py` | `return_unconsumed`, `has_pending_steers`, `without_replayed` (§4.9) |
 
 ---
 
@@ -803,3 +967,11 @@ npx vitest run
 
 For S2 and S4, start the scratch database first (`engineering_practice.md`
 §1.1), then run the named `tests/unit/` files with `uv run pytest`.
+
+For §4.9, from `workbench/control_plane`, then from the repo root:
+
+```bash
+npx vitest run src/lib/chatSteer.test.ts src/components/chatEditComposer.test.ts
+npx playwright test e2e/chat-steer.spec.ts --project=ci
+uv run pytest tests/unit/test_steer_routing.py tests/unit/test_steer_follow_up.py
+```

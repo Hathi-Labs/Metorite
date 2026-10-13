@@ -72,8 +72,11 @@ EMPTIED = (
     "crm_pipelines", "crm_deal_statuses", "crm_lead_statuses",
     "crm_lost_reasons", "crm_sync_cursors", "crm_source_profiles",
     "crm_zoho_tombstones",
+    # CRM-Q7a review P2: the rules name the fields of the old Zoho account.
+    "crm_field_rules",
 )
-KEPT = ("crm_settings", "crm_views", "crm_sync_runs")
+#: What the start over keeps. The same set as ``core.RESET_KEEPS``.
+KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors")
 ALL = EMPTIED + KEPT
 
 
@@ -170,7 +173,7 @@ def x0(promoted, monkeypatch):  # noqa: F811 — a fixture
     yield promoted
     with promoted.admin_engine.begin() as c:
         for org in (promoted.org_a, promoted.org_b):
-            for table in (*ALL, "integration_connections"):
+            for table in (*ALL, "integration_connections", "email_accounts"):
                 c.execute(text(
                     f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
                     {"o": org})
@@ -290,6 +293,20 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
         c.execute(text(
             "INSERT INTO crm_views (organization_id, entity, name, owner_email) "
             "VALUES (CAST(:o AS uuid), 'deals', 'Mine', 'admin@crm-t5-r8.test')"), o)
+        c.execute(text(
+            "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
+            "field_api_name, field_type, profile_version, target_column, status, "
+            "proposed_by) VALUES (CAST(:o AS uuid), 'zoho', 'lead', 'Sector', "
+            "'select', 1, 'industry', 'approved', 'admin')"), o)
+        box = c.execute(text(
+            "INSERT INTO email_accounts (user_id, provider, email_address, "
+            "credentials_encrypted, sync_enabled, organization_id) VALUES "
+            "(:u, 'microsoft', :u, 'x', true, CAST(:o AS uuid)) RETURNING id"),
+            {**o, "u": f"box-{tag.lower()}@crm-x0.test"}).scalar()
+        c.execute(text(
+            "INSERT INTO crm_auto_lead_cursors (account_id, activated_at, "
+            "processed_watermark, last_run_at, organization_id) VALUES "
+            "(:a, now(), now(), now(), CAST(:o AS uuid))"), {**o, "a": box})
     return conn
 
 
@@ -313,6 +330,31 @@ def _connection(p: Any, org: str) -> Any:
                  "integration_connections WHERE organization_id = CAST(:o AS uuid)",
               o=org)
     return rows[0] if rows else None
+
+
+# ── Every CRM table is emptied or kept on purpose (review P2) ────────────────
+
+
+def test_every_crm_table_is_emptied_or_kept_by_the_start_over(x0) -> None:
+    """A new ``crm_*`` table must join ``RESET_TABLES`` or ``RESET_KEEPS``.
+
+    Without this, a table that names the old Zoho account survives a start
+    over, and its rows apply to the next account. ``crm_field_rules`` was
+    that table (CRM-Q7a review P2).
+    """
+    from gateway.routes.crm.core import RESET_KEEPS, RESET_TABLES
+
+    tables = {r[0] for r in _q(x0, (
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_type = 'BASE TABLE' "
+        "AND table_name LIKE 'crm\\_%'"))}
+    assert "crm_field_rules" in tables and "crm_leads" in tables
+    assert tables - set(RESET_TABLES) - set(RESET_KEEPS) == set(), (
+        "a crm_ table that the start over neither empties nor keeps")
+    assert not set(RESET_TABLES) & set(RESET_KEEPS)
+    # The copies of this suite follow the door's lists.
+    assert set(EMPTIED) == set(RESET_TABLES)
+    assert set(KEPT) == set(RESET_KEEPS)
 
 
 # ── Done when 1: the reset ───────────────────────────────────────────────────

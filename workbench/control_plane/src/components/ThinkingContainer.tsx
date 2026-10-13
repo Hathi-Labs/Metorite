@@ -594,7 +594,7 @@ export function ToolStepRow({
               hasEvidence ? "opacity-70 group-hover/tool:opacity-100" : "opacity-0 group-hover/tool:opacity-100"
             }`}
           >
-            {open ? "▴" : "▾"}
+            <AppIcon name="ChevronDown" size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} />
           </span>
         </button>
 
@@ -816,7 +816,11 @@ export default function ThinkingContainer({
             {totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}
           </span>
         )}
-        {hasContent && <span className="ml-auto shrink-0 text-muted-foreground text-[10px]">{expanded ? "▲" : "▼"}</span>}
+        {hasContent && (
+          <span className="ml-auto flex shrink-0 text-muted-foreground" aria-hidden>
+            <AppIcon name="ChevronDown" size={12} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </span>
+        )}
         </span>
       </button>
 
