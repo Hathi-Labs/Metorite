@@ -4,7 +4,7 @@ import Button from "@/components/ui/Button";
 import OverflowTip from "@/components/ui/OverflowTip";
 import Icon from "@/components/Icon";
 import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import BreathingCharacter, { characterForAgent } from "@/components/BreathingCharacter";
 import {
@@ -54,7 +54,9 @@ import {
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import { filterWord, shellBarOn } from "@/lib/shell/registry";
-import { ShellJob } from "@/lib/shell/doJob";
+import { ShellJob, jobFields } from "@/lib/shell/doJob";
+import { openAssistant, useAssistant } from "@/lib/shell/assistant";
+import { shellChatOn } from "@/lib/shell/chatFlag";
 
 // Agent names that receive the Metorite persona (general-purpose brain).
 // All agents get persistent Mem0 memory — conversations are saved to Mem0
@@ -1364,10 +1366,43 @@ function ChatPageInner() {
   );
 }
 
+/**
+ * D99: with the chat bar on, `/chat` is the address of the one assistant's
+ * full view (`navigation_shell.md` §7.1). The page opens it and takes the
+ * job out of the address. It reads three doors: `?do=open-chat` (an activity
+ * row or a toast), `?do=new-chat` (the command bar's job) and `?q=` (words
+ * for the member to check and send). Closing the full view here goes home,
+ * because the page under it is empty.
+ */
+function ChatFullView() {
+  const params = useSearchParams();
+  const router = useRouter();
+  const { open } = useAssistant();
+  const seenOpen = useRef(false);
+  useEffect(() => {
+    const job = params.get("do");
+    const fields = jobFields(params);
+    openAssistant({
+      mode: "full",
+      sessionId: job === OPEN_CHAT_JOB && fields.session ? fields.session : undefined,
+      draft: params.get("q") ?? undefined,
+      fresh: job === "new-chat",
+    });
+    router.replace("/chat");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on arrival
+  }, []);
+  useEffect(() => {
+    if (open) seenOpen.current = true;
+    else if (seenOpen.current) router.replace("/");
+  }, [open, router]);
+  return null;
+}
+
 export default function ChatPage() {
+  const [oneAssistant] = useState(() => shellChatOn());
   return (
     <Suspense fallback={null}>
-      <ChatPageInner />
+      {oneAssistant ? <ChatFullView /> : <ChatPageInner />}
     </Suspense>
   );
 }

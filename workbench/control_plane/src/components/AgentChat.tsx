@@ -270,6 +270,20 @@ interface AgentChatProps {
   pendingInput?: string;
   onPendingInputConsumed?: () => void;
   /**
+   * Words to SEND once, as the member's turn (D99: the shell's chat bar).
+   * Unlike `pendingInput`, the member already pressed Enter in the bar. It
+   * waits until the history has loaded, sends each `seq` once, and then
+   * calls `onAutoSendConsumed`.
+   */
+  autoSend?: { seq: number; text: string } | null;
+  onAutoSendConsumed?: (seq: number) => void;
+  /**
+   * D99: the one assistant's name, "Metorite". The member talks to one
+   * assistant and never picks an agent, so with this set the chat shows the
+   * name in place of the agent's, and it offers no agent switch.
+   */
+  assistantName?: string;
+  /**
    * The server refused this SESSION on send (another org, or a room the member
    * is not in). Return true to take the turn: no error card is drawn, and the
    * parent opens a new chat. Pass it ONLY for a session restored from storage
@@ -305,6 +319,9 @@ export default function AgentChat({
   compact,
   pendingInput,
   onPendingInputConsumed,
+  autoSend,
+  onAutoSendConsumed,
+  assistantName,
   onSessionRefused,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
@@ -368,12 +385,14 @@ export default function AgentChat({
   // The member chooses no effort and no agent for a covered agent (owner,
   // 2026-10-07, amendment of D90 §5 and §7). UI flag off: both as today.
   // Computed before the memos below, which read `modelPlan`.
-  const controls = composerControls({
+  const routed = composerControls({
     uiOn: tierUi,
     agentsKnown,
     entry: coverageEntry,
     isOrchestrator,
   });
+  // D99: the one assistant offers no agent switch.
+  const controls = assistantName ? { ...routed, showAgentSwitch: false } : routed;
 
   // Fetch the unified model list (Copilot SDK + LiteLLM) once the picker is
   // live. UI flag off: on mount, as before.
@@ -457,7 +476,7 @@ export default function AgentChat({
   const agentRuntime: string = currentAgentEntry?.agent_runtime ?? "maf";
   // Friendly display name (alias) for UI labels only — dispatch, localStorage
   // and routing keep using the canonical `currentAgentName`.
-  const currentAgentLabel = currentAgentEntry?.display_name || currentAgentName;
+  const currentAgentLabel = assistantName || currentAgentEntry?.display_name || currentAgentName;
   // Assigned pixel-art avatars (name → libraryId) for the agent switcher/header.
   const agentAvatars = useAgentAvatars();
 
@@ -1546,6 +1565,19 @@ export default function AgentChat({
     },
     [isRunActive, effectiveRuntime, loadingHistory, sendMessage, steerMessage, giveBack]
   );
+
+  // D99: the chat bar's words, sent once each, after the history loads. The
+  // ref holds the last seq sent, so a re-render or a remount of the same
+  // chat never sends it twice (the store also drops it, `consumeAsk`).
+  const autoSentRef = useRef(0);
+  useEffect(() => {
+    if (!autoSend || loadingHistory) return;
+    if (autoSend.seq <= autoSentRef.current) return;
+    autoSentRef.current = autoSend.seq;
+    submitText(autoSend.text);
+    onAutoSendConsumed?.(autoSend.seq);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSend?.seq, loadingHistory]);
 
   /** Stop: it halts the run. There is no "stop and send". */
   const handleStop = useCallback(() => {

@@ -346,6 +346,11 @@ strictly better than Magentic's LLM-in-the-routing-loop for our case, and it avo
 Anthropic documents for orchestrator patterns. Users chat directly with specialists, so no hub is
 in the loop for L1 anyway.
 
+> ⚠️ **Amended 2026-10-12 by D99.** The last sentence above no longer holds. A member talks to
+> one general agent, `orchestrator`, and it calls each specialist as a tool. That is the
+> agent-as-tools shape of §5.1, so §5.1 and §5.2 stand. `navigation_shell.md` §7.1 owns the
+> surface.
+
 ### 5.4 Context discipline belongs at the node, not the topology
 
 `AgentExecutor(context_mode='full' | 'last_agent' | 'custom', context_filter=…)` gives **per-node**
