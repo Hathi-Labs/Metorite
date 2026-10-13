@@ -71,6 +71,27 @@ _identity_read_failed: ContextVar[bool] = ContextVar(
 )
 
 
+#: WS-55 EA-3a, fix round 3. Did THIS task's last role read
+#: (:func:`resolve_access`) fail because the database could not be reached?
+#: A sibling of ``_identity_read_failed``, kept apart on purpose: only branch 0
+#: of ``deps.get_current_user`` reads it (:func:`role_read_failed`), so the
+#: answers of ``gateway.main`` and of the WhatsApp channel, which read
+#: :func:`identity_read_failed`, do not change.
+_role_read_failed: ContextVar[bool] = ContextVar(
+    "acb_auth_role_read_failed", default=False,
+)
+
+
+def role_read_failed() -> bool:
+    """True when this task's last :func:`resolve_access` hit a database outage.
+
+    Cleared on the way in to every :func:`resolve_access`, so a cache hit or a
+    good read leaves it False. Set only for ``db_busy.is_db_outage``: any other
+    failure keeps the degraded answer and leaves this False.
+    """
+    return _role_read_failed.get()
+
+
 def identity_read_failed() -> bool:
     """True when this request's identity read FAILED rather than found nobody.
 
@@ -1111,6 +1132,7 @@ async def resolve_access(
     """
     global _tables_missing
 
+    _role_read_failed.set(False)
     if not email:
         return EffectiveAccess(is_active=False)
     key = email.lower().strip()
@@ -1148,6 +1170,10 @@ async def resolve_access(
         # A pool or connect TIMEOUT is not "no access". It raises, and the
         # auth dependency answers 503 (2026-10-07, see IdentityUnavailable).
         _raise_if_pool_timeout(exc, "access")
+        # WS-55 EA-3a: an outage is recorded for branch 0 (role_read_failed).
+        # The answer to THIS caller does not change: it still degrades.
+        if db_busy.is_db_outage(exc):
+            _role_read_failed.set(True)
         # Distinguish "migration hasn't run" (degrade to legacy, permanently)
         # from a transient DB blip (degrade for this request only).
         message = str(exc).lower()

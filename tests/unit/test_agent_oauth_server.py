@@ -119,6 +119,23 @@ _PUBLIC_IP = "93.184.216.34"
 _CYR_A = chr(0x0430)
 _CYR_IE = chr(0x0435)
 
+#: EA-2c (spec §10.4): the Claude Code metadata document, byte for byte as
+#: the orchestrator fetched it on 2026-10-13 from its own ``client_id`` URL.
+#: Its ``redirect_uris`` are loopback URIs with NO port, and the client sends
+#: a random port. Do not reformat this string.
+_CLAUDE_CODE_DOCUMENT = (
+    '{"client_id":"https://claude.ai/oauth/claude-code-client-metadata",'
+    '"client_name":"Claude Code","client_uri":"https://claude.ai",'
+    '"redirect_uris":["http://localhost/callback","http://127.0.0.1/callback"],'
+    '"grant_types":["authorization_code","refresh_token"],'
+    '"response_types":["code"],"token_endpoint_auth_method":"none"}'
+)
+CLAUDE_CODE = "https://claude.ai/oauth/claude-code-client-metadata"
+CLAUDE_REDIRECT = "http://localhost:53122/callback"
+#: An Arabic-Indic digit five. ``int()`` reads it, and ``\d`` matches it.
+_ARABIC_FIVE = chr(0x0665)
+_CLAUDE_REQUEST = {"client_id": CLAUDE_CODE, "redirect_uri": CLAUDE_REDIRECT}
+
 
 @pytest.fixture(autouse=True)
 def _flag_on(monkeypatch):
@@ -171,6 +188,7 @@ def web(monkeypatch) -> _FakeWeb:
     monkeypatch.setattr(outbound_guard, "send", fake.send)
     fake.docs[CLIENT] = (200, json.dumps(_document()).encode())
     fake.docs[OTHER_CLIENT] = (200, json.dumps(_document(OTHER_CLIENT)).encode())
+    fake.docs[CLAUDE_CODE] = (200, _CLAUDE_CODE_DOCUMENT.encode())
     return fake
 
 
@@ -566,6 +584,185 @@ class TestTheSharedRules:
         url = agent_oauth.authorization_redirect(
             "https://c.example/cb?a=1", {"code": "C", "state": None, "iss": ISSUER})
         assert _query(url) == {"a": "1", "code": "C", "iss": ISSUER}
+
+
+_LH = "http://localhost/callback"
+_V4 = "http://127.0.0.1/callback"
+_V6 = "http://[::1]/callback"
+
+
+class TestTheLoopbackRedirectMatch:
+    """EA-2c (spec §10.4, EA3-23): a loopback registration with no port
+    accepts any port. ``agent_oauth.redirect_uri_matches`` is the one rule.
+
+    The match compares RAW strings, so a host keeps its case and its form,
+    and a port has one spelling. Each case below went red under a named
+    mutation of the rule before it was trusted.
+    """
+
+    @pytest.mark.parametrize(("requested", "registered"), [
+        ("http://localhost:53122/callback", _LH),
+        ("http://127.0.0.1:53122/callback", _V4),
+        ("http://[::1]:53122/callback", _V6),
+        ("http://localhost:1/callback", _LH),
+        ("http://localhost:65535/callback", _LH),
+        ("http://localhost:5555/callback?a=1", "http://localhost/callback?a=1"),
+        ("http://localhost:5555", "http://localhost"),
+    ], ids=["localhost", "127.0.0.1", "[::1]", "port-1", "port-65535",
+            "same-query", "no-path"])
+    def test_a_port_on_a_portless_loopback_registration_passes(
+        self, requested, registered
+    ):
+        assert agent_oauth.redirect_uri_matches(requested, [registered])
+
+    @pytest.mark.parametrize("uri", [_LH, _V4, _V6, REDIRECT,
+                                     "https://claude.ai/api/mcp/auth_callback"])
+    def test_the_exact_string_still_passes(self, uri):
+        """The exact match runs first: no port against no port passes."""
+        assert agent_oauth.redirect_uri_matches(uri, [uri])
+
+    @pytest.mark.parametrize(("requested", "registered"), [
+        # Another host, path or scheme.
+        ("http://127.0.0.1:5555/callback", _LH),
+        ("http://localhost:5555/callback", _V4),
+        ("http://evil.example:5555/callback", _LH),
+        ("http://localhost:5555/other", _LH),
+        ("http://localhost:5555/callback/", _LH),
+        ("http://localhost:5555/", _LH),
+        ("https://localhost:5555/callback", _LH),
+        ("HTTP://localhost:5555/callback", _LH),
+        # A host that only starts like a loopback host.
+        ("http://localhost.evil.com/callback", _LH),
+        ("http://localhost.evil.com:5555/callback", _LH),
+        # A user name or a password.
+        ("http://localhost@evil.com/callback", _LH),
+        ("http://localhost:5555@evil.com/callback", _LH),
+        ("http://user@localhost:5555/callback", _LH),
+        ("http://user:pw@localhost:5555/callback", _LH),
+        # Another query, and a fragment.
+        ("http://localhost:5555/callback?x=1", _LH),
+        ("http://localhost:5555/callback?", _LH),
+        ("http://localhost:5555/callback?a=2", "http://localhost/callback?a=1"),
+        ("http://localhost:5555/callback#f", _LH),
+        ("http://localhost:5555/callback#", _LH),
+        # Another spelling of a loopback host.
+        ("http://LOCALHOST:5555/callback", _LH),
+        ("http://localhost.:5555/callback", _LH),
+        ("http://0.0.0.0:5555/callback", _V4),
+        ("http://127.0.0.2:5555/callback", _V4),
+        ("http://[0:0:0:0:0:0:0:1]:5555/callback", _V6),
+        ("http://[::ffff:127.0.0.1]:5555/callback", _V4),
+        ("http://[::ffff:127.0.0.1]:5555/callback", _V6),
+        ("http://local%68ost:5555/callback", _LH),
+        ("http://127.0.0.%31:5555/callback", _V4),
+        # A port in a bad form.
+        ("http://localhost:0/callback", _LH),
+        ("http://localhost:65536/callback", _LH),
+        ("http://localhost:99999/callback", _LH),
+        ("http://localhost:05555/callback", _LH),
+        ("http://localhost:/callback", _LH),
+        ("http://localhost:+5555/callback", _LH),
+        (f"http://localhost:5{_ARABIC_FIVE * 3}/callback", _LH),
+        ("http://localhost:5555:5555/callback", _LH),
+    ], ids=[
+        "other-host", "other-host-v4", "evil-host", "other-path", "slash-path",
+        "root-path", "https-against-http", "upper-scheme",
+        "localhost.evil.com", "localhost.evil.com-port",
+        "userinfo-host", "port-then-userinfo", "user", "user-password",
+        "query-added", "bare-question-mark", "query-differs", "fragment",
+        "bare-hash",
+        "LOCALHOST", "localhost.", "0.0.0.0", "127.0.0.2", "[0:0:0:0:0:0:0:1]",
+        "[::ffff:127.0.0.1]-v4", "[::ffff:127.0.0.1]-v6", "percent-escape",
+        "percent-escape-v4",
+        "port-0", "port-65536", "port-99999", "port-05555", "port-empty",
+        "port-plus", "port-arabic-digits", "two-ports",
+    ])
+    def test_a_request_that_is_refused(self, requested, registered):
+        assert not agent_oauth.redirect_uri_matches(requested, [registered])
+
+    @pytest.mark.parametrize(("requested", "registered"), [
+        ("https://localhost:5555/callback", "https://localhost/callback"),
+        ("http://127.0.0.1:33419/callback", REDIRECT),
+        ("http://127.0.0.1:33418:5555/callback", REDIRECT),
+        ("http://evil.example:5555/callback", "http://evil.example/callback"),
+        ("https://claude.ai:443/api/mcp/auth_callback",
+         "https://claude.ai/api/mcp/auth_callback"),
+        ("http://LOCALHOST:5555/callback", "http://LOCALHOST/callback"),
+        ("http://localhost.:5555/callback", "http://localhost./callback"),
+        ("http://u@localhost:5555/callback", "http://u@localhost/callback"),
+        ("http://localhost:5555/callback#x", "http://localhost/callback#x"),
+        ("cursor://x:5555/cb", "cursor://x/cb"),
+    ], ids=["https-loopback", "registered-port", "registered-port-plus-port",
+            "not-loopback", "https-default-port", "registered-LOCALHOST",
+            "registered-trailing-dot", "registered-user", "registered-fragment",
+            "private-use-scheme"])
+    def test_any_other_registration_needs_the_exact_string(self, requested, registered):
+        assert not agent_oauth.redirect_uri_matches(requested, [registered])
+
+    def test_an_empty_or_odd_input_matches_nothing(self):
+        assert not agent_oauth.redirect_uri_matches(None, [_LH])
+        assert not agent_oauth.redirect_uri_matches("", [""])
+        assert not agent_oauth.redirect_uri_matches("http://localhost:5555/callback", [])
+        assert agent_oauth.redirect_uri_matches(
+            "http://localhost:5555/callback", [None, 7, _LH])
+
+    def test_the_claude_code_document_matches_a_random_port(self):
+        document = json.loads(_CLAUDE_CODE_DOCUMENT)
+        assert document["client_id"] == CLAUDE_CODE
+        registered = document["redirect_uris"]
+        assert registered == [_LH, _V4]
+        assert agent_oauth.redirect_uri_matches(CLAUDE_REDIRECT, registered)
+        assert agent_oauth.redirect_uri_matches("http://127.0.0.1:53122/callback", registered)
+        assert not agent_oauth.redirect_uri_matches("http://[::1]:53122/callback", registered)
+
+
+class TestTheLoopbackRedirectThroughTheRoute:
+    """EA-2c: ``_validate`` asks ``redirect_uri_matches``, not ``in``.
+
+    The store is replaced here, so this class runs with no database. The
+    full round trip on a real database is ``TestClaudeCodeEndToEnd``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_db(self, monkeypatch):
+        async def _no_client(client_id):
+            return None
+
+        async def _cached(client_id, metadata):
+            return True
+
+        monkeypatch.setattr(agent_tokens, "get_client", _no_client)
+        monkeypatch.setattr(agent_tokens, "cache_cimd_client", _cached)
+
+    async def _check(self, redirect_uri: str) -> httpx.Response:
+        return await _gw(
+            _gateway_app(str(uuid.uuid4())), "/agent-access/authorize/check",
+            _authorize(client_id=CLAUDE_CODE, redirect_uri=redirect_uri))
+
+    @pytest.mark.parametrize("uri", [CLAUDE_REDIRECT, "http://127.0.0.1:61001/callback",
+                                     "http://localhost/callback"])
+    async def test_the_claude_code_client_passes_the_check(self, web, uri):
+        r = await self._check(uri)
+        assert r.status_code == 200, r.text
+        view = r.json()
+        assert view["client"] == {"client_id": CLAUDE_CODE, "name": "Claude Code",
+                                  "origin": "https://claude.ai"}
+        assert view["redirect_uri"] == uri
+        assert view["deny_redirect_to"].startswith(uri + "?")
+
+    @pytest.mark.parametrize("uri", [
+        "http://localhost:0/callback", "http://localhost:05555/callback",
+        "http://LOCALHOST:5555/callback", "http://localhost:5555/callback?x=1",
+        "http://[::1]:5555/callback", "http://localhost:5555/other",
+    ])
+    async def test_a_bad_loopback_request_is_refused_with_no_redirect(self, web, uri):
+        """Each of these passes ``is_allowed_redirect_uri``. Only the match refuses."""
+        assert agent_oauth.is_allowed_redirect_uri(uri)
+        r = await self._check(uri)
+        assert r.status_code == 400, r.text
+        detail = r.json()["detail"]
+        assert detail["error"] == "invalid_request"
+        assert detail["redirect_to"] is None, "an unverified redirect was offered"
 
 
 class _DocServer:
@@ -1320,3 +1517,54 @@ class TestTheRevocationEndpoint:
             access = await agent_tokens.lookup_token(issued["access_token"])
         assert r.status_code == 200
         assert access is not None, "another client revoked the connection"
+
+
+@_DB_GATE
+class TestClaudeCodeEndToEnd:
+    """EA-2c: the Claude Code client, on a random loopback port, end to end.
+
+    Its document lists ``http://localhost/callback`` with no port. The check
+    and the approval accept port 53122. The code keeps that exact URI, so the
+    token request must name the same port (spec §10.4).
+    """
+
+    async def test_check_approve_and_token(self, promoted, web):
+        async with tenant_engine_scope(promoted.app_dsn):
+            check = await _gw(_gateway_app(promoted.org_a),
+                              "/agent-access/authorize/check", _authorize(**_CLAUDE_REQUEST))
+            approve = await _approve(promoted, **_CLAUDE_REQUEST)
+            assert approve.status_code == 200, approve.text
+            redirect = approve.json()["redirect_to"]
+            code = _query(redirect)["code"]
+            stored = _admin_one(
+                promoted, "SELECT redirect_uri FROM agent_token WHERE token_hash = :h",
+                h=agent_tokens.hash_token(code))[0]
+            token = await _token(_exchange(code, **_CLAUDE_REQUEST))
+            assert token.status_code == 200, token.text
+            access = token.json()["access_token"]
+            assert await _connection_of(access) == _connection_id_of_code(promoted, code)
+        assert check.status_code == 200, check.text
+        assert check.json()["client"]["name"] == "Claude Code"
+        assert check.json()["redirect_uri"] == CLAUDE_REDIRECT
+        assert redirect.startswith(CLAUDE_REDIRECT + "?")
+        assert stored == CLAUDE_REDIRECT, "the code must keep the port it was sent to"
+        row = _connection(promoted, _connection_id_of_code(promoted, code))
+        assert row.client_origin == "https://claude.ai"
+        assert not row.revoked
+
+    @pytest.mark.parametrize("uri", [
+        "http://localhost:53123/callback",
+        "http://localhost/callback",
+        "http://127.0.0.1:53122/callback",
+    ], ids=["other-port", "no-port", "other-host"])
+    async def test_a_token_request_on_another_uri_spends_nothing(self, promoted, web, uri):
+        """The token step keeps its exact bind. A port that differs from the
+        authorize step is ``invalid_grant``, and the real client still wins."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted, **_CLAUDE_REQUEST)
+            bad = await _token(_exchange(code, client_id=CLAUDE_CODE, redirect_uri=uri))
+            good = await _token(_exchange(code, **_CLAUDE_REQUEST))
+        assert bad.status_code == 400
+        assert bad.json() == _INVALID_GRANT
+        assert good.status_code == 200, "a wrong port spent the code"
+        assert not _connection(promoted, _connection_id_of_code(promoted, code)).revoked

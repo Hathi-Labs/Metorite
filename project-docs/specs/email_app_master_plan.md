@@ -9008,12 +9008,12 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
 | **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #682 (2026-10-06). The visual check is H-255. Audited GO-NARROWED. The known limits f3, f5, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
-| **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g4b-cursor`). Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
-| **EM-G2-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B | S | §12.3.12.3 |
-| **EM-G4a-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B | S | §12.3.12.4 |
-| **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
-| **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
-| **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
+| **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | ✅ MERGED #915 (`0c882dec4`, 2026-10-12). Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
+| **EM-G2-f1** | 🟢 AGENT-SAFE | 🔨 Built, not merged (2026-10-12, branch `gmail-pra-fill-bulk`). Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B, which merged as #915 | S | §12.3.12.3 |
+| **EM-G4a-f1** | 🟢 AGENT-SAFE | 🔨 Built, not merged (2026-10-12, branch `gmail-pra-fill-bulk`). Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B, which merged as #915 | S | §12.3.12.4 |
+| **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | ✅ PR-C1a MERGED #919 (`421eeb8f4`, 2026-10-12). ✅ PR-C1b MERGED #925 (`144dc0d1f`, 2026-10-12). Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
+| **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | ✅ MERGED #916 (`c0d776667`, 2026-10-12). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
+| **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #910 (`67b61aa11`, 2026-10-12). Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
 order, and EM-G3b can go at any time after EM-G2. EM-G5a follows, then EM-G5b after its new
@@ -11202,7 +11202,7 @@ and the bullets above give the rules that apply now.
 **Known limit EM-G4b-f1.** The cursor moves only at the end of a read. A backlog that one cycle
 cannot finish can fail on a rate limit before its end, such as a bulk label on 50,000 messages.
 The next cycle then starts again at the old cursor. §12.3.12.2 owns the fix: the cursor moves at
-the end of each finished page. 🔨 The fix is built, not merged (2026-10-12).
+the end of each finished page. ✅ The fix MERGED as #915 (`0c882dec4`, 2026-10-12).
 
 **The fences, as built.** `tests/unit/test_gmail_history_cursor.py` holds 49 cases. A fake Gmail
 on `httpx.MockTransport` answers the client. The provider sends no `authenticate` request, so the
@@ -12482,20 +12482,24 @@ row), and §12.3.12.1 to §12.3.12.7 hold one slice for each open item.
    merged as #651 (2026-10-05). The composers flush a pending save, and a Gmail draft with a
    file waits 10 seconds. A failed save or send shows its reason.
 4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
-   the old cursor (§12.3.5.2). Slice: §12.3.12.2. 🔨 Built 2026-10-12, not merged (branch
-   `gmail-g4b-cursor`).
+   the old cursor (§12.3.5.2). Slice: §12.3.12.2. ✅ MERGED #915 (`0c882dec4`,
+   2026-10-12).
 5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body
-   (§12.3.2). Slice: §12.3.12.3.
+   (§12.3.2). Slice: §12.3.12.3. 🔨 Built 2026-10-12, not merged (PR-A, branch
+   `gmail-pra-fill-bulk`).
 6. **EM-G3a-f7.** An update of a draft made in Gmail web drops its inline images (§12.3.3). The
-   measure of 2026-10-12 found that the update drops the whole HTML body too. Slice: §12.3.12.5.
+   measure of 2026-10-12 found that the update drops the whole HTML body too. Slice: §12.3.12.5. ✅ PR-C1a
+   MERGED #919 (`421eeb8f4`, 2026-10-12). ✅ PR-C1b MERGED #925 (`144dc0d1f`, 2026-10-12). PR-C2 follows.
 7. **EM-G4a-f1.** A `batchModify` that stops on a rate limit falls back to one `modify` for each
-   message (§12.3.5.1). Slice: §12.3.12.4.
+   message (§12.3.5.1). Slice: §12.3.12.4. 🔨 Built 2026-10-12, not merged (PR-A, branch
+   `gmail-pra-fill-bulk`).
 8. **The known limits of EM-G8** (§12.3.10). The rule editor suggests no Gmail user label. The
    reconnect banner does not read the capability read. `provider_unavailable` shows the generic
-   failure. Slice: §12.3.12.7.
+   failure. Slice: §12.3.12.7. ✅ MERGED #910 (`67b61aa11`, 2026-10-12).
 9. **EM-G3b-f7.** The health metric and the repair script miss a Gmail thread that a custom
    `MOVE_FOLDER` rule moved. `DAMAGED_CONVERSATION_THREADS_SQL` compares the rule label with the
    folder. The fix changes SQL text and needs an R8 test (§12.3.4). Slice: §12.3.12.6.
+   ✅ MERGED #916 (`c0d776667`, 2026-10-12).
 10. **EM-G3b-f8 (follow-up, reviewer P2 of PR-E, 2026-10-12).** On Gmail, the alarm and the
     repair cannot tell a message that keeps the rule label from a message that the member filed
     under another label. Both sit in `archive`. So a repair puts a re-filed message back in the
@@ -12544,8 +12548,8 @@ and the rule editor and the banner. So each one carries an Outlook acceptance it
 
 #### 12.3.12.2 EM-G4b-f1 — the history cursor moves at each page
 
-**Status.** 🔨 Built 2026-10-12, not merged. PR-B, branch `gmail-g4b-cursor`. Specified
-2026-10-12.
+**Status.** ✅ MERGED #915 (`0c882dec4`, 2026-10-12). PR-B, branch `gmail-g4b-cursor`.
+Specified 2026-10-12.
 
 **As built (2026-10-12).**
 
@@ -12725,7 +12729,37 @@ stay at or below the counts on main.
 
 #### 12.3.12.3 EM-G2-f1 — a large text part comes by `attachmentId`
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-A, with EM-G4a-f1.
+**Status.** 🔨 Built 2026-10-12, not merged. PR-A, with EM-G4a-f1, branch `gmail-pra-fill-bulk`.
+Specified 2026-10-12.
+
+**As built (2026-10-12).**
+
+- `GmailProvider._fill_attachment_bodies` runs in `get_message`, after `raise_for_status` and
+  before the parse. It fetches the body parts of D-G2-f1-3, with the two bounds of D-G2-f1-7.
+- `_record_body_part_failure` writes the record `gmail.body_part_failed id=<message> part=<part>
+  error=<class> status=<code>` into `fetch_failures`.
+- `_record_body_part_too_large` writes the record `gmail.body_part_too_large id=<message>
+  part=<part> size=<bytes>` into `fetch_failures`.
+- `_fetch_into` takes the length of `fetch_failures` before each fetch. It copies the new records
+  into `result.errors` on success and on failure.
+- Mutation M4 (`_fetch_into` drops the records of the fill) turns the fourth fence red. Each of the
+  six mutations turns its fence red.
+
+**Fix round 1 (2026-10-12, review P2).** The reviewer found that the fill had no bound. It fetched
+each text part by `attachmentId`, with no limit on the size or the count. Each label event fetches
+a message again, and the import runs 10 fetches at once inside acb-gateway. So a few large mails
+could hold their parts in memory several times. D-G2-f1-7 adds two bounds.
+
+**Known limit EM-G2-f1-a (the cap and the `/full-body` route).** `GET
+/email/messages/{id}/full-body` (`transport/messages.py`, `get_full_body`) returns the body with no
+truncation, because it is the read for a stored body that the storage cap cut. A Gmail body part
+over `GMAIL_FILL_MAX_BYTES` (4 MiB) gets no fetch, so that route returns an empty body for it. The
+lazy body fill, the §14 HTML route and the sync cut each body at the storage caps of `persist`
+(500 KB of text and 2 MB of HTML). For a part of 4 MiB or less, the cap does not change what they
+keep. A larger part gives them an empty body, not a cut body.
+
+The cap stays for `/full-body` too. *Reason:* the memory of acb-gateway. One body part over 4 MiB is
+rare, and a larger part would need a stream that the parse does not support.
 
 **Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no flag.
 
@@ -12771,6 +12805,14 @@ The tests call it at `test_email_rekey_reclaim.py:425` and `test_gmail_send_and_
   names no subject and no address.
 - **D-G2-f1-6. A spent rate limit raises `GmailRateLimited`.** The fill does not catch it. Each
   caller handles it as EM-G4a says, and the HTML route answers 503 (§14.4.2 item 7).
+- **D-G2-f1-7. The fill has two bounds (fix round 1, review P2, 2026-10-12).** It amends
+  D-G2-f1-3. (a) Only the FIRST part of each type that holds data or an `attachmentId` is a
+  candidate, because `_gmail_bodies` reads only that part. So one message gets two fetches at most.
+  (b) A candidate whose `body.size` is over `GMAIL_FILL_MAX_BYTES` gets no fetch. The cap is two
+  times the larger storage cap of `persist` (`MAX_BODY_TEXT_BYTES`, `MAX_BODY_HTML_BYTES`), so
+  4 MiB today. The fill logs `gmail.body_part_too_large` with the message id, the part id and the
+  size, and adds one record to `fetch_failures`. That body stays empty. *Reason:* the memory of
+  acb-gateway. A stored body is cut at the storage cap, so a larger part buys nothing that is kept.
 
 **Scope.**
 
@@ -12794,6 +12836,9 @@ fetch for a file part. No change to Outlook or IMAP. No cache of a filled body.
    `gmail.body_part_failed` line, and one record in `SyncResult.errors` on the history path. The
    other body part still parses.
 5. A spent rate limit on the fill raises `GmailRateLimited` from `get_message`.
+6. A mail with two large `text/html` parts by `attachmentId` gives exactly one `attachments.get`
+   (D-G2-f1-7 (a)).
+7. A part over `GMAIL_FILL_MAX_BYTES` gives no `attachments.get` and one record (D-G2-f1-7 (b)).
 
 **Fences (R7).** A new fixture, `tests/unit/fixtures/gmail/j_text_part_by_attachment_id.json`, and
 new cases in `tests/unit/test_gmail_parse.py`. The cases drive the real `get_message` on
@@ -12804,9 +12849,13 @@ new cases in `tests/unit/test_gmail_parse.py`. The cases drive the real `get_mes
 - `test_a_file_part_is_never_fetched_for_the_body` (acceptance 3)
 - `test_a_failed_body_part_fetch_leaves_a_record_and_an_empty_body` (acceptance 4)
 - `test_a_rate_limit_on_the_body_part_fetch_raises` (acceptance 5)
+- `test_only_the_first_body_part_of_each_type_is_fetched` (acceptance 6)
+- `test_a_body_part_over_the_cap_is_not_fetched` (acceptance 7)
 
 **Mutations.** M1: `get_message` skips the fill, and the first fence fails. M2: the fill fetches a
 file part, and the third fence fails. M3: the fill swallows `GmailRateLimited`, and the fifth fence
+fails. M4: `_fetch_into` drops the records of the fill, and the fourth fence fails. M5: each part
+of a type is a candidate, and the sixth fence fails. M6: the size cap goes, and the seventh fence
 fails.
 
 **Verify with.**
@@ -12819,7 +12868,13 @@ uv run ruff check tests/unit/test_gmail_parse.py
 
 #### 12.3.12.4 EM-G4a-f1 — a rate limit in a bulk act
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-A, with EM-G2-f1.
+**Status.** 🔨 Built 2026-10-12, not merged. PR-A, with EM-G2-f1, branch `gmail-pra-fill-bulk`.
+Specified 2026-10-12.
+
+**As built (2026-10-12).** `bulk_apply` catches `GmailRateLimited` before `Exception`. It logs
+`gmail.batch_modify_rate_limited` with `size` (the chunk) and `left` (the chunk and each later
+chunk). A fourth fence, `test_a_rate_limited_batch_modify_with_no_failed_out_returns`, covers scope
+item 1 with no `failed_out`. Both mutations turn their fences red.
 
 **Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no flag.
 
@@ -12877,8 +12932,8 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** 🔨 PR-C1b built, not merged (2026-10-12, branch `gmail-c1b-send`). PR-C1a merged as
-#919 (`421eeb8f4`). PR-C2 is not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
+**Status.** 🔨 PR-C2 built, not merged (2026-10-13, branch `gmail-c2-ui`). PR-C1a merged as #919
+(`421eeb8f4`), and PR-C1b merged as #925 (`144dc0d1f`). Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
 C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
 widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
 
@@ -13023,6 +13078,11 @@ images go too, or come back as plain files.
   other answer gives `send`. *Reason:* the pre-send save is the last chance to keep the HTML, so
   the member must see its loss before the mail goes.
 
+  *Amended by review round 1 of PR-C2 (2026-10-13).* A `lost` of an earlier save of the card also
+  stops the send. An autosave is the usual case. That save already wrote the text only to Gmail, so
+  the pre-send save then answers `none`. The helper is `sendAfterPreSave(answer, confirmed,
+  lostBefore)`, and the card passes the loss of its earlier saves as `lostBefore`.
+
 **Where the answer gets `html`.** `upsert_draft` ends with
 `return await _fetch_message_dict(db, local_id)` at `drafting.py:2492`. For a Gmail mailbox that
 line becomes `return {**await _fetch_message_dict(db, local_id), "html": html_state}`, where
@@ -13085,11 +13145,16 @@ once.
 | Item | Where | The words | Test |
 |---|---|---|---|
 | PR-C2 4 | The notice in a Gmail draft with HTML | `This draft has formatting or images from Gmail. If you change the text here, Metorite saves the text only, and the formatting and images go.` | `a-gmail-html-draft-shows-the-notice` |
+| PR-C2 4a | The stopped send, as an alert, in place of the notice above | `Metorite could not keep the formatting and images of this draft. Press Send again to send the text only.` | `a-stopped-send-says-press-send-again` |
 
 The words stay true. A save or a send that leaves the text as it was keeps the formatting
 (D-G3a-f7-2, D-G3a-f7-7). A text edit loses it. A failed read on a save keeps the text only, and
 the same notice then tells the member (D-G3a-f7-6). A failed read at the send stops the send until
 the member presses again (D-G3a-f7-11, D-G3a-f7-12).
+
+Row 4a shows after a stopped send. That is a 409 `html_unavailable`, a pre-send save that
+answered `lost`, or a first send after an earlier save of the card answered `lost`. It replaces the
+words of row 4 until the next send or a text edit.
 
 **Non-goals.** No HTML editor. No change to the send of a draft with no signature: Gmail sends the
 draft that it holds. No change to Outlook or IMAP drafts, or to the create of a draft.
@@ -13130,6 +13195,24 @@ read of `send_draft_endpoint` stays as on main, and an Outlook send writes the S
 text half still comes from `build_signed_bodies`, because that half is the same for both paths.
 `sign_html` reads the new part of the HTML only. A quote of an earlier mail of the member holds the
 signature too, and that copy must not stop the signature.
+
+**The build of PR-C2 (2026-10-13).** Five facts that the scope did not name:
+
+- `gatewayFetch` keeps the raw `detail` on its error. The detail of the 409 is an object, so its
+  message reads `[object Object]`. `isHtmlUnavailable` reads `status` and `detail.reason`.
+- The store does not put `html` into a row of the list. It sets no page banner for the 409,
+  because the card shows the notice.
+- `draftText` is the one rule for the text of the card. The outgoing text and the text at open use
+  it, so a card with no edit equals its text at open.
+- Review round 1 (P3). The HTML read of a Gmail draft with no row HTML can be slow. The card shows
+  the notice while that read runs, and a read that finds no HTML removes it. We chose this over a
+  hold on edits, because it is simpler and the member can still type. It keeps "the member knows
+  first" true. The cost: a draft made in Metorite shows the notice for the time of one read.
+- Review round 1 (P4). The answer type of `saveDraft` in `api.ts` is `DraftSaveResult`.
+  `lib/draftAutosave.ts` already exports a `SavedDraft`.
+
+The behaviour fence is `e2e/email-gmail-draft-notice.spec.ts`. With `E2E_GMAIL_C2_SHOTS` set, it also
+saves the screenshots of acceptance 23.
 
 **Acceptance of PR-C1 (done when).**
 
@@ -13174,10 +13257,18 @@ signature too, and that copy must not stop the signature.
 19. `noticeAfterSave` is true for `html: "lost"` only.
 20. (B3) `sendAfterPreSave` answers `stop` for `html: "lost"` with no confirm, and `send` with the
     confirm. It answers `send` for `kept` and `none`.
+20a. (Review round 1, P2) An autosave answers `lost`, and then the pre-send save answers `none`.
+    The first press stops and shows row 4a, and it sends nothing. The next press sends with
+    `allowTextOnly: true`.
 21. (B2 b) `isHtmlUnavailable` is true for the 409 of D-G3a-f7-11 only. The card sends
     `allowTextOnly: false` on the first press and `true` on the next press after the notice.
+21a. After a stopped send, the card shows the words of E-D3 row 4a as an alert, in place of the
+    words of row 4. The next send and a text edit bring back the words of row 4.
 22. (B5) `needsHtmlRead` is true for a Gmail draft with `bodyText` and no `bodyHtml` that the card
     did not read yet. It is false for an Outlook draft and after one read.
+22a. (Review round 1, P2 and P3) Take a Gmail draft with no row HTML whose `full-body` read
+    answers HTML. The card reads once and shows the notice, and a Cc-only save sends
+    `keep_html: true`. The notice shows while the read runs, and a read with no HTML removes it.
 23. Do a visual review of the card with the notice (§12.3.10 item 8). Look in light mode, at
     compact density, with a changed accent and at 390 px.
 
@@ -13222,6 +13313,14 @@ signature too, and that copy must not stop the signature.
 - `a-gmail-draft-with-text-only-reads-its-html-once` (acceptance 22)
 - `the-send-asks-send-after-pre-save` (acceptance 20). It reads `ConversationView.tsx` as text,
   and finds `sendAfterPreSave(` between the pre-send `saveDraft` and `sendDraft`.
+- `a-stopped-send-says-press-send-again` (acceptance 21a). `noticeWords` gives the words of row
+  4a after a stop and the words of row 4 before it. A source-text case finds the alert role and the
+  clear of the stop. `e2e/email-gmail-draft-notice.spec.ts` shows the words of row 4a after a
+  stopped send.
+- `a-lost-autosave-stops-the-next-send` (acceptance 20a). The e2e case "an autosave that lost the
+  HTML stops the next send" holds the behaviour.
+- `the-notice-shows-while-the-html-read-runs` (acceptance 22a). The e2e cases "a Gmail draft with
+  no row HTML reads it" and "the notice shows while the HTML read runs" hold the behaviour.
 
 **Mutations.** Each must turn its named fence red. Then the file goes back to its exact SHA-256.
 
@@ -13239,6 +13338,10 @@ signature too, and that copy must not stop the signature.
 | M10 | `sendAfterPreSave` answers `send` for `lost` with no confirm | `a-lost-pre-save-stops-the-send-until-the-confirm` |
 | M11 | The HTML read joins the hydrate effect, after its early return | `a-gmail-draft-with-text-only-reads-its-html-once` |
 | M12 | A read with no HTML signs with `sign_html("")` | `test_a_signed_send_with_no_html_anywhere_is_main` |
+| M13 | `noticeWords` gives the words of row 4 after a stop | `a-stopped-send-says-press-send-again` |
+| M14 | `sendAfterPreSave` ignores `lostBefore` | `a-lost-autosave-stops-the-next-send`, and its e2e case |
+| M15 | The notice reads `draft.bodyHtml` only, not `htmlRead?.html` | `the-notice-shows-while-the-html-read-runs`, and the B5 e2e case |
+| M16 | The notice does not show while the read runs | the e2e case "the notice shows while the HTML read runs" |
 
 **Verify with.**
 
@@ -13253,7 +13356,8 @@ The R8 tests must show PASSED, with 0 skips.
 
 #### 12.3.12.6 EM-G3b-f7 — the thread health finds a Gmail custom move
 
-**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`), fix round 1 closed.
+**Status.** ✅ MERGED #916 (`c0d776667`, 2026-10-12, branch `gmail-g3b-health`), fix round 1
+closed.
 PR-E. The `OR` branch reads `email_accounts.provider` through an `EXISTS` on `em.account_id`, so
 the compare of each provider runs as on main. The four fences of
 `test_email_thread_health_gmail.py` pass on a real Postgres, as `acb_app_h3rls`.
@@ -13367,7 +13471,7 @@ The R8 tests must show PASSED, with 0 skips.
 
 #### 12.3.12.7 EM-G8-f1 — the known limits of the connect UI
 
-**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g8-ux`). PR-F. The fences are in `connect.test.ts`, and the mutations M1 to M4 each fail a fence.
+**Status.** ✅ MERGED #910 (`67b61aa11`, 2026-10-12, branch `gmail-g8-ux`). PR-F. The fences are in `connect.test.ts`, and the mutations M1 to M4 each fail a fence.
 
 **Gate.** 🟢 AGENT-SAFE · visual review. UI only. No migration, no flag.
 
@@ -16558,6 +16662,8 @@ migration, and no flag.
 
 **Status: 🔨 BUILT on branch `email-message-actions-dark`, not merged (2026-10-10). Review
 fix rounds 1 to 3 are in.** UI only. No migration, no flag and no gateway change.
+§16.6 (2026-10-13) adds a gateway route for the inline pictures, and its own status line
+says where that fix stands.
 
 The owner asked for two changes on 2026-10-10. This section records them, and a fix of
 "Loading message…".
@@ -16761,6 +16867,163 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
 - **A patch can hide a change from another device.** `messagePatches` lives for the page.
   If another device changes a message that this pane changed, the pane shows its own
   change until a reload.
+
+### 16.6 Inline pictures in the body (2026-10-13)
+
+**Status: 🔨 BUILT on branch `email-inline-images`, not merged (2026-10-13). The security
+review and the re-review gave APPROVE, and their P2 and P3 fixes are in (below).** No migration and no flag. A
+WS-17 bug fix, and it needed no spec audit.
+
+**The report.** The owner's screenshot showed the reading pane in dark mode. A broken
+picture with the alt text "image.png" sat between the text and the sign-off. The owner saw
+it on mail from many senders, on Outlook mailboxes.
+
+**The cause.** A mail names a picture of its own MIME tree with `<img src="cid:...">`. No
+hop of the path could show it, and the path never worked. It is not a regression of
+EM-T17 or of #894.
+
+1. **Ingest.** `outlook._outlook_attachments` skips each part that Graph marks
+   `isInline`, so no `email_attachments` row holds it. That is correct for the file list.
+2. **The pane.** `sanitizeEmailHtml` kept the `cid:` URL, because DOMPurify allows the
+   scheme. But a browser cannot fetch `cid:`, and the frame's CSP was `img-src data:`.
+3. **The gateway.** No route served an inline part.
+
+**Evidence from production** (read-only, 2026-10-13):
+
+- 4,355 of 11,134 stored Microsoft bodies hold `cid:`, in the three organizations that
+  have mail. In the largest, 3,950 bodies hold `src="cid:`.
+- A body holds 10 such pictures at the median, 46 at p90 and 165 at most. Many of them
+  name one signature logo again.
+- The gateway log of two days shows no request for an inline part at all. The browser
+  never asked, so the failure made no log line.
+
+**The fix.**
+
+1. **The provider contract.** `BaseEmailProvider.get_inline_images` gives the parts with a
+   Content-ID, in the form of `normalize_content_id`. IMAP gives none.
+   - Outlook lists the parts with the base properties only, so Graph sends no bytes of a
+     real file. Then it reads each `isInline` or `image/*` file part, four at a time.
+   - Gmail reads the tree once, and never opens an attached mail.
+2. **The route.** `GET /email/messages/{id}/inline?cid=...`, in
+   `transport/inline_images.py`.
+   - The owner read runs first, with the predicate of the HTML route. A message of
+     another member is 404, before any cache read.
+   - The organization comes from the session and the member from `user.email`.
+   - Tenant Redis keeps each picture and the list of names for one hour, by the row id.
+   - One provider read serves all the requests of one message that arrive together.
+   - No session is open across the provider call. A 429 answers 503 with `Retry-After`.
+3. **Only a picture goes out.** The type comes from the first bytes, and SVG and HTML are
+   never served. Each answer carries `nosniff` and a CSP of `default-src 'none'; sandbox`.
+4. **The pane.** `lib/inlineImages.ts` writes `cid:X` as a RELATIVE URL of the route. The
+   frame's CSP adds that one path of our origin, with no trailing slash.
+   - The URL must be relative. `BLOCKED_REMOTE_CSS` drops the re-invert of a picture whose
+     `src` starts with `http`, so an absolute URL draws the picture inverted in dark mode.
+   - An inline picture is part of the mail, so the remote gate does not hold it, and
+     "Show images" is not needed for it. The gate still holds each remote picture.
+   - Each reading surface passes its message id: the single email, the thread, the
+     preview and the chat card.
+
+**Fences.**
+
+- `tests/unit/test_email_inline_images.py`: the Outlook and Gmail reads, the sniff, the
+  route, and the owner check on a real database (R8).
+- `tests/unit/test_email_owner_scope_fence.py` reads the owner predicate in the body of
+  `get_inline_image`. So the owner SQL stays in that body, not in a module constant.
+- `src/app/email/lib/inlineImages.test.ts`: the rewrite, the relative URL and the CSP.
+- `e2e/email-inline-images.spec.ts`: a real PNG loads in a real frame, with
+  `naturalWidth` above 0, in the tokens, invert and original looks, and after "Show images".
+  In the invert look the picture keeps its re-invert, and the remote logo stays refused.
+- Red first: with the client of `main`, each of the four e2e tests fails, and the pane
+  shows the alt text "image.png" as in the report.
+- Mutations, each killed: no owner predicate, no shared provider read, a trusted declared
+  type, no cached list of names, a list read that pulls bytes, a Gmail walk into an
+  attached mail, a failure that is not kept, and no `max_count`. On the client: no
+  rewrite, an absolute URL, and a CSP with no inline path.
+
+**Recorded risks.**
+
+- A `cid:` inside a CSS `url()` stays unresolved. The pane rewrites `src`, `poster` and
+  `background` only.
+- A message that is not a stored row, such as a provider search hit, gets 404. Its
+  pictures show the alt text, as before.
+- The first open of a message with many pictures makes one Graph read for each part.
+  The server cache then serves it for one hour, and the browser cache for ten minutes.
+- **A shared browser keeps a picture for ten minutes** (review P3-6). The answer says
+  `Cache-Control: private, max-age=600`. After a sign-out, the next person at that
+  browser can open the cached URL until the ten minutes end. The hour of the server
+  cache is safe, because the owner check runs before each read of it.
+- A kept owner verdict lives for one minute. If a member disconnects a mailbox in that
+  minute, they can still read the cached pictures of a message that they opened.
+
+**Security review of 2026-10-13: APPROVE, and the fixes.** The review found no P0 or P1.
+This change fixes its four P2 and two P3 findings.
+
+1. **P2-1, the binary Redis pool.** That pool holds 4 connections
+   (`BINARY_POOL_MAX_CONNECTIONS`), and redis-py raises when it is full, with no wait.
+   Each binary call now passes one gate, one below the pool. So a burst queues, and a
+   cache hit seldom turns into a provider read. Seldom, not never: the gate binds this
+   process only. The pool class stays as it is.
+2. **P2-2, one owner read for each picture.** A body of 165 pictures took 165 owner
+   reads, and that filled the database pool. The route now keeps a POSITIVE verdict in
+   the process for 60 s, by organization, member and message. The requests of one open
+   share one owner read. A denial is never kept. The verdict holds no credentials (P3-b
+   below). The owner SQL stays in the handler body for the owner-scope fence.
+3. **P2-3, no bytes past the caps.** Gmail reads a part only when it is inline AND of an
+   `image/*` type, so it never downloads a PDF with a Content-ID. Outlook and Gmail skip
+   each part that would take the listed sizes over `MAX_INLINE_TOTAL_BYTES` (`max_total`).
+4. **P2-4, a passing fault.** A part that fails for a reason other than a rate limit
+   makes the read incomplete (`InlineRead.complete`). The list of names then lives
+   `INLINE_RETRY_TTL_SECS` (60 s), not one hour, so the next open reads that part again.
+5. **P3-5.** A 429 on one Outlook part cancels the reads that still run (`TaskGroup`).
+6. **P3-6.** The browser cache is ten minutes, as the risk above says.
+
+Fences, in `tests/unit/test_email_inline_images.py`, and the mutation that each one
+kills:
+
+- `TestTheRedisPool`: a fake pool that refuses a fifth call, and a burst of 20 on a full
+  cache with no provider read. It kills a gate of 50.
+- `TestOneOwnerReadForEachOpen`: 100 requests make one owner read. Another member and
+  another organization each read again and a stranger gets 404. The verdict ends after
+  its TTL. It kills no kept verdict, no single flight, and a key with no member.
+- `TestTheReadStopsAtTheCaps`: one Gmail picture and five 4 MB PDFs give one download,
+  and a 27 MB Outlook list reads 4 parts. It kills a Gmail check with no type and an
+  Outlook read with no total cap.
+- `TestAFailedPartIsReadAgainSoon`: a 503 or a 404 on a part makes the read incomplete.
+  The list then lives 60 s, and the next open after it reads the provider again. It
+  kills a route that ignores the flag, and an Outlook or Gmail read that always reports
+  complete.
+- `TestARateLimitStopsTheSiblings`: no read runs on after a 429. It kills `gather`.
+- The header test kills a browser cache of one hour.
+
+**Security re-review of 2026-10-13: APPROVE, and three P3 fixes.**
+
+1. **P3-a, a logo that the budget left out.** The budget took the parts in list order and
+   stopped at the cap. So more than 20 MB of image files ahead of a small inline logo
+   left the logo out, and the cached list then said 404 for an hour.
+   - Outlook takes the `isInline` parts first. Gmail takes the parts with an `inline`
+     disposition first.
+   - Each provider, and the route's own cap, now skips a part that does not fit, so a
+     smaller part after it can still fit.
+   - A skipped inline part makes the read incomplete, so the list lives 60 s.
+2. **P3-b, a kept grant.** The kept verdict held the whole row, with
+   `credentials_encrypted`. A reconnect inside the minute let the route refresh from the
+   old grant and write over the new tokens. The owner read now selects no credentials.
+   The pictures flight reads the grant again, with the owner predicate. That is one
+   database read for each provider read.
+3. **P3-c, the other user of the pool.** The file cache of `transport/attachments.py`
+   shares the binary pool. It now queues on the same gate, `_binary_redis_gate`, which
+   moved into `attachments.py`. Both routes import it from there.
+
+Fences, and the mutation that each one kills:
+
+- `TestInlinePartsComeFirst`: an Outlook list with 25 MB of image files and then an
+  inline logo reads the logo. A large inline part is skipped, and a small one after it is
+  read. On Gmail the inline logo is read first. It kills the list order and a `break`.
+- `test_a_reconnect_after_the_verdict_uses_the_new_grant`: a reconnect after the verdict
+  is kept, and then a picture miss, reads the new grant. It kills a flight that takes the
+  grant from the kept row.
+- `TestOneGateForTheBinaryPool`: both routes use the one gate, and the file cache passes
+  it for its read and its write.
 
 ## 17. Email AI context: the whole conversation, chosen by Jev, and no stall (2026-10-12)
 

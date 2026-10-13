@@ -19,7 +19,14 @@ touches it.
 **The flag.** :func:`enabled` is the one reader of ``agent_access_enabled``.
 While it is false, every EA-2a route answers 404.
 
-Fence: ``tests/unit/test_agent_oauth_server.py``.
+**The MCP read surface (EA-3a).** :data:`MCP_ROUTES` is the one allowlist of
+gateway routes an outside agent may reach. :func:`actor_via_for` gives the
+``mcp:<slug>`` stamp of a connection. :data:`ACTOR_VIA_PATTERN` is the one
+shape of that stamp, and the Projects routes import it from here.
+
+Fences: ``tests/unit/test_agent_oauth_server.py``,
+``tests/unit/test_mcp_edge_signing.py`` and
+``tests/unit/test_mcp_edge_coverage.py``.
 """
 from __future__ import annotations
 
@@ -28,6 +35,7 @@ import hashlib
 import hmac
 import re
 from collections.abc import Iterable, Mapping
+from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from acb_common import get_settings
@@ -70,7 +78,7 @@ def parse_scope(value: str | None) -> tuple[str, ...]:
     for token in tokens:
         if token == "":
             continue
-        if not _SCOPE_TOKEN.match(token):
+        if not _SCOPE_TOKEN.fullmatch(token):
             raise ValueError("scope holds a bad token")
         named.add(token)
     return tuple(s for s in SUPPORTED_SCOPES if s in named)
@@ -127,11 +135,11 @@ S256 = "S256"
 
 
 def is_valid_challenge(challenge: str | None) -> bool:
-    return bool(challenge) and bool(_CHALLENGE.match(challenge or ""))
+    return bool(challenge) and bool(_CHALLENGE.fullmatch(challenge or ""))
 
 
 def is_valid_verifier(verifier: str | None) -> bool:
-    return bool(verifier) and bool(_VERIFIER.match(verifier or ""))
+    return bool(verifier) and bool(_VERIFIER.fullmatch(verifier or ""))
 
 
 def s256(verifier: str) -> str:
@@ -234,7 +242,8 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
     ``https`` always. ``http`` only to a loopback host (RFC 8252 §7.3). A
     private-use scheme of a native app (RFC 8252 §7.1), except the schemes in
     :data:`_FORBIDDEN_SCHEMES`. Never a fragment, a user name or a password.
-    The exact match against the client's own list is a separate check. ASCII
+    The match against the client's own list is a separate check,
+    :func:`redirect_uri_matches`. ASCII
     only, for the reason :func:`is_cimd_client_id` gives.
     """
     if not uri or len(uri) > MAX_URL_CHARS or not uri.isascii():
@@ -247,7 +256,7 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
     except ValueError:
         return False
     scheme = parts.scheme
-    if not _SCHEME.match(scheme) or scheme in _FORBIDDEN_SCHEMES:
+    if not _SCHEME.fullmatch(scheme) or scheme in _FORBIDDEN_SCHEMES:
         return False
     if "#" in uri or parts.username is not None or parts.password is not None:
         return False
@@ -259,10 +268,166 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
     return bool(parts.netloc or parts.path)
 
 
+# ── The redirect match (EA-2c, spec §10.4, decision EA3-23) ─────────────────
+
+#: The registered loopback hosts that accept any port, as RAW netloc strings.
+#: Case and form count: ``LOCALHOST``, ``localhost.``, ``127.0.0.2`` and
+#: ``[0:0:0:0:0:0:0:1]`` are not in this set, so they keep the exact match.
+_LOOPBACK_NETLOCS = frozenset({"localhost", "127.0.0.1", "[::1]"})
+
+#: A port in its one spelling: no sign, no leading zero, not ``0``. The upper
+#: bound 65535 is a separate check.
+_PORT = re.compile(r"[1-9][0-9]{0,4}")
+_MAX_PORT = 65535
+
+
+class _RawParts(NamedTuple):
+    """The parts of a URI, cut by hand and never normalised.
+
+    ``query`` and ``fragment`` keep their mark (``?``, ``#``), so a URI that
+    ends in a bare ``?`` or ``#`` differs from one with no mark.
+    """
+
+    scheme: str
+    netloc: str
+    path: str
+    query: str
+    fragment: str
+
+
+def _raw_parts(uri: str) -> _RawParts | None:
+    """*uri* cut into its parts as RAW strings, or ``None`` with no ``://``.
+
+    ⚠️ Not ``urlsplit``. It lowers the case of the scheme and removes a tab
+    or a line break from the URL, so two different strings could compare equal.
+    """
+    scheme, sep, after = uri.partition("://")
+    if not sep:
+        return None
+    end = len(after)
+    for mark in "/?#":
+        found = after.find(mark)
+        if found != -1:
+            end = min(end, found)
+    netloc, rest = after[:end], after[end:]
+    cut = rest.find("#")
+    rest, fragment = (rest, "") if cut == -1 else (rest[:cut], rest[cut:])
+    cut = rest.find("?")
+    path, query = (rest, "") if cut == -1 else (rest[:cut], rest[cut:])
+    return _RawParts(scheme, netloc, path, query, fragment)
+
+
+def _loopback_any_port(requested: str, registered: str) -> bool:
+    """True when *requested* is the loopback *registered* URI on some port.
+
+    The four rules of spec §10.4, each on RAW strings:
+
+    1. *registered* has the scheme ``http``, the netloc ``localhost``,
+       ``127.0.0.1`` or ``[::1]`` exactly, and so no port and no user name.
+    2. *requested* has the same scheme and the same path.
+    3. The netloc of *requested* is the registered netloc, a colon and a
+       port from 1 to 65535 with no leading zero.
+    4. The two queries are identical, and neither URI has a fragment.
+    """
+    reg = _raw_parts(registered)
+    req = _raw_parts(requested)
+    if reg is None or req is None:
+        return False
+    # Rule 1.
+    if reg.scheme != "http" or reg.netloc not in _LOOPBACK_NETLOCS:
+        return False
+    # Rule 2.
+    if req.scheme != reg.scheme or req.path != reg.path:
+        return False
+    # Rule 4.
+    if req.query != reg.query:
+        return False
+    if req.fragment or reg.fragment:
+        return False
+    # Rule 3.
+    host, colon, port = req.netloc.rpartition(":")
+    if not colon or host != reg.netloc:
+        return False
+    return _PORT.fullmatch(port) is not None and int(port) <= _MAX_PORT
+
+
+def redirect_uri_matches(requested: str | None, registered: Iterable[object]) -> bool:
+    """True when *requested* matches one URI of the client's *registered* list.
+
+    The ONE place that compares redirect URIs (spec §10.4). The exact string
+    match runs first. Then a loopback ``http`` registration with no port
+    accepts any port (RFC 8252 §7.3), by :func:`_loopback_any_port`. Every
+    other registration needs the exact string.
+
+    This widens the authorize check only. ``mint_code`` stores the requested
+    URI with its port, and the code spend matches that string exactly. The
+    caller still runs :func:`is_allowed_redirect_uri` on *requested*.
+    """
+    if not isinstance(requested, str) or not requested:
+        return False
+    for uri in registered:
+        if not isinstance(uri, str):
+            continue
+        if requested == uri or _loopback_any_port(requested, uri):
+            return True
+    return False
+
+
 def redirect_host(uri: str) -> str:
     """The host a member sees on the consent screen, or the scheme for an app."""
     parts = urlsplit(uri)
     return ascii_host(parts.hostname) if parts.hostname else f"{parts.scheme}:"
+
+
+# ── The MCP read surface (EA-3a, spec §9.5 and §10.1) ──────────────────────
+
+#: The shape of an ``X-Actor-Via`` value, the provenance stamp of a write
+#: (D-PM-36). It lives here, and ``gateway/routes/projects/core.py`` imports
+#: it, because ``acb_auth`` may not import the gateway and branch 0 of
+#: ``deps.get_current_user`` checks the stamp too. ONE copy.
+ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
+
+#: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
+#: full FastAPI route template. Branch 0 of ``deps.get_current_user`` refuses
+#: every other pair, and the edge client reads this set before it sends a
+#: request. EA-3 lists the GET routes of the seven read tools (§9.1) and no
+#: write. Fence: ``tests/unit/test_mcp_edge_coverage.py``.
+MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/auth/me"),
+    ("GET", "/projects/tree"),
+    ("GET", "/projects/nodes/{project_id}"),
+    ("GET", "/projects/nodes/{project_id}/statuses"),
+    ("GET", "/projects/nodes/{project_id}/types"),
+    ("GET", "/projects/nodes/{project_id}/fields"),
+    ("GET", "/projects/nodes/{project_id}/tags"),
+    ("GET", "/projects/tasks"),
+    ("GET", "/projects/tasks/{task_id}"),
+    ("GET", "/projects/tasks/{task_id}/relations"),
+    ("GET", "/projects/tasks/{task_id}/timeline"),
+    ("GET", "/projects/search"),
+})
+
+
+def actor_via_for(client_origin: str | None) -> str:
+    """The ``X-Actor-Via`` stamp of a connection: ``mcp:<slug>``.
+
+    The slug is the lower-case ASCII host of *client_origin*, with no scheme
+    and no port. When that stamp does not match :data:`ACTOR_VIA_PATTERN`,
+    the slug is the first 16 hex characters of the SHA-256 of the origin. An
+    empty origin gives ``""``, which matches no pattern, so branch 0 refuses
+    it (spec §10.1, step 7).
+    """
+    origin = (client_origin or "").strip()
+    if not origin:
+        return ""
+    try:
+        host = (urlsplit(origin).hostname or "").lower()
+    except ValueError:
+        host = ""
+    stamp = f"mcp:{host}"
+    if host and host.isascii() and ACTOR_VIA_PATTERN.fullmatch(stamp):
+        return stamp
+    return "mcp:" + hashlib.sha256(origin.encode("utf-8")).hexdigest()[:16]
 
 
 def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) -> str:
@@ -279,15 +444,18 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 
 
 __all__ = [
+    "ACTOR_VIA_PATTERN",
     "CONTEXT_READ",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
+    "MCP_ROUTES",
     "OFFLINE_ACCESS",
     "PROJECTS_READ",
     "PROJECTS_WRITE",
     "RESOURCE_SCOPES",
     "S256",
     "SUPPORTED_SCOPES",
+    "actor_via_for",
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
@@ -301,6 +469,7 @@ __all__ = [
     "parse_scope",
     "pkce_matches",
     "redirect_host",
+    "redirect_uri_matches",
     "resource",
     "revocation_endpoint",
     "s256",

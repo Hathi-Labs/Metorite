@@ -11,7 +11,10 @@ row of ``agent_connection``. The authorization server (EA-2a, the edge's
 ``token`` and ``revoke`` and the gateway's ``/agent-access``) and the MCP edge
 (EA-3) call these functions. EA-2a added three: :func:`revoke_replayed_code`
 (a spent code seen again revokes its connection) and the ``agent_client``
-cache, :func:`get_client` and :func:`cache_cimd_client`.
+cache, :func:`get_client` and :func:`cache_cimd_client`. EA-3a added
+:func:`read_live_connection` for branch 0 of the gateway, and
+:func:`lookup_token` now returns the scopes, the pins, the personal opt-in and
+the origin of the connection it read.
 
 **Why it is in ``acb_auth``.** A token is an identity artifact, and this
 package owns authentication. It follows ``acb_auth.email_otp``, the other
@@ -130,6 +133,29 @@ class TokenLookup:
     resource: str | None
     scope: str | None
     expires_at: datetime
+    #: The connection row, read in the same transaction (EA-3a, spec §7.1
+    #: step 3). The edge intersects ``scope`` with ``scopes``.
+    scopes: tuple[str, ...] = ()
+    pinned_projects: tuple[str, ...] = ()
+    include_personal: bool = False
+    client_origin: str = ""
+
+
+@dataclass(frozen=True)
+class LiveConnection:
+    """A live connection, read by its id for branch 0 (EA-3a, spec §10.1).
+
+    ``member_email`` is the ONE source of the member of a signed request. No
+    header can name it.
+    """
+
+    connection_id: str
+    organization_id: str
+    member_email: str
+    client_origin: str
+    scopes: tuple[str, ...]
+    pinned_projects: tuple[str, ...]
+    include_personal: bool
 
 
 @dataclass(frozen=True)
@@ -352,12 +378,25 @@ SELECT connection_id, organization_id, kind, client_id, resource, scope,
    AND expires_at > now()
 """
 
-#: Is the token's connection live? Bound to the token's tenant. One point read
-#: on the primary key.
+#: The live connection, with what the edge and branch 0 need (EA-3a, spec
+#: §7.1 step 3 and §10.1 step 4). Runs bound to the tenant. One point read on
+#: the primary key. "Live" is not revoked and not past ``expires_at``.
+#:
+#: ⚠️ The organization is in the WHERE as well as in the bound GUC. Under
+#: FORCE RLS the bind alone hides a connection of another tenant. The
+#: predicate keeps that answer for a role that bypasses RLS too.
+#:
+#: ``pinned_projects`` comes back as ``text[]``, so a pin is a plain string
+#: and never an asyncpg ``UUID`` object. ``organization_id`` comes back too:
+#: :func:`read_live_connection` reports the ROW's organization, never the
+#: one it was asked for, so branch 0 can compare the two.
 _CONNECTION_LIVE_SQL = """
-SELECT 1
+SELECT CAST(organization_id AS TEXT) AS organization_id,
+       member_email, client_origin, scopes,
+       CAST(pinned_projects AS TEXT[]) AS pinned_projects, include_personal
   FROM agent_connection
  WHERE id = CAST(:connection_id AS UUID)
+   AND organization_id = CAST(:org AS UUID)
    AND revoked_at IS NULL
    AND expires_at > now()
 """
@@ -1032,14 +1071,18 @@ async def lookup_token(raw: str, *, kind: str = ACCESS) -> TokenLookup | None:
         live = (
             await session.execute(
                 text(_CONNECTION_LIVE_SQL),
-                {"connection_id": str(row.connection_id)},
+                {
+                    "connection_id": str(row.connection_id),
+                    "org": str(row.organization_id),
+                },
             )
         ).one_or_none()
-        return row if live is not None else None
+        return (row, live) if live is not None else None
 
-    row = await _run(_work)
-    if row is None:
+    found = await _run(_work)
+    if found is None:
         return None
+    row, live = found
     return TokenLookup(
         connection_id=str(row.connection_id),
         organization_id=str(row.organization_id),
@@ -1048,4 +1091,67 @@ async def lookup_token(raw: str, *, kind: str = ACCESS) -> TokenLookup | None:
         resource=row.resource,
         scope=row.scope,
         expires_at=row.expires_at,
+        scopes=tuple(live.scopes or ()),
+        pinned_projects=tuple(str(p) for p in live.pinned_projects or ()),
+        include_personal=bool(live.include_personal),
+        client_origin=live.client_origin or "",
+    )
+
+
+def _canonical_uuid(value: str | None) -> str | None:
+    """*value* when it is the canonical lower-case form of a UUID, else None."""
+    import uuid
+
+    try:
+        parsed = str(uuid.UUID(value or ""))
+    except ValueError:
+        return None
+    return parsed if parsed == value else None
+
+
+async def read_live_connection(
+    organization_id: str, connection_id: str
+) -> LiveConnection | None:
+    """The live connection *connection_id* of *organization_id*, or ``None``.
+
+    Branch 0 of ``deps.get_current_user`` calls it (EA-3a, spec §10.1 step 4)
+    with the organization and the connection of a request whose HMAC it has
+    already checked. It opens the one unbound :func:`_session` and binds
+    *organization_id* with :data:`_BIND_SQL` inside the transaction, so the
+    tenant-scoped read runs under RLS. A connection of another organization,
+    a revoked one and one past ``expires_at`` all give ``None``.
+
+    ``member_email`` of the result is the ONE source of the member of a
+    signed request, and ``organization_id`` is the one the ROW holds. Each
+    call reads the row again and keeps no cache, so a revoke takes effect on
+    the next call.
+    """
+    from sqlalchemy import text
+
+    org = _canonical_uuid(organization_id)
+    connection = _canonical_uuid(connection_id)
+    if org is None or connection is None:
+        return None
+
+    async def _work(session: Any) -> Any:
+        await _bind(session, org)
+        return (
+            await session.execute(
+                text(_CONNECTION_LIVE_SQL),
+                {"connection_id": connection, "org": org},
+            )
+        ).one_or_none()
+
+    row = await _run(_work)
+    if row is None:
+        return None
+    return LiveConnection(
+        connection_id=connection,
+        # The ROW's organization, never the argument: branch 0 compares them.
+        organization_id=str(row.organization_id),
+        member_email=(row.member_email or "").strip().lower(),
+        client_origin=row.client_origin or "",
+        scopes=tuple(row.scopes or ()),
+        pinned_projects=tuple(str(p) for p in row.pinned_projects or ()),
+        include_personal=bool(row.include_personal),
     )

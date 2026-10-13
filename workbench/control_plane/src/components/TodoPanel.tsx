@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Icon from "@/components/Icon";
 
 export interface TodoItem {
   id: string;
@@ -61,15 +62,13 @@ export default function TodoPanel({
         onClick={() => { userToggledRef.current = true; setExpanded((o) => !o); }}
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-secondary/40 transition-colors"
       >
-        <span className="text-[10px] text-muted-foreground transition-transform duration-150"
-          style={{ transform: expanded ? "rotate(0deg)" : "rotate(-90deg)" }}>
-          ▼
-        </span>
+        <Icon name="ChevronDown" size={12}
+          className={`shrink-0 text-muted-foreground transition-transform duration-150 ${expanded ? "" : "-rotate-90"}`} />
         <span className="text-xs font-semibold text-foreground">
           Todos ({doneCount}/{todos.length})
         </span>
         {running && !allDone && (
-          <span className="w-1.5 h-1.5 rounded-full bg-sky-400 chat-pulse-dot shrink-0" />
+          <span className="w-1.5 h-1.5 rounded-full bg-info chat-pulse-dot shrink-0" />
         )}
       </button>
 

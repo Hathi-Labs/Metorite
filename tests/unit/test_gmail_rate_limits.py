@@ -35,6 +35,7 @@ Run::
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -596,3 +597,101 @@ async def test_a_rate_limit_past_the_tries_fails_the_sync(
 
     with pytest.raises(GmailRateLimited):
         await _provider().sync_messages(**kwargs)
+
+
+# ── EM-G4a-f1: a rate limit in a bulk act (§12.3.12.4) ──────────────────────
+
+#: The path of ``users.messages.batchModify``.
+BATCH = "/messages/batchModify"
+
+
+def _ids(count: int) -> list[str]:
+    return [f"m{n}" for n in range(count)]
+
+
+def _modify_calls(fake: _Gmail) -> int:
+    """The count of per-message ``modify`` calls, ``batchModify`` left out."""
+    return sum(1 for m, p, _ in fake.seen
+               if m == "POST" and p.endswith("/modify")
+               and not p.endswith(BATCH))
+
+
+def _batch_ids(applied: list[list[str]]) -> Answer:
+    """A ``batchModify`` that succeeds and records the ids it applied."""
+    def _answer(request: httpx.Request) -> httpx.Response:
+        applied.append(json.loads(request.content)["ids"])
+        return httpx.Response(204)
+    return _answer
+
+
+async def test_a_rate_limited_batch_modify_makes_no_per_message_call(
+        fake: _Gmail, caplog: pytest.LogCaptureFixture) -> None:
+    """EM-G4a-f1 acceptance 1, mutation M1, D-G4a-f1-1. Chunk 1 of 3 gets a
+    429 until its tries are spent. The client budget is then spent too, so
+    a fallback of one ``modify`` for each id sends up to 1,000 quick
+    requests to a mailbox that Gmail limits. Each id goes into
+    ``failed_out`` instead, and the caller retries it with a back-off."""
+    fake.on("POST", BATCH, _rate_limited("0"))
+    ids = _ids(2500)
+    failed: list[str] = []
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        rekeys = await _provider().bulk_apply(ids, "read", failed)
+
+    assert rekeys == {}
+    assert _modify_calls(fake) == 0
+    assert fake.calls("POST", BATCH) == GMAIL_MAX_TRIES
+    assert failed == ids
+    logged = [r.getMessage() for r in caplog.records
+              if r.getMessage().startswith("gmail.batch_modify_")]
+    assert logged == ["gmail.batch_modify_rate_limited action=read "
+                      "size=1000 left=2500"]
+
+
+async def test_a_rate_limit_on_a_later_chunk_fails_the_rest(fake: _Gmail) -> None:
+    """EM-G4a-f1 acceptance 2, mutation M2. Chunk 1 applies. Chunk 2 gets a
+    spent rate limit, so chunk 2 and chunk 3 go into ``failed_out`` with no
+    call for them. Chunk 3 gets no ``batchModify`` either."""
+    applied: list[list[str]] = []
+    fake.on("POST", BATCH, _batch_ids(applied), _rate_limited("0"))
+    ids = _ids(2500)
+    failed: list[str] = []
+
+    await _provider().bulk_apply(ids, "archive", failed)
+
+    assert applied == [ids[:1000]]
+    assert _modify_calls(fake) == 0
+    assert fake.calls("POST", BATCH) == 1 + GMAIL_MAX_TRIES
+    assert failed == ids[1000:]
+    assert len(failed) == 1500
+
+
+async def test_a_rate_limited_batch_modify_with_no_failed_out_returns(
+        fake: _Gmail) -> None:
+    """EM-G4a-f1 scope item 1. With no ``failed_out``, the act only
+    returns. It makes no call for each message."""
+    fake.on("POST", BATCH, _rate_limited("0"))
+
+    assert await _provider().bulk_apply(_ids(1500), "star") == {}
+    assert _modify_calls(fake) == 0
+    assert fake.calls("POST", BATCH) == GMAIL_MAX_TRIES
+
+
+async def test_a_batch_modify_5xx_still_falls_back_per_message(
+        fake: _Gmail) -> None:
+    """EM-G4a-f1 acceptance 3. Any error that is not a rate limit keeps the
+    fallback. ``batchModify`` is all or nothing, so one stale id must not
+    cost the other ids of the chunk their update. Chunk 2 still applies."""
+    applied: list[list[str]] = []
+    fake.on("POST", BATCH, _refuse(500, "backendError"), _batch_ids(applied))
+    ids = _ids(1500)
+    for mid in ids[:1000]:
+        fake.on("POST", f"/messages/{mid}/modify", _ok({}))
+    failed: list[str] = []
+
+    await _provider().bulk_apply(ids, "read", failed)
+
+    assert _modify_calls(fake) == 1000
+    assert fake.calls("POST", BATCH) == 2
+    assert applied == [ids[1000:]]
+    assert failed == []

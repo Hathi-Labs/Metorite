@@ -314,7 +314,7 @@ describe("the interrupted notice and its Continue button", () => {
 describe("a card answer to a run that restarted", () => {
   const restarted = JSON.stringify({ detail: {
     error: "run_restarted",
-    message: "The assistant restarted. Your answer will be sent as a new message.",
+    message: "The assistant restarted, so your answer goes as a new message.",
     resumeMessage: 'You asked me: "Ship it?"\n\nMy answer: yes',
   } });
 
@@ -324,7 +324,7 @@ describe("a card answer to a run that restarted", () => {
     const res = await sendRespondInputResult(
       { request_id: "r1", answer: "yes", was_freeform: true, thread_id: "t" }, fetchFn,
     );
-    expect(res).toEqual({ outcome: "drop", resend: 'You asked me: "Ship it?"\n\nMy answer: yes' });
+    expect(res).toEqual({ outcome: "drop", resend: 'You asked me: "Ship it?"\n\nMy answer: yes', display: null });
   });
 
   it("keeps the old drop for any other 409", async () => {

@@ -77,6 +77,46 @@ describe("the header row", () => {
   });
 });
 
+describe("the breadcrumb — where the task lives", () => {
+  const PATH = [
+    { id: "s", name: "Fracktal" },
+    { id: "p", name: "Metorite" },
+    { id: "sp", name: "Assistant chat" },
+  ];
+  const render = (where?: Parameters<typeof TaskHeaderRow>[0]["where"]) =>
+    renderToStaticMarkup(createElement(TaskHeaderRow, { taskRef: "#174", where }));
+
+  it("runs from the space down to the project, then the ref", () => {
+    // A card opened from the chat named nothing else (owner, 2026-10-12).
+    const html = render({ path: PATH, onOpen: () => {} });
+    expect(html).toContain('aria-label="Where this task is"');
+    // The ref ends the trail, as a breadcrumb ends on the current page.
+    expect(html).toMatch(/aria-current="page"[^>]*>[\s\S]*#174/);
+    const order = ["Fracktal", "Metorite", "Assistant chat", "#174"].map((n) => html.indexOf(n));
+    expect(order.every((i) => i > -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it("each crumb is a Button that opens its node, and the project stands out", () => {
+    const html = render({ path: PATH, onOpen: () => {} });
+    const tags = [...html.matchAll(/<button\b[^>]*>/g)].map((m) => m[0]);
+    expect(tags).toHaveLength(3);
+    for (const tag of tags) expect(tag).toContain("cc-control");
+    expect(html).toContain('title="Open Metorite"');
+    // Only the task's own project wears the foreground tone.
+    expect(html.match(/font-medium text-foreground/g)).toHaveLength(1);
+    expect(html).toMatch(/font-medium text-foreground">Assistant chat</);
+  });
+
+  it("is plain text with no opener, and absent with no path", () => {
+    const text = render({ path: PATH });
+    expect(text).toContain("Metorite");
+    expect(text).not.toContain("<button");
+    expect(render({ path: [] })).not.toContain("Where this task is");
+    expect(render()).not.toContain("Where this task is");
+  });
+});
+
 describe("the title", () => {
   it("is an h2 holding the button that starts the edit", () => {
     const html = renderToStaticMarkup(

@@ -87,6 +87,10 @@ _EXEMPT = {
     # CRM-Q8: saved views. A view is a member's saved list, not a CRM record, so
     # it works in Mirror mode. It writes `crm_views` and no record table.
     "views.py",
+    # CRM-Q7a: the Field map. It writes `crm_field_rules` and no record table,
+    # and it works in Mirror mode only. The sync applies a rule through the
+    # field-rule door, which the raw-write fence below allows by name.
+    "field_rules.py",
 }
 
 
@@ -466,6 +470,10 @@ _RAW_ALLOW = {
     # from a route fails here.
     "core.py::upsert_module_records_from_source",
     "core.py::delete_module_records_from_source",
+    # CRM-Q7a: the field-rule door. It fills only a NULL column of a mirrored
+    # row, or clears a free column, and only `crm_sync/` names it
+    # (`test_crm_upsert_from_source_fence.py`).
+    "core.py::apply_field_rule_from_source",
     "core.py::insert_row", "core.py::update_row",
     # The legacy importer, the sync and the stage repair refuse Mirror mode.
     "import_zoho.py", "sync_zoho.py",
