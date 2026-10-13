@@ -27,7 +27,6 @@
  *
  * Fences: `feed.test.ts` and `myDayPage.test.ts`.
  */
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
@@ -479,6 +478,10 @@ export function FeedCard({
       ) : null}
       {acts.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2 px-2 pt-1 pb-1">
+          {/* §4.2 item 5, by POSITION and never by way: act 0 is the one
+              filled act, and each later act is outlined. An `open` act is
+              the same primitive drawn as a real link (`Button` with `href`),
+              so it keeps the house focus ring (MD-1b visual review). */}
           {acts.map((a, i) =>
             a.way === "tap" ? (
               <Button
@@ -486,6 +489,7 @@ export function FeedCard({
                 variant={i === 0 ? "primary" : "secondary"}
                 size="sm"
                 icon={a.act === "done" ? "Check" : "CheckCheck"}
+                data-feed-act={i}
                 data-row-act=""
                 data-leaves-card={actLeavesCard(card, a) ? "" : undefined}
                 aria-label={`${a.label}: ${card.title}`}
@@ -494,15 +498,16 @@ export function FeedCard({
                 {a.label}
               </Button>
             ) : (
-              <Link
+              <Button
                 key={a.id}
                 href={a.href ?? card.href}
+                variant={i === 0 ? "primary" : "secondary"}
+                size="sm"
+                data-feed-act={i}
                 data-feed-open=""
-                className="inline-flex min-h-8 items-center gap-1 rounded-md px-1.5 text-xs font-medium text-primary hover:underline underline-offset-2"
               >
                 {a.label}
-                <Icon name="ArrowRight" size={12} />
-              </Link>
+              </Button>
             ),
           )}
         </div>

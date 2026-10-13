@@ -19,6 +19,8 @@
  * RapidTool theme is unchanged by adoption.
  */
 
+import Link from "next/link";
+
 import Icon from "@/components/Icon";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "destructive" | "text";
@@ -163,10 +165,37 @@ export type ButtonProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "c
    * two conflicting answers to "what kind of control is this".
    */
   selected?: boolean;
+  /**
+   * Draw the control as a LINK: a Next `<Link href>` with the same classes,
+   * so a link act wears the variant, the state layer and the house focus
+   * ring of `.cc-control`. A link that goes somewhere is a link, never a
+   * button with a click handler (My Day's feed acts, MD-1b). A disabled or
+   * loading control has nowhere to go, so it draws as the disabled button.
+   */
+  href?: string;
   /** Extra classes for layout only — never for colour, radius or weight. */
   className?: string;
   children?: React.ReactNode;
 };
+
+/** The attributes that belong to a `<button>` and never to an `<a>`. */
+const BUTTON_ONLY = [
+  "type",
+  "form",
+  "formAction",
+  "formEncType",
+  "formMethod",
+  "formNoValidate",
+  "formTarget",
+  "name",
+  "value",
+] as const;
+
+function anchorAttributes(rest: Record<string, unknown>): React.AnchorHTMLAttributes<HTMLAnchorElement> {
+  const out = { ...rest };
+  for (const key of BUTTON_ONLY) delete out[key];
+  return out as React.AnchorHTMLAttributes<HTMLAnchorElement>;
+}
 
 export default function Button({
   variant = "primary",
@@ -177,6 +206,7 @@ export default function Button({
   layout = LAYOUT_DEFAULT,
   disabled,
   selected,
+  href,
   className = "",
   children,
   ...rest
@@ -188,19 +218,27 @@ export default function Button({
     ariaChecked: rest["aria-checked"],
     ariaPressed: rest["aria-pressed"],
   });
-  return (
-    <button
-      {...rest}
-      aria-pressed={pressed}
-      disabled={disabled || loading}
-      className={`cc-control ${radius === "theme" ? "cc-button" : ""} ${layout} disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${selected ? SELECTED[variant] : ""} ${SIZES[size]} ${className}`}
-    >
+  const classes = `cc-control ${radius === "theme" ? "cc-button" : ""} ${layout} disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${selected ? SELECTED[variant] : ""} ${SIZES[size]} ${className}`;
+  const content = (
+    <>
       {loading ? (
         <Icon name="Loader2" size={iconSize} className="animate-spin" />
       ) : icon ? (
         <Icon name={icon} size={iconSize} />
       ) : null}
       {children}
+    </>
+  );
+  if (href !== undefined && !disabled && !loading) {
+    return (
+      <Link {...anchorAttributes(rest)} href={href} className={classes}>
+        {content}
+      </Link>
+    );
+  }
+  return (
+    <button {...rest} aria-pressed={pressed} disabled={disabled || loading} className={classes}>
+      {content}
     </button>
   );
 }

@@ -62,7 +62,9 @@ export function HomeCard({
         {/* `tabIndex={-1}`: focus lands here when the card's last row leaves. */}
         <h2 id={headingId} tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
           {titleHref ? (
-            <Link href={titleHref} className="rounded-sm hover:underline underline-offset-2">
+            // `cc-link`: the house keyboard focus ring of a text link
+            // (globals.css, one declaration with `.cc-control`).
+            <Link href={titleHref} className="cc-link rounded-sm hover:underline underline-offset-2">
               {title}
             </Link>
           ) : (

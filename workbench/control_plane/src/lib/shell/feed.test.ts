@@ -479,10 +479,11 @@ describe("4. the acts go through the owning app", () => {
       createElement(FeedCard, { card: c, nowMs: Date.parse("2026-10-14T12:00:00+05:30"), onAct: () => {} }),
     );
     expect(html).toContain('data-home-card=""');
-    // The headline is the door.
+    // The headline is the door, and it wears the house focus ring of a text
+    // link, `.cc-link` (visual review, item 7).
     expect(html).toMatch(/<h2[^>]*><a[^>]*href="\/projects\?task=9b2e"[^>]*>Send the Q3 BOM to purchase<\/a><\/h2>/);
+    expect(html).toMatch(/<h2[^>]*><a class="cc-link[ "]/);
     expect(html).toContain("My Tasks · Overdue");
-    expect(html).toContain("Due 2d ago");
     expect(html).toContain("Due Monday. 2 days late.");
     // The tap act is the house Button, marked as a row act.
     expect(html).toMatch(/<button[^>]*data-row-act=""[^>]*aria-label="Done: Send the Q3 BOM to purchase"/);
@@ -490,6 +491,51 @@ describe("4. the acts go through the owning app", () => {
     // The open act is a link.
     expect(html).toMatch(/<a\b(?=[^>]*data-feed-open="")(?=[^>]*href="\/calendar")[^>]*>/);
     expect(html.match(/<button\b/g)).toHaveLength(1);
+  });
+
+  /** The class of each act control, in order. */
+  const actClasses = (html: string) =>
+    [...html.matchAll(/<(a|button)\b[^>]*data-feed-act="(\d+)"[^>]*>/g)].map((m) => ({
+      tag: m[1],
+      at: Number(m[2]),
+      klass: /class="([^"]*)"/.exec(m[0])?.[1] ?? "",
+    }));
+  const PRIMARY = "bg-primary text-primary-foreground";
+  const SECONDARY = "border border-border";
+
+  it("draws by position: act 0 is filled, every later act is outlined (§4.2 item 5)", () => {
+    const c = readFeedAnswer(ANSWER).cards[0];
+    const acts = actClasses(renderToStaticMarkup(createElement(FeedCard, { card: c, nowMs: null, onAct: () => {} })));
+    expect(acts.map((a) => [a.tag, a.at])).toEqual([["button", 0], ["a", 1]]);
+    expect(acts[0].klass).toContain(PRIMARY);
+    // The open act is a link, outlined, and it is the primitive: `cc-control`.
+    expect(acts[1].klass).toContain(SECONDARY);
+    expect(acts[1].klass).toContain("cc-control");
+    expect(acts[1].klass).not.toContain(PRIMARY);
+  });
+
+  it("gives a card whose acts are all links one filled act, and keeps each a real link", () => {
+    const c = card("tasks:o1", "now", {
+      kind: "block_overlap",
+      acts: [
+        { id: "open-day", label: "Open the day", way: "open", href: "/calendar" },
+        { id: "open-task", label: "Open task", way: "open", href: "/projects?task=o1" },
+      ],
+    });
+    const html = renderToStaticMarkup(createElement(FeedCard, { card: c, nowMs: null, onAct: () => {} }));
+    const acts = actClasses(html);
+    expect(acts.map((a) => a.tag)).toEqual(["a", "a"]);
+    expect(acts[0].klass).toContain(PRIMARY);
+    expect(acts[1].klass).toContain(SECONDARY);
+    expect(html).toMatch(/<a\b(?=[^>]*data-feed-act="0")(?=[^>]*href="\/calendar")/);
+    expect(html).toMatch(/<a\b(?=[^>]*data-feed-act="1")(?=[^>]*href="\/projects\?task=o1")/);
+    expect(html).not.toContain("<button");
+  });
+
+  it("draws no hand-rolled act link: every act goes through Button", () => {
+    const src = code(read_("./FeedCard.tsx"));
+    expect(src).not.toMatch(/<Link\b/);
+    expect(src).toMatch(/variant=\{i === 0 \? "primary" : "secondary"\}/);
   });
 });
 
