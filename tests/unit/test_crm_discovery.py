@@ -380,3 +380,53 @@ def test_stage_types_keep_won_and_lost_and_the_first_pipeline_decides() -> None:
         "Payment Complete": "won", "Re-Evaluate": "lost",
     }
     assert engine.stage_types([]) == {}
+
+
+# ── CRM-Q10: the discovery allowance ─────────────────────────────────────────
+
+
+def _ctx_with_no_profile(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A run of an org with no profile whose default budget is spent."""
+    handle = engine.RunHandle(
+        org="00000000-0000-0000-0000-00000000000a", run_id="r", kind="incremental",
+        connection_id="c", reconcile=frozenset(), cursors={}, counts={}, estimate=None,
+    )
+    ctx = engine._Ctx(handle, should_stop=lambda: False, credit_budget=None)
+    ctx.budget_total, ctx.used_24h = 0, 950
+    monkeypatch.setattr(engine, "_enabled", lambda _org: True)
+    return ctx
+
+
+def test_the_allowance_is_for_an_org_with_no_profile_and_the_default_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _ctx_with_no_profile(monkeypatch)
+    assert engine._discovery_allowance_due(ctx)
+    ctx.budget_total = engine.DISCOVERY_ALLOWANCE
+    assert not engine._discovery_allowance_due(ctx), "enough budget is left"
+    ctx.budget_total, ctx.budget_is_default = 0, False
+    assert not engine._discovery_allowance_due(ctx), "a test budget never gets it"
+
+
+async def test_the_allowance_never_passes_the_provider_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zoho reports fewer than CREDITS_FLOOR credits: discovery makes no call,
+    also on the allowance, and the budget goes back to what it was."""
+    ctx = _ctx_with_no_profile(monkeypatch)
+    ctx.credits_left = engine.CREDITS_FLOOR - 100
+    made: list[int | None] = []
+
+    def factory(_credential: Any, budget: int | None) -> Any:
+        made.append(budget)
+        raise AssertionError("no provider call past the floor")
+
+    async def credential(_org: str) -> Any:
+        return object()
+
+    monkeypatch.setattr(engine, "source_factory", factory)
+    monkeypatch.setattr(engine, "_fresh_credential", credential)
+    with pytest.raises(BudgetExhausted):
+        await engine._discover(ctx)
+    assert made == [] and ctx.credits == 0
+    assert ctx.budget_total == 0
