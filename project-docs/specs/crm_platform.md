@@ -27,7 +27,7 @@
 > CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
 > (2026-10-12, migration 247). The other slices are not built yet.
 >
-> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5).
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix).
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
@@ -1205,7 +1205,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q7** | The AI mapping assistant and CRM settings → Field map | P0 |
 | **CRM-Q8** | ✅ built 2026-10-12. Built as: migration 250 adds `crm_views`. The list routes and `GET /crm/pipeline` take `owner` (or `me`), `source`, the created, updated and close date ranges, and `custom.<key>=<value>` or `custom.<key>.in=a,b`. A custom key that `crm_field_defs` does not list gives 422. The export takes the same parameters. `GET`, `POST`, `PATCH` and `DELETE /crm/views` save a view of the filters, sort, columns, layout and pipeline. A view is private to its owner, and only an admin shares it. A view works in Mirror mode. Saved views nest under each entity in the rail, `?view=` opens one, and the column choice moves into the view while one is active. Filters on a board and a list use one filter bar. A multiselect field matches when any chosen option is in its array. In Mirror mode the updated range uses the Zoho modified time, and the created range gives 422 `created_range_mirror`. Follow-up: a mirrored created column, so that a created range works in Mirror mode. This also builds CRM-S2 | P0 |
 | **CRM-Q9** | ✅ built 2026-10-12. Sync health: the Zoho count against ours, skipped records, unsupported modules, last error | P0 |
-| **CRM-Q10** (⚠️ id clash: the 2026-10-13 hotfix "a reconnect never freezes the mirror" took this id. Renumber this row) | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
+| **CRM-Q14** (was CRM-Q10 until 2026-10-13, when the hotfix "a reconnect never freezes the mirror" took that id) | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
 | **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
 | **CRM-Q12** | Per-owner visibility in the mirror | P1 |
 | **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
@@ -1689,9 +1689,8 @@ and the target list as its only arguments.
 **Gate.** AGENT-SAFE. This is a production hotfix (2026-10-13). It adds no
 migration, no route and no flag. `CRM_MIRROR` already gates the sync.
 
-⚠️ **The id.** The §18.5 row CRM-Q10 (layouts and sections, P1) is a different
-ticket. The orchestrator gave this hotfix the same id on 2026-10-13. Give the
-P1 row a new id before anyone builds it.
+**The id.** The §18.5 P1 row "Layouts and sections" had the id CRM-Q10 until
+2026-10-13. It is now CRM-Q14, and this hotfix keeps CRM-Q10.
 
 **The incident (Fracktal, Mirror mode, measured on prod 2026-10-12).**
 
@@ -1725,18 +1724,30 @@ that makes a profile.
      scopes.
    - An account that the callback cannot confirm still drops the profile. A
      different account still gets `needs_reset` and saves nothing (CRM-X0).
-2. **With no profile, discovery can run.**
-   - `engine.DISCOVERY_ALLOWANCE` is 25 credits. With no profile and the
-     default budget, discovery may spend up to that many credits, also when
-     the default budget is spent.
-   - When less than the allowance is left, discovery runs first, before the
-     estimate and the field definitions.
+2. **With the edition unknown, discovery can run.**
+   - `engine.DISCOVERY_ALLOWANCE` is 25 credits. The allowance holds when the
+     budget is the floor (no profile, or an edition that Zoho did not name),
+     discovery is due, and the run uses the default budget. Then discovery may
+     spend up to 25 credits, also when the default budget is spent.
+     `_discovery_due` holds it to once in 24 hours. A known edition never
+     gets it (review, 2026-10-13).
+   - When less than the allowance is left, discovery reads first, before the
+     estimate and the field definitions. It stores the profile. The pipelines
+     wait for the normal discovery slot, after the Stage picklist, so a start
+     over keeps the picklist order and probabilities (review P1). A run that
+     stops before that slot leaves them to the next run, which writes them
+     from the stored profile while the org mirrors no Zoho pipeline.
    - When discovery has read the account, the run budget becomes the edition
      budget minus `used_24h`, as before. The credits of this run, discovery
      included, count against it. The module fields and the rest of the run
      obey that budget.
-   - The floor check of `ctx.call` (`CREDITS_FLOOR`) still runs before the
-     discovery call. A discovery that fails sets the budget back.
+   - A discovery that fails sets the budget back.
+   - ⚠️ **Advisory, not fenced: the provider floor.** The check of `ctx.call`
+     against `CREDITS_FLOOR` runs only on a count that Zoho reported earlier
+     in the same run. The early discovery is the first call of its run, so no
+     count exists yet. The 25-credit cap of the allowance bounds it, and the
+     floor does not. A fence needs the last reported count kept across runs.
+     That is not built.
 3. **Sync health names the pause.**
    - `GET /crm/sync/health` returns `credits.resumes_at`. It is the time when
      the credits of the 24-hour window fall below the budget. It is null when
@@ -1761,10 +1772,18 @@ layouts, or 14 retries.
    the edition budget, and end `ok`.
 3. That test fails without the fix: the run stops with `budget` and 0 credits.
 4. A hermetic test shows that a reported credit count under `CREDITS_FLOOR`
-   still stops discovery before its call.
+   still stops discovery before its call. This guards the order in
+   `ctx.call` only. Production does not reach that state (see the advisory
+   note above).
 5. An R8 test shows `credits.resumes_at` for a spent window, and null for a
    window under the budget.
 6. A vitest shows the pause sentence with its time.
+7. Review, 2026-10-13. An R8 test does a start over, spends the window, then
+   imports. The picklist order and probabilities hold. A second test shows
+   that a run that stopped early leaves the pipelines to the next run.
+8. Review, 2026-10-13. An R8 test shows that an unknown edition gets the
+   allowance once in 24 hours. Another shows that a known edition with a
+   spent window gets none, and stops on `budget`.
 
 **Fences.** `tests/unit/test_crm_q10_reconnect_r8.py` (R8, `_DB_GATE`),
 `tests/unit/test_crm_reset_r8.py`, `tests/unit/test_crm_discovery.py`,
@@ -1785,9 +1804,10 @@ cd workbench/control_plane && npx vitest run src/app/crm/components/crmQ9.test.t
   `fetched_at` of the connection 7 days back. The callback passes
   `keep_profile=verdict is True`.
 - `engine.DISCOVERY_ALLOWANCE = 25`. `_discovery_allowance_due` reads the
-  three conditions. `_execute` runs `_discover` first when they hold.
-  `_discover` reads at most once in a run, and it sets the edition budget
-  before the module fields.
+  four conditions. `_execute` runs `_discover` first when they hold, with
+  `ctx.pipelines_deferred` set. `_discover` reads at most once in a run, and
+  it sets the edition budget before the module fields.
+  `_mirror_deferred_pipelines` writes the pipelines at the normal slot.
 - `runs.resumes_at` reads the window with one window function, on the filter
   of `credits_used_24h`. `GET /crm/sync/health` returns it as
   `credits.resumes_at`, and `statusLines` in `lib/syncHealth.ts` writes the
