@@ -1,5 +1,5 @@
 -- ============================================================================
--- 258_crm_field_studio.sql — the field studio of a Native CRM.
+-- 260_crm_field_studio.sql — the field studio of a Native CRM.
 --
 -- What: one new table, `crm_field_sections`, and seven new columns on
 --       `crm_field_defs`. A section groups the fields of one entity (lead,

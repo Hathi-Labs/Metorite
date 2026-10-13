@@ -134,7 +134,7 @@ def _uuid_text(value: Any) -> str | None:
 def field_wire(row: Any, *, slug: str | None = None) -> FieldDef:
     """A ``crm_field_defs`` row → its wire model.
 
-    ``getattr`` with a default reads a row from before migration 258 (and a
+    ``getattr`` with a default reads a row from before migration 260 (and a
     test fake) as a plain custom field. A system row takes ``required`` from
     the entity: a field that the gateway needs stays required (§20.7 item 3).
     """

@@ -711,7 +711,7 @@ def test_the_overlay_scan_proves_itself(tmp_path: Path) -> None:
 
 # ── CRM-C4a: the sync never names a column of the field studio ──────────────
 
-#: The seven columns of migration 258 on ``crm_field_defs`` (§20.7). The sync
+#: The seven columns of migration 260 on ``crm_field_defs`` (§20.7). The sync
 #: writes the field definitions with its own list, so it leaves these alone.
 _STUDIO_COLUMNS = re.compile(
     r"\b(section_id|required|help_text|default_value|lookup_target|is_system|"

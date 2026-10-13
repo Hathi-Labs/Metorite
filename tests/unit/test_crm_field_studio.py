@@ -322,7 +322,7 @@ def test_the_export_writes_the_option_label() -> None:
     assert custom_cell(5, labels) == 5
 
 
-# ── The RLS of migration 258 (review round 1, an R7 gap) ────────────────────
+# ── The RLS of migration 260 (review round 1, an R7 gap) ────────────────────
 #
 # The R8 fixture applies the generated policies after the ladder, so the
 # database alone cannot see a migration that lost its own RLS block. This
@@ -357,7 +357,7 @@ def rls_problems(sql: str) -> list[str]:
     return [name for name, pattern in wanted.items() if not re.search(pattern, body, re.I)]
 
 
-def test_migration_258_forces_rls_with_a_tenant_policy() -> None:
+def test_migration_260_forces_rls_with_a_tenant_policy() -> None:
     assert rls_problems(_studio_migration()) == []
 
 

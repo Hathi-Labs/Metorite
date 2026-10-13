@@ -40,7 +40,7 @@
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
 > and statuses you can shape, in both modes (2026-10-13, migration 257).
 > CRM-C4a, the backend of the field studio, dark behind
-> `CRM_FIELD_STUDIO_ORGS` (2026-10-13, migration 258, §20.7).
+> `CRM_FIELD_STUDIO_ORGS` (2026-10-13, migration 260, §20.7).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -2894,7 +2894,7 @@ total. `acb_skills/skill_families.py` has no `crm` family.
 | **CRM-C1** Settings sections | Child rows under the settings row. One section on each page | AGENT-SAFE | S | None | CRM-C3, because both edit `PipelineSettings.tsx` |
 | **CRM-C2** One board | One column primitive for Projects, Tasks and the CRM. A stage colour that does not fight the corner | AGENT-SAFE | M | None | Nothing |
 | **CRM-C3** Stages you can shape | Hide, order, colour and probability in both modes. A Mirror overlay that the sync never writes | AGENT-SAFE | M | 257 | CRM-C2 merged, because both edit three files |
-| **CRM-C4a** Field studio, the backend | The field routes, the `custom` write path, the layout read and the reader filters (Native) | AGENT-SAFE. Flag `CRM_FIELD_STUDIO_ORGS`, shipped empty | L | 258 | Nothing |
+| **CRM-C4a** Field studio, the backend | The field routes, the `custom` write path, the layout read and the reader filters (Native) | AGENT-SAFE. Flag `CRM_FIELD_STUDIO_ORGS`, shipped empty | L | 260 | Nothing |
 | **CRM-C4p** Field studio, the shared client | The layout read and its hook, one `FieldInput` for each type, the empty value and the Mirror lock | AGENT-SAFE. The same flag | S | None | CRM-C4a merged |
 | **CRM-C4b** Field studio, the record UI | Custom fields in the forms, the Fields tab by layout, the Columns control and the filter bar | AGENT-SAFE. The same flag | M | None | CRM-C4p merged |
 | **CRM-C4c** Field studio, the studio UI | Create, rename, order, hide, sections, picklists, required and defaults in the `fields` section | AGENT-SAFE. The same flag | M | None | CRM-C1 and CRM-C4p merged |
@@ -2904,7 +2904,7 @@ total. `acb_skills/skill_families.py` has no `crm` family.
 
 **Migration numbers (R1).** Measured again on 2026-10-13. 253 to 256 are
 merged, and 256 is CRM-C7 (`256_remove_sales_assistant.sql`). 257 is
-CRM-C3 (`257_crm_stage_overlay.sql`). This section reserves **258** for
+CRM-C3 (`257_crm_stage_overlay.sql`). This section reserves **260** for
 CRM-C4a. A reservation is advisory. Each slice takes the next free number at
 build time and checks it again at merge.
 
@@ -3715,7 +3715,7 @@ C4c anchors come from the trunk at `3fe3349f3` and from `crm-c4a` at
 **Which entities.** Leads, Contacts, Companies and Deals. Native mode has no
 generic module, because `crm_module_records` has no native writer (§18.7).
 
-**Migration 258 (expand only, R6).** 256 is CRM-C7, merged, and 257 is
+**Migration 260 (expand only, R6).** 256 is CRM-C7, merged, and 257 is
 CRM-C3.
 
 - New table `crm_field_sections`: `id`, `organization_id`, `entity`,
@@ -3897,7 +3897,7 @@ pipeline. A Zoho write (CRM-C5).
 
 **Scope.**
 
-- Migration 258 and the flag `CRM_FIELD_STUDIO_ORGS`.
+- Migration 260 and the flag `CRM_FIELD_STUDIO_ORGS`.
 - `field_studio.py` and `core.SYSTEM_FIELDS` (items 3 and 4).
 - The custom write path (item 5), with the rules of items 6, 7 and 8.
 - The `?layout=1` read (item 12) and the five reader filters (item 11).
@@ -3905,7 +3905,7 @@ pipeline. A Zoho write (CRM-C5).
 - Restore, the field layout route and the mode-switch guard (items 4
   and 13).
 
-**Files.** `infra/postgres/258_crm_field_studio.sql` (new),
+**Files.** `infra/postgres/260_crm_field_studio.sql` (new),
 `routes/crm/field_studio.py` (new), `routes/crm/fields.py`, `core.py`,
 `records.py`, `flags.py`, `export.py`, `field_rules.py`, `settings.py`,
 `crm_sync/engine.py`, `crm_sources/zoho/mapping.py`,
@@ -3963,7 +3963,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
 
 **Built as (2026-10-13, branch `crm-c4a`).** 🔨 BUILT, not merged. Migration
-258 holds `crm_field_sections` and the seven columns. The flag
+260 holds `crm_field_sections` and the seven columns. The flag
 `CRM_FIELD_STUDIO_ORGS` ships empty.
 
 - **The section routes.** A `PATCH` or a `DELETE` of a section names its id:
@@ -4014,7 +4014,7 @@ coordinator decided the rest.
 4. **Dates.** A date takes `YYYY-MM-DD` only, and a datetime takes the plain
    ISO form with `Z` or an offset. The record stores `isoformat()`.
 5. **The matrix.** A `url` changes to `textarea`, not to `text` (item 9).
-6. **RLS fence.** `test_crm_field_studio.py` reads migration 258. It
+6. **RLS fence.** `test_crm_field_studio.py` reads migration 260. It
    requires ENABLE, FORCE and one policy with USING and WITH CHECK on
    `crm_field_sections`. The R8 fixture applies the generated policies, so
    the database alone cannot see a lost block.

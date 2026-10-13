@@ -1,7 +1,7 @@
 """R8 — the field studio of a Native CRM, against a real Postgres (WS-53
 CRM-C4a, ``crm_platform.md`` §20.7).
 
-Migration 258 adds ``crm_field_sections`` and seven columns on
+Migration 260 adds ``crm_field_sections`` and seven columns on
 ``crm_field_defs``. The routes of ``routes/crm/field_studio.py`` let an admin
 of a Native CRM create, shape, retire and restore a field. The record routes
 write ``custom`` per key, with the type, "required" and the default of each
