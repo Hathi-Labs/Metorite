@@ -5253,6 +5253,25 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-12 · branch `feat/ws55-ea3-mcp-read-tools`. Renumbered from H-301 to H-302, then to H-303, on 2026-10-13, because
   `origin/main` took H-301 and then H-302. H-303 was free on `origin/main` and in each open pull request.
 
+### H-304 · A full run of `gen_tenant_migration.py` renames 12 tables' keys and policies · [AGENT]
+- **Check:** run `uv run python scripts/gen_tenant_migration.py`, then
+  `git diff --stat infra/postgres/generated`. A diff means this is open. Put
+  the files back with `git checkout -- infra/postgres/generated` after.
+- **Why.** The generator writes the FK, index and policy names from today's
+  table names. Production keeps the old names on purpose (CLAUDE.md §2):
+  the `gtd_*` family, and `crm_organizations` for `crm_companies`. A full
+  run renames them in phases 3 and 4. A replay then adds a second FK, index
+  and permissive policy on each of the 12 tables.
+  `test_crm_rename_upgrade.py::test_144_and_241_apply_again_on_the_promoted_catalog`
+  fails on it. MD-2a of WS-58 found this, and added its table by hand.
+- **Do this:** teach the generator the old name of each renamed table, so a
+  full run on `main` is a no-op. Fence it with the Check above.
+- **Until then:** add each new table to the four phase files by hand, as
+  migrations 251, 255 and 258 did. Do not run the generator in full.
+- **Authority:** `specs/saas_multitenancy.md` (the generated set) ·
+  `tests/unit/test_tenant_coverage.py` · `specs/my_day_feed.md` MD-2a
+- **Added:** 2026-10-14 · WS-58 MD-2a
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

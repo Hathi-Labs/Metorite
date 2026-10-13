@@ -3,7 +3,9 @@
 **Status.** ACTIVE. Owner directive, 2026-10-10. Board row **WS-52**.
 Verified against code on 2026-10-10.
 
-S1 is built on branch `agent-writing-voice` (PR #828). S2 is built on branch
+S1 is built on branch `agent-writing-voice` (PR #828). The chief-of-staff
+role of the orchestrator (§11) is built on branch
+`orchestrator-chief-of-staff`, 2026-10-13. S2 is built on branch
 `agent-voice-drafting`, which starts from the S1 branch (§8.2). S3 and S4 are
 spec only.
 
@@ -389,8 +391,10 @@ adds nothing.
 
 ```bash
 uv run pytest tests/unit/test_agent_voice.py tests/unit/test_agent_voice_eval.py tests/unit/test_drafting_voice.py -q
+uv run pytest tests/unit/test_orchestrator_voice.py tests/unit/test_orchestrator_cos_eval.py -q
 uv run pytest tests/unit/test_chat_upload_every_agent.py tests/unit/test_floor_opt_out.py tests/unit/test_generated_addendum.py tests/unit/test_skill_index.py tests/unit/test_tool_schema_diet.py -q
 uv run python -m evals.agent_voice.run --scripted
+uv run python -m evals.orchestrator_cos.run --scripted
 # Manual, with a model:
 LITELLM_BASE_URL=http://127.0.0.1:8080 uv run python -m evals.agent_voice.run --live
 ```
@@ -405,3 +409,137 @@ LITELLM_BASE_URL=http://127.0.0.1:8080 uv run python -m evals.agent_voice.run --
   The checker is for evals, so a count is the signal, never one hit.
 - **The Skills catalog does not count the voice.** It measures the addendum,
   and the voice is not in the addendum. §6.4 records the cost instead.
+
+## 11. The chief of staff: the orchestrator's role
+
+**Status.** Built on 2026-10-13. Owner directive of the same day. The words
+are the owner's, so they sit in a code block.
+
+```text
+"The orchestrator's messages are overly verbose, overwhelming decision-makers.
+The agent should function as a chief of staff, distilling key information and
+sharing useful insights rather than dumping raw data. It must proactively
+identify important details and present them to support decision-making."
+```
+
+### 11.1 The contract
+
+`acb_llm.voice.ROLES["chief_of_staff"]` holds the text of record. The block
+below must match it byte for byte. `tests/unit/test_orchestrator_voice.py`
+fails when the two differ.
+
+```text
+As chief of staff (the member decides, you prepare the decision):
+- Open with the bottom line: the answer, the status, or the decision the member must take. Do not restate the question.
+- Then give the 2 to 5 points that matter, the most important first. Leave out what does not change what the member knows or does next.
+- Never paste the output of a read or another agent's reply. Say what it means. The detail stays in its step, in a link, or in one folded card. The one exception is text the member asked for (a draft, a message, a document): give it whole.
+- Raise what the member did not ask about only when it is real and close: a deadline, a risk, a conflict, a number out of line, or a thing that waits on the member. One line each. Raise nothing to fill space.
+- For a decision, give each option, your recommendation and its trade-off, one line each. Then say what happens next and who owns it.
+- Fit the length to the question. A fact gets a sentence. A routine reply stays under about 120 words of text. When the member asks for the detail or the data, give all of it.
+```
+
+### 11.2 Where each rule lives, and why
+
+| Rule | Where | Why there |
+|---|---|---|
+| Give the answer first, with no preamble | `CORE` rule 1 | It suits every agent, and the core already says it |
+| The role (§11.1) | `ROLES["chief_of_staff"]`. `AGENT_ROLES` gives it to `orchestrator` only | The orchestrator answers for the whole company. A specialist must keep its detail: an email draft, a coding report, a Projects plan |
+| Merge the replies of the specialists, and never relay one whole. The role also says it: a draft that the member asked for is the one exception to "never paste" | The orchestrator's own instructions, `_PULL_INSTRUCTIONS` in `orchestrator/agents.py` | It names the specialist tools, and the voice names no tool |
+| Keep a deliverable whole (an email, a message, a document) | The same instructions | A draft is the answer, so a summary of it loses the work |
+
+**A role is not a surface.** A surface says what kind of text a call writes.
+A role says what one agent is for. So `voice_prompt(AGENT, role=...)` adds the
+role after the overlays, and a role on a drafting surface raises
+`ValueError`. A sub-agent never reads a role, because it answers its parent.
+
+**The core did not change.** Every other agent reads the same block as
+before. `test_orchestrator_voice.py` builds the seven other in-tree agents. It
+checks that each one holds `voice_prompt(AGENT)` and no role.
+
+**The cap.** A routine reply holds about 120 words of prose. Two sources give
+that number. The executive style of the Agent SDK cookbook allows 30 seconds
+of reading, which is about 120 words at 240 words a minute. The c-level
+chief-of-staff skill allows 5 bullets in a section, at most. The live eval
+(§11.5) is the check, and a later PR can move the number on its evidence.
+
+**The cost.** The role is 278 tokens in the run-context tokenizer (256 in
+`o200k_base`). The orchestrator's voice block grows from 577 to 847. The
+orchestrator pays it once in its prefix, and the cache covers it after the
+first request. No other agent pays it.
+
+### 11.3 The references (owner, 2026-10-13)
+
+| Reference | What we took | State |
+|---|---|---|
+| alirezarezvani `claude-skills`, chief-of-staff `SKILL.md` | Bottom line first, with no narration of the process. At most 5 bullets in a section, and the rest goes to a reference. Name a conflict between advisors, and do not smooth it. Each action has an owner and a date | Loaded |
+| skillsdirectory, amey-thakur `agent-chief-of-staff` | Protect the attention of the human: only what needs a human reaches them, ranked, with a recommendation. Find each stall, and name its blocker. Each assignment says what, who and by when | Loaded |
+| Medium, "I turned Claude Code into my chief of staff" | Nothing | HTTP 403, not read |
+| Claude cookbook, the chief-of-staff agent | Delegate to a specialist, then make its result into a recommendation. The executive output style: 30 seconds to read, 3 to 5 bullets, numbers before narrative, decisions before background | Loaded, with its `executive.md` output style |
+
+**One change from the references.** The c-level skill gives the options with
+no recommendation. The owner asked for a recommendation, and the second
+reference attaches one. So the role asks for the options, a recommendation
+and the trade-off.
+
+### 11.4 The delegation result
+
+`call_agent` returns the final text of the sub-agent, and never its whole
+transcript. `call_agents_parallel` joins the replies as `[agent-name]` blocks.
+`_run_sub_agent_streaming` cuts each reply at 8000 characters
+(`SUB_AGENT_MAX_RESULT_CHARS`).
+
+That shape makes it easy for a model to paste the blocks one after another.
+Before 2026-10-13, the instructions of the orchestrator also said "relay its
+full response". The fix is in the instructions only, for two reasons. A
+framing line in the tool result shows in the step trail of the member. A new
+tool docstring changes the schema of each agent that holds the tool, and the
+WS-23 ratchet of `test_tool_schema_diet.py` with it. The output of each other
+agent stays the same.
+
+⚠️ **The chat prompt of the orchestrator does not hold `apps/agents/agent-orchestrator/instructions.md`.**
+The wrapper `agents.py` calls `build_orchestrator_agent`, which reads
+`_PULL_INSTRUCTIONS`. Measured 2026-10-13: the built prompt holds none of the
+rules 9 to 11 of that file. It also does not hold the section of that file
+"Where each part of your answer goes". This change gives the file the same
+delegation rule, so the two texts agree.
+
+One other reader exists: `mutation.py` gives the file to the self-repair
+sandbox as context. A later decision loads the file into the
+prompt or deletes it.
+
+### 11.5 The eval
+
+`evals/orchestrator_cos/` holds twelve cases:
+
+- A status across apps, and what needs my attention.
+- Two decisions.
+- A long relay, and a relay where two agents disagree.
+- Two facts, and a quiet account.
+- An explicit request for all the detail, and "tell me more" after a short
+  answer.
+- A draft that must stay whole.
+
+Each reply gets eight deterministic checks: `bluf`, `length`, `no_dump`,
+`no_relay`, `recommendation`, `mentions`, `keeps_deliverable` and `voice`.
+The `voice` check is `voice_lint` with no findings. `--judge-model` adds a
+model rubric of five scores from 1 to 5. The `README.md` of that folder
+gives each check.
+
+- `--scripted` runs in the unit job, through
+  `tests/unit/test_orchestrator_cos_eval.py`. Each good answer passes, and
+  each bad answer fails exactly the checks that it names.
+- `--live --arm before --prompt-file <old prompt>` and `--live --arm after`
+  write both arms to `results.json`. `--report` prints the table.
+
+**The live baseline is not recorded yet.** The build machine has no Router.
+The Router of `app.metorite.com` needs its key on the build machine, and a
+permission check refused that copy on 2026-10-13. The owner runs the commands
+in the `README.md` of the eval, and commits `results.json`.
+
+### 11.6 Fences
+
+| Fence | What fails it |
+|---|---|
+| `tests/unit/test_orchestrator_voice.py` | The orchestrator loses the role, or reads it twice. Another agent or a sub-agent gets it. A rule marker goes. The role passes 300 tokens, or the block of the orchestrator passes 900. "relay its full response" comes back. The spec copy drifts |
+| `tests/unit/test_orchestrator_cos_eval.py` | A check stops firing. The case set loses a kind. The cap moves from 120 |
+| `tests/unit/test_agent_voice.py` | The same as before, and still green: the core, the agent block, and one copy of the voice in each agent |

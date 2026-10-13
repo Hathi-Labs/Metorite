@@ -88,6 +88,19 @@ export interface FeedCard {
   at: string | null;
   href: string;
   acts: FeedAct[];
+  // The state fields of MD-2a (`my_day_feed.md` §14.1a, §6.8). Optional: an
+  // older gateway sends none, and `readCard` keeps none of them until MD-2b
+  // draws the dot, "Updated" and "Still open".
+  /** `new`, `seen` or `later`. */
+  state?: "new" | "seen" | "later";
+  /** The card came back because its own facts changed (§6.3 rule 3). */
+  updated?: boolean;
+  /** A seen card that turned urgent since the member saw it (§6.3 rule 4). */
+  still_open?: boolean;
+  /** The visits of the member's day. */
+  visits?: number;
+  /** The state fingerprint that `POST /api/shell/feed/state` sends back (§6.8 item 1). */
+  state_fp?: string;
 }
 
 export interface FeedAnswer {

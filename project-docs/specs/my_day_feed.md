@@ -1,12 +1,14 @@
 # My Day as a live feed — the chief of staff
 
-**Status: ACTIVE, 2026-10-13. MD-1a is BUILT (gateway half, merged as
+**Status: ACTIVE, 2026-10-14. MD-1a is BUILT (gateway half, merged as
 #964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
 dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
-migration 259, dark by the absence of a caller).**
+migration 259, dark by the absence of a caller). MD-2a is BUILT (the card
+state on the server, migration 258).**
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-2a to MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7,
-MD-8, MD-9 and MD-12. Each ships dark.
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-2b,
+MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and
+MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -672,6 +674,12 @@ step 3 is rule 4. Inside a group, a `new` card sorts before a seen card, then
 the score decides (§6.5 step 1). The fixed seed of `test_feed_rank.py`
 changes with this rule only.
 
+The lift instant is `urgent_at` less 2 hours. A card that the member never saw
+lifts only when that instant is at or after the start of the member's current
+day. An older crossing keeps its old-path group, so an overdue task from last
+week stays in Needs you. A card that the member saw lifts when the instant
+came after the last sighting. Decided in fix round 1 of MD-2a, 2026-10-14.
+
 **7. Hidden cards take no slot.** The state join runs after the fold and
 before the order. A snoozed, dismissed or expired card leaves the answer
 before `limit`. A `later` card is in the answer, in the `later` group, and it
@@ -681,7 +689,7 @@ counts against `limit`. `PER_APP` binds the providers, before the join.
 read. A member who holds `feature:tasks` gets them from `get_user_settings`
 (`routes/tasks/settings.py:393`). Any other member gets the zone from the
 lens (`stored_zone`, `routes/projects/personal.py`), and the column defaults
-7 and 23.
+7 and 22 (`77_gtd_calendar_prefs.sql`).
 
 **9. The needs view does not change.** The state never touches `needs`. A
 dismissed or snoozed needs-kind card still counts in the bell.
@@ -1252,6 +1260,7 @@ providers recompute them.
 | `visits` | `INT NOT NULL DEFAULT 0` | The visits of one local day (§6.8 item 2) |
 | `visits_day` | `DATE` | The member's local day that `visits` counts |
 | `first_seen_at`, `last_seen_at`, `acted_at` | `TIMESTAMPTZ` | |
+| `not_useful_at` | `TIMESTAMPTZ` | The last "Not useful". A later sighting clears `dismiss_reason` and keeps this, so the count of §6.6 has its history |
 | `snoozed_until` | `TIMESTAMPTZ` | Null with `snooze_on_change` true means "until it changes" |
 | `snooze_on_change` | `BOOLEAN NOT NULL DEFAULT false` | |
 | `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
@@ -1402,7 +1411,7 @@ and is off by default (`packages/acb_memory`).
   the overlap ids, the notification ids and the waiting time. A countdown such as `minutes` or
   `days_late` never goes in it, so two polls a minute apart give the same
   fingerprint.
-- **MD-2a adds four card fields.** `state` is `new`, `seen` or `later`.
+- **MD-2a adds five card fields.** `state` is `new`, `seen` or `later`.
   `updated` and `still_open` are booleans for the source line. `visits` is
   the count of the day. `state_fp` is the state fingerprint of §6.8 item 1.
 - A field that a later ticket adds is optional for the client.
@@ -1639,6 +1648,62 @@ Done when:
 7. The R8 suite passes with no skip, and the count is in the PR.
 
 The `feed_rank.py` comment that gives Handled to MD-7 changes to MD-2c.
+
+**BUILT 2026-10-14, on branch `my-day-feed-md2`.** The table is migration
+258. `gateway/routes/shell/state.py` holds the POST, the rules in their
+order (`RULES`) and the state join. `src/app/api/shell/feed/state/route.ts`
+is the BFF route. The fences are `test_my_day_state.py`,
+`test_my_day_state_r8.py`, `test_feed_rank.py` and the route test. The
+build made these choices, which this file did not fix:
+
+- **The lift instant of rule 4** is `urgent_at` less 2 hours, the start of
+  the urgency term of §7. The example of §6.3 rule 4 fixes it. §6.8 item 6
+  holds the bound for a card that the member never saw.
+- **A snooze that ended** brings the card back as `new`, with a dot.
+- **An `acted` row** shows its card as `seen`. It gets no fatigue, and rule
+  8 does not fold it. The next sighting writes `seen` again.
+- **The member's own act is no update.** Mark read takes ids out of
+  `note_ids`, so the state fingerprint moves. An `acted` row whose act came
+  at or after the newest event on the card takes the new fingerprint as
+  seen. The newest event is the newest unread note (`last_note_at`), or the
+  last message of a thread.
+- **The member's day** starts at `day_start_hour`. So `visits_day` is the
+  local date of the most recent day start. The snooze times count from that
+  day too. At 00:30 the member's Monday still runs, so "Tomorrow" is
+  Tuesday's start.
+- **A failed or slow state read** keeps the feed. The read has 1.5 seconds
+  (`STATE_TIMEOUT_S`). Each card then reads as new, and the failure goes to
+  the log.
+- **The first write of a card is never lost.** The POST claims a row for
+  each card that has none, then locks the rows in signal-id order, then
+  writes them in one statement. `test_my_day_state_r8.py` holds two sessions
+  on one new card.
+- **Do not run `gen_tenant_migration.py` in full.** It renames the FK, index
+  and policy names of the tables that the gtd and CRM renames moved, and
+  production keeps the old names. Migration 258 adds its table to the four
+  phase files by hand, as 251 and 255 did. This holds until someone fixes
+  that debt.
+- **The thread signal** gains the fact `message_id`, for the state
+  fingerprint.
+- **§14.1a names five state fields**: `state`, `updated`, `still_open`,
+  `visits` and `state_fp`.
+- **A notification signal carries `last_note_at`**, the time of its newest
+  note. The reason note of `at` can be older. The own-act rule reads it, and
+  it is in no fingerprint and not in the needs view.
+
+**Known limits of MD-2a.** A later ticket owns each one.
+
+- **Mark read from another surface** changes the state fingerprint of a
+  dismissed card, because it removes ids from `note_ids`. So the card comes
+  back as "Updated". Only an `acted` row knows that the member read it.
+- **Another person's change with no event time** reads as the member's own
+  act on an `acted` card. A new due date is such a change.
+- **A dismissed card still takes a provider slot.** `PER_APP` binds the
+  providers before the join (§6.8 item 7).
+- **State rows have no bound** until the 30-day sweep of MD-5.
+- **The feed reads the day hours twice** for a member with the Calendar: once
+  for the Calendar provider and once for the state join. The read cache of
+  MD-5 can share them.
 
 ### MD-2b · The card menu and the seen observer — AGENT-SAFE, after MD-2a
 
