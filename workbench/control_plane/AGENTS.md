@@ -168,6 +168,10 @@ Seven rules on top of the three above. Each one exists because it was broken:
    - `src/lib/inAppLink.ts` holds the two rules of a chat link. Each in-app
      click sends `IN_APP_LINK_EVENT`, and a link to another site shows its
      host. Fence: `inAppLink.test.ts`.
+   **A send during a run steers it, through one seam,** `src/lib/chatSteer.ts`
+   (owner, 2026-10-12). The composer has ONE main control, Send or Stop,
+   and no send mode and no queue. Do not add a second send path. Fences:
+   `chatSteer.test.ts` and `e2e/chat-steer.spec.ts`.
    **A long chat card rolls up through one seam,** `components/RollupCard.tsx`
    (owner, 2026-10-10). `src/lib/cardRollup.ts` holds the rules. The newest
    card stays open. A card that waits on the member never folds. A toggle by
