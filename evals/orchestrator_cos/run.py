@@ -54,7 +54,7 @@ TODAY = "Today is Tuesday 13 Oct 2026."
 #: The check ids, in report order.
 CHECKS: tuple[str, ...] = (
     "bluf", "length", "no_dump", "no_relay", "recommendation", "mentions",
-    "keeps_deliverable", "voice",
+    "keeps_deliverable", "voice", "no_tool_name", "no_guillemets", "one_ask",
 )
 
 UI_TOOL = "emit_generative_ui"
@@ -104,6 +104,10 @@ _JSON_LINE = re.compile(r'^\s*[\[{]\s*"|"\w+"\s*:\s*["\[{\d]', re.MULTILINE)
 _ISO_STAMP = re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
 _AGENT_BLOCK = re.compile(r"^\[[a-z]+(?:-[a-z]+)+\]\s*$", re.MULTILINE)
 _FENCE = re.compile(r"^```", re.MULTILINE)
+#: A tool or agent name in prose: a snake_case word ("crm_assistant",
+#: "call_agent") or a registry name ("projects-assistant"). Rule 9 of the
+#: orchestrator's instructions (2026-10-14).
+_TOOL_NAME = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b|\b[a-z]+-assistant\b|\btask-manager\b")
 _WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'.,%#/-]*")
 
 
@@ -205,6 +209,14 @@ def check(case: dict[str, Any], prose: str, card: str = "") -> dict[str, bool | 
         out["keeps_deliverable"] = all(" ".join(k.split()) in flat for k in keep)
 
     out["voice"] = not voice_lint(prose)
+
+    # Rules 9 to 11 of the orchestrator's instructions. Code and a draft to
+    # keep whole are not the writer's own prose.
+    own = re.sub(r"```.*?```", " ", prose or "", flags=re.DOTALL)
+    out["no_tool_name"] = not _TOOL_NAME.search(re.sub(r"\S+@\S+", " ", own))
+    out["no_guillemets"] = "\u00ab" not in own and "\u00bb" not in own
+    if c.get("one_ask"):
+        out["one_ask"] = own.count("?") <= 1
     return out
 
 

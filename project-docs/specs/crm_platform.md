@@ -4645,8 +4645,8 @@ No agent gets SQL. `acb_skills/history_tools.py` records that rule.
      'agent-sales-assistant'`. No foreign key points to that table.
    - `gateway/routes/agent.py:596` (a comment) and `:1135` (the `@sales`
      example).
-   - `orchestrator/agents.py:67`, `:271` and `:279`, and
-     `apps/agents/agent-orchestrator/instructions.md:11`.
+   - `orchestrator/agents.py:67`, `:271` and `:279`. #981 deleted the
+     orchestrator's `instructions.md` on 2026-10-14.
    - `gateway/routes/notes/copilot_context.py:57` and `:261`.
    - `gateway/routes/email/automation/drafting.py:1191`, `:1202` and `:1231`.
    - `src/components/AgentChat.tsx:146`, `src/app/api/agent/chat/route.ts:764`

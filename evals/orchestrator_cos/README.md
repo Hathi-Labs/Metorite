@@ -23,6 +23,9 @@ counts for a request for detail, and never for the cap.
 | `mentions` | Each group of terms of the case shows at least once. These are the facts that matter, and the items that the member did not ask about |
 | `keeps_deliverable` | The draft of case C11 is still whole |
 | `voice` | `acb_llm.voice.voice_lint` finds nothing |
+| `no_tool_name` | The prose names no tool and no agent: no snake_case word, and no `*-assistant` name |
+| `no_guillemets` | The prose holds no « or » |
+| `one_ask` | A case with `one_ask` asks the member at most one question |
 
 `--judge-model` adds a model rubric: five scores from 1 to 5 for
 `bottom_line`, `distilled`, `proactive`, `decision_support` and `length_fit`.
@@ -31,7 +34,7 @@ counts for a request for detail, and never for the cap.
 
 | File | What it holds |
 |---|---|
-| `cases.json` | Twelve cases, and the checks of each |
+| `cases.json` | Fifteen cases, and the checks of each |
 | `scripted_answers.json` | A good answer for each case, and a bad answer that fails named checks |
 | `run.py` | The runner |
 | `prompt_before.txt` | The prompt of the orchestrator before the role, for the `before` arm |

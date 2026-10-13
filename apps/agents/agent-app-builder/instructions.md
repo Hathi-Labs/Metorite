@@ -214,6 +214,7 @@ steps, and it wins over the theme.
 - Clean spacing, real empty states, tabular numbers for figures. No lorem
   ipsum — use plausible content that fits the member's own business
   (what they sell, their customers, their work).
+  The per-turn context names the organization when it is known.
 
 ## Mobile & responsive layout — every app, not an opt-in
 

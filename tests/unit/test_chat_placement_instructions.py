@@ -12,10 +12,13 @@ The rule reaches an agent in ONE of two ways (§24.4, 2026-10-09):
   ``emit_generative_ui`` reads it. The Projects and email agents get the
   rule this way ONLY. A second copy in their instructions cost each model
   request its tokens and said the same thing twice.
-* Three agents still carry the section "Where each part of your answer
-  goes", word for word, until they drop it the same way.
+* Two agents still carry the section "Where each part of your answer
+  goes", word for word, until they drop it the same way. The orchestrator
+  dropped it on 2026-10-14: its ``instructions.md`` was never loaded, so it
+  read the rule from the directive only all along, and the file is gone.
+  Its live text is ``_PULL_INSTRUCTIONS`` (``orchestrator/agents.py``).
 
-Mutations this file catches (R7): delete the section from one of the three;
+Mutations this file catches (R7): delete the section from one of the two;
 edit it in one of them only; put the section back into the Projects or the
 email agent; drop the rule from the injected directive, or take
 ``emit_generative_ui`` away from the Projects or the email agent; bring back
@@ -34,17 +37,23 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 #: The agents that carry the section in their own instructions.
-SECTION_AGENTS = ("agent-crm", "agent-whatsapp-assistant", "agent-orchestrator")
+SECTION_AGENTS = ("agent-crm", "agent-whatsapp-assistant")
 #: The agents that read the rule from the injected directive only.
 DIRECTIVE_AGENTS = {
     "agent-projects": "projects-assistant",
     "agent-email-assistant": "email-assistant",
+    "agent-orchestrator": "orchestrator",
 }
 AGENTS = (*SECTION_AGENTS, *DIRECTIVE_AGENTS)
 HEADING = "## Where each part of your answer goes"
 
 
 def _text(agent: str) -> str:
+    """The agent's own instructions, from the source that the agent loads."""
+    if agent == "agent-orchestrator":
+        import orchestrator.agents as pkg  # the package loads agents.py as _mod
+
+        return pkg._mod._PULL_INSTRUCTIONS
     return (ROOT / "apps/agents" / agent / "instructions.md").read_text(encoding="utf-8").replace("\r\n", "\n")
 
 

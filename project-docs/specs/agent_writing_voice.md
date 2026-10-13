@@ -391,7 +391,7 @@ adds nothing.
 
 ```bash
 uv run pytest tests/unit/test_agent_voice.py tests/unit/test_agent_voice_eval.py tests/unit/test_drafting_voice.py -q
-uv run pytest tests/unit/test_orchestrator_voice.py tests/unit/test_orchestrator_cos_eval.py -q
+uv run pytest tests/unit/test_orchestrator_voice.py tests/unit/test_orchestrator_cos_eval.py tests/unit/test_orchestrator_one_source.py tests/unit/test_run_org_name_r8.py -q
 uv run pytest tests/unit/test_chat_upload_every_agent.py tests/unit/test_floor_opt_out.py tests/unit/test_generated_addendum.py tests/unit/test_skill_index.py tests/unit/test_tool_schema_diet.py -q
 uv run python -m evals.agent_voice.run --scripted
 uv run python -m evals.orchestrator_cos.run --scripted
@@ -496,20 +496,12 @@ tool docstring changes the schema of each agent that holds the tool, and the
 WS-23 ratchet of `test_tool_schema_diet.py` with it. The output of each other
 agent stays the same.
 
-⚠️ **The chat prompt of the orchestrator does not hold `apps/agents/agent-orchestrator/instructions.md`.**
-The wrapper `agents.py` calls `build_orchestrator_agent`, which reads
-`_PULL_INSTRUCTIONS`. Measured 2026-10-13: the built prompt holds none of the
-rules 9 to 11 of that file. It also does not hold the section of that file
-"Where each part of your answer goes". This change gives the file the same
-delegation rule, so the two texts agree.
-
-One other reader exists: `mutation.py` gives the file to the self-repair
-sandbox as context. A later decision loads the file into the
-prompt or deletes it.
+**`apps/agents/agent-orchestrator/instructions.md` is gone (2026-10-14).**
+The chat prompt never held it. §11.7 records where each of its rules went.
 
 ### 11.5 The eval
 
-`evals/orchestrator_cos/` holds twelve cases:
+`evals/orchestrator_cos/` holds twelve cases, and §11.7 adds three more:
 
 - A status across apps, and what needs my attention.
 - Two decisions.
@@ -543,3 +535,66 @@ in the `README.md` of the eval, and commits `results.json`.
 | `tests/unit/test_orchestrator_voice.py` | The orchestrator loses the role, or reads it twice. Another agent or a sub-agent gets it. A rule marker goes. The role passes 300 tokens, or the block of the orchestrator passes 900. "relay its full response" comes back. The spec copy drifts |
 | `tests/unit/test_orchestrator_cos_eval.py` | A check stops firing. The case set loses a kind. The cap moves from 120 |
 | `tests/unit/test_agent_voice.py` | The same as before, and still green: the core, the agent block, and one copy of the voice in each agent |
+
+### 11.7 One source, and no tenant name (owner, 2026-10-14)
+
+**Status.** Built on 2026-10-14 on branch `orchestrator-instructions-merge`.
+The owner decided: merge the useful rules of the unread file into the live
+prompt, then delete the file. A tenant name in a shared prompt is an M1
+defect, so the same change removes it.
+
+**The rules of `apps/agents/agent-orchestrator/instructions.md`, one by one.**
+
+| Rule | Verdict | Where it went, and why |
+|---|---|---|
+| Rules 1 to 8, the tool sections, the link rule | Already live | `_PULL_INSTRUCTIONS` held them word for word |
+| 9. Never name a tool to the member | Kept | `_PULL_INSTRUCTIONS` rule 9. The CRM, email, WhatsApp and Projects agents each hold it in their own text, so it is a rule of each agent, not of `CORE` |
+| 10. No «» around a name | Kept | `_PULL_INSTRUCTIONS` rule 10. It is not universal: the Projects agent writes the marks on purpose, and the chat draws them as pills. The WhatsApp bot runs the orchestrator, and WhatsApp shows the marks raw |
+| 11. A Markdown list, never "•" | Kept | `_PULL_INSTRUCTIONS` rule 7, in place of "Be concise", which the role says |
+| Placement: a read shows under its step | Dropped | `PLACEMENT_RULE` says it, and the role says "Say what it means" |
+| Placement: give a list once | Dropped | The one-card limit, the cap of the role and its "one folded card" cover it |
+| Placement: one card at most, after the text | Dropped | `PLACEMENT_RULE` |
+| Placement: fewer than six items stay text | Dropped | `PLACEMENT_RULE` |
+| Placement: a question is not the answer card | Dropped | `PLACEMENT_RULE` |
+| Placement: one decision at a time | Kept | `_PULL_INSTRUCTIONS` rule 11. No other text says it. `PLACEMENT_RULE` stays the same, so no other agent changes |
+
+**The file is gone.** `mutation.py` read it as the purpose context of the
+self-repair sandbox. An agent with no `instructions.md` now gives the module
+docstring of its `agents.py` (`_agents_py_purpose`). The function parses the
+file and never imports it.
+
+**The tenant name.** The prompt said "for Fracktal Works" to every tenant.
+#978 on main changed it to "the member's own organization", and it swept the
+name out of the other prompts and the memory tool docstrings. Its fence is
+`tests/unit/test_no_tenant_name_in_prompts.py`.
+
+This change adds the name of the run's organisation. The per-turn context
+names it: `executor._run_org_display_name` reads
+`organization.display_name` for the org of `_current_run_org`. That org
+comes from the run boundary, never from the payload (R5).
+
+`_context_preamble_parts` adds the line "Organisation: <name>.", and both
+paths of a run read that one builder. The line sits after the cache break,
+so the static prefix of each agent stays byte-stable. A run with no org, or
+an org with no name, gets no line. A cache keeps each name for 10 minutes,
+so a turn pays at most one read.
+
+The name is a member's words, and nothing checks it at signup. So
+`_clean_org_name` makes it one line of at most 120 characters. It folds
+the text with NFKC, and it removes each control character, each format
+character and the marks « and ». A name with a newline cannot forge a
+context block, and a long name cannot cost its size on each turn.
+
+The orchestrator's prompt and the app builder's instructions now say that
+the per-turn context names the organization. `github_org` still defaults to
+`FracktalWorks` in the settings. That is the GitHub owner of the agent
+repos, not prompt text, so it stays.
+
+**Fences.**
+
+| Fence | What fails it |
+|---|---|
+| `tests/unit/test_orchestrator_one_source.py` | The file comes back, or code reads it. A kept rule leaves the live prompt. The placement section comes back. "Fracktal" is in a built prompt or a tool text of any of the 8 agents. Two orgs do not get their own names. The name comes from the payload. A turn reads the database more than once. The sandbox loses the purpose context |
+| `tests/unit/test_run_org_name_r8.py` | R8, on a promoted catalog as a role with NOBYPASSRLS: the read returns the wrong name, or a row policy hides it |
+| `tests/unit/test_chat_placement_instructions.py` | The orchestrator moved to `DIRECTIVE_AGENTS`. It must read `PLACEMENT_RULE` once, and its own text must not repeat it |
+| `evals/orchestrator_cos` C13 to C15 | Three scripted cases and three checks: `no_tool_name`, `no_guillemets` and `one_ask` |

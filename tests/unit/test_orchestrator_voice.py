@@ -235,22 +235,17 @@ def test_every_other_agent_keeps_the_plain_voice(
 
 # ── The delegation rule in the orchestrator's own instructions ─────────────
 
-def _instruction_texts() -> dict[str, str]:
+def _live_instructions() -> str:
     # ``orchestrator.agents`` is a package that shadows ``agents.py`` and
     # loads it as ``_mod``.
     import orchestrator.agents as pkg
 
-    _PULL_INSTRUCTIONS = pkg._mod._PULL_INSTRUCTIONS
-
-    md = (ROOT / "apps/agents/agent-orchestrator/instructions.md").read_text(encoding="utf-8")
-    return {"agents.py": _PULL_INSTRUCTIONS, "instructions.md": md.replace("\r\n", "\n")}
+    return pkg._mod._PULL_INSTRUCTIONS
 
 
-@pytest.mark.parametrize("where", ["agents.py", "instructions.md"])
-def test_the_orchestrator_merges_replies_and_never_relays_them(where: str) -> None:
-    """``agents.py`` is the live text. ``instructions.md`` is not loaded by
-    the orchestrator (spec §11.4), so it must at least not contradict it."""
-    text = _instruction_texts()[where]
+def test_the_orchestrator_merges_replies_and_never_relays_them() -> None:
+    """``agents.py`` is the one source (spec §11.7: ``instructions.md`` is gone)."""
+    text = _live_instructions()
     assert "relay its full response" not in text
     assert "never relay it whole" in text
     assert "merge their replies into ONE answer" in text

@@ -53,10 +53,18 @@ except ImportError:  # pragma: no cover — acb_skills ships with the platform
 # System instructions
 # ---------------------------------------------------------------------------
 
+# The ONE source of the orchestrator's own instructions (2026-10-14). The
+# ``instructions.md`` beside ``apps/agents/agent-orchestrator/agents.py`` was
+# never loaded, and it is gone. Its kept rules are 7, 9, 10 and 11 below.
+# It names no tenant: the run's organisation reaches the model through the
+# per-turn context (``executor._context_preamble_parts``), after the cache
+# break. Fence: ``tests/unit/test_orchestrator_one_source.py``.
+
 _PULL_INSTRUCTIONS = """\
 You are the AI Company Brain orchestrator for the member's own organization.
 Never name another organization as theirs. Their organization is the one
 their own data, tools and memories describe.
+The per-turn context names the organization when its name is known.
 
 You have three categories of tools:
 
@@ -111,8 +119,13 @@ Rules:
 6. Never expose raw SQL, internal UUIDs outside of citations, or stack traces.
    An in-app link such as /email?email=<id> is a citation. Keep it verbatim.
    A bare UUID in text is not a citation. Do not show it.
-7. Be concise. Bullet points for lists.
+7. Write a list as a Markdown list. Start each item with `- `. Never type "•".
 8. Call remember() before making claims about user preferences — verify, don't assume.
+9. Never name a tool, or the tool name of an agent, to the member. Say what
+   it does in product words.
+10. Never put «» around a name. Write the name in bold, or plain. A reply
+    of another agent can hold the marks, and WhatsApp shows them raw.
+11. Ask the member for one decision at a time.
 """
 
 # ---------------------------------------------------------------------------
