@@ -53,7 +53,9 @@ import { Input, Textarea } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { TaskLinks } from "./TaskLinks";
+import { MarkdownBody } from "@/components/MarkdownMessage";
 import { useEffect, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 
 import { accentForStatus } from "../lib/accent";
 import {
@@ -74,6 +76,8 @@ import {
   writeFolded,
 } from "../lib/sectionFold";
 import { previewKind, readableSize } from "../lib/preview";
+import { forView, keepLineBreaks, withoutImages } from "../lib/inlineUploads";
+import { type TextTarget, useInlineUploads } from "./useInlineUploads";
 import { isAutomated } from "../lib/lifecycle";
 import { labelWith } from "../lib/grouping";
 import {
@@ -232,7 +236,7 @@ export function FieldCell({
 
 /** The first few words of a comment, for the "Replying to …" line. */
 function excerpt(body: string, max = 60): string {
-  const flat = body.replace(/\s+/g, " ").trim();
+  const flat = withoutImages(body).replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
@@ -268,11 +272,35 @@ function Entry({
             : ""}
         </span>
       </p>
-      <p className="whitespace-pre-wrap text-foreground">
-        {describeActivity(activity, fields)}
-      </p>
+      {/* WS-57 TR-4 — a comment is Markdown, so an image pasted into it
+          draws inline. Every other entry is a sentence the app wrote, and
+          stays plain text. The byline above is the same for both. */}
+      {activity.type === "comment" ? (
+        <div className="min-w-0 break-words text-foreground">
+          <MarkdownBody
+            content={keepLineBreaks(describeActivity(activity, fields))}
+            plainEmails
+          />
+        </div>
+      ) : (
+        <p className="whitespace-pre-wrap text-foreground">
+          {describeActivity(activity, fields)}
+        </p>
+      )}
     </div>
   );
+}
+
+/**
+ * True when a click on the rendered description should open the editor. A
+ * link, a button (the "Load image" gate) and a text selection keep their
+ * own meaning.
+ */
+function clickEdits(e: ReactMouseEvent<HTMLElement>): boolean {
+  const target = e.target as HTMLElement | null;
+  if (target?.closest("a, button")) return false;
+  const picked = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+  return !picked;
 }
 
 interface Stream {
@@ -344,6 +372,8 @@ export function TaskBody({
    *  place for the mention picker and the keyboard handling to drift (§5). */
   const [replyTo, setReplyTo] = useState<ActivityRow | null>(null);
   const [comment, setComment] = useState("");
+  // TR-4 — the composer's text, for an upload that ends after a render.
+  const commentText = useRef("");
   const [notDelivered, setNotDelivered] = useState<string | null>(null);
   const commentBox = useRef<HTMLTextAreaElement | null>(null);
   const [assignee, setAssignee] = useState("");
@@ -361,6 +391,13 @@ export function TaskBody({
   // D77 — the description is edited HERE, in both apps. A draft, so typing
   // does not PATCH per keystroke; saved on blur when it changed.
   const [description, setDescription] = useState(task.description ?? "");
+  // TR-4 — the draft as of now, for an upload that ends after a render.
+  const descriptionText = useRef(task.description ?? "");
+  // TR-4 — the saved description draws as Markdown. A click or the edit
+  // button opens the field. An empty description always shows the field.
+  const [editingDescription, setEditingDescription] = useState(false);
+  const editingDescriptionNow = useRef(false);
+  const descriptionBox = useRef<HTMLTextAreaElement | null>(null);
   // D77 — whether I watch this task. Null until the read lands, so the
   // control never renders a state it is only guessing at.
   const [watching, setWatching] = useState<boolean | null>(null);
@@ -424,9 +461,42 @@ export function TaskBody({
 
   // A different task, or a save that came back: the draft follows the row.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setDescription(task.description ?? "");
+    writeDescription(task.description ?? "");
   }, [task.id, task.description]);
+
+  // A different task opens on its rendered description, never mid-edit.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setEditingDescription(false);
+    editingDescriptionNow.current = false;
+  }, [task.id]);
+
+  // The edit button and a click on the text open the field with the caret
+  // at the end, where a member who wants to add something starts.
+  useEffect(() => {
+    if (!editingDescription) return;
+    const box = descriptionBox.current;
+    if (!box) return;
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  }, [editingDescription]);
+
+  /** The description's draft: state for the render, a ref for an upload. */
+  function writeDescription(next: string) {
+    descriptionText.current = next;
+    setDescription(next);
+  }
+
+  /** The composer's text: state for the render, a ref for an upload. */
+  function writeComment(next: string) {
+    commentText.current = next;
+    setComment(next);
+  }
+
+  function editDescription(open: boolean) {
+    editingDescriptionNow.current = open;
+    setEditingDescription(open);
+  }
 
   async function toggleWatch() {
     if (watching === null) return;
@@ -440,11 +510,56 @@ export function TaskBody({
     }
   }
 
-  function saveDescription() {
-    const next = description.trim();
+  /**
+   * Save the draft when it changed. TR-4: never while a placeholder of an
+   * upload THIS body waits on is in it, or the stored text would hold
+   * `![Uploading …]()`. The upload saves the text when it ends
+   * (`descriptionTarget.settled`). Text that only looks like a placeholder
+   * saves as usual.
+   */
+  function saveDescription(text: string = descriptionText.current) {
+    if (inline.waitingNow(text)) return;
+    const next = text.trim();
     if (next === (task.description ?? "").trim()) return;
     void patch({ description: next || null });
   }
+
+  // TR-4 — a pasted or dropped file. The Files list and the timeline are
+  // read again after each batch, the way the Attach button does.
+  const inline = useInlineUploads({
+    taskId: task.id,
+    onUploaded: () => {
+      void Promise.all([
+        attachmentsApi.list(task.id),
+        loadStreams(task.id, allEvents),
+      ]).then(([fresh, got]) => {
+        setFiles(fresh.rows);
+        if (got) {
+          setComments(got.comments);
+          setEvents(got.events);
+        }
+      }, () => undefined);
+    },
+  });
+
+  const descriptionTarget: TextTarget = {
+    read: () => descriptionText.current,
+    write: writeDescription,
+    box: () => descriptionBox.current,
+    // The member left the field while the image went up: save now.
+    settled: (next) => {
+      if (!editingDescriptionNow.current) saveDescription(next);
+    },
+  };
+
+  const commentTarget: TextTarget = {
+    read: () => commentText.current,
+    write: writeComment,
+    box: () => commentBox.current,
+  };
+
+  const descriptionEmpty = description.trim() === "";
+  const showDescriptionField = editingDescription || descriptionEmpty;
 
   async function uploadFiles(picked: FileList | null) {
     if (!picked || picked.length === 0) return;
@@ -656,7 +771,7 @@ export function TaskBody({
     setNotDelivered(null);
     try {
       const posted = await projectsApi.comment(task.id, body, replyTo?.id);
-      setComment("");
+      writeComment("");
       setReplyTo(null);
       setStream("comments");
       // WS-27j: a mention that reached nobody is said out loud.
@@ -674,7 +789,7 @@ export function TaskBody({
     const box = commentBox.current;
     const at = box ? box.selectionStart : comment.length;
     const next = insertMention(comment, at, who);
-    setComment(next.body);
+    writeComment(next.body);
     requestAnimationFrame(() => {
       box?.focus();
       box?.setSelectionRange(next.caret, next.caret);
@@ -691,7 +806,14 @@ export function TaskBody({
 
       {/* ONE scroll region: only the host's header and the composer are
           pinned. The host's strip (`above`) scrolls with the blocks. */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* TR-4 — a file dropped anywhere on the card attaches and inserts
+          nothing. Without the handlers the browser opens the file in the
+          tab and the task is gone. */}
+      <div
+        className="min-h-0 flex-1 overflow-y-auto"
+        onDragOver={inline.allowDrop}
+        onDrop={(e) => inline.dropInto(e)}
+      >
         {above}
 
         <div className={SECTION_COLUMN}>
@@ -898,15 +1020,54 @@ export function TaskBody({
             icon="AlignLeft"
             {...fold("description")}
           >
-            <Textarea
-              value={description}
-              disabled={busy}
-              rows={4}
-              placeholder="What this task is about — notes, links, context…"
-              aria-label="Description"
-              onChange={(e) => setDescription(e.target.value)}
-              onBlur={saveDescription}
-            />
+            {/* WS-57 TR-4 — the saved text draws as Markdown, with images.
+                The plain field stays the editor (a rich editor is
+                WS-27ao's). An empty description shows the field, as it
+                always did. A pasted or dropped image uploads and lands at
+                the caret as `![name](url)`. */}
+            {showDescriptionField ? (
+              <Textarea
+                ref={descriptionBox}
+                value={description}
+                disabled={busy}
+                rows={4}
+                placeholder="What this task is about — notes, links, context…"
+                aria-label="Description"
+                onChange={(e) => writeDescription(e.target.value)}
+                onFocus={() => editDescription(true)}
+                onBlur={() => {
+                  editDescription(false);
+                  saveDescription();
+                }}
+                onPaste={(e) => inline.pasteInto(e, descriptionTarget)}
+                onDragOver={inline.allowDrop}
+                onDrop={(e) => inline.dropInto(e, descriptionTarget)}
+              />
+            ) : (
+              // A row, not an absolute button: `.cc-control` sets
+              // `position: relative`, which beats a utility class.
+              <div className="flex items-start gap-1">
+                <div
+                  data-testid="description-view"
+                  className="min-w-0 flex-1 cursor-text break-words rounded-lg px-1 py-1 text-sm text-foreground hover:bg-muted/40"
+                  onClick={(e) => {
+                    if (clickEdits(e)) editDescription(true);
+                  }}
+                >
+                  <MarkdownBody content={keepLineBreaks(forView(description))} plainEmails />
+                </div>
+                <Button
+                  className="shrink-0"
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="Pencil"
+                  aria-label="Edit description"
+                  title="Edit description"
+                  disabled={busy}
+                  onClick={() => editDescription(true)}
+                />
+              </div>
+            )}
           </CollapsibleSection>
 
           {/* Tags and recurrence draw their own small labels, so they are
@@ -1064,16 +1225,18 @@ export function TaskBody({
                   </div>
                 );
               })}
-              {uploading.map((name) => (
+              {[...uploading, ...inline.pending].map((name, i) => (
                 <div
-                  key={`uploading:${name}`}
+                  key={`uploading:${i}:${name}`}
                   className="flex items-center gap-2 rounded-md border border-dashed border-border px-2 py-1.5 text-xs text-muted-foreground"
                 >
                   <Icon name="Loader2" className="h-3.5 w-3.5 shrink-0 animate-spin" />
                   <span className="min-w-0 flex-1 truncate">{name}</span>
                 </div>
               ))}
-              {files.length === 0 && uploading.length === 0 ? (
+              {files.length === 0 &&
+              uploading.length === 0 &&
+              inline.pending.length === 0 ? (
                 <p className="text-xs text-muted-foreground">Nothing attached.</p>
               ) : null}
             </div>
@@ -1240,6 +1403,8 @@ export function TaskBody({
       <div
         className="shrink-0 border-t border-border bg-card p-3"
         hidden={stream !== "comments"}
+        onDragOver={inline.allowDrop}
+        onDrop={(e) => inline.dropInto(e)}
       >
         {replyTo ? (
           <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1.5">
@@ -1265,7 +1430,10 @@ export function TaskBody({
           ref={commentBox}
           inputSize="lg"
           value={comment}
-          onChange={(e) => setComment(e.target.value)}
+          onChange={(e) => writeComment(e.target.value)}
+          onPaste={(e) => inline.pasteInto(e, commentTarget)}
+          onDragOver={inline.allowDrop}
+          onDrop={(e) => inline.dropInto(e, commentTarget)}
           placeholder={replyTo ? "Write a reply…" : "Add a comment…"}
           aria-label={replyTo ? "Write a reply" : "Add a comment"}
           rows={3}
@@ -1292,7 +1460,8 @@ export function TaskBody({
           className="mt-2 w-full"
           icon={replyTo ? "CornerDownRight" : "MessageSquare"}
           onClick={addComment}
-          disabled={busy || !comment.trim()}
+          // TR-4: not while an image in the text is still going up.
+          disabled={busy || !comment.trim() || inline.waiting(comment)}
         >
           {replyTo ? "Reply" : "Comment"}
         </Button>

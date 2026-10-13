@@ -62,6 +62,37 @@ describe("remoteHost", () => {
     expect(remoteHost("/api/agent/workspace/0b8c-41/file?path=outputs%2Fa.png", APP)).toBeNull();
   });
 
+  describe("a task attachment (WS-57 TR-4)", () => {
+    const ID = "0b8c41e2-7d3a-4f5b-9c1d-2e3f4a5b6c7d";
+
+    it("loads one attachment of a task at once", () => {
+      expect(remoteHost(`/api/projects/attachments/${ID}/image.png`, APP)).toBeNull();
+      expect(remoteHost(`${APP}/api/projects/attachments/${ID}/screen_shot-2.PNG`, APP)).toBeNull();
+    });
+
+    it.each([
+      ["an id that is not a uuid", "/api/projects/attachments/a1/image.png"],
+      ["an upper-case uuid", `/api/projects/attachments/${ID.toUpperCase()}/image.png`],
+      ["a uuid with no dashes", `/api/projects/attachments/${ID.replace(/-/g, "")}/image.png`],
+      ["a query string", `/api/projects/attachments/${ID}/image.png?x=1`],
+      ["a fragment", `/api/projects/attachments/${ID}/image.png#x`],
+      ["an extra segment", `/api/projects/attachments/${ID}/a/image.png`],
+      ["no name segment", `/api/projects/attachments/${ID}`],
+      ["an empty name segment", `/api/projects/attachments/${ID}/`],
+      ["a dot-dot name", `/api/projects/attachments/${ID}/..`],
+      ["a dot-dot that climbs out", `/api/projects/attachments/${ID}/../../email/x`],
+      ["an encoded slash", `/api/projects/attachments/${ID}/a%2Fb.png`],
+      ["an encoded dot-dot", `/api/projects/attachments/${ID}/%2e%2e`],
+      ["an escaped name", `/api/projects/attachments/${ID}/a%20b.png`],
+      ["a backslash", `/api/projects/attachments/${ID}/a\\b.png`],
+      ["the personal attachment route", `/api/tasks/attachments/${ID}/image.png`],
+      ["an upper-case route", `/API/projects/attachments/${ID}/image.png`],
+      ["another origin", `https://attacker.example/api/projects/attachments/${ID}/image.png`],
+    ])("keeps %s remote", (_why, src) => {
+      expect(remoteHost(src, APP)).not.toBeNull();
+    });
+  });
+
   it("gates a scheme the browser would not load, at the cost of one click", () => {
     expect(remoteHost("ftp://attacker.example/p.png", APP)).toBe("attacker.example");
     expect(remoteHost("http://[::1", APP)).toBe(UNKNOWN_HOST);
