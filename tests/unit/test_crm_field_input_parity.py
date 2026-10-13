@@ -200,3 +200,48 @@ def test_each_table_holds_a_pass_and_a_refusal(kind: str) -> None:
         bool(python.fullmatch(s) if not strips else python.match(s.strip())) for s in samples
     }
     assert verdicts == {True, False}
+
+
+# ── The checks that are code, not a pattern ─────────────────────────────────
+
+#: The shared cases. ``crmC4p.test.ts`` runs ``checkValue`` on the same file.
+CASES = Path(__file__).resolve().parents[1] / "fixtures" / "crm_field_check_cases.json"
+
+
+def _gateway_takes(kind: str, value: str) -> bool:
+    """True when ``field_studio._CHECKS[kind]`` takes *value*."""
+    from fastapi import HTTPException
+    from gateway.routes.crm.field_studio import _CHECKS, CustomField
+
+    field = CustomField(
+        key="k", label="K", type=kind, options=(), required=False,
+        default_value=None, lookup_target=None, retired=False,
+    )
+    try:
+        _CHECKS[kind](field, value, None)
+    except HTTPException:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("kind", ["date", "datetime", "phone"])
+def test_the_gateway_gives_each_shared_case_its_verdict(kind: str) -> None:
+    """The real day, the year, the time and offset ranges, and the digits of a
+    phone are code, not a pattern. So both sides run one table of cases.
+    The client half of this fence is in ``crmC4p.test.ts``."""
+    import json
+
+    cases = json.loads(CASES.read_text(encoding="utf-8"))[kind]
+    differ = [(v, ok) for v, ok in cases if _gateway_takes(kind, v) != ok]
+    assert not differ, (
+        f"field_studio.py gives another verdict than crm_field_check_cases.json "
+        f"(value, the fixture says): {differ}. Change the fixture and checkValue together."
+    )
+    assert {ok for _, ok in cases} == {True, False}
+
+
+def test_the_fewest_phone_digits_are_the_same_on_both_sides() -> None:
+    """``PHONE_MIN_DIGITS`` is the fewest digits that ``_phone`` takes."""
+    least = int(_ts_number("PHONE_MIN_DIGITS"))
+    assert _gateway_takes("phone", "1" * least)
+    assert not _gateway_takes("phone", "1" * (least - 1))

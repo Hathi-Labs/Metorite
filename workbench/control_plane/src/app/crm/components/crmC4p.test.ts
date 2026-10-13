@@ -29,13 +29,34 @@ import {
   fromWire,
   isDateTimeValue,
   lookupValue,
+  DOT_FOR_DECIMALS,
+  formValue,
   textLength,
   toWire,
+  type FieldLayout,
   type FieldType,
 } from "../lib/fieldLayout";
 import { fieldText, formatField, LOOKUP_MISSING, type FieldDef } from "../lib/fields";
-import { readFieldLayout } from "../lib/useCrmMode";
-import FieldInput from "./FieldInput";
+import type { EntitySlug } from "../lib/types";
+import { fieldLayoutKey, readFieldLayout } from "../lib/useCrmMode";
+import { clearAll, peek, read } from "@/lib/dataCache";
+import { applyData, applyError, initialState, type ResourceState } from "@/lib/useCachedResource";
+import FieldInput, {
+  SEARCH_FAILED,
+  describedBy,
+  fieldIds,
+  lookupOptions,
+  pickLookup,
+  toggleOption,
+} from "./FieldInput";
+
+/** `tests/fixtures/crm_field_check_cases.json`: pytest runs the gateway on it. */
+const CASES = JSON.parse(
+  readFileSync(
+    fileURLToPath(new URL("../../../../../../tests/fixtures/crm_field_check_cases.json", import.meta.url)),
+    "utf8",
+  ),
+) as Record<"date" | "datetime" | "phone", Array<[string, boolean]>>;
 import FieldValue from "./FieldValue";
 
 const noop = () => undefined;
@@ -75,10 +96,11 @@ const CHECKBOX = /<input[^>]*type="checkbox"[^>]*class="cc-checkbox/;
 const PRIMITIVE: Record<FieldType, { has: RegExp[]; attr?: string; value: unknown }> = {
   text: { has: [INPUT], value: "Hello" },
   textarea: { has: [TEXTAREA], value: "One\nTwo" },
-  number: { has: [INPUT], attr: 'inputMode="numeric"', value: 12 },
-  decimal: { has: [INPUT], attr: 'inputMode="decimal"', value: 1.5 },
-  currency: { has: [INPUT], attr: 'inputMode="decimal"', value: 1000 },
-  percent: { has: [INPUT], attr: 'inputMode="decimal"', value: 12.5 },
+  // iOS has no minus key on a numeric keypad, so a number keeps the text keyboard.
+  number: { has: [INPUT], attr: 'inputMode="text"', value: 12 },
+  decimal: { has: [INPUT], attr: 'inputMode="text"', value: 1.5 },
+  currency: { has: [INPUT], attr: 'inputMode="text"', value: -1000 },
+  percent: { has: [INPUT], attr: 'inputMode="text"', value: 12.5 },
   date: { has: [INPUT], attr: 'type="date"', value: "2026-10-14" },
   datetime: { has: [INPUT], attr: 'type="datetime-local"', value: "2026-10-14T05:00:00.000Z" },
   boolean: { has: [CHECKBOX], value: true },
@@ -406,16 +428,39 @@ describe("the layout read behind useFieldLayout (CRM-C4p item 6)", () => {
     expect(layout!.fields.map((f) => f.key)).toEqual(["name", "tier"]);
   });
 
-  it("gives null for a failed read", async () => {
+  it("throws on a failed read, so the hook can keep what it had", async () => {
     stub(500, { detail: "boom" });
-    expect(await readFieldLayout("deals")).toBeNull();
-    stub(404, { detail: "Not Found" });
-    expect(await readFieldLayout("leads")).toBeNull();
+    await expect(readFieldLayout("deals")).rejects.toBeInstanceOf(CrmError);
+    stub(200, [{ key: "tier" }]);
+    await expect(readFieldLayout("deals")).rejects.toThrow(/layout/);
   });
 
-  it("gives null for a body that is not a layout", async () => {
-    stub(200, [{ key: "tier" }]);
-    expect(await readFieldLayout("deals")).toBeNull();
+  /** One read as `useCachedResource` runs it: `read`, then `applyData` or `applyError`. */
+  const load = (prev: ResourceState<FieldLayout>, entity: EntitySlug) =>
+    read(fieldLayoutKey(entity), () => readFieldLayout(entity), { force: true }).then(
+      (data) => applyData(data),
+      (err: unknown) => applyError(prev, err instanceof Error ? err.message : String(err)),
+    );
+
+  it("gives no layout when the first read fails", async () => {
+    clearAll();
+    stub(404, { detail: "Not Found" });
+    const state = await load(initialState<FieldLayout>(undefined), "leads");
+    expect(state.data ?? null).toBeNull();
+    expect(state.error).toBe("Not Found");
+  });
+
+  it("keeps a good layout when a re-read fails (review P2)", async () => {
+    clearAll();
+    stub(200, LAYOUT);
+    const good = await load(initialState<FieldLayout>(undefined), "deals");
+    expect(good.data?.studio).toBe(true);
+    stub(500, { detail: "boom" });
+    const after = await load(good, "deals");
+    expect(after.data).toEqual(good.data);
+    expect(after.error).toBe("boom");
+    // The cache keeps it too, so the next mount paints the good layout.
+    expect(peek<FieldLayout>(fieldLayoutKey("deals"))?.data.fields).toHaveLength(2);
   });
 
   it("reads a missing flag as false", async () => {
@@ -448,5 +493,140 @@ describe("a refusal keeps the field it names (CRM-C4p items 4, 5 and 7)", () => 
     const calls = stub(200, { ok: true });
     expect(await api.call<{ ok: boolean }>("/field-layout/deals", { method: "PUT" })).toEqual({ ok: true });
     expect(calls).toEqual(["/api/crm/field-layout/deals"]);
+  });
+});
+
+// ── Review round 1 ─────────────────────────────────────────────────────────
+
+describe("a comma leaves a number only from a real grouping (review P1)", () => {
+  const sent = (type: string, text: string) => toWire(def(type), text);
+
+  it("refuses a comma that is not a grouping, and asks for a dot", () => {
+    for (const text of ["1,5", "1.234,56", "1,0,0,0", "12,3", "1,23,4"]) {
+      for (const type of ["number", "decimal", "currency", "percent"]) {
+        expect(sent(type, text), `${type} ${text}`).toBe(text);
+        expect(checkValue(def(type), sent(type, text))).toBe(DOT_FOR_DECIMALS);
+      }
+    }
+  });
+
+  it("takes a Western and an Indian grouping", () => {
+    expect(sent("decimal", "1,234.5")).toBe(1234.5);
+    expect(sent("number", "12,34,567")).toBe(1234567);
+    expect(sent("number", "1,20,000")).toBe(120000);
+    expect(sent("currency", "-1,234,567.25")).toBe(-1234567.25);
+    expect(sent("number", "1,234")).toBe(1234);
+    for (const [type, text] of [["decimal", "1,234.5"], ["number", "12,34,567"]]) {
+      expect(checkValue(def(type), sent(type, text))).toBeNull();
+    }
+  });
+});
+
+describe("the shared cases of tests/fixtures/crm_field_check_cases.json", () => {
+  for (const kind of ["date", "datetime", "phone"] as const) {
+    it(`gives each ${kind} case the gateway's verdict`, () => {
+      const differ = CASES[kind].filter(([value, ok]) => (checkValue(def(kind), value) === null) !== ok);
+      expect(differ).toEqual([]);
+      expect(new Set(CASES[kind].map(([, ok]) => ok))).toEqual(new Set([true, false]));
+    });
+  }
+});
+
+describe("the error and the help text belong to the control (review P2)", () => {
+  const ids = fieldIds("fx");
+  const named = (html: string) => html.match(/aria-describedby="([^"]*)"/g) ?? [];
+
+  it("names the help text and the error on every control", () => {
+    for (const type of FIELD_TYPES) {
+      const html = draw(def(type, { help_text: "Why" }), PRIMITIVE[type].value, { id: "fx", error: "Bad" });
+      expect(html, type).toContain(`id="${ids.help}"`);
+      expect(html, type).toContain(`id="${ids.error}"`);
+      const refs = named(html);
+      expect(refs.length, type).toBeGreaterThan(0);
+      for (const ref of refs) expect(ref, type).toBe(`aria-describedby="${ids.help} ${ids.error}"`);
+      expect(html, type).toContain('aria-invalid="true"');
+    }
+  });
+
+  it("names nothing when there is no help and no error", () => {
+    expect(describedBy("fx", false, false)).toBeUndefined();
+    expect(describedBy("fx", false, true)).toBe(ids.error);
+    expect(named(draw(def("text"), "x", { id: "fx" }))).toEqual([]);
+    expect(draw(def("text"), "x", { id: "fx" })).not.toContain("aria-invalid");
+  });
+
+  it("gives the control the id, so a <label htmlFor> names it", () => {
+    for (const type of ["text", "textarea", "number", "boolean", "select", "lookup"]) {
+      expect(draw(def(type), PRIMITIVE[type as FieldType].value, { id: "fx" }), type).toMatch(
+        /<(input|textarea|button)[^>]*id="fx"/,
+      );
+    }
+    expect(draw(def("select"), "gold", { id: "fx" })).toMatch(/<button[^>]*id="fx"[^>]*aria-haspopup="listbox"/);
+  });
+
+  it("labels the multi-select group, and marks it invalid", () => {
+    const html = draw(def("multiselect"), ["gold"], { id: "fx", error: "Bad" });
+    expect(html).toMatch(new RegExp(`role="group"[^>]*aria-labelledby="${ids.label}"`));
+    expect(html).toContain(`<span id="${ids.label}" class="sr-only">My multiselect</span>`);
+    expect(html).toMatch(/role="group"[^>]*aria-invalid="true"/);
+  });
+});
+
+describe("a boolean has no empty state in a form (review P2)", () => {
+  it("holds the stored value, else the default, else false", () => {
+    expect(formValue(def("boolean"), true)).toBe(true);
+    expect(formValue(def("boolean", { default_value: true }), false)).toBe(false);
+    expect(formValue(def("boolean", { default_value: true }), null)).toBe(true);
+    expect(formValue(def("boolean"), null)).toBe(false);
+    expect(formValue(def("boolean"), undefined)).toBe(false);
+    // Each other type keeps the stored value.
+    expect(formValue(def("text"), null)).toBeNull();
+  });
+
+  it("saves a required boolean that nobody ticked as false", () => {
+    const required = def("boolean", { required: true });
+    expect(checkValue(required, null)).not.toBeNull();
+    expect(checkValue(required, formValue(required, null))).toBeNull();
+  });
+
+  it("draws the default when the record holds no value", () => {
+    expect(draw(def("boolean", { default_value: true }), null)).toMatch(/<input[^>]*checked=""/);
+    expect(draw(def("boolean"), null)).not.toMatch(/checked=""/);
+  });
+});
+
+describe("what a picker sends (verifier)", () => {
+  it("sends a multi-select as an array of option values, never a joined string", () => {
+    expect(toggleOption(["gold"], "silver", true)).toEqual(["gold", "silver"]);
+    expect(toggleOption(["gold", "silver"], "gold", false)).toEqual(["silver"]);
+    expect(toggleOption(["gold"], "gold", true)).toEqual(["gold"]);
+    expect(toggleOption(["gold"], "gold", false)).toBeNull();
+    expect(checkValue(def("multiselect"), toggleOption(["gold"], "silver", true))).toBeNull();
+  });
+
+  it("sends a lookup pick as {id, name} with the hit's id", () => {
+    const hits = [
+      { id: ID, name: "Asha Rao" },
+      { id: "1f2e3d4c-5b6a-4b8f-9c2d-0b9c2f9e4a8e", name: "Ravi" },
+    ];
+    expect(pickLookup(ID, hits, null)).toEqual({ id: ID, name: "Asha Rao" });
+    expect(pickLookup("", hits, null)).toBeNull();
+    const held = { id: "7d7d7d7d-7d7d-4d7d-8d7d-7d7d7d7d7d7d", name: "Old" };
+    expect(pickLookup(held.id, hits, held)).toEqual(held);
+    expect(checkValue(def("lookup"), pickLookup(ID, hits, null))).toBeNull();
+  });
+
+  it("wires each pick of FieldInput through these two", () => {
+    const source = readFileSync(fileURLToPath(new URL("./FieldInput.tsx", import.meta.url)), "utf8");
+    expect(source).toContain("onChange(toggleOption(chosen, o.value, e.target.checked))");
+    expect(source).toContain("onChange(pickLookup(next, hits, current))");
+  });
+
+  it("says Search failed when the lookup search fails, not an empty list", () => {
+    const failed = lookupOptions(null, [], true);
+    expect(failed.map((o) => o.label)).toEqual(["—", SEARCH_FAILED]);
+    expect(failed[1].disabled).toBe(true);
+    const ok = lookupOptions(null, [{ id: ID, name: "Asha" }], false);
+    expect(ok.map((o) => o.label)).toEqual(["—", "Asha"]);
   });
 });
