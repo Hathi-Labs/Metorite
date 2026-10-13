@@ -843,8 +843,8 @@ def test_the_oauth_shape_checks_refuse_a_trailing_newline():
     assert agent_oauth.parse_scope("projects:read") == ("projects:read",)
     with pytest.raises(ValueError):
         agent_oauth.parse_scope("projects:read\n")
-    assert agent_oauth._SCHEME.fullmatch("https")
-    assert not agent_oauth._SCHEME.fullmatch("https\n")
+    assert agent_oauth._PRIVATE_SCHEME.fullmatch("com.example.app")
+    assert not agent_oauth._PRIVATE_SCHEME.fullmatch("com.example.app\n")
     assert agent_oauth.ACTOR_VIA_PATTERN.fullmatch("mcp:client.example")
     assert not agent_oauth.ACTOR_VIA_PATTERN.fullmatch("mcp:client.example\n")
 

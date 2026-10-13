@@ -97,11 +97,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import redis.asyncio as aioredis
+from redis.exceptions import RedisError
 
 from acb_common.settings import get_settings
 
 __all__ = [
     "KEY_ROOT",
+    "OUTAGE_ERRORS",
     "ConsumerGroup",
     "ScanPattern",
     "TenantKey",
@@ -122,6 +124,13 @@ __all__ = [
 #: The one place the ``cc:`` root is written. Nothing else in the codebase
 #: should ever type it again — that is the point of the module.
 KEY_ROOT = "cc"
+
+#: The errors that mean "Redis did not answer": a refused or dropped
+#: connection, a timeout, or any error of redis-py. A caller that must tell an
+#: outage from a wrong value catches this tuple, so it never imports redis-py
+#: itself (the ratchet in ``tests/unit/test_tenant_redis.py``). WS-55 EA-4a
+#: answers 503 for it.
+OUTAGE_ERRORS: tuple[type[BaseException], ...] = (RedisError, OSError, TimeoutError)
 
 
 # ── Errors ───────────────────────────────────────────────────────────────────
@@ -489,6 +498,14 @@ class TenantRedis:
 
     async def get(self, k: TenantKey) -> Any:
         return await self._client.get(self._raw(k))
+
+    async def getdel(self, k: TenantKey) -> Any:
+        """``GETDEL``: read the value and delete the key in ONE command.
+
+        A one-time value (the consent ticket of WS-55 EA-4a) needs this, so
+        two readers can never both get it. Redis 6.2 or later.
+        """
+        return await self._client.getdel(self._raw(k))
 
     async def mget(self, keys: Sequence[TenantKey]) -> list[Any]:
         """Read many keys in ONE round trip. Each key goes through

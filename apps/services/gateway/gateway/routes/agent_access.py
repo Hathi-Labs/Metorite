@@ -50,27 +50,41 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
    §10.4). The code keeps the exact URI, port included. The fetch asks for
    ``Accept-Encoding: identity`` and refuses a compressed body, because the
    guard reads raw bytes and never decompresses.
-8. **No code, token or hash goes into a log line.**
+8. **No code, token or hash goes into a log line.** The consent ticket is
+   a token too.
 9. **ASCII and no control characters** (fix round 1). A client id or a
    redirect URI with a non-ASCII character is refused, so a look-alike host
    cannot show as a verified origin. A C0 control character or DEL in any
    field is a 422.
+10. ⚠️ **The consent ticket (EA-4a, spec §10.5, decision EA3-26).** ``check``
+    gives a ticket of 32 random bytes. The server keeps only its SHA-256, as
+    a key of the tenant-prefixed Redis wrapper, for 300 seconds. The value
+    binds the member, the organization and six fields of the request.
+    ``approve`` spends it with one ``GETDEL`` BEFORE any other check, so an
+    approval cannot skip the screen and a ticket works once. A missing,
+    spent, expired or unmatched ticket is 400 ``invalid_request``. A Redis
+    outage is 503, never 400. Fence: ``tests/unit/test_agent_oauth_server.py``.
 
 What is not here: dynamic client registration (EA-2b), pre-registered
-clients, the organization switch and the client allow list (EA-4), the audit
-row (EA-8) and any rate limit (EA-7).
+clients, the organization switch and the client allow list (EA-4c), the list
+of connections (EA-4b), the audit row (EA-8) and any rate limit (EA-7). The
+CSRF check of the browser request (``Sec-Fetch-Site``) is the BFF's, because
+this router sees only the BFF's server call (spec §10.5).
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import secrets
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
 
 import httpx
 from acb_auth import UserContext, agent_oauth, agent_tokens, get_current_user
 from acb_common import get_logger, get_settings
+from acb_common.tenant_redis import OUTAGE_ERRORS, get_tenant_redis, key, organization_scope
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from gateway import outbound_guard
@@ -92,6 +106,19 @@ _MAX_STATE = 1024
 _MAX_PINS = 50
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+#: The consent ticket (rule 10): its random bytes, its life, and the longest
+#: ticket ``approve`` reads. ``token_urlsafe(32)`` gives 43 characters.
+_TICKET_BYTES = 32
+_TICKET_TTL_S = 300
+_MAX_TICKET = 128
+
+#: The Redis namespace of the ticket. The wrapper prefixes it with the
+#: organization: ``cc:<org>:agent-consent:<sha256>``.
+_TICKET_NAMESPACE = "agent-consent"
+
+#: The longest wait for one Redis command. Past it, the answer is the 503.
+_REDIS_TIMEOUT_S = 2.0
 
 
 async def _require_enabled() -> None:
@@ -152,6 +179,9 @@ class ApproveRequest(AuthorizeRequest):
     pinned_projects: list[UUID] = Field(default_factory=list, max_length=_MAX_PINS)
     #: D-EA-4: personal projects stay out unless the member opts in.
     include_personal: bool = False
+    #: The ticket that ``check`` gave (rule 10). Optional in the model, so a
+    #: request without it is the 400 of rule 10 and not a 422.
+    consent_ticket: str | None = Field(default=None, max_length=_MAX_TICKET)
 
 
 class ClientView(BaseModel):
@@ -165,7 +195,15 @@ class ClientView(BaseModel):
 class AuthorizeView(BaseModel):
     client: ClientView
     redirect_uri: str
-    redirect_host: str
+    #: What the screen shows of the redirect (spec §10.5):
+    #: ``scheme://host:port`` for http and https, ``scheme://authority`` or
+    #: ``scheme:`` for an app. It replaced ``redirect_host``.
+    redirect_display: str
+    #: True for a scheme other than http and https. The page then says "an
+    #: app on this computer".
+    redirect_app: bool
+    #: The one-time ticket that ``approve`` must present (rule 10).
+    consent_ticket: str
     #: The requested scopes the server supports, in the canonical order.
     scopes: list[str]
     resource: str
@@ -382,6 +420,87 @@ def _client_view(client_id: str, metadata: dict[str, Any]) -> ClientView:
     return ClientView(client_id=client_id, name=name, origin=origin)
 
 
+# ── The consent ticket (rule 10) ────────────────────────────────────────────
+
+
+class _TicketBinding(NamedTuple):
+    """What one ticket binds. ``approve`` must match every field.
+
+    ``scope`` is the REQUESTED scope string, not the member's choice. The
+    member narrows on the screen, and the approval names the narrowing.
+    """
+
+    member_email: str
+    organization_id: str
+    client_id: str
+    redirect_uri: str
+    code_challenge: str | None
+    state: str | None
+    resource: str | None
+    scope: str | None
+
+
+def _binding(req: AuthorizeRequest, email: str, org: str) -> _TicketBinding:
+    """The binding of *req* for this member in this organization."""
+    return _TicketBinding(
+        email, org, req.client_id, req.redirect_uri, req.code_challenge,
+        req.state, req.resource, req.scope)
+
+
+def _ticket_key(ticket: str) -> Any:
+    """The tenant-prefixed key of a ticket: the SHA-256 of it, never the ticket."""
+    return key(_TICKET_NAMESPACE, hashlib.sha256(ticket.encode("ascii")).hexdigest())
+
+
+def _redis_unavailable() -> HTTPException:
+    """A Redis outage is 503, never 400 (rule 10)."""
+    return HTTPException(
+        status_code=503,
+        detail="The consent service is busy. Try again.",
+        headers={"Retry-After": "2", **_NO_STORE},
+    )
+
+
+async def _mint_ticket(binding: _TicketBinding) -> str:
+    """A new ticket for *binding*. The server keeps its SHA-256 for 300 s."""
+    ticket = secrets.token_urlsafe(_TICKET_BYTES)
+    try:
+        async with asyncio.timeout(_REDIS_TIMEOUT_S):
+            with organization_scope(binding.organization_id):
+                await get_tenant_redis().setex(
+                    _ticket_key(ticket), _TICKET_TTL_S, json.dumps(list(binding)))
+    except OUTAGE_ERRORS:
+        raise _redis_unavailable() from None
+    return ticket
+
+
+async def _spend_ticket(req: ApproveRequest, binding: _TicketBinding) -> None:
+    """Spend the ticket of *req* with one ``GETDEL``, then match its binding.
+
+    The ticket is gone after this call, whatever the answer. A missing,
+    spent, expired or unmatched ticket is 400 ``invalid_request`` with no
+    ``redirect_to``, because nothing in the request is verified yet.
+    """
+    refused = _error("invalid_request", "The consent ticket is missing or not valid.")
+    ticket = req.consent_ticket
+    if not ticket or not ticket.isascii():
+        raise refused
+    try:
+        async with asyncio.timeout(_REDIS_TIMEOUT_S):
+            with organization_scope(binding.organization_id):
+                raw = await get_tenant_redis().getdel(_ticket_key(ticket))
+    except OUTAGE_ERRORS:
+        raise _redis_unavailable() from None
+    if raw is None:
+        raise refused
+    try:
+        stored = _TicketBinding(*json.loads(raw))
+    except (TypeError, ValueError):
+        raise refused from None
+    if stored != binding:
+        raise refused
+
+
 # ── The two routes ──────────────────────────────────────────────────────────
 
 
@@ -390,14 +509,19 @@ async def check_authorize(
     req: AuthorizeRequest,
     user: UserContext = Depends(get_current_user),
 ) -> AuthorizeView:
-    """Validate an authorize request for the consent screen. Writes nothing
-    except the cache of the client's metadata."""
-    _member(user)
+    """Validate an authorize request for the consent screen, and give the
+    one-time consent ticket (rule 10). Writes nothing else except the cache
+    of the client's metadata."""
+    email = _member(user)
     validated = await _validate(req)
+    ticket = await _mint_ticket(_binding(req, email, str(current_tenant())))
+    display, is_app = agent_oauth.redirect_display(req.redirect_uri)
     return AuthorizeView(
         client=_client_view(req.client_id, validated.metadata),
         redirect_uri=req.redirect_uri,
-        redirect_host=agent_oauth.redirect_host(req.redirect_uri),
+        redirect_display=display,
+        redirect_app=is_app,
+        consent_ticket=ticket,
         scopes=list(validated.scopes),
         resource=agent_oauth.resource(),
         state=req.state,
@@ -415,8 +539,12 @@ async def approve_authorize(
 
     The member is ``user.email`` and the organization is the bound tenant
     (rule 1). The answer carries a code, so no cache may keep it.
+
+    ⚠️ The ticket is spent FIRST (rule 10), before the client fetch and
+    every other check. So no approval runs without the screen.
     """
-    _member(user)
+    email = _member(user)
+    await _spend_ticket(req, _binding(req, email, str(current_tenant())))
     validated = await _validate(req)
     requested = set(validated.scopes)
     chosen = set(req.scopes) if req.scopes is not None else requested

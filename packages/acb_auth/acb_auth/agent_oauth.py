@@ -224,27 +224,41 @@ def ascii_host(host: str) -> str:
 
 # ── Redirect URIs ───────────────────────────────────────────────────────────
 
-#: Schemes a redirect may never use. A consent page that navigates to one of
-#: these on its own origin runs script there.
-_FORBIDDEN_SCHEMES = frozenset({
-    "javascript", "data", "vbscript", "file", "blob", "about", "ftp", "ws",
-    "wss", "filesystem", "view-source", "jar", "chrome", "intent",
-})
-
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
-_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*$")
+#: A private-use scheme of a native app (RFC 8252 §7.1): a reverse domain
+#: name, so it holds a dot, in lower case. ``com.example.app`` passes.
+#: ``cursor``, ``javascript`` and ``Com.Example`` do not.
+_PRIVATE_SCHEME = re.compile(r"[a-z][a-z0-9+-]*(?:\.[a-z0-9+-]+)+")
+
+
+def _is_private_use_redirect(uri: str) -> bool:
+    """True when *uri* is ``scheme:/path`` with a reverse-DNS *scheme*.
+
+    RFC 8252 §7.1 gives the form with ONE slash and no authority, such as
+    ``com.example.app:/oauth/callback``. Read on the RAW string, because
+    ``urlsplit`` lowers the case of the scheme.
+    """
+    scheme, colon, rest = uri.partition(":")
+    if not colon or not _PRIVATE_SCHEME.fullmatch(scheme):
+        return False
+    # One slash, then a path. ``scheme://...`` names an authority.
+    return rest.startswith("/") and not rest.startswith("//") and len(rest) > 1
 
 
 def is_allowed_redirect_uri(uri: str | None) -> bool:
     """True when *uri* may carry an authorization response.
 
-    ``https`` always. ``http`` only to a loopback host (RFC 8252 §7.3). A
-    private-use scheme of a native app (RFC 8252 §7.1), except the schemes in
-    :data:`_FORBIDDEN_SCHEMES`. Never a fragment, a user name or a password.
-    The match against the client's own list is a separate check,
-    :func:`redirect_uri_matches`. ASCII
-    only, for the reason :func:`is_cimd_client_id` gives.
+    An ALLOW list of the three forms of RFC 8252 (EA-4a, spec §10.5), and
+    nothing else:
+
+    1. ``https``, with a host.
+    2. ``http`` to a loopback host (RFC 8252 §7.3).
+    3. A private-use scheme that holds a dot, as ``scheme:/path`` (§7.1).
+
+    Never a fragment, a user name or a password. The match against the
+    client's own list is a separate check, :func:`redirect_uri_matches`.
+    ASCII only, for the reason :func:`is_cimd_client_id` gives.
     """
     if not uri or len(uri) > MAX_URL_CHARS or not uri.isascii():
         return False
@@ -255,17 +269,44 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
         _ = parts.port  # a bad port raises here
     except ValueError:
         return False
-    scheme = parts.scheme
-    if not _SCHEME.fullmatch(scheme) or scheme in _FORBIDDEN_SCHEMES:
-        return False
     if "#" in uri or parts.username is not None or parts.password is not None:
         return False
-    if scheme == "https":
+    # The raw scheme, because ``urlsplit`` lowers its case.
+    raw_scheme = uri.partition(":")[0]
+    if raw_scheme == "https":
         return bool(parts.hostname)
-    if scheme == "http":
+    if raw_scheme == "http":
         return (parts.hostname or "") in _LOOPBACK_HOSTS
-    # A private-use scheme needs something after it.
-    return bool(parts.netloc or parts.path)
+    return _is_private_use_redirect(uri)
+
+
+def redirect_display(uri: str) -> tuple[str, bool]:
+    """What the consent screen shows of *uri*, and whether it is an app.
+
+    EA-4a, spec §10.5. For ``http`` and ``https``: ``scheme://host:port``,
+    with the port of the FULL redirect URI, so a loopback client on port
+    53122 shows that port. No port in the URI shows ``scheme://host``. The
+    host is ASCII (:func:`ascii_host`), and an IPv6 host keeps its brackets.
+
+    For any other scheme: ``scheme://authority``, or ``scheme:`` with no
+    authority, and the second value is True, so the page adds "an app on
+    this computer". ``x-evil://claude.ai/cb`` shows as
+    ``x-evil://claude.ai``, never as ``claude.ai``.
+    """
+    parts = urlsplit(uri)
+    scheme = parts.scheme
+    if scheme in ("http", "https") and parts.hostname:
+        host = ascii_host(parts.hostname)
+        if ":" in host:
+            host = f"[{host}]"
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        return (f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}", False)
+    if parts.netloc:
+        return f"{scheme}://{parts.netloc}", True
+    return f"{scheme}:", True
 
 
 # ── The redirect match (EA-2c, spec §10.4, decision EA3-23) ─────────────────
@@ -468,6 +509,7 @@ __all__ = [
     "issuer",
     "parse_scope",
     "pkce_matches",
+    "redirect_display",
     "redirect_host",
     "redirect_uri_matches",
     "resource",
