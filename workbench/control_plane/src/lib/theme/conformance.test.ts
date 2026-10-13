@@ -477,12 +477,10 @@ describe("no raw Tailwind palette colours", () => {
     // and the live spinner is text-primary (lib/chatSteer.ts).
     "components/AgentChat.tsx": 3,
     "components/AgentStatusBar.tsx": 4,
-    "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,
     "components/ArtifactViewerModal.tsx": 5,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
-    "components/TodoPanel.tsx": 1,
     "lib/providers.ts": 30,
   };
 

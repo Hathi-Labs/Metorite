@@ -29,15 +29,24 @@
  * task pill, a person, a date. Numbered keys (`task 1`, `task 2`) are one
  * list. A field that only repeats the detail is not drawn twice.
  *
+ * One look with the other chat cards (owner report, 2026-10-13). The card
+ * draws through `RollupCard` with `header="own"`, like the question card
+ * beside it: a compact title row ("Approval", the shield icon, the pager),
+ * then the summary and the rows in the body, then Approve and Reject. It
+ * waits on the member, so it never folds.
+ *
  * Fences: `src/lib/confirmationQueue.test.ts` (the parse, the hidden ids and
- * the paint) and `src/lib/cardFields.test.ts` (the words and the kinds).
+ * the paint), `src/lib/cardFields.test.ts` (the words and the kinds) and
+ * `src/lib/chatCardConformance.test.ts` (the header and the icon).
  */
 
 import { useEffect, useRef, useState } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
 import FencedText from "@/components/FencedText";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Button from "@/components/ui/Button";
+import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
 import { cardKey, fieldSpec, repeatsLine } from "@/lib/cardFields";
@@ -54,6 +63,11 @@ import { unfenced } from "@/lib/fencedText";
  * Fence: `src/lib/confirmationQueue.test.ts` ("a new card is not armed").
  */
 export const ARM_MS = 400;
+
+/** The title row of a confirmation card. The summary is in the body. */
+export const CONFIRM_TITLE = "Approval";
+/** The line beside Approve and Reject. */
+export const CONFIRM_HINT = "The assistant waits for your decision.";
 
 export interface CardField {
   /** The key as the tool printed it (`due_at`, `task 1`). */
@@ -236,6 +250,8 @@ interface ConfirmationCardProps {
    * (review round 1: a body's « oui » lost its quotes on the consent card).
    */
   fenced?: boolean;
+  /** The roll-up's id: stable for the card's life (its queue key). */
+  id?: string;
 }
 
 /** A line of card text: fenced names as tokens, or the text as sent. */
@@ -254,6 +270,7 @@ export default function ConfirmationCard({
   disabled = false,
   position,
   fenced = false,
+  id,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -291,22 +308,15 @@ export default function ConfirmationCard({
     if (armed && approvable) onApprove();
   };
   return (
+    <RollupCard id={id ?? "confirm"} title={CONFIRM_TITLE} icon="ShieldCheck" header="own" pending>
     <section
       aria-label={fenced ? unfenced(summary) : summary}
       data-confirmation-card=""
-      className="my-3 rounded-xl border border-border bg-card overflow-hidden"
+      className={CARD_FRAME_CLASS}
     >
-      <div className={`flex items-start gap-2 px-4 pt-3 ${hasBody ? "" : "pb-3"}`}>
-        <Icon name="ShieldCheck" size={14} className="mt-0.5 shrink-0 text-muted-foreground" />
+      <div className="flex min-w-0 items-center gap-2">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-foreground break-words">
-            <CardText text={summary} fenced={fenced} />
-          </p>
-          {rest && (
-            <p className="mt-0.5 text-xs text-muted-foreground break-words">
-              <CardText text={rest} fenced={fenced} />
-            </p>
-          )}
+          <RollupHeader />
         </div>
         {many && (
           <div className="flex shrink-0 items-center gap-0.5" data-confirmation-pager="">
@@ -333,8 +343,19 @@ export default function ConfirmationCard({
         )}
       </div>
 
+      <RollupBody className="space-y-2 pt-1.5">
+        <div className="min-w-0">
+          <p className="break-words text-xs font-medium leading-relaxed text-foreground">
+            <CardText text={summary} fenced={fenced} />
+          </p>
+          {rest && (
+            <p className="mt-0.5 break-words text-[11px] text-muted-foreground">
+              <CardText text={rest} fenced={fenced} />
+            </p>
+          )}
+        </div>
       {hasBody && (
-        <div className="space-y-2 px-4 py-3">
+        <div className="space-y-2">
           {hasRows && (
             <ul className="space-y-1.5" data-confirmation-rows="" aria-label="Rows this approval covers">
               {rows.length === 0 && (
@@ -420,7 +441,7 @@ export default function ConfirmationCard({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
           icon="Check"
@@ -440,10 +461,10 @@ export default function ConfirmationCard({
         >
           Reject
         </Button>
-        <span className="ml-auto text-[10px] text-muted-foreground">
-          Agent is waiting for your decision
-        </span>
+        <span className="text-[10px] text-muted-foreground">{CONFIRM_HINT}</span>
       </div>
+      </RollupBody>
     </section>
+    </RollupCard>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Button from "@/components/ui/Button";
 import { RUN_ERROR_WORDS, noticeBody, type RunErrorView } from "@/lib/runErrors";
 import { openActivity } from "@/lib/shell/ActivityControl";
@@ -24,17 +25,26 @@ import { openActivity } from "@/lib/shell/ActivityControl";
  *   failed for good, and there is no raw text to show (incident 2026-10-09).
  *   Its button carries the code's own verb, such as "Continue".
  *
- * Fences: `runErrors.test.ts`, which renders this card.
+ * - One look with the other chat cards (owner report, 2026-10-13): the
+ *   shared frame size, and a title row that is `RollupHeader`, with an icon
+ *   from the app set (`CircleAlert` for an error, `Info` for a notice). It
+ *   draws through `RollupCard`, so a member may fold it like any card.
+ *
+ * Fences: `runErrors.test.ts`, which renders this card, and
+ * `chatCardConformance.test.ts`.
  */
 export function ErrorCardView({
   error,
   onRetry,
   defaultOpen = false,
+  id,
 }: {
   error: RunErrorView;
   onRetry?: () => void;
   /** Tests render the fold open. A member opens it by hand. */
   defaultOpen?: boolean;
+  /** The roll-up's id: stable for the card's life (its message id). */
+  id?: string;
 }) {
   const [copied, setCopied] = React.useState(false);
   const [expanded, setExpanded] = React.useState(defaultOpen);
@@ -49,18 +59,21 @@ export function ErrorCardView({
   };
 
   return (
+    <RollupCard id={id ?? `error:${error.code}`} title={words.title} icon={notice ? "Info" : "CircleAlert"} header="own">
     <div
       data-chat-error-card
       data-tone={notice ? "notice" : "error"}
       role={notice ? "status" : "alert"}
       className={[
-        "w-full min-w-0 max-w-full overflow-hidden rounded-xl border px-4 py-3 text-sm",
+        "w-full min-w-0 max-w-full overflow-hidden rounded-lg border px-2.5 py-2",
         notice ? "border-warning/40 bg-warning/10" : "border-destructive/40 bg-destructive/10",
       ].join(" ")}
     >
-      <p className={`min-w-0 font-semibold wrap-anywhere ${notice ? "text-foreground" : "text-destructive"}`}>
-        {words.title}
-      </p>
+      <RollupHeader
+        className={`text-xs ${notice ? "text-foreground" : "text-destructive"}`}
+        titleClassName={`font-semibold wrap-anywhere ${notice ? "text-foreground" : "text-destructive"}`}
+      />
+      <RollupBody>
       <p className="mt-1 min-w-0 text-xs leading-relaxed text-foreground wrap-anywhere">{noticeBody(words, error.raw)}</p>
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
         {onRetry && words.retry && (
@@ -97,7 +110,9 @@ export function ErrorCardView({
           )}
         </div>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -108,7 +123,7 @@ export function ErrorCardView({
  * retry: it opens the activity panel, so the member can stop a run. It never
  * re-sends the turn.
  */
-export default function ErrorCard({ error, onRetry }: { error: RunErrorView; onRetry?: () => void }) {
+export default function ErrorCard({ error, onRetry, id }: { error: RunErrorView; onRetry?: () => void; id?: string }) {
   const action = error.code === "too_many_runs" ? openActivity : onRetry;
-  return <ErrorCardView error={error} onRetry={action} />;
+  return <ErrorCardView error={error} onRetry={action} id={id} />;
 }
