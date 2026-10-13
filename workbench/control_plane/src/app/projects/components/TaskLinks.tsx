@@ -36,6 +36,8 @@ export function TaskLinks({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A failed read says so: "no links" would be a false answer.
+  const [unread, setUnread] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -45,8 +47,8 @@ export function TaskLinks({
         if (live) setRows(res.rows);
       })
       .catch(() => {
-        // A card with no links section beats a card that fails to open.
-        if (live) setRows([]);
+        // The card still opens. The section says the read failed.
+        if (live) setUnread(true);
       });
     return () => {
       live = false;
@@ -73,6 +75,8 @@ export function TaskLinks({
         );
         setDraft("");
       } catch (err) {
+        // Keep what was pasted or typed, so a fix is one edit away.
+        setDraft(value);
         setError(err instanceof Error ? err.message : "Couldn't add the link.");
       } finally {
         setBusy(false);
@@ -94,6 +98,9 @@ export function TaskLinks({
 
   return (
     <div className="space-y-1">
+      {unread ? (
+        <p className="text-xs text-muted-foreground">Couldn&apos;t load the links. Reopen the task to try again.</p>
+      ) : null}
       {rows.map((row) => {
         const { main, aside } = refNames(row);
         const state = refState(row.state);
@@ -132,7 +139,9 @@ export function TaskLinks({
       <Input
         icon="Link"
         value={draft}
-        disabled={busy}
+        // Not `disabled` while adding: a disabled field drops the focus.
+        // `add` ignores a second Enter until the first one answers.
+        aria-busy={busy}
         onChange={(e) => {
           setDraft(e.target.value);
           if (error) setError(null);

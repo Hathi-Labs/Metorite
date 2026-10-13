@@ -988,6 +988,10 @@ export function TaskBody({
             icon="Link"
             count={linkCount}
             className={twoColumn ? "min-w-0" : undefined}
+            // Mounted while folded: the list reports the header's count, and
+            // a folded, unmounted list left the last task's count behind
+            // (review of WS-57 TR-2).
+            keepMounted
             {...fold("refs")}
           >
             <TaskLinks key={task.id} taskId={task.id} onCount={setLinkCount} />
