@@ -2368,14 +2368,23 @@ export const attachmentsApi = {
       body,
     });
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    // WS-57 TR-4: a refusal from a hop in front of the gateway (a proxy's
+    // size limit) is not JSON. Its status still reaches the member, never a
+    // parse error.
+    let parsed: { detail?: unknown } | null = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
     if (!res.ok) {
+      const detail = parsed?.detail;
       throw new ProjectsApiError(
-        parsed?.detail ?? `Upload failed (${res.status})`,
+        typeof detail === "string" && detail ? detail : `Upload failed (${res.status})`,
         res.status
       );
     }
-    return parsed as AttachmentRow;
+    return parsed as unknown as AttachmentRow;
   },
 
   detach: (taskId: string, attachmentId: string) =>

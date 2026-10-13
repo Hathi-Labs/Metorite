@@ -11,8 +11,9 @@
  * THE RULE. A URL that would leave the app's origin does not load on render.
  * `MarkdownImage` draws it as a placeholder that names the host, and only a
  * member's click loads it. A `data:` URI, a `blob:` URL, a same-origin page
- * or asset path, and the workspace file proxy that `resolveMediaSrc` builds
- * load at once. Every other same-origin `/api/` path counts as remote, and
+ * or asset path, the workspace file proxy that `resolveMediaSrc` builds and
+ * one task attachment (`SAFE_ATTACHMENT_PATH`, WS-57 TR-4) load at once.
+ * Every other same-origin `/api/` path counts as remote, and
  * so does a same-origin URL with an absolute URL in its query or an escaped
  * `?` in its path: `/api/email/image-proxy?url=…` fetches any public URL
  * server-side, so the data still leaves.
@@ -135,6 +136,25 @@ function embeddedHost(text: string): string | null {
 const SAFE_API_PATH = /^\/api\/agent\/workspace\/[A-Za-z0-9._~-]+\/file$/;
 
 /**
+ * The second same-origin API path that loads at once (WS-57 TR-4): one file
+ * attached to a task, which a pasted image in a description or a comment
+ * points at. Matched on the RAW pathname, like the path above.
+ *
+ * Why it is safe: the gateway route serves the bytes of ONE attachment, and
+ * only when the member can see a task it hangs off. It forwards nothing, and
+ * it takes no query. The exact shape keeps every near miss gated: another id
+ * shape, a query string, an extra segment, a `..` and an escape (`%2F`).
+ * `app/projects/lib/inlineUploads.ts` builds URLs of this shape.
+ */
+const SAFE_ATTACHMENT_PATH =
+  /^\/api\/projects\/attachments\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[^/?#%\\]+$/;
+
+/** True for a raw pathname that `remoteHost` lets load at once. */
+function isSafeApiPath(pathname: string): boolean {
+  return SAFE_API_PATH.test(pathname) || SAFE_ATTACHMENT_PATH.test(pathname);
+}
+
+/**
  * The host a src would make the browser contact, when that is NOT the app
  * itself — or `null` when the src is safe to load at once.
  *
@@ -173,8 +193,12 @@ export function remoteHost(src: string, origin: string = appOrigin()): string | 
     const host = embeddedHost(value);
     if (host) return host;
   }
-  // An API route other than the workspace file proxy may forward it.
-  if (/^\/api(\/|$)/i.test(path) && !SAFE_API_PATH.test(url.pathname)) return url.host;
+  // An API route other than the two safe paths may forward it. A query on
+  // a task attachment is gated too: that route takes none.
+  if (/^\/api(\/|$)/i.test(path)) {
+    if (!isSafeApiPath(url.pathname)) return url.host;
+    if (SAFE_ATTACHMENT_PATH.test(url.pathname) && (url.search || url.hash)) return url.host;
+  }
   return null;
 }
 
