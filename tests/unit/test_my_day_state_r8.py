@@ -28,7 +28,7 @@ A member with no Calendar pane takes the other path to the day hours
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -192,32 +192,30 @@ class TestTheTable:
 
     def test_the_checks_refuse_an_unknown_state_and_reason(self, promoted):  # noqa: F811
         for column, value in (("state", "hidden"), ("dismiss_reason", "boring")):
-            with pytest.raises(DBAPIError, match="my_day_card_state_"):
-                with promoted.admin_engine.begin() as c:
-                    c.execute(text(
-                        "INSERT INTO my_day_card_state (organization_id, member_email, "
-                        "signal_id, kind, state, dismiss_reason) VALUES (CAST(:o AS uuid), "
-                        ":m, 'tasks:check', 'overdue', :s, :r)"),
-                        {"o": promoted.org_b, "m": A,
-                         "s": value if column == "state" else "seen",
-                         "r": value if column == "dismiss_reason" else None})
+            with (pytest.raises(DBAPIError, match="my_day_card_state_"),
+                  promoted.admin_engine.begin() as c):
+                c.execute(text(
+                    "INSERT INTO my_day_card_state (organization_id, member_email, "
+                    "signal_id, kind, state, dismiss_reason) VALUES (CAST(:o AS uuid), "
+                    ":m, 'tasks:check', 'overdue', :s, :r)"),
+                    {"o": promoted.org_b, "m": A,
+                     "s": value if column == "state" else "seen",
+                     "r": value if column == "dismiss_reason" else None})
 
 
 class TestTheTenancyBoundary:
     async def test_i_org_b_reads_none_of_org_as_rows(self, promoted, seeded):  # noqa: F811
         from gateway.db import tenant_session
 
-        async with _as_member(promoted, promoted.org_b):
-            async with tenant_session() as db:
-                in_b = (await db.execute(text(
-                    "SELECT count(*) FROM my_day_card_state WHERE member_email = :m"),
-                    {"m": X})).scalar_one()
-                via_route = await state._read_rows(db, X, ["tasks:org-a-only"])
-        async with _as_member(promoted, promoted.org_a):
-            async with tenant_session() as db:
-                in_a = (await db.execute(text(
-                    "SELECT count(*) FROM my_day_card_state WHERE member_email = :m"),
-                    {"m": X})).scalar_one()
+        async with _as_member(promoted, promoted.org_b), tenant_session() as db:
+            in_b = (await db.execute(text(
+                "SELECT count(*) FROM my_day_card_state WHERE member_email = :m"),
+                {"m": X})).scalar_one()
+            via_route = await state._read_rows(db, X, ["tasks:org-a-only"])
+        async with _as_member(promoted, promoted.org_a), tenant_session() as db:
+            in_a = (await db.execute(text(
+                "SELECT count(*) FROM my_day_card_state WHERE member_email = :m"),
+                {"m": X})).scalar_one()
         assert (in_b, via_route) == (0, {})
         assert in_a == 1  # non-vacuity: the row is there for its own org
 
@@ -227,13 +225,12 @@ class TestTheTenancyBoundary:
         from gateway.db import tenant_session
 
         with pytest.raises(DBAPIError, match="row-level security"):
-            async with _as_member(promoted, promoted.org_b):
-                async with tenant_session() as db:
-                    await db.execute(text(
-                        "INSERT INTO my_day_card_state (organization_id, member_email, "
-                        "signal_id, kind, state) VALUES (CAST(:o AS uuid), :m, "
-                        "'tasks:smuggled', 'overdue', 'dismissed')"),
-                        {"o": promoted.org_a, "m": X})
+            async with _as_member(promoted, promoted.org_b), tenant_session() as db:
+                await db.execute(text(
+                    "INSERT INTO my_day_card_state (organization_id, member_email, "
+                    "signal_id, kind, state) VALUES (CAST(:o AS uuid), :m, "
+                    "'tasks:smuggled', 'overdue', 'dismissed')"),
+                    {"o": promoted.org_a, "m": X})
         with promoted.admin_engine.connect() as c:
             assert c.execute(text(
                 "SELECT count(*) FROM my_day_card_state WHERE signal_id = 'tasks:smuggled'"
