@@ -14,8 +14,8 @@ import type { ConnectionInfo, CrmMode } from "./connect";
 
 export const SETUP_ANCHOR = "crm-setup";
 
-/** Where the banner and the title-bar line send an admin. */
-export const SETUP_HREF = "/crm?tab=settings";
+/** Where the banner and the title-bar line send an admin: the setup section (CRM-C1). */
+export const SETUP_HREF = "/crm?tab=settings&section=setup";
 
 /** The rows of the table in §19.11 item 1, and the case of another account. */
 export type HubState =

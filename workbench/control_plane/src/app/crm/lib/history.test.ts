@@ -6,6 +6,7 @@ import { pushView, replaceView } from "./history";
 
 /**
  * The fence for `history.ts`: a CRM view change makes no server request.
+ * Since CRM-C1 it also refuses a `next/link` `<Link>` under `src/app/crm`.
  * The runtime half is `e2e/crm-rail-held-request.spec.ts`, which holds the
  * server's answer and clicks the rail.
  *
@@ -60,6 +61,15 @@ function routerUses(src: string): string[] {
   return found;
 }
 
+/** A `next/link` import, in any form. The marker does not lift this one. */
+function linkUses(src: string): string[] {
+  const code = stripComments(src);
+  const found: string[] = [];
+  if (/from\s+["']next\/link["']/.test(code)) found.push("next/link");
+  if (/(?:import|require)\s*\(\s*["']next\/link["']\s*\)/.test(code)) found.push("next/link");
+  return found;
+}
+
 function crmFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -87,6 +97,16 @@ describe("the fence's detector", () => {
   });
 });
 
+describe("the next/link detector", () => {
+  it("refuses an import of next/link, and lets a comment name it", () => {
+    expect(linkUses('import Link from "next/link";')).toEqual(["next/link"]);
+    expect(linkUses("import NextLink from 'next/link';")).toEqual(["next/link"]);
+    expect(linkUses('const L = await import("next/link");')).toEqual(["next/link"]);
+    expect(linkUses("// a next/link <Link> waits on the server")).toEqual([]);
+    expect(linkUses('import { pushView } from "./history";')).toEqual([]);
+  });
+});
+
 describe("no CRM file changes the view through the Next router", () => {
   const files = crmFiles(CRM_DIR);
 
@@ -98,6 +118,17 @@ describe("no CRM file changes the view through the Next router", () => {
   it("finds no useRouter, router.push or router.replace", () => {
     const offenders = files
       .map((f) => ({ file: relative(CRM_DIR, f), uses: routerUses(readFileSync(f, "utf-8")) }))
+      .filter((o) => o.uses.length > 0);
+    expect(offenders).toEqual([]);
+  });
+
+  it("finds no next/link Link, which waits on the server as router.push does", () => {
+    // CRM-C1 (crm_platform.md §20.4 item 11): a `<Link>` click is a router
+    // push. A link in the CRM is an `<a>` whose click calls `pushView`.
+    // This file names `next/link` in its fixtures, so it skips itself.
+    const offenders = files
+      .filter((f) => f !== __filename)
+      .map((f) => ({ file: relative(CRM_DIR, f), uses: linkUses(readFileSync(f, "utf-8")) }))
       .filter((o) => o.uses.length > 0);
     expect(offenders).toEqual([]);
   });
