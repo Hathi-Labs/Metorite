@@ -4,14 +4,15 @@
 #964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
 dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
 migration 259, dark by the absence of a caller). MD-2a is BUILT (the card
-state on the server, migration 258).**
+state on the server, migration 258). MD-2b is BUILT (the card menu and the
+seen observer, dark behind `NEXT_PUBLIC_MY_DAY_FEED`).**
 
 **The server half of MD-2c is BUILT, 2026-10-14** (Handled in
 `GET /shell/feed`, no migration, dark by the absence of a caller).
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-2b,
-the client half of MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only),
-MD-7, MD-8, MD-9 and MD-12. Each ships dark.
+The rest of this file is not built. The open AGENT-SAFE tickets are the
+client half of MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7,
+MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -1775,6 +1776,57 @@ Done when:
    menu act with no bell change, and the fallback after 4 seconds.
 5. The `visual-review` skill runs in light mode, at compact density, under a
    changed accent and beside My Tasks. `conformance.test.ts` adds no budget.
+
+**BUILT 2026-10-14, on branch `my-day-feed-md2b`.** The gateway adds
+`restore` to `routes/shell/state.py`. The client is
+`src/lib/shell/feedState.ts`, the one client of `POST /api/shell/feed/state`.
+`feed.ts` keeps the state fields, the carry and the visit. `FeedCard.tsx`
+draws the dot, the marks, the menu, the pill and the Later fold.
+`needs.ts` holds the carrier's limit, `CARRIER_WAIT_MS`.
+
+The fences are `test_my_day_state.py`, `test_my_day_state_r8.py`,
+`feedState.test.ts`, `feed.test.ts`, `needs.test.ts`, `myDayPage.test.ts`
+and `e2e/my-day-feed.spec.ts`.
+
+The build made these choices, which this file did not fix:
+
+- **The Undo of "Not useful" clears `not_useful_at`.** The Undo says that the
+  act did not happen, so it must not count against the kind (§6.6, §7).
+- **A `restore` claims no row.** A card with no row, or a row that is not
+  snoozed or dismissed, gets no write. A `restore` counts no visit.
+- **The client sends one sighting of a card in 30 minutes at most**, for each
+  `state_fp`. The gateway counts two sightings in 30 minutes as one visit.
+- **The queue also sends its items when the column unmounts**, with
+  `keepalive`. A move to another app inside Metorite fires no `pagehide`.
+- **`acted` goes into the queue of the seen observer.** It is a record, so it
+  waits for the next send.
+- **Only a 5xx, a 502 or no answer keeps a batch.** Each 4xx drops it,
+  because the same body never passes.
+- **The carry reads the last answer of `fetchFeed`, not the cache entry.** A
+  Projects write drops the entry, and the read after a Done must still keep
+  a failed source's cards. The last answer is in memory, and a new member
+  starts with none.
+- **An `absent` source keeps its cards too.** Only `ok` with no cap may take
+  a card away.
+- **A card that a menu act hid is never carried.** It may come back from a
+  sound answer that its fetch began after the write, or after Undo.
+- **The overlay of a menu act ends** when an answer lands whose fetch began
+  after the write landed.
+- **Later is outside the cut of 20 cards.** It draws after the other groups,
+  folded, with all its cards.
+- **A card with no `state_fp` has no menu**, and the observer never sends it.
+- **After a menu act, the focus goes back to the "···" button.** When the card
+  left, the focus goes to the column's heading.
+
+**Known limits of MD-2b.** A later ticket owns each one.
+
+- **A visit starts with the first answer that the column draws.** On a
+  revisit that is the cached answer, so the new cards of the read behind it
+  wait behind the pill.
+- **A sighting that a 4xx refused** is not sent again for 30 minutes.
+- **A card more than twice as tall as the window** is never half in view, so
+  it is never seen.
+- **A batch that `pagehide` sends** gets no second try when it fails.
 
 ### MD-2c · Handled and the honest summary — AGENT-SAFE, after MD-2a
 
