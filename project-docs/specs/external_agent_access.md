@@ -278,6 +278,7 @@ A spec audit of EA-3 on 2026-10-11 gave NO-GO. The spec had no testable done-whe
 |---|---|---|
 | EA3-25 | EA-4 splits into EA-4a, EA-4b and EA-4c. EA-4b and EA-4c are NOT go-live gates for a pilot. Until EA-4c, approve binds the organization of the member's current session, and the consent page names that organization. Until EA-4b, a member revokes through the client (`/oauth/revoke`), or asks an admin. The go-live note of EA-10 must list both limits | §15 |
 | EA3-26 | The consent ticket lives in Redis, through the tenant-prefixed wrapper `acb_common.tenant_redis`. It adds no raw Redis client. `check` gives the ticket, and `approve` spends it with one `GETDEL` | §10.5 |
+| EA3-27 | **Owner decision, 2026-10-13.** Go-live is a pilot behind an organization allowlist, Fracktal first. `AGENT_ACCESS_ORGS` holds organization ids with a comma between them, and `*` allows each organization. An empty list allows none, so the default is fail-closed. Agent access is live for an organization only when the flag is on AND the list allows it. Four doors check the list: the consent routes, the token endpoint, the bearer check of `/mcp` and branch 0 | §10.6, §15 (EA-10p) |
 
 ## 7. The connection model
 
@@ -813,6 +814,29 @@ The consent page is `/connect/authorize` on the control plane. A member sees it 
 - It has an Approve button and a Deny button. Deny navigates to `deny_redirect_to`.
 - ⚠️ **The approve gate (double-clickjacking).** An attacker's page can move its opener to this page between the two clicks of a double-click. So Approve stays off until the page is visible and has focus, and then for 500 ms more. A `blur` or a change to hidden starts the wait again. The click checks the gate again. Fences: `consent.test.ts` and `e2e/connect-authorize.spec.ts`.
 
+### 10.6 The organization allowlist (EA3-27, slice EA-10p)
+
+The flag of §5.5 is global, so when it is on, each organization can connect an agent. The owner wants a pilot. A second setting limits agent access to the organizations that it names.
+
+**The setting.** `AGENT_ACCESS_ORGS` is the Setting `agent_access_orgs`, a string with the default `""`.
+
+- It holds organization ids with a comma between them. The parser removes the spaces around each id and compares the ids in lower case.
+- `*` allows each organization.
+- An empty value allows no organization. This is fail-closed: with the flag on and no list, no organization can connect.
+- The parser ignores an entry that is not a UUID and not `*`. Such an entry allows nothing.
+- `acb_auth.agent_oauth.org_allowed(organization_id)` is the one reader. It does not read the flag. Agent access is live for an organization only when `enabled()` and `org_allowed()` are both true.
+
+**The four doors.** Each door takes the organization from the session or from a token row, never from request input.
+
+1. **The consent routes.** `check` and `approve` refuse a session whose organization is not on the list. The refusal comes before the client fetch, the consent ticket and the code. The answer is 403 with the error `org_not_enabled`. The consent page shows "Your organization has not turned on agent connections yet."
+2. **The token endpoint.** The store refuses a code exchange and a refresh for an organization that is not on the list, and the edge answers `invalid_grant`. The refresh check comes before the spend, so a refused refresh spends nothing.
+3. **The bearer check of `/mcp`.** A token whose organization is not on the list counts as no live token. The answer is 401 with `invalid_token`.
+4. **Branch 0 of the gateway.** `agent_tokens.read_live_connection` finds no connection for an organization that is not on the list. Branch 0 then refuses the request as it refuses a dead connection. The code of branch 0 does not change.
+
+**What the list does not stop.** `/oauth/revoke` still revokes a token of an organization that is not on the list, because a revoke only removes access.
+
+**Both units read it.** The gateway checks doors 1 and 4, and the edge checks doors 2 and 3. So the gateway unit and the edge unit must hold the same value. A change of the value is gate `enforcement-flip`. When an id leaves the list, the next call of that organization gets 401 and its next refresh gets `invalid_grant`.
+
 ## 11. Schema addition: task references
 
 A pull request, a commit and a branch are structured facts. A comment hides them, and a custom field cannot hold several. This spec proposes one table.
@@ -892,6 +916,7 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-7 | **Limits.** A per-connection and per-member limiter on the tenant-prefixed Redis wrapper. A 100-row cap | A test shows the 429 and the `Retry-After` value | AGENT-SAFE |
 | EA-8 | **Audit.** One `acb_audit.record` row per call, with `organization_id` set on the event. An admin read route and view | A denied call writes a row. The admin view lists calls by connection | AGENT-SAFE |
 | EA-9 | **Fences.** A tenant fence, a "no client header reaches the gateway" fence, a "no token forwarded" fence. `test_mcp_edge_coverage.py` lands earlier, in EA-3 (D15) | Each fence fails when a mutation breaks its rule (verified red first) | AGENT-SAFE |
+| EA-10p | **The organization allowlist (EA3-27, §10.6).** The Setting `agent_access_orgs`, the predicate `org_allowed` in `agent_oauth.py`, and a check at each of the four doors of §10.6. It ships dark, and the default allows no organization. EA-10 turns the flag on with `AGENT_ACCESS_ORGS=<the organization id of Fracktal>` | The parser: an empty value allows no organization, `*` allows each, a list works, the spaces go, and a bad entry allows nothing. Each door refuses an organization off the list and accepts one on it, and `*` accepts any. With the flag off, each door still refuses. R8, end to end: an allowed organization connects and lists tasks. Then it leaves the list, the next `tools/call` gets 401, and a refresh gets `invalid_grant`. Each door and the fail-closed rule go red under a named mutation | AGENT-SAFE |
 | EA-10 | **Deploy.** The unit file, the Caddy block, the DNS record, the Caddy header strip (§10.1, other control 3), the proof that `GATEWAY_INTERNAL_TOKEN` is provisioned (§10.1, other control 4), `agent_edge_signing_key` on both units and `agent_edge_gateway_url` on the edge (H-303), the flag | The flag turns ON for one test organization. The evidence is the deployed SHA and a real client round trip | OWNER-GATE |
 | EA-11 | **Hardening review.** An adversarial review of §10, then a second pass with a real outside client | Both reviews are recorded in this file | AGENT-SAFE |
 
@@ -1140,3 +1165,4 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **Choices this slice made.** A URI with no port shows `scheme://host`, with no port. The pin picker lists the nodes of `GET /projects/tree` in tree order, folders and spaces too, because a pin covers its subtree. `test_mcp_edge_signing.py` reads `_PRIVATE_SCHEME` in place of the removed `_SCHEME`.
 - 2026-10-13 — Fix round 1 of EA-4a, after the adversarial review. Approve waits for 500 ms of focus. The headline names the verified host, and the client name is a claim. A port 0 redirect is refused. A lost session is a 401. A retry after a 503 gets a fresh ticket. §17 records the Cursor decision.
 - 2026-10-13 — Fix round 2 of EA-4a. Only a JSON 503 from `approve` gets a fresh ticket and a retry. A lost answer or an answer that is not JSON ends the flow, so a retry never makes a second connection.
+- 2026-10-13 — The owner took EA3-27 (§6.1): go-live is a pilot behind an organization allowlist, Fracktal first. §10.6 holds the rules, and §15 adds the slice EA-10p. No code changed.
