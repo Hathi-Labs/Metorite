@@ -209,8 +209,10 @@ DAILY_CREDIT_BUDGET = int(ASSUMED_DAILY_CREDITS * BUDGET_FRACTION)
 #: Stop when the provider reports fewer credits than this.
 CREDITS_FLOOR = 1_000
 
-#: CRM-Q10: the credits that discovery may spend when the org has no profile
-#: and the run uses the default budget, also when that budget is spent. One
+#: CRM-Q10: the credits that discovery may spend while the edition is unknown
+#: (no profile, or an edition that the provider did not name), the profile is
+#: absent or 24 hours old, and the run uses the default budget. It holds also
+#: when that budget is spent (``_discovery_allowance_due``). One
 #: discovery costs 2 + 2 x 4 calls plus one for each Deals layout, so 11 with
 #: one layout (``test_crm_discovery.py``). 25 covers 15 Deals layouts, or 14
 #: retries. Without it, an org whose profile was dropped after it spent the
@@ -1631,20 +1633,27 @@ def _discovery_due(ctx: _Ctx) -> bool:
 
 
 def _discovery_allowance_due(ctx: _Ctx) -> bool:
-    """CRM-Q10: the edition is not known, discovery is due, the run uses the
-    default budget, and less than :data:`DISCOVERY_ALLOWANCE` of it is left.
+    """CRM-Q10: the edition is not known, the profile is absent or at least
+    :data:`DISCOVERY_EVERY` old, the run uses the default budget, and less than
+    :data:`DISCOVERY_ALLOWANCE` of it is left.
 
     "Not known" is no profile, or a profile whose edition the provider did not
     name, so the budget is the floor. Then discovery may spend the allowance,
-    and it reads before the other steps. ``_discovery_due`` holds it to once in
-    24 hours, also when the org section stays unreadable. A known edition never
+    and it reads before the other steps. The age rule holds it to once in 24
+    hours. ``_discovery_due`` alone does not: pending module fields make
+    discovery due after one hour (re-review, 2026-10-13). A known edition never
     gets it, and neither does a test budget (``credit_budget``).
     """
     if not ctx.budget_is_default:
         return False
     if profiles.sync_budget(ctx.profile.profile if ctx.profile else None) is not None:
         return False
-    if not _discovery_due(ctx):
+    current = ctx.profile
+    if (
+        current is not None
+        and current.fetched_at is not None
+        and ctx.started - current.fetched_at < DISCOVERY_EVERY
+    ):
         return False
     left = ctx._budget_left()
     return left is not None and left < DISCOVERY_ALLOWANCE
