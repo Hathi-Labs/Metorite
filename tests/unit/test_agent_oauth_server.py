@@ -1968,6 +1968,48 @@ class TestTheOrgAllowlistOnARealDatabase:
         assert back.status_code == 200, back.text
         assert not _connection(promoted, _connection_id_of_code(promoted, code)).revoked
 
+    async def test_a_replay_off_the_list_still_revokes_the_connection(
+            self, promoted, web, monkeypatch):
+        """Fix round 1. The reuse check comes before the list check. A thief
+        rotates r1 to r2 while the organization is listed. The organization
+        leaves the list, and r1 comes again: that is a reuse, so the store
+        revokes the connection. When the organization comes back, r2 is dead."""
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted)
+            r1 = (await _token(_exchange(code))).json()["refresh_token"]
+            rotated = await _token(_refresh_form(r1))
+            assert rotated.status_code == 200, rotated.text
+            r2 = rotated.json()["refresh_token"]
+
+            _orgs(monkeypatch, promoted.org_b)
+            replay = await agent_tokens.rotate_refresh(r1, client_id=CLIENT)
+            assert isinstance(replay, agent_tokens.Refused)
+            assert replay.reason == agent_tokens.REUSED
+            assert _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+
+            _orgs(monkeypatch, promoted.org_a)
+            after = await agent_tokens.rotate_refresh(r2, client_id=CLIENT)
+            through_edge = await _token(_refresh_form(r2))
+        assert isinstance(after, agent_tokens.Refused)
+        assert after.reason == agent_tokens.CONNECTION_DEAD
+        assert through_edge.json() == _INVALID_GRANT
+
+    async def test_another_client_off_the_list_revokes_nothing(
+            self, promoted, web, monkeypatch):
+        """A spent refresh token that ANOTHER client presents is not a reuse,
+        on the off-list path too."""
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted)
+            r1 = (await _token(_exchange(code))).json()["refresh_token"]
+            assert (await _token(_refresh_form(r1))).status_code == 200
+            _orgs(monkeypatch, "")
+            other = await agent_tokens.rotate_refresh(r1, client_id=OTHER_CLIENT)
+        assert isinstance(other, agent_tokens.Refused)
+        assert other.reason == agent_tokens.ORG_NOT_ALLOWED
+        assert not _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+
     async def test_a_star_refreshes_any_organization(self, promoted, web, monkeypatch):
         _orgs(monkeypatch, promoted.org_b)
         async with tenant_engine_scope(promoted.app_dsn):

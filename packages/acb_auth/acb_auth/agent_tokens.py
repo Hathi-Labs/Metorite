@@ -83,7 +83,8 @@ store that must work before a tenant is known.
    that ``agent_oauth.org_allowed`` refuses gets no token and no connection.
    :func:`issue_tokens` and :func:`rotate_refresh` answer
    :data:`ORG_NOT_ALLOWED`. The refresh check comes BEFORE the spend, so it
-   spends nothing. :func:`read_live_connection` answers ``None``, so branch
+   spends nothing. It comes AFTER the reuse check (fix round 1): a replay of
+   a spent refresh token still revokes the connection, list or no list. :func:`read_live_connection` answers ``None``, so branch
    0 refuses. The organization is the one of the token row or the connection
    row, never an argument. :func:`lookup_token` does NOT check the list:
    ``/oauth/revoke`` must still find a token to revoke it, and the edge
@@ -969,6 +970,17 @@ async def issue_tokens(
     return await _run(lambda s: _issue_in(s, grant, with_refresh=with_refresh))
 
 
+def _same_presentation(state: Any, client_id: str, resource: str | None) -> bool:
+    """True when the refresh token's own client presents it for its resource.
+
+    The same rule as the spend: an omitted resource matches any. A token that
+    another client presents is not a reuse, so it revokes nothing.
+    """
+    return state.client_id == client_id and (
+        resource is None or state.resource == resource
+    )
+
+
 async def _rotate_in(
     session: Any, hashed: str, client_id: str, resource: str | None
 ) -> IssuedTokens | Refused:
@@ -986,13 +998,28 @@ async def _rotate_in(
         return Refused(INVALID)
     organization_id = str(peek.organization_id)
     connection_id = str(peek.connection_id)
-    # Rule 8: checked BEFORE the spend, so a refused refresh spends nothing.
-    if not agent_oauth.org_allowed(organization_id):
-        return Refused(ORG_NOT_ALLOWED, connection_id, organization_id)
 
     await _bind(session, organization_id)
     if not await _lock_live_connection(session, organization_id, connection_id):
         return Refused(CONNECTION_DEAD, connection_id, organization_id)
+
+    # Rule 8 (fix round 1). An organization off the list gets no token, and
+    # the refusal spends nothing. ⚠️ The reuse check comes FIRST: a replay
+    # of a spent refresh token still revokes the connection, whatever the
+    # list says. Else the theft signal is lost, and a thief's rotated chain
+    # lives again when the organization comes back on the list.
+    if not agent_oauth.org_allowed(organization_id):
+        state = (
+            await session.execute(text(_REFRESH_STATE_SQL), {"hash": hashed})
+        ).one_or_none()
+        if (
+            state is not None
+            and state.used_at is not None
+            and _same_presentation(state, client_id, resource)
+        ):
+            await _revoke_in(session, organization_id, connection_id)
+            return Refused(REUSED, connection_id, organization_id)
+        return Refused(ORG_NOT_ALLOWED, connection_id, organization_id)
 
     row = (
         await session.execute(
@@ -1006,10 +1033,7 @@ async def _rotate_in(
         ).one_or_none()
         if state is None:
             return Refused(INVALID)
-        # The same rule as the spend: an omitted resource matches any.
-        if state.client_id != client_id or (
-            resource is not None and state.resource != resource
-        ):
+        if not _same_presentation(state, client_id, resource):
             return Refused(WRONG_CLIENT, connection_id, organization_id)
         if state.used_at is not None:
             # We hold the connection lock, so this revoke needs no upgrade and

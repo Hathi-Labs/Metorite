@@ -837,6 +837,16 @@ The flag of §5.5 is global, so when it is on, each organization can connect an 
 
 **Both units read it.** The gateway checks doors 1 and 4, and the edge checks doors 2 and 3. So the gateway unit and the edge unit must hold the same value. A change of the value is gate `enforcement-flip`. When an id leaves the list, the next call of that organization gets 401 and its next refresh gets `invalid_grant`.
 
+⚠️ **A unit reads the list once, at process start.** `get_settings` is `lru_cache`d, so an edit of the env file changes nothing in a running unit. To change the list:
+
+1. Set the same `AGENT_ACCESS_ORGS` in the env of the gateway and of the edge.
+2. Restart the gateway (`acb-gateway`).
+3. Restart the edge (`acb-agent-edge`).
+
+Until both units restart, the old list stays in force on the unit that did not restart.
+
+**A replay still revokes.** The refresh path runs the reuse check before the list check (fix round 1). So a replay of a spent refresh token revokes its connection, also when the organization is off the list.
+
 ## 11. Schema addition: task references
 
 A pull request, a commit and a branch are structured facts. A comment hides them, and a custom field cannot hold several. This spec proposes one table.
@@ -916,7 +926,7 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-7 | **Limits.** A per-connection and per-member limiter on the tenant-prefixed Redis wrapper. A 100-row cap | A test shows the 429 and the `Retry-After` value | AGENT-SAFE |
 | EA-8 | **Audit.** One `acb_audit.record` row per call, with `organization_id` set on the event. An admin read route and view | A denied call writes a row. The admin view lists calls by connection | AGENT-SAFE |
 | EA-9 | **Fences.** A tenant fence, a "no client header reaches the gateway" fence, a "no token forwarded" fence. `test_mcp_edge_coverage.py` lands earlier, in EA-3 (D15) | Each fence fails when a mutation breaks its rule (verified red first) | AGENT-SAFE |
-| EA-10p | **BUILT 2026-10-13, dark, not merged** (branch `ws55-ea10p-org-allowlist`). **The organization allowlist (EA3-27, §10.6).** The Setting `agent_access_orgs`, the predicate `org_allowed` in `agent_oauth.py`, and a check at each of the four doors of §10.6. It ships dark, and the default allows no organization. EA-10 turns the flag on with `AGENT_ACCESS_ORGS=<the organization id of Fracktal>` | The parser: an empty value allows no organization, `*` allows each, a list works, the spaces go, and a bad entry allows nothing. Each door refuses an organization off the list and accepts one on it, and `*` accepts any. With the flag off, each door still refuses. R8, end to end: an allowed organization connects and lists tasks. Then it leaves the list, the next `tools/call` gets 401, and a refresh gets `invalid_grant`. Each door and the fail-closed rule go red under a named mutation | AGENT-SAFE |
+| EA-10p | **BUILT 2026-10-13, dark, not merged** (branch `ws55-ea10p-org-allowlist`). **The organization allowlist (EA3-27, §10.6).** The Setting `agent_access_orgs`, the predicate `org_allowed` in `agent_oauth.py`, and a check at each of the four doors of §10.6. It ships dark, and the default allows no organization. EA-10 turns the flag on with `AGENT_ACCESS_ORGS=<the organization id of Fracktal>` on both units. Then it restarts `acb-gateway` and `acb-agent-edge`, because each unit reads the list only at process start | The parser: an empty value allows no organization, `*` allows each, a list works, the spaces go, and a bad entry allows nothing. Each door refuses an organization off the list and accepts one on it, and `*` accepts any. With the flag off, each door still refuses. R8, end to end: an allowed organization connects and lists tasks. Then it leaves the list, the next `tools/call` gets 401, and a refresh gets `invalid_grant`. Each door and the fail-closed rule go red under a named mutation | AGENT-SAFE |
 | EA-10 | **Deploy.** The unit file, the Caddy block, the DNS record, the Caddy header strip (§10.1, other control 3), the proof that `GATEWAY_INTERNAL_TOKEN` is provisioned (§10.1, other control 4), `agent_edge_signing_key` on both units and `agent_edge_gateway_url` on the edge (H-303), the flag | The flag turns ON for one test organization. The evidence is the deployed SHA and a real client round trip | OWNER-GATE |
 | EA-11 | **Hardening review.** An adversarial review of §10, then a second pass with a real outside client | Both reviews are recorded in this file | AGENT-SAFE |
 
@@ -1171,3 +1181,4 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The doors.** `agent_access.py` refuses `check` and `approve` with 403 `org_not_enabled` before the client fetch and the ticket. `agent_tokens` refuses a code exchange and a refresh with `ORG_NOT_ALLOWED`, and the refresh check comes before the spend. `bearer.py` answers 401. `read_live_connection` checks the organization of the row, so branch 0 refuses. Branch 0 and its digest do not change. The consent page shows the text of `org_not_enabled`.
   - **The fences.** `test_agent_oauth_server.py` holds the parser and doors 1 and 2. `test_mcp_edge_protocol.py` holds door 3 and the R8 round trip: connect, list, leave the list, get 401 and `invalid_grant`, come back. `test_mcp_edge_authority.py` holds door 4. `consent.test.ts` holds the page text. Each door and the fail-closed rule went red under a named mutation.
   - **Choices this slice made.** A code exchange for an organization that left the list spends the code. The refresh check comes before the spend, so the client can refresh again when the organization comes back. `lookup_token` does not check the list, so `/oauth/revoke` still works.
+- 2026-10-13 — Fix round 1 of EA-10p, after the review. The refresh path now runs the reuse check before the list check. So a replay of a spent refresh token revokes the connection, also when the organization is off the list. §10.6 and the EA-10p row now say that each unit reads the list at process start, so a change needs a restart of `acb-gateway` and `acb-agent-edge`.
