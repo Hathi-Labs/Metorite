@@ -223,6 +223,9 @@ HARDENING_LINES = [
     "InaccessiblePaths=-/opt/acb/app/workbench -/opt/acb/app/apps/services/customer_console/.env"
     " -/opt/acb/app/.git",
     "InaccessiblePaths=-/opt/acb/app/data -/var/lib/acb-gateway -/var/cache/acb-gateway",
+    # The nightly dumps are 0664 under a 0775 directory (backup_db.sh sets
+    # no umask), so the dynamic uid could read every tenant's data there.
+    "InaccessiblePaths=-/opt/acb/backups -/opt/acb/data",
     "InaccessiblePaths=-/run/user -/run/docker.sock -/var/run/docker.sock -/etc/acb -/etc/sudoers.d",
     "ProtectProc=invisible",
     "RestrictSUIDSGID=yes",

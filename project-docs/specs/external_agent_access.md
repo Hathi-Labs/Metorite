@@ -961,6 +961,12 @@ sudo systemd-run --wait --pipe --quiet -p DynamicUser=yes -p ProtectHome=yes -p 
 sudo systemd-run --wait --pipe --quiet -p DynamicUser=yes sh -c 'for p in /opt/acb/app/.env /opt/acb/app/.env.* /opt/acb/app/.env-edit.*; do [ -e "$p" ] || continue; if [ -r "$p" ]; then echo "READABLE $p"; else echo "closed $p"; fi; done'
 ```
 
+2b. The sandbox hides the backups. The nightly dumps under `/opt/acb/backups` are 0664, because `backup_db.sh` sets no umask, so a bare `DynamicUser` could read them. The drop-in hides `/opt/acb/backups` and `/opt/acb/data`. This check applies those two lines, and the line prints `backups: closed`:
+
+```
+sudo systemd-run --wait --pipe --quiet -p DynamicUser=yes -p InaccessiblePaths=-/opt/acb/backups -p InaccessiblePaths=-/opt/acb/data sh -c 'ls /opt/acb/backups >/dev/null 2>&1 && echo "backups: READABLE" || echo "backups: closed"'
+```
+
 3. The unit hides the gateway data. The output lists `/opt/acb/app/.env`, `/opt/acb/app/data` and `/var/lib/acb-gateway`:
 
 ```
@@ -1086,6 +1092,7 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 - The edge allows only the origin of the issuer in `Origin` (§9.6). A client that runs in a browser on another origin gets 403. EA-11 checks the real clients.
 - Data that an agent reads goes to its provider. That is the customer's choice, and it is not a Metorite sub-processor. The terms page must say so. This is an owner and legal point (work_plan.md WS-37).
 - The company context is thin today (D-EA-6).
+- **Follow-up: the backup dumps are 0664.** `backup_db.sh` sets no umask, so each nightly dump under `/opt/acb/backups` is readable by any local user. The edge sandbox hides the folder. The backup job must still write its dumps at 0600, and fix the old ones. This belongs to WS-49 (box hardening), and no slice owns it yet.
 - **Follow-up: check assignees at the gateway.** `AssigneesIn` takes any string, so a member can store a short phrase as an assignee, and the edge can only bound it (§9.4). The gateway must check each new assignee against the member directory, or against the agent registry for `agent:<name>`, before it stores the value. This belongs to the Projects app (WS-27), not to the edge. No slice owns it yet.
 - A connection has no absolute maximum life. A thief who rotates a stolen refresh token at least once in 30 days keeps the connection alive until somebody revokes it. Proposal: an absolute cap, for example 365 days from `created_at`, as a `Settings` default. EA-4 decides it. EA-1 and EA-2a do not build it.
 - The consent routes of EA-2a trust the session alone. A cross-site request could drive `approve` while a member is signed in. EA-4 closes this with an `Origin` check, a `SameSite` session, no 3xx from approve and a one-time consent ticket from `check` (§15 EA-4).
@@ -1219,3 +1226,4 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The fence.** `TestThePoolCeilingFitsThePoolerInFront` now sums the gateway and the edge. It reads the edge pin from the table of §15.3, and an edge pool of 2 turns it red.
   - **The sync engine.** The edge never builds it. A test proves that no edge module imports `acb_graph`, and that the edge app builds no sync engine.
   - **The box check.** Step 4 of the pre-enable check reads the two pool lines of the edge env file. §17 holds the transaction pooler and the narrower database role for GA.
+- 2026-10-13 — Fix round 2 of the EA-10 deploy. The drop-in also hides `/opt/acb/backups` and `/opt/acb/data`. The nightly dumps there are 0664, so the dynamic uid could read the data of every tenant. Pre-enable check 2b proves the line on the box. A follow-up in §17 asks the backup job to write its dumps at 0600.
