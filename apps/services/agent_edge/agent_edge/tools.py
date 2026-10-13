@@ -1,14 +1,23 @@
 """The MCP tools of the edge, and the ONE response-mapping module (EA3-9).
 
 Spec ``project-docs/specs/external_agent_access.md`` §9.1, §9.4, §9.5 and
-§9.6. EA-3b-1 builds two of the seven read tools: ``list_tasks`` and
-``search_tasks``. EA-3b-2 adds the other five.
+§9.6. EA-3b-1 built ``list_tasks`` and ``search_tasks``. EA-3b-2 adds the
+other five read tools: ``whoami``, ``list_projects``, ``get_project``,
+``get_task`` and ``get_task_timeline``.
 
 **The tool record (§9.5).** Each :class:`Tool` declares its ``name``,
 ``title``, ``required_scope``, ``inputSchema``, ``outputSchema``, the four
 annotations and its routes. ``params`` maps each input to the route
-parameter it fills, such as ``text`` to ``q``. The fence
-``tests/unit/test_mcp_edge_coverage.py`` reads these records (rules 3 and 4).
+parameter it fills, such as ``text`` to ``q``. ``edge_inputs`` names each
+input that the edge applies itself, because the route takes no such
+parameter. The fence ``tests/unit/test_mcp_edge_coverage.py`` reads these
+records (rules 3 and 4).
+
+**The one mapping module (EA3-9).** This is the only edge module that may
+hold an identity literal such as ``"email"``, and only as a ``.get()``
+argument, a subscript index or a dict-display key. It imports nothing from
+``fastapi`` or ``starlette``. The AST tests of
+``tests/unit/test_agent_oauth_server.py`` hold both rules.
 
 **Pinned output fields (EA3-15).** Each tool copies only the keys that §9.1
 names from a gateway response, and drops every other key. A new column on a
@@ -29,7 +38,8 @@ gives the same member the same access, so the client would loop.
 **Time (EA3-17).** Each gateway request has 10 seconds
 (``gateway_client.REQUEST_TIMEOUT_S``). Each tool call has
 :data:`TOOL_TIMEOUT_S` for all of its requests. ``list_tasks`` makes at most
-1 + :data:`MAX_STATUS_READS` requests.
+1 + :data:`MAX_STATUS_READS` requests, ``get_task`` makes three and
+``get_project`` makes five. The other tools make one each.
 
 This module reads no request input: no header, no query and no form. The
 transport hands it the parsed arguments and the authenticated caller.
@@ -39,8 +49,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import agent_oauth
@@ -155,6 +166,133 @@ async def _get(ctx: Context, template: str, not_found: str, *,
     return _body_of(answer, not_found)
 
 
+async def _together(*reads: Coroutine[Any, Any, Any]) -> list[Any]:
+    """Run *reads* at the same time. When one fails, stop the others.
+
+    So no gateway request outlives the tool call that made it.
+    """
+    started = [asyncio.ensure_future(r) for r in reads]
+    try:
+        return list(await asyncio.gather(*started))
+    except BaseException:
+        for read in started:
+            read.cancel()
+        await asyncio.gather(*started, return_exceptions=True)
+        raise
+
+
+def _rows_of(body: Any) -> list[dict[str, Any]]:
+    """The ``rows`` of a list answer, or raise the busy text."""
+    rows = body.get("rows") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        raise ToolError(TEXT_BUSY)
+    return [r for r in rows if isinstance(r, dict)]
+
+
+# ── Pages (§9.1, "The opaque cursor") ───────────────────────────────────────
+
+
+def _page_of(ctx: Context, tool: str, args: Mapping[str, Any],
+             default_size: int, max_size: int) -> tuple[int, int]:
+    """``(page, size)``: from the cursor when the input holds one, else page 1.
+
+    A cursor of another tool, filter or connection is the bad-cursor error.
+    """
+    connection = ctx.caller.lookup.connection_id
+    if "cursor" not in args:
+        return 1, int(args.get("limit", default_size))
+    try:
+        position = cursor_mod.decode(ctx.key, args["cursor"], tool=tool,
+                                     arguments=args, connection_id=connection)
+    except cursor_mod.BadCursor as exc:
+        _log.info("agent_edge.bad_cursor", tool=tool, reason=str(exc),
+                  connection_id=connection)
+        raise ToolError(TEXT_BAD_CURSOR) from None
+    return position.page, min(position.size, max_size)
+
+
+def _next_cursor(ctx: Context, tool: str, args: Mapping[str, Any], *,
+                 page: int, size: int, total: int, shown: int) -> str | None:
+    """The cursor of the next page, or ``None`` on the last page."""
+    if page * size >= total or not shown:
+        return None
+    return cursor_mod.encode(ctx.key, tool=tool, page=page + 1, size=size,
+                             arguments=args,
+                             connection_id=ctx.caller.lookup.connection_id)
+
+
+# ── Values (§9.1 and §9.4) ──────────────────────────────────────────────────
+
+_ID_RE = re.compile(_UUID_PATTERN)
+
+#: A key-shaped string: a field name, a category, a link type.
+_KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+#: A member address. No space, so no sentence can hide in it.
+_EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]{1,255}")
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _compact(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _str_or_none(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _bool(value: Any) -> bool:
+    return value if isinstance(value, bool) else False
+
+
+def _id(value: Any) -> str | None:
+    """An id string, or ``None`` for any other value."""
+    return value if isinstance(value, str) and _ID_RE.fullmatch(value) else None
+
+
+def _key(value: Any) -> str | None:
+    """A key-shaped string, or ``None`` for any other value."""
+    return value if isinstance(value, str) and _KEY_RE.fullmatch(value) else None
+
+
+def _emails(value: Any) -> list[str]:
+    """The member addresses of a list. Any other item is dropped."""
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, str) and _EMAIL_RE.fullmatch(v)]
+
+
+def field_value(value: Any) -> Any:
+    """One custom field value, by the rule of §9.1.
+
+    A string is ``untrusted_text``. A list keeps each number and wraps each
+    other item as ``untrusted_text``. A number, a boolean and null stay as
+    they are. Any other shape is ``untrusted_text`` of its compact JSON.
+    """
+    if value is None or isinstance(value, bool) or _number(value):
+        return value
+    if isinstance(value, str):
+        return untrusted(value)
+    if isinstance(value, list):
+        return [v if _number(v) else untrusted(v if isinstance(v, str) else _compact(v))
+                for v in value]
+    return untrusted(_compact(value))
+
+
+def _untrusted_list(value: Any) -> list[dict[str, str] | None]:
+    """Each string of a list as ``untrusted_text``. Any other item is dropped."""
+    if not isinstance(value, list):
+        return []
+    return [untrusted(v) for v in value if isinstance(v, str)]
+
+
 # ── The input check (a small subset of JSON Schema) ─────────────────────────
 
 
@@ -184,8 +322,8 @@ def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
     """The arguments, when they match *schema*, else raise :class:`ToolError`.
 
     The schemas of this module use ``type``, ``properties``, ``required``,
-    ``additionalProperties: false``, ``minimum``, ``maximum``, ``minLength``,
-    ``maxLength`` and ``pattern``. The error text names the input (§9.6).
+    ``additionalProperties: false``, ``enum``, ``minimum``, ``maximum``,
+    ``minLength``, ``maxLength`` and ``pattern``. The error text names the input (§9.6).
     """
     if arguments is None:
         arguments = {}
@@ -212,6 +350,8 @@ def _check_value(name: str, rule: Mapping[str, Any], value: Any) -> None:
     """One input against its rule, or raise :class:`ToolError` that names it."""
     if not _type_ok(value, rule["type"]):
         raise ToolError(f"The input {name!r} must be a {rule['type']}.")
+    if "enum" in rule and value not in rule["enum"]:
+        raise ToolError(f"The input {name!r} must be one of {', '.join(rule['enum'])}.")
     if "minimum" in rule and value < rule["minimum"]:
         raise ToolError(f"The input {name!r} must be at least {rule['minimum']}.")
     if "maximum" in rule and value > rule["maximum"]:
@@ -262,6 +402,9 @@ class Tool:
     run: Callable[[Context, dict[str, Any]], Awaitable[dict[str, Any]]]
     #: Every route the tool reads, :attr:`route` first.
     routes: tuple[str, ...] = ()
+    #: The inputs that the edge applies itself, because :attr:`route` takes no
+    #: such parameter (§9.5 rule 4). Each one needs a spec amendment.
+    edge_inputs: frozenset[str] = frozenset()
     annotations: Mapping[str, bool] = field(default_factory=lambda: dict(READ_ANNOTATIONS))
 
     def describe(self) -> dict[str, Any]:
@@ -442,17 +585,7 @@ def _list_task_row(
 
 
 async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    connection = ctx.caller.lookup.connection_id
-    if "cursor" in args:
-        try:
-            position = cursor_mod.decode(ctx.key, args["cursor"], arguments=args,
-                                         connection_id=connection)
-        except cursor_mod.BadCursor as exc:
-            _log.info("agent_edge.bad_cursor", reason=str(exc), connection_id=connection)
-            raise ToolError(TEXT_BAD_CURSOR) from None
-        page, size = position.page, min(position.size, LIST_LIMIT_MAX)
-    else:
-        page, size = 1, int(args.get("limit", LIST_LIMIT_DEFAULT))
+    page, size = _page_of(ctx, "list_tasks", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
 
     query: list[tuple[str, str]] = []
     for name in ("project_id", "status_id", "tag", "assignee", "text"):
@@ -467,14 +600,11 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(TEXT_BUSY)
     rows = [r for r in rows if isinstance(r, dict)]
     names = await _status_names(ctx, _distinct_projects(rows))
-    next_cursor = None
-    if page * size < total and rows:
-        next_cursor = cursor_mod.encode(ctx.key, page=page + 1, size=size,
-                                        arguments=args, connection_id=connection)
     return {
         "tasks": [_list_task_row(r, names) for r in rows],
         "total": total,
-        "nextCursor": next_cursor,
+        "nextCursor": _next_cursor(ctx, "list_tasks", args, page=page, size=size,
+                                   total=total, shown=len(rows)),
     }
 
 
@@ -601,10 +731,759 @@ SEARCH_TASKS = Tool(
 )
 
 
+# ── whoami ──────────────────────────────────────────────────────────────────
+
+ME_ROUTE = "/auth/me"
+
+#: The keys of ``whoami`` are the keys of this dict, and no other (§9.1). An
+#: identity literal may appear here only as a dict-display key (EA3-9).
+_WHOAMI_PROPERTIES: dict[str, Any] = {
+    "email": {"type": "string"},
+    "organization_id": {"type": "string"},
+    "scopes": {"type": "array", "items": {"type": "string"}},
+    "pinned_projects": {"type": "array", "items": {"type": "string"}},
+    "include_personal": {"type": "boolean"},
+    "server_time": {"type": "string"},
+}
+WHOAMI_KEYS: tuple[str, ...] = tuple(_WHOAMI_PROPERTIES)
+
+_WHOAMI_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": _WHOAMI_PROPERTIES,
+    "required": list(WHOAMI_KEYS),
+    "additionalProperties": False,
+}
+
+
+def _server_time() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+async def _whoami(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """The member from ``/auth/me``, and the rest from the token lookup.
+
+    ``/auth/me`` reads no record, so it has no not-found answer of its own. A
+    404 there gives the busy text. The organization id comes from the token
+    row, never from ``/auth/me``, whose ``organization`` can be ``{}``.
+    """
+    body = await _get(ctx, ME_ROUTE, TEXT_BUSY)
+    email = body.get("email") if isinstance(body, dict) else None
+    if not isinstance(email, str) or not email:
+        raise ToolError(TEXT_BUSY)
+    lookup = ctx.caller.lookup
+    return {
+        "email": email,
+        "organization_id": lookup.organization_id,
+        "scopes": sorted(ctx.caller.scopes),
+        "pinned_projects": [str(p) for p in lookup.pinned_projects],
+        "include_personal": bool(lookup.include_personal),
+        "server_time": _server_time(),
+    }
+
+
+WHOAMI = Tool(
+    name="whoami",
+    title="Who am I",
+    description=(
+        "Tell which Metorite member this connection acts for. Returns the"
+        " member's email, the organization id, the scopes this connection may"
+        " use, the projects it is pinned to (an empty list means every project"
+        " the member can see), whether it may read personal projects, and the"
+        " server time in UTC." + _UNTRUSTED_NOTE
+    ),
+    required_scope=None,
+    input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    output_schema=_WHOAMI_OUTPUT,
+    route=ME_ROUTE,
+    params={},
+    not_found=TEXT_BUSY,
+    run=_whoami,
+    routes=(ME_ROUTE,),
+)
+
+
+# ── list_projects ───────────────────────────────────────────────────────────
+
+#: The keys of one ``list_projects`` row (§9.1).
+PROJECT_ROW_KEYS: tuple[str, ...] = ("id", "name", "path", "parent_id", "task_counts")
+
+TREE_ROUTE = "/projects/tree"
+
+_COUNTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"tasks": {"type": "integer"}, "done": {"type": "integer"},
+                   "cancelled": {"type": "integer"}},
+    "required": ["tasks", "done", "cancelled"],
+    "additionalProperties": False,
+}
+
+_LIST_PROJECTS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "parent_id": {"type": "string", "pattern": _UUID_PATTERN,
+                      "description": "Only the direct children of this project."},
+        "text": {"type": "string", "minLength": 1, "maxLength": 200,
+                 "description": "Only projects whose name holds this text,"
+                                " in any case."},
+        "limit": {"type": "integer", "minimum": 1, "maximum": LIST_LIMIT_MAX,
+                  "default": LIST_LIMIT_DEFAULT,
+                  "description": "Rows on one page. Ignored when a cursor is sent."},
+        "cursor": {"type": "string", "minLength": 1, "maxLength": cursor_mod.MAX_CHARS,
+                   "description": "The nextCursor of the page before."},
+    },
+    "additionalProperties": False,
+}
+
+_LIST_PROJECTS_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "projects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": _UNTRUSTED_SCHEMA,
+                    "path": {"type": "array", "items": _UNTRUSTED_SCHEMA},
+                    "parent_id": _NULLABLE_STRING,
+                    "task_counts": _COUNTS_SCHEMA,
+                },
+                "required": list(PROJECT_ROW_KEYS),
+                "additionalProperties": False,
+            },
+        },
+        "total": {"type": "integer"},
+        "nextCursor": _NULLABLE_STRING,
+    },
+    "required": ["projects", "total", "nextCursor"],
+    "additionalProperties": False,
+}
+
+
+def _flatten(roots: list[Any]) -> list[tuple[dict[str, Any], str | None, list[str]]]:
+    """``(node, parent id, path of names)`` for each node, depth-first in the
+    order of the route. A root has no parent id: the route shows a node whose
+    parent is not visible as a root (``tree.py``, ``get_tree``)."""
+    out: list[tuple[dict[str, Any], str | None, list[str]]] = []
+    stack: list[tuple[Any, str | None, list[str]]] = [
+        (node, None, []) for node in reversed(roots)]
+    while stack:
+        node, parent, path = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        name = node.get("name")
+        here = [*path, name if isinstance(name, str) else ""]
+        out.append((node, parent, here))
+        children = node.get("children")
+        if isinstance(children, list):
+            stack.extend((child, str(node.get("id")), here) for child in reversed(children))
+    return out
+
+
+def _count(node: Mapping[str, Any], name: str) -> int:
+    value = node.get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _project_row(node: dict[str, Any], parent: str | None, path: list[str]) -> dict[str, Any]:
+    return {
+        "id": str(node.get("id")),
+        "name": untrusted(node.get("name") or ""),
+        "path": [untrusted(p) for p in path],
+        "parent_id": parent,
+        "task_counts": {"tasks": _count(node, "tasks"), "done": _count(node, "done"),
+                        "cancelled": _count(node, "cancelled")},
+    }
+
+
+def _kept_projects(roots: list[Any], args: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The flat rows that pass the archived drop (EA3-24) and the two filters."""
+    parent_wanted = str(args["parent_id"]).lower() if "parent_id" in args else None
+    text_wanted = str(args["text"]).casefold() if "text" in args else None
+    rows: list[dict[str, Any]] = []
+    for node, parent, path in _flatten(roots):
+        if node.get("archived_at") is not None:
+            continue
+        if parent_wanted is not None and (parent or "").lower() != parent_wanted:
+            continue
+        name = node.get("name")
+        if text_wanted is not None and (
+                not isinstance(name, str) or text_wanted not in name.casefold()):
+            continue
+        rows.append(_project_row(node, parent, path))
+    return rows
+
+
+async def _list_projects(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    page, size = _page_of(ctx, "list_projects", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+    kept = _kept_projects(_rows_of(await _get(ctx, TREE_ROUTE, TEXT_PROJECT_NOT_FOUND)), args)
+    shown = kept[(page - 1) * size: page * size]
+    return {
+        "projects": shown,
+        "total": len(kept),
+        "nextCursor": _next_cursor(ctx, "list_projects", args, page=page, size=size,
+                                   total=len(kept), shown=len(shown)),
+    }
+
+
+LIST_PROJECTS = Tool(
+    name="list_projects",
+    title="List projects",
+    description=(
+        "List the projects this member can see, a parent before its children,"
+        " one page at a time. Filter by a parent project or by text in the"
+        " name. Each row has the project id, name, path of names from the"
+        " root, parent id and task counts for the whole subtree. Archived and"
+        " personal projects are not listed. Send nextCursor back as cursor to"
+        " read the next page." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_PROJECTS_INPUT,
+    output_schema=_LIST_PROJECTS_OUTPUT,
+    route=TREE_ROUTE,
+    params={},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_list_projects,
+    routes=(TREE_ROUTE,),
+    edge_inputs=frozenset({"parent_id", "text", "limit", "cursor"}),
+)
+
+
+# ── get_project ─────────────────────────────────────────────────────────────
+
+#: The keys of the project of ``get_project`` (§9.1).
+PROJECT_KEYS: tuple[str, ...] = (
+    "id", "name", "description", "parent_id", "kind", "task_prefix", "status",
+    "timezone", "created_at", "updated_at", "archived_at",
+)
+STATUS_KEYS: tuple[str, ...] = ("id", "name", "category", "position", "is_default")
+TYPE_KEYS: tuple[str, ...] = ("id", "name", "is_epic")
+FIELD_KEYS: tuple[str, ...] = (
+    "id", "field_key", "name", "description", "field_type", "options", "required",
+)
+TAG_KEYS: tuple[str, ...] = ("id", "name")
+
+NODE_ROUTE = "/projects/nodes/{project_id}"
+TYPES_ROUTE = "/projects/nodes/{project_id}/types"
+FIELDS_ROUTE = "/projects/nodes/{project_id}/fields"
+TAGS_ROUTE = "/projects/nodes/{project_id}/tags"
+
+
+def _object(properties: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "object", "properties": properties, "required": list(properties),
+            "additionalProperties": False}
+
+
+_PROJECT_SCHEMA = _object({
+    "id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA, "description": _UNTRUSTED_OR_NULL,
+    "parent_id": _NULLABLE_STRING, "kind": _NULLABLE_STRING,
+    "task_prefix": _NULLABLE_STRING, "status": _NULLABLE_STRING,
+    "timezone": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+    "updated_at": _NULLABLE_STRING, "archived_at": _NULLABLE_STRING,
+})
+_PROJECT_STATUS_SCHEMA = _object({
+    "id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA, "category": _NULLABLE_STRING,
+    "position": _NULLABLE_INTEGER, "is_default": {"type": "boolean"},
+})
+_TYPE_SCHEMA = _object({
+    "id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA, "is_epic": {"type": "boolean"},
+})
+_FIELD_SCHEMA = _object({
+    "id": {"type": "string"}, "field_key": _NULLABLE_STRING, "name": _UNTRUSTED_SCHEMA,
+    "description": _UNTRUSTED_OR_NULL, "field_type": _NULLABLE_STRING,
+    "options": {"type": "array", "items": _UNTRUSTED_SCHEMA},
+    "required": {"type": "boolean"},
+})
+_TAG_SCHEMA = _object({"id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA})
+
+_PROJECT_ID_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "The project. An id from list_projects."},
+    },
+    "required": ["project_id"],
+    "additionalProperties": False,
+}
+
+_GET_PROJECT_OUTPUT: dict[str, Any] = _object({
+    "project": _PROJECT_SCHEMA,
+    "statuses": {"type": "array", "items": _PROJECT_STATUS_SCHEMA},
+    "types": {"type": "array", "items": _TYPE_SCHEMA},
+    "fields": {"type": "array", "items": _FIELD_SCHEMA},
+    "tags": {"type": "array", "items": _TAG_SCHEMA},
+})
+
+
+def _project(node: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(node.get("id")),
+        "name": untrusted(node.get("name") or ""),
+        "description": untrusted(node.get("description")),
+        "parent_id": _str_or_none(node.get("parent_project_id")),
+        "kind": _str_or_none(node.get("kind")),
+        "task_prefix": _str_or_none(node.get("task_prefix")),
+        "status": _str_or_none(node.get("status")),
+        "timezone": _str_or_none(node.get("timezone")),
+        "created_at": _str_or_none(node.get("created_at")),
+        "updated_at": _str_or_none(node.get("updated_at")),
+        "archived_at": _str_or_none(node.get("archived_at")),
+    }
+
+
+def _project_status(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row.get("id")),
+        "name": untrusted(row.get("name") or ""),
+        "category": _str_or_none(row.get("category")),
+        "position": _int_or_none(row.get("position")),
+        "is_default": _bool(row.get("is_default")),
+    }
+
+
+def _task_type(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {"id": str(row.get("id")), "name": untrusted(row.get("name") or ""),
+            "is_epic": _bool(row.get("is_epic"))}
+
+
+def _field_definition(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row.get("id")),
+        "field_key": _str_or_none(row.get("field_key")),
+        "name": untrusted(row.get("name") or ""),
+        "description": untrusted(row.get("description")),
+        "field_type": _str_or_none(row.get("field_type")),
+        "options": [untrusted(o) for o in row.get("options") or () if isinstance(o, str)],
+        "required": _bool(row.get("required")),
+    }
+
+
+def _tag(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``task_count`` stays behind: the seam does not narrow it (§9.1)."""
+    return {"id": str(row.get("id")), "name": untrusted(row.get("name") or "")}
+
+
+async def _get_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    where = {"project_id": str(args["project_id"])}
+    node = await _get(ctx, NODE_ROUTE, TEXT_PROJECT_NOT_FOUND, path_params=where)
+    if not isinstance(node, dict):
+        raise ToolError(TEXT_BUSY)
+    statuses, types_, fields, tags = await _together(*(
+        _get(ctx, route, TEXT_PROJECT_NOT_FOUND, path_params=where)
+        for route in (STATUSES_ROUTE, TYPES_ROUTE, FIELDS_ROUTE, TAGS_ROUTE)))
+    return {
+        "project": _project(node),
+        "statuses": [_project_status(r) for r in _rows_of(statuses)],
+        "types": [_task_type(r) for r in _rows_of(types_)],
+        "fields": [_field_definition(r) for r in _rows_of(fields)],
+        "tags": [_tag(r) for r in _rows_of(tags)],
+    }
+
+
+GET_PROJECT = Tool(
+    name="get_project",
+    title="Get a project",
+    description=(
+        "Read one project this member can see: its name, description, parent,"
+        " kind, task prefix, status, time zone and dates, with its statuses,"
+        " task types, custom field definitions and tags. Use the status ids"
+        " and tags to filter list_tasks. An archived project still answers,"
+        " with archived_at set." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_PROJECT_ID_INPUT,
+    output_schema=_GET_PROJECT_OUTPUT,
+    route=NODE_ROUTE,
+    params={"project_id": "project_id"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_get_project,
+    routes=(NODE_ROUTE, STATUSES_ROUTE, TYPES_ROUTE, FIELDS_ROUTE, TAGS_ROUTE),
+)
+
+
+# ── get_task ────────────────────────────────────────────────────────────────
+
+#: The keys of the task of ``get_task`` (§9.1).
+GET_TASK_KEYS: tuple[str, ...] = (
+    "id", "task_number", "project_id", "root_project_id", "parent_task_id",
+    "type_id", "title", "description", "status", "assignees", "importance",
+    "leveraged", "estimate_mins", "start_date", "due_at", "completed_at", "tags",
+    "custom_fields", "created_by", "created_at", "archived_at", "version",
+)
+SUBTASK_KEYS: tuple[str, ...] = (
+    "id", "task_number", "title", "status_id", "status_name", "category", "due_at",
+    "completed_at",
+)
+LINK_KEYS: tuple[str, ...] = (
+    "id", "link_type", "direction", "title", "task_number", "status_name", "category",
+    "completed_at",
+)
+
+TASK_ROUTE = "/projects/tasks/{task_id}"
+RELATIONS_ROUTE = "/projects/tasks/{task_id}/relations"
+
+#: A custom field value after :func:`field_value`.
+_FIELD_VALUE_SCHEMA: dict[str, Any] = {"anyOf": [
+    _UNTRUSTED_SCHEMA, {"type": ["number", "boolean", "null"]},
+    {"type": "array", "items": {"anyOf": [{"type": "number"}, _UNTRUSTED_SCHEMA]}},
+]}
+
+_TASK_SCHEMA = _object({
+    "id": {"type": "string"}, "task_number": _NULLABLE_INTEGER,
+    "project_id": {"type": "string"}, "root_project_id": _NULLABLE_STRING,
+    "parent_task_id": _NULLABLE_STRING, "type_id": _NULLABLE_STRING,
+    "title": _UNTRUSTED_SCHEMA, "description": _UNTRUSTED_OR_NULL,
+    "status": _STATUS_SCHEMA,
+    "assignees": {"type": "array", "items": {"type": "string"}},
+    "importance": _NULLABLE_INTEGER, "leveraged": {"type": "boolean"},
+    "estimate_mins": _NULLABLE_INTEGER, "start_date": _NULLABLE_STRING,
+    "due_at": _NULLABLE_STRING, "completed_at": _NULLABLE_STRING,
+    "tags": {"type": "array", "items": _UNTRUSTED_SCHEMA},
+    "custom_fields": {"type": "object", "additionalProperties": _FIELD_VALUE_SCHEMA},
+    "created_by": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+    "archived_at": _NULLABLE_STRING, "version": _NULLABLE_STRING,
+})
+_SUBTASK_SCHEMA = _object({
+    "id": {"type": "string"}, "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_SCHEMA,
+    "status_id": _NULLABLE_STRING, "status_name": _UNTRUSTED_OR_NULL,
+    "category": _NULLABLE_STRING, "due_at": _NULLABLE_STRING,
+    "completed_at": _NULLABLE_STRING,
+})
+_LINK_SCHEMA = _object({
+    "id": {"type": "string"}, "link_type": _NULLABLE_STRING, "direction": _NULLABLE_STRING,
+    "title": _UNTRUSTED_SCHEMA, "task_number": _NULLABLE_INTEGER,
+    "status_name": _UNTRUSTED_OR_NULL, "category": _NULLABLE_STRING,
+    "completed_at": _NULLABLE_STRING,
+})
+
+_TASK_ID_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks or search_tasks."},
+    },
+    "required": ["task_id"],
+    "additionalProperties": False,
+}
+
+_GET_TASK_OUTPUT: dict[str, Any] = _object({
+    "task": _TASK_SCHEMA,
+    "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
+    "links": {"type": "array", "items": _LINK_SCHEMA},
+})
+
+
+def _custom_fields(value: Any) -> dict[str, Any]:
+    """``field_key`` to value. A key that is not key-shaped is dropped."""
+    if not isinstance(value, dict):
+        return {}
+    return {k: field_value(v) for k, v in value.items() if _key(k) is not None}
+
+
+def _task(row: Mapping[str, Any], names: Mapping[str, str]) -> dict[str, Any]:
+    status_id = row.get("status_id")
+    assignees = row.get("assignees")
+    return {
+        "id": str(row.get("id")),
+        "task_number": _int_or_none(row.get("task_number")),
+        "project_id": str(row.get("project_id")),
+        "root_project_id": _str_or_none(row.get("root_project_id")),
+        "parent_task_id": _str_or_none(row.get("parent_task_id")),
+        "type_id": _str_or_none(row.get("type_id")),
+        "title": untrusted(row.get("title") or ""),
+        "description": untrusted(row.get("description")),
+        "status": {
+            "id": str(status_id) if status_id is not None else "",
+            "name": untrusted(names.get(str(status_id))) if status_id is not None else None,
+        },
+        "assignees": [str(a) for a in assignees] if isinstance(assignees, list) else [],
+        "importance": _int_or_none(row.get("importance")),
+        "leveraged": _bool(row.get("leveraged")),
+        "estimate_mins": _int_or_none(row.get("estimate_mins")),
+        "start_date": _str_or_none(row.get("start_date")),
+        "due_at": _str_or_none(row.get("due_at")),
+        "completed_at": _str_or_none(row.get("completed_at")),
+        "tags": _untrusted_list(row.get("tags")),
+        "custom_fields": _custom_fields(row.get("custom_fields")),
+        "created_by": _str_or_none(row.get("created_by")),
+        "created_at": _str_or_none(row.get("created_at")),
+        "archived_at": _str_or_none(row.get("archived_at")),
+        "version": _str_or_none(row.get("updated_at")),
+    }
+
+
+def _subtask(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row.get("id")),
+        "task_number": _int_or_none(row.get("task_number")),
+        "title": untrusted(row.get("title") or ""),
+        "status_id": _str_or_none(row.get("status_id")),
+        "status_name": untrusted(row.get("status_name")),
+        "category": _str_or_none(row.get("category")),
+        "due_at": _str_or_none(row.get("due_at")),
+        "completed_at": _str_or_none(row.get("completed_at")),
+    }
+
+
+def _link(row: Mapping[str, Any]) -> dict[str, Any]:
+    """``id`` is the OTHER task (``relations.py``, ``_row``). ``link_id`` stays."""
+    return {
+        "id": str(row.get("id")),
+        "link_type": _str_or_none(row.get("link_type")),
+        "direction": _str_or_none(row.get("direction")),
+        "title": untrusted(row.get("title") or ""),
+        "task_number": _int_or_none(row.get("task_number")),
+        "status_name": untrusted(row.get("status_name")),
+        "category": _str_or_none(row.get("category")),
+        "completed_at": _str_or_none(row.get("completed_at")),
+    }
+
+
+async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    where = {"task_id": str(args["task_id"])}
+    row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    project = str(row.get("project_id"))
+    reads: list[Coroutine[Any, Any, Any]] = [
+        _get(ctx, RELATIONS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)]
+    if _id(project) is not None:
+        reads.append(_status_names(ctx, [project]))
+    found = await _together(*reads)
+    relations = found[0]
+    names = found[1].get(project, {}) if len(found) > 1 else {}
+    if not isinstance(relations, dict):
+        raise ToolError(TEXT_BUSY)
+    subtasks, links = relations.get("subtasks"), relations.get("links")
+    return {
+        "task": _task(row, names),
+        "subtasks": [_subtask(r) for r in subtasks or () if isinstance(r, dict)]
+        if isinstance(subtasks, list) else [],
+        "links": [_link(r) for r in links or () if isinstance(r, dict)]
+        if isinstance(links, list) else [],
+    }
+
+
+GET_TASK = Tool(
+    name="get_task",
+    title="Get a task",
+    description=(
+        "Read one task this member can see: its title, description, status,"
+        " assignees, priority, dates, tags, custom fields and version, with"
+        " its subtasks and its links to other tasks. version is the token a"
+        " later write sends back. The status name is null when the member"
+        " cannot open the task's project." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_TASK_ID_INPUT,
+    output_schema=_GET_TASK_OUTPUT,
+    route=TASK_ROUTE,
+    params={"task_id": "task_id"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_get_task,
+    routes=(TASK_ROUTE, RELATIONS_ROUTE, STATUSES_ROUTE),
+)
+
+
+# ── get_task_timeline ───────────────────────────────────────────────────────
+
+#: The keys of one timeline row (§9.1).
+TIMELINE_ROW_KEYS: tuple[str, ...] = (
+    "id", "type", "parent_id", "body", "created_by", "created_at", "updated_at", "meta",
+)
+
+TIMELINE_ROUTE = "/projects/tasks/{task_id}/timeline"
+TIMELINE_KINDS: tuple[str, ...] = ("all", "comments", "events")
+
+
+def _meta_status_change(raw: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "from": untrusted(raw["from"]) if isinstance(raw.get("from"), str) else None,
+        "to": untrusted(raw["to"]) if isinstance(raw.get("to"), str) else None,
+        "from_category": _key(raw.get("from_category")),
+        "to_category": _key(raw.get("to_category")),
+    }
+
+
+#: The keys of one ``changes`` item that take the custom field value rule.
+_CHANGE_VALUE_KEYS: tuple[str, ...] = ("old", "new", "old_label", "new_label")
+
+
+def _change(item: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {"field": _key(item.get("field"))}
+    for name in _CHANGE_VALUE_KEYS:
+        if name in item:
+            out[name] = field_value(item[name])
+    for name in ("old_id", "new_id"):
+        if name in item:
+            out[name] = _id(item[name])
+    return out
+
+
+def _meta_field_change(raw: Mapping[str, Any]) -> dict[str, Any]:
+    changes = raw.get("changes")
+    if not isinstance(changes, list):
+        return {}
+    return {"changes": [_change(c) for c in changes if isinstance(c, dict)]}
+
+
+def _meta_assignment(raw: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name in ("added", "removed"):
+        if name in raw:
+            out[name] = _emails(raw[name])
+    if isinstance(raw.get("bulk"), bool):
+        out["bulk"] = raw["bulk"]
+    return out
+
+
+def _meta_link(raw: Mapping[str, Any]) -> dict[str, Any]:
+    return {"target": _id(raw.get("target")), "type": _key(raw.get("type"))}
+
+
+def _meta_merge(raw: Mapping[str, Any]) -> dict[str, Any]:
+    merged_from = raw.get("merged_from")
+    out: dict[str, Any] = {"merged_into": _id(raw.get("merged_into"))}
+    if isinstance(merged_from, list):
+        out["merged_from"] = [v for v in merged_from if _id(v) is not None]
+    return out
+
+
+def _meta_mention(raw: Mapping[str, Any]) -> dict[str, Any]:
+    return {"mentioned": _emails(raw.get("mentioned"))} if "mentioned" in raw else {}
+
+
+def _meta_comment(raw: Mapping[str, Any]) -> dict[str, Any]:
+    name = raw.get("author_name")
+    return {"author_name": untrusted(name)} if isinstance(name, str) else {}
+
+
+#: The timeline ``meta`` allowlist of §9.1, by activity type. A type that is
+#: not here (``attachment``, ``system``, ``agent_run``, ``sync``) keeps only
+#: ``via`` and ``automation``.
+_META_RULES: Mapping[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
+    "status_change": _meta_status_change,
+    "field_change": _meta_field_change,
+    "assignment": _meta_assignment,
+    "link": _meta_link,
+    "merge": _meta_merge,
+    "mention": _meta_mention,
+    "comment": _meta_comment,
+}
+
+
+def timeline_meta(kind: Any, raw: Any) -> dict[str, Any] | None:
+    """The kept keys of one ``meta``, or ``None`` when no key is kept."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, Any] = {}
+    via = raw.get("via")
+    if isinstance(via, str) and agent_oauth.ACTOR_VIA_PATTERN.fullmatch(via):
+        out["via"] = via
+    if isinstance(raw.get("automation"), bool):
+        out["automation"] = raw["automation"]
+    rule = _META_RULES.get(kind) if isinstance(kind, str) else None
+    if rule is not None:
+        out.update({k: v for k, v in rule(raw).items() if v is not None})
+    return out or None
+
+
+def _activity(row: Mapping[str, Any]) -> dict[str, Any]:
+    kind = row.get("type")
+    return {
+        "id": str(row.get("id")),
+        "type": kind if isinstance(kind, str) else "",
+        "parent_id": _str_or_none(row.get("parent_id")),
+        "body": untrusted(row.get("body")),
+        "created_by": _str_or_none(row.get("created_by")),
+        "created_at": _str_or_none(row.get("created_at")),
+        "updated_at": _str_or_none(row.get("updated_at")),
+        "meta": timeline_meta(kind, row.get("meta")),
+    }
+
+
+_TIMELINE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks or search_tasks."},
+        "kind": {"type": "string", "enum": list(TIMELINE_KINDS), "default": "all",
+                 "description": "comments, events, or all of them."},
+        "limit": {"type": "integer", "minimum": 1, "maximum": LIST_LIMIT_MAX,
+                  "default": LIST_LIMIT_DEFAULT,
+                  "description": "Rows on one page. Ignored when a cursor is sent."},
+        "cursor": {"type": "string", "minLength": 1, "maxLength": cursor_mod.MAX_CHARS,
+                   "description": "The nextCursor of the page before."},
+    },
+    "required": ["task_id"],
+    "additionalProperties": False,
+}
+
+_TIMELINE_OUTPUT: dict[str, Any] = _object({
+    "activities": {"type": "array", "items": _object({
+        "id": {"type": "string"}, "type": {"type": "string"},
+        "parent_id": _NULLABLE_STRING, "body": _UNTRUSTED_OR_NULL,
+        "created_by": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+        "updated_at": _NULLABLE_STRING,
+        "meta": {"type": ["object", "null"]},
+    })},
+    "total": {"type": "integer"},
+    "nextCursor": _NULLABLE_STRING,
+})
+
+_TIMELINE_PARAMS: dict[str, str] = {
+    "task_id": "task_id", "kind": "kind", "limit": "page_size", "cursor": "page",
+}
+
+
+async def _get_task_timeline(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    page, size = _page_of(ctx, "get_task_timeline", args, LIST_LIMIT_DEFAULT,
+                          LIST_LIMIT_MAX)
+    query = [("kind", str(args.get("kind", "all"))), ("page", str(page)),
+             ("page_size", str(size))]
+    body = await _get(ctx, TIMELINE_ROUTE, TEXT_TASK_NOT_FOUND,
+                      path_params={"task_id": str(args["task_id"])}, query=query)
+    rows = _rows_of(body)
+    total = body.get("total")
+    if not isinstance(total, int):
+        raise ToolError(TEXT_BUSY)
+    return {
+        "activities": [_activity(r) for r in rows],
+        "total": total,
+        "nextCursor": _next_cursor(ctx, "get_task_timeline", args, page=page, size=size,
+                                   total=total, shown=len(rows)),
+    }
+
+
+GET_TASK_TIMELINE = Tool(
+    name="get_task_timeline",
+    title="Get a task timeline",
+    description=(
+        "Read the comments and events of one task this member can see, newest"
+        " first, one page at a time. Set kind to comments or events to read"
+        " one of them. Each row has its id, type, parent comment, body,"
+        " author, dates and a small meta object. Send nextCursor back as"
+        " cursor to read the next page. The pages are offsets, so a new row"
+        " between two calls can make a row show twice." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_TIMELINE_INPUT,
+    output_schema=_TIMELINE_OUTPUT,
+    route=TIMELINE_ROUTE,
+    params=_TIMELINE_PARAMS,
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_get_task_timeline,
+    routes=(TIMELINE_ROUTE,),
+)
+
+
 # ── The registry ────────────────────────────────────────────────────────────
 
-#: Every tool of the edge, by name.
-TOOLS: Mapping[str, Tool] = {t.name: t for t in (LIST_TASKS, SEARCH_TASKS)}
+#: Every tool of the edge, by name, in the order of ``tools/list``.
+TOOLS: Mapping[str, Tool] = {t.name: t for t in (
+    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
+    SEARCH_TASKS,
+)}
 
 
 def listed(scopes: frozenset[str]) -> list[dict[str, Any]]:
@@ -634,26 +1513,44 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "FIELD_KEYS",
+    "GET_PROJECT",
+    "GET_TASK",
+    "GET_TASK_KEYS",
+    "GET_TASK_TIMELINE",
+    "LINK_KEYS",
+    "LIST_PROJECTS",
     "LIST_TASKS",
     "LIST_TASK_KEYS",
     "MAX_STATUS_READS",
+    "PROJECT_KEYS",
+    "PROJECT_ROW_KEYS",
     "READ_ANNOTATIONS",
     "SEARCH_HIT_KEYS",
     "SEARCH_TASKS",
+    "STATUS_KEYS",
+    "SUBTASK_KEYS",
+    "TAG_KEYS",
     "TEXT_BAD_CURSOR",
     "TEXT_BAD_REQUEST",
     "TEXT_BUSY",
     "TEXT_FORBIDDEN",
     "TEXT_PROJECT_NOT_FOUND",
     "TEXT_TASK_NOT_FOUND",
+    "TIMELINE_ROW_KEYS",
     "TOOLS",
     "TOOL_TIMEOUT_S",
+    "TYPE_KEYS",
+    "WHOAMI",
+    "WHOAMI_KEYS",
     "Context",
     "GatewayUnauthorized",
     "Tool",
     "ToolError",
     "call",
     "check_input",
+    "field_value",
     "listed",
+    "timeline_meta",
     "untrusted",
 ]

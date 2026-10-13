@@ -29,7 +29,13 @@ The done-when of EA-2a, each one a test below:
   member by sending those values in the body;
 * a structural fence: no ``agent_edge`` or ``agent_access`` module reads a
   tenant or a member from request input, and ``agent_edge`` imports neither
-  the gateway nor ``outbound_guard``.
+  the gateway nor ``outbound_guard``;
+* the fence edit of EA-3b-2 (EA3-9, spec §9.4 and §15.2 D20): ``tools.py``,
+  the one response-mapping module, may hold an identity literal only as a
+  ``.get()`` argument, a subscript index or a dict-display key. It reads no
+  request header, query, form, cookie or path parameter, and it imports
+  nothing from ``fastapi`` or ``starlette``. Every other edge module keeps
+  the old refusal.
 
 The classes marked R8 run the store on a real database, as a NON-privileged
 role, on a phase-4-promoted catalog of their own (the shape of
@@ -931,6 +937,74 @@ def _edge_files() -> list[Path]:
     return files
 
 
+#: The ONE response-mapping module of the edge (EA3-9). It reads gateway
+#: RESPONSES, so ``whoami`` must name ``"email"``. It is the only edge file
+#: the old refusal exempts, and the AST tests below hold it instead.
+_MAPPING_FILE = _EDGE_DIR / "tools.py"
+
+#: The attributes that read a request input in Starlette and FastAPI.
+_REQUEST_READ_ATTRIBUTES = frozenset({
+    "headers", "query_params", "form", "cookies", "path_params"})
+
+#: The FastAPI parameter markers that read a request input.
+_REQUEST_READ_CALLS = frozenset({"Header", "Query", "Form", "Cookie"})
+
+
+def _identity_literal_positions(tree: ast.Module) -> set[int]:
+    """The ids of the string constants in the three allowed positions: the
+    first argument of a ``.get()`` call, a subscript index, a dict key."""
+    allowed: set[int] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and node.args):
+            allowed.add(id(node.args[0]))
+        elif isinstance(node, ast.Subscript):
+            allowed.add(id(node.slice))
+        elif isinstance(node, ast.Dict):
+            allowed.update(id(k) for k in node.keys if k is not None)
+    return allowed
+
+
+def _identity_literal_findings(tree: ast.Module) -> list[str]:
+    docs = _docstring_ids(tree)
+    allowed = _identity_literal_positions(tree)
+    return [
+        f"line {node.lineno} names {node.value!r} outside a response-key position"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and id(node) not in docs and id(node) not in allowed
+        and node.value.strip().lower() in _IDENTITY_INPUTS
+    ]
+
+
+def _request_read_findings(tree: ast.Module) -> list[str]:
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                       else [node.module or ""])
+            for module in modules:
+                if module.split(".")[0] in {"fastapi", "starlette"}:
+                    found.append(f"line {node.lineno} imports {module}")
+            for alias in node.names:
+                if "Request" in {alias.name, alias.asname}:
+                    found.append(f"line {node.lineno} imports a Request")
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _REQUEST_READ_ATTRIBUTES:
+                found.append(f"line {node.lineno} reads .{node.attr}")
+            if node.attr == "Request":
+                found.append(f"line {node.lineno} names Request")
+        elif isinstance(node, ast.Name) and node.id == "Request":
+            found.append(f"line {node.lineno} names Request")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            name = (func.id if isinstance(func, ast.Name)
+                    else func.attr if isinstance(func, ast.Attribute) else "")
+            if name in _REQUEST_READ_CALLS:
+                found.append(f"line {node.lineno} calls {name}")
+    return found
+
+
 class TestTheStructuralFences:
     """R7: the rules of the two halves, read from the source."""
 
@@ -946,10 +1020,16 @@ class TestTheStructuralFences:
                     assert not name.startswith("gateway"), f"{path.name} imports {name}"
                     assert "outbound_guard" not in name, f"{path.name} imports {name}"
 
-    @pytest.mark.parametrize("path", [*sorted(_EDGE_DIR.glob("*.py")), _ACCESS_FILE],
-                             ids=lambda p: p.name)
+    @pytest.mark.parametrize("path", [
+        *(p for p in sorted(_EDGE_DIR.glob("*.py")) if p != _MAPPING_FILE),
+        _ACCESS_FILE,
+    ], ids=lambda p: p.name)
     def test_no_module_reads_a_tenant_or_a_member_from_input(self, path):
-        """A string that names an identity input appears nowhere but a docstring."""
+        """A string that names an identity input appears nowhere but a docstring.
+
+        Every edge module but ``tools.py`` (EA3-9). The three tests below hold
+        that one module.
+        """
         tree = _module_tree(path)
         docs = _docstring_ids(tree)
         for node in ast.walk(tree):
@@ -957,6 +1037,59 @@ class TestTheStructuralFences:
                     and id(node) not in docs):
                 assert node.value.strip().lower() not in _IDENTITY_INPUTS, (
                     f"{path.name}:{node.lineno} names {node.value!r}")
+
+    def test_the_exemption_is_the_one_mapping_module(self):
+        """EA3-9. Exactly one edge file leaves the old refusal, and it exists."""
+        assert _MAPPING_FILE.is_file(), "tools.py moved: update the fence and §9.4"
+        assert _MAPPING_FILE.parent == _EDGE_DIR
+        assert _MAPPING_FILE.name == "tools.py"
+
+    def test_the_mapping_module_names_an_identity_only_as_a_response_key(self):
+        """EA3-9, §9.4 rule 1. ``"email"`` may be a ``.get()`` argument, a
+        subscript index or a dict-display key, and nothing else."""
+        findings = _identity_literal_findings(_module_tree(_MAPPING_FILE))
+        assert not findings, "tools.py:\n  " + "\n  ".join(findings)
+
+    def test_the_mapping_module_reads_no_request_input(self):
+        """EA3-9, §9.4 rules 2 and 3. No header, query, form, cookie or path
+        parameter, no ``Request`` and no ``fastapi`` or ``starlette``."""
+        findings = _request_read_findings(_module_tree(_MAPPING_FILE))
+        assert not findings, "tools.py:\n  " + "\n  ".join(findings)
+
+    @pytest.mark.parametrize("source,rule", [
+        ("x = ('email',)", "literal"),
+        ("x = ['member']", "literal"),
+        ("f('org_id')", "literal"),
+        ("x = d.get('a', 'email')", "literal"),
+        ("x = request.headers.get('x-user-email')", "read"),
+        ("x = request.query_params['org']", "read"),
+        ("x = await request.form()", "read"),
+        ("x = request.cookies", "read"),
+        ("x = request.path_params", "read"),
+        ("from fastapi import Header", "read"),
+        ("import starlette.requests", "read"),
+        ("from x import Request", "read"),
+        ("def f(r: Request): pass", "read"),
+        ("def f(e = Header(None)): pass", "read"),
+    ])
+    def test_the_two_scans_see_each_shape(self, source, rule):
+        """The scans themselves, on small sources, so a scan that goes blind
+        fails here and not only under a mutation."""
+        tree = ast.parse(source)
+        findings = (_identity_literal_findings(tree) if rule == "literal"
+                    else _request_read_findings(tree))
+        assert findings, source
+
+    @pytest.mark.parametrize("source", [
+        "x = body.get('email')",
+        "x = row['organization_id']",
+        "x = {'email': 1, 'organization_id': 2}",
+        "x = lookup.organization_id",
+    ])
+    def test_the_response_key_positions_pass(self, source):
+        tree = ast.parse(source)
+        assert not _identity_literal_findings(tree)
+        assert not _request_read_findings(tree)
 
     @pytest.mark.parametrize("path", [*sorted(_EDGE_DIR.glob("*.py")), _ACCESS_FILE],
                              ids=lambda p: p.name)
