@@ -237,8 +237,9 @@ export interface SendOptions {
    *  text is the envelope the model reads, and the bubble draws this. */
   cardAnswer?: CardAnswer | null;
   /** Hears once what became of this send (review of #942): the server took
-   *  it or steered it (`sent`), it waits for the app (`held`), a run in this
-   *  tab is live so it never left (`busy`), or the server refused it. */
+   *  it (`sent`), folded it into a live run (`steered`), it waits for the app
+   *  (`held`), a run in this tab is live so it never left (`busy`), or the
+   *  server refused it or ran nothing. */
   onSettled?: (outcome: SendOutcome) => void;
   /** The steer follow-up (`lib/chatSteer.ts`): a turn with no words of its
    *  own and no user bubble. The server answers the steers the run never
@@ -251,7 +252,7 @@ export interface SendOptions {
 }
 
 /** What became of one send. */
-export type SendOutcome = "sent" | "held" | "busy" | "refused";
+export type SendOutcome = "sent" | "steered" | "held" | "busy" | "refused";
 
 /** What a held edit keeps: its target and its answer. It keeps no bubble,
  *  because the old turn stays visible until the server accepts the edit. */

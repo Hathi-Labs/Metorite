@@ -536,7 +536,9 @@ export function useAgentChat({
         // Any other answer confirms the turn.
         if (res.status !== 429 && !isUpdateOutage({ status: res.status, gotResponse: true })) confirmTurn();
         // A stream, or a 202 that steered the words into a live run.
-        if (res.ok) settleSend("sent");
+        // A stream: the server took the turn. A 202 is settled below, by
+        // what the server did with it.
+        if (res.ok && res.status !== 202) settleSend("sent");
 
         // ── Stand down: this message was folded into a run already going ──
         // docs/multiplayer/README.md §4.6. A 202 means the gateway steered our
@@ -594,6 +596,8 @@ export function useAgentChat({
           // still going, or stop for "stopped" and "nothing_pending".
           if (outcome.steered) owedAfterSteer(threadId, stopEpochAtSend);
           else if (followUp) settleFollowUpAnswer(threadId, outcome.reason);
+          // The server folded the words into a live run, or ran nothing.
+          settleSend(outcome.steered ? "steered" : "refused");
           // No stream comes for this send, so our placeholder goes. A steer
           // keeps the user's message, attributed. A steer the run has not
           // taken yet marks the turn pending, so a repeat of the same words
