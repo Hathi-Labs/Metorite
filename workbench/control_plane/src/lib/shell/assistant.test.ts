@@ -34,6 +34,7 @@ import {
   currentAssistantFacts,
   dataText,
   effectiveMode,
+  onPageChange,
   openAssistant,
   paneAt,
   paneForDelegate,
@@ -263,6 +264,35 @@ describe("the context of each turn", () => {
     expect(paneAt("/projects/abc", SECTIONS)?.href).toBe("/projects");
     expect(paneAt("/", SECTIONS)).toBeNull();
     expect(paneAt("/settings/organization/teams", SECTIONS)?.href).toBe("/settings/organization");
+  });
+});
+
+describe("a page opened under the full view (owner, 2026-10-13)", () => {
+  it("a wide desktop shrinks the full view to the side panel", () => {
+    expect(onPageChange({ open: true, form: "full", canDock: true, phone: false })).toBe("dock");
+  });
+
+  it("a narrow desktop has no side panel, so the assistant closes", () => {
+    expect(onPageChange({ open: true, form: "full", canDock: false, phone: false })).toBe("close");
+  });
+
+  it("the side panel, a closed assistant and the phone sheet are left alone", () => {
+    expect(onPageChange({ open: true, form: "dock", canDock: true, phone: false })).toBeNull();
+    expect(onPageChange({ open: false, form: "full", canDock: true, phone: false })).toBeNull();
+    expect(onPageChange({ open: true, form: "full", canDock: false, phone: true })).toBeNull();
+  });
+
+  it("the full view spans the whole width, and the chat centres its own text (owner, 2026-10-13)", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain('<div data-assistant-chat="" className="flex min-h-0 w-full flex-1 flex-col">');
+    expect(dock).not.toMatch(/max-w-4xl/);
+    expect(read("components/AgentChat.tsx")).toContain('className="max-w-3xl mx-auto space-y-5"');
+  });
+
+  it("the dock acts on a page CHANGE only, and keeps the member's own choice", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("if (pathname === lastPathRef.current) return;");
+    expect(dock).toContain('if (act === "dock") setAssistantMode("dock", false);');
   });
 });
 

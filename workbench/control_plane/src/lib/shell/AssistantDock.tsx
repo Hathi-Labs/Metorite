@@ -81,6 +81,7 @@ import {
   consumeDraft,
   effectiveMode,
   focusAssistant,
+  onPageChange,
   openAssistant,
   paneAt,
   setAssistantMode,
@@ -393,6 +394,24 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     return () => clearTimeout(t);
   }, [st.open, st.focusSeq, chat.activeId]);
 
+  // ── A page opened under the full view ───────────────────────────────────
+  // The full view covers the page column, so an app the member opens from
+  // the sidebar would open out of sight. The view gives way: the side panel
+  // on a wide screen, closed on a narrow one (owner, 2026-10-13). The first
+  // page is the one the view opened over, so only a CHANGE counts.
+  const lastPathRef = useRef(pathname);
+  const pageRuleRef = useRef({ open: st.open, form, canDock, phone });
+  useEffect(() => {
+    pageRuleRef.current = { open: st.open, form, canDock, phone };
+  }, [st.open, form, canDock, phone]);
+  useEffect(() => {
+    if (pathname === lastPathRef.current) return;
+    lastPathRef.current = pathname;
+    const act = onPageChange(pageRuleRef.current);
+    if (act === "dock") setAssistantMode("dock", false);
+    else if (act === "close") closeAssistant();
+  }, [pathname]);
+
   // ── The app switch ──────────────────────────────────────────────────────
   const movedRef = useRef<Set<string>>(new Set());
   const liveRef = useRef({ open: st.open, activeId: chat.activeId, pathname, sections, form, canDock });
@@ -573,7 +592,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           )
         ) : null}
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className={`flex min-h-0 w-full flex-1 flex-col ${form === "full" ? "mx-auto max-w-4xl" : ""}`}>
+          <div data-assistant-chat="" className="flex min-h-0 w-full flex-1 flex-col">
             {active ? (
               // No page under the assistant renders the side-panel editor
               // (Projects mounts it only with its own chat on, and the flag
@@ -600,7 +619,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                   consumeDraft();
                 }}
                 autoSend={chat.sendable}
-                assistantName={agent === ASSISTANT_AGENT ? ASSISTANT_NAME : undefined}
+                assistantName={ASSISTANT_NAME}
                 onAutoSendConsumed={consumeAsk}
               />
               </SidePanelFitContext.Provider>
