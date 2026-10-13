@@ -55,7 +55,8 @@ Five rules, each because the obvious implementation is wrong:
    **The custom fields follow them** (WS-53 CRM-C4a, ``crm_platform.md`` §20.7
    items 11 and 12): each custom field of the entity in the order of the
    layout, under its label. A row with ``is_system`` is not a custom field,
-   and a retired field is left out.
+   and a retired or hidden field is left out. A picklist value exports as its
+   option label. The Zoho custom fields of a Mirror org export the same way.
 
 5. **This endpoint writes NOTHING.** Not a nicety — the Zoho sync loop is
    RUNNING (spec header, corrected 2026-08-11) and ``core.mark_dirty_on_*``
@@ -100,6 +101,7 @@ import io
 import json
 import zipfile
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
@@ -118,6 +120,7 @@ from gateway.routes.crm.core import (
     Entity,
     _tenant_session,
     custom_pairs,
+    from_jsonb,
     project_joined,
     qualify,
     router,
@@ -271,33 +274,58 @@ def _cell(entity: Entity, key: str, row: dict[str, Any]) -> Any:
     return row.get(key)
 
 
-#: The custom fields of one entity, in the order of the layout. The two
-#: filters below are the rule of §20.7 item 11 for the export.
+#: The custom fields of one entity, in the order of the layout. The filters
+#: are the rule of §20.7 item 11 for the export, and review round 1 adds the
+#: hidden fields to what it leaves out.
 _CUSTOM_COLUMNS_SQL = (
-    "SELECT key, label FROM crm_field_defs WHERE entity = :entity "
-    "AND NOT is_system AND retired_at IS NULL ORDER BY position, key"
+    "SELECT key, label, options FROM crm_field_defs WHERE entity = :entity "
+    "AND NOT is_system AND retired_at IS NULL AND visible "
+    "ORDER BY position, key"
 )
 
 
-async def custom_columns(db: Any, entity: Entity) -> list[tuple[str, str]]:
-    """``(key, label)`` of each custom column of *entity*'s file."""
+@dataclass(frozen=True)
+class CustomColumn:
+    """One custom column of a file: the key, the header, and the label of
+    each option value."""
+
+    key: str
+    label: str
+    options: dict[str, str]
+
+
+async def custom_columns(db: Any, entity: Entity) -> list[CustomColumn]:
+    """Each custom column of *entity*'s file, in the order of the layout."""
     rows = (await db.execute(
         text(_CUSTOM_COLUMNS_SQL), {"entity": FIELD_ENTITY_BY_SLUG[entity.slug]},
     )).fetchall()
-    return [(r.key, r.label or r.key) for r in rows]
+    out: list[CustomColumn] = []
+    for r in rows:
+        options = from_jsonb(r.options)
+        labels = {
+            str(o["value"]): str(o.get("label") or o["value"])
+            for o in (options if isinstance(options, list) else [])
+            if isinstance(o, dict) and o.get("value") is not None
+        }
+        out.append(CustomColumn(key=r.key, label=r.label or r.key, options=labels))
+    return out
 
 
-def custom_cell(value: Any) -> Any:
-    """One custom value as one cell. A lookup gives its name, and a list of
-    options is joined with ``; ``."""
+def custom_cell(value: Any, options: dict[str, str] | None = None) -> Any:
+    """One custom value as one cell. A picklist value gives its option label,
+    a lookup gives its name, and a list joins with ``; ``."""
+    labels = options or {}
     if isinstance(value, dict):
         named = value.get("name")
         return named if isinstance(named, str) else json.dumps(value, sort_keys=True)
     if isinstance(value, list):
         return "; ".join(
-            str(item.get("name")) if isinstance(item, dict) else str(item)
+            str(item.get("name")) if isinstance(item, dict)
+            else labels.get(str(item), str(item))
             for item in value
         )
+    if isinstance(value, str):
+        return labels.get(value, value)
     return value
 
 
@@ -376,10 +404,13 @@ async def _export(
     columns = COLUMNS[entity.slug]
     return Response(
         content=csv_document(
-            [header for _, header in columns] + [label for _, label in extra],
+            [header for _, header in columns] + [c.label for c in extra],
             (
                 [_cell(entity, key, row) for key, _ in columns]
-                + [custom_cell((row.get("custom") or {}).get(key)) for key, _ in extra]
+                + [
+                    custom_cell((row.get("custom") or {}).get(c.key), c.options)
+                    for c in extra
+                ]
                 for row in exported
             ),
         ),

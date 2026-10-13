@@ -292,7 +292,8 @@ export function fieldRows(
   const values = custom as Row;
   const byKey = new Map(customDefs(defs).map((d) => [d.key, d]));
   const known = [...byKey.values()]
-    .filter((d) => d.visible && d.key in values)
+    // CRM-C4a: a retire keeps `visible`, so the retired flag hides the field.
+    .filter((d) => d.visible && !d.retired && d.key in values)
     .sort((a, b) => a.position - b.position);
   const unknown = Object.keys(values).filter((k) => !byKey.has(k));
   return [

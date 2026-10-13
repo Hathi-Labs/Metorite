@@ -463,7 +463,9 @@ async def crm_list_fields(entity: str) -> str:
     field is marked: records keep its values, and no filter takes its key."""
     slug = _entity_slug(entity)
     # WS-53 CRM-C4a: a row with `is_system` overlays a fixed column, so it is
-    # never offered as a custom key (crm_platform.md §20.7 item 11).
+    # never offered as a custom key (crm_platform.md §20.7 item 11). The
+    # primary filter is the route's: `GET /crm/fields/{entity}` reads
+    # `AND NOT is_system` (`fields._FIELDS_SQL`). This one is a second guard.
     defs = [
         d for d in (await _get(f"/crm/fields/{slug}") or [])
         if isinstance(d, dict) and not d.get("is_system")

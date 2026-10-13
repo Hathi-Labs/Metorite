@@ -9,6 +9,8 @@ system fields (item 3), the option rule (item 6), the value checks (items 1,
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -156,7 +158,8 @@ def test_the_type_matrix_is_the_spec_table() -> None:
         "select": {"multiselect"},
         "email": {"text"},
         "phone": {"text"},
-        "url": {"text"},
+        # Review round 1: a URL can be longer than a text field holds.
+        "url": {"textarea"},
     } == TYPE_CHANGES
     assert set(TYPE_CHANGES) <= set(FIELD_TYPES)
     assert all(t <= set(FIELD_TYPES) for t in TYPE_CHANGES.values())
@@ -190,6 +193,9 @@ def _check(field: CustomField, value: Any, kept: Any = None) -> Any:
     ("currency", 1000.25, 1000.25),
     ("date", "2026-10-13", "2026-10-13"),
     ("datetime", "2026-10-13T10:00:00+05:30", "2026-10-13T10:00:00+05:30"),
+    ("datetime", "2026-10-13T10:00Z", "2026-10-13T10:00:00+00:00"),
+    ("number", 10**15 - 1, 10**15 - 1),
+    ("decimal", -999_999_999_999_999.0, -999_999_999_999_999.0),
     ("boolean", False, False),
     ("email", " a@b.co ", "a@b.co"),
     ("phone", "+91 98450 12345", "+91 98450 12345"),
@@ -206,6 +212,13 @@ def test_a_good_value_of_each_type(kind: str, good: Any, stored: Any) -> None:
     ("datetime", "2026-10-13T10:00:00"), ("boolean", "true"),
     ("email", "not-mail"), ("phone", "12"), ("phone", "call me"),
     ("url", "javascript:alert(1)"), ("url", "ftp://x"),
+    # Review round 1: a number of 10^15 or more, and one too big for a float.
+    ("number", 10**15), ("number", -(10**15)), ("number", 10**400),
+    ("decimal", 1e15), ("currency", 10**400), ("percent", -(10**400)),
+    # Review round 1: only the plain ISO forms.
+    ("date", "2026-W42-1"), ("date", "20261013"), ("date", "2026-10-13\n"),
+    ("date", "2026-287"), ("datetime", "2026-10-13 10:00:00+05:30"),
+    ("datetime", "2026-W42-1T10:00:00+05:30"), ("datetime", "20261013T100000Z"),
 ])
 def test_a_bad_value_gives_422_that_names_the_label(kind: str, bad: Any) -> None:
     with pytest.raises(HTTPException) as exc:
@@ -276,3 +289,84 @@ def test_the_new_words_fill_the_columns_of_a_number() -> None:
         assert mapping.types_agree("percent", column_type)
     # Every word that the sync writes is a word of the studio.
     assert set(mapping._FIELD_TYPES.values()) <= set(FIELD_TYPES)
+
+
+# ── Review round 1 ──────────────────────────────────────────────────────────
+
+
+def test_a_url_fits_the_textarea_it_may_become() -> None:
+    """A URL holds up to 2048 characters, so the matrix sends it to a
+    textarea, never to a text field of 255."""
+    url = "https://fracktal.in/" + "a" * (field_studio.URL_MAX - 20)
+    stored = _check(_field("url"), url)
+    assert _check(_field("textarea"), stored) == url
+    with pytest.raises(HTTPException):
+        _check(_field("text"), stored)
+    assert "text" not in TYPE_CHANGES["url"]
+
+
+def test_a_huge_integer_is_a_422_and_never_an_overflow() -> None:
+    with pytest.raises(HTTPException) as exc:
+        _check(_field("number"), 10**400)
+    assert exc.value.status_code == 422
+
+
+def test_the_export_writes_the_option_label() -> None:
+    from gateway.routes.crm.export import custom_cell
+
+    labels = {"gold-tier": "Gold Tier", "silver": "Silver"}
+    assert custom_cell("gold-tier", labels) == "Gold Tier"
+    assert custom_cell(["silver", "gold-tier"], labels) == "Silver; Gold Tier"
+    assert custom_cell("unknown", labels) == "unknown"
+    assert custom_cell({"id": "x", "name": "Acme"}) == "Acme"
+    assert custom_cell(5, labels) == 5
+
+
+# ── The RLS of migration 258 (review round 1, an R7 gap) ────────────────────
+#
+# The R8 fixture applies the generated policies after the ladder, so the
+# database alone cannot see a migration that lost its own RLS block. This
+# fence reads the file.
+
+_MIGRATIONS = Path(__file__).resolve().parents[2] / "infra" / "postgres"
+_TENANT = r"organization_id\s*=\s*current_setting\('app\.tenant_id',\s*true\)::uuid"
+
+
+def _studio_migration() -> str:
+    """The migration that creates the table, found by content (R1)."""
+    found = [
+        p for p in _MIGRATIONS.glob("*.sql")
+        if p.name != "schema.generated.sql"
+        and "CREATE TABLE IF NOT EXISTS crm_field_sections" in p.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, found
+    return found[0].read_text(encoding="utf-8")
+
+
+def rls_problems(sql: str) -> list[str]:
+    """What the migration lacks of the tenant shape of crm_field_sections."""
+    body = re.sub(r"--[^\n]*", "", sql)
+    wanted = {
+        "ENABLE": r"ALTER\s+TABLE\s+crm_field_sections\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY",
+        "FORCE": r"ALTER\s+TABLE\s+crm_field_sections\s+FORCE\s+ROW\s+LEVEL\s+SECURITY",
+        "POLICY": (
+            r"CREATE\s+POLICY\s+\w+\s+ON\s+crm_field_sections\s+"
+            rf"USING\s*\(\s*{_TENANT}\s*\)\s*WITH\s+CHECK\s*\(\s*{_TENANT}\s*\)"
+        ),
+    }
+    return [name for name, pattern in wanted.items() if not re.search(pattern, body, re.I)]
+
+
+def test_migration_258_forces_rls_with_a_tenant_policy() -> None:
+    assert rls_problems(_studio_migration()) == []
+
+
+def test_the_rls_fence_sees_a_missing_block() -> None:
+    sql = _studio_migration()
+    start = sql.index("DO $rls$")
+    end = sql.index("$rls$;", start) + len("$rls$;")
+    assert rls_problems(sql[:start] + sql[end:]) == ["ENABLE", "FORCE", "POLICY"]
+    no_check = re.sub(r"WITH CHECK \([^\n]*\);", ";", sql)
+    assert rls_problems(no_check) == ["POLICY"]
+    no_force = sql.replace("FORCE  ROW LEVEL SECURITY", "NO FORCE ROW LEVEL SECURITY")
+    assert rls_problems(no_force) == ["FORCE"]

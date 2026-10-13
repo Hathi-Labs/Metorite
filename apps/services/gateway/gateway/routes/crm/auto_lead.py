@@ -897,8 +897,10 @@ async def _create_lead(
     owner = str(account.user_id)
     token = bind_tenant(org)
     try:
+        # A platform writer (CRM-C4a): the custom defaults apply, and a
+        # required custom field does not stop the lead.
         return await create_record(
-            LEADS, LeadIn(**fields), _principal(owner),
+            LEADS, LeadIn(**fields), _principal(owner), system=True,
         )
     finally:
         release_tenant(token)

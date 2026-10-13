@@ -108,7 +108,9 @@ TYPE_CHANGES: dict[str, frozenset[str]] = {
     "select": frozenset({"multiselect"}),
     "email": frozenset({"text"}),
     "phone": frozenset({"text"}),
-    "url": frozenset({"text"}),
+    # Review round 1: a URL holds up to 2048 characters and a text field 255,
+    # so a URL becomes a textarea.
+    "url": frozenset({"textarea"}),
 }
 
 #: The targets of a lookup in Native mode (§20.7 item 8). A ``module:<ApiName>``
@@ -123,12 +125,19 @@ LABEL_MAX = 80
 OPTION_LABEL_MAX = 120
 HELP_MAX = 500
 TEXT_MAX = 255
+#: The size of a number that the studio refuses (review round 1). A float
+#: keeps 15 significant digits, so a larger value loses its last digits.
+NUMBER_LIMIT = 1e15
 TEXTAREA_MAX = 32_000
 URL_MAX = 2048
 EMAIL_MAX = 254
 PHONE_MAX = 40
 
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$",
+)
 _EMAIL_RE = re.compile(r"^[^\s@<>?&#%,;]+@[^\s@<>?&#%,;]+\.[^\s@<>?&#%,;]+$")
 _PHONE_RE = re.compile(r"^\+?[\d\s().\-]+(\s*(x|ext\.?|#)\s*\d+)?$", re.IGNORECASE)
 _URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
@@ -342,10 +351,24 @@ def _bad(field: CustomField, why: str) -> HTTPException:
 
 
 def _is_number(value: Any) -> bool:
-    return (
-        isinstance(value, int | float) and not isinstance(value, bool)
-        and math.isfinite(float(value))
-    )
+    """A finite JSON number. ``bool`` is not one. A JSON integer too big for
+    a float raises ``OverflowError`` in ``float()``, and is not one either."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _in_range(field: CustomField, value: Any) -> None:
+    """422 for a number whose size is :data:`NUMBER_LIMIT` or more."""
+    try:
+        too_big = abs(float(value)) >= NUMBER_LIMIT
+    except OverflowError:
+        too_big = True
+    if too_big:
+        raise _bad(field, "give a number smaller than 10^15.")
 
 
 def _text(field: CustomField, value: Any, kept: Any) -> Any:
@@ -358,30 +381,36 @@ def _text(field: CustomField, value: Any, kept: Any) -> Any:
 
 
 def _whole(field: CustomField, value: Any, kept: Any) -> Any:
-    if not _is_number(value) or float(value) != int(value):
+    if not _is_number(value) or (isinstance(value, float) and not value.is_integer()):
         raise _bad(field, "give a whole number.")
+    _in_range(field, value)
     return int(value)
 
 
 def _number(field: CustomField, value: Any, kept: Any) -> Any:
     if not _is_number(value):
         raise _bad(field, "give a number.")
+    _in_range(field, value)
     return value
 
 
 def _date(field: CustomField, value: Any, kept: Any) -> Any:
+    """``YYYY-MM-DD`` only. ``date.fromisoformat`` also takes a week date
+    (``2026-W42-1``) and a basic form (``20261013``), so the pattern runs first."""
     try:
-        if not isinstance(value, str) or len(value) != 10:
+        if not isinstance(value, str) or not _DATE_RE.fullmatch(value):
             raise ValueError(value)
-        date.fromisoformat(value)
+        return date.fromisoformat(value).isoformat()
     except ValueError:
         raise _bad(field, "give a date as YYYY-MM-DD.") from None
-    return value
 
 
 def _datetime(field: CustomField, value: Any, kept: Any) -> Any:
+    """``YYYY-MM-DDTHH:MM[:SS[.ffffff]]`` with ``Z`` or an offset only."""
     try:
-        parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
+        if not isinstance(value, str) or not _DATETIME_RE.fullmatch(value):
+            raise ValueError(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         parsed = None
     if parsed is None or parsed.tzinfo is None:
@@ -520,12 +549,16 @@ def _required(field: CustomField) -> HTTPException:
 
 
 async def custom_for_create(
-    db: Any, slug: str, given: dict[str, Any] | None,
+    db: Any, slug: str, given: dict[str, Any] | None, *, system: bool = False,
 ) -> dict[str, Any]:
     """The whole ``custom`` object of a new record, or 422.
 
     Each named key is checked against its field. A field with a default fills
     an absent key. A required field must hold a value.
+
+    ``system=True`` is for a platform writer (the auto-lead step and the lead
+    conversion). It applies the defaults and skips "required", because no
+    member can fill the field there (owner decision, review round 1).
     """
     fields = await load_custom_fields(db, slug)
     given = given or {}
@@ -539,7 +572,7 @@ async def custom_for_create(
             continue
         if field.key not in given and field.default_value is not None:
             out[field.key] = field.default_value
-        if field.required and is_empty(out.get(field.key)):
+        if field.required and not system and is_empty(out.get(field.key)):
             raise _required(field)
     return out
 
@@ -1001,10 +1034,12 @@ async def retire_field(
         row = await _custom_row(db, entity, key)
         if row.retired_at is not None:
             return _wire(entity, row)
+        # `visible` stays as it is, so a restore gives the field back with
+        # the visibility it had (review round 1). Each reader leaves out a
+        # retired field by `retired_at`.
         await db.execute(text(
-            "UPDATE crm_field_defs SET retired_at = now(), visible = false, "
-            "updated_at = now() WHERE entity = :entity AND key = :key "
-            "AND NOT is_system"
+            "UPDATE crm_field_defs SET retired_at = now(), updated_at = now() "
+            "WHERE entity = :entity AND key = :key AND NOT is_system"
         ), {"entity": stored, "key": key})
         written = await _field_row(db, entity, key)
     return _wire(entity, written)
@@ -1016,15 +1051,14 @@ async def retire_field(
 async def restore_field(
     entity: str, key: str, user: UserContext = Depends(get_current_user),
 ) -> FieldDef:
-    """Bring a retired field back. It shows again with the values it kept."""
+    """Bring a retired field back, with the values and the visibility it kept."""
     stored = checked_slug(entity)
     async with _tenant_session() as db:
         await assert_writable(db, current_tenant(), "crm_field_defs", None)
         await _custom_row(db, entity, key)
         await db.execute(text(
-            "UPDATE crm_field_defs SET retired_at = NULL, visible = true, "
-            "updated_at = now() WHERE entity = :entity AND key = :key "
-            "AND NOT is_system"
+            "UPDATE crm_field_defs SET retired_at = NULL, updated_at = now() "
+            "WHERE entity = :entity AND key = :key AND NOT is_system"
         ), {"entity": stored, "key": key})
         written = await _field_row(db, entity, key)
     return _wire(entity, written)

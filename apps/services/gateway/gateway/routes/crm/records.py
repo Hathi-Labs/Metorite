@@ -324,8 +324,14 @@ async def _resolve_status(
 
 
 async def create_record(
-    entity: Entity, payload: BaseModel, user: UserContext,
+    entity: Entity, payload: BaseModel, user: UserContext, *, system: bool = False,
 ) -> dict:
+    """Create one record.
+
+    ``system=True`` is for a platform writer, such as the auto-lead step. It
+    fills the custom defaults and skips "required" (CRM-C4a, owner decision
+    of review round 1). A route never passes it.
+    """
     values = clean_payload(payload)
     # CRM-C4a: `custom` is checked against the field definitions below, in
     # the session, and never written as the caller sent it.
@@ -359,7 +365,7 @@ async def create_record(
         await _resolve_status(db, entity, values)
         # CRM-C4a (§20.7 item 5): each value checked against its field, the
         # defaults filled, and each required field present, or 422.
-        custom = await custom_for_create(db, entity.slug, given_custom)
+        custom = await custom_for_create(db, entity.slug, given_custom, system=system)
         if custom:
             values["custom"] = custom
         row = await insert_row(db, entity.table, values)

@@ -172,7 +172,7 @@ async def studio(ns, monkeypatch):
                 "crm_deals", "crm_leads", "crm_contacts", "crm_companies",
                 "crm_pipeline_stages", "crm_pipelines", "crm_deal_statuses",
                 "crm_lead_statuses", "crm_lost_reasons", "crm_field_defs",
-                "crm_field_sections", "crm_settings",
+                "crm_field_sections", "crm_views", "crm_settings",
             ):
                 c.execute(text(
                     f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
@@ -320,7 +320,8 @@ async def test_each_type_survives_rename_order_section_hide_retire_restore(
     for key in keys.values():
         back = await _as_admin(p.org_a, "POST", f"/crm/fields/deals/{key}/restore")
         assert back.status_code == 200, back.text
-        assert back.json()["retired"] is False and back.json()["visible"] is True
+        # The field was hidden before the retire, and it comes back hidden.
+        assert back.json()["retired"] is False and back.json()["visible"] is False
     survives("restore")
     read = await _as_admin(p.org_a, "GET", f"/crm/deals/{deal['id']}")
     assert read.json()["custom"] == stored
@@ -528,7 +529,11 @@ async def test_a_bad_value_gives_422_that_names_the_label(studio) -> None:
     p = studio
     seats = await _field(p.org_a, "deals", {"label": "Seat count", "type": "number"})
     site = await _field(p.org_a, "deals", {"label": "Site", "type": "url"})
-    for key, bad in ((seats["key"], "many"), (seats["key"], 2.5), (site["key"], "ftp://x")):
+    for key, bad in (
+        (seats["key"], "many"), (seats["key"], 2.5), (site["key"], "ftp://x"),
+        # Review round 1: this gave 500 (OverflowError) before.
+        (seats["key"], 10**400), (seats["key"], 10**15),
+    ):
         made = await _as_admin(p.org_a, "POST", "/crm/deals",
                                {"name": "X", "custom": {key: bad}})
         assert made.status_code == 422, made.text
@@ -742,14 +747,21 @@ async def test_the_readers_leave_out_a_system_row_and_refuse_a_retired_key(
     assert _def(p, p.org_a, "name")[11] is True
     live = await _field(p.org_a, "deals", {"label": "Live", "type": "text"})
     old = await _field(p.org_a, "deals", {"label": "Old", "type": "text"})
+    tier = await _field(p.org_a, "deals", {
+        "label": "Tier", "type": "multiselect",
+        "options": [{"label": "Gold Tier"}, {"label": "Silver"}],
+    })
+    quiet = await _field(p.org_a, "deals", {"label": "Quiet", "type": "text",
+                                            "visible": False})
     await _record(p.org_a, "deals", {
-        "name": "D", "custom": {live["key"]: "L", old["key"]: "O"},
+        "name": "D", "custom": {live["key"]: "L", old["key"]: "O",
+                                tier["key"]: ["silver", "gold-tier"], quiet["key"]: "Q"},
     })
     assert (await _as_admin(p.org_a, "DELETE", f"/crm/fields/deals/{old['key']}")).status_code == 200
 
     plain = (await _as_admin(p.org_a, "GET", "/crm/fields/deals")).json()
-    assert [f["key"] for f in plain] == [live["key"], old["key"]]
-    assert [f["retired"] for f in plain] == [False, True]
+    assert [f["key"] for f in plain] == [live["key"], old["key"], tier["key"], quiet["key"]]
+    assert [f["retired"] for f in plain] == [False, True, False, False]
 
     system_filter = await _as_admin(p.org_a, "GET", "/crm/deals?custom.name=D")
     assert system_filter.status_code == 422, "a system row is no custom key"
@@ -761,8 +773,9 @@ async def test_the_readers_leave_out_a_system_row_and_refuse_a_retired_key(
     export = await _as_admin(p.org_a, "GET", "/crm/export/deals.csv")
     assert export.status_code == 200, export.text
     header, row = list(csv.reader(io.StringIO(export.content.decode("utf-8-sig"))))[:2]
-    assert header[-1] == "Live" and "Old" not in header and "Title" not in header
-    assert row[-1] == "L"
+    assert header[-2:] == ["Live", "Tier"], header
+    assert "Old" not in header and "Title" not in header and "Quiet" not in header
+    assert row[-2:] == ["L", "Silver; Gold Tier"], "the option labels, not the values"
 
     async def through_the_router(path: str, params: dict | None = None) -> Any:
         got = await _as_admin(p.org_a, "GET", path)
@@ -995,3 +1008,110 @@ async def test_an_approved_rule_on_a_double_field_survives_the_type_change(mirro
     assert _q(p, "SELECT type FROM crm_field_defs WHERE organization_id = "
                  "CAST(:o AS uuid) AND key = 'Score'", o=p.org_a) == [("decimal",)]
     assert float(_leads(p, p.org_a)["l1"][4]["Score"]) == 12.5
+
+
+# ── Review round 1 ──────────────────────────────────────────────────────────
+
+
+async def test_a_restore_keeps_the_visibility_the_field_had(studio) -> None:
+    p = studio
+    shown = await _field(p.org_a, "deals", {"label": "Shown", "type": "text"})
+    hidden = await _field(p.org_a, "deals", {"label": "Hidden", "type": "text",
+                                             "visible": False})
+    for made, before in ((shown, True), (hidden, False)):
+        key = made["key"]
+        gone = await _as_admin(p.org_a, "DELETE", f"/crm/fields/deals/{key}")
+        assert gone.json()["retired"] is True
+        assert gone.json()["visible"] is before, "a retire keeps visible"
+        back = await _as_admin(p.org_a, "POST", f"/crm/fields/deals/{key}/restore")
+        assert back.status_code == 200, back.text
+        assert (back.json()["retired"], back.json()["visible"]) == (False, before)
+
+
+async def test_the_auto_lead_writer_fills_defaults_and_skips_required(studio) -> None:
+    """Owner decision (review round 1): "required" binds member writes. A
+    system writer applies the defaults and skips "required"."""
+    from types import SimpleNamespace
+
+    from gateway.routes.crm import auto_lead
+
+    p = studio
+    need = await _field(p.org_a, "leads", {"label": "Budget code", "type": "text",
+                                           "required": True})
+    channel = await _field(p.org_a, "leads", {
+        "label": "Channel", "type": "select", "options": [{"label": "Email"}],
+        "default_value": "email",
+    })
+    member = await _as_admin(p.org_a, "POST", "/crm/leads", {"first_name": "M"})
+    assert member.status_code == 422, "a member write still meets required"
+
+    lead = await auto_lead._create_lead(
+        p.org_a, SimpleNamespace(user_id="owner@crm-sync.test"),
+        "buyer@example.test", "Asha Rao",
+    )
+    stored = _custom(p, "leads", lead["id"])
+    assert stored == {channel["key"]: "email"}, "the default, and no required stop"
+    assert need["key"] not in stored
+    assert _q(p, "SELECT organization_id FROM crm_leads WHERE id = CAST(:i AS uuid)",
+              i=lead["id"])[0][0] == uuid.UUID(p.org_a)
+
+
+async def test_a_conversion_fills_defaults_and_skips_required(studio) -> None:
+    p = studio
+    defaults = {}
+    for entity in ("deals", "contacts", "organizations"):
+        made = await _field(p.org_a, entity, {
+            "label": "Region", "type": "text", "default_value": f"{entity}-north",
+        })
+        defaults[entity] = made["key"]
+        await _field(p.org_a, entity, {"label": "Must", "type": "text",
+                                       "required": True})
+    lead = await _record(p.org_a, "leads", {
+        "first_name": "Ravi", "last_name": "Rao", "organization_name": "Rao Labs",
+    })
+    converted = await _as_admin(p.org_a, "POST", f"/crm/leads/{lead['id']}/convert", {})
+    assert converted.status_code == 200, converted.text
+    body = converted.json()
+    for entity, part in (("deals", "deal"), ("contacts", "contact"),
+                         ("organizations", "organization")):
+        record = body[part]
+        assert _custom(p, entity, record["id"]) == {
+            defaults[entity]: f"{entity}-north"}, entity
+
+
+async def test_a_saved_view_skips_a_retired_custom_filter(studio) -> None:
+    p = studio
+    tier = await _field(p.org_a, "deals", {
+        "label": "Tier", "type": "select", "options": [{"label": "Gold"}],
+    })
+    region = await _field(p.org_a, "deals", {
+        "label": "Region", "type": "select", "options": [{"label": "North"}],
+    })
+    await _record(p.org_a, "deals", {"name": "D", "custom": {
+        tier["key"]: "gold", region["key"]: "north"}})
+    made = await _as_admin(p.org_a, "POST", "/crm/views", {
+        "entity": "deals", "name": "Gold north",
+        "filters": {"custom": {tier["key"]: ["gold"], region["key"]: ["north"]}},
+    })
+    assert made.status_code == 201, made.text
+    assert (await _as_admin(p.org_a, "DELETE", f"/crm/fields/deals/{tier['key']}")).status_code == 200
+
+    views = (await _as_admin(p.org_a, "GET", "/crm/views?entity=deals")).json()
+    (view,) = [v for v in views if v["id"] == made.json()["id"]]
+    assert view["filters"]["custom"] == {region["key"]: ["north"]}
+    assert view["skipped_filters"] == [tier["key"]]
+    # The view's filters, as the client sends them, now load.
+    query = "&".join(f"custom.{k}={v[0]}" for k, v in view["filters"]["custom"].items())
+    assert (await _as_admin(p.org_a, "GET", f"/crm/deals?{query}")).json()["total"] == 1
+    # The stored view keeps the key, so a restore brings the filter back.
+    stored = _q(p, "SELECT filters FROM crm_views WHERE id = CAST(:i AS uuid)",
+                i=made.json()["id"])[0][0]
+    assert tier["key"] in stored["custom"]
+    assert (await _as_admin(p.org_a, "POST", f"/crm/fields/deals/{tier['key']}/restore")).status_code == 200
+    again = (await _as_admin(p.org_a, "GET", "/crm/views?entity=deals")).json()
+    (view,) = [v for v in again if v["id"] == made.json()["id"]]
+    assert view["skipped_filters"] == [] and tier["key"] in view["filters"]["custom"]
+    # A list request that names a retired key is still 422 (§20.7 item 11).
+    await _as_admin(p.org_a, "DELETE", f"/crm/fields/deals/{tier['key']}")
+    direct = await _as_admin(p.org_a, "GET", f"/crm/deals?custom.{tier['key']}=gold")
+    assert direct.status_code == 422
