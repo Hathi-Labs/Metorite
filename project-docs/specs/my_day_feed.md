@@ -1290,6 +1290,17 @@ and is off by default (`packages/acb_memory`).
 - `folded` names the kinds that §4.5 folded into the card.
 - An act with `way: "tap"` names its `act` and `act_ref`, as the needs items
   do. An act with `way: "open"` names its `href`.
+- **A task's unread notifications are one signal, with one `read` act**
+  (repair round 1 of MD-1a). The act's `act_refs` lists every unread
+  notification id on the task, newest first, and `act_ref` is the first of
+  them. The client marks each one read, and each needs row
+  `projects:<id>` leaves. An asking reason (`assigned`, `mention`, `nudge`)
+  sets the group over a `comment`.
+- **The fingerprint hashes stable facts only.** They are the entity, the
+  kind and the folded kinds. They are also the due time, the block times,
+  the overlap ids, the notification ids and the waiting time. A countdown such as `minutes` or
+  `days_late` never goes in it, so two polls a minute apart give the same
+  fingerprint.
 - A field that a later ticket adds is optional for the client.
 
 ### 14.2 The card registry
