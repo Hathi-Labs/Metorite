@@ -28,6 +28,7 @@
  *
  * Fence: `feedState.test.ts`.
  */
+import { onAccountLeave } from "@/lib/accountLeave";
 import { identity, invalidate } from "@/lib/dataCache";
 import type { ToastAction, ToastVariant } from "@/lib/toast";
 
@@ -132,24 +133,44 @@ export interface StateQueue {
 const sameSlot = (a: StateItem, b: StateItem) => a.signal_id === b.signal_id && a.action === b.action;
 
 /**
+ * Whether this page left its account (`leaveAccount`). Then no queue holds or
+ * sends anything until the page reloads, and the reload starts a new module.
+ */
+let sealed = false;
+onAccountLeave(() => {
+  sealed = true;
+});
+
+/** For tests only: a page that never left its account. */
+export function unsealForTests(): void {
+  sealed = false;
+}
+
+/**
  * The queue. It holds one item for each card and action, and a newer item
  * replaces the older one in place. An item that cannot reach the gateway goes
  * back to the head of the queue, unless a newer one took its slot.
  *
- * ⚠️ A queue belongs to the member that the cache holds when it is made
- * (`identity()`, fix round 1). Once the cache names another member, or none,
- * the queue drops its items and sends nothing. An account switch changes the
- * cookie first and then leaves the page, and the `pagehide` send would else
- * write one member's sightings into the rows of the other.
+ * ⚠️ A queue holds ONE member's writes. Two guards keep them out of another
+ * member's rows:
+ *
+ *   - **The seal** (fix round 2). An account switch changes the cookie first
+ *     and then leaves the page, so a `pagehide` send would go out as the next
+ *     account. `leaveAccount` (`lib/accountLeave.ts`) seals every queue: it
+ *     drops its items, takes no new item and sends nothing until the page
+ *     reloads. A queue made after the seal is sealed too.
+ *   - **The member of the cache** (fix round 1). A queue belongs to the member
+ *     that `identity()` names when it is made. Once the cache names another
+ *     member, the queue drops its items and sends nothing.
  */
 export function createStateQueue(post: PostState = postState, now: () => number = Date.now): StateQueue {
   let items: StateItem[] = [];
   const lastSeen = new Map<string, number>();
   let busy = false;
   const owner = identity();
-  /** Whether the cache still holds this queue's member. Else forget it all. */
+  /** Whether this queue may still hold and send. Else forget it all. */
   const ours = () => {
-    if (identity() === owner) return true;
+    if (!sealed && identity() === owner) return true;
     items = [];
     return false;
   };

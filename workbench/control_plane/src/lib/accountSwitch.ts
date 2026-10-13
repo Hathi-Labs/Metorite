@@ -16,7 +16,7 @@
  * Fence: `accountSwitch.test.ts`.
  */
 import { useEffect } from "react";
-import { bindIdentity } from "@/lib/dataCache";
+import { leaveAccount } from "@/lib/accountLeave";
 import { signOut } from "next-auth/react";
 import { clearAccountNamespaces } from "@/lib/sessions";
 import { safeLocalPath, signInUrl } from "@/lib/orgLink";
@@ -124,7 +124,7 @@ export async function switchTo(
     /* no body: the backstop still runs */
   }
   clearOrgScopedStorage();
-  forgetMember();
+  leaveAccount();
   go(safeLocalPath(target) ?? "/");
   return true;
 }
@@ -288,7 +288,7 @@ export async function signOutThis(
     clearAccountNamespaces([activeEmail]);
     clearAppearanceForAccounts([activeEmail]);
     clearOrgScopedStorage();
-    forgetMember();
+    leaveAccount();
     go("/");
     return "one";
   } catch (e) {
@@ -300,7 +300,7 @@ export async function signOutThis(
       // later write go as `next` under the leaving account's screen, so load
       // `/` as the account the cookie names. The leaving account may still
       // sit in a slot, and the menu there lists it with its remove control.
-      forgetMember();
+      leaveAccount();
       go("/");
       return "reload";
     }
@@ -347,17 +347,6 @@ export async function signOutAll(): Promise<void> {
  */
 export const ACCOUNT_CHANNEL = "mt-active-account";
 
-/**
- * Forget the member of this page before it leaves for another account
- * (WS-58 MD-2b fix round 1). The cookie names the other account already, so
- * the read cache must not hold this one. The cache clear also stops each
- * queue that holds this member's writes, so a `pagehide` send during the
- * switch sends nothing (`lib/shell/feedState.ts`).
- */
-export function forgetMember(): void {
-  bindIdentity(null);
-}
-
 /** True once this tab has switched and is on its way to `/`. */
 let leaving = false;
 
@@ -388,6 +377,18 @@ export function announceAccount(email: string): void {
   }
 }
 
+/**
+ * What a tab does when it hears the active account. A tab of another account
+ * leaves its account (`leaveAccount`, WS-58 MD-2b fix round 2) and loads `/`.
+ * ⚠️ It never clears the read cache: a clear wakes every reader of this page,
+ * and each read would go out as the account the cookie now names.
+ */
+export function reloadForAnnounce(mine: string, announced: unknown): void {
+  if (!shouldReloadFor(mine, announced)) return;
+  leaveAccount();
+  window.location.assign("/");
+}
+
 export function useAccountTabSync(email: string | null): void {
   useEffect(() => {
     if (!email || typeof BroadcastChannel === "undefined") return;
@@ -397,12 +398,7 @@ export function useAccountTabSync(email: string | null): void {
     } catch {
       return;
     }
-    channel.onmessage = (e: MessageEvent<{ email?: unknown }>) => {
-      if (shouldReloadFor(email, e.data?.email)) {
-        forgetMember();
-        window.location.assign("/");
-      }
-    };
+    channel.onmessage = (e: MessageEvent<{ email?: unknown }>) => reloadForAnnounce(email, e.data?.email);
     channel.postMessage({ email });
     return () => channel.close();
   }, [email]);

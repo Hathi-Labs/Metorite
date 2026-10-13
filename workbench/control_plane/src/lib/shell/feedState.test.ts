@@ -30,6 +30,7 @@ import { readFileSync } from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { leaveAccount } from "@/lib/accountLeave";
 import { bindIdentity, clearAll, peek, read } from "@/lib/dataCache";
 
 import { type FeedAnswer, type FeedCard, feedKey, fetchFeed, readFeedAnswer } from "./feed";
@@ -54,6 +55,7 @@ import {
   runMenuAct,
   stateItem,
   undoMenuAct,
+  unsealForTests,
 } from "./feedState";
 import { acquireReader, actsSnapshot } from "./needsActs";
 
@@ -101,6 +103,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   clearAll();
+  unsealForTests();
 });
 
 describe("1. the item of §6.8", () => {
@@ -553,10 +556,34 @@ describe("7. fix round 1 (MD-2b)", () => {
     expect(src).toMatch(/sendStateQueue\(\(\) => queueRef\.current!\)/);
   });
 
-  it("(identity) a switch forgets the member before the page goes", () => {
-    const src = readFileSync(new URL("../accountSwitch.ts", import.meta.url), "utf8");
-    // switchTo, both exits of signOutThis, and the tab that hears another account.
-    expect(src.match(/forgetMember\(\);\s*\n\s*(go\(|window\.location\.assign\()/g)?.length).toBeGreaterThanOrEqual(4);
+  it("(seal, fix round 2) a page that leaves its account sends nothing: not the queue, not a later sighting", async () => {
+    vi.useFakeTimers();
+    const win = Object.assign(new EventTarget(), {
+      setInterval: (fn: () => void, ms: number) => setInterval(fn, ms),
+      clearInterval: (id: ReturnType<typeof setInterval>) => clearInterval(id),
+    });
+    vi.stubGlobal("window", win);
+    const { sendStateQueue } = await import("./FeedCard");
+    // The verifier's probe: the identity stays as it was, so only the seal can stop it.
+    bindIdentity(null);
+    const { post } = recorder(200);
+    const queue = createStateQueue(post);
+    const stop = sendStateQueue(() => queue);
+    queue.see(seenOf("asha-card"));
+    leaveAccount();
+    // A dwell timer that ends after the switch, before the unload.
+    queue.see(seenOf("late-card"));
+    queue.add({ ...seenOf("late-card"), action: "acted" });
+    win.dispatchEvent(new Event("pagehide"));
+    await vi.advanceTimersByTimeAsync(SEEN_FLUSH_MS * 2);
+    stop();
+    // A queue made after the seal is sealed too.
+    const after = createStateQueue(post);
+    after.see(seenOf("next-card"));
+    after.drain();
+    expect(post).not.toHaveBeenCalled();
+    expect(queue.pending()).toEqual([]);
+    expect(after.pending()).toEqual([]);
   });
 
   it("(timeout) a POST that hangs gives up after 8 s, and the queue keeps its batch", async () => {
