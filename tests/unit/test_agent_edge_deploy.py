@@ -152,6 +152,64 @@ def test_the_unit_carries_no_secret_and_no_python_path() -> None:
                 assert not re.search(r"KEY|TOKEN|SECRET|PASSWORD|DATABASE", name), ln
 
 
+# ── 1b. The edge opens no sync engine (the pooler budget) ──────────────────
+#
+# Spec §15.3, the pooler budget. The edge pins ONE async connection
+# (DB_POOL_SIZE=1, DB_MAX_OVERFLOW=0). The sync engine of acb_graph would take
+# db_sync_pool_size + db_sync_max_overflow more. The budget counts the edge
+# as 1, so the edge must never build that engine. Two proofs: no module on
+# its code path imports acb_graph, and the running app builds no engine.
+
+#: The modules that the edge runs: its own package, and the three acb_auth
+#: modules that it imports by name.
+EDGE_CODE = [
+    *sorted((ROOT / "apps/services/agent_edge/agent_edge").glob("*.py")),
+    ROOT / "packages/acb_auth/acb_auth/agent_tokens.py",
+    ROOT / "packages/acb_auth/acb_auth/agent_oauth.py",
+    ROOT / "packages/acb_auth/acb_auth/agent_signing.py",
+]
+
+
+def test_no_module_of_the_edge_imports_the_sync_engine() -> None:
+    import ast
+
+    assert len(EDGE_CODE) > 3
+    for f in EDGE_CODE:
+        tree = ast.parse(_read(f))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            for name in names:
+                assert not name.startswith("acb_graph"), f"{f.name} imports {name}"
+        assert "acb_graph" not in _read(f), f"{f.name} names acb_graph"
+
+
+def test_the_running_edge_builds_no_sync_engine(tmp_path: Path) -> None:
+    """A fresh process imports the edge app and serves a request with the
+    flag on. Then the sync engine of acb_graph must not exist."""
+    import sys
+
+    prog = (
+        "import sys\n"
+        "from fastapi.testclient import TestClient\n"
+        "from agent_edge.app import create_app\n"
+        "r = TestClient(create_app()).get('/.well-known/oauth-authorization-server')\n"
+        "assert r.status_code == 200, r.status_code\n"
+        "m = sys.modules.get('acb_graph.db')\n"
+        "print('built' if m and m.get_engine.cache_info().currsize else 'none')\n"
+    )
+    env = dict(os.environ, AGENT_ACCESS_ENABLED="true",
+               DATABASE_URL="postgresql+psycopg://u:p@db.invalid:5432/x")
+    r = subprocess.run([sys.executable, "-c", prog], cwd=str(tmp_path), env=env,
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.strip().splitlines()[-1] == "none", r.stdout
+
+
 # ── 2. The sandbox ─────────────────────────────────────────────────────────
 
 #: Each line of the drop-in, in order. A change here is a reviewed change.

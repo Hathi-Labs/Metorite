@@ -967,6 +967,12 @@ sudo systemd-run --wait --pipe --quiet -p DynamicUser=yes sh -c 'for p in /opt/a
 sudo systemctl show acb-agent-edge -p DynamicUser -p User -p InaccessiblePaths
 ```
 
+4. The edge env file holds the pool pin of the pooler budget below, and nothing more about the pool. The line prints exactly `DB_MAX_OVERFLOW=0` and `DB_POOL_SIZE=1`, in that order:
+
+```
+sudo grep -E '^DB_(POOL_SIZE|MAX_OVERFLOW|SYNC_[A-Z_]+)=' /opt/acb/app/apps/services/agent_edge/.env | sort
+```
+
 **The deploy step** is in `scripts/vps_apply.sh`, after the Customer Console step, in the same pattern:
 
 1. When `acb-agent-edge` is enabled, the step installs the unit file if it changed. Then it restarts the unit.
@@ -985,7 +991,9 @@ The BO-23 loop installs the unit file, and the BH-7 step installs the drop-in. N
 | `AGENT_ACCESS_ENABLED` | `true` at the pilot. While it is not set, every route answers 404 |
 | `AGENT_EDGE_SIGNING_KEY` | The same key as the gateway. At least 32 bytes, and not equal to `GATEWAY_INTERNAL_TOKEN` or `LITELLM_MASTER_KEY` |
 | `DATABASE_URL` | The DSN and the role of the gateway's `DATABASE_URL`, on the SESSION pooler. `lookup_token` and the other token acts read it through `acb_common.db` |
-| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | `1` and `1`. ⚠️ OPEN: read the pooler budget below |
+| `DB_POOL_SIZE` | `1`. The edge has ONE database connection (the pooler budget below) |
+| `DB_MAX_OVERFLOW` | `0` |
+| `DB_SYNC_POOL_SIZE`, `DB_SYNC_MAX_OVERFLOW` | Not set. The edge never builds the sync `acb_graph` engine, so these values open no connection. Never set them to `0`: SQLAlchemy reads a `pool_size` of 0 as no limit |
 | `DB_STATEMENT_CACHE_SIZE` | The value of the root `.env`, when it sets one |
 | `AGENT_EDGE_GATEWAY_URL` | Not set. The default `http://127.0.0.1:8080` is the gateway on loopback |
 | `AGENT_ISSUER`, `AGENT_RESOURCE` | Not set. The defaults are `https://mcp.metorite.com` and `https://mcp.metorite.com/mcp` |
@@ -993,12 +1001,14 @@ The BO-23 loop installs the unit file, and the BH-7 step installs the drop-in. N
 - The edge file must not hold `GATEWAY_INTERNAL_TOKEN`, `LITELLM_MASTER_KEY` or a provider key.
 - EA-10p decides if the edge reads `AGENT_ACCESS_ORGS`. If it does, the edge file holds the value of the root `.env`.
 
-**⚠️ The pooler budget is OPEN, and it blocks the enable of the edge.** The session pooler in front of the database allows 15 clients for the whole database. `TestThePoolCeilingFitsThePoolerInFront` (`tests/unit/test_db_engine_seam.py`) keeps 3 of them free for a migration, a `psql` and the backup job. So one process may open 12.
+**The pooler budget (orchestrator decision, 2026-10-13).** The session pooler in front of the database allows 15 clients for the whole database. The gateway and the edge share it.
 
-- The gateway opens 7 + 2 async and 2 + 1 sync, so 12 (`settings.py`, `db_pool_size` and the note above it). That is the whole budget.
-- Without pool settings, the edge takes the defaults of `Settings`, so 9 more. With `1` and `1`, it takes 2. Then the sum is 14. That fits the cap of 15, but it leaves 1 slot for the operators, not 3.
-- **The transaction pooler (port 6543) is not proven safe.** The tenant bind of the edge is transaction-local (`acb_common/db.py:298`, `agent_tokens.py:239`), and a transaction pooler allows that. But no config in the repo uses port 6543. The seam sends `idle_in_transaction_session_timeout` in the startup packet (`db.py:132`). And `settings.py` records that a move to that port is "its own decision, not a knob turn".
-- So the decision goes to the orchestrator. The choices are a smaller reserve, a smaller gateway pool, or the transaction pooler for the edge. This slice does not lower the gateway pool, and it adds no fence for the sum until the decision.
+- The gateway opens 7 + 2 async and 2 + 1 sync, so 12 (`settings.py`, `db_pool_size` and the note above it). This slice does not change it.
+- The edge opens ONE: `DB_POOL_SIZE=1` and `DB_MAX_OVERFLOW=0`. Its work is short: the token lookup, and the token issue and rotation. With `db_pool_timeout` at 10 seconds, one connection serves a pilot of one organization.
+- The edge never builds the sync engine. No edge module, and none of `agent_tokens`, `agent_oauth` and `agent_signing`, imports `acb_graph`. A test also imports the edge app and proves that it built no sync engine.
+- So the database sees 12 + 1 = 13 of 15. The headroom is 2: a migration and the backup job can run together. An ad-hoc `psql` waits while both run.
+- The fence is `TestThePoolCeilingFitsThePoolerInFront` in `tests/unit/test_db_engine_seam.py`. It reads the two pool rows of the table above, so the spec and the test hold one value.
+- The transaction pooler (port 6543) is not proven safe for the edge, and a narrower database role is not built. Both are for GA (§17).
 
 **The root `.env` of the gateway** gets three names. A writer of that file keeps its inode (`deploy/AGENTS.md`).
 
@@ -1081,6 +1091,7 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 - The consent routes of EA-2a trust the session alone. A cross-site request could drive `approve` while a member is signed in. EA-4 closes this with an `Origin` check, a `SameSite` session, no 3xx from approve and a one-time consent ticket from `check` (§15 EA-4).
 - For a private-use scheme, `redirect_host` shows the URI authority as if it were a web host. A client can list `x-evil://claude.ai/cb`, and the consent screen then shows `claude.ai`, although the browser gives the code to the native app that claims `x-evil`. EA-4 must show the scheme with the authority for every scheme other than http and https.
 - The redirect URI rules of EA-2a are a deny list of dangerous schemes. A deny list is never complete. EA-4 or EA-2b moves them to the RFC 8252 forms.
+- **Follow-up before GA, not for the pilot: the transaction pooler for the edge.** At GA one connection may be too few for the edge. The transaction pooler (port 6543) has more client slots, and the tenant bind of the edge is transaction-local (`acb_common/db.py:298`, `agent_tokens.py:239`). But no config in the repo uses that port. The seam sends `idle_in_transaction_session_timeout` in the startup packet (`db.py:132`). And `settings.py` makes the move its own decision. A real-database test of the edge's token acts through that pooler comes first.
 - **Follow-up before GA, not for the pilot: a narrower database role for the edge.** The edge connects with the DSN and the role of the gateway (§15.3). So code execution in the edge reaches each table that the gateway reaches, whatever the sandbox hides. The edge needs `agent_token`, `agent_client` and `agent_connection` only. The first two are RLS-exempt (§10.3). A role with grants on those three tables alone takes the database out of the blast radius. No slice owns it yet.
 - D-EA-2 says the edge unit has a smaller blast radius. That is true only after the EA-10 sandbox. The edge holds the database DSN, and EA-3 adds the signing key, not the internal bearer. A thief with the key can act as any member who holds a live connection, on the GET routes of `MCP_ROUTES` (§10.2). A thief with the DSN reaches the database directly.
 
@@ -1204,3 +1215,7 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The pooler budget (P1), OPEN.** The gateway already takes all 12 slots of the budget. The edge at `1` and `1` makes 14, which leaves 1 slot of the reserve of 3. The transaction pooler is not proven safe. The orchestrator decides, and the edge stays off until then.
   - **The claim (P2).** The sandbox does not narrow the database. §17 holds a narrower database role for the edge as a follow-up before GA.
   - **Notes.** The deploy probe reads no database, so step 3 of the EA-10c smoke is the database check. `bh2_strict_check` does not cover the edge.
+- 2026-10-13 — The orchestrator decided the pooler budget of EA-10. The edge gets ONE connection, `DB_POOL_SIZE=1` and `DB_MAX_OVERFLOW=0`, and the gateway pool stays as it is. So the database sees 13 of 15, with a headroom of 2 for a migration and the backup job.
+  - **The fence.** `TestThePoolCeilingFitsThePoolerInFront` now sums the gateway and the edge. It reads the edge pin from the table of §15.3, and an edge pool of 2 turns it red.
+  - **The sync engine.** The edge never builds it. A test proves that no edge module imports `acb_graph`, and that the edge app builds no sync engine.
+  - **The box check.** Step 4 of the pre-enable check reads the two pool lines of the edge env file. §17 holds the transaction pooler and the narrower database role for GA.

@@ -100,10 +100,18 @@ class Settings(BaseSettings):
     # and a member of the second organization got the failures.
     #
     # The budget now holds BOTH engines of the one process: async 7 + 2 = 9,
-    # sync (`db_sync_*` below) 2 + 1 = 3, so 12 in all. That keeps the 3
-    # slots of headroom above for a migration, a `psql` and the backup job.
-    # Fence: `TestThePoolCeilingFitsThePoolerInFront` in
-    # `tests/unit/test_db_engine_seam.py`.
+    # sync (`db_sync_*` below) 2 + 1 = 3, so 12 in all.
+    #
+    # 🔴 **2026-10-13: the MCP edge takes ONE more slot (WS-55 EA-10).** The
+    # unit `acb-agent-edge` is a second process on the same pooler. Its env
+    # file pins `DB_POOL_SIZE=1` and `DB_MAX_OVERFLOW=0`, and it never builds
+    # the sync engine (external_agent_access.md §15.3). So the database sees
+    # 12 + 1 = 13 of 15. The headroom is now 2: a migration and the backup job
+    # can run together, and an ad-hoc `psql` waits while both run. These
+    # defaults are the GATEWAY's. Do not raise them without taking a slot
+    # from somewhere else. Fences: `TestThePoolCeilingFitsThePoolerInFront`
+    # in `tests/unit/test_db_engine_seam.py` (one process, and the gateway
+    # plus the edge).
     db_pool_size: int = 7
     db_max_overflow: int = 2
 
