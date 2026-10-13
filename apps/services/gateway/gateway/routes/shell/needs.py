@@ -482,7 +482,11 @@ def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
             facts={"notification": str(reason.get("kind") or ""),
                    "who": _who(reason.get("actor")), "excerpt": reason.get("excerpt"),
                    "at": _iso(reason.get("created_at")), "note_ids": ids,
-                   "unread": len(ids)},
+                   "unread": len(ids),
+                   # The newest note, which may not be the reason. The state
+                   # join reads it to tell another person's note from the
+                   # member's own act (my_day_feed.md §6.8, MD-2a).
+                   "last_note_at": _iso(rows[0].get("created_at"))},
             href=task_href(task_id),
             acts=(tap("read", "Mark read", "read", ids[0], act_refs=ids),
                   link("open", "Open", task_href(task_id))),
@@ -506,6 +510,9 @@ async def _email(user: UserContext) -> Found:
     # The light read: the ids and the pool flag, and no unread count.
     accounts = await feed_mailboxes(user)
     out: list[Item] = []
+    #: The last message of each thread, by row id: the state fingerprint
+    #: reads it (``my_day_feed.md`` §6.8 item 1).
+    last_message: dict[str, str] = {}
     asked = failed = 0
     total = 0
     capped = False
@@ -547,6 +554,8 @@ async def _email(user: UserContext) -> Found:
             if not thread.get("message_id"):
                 continue  # nothing to open
             who = thread.get("who") or ""
+            last_message[f"email:{account_id}:{thread['thread_id']}"] = str(
+                thread["message_id"])
             out.append(_item(
                 id=f"email:{account_id}:{thread['thread_id']}", app="email",
                 kind="needs_reply", title=thread.get("subject") or "(no subject)",
@@ -559,16 +568,17 @@ async def _email(user: UserContext) -> Found:
     rows = _sort(out)[:PER_APP]
 
     def signals() -> list[Signal]:
-        return [_thread_signal(row) for row in rows]
+        return [_thread_signal(row, last_message.get(row["id"])) for row in rows]
 
     # A mailbox that failed costs its rows, so the total can only be a floor.
     return Found(rows, max(total, len(rows)), capped=capped or failed > 0,
                  signals=signals)
 
 
-def _thread_signal(row: Item) -> Signal:
+def _thread_signal(row: Item, message_id: str | None = None) -> Signal:
     """A needs-reply row as a feed signal. It keeps the row's id,
-    ``email:<account id>:<thread id>``, and its link."""
+    ``email:<account id>:<thread id>``, and its link. ``message_id`` is the
+    thread's last message, which the state fingerprint reads."""
     _, account_id, thread_id = row["id"].split(":", 2)
     detail = row.get("detail") or ""
     who = detail[len("From "):] if detail.startswith("From ") else None
@@ -576,7 +586,8 @@ def _thread_signal(row: Item) -> Signal:
         signal_id=row["id"], app="email", kind="needs_reply",
         entity={"type": "thread", "id": thread_id, "label": row["title"]},
         title=row["title"],
-        facts={"who": who, "waiting_since": row.get("at"), "account": account_id},
+        facts={"who": who, "waiting_since": row.get("at"), "account": account_id,
+               "message_id": message_id},
         href=row["href"], acts=(link("open-thread", "Open thread", row["href"]),),
         at=row.get("at"),
     )

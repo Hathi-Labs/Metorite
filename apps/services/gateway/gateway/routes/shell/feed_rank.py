@@ -14,13 +14,18 @@ The order is a score. Code owns time, and ``decide`` owns judgment::
 * ``weight`` is the OLD PATH until MD-6a: the task's D78 level, from the one
   server matrix (``acb_common.priority``), as a level from 0 to 4, times 6.
   A signal with no task level weighs 0.
-* ``affinity`` and ``fatigue`` are 0 until MD-9 and MD-2 build them.
+* ``affinity`` is 0 until MD-9 builds it.
+* ``fatigue`` is -8 for each visit of the day with no act, to -24 at most
+  (MD-2a). Only the state knows the visits, so the state join subtracts it
+  (``state.join``), after the fold and before the order.
 
 The group comes from the old-path table of §4.3 until ``my_day.triage``
 lands (MD-6a). A card takes the most urgent group of its main kind and of
 every kind folded into it (``most_urgent``). Two of the four rules of §7 apply in MD-1a:
 
-1. **The group comes first.** The score orders the cards inside a group.
+1. **The group comes first.** Inside a group, a card the member has not
+   seen comes first (``state`` is ``new``, ``my_day_feed.md`` §6.8 item 6).
+   Then the score orders the cards.
 3. **Today's caps stay.** 15 cards for each app at most, and an approval
    takes only the room that the member's own work leaves (``YIELDING_KINDS``).
 
@@ -42,8 +47,8 @@ from gateway.routes.shell.needs import (
     _instant,
 )
 
-#: The groups, in the order the feed shows them (§4.3). MD-1 fills only the
-#: first four. ``later`` waits on MD-2, and ``handled`` on MD-7.
+#: The groups, in the order the feed shows them (§4.3). MD-1 fills the first
+#: four. MD-2a fills ``later`` (the state join), and MD-2c fills ``handled``.
 GROUPS: tuple[str, ...] = ("now", "needs_you", "ready", "fyi", "later", "handled")
 
 #: base(kind). ⚠️ The fixed seed of ``test_feed_rank.py`` holds this table: a
@@ -68,6 +73,10 @@ URGENT_SOON = 40
 URGENT_PASSED = 60
 LATE_PER_DAY = 2
 LATE_MAX = 20
+
+#: The fatigue terms (§7): -8 for each visit with no act, to -24 at most.
+FATIGUE_PER_VISIT = 8
+FATIGUE_MAX = 24
 
 #: The weight of one level (§7: "the level from 0 to 4, times 6").
 WEIGHT_STEP = 6
@@ -122,14 +131,16 @@ def affinity(_facts: dict[str, Any]) -> int:
     return 0
 
 
-def fatigue(_facts: dict[str, Any]) -> int:
-    """0 until MD-2 records the visits with no act."""
-    return 0
+def fatigue(visits: int) -> int:
+    """8 for each visit of the day with no act, to 24 at most (§7)."""
+    return min(FATIGUE_MAX, FATIGUE_PER_VISIT * max(0, int(visits)))
 
 
 def score(kind: str, facts: dict[str, Any], urgent_at: Any, now: datetime) -> int:
+    """The score with no state: base + urgency + weight + affinity. The
+    state join subtracts ``fatigue`` (``state.join``)."""
     return (base(kind) + urgency(kind, facts, urgent_at, now) + weight(facts)
-            + affinity(facts) - fatigue(facts))
+            + affinity(facts))
 
 
 def _is_day(value: Any, today: date) -> bool:
@@ -162,12 +173,14 @@ def most_urgent(groups: list[str]) -> str:
     return min(groups, key=GROUPS.index)
 
 
-def _sort_key(card: dict[str, Any]) -> tuple[int, int, float, str]:
-    # Rule 1: the group first. Then the higher score, then the older time
-    # (a card with no time goes last), then the id, so a tie has one order
-    # on every load.
+def _sort_key(card: dict[str, Any]) -> tuple[int, int, int, float, str]:
+    # Rule 1: the group first. Then a new card before a seen one (§6.8 item
+    # 6, §6.5 step 1). A card with no state yet reads as new. Then the higher
+    # score, then the older time (a card with no time goes last), then the
+    # id, so a tie has one order on every load.
     at = _instant(card.get("at"))
-    return (GROUPS.index(card["group"]), -int(card["score"]),
+    unseen = 0 if card.get("state", "new") == "new" else 1
+    return (GROUPS.index(card["group"]), unseen, -int(card["score"]),
             at.timestamp() if at is not None else float("inf"), str(card["signal_id"]))
 
 
