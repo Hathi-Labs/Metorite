@@ -2972,20 +2972,41 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm src
 - `CrmRail.tsx` exports `SettingsSectionRows`. It has no hook, so the test
   reads its element tree. The page passes `settings={railSettings}` at both
   rail call sites.
-- The redirect effect waits for the access read. Without that wait, an
-  admin's link could open a member's default while the access loads.
-- `SetupLink` is an `<a>` with `href={SETUP_HREF}`. A plain left click
-  calls `pushView`, and a click with a modifier key stays the browser's. So
-  the `href` check at `crmX0.test.ts:239` did not change.
-- The `next/link` fence in `history.test.ts` skips its own file, because its
-  fixtures name `next/link`.
-- page.tsx also changes its import lines. §20.3 does not name them, and
-  the named hunks need them.
-- Fences: `components/crmC1.test.ts` (23 tests) and the new `next/link`
-  test in `lib/history.test.ts`. Eleven mutations each turned a fence red.
-- Not done: the `visual-review` check of done-when 11. The dev stack was not
-  started. A static render shows that each child row has the markup of a
-  saved-view row, with token classes only.
+- **The redirect changed in review, and this changes item 6 and done-when 3.**
+  The effect rewrites only a missing or unknown section. A known section
+  that the caller cannot open draws the default, and its URL stays. So
+  `section=sync-health` in Native mode shows Setup and sync and keeps its
+  URL. No rewrite runs while the access read loads or is stale, or while the
+  mode read failed (`readFailed` from `useCrmMode`). In those states the
+  caller is a guess, and a rewrite would lose an admin's link.
+- `boundaryKey` reads the section on screen (`withShownSection`). So a
+  settings URL with no section mounts its subtree once.
+- The unsaved edits of the settings rows live in the CRM store
+  (`settingsDrafts`, `draftOf`). A section change keeps them. A re-read of a
+  row drops its draft, as the local state did before.
+- `SetupLink` is an `<a>` with `href={SETUP_HREF}`. Its click calls
+  `pushOnPlainClick` in `lib/history.ts`. A plain left click calls
+  `pushView`. A middle click or a click with a modifier key stays the
+  browser's. The `href` check at `crmX0.test.ts:239` did not change.
+- `history.test.ts` refuses a `next/link` import under `src/app/crm`, and it
+  skips its own file, because its fixtures name `next/link`. It also refuses
+  an in-app `<a href>` whose click does not call `pushView`, `replaceView`
+  or `pushOnPlainClick`. A link may pass for three other reasons:
+  - It opens a new tab.
+  - Its href starts with `#`, `mailto:`, `tel:` or `http`.
+  - A `crm-link-external:` comment with a reason stands just before it.
+- A click on the section or the view on screen adds no history entry.
+- Each card heading is the label of its rail row. "Pipelines and stages"
+  is now "Deal stages", "Lead Status" is "Lead statuses", the hub heading
+  is "Setup and sync", and `FIELD_MAP_TITLE` is "Field mapping". In Mirror
+  mode an admin's pipelines list reads "Pipelines", because the editor
+  below it is "Deal stages".
+- page.tsx also changes its import lines, `MirrorContext` and the
+  `CrmGate` call. §20.3 does not name them, and the review fixes need them.
+- Fences: `components/crmC1.test.ts` (31 tests) and `lib/history.test.ts`
+  (14 tests). The first build proved 11 mutations, and the review fixes
+  proved 14 more. Each turned a fence red.
+- The verifier checked the rail and one section in a browser.
 
 ### 20.5 CRM-C2: One board
 
