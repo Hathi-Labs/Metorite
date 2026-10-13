@@ -122,18 +122,21 @@ export function userInputAnswer(answers: ElicitationAnswers): { answer: string; 
 }
 
 /**
- * The one line an answered card shows: "Archive both #22 and #23". More
- * than one question puts each answer after its header. Display only.
+ * The one line an answered card shows: "Archive both #22 and #23". Display
+ * only, and never a word the run did not get (review of #945, P2): one
+ * question shows the exact answer that {@link blockingAnswer} sends, so
+ * typed text alone when the member also picked. More than one question
+ * sends every block, so each answer follows its header.
  */
 export function answerSummary(
   questions: readonly ElicitationQuestion[],
   answers: ElicitationAnswers,
 ): string {
+  if (questions.length === 1) return blockingAnswer(questions, answers).answer;
   const one = (h: string) => {
     const a = answers[h] ?? {};
     return [...(a.selected ?? []), a.freeform?.trim() ?? ""].filter(Boolean).join(", ");
   };
-  if (questions.length === 1) return one(questions[0].header);
   return questions
     .map((q) => {
       const said = one(q.header);

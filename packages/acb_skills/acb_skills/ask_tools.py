@@ -143,8 +143,9 @@ def is_hitl_blocking_tool(name: str) -> bool:
 # with no mark: "…should be in the same plac". The member could not tell
 # that text was missing. Now a long text is cut at a word, with an ellipsis,
 # and the question may run to 1000 characters, so a cut is rare and never
-# silent. The executor's bridge (``orchestrator.executor``) cuts with the
-# same function, so both paths send the same card.
+# silent. The executor's bridge (``orchestrator.executor``) cuts the header
+# and the question with the same function. It passes the options on as the
+# model wrote them, uncut, so no option loses a word there either.
 # Fence: ``tests/unit/test_ask_questions_text.py``.
 
 #: The longest header (a short label) the card keeps.

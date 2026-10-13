@@ -87,6 +87,16 @@ describe("Submit waits for an answer to every question", () => {
 });
 
 describe("the answered card's line", () => {
+  // Review of #945, P2: one question sends its typed text alone when the
+  // member also picked. The line showed both, so it named a pick the run
+  // never got.
+  it("shows, for one question, the exact answer the run got", () => {
+    const q = [{ ...ONE[0], allowFreeformInput: true }];
+    const both = collectAnswers(q, { [q[0].header]: { selected: ["Archive only #22"] } }, { [q[0].header]: "and tag it" });
+    expect(answerSummary(q, both)).toBe("and tag it");
+    expect(answerSummary(q, both)).toBe(blockingAnswer(q, both).answer);
+  });
+
   it("is the answer for one question, and each header's answer for more", () => {
     expect(answerSummary(ONE, { [ONE[0].header]: { selected: ["Archive both #22 and #23"] } })).toBe(
       "Archive both #22 and #23",

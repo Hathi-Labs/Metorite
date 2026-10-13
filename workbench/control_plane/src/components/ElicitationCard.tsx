@@ -47,6 +47,7 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Textarea } from "@/components/ui/Input";
+import { plainTitle } from "@/lib/fencedText";
 import {
   canSubmitAnswers,
   collectAnswers,
@@ -137,7 +138,7 @@ export default function ElicitationCard({
         data-elicitation-card={isAnswered ? "answered" : "open"}
         className={CARD_FRAME_CLASS}
       >
-        <RollupHeader aside={answered ? <GenUiText text={answered} /> : undefined} />
+        <RollupHeader aside={answered ? plainTitle(answered) : undefined} />
         <RollupBody className="space-y-2.5 pt-1.5">
           {questions.map((q, qi) => {
             const hasOptions = !!q.options && q.options.length > 0;

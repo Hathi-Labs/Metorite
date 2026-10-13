@@ -173,3 +173,17 @@ describe("a template with its own head draws it as the card's one header", () =>
     expect(read("components/MessageBubble.tsx")).toContain('const header = genUiRootOwnsHead(spec) ? "own" : "frame";');
   });
 });
+
+describe("a new question is a new card (review of #945, P1)", () => {
+  // The answered card stays mounted, and the next question takes its place.
+  // With no key, React kept the first card's picks and typed text, and the
+  // answer reads them by header. Node-env vitest renders no state, so this
+  // reads the source. The browser twin: `e2e/chat-question-twice.spec.ts`.
+  it("each question card in AgentChat is keyed by its request id", () => {
+    const chat = code(read("components/AgentChat.tsx"));
+    const cards = chat.match(/<ElicitationCard\b[^>]*?\bid=/g) ?? [];
+    expect(cards.length).toBe(2);
+    expect(chat).toMatch(/<ElicitationCard\s+key=\{elicitation\.requestId \?\? "questions"\}/);
+    expect(chat).toMatch(/<ElicitationCard\s+key=\{userInput\.requestId\}/);
+  });
+});

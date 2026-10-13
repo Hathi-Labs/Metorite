@@ -1747,6 +1747,10 @@ export default function AgentChat({
 
         {elicitation && (
           <ElicitationCard
+            // A new question is a new card (review of #945, P1). The answered
+            // card stays mounted, so with no key the next question took its
+            // picks and its typed text. A retry keeps its id, and its picks.
+            key={elicitation.requestId ?? "questions"}
             id={`ask:${elicitation.requestId ?? "questions"}`}
             questions={elicitation.questions}
             answered={elicitation.answered}
@@ -1756,7 +1760,7 @@ export default function AgentChat({
                 const { answer, wasFreeform } = blockingAnswer(elicitation.questions, answers);
                 const card = elicitation;
                 const reqId = card.requestId!;
-                setElicitation({ ...card, answered: answerSummary(card.questions, answers) || answer });
+                setElicitation({ ...card, answered: answerSummary(card.questions, answers) });
                 postRespondInput(
                   { request_id: reqId, answer, was_freeform: wasFreeform },
                   () => setElicitation(card),
@@ -1780,6 +1784,7 @@ export default function AgentChat({
 
         {userInput && (
           <ElicitationCard
+            key={userInput.requestId}
             id={`ask:${userInput.requestId}`}
             questions={[{
               header: ASK_USER_HEADER,

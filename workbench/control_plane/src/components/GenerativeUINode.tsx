@@ -45,6 +45,7 @@ import SandboxedReact from "@/components/SandboxedReact";
 import { OWN_HEAD_TEMPLATES, renderTemplate } from "@/components/genUITemplates";
 import GenUIFallback from "@/components/GenUIFallback";
 import { isEmptyNode } from "@/lib/genUiFallback";
+import { plainTitle } from "@/lib/fencedText";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
 import { type AccentHue, accentForHue } from "@/lib/statusAccent";
@@ -149,10 +150,12 @@ function Node({
       // toggle, inside its own border (owner feedback, 2026-10-10). A card
       // nested deeper sees no fold state (`CollapsibleCardBody`).
       if (depth === 0 && fold) {
+        // The header is the fold's `<button>`: plain words, never a link
+        // (review of #945, P2, `plainTitle`).
         return (
           <div className="rounded-lg border border-border/60 bg-card/50 p-3">
             <CollapsibleCardHeader
-              title={title ?? undefined}
+              title={title === null ? undefined : plainTitle(s(props.title))}
               quiet={title === null}
               className="text-sm"
               titleClassName="font-semibold text-foreground"

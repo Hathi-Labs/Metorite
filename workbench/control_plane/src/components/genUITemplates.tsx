@@ -52,6 +52,7 @@ import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadg
 import { pickedFromAnswer } from "@/lib/askAnswers";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
+import { plainTitle } from "@/lib/fencedText";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
 import {
   CollapsibleCardBody,
@@ -993,8 +994,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   };
   return (
     <div style={CARD_BOX}>
-      <TemplateHead icon="list-checks" gap={4}
-        title={data.title != null ? <GenUiText text={str(data.title)} /> : null} />
+      <TemplateHead icon="list-checks" gap={4} rich title={data.title != null ? str(data.title) : null} />
       <TemplateBody>
       {data.description != null && (
         <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
@@ -1096,31 +1096,54 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
  * the row the template always drew. With no title, a chat card still gets
  * the toggle while it folds, and draws nothing while it is open.
  */
-function TemplateHead({ icon, title, aside, gap = 8 }: {
+function TemplateHead({ icon, title, href = null, rich = false, aside, gap = 8 }: {
   icon: string;
-  title: React.ReactNode | null;
-  aside?: React.ReactNode;
+  /** The title's words, or null for a template with no title. */
+  title: string | null;
+  /** Where the title links to, in the app. */
+  href?: string | null;
+  /** The title is generative-UI text: Markdown and «names» outside a fold. */
+  rich?: boolean;
+  /** Plain words after the title. Never a link or a control. */
+  aside?: string;
   gap?: number;
 }) {
   const fold = useCardFold();
   if (fold) {
+    // ⚠️ The header is the fold's trigger, a `<button>`. A link inside it
+    // was invalid HTML, and one click followed the link AND folded the card
+    // (review of #945, P2). So the title is plain words, and the link is
+    // its own control beside the header, as `ToolCardShell` puts its X.
     return (
-      <CollapsibleCardHeader
-        lead={<TIcon name={icon} size={14} color="var(--primary)" />}
-        title={title ?? undefined}
-        quiet={title === null}
-        aside={aside}
-        className="text-sm"
-        titleClassName="font-semibold text-foreground"
-      />
+      <div className="flex min-w-0 items-center gap-1.5">
+        <div className="min-w-0 flex-1">
+          <CollapsibleCardHeader
+            lead={<TIcon name={icon} size={14} color="var(--primary)" />}
+            title={title === null ? undefined : plainTitle(title)}
+            quiet={title === null}
+            aside={aside}
+            className="text-sm"
+            titleClassName="font-semibold text-foreground"
+          />
+        </div>
+        {href && (
+          <a href={href} data-template-open="" aria-label={`Open ${title === null ? "it" : plainTitle(title)}`}
+            title="Open" className="cc-control flex shrink-0 rounded p-1 text-muted-foreground hover:text-foreground">
+            <Icon name="ExternalLink" size={13} />
+          </a>
+        )}
+      </div>
     );
   }
   if (title === null) return null;
+  const words = rich ? <GenUiText text={title} /> : title;
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: gap }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <TIcon name={icon} size={15} color="var(--primary)" />
-        <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>{title}</span>
+        <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
+          <TitleLink href={href}>{words}</TitleLink>
+        </span>
       </div>
       {aside != null && <span style={MUTED}>{aside}</span>}
     </div>
@@ -1158,8 +1181,7 @@ function Timeline({ data }: { data: Data }) {
           : "var(--border)";
   return (
     <div style={CARD_BOX}>
-      <TemplateHead icon="history"
-        title={<TitleLink href={taskHref(data.taskId)}>{str(data.title, "Timeline")}</TitleLink>}
+      <TemplateHead icon="history" title={str(data.title, "Timeline")} href={taskHref(data.taskId)}
         aside={data.total != null ? `${rows.length} of ${num(data.total)}` : undefined} />
       <TemplateBody>
       {rows.length === 0 && <div style={MUTED}>Nothing has happened here yet.</div>}
@@ -1512,8 +1534,7 @@ function ReportCard({ data }: { data: Data }) {
   return (
     <div style={fold ? CARD_BOX : undefined}>
       {/* The one address builder of Reports (`projects_reports.md` §6.5 item 18). */}
-      <TemplateHead icon="file-text" gap={10}
-        title={<TitleLink href={reportLink()}>{str(data.title, "Report")}</TitleLink>}
+      <TemplateHead icon="file-text" gap={10} title={str(data.title, "Report")} href={reportLink()}
         aside={data.period != null ? str(data.period) : undefined} />
       <TemplateBody>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
