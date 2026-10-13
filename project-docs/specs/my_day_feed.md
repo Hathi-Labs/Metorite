@@ -1,12 +1,14 @@
 # My Day as a live feed — the chief of staff
 
-**Status: ACTIVE, 2026-10-13. MD-1a is BUILT (gateway half, merged as
+**Status: ACTIVE, 2026-10-14. MD-1a is BUILT (gateway half, merged as
 #964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
 dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
-migration 259, dark by the absence of a caller).**
+migration 259, dark by the absence of a caller). MD-2a is BUILT (the card
+state on the server, migration 258).**
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-2a to MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7,
-MD-8, MD-9 and MD-12. Each ships dark.
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-2b,
+MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and
+MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -681,7 +683,7 @@ counts against `limit`. `PER_APP` binds the providers, before the join.
 read. A member who holds `feature:tasks` gets them from `get_user_settings`
 (`routes/tasks/settings.py:393`). Any other member gets the zone from the
 lens (`stored_zone`, `routes/projects/personal.py`), and the column defaults
-7 and 23.
+7 and 22 (`77_gtd_calendar_prefs.sql`).
 
 **9. The needs view does not change.** The state never touches `needs`. A
 dismissed or snoozed needs-kind card still counts in the bell.
@@ -1639,6 +1641,40 @@ Done when:
 7. The R8 suite passes with no skip, and the count is in the PR.
 
 The `feed_rank.py` comment that gives Handled to MD-7 changes to MD-2c.
+
+**BUILT 2026-10-14, on branch `my-day-feed-md2`.** The table is migration
+258. `gateway/routes/shell/state.py` holds the POST, the rules in their
+order (`RULES`) and the state join. `src/app/api/shell/feed/state/route.ts`
+is the BFF route. The fences are `test_my_day_state.py`,
+`test_my_day_state_r8.py`, `test_feed_rank.py` and the route test. The
+build made these choices, which this file did not fix:
+
+- **The lift instant of rule 4** is `urgent_at` less 2 hours, the start of
+  the urgency term of §7. The example of §6.3 rule 4 fixes it. A card that
+  the member has not seen is lifted from that instant. A seen card is
+  lifted only when the instant came after the last sighting.
+- **So a new overdue card goes to Now** (§6.5 step 3). After one sighting
+  it goes back to Needs you.
+- **A snooze that ended** brings the card back as `new`, with a dot.
+- **An `acted` row** shows its card as `seen`. It gets no fatigue, and rule
+  8 does not fold it. The next sighting writes `seen` again.
+- **The member's day** starts at `day_start_hour`. So `visits_day` is the
+  local date of the most recent day start.
+- **A failed state read** keeps the feed. Each card reads as new, and the
+  failure goes to the log.
+- **The thread signal** gains the fact `message_id`, for the state
+  fingerprint.
+- **§14.1a names five state fields**, not four: `state`, `updated`,
+  `still_open`, `visits` and `state_fp`.
+
+**Known limits of MD-2a.** A later ticket owns each one.
+
+- **Mark read changes the state fingerprint**, because it removes ids from
+  `note_ids`. So a dismissed task with an unread note comes back as
+  "Updated" after the note is read.
+- **The feed reads the day hours twice** for a member with the Calendar: once
+  for the Calendar provider and once for the state join. The read cache of
+  MD-5 can share them.
 
 ### MD-2b · The card menu and the seen observer — AGENT-SAFE, after MD-2a
 
