@@ -1158,6 +1158,13 @@ class Settings(BaseSettings):
     # only the env file of the box sets them. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_agent_connection_tokens.py.
     agent_access_enabled: bool = False
+    # EA-10p (EA3-27, spec §10.6): the organizations that may connect an
+    # agent while the flag is on. Ids with a comma between them, or `*` for
+    # each organization. Empty allows none, so the default is fail-closed.
+    # `acb_auth.agent_oauth.org_allowed` is the one reader. The gateway and
+    # the edge both read it, so both units need the same value. 🔴 A change
+    # on a box is gate `enforcement-flip`.
+    agent_access_orgs: str = ""
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

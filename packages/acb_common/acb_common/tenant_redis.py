@@ -502,8 +502,9 @@ class TenantRedis:
     async def getdel(self, k: TenantKey) -> Any:
         """``GETDEL``: read the value and delete the key in ONE command.
 
-        A one-time value (the consent ticket of WS-55 EA-4a) needs this, so
-        two readers can never both get it. Redis 6.2 or later.
+        A one-time value needs this, so two readers can never both get it:
+        the consent ticket of WS-55 EA-4a, and the pending flow of an MCP
+        OAuth consent of WS-54 IN-8a. Redis 6.2 or later.
         """
         return await self._client.getdel(self._raw(k))
 
@@ -515,13 +516,6 @@ class TenantRedis:
         if not raw:
             return []
         return list(await self._client.mget(raw))
-
-    async def getdel(self, k: TenantKey) -> Any:
-        """Read the value and delete the key in ONE command (Redis 6.2+).
-
-        A one-time record (the pending flow of an MCP OAuth consent, WS-54
-        IN-8a) is taken once: a second take finds nothing."""
-        return await self._client.getdel(self._raw(k))
 
     async def set(self, k: TenantKey, value: Any, **kwargs: Any) -> Any:
         return await self._client.set(self._raw(k), value, **kwargs)

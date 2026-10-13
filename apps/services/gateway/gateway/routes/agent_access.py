@@ -64,6 +64,11 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
     approval cannot skip the screen and a ticket works once. A missing,
     spent, expired or unmatched ticket is 400 ``invalid_request``. A Redis
     outage is 503, never 400. Fence: ``tests/unit/test_agent_oauth_server.py``.
+11. ⚠️ **The organization allowlist (EA-10p, spec §10.6).** Each route
+    refuses a session whose organization ``agent_oauth.org_allowed`` refuses,
+    right after the member check: 403 with the error ``org_not_enabled`` and
+    no ``redirect_to``. The refusal comes before the client fetch and the
+    ticket, so the ticket is not spent. The consent page shows the text.
 
 What is not here: dynamic client registration (EA-2b), pre-registered
 clients, the organization switch and the client allow list (EA-4c), the list
@@ -243,6 +248,31 @@ def _member(user: UserContext) -> str:
             detail="An active member of an organization must approve an agent.",
         )
     return email
+
+
+#: The error of rule 11. The consent page reads this code.
+ORG_NOT_ENABLED = "org_not_enabled"
+
+
+def _require_org_allowed() -> None:
+    """403 ``org_not_enabled`` unless the session's organization is on the
+    list (rule 11). The organization is the bound tenant, never the body.
+
+    It runs right after :func:`_member`, so a refused organization gets no
+    client fetch, no consent ticket, no connection and no code.
+    """
+    if not agent_oauth.org_allowed(current_tenant()):
+        _log.info("agent_access.org_not_allowed")
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": ORG_NOT_ENABLED,
+                "error_description": (
+                    "Your organization has not turned on agent connections yet."),
+                "redirect_to": None,
+            },
+            headers=_NO_STORE,
+        )
 
 
 # ── The client's metadata document (CIMD), through the SSRF seam ────────────
@@ -554,6 +584,7 @@ async def check_authorize(
     one-time consent ticket (rule 10). Writes nothing else except the cache
     of the client's metadata."""
     email = _member(user)
+    _require_org_allowed()
     validated = await _validate(req)
     ticket = await _mint_ticket(_binding(req, email, str(current_tenant())))
     display, is_app = agent_oauth.redirect_display(req.redirect_uri)
@@ -585,6 +616,7 @@ async def approve_authorize(
     every other check. So no approval runs without the screen.
     """
     email = _member(user)
+    _require_org_allowed()
     await _spend_ticket(req, _binding(req, email, str(current_tenant())))
     validated = await _validate(req)
     requested = set(validated.scopes)

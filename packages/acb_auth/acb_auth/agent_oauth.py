@@ -19,6 +19,12 @@ touches it.
 **The flag.** :func:`enabled` is the one reader of ``agent_access_enabled``.
 While it is false, every EA-2a route answers 404.
 
+**The organization allowlist (EA-10p).** :func:`org_allowed` is the one
+reader of ``agent_access_orgs``. Agent access is live for an organization
+only when the flag is on AND the list allows it. The default allows none.
+Four doors check it (spec §10.6): the consent routes, the store's token
+issue, the edge bearer check and the connection read of branch 0.
+
 **The MCP read surface (EA-3a).** :data:`MCP_ROUTES` is the one allowlist of
 gateway routes an outside agent may reach. :func:`actor_via_for` gives the
 ``mcp:<slug>`` stamp of a connection. :data:`ACTOR_VIA_PATTERN` is the one
@@ -31,9 +37,11 @@ Fences: ``tests/unit/test_agent_oauth_server.py``,
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac
 import re
+import uuid
 from collections.abc import Iterable, Mapping
 from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -96,6 +104,62 @@ def scope_string(scopes: Iterable[str]) -> str:
 def enabled() -> bool:
     """True when ``agent_access_enabled`` is on. The ONE reader of the flag."""
     return bool(get_settings().agent_access_enabled)
+
+
+# ── The organization allowlist (EA-10p, spec §10.6, decision EA3-27) ────────
+
+#: The entry of ``agent_access_orgs`` that allows each organization.
+ALL_ORGS = "*"
+
+
+def _canonical_org(value: object) -> str | None:
+    """*value* as a canonical lower-case UUID string, else ``None``."""
+    text = str(value or "").strip().lower()
+    try:
+        canonical = str(uuid.UUID(text))
+    except ValueError:
+        return None
+    return canonical if canonical == text else None
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_orgs(raw: str) -> frozenset[str]:
+    """The entries of *raw*: canonical organization ids, and ``*``.
+
+    The entries have a comma between them. Each entry loses its spaces and
+    goes to lower case. An entry that is not ``*`` and not a canonical UUID
+    is dropped, so it allows nothing. An empty *raw* gives an empty set.
+    Cached on the raw value.
+    """
+    entries: set[str] = set()
+    for part in raw.split(","):
+        entry = part.strip().lower()
+        if entry == ALL_ORGS:
+            entries.add(ALL_ORGS)
+        elif (org := _canonical_org(entry)) is not None:
+            entries.add(org)
+    return frozenset(entries)
+
+
+def allowed_orgs() -> frozenset[str]:
+    """The parsed ``agent_access_orgs``. Empty means no organization."""
+    return _parse_orgs(str(get_settings().agent_access_orgs or ""))
+
+
+def org_allowed(organization_id: object) -> bool:
+    """True when ``agent_access_orgs`` allows *organization_id*.
+
+    The ONE reader of the allowlist. It does not read the flag: agent access
+    is live for an organization only when :func:`enabled` and this are both
+    true. A value that is not a UUID is false, also with ``*``. The caller
+    passes an organization from the session or from a token row, never from
+    request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = allowed_orgs()
+    return ALL_ORGS in orgs or org in orgs
 
 
 def issuer() -> str:
@@ -491,6 +555,7 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 
 __all__ = [
     "ACTOR_VIA_PATTERN",
+    "ALL_ORGS",
     "CONTEXT_READ",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
@@ -502,6 +567,7 @@ __all__ = [
     "S256",
     "SUPPORTED_SCOPES",
     "actor_via_for",
+    "allowed_orgs",
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
@@ -512,6 +578,7 @@ __all__ = [
     "is_valid_challenge",
     "is_valid_verifier",
     "issuer",
+    "org_allowed",
     "parse_scope",
     "pkce_matches",
     "redirect_display",

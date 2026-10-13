@@ -544,6 +544,8 @@ def world():
 def armed(monkeypatch, world):
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_access_enabled", True)
+    # EA-10p: each organization, unless a test narrows the list.
+    monkeypatch.setattr(settings, "agent_access_orgs", "*")
     monkeypatch.setattr(settings, "agent_edge_signing_key", KEY)
     monkeypatch.setattr(settings, "agent_edge_signing_key_previous", "")
     monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", INTERNAL)
@@ -786,6 +788,59 @@ class TestTheNextCallAfterARevokeOrASuspension:
                 "UPDATE app_user SET status = 'active' WHERE email = :e"
                 " RETURNING id", e=email)
             invalidate_access(email)
+
+
+@_DB_GATE
+class TestBranchZeroReadsTheOrgAllowlist:
+    """EA-10p door 4 (spec §10.6). ``read_live_connection`` finds no
+    connection for an organization off the list, so branch 0 refuses the
+    signed request as it refuses a dead connection. Branch 0 itself does not
+    change, so its digest stays the same."""
+
+    async def test_a_listed_organization_passes(self, armed, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_access_orgs", armed.org_a)
+        r = await _agent(armed, armed.c["open"], "/auth/me")
+        assert r.status_code == 200, r.text
+        assert r.json()["email"] == MEMBER
+
+    @pytest.mark.parametrize("listed", ["", "ORG_B", "not-a-uuid"])
+    async def test_an_organization_off_the_list_gets_401(self, armed, monkeypatch, listed):
+        value = armed.org_b if listed == "ORG_B" else listed
+        monkeypatch.setattr(get_settings(), "agent_access_orgs", value)
+        r = await _agent(armed, armed.c["open"], "/auth/me")
+        assert r.status_code == 401, r.text
+        async with tenant_engine_scope(armed.app_dsn):
+            found = await agent_tokens.read_live_connection(armed.org_a, armed.c["open"])
+        assert found is None
+
+    async def test_a_star_passes_each_organization(self, armed, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_access_orgs", "*")
+        a = await _agent(armed, armed.c["open"], "/auth/me")
+        b = await _agent(armed, armed.c["b_member"], "/auth/me", org=armed.org_b)
+        assert (a.status_code, b.status_code) == (200, 200), (a.text, b.text)
+
+    async def test_the_flag_off_is_401_even_for_a_listed_organization(
+            self, armed, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_access_orgs", armed.org_a)
+        monkeypatch.setattr(get_settings(), "agent_access_enabled", False)
+        r = await _agent(armed, armed.c["open"], "/auth/me")
+        assert r.status_code == 401
+
+    async def test_the_list_reads_the_rows_organization(self, armed, monkeypatch):
+        """The read checks the organization of the ROW, never the argument.
+        A lenient read (no org predicate, run as the superuser that bypasses
+        RLS) finds org B's row for org A. With only org A on the list, the
+        read still answers None."""
+        predicate = TestTheRowOrganizationIsTheOneThatCounts._PREDICATE
+        assert agent_tokens._CONNECTION_LIVE_SQL.count(predicate) == 1
+        monkeypatch.setattr(
+            agent_tokens, "_CONNECTION_LIVE_SQL",
+            agent_tokens._CONNECTION_LIVE_SQL.replace(predicate, ""))
+        monkeypatch.setattr(get_settings(), "agent_access_orgs", armed.org_a)
+        async with tenant_engine_scope(armed.admin_dsn):
+            found = await agent_tokens.read_live_connection(
+                armed.org_a, armed.c["b_member"])
+        assert found is None
 
 
 @_DB_GATE

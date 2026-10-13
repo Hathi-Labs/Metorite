@@ -55,7 +55,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_auth import access as access_module
-from acb_auth import agent_signing, agent_tokens, require_authenticated
+from acb_auth import agent_oauth, agent_signing, agent_tokens, require_authenticated
 from acb_auth.access import invalidate as invalidate_access
 from acb_auth.agent_tokens import TokenLookup
 from acb_common import get_settings
@@ -409,9 +409,11 @@ def gateway() -> Any:
 
 @pytest.fixture
 def armed(monkeypatch, store, gateway):
-    """The flag on and a usable key, with the fake store and gateway."""
+    """The flag on and a usable key, with the fake store and gateway. The
+    allowlist (EA-10p) allows each organization, unless a test narrows it."""
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_access_enabled", True)
+    monkeypatch.setattr(settings, "agent_access_orgs", "*")
     monkeypatch.setattr(settings, "agent_edge_signing_key", KEY)
     monkeypatch.setattr(settings, "agent_edge_signing_key_previous", "")
     monkeypatch.setattr(settings, "agent_issuer", ISSUER)
@@ -484,6 +486,36 @@ class TestTheFlag:
         assert r.status_code == 404
         assert armed.store.calls == 0
         assert not armed.gateway.requests
+
+
+class TestTheBearerCheckReadsTheOrgAllowlist:
+    """EA-10p door 3 (spec §10.6). The organization is the token row's."""
+
+    @pytest.mark.parametrize("listed", ["", "99999999-2222-4333-8444-555555555555",
+                                        "not-a-uuid"])
+    async def test_a_token_of_an_organization_off_the_list_is_401(
+            self, armed, monkeypatch, listed):
+        monkeypatch.setattr(get_settings(), "agent_access_orgs", listed)
+        r = await _post(_rpc("tools/list"))
+        _assert_error_body(r, 401, -32600)
+        assert r.headers["www-authenticate"] == CHALLENGE_401_SENT
+        assert armed.store.calls == 1
+        assert not armed.gateway.requests, "a refused organization reached the gateway"
+
+    @pytest.mark.parametrize("listed", [ORG, f" {ORG.upper()} ", "*",
+                                        f"99999999-2222-4333-8444-555555555555,{ORG}"])
+    async def test_a_listed_organization_or_a_star_passes(self, armed, monkeypatch, listed):
+        monkeypatch.setattr(get_settings(), "agent_access_orgs", listed)
+        result = await _tool("list_tasks", {})
+        assert result["isError"] is False, result
+
+    async def test_the_flag_off_is_404_even_for_a_listed_organization(
+            self, armed, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_access_orgs", ORG)
+        monkeypatch.setattr(get_settings(), "agent_access_enabled", False)
+        r = await _post(_rpc("tools/list"))
+        assert r.status_code == 404
+        assert armed.store.calls == 0
 
 
 class TestTheOrderOfTheChecks:
@@ -2088,6 +2120,7 @@ def live(monkeypatch, world):
 
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_access_enabled", True)
+    monkeypatch.setattr(settings, "agent_access_orgs", "*")
     monkeypatch.setattr(settings, "agent_edge_signing_key", KEY)
     monkeypatch.setattr(settings, "agent_edge_signing_key_previous", "")
     monkeypatch.setattr(settings, "agent_issuer", ISSUER)
@@ -2283,6 +2316,96 @@ class TestTheNextCallOverMcp:
         r = await _mcp(live, "not-a-token", _rpc("tools/list"))
         assert r.status_code == 401
         assert r.headers["www-authenticate"] == CHALLENGE_401_SENT
+
+
+_E2E_CLIENT = "https://client.example/meta.json"
+_E2E_REDIRECT = "http://127.0.0.1:33418/callback"
+_E2E_VERIFIER = "v1-" + "e" * 50
+
+
+class TestTheOrgAllowlistEndToEnd:
+    """EA-10p on a real database, through the real edge and gateway apps.
+
+    An allowed organization connects with a code exchange at
+    ``/oauth/token`` and lists its tasks over ``/mcp``. Then it leaves the
+    list. The next ``tools/call`` gets the MCP 401, and a refresh gets
+    ``invalid_grant``. The code row is seeded as ``approve`` writes it, so
+    this class needs no consent page. ``test_agent_oauth_server.py`` holds
+    the consent half of the list.
+    """
+
+    pytestmark = _DB_GATE
+
+    def _seed_code(self, world) -> str:
+        s = world.seeder
+        s.one("INSERT INTO agent_client (client_id, registered_via, metadata,"
+              " fetched_at, expires_at) VALUES (:c, 'cimd', CAST(:m AS jsonb), now(),"
+              " now() + interval '1 hour') ON CONFLICT (client_id) DO UPDATE"
+              " SET expires_at = EXCLUDED.expires_at RETURNING client_id",
+              c=_E2E_CLIENT, m=json.dumps({"client_id": _E2E_CLIENT,
+                                            "redirect_uris": [_E2E_REDIRECT]}))
+        cid = str(s.one(
+            "INSERT INTO agent_connection (organization_id, member_email, client_id,"
+            " client_name, client_origin, scopes, pinned_projects, include_personal,"
+            " expires_at) VALUES (CAST(:o AS uuid), :m, :c, 'Client', :origin,"
+            " ARRAY['projects:read', 'offline_access'], CAST('{}' AS uuid[]), true,"
+            " now() + interval '1 day') RETURNING id",
+            o=world.org, m=MEMBER, c=_E2E_CLIENT, origin=ORIGIN))
+        code = agent_tokens.new_token()
+        s.one("INSERT INTO agent_token (organization_id, connection_id, kind,"
+              " token_hash, expires_at, client_id, code_challenge, redirect_uri,"
+              " resource, scope) VALUES (CAST(:o AS uuid), CAST(:c AS uuid), 'code',"
+              " :h, now() + interval '60 seconds', :client, :ch, :ru, :r,"
+              " 'projects:read offline_access') RETURNING id",
+              o=world.org, c=cid, h=agent_tokens.hash_token(code), client=_E2E_CLIENT,
+              ch=agent_oauth.s256(_E2E_VERIFIER), ru=_E2E_REDIRECT, r=RESOURCE)
+        return code
+
+    async def _token(self, world, form: dict[str, str]) -> httpx.Response:
+        async def go() -> httpx.Response:
+            async with _edge() as client:
+                return await client.post("/oauth/token", data=form)
+        return await _in_scope(world, go)
+
+    async def test_an_organization_that_leaves_the_list_loses_access(
+            self, live, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "agent_access_orgs", live.org)
+        code = self._seed_code(live)
+        issued = await self._token(live, {
+            "grant_type": "authorization_code", "code": code,
+            "redirect_uri": _E2E_REDIRECT, "code_verifier": _E2E_VERIFIER,
+            "client_id": _E2E_CLIENT, "resource": RESOURCE})
+        assert issued.status_code == 200, issued.text
+        access = issued.json()["access_token"]
+        refresh = issued.json()["refresh_token"]
+
+        listed = await _mcp(live, access, _call("list_tasks", {"limit": 100}))
+        assert listed.status_code == 200, listed.text
+        result = listed.json()["result"]
+        assert result["isError"] is False, result
+        assert live.t["team"] in {row["id"] for row in result["structuredContent"]["tasks"]}
+
+        # The organization leaves the list.
+        monkeypatch.setattr(settings, "agent_access_orgs", str(uuid.uuid4()))
+        r = await _mcp(live, access, _call("list_tasks", {"limit": 100}))
+        assert r.status_code == 401, r.text
+        assert r.headers["www-authenticate"] == CHALLENGE_401_SENT
+        assert r.json()["id"] is None
+        again = await self._token(live, {"grant_type": "refresh_token",
+                                         "client_id": _E2E_CLIENT,
+                                         "refresh_token": refresh})
+        assert again.status_code == 400
+        assert again.json()["error"] == "invalid_grant"
+
+        # It comes back: the same tokens work, because a refusal spent nothing.
+        monkeypatch.setattr(settings, "agent_access_orgs", live.org)
+        back = await _mcp(live, access, _call("list_tasks", {"limit": 100}))
+        assert back.status_code == 200, back.text
+        rotated = await self._token(live, {"grant_type": "refresh_token",
+                                           "client_id": _E2E_CLIENT,
+                                           "refresh_token": refresh})
+        assert rotated.status_code == 200, rotated.text
 
 
 # ═══════════════════════════════════════════════════════════════════════════
