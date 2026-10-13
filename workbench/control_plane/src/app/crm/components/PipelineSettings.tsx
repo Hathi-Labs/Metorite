@@ -90,12 +90,19 @@ const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"]
  * A section change unmounts the row, and the draft stays for its return. A
  * re-read of `served` drops it, as the local state did before.
  */
-function useSettingsDraft<T>(key: string, served: T): [T, (next: T) => void] {
+function useSettingsDraft<T>(
+  key: string,
+  served: T
+): [T, (next: T) => void, () => void] {
   const stored = useCrmStore((state) => state.settingsDrafts[key]);
   const setDraft = useCrmStore((state) => state.setSettingsDraft);
   return [
     draftOf(stored, served),
     (next: T) => setDraft(key, Object.is(next, served) ? null : { base: served, value: next }),
+    // A saved draft leaves the store. Kept, it would come back when another
+    // admin sets the served value back to its base, and a Save would then
+    // overwrite their newer value (CRM-C1 re-review).
+    () => setDraft(key, null),
   ];
 }
 
@@ -467,7 +474,7 @@ function StatusRow({
   // and a row that kept showing what was typed after the server answered
   // something else is the stale-row-reads-as-success lie in miniature. The
   // draft lives in the store, so a section change keeps it (CRM-C1).
-  const [draft, setDraft] = useSettingsDraft(`status:${kind}:${status.id}`, status);
+  const [draft, setDraft, clearDraft] = useSettingsDraft(`status:${kind}:${status.id}`, status);
   // CRM-C2: the dot shows the colour the board shows, so it reads the mode.
   const mode = useCrmModeValue();
   const [invalid, setInvalid] = useState<string | null>(null);
@@ -495,7 +502,7 @@ function StatusRow({
     // Only what moved. `type` and `probability` are judged TOGETHER by the
     // server's clamp, so resending an unchanged one alongside a changed one is
     // the difference between a 422 the editor caused and one the data did.
-    await onSave(patch);
+    if (await onSave(patch)) clearDraft();
   }
 
   return (
@@ -807,7 +814,7 @@ function MirrorStatusRow({
   onSave: (body: Record<string, unknown>) => Promise<boolean>;
 }) {
   // In the store, as in `StatusRow`, so a section change keeps it (CRM-C1).
-  const [draft, setDraft] = useSettingsDraft(`overlay:${kind}:${status.id}`, status);
+  const [draft, setDraft, clearDraft] = useSettingsDraft(`overlay:${kind}:${status.id}`, status);
   const [invalid, setInvalid] = useState<string | null>(null);
   const patch = overlayPatch(
     kind,
@@ -821,7 +828,7 @@ function MirrorStatusRow({
     const message = validateOverlayProbability(draft.ui_probability);
     setInvalid(message);
     if (message) return;
-    await onSave(patch);
+    if (await onSave(patch)) clearDraft();
   }
 
   return (
@@ -1104,7 +1111,7 @@ function ReasonRow({
   onRemove: () => Promise<boolean>;
 }) {
   // In the store, as in `StatusRow`, so a section change keeps it (CRM-C1).
-  const [label, setLabel] = useSettingsDraft(`reason:${reason.id}`, reason.label);
+  const [label, setLabel, clearDraft] = useSettingsDraft(`reason:${reason.id}`, reason.label);
   const [invalid, setInvalid] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
 
@@ -1112,7 +1119,7 @@ function ReasonRow({
     const message = validateLostReasonDraft(label);
     setInvalid(message);
     if (message) return;
-    await onSave(label.trim());
+    if (await onSave(label.trim())) clearDraft();
   }
 
   return (

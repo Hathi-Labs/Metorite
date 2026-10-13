@@ -488,3 +488,25 @@ describe("the title bar", () => {
     expect(read("../page.tsx")).toMatch(/`Settings · \$\{sectionLabel\(settingsSection\)\}`/);
   });
 });
+
+describe("a saved draft leaves the store (CRM-C1 re-review)", () => {
+  // Kept, a saved draft comes back when another admin sets the served value
+  // back to the draft's base. A Save would then overwrite the newer value.
+  const source = read("./PipelineSettings.tsx");
+
+  it("each row clears its draft after a save that succeeds", () => {
+    const saves = source.match(/if \(await onSave\(.*?\)\) clearDraft\(\);/g) ?? [];
+    expect(saves).toHaveLength(3);
+    for (const key of ["status:", "overlay:", "reason:"]) {
+      const at = source.indexOf("= useSettingsDraft(`" + key);
+      expect(at, key).toBeGreaterThan(0);
+      // The line that takes the draft of this row also takes its clear.
+      const line = source.slice(source.lastIndexOf("\n", at), at);
+      expect(line, key).toContain("clearDraft]");
+    }
+  });
+
+  it("the hook's clear writes null for its key", () => {
+    expect(source).toMatch(/\(\) => setDraft\(key, null\)/);
+  });
+});
