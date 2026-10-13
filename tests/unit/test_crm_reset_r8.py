@@ -520,9 +520,10 @@ async def test_needs_reset_gives_the_sync_no_credential(x0, app_engine) -> None:
     first = await _connect(x0, OrgZoho("A1", "Z-A"))
     assert first.status_code == 302, first.text
     assert _connection(x0, x0.org_a)[0] == "connected"
-    # No discovery runs between the two consents: the first consent dropped
-    # the profile, and the account id it stored is what catches the second.
-    assert _counts(x0, x0.org_a)["crm_source_profiles"] == 0
+    # No discovery runs between the two consents. The first consent is the
+    # same account, so it keeps the profile, stale (CRM-Q10). The account id
+    # it stored is what catches the second.
+    assert _counts(x0, x0.org_a)["crm_source_profiles"] == 1
     second = await _connect(x0, OrgZoho("B", "Z-OTHER"))
     assert second.status_code == 302, second.text
     assert _connection(x0, x0.org_a)[0] == "needs_reset"

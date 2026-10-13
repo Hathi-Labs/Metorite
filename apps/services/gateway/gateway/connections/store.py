@@ -175,12 +175,23 @@ _MARK_SYNCED_SQL = (
 #: it, because the next connection may be another Zoho org (CRM-Q1 review).
 _DISCOVERED_KEYS = ("domain_name", "edition", "tabs")
 
-#: A new consent drops the profile. A disconnect keeps it (CRM-X0): the next
-#: consent compares its account with the profile's, and a different account
-#: gets ``needs_reset`` (``routes/crm/connection.py``).
+#: A new consent drops the profile, unless the caller confirmed that it is the
+#: same account (CRM-Q10). A disconnect keeps it (CRM-X0): the next consent
+#: compares its account with the profile's, and a different account gets
+#: ``needs_reset`` (``routes/crm/connection.py``).
 
 _DROP_PROFILES_SQL = (
     "DELETE FROM crm_source_profiles WHERE connection_id = CAST(:id AS uuid) "
+    "AND organization_id = CAST(:org AS uuid)"
+)
+
+#: CRM-Q10: a consent to the SAME account keeps the profile, and so the edition
+#: budget, but marks it stale. Each row moves back by the same span, so the
+#: newest version stays the newest. 7 days is far past the 24 hours of
+#: ``engine.DISCOVERY_EVERY``, so the next run discovers with the new scopes.
+_STALE_PROFILES_SQL = (
+    "UPDATE crm_source_profiles SET fetched_at = fetched_at - interval '7 days' "
+    "WHERE connection_id = CAST(:id AS uuid) "
     "AND organization_id = CAST(:org AS uuid)"
 )
 
@@ -489,10 +500,16 @@ async def save_credential(
     scope_kind: str = SCOPE_ORG,
     member_email: str | None = None,
     scopes: Sequence[str] | None = None,
+    keep_profile: bool = False,
 ) -> Connection:
     """Insert the connection, or update the one row that already exists.
 
     A reconnect updates the row: status ``connected``, a new blob, no error.
+
+    ``keep_profile`` (CRM-Q10) is for a consent that the caller confirmed as
+    the same provider account. The source profile stays and becomes stale, so
+    the sync keeps the edition budget and discovers again at its next run.
+    Without it, the profile is dropped, because the account may be another one.
     """
     params = _key(org, provider, owning_app, scope_kind, member_email)
     params["member_email"] = params.pop("member") or None
@@ -505,7 +522,9 @@ async def save_credential(
     row = (await db.execute(text(_UPSERT_SQL), params)).first()
     # A new consent may be another org or data centre: the profile and the
     # discovered keys are the old account's. Discovery runs again at the next run.
-    await db.execute(text(_DROP_PROFILES_SQL), {"id": str(row.id), "org": str(row.organization_id)})
+    # A confirmed same account keeps the profile, stale (CRM-Q10).
+    profiles_sql = _STALE_PROFILES_SQL if keep_profile else _DROP_PROFILES_SQL
+    await db.execute(text(profiles_sql), {"id": str(row.id), "org": str(row.organization_id)})
     return _connection(row)
 
 
