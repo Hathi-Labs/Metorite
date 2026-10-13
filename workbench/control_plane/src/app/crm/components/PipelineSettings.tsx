@@ -3,11 +3,16 @@
 /**
  * `?tab=settings` — CRM settings (WS-26f f2, WS-53 CRM-Q3).
  *
- * One column of cards, in this order: Setup, Access, Connection, Pipelines and
- * stages, Lead Status, Lost reasons, Fields, Field map, Sync health. The
- * Field map (CRM-Q7a) is for an admin in Mirror mode. The first three are
- * nodes the page passes in for an admin. Fields and Sync health wait for
- * CRM-Q4 and CRM-Q9, and say so.
+ * The cards, in this order: Setup (it holds the connection, CRM-X0), Access,
+ * Pipelines and stages, Lead Status, Lost reasons, Fields, Field map and Sync
+ * health. The page passes Setup and Access in for an admin. Fields is for an
+ * admin. The Field map (CRM-Q7a) and Sync health (CRM-Q9) are for an admin in
+ * Mirror mode.
+ *
+ * **Sections** (WS-53 CRM-C1, crm_platform.md §20.4). With a `section`, the
+ * component draws the cards of that section only, and the rail opens one
+ * section at a time. `lib/settingsSections.ts` holds the list of sections.
+ * With no `section`, it draws every card in one column, as before.
  *
  * The grids drive the EXISTING admin API: deal stages, lead statuses, lost
  * reasons. Before this existed the API was headless — every stage rename,
@@ -63,6 +68,7 @@ import {
   validateStatusDraft,
   type PositionPatch,
 } from "../lib/settings";
+import type { SettingsSectionId } from "../lib/settingsSections";
 import { useCrmStore } from "../lib/store";
 import FieldMapCard from "./FieldMapCard";
 import FieldsCard from "./FieldsCard";
@@ -110,7 +116,14 @@ export default function PipelineSettings({
   pipelines = null,
   showAdminCards = false,
   readOnly = false,
+  section,
 }: {
+  /**
+   * The settings section on screen (CRM-C1). Only its cards draw. With no
+   * value, every card draws. The page decides which sections the caller and
+   * the mode can open, and these props hide the rest of the cards.
+   */
+  section?: SettingsSectionId;
   /** Mirror mode: Zoho owns the stages, and the gateway refuses a write. */
   readOnly?: boolean;
   /** The Setup hub (it holds the connection, CRM-X0) and the Access card of an admin, in this order. */
@@ -147,67 +160,97 @@ export default function PipelineSettings({
   const several = showPicker(pipelines);
   const orderStatuses = useCrmStore((state) => state.orderStatuses);
   const resetStatusOrder = useCrmStore((state) => state.resetStatusOrder);
+  /** Does the section on screen hold this card? With no section, each does. */
+  const show = (id: SettingsSectionId) => !section || section === id;
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
-      {setup}
-      {access}
+      {show("setup") && setup}
+      {show("access") && access}
       {readOnly && showAdminCards ? (
         <>
-          <PipelineSections
-            pipelines={pipelines}
-            fallback={dealStatuses}
-            note="Stages come from Zoho."
-          />
-          <MirrorStatusGrid
-            kind="deal"
-            title="Deal stages"
-            blurb="Zoho owns the stages. The Metorite order, probability, colour and hide stay in Metorite, and the sync never changes them. A Metorite probability moves the forecast only of a deal with no probability of its own, and most Zoho deals have one."
-            statuses={dealStatuses}
-            saving={saving}
-            onSave={onSaveStatus}
-            onOrder={orderStatuses}
-            onResetOrder={resetStatusOrder}
-          />
-          <MirrorStatusGrid
-            kind="lead"
-            title="Lead Status"
-            blurb="Zoho owns the Lead Status values. The Metorite order, colour and hide stay in Metorite."
-            statuses={leadStatuses}
-            saving={saving}
-            onSave={onSaveStatus}
-            onOrder={orderStatuses}
-            onResetOrder={resetStatusOrder}
-          />
-          <MirrorReasonGrid reasons={lostReasons} saving={saving} onSave={onSaveLostReason} />
+          {show("stages") && (
+            <>
+              <PipelineSections
+                pipelines={pipelines}
+                fallback={dealStatuses}
+                note="Stages come from Zoho."
+              />
+              <MirrorStatusGrid
+                kind="deal"
+                title="Deal stages"
+                blurb="Zoho owns the stages. The Metorite order, probability, colour and hide stay in Metorite, and the sync never changes them. A Metorite probability moves the forecast only of a deal with no probability of its own, and most Zoho deals have one."
+                statuses={dealStatuses}
+                saving={saving}
+                onSave={onSaveStatus}
+                onOrder={orderStatuses}
+                onResetOrder={resetStatusOrder}
+              />
+            </>
+          )}
+          {show("lead-statuses") && (
+            <MirrorStatusGrid
+              kind="lead"
+              title="Lead Status"
+              blurb="Zoho owns the Lead Status values. The Metorite order, colour and hide stay in Metorite."
+              statuses={leadStatuses}
+              saving={saving}
+              onSave={onSaveStatus}
+              onOrder={orderStatuses}
+              onResetOrder={resetStatusOrder}
+            />
+          )}
+          {show("lost-reasons") && (
+            <MirrorReasonGrid reasons={lostReasons} saving={saving} onSave={onSaveLostReason} />
+          )}
         </>
       ) : readOnly ? (
         <>
-          <PipelineSections
-            pipelines={pipelines}
-            fallback={dealStatuses}
-            note="Stages come from Zoho."
-          />
-          <Card title="Lead Status" note="Lead Status values come from Zoho.">
-            <NameList names={leadStatuses.map((x) => x.name)} />
-          </Card>
-          <Card title="Lost reasons" note="Lost reasons come from Zoho.">
-            <NameList names={lostReasons.map((x) => x.label)} />
-          </Card>
-        </>
-      ) : (
-        <>
-          {several ? (
+          {show("stages") && (
             <PipelineSections
               pipelines={pipelines}
               fallback={dealStatuses}
-              note="Stage editing for several pipelines is not available yet."
+              note="Stages come from Zoho."
             />
-          ) : (
+          )}
+          {show("lead-statuses") && (
+            <Card title="Lead Status" note="Lead Status values come from Zoho.">
+              <NameList names={leadStatuses.map((x) => x.name)} />
+            </Card>
+          )}
+          {show("lost-reasons") && (
+            <Card title="Lost reasons" note="Lost reasons come from Zoho.">
+              <NameList names={lostReasons.map((x) => x.label)} />
+            </Card>
+          )}
+        </>
+      ) : (
+        <>
+          {show("stages") &&
+            (several ? (
+              <PipelineSections
+                pipelines={pipelines}
+                fallback={dealStatuses}
+                note="Stage editing for several pipelines is not available yet."
+              />
+            ) : (
+              <StatusGrid
+                kind="deal"
+                title="Pipelines and stages"
+                blurb="Lane order, colour and the win probability the forecast reads. A won stage always forecasts 100%, a lost stage 0%. The type is what closes a deal, and the probability is what the pipeline number believes."
+                statuses={dealStatuses}
+                saving={saving}
+                onSave={onSaveStatus}
+                onRemove={onRemoveStatus}
+                onReorder={onReorderStatuses}
+              />
+            ))}
+
+          {show("lead-statuses") && (
             <StatusGrid
-              kind="deal"
-              title="Pipelines and stages"
-              blurb="Lane order, colour and the win probability the forecast reads. A won stage always forecasts 100%, a lost stage 0%. The type is what closes a deal, and the probability is what the pipeline number believes."
-              statuses={dealStatuses}
+              kind="lead"
+              title="Lead Status"
+              blurb="The funnel before a deal exists. No probability: a lead forecasts nothing until it converts."
+              statuses={leadStatuses}
               saving={saving}
               onSave={onSaveStatus}
               onRemove={onRemoveStatus}
@@ -215,33 +258,24 @@ export default function PipelineSettings({
             />
           )}
 
-          <StatusGrid
-            kind="lead"
-            title="Lead Status"
-            blurb="The funnel before a deal exists. No probability: a lead forecasts nothing until it converts."
-            statuses={leadStatuses}
-            saving={saving}
-            onSave={onSaveStatus}
-            onRemove={onRemoveStatus}
-            onReorder={onReorderStatuses}
-          />
-
-          <ReasonGrid
-            reasons={lostReasons}
-            saving={saving}
-            onSave={onSaveLostReason}
-            onRemove={onRemoveLostReason}
-            onReorder={onReorderLostReasons}
-          />
+          {show("lost-reasons") && (
+            <ReasonGrid
+              reasons={lostReasons}
+              saving={saving}
+              onSave={onSaveLostReason}
+              onRemove={onRemoveLostReason}
+              onReorder={onReorderLostReasons}
+            />
+          )}
         </>
       )}
       {showAdminCards && (
         <>
-          <FieldsCard readOnly={readOnly} />
+          {show("fields") && <FieldsCard readOnly={readOnly} />}
           {/* The Field map and Sync health read the mirror, so Native mode
               does not draw them. */}
-          {readOnly && <FieldMapCard />}
-          {readOnly && <SyncHealthCard />}
+          {readOnly && show("field-mapping") && <FieldMapCard />}
+          {readOnly && show("sync-health") && <SyncHealthCard />}
         </>
       )}
     </div>
