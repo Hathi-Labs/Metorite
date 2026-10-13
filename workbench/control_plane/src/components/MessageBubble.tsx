@@ -34,6 +34,7 @@ import { pillsForTurn } from "@/lib/projectsAgent";
 import AnswerDetails from "@/components/AnswerDetails";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
+import { STEER_WAITING, isSteered } from "@/lib/chatSteer";
 import ChatSendButton from "@/components/ChatSendButton";
 import Button from "@/components/ui/Button";
 
@@ -492,6 +493,33 @@ function MessageBubble({
                   <span className="min-w-0">{editError}</span>
                 </p>
               )}
+            </div>
+          </div>
+        ) : isSteered(message) ? (
+          /* ═══ A steer (owner, 2026-10-12, lib/chatSteer.ts) ═══
+             Words the member added to a reply while the agent worked. A
+             small note, not a new turn: a quiet tinted box, the words, and
+             one line under it that says what the server did with them. */
+          <div className="max-w-[88%] sm:max-w-[78%]" data-chat-steer={message.steerAck ?? "added"}>
+            <div className="flex items-start gap-1.5 rounded-xl border border-primary/20 bg-primary/5 px-3 py-1.5 text-[13px] sm:text-sm leading-relaxed text-foreground">
+              <Icon name="MessageSquarePlus" size={13} className="mt-1 shrink-0 text-primary" />
+              <p className="min-w-0 whitespace-pre-wrap break-words">{message.content}</p>
+            </div>
+            <div className="mt-1 flex items-center justify-end gap-1.5 pr-0.5 text-[10px] text-muted-foreground">
+              {message.steerAck === "sending" ? (
+                <>
+                  <Icon name="Loader2" size={10} className="animate-spin shrink-0" />
+                  <span>Adding to the reply…</span>
+                </>
+              ) : message.steerWaiting ? (
+                <span data-steer-waiting>{STEER_WAITING}</span>
+              ) : (
+                <>
+                  <Icon name="Check" size={10} className="shrink-0 text-success" />
+                  <span>Added to the reply</span>
+                </>
+              )}
+              <span>{timestamp}</span>
             </div>
           </div>
         ) : (
