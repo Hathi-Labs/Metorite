@@ -247,7 +247,7 @@ export function EditableTaskTitle({
               if (!(e.target as HTMLElement | null)?.closest("a, button")) start();
             }}
           >
-            <TaskRefText text={value} resolver={refResolver} />
+            <TaskRefText text={value} resolver={refResolver} refClassName="text-sm font-medium" />
           </span>
           <Button
             variant="ghost"

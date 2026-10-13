@@ -495,9 +495,13 @@ export function TaskRefPill({
 export function TaskRefText({
   text,
   resolver = taskRefResolver,
+  refClassName,
 }: {
   text: string;
   resolver?: TaskRefResolver;
+  /** A class on the span around each reference. A heading passes the body
+   *  size, so its pill is the one look of every other pill. */
+  refClassName?: string;
 }) {
   return createElement(
     Fragment,
@@ -505,7 +509,24 @@ export function TaskRefText({
     ...splitTaskRefs(text).map((part, k) =>
       part.kind === "text"
         ? createElement(Fragment, { key: k }, part.text)
-        : createElement(TaskRefPill, { key: k, number: part.number, resolver }),
+        : createElement(RefPart, { key: k, number: part.number, resolver, className: refClassName }),
     ),
   );
+}
+
+/** One reference of `TaskRefText`. The class wraps a pill only: a number
+ *  that names no single task stays text in the words' own size. */
+function RefPart({
+  number,
+  resolver,
+  className,
+}: {
+  number: number;
+  resolver: TaskRefResolver;
+  className?: string;
+}) {
+  const task = taskOf(useTaskRef("", number, true, resolver));
+  if (!task) return createElement(Fragment, null, `#${number}`);
+  const pill = createElement(TaskPill, { task });
+  return className ? createElement("span", { className }, pill) : pill;
 }
