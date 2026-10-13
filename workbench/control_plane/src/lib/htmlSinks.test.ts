@@ -41,7 +41,7 @@ const INVENTORY: Record<string, { count: number; verdict: string; mustContain?: 
   "app/email/components/MessageContent.tsx": {
     count: 1,
     verdict: "The mail body, in a sandboxed iframe srcdoc: DOMPurify, a CSP, and no allow-scripts.",
-    mustContain: ["sanitizeEmailHtml(html, showImages)", "UNTRUSTED_FORBID_TAGS", "script-src 'none'"],
+    mustContain: ["sanitizeEmailHtml(html, showImages, inlinePath)", "UNTRUSTED_FORBID_TAGS", "script-src 'none'"],
   },
   "app/email/lib/signature.ts": {
     count: 1,

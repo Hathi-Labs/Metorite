@@ -42,6 +42,11 @@ definitions that the sync writes. Read only.
 record routes of each mirrored generic Zoho module (``crm_module_records``).
 Its paths start with the literal ``modules/`` segment, so no route shadows it.
 
+``field_rules.py`` is WS-53 CRM-Q7a — ``GET``, ``POST`` and ``PATCH`` on
+``/crm/field-rules``, the Field map of the mirror. Admin only, behind
+``CRM_MIRROR``, and Mirror mode only. It writes ``crm_field_rules`` and never a
+CRM record. The sync applies an approved rule.
+
 ``reports.py`` is WS-26g — the four read-only ``/crm/reports/*`` blocks
 (forecast by stage, funnel, win/loss, owner leaderboard) over
 ``crm_status_changes`` and ``crm_deals``. It writes nothing and adds no
@@ -85,6 +90,7 @@ from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
+from gateway.routes.crm import field_rules as _field_rules  # noqa: F401
 from gateway.routes.crm import fields as _fields  # noqa: F401
 from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
 from gateway.routes.crm import modules as _modules  # noqa: F401

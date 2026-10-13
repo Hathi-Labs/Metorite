@@ -83,6 +83,7 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       // A new key per card: a long body scrolled on one card does not stay
       // scrolled on the next, and the buttons arm again (ConfirmationCard).
       key={card.key}
+      id={`confirm:${card.key}`}
       title={card.title}
       detail={card.detail}
       context={card.context}

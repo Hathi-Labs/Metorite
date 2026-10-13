@@ -26,7 +26,7 @@
  */
 
 import { Collapsible as Base } from "@base-ui/react/collapsible";
-import { createContext, useContext, useId } from "react";
+import { createContext, useContext, useId, useMemo } from "react";
 
 import Icon from "@/components/Icon";
 
@@ -231,6 +231,12 @@ export interface CollapsibleCardHeaderProps {
    * the summary has that place.
    */
   aside?: React.ReactNode;
+  /**
+   * The icon slot, when the card draws its own icon (a generative-UI
+   * template names a Lucide icon of its own). It takes the place of the
+   * fold state's `icon`, after the chevron, so a card has one icon.
+   */
+  lead?: React.ReactNode;
 }
 
 /**
@@ -250,6 +256,7 @@ export function CollapsibleCardHeader({
   className = "text-[11px]",
   titleClassName = "font-medium text-foreground",
   aside,
+  lead,
 }: CollapsibleCardHeaderProps) {
   const fold = useCardFold();
   if (!fold) return null;
@@ -261,7 +268,13 @@ export function CollapsibleCardHeader({
   // one box, so a shut card's summary cuts after the count, never inside it.
   const words = (
     <>
-      {icon ? <Icon name={icon} size={13} className="shrink-0" /> : null}
+      {lead ? (
+        <span className="flex shrink-0" aria-hidden>
+          {lead}
+        </span>
+      ) : icon ? (
+        <Icon name={icon} size={13} className="shrink-0" />
+      ) : null}
       <span
         data-rollup-title=""
         className={`flex min-w-0 items-baseline gap-1 ${shut && summary ? "max-w-[60%] shrink-0" : ""}`}
@@ -410,7 +423,17 @@ export function CollapsibleCard({
 }: CollapsibleCardProps) {
   const shown = toggle ? open : true;
   const panelId = useId();
-  const state: CardFoldState = { rooted: true, toggle, open: shown, label, icon, count, summary, bodyRef, panelId };
+  // ⚠️ One value while nothing in it changes (owner report, 2026-10-13). A
+  // template that draws its own head reads this context, so a new object on
+  // every render re-rendered it on every render of the wrapper. A focus in
+  // the card renders the wrapper (`RollupCard` `held`), between a press and
+  // its release, and the Markdown under the pointer mounted again: the
+  // browser then sent no click, and an option of a picker did nothing.
+  // Fence: `e2e/genui-option-picker.spec.ts` (the 409 picker).
+  const state = useMemo<CardFoldState>(
+    () => ({ rooted: true, toggle, open: shown, label, icon, count, summary, bodyRef, panelId }),
+    [toggle, shown, label, icon, count, summary, bodyRef, panelId],
+  );
   return (
     <Base.Root
       open={shown}

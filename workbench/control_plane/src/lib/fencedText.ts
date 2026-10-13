@@ -77,6 +77,18 @@ export function unfenced(value: string): string {
     .join("");
 }
 
+/**
+ * A text as plain words, for a fold's toggle: no «marks» and no Markdown
+ * marks. The toggle is a `<button>`, so its words hold no link and no
+ * control (review of #945, P2). Fence: `src/lib/chatCardConformance.test.ts`.
+ */
+export function plainTitle(value: string): string {
+  return unfenced(String(value ?? ""))
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__|`)/g, "")
+    .trim();
+}
+
 /** True when the text holds a fence mark at all. */
 export function hasFence(value: string): boolean {
   return /[«»]/.test(String(value ?? ""));

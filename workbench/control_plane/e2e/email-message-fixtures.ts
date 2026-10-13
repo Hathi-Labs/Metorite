@@ -27,7 +27,38 @@ export const IDS = {
   threadOld: "55555555-5555-4555-8555-555555555555",
   threadNew: "66666666-6666-4666-8666-666666666666",
   slow: "77777777-7777-4777-8777-777777777777",
+  inlineSimple: "88888888-8888-4888-8888-888888888888",
+  inlineStyled: "99999999-9999-4999-8999-999999999999",
 } as const;
+
+/**
+ * The Content-IDs of the inline pictures (WS-17, the inline images fix). The
+ * first has the form of Outlook, the second the form of Gmail.
+ */
+export const CIDS = {
+  outlook: "image001.png@01DD5A75.A7B8EA10",
+  gmail: "ii_mv5obra50",
+} as const;
+
+/**
+ * The mail of the owner's report of 2026-10-13: text, one pasted screenshot
+ * as a `cid:` picture, and a sign-off. Simple HTML, so it takes the tokens.
+ */
+const INLINE_SIMPLE_HTML =
+  `<div dir="ltr">Hi team,<br><br>The new layout is below.<br><br>` +
+  `<img src="cid:${CIDS.outlook}" alt="image.png"><br><br>Best,<br>Vijay</div>`;
+
+/**
+ * A styled mail with a remote logo and a `cid:` chart, so it is inverted in
+ * dark mode while the remote logo stays blocked.
+ */
+const INLINE_STYLED_HTML =
+  `<table width="100%" bgcolor="#f2f3f5" cellpadding="0" cellspacing="0"><tr><td style="padding:16px">` +
+  `<table width="520" cellpadding="0" cellspacing="0" style="background-color:#ffffff;color:#333333">` +
+  `<tr><td style="padding:12px"><img src="https://cdn.example.test/logo.png" alt="Remote logo" width="120" height="32"></td></tr>` +
+  `<tr><td style="padding:12px;color:#1f2937"><h2 style="margin:0;color:#0b2545">Weekly numbers</h2>` +
+  `<img src="CID:${CIDS.gmail}" alt="chart.png"></td></tr>` +
+  `</table></td></tr></table>`;
 
 /** A colourful picture, as a data URI, so a re-invert shows in a capture. */
 const PHOTO =
@@ -170,6 +201,16 @@ export const MAILS: Record<string, Raw> = {
   }),
   // Headers only, as Outlook syncs them: the open must fetch the body.
   [IDS.slow]: mail(IDS.slow, "Headers only, the fetch is slow", { body_text: "", body_html: null, snippet: "" }),
+  [IDS.inlineSimple]: mail(IDS.inlineSimple, "The new layout", {
+    body_html: INLINE_SIMPLE_HTML,
+    body_text: "Hi team, The new layout is below. Best, Vijay",
+    from_address: { name: "Vijay", email: "vijay@fracktal.test" },
+  }),
+  [IDS.inlineStyled]: mail(IDS.inlineStyled, "Weekly numbers", {
+    body_html: INLINE_STYLED_HTML,
+    body_text: "Weekly numbers",
+    from_address: { name: "Reports", email: "reports@contoso.test" },
+  }),
 };
 
 export interface Recorded {

@@ -53,8 +53,12 @@ async function gatewayFetch<T>(
     const err = new Error(body.detail || `Gateway error ${res.status}`) as Error & {
       status?: number;
       retryAfter?: number;
+      detail?: unknown;
     };
     err.status = res.status;
+    // The raw detail. An object detail, such as the 409 of a Gmail send
+    // (EM-G3a-f7, `isHtmlUnavailable`), reads "[object Object]" as a message.
+    err.detail = body.detail;
     // The seconds of `Retry-After`, when the answer sends a number. The
     // prefetch of the pane waits that long after a 503 (WS-17 EM-S2).
     const wait = Number(res.headers?.get?.("Retry-After"));
@@ -1225,6 +1229,24 @@ export interface SaveDraftParams {
    *  so the provider adds each attachment exactly once. */
   attachments?: SendAttachment[];
   artifacts?: ArtifactAttachmentRef[];
+  /** WS-17 EM-G3a-f7 (D-G3a-f7-2): the text is as the Gmail draft opened, so
+   *  the gateway keeps the HTML of the draft. Only `draftSavePayload` in
+   *  `./draftSave` sets it, and only for a Gmail draft. */
+  keepHtml?: boolean;
+}
+
+/** The `html` answer of a Gmail save (EM-G3a-f7). `kept`: the save sent the
+ *  HTML of the draft. `none`: the draft holds no HTML, or the save did not
+ *  ask to keep it. `lost`: the read of the HTML failed, so the save sent the
+ *  text only. An Outlook save answers no `html`. */
+export type DraftHtmlState = "kept" | "lost" | "none";
+
+/** The saved draft, and the `html` answer of a Gmail save. Not the
+ *  `SavedDraft` of `./draftAutosave`, which records one save of a composer. */
+export type DraftSaveResult = Email & { html?: DraftHtmlState };
+
+function asHtmlState(v: unknown): DraftHtmlState | undefined {
+  return v === "kept" || v === "lost" || v === "none" ? v : undefined;
 }
 
 /**
@@ -1232,7 +1254,7 @@ export interface SaveDraftParams {
  * sync write path behind auto-save). Returns the persisted message so the caller
  * can show it in Drafts / in-thread and keep editing the same draft.
  */
-export async function saveDraft(params: SaveDraftParams): Promise<Email> {
+export async function saveDraft(params: SaveDraftParams): Promise<DraftSaveResult> {
   const raw = await gatewayFetch<Record<string, unknown>>("/email/drafts", {
     method: "PUT",
     body: JSON.stringify({
@@ -1246,19 +1268,35 @@ export async function saveDraft(params: SaveDraftParams): Promise<Email> {
       body: params.body ?? "",
       attachments: params.attachments ?? [],
       artifacts: params.artifacts ?? [],
+      // Only a Gmail save that keeps the HTML sends the key, so each other
+      // save sends the body of main (D-G3a-f7-5).
+      ...(params.keepHtml ? { keep_html: true } : {}),
     }),
   });
-  return mapEmail(raw);
+  // `mapEmail` drops a field that it does not know, so `html` is read here.
+  const html = asHtmlState(raw?.html);
+  return html ? { ...mapEmail(raw), html } : mapEmail(raw);
 }
 
-/** Send an existing draft natively (Drafts → Sent, no duplicate). */
+/**
+ * Send an existing draft natively (Drafts → Sent, no duplicate).
+ *
+ * `allowTextOnly` (EM-G3a-f7, D-G3a-f7-11a): `false` asks the gateway to stop
+ * a signed Gmail send whose HTML it cannot read, with a 409. `true` sends the
+ * text only. With no value the body is as on main.
+ */
 export async function sendDraft(
   accountId: string,
   draftId: string,
+  allowTextOnly?: boolean,
 ): Promise<{ sent: boolean }> {
   return gatewayFetch("/email/drafts/send", {
     method: "POST",
-    body: JSON.stringify({ account_id: accountId, draft_id: draftId }),
+    body: JSON.stringify({
+      account_id: accountId,
+      draft_id: draftId,
+      ...(allowTextOnly === undefined ? {} : { allow_text_only: allowTextOnly }),
+    }),
   });
 }
 

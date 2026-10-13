@@ -949,6 +949,62 @@ async def test_find_tasks_takes_a_task_number_at_any_length(monkeypatch, query) 
     assert f"full_id: {UUID}" in out
 
 
+def _description_responder(call: dict) -> Any:
+    """``/projects/search`` with one DESCRIPTION hit that carries a snippet,
+    and one title hit that does not (owner request, 2026-10-13)."""
+    if call["path"] == "/projects/search":
+        return {
+            "rows": [
+                {"id": OTHER, "title": "Quicksilver order", "task_number": 3,
+                 "project_id": OTHER, "project_name": "Ops", "rank": 1,
+                 "snippet": None},
+                {"id": UUID, "title": "Finance chores", "task_number": 8,
+                 "project_id": OTHER, "project_name": "Ops", "rank": 4,
+                 "snippet": "…the quicksilver «supplier» is\nlate…"},
+            ],
+            "total": 2, "truncated": False, "query": call["params"]["q"],
+        }
+    return empty_list(call)
+
+
+async def test_find_tasks_shows_why_a_description_matched(monkeypatch) -> None:
+    """The tool passes the words through and prints the route's snippet,
+    fenced and on one line, after the row's `full_id` line."""
+    calls = fake_gateway(monkeypatch, _description_responder)
+    out = await skill_projects.find_tasks("quicksilver supplier")
+    assert calls[0]["params"]["q"] == "quicksilver supplier"
+    lines = out.splitlines()
+    at = lines.index(f"  full_id: {UUID}")
+    assert lines[at - 1].startswith("- #8 «Finance chores»")
+    assert lines[at + 1] == (
+        "  description match: «…the quicksilver supplier is late…»"
+    )
+    # The title hit carries no snippet line.
+    assert out.count("description match:") == 1
+
+
+async def test_find_tasks_caps_a_snippet_the_route_did_not(monkeypatch) -> None:
+    def long_snippet(call: dict) -> Any:
+        if call["path"] == "/projects/search":
+            return {"rows": [{"id": UUID, "title": "T", "task_number": 1,
+                              "project_id": OTHER, "rank": 5, "snippet": "x" * 5000}],
+                    "total": 1, "truncated": False, "query": "abc"}
+        return empty_list(call)
+
+    fake_gateway(monkeypatch, long_snippet)
+    out = await skill_projects.find_tasks("abc")
+    (line,) = [ln for ln in out.splitlines() if "description match:" in ln]
+    assert line.count("x") == skill_projects.reads.SNIPPET_MAX
+
+
+def test_find_tasks_says_it_searches_descriptions() -> None:
+    """The defect's root: the docstring said "words in the title", and the
+    model told the owner that descriptions are not searched."""
+    doc = " ".join((skill_projects.find_tasks.__doc__ or "").split())
+    assert "title AND description" in doc
+    assert "do not open tasks one by one" in doc
+
+
 async def test_list_tasks_refuses_short_text_without_a_call(monkeypatch) -> None:
     """The list route matches NOTHING for short text, so relaying it would
     say "no task matches those filters", which is false."""

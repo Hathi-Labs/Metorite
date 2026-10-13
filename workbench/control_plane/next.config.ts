@@ -1,6 +1,22 @@
 import type { NextConfig } from "next";
 
+/**
+ * WS-55 EA-4a (`external_agent_access.md` §10.5): the consent page of an
+ * outside agent may never sit in a frame. A page that approves an agent with
+ * one click is a clickjacking target, so no other site may frame it. CSP
+ * `frame-ancestors` is the rule of modern browsers, and `X-Frame-Options` is
+ * the same rule for older ones. `/connect/:path*` also matches `/connect`.
+ * Fence: `e2e/connect-authorize.spec.ts` reads both headers off the page.
+ */
+const CONNECT_FRAME_HEADERS = [
+  { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+  { key: "X-Frame-Options", value: "DENY" },
+];
+
 const nextConfig: NextConfig = {
+  async headers() {
+    return [{ source: "/connect/:path*", headers: CONNECT_FRAME_HEADERS }];
+  },
   // 🔴 **The deploy builds BESIDE the running build, never over it.**
   //
   // `scripts/vps_apply.sh` sets `NEXT_DIST_DIR=.next.staging`, builds into it,

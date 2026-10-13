@@ -16,7 +16,11 @@ import { fileURLToPath } from "node:url";
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+
+import { createTaskRefResolver } from "@/lib/taskRefs";
 
 import { EditableTaskTitle, TaskHeaderRow, titleKeyDown, titleToSave } from "./TaskPanelHeader";
 
@@ -77,12 +81,71 @@ describe("the header row", () => {
   });
 });
 
+describe("the breadcrumb — where the task lives", () => {
+  const PATH = [
+    { id: "s", name: "Fracktal" },
+    { id: "p", name: "Metorite" },
+    { id: "sp", name: "Assistant chat" },
+  ];
+  const render = (where?: Parameters<typeof TaskHeaderRow>[0]["where"]) =>
+    renderToStaticMarkup(createElement(TaskHeaderRow, { taskRef: "#174", where }));
+
+  it("runs from the space down to the project, then the ref", () => {
+    // A card opened from the chat named nothing else (owner, 2026-10-12).
+    const html = render({ path: PATH, onOpen: () => {} });
+    expect(html).toContain('aria-label="Where this task is"');
+    // The ref ends the trail, as a breadcrumb ends on the current page.
+    expect(html).toMatch(/aria-current="page"[^>]*>[\s\S]*#174/);
+    const order = ["Fracktal", "Metorite", "Assistant chat", "#174"].map((n) => html.indexOf(n));
+    expect(order.every((i) => i > -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it("each crumb is a Button that opens its node, and the project stands out", () => {
+    const html = render({ path: PATH, onOpen: () => {} });
+    const tags = [...html.matchAll(/<button\b[^>]*>/g)].map((m) => m[0]);
+    expect(tags).toHaveLength(3);
+    for (const tag of tags) expect(tag).toContain("cc-control");
+    expect(html).toContain('title="Open Metorite"');
+    // Only the task's own project wears the foreground tone.
+    expect(html.match(/font-medium text-foreground/g)).toHaveLength(1);
+    expect(html).toMatch(/font-medium text-foreground">Assistant chat</);
+  });
+
+  it("is plain text with no opener, and absent with no path", () => {
+    const text = render({ path: PATH });
+    expect(text).toContain("Metorite");
+    expect(text).not.toContain("<button");
+    expect(render({ path: [] })).not.toContain("Where this task is");
+    expect(render()).not.toContain("Where this task is");
+  });
+});
+
 describe("the title", () => {
   it("is an h2 holding the button that starts the edit", () => {
     const html = renderToStaticMarkup(
       createElement(EditableTaskTitle, { value: "Ship it", onSave: () => {} }),
     );
     expect(html).toMatch(/^<h2[^>]*><button[^>]*title="Click to edit"[^>]*><span[^>]*>Ship it<\/span>/);
+  });
+
+  it("draws a #123 as the task pill, and keeps no link inside a button (WS-57 TR-5)", async () => {
+    const resolver = createTaskRefResolver(async () => [
+      { id: "aaaaaaaa-0000-4000-8000-000000000012", task_number: 12, title: "Twelve", status_name: "To do", category: "todo" },
+    ]);
+    resolver.request("", 12);
+    resolver.request("", 9999);
+    await resolver.flush();
+    const html = renderToStaticMarkup(
+      createElement(EditableTaskTitle, { value: "Ship #12, not #9999", onSave: () => {}, refResolver: resolver }),
+    );
+    expect(html).toMatch(/^<h2/);
+    expect(html).toContain('href="/projects?task=aaaaaaaa-0000-4000-8000-000000000012"');
+    expect(html).toContain("Twelve");
+    expect(html).toContain("not #9999");
+    // A link may not sit inside a button: the pencil is its own Button.
+    expect(html).not.toMatch(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*<a\b/);
+    expect(html).toMatch(/<button\b[^>]*aria-label="Edit title"[^>]*class="[^"]*cc-control/);
   });
 
   it("saves the trimmed text, and nothing for an empty or unchanged one", () => {
@@ -127,7 +190,10 @@ describe("both apps render it", () => {
   it("Projects' title is editable, through the board's own rename write", () => {
     const src = code(read("app/projects/components/TaskPanel.tsx"));
     expect(src).toMatch(/<TaskHeaderRow\b/);
-    expect(src).toMatch(/<EditableTaskTitle value=\{task\.title\} onSave=\{\(t\) => void rename\(t\)\} \/>/);
+    // WS-57 TR-5: the title's `#123` pills read the task's root store.
+    expect(src).toMatch(
+      /<EditableTaskTitle value=\{task\.title\} onSave=\{\(t\) => void rename\(t\)\}\s+refResolver=\{taskRefResolverFor\(task\.root_project_id\)\} \/>/,
+    );
     // The existing task-update path, and no new endpoint.
     expect(src).toMatch(/onChanged\(await projectsApi\.patchTask\(task\.id, \{ title \}\)\);/);
     // The old read-only title.

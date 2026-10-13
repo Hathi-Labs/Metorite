@@ -99,6 +99,8 @@
     "report_save",
     "unarchive_task",
     "unlink_tasks",
+    "add_task_ref",
+    "remove_task_ref",
     "update_project",
     "update_task",
     "watch",

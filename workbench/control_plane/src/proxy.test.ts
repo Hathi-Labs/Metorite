@@ -134,6 +134,18 @@ describe("proxy — the admin-consent return (EM-T3c)", () => {
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/signin");
   });
+
+  it("passes a signed-out GET to the MCP CIMD document, and no neighbour (IN-8a)", async () => {
+    expect(passed(await proxy(request("/oauth/mcp-client.json")))).toBe(true);
+    for (const path of [
+      "/oauth/mcp-client.json/x",
+      "/oauth/mcp-client",
+      "/oauth/other.json",
+      "/api/integrations/mcp/oauth/callback",
+    ]) {
+      expect(passed(await proxy(request(path))), path).toBe(false);
+    }
+  });
 });
 
 describe("proxy — the account switcher's slots end with the session (MT-1k A2, rule 4)", () => {
