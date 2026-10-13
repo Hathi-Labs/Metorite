@@ -45,7 +45,14 @@ async function renderHome(): Promise<string> {
 }
 
 // The page's import graph is large, and its first transform takes seconds.
-// Pay it once, outside the five-second budget of each test.
+// Pay it once, outside the budget of each test.
+//
+// Each render test also resets the modules and imports the page again. That
+// takes about 0.5 s alone, and more than 5 s in a full run on a loaded box
+// (measured 2026-10-13: 5 to 15 of these timed out at 5 s, a different set
+// each run). So each test here gets 30 s.
+vi.setConfig({ testTimeout: 30_000 });
+
 beforeAll(async () => {
   await import("@/app/page");
 }, 60_000);
