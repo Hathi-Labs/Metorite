@@ -299,6 +299,23 @@ describe("(c) the shell bar holds no app", () => {
       /<div class="flex flex-1 basis-0 items-center justify-end gap-1"><i data-zone="bell"><\/i><i data-zone="activity"><\/i><i data-zone="account"><\/i><\/div><\/header>$/,
     );
     const props = code(read("lib/shell/ShellBar.tsx")).match(/export function ShellBarRow\(\{([^}]*)\}/)?.[1] ?? "";
-    expect(props.split(",").map((p) => p.trim()).filter(Boolean).sort()).toEqual(["account", "activity", "bell", "here", "lead", "onOpen"]);
+    // D100: `search` only turns the row's own field off. It carries nothing
+    // an app could fill.
+    expect(props.split(",").map((p) => p.trim()).filter(Boolean).sort()).toEqual([
+      "account", "activity", "bell", "here", "lead", "onOpen", "search = true",
+    ]);
+  });
+
+  it("D100: with the chat bar on, the row draws no search field, and the rest stays", () => {
+    const html = renderToStaticMarkup(
+      createElement(ShellBarRow, {
+        here: null,
+        onOpen: () => {},
+        search: false,
+        account: createElement("i", { "data-zone": "account" }),
+      }),
+    );
+    expect(html).not.toContain("Search or ask anything");
+    expect(html).toContain('data-zone="account"');
   });
 });

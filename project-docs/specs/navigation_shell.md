@@ -28,7 +28,7 @@ NS-3 slice B (2026-10-09) builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`.
 The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
 (2026-10-10) adds Approvals to the needs feed and to My Day.
 
-**NS-6 slice 6b BUILT 2026-10-13, dark: the chat bar and the one
+**NS-6 slice 6b BUILT 2026-10-13, ON in production since 2026-10-13 (owner): the chat bar and the one
 assistant** (D99, §7.1). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
 counts as on only with both shell flags on. Migration 254 adds
 `chat_session.archived_at`. Only the owner turns the flag on in production
@@ -937,6 +937,14 @@ Nobody edits navigation, and no team gets a separate home.
 ## 6. The command bar (D88)
 
 ### 6.1 Place and keys
+
+> ⚠️ **Amended 2026-10-13 by D102.** With `NEXT_PUBLIC_SHELL_CHAT` on, the
+> command bar has no field in the shell bar. Its field is the chat bar at
+> the foot of the page (§7.1). The results rise above that field, Enter asks
+> Metorite, and a highlighted result opens on Enter. ⌘K and `/` put the
+> cursor there. The modal below opens only on a phone, and on a desktop
+> while the assistant is open.
+
 
 The command bar is always visible in the shell bar. `Ctrl K` and `⌘K` focus it
 from any surface. The shell holds the only listener (§5.2 rule 2).
@@ -2058,7 +2066,7 @@ Done when:
 6. The server checks the grant on every scoped read. A test sends a scope the
    member does not hold and gets nothing back.
 
-### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, dark
+### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, ON in production since 2026-10-13 (owner)
 
 Flag `NEXT_PUBLIC_SHELL_DOCK`. Files: a new dock in `src/lib/shell/`, the three
 rails, `AssistantToggle`, and `NotificationBell`.
