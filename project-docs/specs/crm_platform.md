@@ -40,7 +40,9 @@
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
 > and statuses you can shape, in both modes (2026-10-13, migration 257).
 > CRM-C4a, the backend of the field studio, dark behind
-> `CRM_FIELD_STUDIO_ORGS` (2026-10-13, migration 260, §20.7).
+> `CRM_FIELD_STUDIO_ORGS` (2026-10-13, migration 260, §20.7). CRM-C4p, the
+> shared client of the field studio: the layout read, `FieldInput` and the
+> client check (2026-10-14, §20.7). It draws no surface and adds no flag.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -4042,8 +4044,6 @@ coordinator decided the rest.
 tables and the scan of the seven columns), `test_crm_fields.py`,
 `test_crm_kill_switch.py` and `crmQ4.test.ts`.
 
-#### CRM-C4b: the record UI
-
 #### CRM-C4p: the shared client
 
 **Follows CRM-C4a.** Cut the branch from the trunk after C4a merges. C4b and
@@ -4079,8 +4079,9 @@ not. At dispatch, read the merged `routes/crm/fields.py` and
 4. **The field of a refusal.** `CrmError` (`api.ts:47`) gets `field`. It is
    the `field` key of an object `detail`. C4a sends it with each refused
    value (`_unprocessable`, `field_studio.py:155` on `crm-c4a`).
-5. **One way to call the gateway.** `api.ts` exports `call` (`:62`). C4c
-   calls the studio routes through it. A second `fetch` path is a defect.
+5. **One way to call the gateway.** C4p exports `call` from `api.ts`
+   (`:62`). Before C4p it is a private function. C4c calls the studio routes
+   through it. A second `fetch` path is a defect.
 6. **`FieldInput`.** A new `components/FieldInput.tsx`. It takes a
    `FieldDef`, a value, `onChange`, `error` and `locked`. It draws the input
    of the type from the table below, and it shows `error` under the input.
@@ -4173,6 +4174,39 @@ list), `app/crm/components/crmX4.test.ts` and
 uv run pytest tests/unit/test_crm_field_input_parity.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
+
+**Built as (2026-10-14, branch `crm-c4p`).** 🔨 BUILT, not merged. No
+migration, no flag and no new surface.
+
+- **The files.** `lib/fieldLayout.ts` holds the layout type, `checkValue`,
+  `toWire` and `fromWire`. `components/FieldInput.tsx` draws the input.
+  `api.ts` exports `call` and adds `getFieldLayout`. `useCrmMode.ts` adds
+  `useFieldLayout` and its read, `readFieldLayout`.
+- **The length.** `checkValue` counts code points (`[...s].length`), as
+  Python `len` does. JS `.length` counts UTF-16 units.
+- **The year.** A date and a datetime keep the year in 1..9999.
+  `toISOString()` can give `+010000-…` or `0000-…`, and the gateway refuses
+  both.
+- **The phone.** `PHONE_RE` is the text of `_PHONE_RE`, with its extension
+  group. `ONE_NUMBER` in `fields.ts` stays the rule of a `tel:` link.
+- **The value of an edit.** `toWire` changes the text of an input into the
+  JSON value. A blank text gives `null`. A number type gives a JSON number,
+  and a text that is not a number stays text, so the check refuses it. A
+  `datetime` gives `toISOString()`.
+- **The options.** `fieldOptions` in `fields.ts` reads the options with the
+  retired flag. `formatField` and `FieldInput` use it. `optionsOf` in
+  `filterBar.ts` does not change, because C4b owns that file.
+- **A missing lookup** reads "<name> (missing)". `LOOKUP_MISSING` holds the
+  word.
+- **A multi-select.** The client check refuses a repeat, and the gateway
+  removes a repeat. A cleared multi-select sends `null`.
+- **The tests.** The node runner cannot run a hook. So `crmC4p.test.ts` tests
+  `readFieldLayout` against a stubbed `fetch`. It tests an edit through
+  `toWire`, and a source check proves that each text edit calls it.
+- **The parity fence.** `test_crm_field_input_parity.py` reads the six
+  limits, `FIELD_TYPES` and `LOOKUP_TARGETS` as literals. It runs the five
+  patterns of both sides on one table of samples. It compiles the TypeScript
+  patterns with `re.ASCII`, because JS `\d` matches only ASCII digits.
 
 #### CRM-C4b: the record UI
 
