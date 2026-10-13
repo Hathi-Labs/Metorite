@@ -3785,10 +3785,12 @@ CRM-C3.
    - `POST`, `PATCH` and `DELETE /crm/field-sections/{entity}` manage the
      sections. A delete moves its fields to no section.
    - `DELETE /crm/fields/{entity}/{key}` retires the field. It sets
-     `retired_at` and `visible = false`, and it keeps each value in
-     `custom`.
+     `retired_at`, and it keeps each value in `custom`. It keeps `visible`
+     as it was (review round 1, 2026-10-13). Each reader hides a retired
+     field by `retired_at`.
    - `POST /crm/fields/{entity}/{key}/restore` brings a retired field back.
-     It clears `retired_at` and sets `visible = true`.
+     It clears `retired_at`. The field shows again with the visibility
+     that it had before the retire.
 5. **The custom write path.** It is new. `LeadIn` (`routes/crm/core.py:289`),
    `DealIn` (`:345`), `ContactIn` (`:242`) and `OrganizationIn` (`:208`)
    have no `custom`. `update_row` (`core.py:1798`) writes each column whole,
@@ -3831,7 +3833,8 @@ CRM-C3.
    | `number` | `decimal`, `currency`, `percent` |
    | `decimal`, `percent`, `currency` | Each other |
    | `select` | `multiselect`. A value becomes a list of one, in one transaction |
-   | `email`, `phone`, `url` | `text` |
+   | `email`, `phone` | `text` |
+   | `url` | `textarea`, because a URL can hold more than 255 characters (review round 1, 2026-10-13) |
    | Any other | None |
 
 10. **Mode guard.** `crm_field_sections` and `crm_field_defs` join
@@ -3997,11 +4000,35 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
   `metorite` fields and the sections. The start over (`core.RESET_TABLES`)
   already deleted every field row, and now it also deletes the sections.
 - **Not in this slice.** The live name of a lookup on a read (item 8) waits
-  for CRM-C4b. The auto-lead step creates a lead through `create_record`. So
-  a required lead field with no default stops it, and the owner must decide
-  that case before the flag goes on.
+  for CRM-C4b. The field map of a conversion is CRM-C6.
 
-**Fences.** `test_crm_field_studio_r8.py` (21 cases, R8),
+**Review round 1 (2026-10-13).** The owner decided item 1 below. The
+coordinator decided the rest.
+
+1. **"Required" binds a member write only.** A system writer fills the
+   defaults and skips "required". `create_record` and `custom_for_create`
+   take `system=True`, and the auto-lead step passes it.
+2. **A conversion fills the defaults.** The new contact, company and deal
+   each get the custom defaults, and "required" does not stop a conversion.
+3. **Numbers.** A value of 10^15 or more gives 422. A JSON integer that is
+   too big for a float also gives 422, not 500.
+4. **Dates.** A date takes `YYYY-MM-DD` only, and a datetime takes the plain
+   ISO form with `Z` or an offset. The record stores `isoformat()`.
+5. **The matrix.** A `url` changes to `textarea`, not to `text` (item 9).
+6. **RLS fence.** `test_crm_field_studio.py` reads migration 258. It
+   requires ENABLE, FORCE and one policy with USING and WITH CHECK on
+   `crm_field_sections`. The R8 fixture applies the generated policies, so
+   the database alone cannot see a lost block.
+7. **The export.** A picklist value exports as its option label. A hidden
+   field is left out. A Mirror org keeps its Zoho custom columns.
+8. **Restore.** A retire keeps `visible`, so a restore gives the field back
+   with the visibility that it had.
+9. **Saved views.** `GET /crm/views` leaves out a custom filter on a retired
+   key and names the key in `skipped_filters`. The stored view keeps the
+   key, so a restore brings the filter back. A list request that names a
+   retired key still gives 422.
+
+**Fences.** `test_crm_field_studio_r8.py` (25 cases, R8),
 `test_crm_field_studio.py`, `test_crm_mirror_readonly.py` (the studio
 tables and the scan of the seven columns), `test_crm_fields.py`,
 `test_crm_kill_switch.py` and `crmQ4.test.ts`.
