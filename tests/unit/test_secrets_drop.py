@@ -417,8 +417,11 @@ def test_the_manifest_ships_the_three_entries() -> None:
     # The list is a reviewed allowlist, one key at a time. WS-47 WAC-0
     # (2026-10-10) added the WhatsApp bot's System User token. WS-53 CRM-Z2
     # (2026-10-11) added Metorite's own Zoho OAuth client, the id and the secret.
+    # Email §12.4 step 9 (2026-10-14) added Metorite's own Gmail OAuth client and
+    # the EMAIL_GMAIL_CONNECT flag that turns Gmail connect on.
     assert app["allowed_keys"] == [
         "WHATSAPP_ASSISTANT_ACCESS_TOKEN", "CRM_ZOHO_CLIENT_ID", "CRM_ZOHO_CLIENT_SECRET",
+        "GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET", "EMAIL_GMAIL_CONNECT",
     ], (
         "app-env holds only reviewed keys, so it cannot be used by accident"
     )
@@ -426,6 +429,9 @@ def test_the_manifest_ships_the_three_entries() -> None:
         "WHATSAPP_ASSISTANT_ACCESS_TOKEN": ["non_empty"],
         "CRM_ZOHO_CLIENT_ID": ["non_empty"],
         "CRM_ZOHO_CLIENT_SECRET": ["non_empty"],
+        "GMAIL_OAUTH_CLIENT_ID": ["non_empty"],
+        "GMAIL_OAUTH_CLIENT_SECRET": ["non_empty"],
+        "EMAIL_GMAIL_CONNECT": ["non_empty"],
     }
     # A BACKUP_ line in the app env is an ERROR of the backup (H-123, BH-6a),
     # and the gateway's Copilot CLI inherits that env (H-270).
