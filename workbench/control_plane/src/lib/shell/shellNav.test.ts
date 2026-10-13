@@ -28,7 +28,7 @@ describe("the sidebar holds places to work, by team", () => {
       ["personal", ["/tasks", "/calendar", "/email", "/whatsapp"]],
       ["across", ["/projects", "/crm", "/people"]],
       ["studio", ["/chat"]],
-      ["admin", ["/approvals", "/settings/organization"]],
+      ["admin", ["/approvals", "/settings/organization", "/integrations"]],
     ]);
   });
 
@@ -111,7 +111,7 @@ describe("All apps lists every app the member holds, never a preference", () => 
       ["personal", ["/tasks", "/calendar", "/email", "/whatsapp"]],
       ["across", ["/projects", "/crm", "/people"]],
       ["studio", ["/chat"]],
-      ["admin", ["/approvals", "/settings/organization"]],
+      ["admin", ["/approvals", "/settings/organization", "/integrations"]],
     ]);
   });
 

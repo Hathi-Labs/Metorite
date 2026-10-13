@@ -295,6 +295,14 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "read, and a member without the app gets no row and the source "
             "`absent` (`test_shell_needs.py::TestTheFeatureGate`)."
         ),
+        "/shell/feed": (
+            "WS-58 MD-1a. The same run of `needs.REGISTRY`: each provider checks "
+            "every feature in its `features` (and the admin test where it names "
+            "one) before it calls the app's own read. The Calendar provider "
+            "needs both `feature:tasks` and `feature:projects`, and a member "
+            "without either gets no card and the source `absent` "
+            "(`test_shell_feed.py::TestTheCalendarGates`)."
+        ),
     },
 }
 
@@ -321,6 +329,13 @@ def test_the_shell_providers_each_name_a_feature() -> None:
 
     for source, (feature, _fn) in NEEDS.items():
         assert feature and feature.isidentifier(), f"needs provider {source} has no feature"
+
+    from gateway.routes.shell.needs import REGISTRY
+
+    for source, provider in REGISTRY.items():
+        assert provider.features, f"feed provider {source} has no feature"
+        for feature in provider.features:
+            assert feature.isidentifier(), f"feed provider {source} names {feature!r}"
 
 
 def test_the_two_registries_do_not_overlap() -> None:
