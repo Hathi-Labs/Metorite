@@ -1922,7 +1922,7 @@ customer they are the next build after §19.2.
 | Quick add in a lane | "+ Add" at the foot of a lane | Native mode |
 | Quick create with lookups | Company and contact pickers on a new deal, "Create another", and a duplicate warning | CRM-S5, for the warning |
 | Delete with undo | Delete in the record menu, then an Undo toast | Native mode |
-| CSV import (CRM-S3), merge (CRM-S5), field editor (CRM-S6), web forms (CRM-S8), field history (CRM-S10) | The §6 rows | Native mode |
+| CSV import (CRM-S3), merge (CRM-S5), field editor (CRM-S6, superseded by CRM-C4), web forms (CRM-S8), field history (CRM-S10) | The §6 rows | Native mode |
 | Stage transition forms | The move dialog gains a checklist and optional fields for each transition | Native mode |
 | Cadences | Sequences of mail, calls and tasks that stop on a reply | UX-Q4, because a cadence sends mail |
 
@@ -2700,8 +2700,8 @@ health. `CrmRail.tsx:172` draws the settings row last. Saved views already
 nest at depth 1 through `RailRow`.
 
 **Stages.** No status table has a column that hides a row.
-`core.assert_writable` (`routes/crm/core.py:1584`) refuses every Mirror write
-to `MIRROR_SETTINGS_TABLES` (`core.py:1539`). `orderLanes`
+`core.assert_writable` (`routes/crm/core.py:1723`) refuses every Mirror write
+to `MIRROR_SETTINGS_TABLES` (`core.py:1663`). `orderLanes`
 (`app/crm/lib/board.ts:115`) sorts the open group of a Mirror board by
 probability.
 
@@ -2800,8 +2800,8 @@ the next free number at build time and checks it again at merge.
 5. **Wave 5: C5.** It needs the C4c studio and the §19.9 consent.
 
 `app/crm/page.tsx` is the hot file. C2 changes only the `KanbanBoard` props.
-C3 changes only the quick create job (`page.tsx:1025`) and the move and lost
-dialog (`:1054`). C1 starts after C3 merges. So no two slices edit `page.tsx`
+C3 changes only the quick create dialog (`<QuickCreateModal>`, `page.tsx:1123`)
+and the move and lost dialog (`<MoveModal>`, `:1148`). C1 starts after C3 merges. So no two slices edit `page.tsx`
 at the same time.
 
 C1 may edit these hunks of `page.tsx` and no other. The line numbers come
@@ -3593,6 +3593,8 @@ CRM-C3.
      key.
    - A write never touches a key that it does not name. So the stored value
      of a retired field stays.
+   - A write that names a retired key gives 422: "<label> is retired.
+     Restore it to write a value." The stored value does not change.
    - The gateway checks each value against the type of its field. A bad
      value gives 422, and the detail names the field label.
    - A create enforces "required". A PATCH enforces it only when it sets the
@@ -3711,25 +3713,27 @@ reader filter only) and the fences below.
    value of a retired field stays. A JSON `null` removes its key. The test
    runs for leads, deals, contacts and organizations.
 5. A bad value for a type gives 422 that names the field label.
-6. A lookup write stores `{"id", "name"}`. An `id` from org B gives 422. A
+6. A write that names a retired key gives 422 with "<label> is retired.
+   Restore it to write a value." The stored value stays the same.
+7. A lookup write stores `{"id", "name"}`. An `id` from org B gives 422. A
    `module:<ApiName>` target in Native mode gives 422.
-7. A multi-select write stores a JSON array of option values. The custom
+8. A multi-select write stores a JSON array of option values. The custom
    filter finds the record by one of them.
-8. A new option takes a slug `value`, with `-2` on a clash. A rename keeps
+9. A new option takes a slug `value`, with `-2` on a clash. A rename keeps
    the `value`.
-9. `PUT /crm/field-layout/{entity}` sets the section order and the field
-   order in one transaction. The key validator refuses `order`, `layout`
-   and `restore`.
-10. Each of the five readers of item 11 leaves out an `is_system` row. The
+10. `PUT /crm/field-layout/{entity}` sets the section order and the field
+    order in one transaction. The key validator refuses `order`, `layout`
+    and `restore`.
+11. Each of the five readers of item 11 leaves out an `is_system` row. The
     custom filter refuses a retired key with 422. The export leaves it out.
     `crm_list_fields` marks it "retired".
-11. An R8 case: an approved CRM-Q7a rule on a Zoho `double` field survives
+12. An R8 case: an approved CRM-Q7a rule on a Zoho `double` field survives
     the `_FIELD_TYPES` change. Its status is not `type_mismatch`.
-12. An R8 case: a sync over a key that a `source = 'metorite'` row holds
+13. An R8 case: a sync over a key that a `source = 'metorite'` row holds
     leaves that row unchanged. Start over deletes the `metorite` rows.
-13. Each route gives 403 for a member who is not an admin. It gives 404 for
+14. Each route gives 403 for a member who is not an admin. It gives 404 for
     an org that the flag does not allow, and 409 in Mirror mode.
-14. A sync over a Mirror org leaves the seven new columns unchanged.
+15. A sync over a Mirror org leaves the seven new columns unchanged.
 
 **Fences.** `tests/unit/test_crm_field_studio_r8.py` (new, R8, `_DB_GATE`),
 `tests/unit/test_crm_field_studio.py` (new, the key rule and the matrix),
