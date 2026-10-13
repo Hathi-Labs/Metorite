@@ -112,7 +112,7 @@ either, for the reason above.
 The answer is plain words: a row says what it is, where it opens, and
 nothing else. An id travels only inside ``id``, ``href`` and ``act_ref``.
 
-**One registry, two views** (``my_day_feed.md`` §4.4, WS-57 MD-1a).
+**One registry, two views** (``my_day_feed.md`` §4.4, WS-58 MD-1a).
 ``REGISTRY`` holds every provider once. Each entry names its source, its
 features, the admin test, the kinds it gives, and whether it serves the
 needs view. ``PROVIDERS`` is the needs subset, in the order above, and

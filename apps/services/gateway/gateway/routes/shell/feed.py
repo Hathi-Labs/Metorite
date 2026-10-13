@@ -1,4 +1,4 @@
-"""GET /shell/feed — My Day as one ranked column of cards (WS-57 MD-1a).
+"""GET /shell/feed — My Day as one ranked column of cards (WS-58 MD-1a).
 
 Spec: ``project-docs/specs/my_day_feed.md`` §4, §5.1, §7, §11.1 and §14.1a.
 The page frame, the bell and the needs contract stay ``navigation_shell.md``'s.

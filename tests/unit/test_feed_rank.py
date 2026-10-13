@@ -1,4 +1,4 @@
-"""WS-57 MD-1a — the order of the My Day feed (``my_day_feed.md`` §7).
+"""WS-58 MD-1a — the order of the My Day feed (``my_day_feed.md`` §7).
 
 ``feed_rank.py`` holds the base table, the terms of the score, the old-path
 group table of §4.3 and the cut. This file holds each one, so a change to

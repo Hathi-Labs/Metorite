@@ -1,4 +1,4 @@
-"""The order of the My Day feed (``my_day_feed.md`` §7, WS-57 MD-1a).
+"""The order of the My Day feed (``my_day_feed.md`` §7, WS-58 MD-1a).
 
 The order is a score. Code owns time, and ``decide`` owns judgment::
 

@@ -296,7 +296,7 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "`absent` (`test_shell_needs.py::TestTheFeatureGate`)."
         ),
         "/shell/feed": (
-            "WS-57 MD-1a. The same run of `needs.REGISTRY`: each provider checks "
+            "WS-58 MD-1a. The same run of `needs.REGISTRY`: each provider checks "
             "every feature in its `features` (and the admin test where it names "
             "one) before it calls the app's own read. The Calendar provider "
             "needs both `feature:tasks` and `feature:projects`, and a member "

@@ -1,4 +1,4 @@
-"""WS-57 MD-1a — GET /shell/feed, My Day as a feed (``my_day_feed.md``).
+"""WS-58 MD-1a — GET /shell/feed, My Day as a feed (``my_day_feed.md``).
 
 The feed reuses each app's OWN authorized read, as the needs feed does. The
 R8 half is ``test_shell_feed_r8.py``. This file fences what the feed adds,

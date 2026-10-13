@@ -1,4 +1,4 @@
-"""WS-57 MD-1a, R8: GET /shell/feed on a REAL Postgres (``my_day_feed.md``
+"""WS-58 MD-1a, R8: GET /shell/feed on a REAL Postgres (``my_day_feed.md``
 MD-1a, done-when 8).
 
 The feed adds no SQL of its own. It calls each app's own authorized read:
