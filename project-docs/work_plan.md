@@ -3635,6 +3635,8 @@ by D15/D16) — read their banners before citing either.
   `pm_projects.sealed_at`, both visibility clauses filter it on both arms, and
   both off-boarding doors stamp the tree inside the status transaction.
   `tests/live/live_member_seal.sql` carries 14 checks on real Postgres.
+  ✅ **H-304 (2026-10-13):** the `data:org:read` task clause now hides a sealed
+  tree too, and `tests/unit/test_sealed_tree_visibility_r8.py` proves it.
   ⚠️ **The hand-over needed NO code, and that is a finding rather than a
   shortcut.** `task_visibility_clause` has a second arm over
   `pm_task_assignees` that never consults the project, so a task the leaver
