@@ -28,7 +28,7 @@ import { createElement as rawElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import GenerativeUINode, { genUiRootIsCard } from "@/components/GenerativeUINode";
+import GenerativeUINode, { genUiRootIsCard, genUiRootOwnsHead } from "@/components/GenerativeUINode";
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
 import ProjectToolCards from "@/components/projects/ProjectToolCards";
 import { CARD_FRAME_CLASS, CollapsibleCard } from "@/components/ui/Collapsible";
@@ -276,12 +276,17 @@ describe("one toggle, one place, inside the card", () => {
     expect(html).toMatch(/<div class="rounded-lg border border-border\/60 bg-card\/50 p-3"><button[^>]*data-rollup-toggle/);
   });
 
-  it("MessageBubble hands the toggle to a root card, and only to a root card", () => {
+  it("MessageBubble hands the toggle to a root that owns its head, and only to one", () => {
     expect(genUiRootIsCard(TITLED_CARD)).toBe(true);
     expect(genUiRootIsCard({ root: TITLED_CARD })).toBe(true);
     expect(genUiRootIsCard({ type: "table", props: {} })).toBe(false);
+    // A root card, and a template that draws `TemplateHead` (2026-10-13).
+    expect(genUiRootOwnsHead(TITLED_CARD)).toBe(true);
+    expect(genUiRootOwnsHead({ type: "template", props: { name: "timeline", data: {} } })).toBe(true);
+    expect(genUiRootOwnsHead({ type: "template", props: { name: "weatherCard", data: {} } })).toBe(false);
+    expect(genUiRootOwnsHead({ type: "table", props: {} })).toBe(false);
     const src = readFileSync(fileURLToPath(new URL("../components/MessageBubble.tsx", import.meta.url)), "utf8");
-    expect(src).toContain('const header = genUiRootIsCard(spec) ? "own" : "frame";');
+    expect(src).toContain('const header = genUiRootOwnsHead(spec) ? "own" : "frame";');
     expect(count(src, "header={header}")).toBe(2);
   });
 

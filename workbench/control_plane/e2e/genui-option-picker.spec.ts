@@ -297,6 +297,36 @@ test.describe("The ask_questions card answers the click", () => {
     await expect(page.getByRole("paragraph").filter({ hasText: FOLLOW_UP })).toBeVisible({ timeout: 10_000 });
   });
 
+  // Owner report, 2026-10-13: the card looked "out of place" beside the
+  // other chat cards. It draws the shared title row while it waits, with no
+  // toggle, and its answered state once the run takes the answer.
+  test("draws the shared header while it waits, and its answered state after Submit", async ({ page }) => {
+    await installScenario(page, { ask: "question", respondStatus: 200 });
+    await startTurn(page);
+
+    const card = page.locator('[data-elicitation-card="open"]');
+    await expect(card).toBeVisible();
+    await expect(card.locator("[data-rollup-title]")).toHaveText("Question");
+    await expect(card.locator("svg.lucide").first()).toBeVisible();
+    await expect(card.locator("[data-rollup-toggle]")).toHaveCount(0);
+    expect(await card.innerText()).not.toMatch(/\p{Extended_Pictographic}/u);
+
+    const submit = card.getByRole("button", { name: "Submit", exact: true });
+    await expect(submit).toBeDisabled();
+    await card.getByRole("button", { name: /Forward with the PDF/ }).click();
+    await expect(submit).toBeEnabled();
+    await submit.click();
+
+    const done = page.locator('[data-elicitation-card="answered"]');
+    await expect(done).toBeVisible();
+    await expect(done.locator("[data-rollup-title]")).toHaveText("Answered");
+    await expect(done).toContainText("Forward with the PDF");
+    await expect(done.getByRole("button", { name: "Submit", exact: true })).toHaveCount(0);
+    // It waits no more, so it may fold like any card.
+    await expect(done.locator("[data-rollup-toggle]")).toHaveCount(1);
+    await expect.poll(async () => (await respondBodies(page)).at(-1)?.answer).toBe("Forward with the PDF");
+  });
+
   test("submit with 409 sends the answer as a message, so it is never lost", async ({ page }) => {
     await installScenario(page, { ask: "question", respondStatus: 409 });
     await startTurn(page);

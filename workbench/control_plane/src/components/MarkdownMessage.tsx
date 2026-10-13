@@ -20,6 +20,7 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatEntityPill from "@/components/ChatEntityPill";
+import ChatTaskRef from "@/components/ChatTaskRef";
 import { FencedName } from "@/components/FencedText";
 import { ControlLink } from "@/components/ControlLink";
 import MarkdownImage from "@/components/MarkdownImage";
@@ -31,8 +32,11 @@ import { announceInAppLink, externalHost } from "@/lib/inAppLink";
 import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
 import remarkEntityPills, {
   PILL_ATTR,
+  PILL_GROUP_CLASS,
   PILL_NUMBER_ATTR,
   PILL_TEXT_ATTR,
+  TASK_REF_AFTER_ATTR,
+  TASK_REF_ATTR,
   spaceBeforeBold,
   typedBulletsToList,
 } from "@/lib/remarkEntityPills";
@@ -99,6 +103,9 @@ interface MarkdownMessageProps {
    *  2026-10-07). The chat turns it on for every agent answer. A document
    *  does not. */
   fences?: boolean;
+  /** Draw each bare `#171` as the task pill when it is a task the member can
+   *  see (owner report, 2026-10-13). Absent: on with `entityPills`. */
+  taskRefs?: boolean;
   /** A read's receipt for its step in the trail (`ThinkingContainer`,
    *  spec `projects_ai_chat.md` §24 rule 2). `MessageBubble` supplies it. */
   evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
@@ -322,6 +329,11 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 // pills: a «name» draws as a quiet emphasis, and the marks never show. An
 // email stays a mailto link. A document keeps its text as written.
 //
+// `taskRefs` (owner report, 2026-10-13) turns each bare `#171` into the task
+// pill, when one task the member can see has that number (`ChatTaskRef.tsx`).
+// It is on with `entityPills` unless the caller says otherwise, and it needs
+// `entityPills` or `fences`, because only then does the plugin run.
+//
 // `inline` draws ONE line of agent text, for a generative-UI field (a list
 // item, a callout, a table cell). Only inline Markdown survives: bold,
 // italic, strikethrough, inline code and links. Every other element is
@@ -340,6 +352,7 @@ export function MarkdownBody({
   entityPills = false,
   entityIndex,
   fences = false,
+  taskRefs,
   inline = false,
   caret = false,
 }: {
@@ -350,6 +363,8 @@ export function MarkdownBody({
   entityPills?: boolean;
   entityIndex?: EntityIndex;
   fences?: boolean;
+  /** Absent: the same as `entityPills`. */
+  taskRefs?: boolean;
   inline?: boolean;
   /** Draw the streaming caret at the end of the last line of words
    *  (`lib/streamCaret.ts`). Never after the body: that is a line of its own. */
@@ -359,13 +374,16 @@ export function MarkdownBody({
   // The Router turns it into real tool calls. This catches a message stored
   // before that fix, and a box that serves without the Router.
   const visible = stripDsmlMarkup(content);
+  const refs = (taskRefs ?? entityPills) && (entityPills || fences);
+  // While the answer streams, a number may be half typed: no lookup yet.
+  const live = !caret;
   return (
     <ReactMarkdown
       remarkPlugins={
         entityPills
-          ? [remarkGfm, remarkEntityPills]
+          ? [remarkGfm, [remarkEntityPills, { taskRefs: refs }]]
           : fences
-            ? [remarkGfm, [remarkEntityPills, { emails: false }]]
+            ? [remarkGfm, [remarkEntityPills, { emails: false, taskRefs: refs }]]
             : [remarkGfm]
       }
       rehypePlugins={caret ? [rehypeStreamCaret] : []}
@@ -378,16 +396,29 @@ export function MarkdownBody({
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         span: ({ node: _node, children, ...rest }) => {
           const attrs = rest as Record<string, unknown>;
+          if (refs && typeof attrs[TASK_REF_ATTR] === "string") {
+            return (
+              <ChatTaskRef refText={attrs[TASK_REF_ATTR] as string}
+                after={String(attrs[TASK_REF_AFTER_ATTR] ?? "")} index={entityIndex}
+                scope={sessionId} live={live} />
+            );
+          }
           if ((entityPills || fences) && attrs[PILL_ATTR] !== undefined) {
             const number = attrs[PILL_NUMBER_ATTR];
             const text = String(attrs[PILL_TEXT_ATTR] ?? "");
             const n = typeof number === "string" ? number : undefined;
             return entityPills ? (
-              <ChatEntityPill text={text} number={n} index={entityIndex} />
+              <ChatEntityPill text={text} number={n} index={entityIndex} scope={sessionId} live={live} />
             ) : (
               <FencedName text={text} number={n} />
             );
           }
+          // A name with no pill is a run of words, and it must wrap like
+          // words (owner report, 2026-10-13: a long «task title» and its
+          // full stop ran past the right edge of the question card). The
+          // group's `whitespace-nowrap` keeps a short PILL with its comma.
+          // A word and the mark that touches it never part anyway.
+          if (!entityPills && attrs.className === PILL_GROUP_CLASS) return <>{children}</>;
           return <span {...rest}>{children}</span>;
         },
 
@@ -571,6 +602,7 @@ export default function MarkdownMessage({
   entityPills = false,
   entityIndex: givenIndex,
   fences = false,
+  taskRefs,
   evidenceFor,
 }: MarkdownMessageProps) {
   // The names this message's tools printed, for the pills (WS-27bm S9).
@@ -638,6 +670,7 @@ export default function MarkdownMessage({
         entityPills={entityPills}
         entityIndex={entityIndex}
         fences={fences}
+        taskRefs={taskRefs}
         // The streaming caret, only once text streams. It draws INSIDE the
         // last line of words. A span here, after the body, drew a lone "|"
         // on its own line between the answer and the next card (2026-10-07).

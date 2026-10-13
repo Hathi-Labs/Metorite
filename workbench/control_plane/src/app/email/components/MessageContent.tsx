@@ -10,6 +10,7 @@ import { messageHtmlKey } from "../lib/api";
 import { HTML_HOLD_MS, openMessageHtml } from "../lib/htmlPrefetch";
 import { bodyLookCss, bodyPalette, chooseBodyLook, forceDarkMedia, frameColorScheme } from "../lib/bodyLook";
 import { useMode } from "@/lib/theme/surfaces";
+import { imgSrcDirective, inlineImagePath, inlineImageUrl } from "../lib/inlineImages";
 
 interface MessageContentProps {
   /** Raw HTML body from the provider (preferred when present). */
@@ -28,6 +29,12 @@ interface MessageContentProps {
    * app is dark (`lib/lightVersion.ts`). It changes nothing in light mode.
    */
   lightVersion?: boolean;
+  /**
+   * The id of the message row. With it, each `cid:` picture of the body
+   * loads from `GET /api/email/messages/{id}/inline` (WS-17, the inline
+   * images fix). With none, a `cid:` picture shows its alt text, as before.
+   */
+  messageId?: string | null;
 }
 
 /**
@@ -36,6 +43,12 @@ interface MessageContentProps {
  * the text fallback read the same choice.
  */
 const LightVersionContext = createContext(false);
+
+/**
+ * The path that serves the `cid:` pictures of the message below, or null. A
+ * context, so the main frame and the quoted frame of one body use one path.
+ */
+const InlineImageContext = createContext<string | null>(null);
 
 /**
  * The live value of an app token: the accent of the links of a dark look.
@@ -82,10 +95,14 @@ function proxify(u: string): string {
  * URLs are rewritten through our gateway proxy so the sender's tracking pixel
  * never sees the user's IP. When false, remote loading is blocked by the iframe
  * CSP and we just report that remote content is present.
+ *
+ * With ``inlinePath`` (`inlineImagePath`), each `cid:` URL of a `src`, a
+ * `poster` or a `background` becomes the URL of that picture on the gateway.
  */
 export function sanitizeEmailHtml(
   raw: string,
-  proxyRemote: boolean
+  proxyRemote: boolean,
+  inlinePath: string | null = null,
 ): { clean: string; hasRemote: boolean } {
   // Fail closed: with no DOM, DOMPurify hands the input back unchanged.
   if (!DOMPurify.isSupported) return { clean: "", hasRemote: false };
@@ -99,7 +116,12 @@ export function sanitizeEmailHtml(
     }
     for (const attr of ["src", "poster", "background"]) {
       const v = el.getAttribute?.(attr);
-      if (v && /^https?:/i.test(v)) {
+      // A picture of the mail itself (`cid:`) loads from the gateway. It is
+      // part of the message, not a remote host, so the gate does not hold it.
+      const inline = v ? inlineImageUrl(v, inlinePath) : null;
+      if (inline) {
+        el.setAttribute(attr, inline);
+      } else if (v && /^https?:/i.test(v)) {
         hasRemote = true;
         if (proxyRemote) el.setAttribute(attr, proxify(v));
       }
@@ -172,6 +194,7 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
   // How the body draws in dark mode (`lib/bodyLook.ts`). Light mode and the
   // light version draw the original sheet.
   const lightVersion = useContext(LightVersionContext);
+  const inlinePath = useContext(InlineImageContext);
   const dark = useMode() === "dark";
 
   // DOMPurify needs the DOM — defer sanitization to the client to avoid SSR
@@ -192,8 +215,8 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
     if (!mounted) return null;
     // When showing images, rewrite them through our proxy (same-origin), so the
     // CSP only ever needs to allow 'self' — remote hosts never load directly.
-    return sanitizeEmailHtml(html, showImages);
-  }, [mounted, html, showImages]);
+    return sanitizeEmailHtml(html, showImages, inlinePath);
+  }, [mounted, html, showImages, inlinePath]);
   // The look reads the SANITIZED markup, which is what the frame draws. The
   // sanitizer drops a style block of the head, and a dark media query there
   // never reaches the frame, so it cannot make the look `native`.
@@ -224,9 +247,9 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
     // origin — remote image hosts can never see the user's IP.
     const origin =
       typeof window !== "undefined" ? window.location.origin : "";
-    const imgSrc = showImages
-      ? `img-src 'self' ${origin} data:;`
-      : "img-src data:;";
+    // The pictures of the mail itself load from ONE path of our origin, the
+    // inline route of this message, also while remote pictures are blocked.
+    const imgSrc = imgSrcDirective(showImages, origin, inlinePath);
     const mediaSrc = showImages
       ? `media-src 'self' ${origin} data:;`
       : "media-src 'none';";
@@ -263,7 +286,7 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
   blockquote { border-left: 3px solid #d1d5db; margin: 0; padding-left: 12px; color: #6b7280; }
   pre { white-space: pre-wrap; }
 </style>${lookStyle}</head><body>${sanitized.clean}</body></html>`;
-  }, [sanitized, showImages, quoted, look, palette]);
+  }, [sanitized, showImages, quoted, look, palette, inlinePath]);
 
   useEffect(() => {
     if (!srcDoc) return;
@@ -482,15 +505,23 @@ function RemoteHtmlStatus() {
  * path as a stored body: `HtmlMessage`, `HtmlFrame`, `sanitizeEmailHtml` and
  * the sandboxed iframe. There is no second render path.
  */
-export function MessageContent({ html, text, remoteId = null, lightVersion = false }: MessageContentProps) {
+export function MessageContent({
+  html,
+  text,
+  remoteId = null,
+  lightVersion = false,
+  messageId = null,
+}: MessageContentProps) {
   return (
     <LightVersionContext.Provider value={lightVersion}>
-      <MessageBody html={html} text={text} remoteId={remoteId} />
+      <InlineImageContext.Provider value={inlineImagePath(messageId)}>
+        <MessageBody html={html} text={text} remoteId={remoteId} />
+      </InlineImageContext.Provider>
     </LightVersionContext.Provider>
   );
 }
 
-function MessageBody({ html, text, remoteId = null }: Omit<MessageContentProps, "lightVersion">) {
+function MessageBody({ html, text, remoteId = null }: Omit<MessageContentProps, "lightVersion" | "messageId">) {
   const hasHtml = !!html && html.trim().length > 0;
   const remote = useRemoteHtml(hasHtml ? null : remoteId);
   if (hasHtml) return <HtmlMessage html={html as string} />;
