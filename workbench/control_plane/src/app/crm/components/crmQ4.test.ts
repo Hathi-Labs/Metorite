@@ -11,6 +11,7 @@ import {
   fieldRows,
   formatField,
   listCell,
+  pickable,
   readColumns,
   safeHref,
   toggleColumn,
@@ -304,5 +305,30 @@ describe("the list", () => {
   it("shows no custom column until the member picks one", () => {
     const html = renderToStaticMarkup(createElement(RecordList, { ...props, fieldDefs: defs }));
     expect(html).not.toContain("Tier");
+  });
+});
+
+// ── WS-53 CRM-C4a: the reader filter (spec section 20.7 items 1 and 11) ────
+
+describe("the field studio rows in the readers", () => {
+  it("never reads a system row as the definition of a custom key", () => {
+    const rows = fieldRows({ custom: { region: "North" } }, [
+      def("region", "text", { label: "Area", is_system: true }),
+    ]);
+    expect(rows.map((r) => r.label)).toEqual(["Region"]);
+  });
+
+  it("offers no retired field and no system row in the column picker", () => {
+    const picked = pickable([
+      def("tier", "select", { position: 2 }),
+      def("old", "text", { position: 1, retired: true }),
+      def("name", "text", { position: 0, is_system: true }),
+    ]);
+    expect(picked.map((d) => d.key)).toEqual(["tier"]);
+  });
+
+  it("draws the two new number words", () => {
+    expect(formatField(def("d", "decimal"), 1234.5)).toEqual({ kind: "text", text: "1,234.5" });
+    expect(formatField(def("p", "percent"), 12.5)).toEqual({ kind: "text", text: "12.5%" });
   });
 });
