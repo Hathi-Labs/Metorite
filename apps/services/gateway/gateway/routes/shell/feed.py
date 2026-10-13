@@ -278,12 +278,13 @@ register(Provider("calendar", ("tasks", "projects"), _calendar, CALENDAR_KINDS, 
 
 
 def _clock(value: Any, tz: ZoneInfo) -> str:
+    """``HH:MM``, 24-hour: the one clock of My Day. Today and the Calendar
+    draw the same form, so one screen shows one format (MD-1b review)."""
     at = _instant(value)
     if at is None:
         return ""
     local = at.astimezone(tz)
-    hour = local.hour % 12 or 12
-    return f"{hour}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
+    return f"{local.hour:02d}:{local.minute:02d}"
 
 
 def _when(value: Any, tz: ZoneInfo, today: date) -> str:
@@ -361,8 +362,10 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
         return "starts_in", (f"Starts in {_duration(facts.get('minutes'))}, "
                              f"at {_clock(facts.get('block_start'), tz)}.")
     if kind == "block_overlap":
-        return "overlap", (f"It overlaps {_names(facts.get('overlaps') or [])}. Both are set "
-                           f"for {_clock(facts.get('overlap_at'), tz)} "
+        # `overlap_at` is where the overlap starts, which is not where both
+        # blocks start, so the line says only that (MD-1b review).
+        return "overlap", (f"It overlaps {_names(facts.get('overlaps') or [])}. They overlap "
+                           f"from {_clock(facts.get('overlap_at'), tz)} "
                            f"{_when(facts.get('overlap_at'), tz, today)}.")
     if kind == "day_overbooked":
         return "overbooked", (f"{_duration(facts.get('planned_mins'))} planned in a "
