@@ -1089,6 +1089,35 @@ class TestFixRoundOne:
         assert not armed.gateway.requests
 
 
+class TestFixRoundTwo:
+
+    async def test_a_transport_error_outside_httpx_is_busy_and_logs_the_type(
+            self, armed, capsys):
+        """Reviewer P2 (R7). The request guard catches any error, not only an
+        httpx error or a timeout. The log names the type, never the value."""
+        class _Broken(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                raise RuntimeError("the transport broke")
+
+        with gateway_client.use_transport(_Broken()):
+            result = await _tool("search_tasks", {"query": "SECRET-QUERY-VALUE"})
+        assert result == {"content": [{"type": "text", "text": tools.TEXT_BUSY}],
+                          "isError": True}
+        out = "".join(capsys.readouterr())
+        assert "agent_edge.gateway_unreachable" in out
+        assert "RuntimeError" in out
+        assert "SECRET-QUERY-VALUE" not in out
+        assert "the transport broke" not in out
+
+    @pytest.mark.parametrize("method", ["ping", "no/such/method"])
+    async def test_a_lone_surrogate_in_the_id_is_400_with_id_null(self, armed, method):
+        """Reviewer P2. The edge cannot echo such an id, so it is an invalid
+        request and never a 500."""
+        r = await _post({"jsonrpc": "2.0", "id": "\ud800", "method": method})
+        _assert_error_body(r, 400, -32600)
+        assert armed.store.calls == 0
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # R8: the real gateway app on a phase-4-promoted catalog, as a NON-privileged
 # role (D13, D14)

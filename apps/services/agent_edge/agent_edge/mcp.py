@@ -163,7 +163,23 @@ async def _read_capped(request: Request) -> bytes:
 
 
 def _is_id(value: Any) -> bool:
-    return isinstance(value, (str, int)) and not isinstance(value, bool)
+    """A JSON-RPC id the edge can echo: an int, or a string that is UTF-8.
+
+    A lone surrogate is valid JSON and is not UTF-8, so ``JSONResponse``
+    cannot encode it in the answer. Such an id is an invalid request, the
+    400 with ``id: null`` (fix round 2).
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _kind(message: Any) -> str | None:
