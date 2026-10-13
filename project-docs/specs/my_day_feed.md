@@ -1477,6 +1477,9 @@ Done when:
   invalidate heals it.
 - Suppose a feed answer shows a reopened task, and the bell then marks that
   task Done within the 30 s hold. The feed card stays until the hold ends.
+- A row stays pending from the tap until the act calls `keep`, `show` or
+  `fail`. If the store's first load never settles, the card stays hidden
+  for that page visit. A reload shows it again.
 
 **Not in MD-1b, and where each part went.** The honest counts of §6.7 and the
 card menu go to MD-2, because each needs its state table. `stale_next` is

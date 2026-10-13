@@ -1,6 +1,6 @@
 /**
  * GET /api/shell/feed?limit= — My Day as a live feed (`my_day_feed.md`
- * §14.1a, WS-57 MD-1b).
+ * §14.1a, WS-58 MD-1b).
  *
  * Proxies the gateway's `GET /shell/feed`. The answer holds the ranked cards,
  * their groups, and the needs view of the same provider run, so My Day reads

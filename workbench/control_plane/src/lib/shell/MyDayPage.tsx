@@ -21,7 +21,7 @@
  * does. The greeting stays a `PageHeader` under it: a sentence and the date
  * are the page's content, and the bar carries the name only.
  *
- * **The live feed** (`my_day_feed.md` §14.1, WS-57 MD-1b) is behind a second
+ * **The live feed** (`my_day_feed.md` §14.1, WS-58 MD-1b) is behind a second
  * flag, `NEXT_PUBLIC_MY_DAY_FEED` (`myDayFeedOn`), default OFF. With it on,
  * the cards above give way to one column of feed cards (`FeedColumn`), and
  * Today stays as the right rail from `xl`. Needs you and Next actions leave:

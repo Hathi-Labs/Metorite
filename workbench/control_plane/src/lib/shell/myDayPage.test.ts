@@ -212,7 +212,7 @@ describe("/ with the My Day flag", () => {
 });
 
 /**
- * The live feed (`my_day_feed.md` §14.1, WS-57 MD-1b done-when 1). With
+ * The live feed (`my_day_feed.md` §14.1, WS-58 MD-1b done-when 1). With
  * `NEXT_PUBLIC_MY_DAY_FEED` on, My Day is one column of feed cards with
  * Today on the `xl` rail, and Needs you and Next actions are gone. Off, the
  * page above, unchanged.

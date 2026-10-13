@@ -1,6 +1,6 @@
 /**
  * My Day's live feed, as the browser reads it (`my_day_feed.md` §14.1 and
- * §14.1a, WS-57 MD-1b).
+ * §14.1a, WS-58 MD-1b).
  *
  * `GET /api/shell/feed` gives the ranked cards, their groups and the needs
  * view of the same provider run. This file is the ONE client of that route:

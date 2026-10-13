@@ -1,6 +1,6 @@
 /**
  * My Day's live feed in the browser (`my_day_feed.md` §14.1 and §14.1a,
- * WS-57 MD-1b).
+ * WS-58 MD-1b).
  *
  * Seven claims:
  *

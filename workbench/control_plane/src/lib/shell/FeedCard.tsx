@@ -2,7 +2,7 @@
 
 /**
  * My Day as a live feed: the column and its cards (`my_day_feed.md` §4.2 and
- * §14.1, WS-57 MD-1b). Behind `NEXT_PUBLIC_MY_DAY_FEED`, default OFF
+ * §14.1, WS-58 MD-1b). Behind `NEXT_PUBLIC_MY_DAY_FEED`, default OFF
  * (`myDayFeedOn`).
  *
  * **The card** is `HomeCard`, widened: the source line ("My Tasks · Overdue"
