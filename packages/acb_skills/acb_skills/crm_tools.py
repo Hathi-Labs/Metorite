@@ -504,7 +504,8 @@ async def crm_list_pipelines() -> str:
 
 @_read_tool
 async def crm_deal_contacts(deal_id: str) -> str:
-    """The people on one deal, primary first, with each role."""
+    """The contacts on one deal (a deal id from crm_list_records), primary
+    first, each with its role on the deal."""
     record = _record_uuid(deal_id)
     data = await _get(f"/crm/deals/{record}/contacts")
     rows = (data or {}).get("rows") or []
@@ -708,7 +709,8 @@ async def crm_list_module_records(
 
 @_read_tool
 async def crm_get_module_record(module: str, record_id: str) -> str:
-    """One record of a mirrored module, each field under its label."""
+    """One record of a mirrored module (a module from crm_list_modules and an
+    id from crm_list_module_records), each field under its label."""
     mod = _module_name(module)
     record = _record_uuid(record_id)
     data = await _get(f"/crm/modules/{mod}/records/{record}") or {}
