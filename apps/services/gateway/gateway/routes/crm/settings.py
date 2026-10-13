@@ -289,6 +289,28 @@ async def get_crm_settings(
         return _wire(await read_settings(db, org))
 
 
+class CrmModeModel(BaseModel):
+    """The mode alone. It holds nothing else, so any member may read it."""
+
+    mode: str | None = None
+
+
+@router.get("/mode", response_model=CrmModeModel)
+async def get_crm_mode(
+    user: UserContext = Depends(get_current_user),
+) -> CrmModeModel:
+    """The CRM mode, for each member that the access rule admits (CRM-C7).
+
+    ``GET /crm/settings`` stays admin only, because it names the access
+    groups. An agent run reads this route as the member, to drop the record
+    write tools in Mirror mode. No row reads as mode NULL.
+    """
+    org = _organization(user)
+    async with _tenant_session() as db:
+        row = await read_settings(db, org)
+    return CrmModeModel(mode=getattr(row, "mode", None) if row is not None else None)
+
+
 @router.patch(
     "/settings", response_model=CrmSettingsModel,
     dependencies=[require_permission(ADMIN_PERMISSION)],

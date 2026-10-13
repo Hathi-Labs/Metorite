@@ -64,7 +64,7 @@ RETRIEVAL TOOLS (use for broad company data questions):
 - search_timeline: time-stamped facts about entities (deal stage changes, action history)
 
 SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
-- Each registered agent appears as a tool named after it (e.g. agent_sales_assistant, task_manager).
+- Each registered agent appears as a tool named after it (e.g. crm_assistant, task_manager).
 - Call the specialist tool and relay its full response.
 - Keep each in-app link in the response verbatim, for example
   [BQ quote](/email?email=<id>). An in-app link starts with ONE "/" and then a
@@ -268,7 +268,7 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
     and handles the request fully — its response is returned here verbatim.
 
     When to delegate (examples):
-    - Outbound prospecting, lead scraping, Apollo/Google Maps search → "agent-sales-assistant"
+    - CRM records, pipeline and deal questions → "crm-assistant"
     - Task management, sprint status, workload queries → "task-manager"
 
     Do NOT delegate:
@@ -276,7 +276,7 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
     - Questions you can already answer from the entity graph
 
     Args:
-        agent_name: Exact registered name, e.g. "agent-sales-assistant", "task-manager".
+        agent_name: Exact registered name, e.g. "crm-assistant", "task-manager".
         message:    The user's full request, reworded if needed to be self-contained.
 
     Returns:

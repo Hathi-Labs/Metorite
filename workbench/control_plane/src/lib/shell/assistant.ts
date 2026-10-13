@@ -82,6 +82,29 @@ export function effectiveMode(mode: AssistantMode, viewportWidth: number, isMobi
   return mode;
 }
 
+/**
+ * What the assistant does when the member opens another page while the full
+ * view covers the page column (owner, 2026-10-13: "when I click on another
+ * application, minimize the AI chat to the sidebar"). The full view would
+ * hide the app they asked for.
+ *
+ * - `dock`: a wide desktop shrinks it to the side panel, for this moment
+ *   only. The member's own choice of form is kept.
+ * - `close`: below `DOCK_MIN_VIEWPORT` there is no side panel, so it closes,
+ *   and the chat bar holds the chat.
+ * - null: nothing to do. The side panel already shows the page, and on a
+ *   phone the sheet covers the nav, so no app can be opened under it.
+ */
+export function onPageChange(a: {
+  open: boolean;
+  form: AssistantMode;
+  canDock: boolean;
+  phone: boolean;
+}): "dock" | "close" | null {
+  if (!a.open || a.phone || a.form !== "full") return null;
+  return a.canDock ? "dock" : "close";
+}
+
 function subscribeWidth(listener: () => void): () => void {
   window.addEventListener("resize", listener);
   return () => window.removeEventListener("resize", listener);

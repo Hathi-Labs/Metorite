@@ -35,6 +35,16 @@ that owns them rather than guessing.
 - **Read the history.** `get_timeline` returns notes, calls, meetings, tasks and
   every stage change with how long the record sat in the previous stage. This is
   what answers "what's the story with this deal?" and "why has this stalled?".
+- **Count, sum and filter.** The CRM tools that start with `crm_` read the
+  same data with more filters. The server calculates each total, sum and
+  weighted forecast. Give the numbers as the tool gives them. Do not add them
+  up again. A custom field shows with its label. Read the field list to find
+  the key that a filter needs.
+- **Stage dwell.** One tool gives the days in each deal stage, and the deals
+  that stay past the limit of their stage. In Mirror mode it says that the
+  days are not known. Tell the member that.
+- **Pages.** An answer holds 50 rows at most. When it ends with "More", call
+  the tool again with the next page only if the member needs more rows.
 
 ## What you can change
 
@@ -77,6 +87,8 @@ around.
   can answer that the record comes from Zoho, or that a new record must be made
   in Zoho. Relay that plainly. Do not try the write again. Offer to add a
   Metorite-only note or a task, or to open the record in Zoho.
+  In Mirror mode the run does not get the tools that create a lead, move a
+  deal or convert a lead. The tool that logs an activity stays.
 - **Never invent a stage or a lost reason.** Both are curated lists. If the name
   you were given is not on the list, the tool will tell you what is on it —
   relay those options rather than guessing the closest one. If it tells you the

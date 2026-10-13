@@ -9,8 +9,10 @@ three independent sources (spec §5):
     Layer 2  HISTORY   what we already know    — past meetings with the same
                                                  attendees, their decisions, and
                                                  action items still open
-    Layer 3  SYSTEMS   what the other agents know — CRM / tasks / email, via
-                                                 ``call_agent`` (opt-in)
+    Layer 3  SYSTEMS   what the other agents know — tasks, via
+                                                 ``call_agent`` (opt-in). No CRM
+                                                 consult: the fan-out has no
+                                                 member identity (CRM-C7).
 
 Two design rules, both load-bearing:
 
@@ -51,14 +53,12 @@ _AGENT_TIMEOUT_S = 45.0
 
 # Which agent answers which question. Names match the Metorite agent
 # registry (/agents); a name that isn't registered simply yields nothing.
+#
+# No CRM row (WS-53 CRM-C7, 2026-10-13). The CRM row named an agent that was
+# removed. ``call_agent`` here starts a run with no member, and a CRM tool
+# refuses a run with no member. So a CRM row would add a refusal to the
+# prompt as "CRM context". A CRM row needs a run that carries the member.
 _AGENT_QUERIES: tuple[tuple[str, str, str], ...] = (
-    (
-        "crm",
-        "agent-sales-assistant",
-        "For the upcoming meeting with {people}, summarise in under 80 words: "
-        "the company, deal stage/value if any, and the single most important "
-        "open point. If you find nothing, reply exactly: NONE.",
-    ),
     (
         "tasks",
         "task-manager",
@@ -258,7 +258,7 @@ async def _system_context(people: list[str]) -> dict[str, str]:
 #: registry names as the pre-meeting fan-out; kept separate because a live
 #: meeting needs terse, immediately-usable answers, not summaries.
 _CONSULT_AGENTS: tuple[tuple[str, str], ...] = (
-    ("crm", "agent-sales-assistant"),
+    # No CRM row, for the reason given at ``_AGENT_QUERIES`` (CRM-C7).
     ("tasks", "task-manager"),
 )
 
@@ -384,7 +384,7 @@ async def set_deep_context(
     body: DeepContextRequest,
     _user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """Opt this session into asking the business agents (CRM, tasks) for
+    """Opt this session into asking the business agents (tasks) for
     background. Off by default because the fan-out spends tokens before the
     meeting starts — worth it for a customer call, not for a standup."""
     async with _tenant_session() as db:

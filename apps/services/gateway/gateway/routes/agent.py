@@ -669,8 +669,8 @@ _AGENT_REGISTRY: list[dict] = [
         "tags": ["apps", "builder", "workshop"],
         "status": "live",
         # Copilot-SDK engine: the builder needs native file/shell tools to
-        # edit the app workspace. BYOK-routed through the gateway tiers like
-        # the sales-assistant (no GitHub quota dependency).
+        # edit the app workspace. BYOK-routed through the gateway tiers (no
+        # GitHub quota dependency).
         "agent_runtime": "github-copilot",
         "local_path": "apps/agents/agent-app-builder",
         "integrations": [],
@@ -1100,7 +1100,7 @@ _UNRESOLVED_AGENT_SENTINELS = {"unknown", "", "undefined", "null", "none"}
 
 
 #: A leading ``@name`` addresses one agent in a room. Only leading, and only
-#: one: "@sales what about @finance's number" asks sales about finance, it does
+#: one: "@crm what about @finance's number" asks crm about finance, it does
 #: not start two runs. Multi-agent rooms work by ADDRESSING, not by broadcast —
 #: a message that reaches every agent produces N answers to one question and
 #: N times the cost, which is not what anyone means by "ask the room".
@@ -1209,7 +1209,7 @@ def _room_agents(
 def _match_mention(mention: str, candidates: list[str]) -> str | None:
     """Match a typed ``@name`` against the agents present, forgivingly.
 
-    People type ``@sales`` for ``agent-sales-assistant``. Exact match wins,
+    People type ``@crm`` for ``crm-assistant``. Exact match wins,
     then the ``agent-`` prefix is optional, then a unique prefix match — but
     only if it is unique: an ambiguous mention falls through to the primary
     agent rather than guessing which colleague's agent to spend money on.

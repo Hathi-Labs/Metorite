@@ -300,7 +300,7 @@ describe("the star model: only starred apps show, under their own category", () 
     const personal = PANES.filter((p) => p.team === "personal" && !p.setting && hrefs(sections).has(p.href)).map(
       (p) => p.href,
     );
-    expect(personal).toEqual(["/tasks", "/calendar", "/email", "/whatsapp"]);
+    expect(personal).toEqual(["/tasks", "/calendar", "/email", "/whatsapp", "/artifacts"]);
     expect(answerStars(presetById("founder")!, sections)).toEqual([...personal, "/projects", "/chat", "/approvals"]);
     // Approvals is starred for every answer of a member who holds it.
     expect(answerStars(presetById("accounts-assistant")!, sections)).toEqual([...personal, "/approvals"]);

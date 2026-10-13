@@ -313,11 +313,15 @@ export const NAV_SECTIONS: NavSection[] = [
       {
         href: "/artifacts",
         team: "personal",
+        blurb: "The files your chats made",
         label: "Artifacts",
         icon: "FolderOpen",
-        note: "All agent files · inputs · outputs · data",
+        note: "Chat files · agent workspaces",
         feature: "artifacts",
-        launch: "preview", // reads as a debugging surface
+        // Live since 2026-10-13, by owner direction (D99, NS-6 slice 6c): the
+        // files of each chat, "accessed via the artifacts app". It opens on
+        // the member's chats now, not on the agents' workspaces.
+        launch: "live",
       },
     ],
   },

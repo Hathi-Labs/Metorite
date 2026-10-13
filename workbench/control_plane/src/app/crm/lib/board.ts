@@ -9,6 +9,7 @@
 import { statusAccent, type StatusAccent } from "@/lib/statusAccent";
 
 import type { CrmMode } from "./connect";
+import { isRetired, visibleLanes } from "./emptyStages";
 import { stageAgeDays } from "./format";
 import type { Deal, Lead, Pipeline, PipelineLane, Status, StatusType } from "./types";
 
@@ -28,18 +29,19 @@ export type BoardLane = PipelineLane;
  *   blue. Then the name, then the position.
  * - **Mirror mode.** The stored colour is not passed. The sync never writes
  *   it, so every mirrored row is `gray` (`crm_platform.md` §20.1 fact 6), and
- *   a gray that nobody chose must not hide a won or a lost lane. CRM-C3 owns
- *   the Metorite colour of a Mirror stage.
+ *   a gray that nobody chose must not hide a won or a lost lane. The
+ *   Metorite colour of a Mirror stage (`ui_color`, CRM-C3 item 16) wins when
+ *   an admin set one. Else the type rule applies.
  *
  * No index is passed. So an open stage with no keyword in its name is gray on
  * every surface, and a lane that the board hides repaints no other lane.
  */
 export function stageAccent(
-  status: Pick<Status, "color" | "type" | "name">,
+  status: Pick<Status, "color" | "type" | "name"> & Pick<Partial<Status>, "ui_color">,
   mode: CrmMode,
 ): StatusAccent {
   return statusAccent({
-    color: mode === "mirror" ? null : status.color,
+    color: mode === "mirror" ? (status.ui_color ?? null) : status.color,
     stageType: status.type,
     name: status.name,
   });
@@ -83,15 +85,35 @@ function comparePlaces(
 }
 
 /**
+ * The admin order of a Mirror kind (WS-53 CRM-C3, §20.6 item 12). The key is
+ * `(ui_position IS NULL, ui_position, source position)`: each ordered row by
+ * its `ui_position`, then each row with none, in Zoho order. The order route
+ * writes `ui_position` on every row, so only a stage that Zoho adds later has
+ * none, and it goes to the end of its group.
+ */
+function compareAdminOrder(a: Status, b: Status): number {
+  const left = typeof a.ui_position === "number" ? a.ui_position : null;
+  const right = typeof b.ui_position === "number" ? b.ui_position : null;
+  if (left === null && right !== null) return 1;
+  if (left !== null && right === null) return -1;
+  if (left !== null && right !== null && left !== right) return left - right;
+  return (a.source_position ?? a.position) - (b.source_position ?? b.position);
+}
+
+/**
  * THE order of the Deals board columns (owner decision, 2026-10-12). This is
  * the one place that decides it, and the mode is a parameter.
  *
  * The groups, in both modes: open and ongoing stages, then `on_hold`, then
- * won, then lost at the far end.
+ * won, then lost at the far end. A hidden stage, and one that Zoho no longer
+ * lists, goes to the end of its group (CRM-C3).
  *
- * - **Mirror mode.** Inside the open group, `probability` from low to high.
- *   A tie, and every other group, goes to the place in the chosen pipeline,
- *   then to the global `position`.
+ * - **Mirror mode, after an admin order** (`admin_order`). The admin order
+ *   key of `compareAdminOrder`, in each group. The pipeline place does not
+ *   apply: a pipeline is an ordered subset of the one stage list.
+ * - **Mirror mode, no admin order.** Inside the open group, the effective
+ *   `probability` from low to high. A tie, and every other group, goes to the
+ *   place in the chosen pipeline, then to the global `position`.
  * - **Native mode, and a mode not yet known.** The admin's stage order, the
  *   global `position`, then the pipeline place. Probability never reorders a
  *   Native board: a new Native stage has probability 0 and would jump first.
@@ -105,10 +127,16 @@ export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_pos
   mode: CrmMode
 ): T[] {
   const mirror = mode === "mirror";
+  const adminOrder = mirror && lanes.some((lane) => lane.status.admin_order);
   return [...lanes].sort((a, b) => {
     const group = (LANE_GROUP[a.status.type] ?? 0) - (LANE_GROUP[b.status.type] ?? 0);
     if (group !== 0) return group;
-    if (mirror) {
+    const retired = Number(isRetired(a.status)) - Number(isRetired(b.status));
+    if (retired !== 0) return retired;
+    if (adminOrder) {
+      const key = compareAdminOrder(a.status, b.status);
+      if (key !== 0) return key;
+    } else if (mirror) {
       if ((LANE_GROUP[a.status.type] ?? 0) === 0) {
         const odds = (a.status.probability ?? 0) - (b.status.probability ?? 0);
         if (odds !== 0) return odds;
@@ -156,13 +184,22 @@ export type LeadLane = Omit<PipelineLane, "rows"> & {
  *
  * `total` is the count of the WHOLE status. `rows` is one page of it, as on the
  * deals board. A status with no page reads as an empty lane.
+ *
+ * CRM-C3: the Leads board keeps the order of the statuses, with no groups by
+ * type, so "Junk Lead" stays where Zoho puts it. The effective `position`
+ * decides, and the gateway already folds the admin order into it: the
+ * `ui_position` after an admin order, else the source order. A hidden status,
+ * and one that Zoho no longer lists, goes last and shows only with leads in it.
  */
 export function toLeadLanes(
   statuses: readonly Status[],
   pages: Readonly<Record<string, { rows: Lead[]; total: number } | undefined>>,
 ): LeadLane[] {
-  return [...statuses]
-    .sort((a, b) => a.position - b.position)
+  const lanes = [...statuses]
+    .sort(
+      (a, b) =>
+        Number(isRetired(a)) - Number(isRetired(b)) || a.position - b.position
+    )
     .map((status) => {
       const page = pages[status.id];
       return {
@@ -173,6 +210,7 @@ export function toLeadLanes(
         weighted: 0,
       };
     });
+  return visibleLanes(lanes, true);
 }
 
 /** The leads board as it should look the instant a card is dropped. */

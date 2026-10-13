@@ -3,6 +3,7 @@
 Spec: ``project-docs/specs/crm_app.md`` §3.6, §3.10, §4 (``admin.py`` row).
 
     GET/POST          /crm/statuses/{lead|deal}
+    PUT               /crm/statuses/{lead|deal}/order
     PATCH/DELETE      /crm/statuses/{lead|deal}/{status_id}
     GET/POST          /crm/lost-reasons
     PATCH/DELETE      /crm/lost-reasons/{reason_id}
@@ -15,6 +16,12 @@ are not the owner, one member could then empty the funnel of all the others.
 The floor is the one the Zoho import and ``PATCH /crm/settings`` use. The
 reads stay open, because each board and each record sheet needs them.
 
+**The overlay** (WS-53 CRM-C3, ``crm_platform.md`` §20.6). Each stage, status
+and lost reason has source values and Metorite-only overlay values
+(``core.MIRROR_OVERLAY_COLUMNS``). In Mirror mode an admin edits the overlay
+only, and any other field is 409 ``mirror_mode_settings``. In Native mode an
+admin edits the source columns and ``hidden``, and a ``ui_*`` field is 422.
+
 ``DELETE`` on a status still holding records is a **409**. The FK is
 ``ON DELETE RESTRICT``, so Postgres would refuse it anyway — but it would
 surface as a driver IntegrityError and a 500. Counting first turns "the
@@ -23,12 +30,14 @@ database said no" into "Proposal still has 4 deals in it".
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
+    MIRROR_OVERLAY_COLUMNS,
     STAGE_REQUIREABLE_FIELDS,
     STATUS_TYPES,
     LostReasonModel,
@@ -38,6 +47,9 @@ from gateway.routes.crm.core import (
     assert_writable,
     current_tenant,
     insert_row,
+    is_mirror_mode,
+    read_status,
+    read_statuses,
     require_row,
     router,
     status_wire,
@@ -72,11 +84,27 @@ class StatusIn(BaseModel):
     required_fields: list[str] | None = None
     #: Deal statuses only (WS-26h) — ``None`` means this stage never rots.
     max_dwell_days: int | None = None
+    #: CRM-C3: no picker offers a hidden row. Both modes.
+    hidden: bool | None = None
+    #: CRM-C3, Mirror mode only: the overlay. ``null`` clears it, so the source
+    #: value applies again. A Native admin edits the source column instead.
+    ui_position: int | None = None
+    #: Deal statuses only.
+    ui_probability: int | None = None
+    ui_color: str | None = None
 
 
 class LostReasonIn(BaseModel):
     label: str | None = None
     position: int | None = None
+    #: CRM-C3: the one overlay column of a lost reason. Both modes.
+    hidden: bool | None = None
+
+
+class OrderIn(BaseModel):
+    """``PUT /crm/statuses/{kind}/order`` — every id of the kind, in order."""
+
+    ids: list[str]
 
 
 def _kind(kind: str) -> tuple[str, str]:
@@ -114,8 +142,18 @@ CLAMPED_FIELDS: frozenset[str] = frozenset({"type", "probability"})
 #: derives the same set from the two CREATE TABLE bodies plus the WS-26h ALTER
 #: and fails if this one drifts from it.
 DEAL_ONLY_FIELDS: frozenset[str] = frozenset({
-    "probability", "required_fields", "max_dwell_days",
+    "probability", "required_fields", "max_dwell_days", "ui_probability",
 })
+
+#: The overlay fields that only Mirror mode takes (CRM-C3, §20.6 item 3). A
+#: Native admin edits the source column directly, so one of these is a 422.
+#: ``hidden`` is not here: both modes take it.
+UI_FIELDS: frozenset[str] = frozenset({"ui_position", "ui_probability", "ui_color"})
+
+#: A colour token, as ``src/lib/statusAccent.ts`` names its hues: a word, not a
+#: hex value. The picker offers ``ACCENT_HUES``. The grid of a theme decides
+#: the paint, so the server keeps the token short and plain.
+_COLOR_TOKEN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 
 
 def _validate_required_fields(values: dict[str, Any]) -> None:
@@ -180,6 +218,54 @@ def _validate_max_dwell_days(values: dict[str, Any]) -> None:
                 "'max_dwell_days' is a whole number of days from 1 to 32767, or "
                 f"null for a stage that never rots: {days} is neither."
             ),
+        )
+
+
+async def _check_mode(db: Any, table: str, values: dict[str, Any]) -> bool:
+    """The field rules of the two modes (CRM-C3, §20.6 items 2 and 3).
+
+    Mirror mode: a field outside the overlay is 409 ``mirror_mode_settings``,
+    through the one guard, BEFORE any other check. So a PATCH of ``name`` or
+    ``probability`` is 409 and never a 422 about the clamp. Native mode: a
+    ``ui_*`` field is 422. Returns True in Mirror mode.
+    """
+    if await is_mirror_mode(db, current_tenant()):
+        if not set(values) <= MIRROR_OVERLAY_COLUMNS.get(table, frozenset()):
+            await assert_writable(db, current_tenant(), table, values)
+        return True
+    offered = sorted(UI_FIELDS & values.keys())
+    if offered:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{', '.join(offered)} is a Zoho overlay. In Native mode, edit "
+                "the stage itself: position, probability or color."
+            ),
+        )
+    return False
+
+
+def _validate_overlay(values: dict[str, Any]) -> None:
+    """The overlay values are in range, or a 422. ``null`` clears a ``ui_*``."""
+    if values.get("ui_position") is not None and int(values["ui_position"]) < 0:
+        raise HTTPException(
+            status_code=422, detail="'ui_position' is a whole number from 0 up.",
+        )
+    if values.get("ui_probability") is not None and not (
+        0 <= int(values["ui_probability"]) <= 100
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"A stage probability is a percentage: {values['ui_probability']} "
+                "is outside 0-100."
+            ),
+        )
+    supplied = values.get("ui_color")
+    if supplied is not None and not _COLOR_TOKEN.match(str(supplied)):
+        raise HTTPException(
+            status_code=422,
+            detail=f"'ui_color' is a colour name such as 'blue', not {supplied!r}.",
         )
 
 
@@ -284,19 +370,75 @@ def _validate_status(
         )
 
 
+#: The fields whose change can take a row out of the pickers, or make a
+#: hidden row the one that each new record lands in.
+VISIBILITY_FIELDS: frozenset[str] = frozenset({"hidden", "is_default", "type"})
+
+
+async def _check_visibility(
+    db: Any, kind: str, table: str, values: dict[str, Any], row: Any = None,
+) -> None:
+    """Native mode: some rows must stay in the pickers (CRM-C3, item 15).
+
+    It judges the state AFTER the write: the payload over the stored row. So
+    ``{"hidden": true}`` on the default, ``{"is_default": true}`` on a hidden
+    row and ``{"type": "open"}`` on the only visible ``won`` stage are each
+    one 422, on a create and on a PATCH.
+
+    * A hidden row can never be the default. The default holds each new
+      record, and no picker would offer it.
+    * A deal stage that is the only visible ``won`` or ``lost`` stage is the
+      one way to close a deal as won or lost. A write that hides it or
+      retypes it is a 422.
+    """
+    if not (VISIBILITY_FIELDS & values.keys()):
+        return
+    hidden = bool(_effective(values, row, "hidden", False))
+    if hidden and bool(_effective(values, row, "is_default", False)):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "A hidden status cannot be the default, because the default "
+                "holds each new record. Make another the default first."
+            ),
+        )
+    if kind != "deal" or row is None:
+        return
+    was_type = getattr(row, "type", None)
+    was_visible = not bool(getattr(row, "hidden", False))
+    new_type = _effective(values, row, "type", "open")
+    if not was_visible or was_type not in CLAMPED_PROBABILITY:
+        return
+    if not hidden and new_type == was_type:
+        return
+    others = (await db.execute(
+        text(
+            f"SELECT count(*) FROM {table} WHERE type = :type "
+            "AND NOT hidden AND id <> CAST(:id AS uuid)"
+        ),
+        {"type": was_type, "id": str(row.id)},
+    )).scalar() or 0
+    if not int(others):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This is the only visible '{was_type}' stage. A deal cannot "
+                f"close as {was_type} without it, so it stays visible and keeps "
+                "its type."
+            ),
+        )
+
+
 # ── Statuses ────────────────────────────────────────────────────────────────
 
 @router.get("/statuses/{kind}", response_model=list[StatusModel])
 async def list_statuses(
     kind: str, user: UserContext = Depends(get_current_user),
 ) -> list[StatusModel]:
-    """The kanban lanes, in lane order."""
+    """The kanban lanes, in lane order, with the effective values (CRM-C3)."""
     table, _ = _kind(kind)
     async with _tenant_session() as db:
-        rows = (await db.execute(
-            text(f"SELECT * FROM {table} ORDER BY position, name"), {},
-        )).fetchall()
-        return [status_wire(r) for r in rows]
+        return [status_wire(r) for r in await read_statuses(db, table)]
 
 
 @router.post(
@@ -314,12 +456,82 @@ async def create_status(
         raise HTTPException(status_code=422, detail="A status needs a name.")
     values.setdefault("type", "open")
     async with _tenant_session() as db:
+        mirror = await _check_mode(db, table, values)
+        if not mirror:
+            await _check_visibility(db, kind, table, values)
         if values.get("position") is None:
             values["position"] = await _next_position(db, table)
         row = await insert_row(db, table, values)
         if kind == "deal":
             await add_stage_to_default_pipeline(db, str(row.id))
-        return status_wire(row)
+        return status_wire(await read_status(db, table, str(row.id)) or row)
+
+
+@router.put(
+    "/statuses/{kind}/order", response_model=list[StatusModel],
+    dependencies=ADMIN_ONLY,
+)
+async def order_statuses(
+    kind: str, payload: OrderIn,
+    user: UserContext = Depends(get_current_user),
+) -> list[StatusModel]:
+    """Set the lane order of one kind, in one transaction (CRM-C3, item 4).
+
+    The body is every id of the kind, in the new order. Native mode writes
+    ``position``. Mirror mode writes ``ui_position`` on every row, so only a
+    stage that Zoho adds later has none, and it sorts last in its group.
+    A list with a missing, an extra, a repeated or a foreign id is a 422.
+    """
+    table, _ = _kind(kind)
+    wanted = [str(i).strip().lower() for i in payload.ids]
+    async with _tenant_session() as db:
+        mirror = await is_mirror_mode(db, current_tenant())
+        column = "ui_position" if mirror else "position"
+        await assert_writable(db, current_tenant(), table, {column: 0})
+        existing = {
+            str(r.id).lower()
+            for r in (await db.execute(text(f"SELECT id FROM {table}"), {})).fetchall()
+        }
+        if len(set(wanted)) != len(wanted) or set(wanted) != existing:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Send every {kind} status once, in the new order: "
+                    f"{len(existing)} ids, and no other."
+                ),
+            )
+        for index, status_id in enumerate(wanted):
+            await db.execute(
+                text(
+                    f"UPDATE {table} SET {column} = :position "
+                    "WHERE id = CAST(:id AS uuid)"
+                ),
+                {"position": index * 10, "id": status_id},
+            )
+        return [status_wire(r) for r in await read_statuses(db, table)]
+
+
+@router.post(
+    "/statuses/{kind}/order/reset", response_model=list[StatusModel],
+    dependencies=ADMIN_ONLY,
+)
+async def reset_status_order(
+    kind: str, user: UserContext = Depends(get_current_user),
+) -> list[StatusModel]:
+    """"Reset order to Zoho" (CRM-C3, item 14): clear ``ui_position`` on every
+    row of the kind, in one statement. Mirror mode only. Native mode has no
+    overlay order, so it is a 422.
+    """
+    table, _ = _kind(kind)
+    async with _tenant_session() as db:
+        if not await is_mirror_mode(db, current_tenant()):
+            raise HTTPException(
+                status_code=422,
+                detail="Only a Zoho mirror has an order to reset to.",
+            )
+        await assert_writable(db, current_tenant(), table, {"ui_position": None})
+        await db.execute(text(f"UPDATE {table} SET ui_position = NULL"), {})
+        return [status_wire(r) for r in await read_statuses(db, table)]
 
 
 @router.patch(
@@ -330,22 +542,29 @@ async def patch_status(
     kind: str, status_id: str, payload: StatusIn,
     user: UserContext = Depends(get_current_user),
 ) -> StatusModel:
-    """Rename, recolour, retype, or reorder a lane (reorder = PATCH position).
+    """Rename, recolour, retype, hide or reorder a lane (reorder = PATCH position).
 
     The row is loaded BEFORE the payload is validated, because D-CRM-10's clamp
     is about the state the write leaves behind: ``{"type": "won"}`` alone and
     ``{"probability": 40}`` alone each contradict the rule only in combination
     with what is already stored.
+
+    CRM-C3: the mode check runs first. In Mirror mode a field outside the
+    overlay is 409, and "Reset to Zoho" is a PATCH of ``ui_probability`` and
+    ``ui_color`` to ``null``.
     """
     table, _ = _kind(kind)
     values = payload.model_dump(exclude_unset=True)
     async with _tenant_session() as db:
         row = await require_row(db, table, status_id, "Status")
+        mirror = await _check_mode(db, table, values)
         _validate_status(kind, values, existing=row)
-        if not values:
-            return status_wire(row)
-        row = await update_row(db, table, status_id, values, touch=False)
-        return status_wire(row)
+        _validate_overlay(values)
+        if not mirror:
+            await _check_visibility(db, kind, table, values, row)
+        if values:
+            await update_row(db, table, status_id, values, touch=False)
+        return status_wire(await read_status(db, table, status_id) or row)
 
 
 @router.delete("/statuses/{kind}/{status_id}", dependencies=ADMIN_ONLY)
@@ -390,6 +609,14 @@ async def _next_position(db: Any, table: str) -> int:
 
 # ── Lost reasons ────────────────────────────────────────────────────────────
 
+def _reason_wire(row: Any) -> LostReasonModel:
+    return LostReasonModel(
+        id=str(row.id), label=row.label,
+        position=int(getattr(row, "position", 0) or 0),
+        hidden=bool(getattr(row, "hidden", False)),
+    )
+
+
 @router.get("/lost-reasons", response_model=list[LostReasonModel])
 async def list_lost_reasons(
     user: UserContext = Depends(get_current_user),
@@ -398,13 +625,7 @@ async def list_lost_reasons(
         rows = (await db.execute(
             text("SELECT * FROM crm_lost_reasons ORDER BY position, label"), {},
         )).fetchall()
-        return [
-            LostReasonModel(
-                id=str(r.id), label=r.label,
-                position=int(getattr(r, "position", 0) or 0),
-            )
-            for r in rows
-        ]
+        return [_reason_wire(r) for r in rows]
 
 
 @router.post(
@@ -421,10 +642,7 @@ async def create_lost_reason(
         if values.get("position") is None:
             values["position"] = await _next_position(db, "crm_lost_reasons")
         row = await insert_row(db, "crm_lost_reasons", values)
-        return LostReasonModel(
-            id=str(row.id), label=row.label,
-            position=int(getattr(row, "position", 0) or 0),
-        )
+        return _reason_wire(row)
 
 
 @router.patch(
@@ -435,17 +653,16 @@ async def patch_lost_reason(
     reason_id: str, payload: LostReasonIn,
     user: UserContext = Depends(get_current_user),
 ) -> LostReasonModel:
+    """Relabel, reorder or hide a lost reason. In Mirror mode, hide only."""
     values = payload.model_dump(exclude_unset=True)
     async with _tenant_session() as db:
         row = await require_row(db, "crm_lost_reasons", reason_id, "Lost reason")
+        await _check_mode(db, "crm_lost_reasons", values)
         if values:
             row = await update_row(
                 db, "crm_lost_reasons", reason_id, values, touch=False,
             )
-        return LostReasonModel(
-            id=str(row.id), label=row.label,
-            position=int(getattr(row, "position", 0) or 0),
-        )
+        return _reason_wire(row)
 
 
 @router.delete("/lost-reasons/{reason_id}", dependencies=ADMIN_ONLY)

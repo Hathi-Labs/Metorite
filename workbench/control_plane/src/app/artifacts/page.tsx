@@ -1,19 +1,199 @@
 "use client";
 
 /**
- * Artifacts — file explorer for all agent-generated files.
+ * Artifacts — the files the member's chats made, and the agents' own files
+ * (D99, `navigation_shell.md` NS-6 slice 6c). A live app since 2026-10-13
+ * (owner: "artifacts from those sessions are smartly stored away, accessed
+ * via the artifacts app").
  *
- * Agents are the top-level folders.  Inside each agent, files and folders
- * are shown together like a file explorer (Google Drive / VS Code style).
- * Click a folder to navigate in; breadcrumbs let you navigate back.
- * Grid / List views change how the current directory's contents appear.
+ * **Chats** (the default tab): the member's chats at the left, as the
+ * assistant lists them (`SessionPicker`), and the files of the chosen chat at
+ * the right (`ArtifactSidebar`, the same panel the assistant's full view
+ * draws). A chat is chosen by `?session=<id>`, so the assistant's Files button
+ * and a shared link open it here. The files come from `/api/agent/workspace/
+ * {session}`, the one route that applies the tenant, room and thread rules.
+ *
+ * **Agent workspaces**: the explorer this page was before 2026-10-13, for the
+ * files of each personal agent.
  */
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
 import ArtifactViewerModal from "@/components/ArtifactViewerModal";
-import type { FileEntry } from "@/components/ArtifactSidebar";
+import { AppTopBar } from "@/components/AppTopBar";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { useChatScope } from "@/hooks/useChatSessions";
+import { openAssistant } from "@/lib/shell/assistant";
+import { sessionTitle } from "@/lib/shell/chatHistory";
+import { SessionPicker } from "@/lib/shell/SessionPicker";
+import {
+  deleteSession,
+  fetchAndMergeSessionsFromDb,
+  getSessions,
+  renameSession,
+  setSessionArchived,
+  type ChatSession,
+} from "@/lib/sessions";
+import { artifactsTab, chatToShow, type ArtifactsTab } from "./lib/chatFiles";
+
+// ─── Page ─────────────────────────────────────────────────────────────────
+
+export default function ArtifactsPage() {
+  return (
+    <Suspense fallback={null}>
+      <ArtifactsInner />
+    </Suspense>
+  );
+}
+
+function ArtifactsInner() {
+  const params = useSearchParams();
+  const [tab, setTab] = useState<ArtifactsTab>(() => artifactsTab(params.get("tab")));
+  const asked = params.get("session");
+
+  const tabs = (
+    <div role="tablist" aria-label="What to show" className="flex items-center gap-1">
+      {(
+        [
+          ["chats", "Chats", "MessagesSquare"],
+          ["agents", "Agent workspaces", "Bot"],
+        ] as const
+      ).map(([id, label, icon]) => (
+        <Button
+          key={id}
+          role="tab"
+          aria-selected={tab === id}
+          variant={tab === id ? "secondary" : "ghost"}
+          size="sm"
+          icon={icon}
+          onClick={() => setTab(id)}
+        >
+          {label}
+        </Button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="flex h-full flex-col">
+      <AppTopBar title="Artifacts" subtitle="The files your chats made" actions={tabs} />
+      <div className="min-h-0 flex-1">
+        {tab === "chats" ? <ChatFiles asked={asked} /> : <AgentWorkspaces />}
+      </div>
+    </div>
+  );
+}
+
+// ─── Chats ────────────────────────────────────────────────────────────────
+
+/**
+ * The member's chats and the files each made. The chat to show is the one
+ * the link asked for, else the newest chat (`chatToShow`). A phone shows the
+ * list, then the files of the chat the member taps, with a way back.
+ */
+function ChatFiles({ asked }: { asked: string | null }) {
+  const scope = useChatScope();
+  const { isMobile } = useViewMode();
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [picked, setPicked] = useState<string | null>(asked);
+  const [phoneDetail, setPhoneDetail] = useState(Boolean(asked));
+  const [viewer, setViewer] = useState<FileEntry | null>(null);
+  const refresh = useCallback(() => setSessions(getSessions()), []);
+
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!scope) return;
+    refresh();
+    let cancelled = false;
+    fetchAndMergeSessionsFromDb()
+      .then((merged) => { if (!cancelled) setSessions(merged); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [scope, refresh]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  const shown = useMemo(() => chatToShow(sessions, picked), [sessions, picked]);
+  const chat = sessions.find((s) => s.id === shown) ?? null;
+
+  const choose = (id: string) => {
+    setPicked(id);
+    setPhoneDetail(true);
+    // The address names the chat, so a reload or a shared link opens it.
+    window.history.replaceState(null, "", `/artifacts?session=${encodeURIComponent(id)}`);
+  };
+
+  const picker = (
+    <SessionPicker
+      variant="list"
+      sessions={sessions}
+      activeId={shown ?? ""}
+      onSelect={choose}
+      onRename={(id, title) => { if (renameSession(id, title)) refresh(); }}
+      onArchive={(id, archived) => { if (setSessionArchived(id, archived)) refresh(); }}
+      onRemove={(id) => {
+        deleteSession(id);
+        if (id === picked) setPicked(null);
+        refresh();
+      }}
+    />
+  );
+
+  const files = chat ? (
+    <div className="flex h-full min-w-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
+        {isMobile ? (
+          <Button variant="ghost" size="icon-sm" icon="ChevronLeft" aria-label="All chats" onClick={() => setPhoneDetail(false)} />
+        ) : null}
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground" title={sessionTitle(chat)}>
+          {sessionTitle(chat)}
+        </h2>
+        <Button variant="secondary" size="sm" icon="MessageSquare" onClick={() => openAssistant({ sessionId: chat.id })}>
+          Open chat
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1">
+        <ArtifactSidebar
+          key={chat.id}
+          sessionId={chat.id}
+          open
+          fullWidth
+          collapsible={false}
+          onToggle={() => {}}
+          onFileOpen={(entry) => setViewer(entry)}
+        />
+      </div>
+    </div>
+  ) : (
+    <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+      <Icon name="FolderOpen" size={24} className="text-muted-foreground/60" />
+      <p className="text-sm font-medium text-foreground">No chat files yet</p>
+      <p className="max-w-xs text-xs text-muted-foreground">
+        Files the assistant writes in a chat appear here, under that chat.
+      </p>
+    </div>
+  );
+
+  return (
+    <div className="flex h-full min-h-0">
+      {isMobile ? (
+        phoneDetail && chat ? files : <div className="h-full w-full">{picker}</div>
+      ) : (
+        <>
+          <div className="h-full w-80 shrink-0 border-r border-border">{picker}</div>
+          {files}
+        </>
+      )}
+      {viewer && chat ? (
+        <ArtifactViewerModal sessionId={chat.id} entry={viewer} onClose={() => setViewer(null)} />
+      ) : null}
+    </div>
+  );
+}
+
+// ─── Agent workspaces ─────────────────────────────────────────────────────
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -279,7 +459,7 @@ function ListRow({ item, onNavigate, onView, index }: {
 
 // ─── Page ─────────────────────────────────────────────────────────────────
 
-export default function ArtifactsPage() {
+function AgentWorkspaces() {
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -407,7 +587,7 @@ export default function ArtifactsPage() {
               <Icon name="FolderOpen" size={20} className="text-primary" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold text-foreground">Artifacts</h1>
+              <h2 className="text-lg font-semibold text-foreground">Agent workspaces</h2>
               <p className="text-[11px] text-muted-foreground">
                 {`${availableAgents.length} agent${availableAgents.length !== 1 ? "s" : ""} · ${stats.total} files`}
               </p>

@@ -102,7 +102,9 @@ EXPECTED_OPEN_WORLD = frozenset({
 
 #: Registry entries that live in another repo. CI cannot read their tools,
 #: so the fail-closed rule is their control (the external-agent tests).
-EXTERNAL_AGENTS = frozenset({"agent-sales-assistant"})
+#: Empty since WS-53 CRM-C7 removed the last one (2026-10-13). The
+#: external-agent tests keep a synthetic one, so the rule stays tested.
+EXTERNAL_AGENTS: frozenset[str] = frozenset()
 
 
 # ── 0. No database, no process, no container ─────────────────────────────────
@@ -1184,12 +1186,12 @@ class _CopilotSub:
 
 
 async def web_research(query: str) -> str:
-    """Same name and shape as agent-sales-assistant's SerpAPI tool."""
+    """Same name and shape as the SerpAPI tool of an outside agent."""
     return "ran"
 
 
 async def zoho_crm(action: str, extra_args: list[str] | None = None) -> str:
-    """Same name and shape as agent-sales-assistant's direct Zoho write."""
+    """Same name and shape as the direct Zoho write of an outside agent."""
     return "ran"
 
 
@@ -1264,7 +1266,7 @@ def test_a_copilot_sub_agent_of_a_covered_parent_sends_nothing(sandbox, monkeypa
 
 
 def test_another_repos_unannotated_tools_are_withheld_and_refused(sandbox, monkeypatch) -> None:  # noqa: F811
-    """The live shape of agent-sales-assistant (agents.json, github-copilot):
+    """The shape of an agent from another repo (agents.json, github-copilot):
     ``web_research`` and ``zoho_crm`` carry no annotation. Under no_egress
     the injection drops them and the guard refuses a call that names one."""
     from agent_framework._tools import normalize_tools
