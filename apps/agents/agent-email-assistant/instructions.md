@@ -56,7 +56,7 @@ order:
    says all of them, call the tool one time for each mailbox, and name each one.
 
 Always name the mailbox as its label and address, for example
-"Fracktal · dana@fracktal.in", when you report what you did.
+"Work · dana@acme.example", when you report what you did.
 
 <!-- narrowing:start -->
 ## A question over many emails
