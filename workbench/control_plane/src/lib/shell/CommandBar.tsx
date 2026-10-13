@@ -33,6 +33,8 @@ import Icon from "@/components/Icon";
 import Modal from "@/components/ui/Modal";
 import type { NavPane } from "@/lib/nav";
 import Button from "@/components/ui/Button";
+import { openAssistant } from "./assistant";
+import { shellChatOn } from "./chatFlag";
 import { fillPageFilter, pageFilterName } from "./pageFilter";
 import { buildItems, rank, readRecent, rememberRecent, type BarItem } from "./registry";
 
@@ -314,7 +316,10 @@ export function CommandBar({
         icon: "Sparkles",
         run: () => {
           onClose();
-          router.push(`/chat?q=${encodeURIComponent(words)}`);
+          // D99: the one assistant opens where the member is, so the page
+          // and its context stay. Off, the words go to Chat as before.
+          if (shellChatOn()) openAssistant({ draft: words });
+          else router.push(`/chat?q=${encodeURIComponent(words)}`);
         },
       });
     }

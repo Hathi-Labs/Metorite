@@ -17,6 +17,7 @@
  */
 
 import { NAV_SECTIONS, type NavSection } from "@/lib/nav";
+import { shellChatOn } from "@/lib/shell/chatFlag";
 
 /** The catch-all app: the general chat. */
 export const CHAT_HREF = "/chat";
@@ -320,10 +321,14 @@ export function chatLink(
   threadId: string,
   visibleHrefs: ReadonlySet<string> | null = null,
   sections: readonly NavSection[] = NAV_SECTIONS,
+  oneAssistant: boolean = shellChatOn(),
 ): string {
   let href = appForAgent(agentName, sections);
   if (visibleHrefs && !visibleHrefs.has(href)) href = CHAT_HREF;
   if (!CHAT_IN_APP.has(href)) href = CHAT_HREF;
+  // D99: with the chat bar on, the apps mount no rail, and every chat opens
+  // in the one assistant, whose address is `/chat`.
+  if (oneAssistant) href = CHAT_HREF;
   return `${href}?do=${OPEN_CHAT_JOB}&fill.session=${encodeURIComponent(threadId)}`;
 }
 

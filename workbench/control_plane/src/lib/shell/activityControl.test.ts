@@ -303,7 +303,15 @@ describe("the panel closes from the keyboard", () => {
   it("a tap on a row closes the panel as it navigates", () => {
     const src = read("lib/shell/ActivityControl.tsx");
     expect(src).toMatch(/onNavigate=\{onClose\}/);
-    expect(src).toMatch(/onClick=\{onNavigate\}/);
+    // D99: the row's press may open the chat in the one assistant first, and
+    // it still closes the panel.
+    expect(src).toMatch(/onClick=\{\(e\) => \{[\s\S]{0,400}?onNavigate\?\.\(\);/);
+  });
+
+  it("with the chat bar on, a plain press opens the chat in the one assistant (D99)", () => {
+    const src = read("lib/shell/ActivityControl.tsx");
+    expect(src).toMatch(/onOpenChat && !e\.metaKey && !e\.ctrlKey && !e\.shiftKey && e\.button === 0/);
+    expect(src).toMatch(/onOpenChat=\{chatOn \? \(row\) => openAssistant\(\{ sessionId: row\.threadId \}\) : undefined\}/);
   });
 });
 
@@ -339,7 +347,8 @@ describe("the step is plain text", () => {
 describe("the shell owns the control, with the shell bar on or off", () => {
   it("the shell bar draws it after the app's tools", () => {
     const bar = read("lib/shell/ShellBar.tsx");
-    expect(bar).toMatch(/activity=\{<ActivityControl \/>\}/);
+    // D99: with the chat bar on, the control moves into the chat bar.
+    expect(bar).toMatch(/activity=\{chatOn \? null : <ActivityControl \/>\}/);
     expect(bar.indexOf("ref={setRight}")).toBeLessThan(bar.indexOf("{activity}"));
     expect(bar).not.toMatch(/<ActivityPanel\b|<ActivityHost\b/);
   });

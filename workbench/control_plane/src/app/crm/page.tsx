@@ -37,6 +37,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { ShellJob } from "@/lib/shell/doJob";
 import { focusPageFilter } from "@/lib/shell/pageFilter";
 import { NEW_DEAL_MIRROR, NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
+import { CrmModeContext } from "./lib/modeContext";
 import {
   CRM_JOB_IDS,
   afterDialogsClose,
@@ -752,6 +753,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   );
 
   return (
+    // CRM-C2: the list, the reports and the status pill read the mode here.
+    <CrmModeContext.Provider value={ctx.mode}>
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       {/* ═══ The app's title bar (AGENTS.md rule 11, CRM-U1) ═══
           The rail toggle, the name and the scope, the New verb, then the
@@ -888,6 +891,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               hiddenEmpty={view.tab === "leads" ? 0 : store.lanes.length - dealLanes.length}
               loading={store.loading}
               readOnly={ctx.mode === "mirror"}
+              // CRM-C2: the lane colour reads the mode, and the card of the
+              // open record wears the cursor ring.
+              mode={ctx.mode}
+              cursorId={view.record?.id ?? null}
               onMove={
                 view.tab === "leads"
                   ? (move, target) => void moveCard("leads", move, target)
@@ -1160,6 +1167,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         />
       )}
     </div>
+    </CrmModeContext.Provider>
   );
 }
 

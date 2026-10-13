@@ -38,9 +38,10 @@ import { useState } from "react";
 import {
   REQUIREABLE_FIELD_LABELS,
   REQUIREABLE_FIELDS,
-  statusTone,
-  TONE_COLORS,
+  stageAccent,
 } from "../lib/board";
+import { colorOptions } from "../lib/colorOptions";
+import { useCrmModeValue } from "../lib/modeContext";
 import { showPicker } from "../lib/pipelines";
 import {
   changedFields,
@@ -63,11 +64,8 @@ import type {
 
 const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"];
 
-/** The two pickers of a status row, as `SelectButton` options (CRM-U2). */
-const COLOR_OPTIONS: SelectOption[] = TONE_COLORS.map((color) => ({
-  value: color,
-  label: color,
-}));
+/** The type picker of a status row, as `SelectButton` options (CRM-U2). The
+ *  colour picker is `colorOptions` (`lib/colorOptions.ts`). */
 const TYPE_OPTIONS: SelectOption[] = STATUS_TYPES.map((type) => ({
   value: type,
   label: type,
@@ -362,6 +360,8 @@ function StatusRow({
 }) {
   const [draft, setDraft] = useState(status);
   const [served, setServed] = useState(status);
+  // CRM-C2: the dot shows the colour the board shows, so it reads the mode.
+  const mode = useCrmModeValue();
   const [invalid, setInvalid] = useState<string | null>(null);
   // A re-read replaces the draft: every write here re-reads the vocabulary,
   // and a row that kept showing what was typed after the server answered
@@ -408,7 +408,7 @@ function StatusRow({
       >
         <Icon name="GripVertical" className="w-4 h-4" />
       </span>
-      <span className={`w-2 h-2 shrink-0 rounded-full ${statusTone(draft)}`} />
+      <span className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, mode).dot}`} />
 
       <Input
         inputSize="sm"
@@ -420,7 +420,7 @@ function StatusRow({
       <SelectButton
         label="Colour"
         value={draft.color || "gray"}
-        options={COLOR_OPTIONS}
+        options={colorOptions(draft.color)}
         defaultValue="gray"
         onChange={(color) => setDraft({ ...draft, color })}
         widthClass="w-24"
