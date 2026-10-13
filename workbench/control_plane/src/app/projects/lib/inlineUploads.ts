@@ -22,12 +22,31 @@
  * `/`, `?`, `#`, `%` or `\`. The gateway's own `url` field carries the stored
  * name as it is, so a name with a space would need `%20` and fall to the
  * click-to-load placeholder. The gateway ignores the name segment (it serves
- * the stored name), so `attachmentImageUrl` writes a segment that always
- * matches. Fence: `inlineUploads.test.ts`, which runs the built URL through
+ * the stored name), so `attachmentImageUrl` keeps the gateway's own path up to
+ * the id and writes a segment that always matches. It never writes the path
+ * itself: every `/api/projects/` path in the Projects UI sits in the client
+ * (`test_projects_ui_actions.py`), so the upload's answer is the one source.
+ * Fence: `inlineUploads.test.ts`, which runs the built URL through
  * `remoteHost`.
  */
 
 import { previewKind } from "./preview";
+
+/** The served path up to the attachment's id, and the id. */
+const SERVED = /^(.*\/attachments\/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i;
+
+/**
+ * The URL an inline image points at: the upload's own `url`, up to the id,
+ * then a name segment that never needs an escape. A `url` of another shape
+ * comes back as it is, and `markdownMedia` then gates it as remote.
+ */
+export function attachmentImageUrl(servedUrl: string, name: string): string {
+  const found = SERVED.exec(servedUrl);
+  if (!found) return servedUrl;
+  let segment = name.replace(/[^A-Za-z0-9._-]/g, "_");
+  if (/^\.*$/.test(segment)) segment = "image";
+  return found[1] + found[2].toLowerCase() + "/" + segment;
+}
 
 /** The two facts of a `File` these rules read. A test passes plain objects. */
 export interface FileLike {
@@ -122,25 +141,12 @@ export function withoutImages(text: string): string {
   );
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * The URL an inline image points at: the attachment route, with a name
- * segment that never needs an escape. See the module note.
- */
-export function attachmentImageUrl(attachmentId: string, name: string): string {
-  let segment = name.replace(/[^A-Za-z0-9._-]/g, "_");
-  if (/^\.*$/.test(segment)) segment = "image";
-  const id = UUID.test(attachmentId) ? attachmentId.toLowerCase() : attachmentId;
-  return `/api/projects/attachments/${id}/${segment}`;
-}
-
 /** The Markdown for one uploaded image. */
 export function imageMarkdown(
   name: string,
-  uploaded: { attachment_id: string; name: string },
+  uploaded: { url: string; name: string },
 ): string {
-  return `![${altText(name)}](${attachmentImageUrl(uploaded.attachment_id, uploaded.name)})`;
+  return `![${altText(name)}](${attachmentImageUrl(uploaded.url, uploaded.name)})`;
 }
 
 /**
@@ -198,6 +204,19 @@ export function forView(text: string): string {
   return text.replace(ANY_PLACEHOLDER, (_m, name: string) => `*Uploading ${name}…*`);
 }
 
+/** A line that already ends in a hard break: two spaces, or a backslash. */
+const HARD_BREAK_AT_END = / {2}$|\\$/;
+
+/**
+ * A fence's opening line: three or more backticks or tildes.
+ *
+ * Built from a string, with the backtick as `\x60`, because
+ * `test_projects_ui_actions.py` masks this folder's literals and does not
+ * parse a regex. A backtick inside a regex literal opened a template there,
+ * and the scan read past the end of the file.
+ */
+const FENCE_OPEN = new RegExp("^\\s{0,3}(\x60{3,}|~{3,})");
+
 /**
  * Keep each line break that the member typed, outside a fenced code block.
  *
@@ -212,7 +231,7 @@ export function keepLineBreaks(text: string): string {
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const opener = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    const opener = line.match(FENCE_OPEN);
     if (fence === null && opener) {
       fence = opener[1][0];
       out.push(line);
@@ -225,7 +244,7 @@ export function keepLineBreaks(text: string): string {
     }
     const next = lines[i + 1];
     const breaks = next !== undefined && line.trim() !== "" && next.trim() !== "";
-    out.push(breaks && !/ {2}$|\\$/.test(line) ? `${line}  ` : line);
+    out.push(breaks && !HARD_BREAK_AT_END.test(line) ? line + "  " : line);
   }
   return out.join("\n");
 }

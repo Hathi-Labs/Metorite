@@ -229,26 +229,35 @@ describe("mentions stay plain text on the task card (review finding P2)", () => 
 });
 
 describe("the served URL", () => {
+  // The upload's own `url`, as the gateway sends it: the stored name, raw.
+  const served = (id: string, name: string) => `/api/projects/attachments/${id}/${name}`;
+
   it("is the one attachment path that markdownMedia loads at once", () => {
     for (const name of ["image.png", "Screen Shot 2026-10-13 at 9.41.02.png", "a%2Fb.png", "..", "", "ü.png"]) {
-      const url = attachmentImageUrl(ID, name);
+      const url = attachmentImageUrl(served(ID, name), name);
       expect(url.startsWith(`/api/projects/attachments/${ID}/`), url).toBe(true);
       expect(remoteHost(url, APP), url).toBeNull();
     }
   });
 
   it("writes the name segment with no escape", () => {
-    expect(attachmentImageUrl(ID, "Screen Shot.png")).toBe(
+    expect(attachmentImageUrl(served(ID, "Screen Shot.png"), "Screen Shot.png")).toBe(
       `/api/projects/attachments/${ID}/Screen_Shot.png`,
     );
-    expect(attachmentImageUrl(ID, "..")).toBe(`/api/projects/attachments/${ID}/image`);
-    expect(attachmentImageUrl(ID.toUpperCase(), "a.png")).toBe(
+    expect(attachmentImageUrl(served(ID, ".."), "..")).toBe(`/api/projects/attachments/${ID}/image`);
+    expect(attachmentImageUrl(served(ID.toUpperCase(), "a.png"), "a.png")).toBe(
       `/api/projects/attachments/${ID}/a.png`,
     );
   });
 
+  it("keeps a url of another shape as it is, so the gate stays on it", () => {
+    expect(attachmentImageUrl("https://elsewhere.example/x.png", "x.png")).toBe(
+      "https://elsewhere.example/x.png",
+    );
+  });
+
   it("builds the image Markdown from the upload's answer", () => {
-    expect(imageMarkdown("image.png", { attachment_id: ID, name: "image.png" })).toBe(
+    expect(imageMarkdown("image.png", { url: served(ID, "image.png"), name: "image.png" })).toBe(
       `![image.png](/api/projects/attachments/${ID}/image.png)`,
     );
   });
@@ -259,7 +268,9 @@ describe("the rendered view", () => {
     renderToStaticMarkup(createElement(MarkdownBody, { content }));
 
   it("draws an uploaded image inline, with no click-to-load gate", () => {
-    const html = render(forView(imageMarkdown("image.png", { attachment_id: ID, name: "image.png" })));
+    const html = render(
+      forView(imageMarkdown("image.png", { url: `/api/projects/attachments/${ID}/image.png`, name: "image.png" })),
+    );
     expect(html).toContain(`<img src="/api/projects/attachments/${ID}/image.png"`);
     expect(html).not.toContain("data-remote-image");
   });
