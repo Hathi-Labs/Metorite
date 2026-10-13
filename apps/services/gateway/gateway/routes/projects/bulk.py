@@ -73,6 +73,7 @@ from gateway.routes.projects.personal import (
     validate_overlay,
 )
 from gateway.routes.projects.tags import apply_task_tags, normalise_tag
+from gateway.routes.projects.text_links import link_from_text, saved_texts
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -632,6 +633,11 @@ async def bulk_edit(
     for task_id in changed_ids:
         await emit("pm.task.updated", {"task_id": task_id})
     await emit_all(cascaded.events)
+    # WS-57 TR-5 — a bulk patch that writes a title or a description names
+    # the same tasks and URLs for each task it changed. Each task reads them
+    # against its OWN root (`text_links.py`). An action carries no patch, so
+    # it reads nothing.
+    await link_from_text(user, [(task_id, saved_texts(patch)) for task_id in changed_ids])
 
     answer: dict[str, Any] = {
         "requested": len(ids),

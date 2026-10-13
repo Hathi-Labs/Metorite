@@ -8,6 +8,8 @@
  * let through. That is how code, a heading and a URL are proven: those never
  * reach the parser as text, and only the real Markdown tree shows it.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -15,13 +17,18 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { MarkdownBody } from "@/components/MarkdownMessage";
+import { projectPillLabel } from "@/components/ProjectLinkPill";
+import { projectIdOfHref } from "@/lib/entityIndex";
 import {
   TaskPill,
   TaskRefPill,
+  TaskRefText,
   createTaskRefResolver,
   findTaskRefs,
+  refsUrl,
   splitTaskRefs,
   taskRefResolver,
+  taskRefResolverFor,
 } from "@/lib/taskRefs";
 
 const refs = (text: string) => findTaskRefs(text).map((r) => text.slice(r.start, r.end));
@@ -195,5 +202,160 @@ describe("TaskPill and TaskRefPill", () => {
     expect(html(createElement(TaskRefPill, { number: 171, title: "Other", resolver: r }))).toBe("#171");
     // Not live (a streaming answer): text, even with the answer cached.
     expect(html(createElement(TaskRefPill, { number: 171, live: false, resolver: r }))).toBe("#171");
+  });
+});
+
+// ── WS-57 TR-5: one grammar in two languages ────────────────────────────────
+
+describe("the shared case file (tests/fixtures/task_ref_cases.json)", () => {
+  // …/src/lib → …/src → control_plane → workbench → repo
+  const CASES: { name: string; text: string; numbers: number[] }[] = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../../../../tests/fixtures/task_ref_cases.json", import.meta.url)),
+      "utf-8",
+    ),
+  ).cases;
+
+  it("is present and not trivial", () => {
+    // A file that quietly emptied would leave this block and the pytest half
+    // both green while they checked nothing.
+    expect(CASES.length).toBeGreaterThanOrEqual(30);
+    expect(CASES.some((c) => c.numbers.length > 0)).toBe(true);
+    expect(CASES.some((c) => c.numbers.length === 0)).toBe(true);
+  });
+
+  for (const c of CASES) {
+    it(`agrees with the gateway: ${c.name}`, () => {
+      expect(findTaskRefs(c.text).map((r) => r.number)).toEqual(c.numbers);
+    });
+  }
+});
+
+// ── WS-57 TR-5: the task card's store and its plain-text draw ───────────────
+
+describe("the root store", () => {
+  it("asks the refs read with the root, and the app's store asks without", () => {
+    expect(refsUrl([12, 13])).toBe("/api/projects/search/refs?numbers=12,13");
+    expect(refsUrl([12], "aaaaaaaa-0000-4000-8000-000000000001")).toBe(
+      "/api/projects/search/refs?numbers=12&root=aaaaaaaa-0000-4000-8000-000000000001",
+    );
+  });
+
+  it("is one store per root, and the app's store when there is no root", () => {
+    const root = "aaaaaaaa-0000-4000-8000-000000000001";
+    expect(taskRefResolverFor(root)).toBe(taskRefResolverFor(root));
+    expect(taskRefResolverFor(root)).not.toBe(taskRefResolver);
+    expect(taskRefResolverFor(null)).toBe(taskRefResolver);
+    expect(taskRefResolverFor("")).toBe(taskRefResolver);
+  });
+
+  it("sends the root on the wire", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ rows: [] }), { status: 200 });
+    });
+    try {
+      const r = taskRefResolverFor("bbbbbbbb-0000-4000-8000-000000000002");
+      r.request("", 7);
+      await r.flush();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(urls).toEqual(["/api/projects/search/refs?numbers=7&root=bbbbbbbb-0000-4000-8000-000000000002"]);
+  });
+});
+
+describe("TaskRefText", () => {
+  it("draws each #n of plain text as a pill, and keeps every other word", async () => {
+    const r = createTaskRefResolver(async () => [
+      { id: "00000000-0000-4000-8000-000000000012", task_number: 12, title: "Twelve" },
+    ]);
+    r.request("", 12);
+    r.request("", 9999);
+    await r.flush();
+    const out = renderToStaticMarkup(
+      createElement(TaskRefText, { text: "Fix #12 «x» and #9999, `#12`", resolver: r }),
+    );
+    expect(out.match(/href="\/projects\?task=/g)).toHaveLength(2);
+    expect(out).toContain("Twelve");
+    expect(out).toContain("«x» and #9999, `");
+  });
+});
+
+// ── WS-57 TR-5: the task card's Markdown ────────────────────────────────────
+
+describe("MarkdownBody with taskRefs alone (the task card)", () => {
+  const card = async (content: string) => {
+    const r = createTaskRefResolver(async (numbers) =>
+      numbers.filter((n) => n !== 9999).map((n) => ({
+        id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+        task_number: n,
+        title: `Card task ${n}`,
+      })),
+    );
+    for (const n of [12, 13, 9999]) r.request("", n);
+    await r.flush();
+    return renderToStaticMarkup(
+      createElement(MarkdownBody, { content, plainEmails: true, taskRefs: true, taskRefResolver: r, projectPills: true }),
+    );
+  };
+
+  it("draws #12 as a pill with the task's title, and #9999 as text", async () => {
+    const out = await card("Blocked on #12. Not #9999.");
+    expect(out).toContain('href="/projects?task=00000000-0000-4000-8000-000000000012"');
+    expect(out).toContain("Card task 12");
+    expect(out).toContain("Not #9999.");
+  });
+
+  it("changes no other word: marks, an email, a bullet and bold stay as written", async () => {
+    const out = await card("«keep» asha@example.com today.**Bold**\n\n• one");
+    expect(out).toContain("«keep»");
+    expect(out).toContain("asha@example.com");
+    expect(out).not.toContain("mailto:");
+    expect(out).toContain("today.<strong");
+    expect(out).toContain("• one");
+    expect(out).not.toContain("data-entity-pill");
+  });
+
+  it("draws no pill in code or in a link's words", async () => {
+    const out = await card("`#12` and [see #13](https://example.com/x)\n\n```\n#12\n```");
+    expect(out).not.toContain("/projects?task=");
+  });
+
+  it("draws a link to a project as the project pill, which opens it", async () => {
+    const id = "5b0c7a52-3f4e-4d2a-9c1e-0a1b2c3d4e5f";
+    const out = await card(`The board: [Ops board](/projects?project=${id}).`);
+    expect(out).toContain(`href="/projects?project=${id}"`);
+    expect(out).toContain("lucide-folder-kanban");
+    expect(out).toContain("Ops board");
+  });
+
+  it("leaves a project link alone where projectPills is off", () => {
+    const id = "5b0c7a52-3f4e-4d2a-9c1e-0a1b2c3d4e5f";
+    const out = renderToStaticMarkup(
+      createElement(MarkdownBody, { content: `[Ops](/projects?project=${id})`, plainEmails: true }),
+    );
+    expect(out).not.toContain("lucide-folder-kanban");
+  });
+});
+
+describe("projectIdOfHref", () => {
+  const id = "5b0c7a52-3f4e-4d2a-9c1e-0a1b2c3d4e5f";
+  it("reads the in-app path and this origin's full URL, and nothing else", () => {
+    expect(projectIdOfHref(`/projects?project=${id}`, "https://app.metorite.com")).toBe(id);
+    expect(projectIdOfHref(`https://app.metorite.com/projects?project=${id}`, "https://app.metorite.com")).toBe(id);
+    expect(projectIdOfHref(`https://evil.example/projects?project=${id}`, "https://app.metorite.com")).toBeNull();
+    expect(projectIdOfHref(`//evil.example/projects?project=${id}`, "https://app.metorite.com")).toBeNull();
+    expect(projectIdOfHref("/projects?project=not-a-uuid", "https://app.metorite.com")).toBeNull();
+    expect(projectIdOfHref(`/projects/other?project=${id}`, "https://app.metorite.com")).toBeNull();
+    expect(projectIdOfHref(undefined)).toBeNull();
+  });
+
+  it("names the pill by the project, else by the link's own words", () => {
+    expect(projectPillLabel("Ops", "anything")).toBe("Ops");
+    expect(projectPillLabel(null, "Ops board")).toBe("Ops board");
+    expect(projectPillLabel(undefined, `https://app.metorite.com/projects?project=${id}`)).toBe("Project");
+    expect(projectPillLabel(undefined, "")).toBe("Project");
   });
 });

@@ -61,6 +61,7 @@ across the two incomparable. Recorded so the absence reads as a decision.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -474,6 +475,14 @@ async def search_tasks(
 #
 # Archived tasks are included: an answer can name finished work, and the task
 # panel opens an archived task. They sort after the open ones.
+#
+# **The task's own root first** (WS-57 TR-5). The task card sends ``root``,
+# the root project of the task it shows. For a number that a visible task in
+# that root carries, the read returns only the tasks of that root. For any
+# other number it returns what it returns with no root. So `#12` on a card
+# names #12 of the same space, and a #12 elsewhere does not make it "two".
+# The chat sends no root, and its answer does not change. The root narrows
+# what the visibility clause already allows. It never widens it.
 
 #: The most numbers one lookup takes. The client sends at most this many.
 MAX_REFS = 50
@@ -482,14 +491,23 @@ MAX_REFS = 50
 #: leaves room for an archived twin beside two open tasks.
 REF_HITS_PER_NUMBER = 3
 
+# `in_root` sorts first inside each number, so the cap of `:per` never cuts a
+# task of the root in favour of one outside it. `has_root` is true for a
+# number when one visible task of the root carries it, and then the outer
+# WHERE keeps only those. With no root, `:root` is NULL, both are false and
+# the read is the one it was before TR-5.
 _REFS_SQL = """
 SELECT id, title, task_number, status_name, category, archived
   FROM (
     SELECT t.id, t.title, t.task_number, s.name AS status_name, s.category,
            (t.archived_at IS NOT NULL) AS archived,
+           COALESCE(t.root_project_id = CAST(:root AS uuid), false) AS in_root,
+           bool_or(COALESCE(t.root_project_id = CAST(:root AS uuid), false))
+             OVER (PARTITION BY t.task_number) AS has_root,
            row_number() OVER (
              PARTITION BY t.task_number
-             ORDER BY (t.archived_at IS NOT NULL), t.updated_at DESC, t.id
+             ORDER BY COALESCE(t.root_project_id = CAST(:root AS uuid), false) DESC,
+                      (t.archived_at IS NOT NULL), t.updated_at DESC, t.id
            ) AS k
       FROM pm_tasks t
       JOIN pm_task_statuses s ON s.id = t.status_id
@@ -498,8 +516,43 @@ SELECT id, title, task_number, status_name, category, archived
        AND t.task_number = ANY(CAST(:numbers AS bigint[]))
   ) hits
  WHERE k <= :per
+   AND (in_root OR NOT has_root)
  ORDER BY task_number, k
 """
+
+
+def ref_root(raw: str | None) -> str | None:
+    """The ``root`` filter as a uuid string, or ``None`` for none.
+
+    A value that is not a uuid is dropped, not refused: it can only narrow
+    the answer, so a bad one costs the caller its preference and no more.
+    """
+    if not raw:
+        return None
+    try:
+        return str(uuid.UUID(str(raw)))
+    except (TypeError, ValueError):
+        return None
+
+
+async def lookup_task_refs(
+    db: Any, vis: Any, numbers: list[int], root: str | None = None,
+) -> list[Any]:
+    """The visible tasks that carry ``numbers``: the one read for a ``#N``.
+
+    The search route below and the links from text (``text_links.py``) both
+    call it, so a pill and a saved link can never name two tasks. ``root``
+    prefers that root's task for each number (see the note above).
+    """
+    if not numbers:
+        return []
+    return list((await db.execute(
+        text(_REFS_SQL.format(
+            visible=task_visibility_clause(vis),
+            triage=triage_exclusion_clause(),
+        )),
+        {**vis.params, "numbers": list(numbers), "per": REF_HITS_PER_NUMBER, "root": root},
+    )).fetchall())
 
 
 def ref_numbers(raw: str) -> list[int]:
@@ -526,25 +579,21 @@ def ref_numbers(raw: str) -> list[int]:
 @router.get("/search/refs")
 async def task_refs(
     numbers: str = "",
+    root: str = "",
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     """The tasks the caller can see that carry these numbers, in one read.
 
     ``?numbers=171,87``. Each row is ``{id, title, task_number, status_name,
     category, archived}``. A number with no visible task has no row.
+    ``&root=<uuid>`` prefers that root's task for each number (TR-5).
     """
     wanted = ref_numbers(numbers)
     if not wanted:
         return {"rows": []}
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        rows = (await db.execute(
-            text(_REFS_SQL.format(
-                visible=task_visibility_clause(vis),
-                triage=triage_exclusion_clause(),
-            )),
-            {**vis.params, "numbers": wanted, "per": REF_HITS_PER_NUMBER},
-        )).fetchall()
+        rows = await lookup_task_refs(db, vis, wanted, ref_root(root))
     return {
         "rows": [
             {
@@ -562,5 +611,6 @@ async def task_refs(
 
 __all__ = [
     "DESCRIPTION_RANK", "MAX_HITS", "MAX_REFS", "MIN_QUERY", "REF_HITS_PER_NUMBER",
-    "SNIPPET_CHARS", "ref_numbers", "relative_task_ids", "snippet_of", "task_number",
+    "SNIPPET_CHARS", "lookup_task_refs", "ref_numbers", "ref_root", "relative_task_ids",
+    "snippet_of", "task_number",
 ]

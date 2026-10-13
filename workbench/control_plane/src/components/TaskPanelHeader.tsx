@@ -36,6 +36,7 @@ import { type ReactNode, useState } from "react";
 import AppIcon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { CLOSE_TASK_LABEL, EXPAND_ICONS, EXPAND_LABELS } from "@/lib/taskPanel";
+import { findTaskRefs, TaskRefText, type TaskRefResolver } from "@/lib/taskRefs";
 
 export interface TaskHeaderExpand {
   /** The panel is the full card now. */
@@ -212,16 +213,55 @@ function TaskWhereCrumbs({ where, current }: { where: TaskWhere; current: ReactN
  * the heading, because a heading is not allowed inside a button.
  *
  * `onSave` gets the trimmed text, and only when it is new and not empty.
+ *
+ * A `#123` in the title draws as the task pill (WS-57 TR-5), through
+ * `refResolver`, the task's root store. A pill is a link, and a link may not
+ * sit inside a button. So a title with a reference puts its words in a span
+ * that a click edits, and the edit button is the pencil beside them. A title
+ * with no reference keeps the one button.
  */
 export function EditableTaskTitle({
   value,
   onSave,
+  refResolver,
 }: {
   value: string;
   onSave: (next: string) => void;
+  /** The store the `#123` pills read. Absent: the app's store. */
+  refResolver?: TaskRefResolver;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  const start = () => {
+    setDraft(value);
+    setEditing(true);
+  };
+
+  if (!editing && findTaskRefs(value).length > 0) {
+    return (
+      <h2 className="text-base font-semibold leading-snug text-foreground">
+        <span className="group flex w-full items-start gap-2">
+          <span
+            className="min-w-0 flex-1 cursor-text"
+            onClick={(e) => {
+              if (!(e.target as HTMLElement | null)?.closest("a, button")) start();
+            }}
+          >
+            <TaskRefText text={value} resolver={refResolver} />
+          </span>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="Pencil"
+            aria-label="Edit title"
+            title="Edit title"
+            className="shrink-0 reveal-on-hover"
+            onClick={start}
+          />
+        </span>
+      </h2>
+    );
+  }
 
   if (!editing) {
     return (

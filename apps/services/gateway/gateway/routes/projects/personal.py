@@ -91,6 +91,7 @@ from gateway.routes.projects.tasks import (
     delete_task_in,
     move_task_in,
 )
+from gateway.routes.projects.text_links import link_from_text
 from gateway.routes.tasks.priority import important_from_importance
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -644,7 +645,10 @@ async def capture(
                 "due_at": payload.due_at,
                 "source": "manual",
             }, overlay)
-        return row_to_dict(task, TaskModel)
+        result = row_to_dict(task, TaskModel)
+    # WS-57 TR-5 — the captured title and notes, after the commit.
+    await link_from_text(user, [(str(task.id), [(title, False), (payload.notes, True)])])
+    return result
 
 
 async def create_personal_task(
@@ -748,6 +752,7 @@ async def capture_batch(
         project_id = str(project.id)
         status = await load_default_status(db, project_id)
         rows: list[dict[str, Any]] = []
+        saved: list[tuple[str, list[tuple[str | None, bool]]]] = []
         for item in items:
             # The ONE capture path: `create_personal_task` owns the row, the
             # assignee, the overlay and the `pm.task.created` event.
@@ -763,6 +768,9 @@ async def capture_batch(
                     "source": "manual",
                 }, overlay)
             rows.append(await _read_my_task(db, email, str(task.id)))
+            saved.append((str(task.id), [(_clean_title(item), False), (item.notes, True)]))
+    # WS-57 TR-5 — each captured title and its notes, after the commit.
+    await link_from_text(user, saved)
     return ListResponse(rows=rows, total=len(rows))
 
 
@@ -2593,6 +2601,10 @@ async def add_my_steps(
         parent = await load_visible_task(db, vis, task_id)
         # `create_personal_task` emits `pm.task.created` for each step.
         created = await _add_subtasks(db, email, parent, titles)
+    # WS-57 TR-5 — each step's title. `_add_subtasks` skips a blank title and
+    # keeps the order, so the ids pair with the titles that are not blank.
+    named = [t.strip() for t in titles if (t or "").strip()]
+    await link_from_text(user, [(tid, [(t, False)]) for tid, t in zip(created, named, strict=False)])
     return {"created": created}
 
 

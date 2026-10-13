@@ -20,6 +20,9 @@
  *   (owner report, 2026-10-13). `taskRefs.ts` holds the rules of what counts
  *   as one. `ChatTaskRef.tsx` draws it as the same task pill, or as the plain
  *   text when no visible task has that number.
+ * - With `{ names: false, taskRefs: true }`, ONLY the bare `#171`s change
+ *   (WS-57 TR-5). The task card's description and comments use it: a «mark»
+ *   and an email there are the member's own words, and stay as written.
  *
  * The node is `span[data-entity-pill]` in the HTML tree, so `MarkdownBody`
  * draws it through its `span` component, and nothing here knows React.
@@ -258,13 +261,31 @@ function glueTrailingPunctuation(nodes: MdNode[]): MdNode[] {
   return out;
 }
 
-function walk(node: MdNode, insideLink: boolean, emails: boolean, refs: boolean): void {
+/** Split one text value into text and `taskRef` nodes, and touch nothing
+ *  else: the mode with no names (WS-57 TR-5). Exported for its test. */
+export function splitRefsOnly(value: string): MdNode[] {
+  const parts = splitTaskRefs(value);
+  const out = parts.map((part, k): MdNode => {
+    if (part.kind === "text") return { type: "text", value: part.text };
+    const next = parts[k + 1];
+    return taskRefNode(part.ref, next?.kind === "text" ? next.text : "");
+  });
+  return glueTrailingPunctuation(out);
+}
+
+function walk(
+  node: MdNode, insideLink: boolean, emails: boolean, refs: boolean, names: boolean,
+): void {
   if (!node.children || SKIP.has(node.type)) return;
-  const kids = insideLink ? node.children : normalise(node.children, emails);
+  const kids = insideLink || !names ? node.children : normalise(node.children, emails);
   const next: MdNode[] = [];
   for (const child of kids) {
     if (child.type === "text") {
-      if (insideLink) {
+      if (!names) {
+        // The task card's text: its words stay as written, «marks» too.
+        // Only a `#171` outside a link becomes a node.
+        next.push(...(insideLink || !refs ? [child] : splitRefsOnly(child.value ?? "")));
+      } else if (insideLink) {
         // No pill inside a link (a control inside a control), and no marks.
         next.push({ ...child, value: (child.value ?? "").replace(/[«»]/g, "") });
       } else {
@@ -272,25 +293,29 @@ function walk(node: MdNode, insideLink: boolean, emails: boolean, refs: boolean)
       }
       continue;
     }
-    walk(child, insideLink || child.type === "link", emails, refs);
+    walk(child, insideLink || child.type === "link", emails, refs, names);
     next.push(child);
   }
   node.children = next;
 }
 
 /** The plugin's options. `emails: false` marks only the fenced names.
- *  `taskRefs: true` marks each bare `#171` as well. */
+ *  `taskRefs: true` marks each bare `#171` as well. `names: false` marks no
+ *  fenced name and no email, and changes no word: only the `#171`s, for the
+ *  task card (WS-57 TR-5). */
 export interface EntityPillOptions {
   emails?: boolean;
   taskRefs?: boolean;
+  names?: boolean;
 }
 
 /** The plugin. `remarkPlugins={[remarkGfm, remarkEntityPills]}`. */
 export default function remarkEntityPills(options?: EntityPillOptions) {
   const emails = options?.emails !== false;
   const refs = options?.taskRefs === true;
+  const names = options?.names !== false;
   return (tree: MdNode) => {
-    walk(tree, false, emails, refs);
+    walk(tree, false, emails, refs, names);
   };
 }
 

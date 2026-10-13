@@ -54,6 +54,7 @@ import { useToast } from "@/components/ui/Toast";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { TaskLinks } from "./TaskLinks";
 import { MarkdownBody } from "@/components/MarkdownMessage";
+import { taskRefResolverFor, type TaskRefResolver } from "@/lib/taskRefs";
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
@@ -251,10 +252,13 @@ function Entry({
   activity,
   fields,
   personLabels,
+  refResolver,
 }: {
   activity: ActivityRow;
   fields: FieldRow[];
   personLabels?: ReadonlyMap<string, string>;
+  /** The task's root store, for the `#123` pills (WS-57 TR-5). */
+  refResolver?: TaskRefResolver;
 }) {
   const who = activity.created_by ?? "";
   return (
@@ -280,6 +284,9 @@ function Entry({
           <MarkdownBody
             content={keepLineBreaks(describeActivity(activity, fields))}
             plainEmails
+            taskRefs
+            taskRefResolver={refResolver}
+            projectPills
           />
         </div>
       ) : (
@@ -325,6 +332,9 @@ export function TaskBody({
   urgentWindowHours,
 }: TaskBodyProps) {
   const toast = useToast();
+  // WS-57 TR-5 — the `#123` pills in the description and the comments read
+  // this task's root first, as the gateway's links from text do.
+  const refResolver = taskRefResolverFor(task.root_project_id);
   // D-PM-38 decision 2 (S5) — completing a parent with open subtasks asks.
   const subtaskComplete = useSubtaskComplete();
 
@@ -1054,7 +1064,8 @@ export function TaskBody({
                     if (clickEdits(e)) editDescription(true);
                   }}
                 >
-                  <MarkdownBody content={keepLineBreaks(forView(description))} plainEmails />
+                  <MarkdownBody content={keepLineBreaks(forView(description))} plainEmails taskRefs
+                    taskRefResolver={refResolver} projectPills />
                 </div>
                 <Button
                   className="shrink-0"
@@ -1314,6 +1325,7 @@ export function TaskBody({
                       activity={root}
                       fields={fields}
                       personLabels={personLabels}
+                      refResolver={refResolver}
                     />
                     {/* ONE level: the gateway refuses a reply to a reply. */}
                     <div className="mt-1 flex items-center gap-1">
@@ -1340,6 +1352,7 @@ export function TaskBody({
                               activity={reply}
                               fields={fields}
                               personLabels={personLabels}
+                              refResolver={refResolver}
                             />
                           </li>
                         ))}
@@ -1362,6 +1375,7 @@ export function TaskBody({
                         activity={activity}
                         fields={fields}
                         personLabels={personLabels}
+                        refResolver={refResolver}
                       />
                     </li>
                   ))}

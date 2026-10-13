@@ -1,0 +1,253 @@
+{
+ "about": "WS-57 TR-5. The one grammar of a task reference (#123), as cases. workbench/control_plane/src/lib/taskRefs.test.ts runs findTaskRefs over them, and tests/unit/test_task_refs_text_links.py runs gateway/routes/projects/text_links.py find_task_refs over them. Each case gives the numbers found, in order. Change a rule in one language and one of the two suites fails.",
+ "cases": [
+  {
+   "name": "a bare reference",
+   "text": "See #171 for the rest",
+   "numbers": [
+    171
+   ]
+  },
+  {
+   "name": "several in one line",
+   "text": "#171 and #87, then #5 (and #6)",
+   "numbers": [
+    171,
+    87,
+    5,
+    6
+   ]
+  },
+  {
+   "name": "at the start and the end",
+   "text": "#12 is first, the last is #34",
+   "numbers": [
+    12,
+    34
+   ]
+  },
+  {
+   "name": "alone",
+   "text": "#7",
+   "numbers": [
+    7
+   ]
+  },
+  {
+   "name": "punctuation after",
+   "text": "#87, then #88. Then #89; #90: #91! #92? (#93)",
+   "numbers": [
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93
+   ]
+  },
+  {
+   "name": "a colour with letters",
+   "text": "color: #fff; and #a1b2c3 and #1a2b3c",
+   "numbers": []
+  },
+  {
+   "name": "a colour of digits",
+   "text": "background #112233 and #11223344",
+   "numbers": []
+  },
+  {
+   "name": "a hex run that is not a colour",
+   "text": "#1234567 and #12345 and #123",
+   "numbers": [
+    1234567,
+    12345,
+    123
+   ]
+  },
+  {
+   "name": "a hashtag word",
+   "text": "#launch in #general and #dev-team",
+   "numbers": []
+  },
+  {
+   "name": "glued to a letter or digit before",
+   "text": "abc#12 and 9#12 and x_#12",
+   "numbers": []
+  },
+  {
+   "name": "glued to a letter after",
+   "text": "#12a and #12_b",
+   "numbers": []
+  },
+  {
+   "name": "a decimal",
+   "text": "#1.5 and #2,5 and #3. Next",
+   "numbers": [
+    3
+   ]
+  },
+  {
+   "name": "a URL fragment",
+   "text": "https://example.com/page#12",
+   "numbers": []
+  },
+  {
+   "name": "a URL path fragment",
+   "text": "go to example.com/#12 now",
+   "numbers": []
+  },
+  {
+   "name": "a www URL",
+   "text": "www.example.com?x=#12 and (www.x.io#4)",
+   "numbers": []
+  },
+  {
+   "name": "an HTML entity and a double hash",
+   "text": "&#12; and ##12",
+   "numbers": []
+  },
+  {
+   "name": "a leading zero",
+   "text": "#0 and #012 and #00",
+   "numbers": []
+  },
+  {
+   "name": "ten digits",
+   "text": "#1234567890 and #123456789",
+   "numbers": [
+    123456789
+   ]
+  },
+  {
+   "name": "another kind of number",
+   "text": "PR #120, Order #45, Sprint #3, Invoice #4521, pull #9",
+   "numbers": []
+  },
+  {
+   "name": "another kind, with a full stop",
+   "text": "v. #4 and step #2 but task #8",
+   "numbers": [
+    8
+   ]
+  },
+  {
+   "name": "a rank",
+   "text": "#1 priority and #2 spot and #3 is mine",
+   "numbers": [
+    3
+   ]
+  },
+  {
+   "name": "a rank word in other case",
+   "text": "#1 Priority and #4 BEST",
+   "numbers": []
+  },
+  {
+   "name": "words that can name a task",
+   "text": "issue #12, bug #13, ticket #14, item #15",
+   "numbers": [
+    12,
+    13,
+    14,
+    15
+   ]
+  },
+  {
+   "name": "a unicode letter before",
+   "text": "é#12 and 中#13 and -#14",
+   "numbers": [
+    14
+   ]
+  },
+  {
+   "name": "a unicode letter after",
+   "text": "#12é and #13中 and #14-",
+   "numbers": [
+    14
+   ]
+  },
+  {
+   "name": "slash, backslash, equals, at, question",
+   "text": "a/#1 b\\#2 c=#3 d@#4 e?#5",
+   "numbers": []
+  },
+  {
+   "name": "brackets and quotes",
+   "text": "[#21] \"#22\" '#23' {#24} <#25>",
+   "numbers": [
+    21,
+    22,
+    23,
+    24,
+    25
+   ]
+  },
+  {
+   "name": "a newline",
+   "text": "line one #31\n#32 line two",
+   "numbers": [
+    31,
+    32
+   ]
+  },
+  {
+   "name": "a markdown heading marker",
+   "text": "# 12 and ## 13",
+   "numbers": []
+  },
+  {
+   "name": "empty and no hash",
+   "text": "",
+   "numbers": []
+  },
+  {
+   "name": "no reference",
+   "text": "Nothing to see here",
+   "numbers": []
+  },
+  {
+   "name": "a dash before",
+   "text": "see—#41 and –#42",
+   "numbers": [
+    41,
+    42
+   ]
+  },
+  {
+   "name": "an emoji before",
+   "text": "🚀#51 and 🚀 #52",
+   "numbers": [
+    51,
+    52
+   ]
+  },
+  {
+   "name": "a tab",
+   "text": "\t#61\t",
+   "numbers": [
+    61
+   ]
+  },
+  {
+   "name": "chapter and section",
+   "text": "chapter #3, section #4, slide #5",
+   "numbers": []
+  },
+  {
+   "name": "kind word far before",
+   "text": "the order was late, see #77",
+   "numbers": [
+    77
+   ]
+  },
+  {
+   "name": "a percent and a plus",
+   "text": "50%#1 and +#2",
+   "numbers": [
+    1,
+    2
+   ]
+  }
+ ]
+}

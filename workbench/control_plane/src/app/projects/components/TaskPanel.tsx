@@ -71,6 +71,7 @@ import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
 import { useAccess } from "@/components/AccessProvider";
+import { taskRefResolverFor } from "@/lib/taskRefs";
 
 interface Props {
   task: TaskRow;
@@ -254,7 +255,10 @@ export function TaskPanel({
         />
         {/* Wraps rather than truncates: the title is the one thing on the
             panel nobody can afford to have cut off. Click it to rename. */}
-        <EditableTaskTitle value={task.title} onSave={(t) => void rename(t)} />
+        {/* WS-57 TR-5 — a `#123` in it draws as the task pill, read in this
+            task's root first. */}
+        <EditableTaskTitle value={task.title} onSave={(t) => void rename(t)}
+          refResolver={taskRefResolverFor(task.root_project_id)} />
         {/* The chip row. The status is drawn through the shared `StatusChip`,
             in the accent `accentForStatus` resolves; the Details block in the
             body carries the CONTROL that changes it. */}
