@@ -11,7 +11,7 @@ Hostinger VPS deployment scripts, Caddy reverse proxy config, and CI/CD pipeline
 - hostinger/acb-gateway.service -- systemd unit: FastAPI gateway on :8080
 - hostinger/acb-workbench.service -- systemd unit: Next.js workbench on :3001
 - hostinger/acb-operator-console.service -- systemd unit: the staff Operator Console. It is the unit that ran on the box, byte for byte (WS-49 BH-2)
-- hostinger/acb-agent-edge.service -- systemd unit: the MCP edge for outside agents on 127.0.0.1:8091 (WS-55 EA-10a). It loads its own env file, and its drop-in `50-hardening.conf` hides the root `.env`. The deploy restarts it only when the unit is enabled. Caddy serves it as `mcp.metorite.com`. Spec: `project-docs/specs/external_agent_access.md` §15.3. Fence: `tests/unit/test_agent_edge_deploy.py`
+- hostinger/acb-agent-edge.service -- systemd unit: the MCP edge for outside agents on 127.0.0.1:8091 (WS-55 EA-10a). It runs as a systemd `DynamicUser`, never as `acb`, so file permissions close each 0600 file of `acb` to it. systemd loads its own env file as root. Its drop-in `50-hardening.conf` also hides the root `.env`, the workbench tree and the gateway data. The deploy restarts it only when the unit is enabled. Caddy serves it as `mcp.metorite.com`. Spec: `project-docs/specs/external_agent_access.md` §15.3. Fence: `tests/unit/test_agent_edge_deploy.py`
 - caddy/ -- Caddy reverse proxy configuration
 - secrets/manifest.json -- the secrets-drop manifest that `scripts/secrets.sh` reads. It holds names, paths and modes, and never a value. Git tracks only this file in `secrets/`. Reference: `docs/secrets_drop.md`
 - ../.github/workflows/deploy.yml -- CI/CD: push-to-deploy (lint → test → SSH → deploy → smoke)

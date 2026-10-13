@@ -916,32 +916,65 @@ EA-10 puts the edge on the box as a pilot. The flag turns on for the organizatio
 
 **EA-10a. The unit, its sandbox and its deploy step (AGENT-SAFE, gate `deploy-write`).**
 
-The unit file is `deploy/hostinger/acb-agent-edge.service`. It holds these four lines:
+The unit file is `deploy/hostinger/acb-agent-edge.service`. It holds these lines:
 
 ```
-User=acb
-WorkingDirectory=/opt/acb/app/apps/services/agent_edge
+DynamicUser=yes
+User=acb-agent-edge
 EnvironmentFile=/opt/acb/app/apps/services/agent_edge/.env
+RuntimeDirectory=acb-agent-edge
+WorkingDirectory=/run/acb-agent-edge
 ExecStart=/opt/acb/app/.venv/bin/uvicorn agent_edge.app:app --host 127.0.0.1 --port 8091
 ```
 
-- `acb` is the user of `acb-gateway.service`.
 - Port 8091 is free. On 2026-10-13 no unit, compose file or Caddy site in the repo uses it. The Customer Console uses 8090.
 - The edge listens on loopback only. Caddy is its only public door.
-- `uv sync` already installs the edge into the shared venv, because the root `pyproject.toml` lists `agent-edge`.
+- `uv sync` already installs the edge into the shared venv, because the root `pyproject.toml` lists `agent-edge`. So the import needs no working directory.
 
-The sandbox is `deploy/hostinger/acb-agent-edge.service.d/50-hardening.conf`. It has the BH-2 shape of `acb-gateway`, and it adds `InaccessiblePaths=/opt/acb/app/.env`.
+**The identity (fix round 1).** The edge does not run as `acb`. As `acb`, it could read every 0600 file of `acb`. These include the root `.env`, each `.env.bak-<stamp>` copy that `scripts/secrets.sh` keeps, and each `.env-edit.*` file. `InaccessiblePaths` takes no glob, so a path sandbox cannot close those copies. A different identity closes them with plain file permissions.
 
-- **Why the sandbox hides the root `.env`.** `Settings` reads `env_file=".env"`, and that path is relative to the working directory. The root `.env` holds `GATEWAY_INTERNAL_TOKEN`, and the edge holds no bearer (EA3-1). So a wrong working directory must never load it.
-- The sandbox also hides the env files of the workbench and the two consoles, the Git checkout, the SSH keys and Copilot tokens of `acb`, and the Docker socket.
+- **Why `DynamicUser`, and not a fixed user.** The edge only READS the code and the venv, and it writes no file. `DynamicUser=yes` gives the unit a fresh uid at each start, with no home and no file on the box. So nothing must create a user, and no file can ever belong to the edge.
+- **What it must read.** The code under `/opt/acb/app` and the venv at `/opt/acb/app/.venv`. A git checkout and `uv sync` write them as `acb` under umask 022, so they are 0755 and 0644. The repo cannot prove the modes of the box, so the pre-enable check below proves them.
+- **The interpreter.** The venv uses the system Python. `/home/acb/.local/share/uv` does not exist on the box (`box_hardening.md`, the home of `acb`). So `ProtectHome=yes` is safe, and the check below proves it too.
+- **The env file.** systemd reads `EnvironmentFile` as root, before it drops to the dynamic user. So the edge file stays `acb`-owned at 0600, and the edge process cannot open it.
+- **Why the working directory is `/run/acb-agent-edge`.** `Settings` reads `env_file=".env"` from the working directory, and pydantic raises on a `.env` that it cannot open. The runtime directory is empty, so `Settings` reads only the process env that systemd filled. It is never the checkout root, where `.env` holds `GATEWAY_INTERNAL_TOKEN`.
+
+**The sandbox** is `deploy/hostinger/acb-agent-edge.service.d/50-hardening.conf`. It has the BH-2 shape of `acb-gateway`, with `ProtectHome=yes`. It is the second layer, for the paths that are not 0600.
+
+- `InaccessiblePaths=/opt/acb/app/.env` has no `-`, because the root `.env` is always on the box.
+- It also hides the workbench tree, the Console env file, the Git checkout, `/opt/acb/app/data`, `/var/lib/acb-gateway`, `/var/cache/acb-gateway`, the Docker socket and the user manager. The workbench tree holds `.env.local` and the `.env.local.bak.<epoch>` copies of `vps_apply.sh`, whose mode the repo does not fix.
 - It sets no `ReadWritePaths`, because the edge writes no file.
+- **What the sandbox does not do.** The edge holds the DSN of the gateway's database role. Code execution in the edge reaches each table that this role reaches. A narrower role is a follow-up before GA (§17).
+- `bh2_strict_check` in `vps_apply.sh` reads the gateway only. It does not check the sandbox of the edge. The tests of EA-10a pin each line instead.
 
-The deploy step is in `scripts/vps_apply.sh`, after the Customer Console step, in the same pattern:
+**The pre-enable check (owner or operator, gate `deploy`).** Run it on the box after the deploy has installed the unit, and before `systemctl enable`. Stop at the first line that differs.
+
+1. The new identity can read the code and the venv, with no home. The line prints `code and venv: readable`:
+
+```
+sudo systemd-run --wait --pipe --quiet -p DynamicUser=yes -p ProtectHome=yes -p WorkingDirectory=/ /opt/acb/app/.venv/bin/python -c "import agent_edge.app; print('code and venv: readable')"
+```
+
+2. The new identity cannot read the root `.env` or any copy of it. Each line prints `closed`. A `READABLE` line means that file has a mode other than 0600, so fix the mode first:
+
+```
+sudo systemd-run --wait --pipe --quiet -p DynamicUser=yes sh -c 'for p in /opt/acb/app/.env /opt/acb/app/.env.* /opt/acb/app/.env-edit.*; do [ -e "$p" ] || continue; if [ -r "$p" ]; then echo "READABLE $p"; else echo "closed $p"; fi; done'
+```
+
+3. The unit hides the gateway data. The output lists `/opt/acb/app/.env`, `/opt/acb/app/data` and `/var/lib/acb-gateway`:
+
+```
+sudo systemctl show acb-agent-edge -p DynamicUser -p User -p InaccessiblePaths
+```
+
+**The deploy step** is in `scripts/vps_apply.sh`, after the Customer Console step, in the same pattern:
 
 1. When `acb-agent-edge` is enabled, the step installs the unit file if it changed. Then it restarts the unit.
 2. It waits for an HTTP answer on `http://127.0.0.1:8091/.well-known/oauth-authorization-server`. A 404 counts, because the flag is off by default.
 3. An enabled unit that does not answer fails the deploy.
 4. When the unit is not enabled, the step does nothing and says so. A unit that is not enabled stays off.
+
+- **The probe reads no database.** With the flag off, no route of the edge reads the database, and the edge has no readiness route. Step 3 of the EA-10c smoke is the database check.
 
 The BO-23 loop installs the unit file, and the BH-7 step installs the drop-in. Neither one enables a service. So the first deploy puts the files on the box and starts nothing.
 
@@ -951,13 +984,21 @@ The BO-23 loop installs the unit file, and the BH-7 step installs the drop-in. N
 |---|---|
 | `AGENT_ACCESS_ENABLED` | `true` at the pilot. While it is not set, every route answers 404 |
 | `AGENT_EDGE_SIGNING_KEY` | The same key as the gateway. At least 32 bytes, and not equal to `GATEWAY_INTERNAL_TOKEN` or `LITELLM_MASTER_KEY` |
-| `DATABASE_URL` | The DSN and the role of the gateway's `DATABASE_URL`. `lookup_token` and the other token acts read it through `acb_common.db` |
-| `DB_STATEMENT_CACHE_SIZE` | The value of the root `.env`, when it sets one. A transaction pooler needs `0` |
+| `DATABASE_URL` | The DSN and the role of the gateway's `DATABASE_URL`, on the SESSION pooler. `lookup_token` and the other token acts read it through `acb_common.db` |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | `1` and `1`. ⚠️ OPEN: read the pooler budget below |
+| `DB_STATEMENT_CACHE_SIZE` | The value of the root `.env`, when it sets one |
 | `AGENT_EDGE_GATEWAY_URL` | Not set. The default `http://127.0.0.1:8080` is the gateway on loopback |
 | `AGENT_ISSUER`, `AGENT_RESOURCE` | Not set. The defaults are `https://mcp.metorite.com` and `https://mcp.metorite.com/mcp` |
 
 - The edge file must not hold `GATEWAY_INTERNAL_TOKEN`, `LITELLM_MASTER_KEY` or a provider key.
 - EA-10p decides if the edge reads `AGENT_ACCESS_ORGS`. If it does, the edge file holds the value of the root `.env`.
+
+**⚠️ The pooler budget is OPEN, and it blocks the enable of the edge.** The session pooler in front of the database allows 15 clients for the whole database. `TestThePoolCeilingFitsThePoolerInFront` (`tests/unit/test_db_engine_seam.py`) keeps 3 of them free for a migration, a `psql` and the backup job. So one process may open 12.
+
+- The gateway opens 7 + 2 async and 2 + 1 sync, so 12 (`settings.py`, `db_pool_size` and the note above it). That is the whole budget.
+- Without pool settings, the edge takes the defaults of `Settings`, so 9 more. With `1` and `1`, it takes 2. Then the sum is 14. That fits the cap of 15, but it leaves 1 slot for the operators, not 3.
+- **The transaction pooler (port 6543) is not proven safe.** The tenant bind of the edge is transaction-local (`acb_common/db.py:298`, `agent_tokens.py:239`), and a transaction pooler allows that. But no config in the repo uses port 6543. The seam sends `idle_in_transaction_session_timeout` in the startup packet (`db.py:132`). And `settings.py` records that a move to that port is "its own decision, not a knob turn".
+- So the decision goes to the orchestrator. The choices are a smaller reserve, a smaller gateway pool, or the transaction pooler for the edge. This slice does not lower the gateway pool, and it adds no fence for the sum until the decision.
 
 **The root `.env` of the gateway** gets three names. A writer of that file keeps its inode (`deploy/AGENTS.md`).
 
@@ -1007,7 +1048,8 @@ header_up -X-Agent-Signature
 
 1. `curl -s https://mcp.metorite.com/.well-known/oauth-authorization-server` prints the RFC 8414 document with HTTP 200. Its `issuer` is `https://mcp.metorite.com`. A 404 prints `{"detail":"Not Found"}`, and that means the flag is off.
 2. `curl -si -X POST https://mcp.metorite.com/mcp -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'` answers HTTP 401. Its header is `WWW-Authenticate: Bearer resource_metadata="https://mcp.metorite.com/.well-known/oauth-protected-resource/mcp"` (§9.6).
-3. On the box, this line fetches the metadata document of Claude Code through the CIMD fetch of `agent_access.py` (`_fetch_document`, about line 235). It writes nothing to the database, and it prints `Claude Code`:
+3. **The database check.** Send step 2 again, with `-H "Authorization: Bearer smoke-not-a-token"`. The edge looks the token up in the database (§7.1 step 1). HTTP 401 with `error="invalid_token"` proves that the database answered. HTTP 503 with `Retry-After: 2` means that the edge cannot reach the database.
+4. Run this line on the box. It fetches the metadata document of Claude Code through `_fetch_document` in `agent_access.py` (about line 235). It writes nothing to the database, and it prints `Claude Code`:
 
 ```
 cd /opt/acb/app && sudo -u acb .venv/bin/python -c "import asyncio; from gateway.routes import agent_access as a; u='https://claude.ai/oauth/claude-code-client-metadata'; print(a._validated_metadata(u, asyncio.run(a._fetch_document(u)))['client_name'])"
@@ -1039,6 +1081,7 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 - The consent routes of EA-2a trust the session alone. A cross-site request could drive `approve` while a member is signed in. EA-4 closes this with an `Origin` check, a `SameSite` session, no 3xx from approve and a one-time consent ticket from `check` (§15 EA-4).
 - For a private-use scheme, `redirect_host` shows the URI authority as if it were a web host. A client can list `x-evil://claude.ai/cb`, and the consent screen then shows `claude.ai`, although the browser gives the code to the native app that claims `x-evil`. EA-4 must show the scheme with the authority for every scheme other than http and https.
 - The redirect URI rules of EA-2a are a deny list of dangerous schemes. A deny list is never complete. EA-4 or EA-2b moves them to the RFC 8252 forms.
+- **Follow-up before GA, not for the pilot: a narrower database role for the edge.** The edge connects with the DSN and the role of the gateway (§15.3). So code execution in the edge reaches each table that the gateway reaches, whatever the sandbox hides. The edge needs `agent_token`, `agent_client` and `agent_connection` only. The first two are RLS-exempt (§10.3). A role with grants on those three tables alone takes the database out of the blast radius. No slice owns it yet.
 - D-EA-2 says the edge unit has a smaller blast radius. That is true only after the EA-10 sandbox. The edge holds the database DSN, and EA-3 adds the signing key, not the internal bearer. A thief with the key can act as any member who holds a live connection, on the GET routes of `MCP_ROUTES` (§10.2). A thief with the DSN reaches the database directly.
 
 ## 18. Changelog
@@ -1156,3 +1199,8 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The Caddyfile.** The site `mcp.metorite.com` caps a body at `1MiB`, the cap of the edge. The `reverse_proxy` of `api.metorite.com` strips the three identity headers and the three `X-Agent-*` headers.
   - **The fences.** `tests/unit/test_agent_edge_deploy.py` holds each pin, and it runs the deploy step against a stub `systemctl`. `test_caddy_auth_gate.py` stays red until the owner adds the line `CADDY-AUTH-APPROVED <sha>`.
   - **The smoke.** A POST to `/mcp` with no body answers 400, because §9.6 checks the body before the token. So the 401 smoke of EA-10c sends a `ping` body.
+- 2026-10-13 — Fix round 1 of EA-10, after the review. Each change went red under a named mutation first.
+  - **The identity (P1).** The edge runs as a `DynamicUser`, not as `acb`. As `acb`, it could read each 0600 copy of the root `.env` (`.env.bak-<stamp>`, `.env-edit.*`), and `InaccessiblePaths` takes no glob. Its working directory is now its own empty runtime directory, so `Settings` opens no `.env`. The sandbox adds `ProtectHome=yes` and hides the workbench tree and the gateway data. §15.3 adds a pre-enable check for the box.
+  - **The pooler budget (P1), OPEN.** The gateway already takes all 12 slots of the budget. The edge at `1` and `1` makes 14, which leaves 1 slot of the reserve of 3. The transaction pooler is not proven safe. The orchestrator decides, and the edge stays off until then.
+  - **The claim (P2).** The sandbox does not narrow the database. §17 holds a narrower database role for the edge as a follow-up before GA.
+  - **Notes.** The deploy probe reads no database, so step 3 of the EA-10c smoke is the database check. `bh2_strict_check` does not cover the edge.

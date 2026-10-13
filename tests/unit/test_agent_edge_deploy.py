@@ -5,7 +5,8 @@ Spec: project-docs/specs/external_agent_access.md §15.3 (the EA-10 pins).
 These tests read the repo, never the box. They hold four things:
 
 1. The unit ``deploy/hostinger/acb-agent-edge.service``: each pinned line.
-   The edge loads its OWN env file, and never the root ``.env``.
+   The edge runs as a DynamicUser, never as ``acb``, and its process reads
+   no ``.env`` file at all.
 2. Its sandbox ``acb-agent-edge.service.d/50-hardening.conf``: the BH-2 shape,
    plus ``InaccessiblePaths=/opt/acb/app/.env`` with no ``-``.
 3. The deploy step in ``scripts/vps_apply.sh``. The tests EXECUTE the step
@@ -63,33 +64,51 @@ def _one(p: Path, key: str) -> str:
 # ── 1. The unit ─────────────────────────────────────────────────────────────
 
 
+RUN_DIR = "/run/acb-agent-edge"
+
+
 def test_the_unit_holds_each_pinned_line() -> None:
     lines = _conf_lines(UNIT)
     for pin in (
-        "User=acb",
-        f"WorkingDirectory={EDGE_DIR}",
+        "DynamicUser=yes",
+        "User=acb-agent-edge",
+        "RuntimeDirectory=acb-agent-edge",
+        f"WorkingDirectory={RUN_DIR}",
         f"EnvironmentFile={EDGE_DIR}/.env",
         f"ExecStart=/opt/acb/app/.venv/bin/uvicorn agent_edge.app:app --host 127.0.0.1 --port {PORT}",
     ):
         assert pin in lines, pin
     # Exactly one of each, so a second line cannot override a pin.
-    for key in ("User", "WorkingDirectory", "EnvironmentFile", "ExecStart"):
+    for key in ("DynamicUser", "User", "RuntimeDirectory", "WorkingDirectory",
+                "EnvironmentFile", "ExecStart"):
         assert len(_values(UNIT, key)) == 1, key
 
 
-def test_the_unit_runs_as_the_user_of_the_gateway() -> None:
-    assert _one(UNIT, "User") == _one(GATEWAY_UNIT, "User") == "acb"
+def test_the_edge_never_runs_as_acb_or_root() -> None:
+    """Fix round 1, P1. As `acb`, the edge could read every 0600 file of acb:
+    the root .env, its .env.bak-<stamp> and .env-edit.* copies, and more.
+    InaccessiblePaths takes no glob, so only another identity closes them.
+    A DynamicUser gets a fresh uid at each start and owns no file."""
+    assert _one(UNIT, "DynamicUser") == "yes"
+    user = _one(UNIT, "User")
+    assert user not in ("acb", "root", "0", _one(GATEWAY_UNIT, "User")), user
+    for key in ("Group", "SupplementaryGroups"):
+        assert not _values(UNIT, key), key
+    for ln in _conf_lines(DROP_IN):
+        assert ln.split("=", 1)[0] not in ("DynamicUser", "User", "Group"), ln
 
 
-def test_the_edge_reads_its_own_env_file_and_never_the_root_one() -> None:
-    """Settings reads env_file=".env" relative to the working directory. So
-    the working directory must hold the same file as EnvironmentFile, and it
-    must not be the checkout root, where .env holds the internal bearer."""
+def test_the_edge_process_reads_no_env_file_of_its_own() -> None:
+    """systemd reads EnvironmentFile as root. The edge process cannot open
+    that 0600 file, and pydantic raises on a .env it cannot open. So
+    Settings must find NO .env in the working directory: the unit's own
+    empty runtime directory. Never the checkout root, never the edge dir."""
     workdir = _one(UNIT, "WorkingDirectory")
+    assert workdir == f"/run/{_one(UNIT, 'RuntimeDirectory')}"
+    assert workdir not in ("/opt/acb/app", EDGE_DIR)
+    assert not workdir.startswith("/opt/")
     env_file = _one(UNIT, "EnvironmentFile")
-    assert env_file == f"{workdir}/.env"
-    assert workdir != "/opt/acb/app"
-    assert env_file != ROOT_ENV
+    assert env_file == f"{EDGE_DIR}/.env" != ROOT_ENV
     for f in (UNIT, DROP_IN):
         assert ROOT_ENV not in _values(f, "EnvironmentFile"), f.name
 
@@ -141,13 +160,11 @@ HARDENING_LINES = [
     "NoNewPrivileges=yes",
     "PrivateTmp=yes",
     "ProtectSystem=strict",
-    "ProtectHome=read-only",
+    "ProtectHome=yes",
     "InaccessiblePaths=/opt/acb/app/.env",
-    "InaccessiblePaths=-/opt/acb/app/workbench/control_plane/.env.local"
-    " -/opt/acb/app/workbench/operator_console/.env.local"
-    " -/opt/acb/app/apps/services/customer_console/.env -/opt/acb/app/.git",
-    "InaccessiblePaths=-/home/acb/.ssh -/home/acb/.acb -/home/acb/.copilot"
-    " -/home/acb/.cache/copilot -/home/acb/.cache/github-copilot-sdk",
+    "InaccessiblePaths=-/opt/acb/app/workbench -/opt/acb/app/apps/services/customer_console/.env"
+    " -/opt/acb/app/.git",
+    "InaccessiblePaths=-/opt/acb/app/data -/var/lib/acb-gateway -/var/cache/acb-gateway",
     "InaccessiblePaths=-/run/user -/run/docker.sock -/var/run/docker.sock -/etc/acb -/etc/sudoers.d",
     "ProtectProc=invisible",
     "RestrictSUIDSGID=yes",
@@ -185,17 +202,21 @@ def test_the_root_env_is_hidden_with_no_dash() -> None:
 
 
 def test_the_other_secrets_of_the_box_are_hidden() -> None:
+    """The second layer, for paths that are NOT 0600: the workbench tree
+    (its .env.local and the .env.local.bak.* copies), the gateway data and
+    the mem0 store. The identity alone does not close a 0644 file."""
     hidden = {p.lstrip("-") for p in _hidden()}
     assert {
-        "/opt/acb/app/workbench/control_plane/.env.local",
-        "/opt/acb/app/workbench/operator_console/.env.local",
+        "/opt/acb/app/workbench",
         "/opt/acb/app/apps/services/customer_console/.env",
-        "/home/acb/.ssh", "/home/acb/.copilot",
+        "/opt/acb/app/data", "/var/lib/acb-gateway",
         "/run/docker.sock", "/var/run/docker.sock", "/run/user", "/etc/acb",
     } <= hidden
-    # The edge's OWN env file stays readable.
-    assert f"{EDGE_DIR}/.env" not in hidden
-    assert not [p for p in hidden if EDGE_DIR.startswith(p) or p == "/opt/acb/app"]
+    assert "ProtectHome=yes" in _conf_lines(DROP_IN)
+    # The code and the venv stay readable: no parent of them is hidden.
+    for needed in (EDGE_DIR, "/opt/acb/app/.venv", "/opt/acb/app/packages"):
+        assert not [p for p in hidden if needed == p or needed.startswith(p + "/")], needed
+    assert "/opt/acb/app" not in hidden
 
 
 def test_the_edge_writes_nothing_and_cannot_gain_a_privilege() -> None:
