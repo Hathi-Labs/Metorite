@@ -599,6 +599,24 @@ class TestTheClock:
         assert rows["tasks:t-soon"]["kind"] == "due_today"
         assert "tasks:t-next" not in rows
 
+    def test_a_run_that_crosses_utc_midnight_keeps_the_order(self, monkeypatch):
+        # Main's deploy, 2026-10-12: the suite collected before midnight and
+        # ran this test after it. The data is from 23:40, and the wall clock
+        # says 00:05. The feed must read the frozen instant, not the wall.
+        collected = datetime(2026, 10, 12, 23, 40, tzinfo=UTC)
+        wall = datetime(2026, 10, 13, 0, 5, tzinfo=UTC)
+
+        class _Wall(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return wall if tz is None else wall.astimezone(tz)
+
+        f = _install(monkeypatch, Fakes(collected))
+        monkeypatch.setattr(shell, "datetime", _Wall)
+        assert f.later_today < wall, "non-vacuity: by the wall clock, t-soon is late"
+        assert ids(run(admin(*ALL, "approvals")))[2:5] == [
+            "approvals:pa-old", "approvals:pa-new", "tasks:t-soon"]
+
     def test_once_its_time_passes_a_task_is_overdue(self, frozen, monkeypatch):
         # Non-vacuity: the seam is the clock the feed reads. Move it past
         # the deadline, and the same task is overdue.
