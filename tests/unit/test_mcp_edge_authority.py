@@ -144,20 +144,25 @@ GOLDEN: dict[str, tuple[str, str]] = {
         f"(x.organization_id = CAST(:vis_org AS uuid) AND (x.project_id IN ({_GRANTED})"
         + _assignee("x"),
         "cc2295becad3c04cbac338584b95bf7c27c47cc363aa012f6918000471e84480"),
+    # ⚠️ H-304 changed these two ON PURPOSE (D63). The unrestricted task
+    # clause was the tenant alone, so `data:org:read` read a closed tree. It
+    # now has the same two arms as the restricted clause, over the tenant set.
     "task_visibility_clause(unrestricted)": (
-        "t.organization_id = CAST(:vis_org AS uuid)",
-        "898cf0ce8cda794743c3a58b4c032e375248315230b1f606b73951125b6bc003"),
+        f"(t.organization_id = CAST(:vis_org AS uuid) AND (t.project_id IN ({_TENANT_ONLY})"
+        + _assignee("t"),
+        "bbf499b5a640c6de7e3ec2c8f344620f29223a9e000b7962646653b703561ec1"),
     "task_visibility_clause(unrestricted, 'x')": (
-        "x.organization_id = CAST(:vis_org AS uuid)",
-        "80cd9450518fa5ce614dbc3a07faef1f4412949e343b9c220d74cf6ede436269"),
+        f"(x.organization_id = CAST(:vis_org AS uuid) AND (x.project_id IN ({_TENANT_ONLY})"
+        + _assignee("x"),
+        "ef6e9fc8a6643692f405b9a218bc030cfa2f2c54e303c1d7b8b2a74591c7f60f"),
 }
 
 
 def _golden_visibilities() -> tuple[Visibility, Visibility]:
     restricted = Visibility(unrestricted=False, email="dev@golden.test",
                             groups=("group:ops",), organization_id=GOLDEN_ORG)
-    unrestricted = Visibility(unrestricted=True, email="", groups=(),
-                              organization_id=GOLDEN_ORG)
+    unrestricted = Visibility(unrestricted=True, email="admin@golden.test",
+                              groups=(), organization_id=GOLDEN_ORG)
     return restricted, unrestricted
 
 
@@ -193,7 +198,9 @@ class TestTheHumanPathIsByteIdentical:
         assert restricted.params == {
             "vis_email": "dev@golden.test", "vis_groups": ["group:ops"],
             "vis_org": GOLDEN_ORG}
-        assert unrestricted.params == {"vis_org": GOLDEN_ORG}
+        # H-304: the unrestricted caller binds its email for the assignee arm.
+        assert unrestricted.params == {
+            "vis_email": "admin@golden.test", "vis_org": GOLDEN_ORG}
 
     def test_agent_none_is_the_default(self):
         assert Visibility(unrestricted=False, email="", groups=()).agent is None
@@ -716,12 +723,14 @@ class TestEachNarrowingHidesItsTargetOnBothArms:
                            kept=[armed.t["team"], armed.t["foreign"]])
 
     async def test_the_seal_binds_the_unrestricted_form_too(self, armed):
+        """H-304: the human reader no longer lists the sealed task either. The
+        reader is not its assignee, so the hand-over arm does not reach it."""
         rows, _ = await _list(armed, "reader human", email=READER)
-        assert armed.t["handover"] in rows, "data:org:read lists the sealed task"
+        assert armed.t["handover"] not in rows, "data:org:read lists the sealed task"
         agent_rows, agent_total = await _list(armed, "reader agent",
                                               connection=armed.c["reader"])
         assert armed.t["handover"] not in agent_rows
-        assert agent_rows == rows - {armed.t["handover"]}
+        assert agent_rows == rows
         assert agent_total == len(agent_rows)
 
     async def test_a_pin_hides_a_project_from_the_tree_and_from_a_get(self, armed):
