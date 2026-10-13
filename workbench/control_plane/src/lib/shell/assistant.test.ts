@@ -33,6 +33,7 @@ import {
   contextChipText,
   currentAssistantFacts,
   dataText,
+  dockFloats,
   effectiveMode,
   onPageChange,
   openAssistant,
@@ -80,11 +81,42 @@ describe("the two forms", () => {
     expect(clampDockWidth(Number.NaN)).toBe(DOCK_DEFAULT);
   });
 
-  it("a phone and a narrow window get the full view only", () => {
+  it("a phone gets the full view only, and the width never picks the form (owner, 2026-10-14)", () => {
     expect(effectiveMode("dock", DOCK_MIN_VIEWPORT, false)).toBe("dock");
-    expect(effectiveMode("dock", DOCK_MIN_VIEWPORT - 1, false)).toBe("full");
+    expect(effectiveMode("dock", DOCK_MIN_VIEWPORT - 1, false)).toBe("dock");
     expect(effectiveMode("dock", 1920, true)).toBe("full");
     expect(effectiveMode("full", 1920, false)).toBe("full");
+  });
+
+  it("below the floor the side panel floats over the page, and a phone has none", () => {
+    expect(dockFloats(DOCK_MIN_VIEWPORT, false)).toBe(false);
+    expect(dockFloats(DOCK_MIN_VIEWPORT - 1, false)).toBe(true);
+    expect(dockFloats(390, true)).toBe(false);
+  });
+
+  it("every open from closed is the side panel. The full view is asked for, and lasts one open", () => {
+    closeAssistant();
+    openAssistant();
+    expect(assistantState().mode).toBe("dock");
+    setAssistantMode("full");
+    openAssistant({ text: "and the next one" });
+    expect(assistantState().mode).toBe("full");
+    closeAssistant();
+    openAssistant();
+    expect(assistantState().mode).toBe("dock");
+    closeAssistant();
+    openAssistant({ mode: "full" });
+    expect(assistantState().mode).toBe("full");
+    closeAssistant();
+  });
+
+  it("words asked while the assistant is open go into the chat on screen", () => {
+    closeAssistant();
+    openAssistant({ text: "first" });
+    expect(assistantState().ask?.join).toBe(false);
+    openAssistant({ text: "second" });
+    expect(assistantState().ask?.join).toBe(true);
+    closeAssistant();
   });
 });
 
@@ -129,7 +161,7 @@ describe("the store", () => {
     expect(assistantState().focusSeq).toBe(focusSeq + 1);
   });
 
-  it("keeps the member's form and width under their own chat namespace", () => {
+  it("keeps the member's panel width, and never the form, under their own chat namespace", () => {
     const store = new Map<string, string>();
     const ls = {
       getItem: (k: string) => store.get(k) ?? null,
@@ -144,10 +176,9 @@ describe("the store", () => {
       const keys = [...store.keys()];
       expect(keys).toHaveLength(1);
       expect(keys[0]).toContain("a@x.test|org-1");
-      expect(JSON.parse(store.get(keys[0])!)).toEqual({ mode: "full", width: DOCK_MAX });
-      // The app switch shows the panel for a moment, and keeps the choice.
-      setAssistantMode("dock", false);
-      expect(JSON.parse(store.get(keys[0])!).mode).toBe("full");
+      // A stored form made one press open two different things (owner,
+      // 2026-10-14), so only the width is kept.
+      expect(JSON.parse(store.get(keys[0])!)).toEqual({ width: DOCK_MAX });
     } finally {
       delete (globalThis as { localStorage?: unknown }).localStorage;
     }
@@ -195,7 +226,10 @@ describe("the bar joins only the member's own private chat (review of 2026-10-12
   it("the dock's choice and its ask both go through the rule", () => {
     const dock = read("lib/shell/AssistantDock.tsx");
     expect(dock).toMatch(/!s\.archivedAt && s\.isOwner !== false && \(s\.participantCount \?\? 0\) <= 1/);
-    expect(dock).toMatch(/if \(!ownEmpty && !barMayJoin\(cur, Date\.now\(\)\)\)/);
+    expect(dock).toMatch(/if \(!ownEmpty && !onScreen && !barMayJoin\(cur, Date\.now\(\)\)\)/);
+    // Asked with the chat on screen: it goes in, but never into a room or an
+    // archived chat (owner, 2026-10-14).
+    expect(dock).toMatch(/ask\.join && cur && !cur\.archivedAt && cur\.isOwner !== false && \(cur\.participantCount \?\? 0\) <= 1/);
   });
 
   it("the app switch needs the assistant open", () => {
@@ -268,12 +302,13 @@ describe("the context of each turn", () => {
 });
 
 describe("a page opened under the full view (owner, 2026-10-13)", () => {
-  it("a wide desktop shrinks the full view to the side panel", () => {
+  it("a desktop shrinks the full view to the side panel", () => {
     expect(onPageChange({ open: true, form: "full", canDock: true, phone: false })).toBe("dock");
   });
 
-  it("a narrow desktop has no side panel, so the assistant closes", () => {
+  it("a surface with no side panel closes it, and the dock gives every desktop one", () => {
     expect(onPageChange({ open: true, form: "full", canDock: false, phone: false })).toBe("close");
+    expect(read("lib/shell/AssistantDock.tsx")).toContain("const canDock = !phone;");
   });
 
   it("the side panel, a closed assistant and the phone sheet are left alone", () => {
@@ -289,10 +324,10 @@ describe("a page opened under the full view (owner, 2026-10-13)", () => {
     expect(read("components/AgentChat.tsx")).toContain('className="max-w-3xl mx-auto space-y-5"');
   });
 
-  it("the dock acts on a page CHANGE only, and keeps the member's own choice", () => {
+  it("the dock acts on a page CHANGE only", () => {
     const dock = read("lib/shell/AssistantDock.tsx");
     expect(dock).toContain("if (pathname === lastPathRef.current) return;");
-    expect(dock).toContain('if (act === "dock") setAssistantMode("dock", false);');
+    expect(dock).toContain('if (act === "dock") setAssistantMode("dock");');
   });
 });
 
@@ -354,9 +389,13 @@ describe("the source keeps the flag's two sides apart", () => {
     expect(shell).not.toMatch(/import AssistantDock/);
   });
 
-  it("the shell bar drops the activity control, which moves into the chat bar", () => {
-    expect(read("lib/shell/ShellBar.tsx")).toContain("activity={chatOn ? null : <ActivityControl />}");
-    expect(read("lib/shell/ChatBar.tsx")).toContain("<BarActivity");
+  it("the shell bar keeps the activity control, and adds the assistant's button (owner, 2026-10-14)", () => {
+    // The activity control has ONE job: the running count, and the list of
+    // runs. It never opens a chat by itself. The panel button opens the chat.
+    const bar = read("lib/shell/ShellBar.tsx");
+    expect(bar).toContain("activity={<ActivityControl />}");
+    expect(bar).toContain("assistant={chatOn ? <AssistantToggle /> : null}");
+    expect(bar).toMatch(/onClick=\{\(\) => \(st\.open \? closeAssistant\(\) : openAssistant\(\)\)\}/);
   });
 
   it("Projects, My Tasks and Email drop their own assistant behind the flag", () => {
@@ -365,8 +404,10 @@ describe("the source keeps the flag's two sides apart", () => {
     expect(read("app/email/page.tsx")).toMatch(/feature === "chat" && ONE_ASSISTANT/);
   });
 
-  it("the desktop raises the toasts above the bar", () => {
-    expect(read("app/globals.css")).toContain(':root[data-chat-bar="desktop"] .toast-viewport-bottom');
+  it("no bar sits at the foot of the desktop page any more (owner, 2026-10-14)", () => {
+    expect(read("app/globals.css")).not.toContain("data-chat-bar");
+    expect(read("lib/shell/ChatBar.tsx")).not.toMatch(/data-chat-bar|BarActivity|export function ChatBar/);
+    expect(read("components/AppShell.tsx")).not.toMatch(/<ChatBar/);
   });
 
   it("the phone's bottom nav holds an Ask tab with the run badge, and Menu gives the badge up", () => {

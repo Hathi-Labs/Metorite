@@ -25,8 +25,8 @@
  *
  * **The app switch** (owner, 2026-10-12). When the live run of the open chat
  * calls the specialist of another app the member holds, the page moves to
- * that app, once per run and per app. A full view on a wide screen becomes
- * the side panel for that moment, so the member sees the app. A toast offers
+ * that app, once per run and per app. A full view on a desktop becomes the
+ * side panel for that moment, so the member sees the app. A toast offers
  * the way back.
  *
  * Fences (R7): `assistant.test.ts`, `chatHistory.test.ts`, `seams.test.ts`.
@@ -71,6 +71,7 @@ import {
 } from "@/lib/sessions";
 
 import {
+  dockFloats,
   ASSISTANT_AGENT,
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
@@ -192,7 +193,12 @@ function useAssistantChat(open: boolean) {
     // takes them only if the bar may join it: never a room, never an
     // archived chat, never a stale one.
     const ownEmpty = cur && !cur.messageCount && !cur.archivedAt && cur.isOwner !== false;
-    if (!ownEmpty && !barMayJoin(cur, Date.now())) {
+    // Asked while the member watched this chat: it goes in, however old the
+    // chat is. Never into a room or an archived chat, for the reason above.
+    const onScreen = Boolean(
+      ask.join && cur && !cur.archivedAt && cur.isOwner !== false && (cur.participantCount ?? 0) <= 1,
+    );
+    if (!ownEmpty && !onScreen && !barMayJoin(cur, Date.now())) {
       openAssistant({ fresh: true });
       return;
     }
@@ -351,7 +357,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const st = useAssistant();
   const vw = useViewportWidth();
   const form: AssistantMode = effectiveMode(st.mode, vw, phone);
-  const canDock = effectiveMode("dock", vw, phone) === "dock";
+  // Every desktop has the side panel. Below the floor it floats over the
+  // page instead of sitting beside it (owner, 2026-10-14).
+  const canDock = !phone;
+  const floats = dockFloats(vw, phone);
   const chat = useAssistantChat(st.open);
   const pathname = usePathname();
   const router = useRouter();
@@ -396,8 +405,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
 
   // ── A page opened under the full view ───────────────────────────────────
   // The full view covers the page column, so an app the member opens from
-  // the sidebar would open out of sight. The view gives way: the side panel
-  // on a wide screen, closed on a narrow one (owner, 2026-10-13). The first
+  // the sidebar would open out of sight. The view gives way to the side
+  // panel, on every desktop (owner, 2026-10-13 and 2026-10-14). The first
   // page is the one the view opened over, so only a CHANGE counts.
   const lastPathRef = useRef(pathname);
   const pageRuleRef = useRef({ open: st.open, form, canDock, phone });
@@ -408,7 +417,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     if (pathname === lastPathRef.current) return;
     lastPathRef.current = pathname;
     const act = onPageChange(pageRuleRef.current);
-    if (act === "dock") setAssistantMode("dock", false);
+    if (act === "dock") setAssistantMode("dock");
     else if (act === "close") closeAssistant();
   }, [pathname]);
 
@@ -433,8 +442,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       movedRef.current.add(target.href);
       const back = live.pathname ?? "/";
       router.push(target.href);
-      // A full view on a wide screen hides the app it just opened.
-      if (live.form === "full" && live.canDock) setAssistantMode("dock", false);
+      // A full view hides the app it just opened.
+      if (live.form === "full" && live.canDock) setAssistantMode("dock");
       toast.show({
         key: `assistant-switch-${target.href}`,
         variant: "success",
@@ -455,7 +464,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       ? "fixed inset-0 z-50 flex flex-col bg-background pt-safe pb-safe"
       : form === "full"
         ? "absolute inset-0 z-20 flex flex-col bg-background"
-        : "relative flex h-full shrink-0 flex-col border-l border-border bg-card";
+        : floats
+          ? // A narrow desktop: the same panel, over the right of the page.
+            "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl"
+          : "relative flex h-full shrink-0 flex-col border-l border-border bg-card";
 
   // The full view on a desktop shows the chats as a column, as ChatGPT and
   // Claude do. The side panel and the phone open the same list on demand,

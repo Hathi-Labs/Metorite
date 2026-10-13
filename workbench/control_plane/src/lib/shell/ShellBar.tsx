@@ -4,7 +4,7 @@
  * The shell bar: one row across the top of every desktop page
  * (`navigation_shell.md` §3.1, NS-1, flag `NEXT_PUBLIC_SHELL_BAR`).
  *
- *   [ fold · logo ]          [ ✦ Search or ask anything  in <App>  ⌘K ]          [ bell · activity · (avatar) email ]
+ *   [ fold · logo ]     [ ✦ Ask Metorite, or search and open anything…  in <App>  ⌘K ]     [ panel · bell · activity · (avatar) email ]
  *
  * With the shell nav on too, the bar spans the whole window and opens with a
  * `lead` zone that AppShell fills: the sidebar's fold control and the
@@ -28,12 +28,17 @@
  *   • `/` focuses the page's own filter (`[data-page-filter]`) when the page
  *     has one, and opens the command bar when it does not (§6.1, owner
  *     decision 2026-10-07). Never while the member types in a field.
- *   • `⌘J` / `Ctrl J`, with `NEXT_PUBLIC_SHELL_CHAT` on (D99, §7.1): the
- *     cursor goes to the chat bar. With the assistant open it goes to the
- *     assistant, and pressed again in the assistant it closes it.
+ *   • `⌘J` / `Ctrl J`, with `NEXT_PUBLIC_SHELL_CHAT` on (D99, §7.1): opens
+ *     the assistant's side panel. With the assistant open it puts the cursor
+ *     in it, and pressed again in the assistant it closes it.
  *
- * **With `NEXT_PUBLIC_SHELL_CHAT` on, the activity control leaves this bar**
- * for the chat bar at the foot of the page (D99, `ChatBar.tsx`).
+ * **With `NEXT_PUBLIC_SHELL_CHAT` on, the field in the middle is REAL**
+ * (`AskField` in `ChatBar.tsx`, D102 as amended by the owner on 2026-10-14).
+ * It asks Metorite, searches and opens, and there is no bar at the foot of
+ * the page. ⌘K, `/` and "search everywhere for …" put the cursor in it. The
+ * panel button beside the bell opens and closes the assistant, and the
+ * activity control keeps its one job: it shows the running count and opens
+ * the list of runs.
  *
  * Anything may open the bar with words already in it:
  * `window.dispatchEvent(new CustomEvent(OPEN_COMMAND_BAR, { detail: { query } }))`.
@@ -65,8 +70,16 @@ import { useAccess } from "@/components/AccessProvider";
 import { BarAccount } from "@/components/AccountSwitcher";
 import { visibleSections } from "@/lib/nav";
 import { ActivityControl } from "./ActivityControl";
-import { assistantState, closeAssistant, focusAssistant } from "./assistant";
-import { FOCUS_CHAT_BAR, type FocusChatBarDetail } from "./ChatBar";
+import Button from "@/components/ui/Button";
+import {
+  ASSISTANT_NAME,
+  assistantState,
+  closeAssistant,
+  focusAssistant,
+  openAssistant,
+  useAssistant,
+} from "./assistant";
+import { AskField, FOCUS_ASK_FIELD, type FocusAskFieldDetail, useBarKeyLabel } from "./ChatBar";
 import { shellChatOn } from "./chatFlag";
 import { CommandBar } from "./CommandBar";
 import { shellDockOn } from "./dockFlag";
@@ -106,16 +119,18 @@ export function ShellFrame({
 
   // D99: the chat bar's key. Read once, as the flags below are.
   const [chatOn] = useState(() => shellChatOn());
-  // D100: with the chat bar on, a desktop has ONE field, at the foot of the
-  // page. ⌘K, `/` and "search everywhere for …" put the cursor there with
-  // the results open. While the assistant is open the bar is hidden, so the
-  // modal answers instead. It runs the same engine (`useBarResults`).
+  // D102: with the chat on, a desktop has ONE field, in the middle of this
+  // row (owner, 2026-10-14). ⌘K, `/` and "search everywhere for …" put the
+  // cursor there with the results open. The row is above the assistant, so
+  // the field shows in every form, and the modal never opens on a desktop.
+  // It runs the same engine (`useBarResults`). The phone draws no row, so
+  // the phone keeps the modal.
   const unified = chatOn && bar;
   const search = useCallback(
     (query: string) => {
-      if (unified && !assistantState().open) {
+      if (unified) {
         window.dispatchEvent(
-          new CustomEvent<FocusChatBarDetail>(FOCUS_CHAT_BAR, { detail: { query, results: true } }),
+          new CustomEvent<FocusAskFieldDetail>(FOCUS_ASK_FIELD, { detail: { query, results: true } }),
         );
         return;
       }
@@ -130,7 +145,7 @@ export function ShellFrame({
       if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        if (unified && !assistantState().open) {
+        if (unified) {
           search("");
           return;
         }
@@ -142,7 +157,7 @@ export function ShellFrame({
         e.preventDefault();
         e.stopImmediatePropagation();
         if (!assistantState().open) {
-          window.dispatchEvent(new Event(FOCUS_CHAT_BAR));
+          openAssistant();
           return;
         }
         const inside = (e.target as HTMLElement | null)?.closest?.("[data-assistant]");
@@ -194,10 +209,11 @@ export function ShellFrame({
         <ShellBarRow
           here={here}
           onOpen={() => openWith("")}
-          search={!unified}
+          field={unified ? <AskField /> : undefined}
           lead={lead}
+          assistant={chatOn ? <AssistantToggle /> : null}
           bell={dockOn ? <ShellBell /> : null}
-          activity={chatOn ? null : <ActivityControl />}
+          activity={<ActivityControl />}
           account={<BarAccount />}
         />
       ) : null}
@@ -229,14 +245,39 @@ function useShortcutLabel(): string {
 }
 
 /**
+ * The assistant's button: it opens the side panel, and closes the assistant
+ * when it is open. It shows the panel's state, so the member can see what a
+ * press will do (owner, 2026-10-14: "I'm not sure when to expect the sidebar
+ * or the full screen").
+ */
+function AssistantToggle() {
+  const st = useAssistant();
+  const key = useBarKeyLabel().replace("K", "J");
+  const label = st.open ? `Close ${ASSISTANT_NAME} (${key})` : `Open ${ASSISTANT_NAME} (${key})`;
+  return (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      icon={st.open ? "PanelRightClose" : "PanelRightOpen"}
+      data-assistant-toggle={st.open ? "open" : "closed"}
+      aria-label={label}
+      title={label}
+      aria-pressed={st.open}
+      onClick={() => (st.open ? closeAssistant() : openAssistant())}
+    />
+  );
+}
+
+/**
  * The row itself. Exported for `appBar.test.ts`, which renders it and checks
  * that it holds no app name and no slot. Only `ShellFrame` mounts it.
  */
 export function ShellBarRow({
   here,
   onOpen,
-  search = true,
+  field,
   lead,
+  assistant,
   bell,
   activity,
   account,
@@ -245,11 +286,13 @@ export function ShellBarRow({
   here: { label: string; icon: string } | null;
   onOpen: () => void;
   /**
-   * Whether the row draws the search field. D100: with the chat bar on, the
-   * one field is at the foot of the page, and this row holds none.
+   * The real field, in the middle (D102: `AskField`, with the chat on). With
+   * none, the row draws its fake field, and a press opens the modal.
    */
-  search?: boolean;
+  field?: ReactNode;
   lead?: ReactNode;
+  /** The assistant's open and close button, first of the right group (D99). */
+  assistant?: ReactNode;
   /** The shell's one bell (NS-6), before the activity control. */
   bell?: ReactNode;
   /** The shell's own control at the right end. */
@@ -268,10 +311,10 @@ export function ShellBarRow({
           renders here (owner, 2026-10-10). */}
       <div aria-hidden className="min-w-0 flex-1 basis-0" />
 
-      {/* A fake field, on purpose: it looks like the place to type, and a
-          press opens the real one. Every member reads it as "search here".
-          D100: none with the chat bar on, which is the one field. */}
-      {search ? (
+      {/* With the chat on, the real field (D102). Without it, a fake field,
+          on purpose: it looks like the place to type, and a press opens the
+          real one. Every member reads it as "search here". */}
+      {field ?? (
       <button
         type="button"
         onClick={onOpen}
@@ -290,7 +333,7 @@ export function ShellBarRow({
           {shortcut}
         </kbd>
       </button>
-      ) : null}
+      )}
 
       {/* The shell's own controls, the same on every page: the bell, the
           activity control, then the account. An app's tools sit at the
@@ -301,6 +344,7 @@ export function ShellBarRow({
           centre. With `min-w-0`, the avatar put the bell over the command
           bar at 1024px. Fence: `e2e/shell-account.spec.ts`. */}
       <div className="flex flex-1 basis-0 items-center justify-end gap-1">
+        {assistant}
         {bell}
         {activity}
         {account}

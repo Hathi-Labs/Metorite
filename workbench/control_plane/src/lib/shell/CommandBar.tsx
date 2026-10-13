@@ -115,13 +115,14 @@ export type ResultRow = Row;
 /**
  * THE result engine of the one bar (D100): the rows for some words, from the
  * registry, the record search and the coordinator. Both surfaces read it: the
- * chat bar at the foot of the page (`ChatBar.tsx`), and this file's modal,
+ * one field in the middle of the shell bar (`AskField` in `ChatBar.tsx`), and
+ * this file's modal,
  * which the phone and the flag-off desktop still open. One engine, so the two
  * can never answer the same words two ways.
  *
  * `active` is whether the surface shows results now. `onDone` runs before a
  * row moves the member anywhere. `askRow` adds "Ask the assistant: …". The
- * chat bar leaves it out, because its Enter IS the ask.
+ * one field leaves it out, because its Enter IS the ask.
  */
 export function useBarResults({
   active,

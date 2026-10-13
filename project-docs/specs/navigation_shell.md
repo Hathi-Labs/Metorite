@@ -29,7 +29,8 @@ The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
 (2026-10-10) adds Approvals to the needs feed and to My Day.
 
 **NS-6 slice 6b BUILT 2026-10-13, ON in production since 2026-10-13 (owner): the chat bar and the one
-assistant** (D99, §7.1). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
+assistant** (D99, §7.1). On 2026-10-14 the owner moved the one field into the
+shell bar, and the bar at the foot of the page is gone (D102, amended). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
 counts as on only with both shell flags on. Migration 254 adds
 `chat_session.archived_at`. Only the owner turns the flag on in production
 (§13.1).
@@ -283,10 +284,10 @@ over the page column, as NS-1 built it. `desktopFrame` in
 | Scope chip | The shell | Personal, a team, or all my teams (§4). A team app shows its own team, locked. Today the command bar's "in <App>" chip holds this place |
 | Command bar | The shell | Search, do or ask (§6). It sits in the centre and takes the free width |
 | ~~App actions~~ | — | Not in the bar. They are in the app's own title bar |
-| Activity | The shell | Every live assistant run, across apps (WS-51 S3), at the right end. With `NEXT_PUBLIC_SHELL_CHAT` on, it moves into the chat bar (D99, §7.1) |
+| Activity | The shell | Every live assistant run, across apps (WS-51 S3), at the right end. It shows the running count and opens the list of runs. It stays here with `NEXT_PUBLIC_SHELL_CHAT` on (owner, 2026-10-14, §7.1) |
 | New | The shell | The jobs of the apps the member holds, in preset order (§8). Not built |
 | Bell | The shell | "Needs you", from every app (§7.2). BUILT in NS-6 slice 6a, dark behind `NEXT_PUBLIC_SHELL_DOCK`. It sits before Activity (owner, 2026-10-10, §13.3 Q7). An app's own bell never moves into this bar |
-| Assistant | The shell | ~~The dock toggle at the right end (owner, 2026-10-10, §13.3 Q7).~~ **Amended by D99 (2026-10-12):** the chat bar at the foot of the page opens the assistant, so the shell bar holds no assistant toggle (§7.1) |
+| Assistant | The shell | The panel button, first of the right group, with `NEXT_PUBLIC_SHELL_CHAT` on. It opens the side panel and closes the assistant (owner, 2026-10-14, §7.1). From 2026-10-12 to 2026-10-14 the chat bar at the foot of the page opened it instead (D99) |
 | Account | The shell | The avatar and the email. It opens the account menu: switch, add, sign out (owner, 2026-10-12, §3.3). The last item of the bar. Until 2026-10-12, the account menu was the sidebar's foot (NS-2 slice 1) |
 
 **The command bar's "in <App>" chip stays.** It is the command bar's own
@@ -938,6 +939,12 @@ Nobody edits navigation, and no team gets a separate home.
 
 ### 6.1 Place and keys
 
+> ⚠️ **Amended again 2026-10-14 (D102, owner).** The one field is back in
+> the shell bar: `AskField`, in the middle of the row. The results drop below
+> it, Enter asks Metorite, and a highlighted result opens on Enter. ⌘K and
+> `/` put the cursor there. The modal opens only on a phone. The note below
+> records the place of 2026-10-13.
+
 > ⚠️ **Amended 2026-10-13 by D102.** With `NEXT_PUBLIC_SHELL_CHAT` on, the
 > command bar has no field in the shell bar. Its field is the chat bar at
 > the foot of the page (§7.1). The results rise above that field, Enter asks
@@ -1080,29 +1087,38 @@ two:
 
 ## 7. The assistant dock and the bell
 
-### 7.1 One assistant, opened from the chat bar (D99)
+### 7.1 One assistant, opened from the one field (D99)
+
+⚠️ **Amended on 2026-10-14 by the owner (D102).** The field moved into the
+shell bar, and no bar sits at the foot of the page. The text below says
+where each rule now lives.
 
 ⚠️ **Amended on 2026-10-12 by D99.** The dock opened the app's own agent,
 and a toggle in the shell bar opened it. Now the member always talks to one
 general agent, and a chat bar at the foot of the page opens it. Flag
 `NEXT_PUBLIC_SHELL_CHAT`, default off.
 
-**The chat bar.**
+**The one field** (`AskField` in `ChatBar.tsx`).
 
-- **One row at the foot of the page column, on every page.** It is a real
-  row of the frame, under `<main>`, not a layer over the page. So an app's
-  own bottom controls stay inside `<main>`, above it, and the bar never
-  covers them.
-- **It holds a field, the context chip and the activity control.** The
-  field reads "Ask Metorite…". Enter opens the assistant and sends the
-  words. The chip names where the member is, for example "Projects ·
-  Website relaunch".
-- **⌘J or Ctrl J** puts the cursor in the field. With the assistant open,
-  it puts the cursor in the assistant. Pressed again in the assistant, it
-  closes the assistant. The shell's one listener in `ShellBar.tsx` holds
-  the key (§5.2 rule 2).
-- **The bar hides while the assistant is open.** The assistant has its own
-  composer.
+- **It is in the middle of the shell bar, on every desktop page.** The
+  shell bar sits above the assistant, so the field shows in every form of
+  it.
+- **It holds the field, the context chip and the key.** The field reads
+  "Ask Metorite, or search and open anything…". Enter opens the assistant
+  and sends the words. Enter on an empty field opens the assistant. The
+  chip names where the member is, for example "Projects · Website
+  relaunch".
+- **Words typed while the assistant is open go into the chat on screen**
+  (`AssistantAsk.join`). They never go into a room or an archived chat.
+- **The panel button** is first of the right group of the shell bar. It
+  opens the side panel, and closes the assistant when it is open.
+- **⌘J or Ctrl J** opens the assistant. With the assistant open, it puts
+  the cursor in the assistant. Pressed again in the assistant, it closes
+  the assistant. The shell's one listener in `ShellBar.tsx` holds the key
+  (§5.2 rule 2).
+- **The activity control stays in the shell bar.** It shows the running
+  count and opens the list of runs. A row opens its chat in the assistant.
+  The control never opens a chat by itself.
 - **On a phone, an Ask tab replaces the bar** (owner, 2026-10-13). It sits
   at the right end of the bottom nav on every page, so the thumb learns one
   place. A tap opens the assistant as a full-screen sheet, with the cursor
@@ -1115,18 +1131,21 @@ general agent, and a chat bar at the foot of the page opens it. Flag
 
 - **The side panel.** A panel on the right of the page, 400 px wide by
   default. The member drags its left edge between 320 px and 720 px, and the
-  width stays. The page beside it keeps working. Below 1280 px there is no
-  side panel, and the assistant opens as the full view.
+  width stays. The page beside it keeps working. Below 1280 px the panel
+  floats over the right of the page (owner, 2026-10-14). The width never
+  picks the form.
+- **Every open from closed is the side panel.** The full view opens only
+  when the member asks for it, and the next open does not start there. A
+  stored form made one press open two different things (owner,
+  2026-10-14).
 - **The full view.** The assistant covers the page column, under the shell
   bar and beside the sidebar. The page under it stays mounted and keeps its
   state, and it takes no input until the full view closes. The session list
   is at the left, as in ChatGPT and Claude. The chat's files are at the
   right.
 - **A page the member opens makes the full view give way** (owner,
-  2026-10-13). An app picked in the sidebar would open out of sight. So on
-  a wide screen the full view becomes the side panel, and on a narrow one
-  the assistant closes. The member's own choice of form stays
-  (`onPageChange`).
+  2026-10-13). An app picked in the sidebar would open out of sight. So
+  the full view becomes the side panel, on every desktop (`onPageChange`).
 - **The full view spans the whole width.** The chat centres its text and
   its composer at a reading width, and its header and borders run edge to
   edge, as ChatGPT and Claude draw them.
