@@ -42,9 +42,10 @@ import SandboxedHtml from "@/components/SandboxedHtml";
 import Button from "@/components/ui/Button";
 import { CollapsibleCardBody, CollapsibleCardHeader, useCardFold } from "@/components/ui/Collapsible";
 import SandboxedReact from "@/components/SandboxedReact";
-import { renderTemplate } from "@/components/genUITemplates";
+import { OWN_HEAD_TEMPLATES, renderTemplate } from "@/components/genUITemplates";
 import GenUIFallback from "@/components/GenUIFallback";
 import { isEmptyNode } from "@/lib/genUiFallback";
+import { plainTitle } from "@/lib/fencedText";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
 import { type AccentHue, accentForHue } from "@/lib/statusAccent";
@@ -149,10 +150,12 @@ function Node({
       // toggle, inside its own border (owner feedback, 2026-10-10). A card
       // nested deeper sees no fold state (`CollapsibleCardBody`).
       if (depth === 0 && fold) {
+        // The header is the fold's `<button>`: plain words, never a link
+        // (review of #945, P2, `plainTitle`).
         return (
           <div className="rounded-lg border border-border/60 bg-card/50 p-3">
             <CollapsibleCardHeader
-              title={title ?? undefined}
+              title={title === null ? undefined : plainTitle(s(props.title))}
               quiet={title === null}
               className="text-sm"
               titleClassName="font-semibold text-foreground"
@@ -434,6 +437,22 @@ export function genUiRootIsCard(spec: unknown): boolean {
   const sp = spec as Record<string, unknown>;
   const root = (sp.root ?? sp.view ?? sp) as GenUINode | null;
   return !!root && typeof root === "object" && s(root.type) === "card";
+}
+
+/**
+ * Does the tree's root draw its own title row as the chat card's header?
+ * A `card` does, and so does a template that draws `TemplateHead`
+ * (`OWN_HEAD_TEMPLATES` in `genUITemplates.tsx`, owner report 2026-10-13).
+ * The chat card then passes `header="own"`, and the title draws once.
+ */
+export function genUiRootOwnsHead(spec: unknown): boolean {
+  if (genUiRootIsCard(spec)) return true;
+  if (!spec || typeof spec !== "object") return false;
+  const sp = spec as Record<string, unknown>;
+  const root = (sp.root ?? sp.view ?? sp) as GenUINode | null;
+  if (!root || typeof root !== "object" || s(root.type) !== "template") return false;
+  const props = (root.props ?? {}) as Record<string, unknown>;
+  return OWN_HEAD_TEMPLATES.has(s(props.name));
 }
 
 /**

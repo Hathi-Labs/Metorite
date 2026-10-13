@@ -9,6 +9,9 @@ Spec: ``project-docs/specs/crm_app.md`` §4 (``records.py`` row).
     DELETE /crm/<entity>/{id}                                 → what cascaded
     GET    /crm/owners                                        → {owners}
 
+``search_records`` is no route. The command bar's CRM provider calls it
+(WS-53 CRM-X2), after the gates of this router.
+
 **Every path here is written out literally**, one route per entity, rather than
 served by a single ``/crm/{entity}`` template. That is not verbosity for its own
 sake: a generic two-segment template would collide with
@@ -24,6 +27,7 @@ functions below, so there is exactly one implementation of each rule.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -512,6 +516,68 @@ async def list_owners(
     return OwnersResponse(owners=[
         OwnerModel(email=r.email, name=r.name, member=bool(r.member)) for r in rows
     ])
+
+
+# ── The shell's search (WS-53 CRM-X2) ──────────────────────────────────────
+
+#: The entities the command bar searches, and the kind each one names in the
+#: answer. The order breaks a tie of ``last_activity_at``.
+SEARCH_KINDS: tuple[tuple[Entity, str], ...] = (
+    (DEALS, "deal"), (LEADS, "lead"), (CONTACTS, "contact"), (ORGANIZATIONS, "company"),
+)
+
+
+async def search_records(
+    user: UserContext, q: str, limit: int,
+) -> list[tuple[str, dict[str, Any]]]:
+    """The records that match *q*, newest activity first, as ``(kind, row)``.
+
+    Spec: ``crm_platform.md`` §19.6 and §19.10. The command bar's CRM provider
+    (``routes/shell/search.py::_crm``) calls it after the CRM router's gates,
+    so it writes no SQL of its own. Each entity is read with the list contract
+    of its route: the same ``?q=`` match, and the converted-lead rule of
+    ``_list``. The reads share one ``_tenant_session()``, so row level
+    security keeps them in the caller's tenant.
+
+    ⚠️ It builds no ``ListParams``. That class declares its defaults with
+    ``Query(...)``, so a direct call that leaves out an argument passes the
+    ``Query`` object itself. It also reads no next activity and no count
+    (``rows_only``), because the bar has 1.5 seconds for every app.
+    """
+    words = (q or "").strip()
+    if not words:
+        return []
+    found: list[tuple[str, dict[str, Any]]] = []
+    async with _tenant_session() as db:
+        for entity, kind in SEARCH_KINDS:
+            query = list_contract(
+                entity,
+                q=words, sort="last_activity_at", direction="desc",
+                page=1, page_size=limit,
+                extra_where=(OPEN_LEAD_SQL,) if entity.hides_converted else (),
+            )
+            answer = await run_list(db, entity, query, rows_only=True)
+            found += [(kind, row) for row in answer.rows]
+    # Newest first. A record with no activity yet goes last. `sort` is stable,
+    # so a tie keeps the order of `SEARCH_KINDS`.
+    found.sort(key=lambda pair: _activity_instant(pair[1]), reverse=True)
+    return found[:limit]
+
+
+def _activity_instant(row: dict[str, Any]) -> datetime:
+    """The row's ``last_activity_at`` as an instant, or the earliest one."""
+    value = row.get("last_activity_at")
+    if not value:
+        return _NO_ACTIVITY
+    try:
+        instant = datetime.fromisoformat(str(value))
+    except ValueError:
+        return _NO_ACTIVITY
+    return instant if instant.tzinfo else instant.replace(tzinfo=UTC)
+
+
+#: The sort key of a record with no activity: before every real instant.
+_NO_ACTIVITY = datetime.min.replace(tzinfo=UTC)
 
 
 # ── Leads ───────────────────────────────────────────────────────────────────

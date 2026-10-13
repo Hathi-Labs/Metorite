@@ -21,8 +21,9 @@ import Icon from "@/components/Icon";
 import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { statusTone } from "../lib/board";
+import { stageAccent } from "../lib/board";
 import { pickable } from "../lib/emptyStages";
+import { useCrmModeValue } from "../lib/modeContext";
 import type { Status } from "../lib/types";
 
 export default function StatusPill({
@@ -119,7 +120,9 @@ export default function StatusPill({
   const readOnly = disabled || !onChange || statuses.length === 0;
 
   const label = status?.name ?? "No status";
-  const tone = status ? statusTone(status) : "bg-muted-foreground";
+  // The mode comes from the page (`lib/modeContext.ts`, CRM-C2).
+  const mode = useCrmModeValue();
+  const tone = status ? stageAccent(status, mode).dot : "bg-muted-foreground";
 
   if (readOnly) {
     return (
@@ -172,7 +175,7 @@ export default function StatusPill({
               } ${index === active ? "ring-1 ring-primary/40" : ""}`}
             >
               <span
-                className={`w-1.5 h-1.5 rounded-full ${statusTone(option)}`}
+                className={`w-1.5 h-1.5 rounded-full ${stageAccent(option, mode).dot}`}
               />
               <span className="flex-1 truncate">{option.name}</span>
               {/* The stage's default probability beside its name: moving a

@@ -1240,11 +1240,20 @@ def qualify(order_by: str, prefix: str) -> str:
     return ", ".join(f"{prefix}.{term.strip()}" for term in order_by.split(","))
 
 
-async def run_list(db: Any, entity: Entity, query: ListQuery) -> ListResponse:
-    """Execute a :class:`ListQuery` and return the ``{rows, total}`` shape."""
-    total = (await db.execute(
-        text(f"SELECT count(*) FROM {entity.table}{query.where}"), query.params,
-    )).scalar() or 0
+async def run_list(
+    db: Any, entity: Entity, query: ListQuery, *, rows_only: bool = False,
+) -> ListResponse:
+    """Execute a :class:`ListQuery` and return the ``{rows, total}`` shape.
+
+    ``rows_only`` is for the shell's search (WS-53 CRM-X2, §19.10). It reads
+    the page and nothing else: no count, no provider link and no next
+    activity, because the command bar has 1.5 seconds for every app. Then
+    ``total`` is the count of the rows on the page.
+    """
+    if not rows_only:
+        total = (await db.execute(
+            text(f"SELECT count(*) FROM {entity.table}{query.where}"), query.params,
+        )).scalar() or 0
     inner = (
         f"SELECT * FROM {entity.table}{query.where} "
         f"ORDER BY {query.order_by} LIMIT :limit OFFSET :offset"
@@ -1254,6 +1263,8 @@ async def run_list(db: Any, entity: Entity, query: ListQuery) -> ListResponse:
         {**query.params, "limit": query.limit, "offset": query.offset},
     )).fetchall()
     wired = [row_to_dict(r, entity.model) for r in rows]
+    if rows_only:
+        return ListResponse(rows=wired, total=len(wired))
     await attach_ext_urls(db, entity.table, wired)
     await attach_next_activity(db, entity, wired)
     return ListResponse(rows=wired, total=int(total))
@@ -2228,6 +2239,103 @@ async def delete_module_records_from_source(
     return int(result.rowcount or 0)
 
 
+# ── The field rules (WS-53 CRM-Q7a, migration 253) ─────────────────────────
+
+#: The rows that one call of the field-rule door writes at most.
+FIELD_RULE_BATCH = 500
+
+#: The four entities that a field rule can name.
+MIRROR_RULE_ENTITIES: frozenset[str] = frozenset({"lead", "contact", "company", "deal"})
+
+
+def _field_rule_target(table: str, column: str) -> Any:
+    """The legal target ``column`` of ``table``, or a ``ValueError``.
+
+    The column name reaches the SQL text, so it must be one of
+    ``FIELD_RULE_TARGETS`` (``crm_sources/zoho/mapping.py``) for the entity of
+    the table, and never a caller's word.
+    """
+    from gateway.crm_sources.zoho.mapping import ENTITY_TABLES, rule_target
+
+    entity = next(
+        (e for e, t in ENTITY_TABLES.items() if t == table and e in MIRROR_RULE_ENTITIES),
+        None,
+    )
+    target = rule_target(entity, column) if entity else None
+    if target is None or not _COLUMN_NAME.match(column):
+        raise ValueError(f"field rules: {table}.{column} is not a rule target")
+    return target
+
+
+async def apply_field_rule_from_source(
+    db: Any,
+    table: str,
+    column: str,
+    ext_source: str,
+    values: Sequence[tuple[str, Any]] | None,
+    *,
+    organization_id: str,
+) -> int:
+    """Write one batch of an approved field rule into a mirror table, or clear
+    a free column. Returns the rows written (WS-53 CRM-Q7a).
+
+    The seventh door of the mirror write path, beside :func:`upsert_from_source`.
+    ``tests/unit/test_crm_upsert_from_source_fence.py`` lets only
+    ``gateway/crm_sync/`` name it. It writes a raw UPDATE, so it leaves
+    ``zoho_dirty`` and ``updated_at`` alone: a rule is not a native edit, and
+    it must never push a row back to the provider.
+
+    * *values* ``[(row id, value), ...]``: the backfill. Each value is already
+      coerced to the column type. A row gets its value only when it is a row
+      of *ext_source* and its column is still NULL, so the door never
+      overwrites a value from the fixed map.
+    * *values* ``None``: the clear of a free column (a rejected or stale rule).
+      It sets the column to NULL on at most :data:`FIELD_RULE_BATCH` rows of
+      *ext_source* that hold a value. The caller repeats it until it gives 0.
+      A fixed column is refused: a full read restores it.
+
+    *column* must be a legal target of the table's entity. The tenant policy
+    binds the organization, and each statement also names *organization_id*,
+    as :func:`reset_crm_from_admin` does. So a session with row level
+    security off still writes one organization.
+    """
+    target = _field_rule_target(table, column)
+    if not ext_source:
+        raise ValueError("field rules: 'ext_source' is required")
+    if not organization_id:
+        raise ValueError("field rules: 'organization_id' is required")
+    org = str(organization_id)
+    if values is None:
+        if target.standard_field is not None:
+            raise ValueError(f"field rules: {column} is a fixed column, read it again")
+        result = await db.execute(
+            text(
+                f"UPDATE {table} SET {column} = NULL "
+                f"WHERE organization_id = CAST(:org AS uuid) AND id IN ("
+                f"SELECT id FROM {table} WHERE organization_id = CAST(:org AS uuid) "
+                f"AND ext_source = :src AND {column} IS NOT NULL "
+                f"ORDER BY id LIMIT {FIELD_RULE_BATCH})"
+            ),
+            {"src": ext_source, "org": org},
+        )
+        return int(result.rowcount or 0)
+    rows = [(str(row_id), value) for row_id, value in values if value is not None]
+    if len(rows) > FIELD_RULE_BATCH:
+        raise ValueError(f"field rules: at most {FIELD_RULE_BATCH} rows in one batch")
+    written = 0
+    for row_id, value in rows:
+        result = await db.execute(
+            text(
+                f"UPDATE {table} SET {column} = :value WHERE id = CAST(:id AS uuid) "
+                f"AND organization_id = CAST(:org AS uuid) "
+                f"AND ext_source = :src AND {column} IS NULL"
+            ),
+            {"value": value, "id": row_id, "src": ext_source, "org": org},
+        )
+        written += int(result.rowcount or 0)
+    return written
+
+
 # ── The start over (WS-53 CRM-X0, crm_platform.md §19.11 item 6) ────────────
 
 #: The records, as the setup hub and the start-over dialog count them:
@@ -2256,6 +2364,9 @@ RESET_TABLES: tuple[str, ...] = (
     "crm_sync_cursors", "crm_source_profiles",
     # The push queue of the old two-way sync names records that are gone.
     "crm_zoho_tombstones",
+    # CRM-Q7a: a field rule names a field of the old account. It must not
+    # apply to the next one.
+    "crm_field_rules",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved

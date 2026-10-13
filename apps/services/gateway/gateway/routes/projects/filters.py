@@ -159,6 +159,56 @@ def like_escape(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+#: The most words one text query matches one by one (owner request,
+#: 2026-10-13). Words past this are ignored, so a pasted paragraph cannot
+#: become a fifty-arm WHERE.
+MAX_QUERY_WORDS = 8
+
+
+def query_words(term: str) -> list[str]:
+    """The words a text query must each find, in the order typed.
+
+    **Why words and not the phrase.** Until 2026-10-13 both routes matched the
+    query as ONE substring. "invoice approval" then missed a task whose
+    description says "approval of the invoice", and the chat concluded that
+    descriptions are not searched at all. Every word must still appear, in the
+    title or in the description, so a phrase match is always a word match too:
+    the change only widens.
+
+    Words repeat case-insensitively only once. When no word reaches
+    :data:`MIN_QUERY` (``"to do"``), the trigram index could serve none of
+    them, so the whole term is the one word, which is the old phrase rule.
+    """
+    seen: dict[str, str] = {}
+    for word in term.split():
+        seen.setdefault(word.lower(), word)
+    words = list(seen.values())[:MAX_QUERY_WORDS]
+    if not any(len(word) >= MIN_QUERY for word in words):
+        return [term]
+    return words
+
+
+def text_match_clause(
+    term: str, *, alias: str = "t", param: str = "q",
+) -> tuple[str, dict[str, str]]:
+    """``(clause, params)``: every word of ``term`` is in the title or the
+    description. The ONE text predicate, read by ``/projects/search`` and by
+    the list endpoint's ``?q=`` alike, so the two cannot drift.
+
+    Each arm is ``title ILIKE :w OR description ILIKE :w``, the shape the two
+    trigram indexes of migration 170 serve. A word shorter than three letters
+    cannot use a trigram, so the planner checks it as a filter on the rows the
+    longer words found (``query_words`` keeps at least one long word).
+    """
+    arms: list[str] = []
+    params: dict[str, str] = {}
+    for i, word in enumerate(query_words(term)):
+        key = f"{param}_w{i}"
+        arms.append(f"({alias}.title ILIKE :{key} OR {alias}.description ILIKE :{key})")
+        params[key] = f"%{like_escape(word)}%"
+    return "(" + " AND ".join(arms) + ")", params
+
+
 def parse_when(raw: str, *, field: str) -> datetime:
     """A query-string timestamp → a real ``datetime``.
 
@@ -345,8 +395,11 @@ def build_task_filters(
     elif short_text_query(term):
         clauses.append("FALSE")
     elif term:
-        clauses.append("(t.title ILIKE :q OR t.description ILIKE :q)")
-        params["q"] = f"%{like_escape(term)}%"
+        # Every word, in the title or the description (`text_match_clause`):
+        # the same predicate `/projects/search` runs.
+        match, match_params = text_match_clause(term)
+        clauses.append(match)
+        params.update(match_params)
 
     # WS-27m. TWO tag filters, because both questions get asked and one cannot
     # answer the other: `tags` is ANY (`&&` — "show me bugs or regressions"),

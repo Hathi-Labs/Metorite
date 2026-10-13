@@ -35,7 +35,18 @@ import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
 import { ShellJob } from "@/lib/shell/doJob";
-import { NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
+import { focusPageFilter } from "@/lib/shell/pageFilter";
+import { NEW_DEAL_MIRROR, NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
+import { CrmModeContext } from "./lib/modeContext";
+import {
+  CRM_JOB_IDS,
+  afterDialogsClose,
+  findRecordPlan,
+  focusAskFor,
+  logCallPlan,
+  type FocusAsk,
+  type JobPlan,
+} from "./lib/shellJobs";
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { AccessSection } from "./components/AccessPanel";
@@ -252,6 +263,23 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     missing: RequireableField[];
   } | null>(null);
 
+  /**
+   * The view before a job link (CRM-X2). The command bar puts `/crm?do=<job>`
+   * in place of the whole query, so the open record is gone from the address
+   * when the job runs. This keeps the last view that named no job.
+   */
+  const viewBeforeJob = useRef<CrmView | null>(null);
+  useEffect(() => {
+    if (!searchParams.get("do")) viewBeforeJob.current = view;
+  }, [view, searchParams]);
+  /** A `log-call` ask for one record: its Timeline composer opens on Call. */
+  const [callAsk, setCallAsk] = useState<{ n: number; id: string } | null>(null);
+  /** The list whose search box a job asked to focus, once it is on screen. */
+  const focusFor = useRef<FocusAsk | null>(null);
+  const [focusAsk, setFocusAsk] = useState(0);
+  /** The hint of `log-call` with no record, for the Deals list it opened. */
+  const [jobHint, setJobHint] = useState<string | null>(null);
+
   /** Every navigation in this app is a URL rewrite — Back closes the sheet.
    *  ⚠️ `pushView`, never `router.push`: a router push waits on a server
    *  request before the view changes, and a held request left the rail dead
@@ -316,6 +344,38 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   /** The collection a LIST is showing. A board is not a list, so it is null there. */
   const listEntity: EntitySlug | null = isEntity(view.tab) && !boardOn ? view.tab : null;
   const listFieldDefs = filterDefs;
+
+  // A job asked for the search box of a list (CRM-X2). The address may change
+  // a render after the ask, so the ask waits here until that list is on screen.
+  // It also waits for the command bar to finish closing, or the bar takes the
+  // focus back (`afterDialogsClose`).
+  useEffect(() => {
+    const { focus, keep } = focusAskFor(focusFor.current, listEntity, Date.now());
+    focusFor.current = keep;
+    if (!focus) return;
+    return afterDialogsClose(() => void focusPageFilter());
+  }, [focusAsk, listEntity]);
+
+  /**
+   * Run the plan of a job (`lib/shellJobs.ts`). The address changes through
+   * `replaceView`, as `shell/doJob.tsx` does, so nothing waits on the
+   * server. A replace, not a push: the job link was the last entry, so Back
+   * returns to the view before it.
+   */
+  function runJob(plan: JobPlan): void {
+    replaceView(viewHref(plan.view));
+    const opened = plan.view.record;
+    if (plan.composeCall && opened) {
+      setCallAsk((ask) => ({ n: (ask?.n ?? 0) + 1, id: opened.id }));
+    }
+    if (plan.focusSearch && isEntity(plan.view.tab)) {
+      focusFor.current = { entity: plan.view.tab, at: Date.now() };
+      setFocusAsk((n) => n + 1);
+    }
+    setJobHint(plan.hint);
+  }
+  /** The hint shows on the Deals list it was given for, and nowhere else. */
+  const hintShown = jobHint && listEntity === "deals" && !view.record ? jobHint : null;
 
   /** What the Refresh button re-reads — one branch per kind of tab. */
   function reload(): void {
@@ -693,6 +753,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   );
 
   return (
+    // CRM-C2: the list, the reports and the status pill read the mode here.
+    <CrmModeContext.Provider value={ctx.mode}>
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       {/* ═══ The app's title bar (AGENTS.md rule 11, CRM-U1) ═══
           The rail toggle, the name and the scope, the New verb, then the
@@ -802,6 +864,22 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             </div>
           )}
 
+          {hintShown && (
+            // `log-call` with no record open (CRM-X2): the next step, in one
+            // line. A record opened from this list takes the call.
+            <div className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-4 py-2">
+              <Icon name="PhoneCall" size={14} className="shrink-0 text-muted-foreground" />
+              <p className="flex-1 text-xs text-muted-foreground">{hintShown}</p>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                icon="X"
+                onClick={() => setJobHint(null)}
+                aria-label="Dismiss"
+              />
+            </div>
+          )}
+
           {/* One boundary around the view. A throw ends on a sentence and a
               Reload button, and the rail stays. The key clears it when the
               member picks another view (CRM-Q3, spec section 18.6). */}
@@ -813,6 +891,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               hiddenEmpty={view.tab === "leads" ? 0 : store.lanes.length - dealLanes.length}
               loading={store.loading}
               readOnly={ctx.mode === "mirror"}
+              // CRM-C2: the lane colour reads the mode, and the card of the
+              // open record wears the cursor ring.
+              mode={ctx.mode}
+              cursorId={view.record?.id ?? null}
               onMove={
                 view.tab === "leads"
                   ? (move, target) => void moveCard("leads", move, target)
@@ -934,6 +1016,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             // that dialog, closes the dialog and not the record.
             if (converting || pendingMove) return;
             setCameFrom(null);
+            setCallAsk(null);
             go(closeRecord(view));
           }}
           tab={view.recordTab ?? "overview"}
@@ -994,6 +1077,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           }
           onOpenContact={(contactId) => openAlone(openRecord(view, "contact", contactId))}
           related={store.related}
+          // `log-call` asked for THIS record. Another record opens on Note.
+          callRequest={callAsk && callAsk.id === view.record.id ? callAsk.n : 0}
           onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
           onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
         />
@@ -1020,6 +1105,19 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           else toast.show({ key: "crm-new-lead", variant: "error", title: NEW_LEAD_MIRROR });
         }}
       />
+      {/* The other three CRM jobs (CRM-X2, spec section 19.6). Each opens a
+          form or a list, and none saves. */}
+      <ShellJob
+        id="new-deal"
+        onOpen={() => {
+          // Mirror mode: Zoho owns the deals, so the form cannot open.
+          if (mayCreate) setCreating("deals");
+          else toast.show({ key: "crm-new-deal", variant: "error", title: NEW_DEAL_MIRROR });
+        }}
+      />
+      {/* A call is Metorite-only data, so `log-call` works in Mirror mode too. */}
+      <ShellJob id="log-call" onOpen={() => runJob(logCallPlan(viewBeforeJob.current))} />
+      <ShellJob id="find-record" onOpen={() => runJob(findRecordPlan(viewBeforeJob.current))} />
 
       {creating && (
         <QuickCreateModal
@@ -1069,6 +1167,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         />
       )}
     </div>
+    </CrmModeContext.Provider>
   );
 }
 
@@ -1192,18 +1291,19 @@ function CrmGate(): ReactNode {
   }
 
   if (phase !== "ready") {
-    // The "New lead" job lands here too, and it must say why nothing opens.
+    // The CRM jobs land here too, and they must say why nothing opens.
     const refusal = refusalOf(phase);
     return (
       <>
-        {refusal && (
-          <ShellJob
-            id="new-lead"
-            onOpen={() =>
-              toast.show({ key: "crm-new-lead", variant: "error", title: refusal })
-            }
-          />
-        )}
+        {refusal &&
+          // Every CRM job lands here too, and each must say why nothing opens.
+          CRM_JOB_IDS.map((id) => (
+            <ShellJob
+              key={id}
+              id={id}
+              onOpen={() => toast.show({ key: `crm-${id}`, variant: "error", title: refusal })}
+            />
+          ))}
         <FirstOpen
           phase={phase}
           busy={busy}

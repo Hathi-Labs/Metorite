@@ -192,7 +192,6 @@ describe("the board", () => {
         count: 1,
         amount: 0,
         weighted: 0,
-        tone: "bg-primary",
       },
     ] as unknown as BoardLane[];
   const draw = (ext: string | null, onCreate?: () => void) =>

@@ -29,6 +29,7 @@ import {
   contrastRatio,
   parseColor,
 } from "./contrast";
+import { ACCENT_HUES, accentForHue } from "../statusAccent";
 import { THEME } from "./themes";
 import { CATEGORICAL_TOKENS, TERMINAL_INKS } from "./types";
 import type { ColorTokens } from "./types";
@@ -145,6 +146,43 @@ for (const mode of ["dark", "light"] as const) {
     });
   }
 }
+
+/**
+ * Each status chip draws a pair that this file measures (WS-53 CRM-C2 review).
+ *
+ * The gray chip drew `text-muted-foreground` on `bg-secondary`, a pair that no
+ * row here measured, and it read 4.33 : 1 in light mode. So the rule is
+ * structural: a chip is either a status tone on its own 10 % tint, which the
+ * chip-tint loop above measures, or a pair that `PAIRS` lists at AA for text.
+ */
+describe("every status chip draws a measured pair", () => {
+  const camel = (token: string) =>
+    token.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase()) as keyof ColorTokens;
+
+  it.each([...ACCENT_HUES])("the %s chip", (hue) => {
+    const chip = accentForHue(hue).chip;
+    const bg = /(?:^|\s)bg-([a-z-]+)(?:\/(\d+))?(?=\s|$)/.exec(chip);
+    const fg = /(?:^|\s)text-([a-z-]+)(?=\s|$)/.exec(chip);
+    expect(bg, `${hue}.chip has no bg- class: ${chip}`).not.toBeNull();
+    expect(fg, `${hue}.chip has no text- class: ${chip}`).not.toBeNull();
+    const [, bgToken, alpha] = bg!;
+    const fgToken = fg![1];
+
+    const tint =
+      alpha === String(CHIP_TINT * 100) &&
+      bgToken === fgToken &&
+      (STATUS_TEXT_TONES as readonly string[]).includes(fgToken);
+    const listed = PAIRS.some(
+      (p) =>
+        p.fg === camel(fgToken) && p.bg === camel(bgToken) && p.min >= AA_NORMAL_TEXT,
+    );
+    expect(
+      tint || (alpha === undefined && listed),
+      `${hue}.chip draws \`${chip}\`, a pair this file does not measure at AA. ` +
+        "Use a status tone on its 10% tint, or a fill with its own -foreground ink.",
+    ).toBe(true);
+  });
+});
 
 describe("contrast maths", () => {
   it("computes the reference ratios correctly", () => {

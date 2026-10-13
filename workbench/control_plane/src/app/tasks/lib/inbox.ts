@@ -150,7 +150,7 @@ export function inboxRowActions(input: {
             {
               id: "move" as const,
               label: "Move to project",
-              title: "Move to project — put it on a company board (m)",
+              title: "Move to project — put it on a company board",
               icon: "FolderInput",
               run: input.move,
             },
@@ -159,7 +159,7 @@ export function inboxRowActions(input: {
       {
         id: "remove" as const,
         label: DELETE_LABEL,
-        title: `${DELETE_LABEL} (t)`,
+        title: DELETE_LABEL,
         icon: "Trash2",
         run: input.remove,
       },
@@ -171,14 +171,14 @@ export function inboxRowActions(input: {
       // card, the table and the menu stay unedited. The label is the act's name.
       id: "notMine",
       label: REMOVE_LABEL,
-      title: `${REMOVE_LABEL}. The board keeps it (t)`,
+      title: `${REMOVE_LABEL}. The board keeps it`,
       icon: "UserX",
       run: input.notMine,
     },
     {
       id: "openBoard",
       label: "Open on board",
-      title: "Open on board (o)",
+      title: "Open on board",
       icon: "ExternalLink",
       run: input.openBoard,
     },

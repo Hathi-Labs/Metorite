@@ -1,6 +1,12 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import {
+  CARD_FRAME_CLASS,
+  CollapsibleCard,
+  CollapsibleCardBody,
+  CollapsibleCardHeader,
+} from "@/components/ui/Collapsible";
 import Icon from "@/components/Icon";
 import { createContext, useContext, useState } from "react";
 
@@ -13,10 +19,21 @@ import { createContext, useContext, useState } from "react";
 export const InStepContext = createContext(false);
 
 /**
- * Shared chrome for an AG-UI tool card: a header row with a collapse toggle, an
- * optional icon + title, and a dismiss (X) control. Used to make chat tool cards
- * tidy-able — collapse the ones you've seen, close the ones you're done with —
- * across both the email assistant and the general chat agent.
+ * Shared chrome for an AG-UI tool card: a title row with a fold toggle, an
+ * optional icon and title, and a dismiss (X) control. Used to make chat tool
+ * cards tidy-able — fold the ones you've seen, close the ones you're done
+ * with — across the email assistant, the task manager and the Projects reads.
+ *
+ * ⚠️ **One toggle look (owner report, 2026-10-13).** This shell drew its own
+ * header: a text button with a chevron, in its own size, beside the
+ * receipts' `RollupHeader`. Now its title row IS the shared header
+ * (`CollapsibleCardHeader` inside a `CollapsibleCard`), in the shared frame
+ * (`CARD_FRAME_CLASS`), so a read and a receipt draw one toggle, one size and
+ * one chevron. The icon is the caller's node, in the header's icon slot.
+ *
+ * It keeps its own open state and its own lazy body: a closed card mounts no
+ * children, so an email read fetches only when it opens. It does not roll
+ * up by itself (`RollupCard` does that for the flow cards).
  *
  * `onDismiss` is supplied by the caller (so a folded group can dismiss several
  * tool ids at once); omit it to render a non-dismissable shell.
@@ -28,33 +45,39 @@ export function ToolCardShell({
   onDismiss,
   children,
 }: {
-  title: React.ReactNode;
+  title: string;
   icon?: React.ReactNode;
   defaultCollapsed?: boolean;
   onDismiss?: () => void;
   children: React.ReactNode;
 }) {
-  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [open, setOpen] = useState(!defaultCollapsed);
+  const [animate, setAnimate] = useState(false);
   const dismiss = useContext(InStepContext) ? undefined : onDismiss;
   return (
-    <div className="rounded-lg border border-border bg-card/40 overflow-hidden">
-      <div className="flex items-center gap-1.5 px-2.5 py-1.5">
-        <Button variant="text" size="none" layout="flex items-center" onClick={() => setCollapsed((c) => !c)} className="gap-1.5 flex-1 min-w-0 text-left text-xs">
-          <Icon name="ChevronDown"
-            size={12}
-            className={`flex-shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
-          />
-          {icon}
-          <span className="truncate">{title}</span>
-        </Button>
-        {dismiss && (
-          <Button variant="ghost" size="none" radius="keep" layout="" onClick={dismiss} title="Dismiss" aria-label="Dismiss" className="p-0.5 rounded flex-shrink-0">
-            <Icon name="X" size={12} />
-          </Button>
-        )}
+    <CollapsibleCard
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        setAnimate(true);
+      }}
+      toggle
+      label={title}
+      header="own"
+      animate={animate}
+    >
+      <div data-tool-card="" className={CARD_FRAME_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <div className="min-w-0 flex-1">
+            <CollapsibleCardHeader lead={icon} />
+          </div>
+          {dismiss && (
+            <Button variant="ghost" size="icon-xs" icon="X" onClick={dismiss} title="Dismiss" aria-label="Dismiss" className="shrink-0" />
+          )}
+        </div>
+        <CollapsibleCardBody className="pt-1.5">{open ? children : null}</CollapsibleCardBody>
       </div>
-      {!collapsed && <div className="px-2.5 pb-2.5">{children}</div>}
-    </div>
+    </CollapsibleCard>
   );
 }
 

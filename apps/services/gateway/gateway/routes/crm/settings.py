@@ -124,6 +124,8 @@ _RESET_DELETES: tuple[str, ...] = (
     # Zoho sync state. A cursor with ``initial_done_at`` set would make a later
     # reconnect skip the first import (engine.py reads it), so it goes too.
     "crm_sync_cursors", "crm_sync_runs",
+    # CRM-Q7a: the field rules name the fields of the old Zoho account.
+    "crm_field_rules",
 )
 
 _HAS_RECORDS = {

@@ -274,9 +274,6 @@ const SEAM: {
     home: "components/TaskMeta.tsx",
     declaration: /["']CornerDownRight["']/,
     except: {
-      "components/AgentChat.tsx":
-        "the chat composer's 'steer' send mode. Not a subtask and not a " +
-        "parent: the icon means 'redirect this run'",
       "app/projects/components/TaskBody.tsx":
         "a reply to a comment. Not a subtask and not a parent",
       "app/projects/components/NodeDashboard.tsx":
@@ -466,17 +463,13 @@ describe("both apps reach the shared modules", () => {
 
 describe("neither task app re-declares the colour palette", () => {
   /**
-   * Scoped to the two task apps and the shared layer, which is what WS-27ad
-   * reconciled.
+   * Scoped to the two task apps, the CRM and the shared layer.
    *
-   * `app/crm/lib/board.ts` holds a THIRD name→class map (gray/blue/green/
-   * amber/violet, for pipeline stages). It is out of this ticket's scope and
-   * recorded rather than silently swept in: the CRM's stages are a different
-   * axis, its map has only a `dot`, and folding it in is a CRM decision, not a
-   * side effect of a Projects↔Tasks continuity pass. When somebody takes it,
-   * delete this exemption rather than widening the regex.
+   * WS-27ad reconciled Projects and Tasks. WS-53 CRM-C2 took the CRM in: its
+   * stage map in `app/crm/lib/board.ts` is gone, and `stageAccent()` there
+   * asks `statusAccent()` for each lane.
    */
-  const SCOPE = /^(app\/(projects|tasks)\/|lib\/|components\/)/;
+  const SCOPE = /^(app\/(projects|tasks|crm)\/|lib\/|components\/)/;
 
   it("only the shared module maps a hue name to classes", () => {
     // The specific regression: `app/tasks/lib/stageColors.ts` and
@@ -613,36 +606,8 @@ describe("the shared card shell is wired, not merely imported", () => {
     ).toMatch(/ring-ring/);
   });
 
-  /**
-   * The column chrome, held equal.
-   *
-   * ⚠️ This is NOT a theming rule, and it would be wrong to write it as one.
-   * `AGENTS.md` rule 6 says `rounded-xl` "is a fixed 12px that ignores
-   * Graphite's 0.125rem" — in this tree that is **false**: `src/app/globals.css`
-   * derives the whole `--radius-*` scale from `--radius` inside `@theme`, and
-   * `--radius-xl` is literally `var(--radius)`, i.e. the same value
-   * `rounded-lg` resolves to. A tree-wide `rounded-xl` ratchet would therefore
-   * baseline ~274 occurrences that are all correctly themed.
-   *
-   * What was actually wrong is narrower and is what this checks: the two boards
-   * drew one object — a column of task cards — at two radii on two surfaces
-   * (`rounded-xl` + `bg-secondary/30` vs `rounded-lg` + `bg-card`). /projects is
-   * canonical, so both are `rounded-lg` on `bg-card` now, and a fixed-radius
-   * class in either file is a re-divergence.
-   */
-  it("both boards draw their columns with the same radius", () => {
-    const offenders = [
-      "app/tasks/components/TaskBoard.tsx",
-      "app/projects/components/TaskBoard.tsx",
-    ].filter((f) => /\brounded-(?:xl|2xl|3xl)\b/.test(code(f)));
-    expect(
-      offenders,
-      "The two boards' columns have to be the same shape — `rounded-lg`, " +
-        "/projects' chrome. This is a continuity rule, not a theming one: " +
-        "`rounded-xl` IS themed here (globals.css maps --radius-xl to " +
-        "--radius), it is just a different corner from the board next door.",
-    ).toEqual([]);
-  });
+  // The column radius test moved to `src/lib/boards.test.ts` (WS-53 CRM-C2),
+  // where it reads all three boards.
 
   /**
    * The drop gap does not change size while a drag is in flight.

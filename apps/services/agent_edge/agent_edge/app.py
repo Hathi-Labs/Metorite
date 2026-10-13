@@ -9,6 +9,7 @@ Routes, all under the issuer ``https://mcp.metorite.com``:
   document also answers at the path-suffixed address of the resource
   (``/.well-known/oauth-protected-resource/mcp``), which RFC 9728 §3.1 names.
 * ``POST /oauth/token`` and ``POST /oauth/revoke`` — :mod:`agent_edge.token_endpoint`.
+* ``POST /mcp`` — the MCP endpoint (EA-3b-1), :mod:`agent_edge.mcp`.
 
 ⚠️ **The flag.** While ``agent_access_enabled`` is false, EVERY request
 answers 404 and does nothing else: every path, every method, ``OPTIONS`` and
@@ -33,7 +34,7 @@ from acb_auth import agent_oauth
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from agent_edge import metadata, token_endpoint
+from agent_edge import mcp, metadata, token_endpoint
 
 #: The discovery documents may be cached for a short time.
 _METADATA_HEADERS = {"Cache-Control": "public, max-age=300"}
@@ -105,6 +106,10 @@ def create_app() -> FastAPI:
 
     app.add_api_route("/oauth/token", token_endpoint.token, methods=["POST"])
     app.add_api_route("/oauth/revoke", token_endpoint.revoke, methods=["POST"])
+    # EA-3b-1. The route takes every method, so the endpoint runs the checks
+    # of spec §9.6 in their order (the key before the method) and the router
+    # never answers a 405 first.
+    app.add_api_route(mcp.path(), mcp.endpoint, methods=mcp.ROUTE_METHODS)
     return app
 
 

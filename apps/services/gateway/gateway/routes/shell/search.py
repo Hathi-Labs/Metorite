@@ -6,14 +6,17 @@ One route, one provider per app that has a search today. Each provider calls
 its app's OWN search function on this request's member. So:
 
 * **No new data path.** No provider writes SQL, opens a connection or builds a
-  visibility predicate. The task search, the email search and the directory
-  already do that, and their R8 suites already run them on a real database.
+  visibility predicate. The task search, the email search, the directory and
+  the CRM's ``search_records`` already do that, and their R8 suites run them
+  on a real database (the CRM's is ``test_shell_search_crm_r8.py``).
 * **The app's feature gate, again, here.** ⚠️ Each app checks its feature on
   its ROUTER (``require_feature_router("projects")`` and so on), not inside the
   search function. Called from here, the function would skip that gate. So
   every provider checks ``feature:<app>`` first, with the router's own test,
   and a member without the app gets no group at all. Fence:
-  ``tests/unit/test_shell_search.py``, one negative case per provider.
+  ``tests/unit/test_shell_search.py``, one negative case per provider. The
+  CRM router has two more gates, the kill switch and the access rule, and
+  ``_crm`` applies both (WS-53 CRM-X2).
 * **One app at a time.** The providers run one after another, never at once,
   because the pool budget is small (7 + 2 async sessions, Supavisor cap 15).
   Each has a time limit. A provider that fails, refuses or runs out of time is
@@ -116,11 +119,58 @@ async def _people(user: UserContext, q: str) -> list[dict[str, str]]:
     return out
 
 
+#: Each CRM kind → (its word in the hint, the fields that may follow it, the
+#: list tab, the parameter that opens its record sheet). ``crm_platform.md``
+#: §19.6.
+_CRM_KINDS: dict[str, tuple[str, tuple[str, ...], str, str]] = {
+    "lead": ("Lead", ("organization_name", "email"), "leads", "lead"),
+    "deal": ("Deal", ("organization_name",), "deals", "deal"),
+    "contact": ("Contact", ("email",), "contacts", "contact"),
+    "company": ("Company", ("industry",), "organizations", "organization"),
+}
+
+
+def _crm_title(kind: str, row: dict[str, Any]) -> str:
+    if kind == "lead":
+        return row.get("lead_name") or ""
+    if kind == "contact":
+        return " ".join(str(p) for p in (row.get("first_name"), row.get("last_name")) if p)
+    return row.get("name") or ""
+
+
+async def _crm(user: UserContext, q: str) -> list[dict[str, str]]:
+    """The CRM's records (WS-53 CRM-X2, ``crm_platform.md`` §19.6).
+
+    The CRM router has two gates more than its feature, and the loop has
+    tested the feature already. So this provider applies the other two, in
+    the order of the router: the kill switch, then the access rule. A closed
+    kill switch gives no group and no error, as its 404 tells nothing on the
+    router. The access rule's 403 is an ``HTTPException``, and the loop
+    leaves the group out. ``search_records`` runs only after both, and it
+    writes the SQL, not this provider.
+    """
+    from gateway.routes.crm import access, flags, records
+
+    if not flags.crm_org_allowed(user.organization_id):
+        return []
+    await access.require_crm_access(user)
+    out = []
+    for kind, row in await records.search_records(user, q, PER_APP):
+        noun, fields, tab, param = _CRM_KINDS[kind]
+        extra = next((str(row[f]).strip() for f in fields if str(row.get(f) or "").strip()), "")
+        out.append(_item(
+            kind, _crm_title(kind, row), f"{noun} · {extra}" if extra else noun,
+            f"/crm?tab={tab}&{param}={quote(str(row['id']))}",
+        ))
+    return out
+
+
 #: app key → (the feature its router demands, the group's name, the provider).
 PROVIDERS: dict[str, tuple[str, str, Callable[[UserContext, str], Awaitable[list[dict[str, str]]]]]] = {
     "tasks": ("projects", "Tasks", _tasks),
     "email": ("email", "Email", _email),
     "people": ("people", "People", _people),
+    "crm": ("crm", "CRM", _crm),
 }
 
 #: The pane each scope token names (`?scope=` from the bar's "in Email").
@@ -129,6 +179,7 @@ SCOPE_APPS: dict[str, str] = {
     "/projects": "tasks",
     "/tasks": "tasks",
     "/people": "people",
+    "/crm": "crm",
 }
 
 

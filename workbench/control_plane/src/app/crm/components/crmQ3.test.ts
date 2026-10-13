@@ -12,6 +12,7 @@ import { BOUNDARY_COPY, boundaryMessage } from "../lib/boundary";
 import { wantsGroups } from "../lib/access";
 import { zohoLink } from "../lib/connect";
 import { NO_RELATED, relatedSections } from "../lib/related";
+import { CRM_JOB_IDS } from "../lib/shellJobs";
 import type { DealPipeline, Lead, Status } from "../lib/types";
 import CrmBoundary, { CrmFallback } from "./CrmBoundary";
 import FieldsPanel from "./FieldsPanel";
@@ -405,7 +406,11 @@ describe("the access section reads groups late", () => {
 describe("the shell jobs", () => {
   it("keeps /crm?do=new-lead working", () => {
     const page = read("../page.tsx");
-    expect(page.match(/<ShellJob\s+id="new-lead"/g)).toHaveLength(2);
+    // The page mounts it by name. Since CRM-X2 the gate mounts every CRM job,
+    // `new-lead` among them, through one list.
+    expect(page.match(/<ShellJob\s+id="new-lead"/g)).toHaveLength(1);
+    expect(CRM_JOB_IDS).toContain("new-lead");
+    expect(page.slice(page.indexOf("function CrmGate"))).toMatch(/CRM_JOB_IDS\.map\(\(id\) =>/);
     expect(page).toContain("setCreating(\"leads\")");
   });
 });

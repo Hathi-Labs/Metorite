@@ -1356,6 +1356,15 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-54 IN-8a — MCP OAuth for an org connection. Dark: with
+    # MCP_OAUTH_ENABLED off, each of its routes answers 404.
+    from gateway.routes.integrations_mcp_oauth import router as _mcp_oauth_router
+
+    app.include_router(_mcp_oauth_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-23 S1 — read-only skills catalog (skill families + token costs).
     from gateway.routes.integrations_skills import router as _skills_router
 

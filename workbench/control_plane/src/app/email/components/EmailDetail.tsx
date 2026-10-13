@@ -1498,6 +1498,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             text={view.bodyText}
             remoteId={remoteHtmlId(view)}
             lightVersion={lightVersions.has(view.id)}
+            messageId={view.id}
           />
         )}
 

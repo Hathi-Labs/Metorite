@@ -279,6 +279,8 @@ def test_every_witness_is_an_argument_of_a_tool_that_reaches_the_route() -> None
 # `_CALL` gives the whole call for that route and field.
 UUID, OTHER = tw.UUID, tw.OTHER
 _BASE: dict[str, dict[str, Any]] = {
+    # WS-57 TR-3: a URL on the task.
+    "add_task_ref": {"task_id": UUID, "url": "https://github.com/acme/widgets/pull/12"},
     "analytics_finished": {},
     "analytics_load": {},
     "analytics_outlook": {},

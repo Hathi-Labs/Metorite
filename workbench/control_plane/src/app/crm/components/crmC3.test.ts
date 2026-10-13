@@ -7,8 +7,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { accentForHue } from "@/lib/statusAccent";
+
 import * as api from "../lib/api";
-import { orderLanes, toLeadLanes } from "../lib/board";
+import { orderLanes, stageAccent, toLeadLanes, type BoardLane } from "../lib/board";
+import type { CrmMode } from "../lib/connect";
 import { isRetired, pickable, visibleLanes } from "../lib/emptyStages";
 import { chipsFor } from "../lib/filters";
 import {
@@ -20,6 +23,7 @@ import {
 } from "../lib/settings";
 import type { LostReason, PipelineLane, Status, StatusType } from "../lib/types";
 import { DEFAULT_VIEW } from "../lib/urlState";
+import KanbanBoard from "./KanbanBoard";
 import PipelineSettings, { MirrorReasonGrid, MirrorStatusGrid } from "./PipelineSettings";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
@@ -321,5 +325,54 @@ describe("the Native grid", () => {
     expect(html.match(/>hidden</g)?.length).toBe(2);
     // The Native grid keeps its own source fields: no Zoho column.
     expect(html).not.toContain("Zoho ");
+  });
+});
+
+// ── Done when 14 and 13: the lane colour and the "Hidden" mark on the board ──
+
+describe("a Mirror lane on the board", () => {
+  const lane = (status: Status, count = 0) =>
+    ({ status, rows: [], count, amount: 0, weighted: 0 }) as unknown as BoardLane;
+  const board = (lanes: BoardLane[], mode: CrmMode) =>
+    renderToStaticMarkup(
+      createElement(KanbanBoard, {
+        lanes,
+        loading: false,
+        mode,
+        onMove: () => undefined,
+        onOpen: () => undefined,
+      })
+    );
+
+  it("draws a set ui_color in that colour, and a won lane with none in green", () => {
+    const violet = accentForHue("violet");
+    const green = accentForHue("green");
+    // Every mirrored row is gray at the source (crm_platform.md §20.1 fact 6).
+    const proposal = status("Proposal", { color: "gray", ui_color: "violet" });
+    const won = status("Closed Won", { color: "gray", type: "won" });
+    expect(stageAccent(proposal, "mirror")).toBe(violet);
+    expect(stageAccent(won, "mirror")).toBe(green);
+    const html = board([lane(proposal, 1), lane(won, 1)], "mirror");
+    expect(html).toContain(violet.chip);
+    expect(html).toContain(green.chip);
+    // With no ui_color, the type rule: an open stage with no keyword is gray.
+    expect(stageAccent(status("Plain", { color: "gray" }), "mirror")).toBe(
+      accentForHue("gray")
+    );
+    // A Native board keeps its stored colour, and never reads ui_color.
+    expect(stageAccent({ ...proposal, color: "red" }, "native")).toBe(accentForHue("red"));
+  });
+
+  it("marks a hidden lane, and a lane that left Zoho, with the Hidden word", () => {
+    const html = board(
+      [lane(status("Open"), 1), lane(status("Parked", { hidden: true }), 2)],
+      "mirror"
+    );
+    expect(html.match(/>Hidden</g)?.length).toBe(1);
+    const gone = board(
+      [lane(status("Old", { source_gone_at: "2026-10-13T00:00:00Z" }), 1)],
+      "native"
+    );
+    expect(gone).toContain(">Hidden<");
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import AssistantToggle from "@/components/AssistantToggle";
 import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
@@ -37,8 +37,6 @@ import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
 import { DelegatePopup } from "./components/DelegatePopup";
-import { TasksShortcuts } from "./components/TasksShortcuts";
-import { tasksOverlayOpen } from "./lib/shortcuts";
 // ⌘K is search in both task apps, and it is ONE palette. My Tasks mounts the
 // Projects one with no commands (`paletteCommands`), so it searches tasks only.
 import { SearchPalette } from "../projects/components/SearchPalette";
@@ -48,6 +46,9 @@ import { isOpenShortcut } from "../projects/lib/search";
 import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
 import { ShellJob } from "@/lib/shell/doJob";
+import { openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { tasksAssistantFacts } from "./lib/assistantFacts";
 import { OPEN_CHAT_JOB } from "@/lib/runActivity";
 import { askRailSession } from "@/lib/railSessions";
 
@@ -61,6 +62,9 @@ export default function TasksPage() {
   // Read once, as the shell reads its flags: the dev override is in
   // `localStorage`, which the server render cannot see.
   const [dockOn] = useState(() => shellDockOn());
+  // D99: with the chat bar on, the one assistant replaces this app's rail,
+  // and the page tells it what the member is looking at.
+  const [chatOn] = useState(() => shellChatOn());
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   const selectedView = useTaskStore((s) => s.selectedView);
   const selectView = useTaskStore((s) => s.selectView);
@@ -90,6 +94,12 @@ export default function TasksPage() {
   // away (deleting the task from the overlay is the ordinary way), and a stale
   // one would open the next task the user clicked straight into the overlay.
   const [maximisedFor, setMaximisedFor] = useState<string | null>(null);
+  const taskItems = useTaskStore((s) => s.items);
+  const assistantFacts = useMemo(
+    () => (chatOn ? tasksAssistantFacts({ items: taskItems, selectedView, openItemId: selectedItemId }) : null),
+    [chatOn, taskItems, selectedView, selectedItemId],
+  );
+  useAssistantFacts(assistantFacts);
   const isInbox = selectedView === "inbox";
   const isEngage = selectedView === "engage";
   // S6e — a project I lead, opened from the sidebar. Its own surface: my
@@ -167,11 +177,16 @@ export default function TasksPage() {
   const openChat = useCallback(
     (f: Record<string, string>) => {
       if (!f.session) return;
+      // D99: an old link opens the chat in the one assistant.
+      if (chatOn) {
+        openAssistant({ sessionId: f.session });
+        return;
+      }
       askRailSession("task-manager", f.session);
       if (isMobile) openDrawer(<AssistantRail />);
       else setAssistantOpen(true);
     },
-    [isMobile, openDrawer],
+    [chatOn, isMobile, openDrawer],
   );
 
   // Search opens from ⌘K and from the top bar's Search button, through ONE
@@ -183,40 +198,25 @@ export default function TasksPage() {
     }
   }, [maximisedId]);
 
-  // Two hotkeys from any Tasks view: ⌘K searches and `C` captures. ⌘K opens
-  // the same palette it opens in Projects, so one key means one thing in both
-  // task apps. It captured here until 2026-09-24. (App-wide capture from other
-  // Metorite apps needs a persisted store + AppShell-level listener — see spec
-  // §2.1 C2 [plumbing].)
+  // ⌘K searches from any Tasks view. It opens the same palette it opens in
+  // Projects, so one key means one thing in both task apps.
+  //
+  // ⚠️ It is the ONLY key this app binds of its own. The letter shortcuts
+  // (`c`, `u`, `?`, `g`, the Inbox's and Clarify's triage keys) and their
+  // sheet were removed on 2026-10-13: the owner found them unnecessary and
+  // complicated. Arrows, Enter, Escape and Ctrl+Z stay, because a member
+  // brings those from every other application.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (quickCaptureOpen || clarifyModalOpen) return; // a modal owns the keyboard
-      const el = e.target as HTMLElement | null;
-      const typing =
-        !!el &&
-        (el.tagName === "INPUT" ||
-          el.tagName === "TEXTAREA" ||
-          el.isContentEditable);
       if (isOpenShortcut(e)) {
         e.preventDefault();
         openSearch();
-        return;
-      }
-      if (searching) return; // the palette owns the keyboard
-      if (
-        !typing &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        (e.key === "c" || e.key === "C")
-      ) {
-        e.preventDefault();
-        openQuickCapture("single");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openQuickCapture, quickCaptureOpen, clarifyModalOpen, searching, openSearch]);
+  }, [quickCaptureOpen, clarifyModalOpen, openSearch]);
 
   // A hit My Tasks holds opens here. Any other task opens in Projects, because
   // the palette searches every project and My Tasks cannot draw a task it does
@@ -236,13 +236,6 @@ export default function TasksPage() {
       onOpenTask={openHit}
     />
   );
-  // `?` and the `g <letter>` jumps, the ones Projects binds. Held off while
-  // any overlay owns the keyboard (`tasksOverlayOpen`, the twin of Projects'
-  // `overlayOpen`), so neither fires under an open dialog.
-  const overlayOpen = useTaskStore((s) =>
-    tasksOverlayOpen(s, { searching, maximised: Boolean(maximisedId) }),
-  );
-  const shortcuts = <TasksShortcuts blocked={overlayOpen} />;
   // WS-27bn R5b-2 — "My day" opens the T2 report in Projects. The builder
   // makes the reader its subject, so the link names none (`myDayLink`).
   // A member who cannot open Projects sees no control at all (`myDayShown`).
@@ -310,7 +303,6 @@ export default function TasksPage() {
         <EliminatePopup />
         <DelegatePopup />
         {search}
-        {shortcuts}
       </div>
     );
   }
@@ -339,7 +331,6 @@ export default function TasksPage() {
               onClick={() => openQuickCapture("single")}
             >
               Capture
-              <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>
             </Button>
             {myDay}
           </>
@@ -350,10 +341,13 @@ export default function TasksPage() {
             {/* NS-6: with the shell's one bell on, this app mounts no bell
                 of its own. Off, nothing changes. NS-9 deletes it. */}
             {dockOn ? null : <NotificationBell onOpenTask={openHit} />}
-            <AssistantToggle
-              open={assistantOpen}
-              onToggle={() => setAssistantOpen((v) => !v)}
-            />
+            {/* D99: the chat bar opens the one assistant. NS-9 deletes this. */}
+            {chatOn ? null : (
+              <AssistantToggle
+                open={assistantOpen}
+                onToggle={() => setAssistantOpen((v) => !v)}
+              />
+            )}
           </>
         }
       />
@@ -364,7 +358,7 @@ export default function TasksPage() {
         {lists.open && (
           <aside className={`w-60 shrink-0 border-r border-border bg-card ${railClass(lists.settled)}`}>
             <ListsSidebar
-              onOpenAssistant={() => setAssistantOpen(true)}
+              onOpenAssistant={chatOn ? undefined : () => setAssistantOpen(true)}
               assistantActive={assistantOpen}
             />
           </aside>
@@ -451,7 +445,6 @@ export default function TasksPage() {
       <EliminatePopup />
       <DelegatePopup />
       {search}
-      {shortcuts}
     </div>
   );
 }

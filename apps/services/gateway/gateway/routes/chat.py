@@ -85,6 +85,9 @@ class SessionPatchRequest(BaseModel):
     title: str | None = None
     last_preview: str | None = None
     message_count: int | None = None
+    #: D99 (migration 254). True archives the chat, False takes it back into
+    #: the list, None leaves it. An archive keeps its first time.
+    archived: bool | None = None
 
 
 class MessageRecord(BaseModel):
@@ -134,7 +137,7 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
                 "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
                 "       (SELECT count(*) FROM chat_session_participant p "
                 "          WHERE p.session_id = s.id) AS participant_count, "
-                "       me.role AS my_role "
+                "       me.role AS my_role, s.archived_at "
                 "FROM chat_session s "
                 # One join on the participant key, so no query per row.
                 "LEFT JOIN chat_session_participant me "
@@ -171,6 +174,9 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # >1 means somebody else is in here too. The sidebar shows a shared
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
+            # D99 (migration 254): an archived chat stays in the list, and
+            # the assistant shows it under "Archived".
+            "archivedAt": r.archived_at.isoformat() if r.archived_at else None,
         }
         for r in rows
     ]
@@ -410,7 +416,13 @@ def _patch_session(
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    sets: list[str] = ["updated_at = now()"]
+    # D99: an archive alone does not move the chat to the top of the list.
+    # Every other change still stamps `updated_at`, as before.
+    touches = (
+        req.title is not None or req.last_preview is not None
+        or req.message_count is not None or req.archived is None
+    )
+    sets: list[str] = ["updated_at = now()"] if touches else []
     params: dict = {"id": session_id, "uid": user_id}
     if req.title is not None:
         sets.append("title = :title")
@@ -421,12 +433,23 @@ def _patch_session(
     if req.message_count is not None:
         sets.append("message_count = :message_count")
         params["message_count"] = req.message_count
+    # D99: the archive is a column of the chat, so in a room it would hide
+    # the chat from every member. Only the member who may delete the chat
+    # may archive it (`_MAY_DELETE_SQL`). Anybody else gets the 404 of a chat
+    # they cannot see, and nothing of the request is written.
+    owner_only = ""
+    if req.archived is True:
+        sets.append("archived_at = COALESCE(s.archived_at, now())")
+        owner_only = " AND " + _MAY_DELETE_SQL
+    elif req.archived is False:
+        sets.append("archived_at = NULL")
+        owner_only = " AND " + _MAY_DELETE_SQL
 
     with tenant_session(organization_id) as s:
         result = s.execute(
             text(
                 f"UPDATE chat_session s SET {', '.join(sets)} "  # noqa: S608
-                "WHERE s.id = :id AND " + SESSION_VISIBLE_SQL
+                "WHERE s.id = :id AND " + SESSION_VISIBLE_SQL + owner_only
             ),
             params,
         )
@@ -844,6 +867,8 @@ def _upsert_messages(
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
+    from gateway.chat_recovery import gate_card_answer_events  # noqa: PLC0415
+
     if not messages:
         return []
 
@@ -866,10 +891,14 @@ def _upsert_messages(
             # are the server, and they may insert an agent row.
             may_insert = kind == "human" or bool(author_from_run) or bool(mint)
             # The ids stay as sent: the client matches its rows by them.
+            # A card answer's display must agree with the turn's words, or
+            # it goes (review of #942): a member could otherwise show every
+            # viewer an "Approved" card that the model never read.
+            events = gate_card_answer_events(m.role, m.content, m.custom_events)
             body = storable({
                 "content": m.content, "tool_events": m.tool_events,
                 "progress_lines": m.progress_lines, "reasoning": m.reasoning,
-                "agent_state": m.agent_state, "custom_events": m.custom_events,
+                "agent_state": m.agent_state, "custom_events": events,
             })
             result = s.execute(
                 text(_MESSAGE_UPSERT_SQL),
