@@ -53,7 +53,7 @@ import { AccessSection } from "./components/AccessPanel";
 import SetupHubSection from "./components/SetupHub";
 import CrmBoundary from "./components/CrmBoundary";
 import ConvertModal from "./components/ConvertModal";
-import CrmRail, { type RailViewActions } from "./components/CrmRail";
+import CrmRail, { type RailSettings, type RailViewActions } from "./components/CrmRail";
 import FilterBar from "./components/FilterBar";
 import FirstOpen from "./components/FirstOpen";
 import { ImportProgress, SetupLink, StalledBanner } from "./components/MirrorBanner";
@@ -130,6 +130,7 @@ import {
   selectLayout,
   selectPipeline,
   selectRecordTab,
+  selectSection,
   selectTab,
   viewHref,
   type CrmLayout,
@@ -146,6 +147,14 @@ import {
 } from "./lib/useCrmMode";
 import { boundaryKey } from "./lib/boundary";
 import { pushView, replaceView } from "./lib/history";
+import {
+  sectionLabel,
+  sectionRedirect,
+  shownSection,
+  visibleSections,
+  withShownSection,
+  type SettingsSectionId,
+} from "./lib/settingsSections";
 import { viewLabel } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
@@ -163,6 +172,8 @@ type MirrorContext = {
   connection: ConnectionInfo | null;
   sync: SyncStatus | null;
   isAdmin: boolean;
+  /** The mode read failed, so `mode` may be a guess (CRM-C1 review). */
+  modeReadFailed: boolean;
   connecting: boolean;
   syncing: boolean;
   onConnect: () => void;
@@ -585,6 +596,22 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     }
   }
 
+  // The settings section on screen (CRM-C1, crm_platform.md §20.4). A
+  // missing or unknown section goes to the caller's default through
+  // `replaceView`, so Back does not return to the bad URL. A known section
+  // the caller cannot open draws the default and keeps its URL. Nothing is
+  // rewritten while the access read loads or is stale, or while the mode
+  // read failed: then the caller is a guess, and an admin's link would be
+  // lost (`sectionRedirect`).
+  const { loading: accessLoading, stale: accessStale } = useAccess();
+  const sectionCtx = useMemo(() => ({ isAdmin: ctx.isAdmin, mode: ctx.mode }), [ctx.isAdmin, ctx.mode]);
+  const settingsSection = shownSection(view.section, sectionCtx);
+  const sectionTrusted = !accessLoading && !accessStale && !ctx.modeReadFailed;
+  useEffect(() => {
+    const redirect = sectionRedirect(view, sectionCtx, sectionTrusted);
+    if (redirect) replaceView(viewHref({ ...view, section: redirect }));
+  }, [view, sectionCtx, sectionTrusted]);
+
   // The scope line beside the name. CRM-Z7 puts the mode here ("Native", or
   // "Synced from Zoho · 4 min ago"). Until a mode exists, it says what the
   // view on screen holds.
@@ -598,7 +625,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       : boardOn
         ? `${leadCount} leads by status`
         : view.tab === "settings"
-          ? "Setup, access, pipelines and statuses"
+          ? `Settings · ${sectionLabel(settingsSection)}`
           : view.tab === "reports"
             ? "Forecast, funnel, win rate and who is carrying what"
             : view.tab === "module"
@@ -620,9 +647,24 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   /** A rail row, from the desktop column or the phone's drawer. */
   function chooseView(tab: CrmView["tab"]): void {
-    go(selectTab(view, tab));
+    // A click on the view on screen adds no history entry (CRM-C1 review).
+    const next = selectTab(view, tab);
+    if (next !== view) go(next);
     if (isMobile) closeDrawer();
   }
+
+  /** A settings section, from a child row of the rail (CRM-C1). */
+  function chooseSection(section: SettingsSectionId): void {
+    const next = selectSection(view, section);
+    if (next !== view) go(next);
+    if (isMobile) closeDrawer();
+  }
+  /** The child rows of the settings row: the sections this caller can open. */
+  const railSettings: RailSettings = {
+    sections: visibleSections(sectionCtx),
+    active: view.tab === "settings" ? settingsSection : null,
+    onSelect: chooseSection,
+  };
 
   // The app's verb sits next to its name, as Capture does in My Tasks. It is
   // the quick-create entry the old header held, at the bar's size.
@@ -770,7 +812,13 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               onClick={() =>
                 openDrawer(
                   <nav aria-label="CRM views" className="p-2">
-                    <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} modules={railModules} />
+                    <CrmRail
+                      tab={view.tab}
+                      onSelect={chooseView}
+                      saved={railSaved}
+                      modules={railModules}
+                      settings={railSettings}
+                    />
                   </nav>
                 )
               }
@@ -799,7 +847,13 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             aria-label="CRM views"
             className={`w-56 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
           >
-            <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} modules={railModules} />
+            <CrmRail
+              tab={view.tab}
+              onSelect={chooseView}
+              saved={railSaved}
+              modules={railModules}
+              settings={railSettings}
+            />
           </nav>
         ) : null}
 
@@ -809,7 +863,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             <StalledBanner
               isAdmin={ctx.isAdmin}
               status={ctx.connection?.status ?? null}
-              onOpenSetup={() => chooseView("settings")}
+              onOpenSetup={() => chooseSection("setup")}
             />
           )}
           {ctx.mode === "mirror" && ctx.sync?.state === "running" && (
@@ -883,7 +937,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           {/* One boundary around the view. A throw ends on a sentence and a
               Reload button, and the rail stays. The key clears it when the
               member picks another view (CRM-Q3, spec section 18.6). */}
-          <CrmBoundary key={boundaryKey(view, pipelineId)}>
+          <CrmBoundary key={boundaryKey(withShownSection(view, sectionCtx), pipelineId)}>
           {boardOn ? (
             <KanbanBoard
               entity={view.tab === "leads" ? "leads" : "deals"}
@@ -924,6 +978,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             <Reports reports={store.reports} loading={store.loading} />
           ) : view.tab === "settings" ? (
             <PipelineSettings
+              section={settingsSection}
               setup={
                 // CRM-X0: the one setup hub. It holds the connection too.
                 ctx.isAdmin ? (
@@ -1184,7 +1239,7 @@ function CrmGate(): ReactNode {
   const { access, loading: accessLoading } = useAccess();
   const isAdmin = hasCapability(access, ADMIN_CAPABILITY);
 
-  const { phase, mode, connection } = useCrmMode(isAdmin, accessLoading);
+  const { phase, mode, connection, readFailed } = useCrmMode(isAdmin, accessLoading);
   const [watchToken, setWatchToken] = useState(0);
   const sync = useSyncStatus(connection !== null && mode === "mirror", watchToken);
   const [busy, setBusy] = useState<"native" | "zoho" | null>(null);
@@ -1321,6 +1376,7 @@ function CrmGate(): ReactNode {
         connection,
         sync,
         isAdmin,
+        modeReadFailed: readFailed,
         connecting: busy === "zoho",
         syncing,
         onConnect: connectZoho,

@@ -19,15 +19,22 @@ export const BOUNDARY_COPY = {
 } as const;
 
 /**
- * What resets the boundary. A switch of view, of list or board, or of pipeline
- * mounts a fresh subtree, so a failure on one does not stick to the next.
+ * What resets the boundary. A switch of view, of list or board, of pipeline
+ * or of settings section mounts a fresh subtree, so a failure on one does not
+ * stick to the next.
  */
 export function boundaryKey(
-  view: { tab: string; layout: string; module?: string | null },
+  view: { tab: string; layout: string; module?: string | null; section?: string | null },
   pipelineId: string | null,
 ): string {
-  // Each generic module is a view of its own (CRM-Q6b).
-  const tab = view.module ? `${view.tab}:${view.module}` : view.tab;
+  // Each generic module is a view of its own (CRM-Q6b), and so is each
+  // settings section (CRM-C1). Only a module tab has a module, and only the
+  // settings tab has a section.
+  const tab = view.module
+    ? `${view.tab}:${view.module}`
+    : view.section
+      ? `${view.tab}:${view.section}`
+      : view.tab;
   return `${tab}:${view.layout}${pipelineId ? `:${pipelineId}` : ""}`;
 }
 

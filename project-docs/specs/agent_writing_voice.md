@@ -564,8 +564,12 @@ docstring of its `agents.py` (`_agents_py_purpose`). The function parses the
 file and never imports it.
 
 **The tenant name.** The prompt said "for Fracktal Works" to every tenant.
-Now it says "for this organisation". The per-turn context names the run's
-organisation: `executor._run_org_display_name` reads
+#978 on main changed it to "the member's own organization", and it swept the
+name out of the other prompts and the memory tool docstrings. Its fence is
+`tests/unit/test_no_tenant_name_in_prompts.py`.
+
+This change adds the name of the run's organisation. The per-turn context
+names it: `executor._run_org_display_name` reads
 `organization.display_name` for the org of `_current_run_org`. That org
 comes from the run boundary, never from the payload (R5).
 
@@ -581,9 +585,8 @@ the text with NFKC, and it removes each control character, each format
 character and the marks « and ». A name with a newline cannot forge a
 context block, and a long name cannot cost its size on each turn.
 
-The same sweep removed the name from three places. They are the app
-builder's instructions, an example in the email agent's instructions, and
-three examples in the docstrings of the memory tools. `github_org` still defaults to
+The orchestrator's prompt and the app builder's instructions now say that
+the per-turn context names the organization. `github_org` still defaults to
 `FracktalWorks` in the settings. That is the GitHub owner of the agent
 repos, not prompt text, so it stays.
 

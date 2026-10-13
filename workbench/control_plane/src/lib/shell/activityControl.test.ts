@@ -347,9 +347,11 @@ describe("the step is plain text", () => {
 describe("the shell owns the control, with the shell bar on or off", () => {
   it("the shell bar draws it after the app's tools", () => {
     const bar = read("lib/shell/ShellBar.tsx");
-    // D99: with the chat bar on, the control moves into the chat bar.
-    expect(bar).toMatch(/activity=\{chatOn \? null : <ActivityControl \/>\}/);
-    expect(bar.indexOf("ref={setRight}")).toBeLessThan(bar.indexOf("{activity}"));
+    // Owner, 2026-10-14: the control stays in the shell bar with the chat on
+    // too. It shows the running count and opens the list of runs.
+    expect(bar).toMatch(/activity=\{<ActivityControl \/>\}/);
+    expect(bar.indexOf("{bell}")).toBeGreaterThan(0);
+    expect(bar.indexOf("{bell}")).toBeLessThan(bar.indexOf("{activity}"));
     expect(bar).not.toMatch(/<ActivityPanel\b|<ActivityHost\b/);
   });
 

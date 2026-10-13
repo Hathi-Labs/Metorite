@@ -67,7 +67,11 @@ export type AssistantMode = "dock" | "full";
 export const DOCK_DEFAULT = 400;
 export const DOCK_MIN = 320;
 export const DOCK_MAX = 720;
-/** Below this window width there is no side panel (§7.1). */
+/**
+ * Below this window width the side panel FLOATS over the right of the page,
+ * instead of sitting beside it (owner, 2026-10-14: "I'm not sure when to
+ * expect the sidebar or the full screen"). It is still the side panel.
+ */
 export const DOCK_MIN_VIEWPORT = 1280;
 
 /** A width the panel may take: a whole number between the two ends. */
@@ -76,10 +80,19 @@ export function clampDockWidth(width: number): number {
   return Math.round(Math.min(DOCK_MAX, Math.max(DOCK_MIN, width)));
 }
 
-/** The form that draws: the side panel needs a desktop and a wide window. */
-export function effectiveMode(mode: AssistantMode, viewportWidth: number, isMobile: boolean): AssistantMode {
-  if (isMobile || viewportWidth < DOCK_MIN_VIEWPORT) return "full";
+/**
+ * The form that draws. A phone has room for one thing, so it is always the
+ * full sheet. Every desktop draws the form the member asked for: the side
+ * panel unless they asked for the full view. The width never decides it.
+ */
+export function effectiveMode(mode: AssistantMode, _viewportWidth: number, isMobile: boolean): AssistantMode {
+  if (isMobile) return "full";
   return mode;
+}
+
+/** Whether the side panel floats over the page: a desktop narrower than the floor. */
+export function dockFloats(viewportWidth: number, isMobile: boolean): boolean {
+  return !isMobile && viewportWidth < DOCK_MIN_VIEWPORT;
 }
 
 /**
@@ -88,10 +101,11 @@ export function effectiveMode(mode: AssistantMode, viewportWidth: number, isMobi
  * application, minimize the AI chat to the sidebar"). The full view would
  * hide the app they asked for.
  *
- * - `dock`: a wide desktop shrinks it to the side panel, for this moment
- *   only. The member's own choice of form is kept.
- * - `close`: below `DOCK_MIN_VIEWPORT` there is no side panel, so it closes,
- *   and the chat bar holds the chat.
+ * - `dock`: a desktop shrinks it to the side panel. Below
+ *   `DOCK_MIN_VIEWPORT` the panel floats over the page, and it is still the
+ *   side panel (owner, 2026-10-14).
+ * - `close`: a surface with no side panel at all. Every desktop has one now,
+ *   so `AssistantDock` never asks for this, and the rule stays total.
  * - null: nothing to do. The side panel already shows the page, and on a
  *   phone the sheet covers the nav, so no app can be opened under it.
  */
@@ -123,11 +137,21 @@ export interface AssistantAsk {
   /** Grows with each ask, so the same words twice are two asks. */
   seq: number;
   text: string;
+  /**
+   * The assistant was already open when the member asked, so the words go
+   * into the chat on screen, not a new one (owner, 2026-10-14: the top field
+   * stays live beside the open panel).
+   */
+  join?: boolean;
 }
 
 export interface AssistantState {
   open: boolean;
-  /** The member's chosen form. `effectiveMode` decides what draws. */
+  /**
+   * The form of THIS open. Every open from closed starts as the side panel.
+   * The full view is a moment of focus the member asks for, and the next open
+   * never starts there (owner, 2026-10-14). `effectiveMode` decides what draws.
+   */
   mode: AssistantMode;
   /** The chat to show. Null: the newest chat of the one agent, or a new one. */
   sessionId: string | null;
@@ -145,30 +169,32 @@ export interface AssistantState {
 
 const PREFS_KIND = "assistant" as const;
 
-function readPrefs(): Pick<AssistantState, "mode" | "width"> {
-  const fallback = { mode: "dock" as AssistantMode, width: DOCK_DEFAULT };
+/**
+ * The one thing the member's browser keeps: the side panel's width. The form
+ * is NOT kept. A stored form made the same press open two different things
+ * (owner, 2026-10-14), so an old stored `mode` is read and ignored.
+ */
+function readPrefs(): Pick<AssistantState, "width"> {
+  const fallback = { width: DOCK_DEFAULT };
   try {
     const key = chatKey(PREFS_KIND);
     if (!key || typeof localStorage === "undefined") return fallback;
     const raw = localStorage.getItem(key);
     if (!raw) return fallback;
-    const p = JSON.parse(raw) as { mode?: unknown; width?: unknown };
-    return {
-      mode: p.mode === "full" ? "full" : "dock",
-      width: typeof p.width === "number" ? clampDockWidth(p.width) : DOCK_DEFAULT,
-    };
+    const p = JSON.parse(raw) as { width?: unknown };
+    return { width: typeof p.width === "number" ? clampDockWidth(p.width) : DOCK_DEFAULT };
   } catch {
     return fallback;
   }
 }
 
-function writePrefs(mode: AssistantMode, width: number): void {
+function writePrefs(width: number): void {
   try {
     const key = chatKey(PREFS_KIND);
     if (!key || typeof localStorage === "undefined") return;
-    localStorage.setItem(key, JSON.stringify({ mode, width }));
+    localStorage.setItem(key, JSON.stringify({ width }));
   } catch {
-    /* storage off: the preference lasts this page only */
+    /* storage off: the width lasts this page only */
   }
 }
 
@@ -205,6 +231,9 @@ function withPrefs(s: AssistantState): AssistantState {
  * Open the assistant. With `text`, the words go to the chat as the member's
  * turn. With `draft`, they wait in the composer for the member to send. With
  * `sessionId`, that chat opens. With `fresh`, a new chat opens.
+ *
+ * The form: an open from closed is the side panel, unless `mode` asks for the
+ * full view. An open while it is open keeps the form it has.
  */
 export function openAssistant(opts: {
   text?: string;
@@ -219,9 +248,9 @@ export function openAssistant(opts: {
   _set({
     ...base,
     open: true,
-    mode: opts.mode ?? base.mode,
+    mode: opts.mode ?? (base.open ? base.mode : "dock"),
     sessionId: opts.sessionId !== undefined ? opts.sessionId : base.sessionId,
-    ask: text ? { seq: ++_askSeq, text } : base.ask,
+    ask: text ? { seq: ++_askSeq, text, join: base.open } : base.ask,
     draft: draft ? { seq: ++_askSeq, text: draft } : base.draft,
     freshSeq: opts.fresh ? base.freshSeq + 1 : base.freshSeq,
     focusSeq: base.focusSeq + 1,
@@ -240,14 +269,9 @@ export function consumeDraft(): void {
   _set({ ..._state, draft: null });
 }
 
-/**
- * Change the form. The member's own choice is kept as their preference. The
- * app switch passes `persist: false`: it shows the app for this moment, and
- * it must not rewrite what the member chose.
- */
-export function setAssistantMode(mode: AssistantMode, persist = true): void {
+/** Change the form of this open. Nothing is kept for the next one. */
+export function setAssistantMode(mode: AssistantMode): void {
   const base = withPrefs(_state);
-  if (persist) writePrefs(mode, base.width);
   if (base.mode !== mode || base !== _state) _set({ ...base, mode });
 }
 
@@ -255,7 +279,7 @@ export function setAssistantMode(mode: AssistantMode, persist = true): void {
 export function setDockWidth(width: number, persist = true): void {
   const base = withPrefs(_state);
   const w = clampDockWidth(width);
-  if (persist) writePrefs(base.mode, w);
+  if (persist) writePrefs(w);
   if (w !== base.width) _set({ ...base, width: w });
 }
 

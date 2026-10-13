@@ -297,8 +297,8 @@ describe("CRM settings", () => {
     const order = [
       "SETUP",
       "ACCESS",
-      "Pipelines and stages",
-      "Lead Status",
+      "Deal stages",
+      "Lead statuses",
       "Lost reasons",
       "Fields",
       "Sync health",
@@ -317,7 +317,7 @@ describe("CRM settings", () => {
     const html = draw({ setup: undefined, access: undefined, connection: undefined, showAdminCards: false });
     expect(html).not.toContain("SETUP");
     expect(html).not.toContain("Coming soon");
-    expect(html).toContain("Pipelines and stages");
+    expect(html).toContain("Deal stages");
   });
 
   it("keeps the stage editing of the one implicit pipeline", () => {
@@ -379,7 +379,7 @@ describe("the error boundary", () => {
 
   it("wraps the CRM views in the page, keyed by view", () => {
     const page = read("../page.tsx");
-    expect(page).toMatch(/<CrmBoundary key=\{boundaryKey\(view, pipelineId\)\}>/);
+    expect(page).toMatch(/<CrmBoundary key=\{boundaryKey\(withShownSection\(view, sectionCtx\), pipelineId\)\}>/);
     expect(page.indexOf("<CrmBoundary")).toBeLessThan(page.indexOf("<PipelineSettings"));
     expect(page.indexOf("<PipelineSettings")).toBeLessThan(page.indexOf("</CrmBoundary>"));
   });
@@ -450,7 +450,7 @@ describe("related lists, hardened (review P2)", () => {
     const { boundaryKey } = await import("../lib/boundary");
     expect(boundaryKey({ tab: "deals", layout: "board" }, null)).toBe("deals:board");
     expect(boundaryKey({ tab: "deals", layout: "list" }, "p2")).toBe("deals:list:p2");
-    expect(read("../page.tsx")).toMatch(/<CrmBoundary key=\{boundaryKey\(view, pipelineId\)\}>/);
+    expect(read("../page.tsx")).toMatch(/<CrmBoundary key=\{boundaryKey\(withShownSection\(view, sectionCtx\), pipelineId\)\}>/);
   });
 
   it("opens the list for an old link that carries a filter", async () => {

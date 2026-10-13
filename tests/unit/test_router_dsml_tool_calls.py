@@ -24,12 +24,15 @@ import json
 import logging
 import os
 import random
+import re
 import uuid
+from typing import Any
 
 import pytest
 
 pytest.importorskip("fastapi")
 
+from customer_console import dsml as dsml_mod
 from customer_console.dsml import (
     DsmlPolicy,
     DsmlStream,
@@ -41,7 +44,7 @@ from customer_console.dsml import (
     policy_for,
 )
 
-from tests.unit._linear_time import assert_linear
+from tests.unit._linear_time import assert_linear_count
 
 #: The fullwidth bar, built from its code point so no editor can swap it.
 BAR = chr(0xFF5C)
@@ -767,6 +770,53 @@ class TestCallsLeaveAtTheFinish:
         assert len(_streamed_calls(out)) == 1
 
 
+class _CountedPattern:
+    """A compiled regex of ``dsml`` that adds to ``count.chars`` the characters
+    each call may read: from ``pos`` to the end, or to the end of a match."""
+
+    def __init__(self, real: re.Pattern[str], count: _ScanCount) -> None:
+        self._real = real
+        self._count = count
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+    def _scan(self, name: str, string: str, pos: int = 0, *a: Any, **kw: Any) -> Any:
+        self._count.chars += max(0, len(string) - pos)
+        return getattr(self._real, name)(string, pos, *a, **kw)
+
+    def search(self, string: str, pos: int = 0, *a: Any) -> Any:
+        return self._scan("search", string, pos, *a)
+
+    def fullmatch(self, string: str, pos: int = 0, *a: Any) -> Any:
+        return self._scan("fullmatch", string, pos, *a)
+
+    def finditer(self, string: str, pos: int = 0, *a: Any) -> Any:
+        return self._scan("finditer", string, pos, *a)
+
+    def findall(self, string: str, pos: int = 0, *a: Any) -> Any:
+        return self._scan("findall", string, pos, *a)
+
+    def match(self, string: str, pos: int = 0, *a: Any) -> Any:
+        found = self._real.match(string, pos, *a)
+        self._count.chars += (found.end() if found else len(string)) - pos
+        return found
+
+    def sub(self, repl: Any, string: str, count: int = 0) -> Any:
+        self._count.chars += len(string)
+        return self._real.sub(repl, string, count)
+
+
+class _ScanCount:
+    """Every module regex of ``dsml``, wrapped in a :class:`_CountedPattern`."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.chars = 0
+        for name, value in list(vars(dsml_mod).items()):
+            if isinstance(value, re.Pattern):
+                monkeypatch.setattr(dsml_mod, name, _CountedPattern(value, self))
+
+
 class TestABareMarkerIsText:
     """A marker that never forms a tag must not delete the rest of the answer."""
 
@@ -791,23 +841,26 @@ class TestABareMarkerIsText:
         assert out.content == f"odd <{BAR}DSML{BAR}hello. "
         assert len(out.tool_calls) == 1
 
-    def test_a_LONG_block_streamed_one_character_at_a_time_is_linear(self):
-        """The rescans are bounded, so a long argument costs linear time. The
-        fence is the ratio of two timings, not a wall clock (``_linear_time``)."""
+    def test_a_LONG_block_streamed_one_character_at_a_time_is_linear(self, monkeypatch):
+        """The rescans are bounded, so a long argument costs linear work.
 
-        def _stream(size: int):
+        The fence counts the characters that the stream hands to its regexes
+        (``_ScanCount``), and compares equal work (``assert_linear_count``).
+        It reads no clock. The ratio of two timings failed on CI at 2.1 and
+        2.2 against 2, because the clock also measured a copy of the region
+        on each character. That copy is no rescan."""
+        count = _ScanCount(monkeypatch)
+
+        def _scanned(size: int) -> int:
             big = block(invoke("create_task", param("title", "y" * size)))
             st = DsmlStream(TASK_TOOLS)
+            count.chars = 0
+            for ch in big:
+                st.feed(0, ch)
+            assert len(st.finish(0)[1]) == 1
+            return count.chars
 
-            def _run():
-                for ch in big:
-                    st.feed(0, ch)
-                return st.finish(0)[1]
-
-            return _run
-
-        assert len(_stream(40_000)()) == 1
-        assert_linear(_stream, 40_000)
+        assert_linear_count(_scanned, 40_000)
 
 
 class TestParallelToolCallsFalse:

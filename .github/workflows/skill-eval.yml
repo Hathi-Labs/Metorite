@@ -27,6 +27,14 @@ on:
       # stub reads the signatures of the WhatsApp routes.
       - "apps/agents/agent-whatsapp-assistant/**"
       - "apps/services/gateway/gateway/routes/whatsapp/transport/**"
+      # NS-6 6d: the routing eval drives the one assistant and every specialist
+      # it calls. It reads the registry, and the persona, the panes and
+      # ALSO_SERVES from the shell's own source.
+      - "apps/agents/**"
+      - "apps/services/gateway/gateway/routes/agent.py"
+      - "workbench/control_plane/src/lib/nav.ts"
+      - "workbench/control_plane/src/lib/shell/assistant.ts"
+      - "workbench/control_plane/src/lib/shell/AssistantDock.tsx"
       - ".github/workflows/skill-eval.yml"
   workflow_dispatch:
 
@@ -76,6 +84,13 @@ jobs:
       # 40%; the run prints both). No model, no Router.
       - name: WhatsApp narrowing eval (scripted)
         run: uv run python -m evals.whatsapp_narrowing.run --scripted --out "$RUNNER_TEMP/whatsapp-narrowing"
+
+      # NS-6 slice 6d (navigation_shell.md §7.1, D99): the routing set of the
+      # one assistant. The catalog checks read the real registry and the real
+      # orchestrator, and one case of each answer runs through the real
+      # orchestrator run with a scripted model. No model, no network.
+      - name: Routing eval of the one assistant (scripted)
+        run: uv run python -m evals.routing.run --scripted
 
   inspect:
     name: "Inspect AI scenario harness (smoke)"

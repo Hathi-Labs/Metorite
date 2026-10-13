@@ -151,10 +151,13 @@ def test_no_built_prompt_or_tool_text_names_a_tenant(
         assert name not in text, f"{agent_dir} names {name}"
 
 
-def test_the_orchestrator_prompt_names_this_organisation() -> None:
-    assert _live().startswith(
-        "You are the AI Company Brain orchestrator for this organisation.",
+def test_the_orchestrator_prompt_points_at_the_per_turn_name() -> None:
+    """#978's wording opens the prompt, and this change adds the pointer."""
+    text = _live()
+    assert text.startswith(
+        "You are the AI Company Brain orchestrator for the member's own organization.",
     )
+    assert "The per-turn context names the organization when its name is known." in text
 
 
 # ── The run's organisation, in the per-turn context ────────────────────────

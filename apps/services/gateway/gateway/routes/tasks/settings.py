@@ -364,6 +364,7 @@ def upsert_settings_sql(
     cols: list[str],
     placeholder: Callable[[str], str] | None = None,
     update: list[str] | None = None,
+    merge: dict[str, str] | None = None,
 ) -> str:
     """The one write of a member's settings row, for the columns ``cols``.
 
@@ -377,11 +378,18 @@ def upsert_settings_sql(
     ``cols``. The shell's layout write (NS-7, ``routes/admin/me.py``) inserts
     the calendar seed with a NEW row, and on an existing row it changes
     ``shell_prefs`` only.
+
+    ``merge`` gives a column of ``update`` its own expression on an existing
+    row, in place of ``EXCLUDED.<column>``. My Day's preferences (MD-2d,
+    ``routes/shell/prefs.py``) use it to merge one key into
+    ``my_day_prefs`` with ``jsonb_set``, so a save never replaces the column.
     """
     ph = placeholder or (lambda k: f":{k}")
     names = ", ".join(cols)
     vals = ", ".join(ph(k) for k in cols)
-    sets = ", ".join(f"{k} = EXCLUDED.{k}" for k in (update or cols))
+    exprs = merge or {}
+    sets = ", ".join(
+        f"{k} = {exprs.get(k, f'EXCLUDED.{k}')}" for k in (update or cols))
     return (
         f"INSERT INTO user_settings (organization_id, user_id, {names}) "
         f"VALUES ({_BOUND_ORG}, :uid, {vals}) "

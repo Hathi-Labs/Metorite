@@ -324,3 +324,23 @@ export function orderAfterDrop<T extends { id: string }>(
   const moved = moveItem(rows, from, to);
   return moved === rows ? null : moved.map((row) => row.id);
 }
+
+// ── CRM-C1: the drafts of the settings rows ───────────────────────────────
+
+/**
+ * An unsaved edit of one settings row, kept in the CRM store (CRM-C1
+ * review). A section change unmounts the rows, and the store keeps the edit,
+ * so the member can come back and save it.
+ */
+export type SettingsDraft = { base: unknown; value: unknown };
+
+/**
+ * What a row shows: its draft, or the served value.
+ *
+ * A draft holds the served value it was typed over. A re-read brings a new
+ * value, and then the draft no longer applies. The rows worked this way
+ * before CRM-C1: the server's answer is the truth.
+ */
+export function draftOf<T>(draft: SettingsDraft | undefined, served: T): T {
+  return draft && draft.base === served ? (draft.value as T) : served;
+}

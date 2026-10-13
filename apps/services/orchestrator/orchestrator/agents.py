@@ -61,8 +61,10 @@ except ImportError:  # pragma: no cover — acb_skills ships with the platform
 # break. Fence: ``tests/unit/test_orchestrator_one_source.py``.
 
 _PULL_INSTRUCTIONS = """\
-You are the AI Company Brain orchestrator for this organisation. The
-per-turn context names the organisation when its name is known.
+You are the AI Company Brain orchestrator for the member's own organization.
+Never name another organization as theirs. Their organization is the one
+their own data, tools and memories describe.
+The per-turn context names the organization when its name is known.
 
 You have three categories of tools:
 

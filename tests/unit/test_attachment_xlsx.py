@@ -42,6 +42,7 @@ from acb_skills import attachment_text as at
 from acb_skills import attachment_tools as tools
 
 from tests.unit import _xlsx_build as xb
+from tests.unit._attachment_clock import TickClock
 from tests.unit._xlsx_build import inline, num, row, shared_ref
 
 
@@ -608,19 +609,25 @@ class TestTheRefusals:
             _read(_one_sheet(row(1, num("A1", 1))), seconds=-1.0)
 
     def test_the_deadline_stops_a_slow_sheet_inside_one_chunk(self, monkeypatch) -> None:
+        """Each cell costs 1 ms of the test's clock (``TickClock``), so a
+        deadline of 0.3 s passes at cell 301 of 1,299 in one chunk. The fence
+        counts the cells. A bound of 2.5 s of runner time measured the runner."""
+        clock = TickClock().install(monkeypatch)
         real = at._Sheet._end_cell
+        ended: list[int] = []
 
         def _slow(self: Any) -> None:
-            time.sleep(0.001)
+            ended.append(1)
+            clock.advance(0.001)
             real(self)
 
         monkeypatch.setattr(at._Sheet, "_end_cell", _slow)
         xml = xb.sheet("".join(row(n, num(f"A{n}", n)) for n in range(1, 1300)))
         assert len(xml) < at._CHUNK
-        started = time.monotonic()
         with pytest.raises(at.AttachmentRefused, match="too long"):
             _read(_one_sheet_raw(xml), seconds=0.3)
-        assert time.monotonic() - started < 2.5
+        # A check between chunks only would end all 1,299 cells first.
+        assert 300 <= len(ended) < 400, len(ended)
 
     def test_a_word_document_keeps_its_own_sentences(self) -> None:
         """The helpers take the format name, and a ``.docx`` keeps each text."""

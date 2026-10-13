@@ -212,8 +212,9 @@ steps, and it wins over the theme.
   exact HTML structure, more variants, motion/spacing rules) — most rounds
   won't need it since the classes above cover the common cases directly.
 - Clean spacing, real empty states, tabular numbers for figures. No lorem
-  ipsum. Use plausible content for the member's organisation and its
-  business. The per-turn context names the organisation when it is known.
+  ipsum — use plausible content that fits the member's own business
+  (what they sell, their customers, their work).
+  The per-turn context names the organization when it is known.
 
 ## Mobile & responsive layout — every app, not an opt-in
 
