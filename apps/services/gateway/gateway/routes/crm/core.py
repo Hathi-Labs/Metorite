@@ -2367,6 +2367,9 @@ RESET_TABLES: tuple[str, ...] = (
     # CRM-Q7a: a field rule names a field of the old account. It must not
     # apply to the next one.
     "crm_field_rules",
+    # CRM-C4a: the studio sections. ``crm_field_defs`` above holds the
+    # ``source = 'metorite'`` fields too, so the start over takes both.
+    "crm_field_sections",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved

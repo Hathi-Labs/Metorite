@@ -74,6 +74,8 @@ EMPTIED = (
     "crm_zoho_tombstones",
     # CRM-Q7a review P2: the rules name the fields of the old Zoho account.
     "crm_field_rules",
+    # CRM-C4a: the studio sections go with the fields they group.
+    "crm_field_sections",
 )
 #: What the start over keeps. The same set as ``core.RESET_KEEPS``.
 KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors")
