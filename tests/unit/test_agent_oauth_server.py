@@ -149,8 +149,10 @@ _CLAUDE_REQUEST = {"client_id": CLAUDE_CODE, "redirect_uri": CLAUDE_REDIRECT}
 
 @pytest.fixture(autouse=True)
 def _flag_on(monkeypatch):
-    """The flag is ON for every test, unless a test turns it off itself."""
+    """The flag is ON for every test, unless a test turns it off itself. The
+    allowlist (EA-10p) allows each organization, unless a test narrows it."""
     monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    monkeypatch.setattr(get_settings(), "agent_access_orgs", "*")
 
 
 def _document(client_id: str = CLIENT, **over) -> dict:
@@ -474,6 +476,120 @@ class TestTheFlag:
         from acb_common.settings import Settings
 
         assert Settings.model_fields["agent_access_enabled"].default is False
+
+
+_ORG_X = "1a1a1a1a-0000-4000-8000-00000000001a"
+_ORG_Y = "2b2b2b2b-0000-4000-8000-00000000002b"
+_ORG_Z = "3c3c3c3c-0000-4000-8000-00000000003c"
+
+_ORG_NOT_ENABLED = {
+    "error": "org_not_enabled",
+    "error_description": "Your organization has not turned on agent connections yet.",
+    "redirect_to": None,
+}
+
+
+def _orgs(monkeypatch, value: str) -> None:
+    monkeypatch.setattr(get_settings(), "agent_access_orgs", value)
+
+
+class TestTheOrgAllowlist:
+    """EA-10p (spec §10.6, EA3-27): the parser and ``org_allowed``."""
+
+    def test_the_setting_defaults_to_no_organization(self):
+        from acb_common.settings import Settings
+
+        assert Settings.model_fields["agent_access_orgs"].default == ""
+
+    @pytest.mark.parametrize("raw", ["", " ", ",", " , ,"])
+    def test_an_empty_value_allows_no_organization(self, monkeypatch, raw):
+        _orgs(monkeypatch, raw)
+        assert agent_oauth.allowed_orgs() == frozenset()
+        assert not agent_oauth.org_allowed(_ORG_X)
+
+    def test_a_star_allows_each_organization(self, monkeypatch):
+        _orgs(monkeypatch, "*")
+        assert agent_oauth.org_allowed(_ORG_X)
+        assert agent_oauth.org_allowed(uuid.UUID(_ORG_Y))
+        assert agent_oauth.org_allowed(str(uuid.uuid4()))
+
+    @pytest.mark.parametrize("value", [None, "", "not-a-uuid", _ORG_X + "x", "*"])
+    def test_a_value_that_is_not_an_org_id_is_refused_even_with_a_star(
+            self, monkeypatch, value):
+        _orgs(monkeypatch, "*")
+        assert not agent_oauth.org_allowed(value)
+
+    def test_a_list_allows_its_ids_only(self, monkeypatch):
+        _orgs(monkeypatch, f"{_ORG_X},{_ORG_Y}")
+        assert agent_oauth.org_allowed(_ORG_X)
+        assert agent_oauth.org_allowed(_ORG_Y)
+        assert not agent_oauth.org_allowed(_ORG_Z)
+
+    def test_the_spaces_go_and_the_case_does_not_count(self, monkeypatch):
+        _orgs(monkeypatch, f"  {_ORG_X.upper()} ,\t{_ORG_Y}  ")
+        assert agent_oauth.allowed_orgs() == frozenset({_ORG_X, _ORG_Y})
+        assert agent_oauth.org_allowed(_ORG_X.upper())
+
+    @pytest.mark.parametrize("bad", [
+        "fracktal", "123", "**", "{" + _ORG_Z + "}", "urn:uuid:" + _ORG_Z,
+        _ORG_Z.replace("-", ""), _ORG_Z + ";" + _ORG_Y, "' OR 1=1 --",
+    ])
+    def test_a_bad_entry_allows_nothing(self, monkeypatch, bad):
+        """A bad entry is dropped. A good entry beside it still counts, and a
+        bad entry alone leaves the list empty, which allows no organization."""
+        _orgs(monkeypatch, f"{bad}, {_ORG_X}")
+        assert agent_oauth.allowed_orgs() == frozenset({_ORG_X})
+        assert not agent_oauth.org_allowed(_ORG_Z)
+        _orgs(monkeypatch, bad)
+        assert agent_oauth.allowed_orgs() == frozenset()
+        assert not agent_oauth.org_allowed(_ORG_Z)
+
+
+class TestTheConsentRoutesCheckTheList:
+    """EA-10p door 1, database-free. A refused organization gets the 403 of
+    rule 11 before the client fetch, the ticket and the code."""
+
+    @pytest.mark.parametrize("path", ["/agent-access/authorize/check",
+                                      "/agent-access/authorize/approve"])
+    @pytest.mark.parametrize("listed", ["", _ORG_Y, f"{_ORG_Y},{_ORG_Z}"])
+    async def test_an_organization_off_the_list_is_refused_first(
+            self, monkeypatch, redis, path, listed):
+        _orgs(monkeypatch, listed)
+        touched = []
+
+        async def _spy(*a, **k):
+            touched.append(a)
+
+        for name in ("get_client", "cache_cimd_client", "create_connection",
+                     "mint_code"):
+            monkeypatch.setattr(agent_tokens, name, _spy)
+        body = _authorize()
+        ticket = _plant_ticket(redis, body, _ORG_X)
+        if path.endswith("approve"):
+            body["consent_ticket"] = ticket
+        planted = dict(redis.store)
+        r = await _gw(_gateway_app(_ORG_X), path, body)
+        assert r.status_code == 403, r.text
+        assert r.json() == {"detail": _ORG_NOT_ENABLED}
+        assert r.headers["cache-control"] == "no-store"
+        assert not touched, "a refused organization reached the store"
+        assert redis.calls == [], "a refused organization reached Redis"
+        assert redis.store == planted, "the refusal spent or wrote a ticket"
+
+    async def test_the_member_check_still_comes_first(self, monkeypatch):
+        """No bound tenant is the 403 of rule 1, not the allowlist 403."""
+        _orgs(monkeypatch, "")
+        r = await _gw(_gateway_app(None), "/agent-access/authorize/check", _authorize())
+        assert r.status_code == 403
+        assert r.json()["detail"] == (
+            "An active member of an organization must approve an agent.")
+
+    async def test_the_flag_off_is_404_even_for_a_listed_organization(self, monkeypatch):
+        _orgs(monkeypatch, _ORG_X)
+        monkeypatch.setattr(get_settings(), "agent_access_enabled", False)
+        for path in ("/agent-access/authorize/check", "/agent-access/authorize/approve"):
+            r = await _gw(_gateway_app(_ORG_X), path, _authorize())
+            assert r.status_code == 404
 
 
 class TestTheEdgeRefusesMalformedInput:
@@ -1780,6 +1896,104 @@ class TestTheRevocationEndpoint:
             access = await agent_tokens.lookup_token(issued["access_token"])
         assert r.status_code == 200
         assert access is not None, "another client revoked the connection"
+
+
+def _refresh_form(refresh_token: str) -> dict:
+    return {"grant_type": "refresh_token", "client_id": CLIENT,
+            "refresh_token": refresh_token}
+
+
+@_DB_GATE
+class TestTheOrgAllowlistOnARealDatabase:
+    """EA-10p doors 1 and 2 (spec §10.6), as the non-privileged role."""
+
+    async def test_a_listed_organization_approves(self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            check = await _gw(_gateway_app(promoted.org_a),
+                              "/agent-access/authorize/check", _authorize())
+            approve = await _approve(promoted)
+        assert check.status_code == 200, check.text
+        assert approve.status_code == 200, approve.text
+
+    async def test_an_organization_off_the_list_makes_no_connection(
+            self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, promoted.org_b)
+        async with tenant_engine_scope(promoted.app_dsn):
+            before = _connection_count(promoted)
+            check = await _gw(_gateway_app(promoted.org_a),
+                              "/agent-access/authorize/check", _authorize())
+            approve = await _approve(promoted)
+        for r in (check, approve):
+            assert r.status_code == 403, r.text
+            assert r.json() == {"detail": _ORG_NOT_ENABLED}
+        assert _connection_count(promoted) == before, "a refused org made a connection"
+
+    async def test_a_star_approves_any_organization(self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, "*")
+        async with tenant_engine_scope(promoted.app_dsn):
+            a = await _approve(promoted)
+            b = await _approve(promoted, promoted.org_b, session_email="b@agentoauth.test")
+        assert (a.status_code, b.status_code) == (200, 200)
+
+    async def test_a_code_of_an_organization_that_left_is_invalid_grant(
+            self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted)
+            _orgs(monkeypatch, promoted.org_b)
+            r = await _token(_exchange(code))
+        assert r.status_code == 400
+        assert r.json() == _INVALID_GRANT
+        tokens = _admin_one(
+            promoted, "SELECT count(*) FROM agent_token WHERE connection_id = CAST(:c AS uuid)"
+                      " AND kind <> 'code'", c=_connection_id_of_code(promoted, code))[0]
+        assert tokens == 0, "a refused organization got a token"
+
+    async def test_a_refresh_after_the_organization_left_is_invalid_grant(
+            self, promoted, web, monkeypatch):
+        """The refusal spends nothing: when the organization comes back on
+        the list, the same refresh token works."""
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted)
+            issued = (await _token(_exchange(code))).json()
+            for listed in ("", promoted.org_b):
+                _orgs(monkeypatch, listed)
+                refused = await _token(_refresh_form(issued["refresh_token"]))
+                assert refused.status_code == 400, listed
+                assert refused.json() == _INVALID_GRANT
+            _orgs(monkeypatch, promoted.org_a)
+            back = await _token(_refresh_form(issued["refresh_token"]))
+        assert back.status_code == 200, back.text
+        assert not _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+
+    async def test_a_star_refreshes_any_organization(self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, promoted.org_b)
+        async with tenant_engine_scope(promoted.app_dsn):
+            approved = await _approve(promoted, promoted.org_b,
+                                      session_email="b@agentoauth.test")
+            assert approved.status_code == 200, approved.text
+            code = _query(approved.json()["redirect_to"])["code"]
+            issued = await _token(_exchange(code))
+            assert issued.status_code == 200, issued.text
+            _orgs(monkeypatch, "*")
+            r = await _token(_refresh_form(issued.json()["refresh_token"]))
+        assert r.status_code == 200, r.text
+
+    async def test_revoke_still_works_for_an_organization_off_the_list(
+            self, promoted, web, monkeypatch):
+        """A revoke only removes access, so the list does not stop it."""
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted)
+            issued = (await _token(_exchange(code))).json()
+            _orgs(monkeypatch, "")
+            async with _edge_client() as edge:
+                r = await edge.post("/oauth/revoke", data={
+                    "token": issued["refresh_token"], "client_id": CLIENT})
+        assert r.status_code == 200
+        assert _connection(promoted, _connection_id_of_code(promoted, code)).revoked
 
 
 @_DB_GATE

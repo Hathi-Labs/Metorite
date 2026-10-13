@@ -79,6 +79,16 @@ store that must work before a tenant is known.
 7. **Only the hash is stored.** :func:`hash_token` is the one hash. A reader of
    ``agent_token`` cannot use what it reads.
 
+8. ⚠️ **The organization allowlist (EA-10p, spec §10.6).** An organization
+   that ``agent_oauth.org_allowed`` refuses gets no token and no connection.
+   :func:`issue_tokens` and :func:`rotate_refresh` answer
+   :data:`ORG_NOT_ALLOWED`. The refresh check comes BEFORE the spend, so it
+   spends nothing. :func:`read_live_connection` answers ``None``, so branch
+   0 refuses. The organization is the one of the token row or the connection
+   row, never an argument. :func:`lookup_token` does NOT check the list:
+   ``/oauth/revoke`` must still find a token to revoke it, and the edge
+   bearer check tests the list itself.
+
 Fence: ``tests/unit/test_agent_connection_tokens.py`` (R8, a phase-4-promoted
 catalog, as a NON-privileged role).
 """
@@ -92,6 +102,8 @@ from datetime import datetime
 from typing import Any
 
 from acb_common import get_logger, get_settings
+
+from acb_auth import agent_oauth
 
 _log = get_logger("acb_auth.agent_tokens")
 
@@ -213,6 +225,11 @@ REUSED = "reused"
 
 #: The connection is revoked or past its idle expiry. Nothing changed.
 CONNECTION_DEAD = "connection_dead"
+
+#: The organization of the token is not on ``agent_access_orgs`` (EA-10p,
+#: spec §10.6). Nothing was spent and nothing was revoked, so the client can
+#: refresh again when the organization comes back on the list.
+ORG_NOT_ALLOWED = "org_not_allowed"
 
 
 @dataclass(frozen=True)
@@ -917,6 +934,9 @@ async def _issue_in(
     session: Any, grant: CodeGrant, *, with_refresh: bool
 ) -> IssuedTokens | Refused:
     """The body of :func:`issue_tokens`, on an open, unbound transaction."""
+    # Rule 8: the organization comes from the code row.
+    if not agent_oauth.org_allowed(grant.organization_id):
+        return Refused(ORG_NOT_ALLOWED, grant.connection_id, grant.organization_id)
     await _bind(session, grant.organization_id)
     if not await _lock_live_connection(
         session, grant.organization_id, grant.connection_id
@@ -966,6 +986,9 @@ async def _rotate_in(
         return Refused(INVALID)
     organization_id = str(peek.organization_id)
     connection_id = str(peek.connection_id)
+    # Rule 8: checked BEFORE the spend, so a refused refresh spends nothing.
+    if not agent_oauth.org_allowed(organization_id):
+        return Refused(ORG_NOT_ALLOWED, connection_id, organization_id)
 
     await _bind(session, organization_id)
     if not await _lock_live_connection(session, organization_id, connection_id):
@@ -1144,6 +1167,10 @@ async def read_live_connection(
 
     row = await _run(_work)
     if row is None:
+        return None
+    # Rule 8: the ROW's organization must be on the list. Branch 0 then
+    # refuses the request as it refuses a dead connection.
+    if not agent_oauth.org_allowed(row.organization_id):
         return None
     return LiveConnection(
         connection_id=connection,

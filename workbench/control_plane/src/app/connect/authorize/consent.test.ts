@@ -186,6 +186,22 @@ describe("the rest", () => {
     expect(r.redirectTo).toBe("http://localhost:5/cb?error=invalid_target");
   });
 
+  it("an organization off the allowlist gets its own text, with no way back (EA-10p)", () => {
+    const r = refusalFor(403, {
+      detail: {
+        error: "org_not_enabled",
+        error_description: "Your organization has not turned on agent connections yet.",
+        redirect_to: null,
+      },
+    });
+    expect(r.message).toBe("Your organization has not turned on agent connections yet.");
+    expect(r.redirectTo).toBeNull();
+    // Any other 403 keeps the member text.
+    expect(refusalFor(403, { detail: "An active member of an organization must approve an agent." }).message)
+      .toMatch(/active member/);
+    expect(refusalFor(403, { error: "cross_site" }).message).toMatch(/active member/);
+  });
+
   it("every icon the screen draws exists", () => {
     for (const name of ["Bot", "ShieldCheck", "Lock", "AlertCircle", "ArrowLeft", "ArrowUpRight", "Check"]) {
       expect(isKnownIcon(name), name).toBe(true);

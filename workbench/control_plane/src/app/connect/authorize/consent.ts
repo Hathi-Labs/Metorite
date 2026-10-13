@@ -220,6 +220,10 @@ export function organizationName(org: { display_name?: string; slug?: string } |
   return name || null;
 }
 
+/** The gateway's error when the organization is not on the allowlist (EA-10p). */
+export const ORG_NOT_ENABLED = "org_not_enabled";
+export const ORG_NOT_ENABLED_MESSAGE = "Your organization has not turned on agent connections yet.";
+
 export interface Refusal {
   message: string;
   /** Where "Return to the agent" goes: the agent's own error redirect. */
@@ -246,6 +250,10 @@ export function refusalFor(status: number, body: unknown): Refusal {
     };
   }
   if (status === 401) return { message: "Sign in again to continue.", redirectTo: null };
+  if (status === 403 && d?.error === ORG_NOT_ENABLED) {
+    // EA-10p (spec §10.6): the organization is not on AGENT_ACCESS_ORGS.
+    return { message: ORG_NOT_ENABLED_MESSAGE, redirectTo: null };
+  }
   if (status === 403) {
     return { message: "Only an active member of an organization can approve an agent.", redirectTo: null };
   }
