@@ -13,6 +13,7 @@ Three complementary layers, from cheapest/most-deterministic to most realistic:
 | [`email_narrowing/`](email_narrowing/README.md) | WS-48 N2. Five questions of email-assistant on 300 synthetic mails, each one two ways: today's path and `narrow_and_read`. It records tokens and credits on each tier. It passes on recall 100 percent and a cost of at most 40 percent. Q5 is the expected miss of the lexical search | `--scripted`: no. `--compare`: the real decide door on this machine | `--scripted`: `skill-eval.yml`. The pass rule and its mutations: the unit job |
 | [`whatsapp_narrowing/`](whatsapp_narrowing/README.md) | WS-48 N4. Five questions of whatsapp-assistant on 410 synthetic messages, each one two ways: today's path and `narrow_and_read`. It records tokens and credits on each tier. It passes on recall 100 percent and a cost of at most today's path. It does NOT meet the email bar of 40 percent, and it prints that. Q5 is the expected miss of the lexical search | `--scripted`: no. `--compare`: the real decide door on this machine | `--scripted`: `skill-eval.yml`. The pass rule and its mutations: the unit job |
 | [`agent_voice/`](agent_voice/README.md) | WS-52 S1. Thirteen cases over the six surfaces of the house voice (chat, title, description, email, message, summary). `acb_llm.voice.voice_lint` scores each answer, by rule. `--live` asks each case with and without the voice and writes the baseline | `--scripted`: no. `--live`: yes, a manual run | `--scripted`: the unit job (`test_agent_voice_eval.py`) |
+| [`routing/`](routing/README.md) | NS-6 slice 6d. 27 member questions for the one assistant, each with the specialist that must answer it, or none. The catalog checks read the real registry and the real orchestrator. A script drives one case of each answer through the real `orchestrator` run. `--live` asks the real model and writes the baseline | `--scripted`: no. `--live`: yes, a manual run | `--scripted`: `skill-eval.yml`. The checks and their mutations: the unit job (`test_routing_eval.py`) |
 
 ## Golden workflow fixtures (`trajectories/workflows/*.json`)
 
@@ -50,6 +51,7 @@ evals/
   email_narrowing/      WS-48 N2: the synthetic mailbox, the two paths, the cost measure, the runner
   whatsapp_narrowing/   WS-48 N4: the synthetic chats, the two paths, the cost measure, the runner
   agent_voice/          WS-52 S1: the thirteen voice cases, the scripted answers, the runner
+  routing/              NS-6 6d: the routing questions, the harness of many agents, the runner
 ```
 
 ## Running locally
