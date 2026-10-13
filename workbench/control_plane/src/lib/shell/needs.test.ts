@@ -20,7 +20,18 @@ vi.mock("@/app/tasks/lib/completeFromHome", () => ({
 
 import { PROJECTS_CACHE } from "@/app/projects/lib/api";
 
-import { KIND_ORDER, NEEDS_CACHE, needsKey, readFeed, runAct, type NeedsItem } from "./needs";
+import {
+  CARRIER_WAIT_MS,
+  KIND_ORDER,
+  NEEDS_CACHE,
+  carryNeeds,
+  fetchNeeds,
+  needsKey,
+  readFeed,
+  runAct,
+  type NeedsFeed,
+  type NeedsItem,
+} from "./needs";
 
 function rowLog() {
   const log: string[] = [];
@@ -213,5 +224,66 @@ describe("the feed's cache key", () => {
   it("lives in the Projects family, so a Projects write reads it again", () => {
     expect(NEEDS_CACHE.startsWith(PROJECTS_CACHE)).toBe(true);
     expect(needsKey().startsWith(PROJECTS_CACHE)).toBe(true);
+  });
+});
+
+/**
+ * The carrier's limit (`my_day_feed.md` MD-2b, the third follow-up of MD-1b).
+ * The feed route may take 8 seconds. A needs read waits 4 seconds at most on
+ * the feed, then reads the needs route, so the bell never waits on a slow feed.
+ *
+ * Mutation, run by hand (2026-10-14): race the carrier with no limit, and
+ * the first test fails.
+ */
+describe("the carrier's limit (MD-2b)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reads the needs route after 4 seconds on a feed that does not answer, and not before", async () => {
+    vi.useFakeTimers();
+    const { calls } = stub({ count: 0, items: [], sources: {} });
+    const release = carryNeeds(() => new Promise<NeedsFeed | null>(() => {}));
+    try {
+      const read = fetchNeeds();
+      await vi.advanceTimersByTimeAsync(CARRIER_WAIT_MS - 1);
+      expect(calls).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(read).resolves.toMatchObject({ count: 0 });
+      expect(calls.map((c) => c.url)).toEqual(["/api/shell/needs?limit=30"]);
+    } finally {
+      release();
+    }
+    expect(CARRIER_WAIT_MS).toBe(4_000);
+  });
+
+  it("takes the carried view when the feed answers in time, with no second request", async () => {
+    vi.useFakeTimers();
+    const { calls } = stub({ count: 0, items: [], sources: {} });
+    const view = readFeed({ count: 1, items: [item({})], sources: { tasks: "ok" } });
+    const release = carryNeeds(
+      () => new Promise<NeedsFeed | null>((resolve) => setTimeout(() => resolve(view), CARRIER_WAIT_MS - 500)),
+    );
+    try {
+      const read = fetchNeeds();
+      await vi.advanceTimersByTimeAsync(CARRIER_WAIT_MS);
+      await expect(read).resolves.toBe(view);
+    } finally {
+      release();
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("reads the needs route at once when the carrier throws", async () => {
+    const { calls } = stub({ count: 0, items: [], sources: {} });
+    const release = carryNeeds(() => {
+      throw new Error("no feed");
+    });
+    try {
+      await fetchNeeds();
+    } finally {
+      release();
+    }
+    expect(calls.map((c) => c.url)).toEqual(["/api/shell/needs?limit=30"]);
   });
 });
