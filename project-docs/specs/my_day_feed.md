@@ -1855,7 +1855,7 @@ is a new function in the app that owns its table:
 - `action_broker.read_decided`, beside `read_pending`.
 
 `needs.Provider` gains `handled`, and the tasks, email and approvals
-providers carry one. The fences are `test_feed_handled.py` (50 tests) and
+providers carry one. The fences are `test_feed_handled.py` (51 tests) and
 `test_feed_handled_r8.py` (13 tests, R8). The client half is still open,
 and it follows MD-2b. The build made these choices, which this file did not
 fix:
