@@ -373,6 +373,31 @@ class TestEachActionOnARealDatabase:
         assert (row["state"], row["acted_at"]) == ("acted", NOW)
         assert _of(await _feed(promoted, monkeypatch, _a()), sid) is not None
 
+    async def test_restore_undoes_a_menu_act_and_claims_no_row(
+        self, promoted, seeded, monkeypatch,  # noqa: F811
+    ):
+        # MD-2b: the Undo of a menu act. The row goes back to `seen`, and the
+        # card shows again with no dot. A restore of a card with no row
+        # leaves no claimed placeholder behind.
+        sid = f"tasks:{seeded['a_task']}"
+        other = f"tasks:{seeded['b_task']}"
+        late = _of(await _feed(promoted, monkeypatch, _a()), sid)
+        fp = late["state_fp"]
+        await _post(promoted, _a(), [_item(sid, fp, "seen")])
+        await _post(promoted, _a(), [_item(sid, fp, "not_useful")])
+        assert _of(await _feed(promoted, monkeypatch, _a()), sid) is None  # non-vacuity
+        assert await _post(promoted, _a(), [_item(sid, fp, "restore"),
+                                            _item(other, "a41f09c2", "restore")]) == {
+            "written": 1}
+        rows = _rows(promoted, A)
+        assert set(rows) == {sid}
+        row = rows[sid]
+        assert (row["state"], row["dismiss_reason"], row["not_useful_at"]) == (
+            "seen", None, None)
+        assert (row["visits"], row["last_seen_at"]) == (1, NOW)
+        back = _of(await _feed(promoted, monkeypatch, _a()), sid)
+        assert (back["state"], back["updated"]) == ("seen", False)
+
     async def test_a_member_with_no_calendar_pane_reads_and_writes_state(
         self, promoted, seeded, monkeypatch,  # noqa: F811
     ):

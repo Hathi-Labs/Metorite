@@ -540,6 +540,89 @@ class TestThePostWritesAndTheFeedHonoursEach:
         assert _of(run_feed(member(*FULL)), "tasks:t-late") is not None
 
 
+class TestRestoreUndoesAMenuAct:
+    """WS-58 MD-2b. ``restore`` is the Undo of a menu act (§6.8, the POST
+    contract). It clears a snooze or a dismiss, and leaves the row ``seen``."""
+
+    @pytest.mark.parametrize("act", [
+        ("dismiss", None), ("not_useful", None), ("snooze", "later_today"),
+        ("snooze", "tomorrow"), ("snooze", "next_week"), ("snooze", "on_change")])
+    def test_restore_brings_the_card_back_as_seen(self, fakes, days, act):  # noqa: F811
+        action, until = act
+        user = member(*FULL)
+        fp = card(run_feed(user), "tasks:t-late")["state_fp"]
+        _post(user, [_item("tasks:t-late", fp, "seen")])
+        _post(user, [_item("tasks:t-late", fp, action, until=until)])
+        assert _of(run_feed(user), "tasks:t-late") is None  # non-vacuity
+        assert _post(user, [_item("tasks:t-late", fp, "restore")]) == {"written": 1}
+        row = fakes.state_rows[ME]["tasks:t-late"]
+        assert (row["state"], row["dismiss_reason"]) == ("seen", None)
+        assert (row["snoozed_until"], row["snooze_on_change"]) == (None, False)
+        back = card(run_feed(user), "tasks:t-late")
+        # Seen, not new: the member saw it before the act, so no dot.
+        assert (back["state"], back["updated"], back["visits"]) == ("seen", False, 1)
+
+    def test_restore_counts_no_visit(self, fakes, monkeypatch):  # noqa: F811
+        from tests.unit.test_shell_needs import _freeze
+
+        user = member(*FULL)
+        fp = card(run_feed(user), "tasks:t-late")["state_fp"]
+        _post(user, [_item("tasks:t-late", fp, "seen")])
+        _post(user, [_item("tasks:t-late", fp, "dismiss")])
+        _freeze(monkeypatch, fakes.now + timedelta(hours=1))
+        _post(user, [_item("tasks:t-late", fp, "restore")])
+        row = fakes.state_rows[ME]["tasks:t-late"]
+        assert row["visits"] == 1
+        assert row["last_seen_at"] == fakes.now  # the sighting before, kept
+
+    def test_undo_of_not_useful_takes_back_its_record(self, fakes):  # noqa: F811
+        # The Undo says the act did not happen, so it must not count against
+        # the kind for this member (§6.6, §7).
+        user = member(*FULL)
+        fp = card(run_feed(user), "tasks:t-late")["state_fp"]
+        _post(user, [_item("tasks:t-late", fp, "not_useful")])
+        assert fakes.state_rows[ME]["tasks:t-late"]["not_useful_at"] == fakes.now
+        _post(user, [_item("tasks:t-late", fp, "restore")])
+        assert fakes.state_rows[ME]["tasks:t-late"]["not_useful_at"] is None
+
+    def test_undo_of_a_dismiss_keeps_an_older_not_useful(self, fakes):  # noqa: F811
+        user = member(*FULL)
+        fp = card(run_feed(user), "tasks:t-late")["state_fp"]
+        _post(user, [_item("tasks:t-late", fp, "not_useful")])
+        _post(user, [_item("tasks:t-late", "0000bbbb", "seen")])  # it came back
+        _post(user, [_item("tasks:t-late", "0000bbbb", "dismiss")])
+        _post(user, [_item("tasks:t-late", "0000bbbb", "restore")])
+        assert fakes.state_rows[ME]["tasks:t-late"]["not_useful_at"] == fakes.now
+
+    def test_restore_of_a_card_with_no_row_writes_nothing(self, fakes):  # noqa: F811
+        # A claimed placeholder must not stay behind: it would read as Updated.
+        user = member(*FULL)
+        fp = card(run_feed(user), "tasks:t-late")["state_fp"]
+        assert _post(user, [_item("tasks:t-late", fp, "restore")]) == {"written": 0}
+        assert "tasks:t-late" not in fakes.state_rows.get(ME, {})
+        assert card(run_feed(user), "tasks:t-late")["state"] == "new"
+
+    @pytest.mark.parametrize("action", ["seen", "acted"])
+    def test_restore_of_a_shown_card_writes_nothing(self, fakes, action):  # noqa: F811
+        user = member(*FULL)
+        fp = card(run_feed(user), "tasks:t-late")["state_fp"]
+        _post(user, [_item("tasks:t-late", fp, action)])
+        stored = dict(fakes.state_rows[ME]["tasks:t-late"])
+        assert _post(user, [_item("tasks:t-late", fp, "restore")]) == {"written": 0}
+        assert fakes.state_rows[ME]["tasks:t-late"] == stored
+
+    def test_restore_of_a_later_card_writes_nothing(self):
+        late = state.StateItem(signal_id="tasks:t1", state_fp="a41f09c2", kind="overdue",
+                               action="restore")
+        row = _row(_card("overdue"), "later", visits=3)
+        assert state.next_row(row, late, NOW, DAY) is None
+
+    def test_restore_carries_no_until(self):
+        with pytest.raises(ValidationError):
+            state.StateItem(signal_id="tasks:t1", state_fp="a41f09c2", kind="overdue",
+                            action="restore", until="tomorrow")
+
+
 class TestTheWriteOrder:
     """Fix round 1, P2-b. Claim the missing rows, then lock in signal-id
     order, then write all the rows in one statement."""
