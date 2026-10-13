@@ -44,6 +44,7 @@ from __future__ import annotations
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -174,7 +175,9 @@ def seeded(promoted):  # noqa: F811
     now = datetime.now(UTC)
     midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
     later_today = now + (midnight - now) / 2
-    ids: dict[str, str] = {}
+    # The feed's clock is frozen at this instant (`_needs`), so the task
+    # due later today stays due today, however long the module runs.
+    ids: dict[str, Any] = {"now": now}
     with p.admin_engine.begin() as c:
         for email in (ME, OTHER):
             c.execute(text(
@@ -309,8 +312,12 @@ def busy(promoted):  # noqa: F811
     return out
 
 
-async def _needs(p, monkeypatch, user: UserContext, org: str | None = None) -> dict:
+async def _needs(p, monkeypatch, user: UserContext, org: str | None = None,
+                 now: datetime | None = None) -> dict:
     # Room for a cold database. The `sources` check proves each provider ran.
+    if now is not None:
+        # One instant for the data and the overdue test (`shell._now`).
+        monkeypatch.setattr(shell, "_now", lambda: now)
     monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 30.0)
     monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 90.0)
     monkeypatch.setattr(shell, "MAILBOX_TIMEOUT_S", 30.0)
@@ -320,7 +327,7 @@ async def _needs(p, monkeypatch, user: UserContext, org: str | None = None) -> d
 
 class TestTheFeedOnARealDatabase:
     async def test_the_members_own_needs_return_in_order(self, promoted, seeded, monkeypatch):  # noqa: F811
-        answer = await _needs(promoted, monkeypatch, _member(ME))
+        answer = await _needs(promoted, monkeypatch, _member(ME), now=seeded["now"])
         assert answer["sources"] == SOURCES
         assert [i["id"] for i in answer["items"]] == [
             f"tasks:{seeded['overdue']}",
@@ -343,7 +350,7 @@ class TestTheFeedOnARealDatabase:
         assert answer["count"] == 4
 
     async def test_another_members_rows_never_return(self, promoted, seeded, monkeypatch):  # noqa: F811
-        answer = await _needs(promoted, monkeypatch, _member(ME))
+        answer = await _needs(promoted, monkeypatch, _member(ME), now=seeded["now"])
         assert answer["sources"] == SOURCES
         got = " ".join(i["id"] + " " + i["title"] for i in answer["items"])
         for key in ("their_private", "their_assigned", "elsewhere", "note_theirs",
@@ -354,7 +361,7 @@ class TestTheFeedOnARealDatabase:
     async def test_the_other_member_sees_their_own_and_not_mine(self, promoted, seeded, monkeypatch):  # noqa: F811
         # Non-vacuity: the rows held out above are real and readable by their
         # owner, so the negative case is not an empty table.
-        answer = await _needs(promoted, monkeypatch, _member(OTHER))
+        answer = await _needs(promoted, monkeypatch, _member(OTHER), now=seeded["now"])
         assert answer["sources"] == SOURCES
         got = [i["id"] for i in answer["items"]]
         assert f"tasks:{seeded['their_private']}" in got
@@ -406,7 +413,8 @@ class TestTheApprovalsQueue:
     async def test_an_approver_sees_their_orgs_queue_and_not_the_other_orgs(
         self, promoted, seeded, queue, monkeypatch,  # noqa: F811
     ):
-        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals", is_admin=True))
+        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals", is_admin=True),
+                              now=seeded["now"])
         assert answer["sources"]["approvals"] == "ok"
         got = [i for i in answer["items"] if i["app"] == "approvals"]
         assert f"approvals:{queue['mine']}" in [i["id"] for i in got]
@@ -426,14 +434,15 @@ class TestTheApprovalsQueue:
         self, promoted, seeded, queue, monkeypatch,  # noqa: F811
     ):
         # Owner decision, 2026-10-10: only an org admin gets approval rows.
-        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals"))
+        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals"),
+                              now=seeded["now"])
         assert answer["sources"] == SOURCES
         assert not [i for i in answer["items"] if i["app"] == "approvals"]
 
     async def test_a_member_without_the_gate_gets_no_pending_action(
         self, promoted, seeded, queue, monkeypatch,  # noqa: F811
     ):
-        answer = await _needs(promoted, monkeypatch, _member(ME))
+        answer = await _needs(promoted, monkeypatch, _member(ME), now=seeded["now"])
         assert answer["sources"] == SOURCES
         assert not [i for i in answer["items"] if i["app"] == "approvals"]
 
