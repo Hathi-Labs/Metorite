@@ -25,7 +25,11 @@
  *   - reverse the cards inside a group in `feedGroups`: "keeps the server's order" fails;
  *   - make `needsRowFor` take the card id: "the needs row of a folded notification" fails;
  *   - make `cardHidden` ignore the folded kinds: cases (a) and (b) fail;
- *   - make `coversNeeds` always true: both P2 path tests fail.
+ *   - make `coversNeeds` always true: both P2 path tests fail;
+ *   - make `feedHiddenRows` ignore the overlay: F1 (i), (ii) and (iv) fail;
+ *   - make every needs mark hide, overlay or not: F1 (iii) fails;
+ *   - drop the "blocked" guard of `runFeedAct`: F1 (ii) fails;
+ *   - make `joinFeedPoll` always cover: the F3 test fails.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -35,17 +39,33 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const markDoneFromHome = vi.fn(async (id: string) => (id === "parent" ? "kept" : "done"));
+/**
+ * The My Tasks store's gesture, shaped like the real one: it hides the row,
+ * then calls `keep` once the write begins. "parent" asks, and the answer is no.
+ */
+type Row = { hide(): void; show(): void; keep?(): void };
+const markDoneFromHome = vi.fn(async (id: string, row?: Row) => {
+  row?.hide();
+  if (id === "parent") {
+    row?.show();
+    return "kept";
+  }
+  row?.keep?.();
+  return "done";
+});
 vi.mock("@/app/tasks/lib/completeFromHome", () => ({
-  markDoneFromHome: (id: string) => markDoneFromHome(id),
+  markDoneFromHome: (id: string, row?: Row) => markDoneFromHome(id, row),
 }));
 
 import { PROJECTS_CACHE } from "@/app/projects/lib/api";
 import { cacheKey, clearAll, invalidate, peek, read } from "@/lib/dataCache";
+import { applyData, applyError, initialState } from "@/lib/useCachedResource";
 
 import {
   FEED_CACHE,
   FEED_SHOWN,
+  type ActOverlay,
+  type FeedAnswer,
   type FeedCard as Card,
   actLeavesCard,
   actRows,
@@ -55,13 +75,16 @@ import {
   feedAppIcon,
   feedFailedLines,
   feedGroups,
+  feedHiddenRows,
   feedKey,
   fetchFeed,
   needsRowFor,
+  overlayAdd,
+  overlayNextEnd,
   readFeedAnswer,
   sourceLine,
 } from "./feed";
-import { FeedCard, feedActMover } from "./FeedCard";
+import { type FeedActDeps, FeedCard, expireFeedActs, feedActMover, joinFeedPoll, runFeedAct } from "./FeedCard";
 import { needsKey, runAct } from "./needs";
 import { ACT_HOLD_MS, acquireReader, actsSnapshot, pruneActs, removeRow } from "./needsActs";
 import { BELL_POLL_MS, joinNeedsPoll } from "./ShellBell";
@@ -155,7 +178,14 @@ describe("1. the answer of §14.1a", () => {
   });
 
   it("reads a missing field as empty, and drops a card it cannot draw", () => {
-    expect(readFeedAnswer(undefined)).toEqual({ cards: [], groups: [], needs: null, sources: {}, capped: [] });
+    expect(readFeedAnswer(undefined)).toEqual({
+      cards: [],
+      groups: [],
+      needs: null,
+      sources: {},
+      capped: [],
+      fetchedAt: 0,
+    });
     const answer = readFeedAnswer({
       cards: [CARD, { ...CARD, signal_id: 7 }, { ...CARD, group: "someday" }, { ...CARD, href: undefined }],
       groups: [{ id: "needs_you", count: 1 }, { id: "someday", count: 1 }],
@@ -335,7 +365,7 @@ describe("4. the acts go through the owning app", () => {
     const log: string[] = [];
     const row = { hide: () => log.push("hide"), show: () => log.push("show"), fail: () => log.push("fail"), keep: () => {} };
     expect(await runAct(item!, row)).toBe("done");
-    expect(markDoneFromHome).toHaveBeenCalledWith("9b2e");
+    expect(markDoneFromHome.mock.calls[0][0]).toBe("9b2e");
   });
 
   it("names the needs row of a folded notification, not the card", async () => {
@@ -409,7 +439,11 @@ describe("4. the acts go through the owning app", () => {
 
   it("wires each act through runAct and the one store's marks", () => {
     const src = code(read_("./FeedCard.tsx"));
-    expect(src).toMatch(/void runAct\(item, feedActMover\(actRows\(a\), from\)\)/);
+    // The hook runs each act through `runFeedAct`, which runs `runAct` with
+    // the row half that marks every needs row (sections 5 and 5b drive it).
+    expect(src).toMatch(/void runFeedAct\(card, a, from, \{/);
+    expect(src).toMatch(/const mover = feedActMover\(rows, from\);/);
+    expect(src).toMatch(/const out = await runAct\(item, row\);/);
     expect(src).toMatch(/for \(const row of rows\) removeRow\(row, gone\);/);
     // The feed keeps no private removed set: it reads the one store.
     expect(src).toMatch(/useSyncExternalStore\(subscribeActs, actsSnapshot, \(\) => EMPTY_ACTS\)/);
@@ -535,24 +569,126 @@ describe("5. what an act takes away (fix round 1)", () => {
     expect(shownIds([again])).toEqual(["tasks:t7"]);
   });
 
-  it("(d) a Done that never lands, or a task reopened, shows again by the store's own rules", () => {
-    const t0 = 1_000_000;
-    const task = card("tasks:t4", "needs_you", { kind: "overdue", folded: [], acts: [done("t4")] });
-    tap(task, "done", t0);
-    expect(shownIds([task])).toEqual([]);
-    // The needs view still holds the row after the hold window: the write never landed.
-    pruneActs(["tasks:t4"], t0 + ACT_HOLD_MS);
-    expect(shownIds([task])).toEqual(["tasks:t4"]);
-    // Reopened: the needs view lost the row once, then the task came back.
-    tap(task, "done", t0);
-    pruneActs([], t0 + 1_000);
-    expect(shownIds([task])).toEqual(["tasks:t4"]);
-  });
-
   it("hides by the needs rows, never by a card id", () => {
     const c = card("tasks:t8", "now", { kind: "overdue", folded: [], acts: [done("t8")] });
     expect(cardHidden(c, new Set(["tasks:t8#done"]))).toBe(false);
     expect(cardHidden(c, new Set(["tasks:t8"]))).toBe(true);
+  });
+});
+
+describe("5b. the feed's own acts outlive a needs answer (fix round 2, F1)", () => {
+  // The needs read answers before the feed read (4 s, no Calendar). The
+  // feed's overlay ends against the FEED answer, so a needs answer cannot
+  // bring a done card back while the feed answer on screen predates the act.
+  let release: () => void = () => {};
+  beforeEach(() => {
+    release = acquireReader();
+  });
+  afterEach(() => release());
+
+  const T_FETCH = 1_000;
+  const T_ACT = 2_000;
+  const doneOn = (ref: string) => ({ id: "done", label: "Done", way: "tap", act: "done", act_ref: ref });
+  const taskCard = (ref: string) => ({ ...CARD, signal_id: `tasks:${ref}`, title: `Task ${ref}`, folded: [], acts: [doneOn(ref)] });
+
+  /** The page, as `useFeed` runs it: the answer on screen, the overlay and the clock. */
+  function page(cards: unknown[], fetchedAt = T_FETCH) {
+    const state = {
+      answer: { ...readFeedAnswer({ cards, groups: [{ id: "needs_you", count: cards.length }] }), fetchedAt },
+      overlay: new Map() as ActOverlay,
+      now: T_ACT,
+    };
+    const deps: FeedActDeps = {
+      held: () => feedHiddenRows(actsSnapshot().removed, state.overlay, state.answer.fetchedAt),
+      overlay: (change) => {
+        state.overlay = change(state.overlay);
+      },
+      now: () => state.now,
+    };
+    const shown = () =>
+      feedGroups(state.answer, 80, deps.held()).groups.flatMap((g) => g.cards.map((c) => c.signal_id));
+    const tapDone = (i = 0) => runFeedAct(state.answer.cards[i], state.answer.cards[i].acts[0], null, deps);
+    return { state, deps, shown, tapDone };
+  }
+
+  it("(i) a needs answer without the row, while the feed is still stale, keeps the card hidden", async () => {
+    const p = page([taskCard("t1")]);
+    expect(await p.tapDone()).toBe("done");
+    expect(p.shown()).toEqual([]);
+    pruneActs([]); // the needs read answers first, without the row
+    expect(actsSnapshot().removed.has("tasks:t1")).toBe(false);
+    expect(p.shown()).toEqual([]);
+  });
+
+  it("(ii) a feed re-read that fails keeps it hidden for the hold, and the act cannot run twice", async () => {
+    const p = page([taskCard("t1")]);
+    await p.tapDone();
+    pruneActs([]);
+    // The feed's re-read fails, so the answer on screen stays the stale one.
+    p.state.now = T_ACT + ACT_HOLD_MS - 1;
+    expect(await p.tapDone()).toBe("blocked");
+    expect(markDoneFromHome).toHaveBeenCalledTimes(1);
+    expect(p.shown()).toEqual([]);
+    // The hold ends: the card shows again, and its Done runs again.
+    p.state.overlay = expireFeedActs(p.state.overlay, T_ACT + ACT_HOLD_MS);
+    expect(p.state.overlay.size).toBe(0);
+    expect(p.shown()).toEqual(["tasks:t1"]);
+    expect(await p.tapDone()).toBe("done");
+    expect(markDoneFromHome).toHaveBeenCalledTimes(2);
+  });
+
+  it("(iii) a feed answer fetched after the act that still holds the task shows it: really reopened", async () => {
+    const p = page([taskCard("t1")]);
+    await p.tapDone();
+    // The needs view still holds the row inside its hold, so its mark stays.
+    pruneActs(["tasks:t1"]);
+    expect(actsSnapshot().removed.has("tasks:t1")).toBe(true);
+    // The feed answer from after the act is the truth.
+    p.state.answer = { ...p.state.answer, fetchedAt: T_ACT + 1_000 };
+    expect(p.shown()).toEqual(["tasks:t1"]);
+    const html = renderToStaticMarkup(
+      createElement(FeedCard, { card: p.state.answer.cards[0], nowMs: null, marked: p.deps.held(), onAct: () => {} }),
+    );
+    expect(html).toContain('aria-label="Done: Task t1"');
+  });
+
+  it("(iv) a card outside the needs top 30 keeps its hidden state", async () => {
+    const cards = Array.from({ length: 40 }, (_, i) => taskCard(`c${i}`));
+    const p = page(cards);
+    expect(await p.tapDone(35)).toBe("done");
+    // The needs view holds only the first 30 rows, never `tasks:c35`.
+    pruneActs(cards.slice(0, 30).map((c) => c.signal_id));
+    expect(p.shown()).toHaveLength(39);
+    expect(p.shown()).not.toContain("tasks:c35");
+  });
+
+  it("(d) a Done that asks and gets no shows the card again at once", async () => {
+    const p = page([taskCard("parent")]);
+    expect(await p.tapDone()).toBe("kept");
+    expect(p.state.overlay.size).toBe(0);
+    expect(p.shown()).toEqual(["tasks:parent"]);
+  });
+
+  it("the overlay counts down from the last time of the act", () => {
+    const o = overlayAdd(new Map(), ["tasks:a"], T_ACT);
+    expect(overlayNextEnd(o, T_ACT + 1_000)).toBe(ACT_HOLD_MS - 1_000);
+    expect(overlayNextEnd(new Map(), T_ACT)).toBeNull();
+    expect(feedHiddenRows(new Set(), o, T_ACT)).toEqual(new Set(["tasks:a"]));
+    expect(feedHiddenRows(new Set(), o, T_ACT + 1)).toEqual(new Set());
+    // A row the overlay does not hold follows its needs mark (a Done in the bell).
+    expect(feedHiddenRows(new Set(["tasks:b"]), o, T_ACT + 1)).toEqual(new Set(["tasks:b"]));
+  });
+
+  it("stamps the fetch time BEFORE the request", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(ANSWER), { status: 200 })),
+    );
+    const before = Date.now();
+    const answer = await fetchFeed();
+    expect(answer.fetchedAt).toBeGreaterThanOrEqual(before);
+    expect(answer.fetchedAt).toBeLessThanOrEqual(Date.now());
+    expect(readFeedAnswer(ANSWER).fetchedAt).toBe(0);
   });
 });
 
@@ -577,12 +713,43 @@ describe("7. the poll covers the needs key only after a needs view (fix round 1,
     const bell = vi.fn();
     const feed = vi.fn();
     const leaveBell = joinNeedsPoll(bell);
-    const leaveFeed = joinNeedsPoll(feed, feedKey(), covers ? [needsKey()] : []);
+    const leaveFeed = joinFeedPoll(feed, covers);
     vi.advanceTimersByTime(BELL_POLL_MS);
     leaveBell();
     leaveFeed();
     return { bell: bell.mock.calls.length, feed: feed.mock.calls.length };
   }
+
+  it("drives the hook's own state through a FAILED feed read, and the needs poller reads next tick", async () => {
+    // Fix round 2, F3. The real fetch, the real cache read, and the hook's own
+    // state rules (`useCachedResource`): a good answer, then a 502.
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1;
+        return calls === 1
+          ? new Response(JSON.stringify(ANSWER), { status: 200 })
+          : new Response(JSON.stringify({ error: "feed_unavailable" }), { status: 502 });
+      }),
+    );
+    let state = initialState<FeedAnswer>(undefined);
+    state = applyData(await read(feedKey(), () => fetchFeed()));
+    expect(coversNeeds(state.data, state.error)).toBe(true);
+    try {
+      await read(feedKey(), () => fetchFeed(), { force: true });
+    } catch (err) {
+      state = applyError(state, (err as Error).message);
+    }
+    // The hook keeps the last good answer, and raises the error beside it.
+    expect(state.data?.cards).toHaveLength(1);
+    expect(state.error).toBe("Your feed could not load.");
+    expect(tick(coversNeeds(state.data, state.error))).toEqual({ bell: 1, feed: 1 });
+    // And the hook wires exactly that rule into the poll.
+    const src = code(read_("./FeedCard.tsx"));
+    expect(src).toMatch(/const covers = coversNeeds\(feed\.data, feed\.error\);/);
+    expect(src).toMatch(/joinFeedPoll\(refresh, covers\)/);
+  });
 
   it("after a FAILED feed read, the bell's needs poller reads on the next tick", () => {
     expect(tick(coversNeeds(withNeeds, "Your feed could not load."))).toEqual({ bell: 1, feed: 1 });

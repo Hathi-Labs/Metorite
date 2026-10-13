@@ -223,6 +223,15 @@ export async function fetchNeeds(limit = NEEDS_LIMIT): Promise<NeedsFeed> {
 }
 
 /**
+ * The ids of a merged read, only when they are a non-empty list of non-empty
+ * strings. Anything else is `null`, and the read falls back to `[act_ref]`.
+ */
+function readRefs(refs: unknown): string[] | null {
+  if (!Array.isArray(refs) || refs.length === 0) return null;
+  return refs.every((r) => typeof r === "string" && r.length > 0) ? (refs as string[]) : null;
+}
+
+/**
  * Run a row's one-click act through its owning app, and move the row.
  *
  * A done is the My Tasks store's gesture (`markDoneFromHome`). It may ASK
@@ -242,7 +251,7 @@ export async function runAct(
   row.hide();
   try {
     // A feed card's merged read names each unread note of its task.
-    await notificationsApi.markRead(item.act_refs?.length ? item.act_refs : [item.act_ref]);
+    await notificationsApi.markRead(readRefs(item.act_refs) ?? [item.act_ref]);
     return "done";
   } catch {
     row.fail("Could not mark it read. Try again.");

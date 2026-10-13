@@ -142,6 +142,25 @@ describe("runAct goes through the owning app", () => {
     expect(markDoneFromHome).not.toHaveBeenCalled();
   });
 
+  it("trusts act_refs only as a non-empty list of non-empty strings, else posts [act_ref]", async () => {
+    // Fix round 2, F2. Each odd shape falls back to the row's own ref.
+    const odd: unknown[] = [[], ["", "n1"], ["n2", 5], "n2", null, [null]];
+    for (const refs of odd) {
+      const { calls } = stub({ marked: 1 });
+      const row = item({
+        id: "projects:n9",
+        app: "projects",
+        kind: "notification",
+        act: "read",
+        act_ref: "n9",
+        act_refs: refs as string[],
+      });
+      expect(await runAct(row, rowLog().row), JSON.stringify(refs)).toBe("done");
+      expect(calls.map((c) => c.body), JSON.stringify(refs)).toEqual([{ ids: ["n9"] }]);
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("marks each note of a feed card's merged read in one post (my_day_feed.md §14.1a)", async () => {
     const { calls } = stub({ marked: 2 });
     const out = await runAct(

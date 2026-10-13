@@ -28,7 +28,7 @@
  * Fences: `feed.test.ts` and `myDayPage.test.ts`.
  */
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
 import Icon from "@/components/Icon";
@@ -39,6 +39,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
   FEED_SHOWN,
+  type ActOverlay,
   type FeedAct,
   type FeedAnswer,
   type FeedCard as Card,
@@ -51,9 +52,14 @@ import {
   feedAppIcon,
   feedFailedLines,
   feedGroups,
+  feedHiddenRows,
   feedKey,
   fetchFeed,
   needsRowFor,
+  overlayAdd,
+  overlayDrop,
+  overlayExpired,
+  overlayNextEnd,
   sourceLine,
 } from "./feed";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
@@ -64,12 +70,15 @@ import { joinNeedsPoll } from "./ShellBell";
 
 const DANGER = accentForHue("red");
 
+/** The empty overlay. Never written: each change makes a new map. */
+const NO_ACTS: ActOverlay = new Map();
+
 export interface Feed {
   answer: FeedAnswer | undefined;
   loading: boolean;
   error: string | null;
   refresh: () => void;
-  /** The needs rows an act took off, from the one store (`needsActs.ts`). */
+  /** The needs rows that are off: the one store and the feed's overlay (`feedHiddenRows`). */
   marked: ReadonlySet<string>;
   /** Each needs row's error, from the same store. */
   errors: Readonly<Record<string, string>>;
@@ -79,33 +88,64 @@ export interface Feed {
 /**
  * The feed and its acts. My Day calls it once and hands it to the column.
  *
- * ⚠️ The feed keeps no removed set of its own. Each act marks the needs rows
- * it closes (`actRows`) in the one store that the bell and the sidebar read.
- * That store forgets a mark when the needs view no longer holds its row, or
- * after its 30 s hold, so a task that comes back shows again. A card leaves
- * only while its marked rows close every kind it holds (`cardHidden`).
+ * Two sources say which needs rows are off (`feedHiddenRows`):
+ *
+ *   - the one store `needsActs.ts`, which the bell and the sidebar read too,
+ *     so a Done in the bell hides the feed's card at once;
+ *   - the overlay of the feed's OWN acts (`ActOverlay`). The needs store ends
+ *     a mark against the needs answer, which lands before the feed answer.
+ *     The overlay ends against the feed answer: an answer fetched after the
+ *     act is the truth. Else it ends after `ACT_HOLD_MS`.
+ *
+ * A card leaves only while those rows close every kind it holds (`cardHidden`).
  */
 export function useFeed(enabled: boolean): Feed {
   const feed = useCachedResource<FeedAnswer>(enabled ? feedKey() : null, () => fetchFeed());
   const { refresh } = feed;
-  const { removed: marked, errors } = useSyncExternalStore(subscribeActs, actsSnapshot, () => EMPTY_ACTS);
+  const { removed: needsMarks, errors } = useSyncExternalStore(subscribeActs, actsSnapshot, () => EMPTY_ACTS);
 
   // Count this reader (`needsActs.ts` rule 1), as `useNeedsYou` does.
   useEffect(() => acquireReader(), []);
 
-  // The one poll: this refresh owns the feed key. It covers the needs key
-  // only while its last read held a needs view (`coversNeeds`). After a
-  // failed read, the needs poller reads for the bell and the sidebar again.
+  // The one poll (`joinFeedPoll`).
   const covers = coversNeeds(feed.data, feed.error);
-  useEffect(
-    () => (enabled ? joinNeedsPoll(refresh, feedKey(), covers ? [needsKey()] : []) : undefined),
-    [enabled, refresh, covers],
-  );
+  useEffect(() => (enabled ? joinFeedPoll(refresh, covers) : undefined), [enabled, refresh, covers]);
 
-  const act = useCallback((card: Card, a: FeedAct, from: HTMLElement | null) => {
-    const item = needsRowFor(card, a);
-    if (item) void runAct(item, feedActMover(actRows(a), from));
+  // The overlay. A ref holds the newest copy, so a second tap in the same
+  // frame already sees the first one (`runFeedAct` refuses it).
+  const overlayRef = useRef<ActOverlay>(NO_ACTS);
+  const [overlay, setOverlayState] = useState<ActOverlay>(NO_ACTS);
+  const changeOverlay = useCallback((change: (o: ActOverlay) => ActOverlay) => {
+    const next = change(overlayRef.current);
+    if (next === overlayRef.current) return;
+    overlayRef.current = next;
+    setOverlayState(next);
   }, []);
+  const fetchedAt = feed.data?.fetchedAt ?? 0;
+  const fetchedRef = useRef(fetchedAt);
+  useEffect(() => {
+    fetchedRef.current = fetchedAt;
+  });
+
+  // Each overlay row ends after its hold, and its needs mark ends with it.
+  useEffect(() => {
+    const wait = overlayNextEnd(overlay, Date.now());
+    if (wait === null) return;
+    const id = setTimeout(() => changeOverlay((o) => expireFeedActs(o, Date.now())), wait);
+    return () => clearTimeout(id);
+  }, [overlay, changeOverlay]);
+
+  const marked = useMemo(() => feedHiddenRows(needsMarks, overlay, fetchedAt), [needsMarks, overlay, fetchedAt]);
+
+  const act = useCallback(
+    (card: Card, a: FeedAct, from: HTMLElement | null) => {
+      void runFeedAct(card, a, from, {
+        held: () => feedHiddenRows(actsSnapshot().removed, overlayRef.current, fetchedRef.current),
+        overlay: changeOverlay,
+      });
+    },
+    [changeOverlay],
+  );
 
   return {
     answer: feed.data,
@@ -116,6 +156,85 @@ export function useFeed(enabled: boolean): Feed {
     errors,
     act,
   };
+}
+
+/**
+ * Join the one poll for the feed. The feed's refresh owns the feed key. It
+ * covers the needs key only when `covers` (`coversNeeds`): after a failed
+ * read, or an answer with no needs view, the needs poller reads for the bell
+ * and the sidebar again on the next tick. Returns the leave.
+ */
+export function joinFeedPoll(refresh: () => void, covers: boolean): () => void {
+  return joinNeedsPoll(refresh, feedKey(), covers ? [needsKey()] : []);
+}
+
+/** What `runFeedAct` reads and writes, so a test can drive it with no React. */
+export interface FeedActDeps {
+  /** The needs rows that are off now: `feedHiddenRows` of the store and the overlay. */
+  held: () => ReadonlySet<string>;
+  /** Change the overlay of the feed's own acts. */
+  overlay: (change: (o: ActOverlay) => ActOverlay) => void;
+  now?: () => number;
+}
+
+/**
+ * Run one act of a feed card through the owning app (`runAct`), as NS-3 does.
+ *
+ *   - An act whose rows are all off already does not run again: "blocked".
+ *   - The act marks its needs rows in `needsActs`, for the bell and the
+ *     sidebar, and adds them to the overlay at the time of the act.
+ *   - The overlay time moves to the moment the write began (`keep`) and to
+ *     the moment the act settled, so only a feed answer fetched after the
+ *     write ends the overlay.
+ *   - A show (Undo, a question answered no) or a failure takes the rows back
+ *     out of both.
+ */
+export async function runFeedAct(
+  card: Card,
+  a: FeedAct,
+  from: HTMLElement | null,
+  deps: FeedActDeps,
+): Promise<"done" | "kept" | "failed" | "blocked" | null> {
+  const item = needsRowFor(card, a);
+  if (!item) return null;
+  const rows = actRows(a);
+  const held = deps.held();
+  if (rows.every((r) => held.has(r))) return "blocked";
+  const now = deps.now ?? Date.now;
+  const mover = feedActMover(rows, from);
+  const stamp = () => deps.overlay((o) => overlayAdd(o, rows, now()));
+  const clear = () => deps.overlay((o) => overlayDrop(o, rows));
+  const row: DoneRow = {
+    hide() {
+      mover.hide();
+      stamp();
+    },
+    show() {
+      mover.show();
+      clear();
+    },
+    fail(message) {
+      mover.fail(message);
+      clear();
+    },
+    keep() {
+      mover.keep?.();
+      stamp();
+    },
+  };
+  const out = await runAct(item, row);
+  if (out === "done") deps.overlay((o) => (rows.every((r) => o.has(r)) ? overlayAdd(o, rows, now()) : o));
+  return out;
+}
+
+/**
+ * End each overlay row whose hold is over, and its needs mark with it. A
+ * Done that never landed then shows its card again, with a live act.
+ */
+export function expireFeedActs(overlay: ActOverlay, now: number): ActOverlay {
+  const gone = overlayExpired(overlay, now);
+  for (const row of gone) removeRow(row, false);
+  return overlayDrop(overlay, gone);
 }
 
 /**

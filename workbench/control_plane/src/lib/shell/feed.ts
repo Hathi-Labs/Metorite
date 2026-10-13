@@ -36,6 +36,7 @@ import {
   needsKey,
   readFeed,
 } from "./needs";
+import { ACT_HOLD_MS } from "./needsActs";
 
 // ── The shape (§14.1a) ──────────────────────────────────────────────────────
 
@@ -97,6 +98,12 @@ export interface FeedAnswer {
   needs: NeedsFeed | null;
   sources: Partial<Record<FeedApp, SourceState>>;
   capped: FeedApp[];
+  /**
+   * When `fetchFeed` sent the request, in ms. The overlay of the feed's own
+   * acts compares it with the time of each act (`feedHiddenRows`). An answer
+   * that no fetch stamped reads as 0, older than any act.
+   */
+  fetchedAt: number;
 }
 
 // ── The cache key and the fetch ─────────────────────────────────────────────
@@ -176,6 +183,7 @@ export function readFeedAnswer(raw: unknown): FeedAnswer {
     needs: body.needs && typeof body.needs === "object" ? readFeed(body.needs) : null,
     sources: body.sources && typeof body.sources === "object" ? (body.sources as FeedAnswer["sources"]) : {},
     capped: Array.isArray(body.capped) ? (body.capped as FeedApp[]) : [],
+    fetchedAt: 0,
   };
 }
 
@@ -188,11 +196,14 @@ export function readFeedAnswer(raw: unknown): FeedAnswer {
  */
 export async function fetchFeed(limit = FEED_LIMIT): Promise<FeedAnswer> {
   const putNeeds = guardedPut<NeedsFeed>(feedKey(limit), needsKey());
+  // Stamped BEFORE the request: an act after this moment is newer than
+  // everything this answer can know.
+  const fetchedAt = Date.now();
   const res = await fetch(`/api/shell/feed?limit=${limit}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Your feed could not load.");
   const answer = readFeedAnswer(await res.json());
   if (answer.needs) putNeeds(answer.needs);
-  return answer;
+  return { ...answer, fetchedAt };
 }
 
 // ── The groups ──────────────────────────────────────────────────────────────
@@ -337,6 +348,66 @@ export function cardHidden(card: FeedCard, marked: ReadonlySet<string>): boolean
   const closed = new Set<string>();
   for (const act of card.acts) if (actSpent(act, marked)) for (const k of CLOSES[act.act ?? ""] ?? []) closed.add(k);
   return closed.has(card.kind) && card.folded.every((k) => closed.has(k));
+}
+
+// ── The overlay of the feed's own acts (fix round 2, F1) ────────────────────
+//
+// The `needsActs` marks end against the NEEDS answer, and the needs read
+// answers before the feed does (4 s and no Calendar). So after a Done, a
+// needs answer without the row would drop the mark while the FEED answer on
+// screen still predates the Done, and the done card would come back with a
+// live Done. The feed therefore keeps a short overlay of its own acts: the
+// needs row ids of each act, with the time of the act. Memory only, one per
+// page, and no cache.
+
+/** Each needs row the feed's own acts took off, with the time of the act. */
+export type ActOverlay = ReadonlyMap<string, number>;
+
+/** Add these rows at `at`, or move their time to `at`. */
+export function overlayAdd(overlay: ActOverlay, rows: readonly string[], at: number): ActOverlay {
+  const next = new Map(overlay);
+  for (const row of rows) next.set(row, at);
+  return next;
+}
+
+/** Drop these rows. The same object when none of them is there. */
+export function overlayDrop(overlay: ActOverlay, rows: readonly string[]): ActOverlay {
+  if (!rows.some((r) => overlay.has(r))) return overlay;
+  const next = new Map(overlay);
+  for (const row of rows) next.delete(row);
+  return next;
+}
+
+/** The rows whose hold of `ACT_HOLD_MS` has ended at `now`. */
+export function overlayExpired(overlay: ActOverlay, now: number): string[] {
+  return [...overlay].filter(([, at]) => now - at >= ACT_HOLD_MS).map(([row]) => row);
+}
+
+/** How long until the next hold ends, in ms, or null for an empty overlay. */
+export function overlayNextEnd(overlay: ActOverlay, now: number): number | null {
+  let next: number | null = null;
+  for (const at of overlay.values()) {
+    const left = Math.max(0, at + ACT_HOLD_MS - now);
+    if (next === null || left < next) next = left;
+  }
+  return next;
+}
+
+/**
+ * The needs rows the feed treats as taken off, for the answer on screen.
+ *
+ *   - A row of the feed's own act follows the overlay. It is off while the
+ *     act is at least as new as the answer's fetch (`at >= fetchedAt`). An
+ *     answer fetched after the act is the truth: a task it still holds was
+ *     really reopened, so its card shows, whatever the needs mark says.
+ *   - Every other row follows its `needsActs` mark, so a Done in the bell
+ *     hides the feed's card at once.
+ */
+export function feedHiddenRows(marked: ReadonlySet<string>, overlay: ActOverlay, fetchedAt: number): Set<string> {
+  const out = new Set<string>();
+  for (const row of marked) if (!overlay.has(row)) out.add(row);
+  for (const [row, at] of overlay) if (at >= fetchedAt) out.add(row);
+  return out;
 }
 
 /**
