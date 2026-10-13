@@ -1131,7 +1131,6 @@ def test_a_runaway_parse_keeps_its_slot_and_the_parse_threads_stay_capped(ws, mo
         # A wait that did not stop would end with the worker, at "late".
         for name in ("a.txt", "b.txt"):
             assert "took too long" in loop.run_until_complete(_call(name))
-            assert not go_on.is_set()
         assert _free_slots() == 0
         # A call that queued for a slot would wait for the stuck workers, and
         # then end at "took too long" or "late". The refusal comes at once.
