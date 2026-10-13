@@ -346,6 +346,10 @@ entity.
     11:00" is one of its acts.
   - An overdue task that falls on my absence is one `overdue` card. The
     absence is a fact in its why line.
+  - The card takes the most urgent group of all its kinds, so a folded block
+    that starts soon keeps the card in Now. The order is Now, Needs you,
+    Ready for you, then For your information. Fence:
+    `test_shell_feed.py::TestTheMostUrgentGroup`.
 - **The NS-3 rule stays.** Next actions leaves out each task that a feed card
   already shows (`myDay.test.ts`).
 
@@ -1433,6 +1437,9 @@ block MD-1a, and a later ticket owns each one.
   default policy, not to the org's own policy (`load_policy`).
 - **The cost of a poll.** `day_summary` costs about 20 queries and 5 sessions
   on each feed poll. The read cache of MD-5 must cover it.
+- **Mark read covers one page.** `act_refs` covers the unread notifications
+  on the first page of the bell read (15). Older unread notes on the same
+  task stay unread after Mark read, and the card comes back.
 
 ### MD-1b · The feed column and the one poll, the frontend half — AGENT-SAFE (build), OWNER-GATE (turn on)
 
