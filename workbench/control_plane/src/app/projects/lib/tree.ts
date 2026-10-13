@@ -325,6 +325,21 @@ export function pathTo(
 }
 
 /**
+ * A task's place in the tree, for the task card's breadcrumb
+ * (`TaskHeaderRow`'s `where`): one crumb per node, from the space down to the
+ * task's own project. Empty when the tree does not hold the project — a
+ * private project of mine, or a tree that has not loaded — and the card then
+ * starts at the ref.
+ */
+export function taskWhere(
+  roots: readonly ProjectNode[],
+  projectId: string | null | undefined
+): { id: string; name: string }[] {
+  if (!projectId) return [];
+  return pathTo(roots, projectId).map((node) => ({ id: node.id, name: node.name }));
+}
+
+/**
  * The level a node occupies within a forest — the answer a surface needs
  * when it holds a row but not its depth.
  *

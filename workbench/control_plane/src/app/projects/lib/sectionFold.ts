@@ -25,6 +25,8 @@ export const FOLDABLE_SECTIONS = [
   "description",
   "properties",
   "links",
+  // WS-57 TR-2: the Links section (pull requests, commits, docs, URLs).
+  "refs",
   "files",
   "activity",
 ] as const;

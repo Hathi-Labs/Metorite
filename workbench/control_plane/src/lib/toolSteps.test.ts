@@ -189,10 +189,11 @@ describe("the rail renders the agent's steps from a recorded stream", () => {
 
   it("draws one row per step, in order, with its words", () => {
     expect(rows(html).map(([, text]) => text)).toEqual([
-      "Asked Email assistant done ▾",
-      "Ran a script in the sandbox python summarise.py outputs/po.csv done ▾",
-      "Created a task failed failed ▾",
-      "Writing report.md outputs/report.md running ▴",
+      // The chevron is an icon of the set since 2026-10-13, not a ▾ glyph.
+      "Asked Email assistant done",
+      "Ran a script in the sandbox python summarise.py outputs/po.csv done",
+      "Created a task failed failed",
+      "Writing report.md outputs/report.md running",
     ]);
   });
 

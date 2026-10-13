@@ -33,6 +33,8 @@
 >
 > **Built later:** CRM-Q6a, the generic record store (2026-10-12, migration 251). See §18.7.
 >
+> **Built later:** CRM-Q7a, the rule table and the Field map (2026-10-12, migration 253). See §18.7.
+>
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5).
@@ -1272,7 +1274,7 @@ section is that contract. It splits the two tickets into four slices.
 |---|---|---|---|
 | **CRM-Q6a** ✅ built 2026-10-12 | AGENT-SAFE | The generic record store, its door, discovery of the other modules, the new scopes, and the sync. No UI and no new route | CRM-Q5 merged |
 | **CRM-Q6b** ✅ built 2026-10-12 | AGENT-SAFE | The read-only routes, the rail rows and the generic record page | CRM-Q6a merged. Start it after CRM-Q8 merges too, because both edit `CrmRail.tsx` and `page.tsx`. That is a merge order, not a contract |
-| **CRM-Q7a** | AGENT-SAFE | The rule table, the Field map card, approve and reject, and the sync that applies approved rules. No model call | CRM-Q6a merged |
+| **CRM-Q7a** ✅ built 2026-10-12 | AGENT-SAFE | The rule table, the Field map card, approve and reject, and the sync that applies approved rules. No model call | CRM-Q6a merged |
 | **CRM-Q7b** | AGENT-SAFE | The proposer: one routed model call over metadata | CRM-Q7a merged |
 
 The new Zoho consent is the owner's act (§12). The build is not. Each slice
@@ -1493,7 +1495,7 @@ each of these on a real database:
   in light mode, at compact density, under a violet accent and at 390 px,
   beside the Deals list.
 
-#### CRM-Q7a: the rule table and the Field map
+#### CRM-Q7a: the rule table and the Field map (✅ built 2026-10-12)
 
 **The table.** `crm_field_rules` holds one row for each field of a known
 entity that an admin decided, or that the assistant proposed.
@@ -1639,6 +1641,51 @@ decides again.
    holds the fixed map's value again, and the value stays in `custom`.
 10. A reject of a rule on a free column sets that column to NULL.
 11. A second approved rule for the same target column gives 409.
+
+**Built as (2026-10-12).**
+
+- Migration 253 adds `crm_field_rules`, with the tenant key, FORCE row level
+  security and one policy with USING and WITH CHECK. A partial unique index
+  keeps one approved rule for each target column.
+- `FIELD_RULE_TARGETS` in `mapping.py` holds the two tables above and no other
+  column. `rule_problem` is the one check of a rule. The routes and the sync
+  both use it.
+- The profile gains two keys from the reads that discovery already makes.
+  `layout_fields` holds the fields on an active layout. `custom_field_types`
+  holds the type of each field that goes to `custom`. A profile with no
+  `layout_fields` makes discovery due at once.
+- Discovery makes an approved rule stale from those two keys. An entity that
+  discovery could not read keeps the status of its rules.
+- `POST /crm/field-rules` is the pick by hand. It writes an approved rule with
+  `proposed_by = 'admin'`. It refuses a field that has an approved rule.
+- An approve checks the rule again against the latest profile. So an admin
+  cannot approve a rule that the next discovery makes stale again.
+- `GET /crm/field-rules` names the columns that each field can fill now. The
+  Field map card offers only those columns, and it keeps no copy of the rules.
+- The sync keeps the rules that it applied in the cursor row
+  `zoho:field_rules`. Before its first provider call, it undoes each rule that
+  is not approved now. Then it backfills each new rule.
+- A rule enters the applied state in the transaction of its first backfill
+  batch, with the mark `backfilling`. The last batch clears the mark. So a
+  stop between two batches, then a reject, still undoes the rule.
+- `map_record` applies only the rules that the backfill step handled, minus
+  the rules that discovery made stale. A rule that an admin approves during
+  a run waits for the next run.
+- A full read for a rule keeps the mark `rule_reread` in the cursor state of
+  the entity while it runs. It stamps nothing and deletes nothing.
+- The door `apply_field_rule_from_source` writes only a NULL column of a
+  mirrored row, or clears a free column. It refuses to clear a fixed column.
+  Each statement names the organization.
+- A rule on `probability` gives NULL for a value outside 0 to 100.
+- The start over of CRM-X0 and the change of setup of CRM-U5b delete the
+  rules. An R8 fence fails when a `crm_` table is in neither `RESET_TABLES`
+  nor `RESET_KEEPS`.
+- Fences: `tests/unit/test_crm_field_rules_r8.py`,
+  `tests/unit/test_crm_field_rules.py`,
+  `tests/unit/test_crm_upsert_from_source_fence.py`,
+  `tests/unit/test_crm_mirror_readonly.py`,
+  `tests/unit/test_crm_reset_r8.py`, `tests/unit/test_crm_u5b_r8.py` and
+  `src/app/crm/components/crmQ7a.test.ts`.
 
 #### CRM-Q7b: the proposer
 
@@ -2031,7 +2078,7 @@ touched" sits before the converted badge. Two findings stay open. The search
 box makes the Closing range wrap at 1440, and a `blue` stage follows the accent
 until CRM-U3.
 
-### 19.6 CRM-X2: The CRM joins the shell
+### 19.6 CRM-X2: The CRM joins the shell (✅ built 2026-10-12)
 
 **Scope.**
 
@@ -2132,6 +2179,32 @@ the module note of `search.py` says.
 - `src/lib/runActivity.test.ts`, existing: the table gains
   `["crm-assistant", "/crm"]` (item 10).
 - `src/lib/shell/seams.test.ts`, existing: item 11.
+
+**Built as.** The scope and the eleven items are built. Each new fence went
+red first, or a mutation of the code made it red. The R8 suite also proves
+item 4 on a real database, and the sort and the merge of the §19.10 notes.
+`app/crm/components/crmX2.test.ts` holds the browser half. The slice adds no
+migration.
+
+Four rules came from the build.
+
+- `core.run_list` takes `rows_only`. It skips the count, the provider link and
+  the next activity, and `search_records` uses it.
+- The bar puts `/crm?do=<job>` in place of the whole query. So the page keeps
+  the view from before the job link, and `log-call` reads the open record
+  from it.
+- The jobs change the address with `history.replaceState`, as
+  `shell/doJob.tsx` does. No new `router.push` is in `app/crm/`.
+- The command bar gives focus back to `<main>` when it closes. So the page
+  waits until no dialog is open, and then it focuses the search box
+  (`lib/shellJobs.ts`, `afterDialogsClose`).
+
+The hint of `log-call` is one line above the Deals list, because the toast
+has no neutral kind. The gate mounts the four jobs from one list, so each job
+says why the CRM does not open. `agent: "crm-assistant"` feeds the run badge
+only, because the assistant dock (NS-6 slice 6b) is not built. One finding
+stays open: "Show all in …" of the shell loses its focus to `<main>` in the
+same way.
 
 ### 19.7 CRM-X3: Next activity on each card (✅ built 2026-10-12)
 

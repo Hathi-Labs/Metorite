@@ -274,9 +274,6 @@ const SEAM: {
     home: "components/TaskMeta.tsx",
     declaration: /["']CornerDownRight["']/,
     except: {
-      "components/AgentChat.tsx":
-        "the chat composer's 'steer' send mode. Not a subtask and not a " +
-        "parent: the icon means 'redirect this run'",
       "app/projects/components/TaskBody.tsx":
         "a reply to a comment. Not a subtask and not a parent",
       "app/projects/components/NodeDashboard.tsx":

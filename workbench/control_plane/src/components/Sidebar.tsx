@@ -485,7 +485,8 @@ export default function Sidebar() {
             title={collapsed ? "All apps" : undefined}
             aria-label="All apps"
             aria-haspopup="dialog"
-            className={`flex items-center gap-2.5 rounded-lg text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
+            // `cc-link`: the house focus ring, as the Metorite foot wears it.
+            className={`cc-link flex items-center gap-2.5 rounded-lg text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
               collapsed ? "justify-center p-2.5" : "w-full px-3 py-2 text-[13px] font-medium"
             }`}
           >
@@ -565,7 +566,8 @@ export default function Sidebar() {
  * `RailRow`. The block is `px-2`, the row is `px-3 py-2`, and the icon
  * column is the same, so its icon sits in line with the app icons above it,
  * open or folded. `e2e/shell-presets.spec.ts` measures that. It is a button
- * that opens a dialog, not a place, so it has no active state.
+ * that opens a dialog, not a place, so it has no active state. `cc-link`
+ * gives both forms the house focus ring, as the Metorite foot wears it.
  */
 function AddAppsRow({
   collapsed,
@@ -597,7 +599,7 @@ function AddAppsRow({
           title={name}
           aria-label={name}
           aria-haspopup="dialog"
-          className="relative flex items-center justify-center rounded-lg p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+          className="cc-link relative flex items-center justify-center rounded-lg p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
         >
           <Icon name="Plus" size={18} />
           {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
@@ -613,7 +615,7 @@ function AddAppsRow({
         onClick={onOpen}
         aria-haspopup="dialog"
         aria-label={name === "Add apps" ? undefined : name}
-        className="rounded-lg px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+        className="cc-link rounded-lg px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
       >
         <span className="flex items-center gap-2.5">
           <Icon name="Plus" size={16} />

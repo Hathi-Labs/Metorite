@@ -29,7 +29,13 @@ The done-when of EA-2a, each one a test below:
   member by sending those values in the body;
 * a structural fence: no ``agent_edge`` or ``agent_access`` module reads a
   tenant or a member from request input, and ``agent_edge`` imports neither
-  the gateway nor ``outbound_guard``.
+  the gateway nor ``outbound_guard``;
+* the fence edit of EA-3b-2 (EA3-9, spec §9.4 and §15.2 D20): ``tools.py``,
+  the one response-mapping module, may hold an identity literal only as a
+  ``.get()`` argument, a subscript index or a dict-display key. It reads no
+  request header, query, form, cookie or path parameter, and it imports
+  nothing from ``fastapi`` or ``starlette``. Every other edge module keeps
+  the old refusal.
 
 The classes marked R8 run the store on a real database, as a NON-privileged
 role, on a phase-4-promoted catalog of their own (the shape of
@@ -45,6 +51,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 import json
 import os
 import uuid
@@ -61,11 +68,14 @@ from acb_auth.permissions import EffectiveAccess
 from acb_auth.roles import UserContext, UserRole
 from acb_common import get_settings
 from acb_common.db import bind_tenant
+from acb_common.tenant_redis import TenantRedis, organization_scope
 from agent_edge import app as edge_app_module
 from agent_edge import metadata as edge_metadata
 from fastapi import FastAPI
 from gateway import outbound_guard
 from gateway.routes import agent_access
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
@@ -119,11 +129,30 @@ _PUBLIC_IP = "93.184.216.34"
 _CYR_A = chr(0x0430)
 _CYR_IE = chr(0x0435)
 
+#: EA-2c (spec §10.4): the Claude Code metadata document, byte for byte as
+#: the orchestrator fetched it on 2026-10-13 from its own ``client_id`` URL.
+#: Its ``redirect_uris`` are loopback URIs with NO port, and the client sends
+#: a random port. Do not reformat this string.
+_CLAUDE_CODE_DOCUMENT = (
+    '{"client_id":"https://claude.ai/oauth/claude-code-client-metadata",'
+    '"client_name":"Claude Code","client_uri":"https://claude.ai",'
+    '"redirect_uris":["http://localhost/callback","http://127.0.0.1/callback"],'
+    '"grant_types":["authorization_code","refresh_token"],'
+    '"response_types":["code"],"token_endpoint_auth_method":"none"}'
+)
+CLAUDE_CODE = "https://claude.ai/oauth/claude-code-client-metadata"
+CLAUDE_REDIRECT = "http://localhost:53122/callback"
+#: An Arabic-Indic digit five. ``int()`` reads it, and ``\d`` matches it.
+_ARABIC_FIVE = chr(0x0665)
+_CLAUDE_REQUEST = {"client_id": CLAUDE_CODE, "redirect_uri": CLAUDE_REDIRECT}
+
 
 @pytest.fixture(autouse=True)
 def _flag_on(monkeypatch):
-    """The flag is ON for every test, unless a test turns it off itself."""
+    """The flag is ON for every test, unless a test turns it off itself. The
+    allowlist (EA-10p) allows each organization, unless a test narrows it."""
     monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    monkeypatch.setattr(get_settings(), "agent_access_orgs", "*")
 
 
 def _document(client_id: str = CLIENT, **over) -> dict:
@@ -171,7 +200,86 @@ def web(monkeypatch) -> _FakeWeb:
     monkeypatch.setattr(outbound_guard, "send", fake.send)
     fake.docs[CLIENT] = (200, json.dumps(_document()).encode())
     fake.docs[OTHER_CLIENT] = (200, json.dumps(_document(OTHER_CLIENT)).encode())
+    fake.docs[CLAUDE_CODE] = (200, _CLAUDE_CODE_DOCUMENT.encode())
     return fake
+
+
+class _FakeRedis:
+    """The raw client under the REAL ``TenantRedis`` wrapper (EA-4a).
+
+    It keeps the wire keys that the wrapper sends, so a test sees the tenant
+    prefix. A key has a life, and ``now`` moves the clock. ``fail`` makes
+    each command raise, as an outage does.
+    """
+
+    def __init__(self) -> None:
+        self.store: dict[str, tuple[str, float]] = {}
+        self.now = 1_000_000.0
+        self.fail: BaseException | None = None
+        self.calls: list[str] = []
+
+    def _live(self, name: str) -> str | None:
+        found = self.store.get(name)
+        if found is None or found[1] <= self.now:
+            self.store.pop(name, None)
+            return None
+        return found[0]
+
+    async def setex(self, name: str, seconds: int, value: str) -> bool:
+        self.calls.append("setex")
+        if self.fail is not None:
+            raise self.fail
+        self.store[name] = (value, self.now + seconds)
+        return True
+
+    async def getdel(self, name: str) -> str | None:
+        self.calls.append("getdel")
+        if self.fail is not None:
+            raise self.fail
+        value = self._live(name)
+        self.store.pop(name, None)
+        return value
+
+    async def get(self, name: str) -> str | None:
+        self.calls.append("get")
+        if self.fail is not None:
+            raise self.fail
+        return self._live(name)
+
+
+@pytest.fixture(autouse=True)
+def redis(monkeypatch) -> _FakeRedis:
+    """Every test runs the consent ticket on the fake, through the real wrapper."""
+    fake = _FakeRedis()
+    monkeypatch.setattr(agent_access, "get_tenant_redis", lambda **_: TenantRedis(fake))
+    monkeypatch.setattr(_ACTIVE, "redis", fake)
+    return fake
+
+
+class _Active:
+    """The fake of the running test, for the helpers that plant a ticket."""
+
+    redis: _FakeRedis | None = None
+
+
+_ACTIVE = _Active()
+
+
+def _plant_ticket(fake: _FakeRedis, body: dict, org: str, email: str = MEMBER) -> str:
+    """A ticket for *body*, written as ``check`` writes one, without the checks.
+
+    The approve-side tests send requests that ``check`` would refuse, such as
+    one with no PKCE. So the helper plants the ticket that a screen would
+    hold, with the module's own binding and key, and the approval then runs
+    its own checks.
+    """
+    fields = set(agent_access.AuthorizeRequest.model_fields)
+    req = agent_access.AuthorizeRequest(**{k: v for k, v in body.items() if k in fields})
+    ticket = f"planted-{uuid.uuid4().hex}"
+    with organization_scope(org):
+        name = agent_access._ticket_key(ticket).value
+    fake.store[name] = (json.dumps(list(agent_access._binding(req, email, org))), fake.now + 300)
+    return ticket
 
 
 def _edge_client() -> httpx.AsyncClient:
@@ -370,6 +478,120 @@ class TestTheFlag:
         assert Settings.model_fields["agent_access_enabled"].default is False
 
 
+_ORG_X = "1a1a1a1a-0000-4000-8000-00000000001a"
+_ORG_Y = "2b2b2b2b-0000-4000-8000-00000000002b"
+_ORG_Z = "3c3c3c3c-0000-4000-8000-00000000003c"
+
+_ORG_NOT_ENABLED = {
+    "error": "org_not_enabled",
+    "error_description": "Your organization has not turned on agent connections yet.",
+    "redirect_to": None,
+}
+
+
+def _orgs(monkeypatch, value: str) -> None:
+    monkeypatch.setattr(get_settings(), "agent_access_orgs", value)
+
+
+class TestTheOrgAllowlist:
+    """EA-10p (spec §10.6, EA3-27): the parser and ``org_allowed``."""
+
+    def test_the_setting_defaults_to_no_organization(self):
+        from acb_common.settings import Settings
+
+        assert Settings.model_fields["agent_access_orgs"].default == ""
+
+    @pytest.mark.parametrize("raw", ["", " ", ",", " , ,"])
+    def test_an_empty_value_allows_no_organization(self, monkeypatch, raw):
+        _orgs(monkeypatch, raw)
+        assert agent_oauth.allowed_orgs() == frozenset()
+        assert not agent_oauth.org_allowed(_ORG_X)
+
+    def test_a_star_allows_each_organization(self, monkeypatch):
+        _orgs(monkeypatch, "*")
+        assert agent_oauth.org_allowed(_ORG_X)
+        assert agent_oauth.org_allowed(uuid.UUID(_ORG_Y))
+        assert agent_oauth.org_allowed(str(uuid.uuid4()))
+
+    @pytest.mark.parametrize("value", [None, "", "not-a-uuid", _ORG_X + "x", "*"])
+    def test_a_value_that_is_not_an_org_id_is_refused_even_with_a_star(
+            self, monkeypatch, value):
+        _orgs(monkeypatch, "*")
+        assert not agent_oauth.org_allowed(value)
+
+    def test_a_list_allows_its_ids_only(self, monkeypatch):
+        _orgs(monkeypatch, f"{_ORG_X},{_ORG_Y}")
+        assert agent_oauth.org_allowed(_ORG_X)
+        assert agent_oauth.org_allowed(_ORG_Y)
+        assert not agent_oauth.org_allowed(_ORG_Z)
+
+    def test_the_spaces_go_and_the_case_does_not_count(self, monkeypatch):
+        _orgs(monkeypatch, f"  {_ORG_X.upper()} ,\t{_ORG_Y}  ")
+        assert agent_oauth.allowed_orgs() == frozenset({_ORG_X, _ORG_Y})
+        assert agent_oauth.org_allowed(_ORG_X.upper())
+
+    @pytest.mark.parametrize("bad", [
+        "fracktal", "123", "**", "{" + _ORG_Z + "}", "urn:uuid:" + _ORG_Z,
+        _ORG_Z.replace("-", ""), _ORG_Z + ";" + _ORG_Y, "' OR 1=1 --",
+    ])
+    def test_a_bad_entry_allows_nothing(self, monkeypatch, bad):
+        """A bad entry is dropped. A good entry beside it still counts, and a
+        bad entry alone leaves the list empty, which allows no organization."""
+        _orgs(monkeypatch, f"{bad}, {_ORG_X}")
+        assert agent_oauth.allowed_orgs() == frozenset({_ORG_X})
+        assert not agent_oauth.org_allowed(_ORG_Z)
+        _orgs(monkeypatch, bad)
+        assert agent_oauth.allowed_orgs() == frozenset()
+        assert not agent_oauth.org_allowed(_ORG_Z)
+
+
+class TestTheConsentRoutesCheckTheList:
+    """EA-10p door 1, database-free. A refused organization gets the 403 of
+    rule 11 before the client fetch, the ticket and the code."""
+
+    @pytest.mark.parametrize("path", ["/agent-access/authorize/check",
+                                      "/agent-access/authorize/approve"])
+    @pytest.mark.parametrize("listed", ["", _ORG_Y, f"{_ORG_Y},{_ORG_Z}"])
+    async def test_an_organization_off_the_list_is_refused_first(
+            self, monkeypatch, redis, path, listed):
+        _orgs(monkeypatch, listed)
+        touched = []
+
+        async def _spy(*a, **k):
+            touched.append(a)
+
+        for name in ("get_client", "cache_cimd_client", "create_connection",
+                     "mint_code"):
+            monkeypatch.setattr(agent_tokens, name, _spy)
+        body = _authorize()
+        ticket = _plant_ticket(redis, body, _ORG_X)
+        if path.endswith("approve"):
+            body["consent_ticket"] = ticket
+        planted = dict(redis.store)
+        r = await _gw(_gateway_app(_ORG_X), path, body)
+        assert r.status_code == 403, r.text
+        assert r.json() == {"detail": _ORG_NOT_ENABLED}
+        assert r.headers["cache-control"] == "no-store"
+        assert not touched, "a refused organization reached the store"
+        assert redis.calls == [], "a refused organization reached Redis"
+        assert redis.store == planted, "the refusal spent or wrote a ticket"
+
+    async def test_the_member_check_still_comes_first(self, monkeypatch):
+        """No bound tenant is the 403 of rule 1, not the allowlist 403."""
+        _orgs(monkeypatch, "")
+        r = await _gw(_gateway_app(None), "/agent-access/authorize/check", _authorize())
+        assert r.status_code == 403
+        assert r.json()["detail"] == (
+            "An active member of an organization must approve an agent.")
+
+    async def test_the_flag_off_is_404_even_for_a_listed_organization(self, monkeypatch):
+        _orgs(monkeypatch, _ORG_X)
+        monkeypatch.setattr(get_settings(), "agent_access_enabled", False)
+        for path in ("/agent-access/authorize/check", "/agent-access/authorize/approve"):
+            r = await _gw(_gateway_app(_ORG_X), path, _authorize())
+            assert r.status_code == 404
+
+
 class TestTheEdgeRefusesMalformedInput:
     """Every refusal here happens before the store is touched."""
 
@@ -523,7 +745,7 @@ class TestTheSharedRules:
     @pytest.mark.parametrize("uri", [
         REDIRECT, "http://localhost:9/cb", "http://[::1]:9/cb",
         "https://claude.ai/api/mcp/auth_callback",
-        "cursor://anysphere.cursor-retrieval/oauth/callback",
+        "com.example.app:/oauth/callback",
     ])
     def test_a_redirect_that_is_allowed(self, uri):
         assert agent_oauth.is_allowed_redirect_uri(uri)
@@ -543,7 +765,7 @@ class TestTheSharedRules:
     @pytest.mark.parametrize("uri", [
         f"https://cl{_CYR_A}ude.ai/api/mcp/auth_callback",
         f"http://127.0.0.1:9/c{_CYR_A}llback",
-        f"cursor://anysphere.cursor-retri{_CYR_IE}val/oauth/callback",
+        f"com.cursor-retri{_CYR_IE}val.app:/oauth/callback",
     ])
     def test_a_non_ascii_redirect_is_refused(self, uri):
         assert not agent_oauth.is_allowed_redirect_uri(uri)
@@ -566,6 +788,185 @@ class TestTheSharedRules:
         url = agent_oauth.authorization_redirect(
             "https://c.example/cb?a=1", {"code": "C", "state": None, "iss": ISSUER})
         assert _query(url) == {"a": "1", "code": "C", "iss": ISSUER}
+
+
+_LH = "http://localhost/callback"
+_V4 = "http://127.0.0.1/callback"
+_V6 = "http://[::1]/callback"
+
+
+class TestTheLoopbackRedirectMatch:
+    """EA-2c (spec §10.4, EA3-23): a loopback registration with no port
+    accepts any port. ``agent_oauth.redirect_uri_matches`` is the one rule.
+
+    The match compares RAW strings, so a host keeps its case and its form,
+    and a port has one spelling. Each case below went red under a named
+    mutation of the rule before it was trusted.
+    """
+
+    @pytest.mark.parametrize(("requested", "registered"), [
+        ("http://localhost:53122/callback", _LH),
+        ("http://127.0.0.1:53122/callback", _V4),
+        ("http://[::1]:53122/callback", _V6),
+        ("http://localhost:1/callback", _LH),
+        ("http://localhost:65535/callback", _LH),
+        ("http://localhost:5555/callback?a=1", "http://localhost/callback?a=1"),
+        ("http://localhost:5555", "http://localhost"),
+    ], ids=["localhost", "127.0.0.1", "[::1]", "port-1", "port-65535",
+            "same-query", "no-path"])
+    def test_a_port_on_a_portless_loopback_registration_passes(
+        self, requested, registered
+    ):
+        assert agent_oauth.redirect_uri_matches(requested, [registered])
+
+    @pytest.mark.parametrize("uri", [_LH, _V4, _V6, REDIRECT,
+                                     "https://claude.ai/api/mcp/auth_callback"])
+    def test_the_exact_string_still_passes(self, uri):
+        """The exact match runs first: no port against no port passes."""
+        assert agent_oauth.redirect_uri_matches(uri, [uri])
+
+    @pytest.mark.parametrize(("requested", "registered"), [
+        # Another host, path or scheme.
+        ("http://127.0.0.1:5555/callback", _LH),
+        ("http://localhost:5555/callback", _V4),
+        ("http://evil.example:5555/callback", _LH),
+        ("http://localhost:5555/other", _LH),
+        ("http://localhost:5555/callback/", _LH),
+        ("http://localhost:5555/", _LH),
+        ("https://localhost:5555/callback", _LH),
+        ("HTTP://localhost:5555/callback", _LH),
+        # A host that only starts like a loopback host.
+        ("http://localhost.evil.com/callback", _LH),
+        ("http://localhost.evil.com:5555/callback", _LH),
+        # A user name or a password.
+        ("http://localhost@evil.com/callback", _LH),
+        ("http://localhost:5555@evil.com/callback", _LH),
+        ("http://user@localhost:5555/callback", _LH),
+        ("http://user:pw@localhost:5555/callback", _LH),
+        # Another query, and a fragment.
+        ("http://localhost:5555/callback?x=1", _LH),
+        ("http://localhost:5555/callback?", _LH),
+        ("http://localhost:5555/callback?a=2", "http://localhost/callback?a=1"),
+        ("http://localhost:5555/callback#f", _LH),
+        ("http://localhost:5555/callback#", _LH),
+        # Another spelling of a loopback host.
+        ("http://LOCALHOST:5555/callback", _LH),
+        ("http://localhost.:5555/callback", _LH),
+        ("http://0.0.0.0:5555/callback", _V4),
+        ("http://127.0.0.2:5555/callback", _V4),
+        ("http://[0:0:0:0:0:0:0:1]:5555/callback", _V6),
+        ("http://[::ffff:127.0.0.1]:5555/callback", _V4),
+        ("http://[::ffff:127.0.0.1]:5555/callback", _V6),
+        ("http://local%68ost:5555/callback", _LH),
+        ("http://127.0.0.%31:5555/callback", _V4),
+        # A port in a bad form.
+        ("http://localhost:0/callback", _LH),
+        ("http://localhost:65536/callback", _LH),
+        ("http://localhost:99999/callback", _LH),
+        ("http://localhost:05555/callback", _LH),
+        ("http://localhost:/callback", _LH),
+        ("http://localhost:+5555/callback", _LH),
+        (f"http://localhost:5{_ARABIC_FIVE * 3}/callback", _LH),
+        ("http://localhost:5555:5555/callback", _LH),
+    ], ids=[
+        "other-host", "other-host-v4", "evil-host", "other-path", "slash-path",
+        "root-path", "https-against-http", "upper-scheme",
+        "localhost.evil.com", "localhost.evil.com-port",
+        "userinfo-host", "port-then-userinfo", "user", "user-password",
+        "query-added", "bare-question-mark", "query-differs", "fragment",
+        "bare-hash",
+        "LOCALHOST", "localhost.", "0.0.0.0", "127.0.0.2", "[0:0:0:0:0:0:0:1]",
+        "[::ffff:127.0.0.1]-v4", "[::ffff:127.0.0.1]-v6", "percent-escape",
+        "percent-escape-v4",
+        "port-0", "port-65536", "port-99999", "port-05555", "port-empty",
+        "port-plus", "port-arabic-digits", "two-ports",
+    ])
+    def test_a_request_that_is_refused(self, requested, registered):
+        assert not agent_oauth.redirect_uri_matches(requested, [registered])
+
+    @pytest.mark.parametrize(("requested", "registered"), [
+        ("https://localhost:5555/callback", "https://localhost/callback"),
+        ("http://127.0.0.1:33419/callback", REDIRECT),
+        ("http://127.0.0.1:33418:5555/callback", REDIRECT),
+        ("http://evil.example:5555/callback", "http://evil.example/callback"),
+        ("https://claude.ai:443/api/mcp/auth_callback",
+         "https://claude.ai/api/mcp/auth_callback"),
+        ("http://LOCALHOST:5555/callback", "http://LOCALHOST/callback"),
+        ("http://localhost.:5555/callback", "http://localhost./callback"),
+        ("http://u@localhost:5555/callback", "http://u@localhost/callback"),
+        ("http://localhost:5555/callback#x", "http://localhost/callback#x"),
+        ("cursor://x:5555/cb", "cursor://x/cb"),
+    ], ids=["https-loopback", "registered-port", "registered-port-plus-port",
+            "not-loopback", "https-default-port", "registered-LOCALHOST",
+            "registered-trailing-dot", "registered-user", "registered-fragment",
+            "private-use-scheme"])
+    def test_any_other_registration_needs_the_exact_string(self, requested, registered):
+        assert not agent_oauth.redirect_uri_matches(requested, [registered])
+
+    def test_an_empty_or_odd_input_matches_nothing(self):
+        assert not agent_oauth.redirect_uri_matches(None, [_LH])
+        assert not agent_oauth.redirect_uri_matches("", [""])
+        assert not agent_oauth.redirect_uri_matches("http://localhost:5555/callback", [])
+        assert agent_oauth.redirect_uri_matches(
+            "http://localhost:5555/callback", [None, 7, _LH])
+
+    def test_the_claude_code_document_matches_a_random_port(self):
+        document = json.loads(_CLAUDE_CODE_DOCUMENT)
+        assert document["client_id"] == CLAUDE_CODE
+        registered = document["redirect_uris"]
+        assert registered == [_LH, _V4]
+        assert agent_oauth.redirect_uri_matches(CLAUDE_REDIRECT, registered)
+        assert agent_oauth.redirect_uri_matches("http://127.0.0.1:53122/callback", registered)
+        assert not agent_oauth.redirect_uri_matches("http://[::1]:53122/callback", registered)
+
+
+class TestTheLoopbackRedirectThroughTheRoute:
+    """EA-2c: ``_validate`` asks ``redirect_uri_matches``, not ``in``.
+
+    The store is replaced here, so this class runs with no database. The
+    full round trip on a real database is ``TestClaudeCodeEndToEnd``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_db(self, monkeypatch):
+        async def _no_client(client_id):
+            return None
+
+        async def _cached(client_id, metadata):
+            return True
+
+        monkeypatch.setattr(agent_tokens, "get_client", _no_client)
+        monkeypatch.setattr(agent_tokens, "cache_cimd_client", _cached)
+
+    async def _check(self, redirect_uri: str) -> httpx.Response:
+        return await _gw(
+            _gateway_app(str(uuid.uuid4())), "/agent-access/authorize/check",
+            _authorize(client_id=CLAUDE_CODE, redirect_uri=redirect_uri))
+
+    @pytest.mark.parametrize("uri", [CLAUDE_REDIRECT, "http://127.0.0.1:61001/callback",
+                                     "http://localhost/callback"])
+    async def test_the_claude_code_client_passes_the_check(self, web, uri):
+        r = await self._check(uri)
+        assert r.status_code == 200, r.text
+        view = r.json()
+        assert view["client"] == {"client_id": CLAUDE_CODE, "host": "claude.ai",
+                                  "name": "Claude Code", "origin": "https://claude.ai"}
+        assert view["redirect_uri"] == uri
+        assert view["deny_redirect_to"].startswith(uri + "?")
+
+    @pytest.mark.parametrize("uri", [
+        "http://localhost:05555/callback",
+        "http://LOCALHOST:5555/callback", "http://localhost:5555/callback?x=1",
+        "http://[::1]:5555/callback", "http://localhost:5555/other",
+    ])
+    async def test_a_bad_loopback_request_is_refused_with_no_redirect(self, web, uri):
+        """Each of these passes ``is_allowed_redirect_uri``. Only the match refuses."""
+        assert agent_oauth.is_allowed_redirect_uri(uri)
+        r = await self._check(uri)
+        assert r.status_code == 400, r.text
+        detail = r.json()["detail"]
+        assert detail["error"] == "invalid_request"
+        assert detail["redirect_to"] is None, "an unverified redirect was offered"
 
 
 class _DocServer:
@@ -734,6 +1135,90 @@ def _edge_files() -> list[Path]:
     return files
 
 
+#: The ONE response-mapping module of the edge (EA3-9). It reads gateway
+#: RESPONSES, so ``whoami`` must name ``"email"``. It is the only edge file
+#: the old refusal exempts, and the AST tests below hold it instead.
+_MAPPING_FILE = _EDGE_DIR / "tools.py"
+
+#: The attributes that read a request input in Starlette and FastAPI.
+_REQUEST_READ_ATTRIBUTES = frozenset({
+    "headers", "query_params", "form", "cookies", "path_params", "scope", "url"})
+
+#: The methods that read a request body (fix round 1).
+_REQUEST_READ_METHODS = frozenset({"body", "json", "form"})
+
+#: The FastAPI parameter markers that read a request input.
+_REQUEST_READ_CALLS = frozenset({"Header", "Query", "Form", "Cookie"})
+
+
+def _identity_literal_positions(tree: ast.Module) -> set[int]:
+    """The ids of the string constants in the three allowed positions: the
+    first argument of a ``.get()`` call, a subscript index, a dict key."""
+    allowed: set[int] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and node.args):
+            allowed.add(id(node.args[0]))
+        elif isinstance(node, ast.Subscript):
+            allowed.add(id(node.slice))
+        elif isinstance(node, ast.Dict):
+            allowed.update(id(k) for k in node.keys if k is not None)
+    return allowed
+
+
+def _identity_literal_findings(tree: ast.Module) -> list[str]:
+    docs = _docstring_ids(tree)
+    allowed = _identity_literal_positions(tree)
+    return [
+        f"line {node.lineno} names {node.value!r} outside a response-key position"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and id(node) not in docs and id(node) not in allowed
+        and node.value.strip().lower() in _IDENTITY_INPUTS
+    ]
+
+
+def _request_read_findings(tree: ast.Module) -> list[str]:
+    """A HEURISTIC that catches the common shapes of a request read (§9.4).
+
+    It does not catch a literal that reaches a read through a variable, or an
+    attribute name that the code computes without ``getattr``. The real guards
+    are that ``tools.py`` receives no ``Request`` object
+    (:meth:`TestTheStructuralFences.test_the_mapping_module_receives_no_request`)
+    and coverage rule 4.
+    """
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                       else [node.module or ""])
+            for module in modules:
+                if module.split(".")[0] in {"fastapi", "starlette"}:
+                    found.append(f"line {node.lineno} imports {module}")
+            for alias in node.names:
+                if "Request" in {alias.name, alias.asname}:
+                    found.append(f"line {node.lineno} imports a Request")
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _REQUEST_READ_ATTRIBUTES:
+                found.append(f"line {node.lineno} reads .{node.attr}")
+            if node.attr == "Request":
+                found.append(f"line {node.lineno} names Request")
+        elif isinstance(node, ast.Name) and node.id == "Request":
+            found.append(f"line {node.lineno} names Request")
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = (func.id if isinstance(func, ast.Name)
+                    else func.attr if isinstance(func, ast.Attribute) else "")
+            if name in _REQUEST_READ_CALLS:
+                found.append(f"line {node.lineno} calls {name}")
+            if isinstance(func, ast.Attribute) and func.attr in _REQUEST_READ_METHODS:
+                found.append(f"line {node.lineno} calls .{func.attr}()")
+            if name == "getattr" and len(node.args) >= 2:
+                # Any second argument: a computed name reaches any attribute.
+                found.append(f"line {node.lineno} calls getattr")
+    return found
+
+
 class TestTheStructuralFences:
     """R7: the rules of the two halves, read from the source."""
 
@@ -749,10 +1234,16 @@ class TestTheStructuralFences:
                     assert not name.startswith("gateway"), f"{path.name} imports {name}"
                     assert "outbound_guard" not in name, f"{path.name} imports {name}"
 
-    @pytest.mark.parametrize("path", [*sorted(_EDGE_DIR.glob("*.py")), _ACCESS_FILE],
-                             ids=lambda p: p.name)
+    @pytest.mark.parametrize("path", [
+        *(p for p in sorted(_EDGE_DIR.glob("*.py")) if p != _MAPPING_FILE),
+        _ACCESS_FILE,
+    ], ids=lambda p: p.name)
     def test_no_module_reads_a_tenant_or_a_member_from_input(self, path):
-        """A string that names an identity input appears nowhere but a docstring."""
+        """A string that names an identity input appears nowhere but a docstring.
+
+        Every edge module but ``tools.py`` (EA3-9). The three tests below hold
+        that one module.
+        """
         tree = _module_tree(path)
         docs = _docstring_ids(tree)
         for node in ast.walk(tree):
@@ -760,6 +1251,80 @@ class TestTheStructuralFences:
                     and id(node) not in docs):
                 assert node.value.strip().lower() not in _IDENTITY_INPUTS, (
                     f"{path.name}:{node.lineno} names {node.value!r}")
+
+    def test_the_exemption_is_the_one_mapping_module(self):
+        """EA3-9. Exactly one edge file leaves the old refusal, and it exists."""
+        assert _MAPPING_FILE.is_file(), "tools.py moved: update the fence and §9.4"
+        assert _MAPPING_FILE.parent == _EDGE_DIR
+        assert _MAPPING_FILE.name == "tools.py"
+
+    def test_the_mapping_module_names_an_identity_only_as_a_response_key(self):
+        """EA3-9, §9.4 rule 1. ``"email"`` may be a ``.get()`` argument, a
+        subscript index or a dict-display key, and nothing else."""
+        findings = _identity_literal_findings(_module_tree(_MAPPING_FILE))
+        assert not findings, "tools.py:\n  " + "\n  ".join(findings)
+
+    def test_the_mapping_module_receives_no_request(self):
+        """The real guard behind the heuristic scan: a tool call gets the
+        parsed arguments and a :class:`Context` of the caller and the key, and
+        never the request object."""
+        import dataclasses
+        import inspect
+
+        from agent_edge import tools
+
+        assert [f.name for f in dataclasses.fields(tools.Context)] == ["caller", "key"]
+        assert list(inspect.signature(tools.call).parameters) == [
+            "tool", "ctx", "arguments"]
+        assert list(inspect.signature(tools.Tool).parameters).count("request") == 0
+
+    def test_the_mapping_module_reads_no_request_input(self):
+        """EA3-9, §9.4 rules 2 and 3. No header, query, form, cookie or path
+        parameter, no ``Request`` and no ``fastapi`` or ``starlette``."""
+        findings = _request_read_findings(_module_tree(_MAPPING_FILE))
+        assert not findings, "tools.py:\n  " + "\n  ".join(findings)
+
+    @pytest.mark.parametrize("source,rule", [
+        ("x = ('email',)", "literal"),
+        ("x = ['member']", "literal"),
+        ("f('org_id')", "literal"),
+        ("x = d.get('a', 'email')", "literal"),
+        ("x = request.headers.get('x-user-email')", "read"),
+        ("x = request.query_params['org']", "read"),
+        ("x = await request.form()", "read"),
+        ("x = request.cookies", "read"),
+        ("x = request.path_params", "read"),
+        ("from fastapi import Header", "read"),
+        ("import starlette.requests", "read"),
+        ("from x import Request", "read"),
+        ("def f(r: Request): pass", "read"),
+        ("def f(e = Header(None)): pass", "read"),
+        ("x = getattr(request, 'head' + 'ers')", "read"),
+        ("x = getattr(row, name)", "read"),
+        ("x = request.scope['headers']", "read"),
+        ("x = request.url.query", "read"),
+        ("x = await request.body()", "read"),
+        ("x = await request.json()", "read"),
+        ("x = await thing.form()", "read"),
+    ])
+    def test_the_two_scans_see_each_shape(self, source, rule):
+        """The scans themselves, on small sources, so a scan that goes blind
+        fails here and not only under a mutation."""
+        tree = ast.parse(source)
+        findings = (_identity_literal_findings(tree) if rule == "literal"
+                    else _request_read_findings(tree))
+        assert findings, source
+
+    @pytest.mark.parametrize("source", [
+        "x = body.get('email')",
+        "x = row['organization_id']",
+        "x = {'email': 1, 'organization_id': 2}",
+        "x = lookup.organization_id",
+    ])
+    def test_the_response_key_positions_pass(self, source):
+        tree = ast.parse(source)
+        assert not _identity_literal_findings(tree)
+        assert not _request_read_findings(tree)
 
     @pytest.mark.parametrize("path", [*sorted(_EDGE_DIR.glob("*.py")), _ACCESS_FILE],
                              ids=lambda p: p.name)
@@ -909,9 +1474,16 @@ def _connection_count(promoted) -> int:
 
 async def _approve(promoted, session_org: str | None = None, *, session_email: str = MEMBER,
                    **over) -> httpx.Response:
-    """Approve as the SESSION's member and org. ``over`` is the request body."""
-    app = _gateway_app(session_org or promoted.org_a, session_email)
-    return await _gw(app, "/agent-access/authorize/approve", _authorize(**over))
+    """Approve as the SESSION's member and org. ``over`` is the request body.
+
+    EA-4a: the body carries a planted consent ticket for this member and
+    org, so the approval reaches its own checks (:func:`_plant_ticket`).
+    """
+    org = session_org or promoted.org_a
+    body = _authorize(**over)
+    body["consent_ticket"] = _plant_ticket(_ACTIVE.redis, body, org, session_email)
+    app = _gateway_app(org, session_email)
+    return await _gw(app, "/agent-access/authorize/approve", body)
 
 
 async def _code(promoted, **over) -> str:
@@ -963,8 +1535,12 @@ class TestTheConsentHalf:
         assert r.status_code == 200, r.text
         view = r.json()
         assert view["client"] == {
-            "client_id": CLIENT, "name": "Test Agent", "origin": "https://client.example"}
-        assert view["redirect_host"] == "127.0.0.1"
+            "client_id": CLIENT, "host": "client.example", "name": "Test Agent",
+            "origin": "https://client.example"}
+        assert view["redirect_display"] == "http://127.0.0.1:33418"
+        assert view["redirect_app"] is False
+        assert len(view["consent_ticket"]) == 43
+        assert "redirect_host" not in view
         assert view["scopes"] == ["projects:read", "offline_access"]
         assert view["resource"] == RESOURCE
         assert view["issuer"] == ISSUER
@@ -1320,3 +1896,640 @@ class TestTheRevocationEndpoint:
             access = await agent_tokens.lookup_token(issued["access_token"])
         assert r.status_code == 200
         assert access is not None, "another client revoked the connection"
+
+
+def _refresh_form(refresh_token: str) -> dict:
+    return {"grant_type": "refresh_token", "client_id": CLIENT,
+            "refresh_token": refresh_token}
+
+
+@_DB_GATE
+class TestTheOrgAllowlistOnARealDatabase:
+    """EA-10p doors 1 and 2 (spec §10.6), as the non-privileged role."""
+
+    async def test_a_listed_organization_approves(self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            check = await _gw(_gateway_app(promoted.org_a),
+                              "/agent-access/authorize/check", _authorize())
+            approve = await _approve(promoted)
+        assert check.status_code == 200, check.text
+        assert approve.status_code == 200, approve.text
+
+    async def test_an_organization_off_the_list_makes_no_connection(
+            self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, promoted.org_b)
+        async with tenant_engine_scope(promoted.app_dsn):
+            before = _connection_count(promoted)
+            check = await _gw(_gateway_app(promoted.org_a),
+                              "/agent-access/authorize/check", _authorize())
+            approve = await _approve(promoted)
+        for r in (check, approve):
+            assert r.status_code == 403, r.text
+            assert r.json() == {"detail": _ORG_NOT_ENABLED}
+        assert _connection_count(promoted) == before, "a refused org made a connection"
+
+    async def test_a_star_approves_any_organization(self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, "*")
+        async with tenant_engine_scope(promoted.app_dsn):
+            a = await _approve(promoted)
+            b = await _approve(promoted, promoted.org_b, session_email="b@agentoauth.test")
+        assert (a.status_code, b.status_code) == (200, 200)
+
+    async def test_a_code_of_an_organization_that_left_is_invalid_grant(
+            self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted)
+            _orgs(monkeypatch, promoted.org_b)
+            r = await _token(_exchange(code))
+        assert r.status_code == 400
+        assert r.json() == _INVALID_GRANT
+        tokens = _admin_one(
+            promoted, "SELECT count(*) FROM agent_token WHERE connection_id = CAST(:c AS uuid)"
+                      " AND kind <> 'code'", c=_connection_id_of_code(promoted, code))[0]
+        assert tokens == 0, "a refused organization got a token"
+
+    async def test_a_refresh_after_the_organization_left_is_invalid_grant(
+            self, promoted, web, monkeypatch):
+        """The refusal spends nothing: when the organization comes back on
+        the list, the same refresh token works."""
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted)
+            issued = (await _token(_exchange(code))).json()
+            for listed in ("", promoted.org_b):
+                _orgs(monkeypatch, listed)
+                refused = await _token(_refresh_form(issued["refresh_token"]))
+                assert refused.status_code == 400, listed
+                assert refused.json() == _INVALID_GRANT
+            _orgs(monkeypatch, promoted.org_a)
+            back = await _token(_refresh_form(issued["refresh_token"]))
+        assert back.status_code == 200, back.text
+        assert not _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+
+    async def _rotated_then_off_the_list(self, promoted, monkeypatch):
+        """r1 rotated to r2 while org A is listed. Then org A leaves the list,
+        and r1 comes again. Returns ``(code, r2, the replay's result)``."""
+        _orgs(monkeypatch, promoted.org_a)
+        code = await _code(promoted)
+        r1 = (await _token(_exchange(code))).json()["refresh_token"]
+        rotated = await _token(_refresh_form(r1))
+        assert rotated.status_code == 200, rotated.text
+        _orgs(monkeypatch, promoted.org_b)
+        replay = await agent_tokens.rotate_refresh(r1, client_id=CLIENT)
+        return code, rotated.json()["refresh_token"], replay
+
+    async def test_a_replay_off_the_list_is_reused_and_revokes(
+            self, promoted, web, monkeypatch):
+        """Fix round 1. The reuse check comes before the list check, so a
+        replay of a spent refresh token is a reuse, list or no list."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            code, _, replay = await self._rotated_then_off_the_list(promoted, monkeypatch)
+        assert isinstance(replay, agent_tokens.Refused)
+        assert replay.reason == agent_tokens.REUSED
+        assert _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+
+    async def test_the_thiefs_chain_is_dead_when_the_org_comes_back(
+            self, promoted, web, monkeypatch):
+        """Fix round 1. After the replay off the list, r2 must not work when
+        the organization comes back on the list."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            _, r2, _ = await self._rotated_then_off_the_list(promoted, monkeypatch)
+            _orgs(monkeypatch, promoted.org_a)
+            after = await agent_tokens.rotate_refresh(r2, client_id=CLIENT)
+        assert isinstance(after, agent_tokens.Refused), "the rotated chain survived"
+        assert after.reason == agent_tokens.CONNECTION_DEAD
+
+    async def test_another_client_off_the_list_revokes_nothing(
+            self, promoted, web, monkeypatch):
+        """A spent refresh token that ANOTHER client presents is not a reuse,
+        on the off-list path too."""
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted)
+            r1 = (await _token(_exchange(code))).json()["refresh_token"]
+            assert (await _token(_refresh_form(r1))).status_code == 200
+            _orgs(monkeypatch, "")
+            other = await agent_tokens.rotate_refresh(r1, client_id=OTHER_CLIENT)
+        assert isinstance(other, agent_tokens.Refused)
+        assert other.reason == agent_tokens.ORG_NOT_ALLOWED
+        assert not _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+
+    async def test_a_star_refreshes_any_organization(self, promoted, web, monkeypatch):
+        _orgs(monkeypatch, promoted.org_b)
+        async with tenant_engine_scope(promoted.app_dsn):
+            approved = await _approve(promoted, promoted.org_b,
+                                      session_email="b@agentoauth.test")
+            assert approved.status_code == 200, approved.text
+            code = _query(approved.json()["redirect_to"])["code"]
+            issued = await _token(_exchange(code))
+            assert issued.status_code == 200, issued.text
+            _orgs(monkeypatch, "*")
+            r = await _token(_refresh_form(issued.json()["refresh_token"]))
+        assert r.status_code == 200, r.text
+
+    async def test_revoke_still_works_for_an_organization_off_the_list(
+            self, promoted, web, monkeypatch):
+        """A revoke only removes access, so the list does not stop it."""
+        _orgs(monkeypatch, promoted.org_a)
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted)
+            issued = (await _token(_exchange(code))).json()
+            _orgs(monkeypatch, "")
+            async with _edge_client() as edge:
+                r = await edge.post("/oauth/revoke", data={
+                    "token": issued["refresh_token"], "client_id": CLIENT})
+        assert r.status_code == 200
+        assert _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+
+
+@_DB_GATE
+class TestClaudeCodeEndToEnd:
+    """EA-2c: the Claude Code client, on a random loopback port, end to end.
+
+    Its document lists ``http://localhost/callback`` with no port. The check
+    and the approval accept port 53122. The code keeps that exact URI, so the
+    token request must name the same port (spec §10.4).
+    """
+
+    async def test_check_approve_and_token(self, promoted, web):
+        async with tenant_engine_scope(promoted.app_dsn):
+            check = await _gw(_gateway_app(promoted.org_a),
+                              "/agent-access/authorize/check", _authorize(**_CLAUDE_REQUEST))
+            approve = await _approve(promoted, **_CLAUDE_REQUEST)
+            assert approve.status_code == 200, approve.text
+            redirect = approve.json()["redirect_to"]
+            code = _query(redirect)["code"]
+            stored = _admin_one(
+                promoted, "SELECT redirect_uri FROM agent_token WHERE token_hash = :h",
+                h=agent_tokens.hash_token(code))[0]
+            token = await _token(_exchange(code, **_CLAUDE_REQUEST))
+            assert token.status_code == 200, token.text
+            access = token.json()["access_token"]
+            assert await _connection_of(access) == _connection_id_of_code(promoted, code)
+        assert check.status_code == 200, check.text
+        assert check.json()["client"]["name"] == "Claude Code"
+        assert check.json()["redirect_uri"] == CLAUDE_REDIRECT
+        assert redirect.startswith(CLAUDE_REDIRECT + "?")
+        assert stored == CLAUDE_REDIRECT, "the code must keep the port it was sent to"
+        row = _connection(promoted, _connection_id_of_code(promoted, code))
+        assert row.client_origin == "https://claude.ai"
+        assert not row.revoked
+
+    @pytest.mark.parametrize("uri", [
+        "http://localhost:53123/callback",
+        "http://localhost/callback",
+        "http://127.0.0.1:53122/callback",
+    ], ids=["other-port", "no-port", "other-host"])
+    async def test_a_token_request_on_another_uri_spends_nothing(self, promoted, web, uri):
+        """The token step keeps its exact bind. A port that differs from the
+        authorize step is ``invalid_grant``, and the real client still wins."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            code = await _code(promoted, **_CLAUDE_REQUEST)
+            bad = await _token(_exchange(code, client_id=CLAUDE_CODE, redirect_uri=uri))
+            good = await _token(_exchange(code, **_CLAUDE_REQUEST))
+        assert bad.status_code == 400
+        assert bad.json() == _INVALID_GRANT
+        assert good.status_code == 200, "a wrong port spent the code"
+        assert not _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EA-4a (spec §10.5): the redirect forms, the display and the consent ticket.
+# DB-free: the store is replaced, and Redis is the fake under the real wrapper.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTheRedirectForms:
+    """``is_allowed_redirect_uri`` is an ALLOW list of the RFC 8252 forms."""
+
+    @pytest.mark.parametrize("uri", [
+        "https://claude.ai/api/mcp/auth_callback",
+        "https://client.example:8443/cb?a=1",
+        "http://localhost/callback", "http://127.0.0.1:5555/cb", "http://[::1]:9/cb",
+        "com.example.app:/oauth/callback",
+        "com.example.app:/cb?a=1",
+        "io.github.my-tool.cli:/callback",
+    ])
+    def test_the_three_forms_pass(self, uri):
+        assert agent_oauth.is_allowed_redirect_uri(uri)
+
+    @pytest.mark.parametrize("uri", [
+        # A private-use scheme with no dot.
+        "cursor://anysphere.cursor-retrieval/oauth/callback",
+        "myapp:/callback", "x-evil://claude.ai/cb",
+        # A dotted scheme with an authority, or with no slash, or an empty path.
+        "com.example.app://claude.ai/cb", "com.example.app:callback",
+        "com.example.app:/", "com.example.app:",
+        # A malformed dotted scheme.
+        "Com.Example.App:/cb", ".com.example:/cb", "com..example:/cb",
+        "com.example.:/cb", "1com.example:/cb",
+        # The schemes the old deny list named, and others it did not.
+        "javascript:alert(1)", "data:text/html,x", "vbscript:x", "file:///etc/passwd",
+        "ftp://files.example/cb", "wss://x.example/cb", "blob:https://x.example/1",
+        "gopher://x.example/cb", "ms-settings:/cb",
+        # http that is not loopback, and an upper-case scheme.
+        "http://evil.example/cb", "HTTPS://claude.ai/cb", "HTTP://localhost/cb",
+        # A fragment, and a dotted scheme with a fragment.
+        "https://client.example/cb#frag", "com.example.app:/cb#f",
+    ])
+    def test_every_other_form_is_refused(self, uri):
+        assert not agent_oauth.is_allowed_redirect_uri(uri)
+
+    def test_a_private_use_document_redirect_passes_the_route(self, web):
+        """A client document that lists only a dotted-scheme URI is accepted."""
+        doc = _document(redirect_uris=["com.example.app:/oauth/callback"])
+        metadata = agent_access._validated_metadata(CLIENT, doc)
+        assert metadata["redirect_uris"] == ["com.example.app:/oauth/callback"]
+
+    def test_a_document_with_only_refused_forms_is_refused(self):
+        doc = _document(redirect_uris=["cursor://anysphere/cb", "myapp:/cb"])
+        with pytest.raises(agent_access.ClientRefused) as caught:
+            agent_access._validated_metadata(CLIENT, doc)
+        assert caught.value.reason == "no redirect URI is allowed"
+
+
+class TestTheRedirectDisplay:
+    """``redirect_display`` is what the screen shows (spec §10.5)."""
+
+    @pytest.mark.parametrize(("uri", "shown", "is_app"), [
+        ("http://127.0.0.1:33418/callback", "http://127.0.0.1:33418", False),
+        ("http://localhost:53122/callback", "http://localhost:53122", False),
+        ("http://[::1]:5555/callback", "http://[::1]:5555", False),
+        ("http://localhost/callback", "http://localhost", False),
+        ("https://claude.ai/api/mcp/auth_callback", "https://claude.ai", False),
+        ("https://claude.ai:8443/cb", "https://claude.ai:8443", False),
+        ("https://xn--claude-2of.ai/cb", "https://xn--claude-2of.ai", False),
+        ("x-evil://claude.ai/cb", "x-evil://claude.ai", True),
+        ("cursor://anysphere.cursor-retrieval/oauth/callback",
+         "cursor://anysphere.cursor-retrieval", True),
+        ("com.example.app:/oauth/callback", "com.example.app:", True),
+    ], ids=["v4-port", "localhost-port", "v6-port", "no-port", "https", "https-port",
+            "punycode", "x-evil", "cursor", "private-use"])
+    def test_the_display(self, uri, shown, is_app):
+        assert agent_oauth.redirect_display(uri) == (shown, is_app)
+
+    def test_a_private_use_authority_never_shows_as_a_web_host(self):
+        shown, is_app = agent_oauth.redirect_display("x-evil://claude.ai/cb")
+        assert shown != "claude.ai"
+        assert shown.startswith("x-evil://")
+        assert is_app is True
+
+
+class TestTheDisplayThroughTheRoute:
+    """The port of the screen comes from the REQUEST, not the registration.
+
+    Claude Code registers ``http://localhost/callback`` with no port and
+    sends a random port. The screen shows that port.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_db(self, monkeypatch):
+        async def _no_client(client_id):
+            return None
+
+        async def _cached(client_id, metadata):
+            return True
+
+        monkeypatch.setattr(agent_tokens, "get_client", _no_client)
+        monkeypatch.setattr(agent_tokens, "cache_cimd_client", _cached)
+
+    async def test_the_claude_code_check_shows_the_requested_port(self, web):
+        r = await _gw(_gateway_app(str(uuid.uuid4())), "/agent-access/authorize/check",
+                      _authorize(**_CLAUDE_REQUEST))
+        assert r.status_code == 200, r.text
+        view = r.json()
+        assert view["redirect_display"] == "http://localhost:53122"
+        assert view["redirect_app"] is False
+
+
+_TICKET_REFUSED = "The consent ticket is missing or not valid."
+_OTHER_CHALLENGE = agent_oauth.s256("w2-" + "c" * 50)
+
+
+class TestTheConsentTicket:
+    """Rule 10 of ``agent_access``: ``check`` gives a one-time ticket, and
+    ``approve`` spends it with one ``GETDEL`` before any other check.
+
+    The store is replaced, so this class needs no database. Redis is the fake
+    under the REAL ``TenantRedis`` wrapper, so the keys carry the tenant.
+    """
+
+    @pytest.fixture(autouse=True)
+    def store(self, monkeypatch) -> list[tuple[str, tuple, dict]]:
+        calls: list[tuple[str, tuple, dict]] = []
+
+        async def _no_client(client_id):
+            return None
+
+        async def _cached(client_id, metadata):
+            return True
+
+        async def _create(*a, **k):
+            calls.append(("create_connection", a, k))
+            return str(uuid.uuid4())
+
+        async def _mint(*a, **k):
+            calls.append(("mint_code", a, k))
+            return "code-" + uuid.uuid4().hex
+
+        monkeypatch.setattr(agent_tokens, "get_client", _no_client)
+        monkeypatch.setattr(agent_tokens, "cache_cimd_client", _cached)
+        monkeypatch.setattr(agent_tokens, "create_connection", _create)
+        monkeypatch.setattr(agent_tokens, "mint_code", _mint)
+        return calls
+
+    @staticmethod
+    async def _check(org: str, email: str = MEMBER, **over) -> httpx.Response:
+        return await _gw(_gateway_app(org, email), "/agent-access/authorize/check",
+                         _authorize(**over))
+
+    @staticmethod
+    async def _approve(org: str, ticket: str | None, email: str = MEMBER,
+                       **over) -> httpx.Response:
+        body = _authorize(**over)
+        if ticket is not None:
+            body["consent_ticket"] = ticket
+        return await _gw(_gateway_app(org, email), "/agent-access/authorize/approve", body)
+
+    async def _ticket(self, org: str, email: str = MEMBER, **over) -> str:
+        r = await self._check(org, email, **over)
+        assert r.status_code == 200, r.text
+        return r.json()["consent_ticket"]
+
+    @staticmethod
+    def _assert_refused(r: httpx.Response) -> None:
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == {
+            "error": "invalid_request", "error_description": _TICKET_REFUSED,
+            "redirect_to": None}
+
+    async def test_check_gives_a_ticket_and_keeps_only_its_hash(self, web, redis):
+        org = str(uuid.uuid4())
+        ticket = await self._ticket(org)
+        assert len(ticket) == 43  # 32 bytes in base64url
+        ((name, (value, expires)),) = redis.store.items()
+        digest = hashlib.sha256(ticket.encode()).hexdigest()
+        assert name == f"cc:{org}:agent-consent:{digest}"
+        assert ticket not in name
+        assert ticket not in value
+        assert expires - redis.now == 300
+        assert json.loads(value) == [
+            MEMBER, org, CLIENT, REDIRECT, CHALLENGE, "st-123", RESOURCE,
+            "projects:read offline_access"]
+
+    async def test_each_check_gives_a_new_ticket(self, web):
+        org = str(uuid.uuid4())
+        assert await self._ticket(org) != await self._ticket(org)
+
+    async def test_approve_with_the_ticket_works_once(self, web, store):
+        org = str(uuid.uuid4())
+        ticket = await self._ticket(org)
+        first = await self._approve(org, ticket)
+        assert first.status_code == 200, first.text
+        assert "code" in _query(first.json()["redirect_to"])
+        again = await self._approve(org, ticket)
+        self._assert_refused(again)
+        assert [c[0] for c in store] == ["create_connection", "mint_code"]
+
+    @pytest.mark.parametrize("ticket", [None, "", "x" * 43, "é" * 10],
+                             ids=["absent", "empty", "unknown", "non-ascii"])
+    async def test_approve_with_no_valid_ticket_is_400_and_writes_nothing(
+        self, web, store, ticket
+    ):
+        org = str(uuid.uuid4())
+        await self._ticket(org)
+        r = await self._approve(org, ticket)
+        self._assert_refused(r)
+        assert store == []
+
+    async def test_a_tampered_ticket_is_400(self, web, store):
+        org = str(uuid.uuid4())
+        ticket = await self._ticket(org)
+        last = "A" if ticket[-1] != "A" else "B"
+        self._assert_refused(await self._approve(org, ticket[:-1] + last))
+        self._assert_refused(await self._approve(org, ticket + "x"))
+        assert store == []
+
+    async def test_an_expired_ticket_is_400(self, web, redis, store):
+        org = str(uuid.uuid4())
+        ticket = await self._ticket(org)
+        redis.now += 301
+        self._assert_refused(await self._approve(org, ticket))
+        assert store == []
+
+    async def test_a_ticket_one_second_before_expiry_still_works(self, web, redis):
+        org = str(uuid.uuid4())
+        ticket = await self._ticket(org)
+        redis.now += 299
+        assert (await self._approve(org, ticket)).status_code == 200
+
+    @pytest.mark.parametrize("over", [
+        {"client_id": OTHER_CLIENT},
+        {"redirect_uri": "http://127.0.0.1:33419/callback"},
+        {"code_challenge": _OTHER_CHALLENGE},
+        {"state": "st-other"},
+        {"state": None},
+        {"resource": RESOURCE + "/other"},
+        {"scope": "projects:read"},
+        {"scope": None},
+    ], ids=["client_id", "redirect_uri", "code_challenge", "state", "no-state",
+            "resource", "scope", "no-scope"])
+    async def test_each_request_field_is_bound(self, web, store, over):
+        """A ticket for one request never approves another. The refusal is
+        the ticket's, before the client fetch, and it spends the ticket."""
+        org = str(uuid.uuid4())
+        ticket = await self._ticket(org)
+        sent_before = list(web.sent)
+        self._assert_refused(await self._approve(org, ticket, **over))
+        assert web.sent == sent_before, "a refused ticket still fetched the client"
+        # The mismatch spent it: the right request cannot use it now.
+        self._assert_refused(await self._approve(org, ticket))
+        assert store == []
+
+    async def test_the_member_is_bound(self, web, store):
+        org = str(uuid.uuid4())
+        ticket = await self._ticket(org)
+        self._assert_refused(await self._approve(org, ticket, email="b@agentoauth.test"))
+        assert store == []
+
+    async def test_the_organization_is_bound_by_the_key(self, web, store):
+        """The key carries the tenant, so another org's session finds nothing."""
+        org_a, org_b = str(uuid.uuid4()), str(uuid.uuid4())
+        ticket = await self._ticket(org_a)
+        self._assert_refused(await self._approve(org_b, ticket))
+        assert store == []
+
+    async def test_the_organization_is_bound_by_the_value(self, web, redis, store):
+        """The second lock: a value that names another org is refused, even
+        under the key of this org."""
+        org_a, org_b = str(uuid.uuid4()), str(uuid.uuid4())
+        ticket = _plant_ticket(redis, _authorize(), org_a)
+        ((name, entry),) = redis.store.items()
+        redis.store.clear()
+        redis.store[name.replace(f"cc:{org_a}:", f"cc:{org_b}:")] = entry
+        self._assert_refused(await self._approve(org_b, ticket))
+        assert store == []
+
+    async def test_the_ticket_comes_before_every_other_check(self, web, store):
+        """No ticket and a bad request: the answer is the ticket's 400, and the
+        client document is never fetched."""
+        org = str(uuid.uuid4())
+        r = await self._approve(org, None, code_challenge_method="plain",
+                                client_id="https://never.example/m.json")
+        self._assert_refused(r)
+        assert web.sent == []
+
+    @pytest.mark.parametrize("error", [
+        RedisConnectionError("down"),
+        RedisTimeoutError("slow"),
+        ConnectionRefusedError("refused"),
+        TimeoutError(),
+    ], ids=["redis-connection", "redis-timeout", "refused", "timeout"])
+    async def test_a_redis_outage_is_503_never_400(self, web, redis, store, error):
+        org = str(uuid.uuid4())
+        ticket = await self._ticket(org)
+        redis.fail = error
+        approve = await self._approve(org, ticket)
+        check = await self._check(org)
+        for r in (approve, check):
+            assert r.status_code == 503, r.text
+            assert r.headers["retry-after"] == "2"
+            assert r.headers["cache-control"] == "no-store"
+        assert store == []
+
+    async def test_a_hung_redis_is_503(self, web, redis, store, monkeypatch):
+        org = str(uuid.uuid4())
+        ticket = await self._ticket(org)
+
+        async def _hang(name):
+            await asyncio.sleep(5)
+
+        monkeypatch.setattr(agent_access, "_REDIS_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(redis, "getdel", _hang)
+        r = await self._approve(org, ticket)
+        assert r.status_code == 503, r.text
+        assert store == []
+
+    async def test_a_refused_check_gives_no_ticket(self, web, redis):
+        org = str(uuid.uuid4())
+        r = await self._check(org, code_challenge_method="plain")
+        assert r.status_code == 400
+        assert redis.store == {}
+
+    def test_the_approve_model_takes_the_ticket_and_no_identity(self):
+        fields = agent_access.ApproveRequest.model_fields
+        assert "consent_ticket" in fields
+        assert not set(fields) & _IDENTITY_INPUTS
+
+
+class TestTheHeadlineIsTheVerifiedHost:
+    """EA-4a fix round 1 (P2): the screen's headline is the verified host.
+
+    The ``client_name`` of the document is only a claim. The view carries it
+    as ``name``, or ``None`` when it shows nothing, and the screen shows it
+    second. A name of invisible characters is no name.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_db(self, monkeypatch):
+        async def _no_client(client_id):
+            return None
+
+        async def _cached(client_id, metadata):
+            return True
+
+        monkeypatch.setattr(agent_tokens, "get_client", _no_client)
+        monkeypatch.setattr(agent_tokens, "cache_cimd_client", _cached)
+
+    async def _client(self, web, name) -> dict:
+        doc = _document()
+        if name is None:
+            doc.pop("client_name")
+        else:
+            doc["client_name"] = name
+        web.docs[CLIENT] = (200, json.dumps(doc).encode())
+        r = await _gw(_gateway_app(str(uuid.uuid4())), "/agent-access/authorize/check",
+                      _authorize())
+        assert r.status_code == 200, r.text
+        return r.json()["client"]
+
+    async def test_a_normal_name_is_a_claim_beside_the_verified_host(self, web):
+        client = await self._client(web, "Test Agent")
+        assert client["host"] == "client.example"
+        assert client["origin"] == "https://client.example"
+        assert client["name"] == "Test Agent"
+
+    async def test_a_name_that_claims_metorite_never_becomes_the_host(self, web):
+        client = await self._client(web, "Metorite")
+        assert client["host"] == "client.example"
+        assert client["name"] == "Metorite"
+
+    @pytest.mark.parametrize("name", [
+        "ㅤ", "ㅤㅤㅤ", "ᅟ", "ᅠﾠ", " ㅤ ",
+        "​​", "   ", "́́", "!!!", None, 7,
+    ], ids=["hangul-filler", "three-fillers", "choseong-filler", "other-fillers",
+            "filler-in-spaces", "zero-width", "spaces", "marks-only", "symbols-only",
+            "absent", "not-a-string"])
+    async def test_a_name_that_shows_nothing_is_no_name(self, web, name):
+        client = await self._client(web, name)
+        assert client["name"] is None
+        assert client["host"] == "client.example"
+
+    @pytest.mark.parametrize(("raw", "clean"), [
+        ("Claude Code", "Claude Code"),
+        ("ㅤClaude", "ㅤClaude"),
+        ("R2-D2", "R2-D2"),
+        ("クロード", "クロード"),
+        ("7", "7"),
+    ], ids=["plain", "filler-and-letters", "letters-and-digits", "katakana", "digit"])
+    def test_a_name_with_a_visible_letter_or_digit_is_kept(self, raw, clean):
+        assert agent_access._clean_name(raw) == clean
+
+
+class TestAnExplicitPortMustBeInRange:
+    """EA-4a fix round 1: ``https://claude.ai:0/cb`` passed, because a later
+    ``if port`` read the port 0 as no port."""
+
+    @pytest.mark.parametrize("uri", [
+        "https://claude.ai:0/cb", "http://localhost:0/callback", "http://127.0.0.1:0/cb",
+        "https://claude.ai:65536/cb", "https://claude.ai:99999/cb",
+    ])
+    def test_a_port_out_of_range_is_refused(self, uri):
+        assert not agent_oauth.is_allowed_redirect_uri(uri)
+
+    @pytest.mark.parametrize("uri", [
+        "https://claude.ai:1/cb", "https://claude.ai:65535/cb", "http://localhost:53122/callback",
+        "https://claude.ai/cb",
+    ])
+    def test_a_port_in_range_or_no_port_passes(self, uri):
+        assert agent_oauth.is_allowed_redirect_uri(uri)
+
+    async def test_port_zero_is_refused_through_the_route_with_no_redirect(self, web, monkeypatch):
+        """Fix round 1 moved this case out of the EA-2c list: the allow list
+        now refuses port 0 too, so the match is no longer the only refusal."""
+        async def _no_client(client_id):
+            return None
+
+        async def _cached(client_id, metadata):
+            return True
+
+        monkeypatch.setattr(agent_tokens, "get_client", _no_client)
+        monkeypatch.setattr(agent_tokens, "cache_cimd_client", _cached)
+        r = await _gw(_gateway_app(str(uuid.uuid4())), "/agent-access/authorize/check",
+                      _authorize(client_id=CLAUDE_CODE, redirect_uri="http://localhost:0/callback"))
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"] == "invalid_request"
+        assert r.json()["detail"]["redirect_to"] is None
+
+    def test_the_loopback_match_of_ea_2c_is_unchanged(self):
+        assert agent_oauth.redirect_uri_matches("http://localhost:53122/callback", [_LH])
+        assert not agent_oauth.redirect_uri_matches("http://localhost:0/callback", [_LH])
+        assert agent_oauth.redirect_uri_matches(_LH, [_LH])
+
+    def test_the_display_keeps_a_port_and_never_reads_zero_as_none(self):
+        assert agent_oauth.redirect_display("https://claude.ai:443/cb") == (
+            "https://claude.ai:443", False)
+        assert agent_oauth.redirect_display("https://claude.ai:0/cb") == (
+            "https://claude.ai:0", False)

@@ -23,6 +23,7 @@
  * Fence: `chatEdit.test.ts`.
  */
 import type { ChatMessage } from "@/lib/chatStore";
+import { isSteered } from "@/lib/chatSteer";
 
 /** The custom event that marks a user turn as an edit. It persists through
  *  the `custom_events` column, so the "Edited" label survives a reload. */
@@ -33,7 +34,9 @@ export const EDITED_EVENT = "edited";
  *  my message is no longer the last one. */
 export function lastUserMessageId(messages: readonly ChatMessage[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") return messages[i].id;
+    // A steer row is part of the turn it joined (review of #920, round 2).
+    // The gateway's `plan_supersede` removes it with that turn.
+    if (messages[i].role === "user" && !isSteered(messages[i])) return messages[i].id;
   }
   return null;
 }

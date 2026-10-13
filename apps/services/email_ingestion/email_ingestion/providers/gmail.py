@@ -33,6 +33,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from ..persist import MAX_BODY_HTML_BYTES, MAX_BODY_TEXT_BYTES
 from .app_credentials import OAuthApp, token_fields
 from .base import (
     Attachment,
@@ -41,12 +42,15 @@ from .base import (
     EmailFolder,
     EmailMessage,
     EstimateCallback,
+    InlineImage,
+    InlineRead,
     ProviderMailTooLarge,
     ProviderRateLimited,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
+    normalize_content_id,
     received_key,
 )
 
@@ -126,6 +130,21 @@ def _iter_gmail_parts(
         return
     for sub in part.get("parts", []) or []:
         yield from _iter_gmail_parts(sub, descend=descend)
+
+
+def _gmail_part_is_inline_image(part: dict) -> bool:
+    """An inline part with an ``image/*`` type: a ``cid:`` picture.
+
+    ``_gmail_part_is_inline`` alone also takes a PDF that a sender gave a
+    ``Content-ID``, and the inline read must never download a real file.
+    """
+    kind = str(part.get("mimeType") or "").lower()
+    return kind.startswith("image/") and _gmail_part_is_inline(part)
+
+
+def _gmail_opens_part(part: dict) -> bool:
+    """False for an attached mail: the inline walk never reads its parts."""
+    return not str(part.get("mimeType") or "").lower().startswith("message/")
 
 
 def _collect_gmail_attachments(part: dict, msg_id: str) -> list[Attachment]:
@@ -1001,6 +1020,15 @@ GMAIL_MAIL_MAX_BYTES = 36_700_160
 #: larger mail goes to the upload URI.
 GMAIL_PLAIN_MAX_BYTES = 1_048_576
 
+#: The most bytes of one body part that ``get_message`` fetches by
+#: ``attachmentId`` (WS-17 EM-G2-f1, §12.3.12.3). It is two times the larger
+#: storage cap of ``persist``, so 4 MiB today. Each stored body and each
+#: gateway read cuts a body at that cap, so a larger part buys nothing that
+#: is kept. The cap bounds the memory of acb-gateway: each label event
+#: fetches a message again, and the import runs 10 fetches at once. A larger
+#: part gets no fetch, and its body stays empty.
+GMAIL_FILL_MAX_BYTES = 2 * max(MAX_BODY_TEXT_BYTES, MAX_BODY_HTML_BYTES)
+
 
 class GmailMailTooLarge(ProviderMailTooLarge):
     """Gmail cannot take this mail (EM-G3c item 6).
@@ -1118,6 +1146,36 @@ class GmailProvider(BaseEmailProvider):
         logger.warning("gmail.fetch_failed message_id=%s error=%s status=%s",
                        message_id, type(exc).__name__, status)
         return note
+
+    def _record_body_part_failure(
+        self, message_id: Any, part_id: Any, exc: BaseException,
+    ) -> None:
+        """Log and count one body part that a fetch could not read (WS-17
+        EM-G2-f1, D-G2-f1-5). The record goes into ``fetch_failures``, as
+        the record of a failed message does. It names the message id, the
+        part id, the class of the error and the HTTP status, and never a
+        subject or an address."""
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        self.fetch_failures.append(
+            f"gmail.body_part_failed id={message_id} part={part_id} "
+            f"error={type(exc).__name__} status={status}")
+        logger.warning(
+            "gmail.body_part_failed message_id=%s part_id=%s error=%s "
+            "status=%s", message_id, part_id, type(exc).__name__, status)
+
+    def _record_body_part_too_large(
+        self, message_id: Any, part_id: Any, size: int,
+    ) -> None:
+        """Log and count one body part over ``GMAIL_FILL_MAX_BYTES`` that the
+        fill does not fetch (WS-17 EM-G2-f1, review P2). The record names the
+        message id, the part id and the size, and never a subject or an
+        address."""
+        self.fetch_failures.append(
+            f"gmail.body_part_too_large id={message_id} part={part_id} "
+            f"size={size}")
+        logger.warning(
+            "gmail.body_part_too_large message_id=%s part_id=%s size=%d",
+            message_id, part_id, size)
 
     async def _refresh_access_token(self) -> None:
         """Refresh the OAuth access token using the refresh token."""
@@ -1299,7 +1357,73 @@ class GmailProvider(BaseEmailProvider):
             params={"format": "full"},
         )
         resp.raise_for_status()
-        return self._parse_gmail_message(resp.json())
+        raw = resp.json()
+        # The one place of the fill (EM-G2-f1, D-G2-f1-2): each caller of
+        # the parse, the HTML route of §14 too, comes through here.
+        await self._fill_attachment_bodies(client, raw)
+        return self._parse_gmail_message(raw)
+
+    async def _fill_attachment_bodies(
+        self, client: httpx.AsyncClient, raw: dict[str, Any],
+    ) -> None:
+        """Fetch the body parts that Gmail sent by ``attachmentId`` (WS-17
+        EM-G2-f1, ``email_app_master_plan.md`` §12.3.12.3).
+
+        Gmail can leave a large ``text/plain`` or ``text/html`` part out of
+        ``format=full``. The part then has ``body.attachmentId`` and no
+        ``body.data``, and the parse gives an empty body. This step runs one
+        ``users.messages.attachments.get`` for such a part, and writes the
+        base64url answer into ``body.data``. The parse then decodes it with
+        the charset of the part (D-G2-f1-4). The parse stays synchronous
+        (D-G2-f1-1).
+
+        The walk skips each file and each part below a file, as
+        ``_gmail_bodies`` does, so a file never gets a fetch (D-G2-f1-3).
+
+        Two bounds keep the memory of acb-gateway small (review P2,
+        D-G2-f1-7). Only the FIRST part of each type that holds data or an
+        ``attachmentId`` is a candidate, because the parse reads only that
+        part. So one message gets two fetches at most. A candidate over
+        ``GMAIL_FILL_MAX_BYTES`` gets no fetch. It logs
+        ``gmail.body_part_too_large`` and leaves one record, and its body
+        stays empty.
+
+        A message with no such part makes no request. A failed fetch leaves
+        that body empty and one record (D-G2-f1-5). A rate limit whose tries
+        are spent raises (D-G2-f1-6)."""
+        payload = raw.get("payload") or {}
+        seen: set[str] = set()
+        for part in _iter_gmail_parts(
+                payload, descend=lambda p: not _gmail_part_is_file(p)):
+            if _gmail_part_is_file(part):
+                continue
+            mime = str(part.get("mimeType", "")).lower()
+            if mime not in ("text/plain", "text/html") or mime in seen:
+                continue
+            body = part.get("body") or {}
+            attachment_id = body.get("attachmentId")
+            if not attachment_id and not body.get("data"):
+                continue
+            seen.add(mime)
+            if body.get("data"):
+                continue
+            size = int(body.get("size") or 0)
+            if size > GMAIL_FILL_MAX_BYTES:
+                self._record_body_part_too_large(
+                    raw.get("id"), part.get("partId"), size)
+                continue
+            try:
+                resp = await client.get(
+                    f"/users/me/messages/{raw.get('id')}"
+                    f"/attachments/{attachment_id}")
+                resp.raise_for_status()
+                data = resp.json()["data"]
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                self._record_body_part_failure(
+                    raw.get("id"), part.get("partId"), exc)
+                continue
+            part["body"] = {**body, "data": data}
 
     async def send_message(
         self,
@@ -1763,7 +1887,10 @@ class GmailProvider(BaseEmailProvider):
         archiving a 40k-message newsletter backlog costs 40 calls, not 40,000.
 
         ``failed_out`` collects ids the per-message fallback could not apply, so
-        the caller can retry them (see the base contract).
+        the caller can retry them (see the base contract). A rate limit whose
+        tries are spent makes no per-message call. The ids of its chunk and of
+        each later chunk go into ``failed_out``, and the act returns
+        (EM-G4a-f1).
 
         Gmail never re-keys a message id, so the return is always empty.
         """
@@ -1783,6 +1910,20 @@ class GmailProvider(BaseEmailProvider):
             try:
                 resp = await client.post("/users/me/messages/batchModify", json=body)
                 resp.raise_for_status()
+            except GmailRateLimited:
+                # The tries and the wait budget of the client are spent, so
+                # each ``modify`` of a fallback stops at its first refusal.
+                # No call goes out for each message. This chunk and each later
+                # chunk fail, and the caller retries them with a back-off
+                # (EM-G4a-f1, D-G4a-f1-1).
+                left = provider_message_ids[i:]
+                logger.warning(
+                    "gmail.batch_modify_rate_limited action=%s size=%d left=%d",
+                    action, len(chunk), len(left),
+                )
+                if failed_out is not None:
+                    failed_out.extend(left)
+                return {}
             except Exception as exc:  # noqa: BLE001
                 # A whole chunk failing is worth a retry one message at a time:
                 # batchModify is all-or-nothing, so one stale id would otherwise
@@ -2284,18 +2425,24 @@ class GmailProvider(BaseEmailProvider):
         A rate limit whose tries are spent raises (EM-G4a item 9). The
         caller decides what it does: a sweep fails, and the history read
         keeps its finished pages (EM-G4b-f1). Each other failure leaves its
-        record in ``result.errors`` (item 10). Returns the ids whose failure
-        a later cycle can fix (``_transient``)."""
+        record in ``result.errors`` (item 10). The record of a body part that
+        ``get_message`` could not fill goes there too (EM-G2-f1,
+        D-G2-f1-5). Returns the ids whose failure a later cycle can fix
+        (``_transient``)."""
         failed: list[str] = []
         for mid in ids:
+            first = len(self.fetch_failures)
             try:
-                result.messages.append(await self.get_message(mid))
+                message = await self.get_message(mid)
             except Exception as exc:
                 _raise_rate_limit(exc)
-                result.errors.append(self._record_fetch_failure(mid, exc))
+                self._record_fetch_failure(mid, exc)
+                result.errors.extend(self.fetch_failures[first:])
                 if _transient(exc):
                     failed.append(mid)
                 continue
+            result.errors.extend(self.fetch_failures[first:])
+            result.messages.append(message)
             result.messages_synced += 1
         return failed
 
@@ -2735,6 +2882,84 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
         data = resp.json()
         return base64.urlsafe_b64decode(data["data"])
+
+    async def get_inline_images(
+        self, provider_message_id: str, *, max_count: int, max_bytes: int,
+        max_total: int,
+    ) -> InlineRead:
+        """The inline pictures of one message (WS-17, the inline images fix).
+
+        One read of the whole MIME tree (``format=full``). Then each part
+        that is an inline picture: ``_gmail_part_is_inline`` and an
+        ``image/*`` type (review P2-3). So a PDF with a ``Content-ID`` is
+        never downloaded. A small part carries its bytes in the tree, and a
+        larger one is read by its ``attachmentId``. The parts marked
+        ``inline`` come first. The choice stops at *max_count* parts, and it
+        skips a part that would take the sizes over *max_total*. A skip makes
+        the read incomplete (review P3-a).
+
+        The walk never opens an attached mail, because its parts belong to
+        that mail. A failed read of one part skips that part and makes the
+        read incomplete (review P2-4). A rate limit raises.
+        """
+        client = await self._get_client()
+        resp = await client.get(
+            f"/users/me/messages/{provider_message_id}", params={"format": "full"},
+        )
+        resp.raise_for_status()
+        payload = resp.json().get("payload", {}) or {}
+        # The parts with an ``inline`` disposition first, then the parts
+        # with a Content-ID and no disposition. A part over the budget is
+        # skipped, and a smaller one after it can still fit. Each candidate
+        # is a picture that the body can name, so a skip makes the read
+        # incomplete (review P3-a).
+        candidates = [
+            p for p in _iter_gmail_parts(payload, descend=_gmail_opens_part)
+            if not p.get("parts") and _gmail_part_is_inline_image(p)
+        ]
+        candidates.sort(key=lambda p: not _gmail_part_header(
+            p, "Content-Disposition").strip().lower().startswith("inline"))
+        out: list[InlineImage] = []
+        chosen = 0
+        complete = True
+        for part in candidates:
+            if len(out) >= max_count:
+                complete = False
+                break
+            cid = normalize_content_id(_gmail_part_header(part, "Content-ID"))
+            body = part.get("body", {}) or {}
+            size = int(body.get("size", 0) or 0)
+            if not cid or size > max_bytes:
+                continue
+            if chosen + size > max_total:
+                complete = False
+                continue
+            chosen += size
+            try:
+                if body.get("data"):
+                    raw = str(body["data"])
+                    content = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+                elif body.get("attachmentId"):
+                    content = await self.get_attachment(
+                        provider_message_id, str(body["attachmentId"]))
+                else:
+                    continue
+            except ProviderRateLimited:
+                raise
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    raise
+                complete = False
+                continue
+            except Exception:  # one part fails, and the rest still show
+                complete = False
+                continue
+            if content and len(content) <= max_bytes:
+                out.append(InlineImage(
+                    content_id=cid, content=content,
+                    mime_type=str(part.get("mimeType") or ""),
+                ))
+        return InlineRead(images=out, complete=complete)
 
     # ── Helpers ──────────────────────────────────────────────────────────
 

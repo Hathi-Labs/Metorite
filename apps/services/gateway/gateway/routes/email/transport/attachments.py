@@ -24,7 +24,12 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy
-from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+from acb_common.tenant_redis import (
+    BINARY_POOL_MAX_CONNECTIONS,
+    get_tenant_redis,
+    key,
+    organization_scope,
+)
 from acb_skills.attachment_text import (
     PAGE_UNREADABLE,
     SUPPORTED_SUFFIXES,
@@ -46,6 +51,28 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 MAX_PROXY_IMAGE_BYTES = 15 * 1024 * 1024  # 15 MB
+
+#: How many binary Redis calls run at once in this process. The binary pool
+#: of ``tenant_redis`` holds ``BINARY_POOL_MAX_CONNECTIONS`` and raises when it
+#: is full, with no wait. Both of its users, the file cache below and the
+#: inline pictures (``inline_images.py``), queue on this gate, one below the
+#: pool, so a burst waits instead of failing (security review 2026-10-13,
+#: P2-1 and P3-c). The pool itself stays as it is.
+BINARY_REDIS_GATE_SIZE = max(1, BINARY_POOL_MAX_CONNECTIONS - 1)
+
+#: One gate for each event loop. An ``asyncio.Semaphore`` binds to the loop
+#: that first waits on it, so a gate kept across loops would break.
+_BINARY_GATES: dict[int, asyncio.Semaphore] = {}
+
+
+def _binary_redis_gate() -> asyncio.Semaphore:
+    """The gate of each call on the binary Redis pool."""
+    loop = id(asyncio.get_running_loop())
+    gate = _BINARY_GATES.get(loop)
+    if gate is None:
+        _BINARY_GATES.clear()
+        gate = _BINARY_GATES[loop] = asyncio.Semaphore(BINARY_REDIS_GATE_SIZE)
+    return gate
 
 
 def _resolve_is_public(host: str) -> bool:
@@ -246,10 +273,11 @@ async def _fetch_owned_attachment(
     cached: bytes | None = None
     if use_cache:
         try:
-            with organization_scope(org_id):
-                cached = await get_tenant_redis(binary=True).get(
-                    key("email-att", str(row.id))
-                )
+            async with _binary_redis_gate():
+                with organization_scope(org_id):
+                    cached = await get_tenant_redis(binary=True).get(
+                        key("email-att", str(row.id))
+                    )
         except Exception:
             use_cache = False  # fall through to provider fetch
     if cached:
@@ -273,12 +301,13 @@ async def _fetch_owned_attachment(
     fits = max_bytes is None or len(content or b"") <= max_bytes
     if use_cache and content and fits:
         try:
-            with organization_scope(org_id):
-                await get_tenant_redis(binary=True).setex(
-                    key("email-att", str(row.id)),
-                    ATTACHMENT_CACHE_TTL_SECS,
-                    content,
-                )
+            async with _binary_redis_gate():
+                with organization_scope(org_id):
+                    await get_tenant_redis(binary=True).setex(
+                        key("email-att", str(row.id)),
+                        ATTACHMENT_CACHE_TTL_SECS,
+                        content,
+                    )
         except Exception:
             pass
 
