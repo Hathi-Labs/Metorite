@@ -236,9 +236,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <ShellFrame lead={<BarBrand />}>
             <div className="flex min-h-0 flex-1">
               <Sidebar />
-              {/* D99: with the chat flag on, the chat bar is a row under the
-                  page, and the assistant sits beside it or over it. Only
-                  this frame carries it: production runs both shell flags. */}
+              {/* D99: with the chat flag on, the assistant sits beside the
+                  page or over it. Its field is in the shell bar above (D102,
+                  2026-10-14). Only this frame carries it: production runs
+                  both shell flags. */}
               {chatOn ? (
                 <AssistantWorkArea assistant={<AssistantDock />}>
                   <main className="min-h-0 min-w-0 flex-1 overflow-auto">
