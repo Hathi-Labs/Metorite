@@ -50,6 +50,30 @@ api.metorite.com {
 	encode zstd gzip
 	reverse_proxy 127.0.0.1:8080 {
 		header_up X-Real-IP {remote_host}
+		# WS-55 EA-10b (external_agent_access.md §15.3, gate (a)). A request
+		# from the internet must not name a member or an agent connection.
+		# Every internal caller reaches the gateway on loopback, not here.
+		# The MCP edge signs its calls and sends them on loopback too.
+		header_up -X-User-Email
+		header_up -X-User-Role
+		header_up -X-Actor-Via
+		header_up -X-Agent-Connection
+		header_up -X-Agent-Timestamp
+		header_up -X-Agent-Signature
+		lb_try_duration 30s
+		lb_try_interval 250ms
+	}
+}
+
+# --- MCP edge for outside agents (WS-55 EA-10b) ---
+# external_agent_access.md §15.3. The wildcard *.metorite.com record already
+# sends this host to the box. 1MiB is 1048576 bytes, the edge's own cap
+# (agent_edge.mcp.MAX_BODY_BYTES). Caddy reads "1MB" as 1000000 bytes.
+mcp.metorite.com {
+	request_body {
+		max_size 1MiB
+	}
+	reverse_proxy 127.0.0.1:8091 {
 		lb_try_duration 30s
 		lb_try_interval 250ms
 	}

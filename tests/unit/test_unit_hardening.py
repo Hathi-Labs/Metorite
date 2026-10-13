@@ -538,6 +538,11 @@ def _last_value(unit: Path, key: str) -> str | None:
     return value
 
 
+#: Units that run as a systemd DynamicUser, not as acb. Each has a full
+#: sandbox and its own fence. WS-55 EA-10a: tests/unit/test_agent_edge_deploy.py.
+DYNAMIC_USER_UNITS = ("acb-agent-edge",)
+
+
 def test_every_acb_unit_but_pull_has_no_new_privileges() -> None:
     units = _acb_units()
     assert {u.name for u in units} >= {f"{n}.service" for n in OTHER_UNITS}
@@ -546,6 +551,17 @@ def test_every_acb_unit_but_pull_has_no_new_privileges() -> None:
         if u.name not in NNP_EXEMPT and _last_value(u, "NoNewPrivileges") != "yes"
     ]
     assert not missing, f"User=acb units with no NoNewPrivileges=yes: {missing}"
+
+
+def test_every_dynamic_user_unit_has_no_new_privileges() -> None:
+    """A DynamicUser unit is not a User=acb unit, so the scan above skips it.
+    This one lists them, and each needs NoNewPrivileges=yes too."""
+    units = [u for u in sorted(UNITS.glob("*.service"))
+             if "DynamicUser=yes" in [ln.strip() for ln in _read(u).splitlines()]]
+    assert {u.name for u in units} >= {f"{n}.service" for n in DYNAMIC_USER_UNITS}
+    for u in units:
+        assert _last_value(u, "NoNewPrivileges") == "yes", u.name
+        assert _last_value(u, "User") not in ("acb", "root", "0"), u.name
 
 
 @pytest.mark.parametrize("unit", OTHER_UNITS)
