@@ -15,7 +15,7 @@
  * Both strips sit in the page. The shell bar carries nothing of the app.
  */
 
-import type { MouseEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -27,7 +27,7 @@ import {
   type ConnectionInfo,
   type SyncStatus,
 } from "../lib/connect";
-import { pushView } from "../lib/history";
+import { pushOnPlainClick } from "../lib/history";
 import { SETUP_HREF } from "../lib/setup";
 
 /** The banner's sentence for each stalled status. */
@@ -84,20 +84,13 @@ export function SetupLink({ isAdmin, children }: { isAdmin: boolean; children: R
   return (
     <a
       href={SETUP_HREF}
-      onClick={openSetup}
+      onClick={(event) => pushOnPlainClick(event, SETUP_HREF)}
       className="underline underline-offset-2 hover:text-foreground"
       title="Open CRM setup"
     >
       {children}
     </a>
   );
-}
-
-/** A plain left click opens the hub in place. Any other click is the browser's. */
-function openSetup(event: MouseEvent<HTMLAnchorElement>): void {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  event.preventDefault();
-  pushView(SETUP_HREF);
 }
 
 export function ImportProgress({ status }: { status: SyncStatus }) {

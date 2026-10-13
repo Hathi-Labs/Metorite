@@ -93,17 +93,36 @@ export function shownSection(
 }
 
 /**
- * The section to send the URL to, or `null` when the URL is right.
+ * The section to send the URL to, or `null` when the URL stays.
  *
- * A missing, unknown or hidden section on the settings tab goes to the
- * default. The page sends it through `replaceView`, so Back does not return
- * to the bad URL (§20.4 item 6). Another tab never has a section.
+ * Only a missing or unknown section is rewritten, to the default. The page
+ * sends it through `replaceView`, so Back does not return to the bad URL
+ * (§20.4 item 6). Another tab never has a section.
+ *
+ * A known section that the caller cannot open now keeps its URL, and the
+ * page draws the default (`shownSection`). The caller or the mode can be a
+ * guess for a moment: a stale access read during a gateway restart, or a
+ * failed mode read. A rewrite then would lose an admin's link for good
+ * (CRM-C1 review). For the same reason nothing is rewritten until `trusted`
+ * is true, which means that the access read and the mode read both settled.
  */
 export function sectionRedirect(
   view: { tab: string; section?: string | null },
   ctx: SectionContext,
+  trusted: boolean,
 ): SettingsSectionId | null {
-  if (view.tab !== "settings") return null;
-  const shown = shownSection(view.section, ctx);
-  return view.section === shown ? null : shown;
+  if (view.tab !== "settings" || !trusted) return null;
+  return isSettingsSection(view.section) ? null : defaultSection(ctx);
+}
+
+/**
+ * The view with the section that the page draws, for `boundaryKey`. A
+ * settings URL with no section and the same URL after the rewrite then give
+ * one key, so the subtree mounts once (CRM-C1 review).
+ */
+export function withShownSection<V extends { tab: string; section?: string | null }>(
+  view: V,
+  ctx: SectionContext,
+): V & { section: SettingsSectionId | null } {
+  return { ...view, section: view.tab === "settings" ? shownSection(view.section, ctx) : null };
 }

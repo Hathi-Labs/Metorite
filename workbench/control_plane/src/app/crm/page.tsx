@@ -152,6 +152,7 @@ import {
   sectionRedirect,
   shownSection,
   visibleSections,
+  withShownSection,
   type SettingsSectionId,
 } from "./lib/settingsSections";
 import { viewLabel } from "./lib/views";
@@ -171,6 +172,8 @@ type MirrorContext = {
   connection: ConnectionInfo | null;
   sync: SyncStatus | null;
   isAdmin: boolean;
+  /** The mode read failed, so `mode` may be a guess (CRM-C1 review). */
+  modeReadFailed: boolean;
   connecting: boolean;
   syncing: boolean;
   onConnect: () => void;
@@ -594,17 +597,20 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   }
 
   // The settings section on screen (CRM-C1, crm_platform.md §20.4). A
-  // missing, unknown or hidden section goes to the caller's default through
-  // `replaceView`, so Back does not return to the bad URL. The access read
-  // must settle first, or an admin's link would open a member's default.
-  const { loading: accessLoading } = useAccess();
+  // missing or unknown section goes to the caller's default through
+  // `replaceView`, so Back does not return to the bad URL. A known section
+  // the caller cannot open draws the default and keeps its URL. Nothing is
+  // rewritten while the access read loads or is stale, or while the mode
+  // read failed: then the caller is a guess, and an admin's link would be
+  // lost (`sectionRedirect`).
+  const { loading: accessLoading, stale: accessStale } = useAccess();
   const sectionCtx = useMemo(() => ({ isAdmin: ctx.isAdmin, mode: ctx.mode }), [ctx.isAdmin, ctx.mode]);
   const settingsSection = shownSection(view.section, sectionCtx);
+  const sectionTrusted = !accessLoading && !accessStale && !ctx.modeReadFailed;
   useEffect(() => {
-    if (accessLoading) return;
-    const redirect = sectionRedirect(view, sectionCtx);
+    const redirect = sectionRedirect(view, sectionCtx, sectionTrusted);
     if (redirect) replaceView(viewHref({ ...view, section: redirect }));
-  }, [view, sectionCtx, accessLoading]);
+  }, [view, sectionCtx, sectionTrusted]);
 
   // The scope line beside the name. CRM-Z7 puts the mode here ("Native", or
   // "Synced from Zoho · 4 min ago"). Until a mode exists, it says what the
@@ -641,13 +647,16 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   /** A rail row, from the desktop column or the phone's drawer. */
   function chooseView(tab: CrmView["tab"]): void {
-    go(selectTab(view, tab));
+    // A click on the view on screen adds no history entry (CRM-C1 review).
+    const next = selectTab(view, tab);
+    if (next !== view) go(next);
     if (isMobile) closeDrawer();
   }
 
   /** A settings section, from a child row of the rail (CRM-C1). */
   function chooseSection(section: SettingsSectionId): void {
-    go(selectSection(view, section));
+    const next = selectSection(view, section);
+    if (next !== view) go(next);
     if (isMobile) closeDrawer();
   }
   /** The child rows of the settings row: the sections this caller can open. */
@@ -928,7 +937,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           {/* One boundary around the view. A throw ends on a sentence and a
               Reload button, and the rail stays. The key clears it when the
               member picks another view (CRM-Q3, spec section 18.6). */}
-          <CrmBoundary key={boundaryKey(view, pipelineId)}>
+          <CrmBoundary key={boundaryKey(withShownSection(view, sectionCtx), pipelineId)}>
           {boardOn ? (
             <KanbanBoard
               entity={view.tab === "leads" ? "leads" : "deals"}
@@ -1230,7 +1239,7 @@ function CrmGate(): ReactNode {
   const { access, loading: accessLoading } = useAccess();
   const isAdmin = hasCapability(access, ADMIN_CAPABILITY);
 
-  const { phase, mode, connection } = useCrmMode(isAdmin, accessLoading);
+  const { phase, mode, connection, readFailed } = useCrmMode(isAdmin, accessLoading);
   const [watchToken, setWatchToken] = useState(0);
   const sync = useSyncStatus(connection !== null && mode === "mirror", watchToken);
   const [busy, setBusy] = useState<"native" | "zoho" | null>(null);
@@ -1367,6 +1376,7 @@ function CrmGate(): ReactNode {
         connection,
         sync,
         isAdmin,
+        modeReadFailed: readFailed,
         connecting: busy === "zoho",
         syncing,
         onConnect: connectZoho,

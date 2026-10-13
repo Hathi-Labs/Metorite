@@ -3,9 +3,9 @@
 /**
  * `?tab=settings` — CRM settings (WS-26f f2, WS-53 CRM-Q3).
  *
- * The cards, in this order: Setup (it holds the connection, CRM-X0), Access,
- * Pipelines and stages, Lead Status, Lost reasons, Fields, Field map and Sync
- * health. The page passes Setup and Access in for an admin. Fields is for an
+ * The cards, in this order: Setup and sync (it holds the connection, CRM-X0),
+ * Access, Deal stages, Lead statuses, Lost reasons, Fields, Field mapping and
+ * Sync health. A card heading is the label of its rail row (CRM-C1). The page passes Setup and Access in for an admin. Fields is for an
  * admin. The Field map (CRM-Q7a) and Sync health (CRM-Q9) are for an admin in
  * Mirror mode.
  *
@@ -58,6 +58,7 @@ import { useCrmModeValue } from "../lib/modeContext";
 import { showPicker } from "../lib/pipelines";
 import {
   changedFields,
+  draftOf,
   hasOverlay,
   orderAfterDrop,
   overlayPatch,
@@ -83,6 +84,20 @@ import type {
 } from "../lib/types";
 
 const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"];
+
+/**
+ * The draft of one row, kept in the CRM store under `key` (CRM-C1 review).
+ * A section change unmounts the row, and the draft stays for its return. A
+ * re-read of `served` drops it, as the local state did before.
+ */
+function useSettingsDraft<T>(key: string, served: T): [T, (next: T) => void] {
+  const stored = useCrmStore((state) => state.settingsDrafts[key]);
+  const setDraft = useCrmStore((state) => state.setSettingsDraft);
+  return [
+    draftOf(stored, served),
+    (next: T) => setDraft(key, Object.is(next, served) ? null : { base: served, value: next }),
+  ];
+}
 
 /** The type picker of a status row, as `SelectButton` options (CRM-U2). The
  *  colour picker is `colorOptions` (`lib/colorOptions.ts`). */
@@ -170,7 +185,9 @@ export default function PipelineSettings({
         <>
           {show("stages") && (
             <>
+              {/* The editor below is "Deal stages", so this list is the pipelines. */}
               <PipelineSections
+                title="Pipelines"
                 pipelines={pipelines}
                 fallback={dealStatuses}
                 note="Stages come from Zoho."
@@ -190,7 +207,7 @@ export default function PipelineSettings({
           {show("lead-statuses") && (
             <MirrorStatusGrid
               kind="lead"
-              title="Lead Status"
+              title="Lead statuses"
               blurb="Zoho owns the Lead Status values. The Metorite order, colour and hide stay in Metorite."
               statuses={leadStatuses}
               saving={saving}
@@ -213,7 +230,7 @@ export default function PipelineSettings({
             />
           )}
           {show("lead-statuses") && (
-            <Card title="Lead Status" note="Lead Status values come from Zoho.">
+            <Card title="Lead statuses" note="Lead Status values come from Zoho.">
               <NameList names={leadStatuses.map((x) => x.name)} />
             </Card>
           )}
@@ -235,7 +252,7 @@ export default function PipelineSettings({
             ) : (
               <StatusGrid
                 kind="deal"
-                title="Pipelines and stages"
+                title="Deal stages"
                 blurb="Lane order, colour and the win probability the forecast reads. A won stage always forecasts 100%, a lost stage 0%. The type is what closes a deal, and the probability is what the pipeline number believes."
                 statuses={dealStatuses}
                 saving={saving}
@@ -248,7 +265,7 @@ export default function PipelineSettings({
           {show("lead-statuses") && (
             <StatusGrid
               kind="lead"
-              title="Lead Status"
+              title="Lead statuses"
               blurb="The funnel before a deal exists. No probability: a lead forecasts nothing until it converts."
               statuses={leadStatuses}
               saving={saving}
@@ -310,8 +327,8 @@ function StatusGrid({
   const [rows, setRows] = useState<Status[]>(statuses);
   const [served, setServed] = useState<Status[]>(statuses);
   const [dragging, setDragging] = useState<number | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [newName, setNewName] = useState("");
+  const [newName, setNewName] = useSettingsDraft(`new-status:${kind}`, "");
+  const [adding, setAdding] = useState(newName !== "");
   const [error, setError] = useState<string | null>(null);
 
   // The server's answer is the truth; the local order exists only for the
@@ -446,18 +463,14 @@ function StatusRow({
   onSave: (body: Record<string, unknown>) => Promise<boolean>;
   onRemove: () => Promise<boolean>;
 }) {
-  const [draft, setDraft] = useState(status);
-  const [served, setServed] = useState(status);
+  // A re-read replaces the draft: every write here re-reads the vocabulary,
+  // and a row that kept showing what was typed after the server answered
+  // something else is the stale-row-reads-as-success lie in miniature. The
+  // draft lives in the store, so a section change keeps it (CRM-C1).
+  const [draft, setDraft] = useSettingsDraft(`status:${kind}:${status.id}`, status);
   // CRM-C2: the dot shows the colour the board shows, so it reads the mode.
   const mode = useCrmModeValue();
   const [invalid, setInvalid] = useState<string | null>(null);
-  // A re-read replaces the draft: every write here re-reads the vocabulary,
-  // and a row that kept showing what was typed after the server answered
-  // something else is the stale-row-reads-as-success lie in miniature.
-  if (served !== status) {
-    setServed(status);
-    setDraft(status);
-  }
 
   const patch = changedFields(
     status as unknown as Record<string, unknown>,
@@ -793,13 +806,9 @@ function MirrorStatusRow({
   onDragEnd: () => void;
   onSave: (body: Record<string, unknown>) => Promise<boolean>;
 }) {
-  const [draft, setDraft] = useState(status);
-  const [served, setServed] = useState(status);
+  // In the store, as in `StatusRow`, so a section change keeps it (CRM-C1).
+  const [draft, setDraft] = useSettingsDraft(`overlay:${kind}:${status.id}`, status);
   const [invalid, setInvalid] = useState<string | null>(null);
-  if (served !== status) {
-    setServed(status);
-    setDraft(status);
-  }
   const patch = overlayPatch(
     kind,
     status as unknown as Record<string, unknown>,
@@ -986,7 +995,7 @@ function ReasonGrid({
   const [rows, setRows] = useState<LostReason[]>(reasons);
   const [served, setServed] = useState<LostReason[]>(reasons);
   const [dragging, setDragging] = useState<number | null>(null);
-  const [newLabel, setNewLabel] = useState("");
+  const [newLabel, setNewLabel] = useSettingsDraft("new-reason", "");
   const [error, setError] = useState<string | null>(null);
   if (served !== reasons) {
     setServed(reasons);
@@ -1094,14 +1103,10 @@ function ReasonRow({
   onHide: (hidden: boolean) => Promise<boolean>;
   onRemove: () => Promise<boolean>;
 }) {
-  const [label, setLabel] = useState(reason.label);
-  const [served, setServed] = useState(reason.label);
+  // In the store, as in `StatusRow`, so a section change keeps it (CRM-C1).
+  const [label, setLabel] = useSettingsDraft(`reason:${reason.id}`, reason.label);
   const [invalid, setInvalid] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
-  if (served !== reason.label) {
-    setServed(reason.label);
-    setLabel(reason.label);
-  }
 
   async function save() {
     const message = validateLostReasonDraft(label);

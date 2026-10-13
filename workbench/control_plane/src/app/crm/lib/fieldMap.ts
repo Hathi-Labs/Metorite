@@ -60,7 +60,7 @@ export type FieldMap = {
 /** What an admin can do with the rule of one field. */
 export type FieldAction = "approve" | "reject" | "pick";
 
-export const FIELD_MAP_TITLE = "Field map";
+export const FIELD_MAP_TITLE = "Field mapping";
 export const FIELD_MAP_NOTE =
   "Pick the column that a Zoho field fills. The next sync applies the choice. The value also stays with the record.";
 export const NO_FIELDS = "No Zoho field goes to custom.";

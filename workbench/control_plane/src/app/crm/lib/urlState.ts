@@ -477,6 +477,8 @@ export function selectTab(view: CrmView, tab: CrmView["tab"]): CrmView {
  * record tab does.
  */
 export function selectSection(view: CrmView, section: SettingsSectionId): CrmView {
+  // The section on screen: the same view, so a click adds no history entry.
+  if (view.tab === "settings" && view.section === section) return view;
   return { ...selectTab(view, "settings"), section };
 }
 

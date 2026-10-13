@@ -12,7 +12,9 @@ import RailRow from "@/components/ui/RailRow";
 
 import { boundaryKey } from "../lib/boundary";
 import type { CrmMode } from "../lib/connect";
+import { FIELD_MAP_TITLE } from "../lib/fieldMap";
 import { pushView } from "../lib/history";
+import { draftOf } from "../lib/settings";
 import {
   SETTINGS_SECTIONS,
   defaultSection,
@@ -21,8 +23,10 @@ import {
   sectionRedirect,
   shownSection,
   visibleSections,
+  withShownSection,
   type SettingsSectionId,
 } from "../lib/settingsSections";
+import { useCrmStore } from "../lib/store";
 import { SETUP_HREF } from "../lib/setup";
 import type { LostReason, Status } from "../lib/types";
 import {
@@ -53,7 +57,12 @@ const LEAD: Status = { ...STATUS, id: "New", name: "New", probability: null };
 const REASON: LostReason = { id: "r1", label: "Price", position: 0 };
 
 /** The page's cards, for one caller, one mode and one section (or none). */
-function settings(isAdmin: boolean, mode: CrmMode, section?: SettingsSectionId) {
+function settings(
+  isAdmin: boolean,
+  mode: CrmMode,
+  section?: SettingsSectionId,
+  served: { deal?: Status; reason?: LostReason } = {},
+) {
   return renderToStaticMarkup(
     createElement(PipelineSettings, {
       section,
@@ -62,9 +71,9 @@ function settings(isAdmin: boolean, mode: CrmMode, section?: SettingsSectionId) 
       access: isAdmin ? createElement("section", { "aria-label": "Access card" }, "access") : undefined,
       showAdminCards: isAdmin,
       readOnly: mode === "mirror",
-      dealStatuses: [STATUS],
+      dealStatuses: [served.deal ?? STATUS],
       leadStatuses: [LEAD],
-      lostReasons: [REASON],
+      lostReasons: [served.reason ?? REASON],
       saving: false,
       onSaveStatus: async () => true,
       onRemoveStatus: async () => true,
@@ -142,15 +151,15 @@ describe("a member in Native or null mode", () => {
   it("opens the deal grid, the lead grid and the reason grid, one at a time", () => {
     for (const mode of ["native", null] as CrmMode[]) {
       const stages = settings(false, mode, "stages");
-      expect(stages).toContain("Pipelines and stages");
-      expect(stages).not.toContain("Lead Status");
+      expect(stages).toContain(">Deal stages</h2>");
+      expect(stages).not.toContain("Lead statuses");
       expect(stages).not.toContain("Lost reasons");
       const leads = settings(false, mode, "lead-statuses");
-      expect(leads).toContain("Lead Status");
-      expect(leads).not.toContain("Pipelines and stages");
+      expect(leads).toContain(">Lead statuses</h2>");
+      expect(leads).not.toContain("Deal stages");
       const lost = settings(false, mode, "lost-reasons");
-      expect(lost).toContain("Lost reasons");
-      expect(lost).not.toContain("Lead Status");
+      expect(lost).toContain(">Lost reasons</h2>");
+      expect(lost).not.toContain("Lead statuses");
     }
   });
 
@@ -164,27 +173,51 @@ describe("a member in Native or null mode", () => {
 // ── Done when 3: a hidden section goes to the default through replaceView ──
 
 describe("a missing, unknown or hidden section", () => {
-  it("resolves to the default of the caller", () => {
-    const native = { isAdmin: true, mode: "native" as CrmMode };
-    expect(sectionRedirect({ tab: "settings", section: "sync-health" }, native)).toBe("setup");
-    expect(sectionRedirect({ tab: "settings", section: "sync-health" }, { isAdmin: false, mode: "native" })).toBe(
+  const native = { isAdmin: true, mode: "native" as CrmMode };
+
+  it("rewrites a missing or unknown section to the default of the caller", () => {
+    expect(sectionRedirect({ tab: "settings", section: null }, native, true)).toBe("setup");
+    expect(sectionRedirect({ tab: "settings", section: null }, { isAdmin: false, mode: null }, true)).toBe(
       "stages",
     );
-    expect(sectionRedirect({ tab: "settings", section: null }, native)).toBe("setup");
-    expect(sectionRedirect({ tab: "settings", section: "access" }, { isAdmin: false, mode: null })).toBe("stages");
-    expect(sectionRedirect({ tab: "settings", section: "fields" }, native)).toBeNull();
-    expect(sectionRedirect({ tab: "deals", section: null }, native)).toBeNull();
-    expect(shownSection("sync-health", native)).toBe("setup");
+    expect(sectionRedirect({ tab: "settings", section: "nope" }, native, true)).toBe("setup");
+    expect(sectionRedirect({ tab: "settings", section: "fields" }, native, true)).toBeNull();
+    expect(sectionRedirect({ tab: "deals", section: null }, native, true)).toBeNull();
     expect(defaultSection({ isAdmin: false, mode: "mirror" })).toBe("stages");
     // An unknown value parses as null, so it takes the same path.
     expect(parseView("tab=settings&section=nope").section).toBeNull();
   });
 
-  it("is sent there by one effect in the page, through replaceView", () => {
+  it("draws the default for a known hidden section, and keeps its URL", () => {
+    // Done when 3, as the review changed it: `section=sync-health` in Native
+    // mode shows the default. The URL stays, because the mode or the caller
+    // can be a guess for a moment.
+    expect(sectionRedirect({ tab: "settings", section: "sync-health" }, native, true)).toBeNull();
+    expect(shownSection("sync-health", native)).toBe("setup");
+    const member = { isAdmin: false, mode: "native" as CrmMode };
+    expect(sectionRedirect({ tab: "settings", section: "setup" }, member, true)).toBeNull();
+    expect(shownSection("setup", member)).toBe("stages");
+  });
+
+  it("rewrites nothing while the access or the mode is a guess", () => {
+    // A stale access read is NO_ACCESS: the admin reads as a member.
+    const guess = { isAdmin: false, mode: null as CrmMode };
+    for (const section of [null, "nope", "setup", "sync-health"]) {
+      expect(sectionRedirect({ tab: "settings", section }, guess, false), String(section)).toBeNull();
+    }
+  });
+
+  it("is sent there by one effect in the page, through replaceView, once the reads settle", () => {
     const page = read("../page.tsx");
     expect(page).toMatch(
-      /const redirect = sectionRedirect\(view, sectionCtx\);\s*if \(redirect\) replaceView\(viewHref\(\{ \.\.\.view, section: redirect \}\)\);/,
+      /const sectionTrusted = !accessLoading && !accessStale && !ctx\.modeReadFailed;/,
     );
+    expect(page).toMatch(
+      /const redirect = sectionRedirect\(view, sectionCtx, sectionTrusted\);\s*if \(redirect\) replaceView\(viewHref\(\{ \.\.\.view, section: redirect \}\)\);/,
+    );
+    expect(page).toContain("const { loading: accessLoading, stale: accessStale } = useAccess();");
+    expect(page).toContain("modeReadFailed: readFailed,");
+    expect(read("../lib/useCrmMode.ts")).toMatch(/\n    readFailed,\n/);
     // `lib/history.test.ts` refuses router.push and router.replace in each CRM file.
   });
 });
@@ -220,7 +253,7 @@ describe("a click on a child row", () => {
   it("goes through the page's pushView, and closes the drawer on a phone", () => {
     const page = read("../page.tsx");
     expect(page).toMatch(
-      /function chooseSection\(section: SettingsSectionId\): void \{\s*go\(selectSection\(view, section\)\);\s*if \(isMobile\) closeDrawer\(\);\s*\}/,
+      /function chooseSection\(section: SettingsSectionId\): void \{\s*const next = selectSection\(view, section\);\s*if \(next !== view\) go\(next\);\s*if \(isMobile\) closeDrawer\(\);\s*\}/,
     );
     // Both rails: the phone drawer and the desktop column.
     expect(page.match(/settings=\{railSettings\}/g)?.length).toBe(2);
@@ -340,9 +373,111 @@ describe("the setup link", () => {
 
   it("is opened by the banner and the title-bar line through pushView", () => {
     const banner = read("./MirrorBanner.tsx");
-    expect(banner).toMatch(/pushView\(SETUP_HREF\)/);
+    expect(banner).toMatch(/onClick=\{\(event\) => pushOnPlainClick\(event, SETUP_HREF\)\}/);
     expect(banner).not.toMatch(/from "next\/link"/);
     expect(read("../page.tsx")).toContain('onOpenSetup={() => chooseSection("setup")}');
+  });
+});
+
+// ── Review: a click on the view on screen adds no history entry ────────────
+
+describe("a click on the section or the view on screen", () => {
+  it("returns the same view, so the page pushes nothing", () => {
+    const fields = selectSection(DEFAULT_VIEW, "fields");
+    expect(selectSection(fields, "fields")).toBe(fields);
+    expect(selectTab(fields, "settings")).toBe(fields);
+    expect(selectSection(fields, "access")).not.toBe(fields);
+  });
+
+  it("is checked by both rail handlers of the page", () => {
+    const page = read("../page.tsx");
+    expect(page).toMatch(
+      /function chooseView\(tab: CrmView\["tab"\]\): void \{[^}]*const next = selectTab\(view, tab\);\s*if \(next !== view\) go\(next\);/,
+    );
+  });
+});
+
+// ── Review: the boundary key reads the section on screen ───────────────────
+
+describe("the boundary of a settings URL", () => {
+  it("keeps one key across the rewrite of a missing section", () => {
+    const admin = { isAdmin: true, mode: "native" as CrmMode };
+    const key = (search: string) => boundaryKey(withShownSection(parseView(search), admin), null);
+    expect(key("tab=settings")).toBe(key("tab=settings&section=setup"));
+    expect(key("tab=settings&section=sync-health")).toBe(key("tab=settings&section=setup"));
+    expect(key("tab=settings&section=fields")).not.toBe(key("tab=settings&section=setup"));
+    expect(key("tab=deals")).toBe("deals:board");
+    expect(read("../page.tsx")).toContain(
+      "<CrmBoundary key={boundaryKey(withShownSection(view, sectionCtx), pipelineId)}>",
+    );
+  });
+});
+
+// ── Review: an unsaved edit survives a section change ──────────────────────
+
+describe("a draft across a section change", () => {
+  const typed = (html: string, text: string) => html.includes(`value="${text}"`);
+  // A server render reads the store's INITIAL state (zustand's server
+  // snapshot), and this runner has no DOM. So the test copies the live drafts
+  // there before each render. The browser reads the live state.
+  const initial = useCrmStore.getInitialState();
+  const settingsNow = (...args: Parameters<typeof settings>) => {
+    initial.settingsDrafts = useCrmStore.getState().settingsDrafts;
+    return settings(...args);
+  };
+
+  it("comes back with the member, until a re-read replaces the row", () => {
+    const store = useCrmStore.getState();
+    const cases = [
+      { key: `status:deal:${STATUS.id}`, base: STATUS, value: { ...STATUS, name: "Qualified draft" }, text: "Qualified draft", admin: false, mode: "native" as CrmMode, section: "stages" as const },
+      { key: `overlay:deal:${STATUS.id}`, base: STATUS, value: { ...STATUS, ui_probability: 42 }, text: "42", admin: true, mode: "mirror" as CrmMode, section: "stages" as const },
+      { key: `reason:${REASON.id}`, base: REASON.label, value: "Price draft", text: "Price draft", admin: false, mode: "native" as CrmMode, section: "lost-reasons" as const },
+    ];
+    try {
+      for (const c of cases) {
+        store.setSettingsDraft(c.key, { base: c.base, value: c.value });
+        expect(typed(settingsNow(c.admin, c.mode, c.section), c.text), c.key).toBe(true);
+        // Another section unmounts the row. The store keeps the draft.
+        expect(typed(settingsNow(c.admin, c.mode, "lead-statuses"), c.text), c.key).toBe(false);
+        expect(typed(settingsNow(c.admin, c.mode, c.section), c.text), c.key).toBe(true);
+      }
+      // A re-read brings new rows, and the drafts no longer apply.
+      expect(typed(settingsNow(false, "native", "stages", { deal: { ...STATUS } }), "Qualified draft")).toBe(false);
+      expect(typed(settingsNow(false, "native", "lost-reasons", { reason: { ...REASON } }), "Price draft")).toBe(true);
+      expect(draftOf({ base: STATUS, value: "x" }, { ...STATUS })).toEqual({ ...STATUS });
+    } finally {
+      useCrmStore.setState({ settingsDrafts: {} });
+      initial.settingsDrafts = {};
+    }
+  });
+
+  it("is dropped when the member types the served value back", () => {
+    useCrmStore.getState().setSettingsDraft("new-reason", null);
+    expect(useCrmStore.getState().settingsDrafts).toEqual({});
+    expect(read("./PipelineSettings.tsx")).toContain(
+      "setDraft(key, Object.is(next, served) ? null : { base: served, value: next })",
+    );
+  });
+});
+
+// ── Review: one name for one thing ─────────────────────────────────────────
+
+describe("the card headings", () => {
+  it("are the labels of the rail rows", () => {
+    for (const isAdmin of [true, false]) {
+      for (const mode of MODES) {
+        for (const section of visibleSections({ isAdmin, mode })) {
+          if (section.id === "setup" || section.id === "access") continue;
+          const html = settings(isAdmin, mode, section.id as SettingsSectionId);
+          expect(html, `${section.id} ${isAdmin} ${mode}`).toContain(`>${section.label}</h2>`);
+        }
+      }
+    }
+    // The page passes these two cards in, so their source holds the heading.
+    expect(read("./SetupHub.tsx")).toContain(`>${sectionLabel("setup")}</h2>`);
+    expect(read("./AccessPanel.tsx")).toContain(`>${sectionLabel("access")}</h2>`);
+    expect(FIELD_MAP_TITLE).toBe(sectionLabel("field-mapping"));
+    expect(settings(true, "native")).not.toContain("Pipelines and stages");
   });
 });
 

@@ -107,7 +107,7 @@ export function SetupHubView({
       aria-label="CRM setup"
     >
       <header className="border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-foreground">Setup</h2>
+        <h2 className="text-sm font-semibold text-foreground">Setup and sync</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">{hubNote(state)}</p>
       </header>
 
