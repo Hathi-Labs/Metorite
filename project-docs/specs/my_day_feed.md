@@ -517,15 +517,20 @@ except `my_day.resurface`, which can only bring a card back.
 | `dismissed` | Hidden until its fingerprint changes. `dismiss_reason` is `dismiss` or `not_useful` | No |
 | `expired` | Its `expires_at` passed | No |
 
-**A card leaves the feed when its source stops returning it, and only from a
-sound answer.** A signal that a provider no longer returns has left the
-feed only when that source answered `ok` and was not capped. Two other cases
-keep the card:
+**A card leaves the feed when its source stops returning it.** Only a failed
+source keeps its cards for a while. Decided in MD-2b fix round 1,
+2026-10-14:
 
-- **The source failed.** The client keeps that source's cards from the last
-  answer, and the caveat line of NS-3 names the gap.
-- **The source stopped at its cap.** A signal past the cap is unknown, not
-  closed. The group shows "Show all in My Tasks", for example.
+- **A capped source carries nothing.** Its answer is the truth for its top
+  15. The rest sit behind "Show all in <app>", for example "Show all in My
+  Tasks".
+- **An absent source carries nothing.** The member no longer holds the app.
+- **A failed source carries its cards from the last answer in which it read
+  `ok`.** That is the last raw answer, and never a carried one. It carries
+  for 5 minutes at most. After that the cards leave, and the caveat line of
+  NS-3 stays.
+- **A card that the member closed is never carried.** That is a snooze, a
+  dismiss, or a tap act that takes the whole card away. Undo lets it back.
 
 Leaving the feed never writes a state row, and it never puts a card in
 Handled (§6.7).
@@ -1622,9 +1627,9 @@ them shows while `NEXT_PUBLIC_MY_DAY_FEED` is off.
 - **A carried needs read can be 5 seconds old.** `carryFeedNeeds` reads the
   feed key without `force`, and `FRESH_MS` is 5 seconds. MD-5 owns the fix,
   with the ETag.
-- **A slow feed holds the bell on My Day.** `fetchNeeds` waits on the
-  carrier, and the feed route times out at 8 seconds. MD-2b gives the carrier
-  a limit of its own, about 4 seconds. Then it falls back to `/shell/needs`.
+- ~~**A slow feed holds the bell on My Day.**~~ **Fixed by MD-2b,
+  2026-10-14.** `fetchNeeds` waits 4 seconds at most on the carrier
+  (`CARRIER_WAIT_MS`). Then it reads `/shell/needs`.
 
 ### MD-2 · The life of a card — AGENT-SAFE, in four slices
 
@@ -1751,9 +1756,10 @@ The audit of 2026-10-14 gave GO-NARROWED. These answers close its three gaps.
   dismiss, and leaves the row `seen`. The POST contract of §6.8 gains it.
 - **`acted` is written.** A tap act that succeeds also posts `acted` for its
   card (§6.8 item 4).
-- **A failed or capped source keeps its cards** from the last answer (§6.1).
-  Calendar is a source too. Only a source that answered `ok`, and is not in
-  `capped`, may remove a card. A capped group ends with "Show all in <app>".
+- **A failed source keeps its cards for 5 minutes**, from its last `ok`
+  answer (§6.1, as fix round 1 decided it). Calendar is a source too. A
+  capped or absent source carries nothing. A capped group ends with "Show all
+  in <app>".
 - **The order holds during a visit (§7 rule 4).** A visit is the life of one
   mounted feed column. It ends at a click on the "N new" pill, or at a
   remount. A card that a new answer would move stays in its place until the
@@ -1802,16 +1808,34 @@ The build made these choices, which this file did not fix:
   waits for the next send.
 - **Only a 5xx, a 502 or no answer keeps a batch.** Each 4xx drops it,
   because the same body never passes.
-- **The carry reads the last answer of `fetchFeed`, not the cache entry.** A
-  Projects write drops the entry, and the read after a Done must still keep
-  a failed source's cards. The last answer is in memory, and a new member
-  starts with none.
-- **An `absent` source keeps its cards too.** Only `ok` with no cap may take
-  a card away.
+- **The carry reads the last `ok` cards of each source, not the cache
+  entry.** A Projects write drops the entry, and the read after a Done must
+  still carry a failed source. `fetchFeed` keeps those cards in memory, from
+  raw answers only, and a new member starts with none.
 - **A card that a menu act hid is never carried.** It may come back from a
   sound answer that its fetch began after the write, or after Undo.
 - **The overlay of a menu act ends** when an answer lands whose fetch began
   after the write landed.
+
+**Fix round 1, 2026-10-14.** The review and the verifier found these, and
+this round fixed each one:
+
+- **The carry rule of §6.1 is now decided.** Only a failed source carries,
+  from its last raw `ok` answer, for 5 minutes at most (`CARRY_MS`). A capped
+  or absent source carries nothing.
+- **A Done is never carried back.** A tap act that takes its whole card away
+  stops the carry of that card. The store's Undo lets it back.
+- **A menu act drops the feed key** (`invalidate`). A read that began before
+  the write then never stores its answer, so an Undo does not hide the card
+  again.
+- **The state queue belongs to one member.** It sends nothing once the cache
+  names another. Each account switch forgets the member before the page goes
+  (`forgetMember` in `accountSwitch.ts`). So a `pagehide` during a switch
+  sends nothing.
+- **`columnView` in `feed.ts` is the one rule** of the visit, the cut and the
+  pill. The pill counts only new cards that the next cut draws outside Later.
+- **A POST gives up after 8 seconds** (`STATE_TIMEOUT_MS`), and the queue
+  keeps its batch.
 - **Later is outside the cut of 20 cards.** It draws after the other groups,
   folded, with all its cards.
 - **A card with no `state_fp` has no menu**, and the observer never sends it.
