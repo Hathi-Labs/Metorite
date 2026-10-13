@@ -3637,13 +3637,19 @@ by D15/D16) — read their banners before citing either.
   `tests/live/live_member_seal.sql` carries 14 checks on real Postgres.
   ✅ **H-304 (2026-10-13):** the `data:org:read` task clause now hides a sealed
   tree too, and `tests/unit/test_sealed_tree_visibility_r8.py` proves it.
+  ✅ **H-305 (owner, 2026-10-13: "Stop counting them."):** a sealed tree no
+  longer counts in its owner's load, and a handed-over task still counts for
+  its new assignee.
   ⚠️ **The hand-over needed NO code, and that is a finding rather than a
   shortcut.** `task_visibility_clause` has a second arm over
   `pm_task_assignees` that never consults the project, so a task the leaver
   assigned outward stays visible to its assignee while the tree seals. No row
-  moves. 📌 Still owed: the dialog that states the split in numbers, and the
-  owner-only LOGGED door that opens a sealed tree. `unseal_personal_tree` is
-  the mechanism for it. No route calls that function yet.
+  moves. ✅ The dialog that states the split in numbers is built. It calls
+  `seal_counts` through `GET /admin/members/{email}/seal-preview`
+  (`admin/members.py:1123`). 📌 Still owed: the owner-only LOGGED door that
+  lets somebody else open a sealed tree. `unseal_personal_tree` is the
+  mechanism for it. Its one caller today is reactivation
+  (`admin/members.py:362`), which gives the tree back to its owner.
   The principle: **the company is entitled to the work, not to the workspace.**
   So the tree is split by what was *already shared*, not treated as one object:
   * tasks in their tree **assigned to somebody else** → **handed over**. They
