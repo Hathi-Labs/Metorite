@@ -479,6 +479,45 @@ class TestTheCardShape:
         assert late["score"] >= 60 + 60 + 24
 
 
+class TestTheMostUrgentGroup:
+    """Verifier F1. A card takes the MOST urgent old-path group of all its
+    kinds (now > needs_you > ready > fyi). The main kind still sets the
+    title, the lead of the why line and the base of the score."""
+
+    def _comment(self, fakes, task_id: str, title: str) -> None:
+        fakes.notes[ME] = [{"id": "n-c", "task_id": task_id, "kind": "comment",
+                            "actor": "lena@x.test", "task_title": title, "task_number": 9,
+                            "excerpt": None, "created_at": fakes.now - timedelta(minutes=5)}]
+
+    def test_a_comment_on_a_task_whose_block_starts_soon_stays_in_now(self, fakes):
+        fakes.blocks[ME] = [_block("t-solo", "Read the spec", fakes.now + timedelta(minutes=20),
+                                   30)]
+        self._comment(fakes, "t-solo", "Read the spec")
+        answer = run_feed(member(*FULL))
+        solo = card(answer, "tasks:t-solo")
+        assert (solo["kind"], solo["folded"]) == ("notification", ["block_soon"])
+        assert solo["group"] == "now"
+        assert solo["why_key"] == "notification_comment"
+        assert solo["why"].startswith("lena commented on this task")
+        assert "Its block starts in 20 min." in solo["why"]
+        assert solo["score"] >= feed_rank.BASE["notification"]
+
+    def test_a_comment_on_an_overlap_today_stays_in_now(self, fakes):
+        fakes.blocks[ME] = [
+            _block("t-a", "Write the plan", fakes.now + timedelta(minutes=40), 60),
+            _block("t-b", "Review the plan", fakes.now + timedelta(minutes=70), 60)]
+        self._comment(fakes, "t-a", "Write the plan")
+        answer = run_feed(member(*FULL))
+        a = card(answer, "tasks:t-a")
+        assert (a["kind"], a["folded"], a["group"]) == ("notification", ["block_overlap"], "now")
+
+    def test_a_comment_alone_stays_information(self, fakes):
+        # Non-vacuity: with no folded kind the comment is still `fyi`.
+        fakes.blocks[ME] = []
+        self._comment(fakes, "t-solo", "Read the spec")
+        assert card(run_feed(member(*FULL)), "tasks:t-solo")["group"] == "fyi"
+
+
 class TestTheFingerprint:
     """Review round 1, P2. The fingerprint hashes stable facts only (§14.1a):
     the entity, the kind, the folded kinds, the due time, the block times,
@@ -631,6 +670,49 @@ class TestTheCalendarKinds:
         fakes.day_start[ME] = datetime.now(UTC).astimezone(ZoneInfo(fakes.zone)).hour
         answer = run_feed(member(*FULL))
         assert not [c for c in answer["cards"] if c["kind"] == "no_plan_yet"]
+
+    @pytest.mark.parametrize("stored", ["none", "missing"])
+    def test_an_unset_day_start_reads_as_7_not_midnight(self, fakes, monkeypatch, stored):
+        # Verifier F2. The column default is 7 (migration 77). At 05:00 the
+        # member's day has not started, so no_plan_yet stays quiet.
+        five = datetime.combine(fakes._today(), datetime.min.time(),
+                                tzinfo=ZoneInfo(fakes.zone)) + timedelta(hours=5)
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return five if tz is None else five.astimezone(tz)
+
+        monkeypatch.setattr(feed, "datetime", _Clock)
+        fakes.blocks[ME] = []
+        fakes.day_start[ME] = None
+        if stored == "missing":
+            async def no_hour(*, user):
+                await fakes._enter("get_user_settings", user, {"user": user})
+                return SimpleNamespace(timezone=fakes.zone)
+
+            import gateway.routes.tasks.settings as settings
+            monkeypatch.setattr(settings, "get_user_settings", no_hour)
+        answer = run_feed(member(*FULL))
+        assert answer["sources"]["calendar"] == "ok"
+        assert not [c for c in answer["cards"] if c["kind"] == "no_plan_yet"]
+
+    def test_a_stored_midnight_start_still_counts(self, fakes, monkeypatch):
+        # Non-vacuity for the case above: 0 is a real hour, and at 05:00 the
+        # grace of a midnight start is over.
+        five = datetime.combine(fakes._today(), datetime.min.time(),
+                                tzinfo=ZoneInfo(fakes.zone)) + timedelta(hours=5)
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return five if tz is None else five.astimezone(tz)
+
+        monkeypatch.setattr(feed, "datetime", _Clock)
+        fakes.blocks[ME] = []
+        fakes.day_start[ME] = 0
+        answer = run_feed(member(*FULL))
+        assert [c for c in answer["cards"] if c["kind"] == "no_plan_yet"]
 
     def test_no_plan_yet_is_quiet_on_a_day_off(self, fakes, monkeypatch):
         monkeypatch.setattr(feed, "PLAN_GRACE", timedelta(0))

@@ -92,6 +92,9 @@ WEEK_DAYS = 7
 SOON = timedelta(minutes=30)
 #: ``no_plan_yet`` waits this long after the start of the member's day.
 PLAN_GRACE = timedelta(minutes=60)
+#: The day start of a member with no stored hour: the column default of
+#: ``user_settings.day_start_hour`` (``infra/postgres/77_gtd_calendar_prefs.sql``).
+DEFAULT_DAY_START_HOUR = 7
 #: The effective dispositions of a block that is no longer open.
 CLOSED = frozenset({"DONE", "TRASH"})
 #: The Calendar kinds of MD-1 (§5.1).
@@ -140,7 +143,11 @@ async def _calendar(user: UserContext) -> Found:
     elif not blocks and not any(
         _on_day(r, today, tz) for r in rows if r.get("disposition") != "TRASH"
     ):
-        start_hour = int(getattr(settings, "day_start_hour", 7) or 0)
+        # An unset hour reads as 7, the column default (migration 77). Never
+        # as midnight, or no_plan_yet fires seven hours early. 0 is a real
+        # hour, so this checks for None, never with `or`.
+        stored_hour = getattr(settings, "day_start_hour", None)
+        start_hour = DEFAULT_DAY_START_HOUR if stored_hour is None else int(stored_hour)
         started = datetime.combine(today, time(hour=min(23, max(0, start_hour))), tzinfo=tz)
         if now >= started + PLAN_GRACE and await _working_day(user, today):
             signals.append(Signal(
@@ -460,7 +467,11 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
             "app": main.app,
             "kind": main.kind,
             "folded": folded,
-            "group": feed_rank.group(main.kind, facts, now, today),
+            # The most urgent group of every kind on the card (§4.5). The main
+            # kind still sets the title, the lead of the why line and the base.
+            "group": feed_rank.most_urgent(
+                [feed_rank.group(main.kind, facts, now, today)]
+                + [feed_rank.group(s.kind, s.facts, now, today) for s in rest]),
             "score": max(feed_rank.score(main.kind, facts, s.urgent_at, now) for s in ordered),
             "entity": dict(main.entity),
             "title": main.title,

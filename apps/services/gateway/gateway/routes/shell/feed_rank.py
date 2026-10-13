@@ -17,7 +17,8 @@ The order is a score. Code owns time, and ``decide`` owns judgment::
 * ``affinity`` and ``fatigue`` are 0 until MD-9 and MD-2 build them.
 
 The group comes from the old-path table of §4.3 until ``my_day.triage``
-lands (MD-6a). Two of the four rules of §7 apply in MD-1a:
+lands (MD-6a). A card takes the most urgent group of its main kind and of
+every kind folded into it (``most_urgent``). Two of the four rules of §7 apply in MD-1a:
 
 1. **The group comes first.** The score orders the cards inside a group.
 3. **Today's caps stay.** 15 cards for each app at most, and an approval
@@ -152,6 +153,13 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     if kind == "day_overbooked":
         return "needs_you" if _is_day(facts.get("day"), today) else "fyi"
     raise KeyError(kind)
+
+
+def most_urgent(groups: list[str]) -> str:
+    """The most urgent of some groups, in the order now > needs_you > ready >
+    fyi (§4.5). A card takes the most urgent group of all its kinds, so a
+    folded block that starts soon keeps the card in Now."""
+    return min(groups, key=GROUPS.index)
 
 
 def _sort_key(card: dict[str, Any]) -> tuple[int, int, float, str]:

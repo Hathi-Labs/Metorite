@@ -153,6 +153,18 @@ def _card(sid: str, *, group: str, score: int, app: str = "tasks", kind: str = "
             "at": at.isoformat() if at else None}
 
 
+class TestTheMostUrgentGroup:
+    @pytest.mark.parametrize(("groups", "best"), [
+        (["fyi", "now"], "now"),
+        (["needs_you", "fyi"], "needs_you"),
+        (["fyi", "ready", "needs_you"], "needs_you"),
+        (["ready", "fyi"], "ready"),
+        (["fyi"], "fyi"),
+    ])
+    def test_the_order_is_now_needs_you_ready_fyi(self, groups, best):
+        assert feed_rank.most_urgent(groups) == best
+
+
 class TestRuleOneTheGroupComesFirst:
     def test_a_low_score_in_now_comes_before_a_high_score_in_needs_you(self):
         cards = [_card("a", group="needs_you", score=200), _card("b", group="now", score=1),
