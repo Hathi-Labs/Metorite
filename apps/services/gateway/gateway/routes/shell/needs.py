@@ -121,6 +121,11 @@ needs view. ``PROVIDERS`` is the needs subset, in the order above, and
 feed-only providers. A provider gives its needs rows AND a thunk for its
 feed signals. The needs route never calls the thunk, so the needs answer
 runs no feed code. Fence: ``tests/unit/test_shell_feed.py::TestOneRegistry``.
+
+**Handled** (``my_day_feed.md`` MD-2c). The tasks, email and approvals
+entries also carry a ``handled`` read: what the app closed for the member
+since an instant, through a new function in the app that owns the table.
+Only the feed calls it (``handled.py``). ``closed_by`` is the ``by`` table.
 """
 
 from __future__ import annotations

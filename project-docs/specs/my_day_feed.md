@@ -6,9 +6,12 @@ dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
 migration 259, dark by the absence of a caller). MD-2a is BUILT (the card
 state on the server, migration 258).**
 
+**The server half of MD-2c is BUILT, 2026-10-14** (Handled in
+`GET /shell/feed`, no migration, dark by the absence of a caller).
+
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-2b,
-MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and
-MD-12. Each ships dark.
+the client half of MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only),
+MD-7, MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -617,12 +620,14 @@ function (`whatsapp_assistant_channel.md`).
   - Email: the rules applied today on the member's mailboxes
     (`email_executed_rules`, status `APPLIED`).
   - Approvals: the actions an admin decided today.
-  - My Day: the member's own acts today (`my_day_card_state.acted_at`).
+
+  The `acted` rows of `my_day_card_state` are not a source. They hold no
+  title and no link (the MD-2c ticket, §16).
 - **Each row names who closed it**: "You", a colleague, "Email rules", or the
   agent's name.
 - **The summary line counts real rows.** "3 things need you" is the count of
   open cards in Now and Needs you. "The rest is handled" shows only when
-  Handled is not empty, and every source answered `ok` with no cap.
+  Handled is not empty and no Handled read failed (`handled_ok`, §14.1a).
 - **A failed source silences the claim.** The rule of NS-3 stays: when a
   source failed, the summary says nothing about needs, and the card names the
   gap.
@@ -1385,7 +1390,12 @@ and is off by default (`packages/acb_memory`).
   "groups": [{"id": "now", "count": 1}, {"id": "needs_you", "count": 4}],
   "needs": {"count": 5, "total": 5, "items": [], "sources": {}, "totals": {}, "capped": []},
   "sources": {"tasks": "ok", "projects": "ok", "email": "absent", "approvals": "absent", "calendar": "ok"},
-  "capped": []
+  "capped": [],
+  "handled": [
+    {"app": "tasks", "title": "File the VAT return", "href": "/projects?task=4c1d…",
+     "by": {"kind": "person", "name": "ravi"}, "at": "2026-10-14T10:20:00+00:00"}
+  ],
+  "handled_ok": true
 }
 ```
 
@@ -1416,6 +1426,12 @@ and is off by default (`packages/acb_memory`).
 - **MD-2a adds five card fields.** `state` is `new`, `seen` or `later`.
   `updated` and `still_open` are booleans for the source line. `visits` is
   the count of the day. `state_fp` is the state fingerprint of §6.8 item 1.
+- **MD-2c adds two answer fields.** `handled` is what the apps closed for the
+  member since the start of the member's day, the newest first. Each entry is
+  `{app, title, href, by, at}`, and `by` is `{kind, name}` (the `by` table of
+  MD-2c). `handled_ok` is true when no Handled read that ran failed. A source
+  that the member does not hold does not count as failed. `cards` and
+  `groups` never hold `handled`, and it does not count against `limit`.
 - A field that a later ticket adds is optional for the client.
 
 ### 14.2 The card registry
@@ -1827,6 +1843,52 @@ Done when:
    - Org B's admin sees no approval of org A.
    - A member who is not an admin gets no approval row.
 3. The R8 suite passes with no skip, and the count is in the PR.
+
+**BUILT (server half), 2026-10-14, on branch `my-day-feed-md2c`.** No
+migration. `gateway/routes/shell/handled.py` runs the three reads. Each read
+is a new function in the app that owns its table:
+
+- `personal.my_completed_since`, beside `my_due_tasks`.
+- `runner.applied_rules_since`, beside `rules_history`.
+- `action_broker.read_decided`, beside `read_pending`.
+
+`needs.Provider` gains `handled`, and the tasks, email and approvals
+providers carry one. The fences are `test_feed_handled.py` (46 tests) and
+`test_feed_handled_r8.py` (12 tests, R8). The client half is still open,
+and it follows MD-2b. The build made these choices, which this file did not
+fix:
+
+- **The claim field is `handled_ok`.** It is true when no Handled read that
+  ran failed. §14.1a holds it.
+- **The day** comes from `state._hours` and `Day.day_start`, the functions
+  of the state join. A member with no Calendar pane gets the zone from the
+  lens and the start hour 07:00 (§6.8 item 8).
+- **The budget** is `state.STATE_TIMEOUT_S`. The day read counts inside it.
+  A read that is not done at the limit reads as failed, and the other reads
+  keep their entries.
+- **A failed or slow read never fails the feed.** The cards and `needs` do
+  not change, and `handled_ok` goes false.
+- **One entry for each entity.** The email read keeps the newest rule row
+  for each message in its SQL. The run also keeps the newest entry for each
+  entity, so a read that gives two rows for one entity gives one entry.
+- **A rule row with no message** opens `/email`. The email app has no link
+  to its rules history.
+- **The `by` table.** An actor with no `@` that is not `agent:<name>` reads
+  as `system`. This covers `system`, `system:*`, `operator` and an empty
+  value.
+- **Projects carries no Handled read.** A closed task is a row of My Tasks,
+  and a notification that the member read closed nothing.
+
+**Known limits of the server half.** A later ticket owns each one.
+
+- **An entry does not say how an approval ended.** The shape of the ticket
+  has no status, so a rejected action and an applied action look the same.
+  The client half must decide if the words need it.
+- **The feed reads the hours of the day three times** for a member with the
+  Calendar pane. The Calendar provider, the state join and Handled each
+  read them. The read cache of MD-5 can share them.
+- **`completed_at` has no index.** The membership join of the lens bounds
+  the read, as the ticket records.
 
 ### MD-2d · Feed preferences — AGENT-SAFE
 
