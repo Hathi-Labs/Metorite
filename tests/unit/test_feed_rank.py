@@ -7,12 +7,13 @@ the order fails here first:
 * **The table.** Each base, and the rule that the five needs kinds start
   above every other kind, in the needs feed's own order.
 * **Each term.** Urgency, the old-path weight from the ONE server matrix
-  (``acb_common.priority``), and affinity and fatigue at 0 until MD-9 and
-  MD-2.
+  (``acb_common.priority``), affinity at 0 until MD-9, and fatigue (MD-2a):
+  -8 for each visit of the day, to -24.
 * **The group table** of §4.3, row by row.
 * **Rule 1** (the group comes first) and **rule 3** (15 cards for each app,
   and an approval yields).
-* **A fixed seed** whose order may change only with the table.
+* **A fixed seed** whose order may change only with the table, and with the
+  new-before-seen rule of MD-2a (``my_day_feed.md`` §6.8 item 6).
 
 Rule 2 (a ``drop`` answer never hides a needs card) has no subject until
 MD-6a builds ``decide``. Rule 4 (the order holds while the member reads) is
@@ -268,3 +269,14 @@ class TestTheFixedSeed:
             ("tasks:wk", "needs_you", 40),
             ("tasks:note", "fyi", 48),
         ]
+
+    def test_a_seen_card_moves_only_behind_the_new_cards_of_its_group(self):
+        # MD-2a, §6.8 item 6: inside a group a new card sorts before a seen
+        # one. That rule alone changes the seed: `tasks:soon` drops behind
+        # `tasks:blk` in Now, and nothing else moves.
+        cards = feed.build_cards(_seed(), NOW, ZoneInfo("UTC"), TODAY)
+        for c in cards:
+            c["state"] = "seen" if c["signal_id"] == "tasks:soon" else "new"
+        got = [c["signal_id"] for c in feed_rank.order(cards, 40)]
+        assert got == ["tasks:blk", "tasks:soon", "tasks:crit", "tasks:old", "tasks:eve",
+                       "tasks:ask", "tasks:wk", "tasks:note"]
