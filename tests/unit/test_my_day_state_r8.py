@@ -142,7 +142,8 @@ def _rows(p, member: str) -> dict[str, dict]:
     with p.admin_engine.connect() as c:
         got = c.execute(text(
             "SELECT signal_id, organization_id::text AS org, kind, state, dismiss_reason, "
-            "fingerprint, visits, visits_day, last_seen_at, acted_at, snoozed_until, "
+            "fingerprint, visits, visits_day, last_seen_at, acted_at, not_useful_at, "
+            "snoozed_until, "
             "snooze_on_change FROM my_day_card_state WHERE member_email = :m"),
             {"m": member})
         return {r.signal_id: dict(r._mapping) for r in got}
@@ -271,13 +272,52 @@ class TestTheTenancyBoundary:
         assert _rows(promoted, A) == {} and _rows(promoted, B) == {}
 
 
+class TestTheFirstWriteOfACardIsNeverLost:
+    async def test_a_seen_that_waits_on_a_dismiss_does_not_erase_it(
+        self, promoted, seeded,  # noqa: F811
+    ):
+        """Fix round 1, P2-b. Tab 1 dismisses a card that has no row yet, and
+        has not committed. Tab 2 posts a seen of the same card. The seen
+        must wait for the dismiss and then read it, so the card stays
+        dismissed. Before the claim, the seen read no row, waited only at
+        its upsert, and then wrote ``seen`` over the dismiss."""
+        import asyncio
+
+        from gateway.db import tenant_session
+
+        sid = f"tasks:{seeded['a_task']}"
+        fp = "a41f09c2"
+        async with _as_member(promoted, promoted.org_b):
+            first = tenant_session()
+            db = await first.__aenter__()
+            try:
+                dismissed = state.next_row(
+                    None, state.StateItem(signal_id=sid, state_fp=fp, kind="overdue",
+                                          action="dismiss"), NOW, state.Day(ZoneInfo("UTC")))
+                await db.execute(text(state._UPSERT_SQL), {
+                    "member": A, "signal_id": sid,
+                    **{c: dismissed[c] for c in state.COLUMNS}})
+                second = asyncio.create_task(state.write_state(
+                    _a(), [state.StateItem(signal_id=sid, state_fp=fp, kind="overdue",
+                                           action="seen")], NOW))
+                await asyncio.sleep(1.5)
+                assert not second.done(), "the seen did not wait for the dismiss"
+            finally:
+                await first.__aexit__(None, None, None)  # commit tab 1
+            written = await asyncio.wait_for(second, 30)
+        assert written == 0  # a seen of a dismissed card writes nothing
+        row = _rows(promoted, A)[sid]
+        assert (row["state"], row["dismiss_reason"]) == ("dismissed", "dismiss")
+
+
 class TestEachActionOnARealDatabase:
     async def test_seen_writes_the_visit_and_the_feed_reads_it(
         self, promoted, seeded, monkeypatch,  # noqa: F811
     ):
         sid = f"tasks:{seeded['a_task']}"
         late = _of(await _feed(promoted, monkeypatch, _a()), sid)
-        assert late["state"] == "new" and late["group"] == "now"  # §6.5 step 3
+        # Due two days ago: an old crossing keeps its group (§6.8 item 6).
+        assert late["state"] == "new" and late["group"] == "needs_you"
         assert await _post(promoted, _a(), [_item(sid, late["state_fp"], "seen")]) == {
             "written": 1}
         row = _rows(promoted, A)[sid]
@@ -318,6 +358,7 @@ class TestEachActionOnARealDatabase:
         await _post(promoted, _a(), [_item(sid, late["state_fp"], action)])
         row = _rows(promoted, A)[sid]
         assert (row["state"], row["dismiss_reason"]) == ("dismissed", action)
+        assert (row["not_useful_at"] == NOW) is (action == "not_useful")
         answer = await _feed(promoted, monkeypatch, _a())
         assert _of(answer, sid) is None
         assert sid in [i["id"] for i in answer["needs"]["items"]]

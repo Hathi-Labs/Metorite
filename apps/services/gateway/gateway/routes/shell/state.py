@@ -40,6 +40,7 @@ FORCE RLS, two organizations).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -87,7 +88,12 @@ STATE_FACTS = ("due_at", "note_ids", "waiting_since", "message_id")
 
 #: The columns of one state row, in the order of the table.
 COLUMNS = ("kind", "state", "dismiss_reason", "fingerprint", "visits", "visits_day",
-           "first_seen_at", "last_seen_at", "acted_at", "snoozed_until", "snooze_on_change")
+           "first_seen_at", "last_seen_at", "acted_at", "not_useful_at", "snoozed_until",
+           "snooze_on_change")
+
+#: Seconds the state join may take. It runs after the providers, so a slow
+#: pool must not cost the feed, or the needs view the bell reads with it.
+STATE_TIMEOUT_S = 1.5
 
 
 def state_fp(signal_id: str, facts: dict[str, Any]) -> str:
@@ -118,6 +124,10 @@ class Day:
     def at(self, day: date, hour: int) -> datetime:
         return datetime.combine(day, time.min, tzinfo=self.tz) + timedelta(hours=hour)
 
+    def day_start(self, now: datetime) -> datetime:
+        """The instant the member's current day started."""
+        return self.at(self.feed_day(now), self.start_hour)
+
     def next_working_day(self, after: date) -> date:
         for step in range(1, 15):
             candidate = after + timedelta(days=step)
@@ -142,8 +152,13 @@ def _hour(value: Any, default: int, high: int) -> int:
 
 def snoozed_until(until: str, now: datetime, day: Day) -> datetime | None:
     """The end of a snooze (§6.8, the POST contract). The server computes it
-    in the member's zone. It never takes a time from the client."""
-    today = now.astimezone(day.tz).date()
+    in the member's zone. It never takes a time from the client.
+
+    "Today" is the member's day, which starts at ``day_start_hour``
+    (``Day.feed_day``). At 00:30 the member's Monday still runs, so
+    "Tomorrow" is Tuesday's start, and "Later today" is past the Monday day
+    end, so it is the next day start too."""
+    today = day.feed_day(now)
     if until == "on_change":
         return None
     if until == "later_today":
@@ -231,8 +246,31 @@ def _rule_2_dismiss_holds(card, row, fp, ctx):
     return None
 
 
+def _last_event(card: dict[str, Any]) -> datetime | None:
+    """The time of the newest event on the card that the server knows: the
+    newest unread note, or the last message of a thread."""
+    facts = card.get("facts") or {}
+    times = [t for t in (_instant(facts.get("at")) if facts.get("note_ids") else None,
+                         _instant(facts.get("waiting_since"))) if t is not None]
+    return max(times) if times else None
+
+
+def own_act_changed(card: dict[str, Any], row: dict[str, Any] | None, fp: str) -> bool:
+    """Whether the member's own act changed the fingerprint. Mark read takes
+    ids out of ``note_ids``, so the card the member just acted on would come
+    back as Updated. An ``acted`` row whose act came at or after the newest
+    event on the card takes the new fingerprint as seen."""
+    if not _changed(row, fp) or row.get("state") != "acted":
+        return False
+    acted = _instant(row.get("acted_at"))
+    if acted is None:
+        return False
+    event = _last_event(card)
+    return event is None or event <= acted
+
+
 def _rule_3_changed_returns_new(card, row, fp, ctx):
-    if _changed(row, fp):
+    if _changed(row, fp) and not own_act_changed(card, row, fp):
         return Outcome(3, True, "new", visits=0, updated=True)
     return None
 
@@ -244,13 +282,21 @@ def _rule_4_urgency_lifts(card, row, fp, ctx):
     lift = urgent - feed_rank.SOON
     if lift > ctx.now:
         return None
-    state = _effective(row)
-    if state == "new":
-        return Outcome(4, True, "new", group="now", visits=0)
     seen = _instant(row.get("last_seen_at")) if row else None
-    if seen is not None and seen < lift:
+    state = _effective(row)
+    if seen is None:
+        # A card the member never saw lifts only when its edge came in the
+        # member's current day. An older crossing keeps its old-path group,
+        # so last week's overdue task stays in Needs you.
+        if state == "new" and lift >= ctx.day.day_start(ctx.now):
+            return Outcome(4, True, "new", group="now", visits=0)
+        return None
+    if state != "new" and seen < lift:
         return Outcome(4, True, "seen", group="now", visits=_visits_today(row, ctx),
                        still_open=True)
+    if state == "new" and seen < lift:
+        # A snooze that ended: the member saw the card before its edge.
+        return Outcome(4, True, "new", group="now", visits=0)
     return None
 
 
@@ -388,7 +434,7 @@ class StateBody(BaseModel):
 _BLANK: dict[str, Any] = {
     "state": None, "dismiss_reason": None, "fingerprint": None, "visits": 0,
     "visits_day": None, "first_seen_at": None, "last_seen_at": None, "acted_at": None,
-    "snoozed_until": None, "snooze_on_change": False,
+    "not_useful_at": None, "snoozed_until": None, "snooze_on_change": False,
 }
 
 
@@ -408,7 +454,11 @@ def next_row(old: dict[str, Any] | None, item: StateItem, now: datetime,
         if old is not None and not changed and held(old, fp, now):
             return None
         today = day.feed_day(now)
-        fresh = old is None or changed or old.get("state") in ("snoozed", "dismissed")
+        # An `acted` row whose fingerprint moved is the member's own act (Mark
+        # read), so the sighting counts on, as the read showed it (rule 3).
+        own_act = changed and old.get("state") == "acted"
+        fresh = old is None or (changed and not own_act) or old.get("state") in (
+            "snoozed", "dismissed")
         last = _instant(old.get("last_seen_at")) if old else None
         if fresh or old.get("visits_day") != today:
             visits = 1
@@ -431,6 +481,10 @@ def next_row(old: dict[str, Any] | None, item: StateItem, now: datetime,
     if item.action in ("dismiss", "not_useful"):
         row.update(state="dismissed", dismiss_reason=item.action,
                    snoozed_until=None, snooze_on_change=False)
+        if item.action == "not_useful":
+            # The history of §6.6: a later sighting clears `dismiss_reason`,
+            # and this column stays.
+            row["not_useful_at"] = now
         return row
     # `acted` is a record, never a hide (§6.8 item 4).
     row.update(state="acted", acted_at=now, dismiss_reason=None,
@@ -457,6 +511,16 @@ _UPSERT_SQL = (
     "ON CONFLICT (organization_id, member_email, signal_id) DO UPDATE SET "
     f"{', '.join(f'{c} = EXCLUDED.{c}' for c in COLUMNS)}, updated_at = now()"
 )
+#: The first row of a card, claimed before the read. ``FOR UPDATE`` locks no
+#: row that does not exist yet, so two writes of a new card would each read
+#: nothing, and the later upsert would erase the earlier one. A claimed row
+#: makes the second write wait for the first, and then read it.
+_CLAIM_SQL = (
+    "INSERT INTO my_day_card_state (organization_id, member_email, signal_id, kind, state) "
+    "VALUES {values} "
+    "ON CONFLICT (organization_id, member_email, signal_id) DO NOTHING "
+    "RETURNING signal_id"
+)
 
 
 async def _read_rows(db: Any, member: str, ids: list[str], *,
@@ -465,10 +529,31 @@ async def _read_rows(db: Any, member: str, ids: list[str], *,
 
     if not ids:
         return {}
-    sql = text(_READ_SQL + (" FOR UPDATE" if lock else "")).bindparams(
+    # One order for every lock, so two tabs of one member never deadlock.
+    sql = text(_READ_SQL + " ORDER BY signal_id" + (" FOR UPDATE" if lock else "")).bindparams(
         bindparam("ids", expanding=True))
     result = await db.execute(sql, {"member": member, "ids": sorted(set(ids))})
     return {str(r.signal_id): dict(r._mapping) for r in result}
+
+
+async def _claim_rows(db: Any, member: str, items: list[StateItem]) -> set[str]:
+    """Insert a placeholder row for each card that has none, in signal-id
+    order, and answer the ids this transaction created. The caller writes
+    each of them in the same transaction, so no reader sees a placeholder."""
+    from sqlalchemy import text
+
+    kinds: dict[str, str] = {}
+    for item in items:
+        kinds.setdefault(item.signal_id, item.kind)
+    if not kinds:
+        return set()
+    params: dict[str, Any] = {"member": member}
+    values = []
+    for n, sid in enumerate(sorted(kinds)):
+        params[f"s{n}"], params[f"k{n}"] = sid, kinds[sid]
+        values.append(f"({_BOUND_ORG}, :member, :s{n}, :k{n}, 'seen')")
+    result = await db.execute(text(_CLAIM_SQL.format(values=", ".join(values))), params)
+    return {str(r[0]) for r in result}
 
 
 async def _hours(user: UserContext, db: Any | None) -> Day:
@@ -516,14 +601,18 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
     """
     member = user.email or ""
     ids = [c["signal_id"] for c in cards]
-    try:
+
+    async def _read() -> tuple[Day, dict[str, dict[str, Any]]]:
         tasks_hours = user.has_permission("feature:tasks")
         day = await _hours(user, None) if tasks_hours else None
         async with _tenant_session() as db:
             if day is None:
                 day = await _hours(user, db)
-            rows = await _read_rows(db, member, ids)
-    except Exception as exc:
+            return day, await _read_rows(db, member, ids)
+
+    try:
+        day, rows = await asyncio.wait_for(_read(), STATE_TIMEOUT_S)
+    except Exception as exc:  # a timeout too: the same fallback
         logger.warning("shell.feed state read failed", extra={"error": type(exc).__name__})
         return join(cards, {}, Context(now, Day(ZoneInfo("UTC"))))
     return join(cards, rows, Context(now, day))
@@ -542,16 +631,22 @@ async def write_state(user: UserContext, items: list[StateItem], now: datetime) 
             day = await _hours(user, db)
         if any(i.action == "snooze" for i in items):
             day = Day(day.tz, day.start_hour, day.end_hour, await _working_days(db, user))
+        # Claim, then lock, then write: the order that loses no first write.
+        claimed = await _claim_rows(db, member, items)
         rows = await _read_rows(db, member, [i.signal_id for i in items], lock=True)
+        for sid in claimed:
+            rows.pop(sid, None)  # a placeholder is no history
+        final: dict[str, dict[str, Any]] = {}
         for item in items:
             new = next_row(rows.get(item.signal_id), item, now, day)
             if new is None:
                 continue
-            rows[item.signal_id] = new
-            await db.execute(text(_UPSERT_SQL), {
-                "member": member, "signal_id": item.signal_id,
-                **{c: new[c] for c in COLUMNS}})
+            rows[item.signal_id] = final[item.signal_id] = new
             written += 1
+        if final:
+            await db.execute(text(_UPSERT_SQL), [
+                {"member": member, "signal_id": sid, **{c: new[c] for c in COLUMNS}}
+                for sid, new in sorted(final.items())])
     return written
 
 

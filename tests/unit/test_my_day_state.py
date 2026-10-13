@@ -137,11 +137,28 @@ class TestRuleFourUrgencyLifts:
         out = _decide(c, _row(c, "seen", last_seen=NOW - timedelta(minutes=10)))
         assert out.rule != 4 and out.group is None and not out.still_open
 
-    def test_a_new_card_past_its_urgency_moves_to_now(self):
-        # §6.5 step 3: "urgent_at passed, and the card is still new".
-        c = _card("overdue", urgent=NOW - timedelta(days=1))
+    def test_a_new_card_whose_edge_passed_this_morning_moves_to_now(self):
+        # §6.5 step 3, bounded by §6.8 item 6: the 2-hour edge (08:00) came
+        # after the member's day started (07:00).
+        c = _card("due_today", urgent=datetime(2026, 10, 13, 10, 0, tzinfo=UTC))
         out = _decide(c, None)
         assert (out.rule, out.group, out.state, out.still_open) == (4, "now", "new", False)
+
+    def test_a_new_overdue_task_due_last_week_stays_in_its_group(self):
+        # Fix round 1, P1-b: an old crossing keeps the old-path group, so a
+        # member's first visit does not fill Now with every overdue task.
+        c = _card("overdue", urgent=NOW - timedelta(days=7))
+        out = _decide(c, None)
+        assert out.rule is None and out.group is None and out.state == "new"
+        assert state.join([c], {}, CTX)[0]["group"] == "needs_you"
+
+    @pytest.mark.parametrize(("edge", "lifted"), [
+        (datetime(2026, 10, 13, 7, 0, tzinfo=UTC), True),     # at the day start
+        (datetime(2026, 10, 13, 6, 59, tzinfo=UTC), False),   # before it
+    ])
+    def test_the_bound_is_the_start_of_the_members_day(self, edge, lifted):
+        c = _card("due_today", urgent=edge + feed_rank.SOON)
+        assert (_decide(c, None).rule == 4) is lifted
 
     def test_a_later_card_that_crosses_its_urgency_leaves_later(self):
         c = _card(urgent=NOW + timedelta(hours=1))
@@ -371,6 +388,19 @@ def _at(y: int, m: int, d: int, h: int, mi: int = 0) -> datetime:
     return datetime(y, m, d, h, mi, tzinfo=KOLKATA)
 
 
+class TestTheSnoozeTimesFollowTheMembersDay:
+    """Fix round 1, P2-a. At 00:30 the member's Monday still runs."""
+
+    day = state.Day(KOLKATA, 7, 22, WEEKDAYS)
+    now = _at(2026, 10, 13, 0, 30)  # Tuesday 00:30, the member's Monday
+
+    def test_tomorrow_at_half_past_midnight_is_this_mornings_start(self):
+        assert state.snoozed_until("tomorrow", self.now, self.day) == _at(2026, 10, 13, 7)
+
+    def test_later_today_at_half_past_midnight_is_the_next_day_start(self):
+        assert state.snoozed_until("later_today", self.now, self.day) == _at(2026, 10, 13, 7)
+
+
 class TestTheSnoozeTimes:
     day = state.Day(KOLKATA, 9, 18, WEEKDAYS)
 
@@ -507,6 +537,114 @@ class TestThePostWritesAndTheFeedHonoursEach:
         assert "tasks:t-late" not in fakes.state_rows.get(ME, {})
         assert fakes.state_rows[OTHER]["tasks:t-late"]["state"] == "dismissed"
         assert _of(run_feed(member(*FULL)), "tasks:t-late") is not None
+
+
+class TestTheWriteOrder:
+    """Fix round 1, P2-b. Claim the missing rows, then lock in signal-id
+    order, then write all the rows in one statement."""
+
+    def test_claim_then_lock_then_one_upsert_in_signal_id_order(self, fakes):  # noqa: F811
+        user = member(*FULL)
+        fp = "a41f09c2"
+        _post(user, [_item("tasks:b", fp, "seen"), _item("tasks:a", fp, "dismiss"),
+                     _item("tasks:b", fp, "seen")])
+        assert fakes.state_log == [
+            ("claim", ["tasks:a", "tasks:b"]),
+            ("read_locked", ["tasks:a", "tasks:b"]),
+            ("upsert", ["tasks:a", "tasks:b"]),
+        ]
+        # A claimed placeholder is no history: the first sighting is visit 1.
+        assert fakes.state_rows[ME]["tasks:b"]["visits"] == 1
+        assert fakes.state_rows[ME]["tasks:a"]["state"] == "dismissed"
+
+    def test_the_locked_read_orders_by_signal_id(self):
+        seen: list[str] = []
+
+        class _Db:
+            async def execute(self, sql, params=None):
+                seen.append(str(sql))
+                return []
+
+        asyncio.run(state._read_rows(_Db(), ME, ["tasks:b", "tasks:a"], lock=True))
+        assert seen[0].rstrip().endswith("ORDER BY signal_id FOR UPDATE")
+
+
+class TestTheStateReadHasATimeLimit:
+    def test_a_slow_state_read_keeps_the_feed_and_the_bell(self, fakes, monkeypatch):  # noqa: F811
+        # Fix round 1, P2-c.
+        async def slow(db, member, ids, *, lock=False):
+            await asyncio.sleep(2)
+            return {}
+
+        user = member(*FULL)
+        late = card(run_feed(user), "tasks:t-late")
+        fakes.state_rows[ME] = {"tasks:t-late": {
+            "kind": "overdue", "state": "dismissed", "dismiss_reason": "dismiss",
+            "fingerprint": late["state_fp"], "visits": 0, "visits_day": None,
+            "last_seen_at": None, "snoozed_until": None, "snooze_on_change": False}}
+        assert _of(run_feed(user), "tasks:t-late") is None  # non-vacuity
+        monkeypatch.setattr(state, "_read_rows", slow)
+        monkeypatch.setattr(state, "STATE_TIMEOUT_S", 0.05)
+        answer = run_feed(user)
+        assert card(answer, "tasks:t-late")["state"] == "new"
+        assert answer["needs"] == run_needs(user)
+
+
+class TestTheMembersOwnActIsNoUpdate:
+    """Fix round 1, P2-d. Mark read takes ids out of ``note_ids``."""
+
+    def test_an_acted_card_whose_notes_were_read_reads_as_seen(self):
+        after = _card("overdue", facts={"due_at": "2026-10-10T09:00:00+00:00"})
+        row = _row(after, "acted", fp="0000aaaa", visits=2, day=TODAY,
+                   last_seen=NOW - timedelta(hours=2))
+        row["acted_at"] = NOW - timedelta(hours=1)
+        out = _decide(after, row)
+        assert (out.state, out.updated, out.visits) == ("seen", False, 2)
+
+    def test_a_note_after_the_act_is_still_an_update(self):
+        newer = _card("overdue", facts={"due_at": "2026-10-10T09:00:00+00:00",
+                                        "note_ids": ["n9"],
+                                        "at": (NOW - timedelta(minutes=10)).isoformat()})
+        row = _row(newer, "acted", fp="0000aaaa", day=TODAY)
+        row["acted_at"] = NOW - timedelta(hours=1)
+        out = _decide(newer, row)
+        assert (out.rule, out.updated) == (3, True)
+
+    def test_mark_read_through_the_feed_keeps_the_card_seen(self, fakes, monkeypatch):  # noqa: F811
+        from tests.unit.test_shell_needs import _freeze
+
+        user = member(*FULL)
+        fakes.notes[ME].append({
+            "id": "n-late", "task_id": "t-late", "kind": "mention", "actor": "priya@x.test",
+            "task_title": "Ship the extruder", "task_number": None, "excerpt": None,
+            "created_at": fakes.now - timedelta(minutes=30)})
+        late = card(run_feed(user), "tasks:t-late")
+        assert "notification" in late["folded"]
+        _post(user, [_item("tasks:t-late", late["state_fp"], "seen")])
+        _freeze(monkeypatch, fakes.now + timedelta(minutes=5))
+        _post(user, [_item("tasks:t-late", late["state_fp"], "acted")])
+        fakes.notes[ME] = [n for n in fakes.notes[ME] if n["task_id"] != "t-late"]
+        after = card(run_feed(user), "tasks:t-late")
+        assert after["state_fp"] != late["state_fp"]
+        assert (after["state"], after["updated"]) == ("seen", False)
+        _freeze(monkeypatch, fakes.now + timedelta(minutes=60))
+        _post(user, [_item("tasks:t-late", after["state_fp"], "seen")])
+        assert fakes.state_rows[ME]["tasks:t-late"]["visits"] == 2  # counted on
+
+
+class TestNotUsefulKeepsItsHistory:
+    def test_not_useful_at_outlives_a_later_sighting(self, fakes, monkeypatch):  # noqa: F811
+        from tests.unit.test_shell_needs import _freeze
+
+        user = member(*FULL)
+        fp = card(run_feed(user), "tasks:t-late")["state_fp"]
+        _post(user, [_item("tasks:t-late", fp, "not_useful")])
+        assert fakes.state_rows[ME]["tasks:t-late"]["not_useful_at"] == fakes.now
+        _freeze(monkeypatch, fakes.now + timedelta(hours=1))
+        _post(user, [_item("tasks:t-late", "0000bbbb", "seen")])  # it came back
+        row = fakes.state_rows[ME]["tasks:t-late"]
+        assert (row["state"], row["dismiss_reason"]) == ("seen", None)
+        assert row["not_useful_at"] == fakes.now  # the not_useful instant, kept
 
 
 class TestTheBodyContract:

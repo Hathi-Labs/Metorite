@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS my_day_card_state (
     first_seen_at     TIMESTAMPTZ NULL,
     last_seen_at      TIMESTAMPTZ NULL,
     acted_at          TIMESTAMPTZ NULL,
+    not_useful_at     TIMESTAMPTZ NULL,
     snoozed_until     TIMESTAMPTZ NULL,
     snooze_on_change  BOOLEAN NOT NULL DEFAULT false,
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),

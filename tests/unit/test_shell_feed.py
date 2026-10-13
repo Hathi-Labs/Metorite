@@ -121,6 +121,8 @@ class FeedFakes(Fakes):
         #: The state join reads them through ``state._read_rows`` (MD-2a).
         self.state_rows: dict[str, dict[str, dict]] = {}
         self.state_reads: list[tuple[str, list[str]]] = []
+        #: The order of the state writes: the claim, the locked read, the upsert.
+        self.state_log: list[tuple[str, list[str]]] = []
 
     def _today(self):
         return self.now.astimezone(ZoneInfo(self.zone)).date()
@@ -170,6 +172,7 @@ class FeedFakes(Fakes):
 
     async def read_state(self, db, member, ids, *, lock=False):
         self.state_reads.append((member, list(ids)))
+        self.state_log.append(("read_locked" if lock else "read", sorted(set(ids))))
         mine = self.state_rows.get(member, {})
         return {sid: dict(mine[sid]) for sid in ids if sid in mine}
 
@@ -193,9 +196,22 @@ class _NoSession:
     async def execute(self, sql, params=None):
         sql = str(sql)
         assert "INSERT INTO my_day_card_state" in sql, sql
-        row = {k: v for k, v in (params or {}).items() if k not in ("member", "signal_id")}
-        self.fakes.state_rows.setdefault(params["member"], {})[params["signal_id"]] = row
-        return SimpleNamespace(rowcount=1)
+        if "DO NOTHING" in sql:
+            # The claim: a placeholder for each card with no row, in order.
+            mine = self.fakes.state_rows.setdefault(params["member"], {})
+            ids = [params[k] for k in sorted((k for k in params if k.startswith("s")),
+                                             key=lambda k: int(k[1:]))]
+            self.fakes.state_log.append(("claim", ids))
+            made = [sid for sid in ids if sid not in mine]
+            for sid in made:
+                mine[sid] = {"state": "seen", "fingerprint": None}
+            return [(sid,) for sid in made]
+        batch = params if isinstance(params, list) else [params]
+        self.fakes.state_log.append(("upsert", [p["signal_id"] for p in batch]))
+        for one in batch:
+            row = {k: v for k, v in one.items() if k not in ("member", "signal_id")}
+            self.fakes.state_rows.setdefault(one["member"], {})[one["signal_id"]] = row
+        return SimpleNamespace(rowcount=len(batch))
 
 
 @pytest.fixture()
