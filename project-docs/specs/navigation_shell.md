@@ -736,6 +736,13 @@ the top. The risk is a third view of the same tasks, so each app gets one job.
 **No second ritual.** Calendar has `StartupRitual`. The first open of My Day
 each day offers that ritual. My Day does not copy it.
 
+**What goes into the feed lives in `my_day_feed.md` (WS-58, ACTIVE
+2026-10-13).** That spec owns the signals, the cards, the order, the life of
+a card and the AI that prepares one. **D101 (owner, 2026-10-13) widens the
+acts in the table above for that feed:** a card acts in place, unless the act
+needs more context. `my_day_feed.md` §11 holds the rule. This spec keeps the
+page frame, the bell, the manifest and the flags.
+
 ### 4.4 Cards
 
 An app declares its cards in its manifest (§5.1). Each card names the
@@ -1198,6 +1205,11 @@ display order stays as below.
   when one mailbox failed and the others answered.
 - `total` is unchanged. It counts the rows before the cut, so the bell's
   number is still a floor of 60 at most.
+
+**The My Day feed reads the same providers (WS-58, ACTIVE 2026-10-13).**
+`my_day_feed.md` §4.4 owns the feed. This contract keeps its five kinds. A
+new kind joins it only by an amendment of this section, in the PR that adds
+the kind.
 
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent

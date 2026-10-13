@@ -518,6 +518,7 @@ owning specs are the archive; this file owns ordering, gates and states only.
 | WS-55 | **External agent access — Metorite as an MCP server** *(minted 2026-10-10, owner directive)* | 🔨 **EA-1 and EA-2a BUILT, dark, and merged** (#884, commit `898cfbc89`, 2026-10-11). **EA-3a MERGED, dark** (#946, `d5d8244f5`, 2026-10-13, after fix rounds 1 to 5). **EA-2c MERGED, dark** (#953, 2026-10-13). **EA-3b-1 MERGED, dark** (#954, `355c18bcf`, 2026-10-13, after fix rounds 1 and 2): the edge serves `/mcp` with `list_tasks` and `search_tasks`. **EA-3b-2 MERGED, dark** (2026-10-13, after fix rounds 1 and 2): the other five read tools, a cursor that binds the tool name, and the fence edit of EA3-9. **EA-4a MERGED, dark** (2026-10-13, after fix rounds 1 and 2): the consent page `/connect/authorize`, its two same-origin BFF routes, the one-time consent ticket in the tenant-prefixed Redis wrapper, and the RFC 8252 allow list. **EA-10p MERGED, dark** (2026-10-13, after fix round 1): the organization allowlist `AGENT_ACCESS_ORGS` of EA3-27, default none, checked at four doors, so go-live is a pilot. EA3-24 drops archived projects from `list_projects`. D97 took the eight defaults of the spec. A member connects an outside agent with one URL and OAuth 2.1. The agent acts as that member, within the scopes the member chose. The EA-3 audit of 2026-10-11 gave NO-GO, and spec §6.1 records the eight engineering decisions that answer it (EA3-1 to EA3-8). The EA-3b audit of 2026-10-13 gave NO-GO too, and spec §6.1 records the answer (EA3-9 to EA3-24). EA-4 split into EA-4a, EA-4b and EA-4c (EA3-25), and EA-4b and EA-4c do not gate a pilot. | **`specs/external_agent_access.md`** · D97 · member guide `docs/external_agents_connect.md` | AGENT-SAFE: EA-1 to EA-9 and EA-11, all dark. 🔴 OWNER-GATE: EA-10 (the DNS record, the Caddy block and header strip, the signing key on both units, the unit, the flag). HANDOFF H-303 carries the key and the strip. **Next: EA-10, the go-live (owner gate, H-303), with `AGENT_ACCESS_ORGS` set to the Fracktal organization id on the gateway and the edge, then EA-6.** EA-3a is the gateway half: branch 0 and the visibility narrowing. EA-3b is the edge half. EA-3b-1 is the transport with `list_tasks` and `search_tasks`, and EA-3b-2 is the other five tools and the fence edit. **EA-2c** accepts a loopback redirect on any port, which Claude Code needs. It can run in parallel with EA-3b, and it merges before EA-4. It changes a security path, so it gets the full review loop. EA-3c accepts the 2026-07-28 revision later. EA-2b and EA-4 follow. |
 | WS-56 | **External agent dispatch — start a session on the member's own AI account** *(minted 2026-10-11, owner directive)* | 📝 **SPECIFIED, no decision taken, nothing built** (2026-10-11). Outbound twin of WS-55. A task in Projects offers **Run with…** and Metorite starts Copilot, Jules or a GitHub-based agent as the member. A personal credential never becomes an organization credential. | **`specs/external_agent_dispatch.md`** · reuses the WS-54 registry | AGENT-SAFE: DX-1, DX-2, DX-4 after DX-0. The credentialed adapters (DX-5 to DX-9) wait for the WS-54 registry slice. 🔴 OWNER-GATE: DX-0 (decisions D-DX-1 to D-DX-8), and the GitHub App registration in DX-5. |
 | WS-57 | **Task references — links, PRs, commits, pasted images and `#123` pills** *(minted 2026-10-13, owner directive)* | ✅ **BUILT.** TR-1, TR-2 and TR-3 are LIVE (2026-10-13, PR #956, migration 255 applied). TR-4 is LIVE (2026-10-13, PR #955). TR-5 is BUILT on branch `task-pills-v2` (2026-10-13): `#123` pills on the card, and links and references from the text (`routes/projects/text_links.py`, no migration). Migration 255 holds `pm_task_refs`, `routes/projects/refs.py` holds the route and the GitHub read, and `add_task_ref` and `remove_task_ref` are the chat tools. ⚠️ Check migration 255 again at merge (R1). | **`specs/task_references.md`** · `external_agent_access.md` §11 | All five slices are built. 🔴 OWNER-GATE: a GitHub App (§8). **Next: merge TR-5 (branch `task-pills-v2`). Later: a GitHub App (§8), an OWNER-GATE.** |
+| WS-58 | **My Day as a live feed — the chief of staff** *(minted 2026-10-13, owner directive)* | 📝 **SPECIFIED, nothing built** (2026-10-13). D100 and D101 taken the same day. My Day becomes one ranked column of cards. Code finds the signals and a template writes every card. `decide` makes the judgment calls as typed questions, and a text model writes only a gist or a prep list. The owner answered Q2 (the customer pays in AI credits) and Q3 (calendar clashes fold in when calendar sync lands) on 2026-10-13. A card has a life, and fixed rules bring it back when it matters again. It extends the one needs feed of WS-44 and adds no second feed | **`specs/my_day_feed.md`** · the page frame, the bell and the shell flags stay in `specs/navigation_shell.md` | AGENT-SAFE: MD-1a (the gateway feed) and MD-1b (the frontend), MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12, all dark. MD-1a and MD-1b are in build since 2026-10-13. 🔴 OWNER-GATE: turning on `NEXT_PUBLIC_MY_DAY_FEED`, `MY_DAY_COMPOSE` or any `my_day.*` decide mode, and MD-10 (messages outside the app). MD-6c also waits on H-171 and H-69. Repair round 1 of PR #939 fixed 14 P1 and 5 P2 review findings on 2026-10-13. MD-11 (meeting overlaps) is BLOCKED on calendar P4 |
 
 ### Product — Centers (`department_centers.md` §3 · combined board record 2026-08-09 there)
 
@@ -5075,6 +5076,58 @@ none exists yet.
 
 ---
 
+### D100 — `decide` may serve every app, not only email triage (2026-10-13)
+
+Owner decision, 2026-10-13, in chat. **Decided: owner, 2026-10-13.** Board:
+**WS-58**, and every later adopter of `decide`. Owning spec for its first
+non-email use: **`specs/my_day_feed.md`** §10.
+
+**The question:** D-EM-9 approves `decide` residency for email triage "and for
+no other app". My Day would send task titles, deal names, goal names and mail
+subjects as clipped facts. May it?
+
+**The answer:** the owner approved the use of `decide` across the whole
+product, in chat on 2026-10-13.
+
+1. **Residency for `decide` covers every app.** Tenant content may go to
+   TypeSafe and to AI/ML API for a `decide` call from any app. This widens
+   D-EM-9, which stays the record for email.
+2. **The adoption rule still binds each feature.** Every feature starts
+   `off`, then runs `shadow`, then `on` behind a gate (D75 item 7,
+   `customer_console.md` §6A.14). D100 answers residency, and nothing else.
+3. **The customer pays in AI credits** (`my_day_feed.md` §9.3, owner,
+   2026-10-13).
+
+**What it does not change.** `DECIDE_ENABLED` stays an owner act (H-166). A
+text model is not `decide`, so D100 says nothing about a text call.
+
+---
+
+### D101 — A My Day card may act in place, unless the act needs more context (2026-10-13)
+
+Owner decision, 2026-10-13, in chat. **Decided: owner, 2026-10-13.** Board:
+**WS-58**. Owning spec: **`specs/my_day_feed.md`** §11.
+
+**The answer, in the owner's words, in three parts:** "actions can happen
+inside cards, inside my day itself, unless the action needs more context".
+Then "the user can prefer to open it in the app itself". Then the owner asked
+the design to work out when to do which.
+
+1. **An act runs in the card.** An act on the member's own data is one tap. An
+   act that reaches another person expands in the card, shows its whole
+   effect, and waits 10 seconds with Undo.
+2. **"Needs more context" is a test in code** (`my_day_feed.md` §11.2). When
+   it is true, the act opens the owning app.
+3. **The member can always open the app instead,** and can make that the
+   default for a kind.
+4. **Class C never runs in a card:** delete, bulk acts, money, and the
+   approval of an agent's act.
+
+**What it amends.** `navigation_shell.md` §4.3 allowed My Day three one-click
+acts. D101 widens that for the feed of WS-58.
+
+---
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 | Work | Owner | Mirrors (link-only after §5) |
@@ -5114,6 +5167,7 @@ none exists yet.
 | **The inbound MCP edge** — an outside agent that acts as a member: the OAuth server, the `/mcp` endpoint, the signed request to the gateway, the agent scope on `Visibility`, and the `MCP_ROUTES` allowlist | **WS-55 — `specs/external_agent_access.md`** (D97, minted 2026-10-10) | `external_agent_dispatch.md` (WS-56, the outbound twin, link-only) · `projects_agent_parity.md` D91 (it keeps the native tools of the in-product assistant. Its §5.3 is the parked item, and WS-55 answers it) · `tenancy_and_visibility.md` §3.2 (a pointer to the agent scope only) |
 | Visibility model (who inside that company) | **`specs/tenancy_and_visibility.md`** (D12 §3–§4 · the app-by-app gap table §5 · TV-1 §2 — **unchanged and still binding**) | `department_centers.md` (the "separate deployment is for a separate org, never a department" rule) · `org_access_control.md` §8 Ph2 · `multi_user_organization_research.md` §5/§7/§8/§9/§17 (**research only, and superseded for planning by the new spec**) · `groups_sessions_authority.md` §3 (the intersection rule it constrains) · D9 (the twelve "second tenant deployment" sites) |
 | **The shell** — the bar, the sidebar shape, Home and its altitudes, the command bar, the dock, the bell, the avatar menu, role presets and the app manifest | **WS-44 — `specs/navigation_shell.md`** (D87, D88 and D89, minted 2026-10-05) | `launch_surface.md` keeps WHICH panes are live (§2) and the one nav filter (§8.4) · `DESIGN_SYSTEM.md` §6a and `workbench/control_plane/AGENTS.md` rule 10 (pointers only) · `department_centers.md` (D49 banner, a pointer only) · each app's own spec keeps what happens inside the app |
+| **The My Day feed** — what goes into My Day: the signals, the cards, their order and life, the `decide` questions that judge them, and their cost | **WS-58 — `specs/my_day_feed.md`** (D100 and D101, 2026-10-13) | `specs/navigation_shell.md` keeps the page frame, the bell, the needs contract of §7.2 and the flags (pointers in its §4.3 and §7.2) |
 | **The public legal pages** — `site/privacy.html`, `site/terms.html`, `site/refunds.html` and `site/contact.html`. A merge publishes them, because Caddy serves `/opt/acb/app/site` | **WS-33 — `specs/marketing_site.md` §5** (recorded 2026-10-12, PR-D0). The page files and their fence belong to WS-33. 🔴 The words of each change are OWNER-GATE: the owner approves the text before the PR that publishes it, because a legal page binds Metorite to third parties (CLAUDE.md §3a rule 3) | `email_app_master_plan.md` §12.4, after step 15, holds the Gmail draft, for approval only. `site/AGENTS.md` points to the owner spec and adds nothing |
 
 ## 5. Documentation remediation backlog (WS-0)
@@ -5467,6 +5521,15 @@ and one thing that cannot be written until a second person exists.
 >
 > ⚠️ **No plan-guard rule names these flags**, so this text is the only fence.
 > A rule needs the `guard-write` grant.
+>
+> **WS-58 — the My Day feed flags.** *(Registered 2026-10-13 with D100 and
+> D101.)* To build MD-1a to MD-12 is AGENT-SAFE, and each slice ships dark. To
+> turn on `NEXT_PUBLIC_MY_DAY_FEED` in production is an owner flip, for the
+> reason of the WS-44 flags above. `MY_DAY_COMPOSE`, and any `my_day.*` mode
+> other than `off` in `DECIDE_FEATURE_MODES`, are owner flips because they
+> spend the org's credits (CLAUDE.md §3a rule 3). MD-10, a message outside the
+> app, is owner-only because it reaches a real person. `specs/my_day_feed.md`
+> §17.1 is the authority. No plan-guard rule names these flags either.
 >
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against
 > live customer data. AGENT-SAFE to build; **OWNER-GATE to execute.**
