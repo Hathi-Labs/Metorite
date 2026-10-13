@@ -11,6 +11,7 @@ Hostinger VPS deployment scripts, Caddy reverse proxy config, and CI/CD pipeline
 - hostinger/acb-gateway.service -- systemd unit: FastAPI gateway on :8080
 - hostinger/acb-workbench.service -- systemd unit: Next.js workbench on :3001
 - hostinger/acb-operator-console.service -- systemd unit: the staff Operator Console. It is the unit that ran on the box, byte for byte (WS-49 BH-2)
+- hostinger/acb-agent-edge.service -- systemd unit: the MCP edge for outside agents on 127.0.0.1:8091 (WS-55 EA-10a). It loads its own env file, and its drop-in `50-hardening.conf` hides the root `.env`. The deploy restarts it only when the unit is enabled. Caddy serves it as `mcp.metorite.com`. Spec: `project-docs/specs/external_agent_access.md` §15.3. Fence: `tests/unit/test_agent_edge_deploy.py`
 - caddy/ -- Caddy reverse proxy configuration
 - secrets/manifest.json -- the secrets-drop manifest that `scripts/secrets.sh` reads. It holds names, paths and modes, and never a value. Git tracks only this file in `secrets/`. Reference: `docs/secrets_drop.md`
 - ../.github/workflows/deploy.yml -- CI/CD: push-to-deploy (lint → test → SSH → deploy → smoke)
@@ -40,5 +41,6 @@ Hostinger VPS deployment scripts, Caddy reverse proxy config, and CI/CD pipeline
 - Provider keys live in the encrypted `provider_keys` table; seeded from `.env` on first boot
 - Next.js workbench is rebuilt (`npm ci && npm run build`) and restarted on every deploy
 - Caddy handles SSL termination and routing
+- The `reverse_proxy` of `api.metorite.com` strips `X-User-Email`, `X-User-Role`, `X-Actor-Via` and the three `X-Agent-*` headers (WS-55 EA-10b). Every internal caller reaches the gateway on loopback. A change to these lines is gate (a), fenced by `tests/unit/test_caddy_auth_gate.py`
 - CI/CD deploys on push to main; PRs run lint + test only
 - SSH key for CI/CD must be a dedicated key (not a developer personal key)

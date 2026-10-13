@@ -538,9 +538,14 @@ def _last_value(unit: Path, key: str) -> str | None:
     return value
 
 
+#: User=acb units with a full sandbox of their own, beside the gateway. Each
+#: has its own fence. WS-55 EA-10a: tests/unit/test_agent_edge_deploy.py.
+SANDBOXED_UNITS = ("acb-agent-edge",)
+
+
 def test_every_acb_unit_but_pull_has_no_new_privileges() -> None:
     units = _acb_units()
-    assert {u.name for u in units} >= {f"{n}.service" for n in OTHER_UNITS}
+    assert {u.name for u in units} >= {f"{n}.service" for n in (*OTHER_UNITS, *SANDBOXED_UNITS)}
     missing = [
         u.name for u in units
         if u.name not in NNP_EXEMPT and _last_value(u, "NoNewPrivileges") != "yes"
