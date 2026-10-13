@@ -29,7 +29,13 @@
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { sameOrigin } from "@/lib/accountsServer";
-import { GATEWAY_URL, gatewayFetch, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import {
+  GATEWAY_URL,
+  NoIdentityError,
+  gatewayFetch,
+  gatewayHeaders,
+  requireIdentity,
+} from "@/lib/gateway";
 
 export type ConsentAction = "check" | "approve";
 
@@ -65,11 +71,22 @@ export async function relayConsent(req: NextRequest, action: ConsentAction): Pro
   const body = await req.text();
   if (body.length > MAX_CONSENT_BODY) return refuse("too_large", 413);
 
+  // The headers come BEFORE the fetch's `try` (fix round 1). A session that
+  // ends between `requireIdentity` and here throws `NoIdentityError`, and
+  // that is a 401, never the 502 of an unreachable gateway.
+  let headers: Record<string, string>;
+  try {
+    headers = await gatewayHeaders({ "Content-Type": "application/json" });
+  } catch (err) {
+    if (err instanceof NoIdentityError) return refuse("unauthenticated", 401);
+    throw err;
+  }
+
   let res: Response;
   try {
     res = await gatewayFetch(`${GATEWAY_URL}/agent-access/authorize/${action}`, {
       method: "POST",
-      headers: await gatewayHeaders({ "Content-Type": "application/json" }),
+      headers,
       body: body || "{}",
       cache: "no-store",
       redirect: "manual",

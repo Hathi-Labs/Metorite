@@ -23,7 +23,7 @@
  * Tokens only, `<Icon>`, and the primitives of `src/components/ui/`. The
  * decisions live in `consent.ts`, and this file only draws them.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
@@ -39,11 +39,15 @@ import {
   type Refusal,
   approveBody,
   canApprove,
+  gateOpen,
+  gateStart,
+  gateWaitMs,
   initialChoice,
   isCheckView,
   organizationName,
   pinChoices,
   refusalFor,
+  sameScreen,
   scopeRows,
 } from "./consent";
 
@@ -71,6 +75,53 @@ async function postJson(url: string, body: unknown, signal?: AbortSignal) {
     json = null;
   }
   return { status: res.status, ok: res.ok, json };
+}
+
+/**
+ * The approve gate (fix round 1, P1). Approve stays off until the page is
+ * visible and focused, and then 500 ms more. A blur or a hide starts again.
+ * The decision is `gateStart` and `gateOpen` in `consent.ts`. This hook only
+ * feeds them the browser's events. `openNow` reads the clock at the click,
+ * so a stale render cannot approve.
+ */
+function useApproveGate(): { open: boolean; openNow: () => boolean } {
+  const [start, setStart] = useState<number | null>(null);
+  const [now, setNow] = useState(0);
+  const startRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const visible = () => document.visibilityState === "visible";
+    const apply = (focused: boolean) =>
+      setStart((prev) => {
+        const next = gateStart(prev, { visible: visible(), focused }, Date.now());
+        startRef.current = next;
+        return next;
+      });
+    apply(document.hasFocus());
+    const onFocus = () => apply(true);
+    const onBlur = () => apply(false);
+    const onVisibility = () => apply(visible() && document.hasFocus());
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // Draw again when the gate opens.
+  useEffect(() => {
+    const wait = gateWaitMs(start, Date.now());
+    if (wait === null) return;
+    const timer = setTimeout(() => setNow(Date.now()), wait);
+    return () => clearTimeout(timer);
+  }, [start]);
+
+  const openNow = useCallback(() => gateOpen(startRef.current, Date.now()), []);
+  // `now` moves only by the timer, so a new spell (a later `start`) reads closed.
+  return { open: gateOpen(start, now), openNow };
 }
 
 function Frame({ children }: { children: React.ReactNode }) {
@@ -202,6 +253,11 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
   const [problem, setProblem] = useState<string | null>(null);
   const [projects, setProjects] = useState<PinChoice[] | null>(null);
   const [projectsFailed, setProjectsFailed] = useState(false);
+  const gate = useApproveGate();
+  // The screen the member approves. After a 503 the page asks `check` again
+  // for a fresh ticket, and keeps it only for the same screen (fix round 1).
+  const [shown, setShown] = useState<CheckView>(view);
+  const [needsFreshTicket, setNeedsFreshTicket] = useState(false);
 
   // One read, once. The page lives for one approval, so a cache adds nothing.
   useEffect(() => {
@@ -227,28 +283,52 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
   const togglePin = (id: string) =>
     setPins((prev) => (prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]));
 
-  const ready = canApprove(view, chosen) && !!orgName && !sending;
+  const ready = canApprove(view, chosen) && !!orgName && !sending && gate.open;
+
+  /** A fresh ticket for the same screen, or null when the flow must end. */
+  async function freshTicket(): Promise<CheckView | null> {
+    const res = await postJson(CHECK_URL, request);
+    if (!res.ok || !isCheckView(res.json)) {
+      onRefused(refusalFor(res.ok ? 502 : res.status, res.json));
+      return null;
+    }
+    if (!sameScreen(shown, res.json)) {
+      onRefused({ message: "The agent's request changed. Start again from the agent.", redirectTo: null });
+      return null;
+    }
+    setShown(res.json);
+    setNeedsFreshTicket(false);
+    return res.json;
+  }
 
   async function approve() {
-    if (!ready) return;
+    if (!ready || !gate.openNow()) return;
     setSending(true);
     setProblem(null);
     try {
-      const res = await postJson(APPROVE_URL, approveBody(request, view, { scopes: chosen, pins, includePersonal }));
+      // Redis may have spent the old ticket before its reply timed out, so a
+      // retry after a 503 or a lost answer starts with a fresh ticket.
+      const ticketView = needsFreshTicket ? await freshTicket() : shown;
+      if (!ticketView) return;
+      const res = await postJson(
+        APPROVE_URL,
+        approveBody(request, ticketView, { scopes: chosen, pins, includePersonal }),
+      );
       const redirectTo = (res.json as { redirect_to?: unknown } | null)?.redirect_to;
       if (res.ok && typeof redirectTo === "string") {
-        onLeave(`${view.client.name} is connected.`, redirectTo);
+        onLeave(`${view.client.host} is connected.`, redirectTo);
         return;
       }
       const refusal = refusalFor(res.ok ? 502 : res.status, res.json);
       if (res.status === 503) {
-        // The ticket may still be good after an outage, so the member may try again.
+        setNeedsFreshTicket(true);
         setProblem(refusal.message);
         setSending(false);
         return;
       }
       onRefused(refusal);
     } catch {
+      setNeedsFreshTicket(true);
       setProblem(refusalFor(0, null).message);
       setSending(false);
     }
@@ -262,9 +342,16 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
             <Icon name="Bot" size={20} />
           </span>
           <div className="min-w-0">
+            {/* The headline names the VERIFIED host. The document's own name is
+                only a claim, so it shows second and in quotes (fix round 1). */}
             <h1 className="text-base font-semibold text-foreground">
-              <span className="break-words">{view.client.name}</span> wants to connect to Metorite
+              <span className="break-all">{view.client.host}</span> wants to connect to Metorite
             </h1>
+            {view.client.name && (
+              <p className="mt-0.5 text-xs text-muted-foreground" data-testid="consent-claim">
+                It calls itself: <span className="break-words">&ldquo;{view.client.name}&rdquo;</span>
+              </p>
+            )}
             <p className="mt-1 text-sm text-muted-foreground">
               The agent will act as you. It can never see or change more than you can.
             </p>

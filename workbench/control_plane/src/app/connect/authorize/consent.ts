@@ -66,7 +66,12 @@ export function parseAuthorizeRequest(params: SearchParams): ParsedRequest {
 
 /** What the gateway's `check` answers (`AuthorizeView`). */
 export interface CheckView {
-  client: { client_id: string; name: string; origin: string };
+  /**
+   * `host` is the VERIFIED host the document came from, and the headline
+   * names it. `name` is the document's own `client_name`, a CLAIM, or null
+   * (fix round 1, P2).
+   */
+  client: { client_id: string; host: string; name: string | null; origin: string };
   redirect_uri: string;
   redirect_display: string;
   redirect_app: boolean;
@@ -88,7 +93,9 @@ export function isCheckView(value: unknown): value is CheckView {
     typeof v.redirect_app === "boolean" &&
     Array.isArray(v.scopes) &&
     !!v.client &&
-    typeof v.client.name === "string" &&
+    typeof v.client.host === "string" &&
+    v.client.host.length > 0 &&
+    (v.client.name === null || typeof v.client.name === "string") &&
     typeof v.client.origin === "string"
   );
 }
@@ -252,4 +259,70 @@ export function refusalFor(status: number, body: unknown): Refusal {
     return { message: "Metorite is busy. Try again in a moment.", redirectTo: null };
   }
   return { message: "Metorite could not answer. Try again in a moment.", redirectTo: null };
+}
+
+/**
+ * True when a fresh `check` shows the member the same screen (fix round 1).
+ *
+ * After a 503 on approve, the page asks `check` again for a fresh ticket,
+ * because Redis may have spent the old one before its reply timed out. The
+ * page uses the fresh ticket only when every fact on the screen is the same.
+ * Anything else ends the flow, so the member never approves a screen that
+ * they did not see.
+ */
+export function sameScreen(shown: CheckView, fresh: CheckView): boolean {
+  return (
+    shown.client.client_id === fresh.client.client_id &&
+    shown.client.host === fresh.client.host &&
+    shown.client.origin === fresh.client.origin &&
+    shown.client.name === fresh.client.name &&
+    shown.redirect_uri === fresh.redirect_uri &&
+    shown.redirect_display === fresh.redirect_display &&
+    shown.redirect_app === fresh.redirect_app &&
+    shown.deny_redirect_to === fresh.deny_redirect_to &&
+    shown.scopes.length === fresh.scopes.length &&
+    shown.scopes.every((s, i) => s === fresh.scopes[i])
+  );
+}
+
+// ── The approve gate (fix round 1, P1: double-clickjacking) ──────────────────
+//
+// The attack: a page of the attacker says "double-click to continue". On the
+// first mousedown it moves its opener to `/connect/authorize`, so the second
+// click lands on Approve in a top-level window. The frame headers cannot see
+// this, because nothing is framed.
+//
+// The rule: Approve stays off until the page is VISIBLE and has FOCUS, and
+// then for 500 ms more. A blur, or a change to hidden, starts the wait again.
+// The page also checks the gate when the click arrives, not only when it
+// draws. Fence: `consent.test.ts` and `e2e/connect-authorize.spec.ts`.
+
+/** How long the page must be visible and focused before Approve works. */
+export const APPROVE_GATE_MS = 500;
+
+export interface Attention {
+  visible: boolean;
+  focused: boolean;
+}
+
+/**
+ * When the current spell of attention began, or null when there is none.
+ *
+ * `prev` is the start of the spell before this event. A spell goes on while
+ * the page stays visible and focused, and a blur or a hide ends it.
+ */
+export function gateStart(prev: number | null, attention: Attention, now: number): number | null {
+  if (!attention.visible || !attention.focused) return null;
+  return prev ?? now;
+}
+
+/** True when Approve may act: one spell of attention, 500 ms old or more. */
+export function gateOpen(start: number | null, now: number): boolean {
+  return start !== null && now - start >= APPROVE_GATE_MS;
+}
+
+/** How long until the gate opens, 0 when it is open, or null with no spell. */
+export function gateWaitMs(start: number | null, now: number): number | null {
+  if (start === null) return null;
+  return Math.max(0, start + APPROVE_GATE_MS - now);
 }

@@ -77,6 +77,7 @@ import asyncio
 import hashlib
 import json
 import secrets
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 from uuid import UUID
@@ -186,8 +187,13 @@ class ApproveRequest(AuthorizeRequest):
 
 class ClientView(BaseModel):
     client_id: str
-    #: The ``client_name`` of the document, or the host when it names none.
-    name: str
+    #: The host the document came from, in ASCII, with a port if the URL has
+    #: one. This is the VERIFIED part, so the consent screen names it in its
+    #: headline (EA-4a fix round 1, spec §10.5).
+    host: str
+    #: The ``client_name`` of the document, or ``None``. It is only a CLAIM:
+    #: the screen shows it second, as "It calls itself", never as the headline.
+    name: str | None
     #: The scheme and host the document came from. This is the verified part.
     origin: str
 
@@ -296,11 +302,40 @@ async def _fetch_document(client_id: str) -> dict[str, Any]:
     return document
 
 
+#: Letters that draw nothing. Unicode files them as letters (``Lo``), so a
+#: category check alone passes a name made of them. A name of only these
+#: draws as an empty string beside the claim label (EA-4a fix round 1).
+_INVISIBLE_LETTERS = frozenset({
+    "ᅟ",  # HANGUL CHOSEONG FILLER
+    "ᅠ",  # HANGUL JUNGSEONG FILLER
+    "ㅤ",  # HANGUL FILLER
+    "ﾠ",  # HALFWIDTH HANGUL FILLER
+})
+
+
+def _shows_something(name: str) -> bool:
+    """True when *name* holds one letter or digit that draws.
+
+    A visible name needs a character of a Unicode letter (``L*``) or number
+    (``N*``) category that is not an invisible filler. A name of spaces,
+    marks, symbols or fillers alone is no name.
+    """
+    return any(
+        unicodedata.category(c)[0] in ("L", "N") and c not in _INVISIBLE_LETTERS
+        for c in name
+    )
+
+
 def _clean_name(value: Any) -> str:
+    """The claimed name, printable and at most 100 characters, or ``""``.
+
+    ``""`` means "no name": the screen then shows the verified host only.
+    """
     if not isinstance(value, str):
         return ""
     printable = "".join(c for c in value if c.isprintable())
-    return printable.strip()[:_MAX_CLIENT_NAME]
+    name = printable.strip()[:_MAX_CLIENT_NAME]
+    return name if _shows_something(name) else ""
 
 
 def _validated_metadata(client_id: str, document: dict[str, Any]) -> dict[str, Any]:
@@ -415,9 +450,15 @@ async def _validate(req: AuthorizeRequest) -> _Validated:
 
 
 def _client_view(client_id: str, metadata: dict[str, Any]) -> ClientView:
+    """The verified host and origin, and the claimed name if it shows anything.
+
+    The name is cleaned again here, so a row that an older build cached keeps
+    to the rule of :func:`_clean_name`.
+    """
     origin = agent_oauth.client_origin(client_id)
-    name = metadata.get("client_name") or agent_oauth.redirect_host(client_id)
-    return ClientView(client_id=client_id, name=name, origin=origin)
+    host = origin.partition("://")[2]
+    name = _clean_name(metadata.get("client_name")) or None
+    return ClientView(client_id=client_id, host=host, name=name, origin=origin)
 
 
 # ── The consent ticket (rule 10) ────────────────────────────────────────────
@@ -558,7 +599,7 @@ async def approve_authorize(
     connection_id = await agent_tokens.create_connection(
         user.email,
         req.client_id,
-        client_name=view.name,
+        client_name=view.name or view.host,
         client_origin=view.origin,
         scopes=granted.split(" "),
         pinned_projects=[str(p) for p in req.pinned_projects],

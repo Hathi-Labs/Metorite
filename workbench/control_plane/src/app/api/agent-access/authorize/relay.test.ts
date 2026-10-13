@@ -19,12 +19,22 @@ vi.mock("@/auth", () => ({
   SESSION_SECRET: "relay-test-secret-at-least-32-characters!",
 }));
 
-vi.mock("@/lib/gateway", () => ({
-  GATEWAY_URL: "http://gw.test",
-  requireIdentity: async () => ({ email: "a@example.com" }),
-  gatewayHeaders: async (extra: Record<string, string> = {}) => ({ ...extra, "X-User-Email": "a@example.com" }),
-  gatewayFetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
-}));
+/** Set by a test: the session ends between `requireIdentity` and the headers. */
+const session = vi.hoisted(() => ({ endsBeforeHeaders: false }));
+
+vi.mock("@/lib/gateway", () => {
+  class NoIdentityError extends Error {}
+  return {
+    GATEWAY_URL: "http://gw.test",
+    NoIdentityError,
+    requireIdentity: async () => ({ email: "a@example.com" }),
+    gatewayHeaders: async (extra: Record<string, string> = {}) => {
+      if (session.endsBeforeHeaders) throw new NoIdentityError();
+      return { ...extra, "X-User-Email": "a@example.com" };
+    },
+    gatewayFetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+  };
+});
 
 import { POST as checkPOST } from "./check/route";
 import { POST as approvePOST } from "./approve/route";
@@ -125,6 +135,18 @@ describe("the consent BFF routes", () => {
       });
       const res = await POST(request(action, "same-origin"));
       expect(res.status).toBe(502);
+    });
+
+    it("answers 401, not 502, when the session ends before the headers (fix round 1)", async () => {
+      session.endsBeforeHeaders = true;
+      try {
+        const res = await POST(request(action, "same-origin"));
+        expect(res.status).toBe(401);
+        expect(await res.json()).toEqual({ error: "unauthenticated" });
+        expect(asked).toEqual([]);
+      } finally {
+        session.endsBeforeHeaders = false;
+      }
     });
 
     it("refuses a body far larger than a request, before the gateway", async () => {

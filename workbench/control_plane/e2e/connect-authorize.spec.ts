@@ -33,6 +33,7 @@ const DENIED = `${CALLBACK}?error=access_denied&state=st-123&iss=https%3A%2F%2Fm
 const VIEW = {
   client: {
     client_id: "https://claude.ai/oauth/claude-code-client-metadata",
+    host: "claude.ai",
     name: "Claude Code",
     origin: "https://claude.ai",
   },
@@ -102,7 +103,9 @@ test.describe("the consent page of an outside agent", () => {
   test("renders the client, the verified origin, the return address, the organization and the scopes", async ({ page }) => {
     await stub(page);
     await page.goto(PAGE);
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Claude Code wants to connect to Metorite");
+    // The headline names the VERIFIED host. The name is a claim, shown second.
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("claude.ai wants to connect to Metorite");
+    await expect(page.getByTestId("consent-claim")).toHaveText("It calls itself: “Claude Code”");
     await expect(page.getByTestId("consent-origin")).toHaveText("https://claude.ai");
     await expect(page.getByTestId("consent-redirect")).toHaveText("http://localhost:53122");
     await expect(page.getByTestId("consent-org")).toHaveText("Fracktal Works");
@@ -163,6 +166,74 @@ test.describe("the consent page of an outside agent", () => {
     await page.getByRole("button", { name: "Deny" }).click();
     await page.waitForURL(DENIED);
     expect(approvals).toHaveLength(0);
+  });
+
+  test("a claimed name never takes the headline", async ({ page }) => {
+    await stub(page, { ...VIEW, client: { ...VIEW.client, name: "Metorite" } });
+    await page.goto(PAGE);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("claude.ai wants to connect to Metorite");
+    await expect(page.getByTestId("consent-claim")).toHaveText("It calls itself: “Metorite”");
+  });
+
+  test("with no claimed name, the page shows no claim line", async ({ page }) => {
+    await stub(page, { ...VIEW, client: { ...VIEW.client, name: null } });
+    await page.goto(PAGE);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("claude.ai wants to connect to Metorite");
+    await expect(page.getByTestId("consent-claim")).toHaveCount(0);
+  });
+
+  test("Approve is off at once, and on after the 500 ms gate (double-clickjacking)", async ({ page }) => {
+    const approvals = await stub(page);
+    await page.clock.install();
+    await page.goto(PAGE);
+    const approve = page.getByRole("button", { name: "Approve" });
+    await expect(page.getByTestId("consent-org")).toHaveText("Fracktal Works");
+    await expect(approve).toBeDisabled();
+    // A click that arrives at once does nothing.
+    await approve.click({ force: true });
+    expect(approvals).toHaveLength(0);
+    await page.clock.runFor(600);
+    await expect(approve).toBeEnabled();
+    // A blur closes the gate again, and a new spell waits once more.
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    await expect(approve).toBeDisabled();
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(approve).toBeDisabled();
+    await page.clock.runFor(600);
+    await expect(approve).toBeEnabled();
+  });
+
+  test("after a 503, the retry asks check for a fresh ticket first", async ({ page }) => {
+    const approvals = await stub(page);
+    const checks: number[] = [];
+    let answer = 503;
+    await page.route("**/api/agent-access/authorize/check", (r) => {
+      checks.push(checks.length);
+      const ticket = checks.length === 1 ? VIEW.consent_ticket : "F".repeat(43);
+      return r.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...VIEW, consent_ticket: ticket }),
+      });
+    });
+    await page.route("**/api/agent-access/authorize/approve", (r) => {
+      approvals.push(r.request());
+      const status = answer;
+      answer = 200;
+      return r.fulfill(
+        status === 503
+          ? { status: 503, contentType: "application/json", headers: { "retry-after": "2" }, body: "{}" }
+          : { status: 200, contentType: "application/json", body: JSON.stringify({ redirect_to: APPROVED }) },
+      );
+    });
+    await page.goto(PAGE);
+    await page.getByRole("button", { name: "Approve" }).click();
+    await expect(page.getByText("Metorite is busy. Try again in a moment.")).toBeVisible();
+    expect(checks).toHaveLength(1);
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.waitForURL(APPROVED);
+    expect(checks).toHaveLength(2);
+    expect(approvals.map((a) => a.postDataJSON().consent_ticket)).toEqual([VIEW.consent_ticket, "F".repeat(43)]);
   });
 
   test("the page carries the frame headers", async ({ page }) => {

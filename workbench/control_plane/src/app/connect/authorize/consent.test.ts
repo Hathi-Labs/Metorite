@@ -8,8 +8,13 @@ import { describe, expect, it } from "vitest";
 import { isKnownIcon } from "@/lib/icons";
 
 import {
+  APPROVE_GATE_MS,
   OFFLINE_ACCESS,
   approveBody,
+  gateOpen,
+  gateStart,
+  gateWaitMs,
+  sameScreen,
   canApprove,
   grantedScopes,
   initialChoice,
@@ -34,7 +39,7 @@ const REQUEST = {
 };
 
 const VIEW: CheckView = {
-  client: { client_id: REQUEST.client_id, name: "Claude Code", origin: "https://claude.ai" },
+  client: { client_id: REQUEST.client_id, host: "claude.ai", name: "Claude Code", origin: "https://claude.ai" },
   redirect_uri: REQUEST.redirect_uri,
   redirect_display: "http://localhost:53122",
   redirect_app: false,
@@ -185,5 +190,83 @@ describe("the rest", () => {
     for (const name of ["Bot", "ShieldCheck", "Lock", "AlertCircle", "ArrowLeft", "ArrowUpRight", "Check"]) {
       expect(isKnownIcon(name), name).toBe(true);
     }
+  });
+});
+
+describe("the approve gate (fix round 1, P1: double-clickjacking)", () => {
+  const ON = { visible: true, focused: true };
+  const T0 = 1_000_000;
+
+  it("is not ready before 500 ms of visible, focused attention", () => {
+    const start = gateStart(null, ON, T0);
+    expect(start).toBe(T0);
+    expect(gateOpen(start, T0)).toBe(false);
+    expect(gateOpen(start, T0 + APPROVE_GATE_MS - 1)).toBe(false);
+    expect(gateWaitMs(start, T0 + 100)).toBe(APPROVE_GATE_MS - 100);
+  });
+
+  it("is ready at 500 ms and after", () => {
+    const start = gateStart(null, ON, T0);
+    expect(APPROVE_GATE_MS).toBe(500);
+    expect(gateOpen(start, T0 + 500)).toBe(true);
+    expect(gateOpen(start, T0 + 60_000)).toBe(true);
+    expect(gateWaitMs(start, T0 + 900)).toBe(0);
+  });
+
+  it("a page that loads without focus or hidden is never ready", () => {
+    expect(gateStart(null, { visible: true, focused: false }, T0)).toBeNull();
+    expect(gateStart(null, { visible: false, focused: true }, T0)).toBeNull();
+    expect(gateOpen(null, T0 + 10_000)).toBe(false);
+    expect(gateWaitMs(null, T0)).toBeNull();
+  });
+
+  it("resets on blur, and a new spell waits 500 ms again", () => {
+    let start = gateStart(null, ON, T0);
+    expect(gateOpen(start, T0 + 600)).toBe(true);
+    start = gateStart(start, { visible: true, focused: false }, T0 + 700);
+    expect(start).toBeNull();
+    expect(gateOpen(start, T0 + 800)).toBe(false);
+    start = gateStart(start, ON, T0 + 900);
+    expect(start).toBe(T0 + 900);
+    expect(gateOpen(start, T0 + 1_000)).toBe(false);
+    expect(gateOpen(start, T0 + 1_400)).toBe(true);
+  });
+
+  it("resets on hidden", () => {
+    let start = gateStart(null, ON, T0);
+    start = gateStart(start, { visible: false, focused: true }, T0 + 600);
+    expect(start).toBeNull();
+    expect(gateOpen(start, T0 + 5_000)).toBe(false);
+  });
+
+  it("a spell that goes on keeps its start", () => {
+    const start = gateStart(T0, ON, T0 + 300);
+    expect(start).toBe(T0);
+  });
+});
+
+describe("sameScreen (fix round 1, the retry after a 503)", () => {
+  it("accepts a fresh check of the same screen with a new ticket", () => {
+    expect(sameScreen(VIEW, { ...VIEW, consent_ticket: "n".repeat(43) })).toBe(true);
+  });
+
+  it.each([
+    ["host", { client: { ...VIEW.client, host: "evil.example" } }],
+    ["name", { client: { ...VIEW.client, name: "Other" } }],
+    ["redirect", { redirect_display: "http://localhost:1" }],
+    ["scopes", { scopes: ["projects:read"] }],
+    ["deny", { deny_redirect_to: "http://localhost:1/x" }],
+  ])("refuses a fresh check whose %s differs", (_name, change) => {
+    expect(sameScreen(VIEW, { ...VIEW, ...change } as CheckView)).toBe(false);
+  });
+});
+
+describe("the claim (fix round 1, P2)", () => {
+  it("a view with no claimed name is still a view", () => {
+    expect(isCheckView({ ...VIEW, client: { ...VIEW.client, name: null } })).toBe(true);
+  });
+
+  it("a view with no verified host is not", () => {
+    expect(isCheckView({ ...VIEW, client: { ...VIEW.client, host: "" } })).toBe(false);
   });
 });

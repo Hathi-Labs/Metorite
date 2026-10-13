@@ -827,13 +827,13 @@ class TestTheLoopbackRedirectThroughTheRoute:
         r = await self._check(uri)
         assert r.status_code == 200, r.text
         view = r.json()
-        assert view["client"] == {"client_id": CLAUDE_CODE, "name": "Claude Code",
-                                  "origin": "https://claude.ai"}
+        assert view["client"] == {"client_id": CLAUDE_CODE, "host": "claude.ai",
+                                  "name": "Claude Code", "origin": "https://claude.ai"}
         assert view["redirect_uri"] == uri
         assert view["deny_redirect_to"].startswith(uri + "?")
 
     @pytest.mark.parametrize("uri", [
-        "http://localhost:0/callback", "http://localhost:05555/callback",
+        "http://localhost:05555/callback",
         "http://LOCALHOST:5555/callback", "http://localhost:5555/callback?x=1",
         "http://[::1]:5555/callback", "http://localhost:5555/other",
     ])
@@ -1249,7 +1249,8 @@ class TestTheConsentHalf:
         assert r.status_code == 200, r.text
         view = r.json()
         assert view["client"] == {
-            "client_id": CLIENT, "name": "Test Agent", "origin": "https://client.example"}
+            "client_id": CLIENT, "host": "client.example", "name": "Test Agent",
+            "origin": "https://client.example"}
         assert view["redirect_display"] == "http://127.0.0.1:33418"
         assert view["redirect_app"] is False
         assert len(view["consent_ticket"]) == 43
@@ -1989,3 +1990,114 @@ class TestTheConsentTicket:
         fields = agent_access.ApproveRequest.model_fields
         assert "consent_ticket" in fields
         assert not set(fields) & _IDENTITY_INPUTS
+
+
+class TestTheHeadlineIsTheVerifiedHost:
+    """EA-4a fix round 1 (P2): the screen's headline is the verified host.
+
+    The ``client_name`` of the document is only a claim. The view carries it
+    as ``name``, or ``None`` when it shows nothing, and the screen shows it
+    second. A name of invisible characters is no name.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_db(self, monkeypatch):
+        async def _no_client(client_id):
+            return None
+
+        async def _cached(client_id, metadata):
+            return True
+
+        monkeypatch.setattr(agent_tokens, "get_client", _no_client)
+        monkeypatch.setattr(agent_tokens, "cache_cimd_client", _cached)
+
+    async def _client(self, web, name) -> dict:
+        doc = _document()
+        if name is None:
+            doc.pop("client_name")
+        else:
+            doc["client_name"] = name
+        web.docs[CLIENT] = (200, json.dumps(doc).encode())
+        r = await _gw(_gateway_app(str(uuid.uuid4())), "/agent-access/authorize/check",
+                      _authorize())
+        assert r.status_code == 200, r.text
+        return r.json()["client"]
+
+    async def test_a_normal_name_is_a_claim_beside_the_verified_host(self, web):
+        client = await self._client(web, "Test Agent")
+        assert client["host"] == "client.example"
+        assert client["origin"] == "https://client.example"
+        assert client["name"] == "Test Agent"
+
+    async def test_a_name_that_claims_metorite_never_becomes_the_host(self, web):
+        client = await self._client(web, "Metorite")
+        assert client["host"] == "client.example"
+        assert client["name"] == "Metorite"
+
+    @pytest.mark.parametrize("name", [
+        "ㅤ", "ㅤㅤㅤ", "ᅟ", "ᅠﾠ", " ㅤ ",
+        "​​", "   ", "́́", "!!!", None, 7,
+    ], ids=["hangul-filler", "three-fillers", "choseong-filler", "other-fillers",
+            "filler-in-spaces", "zero-width", "spaces", "marks-only", "symbols-only",
+            "absent", "not-a-string"])
+    async def test_a_name_that_shows_nothing_is_no_name(self, web, name):
+        client = await self._client(web, name)
+        assert client["name"] is None
+        assert client["host"] == "client.example"
+
+    @pytest.mark.parametrize(("raw", "clean"), [
+        ("Claude Code", "Claude Code"),
+        ("ㅤClaude", "ㅤClaude"),
+        ("R2-D2", "R2-D2"),
+        ("クロード", "クロード"),
+        ("7", "7"),
+    ], ids=["plain", "filler-and-letters", "letters-and-digits", "katakana", "digit"])
+    def test_a_name_with_a_visible_letter_or_digit_is_kept(self, raw, clean):
+        assert agent_access._clean_name(raw) == clean
+
+
+class TestAnExplicitPortMustBeInRange:
+    """EA-4a fix round 1: ``https://claude.ai:0/cb`` passed, because a later
+    ``if port`` read the port 0 as no port."""
+
+    @pytest.mark.parametrize("uri", [
+        "https://claude.ai:0/cb", "http://localhost:0/callback", "http://127.0.0.1:0/cb",
+        "https://claude.ai:65536/cb", "https://claude.ai:99999/cb",
+    ])
+    def test_a_port_out_of_range_is_refused(self, uri):
+        assert not agent_oauth.is_allowed_redirect_uri(uri)
+
+    @pytest.mark.parametrize("uri", [
+        "https://claude.ai:1/cb", "https://claude.ai:65535/cb", "http://localhost:53122/callback",
+        "https://claude.ai/cb",
+    ])
+    def test_a_port_in_range_or_no_port_passes(self, uri):
+        assert agent_oauth.is_allowed_redirect_uri(uri)
+
+    async def test_port_zero_is_refused_through_the_route_with_no_redirect(self, web, monkeypatch):
+        """Fix round 1 moved this case out of the EA-2c list: the allow list
+        now refuses port 0 too, so the match is no longer the only refusal."""
+        async def _no_client(client_id):
+            return None
+
+        async def _cached(client_id, metadata):
+            return True
+
+        monkeypatch.setattr(agent_tokens, "get_client", _no_client)
+        monkeypatch.setattr(agent_tokens, "cache_cimd_client", _cached)
+        r = await _gw(_gateway_app(str(uuid.uuid4())), "/agent-access/authorize/check",
+                      _authorize(client_id=CLAUDE_CODE, redirect_uri="http://localhost:0/callback"))
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"] == "invalid_request"
+        assert r.json()["detail"]["redirect_to"] is None
+
+    def test_the_loopback_match_of_ea_2c_is_unchanged(self):
+        assert agent_oauth.redirect_uri_matches("http://localhost:53122/callback", [_LH])
+        assert not agent_oauth.redirect_uri_matches("http://localhost:0/callback", [_LH])
+        assert agent_oauth.redirect_uri_matches(_LH, [_LH])
+
+    def test_the_display_keeps_a_port_and_never_reads_zero_as_none(self):
+        assert agent_oauth.redirect_display("https://claude.ai:443/cb") == (
+            "https://claude.ai:443", False)
+        assert agent_oauth.redirect_display("https://claude.ai:0/cb") == (
+            "https://claude.ai:0", False)

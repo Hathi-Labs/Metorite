@@ -266,8 +266,12 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
         return False
     try:
         parts = urlsplit(uri)
-        _ = parts.port  # a bad port raises here
+        port = parts.port  # a bad port raises here
     except ValueError:
+        return False
+    # An explicit port must be 1 to 65535. ``urlsplit`` reads ``:0`` as the
+    # port 0, and a later ``if port`` reads 0 as "no port" (fix round 1).
+    if port is not None and not 1 <= port <= _MAX_PORT:
         return False
     if "#" in uri or parts.username is not None or parts.password is not None:
         return False
@@ -303,7 +307,8 @@ def redirect_display(uri: str) -> tuple[str, bool]:
             port = parts.port
         except ValueError:
             port = None
-        return (f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}", False)
+        shown = f"{scheme}://{host}" if port is None else f"{scheme}://{host}:{port}"
+        return shown, False
     if parts.netloc:
         return f"{scheme}://{parts.netloc}", True
     return f"{scheme}:", True
