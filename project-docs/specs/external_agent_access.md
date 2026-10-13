@@ -764,6 +764,7 @@ The consent page is `/connect/authorize` on the control plane. A member sees it 
 - `approve` spends the ticket with one `GETDEL`, before every other check of the request. So a ticket that `approve` reads is gone, whatever the result.
 - A missing, spent, expired or unmatched ticket gives 400 `invalid_request`, with no `redirect_to`.
 - A Redis outage gives 503 with `Retry-After`, never 400. This holds for `check` too, because `check` cannot give a ticket without Redis.
+- Redis can spend a ticket and then lose the reply. So after a 503 or a lost answer on `approve`, the page calls `check` again before the retry. It uses the fresh ticket only when the fresh screen is the same (`sameScreen` in `consent.ts`). Any other answer ends the flow.
 
 **What the screen shows of the redirect.** `AuthorizeView.redirect_display` replaces `redirect_host`.
 
@@ -782,11 +783,14 @@ The consent page is `/connect/authorize` on the control plane. A member sees it 
 
 **What the page shows and takes.**
 
-- It shows the client name, the verified origin, `redirect_display`, the organization name and each requested scope.
+- The headline names the VERIFIED host, for example "claude.ai wants to connect to Metorite". The `client_name` of the document is only a claim. The page shows it second, as `It calls itself: "<name>"`, or not at all.
+- `_clean_name` refuses a name with no visible letter or digit, such as a name of Hangul fillers (U+3164, U+115F). The view then carries no name.
+- It also shows the verified origin, `redirect_display`, the organization name and each requested scope.
 - It takes a checkbox for each scope. A member can clear a box and never add a scope. The member cannot clear `offline_access`, so it shows with no box.
 - It takes a project pin picker. The picker lists up to 50 visible projects that are not personal. No pin means every project the member sees (§7).
 - It takes `include_personal`, a checkbox that is off by default (D-EA-4).
 - It has an Approve button and a Deny button. Deny navigates to `deny_redirect_to`.
+- ⚠️ **The approve gate (double-clickjacking).** An attacker's page can move its opener to this page between the two clicks of a double-click. So Approve stays off until the page is visible and has focus, and then for 500 ms more. A `blur` or a change to hidden starts the wait again. The click checks the gate again. Fences: `consent.test.ts` and `e2e/connect-authorize.spec.ts`.
 
 ## 11. Schema addition: task references
 
@@ -985,6 +989,10 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 - For a private-use scheme, `redirect_host` shows the URI authority as if it were a web host. A client can list `x-evil://claude.ai/cb`, and the consent screen then shows `claude.ai`, although the browser gives the code to the native app that claims `x-evil`. EA-4a shows the scheme with the authority for every scheme other than http and https (`redirect_display`, §10.5).
 - The redirect URI rules of EA-2a are a deny list of dangerous schemes. A deny list is never complete. EA-4a moves them to the RFC 8252 forms (§10.5).
 - The allow list of EA-4a refuses a private-use scheme with no dot. A client that registers such a scheme cannot connect, until it registers a loopback or `https` URI. EA-11 checks the real clients.
+- **The Cursor decision (EA-4a fix round 1).** The allow list refuses Cursor's `cursor://anysphere.cursor-retrieval/oauth/callback`, so Cursor cannot connect today.
+  - RFC 8252 §8.4 says that a server SHOULD refuse a private-use scheme with no dot. It does not say MUST.
+  - The refusal of the authority form (`scheme://authority/path`) is stricter than the RFC.
+  - Cursor registers through Dynamic Client Registration. So look at this decision again when EA-2b is built.
 - D-EA-2 says the edge unit has a smaller blast radius. That is true only after the EA-10 sandbox. The edge holds the database DSN, and EA-3 adds the signing key, not the internal bearer. A thief with the key can act as any member who holds a live connection, on the GET routes of `MCP_ROUTES` (§10.2). A thief with the DSN reaches the database directly.
 
 ## 18. Changelog
@@ -1084,3 +1092,4 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The control plane.** The page `/connect/authorize`, the BFF routes `check` and `approve` with the `Sec-Fetch-Site` check, the frame headers in `next.config.ts`, and `/connect` in `CHROMELESS_ROUTES`. The page reads the organization name from `GET /api/auth/me`, so `AuthorizeView` carries no organization field.
   - **The fences.** `test_agent_oauth_server.py` holds the ticket, the display and the redirect forms. `relay.test.ts` holds the BFF rules, `sessionCookie.test.ts` holds `SameSite=Lax`, and `e2e/connect-authorize.spec.ts` holds the page and the frame headers. Each rule was red first under a named mutation.
   - **Choices this slice made.** A URI with no port shows `scheme://host`, with no port. The pin picker lists the nodes of `GET /projects/tree` in tree order, folders and spaces too, because a pin covers its subtree. `test_mcp_edge_signing.py` reads `_PRIVATE_SCHEME` in place of the removed `_SCHEME`.
+- 2026-10-13 — Fix round 1 of EA-4a, after the adversarial review. Approve waits for 500 ms of focus. The headline names the verified host, and the client name is a claim. A port 0 redirect is refused. A lost session is a 401. A retry after a 503 gets a fresh ticket. §17 records the Cursor decision.
