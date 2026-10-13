@@ -61,6 +61,7 @@ from acb_skills.agent_paths import (  # noqa: E402
 from acb_skills.write_artifact import bind_artifact_context  # noqa: E402
 
 from tests.unit import _xlsx_build as xb  # noqa: E402
+from tests.unit._attachment_clock import TickClock as _TickClock  # noqa: E402
 from tests.unit._linear_time import assert_linear  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -957,41 +958,6 @@ import threading  # noqa: E402
 import time  # noqa: E402
 import zlib  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
-
-
-class _TickClock:
-    """``time`` as ``attachment_text`` reads it, with a clock the test moves.
-
-    ``_Deadline`` is the only reader of ``time.monotonic`` in that module, so
-    this clock decides when a deadline fires. ``advance`` moves it, and
-    *per_read* moves it on each read. A deadline then fires after a COUNT of
-    checks or of slow steps, never after an amount of runner time.
-
-    These fences read the real clock before. A slow PDF failed at 4.54 s and
-    4.7 s against 4.5 s on loaded CI runners (2026-10-11 and 2026-10-12),
-    and #943 widened the bound to 15 s. Now the fence is where the parse
-    stops, and a loaded runner cannot move that."""
-
-    def __init__(self, per_read: float = 0.0) -> None:
-        self.now = 0.0
-        self.per_read = per_read
-        self.reads = 0
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(time, name)
-
-    def monotonic(self) -> float:
-        self.reads += 1
-        self.now += self.per_read
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-    def install(self, monkeypatch: pytest.MonkeyPatch) -> _TickClock:
-        monkeypatch.setattr(at, "time", self)
-        return self
-
 
 #: A hang guard, never a budget: the outer wait of ``parse_bounded`` in the
 #: fences that hold it, so only the parse's own deadline can answer first.
