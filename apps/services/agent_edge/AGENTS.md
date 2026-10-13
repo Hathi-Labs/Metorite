@@ -17,7 +17,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 - `bearer.py` reads the bearer token, looks it up, checks the audience and computes the effective scopes.
 - `gateway_client.py` is the only client of the gateway. It sends the four signed headers of `acb_auth.agent_signing` and no other header that it sets.
 - `cursor.py` signs and reads the page cursor of a list tool. The cursor binds the tool name, so a cursor of one tool never pages another.
-- `tools.py` holds the tool records and is the ONE module that maps a gateway response to a tool result (EA3-9). It holds the seven read tools of spec §9.1: `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline` and `search_tasks`.
+- `tools.py` holds the tool records and is the ONE module that maps a gateway response to a tool result (EA3-9). It holds the seven read tools of spec §9.1: `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline` and `search_tasks`. EA-6a adds the two write tools of spec §9.2, `set_task_status` and `add_task_reference`. Each needs `projects:write`, and branch 0 of the gateway checks the nonce, the scope, the writes flag and the cap.
 
 ## Local contract
 
@@ -31,7 +31,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 7. **No token, code or hash goes into a log line.** Log ids and reasons only.
 8. **No rate limit yet.** EA-7 owns the limits. Do not add a limiter here before EA-7. The body cap of `token` and `revoke` is `agent_oauth_max_body_bytes`. The body cap of `/mcp` is `mcp.MAX_BODY_BYTES`, which is 1 MiB.
 9. **No control character.** A C0 control character or DEL in a form field is `invalid_request`. Postgres refuses a NUL in text, so the edge must refuse it first.
-10. **The edge holds no bearer.** A gateway request carries the four signed headers and nothing else that the edge sets. Never send an `Authorization` header or a member header to the gateway. Never copy a header of the client request into a gateway request.
+10. **The edge holds no bearer.** A gateway request carries the four signed headers and nothing else that the edge sets. A write (EA-6a) also carries the signed `X-Agent-Nonce`, a JSON `Content-Type` and `If-Match` when the tool sends a version. Only `gateway_client.write` sends a write, and only for a pair of `agent_oauth.MCP_WRITE_ROUTES`. Never send an `Authorization` header or a member header to the gateway. Never copy a header of the client request into a gateway request.
 11. **Keep the order of the checks.** The order of spec §9.6 is the flag, the key, the method, the origin, the body, the token, the version and the scope. Do not move a check.
 12. **An outage is a 503, never a 401.** A 401 makes a client drop a good token. `acb_common.db_busy.is_db_outage` decides.
 13. **Only check 8 sends `insufficient_scope`.** A gateway 403 is a tool error with a fixed text. Never send a gateway error text to an agent.
@@ -47,7 +47,7 @@ The deploy starts the edge only after the owner enables the unit. Caddy serves i
 
 ## Fence
 
-`tests/unit/test_agent_oauth_server.py` holds the behaviour of the OAuth routes, and it holds the structural fences of rules 2, 4 and 15. `tests/unit/test_mcp_edge_protocol.py` holds rules 10 to 14 and the wire contract of `/mcp`. `tests/unit/test_mcp_edge_coverage.py` holds the tool records against `MCP_ROUTES` and the gateway routes, and rule 16.
+`tests/unit/test_agent_oauth_server.py` holds the behaviour of the OAuth routes, and it holds the structural fences of rules 2, 4 and 15. `tests/unit/test_mcp_edge_protocol.py` holds rules 10 to 14 and the wire contract of `/mcp`. `tests/unit/test_mcp_edge_coverage.py` holds the tool records against `MCP_ROUTES` and the gateway routes, and rule 16. `tests/unit/test_mcp_edge_writes.py` holds the write tools of EA-6a, with R8 classes through the real gateway app.
 
 ## Child DOX Index
 
