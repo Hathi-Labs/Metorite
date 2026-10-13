@@ -22,7 +22,11 @@ org admin who holds ``feature:approvals`` gets approval rows.
 **The budget** is the state join's: ``state.STATE_TIMEOUT_S``, 1.5 seconds.
 The feed runs this at the same time as the join, so the feed's worst case
 stays at 7.5 seconds. The day read counts inside it. A read that is not done
-when the budget ends counts as failed.
+when the budget ends counts as failed, and so does each read that did not
+start.
+
+**One read at a time.** The reads run as one chain, beside the join, so a
+feed read holds two pool connections at most (fix round 1).
 
 **The shape.** ``entries`` is a list of ``{app, title, href, by, at}``, the
 newest first. Each source gives ``needs.PER_APP`` (15) entries at most, and
@@ -91,10 +95,26 @@ def _newest(closed: list[Closed]) -> list[Closed]:
     return sorted(kept.values(), key=lambda c: (-stamp(c), c.key))
 
 
+#: A read starts only when this much of the budget is left, the rule of
+#: ``needs.run_providers``. A read that cannot finish never takes a
+#: connection from the pool.
+MIN_START_S = 0.05
+
+
 async def handled_run(user: UserContext, now: datetime, *, budget_s: float) -> HandledRun:
-    """Run each Handled read the member holds, at the same time, inside
+    """Run each Handled read the member holds, ONE AFTER ANOTHER, inside
     ``budget_s``. It never raises: a failure reads ``failed``, and the
-    feed keeps its cards."""
+    feed keeps its cards.
+
+    ⚠️ **One read at a time** (MD-2c fix round 1). The feed runs this chain
+    beside the state join, so a feed read holds two pool connections at most:
+    the join's and the chain's. Three reads at once took four, and at the
+    09:00 peak the join then waited on the pool past its own limit, and every
+    snoozed card came back for a poll. The day read is the first link.
+
+    When the budget ends, the read in flight is cancelled, and each read that
+    did not start reads ``failed``. No read starts after the budget ends.
+    """
     run = HandledRun()
     held: list[Provider] = []
     for provider in handled_providers():
@@ -116,30 +136,30 @@ async def handled_run(user: UserContext, now: datetime, *, budget_s: float) -> H
         run.ok = False
         return run
 
-    tasks = {p.source: asyncio.ensure_future(p.handled(user, since))  # type: ignore[misc]
-             for p in held}
-    left = max(0.0, deadline - loop.time())
-    _done, late = await asyncio.wait(tasks.values(), timeout=left)
-    for task in late:
-        task.cancel()
-    if late:
-        await asyncio.gather(*late, return_exceptions=True)
-
     found: list[Closed] = []
-    for source, task in tasks.items():
-        if task in late or task.cancelled():
+    for provider in held:
+        source = provider.source
+        left = deadline - loop.time()
+        if left <= MIN_START_S:
+            logger.info("shell.feed handled read not started", extra={"provider": source})
+            run.sources[source] = "failed"
+            continue
+        try:
+            closed = await asyncio.wait_for(provider.handled(user, since), left)  # type: ignore[misc]
+        except TimeoutError:
             logger.info("shell.feed handled read timed out", extra={"provider": source})
             run.sources[source] = "failed"
             continue
-        exc = task.exception()
-        if exc is not None:
+        except Exception as exc:
             # The error's TYPE only, for the reason in ``needs.run_providers``.
             logger.warning("shell.feed handled read failed",
                            extra={"provider": source, "error": type(exc).__name__})
             run.sources[source] = "failed"
             continue
         run.sources[source] = "ok"
-        found.extend(_newest(list(task.result() or []))[:PER_APP])
+        # The ONE cut to PER_APP. The reads ask for PER_APP rows, and this
+        # cut holds when a read gives more.
+        found.extend(_newest(list(closed or []))[:PER_APP])
     run.ok = all(v != "failed" for v in run.sources.values())
     run.entries = [c.entry() for c in _newest(found)]
     return run

@@ -1789,12 +1789,14 @@ the member closed.
 - **Tasks.** A new read beside `my_due_tasks` in
   `routes/projects/personal.py`. It reads the tasks of the member's lens with
   `completed_at` since the day start. The actor is `created_by` of the newest
-  `pm_activities` row of type `status_change` for that task.
+  `pm_activities` row of type `status_change` for that task. A tie of
+  `created_at` goes to the higher `seq` (migration 213).
 - **Email rules.** The rows of `email_executed_rules` with status `APPLIED`
   since the day start, on the mailboxes the needs email provider reads (owned,
   and `in_all_inboxes`). A row on a message in the trash counts, because the
   rule may have put it there. The title is the subject, or else the rule
-  name. The link is the message, or else the rules history.
+  name. The link is the message, or else the email app (`/email`). The app
+  has no link to its rules history.
 - **Approvals.** A new read in `action_broker`, `read_decided(since)`, beside
   `read_pending`. It reads the statuses `approved`, `applied` and `rejected`.
   `failed` is not handled. Only the org admin who passes the approvals gate
@@ -1853,8 +1855,8 @@ is a new function in the app that owns its table:
 - `action_broker.read_decided`, beside `read_pending`.
 
 `needs.Provider` gains `handled`, and the tasks, email and approvals
-providers carry one. The fences are `test_feed_handled.py` (46 tests) and
-`test_feed_handled_r8.py` (12 tests, R8). The client half is still open,
+providers carry one. The fences are `test_feed_handled.py` (50 tests) and
+`test_feed_handled_r8.py` (13 tests, R8). The client half is still open,
 and it follows MD-2b. The build made these choices, which this file did not
 fix:
 
@@ -1864,13 +1866,20 @@ fix:
   of the state join. A member with no Calendar pane gets the zone from the
   lens and the start hour 07:00 (§6.8 item 8).
 - **The budget** is `state.STATE_TIMEOUT_S`. The day read counts inside it.
-  A read that is not done at the limit reads as failed, and the other reads
-  keep their entries.
+  A read that is not done at the limit reads as failed. A read that did not
+  start before the limit reads as failed, and it never starts.
+- **One read at a time** (fix round 1). The reads run as one chain beside
+  the state join, so a feed read holds two pool connections at most. Three
+  reads at once held four, and at a peak the join then missed its own limit.
+  `test_a_feed_read_holds_two_connections_at_most` holds the rule.
+- **One cut to 15.** Each read asks for 15 rows, and `handled_run` cuts each
+  source to 15. The providers do not cut again.
 - **A failed or slow read never fails the feed.** The cards and `needs` do
   not change, and `handled_ok` goes false.
 - **One entry for each entity.** The email read keeps the newest rule row
-  for each message in its SQL. The run also keeps the newest entry for each
-  entity, so a read that gives two rows for one entity gives one entry.
+  for each message in its SQL, before its `LIMIT`. So many runs on one
+  message never push other messages out. The run also keeps the newest entry
+  for each entity. A read that gives two rows for one entity gives one entry.
 - **A rule row with no message** opens `/email`. The email app has no link
   to its rules history.
 - **The `by` table.** An actor with no `@` that is not `agent:<name>` reads

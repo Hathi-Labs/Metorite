@@ -187,7 +187,7 @@ webhook receivers, OAuth callbacks, and the Control Plane API.
    - The state join of `GET /shell/feed` runs after the fold and before the order, and it writes nothing. `RULES` holds the eight rules of `my_day_feed.md` §6.3 in their order. The feed computes `needs` before the join, so the state never changes the bell.
    - Fences: `tests/unit/test_my_day_state.py`, `tests/unit/test_my_day_state_r8.py` (R8), `tests/unit/test_shell_feed.py` and `tests/unit/test_feed_rank.py`.
    - `handled.py` builds the Handled group of `GET /shell/feed` (WS-58 MD-2c). A provider of `needs.REGISTRY` may carry a `handled` read, and the tasks, email and approvals providers carry one. Each read calls a function in the app that owns the table: `personal.my_completed_since`, `runner.applied_rules_since` and `action_broker.read_decided`. The module adds no SQL, and it opens a session only through the state module's seam, for the day of a member with no Calendar pane.
-   - The Handled reads run at the same time as the state join, inside `state.STATE_TIMEOUT_S`. The day comes from `state._hours`. A read that fails or runs out of time makes `handled_ok` false, and the feed keeps its cards. Fences: `tests/unit/test_feed_handled.py` and `tests/unit/test_feed_handled_r8.py` (R8).
+   - The Handled reads run one after another, as one chain beside the state join, inside `state.STATE_TIMEOUT_S`. So a feed read holds two pool connections at most. A read that did not start before the limit reads as failed. The day comes from `state._hours`. A read that fails or runs out of time makes `handled_ok` false, and the feed keeps its cards. Fences: `tests/unit/test_feed_handled.py` and `tests/unit/test_feed_handled_r8.py` (R8).
 
 ## Work Guidance
 

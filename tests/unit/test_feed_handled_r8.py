@@ -61,6 +61,8 @@ TAG = uuid.uuid4().hex[:8]
 #: Member A and member B of org B. A is the one whose day this suite reads.
 A = f"handled-a-{TAG}@md2c.test"
 B = f"handled-b-{TAG}@md2c.test"
+#: A member of org B with one crowded mailbox (the email dedup).
+CROWD = f"handled-crowd-{TAG}@md2c.test"
 #: An admin of org A, who decided org A's action.
 BOSS = f"handled-boss-{TAG}@md2c.test"
 #: The member's day starts at 01:00 in a zone where it is now 03:00 to 20:59,
@@ -186,6 +188,10 @@ def seeded(promoted):  # noqa: F811
         ids["yesterday"] = _closed_task(
             c, org=org, project=shared, lane=done, title="Closed yesterday", number=5,
             assignee=A, closed_at=before, history=[(A, before)])
+        # Two moves in one instant: B first, then A. `seq` says A was last.
+        ids["tied"] = _closed_task(
+            c, org=org, project=shared, lane=done, title="Tied closers", number=10,
+            assignee=A, closed_at=ago(55), history=[(B, ago(55)), (A, ago(55))])
         ids["open"] = _closed_task(
             c, org=org, project=shared, lane=todo, title="Still open", number=6,
             assignee=A, closed_at=None, history=[])  # type: ignore[arg-type]
@@ -255,6 +261,21 @@ def seeded(promoted):  # noqa: F811
                                 status="applied", by=A, at=before)
         ids["pa_far"] = _action(c, org=other, action="crm.zoho_delete",
                                 status="applied", by=BOSS, at=ago(2))
+    # A crowded mailbox: twenty runs on one message, newer than one run on
+    # each of two other messages. A LIMIT before the dedup loses the two.
+    ids["box_crowd"] = crowd = _account(p.admin_engine, org=org, owner=CROWD, default=True)
+    m_busy = _mail(p.admin_engine, org=org, account_id=crowd, sender="a@x.test",
+                   subject="Busy thread")
+    ids["m_crowd"] = [m_busy] + [
+        _mail(p.admin_engine, org=org, account_id=crowd, sender="a@x.test", subject=s)
+        for s in ("Quiet one", "Quiet two")]
+    with p.admin_engine.begin() as c:
+        for n in range(20):
+            _rule_row(c, org=org, account=crowd, message=m_busy, subject="Busy thread",
+                      rule=f"Run {n}", status="APPLIED", at=NOW - timedelta(seconds=n + 1))
+        for minutes, message in ((30, ids["m_crowd"][1]), (40, ids["m_crowd"][2])):
+            _rule_row(c, org=org, account=crowd, message=message, subject=None,
+                      rule="Once", status="APPLIED", at=ago(minutes))
     return ids
 
 
@@ -284,13 +305,15 @@ class TestTasks:
         assert run.sources == {"tasks": "ok", "email": "absent", "approvals": "absent"}
         assert run.ok is True
         assert _titles(run) == ["Ship the bracket", "Draw the housing", "Wire the sensor",
-                                "Synced closed"]
+                                "Synced closed", "Tied closers"]
         by = {e["title"]: e["by"] for e in run.entries}
         # The NEWEST status_change names the closer: A, not B's older move.
         assert by["Ship the bracket"] == {"kind": "you", "name": None}
         assert by["Draw the housing"] == {"kind": "person", "name": B.split("@")[0]}
         assert by["Wire the sensor"] == {"kind": "agent", "name": "builder"}
         assert by["Synced closed"] == {"kind": "system", "name": None}
+        # One instant, two moves: the higher `seq` (A's) names the closer.
+        assert by["Tied closers"] == {"kind": "you", "name": None}
         first = run.entries[0]
         assert first["href"] == f"/projects?task={seeded['by_a']}"
         assert first["app"] == "tasks"
@@ -303,7 +326,7 @@ class TestTasks:
         assert theirs.sources["tasks"] == "ok"
         got = _titles(theirs)
         for title in ("Ship the bracket", "Draw the housing", "Wire the sensor",
-                      "Synced closed"):
+                      "Synced closed", "Tied closers"):
             assert title not in got, title
         # Non-vacuity: B's own closed work is real, and B reads it.
         assert set(got) == {"B private closed", "B assigned closed"}
@@ -378,6 +401,34 @@ class TestEmailRules:
         assert [r["subject"] for r in theirs] == ["B's mail"]  # non-vacuity
 
 
+class TestTheEmailDedupInSql:
+    async def test_twenty_runs_on_one_message_never_push_two_others_out(
+        self, promoted, seeded,  # noqa: F811
+    ):
+        """Verifier finding 2. `handled._newest` dedups again, so only the read
+        alone shows that the SQL keeps ONE row for each message before its
+        LIMIT. Without it, the busy message fills all fifteen rows."""
+        from gateway.routes.email.automation.runner import applied_rules_since
+
+        async with _as_member(promoted, promoted.org_b):
+            rows = await applied_rules_since(_user(CROWD, "email"), [seeded["box_crowd"]],
+                                             _since(seeded["zone"]), limit=15)
+        assert [r["message_id"] for r in rows] == seeded["m_crowd"]
+        assert rows[0]["rule_name"] == "Run 0"  # the newest run of the busy one
+
+
+async def _decided_ids(p, org: str, zone: str) -> set[str]:
+    """The ids that ``read_decided`` gives a session bound to ``org``."""
+    import action_broker
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = bind_tenant(org)
+    try:
+        return {str(r["id"]) for r in action_broker.read_decided(_since(zone))}
+    finally:
+        release_tenant(token)
+
+
 class TestApprovals:
     async def test_an_admin_reads_the_decisions_of_the_day(
         self, promoted, seeded, broker_as_app,  # noqa: F811
@@ -398,12 +449,22 @@ class TestApprovals:
     ):
         run = await _handled(promoted, _user(A, "approvals", is_admin=True))
         assert run.sources["approvals"] == "ok"
-        assert "Delete a record in Zoho CRM" not in _titles(run)  # pa_far, and pa_failed
-        # Non-vacuity: org A's admin reads org A's decision, and none of B's.
+        # By id, through the read the entries come from (verifier finding 3).
+        in_b = await _decided_ids(promoted, promoted.org_b, seeded["zone"])
+        assert seeded["pa_far"] not in in_b
+        assert seeded["pa_applied"] in in_b  # non-vacuity in B
+        # No entry carries org A's decider or org A's instant.
+        boss = BOSS.split("@")[0]
+        far_at = NOW - timedelta(minutes=2)
+        assert not [e for e in run.entries if e["by"].get("name") == boss
+                    or datetime.fromisoformat(e["at"]) == far_at]
+        # Non-vacuity: org A's session reads org A's decision, and none of B's.
+        assert await _decided_ids(promoted, promoted.org_a, seeded["zone"]) == {
+            seeded["pa_far"]}
         theirs = await _handled(promoted, _user(BOSS, "approvals", is_admin=True),
                                 org=promoted.org_a)
         assert theirs.sources["approvals"] == "ok"
-        assert _titles(theirs) == ["Delete a record in Zoho CRM"]
+        assert [e["by"] for e in theirs.entries] == [{"kind": "you", "name": None}]
 
     async def test_iv_a_member_who_is_not_an_admin_gets_no_approval_row(
         self, promoted, seeded, broker_as_app,  # noqa: F811
@@ -447,7 +508,7 @@ class TestThroughTheFeed:
             answer = await feed.shell_feed(limit=80, user=user)
         assert answer["handled_ok"] is True
         assert {e["app"] for e in answer["handled"]} == {"tasks", "email", "approvals"}
-        assert len(answer["handled"]) == 10
+        assert len(answer["handled"]) == 11
         stamps = [datetime.fromisoformat(e["at"]) for e in answer["handled"]]
         assert stamps == sorted(stamps, reverse=True)
         assert "handled" not in {g["id"] for g in answer["groups"]}

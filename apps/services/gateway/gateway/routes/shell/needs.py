@@ -402,7 +402,7 @@ async def _tasks_handled(user: UserContext, since: datetime) -> list[Closed]:
 
     answer = await my_completed_since(user, since, limit=PER_APP)
     out: list[Closed] = []
-    for row in (answer.get("rows") or [])[:PER_APP]:
+    for row in answer.get("rows") or []:
         task_id = str(row["id"])
         out.append(Closed(
             key=f"tasks:{task_id}", app="tasks",
@@ -687,7 +687,7 @@ async def _email_handled(user: UserContext, since: datetime) -> list[Closed]:
     if not accounts:
         return []
     out: list[Closed] = []
-    for row in (await applied_rules_since(user, accounts, since, limit=PER_APP))[:PER_APP]:
+    for row in await applied_rules_since(user, accounts, since, limit=PER_APP):
         message = row.get("message_id")
         title = (str(row.get("subject") or "").strip()
                  or str(row.get("rule_name") or "").strip() or "(no subject)")
@@ -810,7 +810,7 @@ async def _approvals_handled(user: UserContext, since: datetime) -> list[Closed]
         key=f"approvals:{row['id']}", app="approvals", title=_action_title(row),
         href="/approvals", by=closed_by(row.get("reviewed_by"), user.email or ""),
         at=_iso(row.get("reviewed_at")),
-    ) for row in rows[:PER_APP]]
+    ) for row in rows]
 
 
 # ── The one registry (``my_day_feed.md`` §4.4) ─────────────────────────────

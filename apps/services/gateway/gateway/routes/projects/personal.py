@@ -1756,10 +1756,12 @@ async def my_due_tasks(user: UserContext, *, limit: int) -> dict[str, Any]:
 #: Who closed the task: ``created_by`` of its newest ``status_change`` row
 #: (``apply_status_transition`` writes it beside ``completed_at``). An
 #: email, ``agent:<name>``, ``system:sync`` or ``system:workflow:<id>``.
+#: ``seq`` breaks a tie of ``created_at`` (migration 213, H-159), in the order
+#: of ``idx_pm_activities_task_seq``.
 _CLOSED_BY_SQL = (
     "(SELECT a.created_by FROM pm_activities a"
     " WHERE a.task_id = t.id AND a.type = 'status_change'"
-    " ORDER BY a.created_at DESC, a.id DESC LIMIT 1)"
+    " ORDER BY a.created_at DESC, a.seq DESC LIMIT 1)"
 )
 
 #: The lens rows closed at or after ``:since``, the newest first. One row

@@ -254,16 +254,35 @@ class TestTheCap:
         assert asked == {"my_completed_since": 15, "applied_rules_since": 15,
                          "read_decided": 15}
 
-    def test_a_read_that_gives_more_is_cut_to_fifteen(self, seeded, monkeypatch):
-        async def _many(user, since, *, limit):
-            return {"rows": [_done(f"t-{n:02d}", f"Task {n}", ME,
-                                   NOW - timedelta(minutes=n + 1)) for n in range(40)]}
-
+    @pytest.mark.parametrize("app", ["tasks", "email", "approvals"])
+    def test_a_read_that_gives_more_is_cut_to_fifteen(self, seeded, monkeypatch, app):
+        # The ONE cut, in `handled_run`. Each read asks for 15 rows, and the
+        # cut holds when a read gives 40.
+        import action_broker
+        from gateway.routes.email.automation import runner
         from gateway.routes.projects import personal
 
-        monkeypatch.setattr(personal, "my_completed_since", _many)
-        entries = run_feed(member("projects"))["handled"]
+        stamps = [NOW - timedelta(minutes=n + 1) for n in range(40)]
+
+        async def _tasks(user, since, *, limit):
+            return {"rows": [_done(f"t-{n:02d}", f"Task {n}", ME, at)
+                             for n, at in enumerate(stamps)]}
+
+        async def _rules(user, account_ids, since, *, limit):
+            return [_rule(f"r-{n:02d}", "a-mine", f"m-{n:02d}", f"Mail {n}", "R", at)
+                    for n, at in enumerate(stamps)]
+
+        def _decisions(since, limit=15):
+            return [_decided(f"pa-{n:02d}", "crm.zoho_update", ME, at, "applied")
+                    for n, at in enumerate(stamps)]
+
+        monkeypatch.setattr(personal, "my_completed_since", _tasks)
+        monkeypatch.setattr(runner, "applied_rules_since", _rules)
+        monkeypatch.setattr(action_broker, "read_decided", _decisions)
+        entries = [e for e in run_feed(admin(*FULL, "approvals"))["handled"]
+                   if e["app"] == app]
         assert len(entries) == 15
+        assert entries[0]["at"] == stamps[0].isoformat()  # the newest fifteen
 
 
 # ── The day start, the gates and the tenant ─────────────────────────────────
@@ -379,9 +398,87 @@ class TestTheBudget:
         answer = run_feed(admin(*FULL, "approvals"))
         assert time.monotonic() - began < 2.0
         assert answer["handled_ok"] is False
-        apps = {e["app"] for e in answer["handled"]}
-        assert apps == {"email", "approvals"}  # the reads that finished stay
+        assert answer["handled"] == []
         assert answer["cards"], "the feed keeps its cards"
+        # No read starts after the budget ends: the chain never reached them.
+        assert "applied_rules_since" not in _names(seeded)
+        assert "read_decided" not in _names(seeded)
+
+    def test_the_reads_that_did_not_start_count_as_failed(self, seeded, monkeypatch):
+        # The second link hangs: the first keeps its entries, the third never
+        # starts, and both later sources read failed.
+        async def _hangs(user, account_ids, since, *, limit):
+            await asyncio.sleep(5)
+            return []
+
+        from gateway.routes.email.automation import runner
+
+        monkeypatch.setattr(runner, "applied_rules_since", _hangs)
+
+        async def _go():
+            return await handled.handled_run(admin(*FULL, "approvals"), NOW, budget_s=0.4)
+
+        run = _bound(_go)
+        assert run.sources == {"tasks": "ok", "email": "failed", "approvals": "failed"}
+        assert run.ok is False
+        assert {e["app"] for e in run.entries} == {"tasks"}
+        assert "read_decided" not in _names(seeded)
+
+    def test_a_feed_read_holds_two_connections_at_most(self, seeded, monkeypatch):
+        """Fix round 1 (P2). The state join holds one connection, and the
+        Handled chain holds one. Every fake that stands for a session counts
+        itself while it runs, and the most at once must be 2."""
+        import threading
+
+        import action_broker
+        import gateway.routes.tasks.settings as settings
+        from gateway.routes.email.automation import runner
+        from gateway.routes.email.transport import accounts
+        from gateway.routes.projects import personal
+
+        lock = threading.Lock()
+        gauge = {"now": 0, "most": 0}
+
+        def _in():
+            with lock:
+                gauge["now"] += 1
+                gauge["most"] = max(gauge["most"], gauge["now"])
+
+        def _out():
+            with lock:
+                gauge["now"] -= 1
+
+        def _async(fn):
+            async def counted(*a, **k):
+                _in()
+                try:
+                    await asyncio.sleep(0.05)
+                    return await fn(*a, **k)
+                finally:
+                    _out()
+            return counted
+
+        def _sync(fn):
+            def counted(*a, **k):
+                _in()
+                try:
+                    time.sleep(0.05)
+                    return fn(*a, **k)
+                finally:
+                    _out()
+            return counted
+
+        for module, name in ((settings, "get_user_settings"), (state, "_read_rows"),
+                             (personal, "my_completed_since"),
+                             (accounts, "feed_mailboxes"),
+                             (runner, "applied_rules_since"),
+                             (personal, "stored_zone"), (personal, "my_due_tasks")):
+            monkeypatch.setattr(module, name, _async(getattr(module, name)))
+        monkeypatch.setattr(action_broker, "read_decided", _sync(action_broker.read_decided))
+        answer = run_feed(admin(*FULL, "approvals"))
+        assert answer["handled_ok"] is True
+        assert {e["app"] for e in answer["handled"]} == {"tasks", "email", "approvals"}
+        assert gauge["most"] == 2  # 2, and not 1: the chain runs beside the join
 
     def test_the_run_reports_each_source(self, seeded, monkeypatch):
         monkeypatch.setattr(seeded, "fail", {"read_decided": RuntimeError("db down")})
@@ -456,7 +553,9 @@ class TestTheReadsStayInStep:
         assert " ".join(personal.MY_TASKS_FROM.split()) in sql
         assert "t.completed_at >= CAST(:since AS timestamptz)" in sql
         assert sql.endswith("ORDER BY t.completed_at DESC, t.id LIMIT :limit")
-        assert "a.type = 'status_change'" in sql and "a.created_at DESC" in sql
+        assert "a.type = 'status_change'" in sql
+        # The newest row, with `seq` for a tie (migration 213, H-159).
+        assert "ORDER BY a.created_at DESC, a.seq DESC LIMIT 1" in sql
 
     def test_the_rule_read_keeps_the_trash_and_only_applied_rows(self):
         from gateway.routes.email.automation import runner
