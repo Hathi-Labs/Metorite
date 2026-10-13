@@ -260,6 +260,15 @@ export interface SelectButtonProps {
    * needs more, because each stage carries its meaning on a second line.
    */
   panelMaxHeight?: number;
+  /**
+   * WS-53 CRM-C4p. The id of the trigger, so a `<label htmlFor>` names it.
+   * Absent: no id, as before.
+   */
+  id?: string;
+  /** WS-53 CRM-C4p. The ids of the help text and the error of a form field. */
+  describedBy?: string;
+  /** WS-53 CRM-C4p. The value of a form field is refused. */
+  invalid?: boolean;
 }
 
 export function SelectButton({
@@ -278,6 +287,9 @@ export function SelectButton({
   prompt,
   filterAbove,
   panelMaxHeight,
+  id,
+  describedBy,
+  invalid = false,
 }: SelectButtonProps) {
   const [{ open, query }, dispatch] = useReducer(selectPanelReducer, {
     open: autoOpen,
@@ -351,7 +363,10 @@ export function SelectButton({
     <div ref={root} className={`relative ${widthClass}`}>
       <button
         ref={setTrigger}
+        id={id}
         type="button"
+        aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
         aria-label={prefix ? `${prefix} ${current?.label ?? prompt ?? label}` : label}
         aria-haspopup="listbox"
         aria-expanded={open}

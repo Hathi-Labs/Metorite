@@ -12,7 +12,8 @@
  *   A text input keeps its own draft, and each edit sends `toWire(draft)`, so
  *   a number is a JSON number and a time has its `Z`.
  * - The caller runs `checkValue` before a save and passes the message as
- *   `error`. The input shows it under itself.
+ *   `error`. The input shows it under itself, and each control names the
+ *   error and the help text in `aria-describedby`.
  * - With `locked`, the input draws the value read only, with `LOCK_TIP`. A
  *   Mirror record stays locked until CRM-C5.
  * - Only the shared primitives: `Input`, `Textarea`, `SelectButton` and
@@ -28,12 +29,7 @@ import { SelectButton, type SelectOption } from "@/components/ui/SelectButton";
 import * as api from "../lib/api";
 import { LOCK_TIP } from "../lib/connect";
 import { fieldOptions, formatField, type FieldDef } from "../lib/fields";
-import {
-  fromWire,
-  isLookupTarget,
-  lookupValue,
-  toWire,
-} from "../lib/fieldLayout";
+import { formValue, fromWire, isLookupTarget, lookupValue, toWire } from "../lib/fieldLayout";
 import type { EntitySlug } from "../lib/types";
 import FieldValue from "./FieldValue";
 
@@ -56,13 +52,19 @@ export type FieldInputProps = {
   id?: string;
 };
 
-/** The text input of each text-like type, from the table of the spec. */
+/**
+ * The text input of each text-like type, from the table of the spec.
+ *
+ * ⚠️ A number type uses `inputMode="text"` (review P2). The numeric keypad of
+ * iOS has no minus key, and each of the four types can be negative. The
+ * client check still refuses a text that is not a number.
+ */
 const TEXT_INPUTS: Record<string, React.InputHTMLAttributes<HTMLInputElement>> = {
   text: {},
-  number: { inputMode: "numeric" },
-  decimal: { inputMode: "decimal" },
-  currency: { inputMode: "decimal" },
-  percent: { inputMode: "decimal" },
+  number: { inputMode: "text" },
+  decimal: { inputMode: "text" },
+  currency: { inputMode: "text" },
+  percent: { inputMode: "text" },
   date: { type: "date" },
   datetime: { type: "datetime-local" },
   email: { type: "email" },
@@ -73,6 +75,23 @@ const TEXT_INPUTS: Record<string, React.InputHTMLAttributes<HTMLInputElement>> =
 /** The JSON text of a value, to see whether two values are the same. */
 function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+/** The ids of the parts of one field. The control names the help and the error. */
+export function fieldIds(controlId: string) {
+  return {
+    control: controlId,
+    label: `${controlId}-label`,
+    help: `${controlId}-help`,
+    error: `${controlId}-error`,
+  };
+}
+
+/** `aria-describedby` of a control: its help text and its error, when shown. */
+export function describedBy(controlId: string, help: boolean, error: boolean): string | undefined {
+  const ids = fieldIds(controlId);
+  const parts = [help ? ids.help : null, error ? ids.error : null].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 export default function FieldInput({
@@ -104,14 +123,25 @@ export default function FieldInput({
     );
   }
 
+  const ids = fieldIds(controlId);
   return (
     <div className="min-w-0">
-      <Control def={def} value={value} onChange={onChange} kept={kept} id={controlId} invalid={!!error} />
+      <Control
+        def={def}
+        value={value}
+        onChange={onChange}
+        kept={kept}
+        id={controlId}
+        invalid={!!error}
+        describedBy={describedBy(controlId, !!def.help_text, !!error)}
+      />
       {def.help_text ? (
-        <p className="mt-1 text-[11px] text-muted-foreground">{def.help_text}</p>
+        <p id={ids.help} className="mt-1 text-[11px] text-muted-foreground">
+          {def.help_text}
+        </p>
       ) : null}
       {error ? (
-        <p role="alert" className="mt-1 text-[11px] text-destructive">
+        <p id={ids.error} role="alert" className="mt-1 text-[11px] text-destructive">
           {error}
         </p>
       ) : null}
@@ -126,6 +156,7 @@ type ControlProps = {
   kept: unknown;
   id: string;
   invalid: boolean;
+  describedBy: string | undefined;
 };
 
 function Control(props: ControlProps) {
@@ -135,13 +166,15 @@ function Control(props: ControlProps) {
   }
   switch (def.type) {
     case "boolean":
+      // A boolean has no empty state in a form (review P2): `formValue`.
       return (
         <Checkbox
           id={props.id}
-          checked={props.value === true}
+          checked={formValue(def, props.value) === true}
           onChange={(e) => props.onChange(e.target.checked)}
           aria-label={def.label}
           aria-invalid={props.invalid || undefined}
+          aria-describedby={props.describedBy}
         />
       );
     case "select":
@@ -165,7 +198,7 @@ function Control(props: ControlProps) {
  * sends `toWire(text)`. A new value from the caller (a reset, a default)
  * replaces the draft, unless the draft already gives that value.
  */
-function TextControl({ def, value, onChange, id, invalid }: ControlProps) {
+function TextControl({ def, value, onChange, id, invalid, describedBy: described }: ControlProps) {
   const [draft, setDraft] = useState(() => fromWire(def, value));
   const [seen, setSeen] = useState(value);
   if (!same(seen, value)) {
@@ -183,6 +216,7 @@ function TextControl({ def, value, onChange, id, invalid }: ControlProps) {
         rows={3}
         aria-label={def.label}
         aria-invalid={invalid || undefined}
+        aria-describedby={described}
         placeholder="—"
         value={draft}
         onChange={(e) => edit(e.target.value)}
@@ -195,6 +229,7 @@ function TextControl({ def, value, onChange, id, invalid }: ControlProps) {
       inputSize="sm"
       aria-label={def.label}
       aria-invalid={invalid || undefined}
+      aria-describedby={described}
       placeholder="—"
       {...TEXT_INPUTS[def.type]}
       value={draft}
@@ -218,33 +253,55 @@ function choices(def: FieldDef, kept: unknown, value: unknown): SelectOption[] {
     .map((o) => ({ value: o.value, label: o.label }));
 }
 
-function SelectControl({ def, value, onChange, kept }: ControlProps) {
+function SelectControl({ def, value, onChange, kept, id, invalid, describedBy: described }: ControlProps) {
   return (
     <SelectButton
+      id={id}
       label={def.label}
       value={typeof value === "string" ? value : ""}
       options={[NONE, ...choices(def, kept, value)]}
       onChange={(next) => onChange(next === "" ? null : next)}
       prompt="—"
       widthClass="w-full"
+      invalid={invalid}
+      describedBy={described}
     />
   );
 }
 
-function MultiControl({ def, value, onChange, kept, id }: ControlProps) {
+/**
+ * The value of a multi-select after one box changes: a JSON array of option
+ * values, never a joined string. An empty choice gives `null`, which clears
+ * the field.
+ */
+export function toggleOption(chosen: readonly string[], option: string, on: boolean): string[] | null {
+  const next = on
+    ? [...chosen.filter((v) => v !== option), option]
+    : chosen.filter((v) => v !== option);
+  return next.length > 0 ? next : null;
+}
+
+function MultiControl({ def, value, onChange, kept, id, invalid, describedBy: described }: ControlProps) {
   const chosen = Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
-  const toggle = (option: string, on: boolean) => {
-    const next = on ? [...chosen.filter((v) => v !== option), option] : chosen.filter((v) => v !== option);
-    onChange(next.length > 0 ? next : null);
-  };
+  const ids = fieldIds(id);
   return (
-    <div id={id} role="group" aria-label={def.label} className="flex flex-wrap gap-x-3 gap-y-1">
+    <div
+      id={id}
+      role="group"
+      aria-labelledby={ids.label}
+      aria-describedby={described}
+      aria-invalid={invalid || undefined}
+      className="flex flex-wrap gap-x-3 gap-y-1"
+    >
+      <span id={ids.label} className="sr-only">
+        {def.label}
+      </span>
       {choices(def, kept, value).map((o) => (
         <label key={o.value} className="flex items-center gap-1.5 text-xs text-foreground">
           <Checkbox
             size="sm"
             checked={chosen.includes(o.value)}
-            onChange={(e) => toggle(o.value, e.target.checked)}
+            onChange={(e) => onChange(toggleOption(chosen, o.value, e.target.checked))}
           />
           {o.label}
         </label>
@@ -259,15 +316,47 @@ export const LOOKUP_WAIT_MS = 250;
 /** The most hits the lookup search asks for. */
 export const LOOKUP_PAGE = 10;
 
+/** What the hits list says when the search failed (a 403 or a 500). */
+export const SEARCH_FAILED = "Search failed";
+
+type Hit = { id: string; name: string };
+
+/**
+ * The value of a lookup after a pick: the `{id, name}` of the hit, with the
+ * hit's id. The empty pick gives `null`. A pick of the value already held
+ * keeps its stored name.
+ */
+export function pickLookup(next: string, hits: readonly Hit[], current: Hit | null): Hit | null {
+  if (next === "") return null;
+  const hit = hits.find((h) => h.id === next);
+  if (hit) return { id: hit.id, name: hit.name };
+  return current && current.id === next ? current : null;
+}
+
+/** The value of a failed-search row. No record has it, and it is disabled. */
+const FAILED_VALUE = "\u0000search-failed";
+
+/** The list of a lookup picker: none, the value held, then the hits or the failure. */
+export function lookupOptions(current: Hit | null, hits: readonly Hit[], failed: boolean): SelectOption[] {
+  const held = current ? [{ value: current.id, label: current.name || current.id }] : [];
+  const rest: SelectOption[] = failed
+    ? [{ value: FAILED_VALUE, label: SEARCH_FAILED, disabled: true }]
+    : hits
+        .filter((h) => h.id !== current?.id)
+        .map((h) => ({ value: h.id, label: h.name || h.id }));
+  return [NONE, ...held, ...rest];
+}
+
 /**
  * A lookup: an `Input` for the search and a `SelectButton` for the hits. The
  * search is the `?q=` list search of CRM-X1 on `lookup_target` only. A pick
  * stores `{id, name}`, and the gateway checks the `id` again.
  */
-function LookupControl({ def, value, onChange, id, invalid }: ControlProps) {
+function LookupControl({ def, value, onChange, id, invalid, describedBy: described }: ControlProps) {
   const target: EntitySlug | null = isLookupTarget(def.lookup_target) ? def.lookup_target : null;
   const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<Array<{ id: string; name: string }>>([]);
+  const [hits, setHits] = useState<Hit[]>([]);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     const q = query.trim();
@@ -277,10 +366,14 @@ function LookupControl({ def, value, onChange, id, invalid }: ControlProps) {
       api
         .listRecords(target, { q, page_size: LOOKUP_PAGE })
         .then((page) => {
-          if (live) setHits(page.rows.map((row) => lookupValue(target, row)));
+          if (!live) return;
+          setFailed(false);
+          setHits(page.rows.map((row) => lookupValue(target, row)));
         })
         .catch(() => {
-          if (live) setHits([]);
+          if (!live) return;
+          setFailed(true);
+          setHits([]);
         });
     }, LOOKUP_WAIT_MS);
     return () => {
@@ -289,17 +382,14 @@ function LookupControl({ def, value, onChange, id, invalid }: ControlProps) {
     };
   }, [query, target]);
 
-  const current =
+  const raw =
     value && typeof value === "object" && !Array.isArray(value)
       ? (value as { id?: unknown; name?: unknown })
       : null;
-  const currentId = typeof current?.id === "string" ? current.id : "";
-  const currentName = typeof current?.name === "string" ? current.name : "";
-  const options: SelectOption[] = [
-    NONE,
-    ...(currentId ? [{ value: currentId, label: currentName || currentId }] : []),
-    ...hits.filter((h) => h.id !== currentId).map((h) => ({ value: h.id, label: h.name || h.id })),
-  ];
+  const current: Hit | null =
+    raw && typeof raw.id === "string"
+      ? { id: raw.id, name: typeof raw.name === "string" ? raw.name : "" }
+      : null;
 
   return (
     <div className="flex min-w-0 flex-col gap-1">
@@ -309,6 +399,7 @@ function LookupControl({ def, value, onChange, id, invalid }: ControlProps) {
         icon="Search"
         aria-label={`Search for ${def.label}`}
         aria-invalid={invalid || undefined}
+        aria-describedby={described}
         placeholder={target ? `Search ${target}` : "This lookup has no target"}
         disabled={!target}
         value={query}
@@ -316,16 +407,14 @@ function LookupControl({ def, value, onChange, id, invalid }: ControlProps) {
       />
       <SelectButton
         label={def.label}
-        value={currentId}
-        options={options}
-        onChange={(next) => {
-          if (next === "") return onChange(null);
-          const hit = hits.find((h) => h.id === next);
-          onChange(hit ?? { id: next, name: currentName });
-        }}
+        value={current?.id ?? ""}
+        options={lookupOptions(current, hits, failed)}
+        onChange={(next) => onChange(pickLookup(next, hits, current))}
         prompt="—"
         widthClass="w-full"
         disabled={!target}
+        invalid={invalid}
+        describedBy={described}
       />
     </div>
   );
