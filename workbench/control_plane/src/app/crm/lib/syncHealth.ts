@@ -40,7 +40,11 @@ export type SyncHealth = {
   history: HealthRun[];
   /** A run is running and its heartbeat is fresh. A crashed run is not. */
   running: boolean;
-  credits: { budget_24h: number; used_24h: number };
+  /**
+   * `resumes_at` (CRM-Q10): when the credits of the 24-hour window fall below
+   * the budget. `null` while the window is below it.
+   */
+  credits: { budget_24h: number; used_24h: number; resumes_at?: string | null };
 };
 
 export const UNAVAILABLE_SENTENCE = "Connect Zoho again to allow this module";
@@ -93,6 +97,25 @@ export function errorSentence(code: string | null | undefined): string | null {
   }
 }
 
+/** "07:30": the local time of day of an ISO time. Empty for a missing or bad time. */
+export function clockLabel(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const hh = String(at.getHours()).padStart(2, "0");
+  const mm = String(at.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+/**
+ * The sentence of a run that stopped on the daily budget (CRM-Q10). It names
+ * the time the sync resumes, when the health answer has one.
+ */
+export function budgetPauseSentence(resumesAt: string | null | undefined): string | null {
+  const at = clockLabel(resumesAt);
+  return at ? `Paused: the daily Zoho API budget is spent. It resumes at ${at}.` : null;
+}
+
 /** "12 min ago", "3 h ago", "2 days ago". Empty for a missing or bad time. */
 export function agoLabel(iso: string | null | undefined, nowMs = Date.now()): string {
   if (!iso) return "";
@@ -136,8 +159,13 @@ export function statusLines(health: SyncHealth, nowMs = Date.now()): StatusLines
   return {
     synced: ago ? `Synced ${ago}` : "Never synced",
     next: isRunning(health) ? "Running now" : when ? `Next run ${when}` : null,
-    // A run that is still going has no error to show yet.
-    error: run && !isRunning(health) ? errorSentence(run.error) : null,
+    // A run that is still going has no error to show yet. A budget stop names
+    // the time the sync resumes (CRM-Q10).
+    error:
+      run && !isRunning(health)
+        ? (run.error === "budget" && budgetPauseSentence(health.credits.resumes_at)) ||
+          errorSentence(run.error)
+        : null,
   };
 }
 

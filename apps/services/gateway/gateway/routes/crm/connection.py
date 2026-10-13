@@ -56,8 +56,10 @@ order, whether the new account is the one the CRM records came from:
    is ``org_unreadable``.
 4. Else the CRM holds nothing of Zoho, and the consent goes on.
 
-The same account goes on as before, and the save stores the account id.
-Another account sets ``needs_reset``, keeps the old token, revokes the new one
+The same account goes on as before, and the save stores the account id. When
+step 1, 2 or 3 confirmed it, the save also keeps the source profile and marks
+it stale (CRM-Q10), so the sync keeps the edition budget and discovers again.
+Step 4 confirms nothing, so the save drops the profile. Another account sets ``needs_reset``, keeps the old token, revokes the new one
 and writes no record, so the records of two Zoho accounts never mix. The save
 checks the stored id again under the connect lock, so two consents at one time
 cannot both pass the check.
@@ -542,9 +544,12 @@ async def zoho_callback(
             now_id = (current.provider_meta if current else {}).get(store.META_ACCOUNT_ID)
             if now_id and str(now_id) != str(fresh_id):
                 raise _AccountChanged()
+            # CRM-Q10: a confirmed same account keeps its profile, stale, so
+            # the sync keeps the edition budget. An unconfirmed one drops it.
             row = await store.save_credential(
                 db, org, PROVIDER, OWNING_APP, credential,
                 connected_by=member, scopes=ZOHO_READ_SCOPES,
+                keep_profile=verdict is True,
             )
             await _adopt_mirror(db, org, row.id, member)
     except _AccountChanged:
