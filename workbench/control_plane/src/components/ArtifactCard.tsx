@@ -15,6 +15,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { categoricalAccent } from "@/lib/categorical";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { archiveNotice, fetchArchive, saveBlob } from "@/lib/archiveDownload";
@@ -92,19 +93,23 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * The icon of a file, and its hue. A file kind is an IDENTITY, so its hue is
+ * a slot of the categorical ramp, picked by the kind's name
+ * (`lib/categorical.ts`, AGENTS.md rule 7). It drew five raw Tailwind
+ * palette classes until 2026-10-13, which no token, mode or accent reached.
+ */
 function fileIcon(artifact: ArtifactMeta): React.ReactNode {
   const ext = getExt(artifact.name);
   const mime = artifact.mimeType ?? "";
-  if (IMAGE_EXTS.has(ext) || mime.startsWith("image/"))
-    return <Icon name="FileImage" size={15} className="shrink-0 text-purple-400" />;
-  if (CODE_EXTS.has(ext))
-    return <Icon name="FileCode" size={15} className="shrink-0 text-blue-400" />;
-  if (["md", "txt", "log", "rst", "csv"].includes(ext) || mime.startsWith("text/"))
-    return <Icon name="FileText" size={15} className="shrink-0 text-green-400" />;
-  if (["pdf"].includes(ext) || mime === "application/pdf")
-    return <Icon name="FileText" size={15} className="shrink-0 text-red-400" />;
-  if (["xlsx", "xls"].includes(ext))
-    return <Icon name="FileSpreadsheet" size={15} className="shrink-0 text-emerald-400" />;
+  const kind = (name: string, icon: string) => (
+    <Icon name={icon} size={15} className={`shrink-0 ${categoricalAccent(name).text}`} />
+  );
+  if (IMAGE_EXTS.has(ext) || mime.startsWith("image/")) return kind("image", "FileImage");
+  if (CODE_EXTS.has(ext)) return kind("code", "FileCode");
+  if (["md", "txt", "log", "rst", "csv"].includes(ext) || mime.startsWith("text/")) return kind("text", "FileText");
+  if (["pdf"].includes(ext) || mime === "application/pdf") return kind("pdf", "FileText");
+  if (["xlsx", "xls"].includes(ext)) return kind("sheet", "FileSpreadsheet");
   if (isArchive(artifact.name, mime))
     return <Icon name="FileArchive" size={15} className="shrink-0 text-muted-foreground" />;
   return <Icon name="File" size={15} className="shrink-0 text-muted-foreground" />;
@@ -172,7 +177,7 @@ export default function ArtifactCard({
   // ── Image artifact: render inline thumbnail ─────────────────────────────
   if (image && !imgError) {
     return (
-      <div className="mt-3 rounded-xl overflow-hidden border border-border/60 bg-card/60 group/card">
+      <div className="mt-3 rounded-lg overflow-hidden border border-border bg-card/40 group/card">
         {/* Image */}
         <div className="relative">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -204,7 +209,7 @@ export default function ArtifactCard({
           </div>
         </div>
         {/* Caption bar */}
-        <div className="flex items-center gap-2 px-3 py-2 border-t border-border/60">
+        <div className="flex items-center gap-2 px-2.5 py-1.5 border-t border-border">
           {fileIcon(artifact)}
           <span className="text-xs text-foreground truncate flex-1 min-w-0 font-mono">
             {artifact.name}
@@ -233,14 +238,14 @@ export default function ArtifactCard({
       role={isDoc ? "button" : undefined}
       tabIndex={isDoc ? 0 : undefined}
       aria-label={isDoc ? `Open ${artifact.name}` : undefined}
-      className={`@container mt-3 rounded-xl border border-border/60 bg-card/60 px-3 py-2.5 flex items-center gap-3 group/card transition-colors hover:border-primary/30/80 ${
+      className={`@container mt-3 rounded-lg border border-border bg-card/40 px-2.5 py-2 flex items-center gap-2.5 group/card transition-colors hover:border-primary/30 ${
         isDoc
           ? "cursor-pointer hover:bg-card focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           : ""
       }`}
     >
       {/* Icon */}
-      <div className="shrink-0 w-9 h-9 rounded-lg bg-secondary flex items-center justify-center">
+      <div className="shrink-0 w-8 h-8 rounded-md bg-secondary flex items-center justify-center">
         {fileIcon(artifact)}
       </div>
 
@@ -273,14 +278,15 @@ export default function ArtifactCard({
       {/* Actions */}
       <div className="flex items-center gap-1 shrink-0">
         {isDoc && (isMobile || onOpenInSidePanel || onOpen) && (
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={isMobile || !onOpenInSidePanel ? "Maximize2" : "PanelLeft"}
             onClick={(e) => { e.stopPropagation(); openRendered(); }}
-            className="flex items-center gap-1.5 rounded-lg bg-primary/10 px-2.5 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/20 transition-colors"
             title={isMobile || !onOpenInSidePanel ? "Open the rendered artifact" : "Open in side panel — edit + live preview"}
           >
-            {isMobile || !onOpenInSidePanel ? <Icon name="Maximize2" size={13} /> : <Icon name="PanelLeft" size={13} />}
             Open
-          </button>
+          </Button>
         )}
         {!isMobile && !archive && (
           <Button variant="ghost" size="icon-sm" layout="" onClick={(e) => { e.stopPropagation(); handleOpen(); }} title={isDoc ? "Open in modal viewer" : "Open in viewer"}>

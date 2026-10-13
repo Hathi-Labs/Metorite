@@ -16614,6 +16614,8 @@ migration, and no flag.
 
 **Status: 🔨 BUILT on branch `email-message-actions-dark`, not merged (2026-10-10). Review
 fix rounds 1 to 3 are in.** UI only. No migration, no flag and no gateway change.
+§16.6 (2026-10-13) adds a gateway route for the inline pictures, and its own status line
+says where that fix stands.
 
 The owner asked for two changes on 2026-10-10. This section records them, and a fix of
 "Loading message…".
@@ -16817,6 +16819,163 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
 - **A patch can hide a change from another device.** `messagePatches` lives for the page.
   If another device changes a message that this pane changed, the pane shows its own
   change until a reload.
+
+### 16.6 Inline pictures in the body (2026-10-13)
+
+**Status: 🔨 BUILT on branch `email-inline-images`, not merged (2026-10-13). The security
+review and the re-review gave APPROVE, and their P2 and P3 fixes are in (below).** No migration and no flag. A
+WS-17 bug fix, and it needed no spec audit.
+
+**The report.** The owner's screenshot showed the reading pane in dark mode. A broken
+picture with the alt text "image.png" sat between the text and the sign-off. The owner saw
+it on mail from many senders, on Outlook mailboxes.
+
+**The cause.** A mail names a picture of its own MIME tree with `<img src="cid:...">`. No
+hop of the path could show it, and the path never worked. It is not a regression of
+EM-T17 or of #894.
+
+1. **Ingest.** `outlook._outlook_attachments` skips each part that Graph marks
+   `isInline`, so no `email_attachments` row holds it. That is correct for the file list.
+2. **The pane.** `sanitizeEmailHtml` kept the `cid:` URL, because DOMPurify allows the
+   scheme. But a browser cannot fetch `cid:`, and the frame's CSP was `img-src data:`.
+3. **The gateway.** No route served an inline part.
+
+**Evidence from production** (read-only, 2026-10-13):
+
+- 4,355 of 11,134 stored Microsoft bodies hold `cid:`, in the three organizations that
+  have mail. In the largest, 3,950 bodies hold `src="cid:`.
+- A body holds 10 such pictures at the median, 46 at p90 and 165 at most. Many of them
+  name one signature logo again.
+- The gateway log of two days shows no request for an inline part at all. The browser
+  never asked, so the failure made no log line.
+
+**The fix.**
+
+1. **The provider contract.** `BaseEmailProvider.get_inline_images` gives the parts with a
+   Content-ID, in the form of `normalize_content_id`. IMAP gives none.
+   - Outlook lists the parts with the base properties only, so Graph sends no bytes of a
+     real file. Then it reads each `isInline` or `image/*` file part, four at a time.
+   - Gmail reads the tree once, and never opens an attached mail.
+2. **The route.** `GET /email/messages/{id}/inline?cid=...`, in
+   `transport/inline_images.py`.
+   - The owner read runs first, with the predicate of the HTML route. A message of
+     another member is 404, before any cache read.
+   - The organization comes from the session and the member from `user.email`.
+   - Tenant Redis keeps each picture and the list of names for one hour, by the row id.
+   - One provider read serves all the requests of one message that arrive together.
+   - No session is open across the provider call. A 429 answers 503 with `Retry-After`.
+3. **Only a picture goes out.** The type comes from the first bytes, and SVG and HTML are
+   never served. Each answer carries `nosniff` and a CSP of `default-src 'none'; sandbox`.
+4. **The pane.** `lib/inlineImages.ts` writes `cid:X` as a RELATIVE URL of the route. The
+   frame's CSP adds that one path of our origin, with no trailing slash.
+   - The URL must be relative. `BLOCKED_REMOTE_CSS` drops the re-invert of a picture whose
+     `src` starts with `http`, so an absolute URL draws the picture inverted in dark mode.
+   - An inline picture is part of the mail, so the remote gate does not hold it, and
+     "Show images" is not needed for it. The gate still holds each remote picture.
+   - Each reading surface passes its message id: the single email, the thread, the
+     preview and the chat card.
+
+**Fences.**
+
+- `tests/unit/test_email_inline_images.py`: the Outlook and Gmail reads, the sniff, the
+  route, and the owner check on a real database (R8).
+- `tests/unit/test_email_owner_scope_fence.py` reads the owner predicate in the body of
+  `get_inline_image`. So the owner SQL stays in that body, not in a module constant.
+- `src/app/email/lib/inlineImages.test.ts`: the rewrite, the relative URL and the CSP.
+- `e2e/email-inline-images.spec.ts`: a real PNG loads in a real frame, with
+  `naturalWidth` above 0, in the tokens, invert and original looks, and after "Show images".
+  In the invert look the picture keeps its re-invert, and the remote logo stays refused.
+- Red first: with the client of `main`, each of the four e2e tests fails, and the pane
+  shows the alt text "image.png" as in the report.
+- Mutations, each killed: no owner predicate, no shared provider read, a trusted declared
+  type, no cached list of names, a list read that pulls bytes, a Gmail walk into an
+  attached mail, a failure that is not kept, and no `max_count`. On the client: no
+  rewrite, an absolute URL, and a CSP with no inline path.
+
+**Recorded risks.**
+
+- A `cid:` inside a CSS `url()` stays unresolved. The pane rewrites `src`, `poster` and
+  `background` only.
+- A message that is not a stored row, such as a provider search hit, gets 404. Its
+  pictures show the alt text, as before.
+- The first open of a message with many pictures makes one Graph read for each part.
+  The server cache then serves it for one hour, and the browser cache for ten minutes.
+- **A shared browser keeps a picture for ten minutes** (review P3-6). The answer says
+  `Cache-Control: private, max-age=600`. After a sign-out, the next person at that
+  browser can open the cached URL until the ten minutes end. The hour of the server
+  cache is safe, because the owner check runs before each read of it.
+- A kept owner verdict lives for one minute. If a member disconnects a mailbox in that
+  minute, they can still read the cached pictures of a message that they opened.
+
+**Security review of 2026-10-13: APPROVE, and the fixes.** The review found no P0 or P1.
+This change fixes its four P2 and two P3 findings.
+
+1. **P2-1, the binary Redis pool.** That pool holds 4 connections
+   (`BINARY_POOL_MAX_CONNECTIONS`), and redis-py raises when it is full, with no wait.
+   Each binary call now passes one gate, one below the pool. So a burst queues, and a
+   cache hit seldom turns into a provider read. Seldom, not never: the gate binds this
+   process only. The pool class stays as it is.
+2. **P2-2, one owner read for each picture.** A body of 165 pictures took 165 owner
+   reads, and that filled the database pool. The route now keeps a POSITIVE verdict in
+   the process for 60 s, by organization, member and message. The requests of one open
+   share one owner read. A denial is never kept. The verdict holds no credentials (P3-b
+   below). The owner SQL stays in the handler body for the owner-scope fence.
+3. **P2-3, no bytes past the caps.** Gmail reads a part only when it is inline AND of an
+   `image/*` type, so it never downloads a PDF with a Content-ID. Outlook and Gmail skip
+   each part that would take the listed sizes over `MAX_INLINE_TOTAL_BYTES` (`max_total`).
+4. **P2-4, a passing fault.** A part that fails for a reason other than a rate limit
+   makes the read incomplete (`InlineRead.complete`). The list of names then lives
+   `INLINE_RETRY_TTL_SECS` (60 s), not one hour, so the next open reads that part again.
+5. **P3-5.** A 429 on one Outlook part cancels the reads that still run (`TaskGroup`).
+6. **P3-6.** The browser cache is ten minutes, as the risk above says.
+
+Fences, in `tests/unit/test_email_inline_images.py`, and the mutation that each one
+kills:
+
+- `TestTheRedisPool`: a fake pool that refuses a fifth call, and a burst of 20 on a full
+  cache with no provider read. It kills a gate of 50.
+- `TestOneOwnerReadForEachOpen`: 100 requests make one owner read. Another member and
+  another organization each read again and a stranger gets 404. The verdict ends after
+  its TTL. It kills no kept verdict, no single flight, and a key with no member.
+- `TestTheReadStopsAtTheCaps`: one Gmail picture and five 4 MB PDFs give one download,
+  and a 27 MB Outlook list reads 4 parts. It kills a Gmail check with no type and an
+  Outlook read with no total cap.
+- `TestAFailedPartIsReadAgainSoon`: a 503 or a 404 on a part makes the read incomplete.
+  The list then lives 60 s, and the next open after it reads the provider again. It
+  kills a route that ignores the flag, and an Outlook or Gmail read that always reports
+  complete.
+- `TestARateLimitStopsTheSiblings`: no read runs on after a 429. It kills `gather`.
+- The header test kills a browser cache of one hour.
+
+**Security re-review of 2026-10-13: APPROVE, and three P3 fixes.**
+
+1. **P3-a, a logo that the budget left out.** The budget took the parts in list order and
+   stopped at the cap. So more than 20 MB of image files ahead of a small inline logo
+   left the logo out, and the cached list then said 404 for an hour.
+   - Outlook takes the `isInline` parts first. Gmail takes the parts with an `inline`
+     disposition first.
+   - Each provider, and the route's own cap, now skips a part that does not fit, so a
+     smaller part after it can still fit.
+   - A skipped inline part makes the read incomplete, so the list lives 60 s.
+2. **P3-b, a kept grant.** The kept verdict held the whole row, with
+   `credentials_encrypted`. A reconnect inside the minute let the route refresh from the
+   old grant and write over the new tokens. The owner read now selects no credentials.
+   The pictures flight reads the grant again, with the owner predicate. That is one
+   database read for each provider read.
+3. **P3-c, the other user of the pool.** The file cache of `transport/attachments.py`
+   shares the binary pool. It now queues on the same gate, `_binary_redis_gate`, which
+   moved into `attachments.py`. Both routes import it from there.
+
+Fences, and the mutation that each one kills:
+
+- `TestInlinePartsComeFirst`: an Outlook list with 25 MB of image files and then an
+  inline logo reads the logo. A large inline part is skipped, and a small one after it is
+  read. On Gmail the inline logo is read first. It kills the list order and a `break`.
+- `test_a_reconnect_after_the_verdict_uses_the_new_grant`: a reconnect after the verdict
+  is kept, and then a picture miss, reads the new grant. It kills a flight that takes the
+  grant from the kept row.
+- `TestOneGateForTheBinaryPool`: both routes use the one gate, and the file cache passes
+  it for its read and its write.
 
 ## 17. Email AI context: the whole conversation, chosen by Jev, and no stall (2026-10-12)
 

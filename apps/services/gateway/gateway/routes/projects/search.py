@@ -455,7 +455,112 @@ async def search_tasks(
         }
 
 
+# ── Task references: `#171` in a chat answer (owner report, 2026-10-13) ──────
+#
+# The chat draws a bare `#171` as the task pill when it is a task the member
+# can see (`ChatTaskRef.tsx`, `lib/taskRefs.ts`). One answer can name
+# a dozen numbers, so this read takes them all at once: one request per
+# answer, never one per number.
+#
+# **Visibility is the search's own.** The same `task_visibility_clause` and
+# the same triage rule, so a reference can never name a task that the search
+# box would hide. A number the member cannot see returns nothing, and the chip
+# stays text.
+#
+# **A number is unique per ROOT project, not per organization**
+# (`pm_tasks UNIQUE (root_project_id, task_number)`), so two spaces can each
+# hold a #5. The read returns up to `REF_HITS_PER_NUMBER` hits per number, open
+# tasks first, so the client can tell one from two. It links only on one.
+#
+# Archived tasks are included: an answer can name finished work, and the task
+# panel opens an archived task. They sort after the open ones.
+
+#: The most numbers one lookup takes. The client sends at most this many.
+MAX_REFS = 50
+
+#: The most hits one number returns. Two already say "not one"; the third
+#: leaves room for an archived twin beside two open tasks.
+REF_HITS_PER_NUMBER = 3
+
+_REFS_SQL = """
+SELECT id, title, task_number, status_name, category, archived
+  FROM (
+    SELECT t.id, t.title, t.task_number, s.name AS status_name, s.category,
+           (t.archived_at IS NOT NULL) AS archived,
+           row_number() OVER (
+             PARTITION BY t.task_number
+             ORDER BY (t.archived_at IS NOT NULL), t.updated_at DESC, t.id
+           ) AS k
+      FROM pm_tasks t
+      JOIN pm_task_statuses s ON s.id = t.status_id
+     WHERE {visible}
+       AND {triage}
+       AND t.task_number = ANY(CAST(:numbers AS bigint[]))
+  ) hits
+ WHERE k <= :per
+ ORDER BY task_number, k
+"""
+
+
+def ref_numbers(raw: str) -> list[int]:
+    """``"171,#87, 171,x"`` → ``[87, 171]``: the distinct task numbers, sorted.
+
+    Each item goes through :func:`task_number`, the one rule of what a task
+    number is. Junk is dropped, not refused: a chat answer is not a form, and
+    one bad item must not cost the others their pills. More than
+    :data:`MAX_REFS` numbers is a 422, because the client batches at that size
+    and a longer list is a caller that skipped the cap.
+    """
+    numbers = sorted({
+        n for n in (task_number(part) for part in (raw or "").split(","))
+        if n is not None and n > 0
+    })
+    if len(numbers) > MAX_REFS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Ask for at most {MAX_REFS} task numbers at once.",
+        )
+    return numbers
+
+
+@router.get("/search/refs")
+async def task_refs(
+    numbers: str = "",
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The tasks the caller can see that carry these numbers, in one read.
+
+    ``?numbers=171,87``. Each row is ``{id, title, task_number, status_name,
+    category, archived}``. A number with no visible task has no row.
+    """
+    wanted = ref_numbers(numbers)
+    if not wanted:
+        return {"rows": []}
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        rows = (await db.execute(
+            text(_REFS_SQL.format(
+                visible=task_visibility_clause(vis),
+                triage=triage_exclusion_clause(),
+            )),
+            {**vis.params, "numbers": wanted, "per": REF_HITS_PER_NUMBER},
+        )).fetchall()
+    return {
+        "rows": [
+            {
+                "id": str(r.id),
+                "title": r.title,
+                "task_number": int(r.task_number),
+                "status_name": r.status_name,
+                "category": r.category,
+                "archived": bool(r.archived),
+            }
+            for r in rows
+        ],
+    }
+
+
 __all__ = [
-    "DESCRIPTION_RANK", "MAX_HITS", "MIN_QUERY", "SNIPPET_CHARS",
-    "relative_task_ids", "snippet_of", "task_number",
+    "DESCRIPTION_RANK", "MAX_HITS", "MAX_REFS", "MIN_QUERY", "REF_HITS_PER_NUMBER",
+    "SNIPPET_CHARS", "ref_numbers", "relative_task_ids", "snippet_of", "task_number",
 ]

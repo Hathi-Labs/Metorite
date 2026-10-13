@@ -263,6 +263,7 @@ export function ConversationView({
                     text={view.bodyText}
                     remoteId={remoteHtmlId(view)}
                     lightVersion={lightVersions?.has(view.id) ?? false}
+                    messageId={view.id}
                   />
                 ) : (
                   <div className="text-xs text-muted-foreground italic py-2">

@@ -52,8 +52,16 @@ import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadg
 import { pickedFromAnswer } from "@/lib/askAnswers";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
+import { plainTitle } from "@/lib/fencedText";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
-import { CollapsibleSection } from "@/components/ui/Collapsible";
+import {
+  CollapsibleCardBody,
+  CollapsibleCardHeader,
+  CollapsibleSection,
+  useCardFold,
+} from "@/components/ui/Collapsible";
+import Button from "@/components/ui/Button";
+import Icon from "@/components/Icon";
 import { ReportFileButtons } from "@/app/projects/components/ReportFileButtons";
 import { taskCell } from "@/app/projects/lib/matrix";
 import { reportLink } from "@/app/projects/lib/reportBuilder";
@@ -248,7 +256,7 @@ function DeltaArrow({ delta }: { delta: number }): React.ReactElement | null {
   const up = delta > 0;
   return (
     <span style={{ color: up ? "var(--success)" : "var(--destructive)", fontVariantNumeric: "tabular-nums" }}>
-      {up ? "▲" : "▼"} {Math.abs(delta)}
+      <Icon name={up ? "ArrowUp" : "ArrowDown"} size={11} className="inline align-[-1px]" /> {Math.abs(delta)}
     </span>
   );
 }
@@ -567,7 +575,7 @@ function ProgressTracker({ data }: { data: Data }) {
                 animation: state === "active" ? "ccPulse 1.6s ease-in-out infinite" : "none",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 fontSize: TYPE.micro, color: "var(--success-foreground)" }}>
-                {state === "done" ? "✓" : ""}
+                {state === "done" ? <Icon name="Check" size={10} /> : null}
               </span>
               <span style={{ fontSize: TYPE.xs,
                 color: state === "pending" ? "var(--muted-foreground)" : "var(--foreground)",
@@ -930,14 +938,16 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           );
         })}
       </div>
-      <button type="button" onClick={submit} disabled={!ctx?.onAction || submitted || missing}
-        style={{ marginTop: 12, fontSize: TYPE.xs, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
-          border: "none", cursor: submitted || missing ? "default" : "pointer",
-          color: "var(--primary-foreground)",
-          background: submitted ? "var(--success)" : "var(--primary)",
-          opacity: !ctx?.onAction || missing ? 0.5 : 1, transition: "all 0.2s var(--cc-ease, ease)" }}>
-        {submitted ? "✓ Submitted" : str(data.submitLabel, "Submit")}
-      </button>
+      {submitted ? (
+        <div role="status" className="mt-3 flex items-center gap-2">
+          <Badge tone="success" icon="Check">{PICKER_SENT}</Badge>
+          <span style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{PICKER_SENT_NOTE}</span>
+        </div>
+      ) : (
+        <Button size="sm" onClick={submit} disabled={!ctx?.onAction || missing} className="mt-3">
+          {str(data.submitLabel, "Submit")}
+        </Button>
+      )}
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
@@ -983,10 +993,9 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
   };
   return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
-      {data.title != null && (
-        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", marginBottom: 4 }}><GenUiText text={str(data.title)} /></div>
-      )}
+    <div style={CARD_BOX}>
+      <TemplateHead icon="list-checks" gap={4} rich title={data.title != null ? str(data.title) : null} />
+      <TemplateBody>
       {data.description != null && (
         <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
       )}
@@ -1031,14 +1040,9 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         })}
       </div>
       {multi && !submitted && (
-        <button type="button" onClick={() => submit(picked)}
-          disabled={inert || !picked.length}
-          style={{ marginTop: 12, fontSize: TYPE.xs, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
-            border: "none", cursor: inert || !picked.length ? "default" : "pointer", color: "var(--primary-foreground)",
-            background: "var(--primary)",
-            opacity: inert || !picked.length ? 0.5 : 1 }}>
+        <Button size="sm" onClick={() => submit(picked)} disabled={inert || !picked.length} className="mt-3">
           Confirm selection
-        </button>
+        </Button>
       )}
       {submitted && (
         <div role="status" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
@@ -1049,6 +1053,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       {inert && (
         <div style={{ marginTop: 12, fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{PICKER_INERT_NOTE}</div>
       )}
+      </TemplateBody>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
@@ -1064,9 +1069,93 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
 
 const CELL: React.CSSProperties = { fontSize: TYPE.xs, color: "var(--foreground)" };
 const MUTED: React.CSSProperties = { fontSize: TYPE.caption, color: "var(--muted-foreground)" };
+/** The frame of a chat template: the radius and the padding of the
+ *  generative-UI `card` (`rounded-lg p-3`), so the two read as one kind. */
 const CARD_BOX: React.CSSProperties = {
-  borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 14,
+  borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--card)", padding: 12,
 };
+
+/**
+ * The templates that draw their own title row as the chat card's one header
+ * (owner report, 2026-10-13). In the transcript the roll-up drew its own
+ * frame and title round a template, and the template drew its title again
+ * inside: two titles and a card in a card. Each of these draws
+ * {@link TemplateHead} instead, which is the card's `RollupHeader` inside
+ * a fold and the template's own row anywhere else. `MessageBubble` passes
+ * `header="own"` for them (`genUiRootOwnsHead`).
+ * Fence: `src/lib/chatCardConformance.test.ts`.
+ */
+export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
+  "timeline", "taskBoard", "dataGrid", "reportCard", "planCard", "optionPicker",
+]);
+
+/**
+ * A template's title row. Inside a folding chat card it is the card's one
+ * header and toggle (`CollapsibleCardHeader`, with the template's icon in
+ * the icon slot). Anywhere else (the side panel, a nested table) it draws
+ * the row the template always drew. With no title, a chat card still gets
+ * the toggle while it folds, and draws nothing while it is open.
+ */
+function TemplateHead({ icon, title, href = null, rich = false, aside, gap = 8 }: {
+  icon: string;
+  /** The title's words, or null for a template with no title. */
+  title: string | null;
+  /** Where the title links to, in the app. */
+  href?: string | null;
+  /** The title is generative-UI text: Markdown and «names» outside a fold. */
+  rich?: boolean;
+  /** Plain words after the title. Never a link or a control. */
+  aside?: string;
+  gap?: number;
+}) {
+  const fold = useCardFold();
+  if (fold) {
+    // ⚠️ The header is the fold's trigger, a `<button>`. A link inside it
+    // was invalid HTML, and one click followed the link AND folded the card
+    // (review of #945, P2). So the title is plain words, and the link is
+    // its own control beside the header, as `ToolCardShell` puts its X.
+    return (
+      <div className="flex min-w-0 items-center gap-1.5">
+        <div className="min-w-0 flex-1">
+          <CollapsibleCardHeader
+            lead={<TIcon name={icon} size={14} color="var(--primary)" />}
+            title={title === null ? undefined : plainTitle(title)}
+            quiet={title === null}
+            aside={aside}
+            className="text-sm"
+            titleClassName="font-semibold text-foreground"
+          />
+        </div>
+        {href && (
+          <a href={href} data-template-open="" aria-label={`Open ${title === null ? "it" : plainTitle(title)}`}
+            title="Open" className="cc-control flex shrink-0 rounded p-1 text-muted-foreground hover:text-foreground">
+            <Icon name="ExternalLink" size={13} />
+          </a>
+        )}
+      </div>
+    );
+  }
+  if (title === null) return null;
+  const words = rich ? <GenUiText text={title} /> : title;
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: gap }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <TIcon name={icon} size={15} color="var(--primary)" />
+        <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
+          <TitleLink href={href}>{words}</TitleLink>
+        </span>
+      </div>
+      {aside != null && <span style={MUTED}>{aside}</span>}
+    </div>
+  );
+}
+
+/** The part of a template under its title: the fold's body in a chat card. */
+function TemplateBody({ children }: { children: React.ReactNode }) {
+  const fold = useCardFold();
+  if (!fold) return <>{children}</>;
+  return <CollapsibleCardBody className="pt-2">{children}</CollapsibleCardBody>;
+}
 
 /** The app link for a row that carries a task id, or null. Exported for its test. */
 export function taskHref(id: unknown, base = "/projects?task="): string | null {
@@ -1092,15 +1181,9 @@ function Timeline({ data }: { data: Data }) {
           : "var(--border)";
   return (
     <div style={CARD_BOX}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <TIcon name="history" size={15} color="var(--primary)" />
-          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
-            <TitleLink href={taskHref(data.taskId)}>{str(data.title, "Timeline")}</TitleLink>
-          </span>
-        </div>
-        {data.total != null && <span style={MUTED}>{rows.length} of {num(data.total)}</span>}
-      </div>
+      <TemplateHead icon="history" title={str(data.title, "Timeline")} href={taskHref(data.taskId)}
+        aside={data.total != null ? `${rows.length} of ${num(data.total)}` : undefined} />
+      <TemplateBody>
       {rows.length === 0 && <div style={MUTED}>Nothing has happened here yet.</div>}
       {/* The scroll box and the line are two boxes. The dots sit 20px left of
           each row, over the line. On one box with overflowY the scroll clip
@@ -1139,6 +1222,7 @@ function Timeline({ data }: { data: Data }) {
         })}
       </div>
       </div>
+      </TemplateBody>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
@@ -1200,13 +1284,9 @@ function TaskBoard({ data }: { data: Data }) {
   }, [columns.length]);
   return (
     <div style={CARD_BOX}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <TIcon name="kanban" size={15} color="var(--primary)" />
-          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Board")}</span>
-        </div>
-        {data.total != null && <span style={MUTED}>{num(data.total)} tasks</span>}
-      </div>
+      <TemplateHead icon="kanban" title={str(data.title, "Board")} gap={10}
+        aside={data.total != null ? `${num(data.total)} tasks` : undefined} />
+      <TemplateBody>
       <div ref={stripRef} style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
         {columns.map((c, i) => {
           const tasks = arr(c.tasks).map((t) => (t ?? {}) as Data);
@@ -1226,6 +1306,7 @@ function TaskBoard({ data }: { data: Data }) {
           More lanes to the right <TIcon name="arrow-right" size={12} color="var(--muted-foreground)" />
         </div>
       )}
+      </TemplateBody>
     </div>
   );
 }
@@ -1359,12 +1440,8 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
   const lead = shown.find((c) => c.role === "lead");
   return (
     <div ref={boxRef} data-grid-layout={mode} style={CARD_BOX}>
-      {data.title != null && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          <TIcon name="table-2" size={15} color="var(--primary)" />
-          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title)}</span>
-        </div>
-      )}
+      <TemplateHead icon="table-2" title={data.title != null ? str(data.title) : null} />
+      <TemplateBody>
       {mode === "stacked" ? (
         <div style={{ maxHeight: 420, overflowY: "auto" }}>
           {rows.map((r, i) => {
@@ -1442,6 +1519,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
           )}
         </>
       )}
+      </TemplateBody>
     </div>
   );
 }
@@ -1449,22 +1527,25 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
 function ReportCard({ data }: { data: Data }) {
   const stats = arr(data.stats);
   const tables = arr(data.tables).map((t) => (t ?? {}) as Data);
+  // In a chat card the report is ONE card: its title row is the card's
+  // header, and the tiles and the tables are its body (owner report,
+  // 2026-10-13). Elsewhere it is the column it always was.
+  const fold = useCardFold();
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-        <TIcon name="file-text" size={15} color="var(--primary)" />
-        <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
-          {/* The one address builder of Reports (`projects_reports.md` §6.5 item 18). */}
-          <TitleLink href={reportLink()}>{str(data.title, "Report")}</TitleLink>
-        </span>
-        {data.period != null && <span style={MUTED}>{str(data.period)}</span>}
-      </div>
+    <div style={fold ? CARD_BOX : undefined}>
+      {/* The one address builder of Reports (`projects_reports.md` §6.5 item 18). */}
+      <TemplateHead icon="file-text" gap={10} title={str(data.title, "Report")} href={reportLink()}
+        aside={data.period != null ? str(data.period) : undefined} />
+      <TemplateBody>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       {/* WS-27bm S8: the saved report as a Markdown or PDF file. Drawn only
           when the card carries a real report id, and rendered again on the
           click, so the file is the Reports app's numbers of that moment. */}
       <ReportFileButtons reportId={data.reportId} />
       {stats.length > 0 && <StatDashboard data={{ stats }} />}
       {tables.map((t, i) => <DataGrid key={i} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
+      </div>
+      </TemplateBody>
     </div>
   );
 }
@@ -1506,10 +1587,8 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   };
   return (
     <div style={CARD_BOX}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <TIcon name="list-todo" size={15} color="var(--primary)" />
-        <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Plan")}</span>
-      </div>
+      <TemplateHead icon="list-todo" title={str(data.title, "Plan")} gap={4} />
+      <TemplateBody>
       {data.description != null && <div style={{ ...MUTED, marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>}
       <label style={{ ...MUTED, display: "block", marginBottom: 10 }}>
         Project name
@@ -1543,9 +1622,8 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                     fontVariantNumeric: "tabular-nums" }}>{str(r.priority)}</span>
                 )}
                 {!submitted && (
-                  <button type="button" onClick={() => drop(i)} aria-label="Remove task"
-                    style={{ border: "none", background: "transparent", cursor: "pointer", paddingBottom: 7,
-                      color: "var(--muted-foreground)", fontSize: TYPE.xs }}>✕</button>
+                  <Button variant="ghost" size="icon-xs" icon="X" onClick={() => drop(i)}
+                    aria-label="Remove task" className="mb-1" />
                 )}
               </div>
               <div style={PLAN_GRID}>{shortCols.map(field)}</div>
@@ -1572,15 +1650,20 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 </CollapsibleSection>
               )}
               {facts.length > 0 && <div style={{ ...MUTED, ...PLAN_WRAP, marginTop: 4 }}>{facts.join(" · ")}</div>}
-              {isMarked(r) && <div style={{ ...MARK_BOX, ...PLAN_WRAP }}>⚠ {markLine(r)}</div>}
+              {isMarked(r) && (
+                <div style={{ ...MARK_BOX, ...PLAN_WRAP, display: "flex", alignItems: "flex-start", gap: 4 }}>
+                  <Icon name="TriangleAlert" size={12} className="mt-px shrink-0" />
+                  <span>{markLine(r)}</span>
+                </div>
+              )}
             </div>
           );
         })}
       </div>
       {!submitted && (
-        <button type="button" onClick={add}
-          style={{ ...MUTED, marginTop: 6, border: "1px dashed var(--border)", background: "transparent",
-            borderRadius: 8, padding: "5px 10px", cursor: "pointer" }}>+ Add a task</button>
+        <Button variant="ghost" size="sm" icon="Plus" onClick={add} className="mt-1.5">
+          Add a task
+        </Button>
       )}
       {capacity && <div style={{ ...MUTED, marginTop: 8 }}>{capacity}</div>}
       {warnings.length > 0 && (
@@ -1601,17 +1684,23 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           </ul>
         </div>
       )}
-      <button type="button" onClick={submit} disabled={!ctx?.onAction || submitted || !!blocked}
-        style={{ marginTop: 12, fontSize: TYPE.xs, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
-          border: "none", cursor: "pointer", color: "var(--primary-foreground)",
-          background: submitted ? "var(--success)" : "var(--primary)",
-          opacity: !ctx?.onAction || blocked ? 0.5 : 1 }}>
-        {submitted ? "✓ Submitted" : str(data.submitLabel, "Review plan")}
-      </button>
-      <div style={{ ...MUTED, marginTop: 6 }}>
-        {blocked && !submitted ? `${blocked} ` : ""}
-        A confirmation card follows. Nothing is created until you approve it. A mark warns and never blocks.
-      </div>
+      {submitted ? (
+        <div role="status" className="mt-3 flex items-center gap-2">
+          <Badge tone="success" icon="Check">{PICKER_SENT}</Badge>
+          <span style={MUTED}>A confirmation card follows.</span>
+        </div>
+      ) : (
+        <Button size="sm" onClick={submit} disabled={!ctx?.onAction || !!blocked} className="mt-3">
+          {str(data.submitLabel, "Review plan")}
+        </Button>
+      )}
+      {!submitted && (
+        <div style={{ ...MUTED, marginTop: 6 }}>
+          {blocked ? `${blocked} ` : ""}
+          A confirmation card follows. Nothing is created until you approve it. A mark warns and never blocks.
+        </div>
+      )}
+      </TemplateBody>
     </div>
   );
 }

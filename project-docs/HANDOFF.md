@@ -646,6 +646,9 @@ line — never reclaim a number by deleting the other entry.
 - **Why.** The HTML route of EM-S1 caches up to 2 MB of HTML for each message for 1 hour. The
   file cache of `transport/attachments.py` caches up to 15 MB for each file. The TTL is their only
   bound, so a burst of opens can fill the memory of the box.
+  The inline picture cache of `transport/inline_images.py` (`email-inline` and `email-inline-ids`,
+  `email_app_master_plan.md` §16.6) caches up to 20 MB for each message for 1 hour. It is the
+  third cache that a member's opens grow, so count it in the number you choose.
 - **Do.** Set `maxmemory` and `maxmemory-policy volatile-lru` (or `allkeys-lru`) for the Redis of
   the gateway. First check that no key without a TTL is state that must stay, such as a stream
   or a consumer group. Measure the memory of Redis on the box before you choose the number.
