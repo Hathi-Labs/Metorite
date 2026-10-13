@@ -77,6 +77,9 @@ RUN_ERROR_CODES: tuple[str, ...] = (
     "updating",
     "interrupted",
     "run_restarted",
+    # The browser's own (review of #942): that answer met a live run in the
+    # tab, so it waits in the composer queue until the reply ends.
+    "run_restarted_queued",
     # WS-51 S2, the browser's own: a card answer from a tab whose account is
     # no longer the signed-in one. The route refuses it before the gateway,
     # so the answer never reaches the other account's org.
