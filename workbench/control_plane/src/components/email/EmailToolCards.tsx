@@ -1501,7 +1501,7 @@ function EmailRow({
                 </div>
               )}
               <div className="max-h-72 overflow-y-auto overflow-x-hidden rounded">
-                <MessageContent html={body.body_html} text={body.body_text} />
+                <MessageContent html={body.body_html} text={body.body_text} messageId={row.id} />
               </div>
             </>
           ) : null}

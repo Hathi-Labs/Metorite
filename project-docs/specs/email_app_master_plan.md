@@ -12932,8 +12932,8 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** ✅ PR-C1b MERGED #925 (`144dc0d1f`, 2026-10-12, branch `gmail-c1b-send`). PR-C1a merged as
-#919 (`421eeb8f4`). PR-C2 is not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
+**Status.** 🔨 PR-C2 built, not merged (2026-10-13, branch `gmail-c2-ui`). PR-C1a merged as #919
+(`421eeb8f4`), and PR-C1b merged as #925 (`144dc0d1f`). Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
 C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
 widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
 
@@ -13078,6 +13078,11 @@ images go too, or come back as plain files.
   other answer gives `send`. *Reason:* the pre-send save is the last chance to keep the HTML, so
   the member must see its loss before the mail goes.
 
+  *Amended by review round 1 of PR-C2 (2026-10-13).* A `lost` of an earlier save of the card also
+  stops the send. An autosave is the usual case. That save already wrote the text only to Gmail, so
+  the pre-send save then answers `none`. The helper is `sendAfterPreSave(answer, confirmed,
+  lostBefore)`, and the card passes the loss of its earlier saves as `lostBefore`.
+
 **Where the answer gets `html`.** `upsert_draft` ends with
 `return await _fetch_message_dict(db, local_id)` at `drafting.py:2492`. For a Gmail mailbox that
 line becomes `return {**await _fetch_message_dict(db, local_id), "html": html_state}`, where
@@ -13140,11 +13145,16 @@ once.
 | Item | Where | The words | Test |
 |---|---|---|---|
 | PR-C2 4 | The notice in a Gmail draft with HTML | `This draft has formatting or images from Gmail. If you change the text here, Metorite saves the text only, and the formatting and images go.` | `a-gmail-html-draft-shows-the-notice` |
+| PR-C2 4a | The stopped send, as an alert, in place of the notice above | `Metorite could not keep the formatting and images of this draft. Press Send again to send the text only.` | `a-stopped-send-says-press-send-again` |
 
 The words stay true. A save or a send that leaves the text as it was keeps the formatting
 (D-G3a-f7-2, D-G3a-f7-7). A text edit loses it. A failed read on a save keeps the text only, and
 the same notice then tells the member (D-G3a-f7-6). A failed read at the send stops the send until
 the member presses again (D-G3a-f7-11, D-G3a-f7-12).
+
+Row 4a shows after a stopped send. That is a 409 `html_unavailable`, a pre-send save that
+answered `lost`, or a first send after an earlier save of the card answered `lost`. It replaces the
+words of row 4 until the next send or a text edit.
 
 **Non-goals.** No HTML editor. No change to the send of a draft with no signature: Gmail sends the
 draft that it holds. No change to Outlook or IMAP drafts, or to the create of a draft.
@@ -13185,6 +13195,24 @@ read of `send_draft_endpoint` stays as on main, and an Outlook send writes the S
 text half still comes from `build_signed_bodies`, because that half is the same for both paths.
 `sign_html` reads the new part of the HTML only. A quote of an earlier mail of the member holds the
 signature too, and that copy must not stop the signature.
+
+**The build of PR-C2 (2026-10-13).** Five facts that the scope did not name:
+
+- `gatewayFetch` keeps the raw `detail` on its error. The detail of the 409 is an object, so its
+  message reads `[object Object]`. `isHtmlUnavailable` reads `status` and `detail.reason`.
+- The store does not put `html` into a row of the list. It sets no page banner for the 409,
+  because the card shows the notice.
+- `draftText` is the one rule for the text of the card. The outgoing text and the text at open use
+  it, so a card with no edit equals its text at open.
+- Review round 1 (P3). The HTML read of a Gmail draft with no row HTML can be slow. The card shows
+  the notice while that read runs, and a read that finds no HTML removes it. We chose this over a
+  hold on edits, because it is simpler and the member can still type. It keeps "the member knows
+  first" true. The cost: a draft made in Metorite shows the notice for the time of one read.
+- Review round 1 (P4). The answer type of `saveDraft` in `api.ts` is `DraftSaveResult`.
+  `lib/draftAutosave.ts` already exports a `SavedDraft`.
+
+The behaviour fence is `e2e/email-gmail-draft-notice.spec.ts`. With `E2E_GMAIL_C2_SHOTS` set, it also
+saves the screenshots of acceptance 23.
 
 **Acceptance of PR-C1 (done when).**
 
@@ -13229,10 +13257,18 @@ signature too, and that copy must not stop the signature.
 19. `noticeAfterSave` is true for `html: "lost"` only.
 20. (B3) `sendAfterPreSave` answers `stop` for `html: "lost"` with no confirm, and `send` with the
     confirm. It answers `send` for `kept` and `none`.
+20a. (Review round 1, P2) An autosave answers `lost`, and then the pre-send save answers `none`.
+    The first press stops and shows row 4a, and it sends nothing. The next press sends with
+    `allowTextOnly: true`.
 21. (B2 b) `isHtmlUnavailable` is true for the 409 of D-G3a-f7-11 only. The card sends
     `allowTextOnly: false` on the first press and `true` on the next press after the notice.
+21a. After a stopped send, the card shows the words of E-D3 row 4a as an alert, in place of the
+    words of row 4. The next send and a text edit bring back the words of row 4.
 22. (B5) `needsHtmlRead` is true for a Gmail draft with `bodyText` and no `bodyHtml` that the card
     did not read yet. It is false for an Outlook draft and after one read.
+22a. (Review round 1, P2 and P3) Take a Gmail draft with no row HTML whose `full-body` read
+    answers HTML. The card reads once and shows the notice, and a Cc-only save sends
+    `keep_html: true`. The notice shows while the read runs, and a read with no HTML removes it.
 23. Do a visual review of the card with the notice (§12.3.10 item 8). Look in light mode, at
     compact density, with a changed accent and at 390 px.
 
@@ -13277,6 +13313,14 @@ signature too, and that copy must not stop the signature.
 - `a-gmail-draft-with-text-only-reads-its-html-once` (acceptance 22)
 - `the-send-asks-send-after-pre-save` (acceptance 20). It reads `ConversationView.tsx` as text,
   and finds `sendAfterPreSave(` between the pre-send `saveDraft` and `sendDraft`.
+- `a-stopped-send-says-press-send-again` (acceptance 21a). `noticeWords` gives the words of row
+  4a after a stop and the words of row 4 before it. A source-text case finds the alert role and the
+  clear of the stop. `e2e/email-gmail-draft-notice.spec.ts` shows the words of row 4a after a
+  stopped send.
+- `a-lost-autosave-stops-the-next-send` (acceptance 20a). The e2e case "an autosave that lost the
+  HTML stops the next send" holds the behaviour.
+- `the-notice-shows-while-the-html-read-runs` (acceptance 22a). The e2e cases "a Gmail draft with
+  no row HTML reads it" and "the notice shows while the HTML read runs" hold the behaviour.
 
 **Mutations.** Each must turn its named fence red. Then the file goes back to its exact SHA-256.
 
@@ -13294,6 +13338,10 @@ signature too, and that copy must not stop the signature.
 | M10 | `sendAfterPreSave` answers `send` for `lost` with no confirm | `a-lost-pre-save-stops-the-send-until-the-confirm` |
 | M11 | The HTML read joins the hydrate effect, after its early return | `a-gmail-draft-with-text-only-reads-its-html-once` |
 | M12 | A read with no HTML signs with `sign_html("")` | `test_a_signed_send_with_no_html_anywhere_is_main` |
+| M13 | `noticeWords` gives the words of row 4 after a stop | `a-stopped-send-says-press-send-again` |
+| M14 | `sendAfterPreSave` ignores `lostBefore` | `a-lost-autosave-stops-the-next-send`, and its e2e case |
+| M15 | The notice reads `draft.bodyHtml` only, not `htmlRead?.html` | `the-notice-shows-while-the-html-read-runs`, and the B5 e2e case |
+| M16 | The notice does not show while the read runs | the e2e case "the notice shows while the HTML read runs" |
 
 **Verify with.**
 
@@ -16614,6 +16662,8 @@ migration, and no flag.
 
 **Status: 🔨 BUILT on branch `email-message-actions-dark`, not merged (2026-10-10). Review
 fix rounds 1 to 3 are in.** UI only. No migration, no flag and no gateway change.
+§16.6 (2026-10-13) adds a gateway route for the inline pictures, and its own status line
+says where that fix stands.
 
 The owner asked for two changes on 2026-10-10. This section records them, and a fix of
 "Loading message…".
@@ -16817,6 +16867,163 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
 - **A patch can hide a change from another device.** `messagePatches` lives for the page.
   If another device changes a message that this pane changed, the pane shows its own
   change until a reload.
+
+### 16.6 Inline pictures in the body (2026-10-13)
+
+**Status: 🔨 BUILT on branch `email-inline-images`, not merged (2026-10-13). The security
+review and the re-review gave APPROVE, and their P2 and P3 fixes are in (below).** No migration and no flag. A
+WS-17 bug fix, and it needed no spec audit.
+
+**The report.** The owner's screenshot showed the reading pane in dark mode. A broken
+picture with the alt text "image.png" sat between the text and the sign-off. The owner saw
+it on mail from many senders, on Outlook mailboxes.
+
+**The cause.** A mail names a picture of its own MIME tree with `<img src="cid:...">`. No
+hop of the path could show it, and the path never worked. It is not a regression of
+EM-T17 or of #894.
+
+1. **Ingest.** `outlook._outlook_attachments` skips each part that Graph marks
+   `isInline`, so no `email_attachments` row holds it. That is correct for the file list.
+2. **The pane.** `sanitizeEmailHtml` kept the `cid:` URL, because DOMPurify allows the
+   scheme. But a browser cannot fetch `cid:`, and the frame's CSP was `img-src data:`.
+3. **The gateway.** No route served an inline part.
+
+**Evidence from production** (read-only, 2026-10-13):
+
+- 4,355 of 11,134 stored Microsoft bodies hold `cid:`, in the three organizations that
+  have mail. In the largest, 3,950 bodies hold `src="cid:`.
+- A body holds 10 such pictures at the median, 46 at p90 and 165 at most. Many of them
+  name one signature logo again.
+- The gateway log of two days shows no request for an inline part at all. The browser
+  never asked, so the failure made no log line.
+
+**The fix.**
+
+1. **The provider contract.** `BaseEmailProvider.get_inline_images` gives the parts with a
+   Content-ID, in the form of `normalize_content_id`. IMAP gives none.
+   - Outlook lists the parts with the base properties only, so Graph sends no bytes of a
+     real file. Then it reads each `isInline` or `image/*` file part, four at a time.
+   - Gmail reads the tree once, and never opens an attached mail.
+2. **The route.** `GET /email/messages/{id}/inline?cid=...`, in
+   `transport/inline_images.py`.
+   - The owner read runs first, with the predicate of the HTML route. A message of
+     another member is 404, before any cache read.
+   - The organization comes from the session and the member from `user.email`.
+   - Tenant Redis keeps each picture and the list of names for one hour, by the row id.
+   - One provider read serves all the requests of one message that arrive together.
+   - No session is open across the provider call. A 429 answers 503 with `Retry-After`.
+3. **Only a picture goes out.** The type comes from the first bytes, and SVG and HTML are
+   never served. Each answer carries `nosniff` and a CSP of `default-src 'none'; sandbox`.
+4. **The pane.** `lib/inlineImages.ts` writes `cid:X` as a RELATIVE URL of the route. The
+   frame's CSP adds that one path of our origin, with no trailing slash.
+   - The URL must be relative. `BLOCKED_REMOTE_CSS` drops the re-invert of a picture whose
+     `src` starts with `http`, so an absolute URL draws the picture inverted in dark mode.
+   - An inline picture is part of the mail, so the remote gate does not hold it, and
+     "Show images" is not needed for it. The gate still holds each remote picture.
+   - Each reading surface passes its message id: the single email, the thread, the
+     preview and the chat card.
+
+**Fences.**
+
+- `tests/unit/test_email_inline_images.py`: the Outlook and Gmail reads, the sniff, the
+  route, and the owner check on a real database (R8).
+- `tests/unit/test_email_owner_scope_fence.py` reads the owner predicate in the body of
+  `get_inline_image`. So the owner SQL stays in that body, not in a module constant.
+- `src/app/email/lib/inlineImages.test.ts`: the rewrite, the relative URL and the CSP.
+- `e2e/email-inline-images.spec.ts`: a real PNG loads in a real frame, with
+  `naturalWidth` above 0, in the tokens, invert and original looks, and after "Show images".
+  In the invert look the picture keeps its re-invert, and the remote logo stays refused.
+- Red first: with the client of `main`, each of the four e2e tests fails, and the pane
+  shows the alt text "image.png" as in the report.
+- Mutations, each killed: no owner predicate, no shared provider read, a trusted declared
+  type, no cached list of names, a list read that pulls bytes, a Gmail walk into an
+  attached mail, a failure that is not kept, and no `max_count`. On the client: no
+  rewrite, an absolute URL, and a CSP with no inline path.
+
+**Recorded risks.**
+
+- A `cid:` inside a CSS `url()` stays unresolved. The pane rewrites `src`, `poster` and
+  `background` only.
+- A message that is not a stored row, such as a provider search hit, gets 404. Its
+  pictures show the alt text, as before.
+- The first open of a message with many pictures makes one Graph read for each part.
+  The server cache then serves it for one hour, and the browser cache for ten minutes.
+- **A shared browser keeps a picture for ten minutes** (review P3-6). The answer says
+  `Cache-Control: private, max-age=600`. After a sign-out, the next person at that
+  browser can open the cached URL until the ten minutes end. The hour of the server
+  cache is safe, because the owner check runs before each read of it.
+- A kept owner verdict lives for one minute. If a member disconnects a mailbox in that
+  minute, they can still read the cached pictures of a message that they opened.
+
+**Security review of 2026-10-13: APPROVE, and the fixes.** The review found no P0 or P1.
+This change fixes its four P2 and two P3 findings.
+
+1. **P2-1, the binary Redis pool.** That pool holds 4 connections
+   (`BINARY_POOL_MAX_CONNECTIONS`), and redis-py raises when it is full, with no wait.
+   Each binary call now passes one gate, one below the pool. So a burst queues, and a
+   cache hit seldom turns into a provider read. Seldom, not never: the gate binds this
+   process only. The pool class stays as it is.
+2. **P2-2, one owner read for each picture.** A body of 165 pictures took 165 owner
+   reads, and that filled the database pool. The route now keeps a POSITIVE verdict in
+   the process for 60 s, by organization, member and message. The requests of one open
+   share one owner read. A denial is never kept. The verdict holds no credentials (P3-b
+   below). The owner SQL stays in the handler body for the owner-scope fence.
+3. **P2-3, no bytes past the caps.** Gmail reads a part only when it is inline AND of an
+   `image/*` type, so it never downloads a PDF with a Content-ID. Outlook and Gmail skip
+   each part that would take the listed sizes over `MAX_INLINE_TOTAL_BYTES` (`max_total`).
+4. **P2-4, a passing fault.** A part that fails for a reason other than a rate limit
+   makes the read incomplete (`InlineRead.complete`). The list of names then lives
+   `INLINE_RETRY_TTL_SECS` (60 s), not one hour, so the next open reads that part again.
+5. **P3-5.** A 429 on one Outlook part cancels the reads that still run (`TaskGroup`).
+6. **P3-6.** The browser cache is ten minutes, as the risk above says.
+
+Fences, in `tests/unit/test_email_inline_images.py`, and the mutation that each one
+kills:
+
+- `TestTheRedisPool`: a fake pool that refuses a fifth call, and a burst of 20 on a full
+  cache with no provider read. It kills a gate of 50.
+- `TestOneOwnerReadForEachOpen`: 100 requests make one owner read. Another member and
+  another organization each read again and a stranger gets 404. The verdict ends after
+  its TTL. It kills no kept verdict, no single flight, and a key with no member.
+- `TestTheReadStopsAtTheCaps`: one Gmail picture and five 4 MB PDFs give one download,
+  and a 27 MB Outlook list reads 4 parts. It kills a Gmail check with no type and an
+  Outlook read with no total cap.
+- `TestAFailedPartIsReadAgainSoon`: a 503 or a 404 on a part makes the read incomplete.
+  The list then lives 60 s, and the next open after it reads the provider again. It
+  kills a route that ignores the flag, and an Outlook or Gmail read that always reports
+  complete.
+- `TestARateLimitStopsTheSiblings`: no read runs on after a 429. It kills `gather`.
+- The header test kills a browser cache of one hour.
+
+**Security re-review of 2026-10-13: APPROVE, and three P3 fixes.**
+
+1. **P3-a, a logo that the budget left out.** The budget took the parts in list order and
+   stopped at the cap. So more than 20 MB of image files ahead of a small inline logo
+   left the logo out, and the cached list then said 404 for an hour.
+   - Outlook takes the `isInline` parts first. Gmail takes the parts with an `inline`
+     disposition first.
+   - Each provider, and the route's own cap, now skips a part that does not fit, so a
+     smaller part after it can still fit.
+   - A skipped inline part makes the read incomplete, so the list lives 60 s.
+2. **P3-b, a kept grant.** The kept verdict held the whole row, with
+   `credentials_encrypted`. A reconnect inside the minute let the route refresh from the
+   old grant and write over the new tokens. The owner read now selects no credentials.
+   The pictures flight reads the grant again, with the owner predicate. That is one
+   database read for each provider read.
+3. **P3-c, the other user of the pool.** The file cache of `transport/attachments.py`
+   shares the binary pool. It now queues on the same gate, `_binary_redis_gate`, which
+   moved into `attachments.py`. Both routes import it from there.
+
+Fences, and the mutation that each one kills:
+
+- `TestInlinePartsComeFirst`: an Outlook list with 25 MB of image files and then an
+  inline logo reads the logo. A large inline part is skipped, and a small one after it is
+  read. On Gmail the inline logo is read first. It kills the list order and a `break`.
+- `test_a_reconnect_after_the_verdict_uses_the_new_grant`: a reconnect after the verdict
+  is kept, and then a picture miss, reads the new grant. It kills a flight that takes the
+  grant from the kept row.
+- `TestOneGateForTheBinaryPool`: both routes use the one gate, and the file cache passes
+  it for its read and its write.
 
 ## 17. Email AI context: the whole conversation, chosen by Jev, and no stall (2026-10-12)
 

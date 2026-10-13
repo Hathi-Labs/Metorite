@@ -29,6 +29,14 @@ import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/Confirm
 import AskPin from "@/components/AskPin";
 import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
+import {
+  genUiAnswersFromTurns,
+  parseCardAnswerEnvelope,
+  resendOutcomeOfSteer,
+  resendPlan,
+  STEER_UNSUPPORTED_CARD,
+  type ResendOutcome,
+} from "@/lib/cardAnswer";
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
@@ -49,6 +57,13 @@ import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
 import { ErrorCardView } from "@/components/ChatErrorCard";
 import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
+import {
+  ASK_USER_HEADER,
+  answerSummary,
+  blockingAnswer,
+  formattedAnswers,
+  userInputAnswer,
+} from "@/lib/elicitationAnswer";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
@@ -908,6 +923,10 @@ export default function AgentChat({
   const [elicitation, setElicitation] = useState<{
     questions: ElicitationQuestion[];
     requestId?: string;
+    /** The member answered and the run took it: the one line the card
+     *  shows (`answerSummary`). The card waits no more. The run's end
+     *  clears it, as it clears a waiting card. */
+    answered?: string;
   } | null>(null);
 
   // ── Native ask_user state (Copilot SDK on_user_input_request) ────────
@@ -918,6 +937,8 @@ export default function AgentChat({
     question: string;
     choices: string[];
     allowFreeform: boolean;
+    /** As for `elicitation`: the answer, once the run took it. */
+    answered?: string;
   } | null>(null);
 
   // The words of each answer this session sent to a blocking generative-UI
@@ -1051,6 +1072,13 @@ export default function AgentChat({
   // render (the card answer path above).
   const sendMessageRef = useRef(sendMessage);
   useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
+  // The steer and the route, for a card answer's resend (review of #942).
+  const steerMessageRef = useRef(steerMessage);
+  useEffect(() => { steerMessageRef.current = steerMessage; }, [steerMessage]);
+  const resendRouteRef = useRef({ runActive: isRunActive, mode: effectiveRuntime });
+  useEffect(() => {
+    resendRouteRef.current = { runActive: isRunActive, mode: effectiveRuntime };
+  }, [isRunActive, effectiveRuntime]);
 
   // Live ref to the current sessionId so async callbacks (e.g. /compact) can
   // bail if the user switched sessions while the request was in flight.
@@ -1132,7 +1160,7 @@ export default function AgentChat({
       // The account this tab drew the card for. The route refuses the answer
       // when the browser is signed in to another account now (WS-51 S2).
       const drawnFor = boundIdentity();
-      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, otherAccount }) => {
+      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount }) => {
         // Only touch the cards if the user is still on the session that asked.
         if (sessionIdRef.current !== forSession) return;
         if (otherAccount) {
@@ -1145,14 +1173,50 @@ export default function AgentChat({
         }
         if (outcome === "retry") { restoreCard(); return; }
         if (resend) {
-          setMessages((prev) => [...prev, {
-            id: `restarted-${payload.request_id}`,
-            role: "system",
-            content: `__ERROR__${JSON.stringify({ code: "run_restarted", ref: null, raw: "" })}`,
-            timestamp: Date.now(),
-          }]);
-          void sendMessageRef.current(resend);
-          settle?.("resent");
+          // The model reads the envelope. The member reads the answered
+          // card (owner report, 2026-10-13, `lib/cardAnswer.ts`). An old
+          // gateway sends no display, so the envelope is parsed instead.
+          // The notice and the card follow what became of the send, so the
+          // notice never says "went" for an answer that did not go
+          // (review of #942, `resendPlan`).
+          const cardAnswer = display ?? parseCardAnswerEnvelope(resend);
+          const finish = (outcome: ResendOutcome) => {
+            if (sessionIdRef.current !== forSession) return;
+            const plan = resendPlan(outcome);
+            if (plan.notice) {
+              const code = plan.notice;
+              setMessages((prev) => [...prev.filter((m) => m.id !== `restarted-${payload.request_id}`), {
+                id: `restarted-${payload.request_id}`,
+                role: "system",
+                content: `__ERROR__${JSON.stringify({ code, ref: null, raw: "" })}`,
+                timestamp: Date.now(),
+              }]);
+            }
+            if (plan.card === "keep") restoreCard();
+            else settle?.("resent");
+          };
+          // A run is live in this thread (#920): the answer STEERS it, the
+          // same path as the composer's Send, so the live run reads it now.
+          // The server folds it in, or starts a run when that one has ended.
+          const steer = () => {
+            void steerMessageRef.current(resend, { cardAnswer }).then((out) => {
+              if (out.kind === "refused" && sessionIdRef.current === forSession) setComposerNotice(out.notice);
+              finish(resendOutcomeOfSteer(out.kind));
+            });
+          };
+          const route = sendRoute(resendRouteRef.current);
+          if (route === "steer") { steer(); return; }
+          if (route === "unsupported") {
+            // The direct model path takes no steer. The card stays open.
+            setComposerNotice(STEER_UNSUPPORTED_CARD);
+            finish("refused");
+            return;
+          }
+          void sendMessageRef.current(resend, {
+            cardAnswer,
+            // A run that started between the route and the send: steer it.
+            onSettled: (outcome) => (outcome === "busy" ? steer() : finish(outcome)),
+          });
           return;
         }
         settle?.(outcome);
@@ -1687,12 +1751,18 @@ export default function AgentChat({
   };
   const hasConfirmations = confirmations.cards.length > 0;
 
+  // A question card that the run took an answer for waits no more. It
+  // stays in view with its answer until the run ends (owner, 2026-10-13).
+  const elicitationWaits = !!elicitation && elicitation.answered === undefined;
+  const userInputWaits = !!userInput && userInput.answered === undefined;
   const renderHitlCards = (): React.ReactNode => {
     if (!hasConfirmations && !elicitation && !userInput) return null;
     // One mark for the group: the pin above the composer scrolls here
     // while a card waits (`lib/askPin.ts`, spec §24 rule 1). It is a card of
     // the transcript too: its arrival rolls up the long cards above it, and
-    // it never rolls up itself (`components/RollupCard.tsx`).
+    // it never rolls up itself (`components/RollupCard.tsx`). The group
+    // draws no title row of its own. Each card in it draws its own, and an
+    // answered question card folds by itself (`ElicitationCard`).
     return (
       <RollupCard id={HITL_TARGET} title="Waiting for you" pending>
       <div data-chat-ask={HITL_TARGET} className="space-y-2 outline-none">
@@ -1702,55 +1772,35 @@ export default function AgentChat({
 
         {elicitation && (
           <ElicitationCard
+            // A new question is a new card (review of #945, P1). The answered
+            // card stays mounted, so with no key the next question took its
+            // picks and its typed text. A retry keeps its id, and its picks.
+            key={elicitation.requestId ?? "questions"}
+            id={`ask:${elicitation.requestId ?? "questions"}`}
             questions={elicitation.questions}
+            answered={elicitation.answered}
             onSubmit={(answers: ElicitationAnswers) => {
               if (elicitation.requestId) {
-                const formatted = Object.entries(answers)
-                  .map(([header, ans]) => {
-                    const parts: string[] = [`[${header}]`];
-                    if (ans.selected && ans.selected.length > 0) {
-                      parts.push(`Selected: ${ans.selected.join(", ")}`);
-                    }
-                    if (ans.freeform) {
-                      parts.push(`Answer: ${ans.freeform}`);
-                    }
-                    return parts.join("\n");
-                  })
-                  .join("\n\n");
-                const single = elicitation.questions.length === 1;
-                const firstHeader = elicitation.questions[0]?.header ?? "Question";
-                const a = answers[firstHeader] ?? {};
-                const freeform = a.freeform?.trim();
-                const selectedJoined = (a.selected ?? []).join(", ");
-                const answer = single
-                  ? (freeform || selectedJoined || formatted)
-                  : formatted;
-                const wasFreeform = single && !!freeform && !selectedJoined;
+                // The wire shape is `lib/elicitationAnswer.ts`, unchanged.
+                const { answer, wasFreeform } = blockingAnswer(elicitation.questions, answers);
                 const card = elicitation;
                 const reqId = card.requestId!;
-                setElicitation(null);
+                setElicitation({ ...card, answered: answerSummary(card.questions, answers) });
                 postRespondInput(
                   { request_id: reqId, answer, was_freeform: wasFreeform },
                   () => setElicitation(card),
                   // A 4xx says no question waits on this id (a stale card).
                   // The answer goes out as a message, as the genUI path
-                  // does, so it is never lost (2026-10-09).
-                  (outcome) => { if (outcome === "drop") submitText(answer); },
+                  // does, so it is never lost (2026-10-09). The message
+                  // carries the answer, so the card leaves.
+                  (outcome) => {
+                    if (outcome === "ok") return;
+                    setElicitation((prev) => (prev?.requestId === reqId ? null : prev));
+                    if (outcome === "drop") submitText(answer);
+                  },
                 );
               } else {
-                const formatted = Object.entries(answers)
-                  .map(([header, ans]) => {
-                    const parts: string[] = [`[${header}]`];
-                    if (ans.selected && ans.selected.length > 0) {
-                      parts.push(`Selected: ${ans.selected.join(", ")}`);
-                    }
-                    if (ans.freeform) {
-                      parts.push(`Answer: ${ans.freeform}`);
-                    }
-                    return parts.join("\n");
-                  })
-                  .join("\n\n");
-                submitText(formatted);
+                submitText(formattedAnswers(answers));
                 setElicitation(null);
               }
             }}
@@ -1759,8 +1809,10 @@ export default function AgentChat({
 
         {userInput && (
           <ElicitationCard
+            key={userInput.requestId}
+            id={`ask:${userInput.requestId}`}
             questions={[{
-              header: "Question",
+              header: ASK_USER_HEADER,
               question: userInput.question,
               multiSelect: false,
               allowFreeformInput: userInput.allowFreeform,
@@ -1768,18 +1820,19 @@ export default function AgentChat({
                 ? userInput.choices.map((c) => ({ label: c }))
                 : null,
             }]}
+            answered={userInput.answered}
             onSubmit={(answers: ElicitationAnswers) => {
-              const a = answers["Question"] ?? {};
-              const selected = a.selected?.[0];
-              const freeform = a.freeform?.trim();
-              const answer = freeform || selected || "";
-              const wasFreeform = !!freeform && !selected;
+              const { answer, wasFreeform } = userInputAnswer(answers);
               const card = userInput;
-              setUserInput(null);
+              setUserInput({ ...card, answered: answer });
               postRespondInput(
                 { request_id: card.requestId, answer, was_freeform: wasFreeform },
                 () => setUserInput(card),
-                (outcome) => { if (outcome === "drop" && answer) submitText(answer); },
+                (outcome) => {
+                  if (outcome === "ok") return;
+                  setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
+                  if (outcome === "drop" && answer) submitText(answer);
+                },
               );
             }}
           />
@@ -1792,13 +1845,30 @@ export default function AgentChat({
   // The element that waits on the member, for the pin above the composer
   // (spec §24 rule 1). It reads the queue and the question state above, and
   // keeps none of its own.
+  // The room: read here, before the card answers below, which count only
+  // the viewer's own turns (review of #942). The room layer is further down.
+  const viewerEmail = memoryUserId ?? "";
+  const { room, shared: isRoom, presence, timeline, refresh: refreshRoom } =
+    useRoom(sessionId, viewerEmail, { enabled: !compact });
+  // A blocking generative-UI card whose answer went as a new message after a
+  // restart: its run died before its tool result recorded the answer, so the
+  // answer comes from the member's turn (`lib/cardAnswer.ts`). The card then
+  // stays answered after a reload too. Keyed on the text, so a streamed
+  // token makes no new map and every bubble keeps its memo.
+  const restartAnswersKey = JSON.stringify([...genUiAnswersFromTurns(messages, viewerEmail || undefined, isRoom)]);
+  const cardAskAnswers = useMemo<ReadonlyMap<string, string>>(() => {
+    const fromTurns = JSON.parse(restartAnswersKey) as [string, string][];
+    return fromTurns.length === 0 ? askAnswers : new Map([...fromTurns, ...askAnswers]);
+  }, [askAnswers, restartAnswersKey]);
   const askSources = {
     confirmations: confirmations.cards,
-    elicitation,
-    userInput,
+    elicitation: elicitationWaits ? elicitation : null,
+    userInput: userInputWaits ? userInput : null,
     messages,
     runActive: isRunActive,
-    answered: answeredAsks,
+    answered: cardAskAnswers.size === askAnswers.size
+      ? answeredAsks
+      : new Set([...answeredAsks, ...cardAskAnswers.keys()]),
   };
   const waiting = pendingAsk(askSources);
 
@@ -1834,9 +1904,7 @@ export default function AgentChat({
   // nothing: `shared` is false, so no rail, no banner, no stream, no
   // heartbeat. Everything below keys off `shared` rather than off the room
   // object, so solo chat is exactly the surface it has always been.
-  const viewerEmail = memoryUserId ?? "";
-  const { room, shared: isRoom, presence, timeline, refresh: refreshRoom } =
-    useRoom(sessionId, viewerEmail, { enabled: !compact });
+  // `viewerEmail` and `isRoom` are read above, by the card answers.
   const [railOpen, setRailOpen] = useState(false);
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
   // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).
@@ -2031,7 +2099,7 @@ export default function AgentChat({
                 )}
                 <MessageBubble message={msg} sessionId={sessionId} onChoice={handleChoice}
                   onHitlRespond={handleGenUiHitl}
-                  askAnswers={askAnswers}
+                  askAnswers={cardAskAnswers}
                   emailContext={emailContext}
                   onFileOpen={handleFileOpen}
                   onEditLast={msg.id === lastUserId ? handleEditLast : undefined}
@@ -2039,6 +2107,8 @@ export default function AgentChat({
                   participants={isRoom ? roomPeople : undefined}
                   // Entity pills for the Projects assistant only (S9).
                   entityPills={currentAgentName === PROJECTS_AGENT}
+                  // Bare `#171` task links, for the task agents (2026-10-13).
+                  taskRefAgent={currentAgentName}
                   onRetryMessage={prevUserMsg ? handleRetryMessage : undefined} />
                 {/* Mailbox switch — everything below this line is about a
                     different inbox, and the assistant's per-account

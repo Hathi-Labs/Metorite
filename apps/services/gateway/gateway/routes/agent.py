@@ -2307,7 +2307,7 @@ class PromptToSave(BaseModel):
 
 def prompt_to_save(
     *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
-    actor: str, room: Any, supersedes: str = "",
+    actor: str, room: Any, supersedes: str = "", card_answer: Any = None,
 ) -> PromptToSave | None:
     """The turn to save at run start, or ``None`` when the server saves nothing.
 
@@ -2345,6 +2345,15 @@ def prompt_to_save(
     # An edit keeps its "Edited" marker after a reload, as the browser's own
     # save writes it (lib/chatEdit.ts `editedMarker`).
     marker = [{"name": "edited", "value": {"supersedes": supersedes}}] if supersedes else []
+    # A card answer that went as a new message keeps its display (owner
+    # report, 2026-10-13), as the browser's own save writes it
+    # (`lib/cardAnswer.ts`). Only an envelope that says the same thing takes
+    # one, so no other turn can draw as an answered card (review of #942).
+    from gateway.chat_recovery import card_answer_marker  # noqa: PLC0415
+
+    card = card_answer_marker(words, card_answer) if card_answer is not None else None
+    if card is not None:
+        marker.append(card)
     return PromptToSave(
         message_id=mid, content=words, timestamp_ms=ts, custom_events=marker,
     )
@@ -2522,6 +2531,9 @@ async def run_agent_stream_endpoint(
     _superseded_ids: list[str] = []
     _supersedes = str(req.payload.pop("supersedes", "") or "").strip()
     _new_user_id = str(req.payload.pop("user_message_id", "") or "").strip()
+    # The display of a card answer that went as a new message. It is for the
+    # saved turn only, and never reaches the executor.
+    _card_answer = req.payload.pop("card_answer", None)
     _edit_keep = [_new_user_id, req.assistant_message_id or ""]
     # WS-51 S4: the member's turn, as they typed it. The server saves it
     # below, before the run starts, so a tab closed at once keeps it. The
@@ -2532,6 +2544,7 @@ async def run_agent_stream_endpoint(
         text=str(req.payload.get("message") or req.payload.get("user_query") or ""),
         timestamp=req.payload.pop("user_message_ts", None),
         actor=actor_email, room=room, supersedes=_supersedes,
+        card_answer=_card_answer,
     )
     _edit_shared = bool(room is not None and room.is_shared)
     if _supersedes and req.thread_id:
@@ -3128,8 +3141,8 @@ async def run_agent_stream_endpoint(
 
 async def _late_answer_from_row(
     req: UserInputResponseRequest, user: UserContext,
-) -> tuple[str | None, bool]:
-    """``(message to resend, the card has a row)`` for an answer no run took.
+) -> tuple[Any, bool]:
+    """``(CardResend, the card has a row)`` for an answer no run took.
 
     WS-51 S2 (``CHAT_DURABLE_ASKS``, default OFF; OFF returns
     ``(None, False)`` and the route keeps its old path). The row is read under
@@ -3276,10 +3289,15 @@ async def respond_user_input(
                 detail={
                     "error": "run_restarted",
                     "message": (
-                        "The assistant restarted. Your answer will be sent "
-                        "as a new message."
+                        "The assistant restarted, so your answer goes as "
+                        "a new message."
                     ),
-                    "resumeMessage": resend,
+                    # What the model reads: the fenced envelope.
+                    "resumeMessage": resend.message,
+                    # What the member reads (owner report, 2026-10-13). The
+                    # chat draws the answered card from it, and the saved
+                    # turn keeps it as the ``card_answer`` custom event.
+                    "resumeDisplay": resend.display,
                     "threadId": req.thread_id,
                 },
             )

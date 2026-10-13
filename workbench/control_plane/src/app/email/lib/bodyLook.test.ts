@@ -268,11 +268,11 @@ describe("email-dark-no-content", () => {
     const src = readFileSync(join(__dirname, "../components/MessageContent.tsx"), "utf-8").replace(/\r\n/g, "\n");
     expect(src).toContain("const lookCss = bodyLookCss(look, palette, { remoteBlocked: !showImages });");
     // The palette is a dependency of the frame's document.
-    expect(src).toContain("}, [sanitized, showImages, quoted, look, palette]);");
+    expect(src).toContain("}, [sanitized, showImages, quoted, look, palette, inlinePath]);");
     expect(src).toContain("</style>${lookStyle}</head><body>${sanitized.clean}</body></html>");
     // The sandbox and the sanitizer stay as they were.
     expect(src).toContain('sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"');
-    expect(src).toContain("return sanitizeEmailHtml(html, showImages);");
+    expect(src).toContain("return sanitizeEmailHtml(html, showImages, inlinePath);");
   });
 });
 

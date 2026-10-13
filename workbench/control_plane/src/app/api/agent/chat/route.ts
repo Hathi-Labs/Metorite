@@ -96,6 +96,10 @@ interface ChatRequest {
    *  writes the words the model reads, from the saved partial reply, so this
    *  is a flag and never text. */
   resume?: boolean;
+  /** The answered card of a card answer that went as a new message (owner
+   *  report, 2026-10-13, `lib/cardAnswer.ts`). The gateway checks it and
+   *  saves it on the member's turn. It never reaches the model. */
+  cardAnswer?: unknown;
   /** The steer follow-up (owner, 2026-10-12). The chat sends it once a run
    *  it steered has ended, with no words. The gateway answers a steer that
    *  run never read, or 202 when nothing is owed (`lib/chatSteer.ts`). */
@@ -654,7 +658,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp } = body;
+  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp, cardAnswer } = body;
   // A steer follow-up has no words of its own: the gateway's ENGAGE seam
   // makes the stored steers its message. It runs on the gateway path only.
   const followUp = steerFollowUp === true && mode === "copilot" && !!threadId;
@@ -821,6 +825,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               }
               : {}),
             ...(supersedes ? { supersedes } : {}),
+            ...(cardAnswer && typeof cardAnswer === "object" ? { card_answer: cardAnswer } : {}),
           },
           thread_id: threadId ?? undefined,
           model: model ?? undefined,

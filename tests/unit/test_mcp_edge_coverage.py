@@ -21,7 +21,9 @@ adds rules 3 and 4, which read the edge's tool records
    a read, an ``inputSchema`` and an ``outputSchema`` (EA-3b-1).
 4. Each tool input maps to a parameter of its route. The parameters come
    from ``route.dependant``, as ``test_projects_field_parity.py`` reads them.
-   Each route a tool reads is in ``MCP_ROUTES`` (EA-3b-1).
+   Each route a tool reads is in ``MCP_ROUTES`` (EA-3b-1). An input that the
+   edge applies itself is a named exception, listed in the tool record's
+   ``edge_inputs`` and in :data:`NAMED_EDGE_INPUTS` (EA-3b-2).
 
 Database-free. The gateway app imports, and the manifest is a tuple.
 """
@@ -151,14 +153,29 @@ def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
     assert not wrong, "\n  ".join(["A tool record breaks §9.5 rule 3:", *wrong])
 
 
+#: The inputs that the edge applies itself, because the route takes no such
+#: parameter. Each one is a named exception of rule 4, and a new one needs a
+#: spec amendment (§9.5 rule 4). ``GET /projects/tree`` takes no parameter.
+NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
+    ("list_projects", "parent_id"),
+    ("list_projects", "text"),
+    ("list_projects", "limit"),
+    ("list_projects", "cursor"),
+})
+
+
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
     params = _route_parameters()
     wrong: list[str] = []
     for tool in _tools():
         inputs = set(tool.input_schema.get("properties", {}))
-        if set(tool.params) != inputs:
+        edge = set(tool.edge_inputs)
+        if set(tool.params) & edge:
+            wrong.append(f"{tool.name}: {sorted(set(tool.params) & edge)} is both a "
+                         f"route parameter and an edge input")
+        if set(tool.params) | edge != inputs:
             wrong.append(f"{tool.name}: inputs {sorted(inputs)} but params "
-                         f"{sorted(tool.params)}")
+                         f"{sorted(tool.params)} and edge inputs {sorted(edge)}")
         served = params.get(tool.route)
         if served is None:
             wrong.append(f"{tool.name}: GET {tool.route} is not a gateway route")
@@ -168,6 +185,15 @@ def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
                 wrong.append(f"{tool.name}: {name} maps to {parameter!r}, which "
                              f"GET {tool.route} does not take")
     assert not wrong, "\n  ".join(["A tool input breaks §9.5 rule 4:", *wrong])
+
+
+def test_rule_4_the_edge_inputs_are_exactly_the_named_exceptions():
+    """An edge input is a hole in rule 4, so the spec names each one."""
+    declared = {(tool.name, name) for tool in _tools() for name in tool.edge_inputs}
+    assert declared == NAMED_EDGE_INPUTS, (
+        "The edge inputs of the tool records differ from the named exceptions of"
+        f" spec §9.5 rule 4. Extra: {sorted(declared - NAMED_EDGE_INPUTS)}."
+        f" Missing: {sorted(NAMED_EDGE_INPUTS - declared)}.")
 
 
 def test_rule_4_each_route_a_tool_reads_is_in_the_allowlist():
