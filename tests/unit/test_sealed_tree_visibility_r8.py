@@ -51,8 +51,8 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from acb_auth import require_authenticated
 from acb_auth import access as access_module
+from acb_auth import require_authenticated
 from acb_auth.access import invalidate as invalidate_access
 from fastapi import FastAPI
 from sqlalchemy import create_engine, text
@@ -74,7 +74,6 @@ _DB_GATE = pytest.mark.skipif(
         "pgvector. A skip here is not a pass; CI must set it."
     ),
 )
-pytestmark = _DB_GATE
 
 _APP_ROLE = "acb_app_sealedtree"
 _APP_PW = "sealedtree_scratch_pw"
@@ -390,6 +389,7 @@ async def _refs(world, email: str) -> set[str]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@_DB_GATE
 class TestTheAdminDoesNotReadTheSealedTree:
     """Every read that goes through the one clause hides the tree, except
     the task that was handed over to the admin."""
@@ -451,6 +451,7 @@ class TestTheAdminDoesNotReadTheSealedTree:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@_DB_GATE
 class TestTheHandOverSurvivesTheSeal:
     """D63: the company keeps the work. The assignee keeps the task."""
 
@@ -467,6 +468,7 @@ class TestTheHandOverSurvivesTheSeal:
         assert {armed.t["team"], armed.t["peer_private"]} <= rows
 
 
+@_DB_GATE
 class TestTheTenantHolds:
     async def test_the_other_tenants_admin_sees_nothing_of_org_a(self, armed):
         a_tasks = set(armed.t.values()) - {armed.t["b"]}
@@ -477,6 +479,7 @@ class TestTheTenantHolds:
         assert r.status_code == 404
 
 
+@_DB_GATE
 class TestTheSuiteIsHonest:
     async def test_the_suite_runs_as_a_role_that_cannot_bypass_rls(self, armed):
         engine = create_engine(make_url(armed.app_dsn), future=True)
@@ -519,6 +522,7 @@ async def _as_app(world, org: str, fn):
         await engine.dispose()
 
 
+@_DB_GATE
 class TestTheBypassDoorsStillSeeTheTree:
     """``projects/seal.py`` is the off-boarding door. It reads the sealed tree
     by its own ``_TREE_SQL`` and never through the visibility clause, which is
@@ -544,6 +548,10 @@ class TestTheBypassDoorsStillSeeTheTree:
             return opened, closed
 
         assert await _as_app(armed, armed.org_a, _round_trip) == (2, 2)
+
+
+class TestTheBypassDoorsAreExplicit:
+    """Database-free, so it runs in every CI job."""
 
     def test_the_doors_do_not_read_through_the_visibility_clause(self):
         """The explicit part. A door that read through the clause would see
