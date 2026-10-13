@@ -174,11 +174,10 @@ the specialist's gate.
   `whatsapp-assistant`, the page does not move to My WhatsApp. `apis-config`
   has no pane with an agent either, and App Workshop is a preview pane. The
   runner prints this note.
-- **The orchestrator's own instructions name one customer.** The first line
-  of `_PULL_INSTRUCTIONS` in `orchestrator/agents.py` says "for Fracktal
-  Works". The persona of `assistant.ts` says that a chat must never carry
-  the name of one tenant. The eval does not change the instructions.
-- **Two instructions disagree.** `_PULL_INSTRUCTIONS` rule 2 says "Do not
+- **FIXED by #978: the orchestrator's instructions named one customer.**
+  `_PULL_INSTRUCTIONS` no longer names a tenant, and
+  `tests/unit/test_no_tenant_name_in_prompts.py` fences every shared prompt.
+- **Two instructions may disagree.** `_PULL_INSTRUCTIONS` rule 2 says "Do not
   ask the user which agent to use". The persona says "ask one short
   question" when the record is not clear. The live run of the `asks` cases
   measures which one the model follows.

@@ -2211,10 +2211,10 @@ Findings, not fixed here:
 
 - **No live pane names `whatsapp-assistant`.** My WhatsApp is live, and its
   pane has no `agent`, so a delegation to it does not move the page.
-- **`_PULL_INSTRUCTIONS` names one customer.** Its first line in
-  `orchestrator/agents.py` says "for Fracktal Works", and every tenant's
-  orchestrator reads it.
-- **Two instructions disagree.** `_PULL_INSTRUCTIONS` rule 2 says "Do not
+- **FIXED by #978: `_PULL_INSTRUCTIONS` named one customer.** No shared
+  prompt names a tenant now. Fence:
+  `tests/unit/test_no_tenant_name_in_prompts.py`.
+- **Two instructions may disagree.** `_PULL_INSTRUCTIONS` rule 2 says "Do not
   ask the user which agent to use". `ASSISTANT_PERSONA` says to ask when
   the record is not clear. The live run of the three `asks` cases measures
   which one the model follows.
