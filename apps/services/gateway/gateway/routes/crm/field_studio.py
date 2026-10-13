@@ -71,6 +71,7 @@ from gateway.routes.crm.core import (
     system_field,
 )
 from gateway.routes.crm.fields import (
+    DEF_COLUMNS,
     ENTITY_BY_SLUG,
     FieldDef,
     FieldLayout,
@@ -306,8 +307,9 @@ class CustomField:
 
 
 _CUSTOM_FIELDS_SQL = (
-    "SELECT key, label, type, options, required, default_value, lookup_target, "
-    "is_system, retired_at FROM crm_field_defs WHERE entity = :entity"
+    "SELECT key, label, type, options, required, default_value::text AS "
+    "default_value, lookup_target, is_system, retired_at FROM crm_field_defs "
+    "WHERE entity = :entity"
 )
 
 
@@ -696,9 +698,8 @@ async def _check_default(db: Any, field: CustomField, value: Any) -> Any:
 
 
 _FIELD_ROW_SQL = (
-    "SELECT id, key, label, type, options, source, provider_api_name, position, "
-    "visible, section_id, required, help_text, default_value, lookup_target, "
-    "is_system, retired_at FROM crm_field_defs WHERE entity = :entity AND key = :key"
+    f"SELECT id, {DEF_COLUMNS} FROM crm_field_defs "
+    "WHERE entity = :entity AND key = :key"
 )
 
 
@@ -765,13 +766,13 @@ async def create_field(
                 lookup_target=target, retired=False,
             )
             default = await _check_default(db, probe, payload.default_value)
-            row = (await db.execute(text(
+            await db.execute(text(
                 "INSERT INTO crm_field_defs (entity, key, label, type, options, "
                 "source, position, visible, section_id, required, help_text, "
                 "default_value, lookup_target) VALUES (:entity, :key, :label, :type, "
                 "CAST(:options AS jsonb), :source, :position, :visible, "
                 "CAST(:section_id AS uuid), :required, :help_text, "
-                "CAST(:default_value AS jsonb), :lookup_target) RETURNING *"
+                "CAST(:default_value AS jsonb), :lookup_target)"
             ), {
                 "entity": stored, "key": key, "label": label, "type": payload.type,
                 "options": json.dumps(options) if options is not None else None,
@@ -781,7 +782,8 @@ async def create_field(
                 "help_text": (payload.help_text or "").strip() or None,
                 "default_value": json.dumps(default) if default is not None else None,
                 "lookup_target": target,
-            })).first()
+            })
+            row = await _field_row(db, entity, key)
     except DBAPIError as exc:
         if _unique_violation(exc):
             raise HTTPException(status_code=409, detail={
@@ -850,19 +852,20 @@ async def _write_system_row(
     if fixed is None:
         raise HTTPException(status_code=404, detail="Field not found.")
     await assert_writable(db, current_tenant(), "crm_field_defs", None)
-    return (await db.execute(text(
+    await db.execute(text(
         "INSERT INTO crm_field_defs (entity, key, label, type, source, position, "
         "visible, section_id, is_system) VALUES (:entity, :key, :label, :type, "
         ":source, :position, :visible, CAST(:section_id AS uuid), true) "
         "ON CONFLICT (organization_id, entity, key) DO UPDATE SET "
         "label = EXCLUDED.label, position = EXCLUDED.position, "
         "visible = EXCLUDED.visible, section_id = EXCLUDED.section_id, "
-        "updated_at = now() WHERE crm_field_defs.is_system RETURNING *"
+        "updated_at = now() WHERE crm_field_defs.is_system"
     ), {
         "entity": ENTITY_BY_SLUG[slug], "key": key, "label": label,
         "type": fixed.type, "source": SOURCE, "position": position,
         "visible": visible, "section_id": section,
-    })).first()
+    })
+    return await _field_row(db, slug, key)
 
 
 async def _custom_changes(
@@ -967,10 +970,13 @@ _PATCH_COLUMNS: dict[str, str] = {
 async def _update_field(db: Any, stored: str, key: str, changes: dict[str, Any]) -> Any:
     await assert_writable(db, current_tenant(), "crm_field_defs", None)
     sets = ", ".join(f"{c} = {_PATCH_COLUMNS[c]}" for c in changes)
-    return (await db.execute(text(
+    await db.execute(text(
         f"UPDATE crm_field_defs SET {sets}, updated_at = now() "
-        "WHERE entity = :entity AND key = :key AND NOT is_system RETURNING *"
-    ), {**changes, "entity": stored, "key": key})).first()
+        "WHERE entity = :entity AND key = :key AND NOT is_system"
+    ), {**changes, "entity": stored, "key": key})
+    return (await db.execute(
+        text(_FIELD_ROW_SQL), {"entity": stored, "key": key},
+    )).first()
 
 
 async def _custom_row(db: Any, slug: str, key: str) -> Any:
@@ -995,11 +1001,12 @@ async def retire_field(
         row = await _custom_row(db, entity, key)
         if row.retired_at is not None:
             return _wire(entity, row)
-        written = (await db.execute(text(
+        await db.execute(text(
             "UPDATE crm_field_defs SET retired_at = now(), visible = false, "
             "updated_at = now() WHERE entity = :entity AND key = :key "
-            "AND NOT is_system RETURNING *"
-        ), {"entity": stored, "key": key})).first()
+            "AND NOT is_system"
+        ), {"entity": stored, "key": key})
+        written = await _field_row(db, entity, key)
     return _wire(entity, written)
 
 
@@ -1014,11 +1021,12 @@ async def restore_field(
     async with _tenant_session() as db:
         await assert_writable(db, current_tenant(), "crm_field_defs", None)
         await _custom_row(db, entity, key)
-        written = (await db.execute(text(
+        await db.execute(text(
             "UPDATE crm_field_defs SET retired_at = NULL, visible = true, "
             "updated_at = now() WHERE entity = :entity AND key = :key "
-            "AND NOT is_system RETURNING *"
-        ), {"entity": stored, "key": key})).first()
+            "AND NOT is_system"
+        ), {"entity": stored, "key": key})
+        written = await _field_row(db, entity, key)
     return _wire(entity, written)
 
 

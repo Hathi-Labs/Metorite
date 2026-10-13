@@ -50,11 +50,15 @@ from sqlalchemy import text
 #: One map, in ``core``, because the list filters read it too.
 ENTITY_BY_SLUG = FIELD_ENTITY_BY_SLUG
 
-_COLUMNS = (
+#: ⚠️ ``default_value`` is read as its JSON text. A scalar jsonb value comes
+#: back from psycopg as the Python value and from asyncpg as JSON text, so a
+#: default of ``"123"`` would read as the number 123 under one of them.
+DEF_COLUMNS = (
     "key, label, type, options, source, provider_api_name, position, visible, "
-    "section_id, required, help_text, default_value, lookup_target, is_system, "
-    "retired_at"
+    "section_id, required, help_text, default_value::text AS default_value, "
+    "lookup_target, is_system, retired_at"
 )
+_COLUMNS = DEF_COLUMNS
 
 #: The custom keys of one entity. A row that overlays a fixed column
 #: (``is_system``) is not one (§20.7 item 11).
