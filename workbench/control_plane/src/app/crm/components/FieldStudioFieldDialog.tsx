@@ -150,7 +150,8 @@ export default function FieldStudioFieldDialog({
   );
 }
 
-function FieldFormBody({
+/** The form inside the dialog. Exported for `crmC4.test.ts`, which has no DOM for a portal. */
+export function FieldFormBody({
   form,
   sections,
   onClose,
