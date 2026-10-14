@@ -220,12 +220,20 @@ async def test_a_headless_create_saves_nothing(monkeypatch) -> None:
     {"action_type": "DRAFT_EMAIL", "draft_content": "Thanks"},
     {"action_type": "REPLY", "draft_subject": "Re"},
 ], ids=["label", "archive", "label-archive", "draft", "reply"])
-async def test_an_inward_create_saves_with_no_card(
+async def test_an_inward_create_asks_one_plain_card(
     gw: Gateway, kwargs: dict[str, Any],
 ) -> None:
+    """EM-G11c1 (gap G6): an inward rule asks a card too, and it is not the
+    outward card. A "no" saves nothing."""
     await agents.create_rule(BOX, name="Bank", **kwargs)
-    assert gw.cards == []
+    [card] = gw.cards
+    assert card["title"].startswith('Save the rule "Bank" that ')
+    assert "Sends to" not in card["detail"]
     assert len(gw.saves) == 1
+    gw.answer = False
+    out = await agents.create_rule(BOX, name="Bank", **kwargs)
+    assert len(gw.cards) == 2 and len(gw.saves) == 1
+    assert out.startswith("Cancelled")
 
 
 # ── The card (scope 2, review round 1 P1) ────────────────────────────────────
@@ -409,12 +417,23 @@ async def test_a_pause_of_a_forward_rule_needs_no_card(gw: Gateway) -> None:
     assert gw.patches[-1][1]["enabled"] is False
 
 
-async def test_an_inward_update_of_an_inward_rule_needs_no_card(gw: Gateway) -> None:
+async def test_an_inward_update_of_an_inward_rule_asks_one_plain_card(
+    gw: Gateway,
+) -> None:
+    """EM-G11c1 (gap G6): the change asks a card, and the rule is read again
+    after it, as for the outward card."""
     await agents.update_rule(
         BOX, "r-lbl", instructions="bank mail", enabled=True,
         add_action_type="ARCHIVE")
-    assert gw.cards == []
+    [card] = gw.cards
+    assert card["title"] == 'Change the rule "Bank"?'
     assert len(gw.patches) == 1
+
+
+async def test_a_pause_of_an_inward_rule_needs_no_card(gw: Gateway) -> None:
+    await agents.update_rule(BOX, "r-lbl", enabled=False)
+    assert gw.cards == []
+    assert gw.patches[-1][1]["enabled"] is False
 
 
 async def test_a_saved_draft_to_an_address_counts_as_outward(gw: Gateway) -> None:
@@ -486,13 +505,17 @@ async def test_a_yes_saves_the_exact_specs_in_one_batch(gw: Gateway) -> None:
     assert "Created 2 rule(s)" in out
 
 
-async def test_an_inward_prompt_rule_saves_with_no_card(gw: Gateway) -> None:
+async def test_an_inward_prompt_batch_asks_one_plain_card(gw: Gateway) -> None:
+    """EM-G11c1 (gap G6): one card for the batch, which lists each rule."""
     gw.specs = [
         {"name": "Bank", "actions": [{"type": "LABEL", "label": "F"}]},
         {"name": "Thanks", "actions": [{"type": "DRAFT_EMAIL", "content": "Hi"}]},
     ]
     await agents.create_rules_from_prompt(BOX, prompt="label and draft")
-    assert gw.cards == []
+    [card] = gw.cards
+    assert card["title"].startswith("Save 2 rules in ")
+    assert card["context"].splitlines() == [
+        '- rule "Bank": labels "F"', '- rule "Thanks": drafts an email']
     assert [p for p, _ in gw.saves] == ["/email/rules/batch"]
 
 

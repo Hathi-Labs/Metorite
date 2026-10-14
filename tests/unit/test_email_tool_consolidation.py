@@ -91,6 +91,16 @@ def calls(monkeypatch):
     monkeypatch.setattr(agents, "_post", fake_post)
     monkeypatch.setattr(agents, "_patch", fake_patch)
     monkeypatch.setattr(agents, "_delete", fake_delete)
+
+    # EM-G11c1: each write tool asks a card first. These tests check the
+    # dispatch, so the member says yes, in a live chat. A test that checks a
+    # "no" patches the card again.
+    async def yes(**kw):
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", yes)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open",
+                        lambda: True)
     return rec
 
 

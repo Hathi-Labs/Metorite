@@ -187,6 +187,10 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
     g = Gateway()
 
     async def _post(path: str, body: Any) -> Any:
+        if path == "/email/messages/summaries":
+            # A read that uses POST (EM-G11c1): the bulk card lists each
+            # message. It writes nothing, so it is not in ``writes``.
+            return {"summaries": []}
         return await g.write("POST", path, body)
 
     async def _patch(path: str, body: Any) -> Any:
@@ -204,6 +208,10 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
     monkeypatch.setattr(agents, "_delete", _delete)
     monkeypatch.setattr(agents, "_patch_settings", _put_settings)
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", g.confirm)
+    # A live chat: a "no" on the card is a refusal, not a run with no card
+    # channel (EM-G11c1 answers that one with the Chat-app text).
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open",
+                        lambda: True)
     return g
 
 

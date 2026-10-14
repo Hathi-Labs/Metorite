@@ -255,7 +255,8 @@ async def test_an_unknown_target_kind_sends_nothing(gw: Gateway) -> None:
 
 @pytest.mark.parametrize(("answer", "channel", "lead"), [
     (False, True, "Cancelled"),
-    (False, False, "Nothing changed. This needs the member's approval"),
+    # EM-G11c1: no card channel answers the one Chat-app text.
+    (False, False, "Nothing changed. This needs your approval on a card"),
 ])
 async def test_a_refusal_or_a_headless_call_unsubscribes_nothing(
     gw: Gateway, answer: bool, channel: bool, lead: str,
@@ -335,7 +336,8 @@ async def test_the_card_shows_no_hidden_text_in_an_address(gw: Gateway) -> None:
 
 @pytest.mark.parametrize(("answer", "channel", "lead"), [
     (False, True, "Send cancelled"),
-    (False, False, "Not sent. This needs the member's approval"),
+    # EM-G11c1: no card channel answers the one Chat-app text.
+    (False, False, "Nothing changed. This needs your approval on a card"),
 ])
 async def test_a_refused_or_headless_draft_card_sends_nothing(
     gw: Gateway, answer: bool, channel: bool, lead: str,
