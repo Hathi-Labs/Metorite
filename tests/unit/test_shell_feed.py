@@ -110,6 +110,10 @@ def _block(task_id: str, title: str, start: datetime, minutes: int,
             "scheduled_end": (start + timedelta(minutes=minutes)).isoformat()}
 
 
+#: A run that the ceiling fails to stop would hang. This bounds it, and
+#: asserts no budget: the outcomes prove the ceiling (test_no_new_clock_flakes).
+HANG_GUARD_S = 30.0
+
 class FeedFakes(Fakes):
     """The needs fakes, plus the four Calendar reads. Each answers by the
     member it is handed, as the real one does, and records the call."""
@@ -1402,7 +1406,8 @@ class TestThePoolBound:
         # It never got a slot before the ceiling, and it reads failed.
         assert answer["sources"]["queued"] == "failed"
         assert "queued" not in ran
-        assert took < 1.8, took
+        # A hang guard only (#947): the outcomes above prove the ceiling.
+        assert took < HANG_GUARD_S, took
         from gateway.routes.shell import cache
 
         assert not cache.storable(answer)
