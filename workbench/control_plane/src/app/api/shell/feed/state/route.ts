@@ -3,8 +3,9 @@
  * (`my_day_feed.md` §6.8, WS-58 MD-2a).
  *
  * Proxies the gateway's `POST /shell/feed/state`: seen, snooze, dismiss,
- * "Not useful" and `acted`. The gateway computes each snooze time and each
- * visit. The client sends only what happened.
+ * "Not useful", `acted` and `restore`, the Undo of a menu act (MD-2b). The
+ * gateway computes each snooze time and each visit. The client sends only
+ * what happened. `lib/shell/feedState.ts` is the one client of this route.
  *
  * The identity is the session's. The body names no member and no tenant
  * (R11), and the gateway refuses a key it does not know with 422. This

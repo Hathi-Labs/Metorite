@@ -11,6 +11,7 @@
 // A definition never hides a value that the record carries under another key.
 
 import { customValue, humanizeKey } from "./connect";
+import type { FieldLayout, FieldSection } from "./fieldLayout";
 import { dateTime, money, shortDate } from "./format";
 import type { EntitySlug } from "./types";
 
@@ -370,6 +371,56 @@ export function fieldRows(
   ];
 }
 
+/**
+ * The custom keys of a record that no definition describes, ready to draw
+ * (CRM-C4b). The Fields tab by layout shows them after its sections, read
+ * only, as `fieldRows` does.
+ */
+export function undefinedRows(
+  record: Row | null | undefined,
+  defs: FieldDef[] | null | undefined,
+): FieldRow[] {
+  const custom = record?.custom;
+  if (!custom || typeof custom !== "object" || Array.isArray(custom)) return [];
+  const known = new Set((defs ?? []).map((d) => d.key));
+  return Object.entries(custom as Row)
+    .filter(([key]) => !known.has(key))
+    .map(([key, value]) => ({ key, label: humanizeKey(key), value: formatField(null, value) }));
+}
+
+/** One section of a layout and its fields. `section` is null for no section. */
+export type FieldGroup = { section: FieldSection | null; fields: FieldDef[] };
+
+/**
+ * The fields of a layout, by section (WS-53 CRM-C4b, section 20.7 item 12).
+ *
+ * - Only a visible field that is not retired, and only a field that `keep`
+ *   passes. Each field shows also when the record holds no value for it.
+ * - The fields of no section come first, with no heading. A `section_id`
+ *   that the layout does not list counts as no section.
+ * - Then each section in the order of `position`, with its fields in the
+ *   order of `position`. A section with no field to show is left out.
+ */
+export function layoutGroups(
+  layout: FieldLayout,
+  keep: (def: FieldDef) => boolean = () => true,
+): FieldGroup[] {
+  // A stable sort, so a tie keeps the order that the gateway gave.
+  const shown = layout.fields
+    .filter((d) => d.visible && !d.retired && keep(d))
+    .sort((a, b) => a.position - b.position);
+  const sections = [...layout.sections].sort((a, b) => a.position - b.position);
+  const known = new Set(sections.map((s) => s.id));
+  const groups: FieldGroup[] = [];
+  const loose = shown.filter((d) => !d.section_id || !known.has(d.section_id));
+  if (loose.length > 0) groups.push({ section: null, fields: loose });
+  for (const section of sections) {
+    const fields = shown.filter((d) => d.section_id === section.id);
+    if (fields.length > 0) groups.push({ section, fields });
+  }
+  return groups;
+}
+
 // ── The list columns a member picks ─────────────────────────────────────────
 
 /** The most custom columns a list shows. */
@@ -431,6 +482,15 @@ export function pickable(defs: FieldDef[] | null | undefined): FieldDef[] {
   return customDefs(defs)
     .filter((d) => d.visible && !d.retired)
     .sort((a, b) => a.position - b.position);
+}
+
+/**
+ * The fields of `pickable`, by the sections of the layout (CRM-C4b). The
+ * Columns control draws a heading for each section. The set is the set of
+ * `pickable`: no retired field and no system row.
+ */
+export function columnGroups(layout: FieldLayout): FieldGroup[] {
+  return layoutGroups(layout, (d) => !d.is_system);
 }
 
 /**

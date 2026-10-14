@@ -67,7 +67,7 @@ MAX_ITEMS = 50
 SIGNAL_ID_PATTERN = r"^[a-z_]+:[^\s]{1,200}$"
 STATE_FP_PATTERN = r"^[0-9a-f]{8,64}$"
 KIND_PATTERN = r"^[a-z_]{1,40}$"
-Action = Literal["seen", "snooze", "dismiss", "not_useful", "acted"]
+Action = Literal["seen", "snooze", "dismiss", "not_useful", "acted", "restore"]
 Until = Literal["later_today", "tomorrow", "next_week", "on_change"]
 
 #: Two sightings within this time are one visit (§6.2).
@@ -456,8 +456,23 @@ def next_row(old: dict[str, Any] | None, item: StateItem, now: datetime,
     visit rule is the server's: two sightings within 30 minutes are one
     visit. The sighting that gives a card its third visit of the day writes
     ``later`` (§6.8 item 5), and ``later`` stays until the card changes.
+
+    ``restore`` is the Undo of a menu act (MD-2b). It clears a snooze or a
+    dismiss, and leaves the row ``seen``. It counts no visit. The Undo of
+    "Not useful" also takes back ``not_useful_at``, so a "Not useful" that
+    the member took back never counts against the kind (§6.6). A row that is
+    not snoozed or dismissed, or no row, gets no write.
     """
     fp = item.state_fp
+    if item.action == "restore":
+        if old is None or old.get("state") not in ("snoozed", "dismissed"):
+            return None
+        row = {**_BLANK, **old, "kind": item.kind, "fingerprint": fp}
+        if old.get("dismiss_reason") == "not_useful":
+            row["not_useful_at"] = None
+        row.update(state="seen", dismiss_reason=None, snoozed_until=None,
+                   snooze_on_change=False)
+        return row
     row = {**_BLANK, **(old or {}), "kind": item.kind, "fingerprint": fp}
     changed = _changed(old, fp)
     if item.action == "seen":
@@ -642,7 +657,9 @@ async def write_state(user: UserContext, items: list[StateItem], now: datetime) 
         if any(i.action == "snooze" for i in items):
             day = Day(day.tz, day.start_hour, day.end_hour, await _working_days(db, user))
         # Claim, then lock, then write: the order that loses no first write.
-        claimed = await _claim_rows(db, member, items)
+        # ⚠️ A `restore` claims nothing. It writes no new row, so a claimed
+        # placeholder would stay behind and read as an Updated card.
+        claimed = await _claim_rows(db, member, [i for i in items if i.action != "restore"])
         rows = await _read_rows(db, member, [i.signal_id for i in items], lock=True)
         for sid in claimed:
             rows.pop(sid, None)  # a placeholder is no history

@@ -253,6 +253,39 @@ test.describe("the top-right account widget", () => {
     expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
   });
 
+  test("a switch makes the leaving page read nothing under the new cookie (WS-58 MD-2b fix round 2)", async ({ page }) => {
+    // The new document is held for 2.5 s, so the leaving page stays alive.
+    // A cache clear before the reload would wake each reader of that page,
+    // and each read would go out as the account the cookie now names.
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, THREE, calls);
+    let holding = false;
+    const leaked: string[] = [];
+    await page.route(
+      (u) => u.pathname === "/",
+      async (route) => {
+        if (!route.request().isNavigationRequest()) return route.continue();
+        holding = true;
+        await new Promise((r) => setTimeout(r, 2_500));
+        holding = false;
+        return route.continue();
+      },
+    );
+    page.on("request", (req) => {
+      const path = new URL(req.url()).pathname;
+      if (holding && ["/api/shell/needs", "/api/auth/me/shell", "/api/projects/tree"].includes(path)) leaked.push(path);
+    });
+    await page.goto("/projects");
+    await expect(trigger(page)).toBeVisible();
+    await page.waitForTimeout(1_000);
+    await trigger(page).click();
+    await menu(page).getByRole("button", { name: /Vijay Raghav Varada/ }).click();
+    await page.waitForURL((u) => u.pathname === "/", { timeout: 15_000 });
+    expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
+    expect(leaked).toEqual([]);
+  });
+
   test("Sign out leaves this account: a switch to the next, then a remove of that slot", async ({ page }) => {
     const calls: string[] = [];
     await flags(page);

@@ -5,6 +5,8 @@
  *
  * One row of controls above a list or a board: the search box (a list only,
  * CRM-X1), owner, source, the custom picklist fields and the date ranges.
+ * With the field studio on (CRM-C4b), the custom fields also offer a
+ * checkbox, a number and a date filter, each by equality (`lib/filterBar.ts`).
  * Then the view row: "Save view", and
  * "Update view / Reset" when a saved view is in effect and the screen has moved
  * away from it. It is the Projects `FilterBar` pattern (`SelectButton` for a
@@ -26,10 +28,15 @@ import {
   ANY,
   SOURCE_OPTIONS,
   activeCount,
+  booleanFilterOptions,
+  customFilters,
+  dateFilterValue,
   dateFilters,
+  numberFilterValue,
   optionsOf,
   ownerOptions,
   picklistDefs,
+  type CustomFilter,
   searchBoxStart,
   searchBoxSync,
   searchBoxWrote,
@@ -42,6 +49,7 @@ import {
 import { clearFilters, type SavedView } from "../lib/savedViews";
 import type { EntitySlug } from "../lib/types";
 import type { CrmView } from "../lib/urlState";
+import { useFieldLayout } from "../lib/useCrmMode";
 import { viewLabel } from "../lib/views";
 
 export type FilterBarProps = {
@@ -100,7 +108,13 @@ export default function FilterBar({
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
   const [share, setShare] = useState(false);
-  const picklists = picklistDefs(fieldDefs);
+  // CRM-C4b: with the studio on, the bar reads the layout and offers more
+  // types. With it off, it offers the picklists of today.
+  const { layout } = useFieldLayout(entity);
+  const filters: CustomFilter[] =
+    layout?.studio === true
+      ? customFilters(layout.fields, true)
+      : picklistDefs(fieldDefs).map((def) => ({ def, kind: "options" }));
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -142,8 +156,33 @@ export default function FilterBar({
           onChange={(next) => onChange({ ...view, source: next || null })}
           options={[{ value: ANY, label: "Any source" }, ...SOURCE_OPTIONS]}
         />
-        {picklists.map((def) => {
+        {filters.map(({ def, kind }) => {
           const chosen = view.custom[def.key] ?? [];
+          if (kind === "boolean") {
+            return (
+              <SelectButton
+                key={def.key}
+                label={def.label}
+                widthClass="w-40"
+                className={chosen.length > 0 ? OFF_DEFAULT : ""}
+                value={chosen[0] ?? ANY}
+                defaultValue={ANY}
+                onChange={(next) => onChange(setCustom(view, def.key, next))}
+                options={booleanFilterOptions(def)}
+              />
+            );
+          }
+          if (kind === "number" || kind === "date") {
+            return (
+              <EqualsFilter
+                key={def.key}
+                def={def}
+                kind={kind}
+                value={chosen[0] ?? ANY}
+                onCommit={(next) => onChange(setCustom(view, def.key, next))}
+              />
+            );
+          }
           const options = optionsOf(def);
           const known = chosen.every((c) => options.some((o) => o.value === c));
           return (
@@ -266,6 +305,57 @@ export default function FilterBar({
           </>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The filter "equal to one number" or "on one day" of a custom field
+ * (CRM-C4b). The text is local while the member types. It writes the view on
+ * Enter and when the input loses the focus, and only a good value. A text
+ * that is not a number or a day marks the input invalid, and the view stays.
+ */
+function EqualsFilter({
+  def,
+  kind,
+  value,
+  onCommit,
+}: {
+  def: FieldDef;
+  kind: "number" | "date";
+  value: string;
+  onCommit: (next: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [seen, setSeen] = useState(value);
+  if (seen !== value) {
+    setSeen(value);
+    setDraft(value);
+  }
+  const parsed = kind === "number" ? numberFilterValue(def, draft) : dateFilterValue(draft);
+  const commit = (next: string | null) => {
+    if (next !== null && next !== value) onCommit(next);
+  };
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label={`${def.label} filter`}>
+      <span className="text-xs text-muted-foreground">{def.label}</span>
+      <Input
+        inputSize="sm"
+        className="w-32"
+        aria-label={kind === "number" ? `${def.label} equals` : `${def.label} on`}
+        aria-invalid={parsed === null || undefined}
+        {...(kind === "number" ? { inputMode: "text" as const, placeholder: "=" } : { type: "date" })}
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          // A date input gives a whole day or nothing, so it writes at once.
+          if (kind === "date") commit(dateFilterValue(e.target.value));
+        }}
+        onBlur={() => commit(parsed)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit(parsed);
+        }}
+      />
     </div>
   );
 }

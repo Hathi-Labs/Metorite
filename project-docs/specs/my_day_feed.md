@@ -4,14 +4,15 @@
 #964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
 dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
 migration 259, dark by the absence of a caller). MD-2a is BUILT (the card
-state on the server, migration 258).**
+state on the server, migration 258). MD-2b is BUILT (the card menu and the
+seen observer, dark behind `NEXT_PUBLIC_MY_DAY_FEED`).**
 
 **The server half of MD-2c is BUILT, 2026-10-14** (Handled in
 `GET /shell/feed`, no migration, dark by the absence of a caller).
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-2b,
-the client half of MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only),
-MD-7, MD-8, MD-9 and MD-12. Each ships dark.
+The rest of this file is not built. The open AGENT-SAFE tickets are the
+client half of MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7,
+MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -516,15 +517,20 @@ except `my_day.resurface`, which can only bring a card back.
 | `dismissed` | Hidden until its fingerprint changes. `dismiss_reason` is `dismiss` or `not_useful` | No |
 | `expired` | Its `expires_at` passed | No |
 
-**A card leaves the feed when its source stops returning it, and only from a
-sound answer.** A signal that a provider no longer returns has left the
-feed only when that source answered `ok` and was not capped. Two other cases
-keep the card:
+**A card leaves the feed when its source stops returning it.** Only a failed
+source keeps its cards for a while. Decided in MD-2b fix round 1,
+2026-10-14:
 
-- **The source failed.** The client keeps that source's cards from the last
-  answer, and the caveat line of NS-3 names the gap.
-- **The source stopped at its cap.** A signal past the cap is unknown, not
-  closed. The group shows "Show all in My Tasks", for example.
+- **A capped source carries nothing.** Its answer is the truth for its top
+  15. The rest sit behind "Show all in <app>", for example "Show all in My
+  Tasks".
+- **An absent source carries nothing.** The member no longer holds the app.
+- **A failed source carries its cards from the last answer in which it read
+  `ok`.** That is the last raw answer, and never a carried one. It carries
+  for 5 minutes at most. After that the cards leave, and the caveat line of
+  NS-3 stays.
+- **A card that the member closed is never carried.** That is a snooze, a
+  dismiss, or a tap act that takes the whole card away. Undo lets it back.
 
 Leaving the feed never writes a state row, and it never puts a card in
 Handled (§6.7).
@@ -1621,9 +1627,9 @@ them shows while `NEXT_PUBLIC_MY_DAY_FEED` is off.
 - **A carried needs read can be 5 seconds old.** `carryFeedNeeds` reads the
   feed key without `force`, and `FRESH_MS` is 5 seconds. MD-5 owns the fix,
   with the ETag.
-- **A slow feed holds the bell on My Day.** `fetchNeeds` waits on the
-  carrier, and the feed route times out at 8 seconds. MD-2b gives the carrier
-  a limit of its own, about 4 seconds. Then it falls back to `/shell/needs`.
+- ~~**A slow feed holds the bell on My Day.**~~ **Fixed by MD-2b,
+  2026-10-14.** `fetchNeeds` waits 4 seconds at most on the carrier
+  (`CARRIER_WAIT_MS`). Then it reads `/shell/needs`.
 
 ### MD-2 · The life of a card — AGENT-SAFE, in four slices
 
@@ -1750,9 +1756,10 @@ The audit of 2026-10-14 gave GO-NARROWED. These answers close its three gaps.
   dismiss, and leaves the row `seen`. The POST contract of §6.8 gains it.
 - **`acted` is written.** A tap act that succeeds also posts `acted` for its
   card (§6.8 item 4).
-- **A failed or capped source keeps its cards** from the last answer (§6.1).
-  Calendar is a source too. Only a source that answered `ok`, and is not in
-  `capped`, may remove a card. A capped group ends with "Show all in <app>".
+- **A failed source keeps its cards for 5 minutes**, from its last `ok`
+  answer (§6.1, as fix round 1 decided it). Calendar is a source too. A
+  capped or absent source carries nothing. A capped group ends with "Show all
+  in <app>".
 - **The order holds during a visit (§7 rule 4).** A visit is the life of one
   mounted feed column. It ends at a click on the "N new" pill, or at a
   remount. A card that a new answer would move stays in its place until the
@@ -1775,6 +1782,95 @@ Done when:
    menu act with no bell change, and the fallback after 4 seconds.
 5. The `visual-review` skill runs in light mode, at compact density, under a
    changed accent and beside My Tasks. `conformance.test.ts` adds no budget.
+
+**BUILT 2026-10-14, on branch `my-day-feed-md2b`.** The gateway adds
+`restore` to `routes/shell/state.py`. The client is
+`src/lib/shell/feedState.ts`, the one client of `POST /api/shell/feed/state`.
+`feed.ts` keeps the state fields, the carry and the visit. `FeedCard.tsx`
+draws the dot, the marks, the menu, the pill and the Later fold.
+`needs.ts` holds the carrier's limit, `CARRIER_WAIT_MS`.
+
+The fences are `test_my_day_state.py`, `test_my_day_state_r8.py`,
+`feedState.test.ts`, `feed.test.ts`, `needs.test.ts`, `myDayPage.test.ts`
+and `e2e/my-day-feed.spec.ts`.
+
+The build made these choices, which this file did not fix:
+
+- **The Undo of "Not useful" clears `not_useful_at`.** The Undo says that the
+  act did not happen, so it must not count against the kind (§6.6, §7).
+- **A `restore` claims no row.** A card with no row, or a row that is not
+  snoozed or dismissed, gets no write. A `restore` counts no visit.
+- **The client sends one sighting of a card in 30 minutes at most**, for each
+  `state_fp`. The gateway counts two sightings in 30 minutes as one visit.
+- **The queue also sends its items when the column unmounts**, with
+  `keepalive`. A move to another app inside Metorite fires no `pagehide`.
+- **`acted` goes into the queue of the seen observer.** It is a record, so it
+  waits for the next send.
+- **Only a 5xx, a 502 or no answer keeps a batch.** Each 4xx drops it,
+  because the same body never passes.
+- **The carry reads the last `ok` cards of each source, not the cache
+  entry.** A Projects write drops the entry, and the read after a Done must
+  still carry a failed source. `fetchFeed` keeps those cards in memory, from
+  raw answers only, and a new member starts with none.
+- **A card that a menu act hid is never carried.** It may come back from a
+  sound answer that its fetch began after the write, or after Undo.
+- **The overlay of a menu act ends** when an answer lands whose fetch began
+  after the write landed.
+- **Later is outside the cut of 20 cards.** It draws after the other groups,
+  folded, with all its cards.
+- **A card with no `state_fp` has no menu**, and the observer never sends it.
+- **After a menu act, the focus goes back to the "···" button.** When the card
+  left, the focus goes to the column's heading.
+
+**Fix round 1, 2026-10-14.** The review and the verifier found these, and
+this round fixed each one:
+
+- **The carry rule of §6.1 is now decided.** Only a failed source carries,
+  from its last raw `ok` answer, for 5 minutes at most (`CARRY_MS`). A capped
+  or absent source carries nothing.
+- **A Done is never carried back.** A tap act that takes its whole card away
+  stops the carry of that card. The store's Undo lets it back.
+- **A menu act drops the feed key** (`invalidate`). A read that began before
+  the write then never stores its answer, so an Undo does not hide the card
+  again.
+- **The state queue belongs to one member.** It sends nothing once the cache
+  names another member. A change of member gives the hook a new queue.
+- **`columnView` in `feed.ts` is the one rule** of the visit, the cut and the
+  pill. The pill counts only new cards that the next cut draws outside Later.
+- **A POST gives up after 8 seconds** (`STATE_TIMEOUT_MS`), and the queue
+  keeps its batch.
+
+**Fix round 2, 2026-10-14.** A focused verification found two defects in
+the account-switch change of round 1. This round fixed both:
+
+- **An account switch clears no cache.** Round 1 called `bindIdentity(null)`
+  before each navigation. That woke every reader of the leaving page, and
+  each read went out under the new cookie. It also closed open panes, for
+  every member and with the flag off. That call is gone.
+- **One narrow signal takes its place.** `src/lib/accountLeave.ts` holds
+  `onAccountLeave` and `leaveAccount`. The 4 exits call `leaveAccount` just
+  before they navigate: `switchTo`, both exits of `signOutThis`, and the tab
+  that hears another account. The signal touches no cache, wakes no reader
+  and closes no pane. A listener that throws never blocks the navigation.
+- **The state queue seals itself on the signal.** It drops its items, takes
+  no new item, and sends nothing on `pagehide` or at the unmount until the
+  page reloads. The seal also holds each queue that the page makes after it.
+  The seal does not depend on `identity()`.
+- **The fences.** `accountSwitchLeave.test.ts` proves with module mocks that
+  each exit calls `leaveAccount` and never `bindIdentity`, `clearAll` or
+  `invalidate`. `feedState.test.ts` holds the seal probe. The
+  `shell-account.spec.ts` check holds the new document for 2.5 seconds, and
+  the leaving page makes no read.
+
+**Known limits of MD-2b.** A later ticket owns each one.
+
+- **A visit starts with the first answer that the column draws.** On a
+  revisit that is the cached answer, so the new cards of the read behind it
+  wait behind the pill.
+- **A sighting that a 4xx refused** is not sent again for 30 minutes.
+- **A card more than twice as tall as the window** is never half in view, so
+  it is never seen.
+- **A batch that `pagehide` sends** gets no second try when it fails.
 
 ### MD-2c · Handled and the honest summary — AGENT-SAFE, after MD-2a
 

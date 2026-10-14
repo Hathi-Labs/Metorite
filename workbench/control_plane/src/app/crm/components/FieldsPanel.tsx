@@ -10,7 +10,11 @@
  * - `overview`: the lead's Convert and the fixed fields. The status pill
  *   moved to the record header, because it is one control (`StatusPill`).
  * - `related`: the deal's people with their roles, and the related lists.
- * - `fields`: the custom fields of `crm_field_defs`.
+ * - `fields`: the custom fields of `crm_field_defs`. With the field studio
+ *   on (CRM-C4b, `crm_platform.md` section 20.7 item 12), it draws the
+ *   layout instead: each section in order, with its system and custom
+ *   fields. A visible field with no value reads "—", and a member edits it
+ *   there through `FieldInput`. A Mirror record shows each field locked.
  *
  * Inline edit rather than an edit mode: a CRM record is corrected constantly
  * — a phone number, a close date, a next step — and a form that has to be
@@ -20,10 +24,27 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { isMirrored, LOCK_TIP } from "../lib/connect";
-import { contactValue, fieldRows, type FieldDef } from "../lib/fields";
+import { formValue, type FieldLayout } from "../lib/fieldLayout";
+import {
+  contactValue,
+  fieldRows,
+  layoutGroups,
+  undefinedRows,
+  type FieldDef,
+} from "../lib/fields";
 import { money, shortDate } from "../lib/format";
+import {
+  editKey,
+  isReference,
+  layoutValue,
+  referenceValue,
+  saveEdit,
+  storedValue,
+} from "../lib/recordForm";
+import type { CrmRefusal } from "../lib/store";
+import FieldInput from "./FieldInput";
 import FieldValue from "./FieldValue";
 import RelatedLists from "./RelatedLists";
 import { NO_RELATED, type RelatedLists as Related } from "../lib/related";
@@ -135,6 +156,9 @@ export default function FieldsPanel({
   onOpenRelated,
   onRetryRelated,
   fieldDefs = null,
+  layout = null,
+  refusal = null,
+  companyName = null,
 }: {
   /** Which tab draws the panel. Overview when it is not given. */
   part?: FieldsPart;
@@ -144,7 +168,11 @@ export default function FieldsPanel({
   statuses: Status[];
   dealContacts: DealContact[];
   saving: boolean;
-  onPatch: (body: Record<string, unknown>) => void;
+  /**
+   * Save an edit. The page gives the result of `store.patchRecord`: `false`
+   * for a refusal, and then the edit of the Fields tab stays open (CRM-C4b).
+   */
+  onPatch: (body: Record<string, unknown>) => void | Promise<boolean>;
   onConvert: () => void;
   onSetPrimary: (contactId: string) => void;
   onDetach: (contactId: string) => void;
@@ -155,6 +183,15 @@ export default function FieldsPanel({
   onRetryRelated?: () => void;
   /** What each custom field means (CRM-Q4). `null` falls back to the humanised keys. */
   fieldDefs?: FieldDef[] | null;
+  /**
+   * The layout of the entity (CRM-C4b). With `studio` true, the Fields tab
+   * draws it by section. `null` or `studio` false draws the tab of today.
+   */
+  layout?: FieldLayout | null;
+  /** The refusal of the last edit, from the store (the 422 rule). */
+  refusal?: CrmRefusal | null;
+  /** The name of a contact's company, which the contact row does not carry. */
+  companyName?: string | null;
 }) {
   const status =
     statuses.find((s) => s.id === record.status_id) ?? null;
@@ -235,6 +272,21 @@ export default function FieldsPanel({
           />
         )}
       </div>
+    );
+  }
+
+  if (part === "fields" && layout?.studio === true) {
+    return (
+      <LayoutFields
+        layout={layout}
+        record={record}
+        statuses={statuses}
+        companyName={companyName}
+        saving={saving}
+        refusal={refusal}
+        locked={mirrored}
+        onPatch={onPatch}
+      />
     );
   }
 
@@ -417,6 +469,265 @@ function EditableField({
           >
             {shown}
           </button>
+        )}
+      </dd>
+    </div>
+  );
+}
+
+// ── The Fields tab by layout (WS-53 CRM-C4b) ────────────────────────────────
+
+/** A label cell of the Fields tab. The same look as the rows of today. */
+const LABEL = "w-28 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground";
+
+/**
+ * The Fields tab when the layout says `studio` (section 20.7 item 12). Each
+ * section in order, with the system and the custom fields in it. A custom
+ * key that no definition describes follows, read only, as before.
+ */
+export function LayoutFields({
+  layout,
+  record,
+  statuses,
+  companyName,
+  saving,
+  refusal,
+  locked,
+  onPatch,
+}: {
+  layout: FieldLayout;
+  record: Row;
+  statuses: Status[];
+  companyName: string | null;
+  saving: boolean;
+  refusal: CrmRefusal | null;
+  /** A Mirror record: each field reads only, with the lock (CRM-C5 opens it). */
+  locked: boolean;
+  onPatch: (body: Record<string, unknown>) => void | Promise<boolean>;
+}) {
+  const groups = layoutGroups(layout);
+  const extra = undefinedRows(record, layout.fields);
+  return (
+    <div className="flex flex-col">
+      {groups.map((group) => (
+        <section
+          key={group.section?.id ?? "none"}
+          aria-label={group.section?.label}
+          className="border-b border-border/60 last:border-b-0"
+        >
+          {group.section && (
+            <h3 className="px-4 pb-1 pt-3 text-[11px] font-medium text-foreground">
+              {group.section.label}
+            </h3>
+          )}
+          <dl className="divide-y divide-border/60">
+            {group.fields.map((def) => {
+              if (isReference(def)) {
+                const value = referenceValue(def, record, statuses, companyName);
+                return value === null ? null : (
+                  <div key={def.key} className="flex items-start gap-3 px-4 py-2">
+                    <dt className={LABEL}>{def.label}</dt>
+                    <dd className="min-w-0 flex-1 break-words text-xs text-foreground">
+                      <FieldValue value={value} />
+                    </dd>
+                  </div>
+                );
+              }
+              return (
+                <LayoutFieldRow
+                  key={def.key}
+                  def={def}
+                  record={record}
+                  statuses={statuses}
+                  saving={saving}
+                  refusal={refusal}
+                  locked={locked}
+                  onPatch={onPatch}
+                />
+              );
+            })}
+          </dl>
+        </section>
+      ))}
+      {extra.length > 0 && (
+        <dl className="divide-y divide-border/60 border-t border-border/60">
+          {extra.map((row) => (
+            <div key={row.key} className="flex items-start gap-3 px-4 py-2">
+              <dt className={LABEL}>{row.label}</dt>
+              <dd className="min-w-0 flex-1 break-words text-xs text-foreground">
+                <FieldValue value={row.value} />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+}
+
+/** Focus the control of an inline edit: the input, or the first one in a group. */
+function focusControl(id: string): void {
+  const el = document.getElementById(id);
+  const target = el?.matches("input, textarea, button")
+    ? el
+    : el?.querySelector<HTMLElement>("input, textarea, button");
+  target?.focus();
+}
+
+/**
+ * One field of the Fields tab: its value, and an inline edit through
+ * `FieldInput`, as the Overview edits a fixed field.
+ *
+ * - A save sends only this key (`fieldPatch`). So a lookup that reads
+ *   `"missing": true` in another row never reaches the save.
+ * - The client check runs first. A refusal of the gateway keeps the edit
+ *   open with the typed value, and its message shows under the input.
+ * - The keyboard works as in `EditableField`: the edit takes the focus,
+ *   Enter saves, Escape cancels (`editKey`). After a save or a cancel, the
+ *   focus goes back to the Pencil button.
+ * - The value reads by `layoutValue`, so an amount keeps the currency of
+ *   the record (review P1). The Mirror lock reads the same value.
+ */
+function LayoutFieldRow({
+  def,
+  record,
+  statuses,
+  saving,
+  refusal,
+  locked,
+  onPatch,
+}: {
+  def: FieldDef;
+  record: Row;
+  statuses: Status[];
+  saving: boolean;
+  refusal: CrmRefusal | null;
+  locked: boolean;
+  onPatch: (body: Record<string, unknown>) => void | Promise<boolean>;
+}) {
+  const id = useId();
+  const editId = `${id}-edit`;
+  const stored = storedValue(def, record);
+  const shown = layoutValue(def, record, statuses);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<unknown>(null);
+  /** The message of the client check. */
+  const [problem, setProblem] = useState<string | null>(null);
+  /** The gateway refused the last save of this row. */
+  const [refused, setRefused] = useState(false);
+  /** Where the focus goes after the next render: the control, or the Pencil. */
+  const focusTo = useRef<"control" | "pencil" | null>(null);
+  const error = problem ?? (refused && !saving ? (refusal?.message ?? null) : null);
+
+  useEffect(() => {
+    const to = focusTo.current;
+    if (to === null) return;
+    focusTo.current = null;
+    if (to === "control") focusControl(id);
+    else document.getElementById(editId)?.focus();
+  });
+
+  function begin() {
+    setDraft(formValue(def, stored));
+    setProblem(null);
+    setRefused(false);
+    setEditing(true);
+    focusTo.current = "control";
+  }
+
+  function close() {
+    setEditing(false);
+    focusTo.current = "pencil";
+  }
+
+  async function commit() {
+    setRefused(false);
+    const outcome = await saveEdit(def, stored, draft, onPatch);
+    if (outcome.done) {
+      close();
+    } else if (outcome.problem) {
+      setProblem(outcome.problem);
+    } else {
+      setRefused(true);
+    }
+  }
+
+  return (
+    <div className="flex items-start gap-3 px-4 py-2">
+      <dt className={LABEL}>
+        {editing ? <label htmlFor={id}>{def.label}</label> : def.label}
+      </dt>
+      <dd className="min-w-0 flex-1">
+        {locked ? (
+          // The C4p lock, with the value of `layoutValue`.
+          <span className="flex items-start gap-1.5 text-xs text-foreground" title={LOCK_TIP}>
+            <span className="min-w-0 flex-1 break-words">
+              <FieldValue value={shown} />
+            </span>
+            <Icon
+              name="Lock"
+              className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground"
+              aria-label={LOCK_TIP}
+            />
+          </span>
+        ) : editing ? (
+          <div
+            className="flex items-start gap-1"
+            onKeyDown={(e) => {
+              const act = editKey(e.key, (e.target as HTMLElement).tagName);
+              if (act === "cancel") {
+                e.stopPropagation();
+                close();
+              } else if (act === "commit") {
+                e.preventDefault();
+                void commit();
+              }
+            }}
+          >
+            <div className="min-w-0 flex-1">
+              <FieldInput
+                id={id}
+                def={def}
+                value={draft}
+                held={stored}
+                error={error}
+                onChange={(next) => {
+                  setDraft(next);
+                  setProblem(null);
+                  setRefused(false);
+                }}
+              />
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="Check"
+              aria-label={`Save ${def.label.toLowerCase()}`}
+              disabled={saving}
+              onClick={() => void commit()}
+            />
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="X"
+              aria-label="Cancel"
+              onClick={close}
+            />
+          </div>
+        ) : (
+          <span className="flex items-start gap-1.5 text-xs text-foreground">
+            <span className="min-w-0 flex-1 break-words">
+              <FieldValue value={shown} />
+            </span>
+            <Button
+              id={editId}
+              variant="ghost"
+              size="icon-xs"
+              icon="Pencil"
+              aria-label={`Edit ${def.label.toLowerCase()}`}
+              onClick={begin}
+            />
+          </span>
         )}
       </dd>
     </div>
