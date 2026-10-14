@@ -76,7 +76,7 @@ _USE_CHAT_APP = (
 
 def _card_channel_open() -> bool:
     """True when a "no" on the card came from a member in a live chat."""
-    from acb_skills.ask_tools import confirmation_channel_open  # noqa: PLC0415
+    from acb_skills.ask_tools import confirmation_channel_open
     return confirmation_channel_open()
 
 
@@ -1374,7 +1374,7 @@ async def _inbox_card_parts(message_ids: list[str]) -> tuple[str, str, str]:
     """
     try:
         boxes = [_mailbox_text(a) for a in await _accounts()]
-    except Exception:  # noqa: BLE001 — the card still names the count
+    except Exception:  # the card still names the count
         boxes = []
     if len(boxes) == 1:
         mailbox, where = boxes[0], f"Mailbox: {boxes[0]}."
@@ -1387,7 +1387,7 @@ async def _inbox_card_parts(message_ids: list[str]) -> tuple[str, str, str]:
     try:
         res = await _post("/email/messages/summaries", {"ids": list(message_ids)})
         rows = [s for s in (res.get("summaries") or []) if isinstance(s, dict)]
-    except Exception:  # noqa: BLE001
+    except Exception:  # the card still names the count
         rows = []
     if not rows:
         return mailbox, where, ""
@@ -2078,7 +2078,7 @@ async def delete_rule(account_id: str, rule_id: str) -> str:
     Disabling (update_rule with enabled=false) is reversible; deleting is not."""
     try:
         rules = (await _get("/email/rules", {"account_id": account_id})).get("rules", [])
-    except Exception:  # noqa: BLE001 — the card then names the id
+    except Exception:  # the card then names the id
         rules = []
     rule = next((r for r in rules if isinstance(r, dict) and r.get("id") == rule_id), None)
     shown = _card_name(rule.get("name")) if rule else rule_id
@@ -2300,7 +2300,7 @@ async def learn_rule_pattern(
     # EM-G11c1: a learned pattern changes what each later match does.
     try:
         rules = (await _get("/email/rules", {"account_id": account_id})).get("rules", [])
-    except Exception:  # noqa: BLE001 — the card then names the id
+    except Exception:  # the card then names the id
         rules = []
     rule = next((r for r in rules if isinstance(r, dict) and r.get("id") == rule_id), None)
     shown = _card_name(rule.get("name")) if rule else rule_id
@@ -2551,6 +2551,17 @@ async def generate_writing_style(account_id: str | None = None) -> str:
     account_id, ask = await _one_mailbox(account_id, "generate_writing_style")
     if ask:
         return ask
+    # EM-G11c1: the saved style changes each later draft.
+    box = await _named(account_id)
+    refusal = await _card_refusal(
+        f"Learn and save a writing style for {box}?",
+        "The assistant reads your recent sent email and saves a style guide "
+        "that it follows when it drafts replies. It replaces the style that is "
+        f"saved now. Mailbox: {box}.",
+        "Cancelled — the writing style was not changed.",
+    )
+    if refusal:
+        return refusal
     res = await _post(
         f"/email/assistant/writing-style/generate?account_id={account_id}", {}
     )
@@ -2590,24 +2601,36 @@ async def install_default_rules(
                 f"Nothing changed. No connected mailbox has the id {account_id}. "
                 "Call list_accounts and ask the user which mailbox this is for."
             )
-        if not await _confirm_destructive(
-            title=f"Delete all rules of {where} and reinstall the defaults?",
-            detail=f"Mailbox: {where}. Every existing rule of this mailbox "
-                   "(including ones you customised) is deleted first, then the "
-                   "default set is installed fresh.",
-        ):
-            return "Cancelled — your rules were left unchanged."
+        refusal = await _card_refusal(
+            f"Delete all rules of {where} and reinstall the defaults?",
+            f"Mailbox: {where}. Every existing rule of this mailbox "
+            "(including ones you customised) is deleted first, then the "
+            "default set is installed fresh.",
+            "Cancelled — your rules were left unchanged.",
+        )
+        if refusal:
+            return refusal
         res = await _post(f"/email/rules/reset?account_id={account_id}", {})
         installed = res.get("installed", [])
         return (
             f"Reset rules in {where}: reinstalled {len(installed)} default "
             f"rule(s) ({', '.join(installed)})."
         )
+    # EM-G11c1: the add path saves eight rules that act on new mail.
+    where = await _named(account_id)
+    refusal = await _card_refusal(
+        f"Install the default rules in {where}?",
+        "Adds To Reply, FYI, Newsletter, Marketing, Calendar, Receipt, "
+        "Notification and Cold Email, and skips each one that you have. The "
+        f"rules label new email. Mailbox: {where}.",
+        "Cancelled — no rule was installed.",
+    )
+    if refusal:
+        return refusal
     res = await _post(
         f"/email/rules/install-presets?account_id={account_id}", {}
     )
     installed = res.get("installed", [])
-    where = await _named(account_id)
     if not installed:
         return f"The default rules are already installed in {where}."
     return (
@@ -2627,7 +2650,18 @@ async def find_follow_ups(account_id: str) -> str:
     to "find follow-ups", "chase replies", or "draft follow-ups".
 
     Respects the configured reminder windows; if none are set, ask the user how
-    many days to wait and set them via update_assistant_settings first."""
+    many days to wait and set them via update_assistant_settings first.
+    It shows the user a card first, because the scan labels threads."""
+    box = await _named(account_id)
+    refusal = await _card_refusal(
+        f"Scan {box} for follow-ups?",
+        'It labels each thread that waits past your reminder windows "Follow-up". '
+        "When follow-up drafts are on, it also saves a nudge draft for each. "
+        f"Nothing is sent. Mailbox: {box}.",
+        "Cancelled — no thread was labelled.",
+    )
+    if refusal:
+        return refusal
     res = await _post("/email/follow-ups/scan", {"account_id": account_id})
     if not res.get("configured"):
         return (
@@ -2688,7 +2722,17 @@ async def list_labels(account_id: str) -> str:
 
 @_annotate_risk(open_world=True)
 async def create_label(account_id: str, name: str) -> str:
-    """Create (or reuse) a label/folder on the account."""
+    """Create (or reuse) a label/folder on the account. It shows the user a
+    card first."""
+    box = await _named(account_id)
+    refusal = await _card_refusal(
+        f'Create the label "{_card_name(name)}" in {box}?',
+        "It makes a label or a folder in the mailbox at the provider. A label "
+        f"with this name that exists is used again. Mailbox: {box}.",
+        "Cancelled — no label was created.",
+    )
+    if refusal:
+        return refusal
     res = await _post(f"/email/accounts/{account_id}/folders", {"name": name})
     return f"Label/folder ready: {res.get('name', name)}."
 
@@ -3020,6 +3064,8 @@ async def send_email(
             body,
         ),
     ):
+        if not _card_channel_open():
+            return _USE_CHAT_APP
         return f"Send cancelled — the {verb} was not sent."
     res = await _post("/email/send", payload)
     note = f" with {len(refs)} attachment(s)" if refs else ""
@@ -3150,6 +3196,8 @@ async def forward_email(
             _card_head(sender, to=to, cc=cc, bcc=bcc, files=_forward_file_pairs(carried)),
             note),
     ):
+        if not _card_channel_open():
+            return _USE_CHAT_APP
         return "Forward cancelled. The email was not forwarded."
     payload: dict[str, Any] = {
         "message_id": mid,
@@ -3308,7 +3356,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     ):
         if _channel_open():
             return "Send cancelled — the draft was not sent."
-        return "Not sent. This needs the member's approval in a live chat."
+        return _USE_CHAT_APP
     try:
         await _post(
             "/email/drafts/send",
@@ -3328,7 +3376,23 @@ async def send_draft(account_id: str, draft_id: str) -> str:
 
 @_annotate_risk(open_world=False)
 async def delete_knowledge(account_id: str, knowledge_id: str) -> str:
-    """Delete a knowledge-base entry by id."""
+    """Delete a knowledge-base entry by id. It shows the user a card first."""
+    try:
+        entries = (await _get(
+            "/email/knowledge", {"account_id": account_id})).get("entries", [])
+    except Exception:  # the card then names the id
+        entries = []
+    entry = next((e for e in entries if isinstance(e, dict)
+                  and e.get("id") == knowledge_id), None)
+    shown = _card_name(entry.get("title")) if entry else knowledge_id
+    refusal = await _card_refusal(
+        f'Delete the knowledge entry "{shown}"?',
+        f"Mailbox: {await _named(account_id)}. The assistant stops using it "
+        "when it drafts replies.",
+        "Cancelled — the knowledge entry was not deleted.",
+    )
+    if refusal:
+        return refusal
     await _delete(f"/email/knowledge/{knowledge_id}")
     return f"Deleted knowledge entry {knowledge_id}."
 
@@ -3461,10 +3525,7 @@ async def unsubscribe_sender(
     ):
         if _channel_open():
             return f"Cancelled — still subscribed to {shown}."
-        return (
-            "Nothing changed. This needs the member's approval in a live chat, "
-            "so nothing was sent."
-        )
+        return _USE_CHAT_APP
     if target.get("kind") == "block":
         # No link to use. ``POST /unsubscribe`` with no link reads the stored
         # link again, and a new mail can store one that the card did not show.
@@ -3539,15 +3600,36 @@ async def set_sender_status(account_id: str, email: str, status: str) -> str:
       • ``keep``     — keep receiving their mail / approve them (undo a block or
         unsubscribe; also called 'approved').
 
-    (To actually unsubscribe + archive a newsletter, use unsubscribe_sender.)"""
+    (To actually unsubscribe + archive a newsletter, use unsubscribe_sender.)
+    It shows the user a card first."""
     s = (status or "").strip().lower()
     if s in ("cold", "is_cold"):
-        return await set_cold_sender(account_id, email, is_cold=True)
-    if s in ("not_cold", "notcold", "clear", "not cold"):
-        return await set_cold_sender(account_id, email, is_cold=False)
-    if s in ("keep", "approved", "approve", "keep_newsletter"):
+        act, title, detail = (
+            "cold", "Mark {who} as a cold sender in {box}?",
+            "The cold-email blocker then acts on the email of this sender, as "
+            "its setting says.")
+    elif s in ("not_cold", "notcold", "clear", "not cold"):
+        act, title, detail = (
+            "not_cold", "Clear the cold flag of {who} in {box}?",
+            "The cold-email blocker stops acting on the email of this sender.")
+    elif s in ("keep", "approved", "approve", "keep_newsletter"):
+        act, title, detail = (
+            "keep", "Keep the email of {who} in {box}?",
+            "Marks the sender approved. This undoes a block or an unsubscribe "
+            "of the sender.")
+    else:
+        return "status must be one of: cold | not_cold | keep."
+    # EM-G11c1: the status decides what the blocker does with later mail.
+    box = await _named(account_id)
+    refusal = await _card_refusal(
+        title.format(who=_card_text(email, 120), box=box), detail,
+        "Cancelled — the sender was not changed.",
+    )
+    if refusal:
+        return refusal
+    if act == "keep":
         return await keep_newsletter(account_id, email)
-    return "status must be one of: cold | not_cold | keep."
+    return await set_cold_sender(account_id, email, is_cold=act == "cold")
 
 
 # ── Reply Zero ───────────────────────────────────────────────────────────────
@@ -3556,7 +3638,18 @@ async def set_sender_status(account_id: str, email: str, status: str) -> str:
 async def mark_thread_done(
     account_id: str, thread_id: str, done: bool = True
 ) -> str:
-    """Mark a Reply-Zero thread done (handled) or reopen it (done=false)."""
+    """Mark a Reply-Zero thread done (handled) or reopen it (done=false).
+    It shows the user a card first."""
+    box = await _named(account_id)
+    refusal = await _card_refusal(
+        f"Mark this thread done in {box}?" if done
+        else f"Reopen this thread in {box}?",
+        "Reply Zero counts the thread as handled, and it leaves To Reply."
+        if done else "Reply Zero shows the thread again.",
+        "Cancelled — the thread was not changed.",
+    )
+    if refusal:
+        return refusal
     await _post("/email/reply-zero/resolve", {
         "account_id": account_id, "thread_id": thread_id, "done": done,
     })
@@ -3566,7 +3659,17 @@ async def mark_thread_done(
 @_annotate_risk(open_world=False)
 async def reclassify_reply_zero(account_id: str) -> str:
     """Rebuild Reply Zero (To Reply / Awaiting / FYI) with the current rules.
-    Runs in the background; check find_needs_reply afterwards."""
+    Runs in the background; check find_needs_reply afterwards. It shows the
+    user a card first."""
+    box = await _named(account_id)
+    refusal = await _card_refusal(
+        f"Rebuild Reply Zero in {box}?",
+        "It sorts each thread again into To Reply, Awaiting and FYI with the "
+        f"rules of now, and it changes their labels. Mailbox: {box}.",
+        "Cancelled — Reply Zero was not changed.",
+    )
+    if refusal:
+        return refusal
     await _post("/email/reply-zero/reclassify", {"account_id": account_id})
     return "Reply Zero is reclassifying in the background."
 
@@ -3602,16 +3705,32 @@ async def resolve_execution(execution_id: str, decision: str) -> str:
       • ``undo``    — reverse an already-APPLIED execution's actions.
     """
     d = (decision or "").strip().lower()
+    cards = {
+        "approve": ("Apply the actions of this rule run?",
+                    "The pending actions of the run act on the email now."),
+        "reject": ("Discard this pending rule run?",
+                   "Its actions never act."),
+        "undo": ("Undo this rule run?",
+                 "The actions that the run applied are reversed."),
+    }
+    if d not in cards:
+        return "decision must be one of: approve | reject | undo."
+    # EM-G11c1: each decision changes the mail or the record of the run.
+    title, detail = cards[d]
+    refusal = await _card_refusal(
+        title, f"{detail} Run: {_card_text(execution_id, 80)}.",
+        "Cancelled — the rule run was not changed.",
+    )
+    if refusal:
+        return refusal
     if d == "approve":
         res = await _post(f"/email/rules/history/{execution_id}/approve", {})
         return f"Approved — applied: {', '.join(res.get('actions', []))}."
     if d == "reject":
         await _post(f"/email/rules/history/{execution_id}/reject", {})
         return "Rejected — no actions taken."
-    if d == "undo":
-        res = await _post(f"/email/rules/history/{execution_id}/undo", {})
-        return f"Undone: reversed {', '.join(res.get('reversed', []))}."
-    return "decision must be one of: approve | reject | undo."
+    res = await _post(f"/email/rules/history/{execution_id}/undo", {})
+    return f"Undone: reversed {', '.join(res.get('reversed', []))}."
 
 
 # ── Digest ───────────────────────────────────────────────────────────────────
@@ -3664,11 +3783,13 @@ async def digest(account_id: str, period: str = "day", send: bool = False) -> st
     ``send=false`` (default) previews the digest — counts and highlights per
     section. ``send=true`` emails it to the account now. Confirm before sending."""
     if send:
-        if not await _confirm_destructive(
-            title="Email the digest now?",
-            detail=f"Sends the {period} inbox digest to your own mailbox.",
-        ):
-            return "Cancelled — the digest was not sent."
+        refusal = await _card_refusal(
+            "Email the digest now?",
+            f"Sends the {period} inbox digest to your own mailbox.",
+            "Cancelled — the digest was not sent.",
+        )
+        if refusal:
+            return refusal
         res = await _post(
             "/email/digest/send", {"account_id": account_id, "period": period}
         )
@@ -3693,13 +3814,16 @@ async def sync_account(
     COMPLETE re-sync; add ``purge=true`` to delete local mail first (for
     stale/corrupt local data — confirm purge with the user). ``purge`` implies a
     full re-sync."""
-    if purge and not await _confirm_destructive(
-        title="Purge and re-download this mailbox?",
-        detail="Deletes all locally-stored mail for the account first, then "
-               "re-fetches it from the provider. Use only for stale/corrupt "
-               "local data.",
-    ):
-        return "Cancelled — nothing was purged."
+    if purge:
+        refusal = await _card_refusal(
+            "Purge and re-download this mailbox?",
+            "Deletes all locally-stored mail for the account first, then "
+            "re-fetches it from the provider. Use only for stale/corrupt "
+            "local data.",
+            "Cancelled — nothing was purged.",
+        )
+        if refusal:
+            return refusal
     if full or purge:
         res = await _post(
             f"/email/accounts/{account_id}/resync?purge="
@@ -3755,7 +3879,17 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
     ``draft`` (writing preferences) or ``rule`` (rule-classification pins) —
     matching the id you got from list_patterns(kind=…)."""
     k = (kind or "draft").strip().lower()
-    if k in ("rule", "rules", "classification"):
+    is_rule = k in ("rule", "rules", "classification")
+    # EM-G11c1: a learned pattern shapes each later draft or match.
+    refusal = await _card_refusal(
+        "Forget this learned pattern?",
+        f"The assistant stops using the learned {'rule' if is_rule else 'draft'} "
+        f"pattern {_card_text(pattern_id, 80)}. It cannot be brought back.",
+        "Cancelled — the pattern was kept.",
+    )
+    if refusal:
+        return refusal
+    if is_rule:
         await _delete(f"/email/rules/patterns/{pattern_id}")
         return f"Forgot rule pattern {pattern_id}."
     await _delete(f"/email/learned-patterns/{pattern_id}")
@@ -3859,12 +3993,30 @@ async def create_rules_from_prompt(
             f"Couldn't turn that into a rule in {await _named(account_id)}: "
             f"{res.get('error', 'try rephrasing the description.')}"
         )
+    box = await _named(account_id)
+    cancelled = f"Cancelled — no rule was created in {box}."
     refusal = await _outward_rule_refusal(
-        "Create rules that send mail out of the mailbox?", specs,
-        f"Cancelled — no rule was created in {await _named(account_id)}.",
+        "Create rules that send mail out of the mailbox?", specs, cancelled,
     )
     if refusal:
         return refusal
+    if not any(_has_outward_action(s.get("actions")) for s in specs):
+        # EM-G11c1: an inward batch asks one card too.
+        listing = _rule_lines(specs)
+        if len(listing) > _CARD_CONTEXT_LIMIT:
+            return (
+                "Not saved. These rules are too many to show on one card. Ask "
+                "the user for fewer rules at a time."
+            )
+        n = len(specs)
+        refusal = await _card_refusal(
+            f"Save {n} rule{'s' if n != 1 else ''} in {box}?",
+            f"Mailbox: {box}. Each rule acts on each new email that matches. "
+            "Each rule is in the list below.",
+            cancelled, listing,
+        )
+        if refusal:
+            return refusal
     try:
         res = await _post(
             "/email/rules/batch", {"account_id": account_id, "rules": specs},
@@ -3976,6 +4128,47 @@ _TOOLS = [
     # Account sync
     sync_account,
 ]
+
+
+#: EM-G11c1 (``email_app_master_plan.md`` §12.3.13.6). Each registered tool
+#: that writes to a mailbox, saves an automation, turns on a write in the
+#: settings, or changes what the assistant knows. Each one asks a card
+#: (``_card_refusal``, or ``request_confirmation`` in the send tools) before
+#: its first write. A branch that writes nothing asks none: a dry run of the
+#: rules, a preview of ``auto_categorize_inbox``, a draft that only shows in
+#: the chat, a digest preview, a sync without a purge, a pause of a rule, a
+#: settings change that turns no write on. With no card channel each one
+#: answers ``_USE_CHAT_APP`` and writes nothing.
+#: Fence: ``tests/unit/test_email_agent_write_cards.py``.
+MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
+    # The tools that asked a card before EM-G11c1.
+    "send_email", "forward_email", "send_draft", "unsubscribe_sender",
+    "digest", "sync_account", "install_default_rules", "create_rule",
+    "update_rule", "create_rules_from_prompt", "manage_inbox",
+    # Gap G6 (§12.3.13.2, item 3).
+    "draft_reply", "auto_categorize_inbox", "delete_rule", "run_rules",
+    "learn_rule_pattern", "update_assistant_settings", "create_label",
+    "find_follow_ups", "mark_thread_done", "reclassify_reply_zero",
+    "set_sender_status", "resolve_execution",
+    # Sorted by the EM-G11c1 audit: each changes what the assistant does later.
+    "save_knowledge", "delete_knowledge", "generate_writing_style",
+    "forget_pattern",
+})
+
+#: The registered tools that call a gateway POST and still ask no card, with
+#: the reason for each. A tool that is in neither list fails the fence.
+GATEWAY_READ_POSTS: dict[str, str] = {
+    "present_email_groups": (
+        "POST /email/messages/summaries reads the sender and the subject of "
+        "each id. It writes no row and changes no read state."),
+    "test_rule_match": (
+        "POST /email/rules/test is a dry run. It shows which rule would match "
+        "and applies nothing."),
+    "categorize_senders": (
+        "POST /email/senders/categorize counts the labels that the member's "
+        "own rules already applied, per sender. It writes no mail, no rule "
+        "and no setting, and a second run gives the same rows."),
+}
 
 
 # ── WS-48 N2: narrow, pick, read (data_narrowing_pipeline.md §9 N2) ─────────
