@@ -520,13 +520,6 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
     return cards
 
 
-def _zone(name: Any) -> ZoneInfo:
-    try:
-        return ZoneInfo(str(name or "UTC"))
-    except (ValueError, OSError):
-        return ZoneInfo("UTC")
-
-
 @router.get("/feed")
 async def shell_feed(
     limit: int = DEFAULT_FEED_LIMIT,
@@ -608,7 +601,7 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
 
     if now is None:
         now = needs._now()  # the feed's one clock (needs._now)
-    tz = _zone(next((a.zone for a in found.values() if a.zone), None))
+    tz = state.zone_of(next((a.zone for a in found.values() if a.zone), None))
     today = now.astimezone(tz).date()
     # The state join: after the fold, before the order (§6.8 item 7). The
     # Handled reads run at the same time, inside the join's own budget
