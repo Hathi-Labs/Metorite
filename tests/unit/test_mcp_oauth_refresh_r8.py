@@ -183,16 +183,27 @@ def _by_name(servers: list[Any]) -> dict[str, Any]:
     return {s.name: s for s in servers}
 
 
+def _two_processes(monkeypatch) -> None:
+    """Each call gets its own slots, as two gateway processes do. So only
+    the row lock can serve one refresh to two workers (O7). One process
+    would also serialize them on the slot of the org."""
+    from gateway.connections import mcp
+
+    monkeypatch.setattr(mcp, "_org_slots", lambda _org: asyncio.Semaphore(1))
+    monkeypatch.setattr(mcp, "_slots", lambda: asyncio.Semaphore(1))
+
+
 # ── O7: one refresh under two workers ───────────────────────────────────────
 
 
 async def test_two_workers_send_one_refresh_and_both_get_the_new_token(
-        ns, world, app_engine) -> None:  # noqa: F811
+        ns, world, app_engine, monkeypatch) -> None:  # noqa: F811
     from gateway.connections import mcp
 
     _assert_non_priv(app_engine)
     name = _name("o7")
     await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=NEAR)
+    _two_processes(monkeypatch)
     # The provider is slow, so both workers find the old token at one time.
     world.token_delay_s = 0.5
     one, two = await asyncio.gather(mcp.servers_for_org(ns.org_a),
@@ -494,9 +505,10 @@ async def test_one_process_runs_at_most_the_slot_cap_of_refreshes(
     of one process are capped, and the pool of other orgs stays free."""
     from gateway.connections import mcp
 
-    names = [_name(f"slot{i}") for i in range(3)]
-    for i, name in enumerate(names):
-        await _connected(world, ns.org_a, ADMIN_A, name, f"{TOKEN_A}-{i}", expires_in=NEAR)
+    # Two orgs, so the slot of each org does not hide the cap of the process.
+    name_a, name_b = _name("slot-a"), _name("slot-b")
+    await _connected(world, ns.org_a, ADMIN_A, name_a, TOKEN_A, expires_in=NEAR)
+    await _connected(world, ns.org_b, ADMIN_B, name_b, TOKEN_B, expires_in=NEAR)
     monkeypatch.setattr(mcp, "REFRESH_SLOTS", 1)
     world.token_delay_s = 0.3
     live = {"now": 0, "most": 0}
@@ -514,10 +526,11 @@ async def test_one_process_runs_at_most_the_slot_cap_of_refreshes(
                 live["now"] -= 1
 
     monkeypatch.setattr(world, "ahandle", _counted)
-    got = _by_name(await mcp.servers_for_org(ns.org_a))
-    assert len(world.refreshes) == 3
+    got_a, got_b = await asyncio.gather(mcp.servers_for_org(ns.org_a),
+                                        mcp.servers_for_org(ns.org_b))
+    assert len(world.refreshes) == 2
     assert live["most"] == 1, f"{live['most']} refreshes ran at one time"
-    assert all(got[n].refreshed for n in names)
+    assert _by_name(got_a)[name_a].refreshed and _by_name(got_b)[name_b].refreshed
 
 
 async def test_a_stop_during_the_fetch_still_keeps_the_rotated_token(
@@ -641,6 +654,7 @@ async def test_a_short_token_gets_one_refresh_under_two_workers(
     # 200 s later: 100 s left, past half the life, so the token is due.
     shift = timedelta(seconds=200)
     monkeypatch.setattr(mcp, "_utcnow", lambda: datetime.now(UTC) + shift, raising=False)
+    _two_processes(monkeypatch)
     world.token_delay_s = 0.5
     one, two = await asyncio.gather(mcp.servers_for_org(ns.org_a),
                                     mcp.servers_for_org(ns.org_a))
