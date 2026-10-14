@@ -456,6 +456,35 @@ class TestAFoldKeepsTheStateFingerprint:
         for kind, facts in TASK_FACTS.items():
             assert not set(facts) & set(state.STATE_FACTS), kind
 
+    def test_the_provider_s_own_signals_keep_a_notification_card_s_fingerprint(self):
+        """The signals as the provider builds them, from rows that DO have a
+        due time: none carries it, so a fold into a notification card (no
+        ``due_at``) keeps the state fingerprint."""
+        tz = ZoneInfo("UTC")
+        now = datetime(2026, 10, 12, 12, 0, tzinfo=tz)
+        today = now.date()
+        due = "2026-10-15T11:00:00+00:00"
+        made = [
+            feed._quiet_signal(_row("t-1", "One", due_at=due, disposition="WAITING",
+                                    delegated_at="2026-10-01T09:00:00+00:00",
+                                    waiting_on={"name": "Ravi"}), today, tz),
+            feed._quiet_signal(_row("t-1", "One", due_at=due, disposition="NEXT",
+                                    last_change_at="2026-09-01T09:00:00+00:00"), today, tz),
+            feed._unblocked_signal(_row("t-1", "One", due_at=due, unblocked_by={
+                "readable": True, "id": "b-1", "title": "API", "closed_by": "r@x.test",
+                "closed_at": "2026-10-12T09:00:00+00:00"})),
+            feed._absent_signal(_row("t-1", "One", due_at=due), {date(2026, 10, 15)}, tz),
+        ]
+        assert [s.kind for s in made] == list(TASK_KINDS)
+        main = _signal("notification", app="projects", facts=self.MAINS["notification"])
+        alone = feed.build_cards([main], now, tz, today)[0]
+        for signal in made:
+            assert not set(signal.facts) & set(state.STATE_FACTS), signal.kind
+            both = feed.build_cards([main, signal], now, tz, today)[0]
+            assert both["folded"] == [signal.kind]
+            assert state.state_fp("tasks:t-1", both["facts"]) == \
+                state.state_fp("tasks:t-1", alone["facts"]), signal.kind
+
 
 class TestTheFoldedClauses:
     def test_absent_on_due_folds_its_own_sentence(self):
