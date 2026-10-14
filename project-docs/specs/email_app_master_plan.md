@@ -9013,7 +9013,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G4a-f1** | 🟢 AGENT-SAFE | 🔨 Built, not merged (2026-10-12, branch `gmail-pra-fill-bulk`). Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B, which merged as #915 | S | §12.3.12.4 |
 | **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | ✅ PR-C1a MERGED #919 (`421eeb8f4`, 2026-10-12). ✅ PR-C1b MERGED #925 (`144dc0d1f`, 2026-10-12). Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
 | **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | ✅ MERGED #916 (`c0d776667`, 2026-10-12). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
-| **EM-G11** | 🟢 AGENT-SAFE builds · 🔴 OWNER-GATE (Google console, KMS billing, CASA) · 🔴 `enforcement-flip` (two dark flags) | 📝 Specified 2026-10-14, not audited. Google verification readiness: the disclosure, one scope set, a card for each AI write, UMCC, the teardown, envelope keys, and the owner runbooks. Ten PRs, PR-G1 to PR-G10 | PR-G1 and PR-G2 first | 10 × M | §12.3.13 |
+| **EM-G11** | 🟢 AGENT-SAFE builds · 🔴 OWNER-GATE (Google console, KMS billing, CASA) · 🔴 `enforcement-flip` (two dark flags) | 📝 Specified 2026-10-14. 🔨 PR-G2 (EM-G11b) built 2026-10-14, not merged. Google verification readiness: the disclosure, one scope set, a card for each AI write, UMCC, the teardown, envelope keys, and the owner runbooks. Ten PRs, PR-G1 to PR-G10 | PR-G1 and PR-G2 first | 10 × M | §12.3.13 |
 | **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #910 (`67b61aa11`, 2026-10-12). Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -13583,8 +13583,9 @@ cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 
 #### 12.3.13 EM-G11 — Google verification readiness of the Gmail app (2026-10-14)
 
-**Status.** 📝 Specified, not built (2026-10-14). Not audited. Each PR below needs a spec-auditor
-pass before an agent builds it.
+**Status.** 📝 Specified (2026-10-14). Each PR below needs a spec-auditor pass before an agent
+builds it. 🔨 **PR-G2 (EM-G11b) is built** (2026-10-14, branch `gmail-one-scope-set`, not merged).
+The auditor cleared it GO-NARROWED. The other nine PRs are not built and not audited.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
 Owner instruction, 2026-10-14. Google verifies an app that asks for a restricted scope only when the
@@ -13683,7 +13684,7 @@ scopes.
 - **The old OAuth route is retired, but its table still names `gmail.readonly`.** The `google`
   entry of `_PROVIDERS` (`apps/services/gateway/gateway/routes/oauth.py:84-94`) holds it. Since
   WS-54 IN-0, the authorize leg answers 410 (`oauth.py:139-145`) and the callback exchanges no code
-  (`oauth.py:148-161`). `refresh_access_token` (`oauth.py:208`) still reads the entry, and it has no
+  (`oauth.py:148-161`). `refresh_access_token` (`oauth.py:215`) still reads the entry, and it has no
   caller. IN-5 of WS-54 removes `_persist_tokens` only. The settings `google_client_id`,
   `google_client_secret` and the three `google_*_token` names stay
   (`packages/acb_common/acb_common/settings.py:983-987`).
@@ -13852,7 +13853,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR | Slice | Items | Gate | Size | Section |
 |---|---|---|---|---|---|
 | PR-G1 | **EM-G11a** — the disclosure step and the Google button | 1, 8 | 🟢 AGENT-SAFE · security review · visual review. 🔴 The owner approves the disclosure text (Q-GM-7) | M, about 550 | §12.3.13.4 |
-| PR-G2 | **EM-G11b** — one set of Gmail scopes | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
+| PR-G2 | **EM-G11b** — one set of Gmail scopes. 🔨 Built 2026-10-14, branch `gmail-one-scope-set`, not merged | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
 | PR-G3 | **EM-G11c1** — a card for each chat write | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
 | PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
@@ -14030,6 +14031,29 @@ Read our privacy policy
 ```
 
 ##### 12.3.13.5 EM-G11b — one set of Gmail scopes (PR-G2)
+
+**Status.** 🔨 Built 2026-10-14 on branch `gmail-one-scope-set`, not merged. The auditor cleared
+it GO-NARROWED. Items 1 to 4 are built as written, with the additions below.
+
+- **The auditor added three things.** The builder removed the `google-sheets` fallback to
+  `GMAIL_SA_JSON_PATH` in the configured check of `routes/integrations.py` too. It removed the
+  `gmail` and `gmail-send` entries of the two logo maps in `ApiKeysView.tsx`. The round-2 tests of
+  `test_integrations_env_hardening.py` now assert the refusal of both names, not the guide.
+- **The builder added one thing.** `routes/integrations.py` holds `RETIRED_SERVICE_IDS`, `gmail`
+  and `gmail-send`. `RESERVED_SERVICE_IDS` includes it, so a custom integration cannot take either
+  id. `env_guard` still refuses `GMAIL_SA_JSON_PATH`, `GMAIL_DEFAULT_USER`, `GOOGLE_CLIENT_ID` and
+  `GOOGLE_CLIENT_SECRET`.
+- **Anchors, measured again at build.** `refresh_access_token` is at `oauth.py:215`. The path of
+  `env_guard.py` is `packages/acb_common/acb_common/env_guard.py`, and `GMAIL_DEFAULT_USER` is at
+  `:125`. The `gmail` guide starts at `integrations.py:193`. The key-store entries are at
+  `key_store.py:77-84`. The two resolvers are at `acb_skills/integrations.py:114-131`.
+- **Tests the spec did not name.** `test_integrations_env_hardening.py:131`, `:881` and
+  `:1525-1553`, and `test_org_access_credentials.py:32`.
+- **The check before the removal.** On 2026-10-14, six env names of the box each counted 0:
+  `GMAIL_SA_JSON_PATH`, `GMAIL_DEFAULT_USER`, `GMAIL_WORKSPACE_DOMAIN`, `GOOGLE_CLIENT_ID`,
+  `GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN`. ⚠️ **The `provider_keys` count is open.** The permission layer of the
+  builder refused the production query. Run it before the merge. A row under `gmail:` or
+  `gmail-send:` stays in the table, and startup does not load it.
 
 **Scope.**
 
