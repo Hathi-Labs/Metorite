@@ -402,7 +402,14 @@ async def mark_read(
             )
             params = {"me": me, "ids": list(payload.ids)}
         result = await db.execute(text(sql), params)
-    return {"marked": int(getattr(result, "rowcount", 0) or 0)}
+    marked = int(getattr(result, "rowcount", 0) or 0)
+    if marked:
+        # WS-58 MD-5a — after the commit: a read note leaves My Day, and
+        # marking read emits no `pm.*` event (my_day_feed.md §8.4 item 5).
+        from gateway.routes.projects.personal import bump_my_day
+
+        await bump_my_day(user.organization_id, me)
+    return {"marked": marked}
 
 
 def _row(row: Any) -> dict:

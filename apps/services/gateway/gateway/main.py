@@ -1652,6 +1652,20 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-58 MD-5a — the My Day change sink (my_day_feed.md §8.2, §8.4 items 1
+    # and 20). A `pm.*` event bumps the org's feed version with one Redis
+    # increment, and runs no SQL. Its OWN try, apart from the workflows block,
+    # so a failed workflows import does not drop it. MY_DAY_CACHE gates it
+    # inside the sink, never here.
+    from ingestion.event_hooks import register_event_sink as _register_my_day_sink
+
+    from gateway.routes.shell.cache import on_event as _my_day_sink
+
+    _register_my_day_sink(_my_day_sink)
+except Exception:  # pragma: no cover - ingestion optional in some deploys
+    pass
+
+try:
     # Org access control (project-docs/specs/org_access_control.md) —
     # member roster + lifecycle, roles, per-user overrides (prefix /admin),
     # plus /auth/me, which every signed-in member calls to resolve their own

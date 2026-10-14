@@ -327,15 +327,35 @@ export function readFeedAnswer(raw: unknown): FeedAnswer {
  *
  * The cards of a source that failed come from the last answer in which it
  * read `ok`, for 5 minutes at most (`carryCards`, §6.1).
+ *
+ * The gateway's read cache (MD-5a, §8.4 item 5) tags each answer. The next
+ * fetch sends the tag, and a 304 keeps the answer this client holds. It still
+ * stamps a new `fetchedAt` and writes the needs view again, so a 304 is a
+ * fresh answer for every reader.
  */
 export async function fetchFeed(limit = FEED_LIMIT): Promise<FeedAnswer> {
   const putNeeds = guardedPut<NeedsFeed>(feedKey(limit), needsKey());
   // Stamped BEFORE the request: an act after this moment is newer than
   // everything this answer can know.
   const fetchedAt = Date.now();
-  const res = await fetch(`/api/shell/feed?limit=${limit}`, { cache: "no-store" });
-  if (!res.ok) throw new Error("Your feed could not load.");
-  const answer = readFeedAnswer(await res.json());
+  const held = lastTagged.get(limit);
+  const res = await fetch(`/api/shell/feed?limit=${limit}`, {
+    cache: "no-store",
+    // The tag of the answer this client holds (§8.4 item 5, MD-5a).
+    ...(held ? { headers: { "If-None-Match": held.tag } } : {}),
+  });
+  let answer: FeedAnswer;
+  if (res.status === 304 && held) {
+    // The server's answer is the one we hold. It counts as a new answer: a
+    // new `fetchedAt`, and the needs view goes into the needs key again.
+    answer = held.answer;
+  } else {
+    if (!res.ok) throw new Error("Your feed could not load.");
+    answer = readFeedAnswer(await res.json());
+    const tag = res.headers.get("ETag");
+    if (tag) lastTagged.set(limit, { tag, answer });
+    else lastTagged.delete(limit);
+  }
   if (answer.needs) putNeeds(answer.needs);
   // A card that a sound answer from after the menu act holds again is back
   // for real, for example after a snooze ended: the carry may keep it again.
@@ -369,6 +389,15 @@ export interface OkCards {
  * as an answer. Memory only, and a new member starts with none.
  */
 const lastOk = new Map<number, ReadonlyMap<string, OkCards>>();
+
+/**
+ * The last RAW answer and its `ETag`, for each limit (MD-5a, §8.4 item 5).
+ * `fetchFeed` sends the tag as `If-None-Match`, and a 304 stands for this
+ * answer. It is not the cache entry, because a Projects write drops that
+ * entry, and the read after it may still get a 304. Memory only, and a new
+ * member starts with none.
+ */
+const lastTagged = new Map<number, { tag: string; answer: FeedAnswer }>();
 
 /** Record the cards of each source that read `ok` in this raw answer. */
 export function noteOk(
@@ -410,6 +439,7 @@ export function allowCarry(signalId: string): void {
 onClear(() => {
   noCarry.clear();
   lastOk.clear();
+  lastTagged.clear();
 });
 
 /**
