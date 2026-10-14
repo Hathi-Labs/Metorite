@@ -13860,7 +13860,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
-| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
+| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. 🔨 Built NARROWED 2026-10-14, branch `gmail-purge-durable`, migration 264, not merged | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
 | — | **EM-G11r** — the reviewer path, the video, the publish order and the scope text | 7, 9, 10, 11 | 🔴 OWNER-GATE (Google account, money, third party). Parts are agent acts, named in each step | Runbook | §12.3.13.11 to §12.3.13.14 |
@@ -14439,6 +14439,38 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
   `operator.py`) wait for a spec edit. So does `test_three_paths_call_one_teardown`. The help line
   of item 3 is not in f1. The check of Google's "third-party apps" page needs a real Gmail account,
   and it is the owner's.
+
+**EM-G11f2 as built (2026-10-14).** 🔨 Built NARROWED, not merged, on branch
+`gmail-purge-durable`. The audit returned GO-NARROWED. The scope is items 1 to 3, for
+`DELETE /email/accounts/{id}` only.
+
+- **Item 1, the durable purge.** Migration 264 (`infra/postgres/264_email_mailbox_purges.sql`) adds
+  `email_mailbox_purges`, with `organization_id` and FORCE RLS. `account_id` has NO foreign key, so
+  the cascade cannot delete the row. `delete_account` writes the row inside the block of its
+  `DELETE`, so one commit holds both. The route's task closes the row after two good passes.
+- **The sweeper host is the calendar auto-rollover loop** (`routes/tasks/calendar.py`). It runs on
+  each box with no flag, and it lists each organization already. It starts
+  `memory_purge.start_purge_sweep` in a task of its own, so a slow Mem0 never delays a rollover. It
+  adds no process, no unit and no connection site.
+- **The sweep.** A new row waits 10 minutes first, so the sweeper does not race the route's task.
+  The sweeper takes each due row with `FOR UPDATE SKIP LOCKED` and runs ONE pass. A failed pass
+  keeps the row open with a back-off from 5 minutes to 6 hours. Only the second good pass closes it.
+- **Mem0 off (agent decision).** The sweeper reads no row, and the task runs no pass. The rows stay
+  open, and they close only after a real purge. The reason: Mem0 keeps its memories in the
+  `mem0_memories` table of the same Postgres. That table outlives the flag, so a row that closed
+  while Mem0 was off would claim a purge that never ran.
+- **Item 2, no write to `"default"` (agent decision: refuse).** The drafter writes Mem0 only under
+  the key that `memory_purge.mailbox_memory_scope` builds. With no owner or no mailbox id, it logs
+  `email.memory_write_refused` and skips. The fix covers the draft precedent and the learning job,
+  which wrote `"default#acct:<id>"` when the mailbox row was gone.
+- **Item 3, the child fence.** `test_each_child_is_empty_after_a_disconnect` reads each foreign
+  key to `email_accounts` or `email_messages` from `information_schema`. It fills one row in each
+  child from the catalog, disconnects, and finds no row of the mailbox.
+- **Fences.** `tests/unit/test_email_mailbox_purge_durable.py` holds the four named tests and
+  their companions. Three mutations each fail it. They are a purge row outside the `DELETE`
+  transaction, a sweeper that deletes the row first, and a write to `"default"`.
+- **Not in f2.** The admin member purge, the org purge and `test_three_paths_call_one_teardown`
+  wait for a spec edit. `automation/assistant.py` still writes under `user.email or "default"`.
 
 ##### 12.3.13.10 EM-G11g1 and EM-G11g2 — envelope encryption and rotation (PR-G9, PR-G10)
 
