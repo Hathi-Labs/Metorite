@@ -17,7 +17,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 - `bearer.py` reads the bearer token, looks it up, checks the audience and computes the effective scopes.
 - `gateway_client.py` is the only client of the gateway. It sends the four signed headers of `acb_auth.agent_signing` and no other header that it sets.
 - `cursor.py` signs and reads the page cursor of a list tool. The cursor binds the tool name, so a cursor of one tool never pages another.
-- `tools.py` holds the tool records and is the ONE module that maps a gateway response to a tool result (EA3-9). It holds the seven read tools of spec §9.1: `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline` and `search_tasks`. EA-6a adds the two write tools of spec §9.2, `set_task_status` and `add_task_reference`. Each needs `projects:write`, and branch 0 of the gateway checks the nonce, the scope, the writes flag and the cap.
+- `tools.py` holds the tool records and is the ONE module that maps a gateway response to a tool result (EA3-9). It holds the seven read tools of spec §9.1: `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline` and `search_tasks`. EA-6a adds the two write tools of spec §9.2, `set_task_status` and `add_task_reference`. Each needs `projects:write`, and branch 0 of the gateway checks the nonce, the scope, the writes flag and the cap. EA-12b adds the six agent-run tools of spec §12.1 and `agent_runs` in `get_task`. They show only while `agent_runs_enabled` is on, and the edge reads that flag through `agent_oauth.runs_enabled`. So the edge and the gateway need the same value.
 
 ## Local contract
 
@@ -47,7 +47,7 @@ The deploy starts the edge only after the owner enables the unit. Caddy serves i
 
 ## Fence
 
-`tests/unit/test_agent_oauth_server.py` holds the behaviour of the OAuth routes, and it holds the structural fences of rules 2, 4 and 15. `tests/unit/test_mcp_edge_protocol.py` holds rules 10 to 14 and the wire contract of `/mcp`. `tests/unit/test_mcp_edge_coverage.py` holds the tool records against `MCP_ROUTES` and the gateway routes, and rule 16. `tests/unit/test_mcp_edge_writes.py` holds the write tools of EA-6a, with R8 classes through the real gateway app.
+`tests/unit/test_agent_oauth_server.py` holds the behaviour of the OAuth routes, and it holds the structural fences of rules 2, 4 and 15. `tests/unit/test_mcp_edge_protocol.py` holds rules 10 to 14 and the wire contract of `/mcp`. `tests/unit/test_mcp_edge_coverage.py` holds the tool records against `MCP_ROUTES` and the gateway routes, and rule 16. `tests/unit/test_mcp_edge_writes.py` holds the write tools of EA-6a, with R8 classes through the real gateway app. `tests/unit/test_mcp_edge_agent_runs.py` holds the agent-run tools of EA-12b, the flag, the long poll and the text of the tool descriptions.
 
 ## Child DOX Index
 
