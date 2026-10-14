@@ -240,7 +240,7 @@ describe("both composers act in the chosen mailbox (D-EM-20)", () => {
   });
 
   it("syncs the mailbox that sent a reply from another mailbox", () => {
-    expect(detail).toContain("if (fromId && fromId !== acct) void triggerSync(fromId);");
+    expect(detail).toContain("if (fromId && fromId !== acct) void triggerSync(fromId, { quiet: true });");
   });
 });
 

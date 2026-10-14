@@ -104,7 +104,7 @@ export function ComposePanel({
   // the live backend steps and the per-round revision history.
   const [aiOpen, setAiOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
-  const { saveDraft, sendDraft, deleteEmail, accounts, authErrors } = useEmailStore();
+  const { saveDraft, sendDraft, deleteEmail, accounts, authErrors, setComposeDraftId } = useEmailStore();
   // ── The sending mailbox (EM-T8c, D-EM-20) ──
   // The pick of the From row holds only while the composer opens on the same
   // mailbox, so a new compose session starts on its own mailbox.
@@ -223,6 +223,8 @@ export function ComposePanel({
         }
         draftIdRef.current = draftId;
         draftHasFileRef.current = Boolean(draftHasFile);
+        // The reading pane hides this draft while the composer edits it.
+        setComposeDraftId(draftId);
       });
     }
     staleDraftsRef.current = [];
@@ -357,6 +359,9 @@ export function ComposePanel({
         draftIdRef.current = saved.id;
         draftHasFileRef.current = saved.hasAttachments;
         lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
+        // The reading pane hides this draft while the composer edits it. A
+        // pop-out with no hand-over draft makes its first draft here.
+        setComposeDraftId(saved.id);
         // A provider draft cannot move between mailboxes: the new mailbox
         // saved its own, so the drafts of the old one go (§11.6 case 7).
         dropStaleDrafts();

@@ -6919,6 +6919,10 @@ a sibling slice and is recorded separately.* Migration **168** — number taken 
 `infra/postgres/` at file creation (highest on disk and on `origin/main` was
 `167_projects_seed_status_colours.sql`) and re-checked immediately before commit. R1.
 
+⚠️ **No caller reads this feed today** (measured 2026-10-14). The web client does not call
+it, `skill_projects/manifest.py` classes it `X`, and the MCP edge does not route it. So
+nothing reads `removed[]`. HANDOFF H-306 holds the D63 seal removals until a caller exists.
+
 **The endpoint is `GET /projects/delta/tasks`, not `/projects/tasks/delta`.** The natural
 spelling would be matched by `/projects/tasks/{task_id}` and the answer would depend on
 import order — the route-shadowing trap `routes/workflows/__init__.py` documents and this

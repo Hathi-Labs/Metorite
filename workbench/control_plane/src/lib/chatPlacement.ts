@@ -365,7 +365,31 @@ export function genUiTitle(spec: unknown): string {
   for (const v of [data.title, props.title, props.text]) {
     if (typeof v === "string" && v.trim()) return v.trim();
   }
-  return "";
+  return typeof props.name === "string" ? templateTitle(props.name, data) : "";
+}
+
+/**
+ * The title of a template that names itself by another field than `title`:
+ * a weather card by its place, a flight by its number. The template draws
+ * this as its one header (`TemplateHead` in `genUITemplates.tsx`), and the
+ * fold's toggle is named by it too, so the name a screen reader hears is the
+ * words on the row. Any other template reads `data.title`.
+ */
+export function templateTitle(name: string, data: Record<string, unknown>): string {
+  const t = (v: unknown) => (typeof v === "string" || typeof v === "number" ? String(v).trim() : "");
+  const join = (...parts: string[]) => parts.filter(Boolean).join(" ");
+  switch (name) {
+    case "weatherCard":
+      return t(data.location) || "Weather";
+    case "sparkTrend":
+      return t(data.label);
+    case "flightStatus":
+      return join(t(data.airline), t(data.flightNo));
+    case "trainStatus":
+      return join(t(data.operator), t(data.trainNo), t(data.line) ? `· ${t(data.line)}` : "");
+    default:
+      return t(data.title);
+  }
 }
 
 // ── Generative UI: its place in the order the turn streamed ─────────────────

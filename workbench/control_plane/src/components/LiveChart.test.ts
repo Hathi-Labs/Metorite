@@ -24,7 +24,12 @@ describe("wac10g-one-chart", () => {
   it("the chat offers the chart template, and barChart draws through the engine", () => {
     expect(Object.keys(TEMPLATE_REGISTRY)).toContain("chart");
     const tpl = readFileSync(join(SRC, "components", "genUITemplates.tsx"), "utf8");
-    expect(tpl).toMatch(/barChart: \(data\) => <LiveChart spec=\{barChartSpec\(data\)\} \/>/);
+    // Both chart templates draw through `ChartCard`, which draws the one
+    // engine: in a chat card under the card's header (follow-up of #945).
+    expect(tpl).toMatch(/barChart: \(data\) => <ChartCard spec=\{barChartSpec\(data\)\} \/>/);
+    expect(tpl).toMatch(/chart: \(data\) => <ChartCard spec=\{data\} \/>/);
+    const card = tpl.slice(tpl.indexOf("function ChartCard("), tpl.indexOf("// ── Registry"));
+    expect(card.match(/<LiveChart /g)?.length).toBe(2);
     expect(tpl).not.toMatch(/function BarChart\(/);
   });
   it("maps the barChart data and its tones onto a bar spec", () => {
