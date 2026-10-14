@@ -85,6 +85,7 @@ def db(promoted, app_engine):  # noqa: F811
         c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"), {"u": ME})
         c.execute(text("DELETE FROM wa_accounts WHERE user_id = :u"), {"u": ME})
         c.execute(text("DELETE FROM pm_projects WHERE created_by = :u"), {"u": ME})
+        c.execute(text("DELETE FROM app_user WHERE lower(email) = :u"), {"u": ME})
         for table in ("crm_activities", "crm_leads", "crm_settings"):
             c.execute(text(f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
                       {"o": promoted.org_a})
@@ -137,8 +138,9 @@ async def test_the_crm_timeline_pages_with_no_repeat_and_no_gap(db, monkeypatch)
             # Newest first: mail 0 is the newest row of the record.
             c.execute(text(
                 "INSERT INTO email_messages (account_id, provider_message_id, thread_id, "
-                "folder, from_address, subject, received_at, organization_id) VALUES "
-                "(CAST(:a AS uuid), :p, :t, 'INBOX', CAST(:f AS jsonb), :s, :r, "
+                "folder, from_address, to_addresses, subject, received_at, organization_id) "
+                "VALUES (CAST(:a AS uuid), :p, :t, 'INBOX', CAST(:f AS jsonb), "
+                "CAST('[]' AS jsonb), :s, :r, "
                 "CAST(:o AS uuid))"),
                 {"a": box, "p": f"pm-{TAG}-{k}", "t": f"t-{TAG}-{k}",
                  "f": json.dumps({"name": "Ann", "email": buyer}), "s": f"mail {k}",
@@ -186,8 +188,9 @@ async def test_email_messages_break_a_tie_by_id(db) -> None:
         for k in range(30):
             ids.append(str(c.execute(text(
                 "INSERT INTO email_messages (account_id, provider_message_id, thread_id, "
-                "folder, from_address, subject, received_at, organization_id) VALUES "
-                "(CAST(:a AS uuid), :p, :t, 'INBOX', CAST(:f AS jsonb), :s, :r, "
+                "folder, from_address, to_addresses, subject, received_at, organization_id) "
+                "VALUES (CAST(:a AS uuid), :p, :t, 'INBOX', CAST(:f AS jsonb), "
+                "CAST('[]' AS jsonb), :s, :r, "
                 "CAST(:o AS uuid)) RETURNING id"),
                 {"a": box, "p": f"pt-{TAG}-{k}", "t": f"thr-{TAG}",
                  "f": json.dumps({"email": "x@y.io"}), "s": f"s{k}", "r": T0,
@@ -236,10 +239,20 @@ async def test_notifications_break_a_tie_by_id(db) -> None:
     task = str(uuid.uuid4())
     ids: list[str] = []
     with db.admin_engine.begin() as c:
+        # An org grant reaches members of the org, so the reader is one.
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+            "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid))"),
+            {"e": ME, "o": db.org_b})
         c.execute(text(
             "INSERT INTO pm_projects (id, organization_id, name, source, created_by, "
-            "owns_statuses, personal_owner) VALUES (CAST(:p AS uuid), CAST(:o AS uuid), "
-            "'Mine', 'manual', :me, true, :me)"), {"p": project, "o": db.org_b, "me": ME})
+            "owns_statuses) VALUES (CAST(:p AS uuid), CAST(:o AS uuid), "
+            "'Shared', 'manual', :me, true)"), {"p": project, "o": db.org_b, "me": ME})
+        # An org grant, so the member sees the task (the shell suite's shape).
+        c.execute(text(
+            "INSERT INTO pm_project_grants (project_id, subject, created_by, "
+            "organization_id) VALUES (CAST(:p AS uuid), 'org', :me, CAST(:o AS uuid))"),
+            {"p": project, "me": ME, "o": db.org_b})
         c.execute(text(
             "INSERT INTO pm_task_statuses (id, project_id, name, position, category, "
             "is_default) VALUES (CAST(:s AS uuid), CAST(:p AS uuid), 'To do', 1, 'todo', "
