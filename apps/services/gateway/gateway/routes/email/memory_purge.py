@@ -219,6 +219,11 @@ def writable_memory_scope(owner: str | None, account_id: Any, writer: str) -> st
         return None
 
 
+def _mem0_flag() -> bool:
+    """The ``MEM0_ENABLED`` setting, the one reader in this module."""
+    return bool(getattr(get_settings(), "mem0_enabled", False))
+
+
 async def mem0_on() -> bool:
     """True when the Mem0 client is ready (rule 7).
 
@@ -234,7 +239,7 @@ async def mem0_on() -> bool:
         client = get_memory_client()
         if getattr(client, "_client", None) is not None:
             return True
-        if not getattr(get_settings(), "mem0_enabled", False):
+        if not _mem0_flag():
             return False
         if (_mem0_failed_at is not None
                 and time.monotonic() - _mem0_failed_at < MEM0_RETRY_S):

@@ -37,8 +37,10 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import json
 import re
+import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -81,9 +83,19 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 
 _REPO = Path(__file__).resolve().parents[2]
 _MIGRATIONS = _REPO / "infra" / "postgres"
-_DRAFTING = (_REPO / "apps/services/gateway/gateway/routes/email/automation"
-             / "drafting.py")
 ACC = "7a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+
+
+async def _mem0_off() -> bool:
+    return False
+
+
+async def _mem0_on() -> bool:
+    return True
+
+
+def _never_built() -> None:
+    raise AssertionError("the probe built the client with the flag off")
 
 
 def _migration() -> str:
@@ -152,7 +164,7 @@ class TestThePurgeRowLandsWithTheDelete:
         self, wired, monkeypatch,  # noqa: F811
     ):
         ledger = wired({ACC: _row()})
-        monkeypatch.setattr(memory_purge, "mem0_on", lambda: False)
+        monkeypatch.setattr(memory_purge, "mem0_on", _mem0_off)
         await accounts.delete_account(ACC, user=_user())
         await _drain()
         assert "purge_row" in ledger.kinds()
@@ -185,18 +197,45 @@ class TestTheSweeperIsCheapWithMem0Off:
             opened.append(a)
             raise AssertionError("the sweeper opened a session with Mem0 off")
 
-        monkeypatch.setattr(memory_purge, "mem0_on", lambda: False)
+        async def _no_orgs() -> list[str]:
+            opened.append("org list")
+            raise AssertionError("the tick read the organizations with Mem0 off")
+
+        monkeypatch.setattr(memory_purge, "mem0_on", _mem0_off)
+        monkeypatch.setattr(memory_purge, "_organization_ids", _no_orgs)
         assert await memory_purge.sweep_mailbox_purges(
             [str(uuid.uuid4())], open_session=_tripwire) == 0
-        assert memory_purge.start_purge_sweep([str(uuid.uuid4())]) is None
+        assert await memory_purge.run_tick() == 0
         assert opened == []
 
-    def test_the_probe_reads_the_flag(self, monkeypatch):
+    async def test_the_probe_reads_the_flag(self, monkeypatch):
         client = mem0_client.MemoryClient()
         monkeypatch.setattr(mem0_client, "get_memory_client", lambda: client)
-        monkeypatch.setattr(mem0_client, "get_settings",
-                            lambda: SimpleNamespace(mem0_enabled=False))
-        assert memory_purge.mem0_on() is False
+        monkeypatch.setattr(memory_purge, "_mem0_flag", lambda: False)
+        monkeypatch.setattr(client, "_get_client", _never_built)
+        assert await memory_purge.mem0_on() is False
+
+    async def test_a_failed_build_runs_off_the_loop_and_waits(self, monkeypatch):
+        client = mem0_client.MemoryClient()
+        builds: list[int] = []
+        loop_thread = threading.get_ident()
+
+        def _build() -> None:
+            builds.append(threading.get_ident())
+            return None
+
+        monkeypatch.setattr(mem0_client, "get_memory_client", lambda: client)
+        monkeypatch.setattr(memory_purge, "_mem0_flag", lambda: True)
+        monkeypatch.setattr(client, "_get_client", _build)
+        monkeypatch.setattr(memory_purge, "_mem0_failed_at", None)
+        assert await memory_purge.mem0_on() is False
+        assert await memory_purge.mem0_on() is False
+        assert len(builds) == 1, "a failed build ran again inside the back-off"
+        assert builds[0] != loop_thread, "the build ran on the event loop"
+        monkeypatch.setattr(memory_purge, "_mem0_failed_at",
+                            memory_purge._mem0_failed_at - memory_purge.MEM0_RETRY_S - 1)
+        assert await memory_purge.mem0_on() is False
+        assert len(builds) == 2, "the build never ran again after the back-off"
 
     def test_the_back_off_grows_and_has_a_cap(self):
         delays = [memory_purge.retry_delay_s(n) for n in range(1, 12)]
@@ -205,7 +244,125 @@ class TestTheSweeperIsCheapWithMem0Off:
         assert max(delays) == memory_purge.RETRY_CAP_S
 
 
+# ── the lease: one row is claimed just before its own pass (hermetic) ───────
+
+
+class _ClaimLedger:
+    """A session double for the sweeper. It hands out ``rows`` one claim at a
+    time and records the order of the claims, the passes and the records."""
+
+    def __init__(self, rows: list[Any]) -> None:
+        self.rows = list(rows)
+        self.events: list[str] = []
+
+    def session(self, org: str) -> Any:
+        ledger = self
+
+        class _DB:
+            async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+                sql = " ".join(str(stmt).split())
+                if sql.startswith("UPDATE email_mailbox_purges p SET tries"):
+                    assert "LIMIT 1" in sql, "a claim takes more than one row"
+                    ledger.events.append("claim")
+                    row = ledger.rows.pop(0) if ledger.rows else None
+                    return SimpleNamespace(fetchone=lambda: row)
+                ledger.events.append("record")
+                return SimpleNamespace(fetchone=lambda: None)
+
+        @contextlib.asynccontextmanager
+        async def _cm():
+            yield _DB()
+
+        return _cm()
+
+
+def _due_row(passes: int = 0) -> Any:
+    return SimpleNamespace(id=str(uuid.uuid4()), owner_email=OWNER,
+                           account_id=str(uuid.uuid4()), passes=passes, tries=1)
+
+
+class TestTheLeaseCoversOnePass:
+
+    async def test_each_row_is_claimed_just_before_its_pass(self, monkeypatch):
+        ledger = _ClaimLedger([_due_row(), _due_row(), _due_row()])
+
+        async def _pass(_scope: str, _shown: str, _phase: str) -> int:
+            ledger.events.append("pass")
+            return 0
+
+        monkeypatch.setattr(memory_purge, "mem0_on", _mem0_on)
+        monkeypatch.setattr(memory_purge, "_one_pass", _pass)
+        await memory_purge.sweep_mailbox_purges(["org"], open_session=ledger.session)
+        assert ledger.events == ["claim", "pass", "record"] * 3 + ["claim"]
+
+    async def test_a_spent_budget_claims_no_row(self, monkeypatch):
+        ledger = _ClaimLedger([_due_row()])
+        monkeypatch.setattr(memory_purge, "mem0_on", _mem0_on)
+        assert await memory_purge.sweep_mailbox_purges(
+            ["org"], open_session=ledger.session, budget_s=0) == 0
+        assert ledger.events == []
+
+    def test_one_pass_fits_inside_the_lease(self):
+        assert memory_purge.SWEEP_PASS_BOUND_S * 2 < memory_purge.SWEEP_LEASE_S
+
+
+# ── the loop starts from the lifespan (hermetic) ────────────────────────────
+
+
+_MAIN = _REPO / "apps/services/gateway/gateway/main.py"
+
+
+def _lifespan_violations(source: str) -> list[str]:
+    """What is wrong with how the lifespan runs the purge loop."""
+    head, sep, tail = source.replace("\r\n", "\n").partition("\n    yield\n")
+    if not sep:
+        return ["the lifespan has no yield"]
+    problems = []
+    if "start_purge_loop" not in head:
+        problems.append("the lifespan does not start the purge loop")
+    if "stop_purge_loop" not in tail:
+        problems.append("the shutdown does not stop the purge loop")
+    return problems
+
+
+class TestTheLoopStartsFromTheLifespan:
+
+    def test_the_lifespan_starts_and_stops_the_loop(self):
+        assert _lifespan_violations(_MAIN.read_text(encoding="utf-8")) == []
+
+    def test_the_check_can_fail(self):
+        source = _MAIN.read_text(encoding="utf-8").replace("start_purge_loop", "x")
+        assert _lifespan_violations(source) == [
+            "the lifespan does not start the purge loop"]
+
+    def test_the_rollover_no_longer_hosts_the_sweeper(self):
+        calendar = _REPO / "apps/services/gateway/gateway/routes/tasks/calendar.py"
+        assert "memory_purge" not in calendar.read_text(encoding="utf-8")
+
+    async def test_the_loop_ticks_and_stops(self, monkeypatch):
+        ticks: list[int] = []
+
+        async def _tick() -> int:
+            ticks.append(1)
+            return 0
+
+        monkeypatch.setattr(memory_purge, "run_tick", _tick)
+        assert await memory_purge.start_purge_loop() is True
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task = memory_purge._loop_task
+        assert task is not None and not task.done()
+        await memory_purge.stop_purge_loop()
+        assert task.done() and memory_purge._loop_task is None
+        assert ticks, "the loop never ticked"
+
+
 # ── email-no-default-scope (hermetic) ────────────────────────────────────────
+
+_GATEWAY = _REPO / "apps/services/gateway/gateway"
+_EMAIL_ROUTES = _GATEWAY / "routes/email"
+#: The Mem0 write calls. ``add`` is the method of a mem0 client.
+_WRITE_NAMES = {"add_memories_background", "add_memories"}
 
 
 def _add_calls(tree: ast.AST) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.Call]]:
@@ -216,14 +373,14 @@ def _add_calls(tree: ast.AST) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionD
         for node in ast.walk(fn):
             if (isinstance(node, ast.Call)
                     and getattr(node.func, "id", getattr(node.func, "attr", ""))
-                    == "add_memories_background"):
+                    in _WRITE_NAMES):
                 found.append((fn, node))
     return found
 
 
 def _scope_violations(source: str) -> list[str]:
-    """Each Mem0 add of the drafter whose key does not come from
-    ``_purgeable_memory_scope``. Empty means correct."""
+    """Each Mem0 add whose key does not come from
+    ``memory_purge.writable_memory_scope``. Empty means correct."""
     tree = ast.parse(source)
     problems = []
     for fn, call in _add_calls(tree):
@@ -233,32 +390,69 @@ def _scope_violations(source: str) -> list[str]:
             continue
         made = [n for n in ast.walk(fn) if isinstance(n, ast.Assign)
                 and any(getattr(t, "id", None) == arg.id for t in n.targets)
-                and any(getattr(c.func, "id", None) == "_purgeable_memory_scope"
+                and any(getattr(c.func, "id", None) == "writable_memory_scope"
                         for c in ast.walk(n.value) if isinstance(c, ast.Call))]
         if not made:
-            problems.append(f"{fn.name}: {arg.id} skips _purgeable_memory_scope")
+            problems.append(f"{fn.name}: {arg.id} skips writable_memory_scope")
     return problems
+
+
+def _gateway_writers() -> dict[str, int]:
+    """Each gateway file with a Mem0 write call, and the count of its calls."""
+    out = {}
+    for path in sorted(_GATEWAY.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if not any(name in source for name in _WRITE_NAMES):
+            continue
+        n = len(_add_calls(ast.parse(source)))
+        if n:
+            out[path.relative_to(_GATEWAY).as_posix()] = n
+    return out
 
 
 class TestNoMemoryWriteToDefault:
 
     def test_no_memory_write_to_default(self):
-        source = _DRAFTING.read_text(encoding="utf-8")
-        assert len(_add_calls(ast.parse(source))) >= 2, "the add calls moved"
-        assert _scope_violations(source) == []
-        assert not re.search(r'or\s+"default"', source), "a 'default' key is back"
+        """Each Mem0 write of ``routes/email`` takes a checked mailbox key."""
+        writers = {k: n for k, n in _gateway_writers().items()
+                   if k.startswith("routes/email/")}
+        assert writers == {"routes/email/automation/assistant.py": 1,
+                           "routes/email/automation/drafting.py": 2}, (
+            f"the email Mem0 writers moved: {writers}")
+        for rel in writers:
+            source = (_GATEWAY / rel).read_text(encoding="utf-8")
+            assert _scope_violations(source) == [], rel
+            assert not re.search(r'or\s+"default"', source), f"{rel}: 'default' is back"
+
+    def test_no_writer_outside_email_writes_a_mailbox_key(self):
+        """The Mem0 writes outside ``routes/email`` key on a member, an agent or
+        a room. None of them builds a mailbox key, so no purge owes them."""
+        outside = {k for k in _gateway_writers() if not k.startswith("routes/email/")}
+        assert outside == {"main.py", "routes/agent.py"}, (
+            f"a new Mem0 writer: {outside}. Check its key against the purge")
+        tools = (_REPO / "packages/acb_skills/acb_skills/memory_tools.py")
+        for path in [*(_GATEWAY / k for k in outside), tools]:
+            source = path.read_text(encoding="utf-8")
+            assert "email_memory_scope" not in source, path.name
+            assert "#acct:" not in source and "ACCOUNT_SCOPE_MARK" not in source, path.name
 
     def test_the_check_can_fail(self):
         old = ("async def f(mem_scope):\n"
                "    await add_memories_background(mem_scope or 'default', [])\n")
         assert _scope_violations(old) == ["f: the key is not a checked name"]
+        style = ("async def g(user, account_id):\n"
+                 "    scope = email_memory_scope(user.email or 'default', account_id)\n"
+                 "    await add_memories_background(scope, [])\n")
+        assert _scope_violations(style) == ["g: scope skips writable_memory_scope"]
 
     def test_the_helper_refuses_a_key_with_no_mailbox(self):
-        assert drafting._purgeable_memory_scope("", ACC, "t") is None
-        assert drafting._purgeable_memory_scope(OWNER, "", "t") is None
-        assert drafting._purgeable_memory_scope(OWNER, None, "t") is None
-        assert drafting._purgeable_memory_scope(OWNER, ACC.upper(), "t") == (
-            f"{OWNER}#acct:{ACC}")
+        w = memory_purge.writable_memory_scope
+        assert w("", ACC, "t") is None
+        assert w(None, ACC, "t") is None
+        assert w(OWNER, "", "t") is None
+        assert w(OWNER, None, "t") is None
+        assert w(OWNER, ACC.upper(), "t") == f"{OWNER}#acct:{ACC}"
+        assert w("anonymous", ACC, "t") == f"anonymous#acct:{ACC}"
 
     async def test_a_draft_with_no_mailbox_writes_no_memory(self, monkeypatch):
         added: list[str] = []
