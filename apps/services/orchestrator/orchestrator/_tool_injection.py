@@ -2395,6 +2395,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
             # IN-8b: an OAuth row, and whether this read refreshed its token.
             oauth=getattr(srv, "oauth", False) is True,
             oauth_refreshed=getattr(srv, "refreshed", False) is True,
+            # IN-8c (D98): the admin that an OAuth row acts as, for the card.
+            acts_as=(str(getattr(srv, "connected_by", None) or "")
+                     if getattr(srv, "oauth", False) is True else ""),
         ))
     return out
 

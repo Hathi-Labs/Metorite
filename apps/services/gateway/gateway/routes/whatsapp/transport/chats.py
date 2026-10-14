@@ -173,7 +173,7 @@ async def list_chats(
                 ORDER BY m.sent_at DESC NULLS LAST LIMIT 1
             ) lm ON TRUE
             WHERE {' AND '.join(where)}
-            ORDER BY c.last_message_at DESC NULLS LAST
+            ORDER BY c.last_message_at DESC NULLS LAST, c.id DESC
             LIMIT :limit
         """
         rows = (await db.execute(text(q), params)).fetchall()

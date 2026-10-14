@@ -55,6 +55,7 @@ from uuid import UUID
 
 import httpx
 from acb_common import get_logger, get_settings
+from acb_common.paging import bounds, page_line
 
 # WS-53 CRM-C7: the twelve CRM read tools have ONE implementation, in
 # ``acb_skills.crm_tools``. Every other agent gets the same functions as the
@@ -541,8 +542,15 @@ def _email_line(thread: dict[str, Any]) -> str:
     )
 
 
+#: The deepest timeline offset the route takes: ``MAX_TIMELINE_OFFSET`` in
+#: ``gateway/routes/crm/activities.py``. A copy, because an agent does not
+#: import gateway code. ``test_read_tool_paging.py`` holds the two equal.
+_TIMELINE_OFFSET_MAX = 5000
+
+
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
-async def get_timeline(entity: str, record_id: str, limit: int = 20) -> str:
+async def get_timeline(entity: str, record_id: str, limit: int = 20,
+                       offset: int = 0) -> str:
     """What has happened to a CRM record, newest first: logged notes, calls,
     meetings and tasks, every status change with how long it sat in the
     previous stage, and email threads with this record's people. A deal also
@@ -554,14 +562,27 @@ async def get_timeline(entity: str, record_id: str, limit: int = 20) -> str:
     different threads and somebody with no mailbox connected sees none. Never
     report "there has been no email" as a fact about the record. Each thread is
     given as sender, subject and status only, never its contents (D-CRM-12) —
-    do not speculate about what an email said."""
+    do not speculate about what an email said. Mail can fill a page, so
+    offset reads further back to the older notes and stage changes."""
     slug = _entity_slug(entity)
     record = _record_uuid(record_id)
-    capped = max(1, min(int(limit or 20), 100))
-    data = await _get(f"/crm/{slug}/{record}/timeline", {"limit": capped})
+    # The route pages ONE total order when it gets `offset` (review of #1014).
+    # Its unpaged read gives mail half the page, so a bigger LIMIT is a
+    # different mix and cannot be cut into pages.
+    start, size = bounds(offset, limit, default=20)
+    # The route refuses an offset past its MAX_TIMELINE_OFFSET with a 422.
+    # Clamp it here and say so, so the model reads a line, not an error.
+    deep = start > _TIMELINE_OFFSET_MAX
+    start = min(start, _TIMELINE_OFFSET_MAX)
+    data = await _get(f"/crm/{slug}/{record}/timeline", {"limit": size, "offset": start})
     entries = (data or {}).get("entries") or []
+    line = page_line(None, start, len(entries), more=bool((data or {}).get("has_more")),
+                     noun="entries")
+    if deep:
+        line = (f"The timeline reads back at most {_TIMELINE_OFFSET_MAX} entries, "
+                f"so this page starts at offset={_TIMELINE_OFFSET_MAX}. {line}").strip()
     if not entries:
-        return f"No activity recorded on this {ENTITY_LABELS[slug].lower()} yet."
+        return line or f"No activity recorded on this {ENTITY_LABELS[slug].lower()} yet."
     out = [f"{ENTITY_LABELS[slug]} timeline ({len(entries)} entries, newest first):"]
     for entry in entries:
         inherited = " [from its lead]" if entry.get("origin") == "lead" else ""
@@ -601,6 +622,8 @@ async def get_timeline(entity: str, record_id: str, limit: int = 20) -> str:
             + (f" — {body[:160]}" if body else "")
             + (f" (by {act['created_by']})" if act.get("created_by") else "")
         )
+    if line:
+        out.append(line)
     return "\n".join(out)
 
 

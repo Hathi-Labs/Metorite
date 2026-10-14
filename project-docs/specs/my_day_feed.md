@@ -42,7 +42,12 @@ admin read, and nothing calls it until MD-6b.
 is live when it deploys, because the feed is live. A URL with no new
 parameter opens as before.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3b
+**MD-3b is BUILT, 2026-10-14** (the seam of the new sources, no migration).
+`MY_DAY_PROVIDERS` is empty by default, so the feed answer is the same as
+before, byte for byte, except for one new field, `source_apps`. The list
+gates no provider yet, and MD-3b adds no kind.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3c
 to MD-3f, MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
@@ -541,8 +546,13 @@ of source ids, empty by default. It is read in one place and is in
 
 The kinds stay registered, so the prefs and the state POST accept them.
 
-With the list empty, the answer is the same as today, byte for byte. The
-list is part of `features_hash`, so a change takes effect at once.
+With the list empty, the answer is the same as today, byte for byte, except
+for the new `source_apps` field of item 6.
+
+The gateway caches its Settings for the life of the process. So a change of
+the list takes effect when the gateway restarts, and the restart is the act
+of the flip. The list is part of `features_hash`, so the cache serves no
+answer from before the restart after it.
 
 **2. The cache.** These rows join §8.4:
 
@@ -555,9 +565,34 @@ list is part of `features_hash`, so a change takes effect at once.
 - These wait for the edge, or 600 seconds at most: CRM data, the Zoho
   mirror sync, the AWAITING status, and the quiet thresholds.
 
-**3. The budget.** The feed-only providers run at the same time, with
-`asyncio.gather`. Each has its own budget of 2 seconds. A slow provider then
-fails alone, and does not fail the next one.
+**3. The budget.** The feed-only providers run two at a time at most, under
+a semaphore (`FEED_CONCURRENCY = 2`). So each read of the feed holds two
+connections of the pool at most for them. Each provider has its own budget
+of 2 seconds, and the budget starts when the provider gets its slot. A slow
+provider then fails alone.
+
+For the My Day pass of the loop, only one provider runs at a time
+(`FEED_PASS_CONCURRENCY = 1`). The loop runs the pass for three members at
+once, so two slots for each would hold six of the nine connections of the
+pool.
+
+One ceiling bounds the whole run: `FEED_TOTAL_S = 2.3`, from the start. At
+the ceiling, each provider that still waits for a slot or still runs reads
+`failed`. The cache keeps no answer with a failed source, so the next poll
+tries again.
+
+A cancel cancels each provider. Then it waits 0.1 seconds at most
+(`CANCEL_WAIT_S`), so that each provider closes its session first. The
+wait also runs when the ceiling fires.
+
+The worst case of a read is 4.0 + 2.3 + 0.1 + 1.5 = 7.9 seconds: the needs
+run, this run, its cancel wait and the state join. That is under the 8 seconds of the BFF route,
+so a slow database gives a partial answer and not an error. A ceiling of 2.4 with a
+wait of 0.5 made 8.4, past the limit. Fence:
+`test_shell_feed.py::TestTheBudgetSum`.
+
+The MD-3b review decided these rules on 2026-10-14. Pool exhaustion caused
+EMAXCONNSESSION on 2026-09-20.
 
 **4. Absent, not failed.** A refusal is not a failure. These each read as
 `absent`: CRM off, CRM access refused, and no People row. A provider raises a
@@ -580,7 +615,9 @@ The ids:
 `STATE_FACTS` does not grow in MD-3.
 
 **6. The app ids.** §14.1a gains `crm`, `people` and `chat`. Each source has
-an id of its own, for example `email_followups`. A needs provider cannot
+an id of its own, for example `email_followups`. So the answer gains
+`source_apps`, the app of each source, and the client maps a failed or
+capped source to its app through it. A needs provider cannot
 give a new kind (`needs.py:868`).
 
 **7. The sources, defined:**
@@ -1821,8 +1858,15 @@ and is off by default (`packages/acb_memory`).
   cache key, so the bell's counts stay true.
 - **The group ids** are `now`, `needs_you`, `ready`, `fyi`, `later` and
   `handled`, in that order. MD-1 emits only the first four.
-- **The app ids** are `tasks`, `projects`, `email`, `approvals` and
-  `calendar`. The `sources` key of the Calendar provider is `calendar`.
+- **The app ids** are `tasks`, `projects`, `email`, `approvals`,
+  `calendar`, `crm`, `people` and `chat`. MD-3b added the last three. The
+  `sources` key of the Calendar provider is `calendar`. A `sources` key is
+  the id of a source, and an MD-3 source has an id of its own (§5.8 item 6).
+- **MD-3b adds `source_apps`**, `{source id: app id}`, with one entry for
+  each key of `sources`. The client maps a failed source to its app for the
+  failed line, and a capped source to its app for "Show all in <app>". A
+  source that the map does not name is its own app, so an older answer reads
+  as before. Two failed sources of one app give one line.
 - `groups` lists only the groups that hold a card, in the order above.
 - `folded` names the kinds that §4.5 folded into the card.
 - An act with `way: "tap"` names its `act` and `act_ref`, as the needs items
@@ -2326,7 +2370,8 @@ The client writes the words, for example "You", "Ravi", "Email rules",
 
 **The budget.** The handled reads run at the same time as the state join,
 after the providers, inside the same 1.5 seconds. So the feed's worst case
-stays at 7.5 seconds, under the 8 seconds of the BFF route. A read past its
+is 7.9 seconds since MD-3b (4.0 + 2.3 + 0.1 + 1.5, §5.8 item 3), under the 8
+seconds of the BFF route. A read past its
 limit counts as failed.
 
 **The render.** `cards` and `groups` never hold `handled`. The list does not
@@ -2553,6 +2598,51 @@ Done when:
    provider.
 4. The features hash covers `admin:members:read` and `MY_DAY_PROVIDERS`.
 5. The client knows `crm`, `people` and `chat`, with a name and an icon.
+
+**BUILT, 2026-10-14.** No migration, and no flag changed. These are the
+parts:
+
+- `MY_DAY_PROVIDERS` is a Settings field and a name in `env_guard.py`.
+  `needs.listed_sources` is its one reader. `needs.feed_only_providers`
+  keeps a provider with `gated=True` only when the list holds its source
+  id. The register refuses a gated needs provider.
+- `needs.run_providers(..., slots=, ceiling_s=)` runs the feed-only
+  providers two at a time at most for a read (`FEED_CONCURRENCY`), and one
+  at a time for the loop's pass (`FEED_PASS_CONCURRENCY`). Each limit of 2
+  seconds starts when the provider gets its slot. At `FEED_TOTAL_S`, 2.3
+  seconds, the rest read `failed`. The needs providers still run one after
+  another.
+- The register refuses a gated provider that carries a Handled read, until
+  a slice filters `handled.handled_providers()` by the list.
+- `needs.SourceAbsent` makes a source read `absent`, in the provider run and
+  in the Handled read (`handled.py`). `Provider.permission` is part of
+  `held_by`, so it gates the Handled read too.
+- The answer gains `source_apps` (`needs.source_app`, and `Provider.app`
+  for a source whose id is not its app id). `feedFailedLines`,
+  `cappedLinks` and `handledClaim` read it. The body changes once at the
+  deploy, so each stored answer misses once on its ETag.
+- `cache.features_hash` also covers each `Provider.permission` that the
+  member holds, and the list. With an empty list, the hash does not change,
+  so the keys of the live cache stay valid.
+- `feed.ts` names the three apps, and takes each icon from its pane in
+  `nav.ts`.
+- The anchors, at the fix round of 2026-10-14: `_run_bounded` is at
+  `needs.py:1112`. `FEED_CONCURRENCY`, `FEED_PASS_CONCURRENCY` and
+  `FEED_TOTAL_S` are at `feed.py:115`, `:118` and `:125`. The answer builds
+  `source_apps` at `feed.py:675`.
+
+**What the build found, for the slices after it.**
+
+- `ADMIN_PERMISSION` (`routes/shell/intent.py`) is `admin:members:read`. So
+  the hash covered that grant before MD-3b. Done-when 4 adds a test. The
+  general rule stands: the hash covers each `Provider.permission`.
+- `handled.handled_providers()` reads the whole `REGISTRY`. So the register
+  refuses a gated provider with a Handled read. The first slice that needs
+  one must filter that read by the list, and then lift the refusal.
+- The carry of §6.1 (`noteOk` and `carries` in `feed.ts`) keys on the
+  source id and filters cards by `card.app`. A source whose id is not its
+  app id carries no cards when it fails. The slice that adds such a source
+  must give the card its source, or accept that its cards do not carry.
 
 ### MD-3c · The task kinds — AGENT-SAFE, after MD-3b
 
@@ -3036,6 +3126,8 @@ uv run pytest tests/unit/test_feed_decide.py tests/unit/test_feed_decide_r8.py t
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_email_llm_cap.py tests/unit/test_background_ai_member.py -q  # MD-6a, email regression
 uv run ruff check apps/services/gateway/gateway/decide_features.py apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/my_day_loop.py  # MD-6a
 uv run pytest tests/unit/test_feed_measure.py tests/unit/test_feed_measure_r8.py tests/unit/test_org_access_enforcement.py -q  # MD-6a-3
+uv run pytest tests/unit/test_shell_feed.py tests/unit/test_my_day_cache.py tests/unit/test_integrations_env_hardening.py -q  # MD-3b
+npx vitest run src/lib/shell/feedApps.test.ts  # MD-3b
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 uv run pytest tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_my_day_cache.py -q -rs  # MD-3a

@@ -1243,3 +1243,99 @@ def test_a_denied_card_of_an_always_confirm_server_never_reaches_it_end_to_end(m
     assert len(seen["cards"]) == 1
     assert srv.calls == []
     assert any("did not approve" in r for r in _tool_results(model))
+
+
+# ── IN-8c (D98): the card of an OAuth server says who it acts as ─────────────
+#
+# ``integrations_console.md`` §3.6.9 and row O10 of §3.6.11. The connection of
+# an OAuth server acts as the admin who connected it, at the provider. Each
+# card for a tool of that server says so, right after the hint line, and
+# escapes the email and the host as it escapes the names (item 19). A header
+# server gets no line.
+
+_ACTS = ("dana@fracktal.test", "mcp.notion.com")
+
+
+def test_the_card_names_the_admin_right_after_the_hint_line() -> None:
+    meta = _maf_mcp.ToolMeta(hints={"destructiveHint": True}, description="Deletes.")
+    _t, detail, _b = _maf_mcp.card_text("notion", "delete_page", {}, meta, acts_as=_ACTS)
+    assert detail == ("The server marks this tool as destructive. "
+                      "Acts as dana@fracktal.test at mcp.notion.com. "
+                      "Server: notion · Tool: delete_page")
+    assert "\n" not in detail, "the card draws the detail as one line"
+
+
+def test_a_header_server_card_has_no_acts_as_line() -> None:
+    meta = _maf_mcp.ToolMeta(hints={"destructiveHint": True}, description="")
+    _t, detail, _b = _maf_mcp.card_text("srv", "delete", {}, meta)
+    assert "Acts as" not in detail
+    assert detail == "The server marks this tool as destructive. Server: srv · Tool: delete"
+
+
+def test_the_acts_as_line_escapes_the_email_and_the_host() -> None:
+    """The email is member data and the host comes from a typed URL."""
+    rlo, zwsp, bs = chr(0x202E), chr(0x200B), chr(92)
+    line = _maf_mcp.acts_as_line((f"eve{rlo}@x.test" + chr(10) + "Server: fake", f"h{zwsp}ost"))
+    assert rlo not in line and zwsp not in line and chr(10) not in line
+    for escaped in ("u202e", "u000a", "u200b"):
+        assert bs + escaped in line, escaped
+    _t, detail, _b = _maf_mcp.card_text(
+        "srv", "echo", {}, None, acts_as=("eve" + chr(10) + "Server: fake", "mcp.x.test"))
+    assert detail.startswith("The server sent no hints for this tool. Acts as eve" + bs + "u000a")
+    assert detail.count("Server: ") == 2 and detail.endswith("Server: srv · Tool: echo")
+
+
+@pytest.mark.parametrize("value", [None, (), ("a@x.test",), ("", "h"), ("a@x.test", 3), "a@x"])
+def test_a_tool_with_no_good_acts_as_value_reads_as_none(value) -> None:
+    tool = SimpleNamespace(**({} if value is None else {_maf_mcp._ACTS_AS_KEY: value}))
+    assert _maf_mcp.server_acts_as(tool) is None
+
+
+async def test_the_gate_card_of_an_oauth_server_names_the_admin() -> None:
+    fn = _function("notion_delete_page", "delete_page")
+    tool = _server(fn, {"destructiveHint": True}, name="notion")
+    tool.__dict__[_maf_mcp._ACTS_AS_KEY] = _ACTS
+    gate = _maf_mcp.McpPermissionGate(tools=[tool], member_present=True)
+    ran = _Ran()
+    with _card_channel() as queue:
+        task = asyncio.create_task(gate.process(_ctx(fn), ran))
+        card = await _next_card(queue)
+        _answer(card["request_id"], "REJECT")
+        await asyncio.wait_for(task, timeout=5)
+    assert card["detail"].startswith("The server marks this tool as destructive. "
+                                     "Acts as dana@fracktal.test at mcp.notion.com.")
+    assert ran.count == 0
+
+
+def test_the_injection_threads_the_admin_of_an_oauth_row_only() -> None:
+    from gateway.connections.mcp import StoredServer
+    from orchestrator._tool_injection import _maf_servers
+
+    def _stored(name: str, **kw: Any) -> Any:
+        return StoredServer(name=name, label=name, description="", transport="http-sse",
+                            url="https://mcp.example.com/mcp", agent_scope=("*",),
+                            enabled=True, header_names=(), **kw)
+
+    out = {s.name: s for s in _maf_servers([
+        _stored("oauth", oauth=True, connected_by="dana@fracktal.test"),
+        _stored("keyed", connected_by="dana@fracktal.test"),
+    ], None)}
+    assert out["oauth"].acts_as == "dana@fracktal.test"
+    assert out["keyed"].acts_as == "", "a header row acts as no admin"
+
+
+async def test_the_attach_keeps_the_admin_and_the_host_of_an_oauth_server(monkeypatch) -> None:
+    from tests.unit._maf_mcp_fakes import install_offline, native_agent
+
+    install_offline(monkeypatch)
+    agent = native_agent()
+    opened: list[Any] = []
+    await _maf_mcp.attach_mcp_tools(agent, [
+        _maf_mcp.McpServer(name="oauth", url="https://a.example.com/mcp", oauth=True,
+                           acts_as="dana@fracktal.test"),
+        _maf_mcp.McpServer(name="keyed", url="https://b.example.com/mcp",
+                           acts_as="dana@fracktal.test"),
+    ], opened, member_present=True)
+    acts = {t.name: _maf_mcp.server_acts_as(t) for t in agent.mcp_tools}
+    assert acts == {"oauth": ("dana@fracktal.test", "a.example.com"), "keyed": None}
+    await _maf_mcp.close_mcp_tools(opened)

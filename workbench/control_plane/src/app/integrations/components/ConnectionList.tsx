@@ -15,6 +15,7 @@ import {
   APP_LABEL,
   STATUS_COLOR,
   STATUS_LABEL,
+  actsAsLine,
   errorMessage,
   lastSyncLabel,
   rowLabel,
@@ -90,6 +91,9 @@ export default function ConnectionList({
     <ul className="min-h-0 flex-1 divide-y divide-border overflow-y-auto" aria-label="Connections">
       {rows.map((row) => {
         const error = errorMessage(row.last_error);
+        // IN-8c (D98): who an OAuth MCP connection acts as. React draws it
+        // as text, so a name with markup in it stays text.
+        const actsAs = actsAsLine(row);
         return (
           <li key={row.id}>
             <button
@@ -104,6 +108,11 @@ export default function ConnectionList({
                 <span className="block truncate text-xs text-muted-foreground">
                   {row.provider} · {APP_LABEL[row.owning_app]} · {scopeLabel(row)}
                 </span>
+                {actsAs ? (
+                  <span className="block truncate text-xs text-muted-foreground" data-acts-as="">
+                    {actsAs}
+                  </span>
+                ) : null}
                 {error ? <span className="block truncate text-xs text-destructive">{error}</span> : null}
               </span>
               <ConnectionState status={row.status} />

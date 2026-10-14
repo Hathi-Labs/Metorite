@@ -8,14 +8,20 @@
  * rule 4). Setup belongs to the owning app, so "Open in <app>" and "Connect
  * again" are links. Only Disconnect, Test and the "always confirm" switch of
  * an MCP server (H-300) call the console's own routes.
+ *
+ * WS-54 IN-8c (D98): an MCP server that takes an OAuth consent shows
+ * "Acts as <admin> at <host>", and offers Connect or Reconnect to an admin.
+ * The button opens the dialog of `ConnectionsView`, which starts the consent.
  */
 
+import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import { useViewMode } from "@/components/ViewModeProvider";
 
 import {
   APP_LABEL,
+  CONNECT_LABEL,
   detailRows,
   errorMessage,
   lastSyncLabel,
@@ -41,6 +47,10 @@ export interface SheetBodyProps {
   onAlwaysConfirm?: (next: boolean) => void;
   /** True while that change is on its way. */
   savingAlwaysConfirm?: boolean;
+  /** IN-8c: the admin asks to connect or reconnect an OAuth MCP server. */
+  onConnect?: () => void;
+  /** True while the consent starts, before the browser leaves. */
+  connecting?: boolean;
 }
 
 export function SheetBody({
@@ -54,6 +64,8 @@ export function SheetBody({
   onTest,
   onAlwaysConfirm,
   savingAlwaysConfirm,
+  onConnect,
+  connecting,
 }: SheetBodyProps) {
   const plan = panelPlan(row, canManage);
   const error = errorMessage(row.last_error);
@@ -69,6 +81,12 @@ export function SheetBody({
         <ConnectionState status={row.status} />
         <span className="text-xs text-muted-foreground">{row.provider}</span>
       </div>
+      {plan.actsAs ? (
+        <p className="flex items-start gap-1.5 text-xs text-foreground" data-acts-as="">
+          <Icon name="UserCheck" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 break-words">{plan.actsAs}</span>
+        </p>
+      ) : null}
       {error ? (
         <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {error}
@@ -93,6 +111,18 @@ export function SheetBody({
         <p className="rounded-lg bg-secondary px-3 py-2 text-xs text-muted-foreground">{plan.memberNote}</p>
       ) : null}
       <div className="flex flex-wrap gap-2">
+        {plan.connect && onConnect ? (
+          <Button
+            variant={plan.connect === "reconnect" && row.status !== "needs_reconnect" ? "secondary" : "primary"}
+            size="sm"
+            icon={plan.connect === "reconnect" ? "RefreshCw" : "LogIn"}
+            loading={connecting}
+            onClick={onConnect}
+            data-mcp-connect={plan.connect}
+          >
+            {CONNECT_LABEL[plan.connect]}
+          </Button>
+        ) : null}
         {plan.reconnect && plan.reconnectHref ? (
           <Button variant="primary" size="sm" icon="RefreshCw" onClick={() => onNavigate(plan.reconnectHref!)}>
             Connect again

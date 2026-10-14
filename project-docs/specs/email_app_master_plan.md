@@ -13587,7 +13587,8 @@ cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 builds it. ✅ **PR-G2 (EM-G11b) is merged** (#1001, 2026-10-14). ✅ **PR-G7 (EM-G11f1) is
 merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. ✅ **PR-G3 (EM-G11c1)
 is merged** (#1019, 2026-10-14), and §12.3.13.6 records what it covers. The owner answered
-Q-GM-14 on 2026-10-14, and PR-G3b adds cards to the email chat pane. 🔨 **PR-G8 (EM-G11f2) is
+Q-GM-14 on 2026-10-14. 📝 **PR-G3b (EM-G11c1b) is specified** (2026-10-15, §12.3.13.6b): the
+pane shows cards on `main` already, so PR-G3b proves it and closes two gaps. 🔨 **PR-G8 (EM-G11f2) is
 built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264).
 
 🔨 **PR-G5 (EM-G11d) is built NARROWED, not merged** (2026-10-15, branch `gmail-umcc`).
@@ -13746,6 +13747,9 @@ can show it (`packages/acb_skills/acb_skills/ask_tools.py:626-649`).
 (`GW/email/automation/chat.py:232`), so each card there answers "no". After EM-G11c1, a write tool in
 that pane writes nothing, and it tells the member to use the Chat app, which shows cards. The owner
 answered Q-GM-14 on 2026-10-14: add cards to the pane. PR-G3b is that ticket.
+⚠️ **Corrected 2026-10-15 (§12.3.13.6b).** The pane does not call `/email/ai/chat`. It runs the
+shared `AgentChat` on `/agent/run/stream`, with `shows_cards=True`, so it shows each card. No client
+calls `/email/ai/chat`.
 
 **Item 4, prompt injection.** Half a control exists, and nothing names it.
 
@@ -13862,7 +13866,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G1 | **EM-G11a** — the disclosure step and the Google button | 1, 8 | 🟢 AGENT-SAFE · security review · visual review. 🔴 The owner approves the disclosure text (Q-GM-7) | M, about 550 | §12.3.13.4 |
 | PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
-| PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 📝 Not specified | 3 | 🟢 AGENT-SAFE · security review | M | §12.3.13.6 |
+| PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 📝 Specified 2026-10-15. The pane shows cards on `main`, so the PR gets browser evidence, starts a saved draft card as saved, and replaces the interim text | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
 | PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set. 🔨 Built NARROWED 2026-10-15, branch `gmail-umcc`, not merged | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
@@ -14168,6 +14172,8 @@ no case skips.
    registry tool writes nothing in the email chat pane (`shows_cards=False`) and in a scheduled
    agent run. The owner answered Q-GM-14 on 2026-10-14: the pane gets cards in PR-G3b. Until then,
    the tool answers one fixed text that sends the member to the Chat app (audit edit).
+   ⚠️ Corrected 2026-10-15: the pane runs `/agent/run/stream` and shows cards. Only a run with no
+   card channel gets the fixed text (§12.3.13.6b).
 
 **Non-goals.** No new card UI. No change to the routes that a member's click calls. No change to the
 tools that ask a card today.
@@ -14283,6 +14289,225 @@ items.
 - The branch sweep also calls each `bool | None` parameter, and each rule action type.
 - The contract of `confirmation_channel_open` says that a tool may read it before a card, but only
   to choose an act that writes less.
+
+##### 12.3.13.6b EM-G11c1b — cards in the email chat pane (PR-G3b)
+
+**Status.** 📝 Specified 2026-10-15. Verified against code at `origin/main` `caec2932f` on
+2026-10-15. Not built. A spec-auditor pass comes before an agent builds it.
+
+**Paths.** `AG` and `GW` are as in §12.3.13.2. `CP` is `workbench/control_plane/src/`.
+
+**The finding that changes this ticket.** The chat pane of the Email app shows each card on
+`origin/main` today. The premise of Q-GM-14 and of §12.3.13.6 item 6 is wrong. The code proves it
+in five steps:
+
+1. The pane is `EmailAssistantChat` (`CP/app/email/components/EmailAssistantChat.tsx:1-20`). It
+   renders the shared `AgentChat` (`:321-347`), with the chat session as its key (`:325`).
+2. `AgentChat` runs each agent that is not the orchestrator in the mode `copilot`
+   (`CP/components/AgentChat.tsx:491`). The chat route then posts to `/agent/run/stream`
+   (`CP/app/api/agent/chat/route.ts:792-800`).
+3. That route calls `run_agent_stream` with `shows_cards=True` (`GW/agent.py:3050-3063`). The email
+   assistant runs on MAF (`apps/agents/agent-email-assistant/config.json:15`), so a card takes path
+   A of `request_confirmation`.
+4. `AgentChat` draws each `confirmation_requested` event in `ConfirmationQueue`
+   (`AgentChat.tsx:971-990`, `:1793-1806`). The answer goes through `postRespondInput` (`:1172`).
+5. `/email/ai/chat` is the route with `shows_cards=False` (`GW/email/automation/chat.py:143-351`,
+   `:224-233`). No client calls it. `CP/app/email/lib/api.ts:1315-1319` records that the pane left
+   it. In `CP/`, only the proxy timeout list names it (`CP/app/api/email/[...path]/postTimeout.ts:32-33`).
+
+So in the pane today, a write tool shows its card. `draft_reply(save=true)` asks a card and saves
+on a yes. The text of `_USE_CHAT_APP` shows only in a run with no card channel. That is a scheduled
+run, a batch run, a WhatsApp run, or a call of the unused `/email/ai/chat`. ⚠️ Nobody has seen a
+card in the pane in a browser yet. Acceptance item 1 gets that evidence first.
+
+**Scope.** PR-G3b adds no second card and no second ask channel. It does four things.
+
+1. **Prove the pane shows the card.** Get browser evidence. Then add a fence that keeps the pane on
+   the card path.
+2. **Show a draft that the tool saved as saved.** `DraftResultCard`
+   (`CP/components/email/EmailToolCards.tsx:641-740`) starts in the state `idle` (`:662`). So after a
+   yes, the card still offers "Save to Drafts" and "Send". Each button calls `POST /email/drafts/save`
+   (`GW/email/automation/drafting.py:3129-3177`), and that route makes a new provider draft each
+   time. One click then gives two drafts. The card must start in the state `saved` when the first
+   line of the result says "(saved to Drafts)".
+3. **Replace the interim text.** `_USE_CHAT_APP` (`AG:71-74`) says "this chat cannot show one. Ask
+   for it in the Chat app." PR-G3 wrote it for the pane, and the pane shows cards. The text stays
+   only for a run with no card channel, so its words must not name a chat as a place with no card.
+   The note of an unsaved draft (`AG:1530-1538`) and `instructions.md` (`:185-189`, `:245-247`)
+   change the same way.
+4. **Correct the code comments.** Each comment that calls `/email/ai/chat` the email chat pane
+   changes: `GW/email/automation/chat.py:230-231`, `AG:64-70`,
+   `packages/acb_skills/acb_skills/ask_tools.py:94-97` and
+   `apps/services/orchestrator/orchestrator/executor.py:3751-3754`.
+
+**The one seam.** The pane uses each part of the one card path already. PR-G3b adds no part.
+
+| Part | The one owner | Anchor |
+|---|---|---|
+| The ask | `request_confirmation` | `ask_tools.py:630-809` |
+| The close event | `CONFIRMATION_RESOLVED` | `ask_tools.py:477-480`, `:717-752` |
+| The wait, and the thread that owns it | `_pending_user_input`, `wait_user_future` | `executor.py:819-862`, `:953` |
+| The durable copy, behind `CHAT_DURABLE_ASKS` | `orchestrator/pending_ask.py` | `:1-42`, `:477-537` |
+| The answer route | `POST /agent/respond-input` | `GW/agent.py:3204-3311`, `CP/app/api/agent/respond-input/route.ts:40-94` |
+| The answer in the browser | `sendRespondInputResult` | `CP/lib/respondInput.ts:102-133` |
+| The queue | `confirmationReducer` | `CP/lib/confirmationQueue.ts:279-340` |
+| The card | `ConfirmationQueue`, `ConfirmationCard` | `CP/components/ConfirmationQueue.tsx:66-107`, `CP/components/ConfirmationCard.tsx:262-470` |
+
+This PR must not add any of these:
+
+- A pass of CUSTOM events through `/email/ai/chat`, or `shows_cards=True` on it. Its
+  `event_stream` (`chat.py:254-320`) forwards no CUSTOM event, and no client reads it. A card there
+  waits an hour with no reader.
+- A card component under `CP/app/email/` or in `EmailToolCards.tsx`.
+- A second answer route, or a second answer POST.
+
+**Non-goals.**
+
+- The removal of `/email/ai/chat` and `/email/ai/quick-action`. They have no client. But six suites
+  read them, and one of the six is an R8 suite with an unrelated fence. §12.3.13.15 records the
+  removal as a finding.
+- A change to `request_confirmation`, to `pending_ask`, to the answer route, or to the look of the
+  card.
+- A Send button on a draft that the tool saved. The result holds no draft id, so the card cannot
+  send that draft (Q-GM-15).
+- A sign outside the pane that a card waits.
+
+**The card in the pane (design system).** The card is the shared `ConfirmationCard`. `AgentChat`
+draws it in its "Waiting for you" group (`AgentChat.tsx:1793-1806`). The pane passes `compact`
+(`EmailAssistantChat.tsx:328`), and `compact` hides no card. These rules of
+`workbench/control_plane/AGENTS.md` and `DESIGN_SYSTEM.md` bind:
+
+1. The card gets no class of the pane, no colour literal and no raw palette class (rules 1 and 7).
+   It keeps `CARD_FRAME_CLASS`.
+2. The card gets no new control. Approve and Reject stay the `Button` of `src/components/ui/`
+   (rule 3).
+3. The pane gets no second card vocabulary (rule 4). An email tool that needs a card calls
+   `request_confirmation`. It never draws a card of its own in `EmailToolCards.tsx`.
+4. The saved draft uses the badge of a manual save (`EmailToolCards.tsx:711`).
+5. Look at the card in the pane in light mode, at compact density, with a changed accent, and at a
+   width of 360 px. The pane is `bg-sidebar` (`EmailAssistantChat.tsx:224`), so check the edge of
+   the card against it. Look at the draft card beside it in the same four states. Use the
+   `visual-review` skill.
+
+**An unanswered card.** The pane adds no rule. The card follows the rules of the one card path.
+
+- **The member closes the pane.** "Back to inbox" unmounts `EmailAssistantChat`
+  (`CP/app/email/page.tsx:995-1003`). So does a click that opens an email from a chat card
+  (`page.tsx:602-616`). The gateway detaches the run (`run_detached`, `GW/agent.py:3073`), so its
+  wait goes on. No write happens while the card waits.
+- **The member comes back.** The pane opens the newest email-assistant chat of the member
+  (`CP/hooks/useChatSessions.ts:189-207`), and `AgentChat` replays the stream. The card shows
+  again, once, because the queue keys it by `request_id`. The Chat app shows the same chat, so the
+  member can answer there too. `confirmation_resolved` then closes the card in both.
+- **The member switches email.** The key of the pane is the chat session
+  (`EmailAssistantChat.tsx:325`), so a new open email does not remount it, and the card stays. The
+  card names the mailbox and the messages of its tool call. The open email does not change them. On
+  a desktop, the chat scene covers the inbox, so a switch first closes the pane as above.
+- **Nobody answers.** After `ASK_USER_TIMEOUT`, 3600 s by default (`executor.py:880`), the card
+  closes as `TIMEOUT`. The tool writes nothing and answers its "Cancelled" text, because a live
+  chat asked. With `CHAT_DURABLE_ASKS` on, the run parks after `CHAT_ASK_PARK_SECONDS`, 600 s by
+  default. A late Approve then gets 409 `run_restarted`, and the chat sends it as a new message.
+  That tool call is gone, so the answer writes nothing. A write needs a new call and a new card.
+- **The member stops the run.** The card closes as `CANCELLED`, and the tool writes nothing.
+
+**`draft_reply` when the pane shows cards.**
+
+- In the pane and in the Chat app, `draft_reply(save=true)` asks one card (`AG:1539-1556`). A yes
+  saves the draft, and the first line of the result says "(saved to Drafts)" (`AG:1561-1567`). A no
+  answers "Cancelled — no draft was saved." This is the code on `main`, and
+  `test_a_draft_in_a_live_chat_still_asks_before_it_saves` fences it.
+- `DraftResultCard` reads the first line through `draftReplyHead` (`EmailToolCards.tsx:2225-2229`).
+  PR-G3b adds the field `saved` to its result, and a pure function `draftCardStart(raw)` that gives
+  `"saved"` or `"idle"`. The card starts in the state that `draftCardStart` gives.
+- In the state `saved`, the card shows the badge "Saved to Drafts" and a body that cannot change,
+  as after a manual save. It shows no Save button and no Send button.
+- With no card channel, the tool saves nothing and returns the draft (`AG:1530-1538`). The card
+  starts in the state `idle`, as on `main`.
+
+**The interim text.**
+
+- Rename `_USE_CHAT_APP` (`AG:71-74`) to `_NO_CARD_CHANNEL`, and delete the alias at `AG:1717`.
+  The readers at `AG:93`, `:1923`, `:3294`, `:3426`, `:3585`, `:3754` and `:4472` use the one name.
+- The new text is "Nothing changed. This needs your approval on a card, and a card cannot show
+  here. Ask for it in the Chat app or the Email app." It starts "Nothing changed.", so `noActionOf`
+  (`EmailToolCards.tsx:2171-2178`) draws it as an act that did not happen. It holds no "Cancelled",
+  because the member refused nothing.
+- The new note of an unsaved draft (`AG:1537-1538`) is "(Drafts is unchanged, because a card
+  cannot show here. Save or send this draft in the Email app)".
+- `instructions.md:185-189` and `:245-247` say "a run that cannot show a card", not "this chat".
+  The model sends the member to the Chat app or the Email app.
+- In `tests/unit/test_email_agent_write_cards.py`, `test_the_chat_app_text_is_pinned` becomes
+  `test_the_no_card_text_is_pinned`. The parametrize id `email-pane` becomes `no-channel`, and
+  `PANE_FALLBACK` becomes `NO_CHANNEL_FALLBACK`. `test_a_draft_in_the_email_pane_shows_and_saves_nothing`
+  becomes `test_a_draft_with_no_card_channel_saves_nothing`.
+
+**Acceptance.**
+
+1. **Browser evidence comes first.** Run a local stack with a test mailbox. Open the chat of the
+   Email app, and ask "archive the newest email from X". One Approval card shows in the pane. Reject
+   gives "Cancelled — …", and the email stays. Approve archives it. Attach both screenshots to the
+   PR. ⚠️ If the pane answers "Nothing changed … Ask for it in the Chat app", stop. The finding
+   above is then wrong, and this section needs a new design.
+2. In the pane, "draft a reply to this email" shows one card. After Approve, Drafts holds one new
+   draft. The draft card shows "Saved to Drafts" and no Save button, so a second draft cannot
+   follow.
+3. The Chat app gives the same draft card state, because it draws the same `EmailToolCards`
+   (`CP/components/MessageBubble.tsx:13`, `:738`).
+4. Close the pane while a card waits, then open it again. The card shows once, and Approve does the
+   act once.
+5. Inside `refuse_cards()`, each tool of `MAILBOX_WRITE_TOOLS` writes nothing and answers the new
+   `_NO_CARD_CHANNEL` text. `draft_reply` returns the unsaved draft with the new note.
+6. The card and the draft card pass the four looks of design rule 5. No text is cut at 360 px.
+7. Outlook acceptance item: items 1 and 2 pass for an Outlook mailbox too.
+
+**Fences (R7).**
+
+- `CP/app/email/components/emailPaneCards.test.ts`, a new file:
+  - `the pane renders the shared AgentChat` reads `EmailAssistantChat.tsx`. The file must render
+    `<AgentChat` with `key={activeSession.id}`.
+  - `no client calls the email ai chat route` scans each file under `CP/` that is not a test. No
+    call of `fetch` or `gatewayFetch` may name a path that ends in `ai/chat`.
+- `CP/components/email/draftReplyHead.test.ts`: `draftReplyHead` gives `saved: true` for
+  "(saved to Drafts)". It gives `saved: false` for "(Drafts is unchanged …)" and for a first line
+  with no note. `draftCardStart` gives `"saved"` and `"idle"` for the same three inputs.
+- `tests/unit/test_email_agent_write_cards.py`: the renamed tests, and the new
+  `test_the_no_card_text_names_no_chat`. That test asserts that `_NO_CARD_CHANNEL` and the
+  unsaved-draft note hold neither "this chat" nor "Cancelled".
+- `tests/unit/test_maf_mcp_confirm.py::test_every_stream_declares_if_it_shows_cards` (A19) exists.
+  It pins `shows_cards=True` on `GW/agent.py`, which is the route of the pane. It does not change.
+
+**Mutations.**
+
+- M1: `EmailAssistantChat` renders a component of its own in place of `AgentChat`.
+  `emailPaneCards.test.ts` turns red.
+- M2: `draftCardStart` gives `"idle"` for a saved first line. `draftReplyHead.test.ts` turns red.
+- M3: `_NO_CARD_CHANNEL` says "this chat cannot show one" again.
+  `test_the_no_card_text_names_no_chat` turns red.
+- M4: `GW/agent.py:3062` says `shows_cards=False`. A19 turns red.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_email_agent_write_cards.py tests/unit/test_maf_mcp_confirm.py \
+  tests/unit/test_email_rule_confirm.py tests/unit/test_email_send_cards.py -v -rs
+uv run ruff check apps/agents/agent-email-assistant/agents.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/components/email \
+  src/app/email/components/emailPaneCards.test.ts src/lib/confirmationQueue.test.ts src/lib/theme/
+```
+
+The PR changes no SQL, so R8 binds nothing. `test_maf_mcp_confirm.py` skips its tenant cases with
+no database. Read `-rs`, and run `bash scripts/dev_db.sh` first when it skips.
+
+**Gate.** 🟢 AGENT-SAFE. No migration, no flag, no new write path and no new channel. A visual review
+is part of done (design rule 5). The PR changes the start state of one card and two texts, and it
+adds no route. So one adversarial review round is enough, not the full security loop of PR-G3.
+
+**Size.** S, about 150 lines with the tests.
+
+**Open question.** Q-GM-15 (§12.5). A draft that the tool saved shows no Send button after this PR.
+To send it from the card, `/email/draft-reply` must return the local draft id
+(`drafting.py:1955-1990` returns none). Add that id and a Send of the saved draft, or keep the
+card as after a manual save? This PR keeps it as after a manual save.
 
 ##### 12.3.13.7 EM-G11c2 — no background write without a member choice (PR-G4)
 
@@ -14911,7 +15136,17 @@ settings, vacation replies or any other setting.
 
 - **Risk: the chat pane loses its writes.** After PR-G3, each write tool writes nothing in the
   email chat pane, because that pane shows no card. The tool sends the member to the Chat app.
-  PR-G3b closes the risk (Q-GM-14, owner answer 2026-10-14).
+  PR-G3b closes the risk (Q-GM-14, owner answer 2026-10-14). ⚠️ Corrected 2026-10-15: the pane
+  shows cards on `main`, so the risk did not occur there. PR-G3b gets the browser evidence
+  (§12.3.13.6b).
+- **Finding (WS-17): `/email/ai/chat` and `/email/ai/quick-action` have no client**
+  (`GW/email/automation/chat.py:143`, `:354`). The pane left them for `AgentChat`
+  (`workbench/control_plane/src/app/email/lib/api.ts:1315-1319`). They are a second run path for
+  the email assistant, and the second one shows no card. Remove both, and the two
+  `postTimeout.ts` entries, in a later PR. Six suites read them: `test_email_chat_context_owner.py`
+  (R8, with the unrelated fence `email-task-close-owned-only`), `test_email_chat_tier_routing.py`,
+  `test_email_llm_cap.py`, `test_email_owner_scope_fence.py`, `test_email_tool_consolidation.py`
+  and A19 in `test_maf_mcp_confirm.py`.
 - **Risk: Gmail is live for each member while the app is in Testing.** A member who is not a test
   user reads `consent_declined`. After step 3 of R-3, each connect counts against the cap of 100.
 - **Risk: the detector is a new sub-processor.** Model Armor reads mail text. The privacy page and
@@ -15182,6 +15417,13 @@ The questions of EM-G11 (§12.3.13, 2026-10-14):
   ✅ **Answered by the owner, 2026-10-14: "Add cards to Email chat".** PR-G3b adds cards to the
   pane. Until it merges, a write tool in the pane answers the fixed text of `_USE_CHAT_APP`, which
   sends the member to the Chat app (§12.3.13.6).
+  ⚠️ **Corrected 2026-10-15.** The pane runs the shared `AgentChat` on `/agent/run/stream`, so it
+  shows each card on `main` already. `/email/ai/chat` has no client. PR-G3b gets the browser
+  evidence and closes two gaps (§12.3.13.6b).
+- **Q-GM-15. A Send button on a draft that the tool saved.** After PR-G3b, such a draft card shows
+  "Saved to Drafts" and no Send button, as after a manual save. A Send there needs
+  `/email/draft-reply` to return the local draft id. Add the id and the Send, or keep the card as it
+  is? Default until an answer: keep it (§12.3.13.6b).
 
 ---
 
