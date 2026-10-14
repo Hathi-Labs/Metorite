@@ -997,7 +997,22 @@ async def set_personal(
         # D77 — INBOX, NEXT or WAITING on a closed task reopens it for the board.
         await reopen_if_closed(db, task, email, values.get("disposition"))
         row = await _upsert_personal(db, task_id, email, values)
-        return _personal_to_dict(row)
+        out = _personal_to_dict(row)
+    # WS-58 MD-5a — after the commit. A disposition, a defer or a block moves
+    # the member's My Day, and this write emits no `pm.*` event.
+    await bump_my_day(user.organization_id, email)
+    return out
+
+
+async def bump_my_day(organization_id: Any, email: str) -> None:
+    """Move one member's My Day version (``my_day_feed.md`` §8.4 item 5).
+
+    For a write of the member's own view that emits no ``pm.*`` event. It
+    does nothing with ``MY_DAY_CACHE`` off, and it never raises. The import
+    is local, because the shell package imports this module."""
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member(organization_id, email)
 
 
 def _iso(row: Any, field: str) -> str | None:
@@ -2817,14 +2832,18 @@ async def nudge_task(
                 db, task_id, email, {"last_nudged_at": now()},
             )
 
-        return {
-            **sent,
-            # None until somebody was actually told, so the surface can draw
-            # "nudged …" from the same fact the stamp records.
-            "last_nudged_at": (
-                _iso(stamped, "last_nudged_at") if stamped is not None else None
-            ),
-        }
+    if sent["notified"]:
+        # WS-58 MD-5a — after the commit: the nudge is a new notification in
+        # the feed of the person it reached, and it emits no `pm.*` event.
+        await bump_my_day(user.organization_id, who)
+    return {
+        **sent,
+        # None until somebody was actually told, so the surface can draw
+        # "nudged …" from the same fact the stamp records.
+        "last_nudged_at": (
+            _iso(stamped, "last_nudged_at") if stamped is not None else None
+        ),
+    }
 
 
 # -- Areas: a member's own categories (WS-39 S6b) ----------------------------

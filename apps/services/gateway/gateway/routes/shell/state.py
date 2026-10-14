@@ -55,7 +55,7 @@ from zoneinfo import ZoneInfo
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
-from gateway.routes.shell import feed_rank, needs
+from gateway.routes.shell import cache, feed_rank, needs
 from gateway.routes.shell.needs import _instant
 from gateway.routes.shell.search import router
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -637,13 +637,42 @@ async def _working_days(db: Any, user: UserContext) -> frozenset[int]:
     return frozenset(int(d) for d in schedule.get("days") or ()) or frozenset({1, 2, 3, 4, 5})
 
 
+@dataclass(frozen=True)
+class Applied:
+    """What the state join gives the feed (WS-58 MD-5a, ``my_day_feed.md``
+    §8.4 items 2 and 21).
+
+    ``cards`` are the cards that stay. ``snooze_edge`` is the earliest
+    ``snoozed_until`` of a time snooze that hides a card now: the instant
+    that card comes back. ``day`` is the member's day as the join read it.
+    ``ok`` is False when the read failed, so the read cache does not keep an
+    answer in which every card reads as new.
+    """
+
+    cards: list[dict[str, Any]]
+    snooze_edge: datetime | None = None
+    day: Day | None = None
+    ok: bool = True
+
+
+def snooze_edge(rows: dict[str, dict[str, Any]], now: datetime) -> datetime | None:
+    """The earliest end of a time snooze still in force (§8.4 item 21). Rule 1
+    hides each such card until that end. A snooze until a change has no
+    time, so it has no edge."""
+    ends = [until for until in (_instant(r.get("snoozed_until")) for r in rows.values()
+                                if r.get("state") == "snoozed" and not r.get("snooze_on_change"))
+            if until is not None and until > now]
+    return min(ends) if ends else None
+
+
 async def apply_state(user: UserContext, cards: list[dict[str, Any]],
-                      now: datetime) -> list[dict[str, Any]]:
+                      now: datetime) -> Applied:
     """The state join of ``GET /shell/feed``. The read writes nothing.
 
     A failed read keeps the feed: every card reads as new, and the failure
     goes to the log. A blank My Day would cost more than a dismissed card
-    that shows again for one poll.
+    that shows again for one poll. ``Applied.ok`` says so, and the read
+    cache then keeps nothing, so it stays one poll.
     """
     member = user.email or ""
     ids = [c["signal_id"] for c in cards]
@@ -660,8 +689,8 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
         day, rows = await asyncio.wait_for(_read(), STATE_TIMEOUT_S)
     except Exception as exc:  # a timeout too: the same fallback
         logger.warning("shell.feed state read failed", extra={"error": type(exc).__name__})
-        return join(cards, {}, Context(now, Day(ZoneInfo("UTC"))))
-    return join(cards, rows, Context(now, day))
+        return Applied(join(cards, {}, Context(now, Day(ZoneInfo("UTC")))), ok=False)
+    return Applied(join(cards, rows, Context(now, day)), snooze_edge(rows, now), day)
 
 
 async def write_state(user: UserContext, items: list[StateItem], now: datetime) -> int:
@@ -714,4 +743,8 @@ async def post_feed_state(
     except Exception as exc:
         logger.warning("shell.feed state write failed", extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
+    if written:
+        # After the commit, so the next read misses and sees the write
+        # (MD-5a, §8.4 item 1). The session's org and member, never the body.
+        await cache.bump_member(user.organization_id, user.email)
     return {"written": written}

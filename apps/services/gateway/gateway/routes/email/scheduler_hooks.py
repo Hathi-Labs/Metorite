@@ -220,6 +220,35 @@ async def process_new_mail(account_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         _log.warning("sync.auto_lead_failed", account_id=account_id,
                      error=str(exc)[:200])
+    try:
+        # WS-58 MD-5a: LAST, after every step that changes the mailbox.
+        await bump_my_day_owner(account_id)
+    except Exception as exc:
+        _log.warning("sync.my_day_bump_failed", account_id=account_id,
+                     error_type=type(exc).__name__)
+
+
+async def bump_my_day_owner(account_id: str) -> None:
+    """New mail bumps the My Day version of the mailbox OWNER, so the owner's
+    next feed read misses the cache (``my_day_feed.md`` §8.4 items 1 and 19).
+
+    Only the ``on_new_mail`` hook calls this. A change from
+    ``classify_threads``, or from a path that skips ``on_new_mail``, waits for
+    the time edge, 600 seconds at most. A member who reads a mailbox but does
+    not own it waits the same way (§8.4 item 8).
+
+    The owner comes from ``email_accounts`` (:func:`mailbox_owner`), and the
+    org is the tenant the sync loop bound. With ``MY_DAY_CACHE`` off this
+    reads nothing and sends nothing.
+    """
+    from gateway.routes.shell import cache
+
+    if not cache.enabled():
+        return
+    org = current_tenant()
+    if not org:
+        return
+    await cache.bump_member(org, await mailbox_owner(account_id))
 
 
 async def learn_label_changes(account_id: str, changes: list) -> None:

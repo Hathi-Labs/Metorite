@@ -17,7 +17,7 @@ counts read it with no second request (§14.1).
 the highest ``feed_rank.BASE`` is the card's kind, and each other kind is
 folded into the card: its facts, a clause of the why line, and its acts.
 
-**No model, no write, no flag.** Code writes every why line from a template
+**No model and no write.** Code writes every why line from a template
 (§4.2). Each act names its way (§11.1): ``done`` and ``read`` are ``tap``,
 and run through the owning app's route, as the needs rows do. Every other
 act is ``open``, a link. The route is read-only. The client reads it only
@@ -33,6 +33,11 @@ BEFORE the join, so the state never changes the bell (§6.8 item 9).
 seconds (``handled.handled_run``). The answer gains ``handled``, what the
 apps closed for the member today, and ``handled_ok``, the claim flag. Neither
 is a card or a group, and neither counts against ``limit``.
+
+**The read cache** (MD-5a, §8.4) wraps the run: ``shell_feed`` asks
+``cache.serve``, and only a miss calls ``feed_answer``. ``feed_answer`` hands
+back the answer with its time edges, so the cache knows when the clock changes
+it. ``MY_DAY_CACHE`` (default off) gates it, and ``cache.py`` holds the rules.
 
 **The Calendar provider** (§5.1, feed only) needs ``feature:tasks`` (the
 Calendar pane) AND ``feature:projects`` (the lens read of blocks). It calls
@@ -73,8 +78,8 @@ from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from acb_common.priority import task_cell
-from fastapi import Depends, HTTPException
-from gateway.routes.shell import feed_rank, handled, needs, state
+from fastapi import Depends, HTTPException, Request, Response
+from gateway.routes.shell import cache, feed_rank, handled, needs, state
 from gateway.routes.shell.needs import (
     PER_APP,
     Found,
@@ -171,7 +176,18 @@ async def _calendar(user: UserContext) -> Found:
             ))
     signals.extend(_overlaps(rows, level, now, tz))
     return Found([], 0, capped=len(signals) > PER_APP,
-                 signals=lambda: signals[:PER_APP], zone=zone)
+                 signals=lambda: signals[:PER_APP], zone=zone,
+                 next_edge=_next_block_edge(blocks, now))
+
+
+def _next_block_edge(blocks: list[dict[str, Any]], now: datetime) -> str | None:
+    """The instant the next block of today enters the window of
+    ``block_soon``: its start minus 30 minutes, for a block that starts after
+    the window (``my_day_feed.md`` §8.4 item 2). A block inside the window is
+    already a signal, and its ``expires_at`` is its own edge."""
+    edges = [start - SOON for start in (_instant(b.get("start")) for b in blocks)
+             if start is not None and start > now + SOON]
+    return _iso(min(edges)) if edges else None
 
 
 def _block_soon(blocks: list[dict[str, Any]], level: dict[str, str],
@@ -514,16 +530,26 @@ def _zone(name: Any) -> ZoneInfo:
 async def shell_feed(
     limit: int = DEFAULT_FEED_LIMIT,
     user: UserContext = Depends(get_current_user),
-) -> dict[str, Any]:
+    request: Request = None,  # type: ignore[assignment]  # None only in a direct call
+    response: Response = None,  # type: ignore[assignment]
+) -> Any:
     """My Day's cards for this member, from the apps the member holds."""
     if not user.email:
         raise HTTPException(status_code=401, detail="Authentication required")
     size = max(1, min(int(limit), MAX_FEED_LIMIT))
     # MD-5b: the session member joins the org's active set (§8.4 item 22).
     # Gated by MY_DAY_LOOP_ENABLED, runs beside the read, and never raises.
+    # Before the cache, so a hit marks the member active too.
     from gateway.my_day_loop import mark_active
     mark_active(user)
+    # The read cache (MD-5a, §8.4): a hit runs no provider. Dark by MY_DAY_CACHE.
+    return await cache.serve(user, size, lambda: feed_answer(user, size),
+                             if_none_match=cache.if_none_match(request), response=response)
 
+
+async def feed_answer(user: UserContext, size: int) -> cache.Computed:
+    """One run of the providers: the answer, and what the read cache needs
+    to keep it (its time edges, and whether item 18 lets it be stored)."""
     # The needs providers first, in today's order and on today's budget.
     run = await needs.needs_run(user)
     # The needs view, at the needs route's own default limit, whatever the
@@ -559,9 +585,9 @@ async def shell_feed(
         state.apply_state(user, build_cards(signals, now, tz, today), now),
         handled.handled_run(user, now, budget_s=state.STATE_TIMEOUT_S),
     )
-    cards = feed_rank.order(joined, size)
+    cards = feed_rank.order(joined.cards, size)
     counts = {g: sum(1 for c in cards if c["group"] == g) for g in feed_rank.GROUPS}
-    return {
+    body = {
         "cards": cards,
         "groups": [{"id": g, "count": n} for g, n in counts.items() if n],
         "needs": needs_view,
@@ -571,3 +597,9 @@ async def shell_feed(
         "handled": closed.entries,
         "handled_ok": closed.ok,
     }
+    # The next time edge (§8.4 item 2): what the clock changes, and when.
+    edges = [*cache.signal_edges(signals), *cache.day_edges(joined.day, tz, now)]
+    edges += [e for e in (needs._instant(a.next_edge) for a in found.values()) if e is not None]
+    if joined.snooze_edge is not None:
+        edges.append(joined.snooze_edge)
+    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=joined.ok))

@@ -384,6 +384,80 @@ describe("3. the feed answer fills the needs key", () => {
   });
 });
 
+// MD-5a (`my_day_feed.md` §8.4 item 5, done-when 6). Mutations, run by hand
+// (2026-10-14): send no `If-None-Match`, and the first test fails; throw on
+// the 304 as before, and the first test fails; skip `putNeeds` on a 304, and
+// the needs check fails.
+describe("3a. a 304 keeps the answer and counts as a fresh one", () => {
+  function stubReplies(replies: (() => Response)[]) {
+    const sent: (string | null)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        sent.push(new Headers(init?.headers).get("If-None-Match"));
+        const next = replies.shift();
+        if (!next) throw new Error("no reply left");
+        return next();
+      }),
+    );
+    return sent;
+  }
+
+  const tagged = (body: unknown, tag: string) =>
+    () => new Response(JSON.stringify(body), { status: 200, headers: { ETag: tag } });
+  const notModified = (tag: string) => () => new Response(null, { status: 304, headers: { ETag: tag } });
+
+  it("sends the tag it holds, keeps its answer on a 304, and writes the needs view again", async () => {
+    const sent = stubReplies([tagged(ANSWER, 'W/"t1"'), notModified('W/"t1"')]);
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const first = await fetchFeed();
+    expect(sent).toEqual([null]);
+    expect(first.fetchedAt).toBe(1_000);
+
+    // The needs key leaves (a Done in the bell, say). The 304 must fill it again.
+    invalidate(needsKey());
+    expect(peek(needsKey())).toBeUndefined();
+    now.mockReturnValue(9_000);
+    const second = await fetchFeed();
+    now.mockRestore();
+
+    expect(sent).toEqual([null, 'W/"t1"']);
+    expect(second.cards).toEqual(first.cards);
+    expect(second.groups).toEqual(first.groups);
+    expect(second.fetchedAt).toBe(9_000);
+    expect(peek(needsKey())?.data).toEqual(NEEDS_VIEW);
+  });
+
+  it("takes a new tag with a new answer, and forgets the tag on an answer with none", async () => {
+    const changed = { ...ANSWER, cards: [{ ...CARD, signal_id: "tasks:new", title: "New" }] };
+    const sent = stubReplies([
+      tagged(ANSWER, 'W/"t1"'),
+      tagged(changed, 'W/"t2"'),
+      () => new Response(JSON.stringify(ANSWER), { status: 200 }),
+      () => new Response(JSON.stringify(ANSWER), { status: 200 }),
+    ]);
+    await fetchFeed();
+    const second = await fetchFeed();
+    expect(second.cards.map((c) => c.signal_id)).toEqual(["tasks:new"]);
+    await fetchFeed();
+    await fetchFeed();
+    expect(sent).toEqual([null, 'W/"t1"', 'W/"t2"', null]);
+  });
+
+  it("forgets the tag on a change of member", async () => {
+    const sent = stubReplies([tagged(ANSWER, 'W/"t1"'), tagged(ANSWER, 'W/"t1"')]);
+    await fetchFeed();
+    clearAll();
+    await fetchFeed();
+    expect(sent).toEqual([null, null]);
+  });
+
+  it("throws on a 304 when it holds no answer", async () => {
+    stubReplies([notModified('W/"t1"')]);
+    await expect(fetchFeed()).rejects.toThrow("Your feed could not load.");
+  });
+});
+
 describe("4. the acts go through the owning app", () => {
   const folded = card("tasks:t1", "needs_you", {
     kind: "overdue",

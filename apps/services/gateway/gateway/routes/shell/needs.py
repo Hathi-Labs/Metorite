@@ -243,6 +243,12 @@ class Found:
     ``signals`` builds the feed signals from the same rows. Only the feed
     calls it, so a needs answer runs no feed code. ``zone`` is the member's
     zone when the app's read reports it.
+
+    ``next_edge`` is the next instant at which the clock changes what the
+    provider gives, beyond the times its signals carry: an aware ISO text, or
+    None. The Calendar provider sets it to the next block start of today
+    minus 30 minutes, for a block outside the window of ``block_soon``. The
+    feed's read cache reads it (``my_day_feed.md`` §8.4 item 2, MD-5a).
     """
 
     rows: list[Item]
@@ -250,6 +256,7 @@ class Found:
     capped: bool
     signals: Callable[[], list[Signal]] | None = None
     zone: str | None = None
+    next_edge: str | None = None
 
 
 def _now() -> datetime:

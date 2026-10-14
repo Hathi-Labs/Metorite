@@ -18,27 +18,32 @@ vi.mock("@/lib/gateway", async () => {
     GATEWAY_URL: "http://gw.test",
     requireIdentity: async () =>
       identity.value ?? NextResponse.json({ error: "Sign in to continue" }, { status: 401 }),
-    gatewayHeaders: async () => ({ "X-User-Email": "a@example.com" }),
+    // The real one spreads `extra` first, then sets the identity.
+    gatewayHeaders: async (extra: Record<string, string> = {}) => ({ ...extra, "X-User-Email": "a@example.com" }),
     gatewayFetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
   };
 });
 
 const asked: string[] = [];
+/** The headers of each gateway request, in order. */
+const sent: Record<string, string>[] = [];
 
 function stubGateway(reply: () => Response) {
   asked.length = 0;
+  sent.length = 0;
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       asked.push(String(input));
+      sent.push({ ...((init?.headers as Record<string, string>) ?? {}) });
       return reply();
     }),
   );
 }
 
-const get = async (query = "") => {
+const get = async (query = "", headers: Record<string, string> = {}) => {
   const { GET } = await import("./route");
-  return GET(new NextRequest(`http://app.test/api/shell/feed${query}`));
+  return GET(new NextRequest(`http://app.test/api/shell/feed${query}`, { headers }));
 };
 
 /** The answer of §14.1a, as the gateway sends it. */
@@ -115,6 +120,32 @@ describe("/api/shell/feed", () => {
     const res = await get();
     expect(res.status).toBe(401);
     expect(asked).toEqual([]);
+  });
+
+  // MD-5a (§8.4 item 5). Mutation, run by hand (2026-10-14): answer the 304
+  // with `NextResponse.json`, as before, and the 304 test fails on the tag.
+  it("passes the client's tag on, and a 304 back as a 304 with its tag and no body", async () => {
+    stubGateway(() => new Response(null, { status: 304, headers: { ETag: 'W/"abc"' } }));
+    const res = await get("", { "If-None-Match": 'W/"abc"' });
+    expect(sent[0]["If-None-Match"]).toBe('W/"abc"');
+    expect(res.status).toBe(304);
+    expect(res.headers.get("etag")).toBe('W/"abc"');
+    expect(await res.text()).toBe("");
+  });
+
+  it("passes the tag of a 200 back with the answer", async () => {
+    stubGateway(() => new Response(JSON.stringify(ANSWER), { status: 200, headers: { ETag: 'W/"def"' } }));
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("etag")).toBe('W/"def"');
+    expect(await res.json()).toEqual(ANSWER);
+  });
+
+  it("sends no tag when the client holds none", async () => {
+    stubGateway(() => new Response(JSON.stringify(ANSWER), { status: 200 }));
+    const res = await get();
+    expect(sent[0]).not.toHaveProperty("If-None-Match");
+    expect(res.headers.get("etag")).toBeNull();
   });
 
   it("exports only its handler and its route config", async () => {

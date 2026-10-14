@@ -48,8 +48,8 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from fastapi import Body, Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
+from gateway.routes.shell import cache, needs
 from gateway.routes.shell import feed as _feed  # noqa: F401  (registers the feed kinds)
-from gateway.routes.shell import needs
 from gateway.routes.shell.search import router
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
@@ -249,4 +249,7 @@ async def put_feed_prefs(
     except Exception as exc:
         logger.warning("shell.prefs.write_failed", extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
+    # After the commit: the member's version moves, so the next feed read
+    # misses (MD-5a, ``my_day_feed.md`` §8.4 item 1).
+    await cache.bump_member(user.organization_id, uid)
     return stored_prefs(stored)
