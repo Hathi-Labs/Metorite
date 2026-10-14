@@ -4,7 +4,7 @@
 // status and the server's own message, because the MCP guard explains its
 // refusals (a private address, a non-https URL) and the form shows them.
 
-import { refusalText, type Connection } from "./connections";
+import { refusalText, startErrorMessage, type Connection } from "./connections";
 
 export class IntegrationsError extends Error {
   status: number;
@@ -68,6 +68,28 @@ export async function setMcpAlwaysConfirm(name: string, value: boolean): Promise
     body: JSON.stringify({ always_confirm: value }),
   });
   if (!res.ok) return fail(res);
+}
+
+/**
+ * WS-54 IN-8c: start the OAuth consent of one MCP server, and get the
+ * provider's sign-in URL. The browser sends no body: the gateway signs the
+ * state and builds the URL, and the BFF passes on an https URL only. The
+ * caller sends the browser there.
+ */
+export async function startMcpOAuth(name: string): Promise<string> {
+  const res = await fetch(`/api/integrations/mcp/${encodeURIComponent(name)}/oauth/start`, {
+    method: "POST",
+  });
+  const body = (await res.json().catch(() => ({}))) as { url?: unknown; detail?: unknown };
+  if (!res.ok) {
+    const code = typeof body.detail === "string" ? body.detail : undefined;
+    throw new IntegrationsError(startErrorMessage(code), res.status, code);
+  }
+  // The BFF checked it. A second check costs nothing.
+  if (typeof body.url !== "string" || !body.url.startsWith("https://")) {
+    throw new IntegrationsError(startErrorMessage("failed"), 502, "failed");
+  }
+  return body.url;
 }
 
 export async function addMcp(body: Record<string, unknown>): Promise<void> {

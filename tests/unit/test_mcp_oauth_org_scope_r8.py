@@ -344,12 +344,93 @@ async def test_the_test_button_sends_the_stored_bearer(ns, world, monkeypatch) -
     assert res.json() == {"ok": False, "tools": None, "error": "unauthorized"}
 
 
-async def test_the_test_button_names_an_expired_token(ns, world) -> None:  # noqa: F811
+async def test_the_test_button_names_a_token_that_the_refresh_cannot_renew(
+        ns, world) -> None:  # noqa: F811
+    """IN-8c: the Test follows the rule of a run. A token inside the margin
+    gets ONE refresh. The new token also ends within 60 s here, so the Test
+    sends nothing to the server and says that the sign-in ended."""
     name = _name("expired")
     await _seed(ns.org_a, name)
-    world.expires_in = 30  # inside the 60 s margin of a run
+    world.expires_in = 30  # inside the 60 s margin of a run, also after a refresh
     assert (await _connect(world, f.user(ADMIN_A, ns.org_a), name, TOKEN_A)).status_code == 302
     before = len(world.requests)
     res = await _call(f.user(ADMIN_A, ns.org_a), "POST", f"/integrations/mcp/{name}/test")
     assert res.json() == {"ok": False, "tools": None, "error": "token_expired"}
-    assert len(world.requests) == before, "an expired token sent a request"
+    sent = [r.url.path for r in world.requests[before:]]
+    assert sent == ["/token"], f"one refresh and no MCP request, got {sent}"
+    assert len(world.refreshes) == 1
+
+
+async def test_the_test_button_refreshes_a_token_that_is_due(ns, world) -> None:  # noqa: F811
+    """IN-8c: a Test after a 401 that ended the stored token (or near its end)
+    refreshes it under the row lock, sends the new bearer, and stores it, so
+    the next run sends the same token."""
+    name = _name("due")
+    await _seed(ns.org_a, name)
+    world.expires_in = 30
+    assert (await _connect(world, f.user(ADMIN_A, ns.org_a), name, TOKEN_A)).status_code == 302
+    world.expires_in = 3600  # the refresh gives a token that lives an hour
+    before = _registry(ns, ns.org_a)[name]
+    res = await _call(f.user(ADMIN_A, ns.org_a), "POST", f"/integrations/mcp/{name}/test")
+    assert res.status_code == 200 and res.json()["ok"] is True, res.text
+    fresh = f"{f.SENTINEL_ACCESS}-refreshed-1"
+    sent = [r for r in world.requests if r.url.path == "/mcp"][-1]
+    assert sent.headers["authorization"] == f"Bearer {fresh}"
+    assert fresh not in res.text
+    after = _registry(ns, ns.org_a)[name]
+    assert after["credentials_encrypted"] != before["credentials_encrypted"]
+    assert after["status"] == "connected"
+    # A second Test finds a live token, and sends no refresh.
+    res = await _call(f.user(ADMIN_A, ns.org_a), "POST", f"/integrations/mcp/{name}/test")
+    assert res.json()["ok"] is True and len(world.refreshes) == 1
+
+
+async def test_a_test_of_a_token_that_cannot_refresh_marks_needs_reconnect(
+        ns, world) -> None:  # noqa: F811
+    """IN-8c: no refresh token, and the token is inside the margin. The Test
+    sends nothing, the row turns ``needs_reconnect`` as a run would turn it,
+    and the console offers the admin a new consent."""
+    name = _name("norefresh")
+    await _seed(ns.org_a, name)
+    world.expires_in = 30
+    world.access_token = TOKEN_A
+    world.refresh_token = ""
+    admin = f.user(ADMIN_A, ns.org_a)
+    _, code, state = await f.start_and_consent(admin, world, name)
+    assert (await f.finish(admin, code, state, iss=f.ISSUER)).status_code == 302
+    before = len(world.requests)
+    res = await _call(admin, "POST", f"/integrations/mcp/{name}/test")
+    assert res.json() == {"ok": False, "tools": None, "error": "token_expired"}
+    assert world.requests[before:] == [], "a token with no refresh token sent a request"
+    assert _registry(ns, ns.org_a)[name]["status"] == "needs_reconnect"
+    listed = await _call(admin, "GET", "/integrations/connections")
+    row = next(r for r in listed.json()["connections"] if r["id"] == f"mcp:{name}")
+    assert row["status"] == "needs_reconnect" and row["last_error"] == "no_refresh_token"
+    assert row["acts_as"] == ADMIN_A and row["can_connect"] is True
+    # A row in needs_reconnect sends nothing on the next Test either.
+    res = await _call(admin, "POST", f"/integrations/mcp/{name}/test")
+    assert res.json()["error"] == "token_expired"
+    assert world.requests[before:] == []
+
+
+async def test_the_console_row_names_the_admin_it_acts_as(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    """O10, the read half, against the real store. With the flag off the row
+    carries neither the label nor the Connect offer."""
+    from acb_common import get_settings
+
+    name = _name("label")
+    await _seed(ns.org_a, name)
+    assert (await _connect(world, f.user(ADMIN_A, ns.org_a), name, TOKEN_A)).status_code == 302
+
+    async def _row(who: Any) -> dict[str, Any]:
+        listed = await _call(who, "GET", "/integrations/connections")
+        assert listed.status_code == 200, listed.text
+        return next(r for r in listed.json()["connections"] if r["id"] == f"mcp:{name}")
+
+    row = await _row(f.user(ADMIN_A, ns.org_a))
+    assert row["acts_as"] == ADMIN_A and row["can_connect"] is True
+    assert TOKEN_A not in str(row)
+    monkeypatch.setattr(get_settings(), "mcp_oauth_enabled", False, raising=False)
+    row = await _row(f.user(ADMIN_A, ns.org_a))
+    assert row["acts_as"] is None and row["can_connect"] is False
