@@ -932,7 +932,8 @@ stand for an answer from before a write. The new stamp also fixes the
 today. The sink and the active-set write log the failure and go on. The sink
 waits 50 ms at most, because Projects awaits `emit` inline in each write.
 
-**7. Dark by a server flag.** `MY_DAY_CACHE`, default false, gates the cache,
+**7. Dark by a server flag.** `MY_DAY_CACHE`, default false, is a field in
+`packages/acb_common/acb_common/settings.py`. It gates the cache,
 the sink and the bumps. It is read in one place, and a test fences it. With
 it off, every read runs the providers, as today.
 
@@ -1006,8 +1007,9 @@ An emit with no bound tenant bumps nothing, unless its payload names
 edge, or 600 seconds at most. The sink gets its own `try` in `main.py`, apart
 from the workflows block, so a failed workflows import does not drop it.
 
-**21. The hash and the snooze edge.** The features hash covers the member's
-`feature:*` grants, sorted. `state.apply_state` also returns the earliest
+**21. The hash and the snooze edge.** The features hash covers each grant
+that gates a provider: the member's `feature:*` grants, and
+`ADMIN_PERMISSION` (`needs.py:845-847`), sorted. `state.apply_state` also returns the earliest
 `snoozed_until` of the rows it hides, for item 2.
 
 **22. The active-set write.** The feed read writes the active set only while
@@ -2286,7 +2288,8 @@ Done when:
 7. A Redis outage serves the uncached answer.
 8. With `MY_DAY_CACHE` off, every read runs the providers, and the sink and
    the bumps do nothing.
-9. A revoked feature stops its cards at the next read, through the hash.
+9. A revoked feature stops its cards at the next read, through the hash. A
+   revoked admin permission stops the approval cards the same way.
 10. A recompute whose body differs never answers 304 (§8.4 item 16).
 11. A write during a compute makes the next read miss (item 17).
 12. An answer with a failed source, or with `handled_ok` false, is not
@@ -2304,7 +2307,8 @@ Files:
 
 - a new `gateway/my_day_loop.py`
 - `gateway/main.py`, to start and stop it beside the CRM mirror
-- `gateway/settings.py`, for `MY_DAY_LOOP_ENABLED`, like `crm_mirror`
+- `packages/acb_common/acb_common/settings.py`, for `MY_DAY_LOOP_ENABLED`,
+  beside `crm_mirror` at line 261
 - `packages/acb_common/acb_common/tenant_redis.py`, for the sorted sets
 - the active-set write in `routes/shell/feed.py`
 - `tests/unit/test_db_engine_seam.py`, for the discovery site
