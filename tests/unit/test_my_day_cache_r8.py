@@ -12,6 +12,9 @@ a helper is counted too.
   SQL, a hit sends NONE, and a hit with the tag answers 304 with none. The
   identity resolve of each request is apart from the count: the test app
   hands the route its member with no lookup, as the CRM-X3 suite does.
+* **§8.4 item 5.** Four writes of a member's own view that emit no event (the
+  overlay PATCH, mark-read, a nudge and an assignee removal) each move a
+  version after the commit, and emit no new event.
 * **Done-when 4.** One real task capture (``POST /projects/my/tasks``), which
   emits ``pm.task.created``, sends the same statements with the change sink
   on and off. With it on, the org version moves by one.
@@ -56,6 +59,7 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ME = f"cache-me-{TAG}@md5a.test"
+OTHER = f"cache-other-{TAG}@md5a.test"
 
 
 @pytest.fixture(autouse=True)
@@ -91,9 +95,11 @@ def seeded(promoted):  # noqa: F811
     org = p.org_b
     zone = _a_daytime_zone(NOW)
     with p.admin_engine.begin() as c:
-        c.execute(text(
-            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
-            "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid))"), {"e": ME, "o": org})
+        for email in (ME, OTHER):
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+                "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid))"),
+                {"e": email, "o": org})
         c.execute(text(
             "INSERT INTO user_settings (user_id, timezone, day_start_hour, day_end_hour, "
             "daily_capacity_mins, organization_id) VALUES "
@@ -101,11 +107,11 @@ def seeded(promoted):  # noqa: F811
         project, lane = _project(c, org=org, name=f"Cache {TAG}", owner=None, grant_org=True)
         task = _task(c, org=org, project=project, lane=lane, title="Ship the bracket",
                      due=NOW - timedelta(days=1), assignee=ME, number=1)
-    return {"org": org, "task": task}
+    return {"org": org, "task": task, "project": project, "lane": lane}
 
 
-def _member(org: str) -> UserContext:
-    return UserContext(email=ME, role=UserRole.EMPLOYEE, organization_id=org,
+def _member(org: str, email: str = ME) -> UserContext:
+    return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=org,
                        access=EffectiveAccess(role_granted=frozenset(
                            {"feature:projects", "feature:tasks"})))
 
@@ -248,5 +254,120 @@ class TestTheSinkSendsNoSql:
         assert len(off) > 0
         assert len(on) == len(off), (len(on), len(off))
         version = f"cc:{org}:my_day:ver"
-        assert redis.ops("incr") == [version]
-        assert redis.store[version][0] == "1"
+        assert redis.ops("set") == [version]
+        assert redis.ops("incr") == []
+        stamp, token = redis.store[version][0].split("-")
+        assert int(stamp) > 0 and len(token) == 8
+
+
+_NUMBER = iter(range(100, 10_000))
+
+
+def _seed_task(p, seeded, *assignees: str, waiting: bool = False) -> str:
+    """A fresh task of the seeded project, held by ``assignees``. With
+    ``waiting``, ME's overlay says WAITING, so ME may nudge the others."""
+    org = seeded["org"]
+    with p.admin_engine.begin() as c:
+        task = _task(c, org=org, project=seeded["project"], lane=seeded["lane"],
+                     title=f"Own write {TAG}", due=NOW + timedelta(days=3), assignee=None,
+                     number=next(_NUMBER))
+        for who in assignees:
+            c.execute(text(
+                "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by, "
+                "organization_id) VALUES (CAST(:t AS uuid), :a, :by, CAST(:o AS uuid))"),
+                {"t": task, "a": who, "by": ME, "o": org})
+        if waiting:
+            c.execute(text(
+                "INSERT INTO pm_task_personal (task_id, member_email, disposition, "
+                "organization_id) VALUES (CAST(:t AS uuid), :e, 'WAITING', CAST(:o AS uuid))"),
+                {"t": task, "e": ME, "o": org})
+    return task
+
+
+class TestOwnWritesMoveAVersion:
+    """§8.4 item 5: four writes of a member's own view emit no ``pm.*`` event.
+    Each moves a version after its commit, through the real route, on a real
+    database. None of them emits a new event, so workflow triggers do not
+    change."""
+
+    @pytest.fixture(autouse=True)
+    def _no_event(self, monkeypatch):
+        from ingestion import event_hooks
+
+        seen: list[tuple[str, str]] = []
+
+        async def record(source, event_type, payload):
+            seen.append((source, event_type))
+
+        monkeypatch.setattr(event_hooks, "_SINKS", [record])
+        self.events = seen
+
+    async def test_the_overlay_patch_moves_the_member(self, promoted, seeded, redis, switch):  # noqa: F811
+        from gateway.routes.projects import personal
+
+        org = seeded["org"]
+        task = _seed_task(promoted, seeded, ME)
+        async with _as_member(promoted, org):
+            await personal.set_personal(task, personal.PersonalIn(disposition="SOMEDAY"),
+                                        user=_member(org))
+        assert redis.ops("incr") == [f"cc:{org}:my_day:ver:{ME}"]
+        assert self.events == []
+
+    async def test_mark_read_moves_the_member(self, promoted, seeded, redis, switch):  # noqa: F811
+        from gateway.routes.projects import notifications
+
+        org = seeded["org"]
+        task = _seed_task(promoted, seeded, ME)
+        with promoted.admin_engine.begin() as c:
+            note = str(c.execute(text(
+                "INSERT INTO pm_notifications (recipient, kind, task_id, actor, "
+                "organization_id) VALUES (:r, 'assigned', CAST(:t AS uuid), :a, "
+                "CAST(:o AS uuid)) RETURNING id"),
+                {"r": ME, "t": task, "a": OTHER, "o": org}).scalar_one())
+        async with _as_member(promoted, org):
+            out = await notifications.mark_read(notifications.ReadIn(ids=[note]),
+                                                user=_member(org))
+            assert out == {"marked": 1}
+            assert redis.ops("incr") == [f"cc:{org}:my_day:ver:{ME}"]
+            # Nothing left to mark: no write, so no bump.
+            again = await notifications.mark_read(notifications.ReadIn(ids=[note]),
+                                                  user=_member(org))
+        assert again == {"marked": 0}
+        assert len(redis.ops("incr")) == 1
+        assert self.events == []
+
+    async def test_a_nudge_moves_the_person_it_reaches(self, promoted, seeded, redis, switch):  # noqa: F811
+        from gateway.routes.projects import personal
+
+        org = seeded["org"]
+        task = _seed_task(promoted, seeded, ME, OTHER, waiting=True)
+        async with _as_member(promoted, org):
+            out = await personal.nudge_task(task, user=_member(org))
+        assert out["notified"], out
+        assert redis.ops("incr") == [f"cc:{org}:my_day:ver:{OTHER}"]
+        assert self.events == []
+
+    async def test_an_assignee_removal_moves_the_org(self, promoted, seeded, redis, switch):  # noqa: F811
+        from gateway.routes.projects import tasks
+
+        org = seeded["org"]
+        task = _seed_task(promoted, seeded, ME, OTHER)
+        async with _as_member(promoted, org):
+            await tasks.set_assignees(task, tasks.AssigneesIn(assignees=[ME]),
+                                      user=_member(org))
+        assert redis.ops("set") == [f"cc:{org}:my_day:ver"]
+        assert self.events == [], "a removal must not emit a new event"
+
+    async def test_with_the_switch_off_no_write_reaches_redis(
+            self, promoted, seeded, redis, switch):  # noqa: F811
+        from gateway.routes.projects import personal, tasks
+
+        switch(False)
+        org = seeded["org"]
+        task = _seed_task(promoted, seeded, ME, OTHER)
+        async with _as_member(promoted, org):
+            await personal.set_personal(task, personal.PersonalIn(disposition="SOMEDAY"),
+                                        user=_member(org))
+            await tasks.set_assignees(task, tasks.AssigneesIn(assignees=[ME]),
+                                      user=_member(org))
+        assert redis.calls == []

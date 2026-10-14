@@ -272,7 +272,7 @@ class TestTheClockEdge:
         assert app_calls(f) > before
         soon = [c for c in later["cards"] if c["kind"] == "block_soon"]
         assert [c["signal_id"] for c in soon] == ["tasks:t-later"]
-        assert redis.ops("incr") == [], "an event moved the version"
+        assert not [k for o, k in redis.calls if o in ("set", "incr") and ":my_day:ver" in k],             "an event moved a version"
 
     def test_the_calendar_provider_names_the_edge(self, fakes):  # noqa: F811
         now = fakes.now
@@ -370,14 +370,48 @@ async def _bump_member(email: str) -> None:
 
 
 class TestTheSink:
-    def test_a_pm_event_bumps_the_org_version_of_the_bound_tenant(self, redis, on):
+    def test_a_pm_event_sets_the_org_version_of_the_bound_tenant(self, redis, on):
         bump_org()
-        assert redis.ops("incr") == [f"cc:{ORG}:my_day:ver"]
+        assert redis.ops("set") == [f"cc:{ORG}:my_day:ver"]
+        assert redis.ops("incr") == []
+        value = redis.store[f"cc:{ORG}:my_day:ver"][0]
+        stamp, token = value.split("-")
+        assert int(stamp) > 0 and len(token) == 8
+
+    def test_each_event_sets_a_new_version(self, redis, on):
+        bump_org()
+        first = redis.store[f"cc:{ORG}:my_day:ver"][0]
+        bump_org()
+        assert redis.store[f"cc:{ORG}:my_day:ver"][0] != first
 
     def test_with_no_tenant_bound_the_payload_names_the_org(self, redis, on):
         asyncio.run(cache.on_event("projects", "pm.task.assigned",
                                    {"task_id": "t", "organization_id": "org-x"}))
-        assert redis.ops("incr") == ["cc:org-x:my_day:ver"]
+        assert redis.ops("set") == ["cc:org-x:my_day:ver"]
+
+    def test_the_bound_tenant_wins_over_the_payload(self, redis, on):
+        """§8.4 item 20: the bound tenant first, the payload only without one.
+        A payload that names another org never moves that org's version."""
+        async def go():
+            from acb_common.db import bind_tenant, release_tenant
+
+            token = bind_tenant(ORG)
+            try:
+                await cache.on_event("projects", "pm.task.assigned",
+                                     {"task_id": "t", "organization_id": "org-b"})
+            finally:
+                release_tenant(token)
+
+        asyncio.run(go())
+        assert redis.ops("set") == [f"cc:{ORG}:my_day:ver"]
+        assert not [k for k in redis.store if k.startswith("cc:org-b:")]
+
+    def test_bump_org_sets_the_version_and_the_switch_gates_it(self, redis, on, monkeypatch):
+        asyncio.run(cache.bump_org(ORG))
+        assert redis.ops("set") == [f"cc:{ORG}:my_day:ver"]
+        monkeypatch.setattr(get_settings(), "my_day_cache", False)
+        asyncio.run(cache.bump_org(ORG))
+        assert len(redis.calls) == 1
 
     def test_an_event_with_no_org_bumps_nothing(self, redis, on):
         asyncio.run(cache.on_event("projects", "pm.task.updated", {"task_id": "t"}))
@@ -423,6 +457,58 @@ class TestTheSink:
         assert len(owners) == 1, "register the sink once, at module level"
         assert not any(m and m.startswith("gateway.routes.workflows") for m in owners[0])
         assert "ingestion.event_hooks" in owners[0]
+
+
+class TestTheSettleTime:
+    """§8.4 item 8: Projects emits some events before the commit. A read in
+    the settle time serves its answer and stores none."""
+
+    def test_bump_then_read_then_commit_stores_nothing_stale(
+            self, fakes, redis, on, monkeypatch):  # noqa: F811
+        clock = {"ns": 10**18}
+        monkeypatch.setattr(cache, "_wall_ns", lambda: clock["ns"])
+        user = member(*FULL)
+
+        bump_org()                          # the event, inside the transaction
+        clock["ns"] += int(0.5e9)
+        first, resp = read(user)            # a read before the commit
+        assert "tasks:t-new" not in [c["signal_id"] for c in first["cards"]]
+        assert answer_keys(redis) == [], "a read in the settle time stored an answer"
+        assert resp.headers["etag"]
+
+        # The commit lands.
+        fakes.tasks[ME].append({**fakes.tasks[ME][0], "id": "t-new", "title": "A new task"})
+        clock["ns"] += int(cache.SETTLE_S * 1e9)
+        before = app_calls(fakes)
+        later, _ = read(user)
+        assert app_calls(fakes) > before
+        assert "tasks:t-new" in [c["signal_id"] for c in later["cards"]]
+        assert len(answer_keys(redis)) == 1, "a settled read stores again"
+
+    @pytest.mark.parametrize("value,ok", [
+        ("0", True), ("not-a-stamp", True), ("7", True)])
+    def test_an_old_or_odd_version_counts_as_settled(self, value, ok):
+        assert cache.settled(value) is ok
+
+    def test_a_fresh_version_is_not_settled(self, monkeypatch):
+        monkeypatch.setattr(cache, "_wall_ns", lambda: 5 * 10**18)
+        assert cache.settled(f"{5 * 10**18 - 10**9}-abcd1234") is False
+        assert cache.settled(f"{5 * 10**18 - 3 * 10**9}-abcd1234") is True
+
+
+class TestAnAgentBypassesTheCache:
+    def test_an_outside_agent_reads_and_stores_nothing(self, fakes, redis, on):  # noqa: F811
+        from dataclasses import replace
+
+        from acb_auth.roles import AgentScope
+
+        user = replace(member(*FULL), agent=AgentScope(connection_id="c-1"))
+        _, resp = read(user)
+        first = app_calls(fakes)
+        read(user)
+        assert app_calls(fakes) == 2 * first
+        assert redis.calls == []
+        assert "etag" not in resp.headers
 
 
 # ── done-when 5 ─────────────────────────────────────────────────────────────

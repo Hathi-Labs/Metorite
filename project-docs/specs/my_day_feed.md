@@ -930,9 +930,22 @@ The BFF route passes `If-None-Match` on, and passes a 304 back as a 304.
 `fetchFeed` keeps the tag. On a 304 it keeps its cached answer, stamps
 `fetchedAt` again, and writes the needs view again.
 
-A write that changes the answer always bumps a version. So a 304 can never
-stand for an answer from before a write. The new stamp also fixes the
-5-second carried needs.
+A 304 says that the body is the same as the body the client holds. It does
+not say that the body is new. The writes of this file bump a version, and
+item 8 names the writes that wait. The new stamp also fixes the 5-second
+carried needs.
+
+These writes of a member's own view emit no `pm.*` event, so each one bumps
+a version after its commit (MD-5a review):
+
+- `PATCH /projects/tasks/{id}/personal` (a disposition, a defer, a block) and
+  `POST /projects/notifications/read` bump the member's version.
+- `POST /projects/tasks/{id}/nudge` bumps the version of the person whom the
+  nudge reaches.
+- `PUT /projects/tasks/{id}/assignees` with removals and no additions bumps
+  the org version. An addition already emits `pm.task.assigned`.
+
+None of them emits a new event, so the workflow triggers do not change.
 
 **6. Redis fails open.** With Redis down, the read runs the providers as
 today. The sink and the active-set write log the failure and go on. The sink
@@ -950,6 +963,18 @@ for the edge, or 600 seconds at most:
 - a mailbox the member reads but does not own
 - a Calendar change that is not a task edit
 - a Handled entry of another member
+
+**The settle time.** Projects emits some `pm.*` events inside the
+transaction of the write: `create_personal_task`, `complete_for_member` and
+`reopen_if_closed`. A read between the event and the commit reads the old
+rows. So the org version is a time stamp, and a read stores no answer while
+the org version is less than 2 seconds old (`SETTLE_S`). The read still
+serves its answer.
+
+A transaction slower than 2 seconds can still store a stale answer, until the
+edge or 600 seconds at most. The fix for the long term is to emit after the
+commit. #493 put the emit of `complete_for_member` inside the transaction on
+purpose, so that change needs its own decision.
 
 **9. Paging is not in MD-5.** The column keeps `limit=40`. The cache keys on
 `limit`, so a later ticket can page with no change to the cache.
@@ -2275,6 +2300,11 @@ time itself, the urgent time minus 2 hours, and the next local midnight. A
 folded `block_soon` counts as a countdown. An answer whose state read failed
 is not stored. Fences: the two suites below and the vitest of `feed.test.ts`
 and `route.test.ts`.
+
+The review added four rules. The four own writes of item 5 bump a version. The
+org version is a time stamp with the settle time of item 8. The sink takes the
+bound tenant before the payload's org. A request of an outside agent
+(`user.agent`) reads and stores nothing.
 
 Files:
 

@@ -12,11 +12,24 @@ version moves, the next time edge passes, or 600 seconds pass. While the
 answer holds a countdown (§8.4 item 3) it is valid for 60 seconds at most.
 
 **Two versions** (§8.4 item 1). ``key("my_day", "ver")`` is the org's. The
-change sink bumps it on each ``pm.*`` event (:func:`on_event`). The member's
-is ``key("my_day", "ver", <member>)``. The state POST, the prefs PUT and the
-``on_new_mail`` hook of a mailbox the member owns bump it (:func:`bump_member`).
-The read takes both versions BEFORE it runs the providers, and stores those
-values (item 17). So a write during the compute makes the next read miss.
+change sink sets it on each ``pm.*`` event (:func:`on_event`), and an assignee
+removal sets it too (:func:`bump_org`). The member's is
+``key("my_day", "ver", <member>)``. These bump it (:func:`bump_member`): the
+state POST, the prefs PUT, the member's own overlay PATCH and mark-read in
+Projects, the nudge (for the person it reaches), and the ``on_new_mail`` hook of
+a mailbox the member owns. The read takes both versions BEFORE it runs the
+providers, and stores those values (item 17). So a write during the compute
+makes the next read miss.
+
+**The settle time** (§8.4 item 8). Projects emits some ``pm.*`` events inside
+the write's transaction, before the commit. So the org version is a time stamp
+(``<ns>-<8 hex>``), set with one ``SET``, and a read stores no answer while the
+org version is less than ``SETTLE_S`` old. The read still serves its answer. A
+transaction slower than ``SETTLE_S`` can still leave a stale answer, up to the
+edge or 600 seconds.
+
+**An agent never uses the cache.** A request with ``user.agent`` set (an
+outside agent, WS-55) runs the providers, and reads and stores nothing.
 
 **The ETag names the body** (item 16): ``W/"<16 hex of SHA-256>"`` of the
 JSON with sorted keys. A hit answers 304 only when ``If-None-Match`` holds the
@@ -49,6 +62,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import secrets
+import time as _time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
@@ -74,18 +89,21 @@ WRITE_TIMEOUT_S = 0.25
 #: Seconds the sink and a bump wait for Redis (§8.4 item 6). Projects awaits
 #: ``emit`` inline in each write, so the sink must not slow a task edit.
 BUMP_TIMEOUT_S = 0.05
-#: The block edge (§8.4 item 2): a block start minus this.
-BLOCK_LEAD = timedelta(minutes=30)
-#: The due edge (§8.4 item 2): a due time minus this.
-DUE_LEAD = timedelta(hours=2)
-#: The grace of ``no_plan_yet`` after the day start (§8.4 item 2).
-PLAN_GRACE = timedelta(minutes=60)
+#: Seconds after an org version moves in which a read stores nothing
+#: (§8.4 item 8). A ``pm.*`` event can come before its commit.
+SETTLE_S = 2.0
 #: The day end edge (§8.4 item 2): the day end minus this.
 DAY_END_LEAD = timedelta(minutes=60)
 #: The source of the ``pm.*`` events (``routes/projects/core.py`` ``emit``).
 PROJECTS_SOURCE = "projects"
 #: The Redis namespace of every key here (§8.4 item 4).
 NAMESPACE = "my_day"
+
+
+def _wall_ns() -> int:
+    """The wall clock of the org version and of the settle time. One name,
+    so a test can move both."""
+    return _time.time_ns()
 
 
 def enabled() -> bool:
@@ -204,11 +222,13 @@ def signal_edges(signals: Iterable[Any]) -> list[datetime]:
     """Each ``urgent_at`` and the instant 2 hours before it (the urgency term
     and the lift of §6.3 rule 4), each ``expires_at``, and each due time and
     the instant 2 hours before it (§8.4 item 2)."""
+    from gateway.routes.shell.feed_rank import SOON  # the urgency term, 2 hours
+
     out: list[datetime] = []
     for signal in signals:
         urgent = _instant(getattr(signal, "urgent_at", None))
         if urgent is not None:
-            out += [urgent, urgent - DUE_LEAD]
+            out += [urgent, urgent - SOON]
         expires = _instant(getattr(signal, "expires_at", None))
         if expires is not None:
             out.append(expires)
@@ -216,7 +236,7 @@ def signal_edges(signals: Iterable[Any]) -> list[datetime]:
         if due is not None:
             # The due time itself too: the needs view moves the task from
             # due today to overdue then.
-            out += [due, due - DUE_LEAD]
+            out += [due, due - SOON]
     return out
 
 
@@ -225,6 +245,9 @@ def day_edges(day: Any, tz: ZoneInfo, now: datetime) -> list[datetime]:
     minutes, of the member's current and next day (§8.4 item 2). Also the
     next local midnight of the feed's zone, where "today" moves for the
     templates and for the split of due today and overdue."""
+    # Local: feed.py imports this module.
+    from gateway.routes.shell.feed import PLAN_GRACE
+
     out: list[datetime] = []
     if day is not None:
         first = day.feed_day(now)
@@ -354,7 +377,8 @@ async def serve(user: Any, size: int, compute: Callable[[], Awaitable[Computed]]
     from fastapi.encoders import jsonable_encoder
     from gateway.routes.shell import needs
 
-    if not enabled():
+    if not enabled() or getattr(user, "agent", None) is not None:
+        # Off, or an outside agent: no read and no store (§8.4 item 7).
         return (await compute()).body
 
     org = str(getattr(user, "organization_id", None) or "")
@@ -383,7 +407,7 @@ async def serve(user: Any, size: int, compute: Callable[[], Awaitable[Computed]]
     body = jsonable_encoder(computed.body)
     text = body_json(body)
     tag = etag(text)
-    if seen is not None and computed.storable:
+    if seen is not None and computed.storable and settled(seen.org_ver):
         ttl = ttl_seconds(now, computed.edges, body)
         if ttl > 0:
             try:
@@ -402,14 +426,34 @@ async def serve(user: Any, size: int, compute: Callable[[], Awaitable[Computed]]
 # ── The bumps (§8.2, §8.4 items 1, 19 and 20) ───────────────────────────────
 
 
-async def _incr(org: str, which: Callable[[], Any], event: str) -> None:
+def org_version_value() -> str:
+    """A new org version: the wall clock in ns and 8 random hex characters.
+    Equality is all a read compares. The time also gives the settle rule."""
+    return f"{_wall_ns()}-{secrets.token_hex(4)}"
+
+
+def settled(org_ver: str) -> bool:
+    """Whether the org version is ``SETTLE_S`` old or more (§8.4 item 8). No
+    version, or one that does not parse, counts as settled."""
+    try:
+        stamp = int(str(org_ver).split("-", 1)[0])
+    except ValueError:
+        return True
+    return (_wall_ns() - stamp) / 1e9 >= SETTLE_S
+
+
+async def _bump(org: str, op: Callable[[Any], Awaitable[Any]], event: str) -> None:
     from acb_common.tenant_redis import organization_scope
 
     try:
         with organization_scope(org):
-            await asyncio.wait_for(_redis().incr(which()), BUMP_TIMEOUT_S)
+            await asyncio.wait_for(op(_redis()), BUMP_TIMEOUT_S)
     except Exception as exc:  # a bump never fails the write that made it
         logger.warning(event, extra={"error": type(exc).__name__})
+
+
+async def _set_org_version(org: str, event: str) -> None:
+    await _bump(org, lambda r: r.set(_org_version_key(), org_version_value()), event)
 
 
 async def bump_member(organization_id: Any, email: Any) -> None:
@@ -423,12 +467,24 @@ async def bump_member(organization_id: Any, email: Any) -> None:
     org, member = str(organization_id or ""), _member(email)
     if not org or "@" not in member:
         return
-    await _incr(org, lambda: _member_version_key(member), "shell.feed.cache member bump failed")
+    await _bump(org, lambda r: r.incr(_member_version_key(member)),
+                "shell.feed.cache member bump failed")
+
+
+async def bump_org(organization_id: Any) -> None:
+    """Move the org version for a write that emits no ``pm.*`` event, such as
+    an assignee removal (§8.4 item 5). The caller passes a stored fact or the
+    session's org, never a request value."""
+    if not enabled():
+        return
+    org = str(organization_id or "")
+    if org:
+        await _set_org_version(org, "shell.feed.cache org bump failed")
 
 
 async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> None:
-    """The change sink (§8.2, §8.4 items 1 and 20): a ``pm.*`` event bumps
-    the org version with ONE increment. It runs no SQL.
+    """The change sink (§8.2, §8.4 items 1 and 20): a ``pm.*`` event sets
+    the org version with ONE ``SET``. It runs no SQL.
 
     The org is the bound tenant (``acb_common.db.current_tenant``), or else
     the payload's ``organization_id``. Only ``pm.task.assigned`` carries
@@ -443,4 +499,4 @@ async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> Non
     org = current_tenant() or (payload or {}).get("organization_id")
     if not org:
         return
-    await _incr(str(org), _org_version_key, "shell.feed.cache org bump failed")
+    await _set_org_version(str(org), "shell.feed.cache org bump failed")
