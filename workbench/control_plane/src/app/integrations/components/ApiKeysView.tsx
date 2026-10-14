@@ -11,7 +11,7 @@ import type { AgentEntry } from "@/app/api/agent/list/route";
 import GitHubAccountBadge from "@/components/GitHubAccountBadge";
 import FilterPills from "@/components/FilterPills";
 import { Input } from "@/components/ui/Input";
-import { orgKeyConfigured, type Connection } from "../lib/connections";
+import { APP_OWNED_TILES, appConnection, orgKeyConfigured, type Connection } from "../lib/connections";
 import OperatorEnvVars from "../OperatorEnvVars";
 
 // ===========================================================================
@@ -22,6 +22,8 @@ type ApiEntry = IntegrationStatus & {
   category: string;
   is_custom?: boolean;
   domain?: string;
+  /** The app's registry row of an app-owned tile (`APP_OWNED_TILES`), or null. */
+  appConnection?: Connection | null;
 };
 
 interface DiscoveredDef {
@@ -175,14 +177,35 @@ function ApiTile({ api, selected, onClick }: { api: ApiEntry; selected: boolean;
 
 const ZOHO_SERVICE = "zoho-crm";
 
-/** Zoho has no key form here. The CRM app owns the one-click connect. */
-function ZohoInCrm() {
+/**
+ * Zoho has no key form here. The CRM owns the one-click connect (D96.1), so
+ * the panel says where the connection lives and links to CRM settings.
+ */
+export function ZohoInCrm({ connected, connection }: {
+  connected: boolean;
+  connection: Connection | null;
+}) {
   const router = useRouter();
+  const location = connected ? connection?.detail?.location : undefined;
   return (
     <div className="space-y-3">
-      <p className="text-sm text-muted-foreground">Zoho connects in the CRM app.</p>
-      <Button variant="primary" size="sm" icon="ExternalLink" onClick={() => router.push("/crm")}>
-        Open CRM
+      {connected ? (
+        <div className="space-y-1">
+          <p className="text-sm text-foreground">Connected through the CRM.</p>
+          {location && (
+            <p className="text-xs text-muted-foreground">Data centre: {location.toUpperCase()}</p>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">Connect Zoho from CRM settings. It takes one click.</p>
+      )}
+      <Button
+        variant="primary"
+        size="sm"
+        icon="Settings2"
+        onClick={() => router.push(APP_OWNED_TILES[ZOHO_SERVICE].settingsHref)}
+      >
+        Manage in CRM settings
       </Button>
     </div>
   );
@@ -473,7 +496,7 @@ function ApiSidePanel({ api, agents, onClose, onRefresh }: {
           <GitHubAccountBadge integration={api} onRefresh={onRefresh} />
         ) : api.service === ZOHO_SERVICE ? (
           // Zoho connects inside the CRM app (D96). No customer OAuth app.
-          <ZohoInCrm />
+          <ZohoInCrm connected={api.configured} connection={api.appConnection ?? null} />
         ) : api.service === "whatsapp" ? (
           // WhatsApp is multi-account too (wa_accounts); connecting is a guided
           // wizard in the app, so the panel just lists + disconnects numbers.
@@ -832,7 +855,12 @@ export default function ApiKeysView() {
           const base = { ...a, category: a.category ?? "custom" };
           if (a.service === "whatsapp")
             return { ...base, configured: whatsappCount > 0 };
-          return { ...base, configured: orgKeyConfigured(orgRows, a.service, a.configured) };
+          // An app-owned tile (Zoho CRM) counts the app's registry row.
+          return {
+            ...base,
+            configured: orgKeyConfigured(orgRows, a.service, a.configured),
+            appConnection: appConnection(orgRows, a.service),
+          };
         }),
       );
       setAgents(Array.isArray(aData) ? aData : []);

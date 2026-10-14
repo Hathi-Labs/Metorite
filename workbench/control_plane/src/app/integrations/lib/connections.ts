@@ -405,8 +405,38 @@ export function testMessage(r: { ok: boolean; error: string | null }): string {
 }
 
 /**
- * Whether the org holds a key for `service`. `rows` is `null` when the read
- * model answered 404, and then the deployment-wide status stands.
+ * The tiles whose connection an app owns (D96.1), and the registry row that
+ * stands for each one. Such a tile counts that row, of any kind, and never a
+ * key row. Its panel links to the app and offers no key form. The gateway
+ * mirror is `APP_OWNED_SERVICES` in `routes/integrations.py`.
+ *
+ * WhatsApp stays out on purpose. Its tile counts the numbers that
+ * `/api/whatsapp/accounts` returns, and that read works for a member. The
+ * registry read needs `admin:members:read`, so a member would see "Not set up".
+ */
+export const APP_OWNED_TILES: Record<
+  string,
+  { provider: string; owningApp: OwningApp; settingsHref: string }
+> = {
+  "zoho-crm": { provider: "zoho", owningApp: "crm", settingsHref: "/crm?tab=settings&section=setup" },
+};
+
+const LIVE: ReadonlySet<ConnectionStatus> = new Set(["connected", "configured"]);
+
+/** The app's registry row for an app-owned tile, or null. */
+export function appConnection(
+  rows: readonly Connection[] | null,
+  service: string,
+): Connection | null {
+  const owned = APP_OWNED_TILES[service];
+  if (!owned || rows === null) return null;
+  return rows.find((r) => r.provider === owned.provider && r.owning_app === owned.owningApp) ?? null;
+}
+
+/**
+ * Whether the org holds a live connection for `service`: the app's row for an
+ * app-owned tile, else a key row. `rows` is `null` when the read model could
+ * not be read, and then the server's status stands.
  */
 export function orgKeyConfigured(
   rows: readonly Connection[] | null,
@@ -414,10 +444,11 @@ export function orgKeyConfigured(
   fallback: boolean,
 ): boolean {
   if (rows === null) return fallback;
-  return rows.some(
-    (r) =>
-      r.kind === "api_key" &&
-      r.provider === service &&
-      (r.status === "configured" || r.status === "connected"),
-  );
+  const owned = APP_OWNED_TILES[service];
+  if (owned) {
+    return rows.some(
+      (r) => r.provider === owned.provider && r.owning_app === owned.owningApp && LIVE.has(r.status),
+    );
+  }
+  return rows.some((r) => r.kind === "api_key" && r.provider === service && LIVE.has(r.status));
 }

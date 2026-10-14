@@ -942,13 +942,10 @@ class TestLayerCTheBuiltInAllowlist:
         for row in rows:
             for var in row["env_vars"]:
                 assert var["key"] in integrations.BUILTIN_ENV_KEYS, (row["service"], var["key"])
+        # The CRM owns Zoho, so its tile offers no key form at all (WS-54,
+        # `APP_OWNED_SERVICES`, `test_integrations_zoho_tile.py`).
         zoho = by_service["zoho-crm"]
-        assert [v["key"] for v in zoho["env_vars"]] == [
-            "ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN",
-        ]
-        assert [v["key"] for v in zoho["operator_env_vars"]] == [
-            "ZOHO_API_DOMAIN", "ZOHO_ACCOUNTS_URL", "ZOHO_REGION",
-        ]
+        assert zoho["env_vars"] == [] and zoho["operator_env_vars"] == []
         smtp = by_service["smtp"]
         assert [v["key"] for v in smtp["env_vars"]] == ["SMTP_USERNAME", "SMTP_PASSWORD"]
         assert [v["key"] for v in smtp["operator_env_vars"]] == ["SMTP_HOST", "SMTP_PORT"]
