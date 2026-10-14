@@ -48,9 +48,9 @@ RANK = ("none", "brief", "interrupt", "urgent")
 
 
 def _kind_class(kind: str, facts: dict[str, Any]) -> str:
-    if kind == "notification":
-        if str(facts.get("notification") or "") in INTERRUPTING_NOTIFICATIONS:
-            return "interrupt"
+    if (kind == "notification"
+            and str(facts.get("notification") or "") in INTERRUPTING_NOTIFICATIONS):
+        return "interrupt"
     return REACH_CLASS.get(kind, "none")
 
 
