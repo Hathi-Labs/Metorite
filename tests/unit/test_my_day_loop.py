@@ -104,6 +104,11 @@ class _FakeRedis:
             self._note("mget", k)
         return [None if self.strings.get(k) is None else self.strings[k][0] for k in keys]
 
+    async def delete(self, *keys: str) -> int:
+        for k in keys:
+            self._note("delete", k)
+        return sum(1 for k in keys if self.strings.pop(k, None) is not None)
+
     async def exists(self, *keys: str) -> int:
         for k in keys:
             self._note("exists", k)
@@ -279,15 +284,29 @@ class TestTheSwitch:
 
 
 class TestTheReadWritesTheSessionMember:
-    def test_note_active_writes_the_lower_case_session_email(self, switch,
-                                                             redis_fake) -> None:
+    def test_note_active_writes_the_exact_session_email(self, switch,
+                                                        redis_fake) -> None:
+        """The session's own spelling, not a lower-case copy (fix round 1,
+        P1): every member table keys on it."""
         switch(True)
         before = time.time()
-        asyncio.run(my_day_loop.note_active(_user()))
+        asyncio.run(my_day_loop.note_active(_user(email=f"  {ME} ")))
         assert list(redis_fake.zsets) == [_zkey(ORG_A)]
         (member, score), = redis_fake.zsets[_zkey(ORG_A)].items()
-        assert member == ME.lower()
+        assert member == ME and member != ME.lower()
         assert before <= score <= time.time()
+
+    def test_note_active_drops_an_old_lower_case_copy(self, switch, redis_fake) -> None:
+        switch(True)
+        redis_fake.zsets[_zkey(ORG_A)] = {ME.lower(): time.time() - 60}
+        asyncio.run(my_day_loop.note_active(_user()))
+        assert list(redis_fake.zsets[_zkey(ORG_A)]) == [ME]
+
+    def test_a_lower_case_session_writes_one_entry(self, switch, redis_fake) -> None:
+        switch(True)
+        asyncio.run(my_day_loop.note_active(_user(email="plain@a.test")))
+        assert list(redis_fake.zsets[_zkey(ORG_A)]) == ["plain@a.test"]
+        assert [n for n, _ in redis_fake.calls] == ["zadd"]
 
     def test_note_active_takes_the_user_and_nothing_else(self) -> None:
         params = list(inspect.signature(my_day_loop.note_active).parameters)
@@ -512,7 +531,7 @@ SHADOW = "my_day.triage=shadow,my_day.weight=shadow"
 
 
 def _ctx(org: str = ORG_A, *grants: str) -> UserContext:
-    return UserContext(email=ME.lower(), role=UserRole.EMPLOYEE, organization_id=org,
+    return UserContext(email=ME, role=UserRole.EMPLOYEE, organization_id=org,
                        access=EffectiveAccess(role_granted=frozenset(grants)))
 
 
@@ -532,6 +551,8 @@ class _World:
         self.day = state.Day(state._zone(ZONE), 9, 18)
         self.log: list[str] = []
         self.judged: list[tuple[UserContext, datetime | None]] = []
+        #: The address that each outside read was handed, by read.
+        self.emails: dict[str, list[str]] = {}
 
 
 @pytest.fixture
@@ -544,6 +565,7 @@ def world(monkeypatch, redis_fake) -> _World:
 
     async def _resolve(email: str) -> tuple[str | None, str | None]:
         w.log.append("resolve_identity")
+        w.emails.setdefault("resolve_identity", []).append(email)
         if w.unavailable:
             raise access.IdentityUnavailable("identity")
         access._identity_read_failed.set(w.failed)
@@ -551,12 +573,18 @@ def world(monkeypatch, redis_fake) -> _World:
 
     async def _status(org: str, member: str) -> str | None:
         w.log.append("status")
+        w.emails.setdefault("status", []).append(member)
         return w.status
 
     async def _member_context(email: str) -> UserContext:
+        # The request path's resolve keeps the address it is handed
+        # (deps.member_context builds UserContext(email=email)).
         w.log.append("member_context")
+        w.emails.setdefault("member_context", []).append(email)
         bind_tenant(str(w.context.organization_id))  # bound for ever, as the real one
-        return w.context
+        return UserContext(email=email, role=w.context.role,
+                           organization_id=w.context.organization_id,
+                           access=w.context.access)
 
     async def _read_day(org: str, user: Any) -> Any:
         w.log.append("read_day")
@@ -579,7 +607,7 @@ def _seed_active(fake: _FakeRedis, *members: str, org: str = ORG_A) -> None:
     fake.zsets[_zkey(org)] = {m: time.time() for m in members}
 
 
-def _pass(when: datetime, org: str = ORG_A, member: str = ME.lower()) -> str:
+def _pass(when: datetime, org: str = ORG_A, member: str = ME) -> str:
     return asyncio.run(my_day_loop.member_pass(org, member, when))
 
 
@@ -657,15 +685,15 @@ class TestDeparted:
 
     def test_no_org_removes_the_member_before_member_context(self, world,
                                                               redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower(), "other@a.test")
+        _seed_active(redis_fake, ME, "other@a.test")
         world.identity = (None, None)
         assert _pass(EARLY) == "departed"
-        assert ME.lower() not in redis_fake.zsets[_zkey(ORG_A)]
+        assert ME not in redis_fake.zsets[_zkey(ORG_A)]
         assert "other@a.test" in redis_fake.zsets[_zkey(ORG_A)]
         assert world.log == ["resolve_identity"]
 
     def test_another_org_removes_the_member(self, world, redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         world.identity = ("u-1", ORG_B)
         assert _pass(EARLY) == "departed"
         assert redis_fake.zsets[_zkey(ORG_A)] == {}
@@ -674,24 +702,24 @@ class TestDeparted:
     @pytest.mark.parametrize("status", ["removed", "suspended", "invited", None])
     def test_a_status_that_is_not_active_removes_the_member(self, world, redis_fake,
                                                             status) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         world.status = status
         assert _pass(EARLY) == "departed"
         assert redis_fake.zsets[_zkey(ORG_A)] == {}
         assert world.log == ["resolve_identity", "status"]
 
     def test_a_failed_identity_read_keeps_the_member(self, world, redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         world.failed = True
         assert _pass(EARLY) == "identity_failed"
-        assert ME.lower() in redis_fake.zsets[_zkey(ORG_A)]
+        assert ME in redis_fake.zsets[_zkey(ORG_A)]
         assert world.log == ["resolve_identity"]
 
     def test_identity_unavailable_keeps_the_member(self, world, redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         world.unavailable = True
         assert _pass(EARLY) == "identity_failed"
-        assert ME.lower() in redis_fake.zsets[_zkey(ORG_A)]
+        assert ME in redis_fake.zsets[_zkey(ORG_A)]
         assert world.log == ["resolve_identity"]
 
     def test_a_failed_status_read_keeps_the_member(self, world, redis_fake,
@@ -700,20 +728,20 @@ class TestDeparted:
             raise ConnectionError("db down")
 
         monkeypatch.setattr(my_day_loop, "_member_status", _boom)
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         assert _pass(EARLY) == "identity_failed"
-        assert ME.lower() in redis_fake.zsets[_zkey(ORG_A)]
+        assert ME in redis_fake.zsets[_zkey(ORG_A)]
         assert "member_context" not in world.log
 
     def test_an_active_member_reaches_member_context(self, world, redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         _pass(EARLY)
         assert world.log[:3] == ["resolve_identity", "status", "member_context"]
-        assert ME.lower() in redis_fake.zsets[_zkey(ORG_A)]
+        assert ME in redis_fake.zsets[_zkey(ORG_A)]
 
     def test_the_status_read_is_bound_and_names_the_bound_org(self) -> None:
         sql = my_day_loop._STATUS_SQL
-        assert "FROM app_user" in sql and "lower(email) = :email" in sql
+        assert "FROM app_user" in sql and "lower(email) = lower(:email)" in sql
         assert "organization_id = CAST(NULLIF(current_setting('app.tenant_id'" in sql
 
 
@@ -721,12 +749,12 @@ class TestTheContext:
     """Done-whens 1 and 2 (§8.3): the context is the request path's own."""
 
     def test_a_context_of_another_org_is_skipped(self, world, redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         world.context = _ctx(ORG_B, "feature:projects")
         assert _pass(EARLY + timedelta(minutes=15)) == "other_org"
         assert world.judged == []
         assert "read_day" not in world.log
-        assert ME.lower() in redis_fake.zsets[_zkey(ORG_A)]
+        assert ME in redis_fake.zsets[_zkey(ORG_A)]
 
     @pytest.mark.parametrize(("grants", "email_ran"), [
         (("feature:projects",), False),
@@ -760,7 +788,7 @@ class TestTheContext:
 
         monkeypatch.setattr(feed_decide, "judge", _judge)
         world.context = _ctx(ORG_A, *grants)
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         assert _pass(EARLY + timedelta(minutes=15)) == "judged:asked"
         assert ("email" in ran) is email_ran
         assert sources["email"] == ("ok" if email_ran else "absent")
@@ -783,7 +811,7 @@ class TestTheMorningPass:
         assert my_day_loop.morning_date(day, at(23, 50)) is None
 
     def test_the_morning_pass_runs_once(self, world, redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         # 08:30: not yet. The first look reads the day once, and keeps it.
         assert _pass(EARLY) == "not_due"
         assert world.judged == []
@@ -793,7 +821,7 @@ class TestTheMorningPass:
         assert world.log == []
         # 08:45: the morning pass.
         assert _pass(EARLY + timedelta(minutes=15)) == "judged:asked"
-        assert len(world.judged) == 1 and world.judged[0][0] is world.context
+        assert len(world.judged) == 1 and world.judged[0][0].email == ME
         guard = f"{KEY_ROOT}:{ORG_A}:my_day:morning:{ME.lower()}:2026-10-14"
         _value, kwargs = redis_fake.strings[guard]
         assert kwargs == {"nx": True, "ex": my_day_loop.MORNING_GUARD_S}
@@ -808,7 +836,7 @@ class TestTheMorningPass:
         assert len(world.judged) == 2
 
     def test_a_guard_another_process_holds_runs_no_pass(self, world, redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         guard = f"{KEY_ROOT}:{ORG_A}:my_day:morning:{ME.lower()}:2026-10-14"
         redis_fake.strings[guard] = ("1", {})
         assert _pass(EARLY + timedelta(minutes=15)) == "not_due"
@@ -816,7 +844,7 @@ class TestTheMorningPass:
 
     def test_with_the_cache_off_the_versions_are_never_read(self, world,
                                                             redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         _pass(EARLY)
         assert not any(name == "mget" for name, _ in redis_fake.calls)
 
@@ -835,7 +863,7 @@ class TestTheDirtyPass:
 
     def test_one_pass_in_two_minutes(self, world, redis_fake, monkeypatch) -> None:
         monkeypatch.setattr(get_settings(), "my_day_cache", True)
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         # Never judged: dirty.
         assert _pass(self.LATE) == "judged:asked"
         dirty_key = f"{KEY_ROOT}:{ORG_A}:my_day:dirty:{ME.lower()}"
@@ -862,7 +890,7 @@ class TestTheDirtyPass:
         assert len(world.judged) == 2
 
     def test_with_the_cache_off_a_bump_makes_no_pass(self, world, redis_fake) -> None:
-        _seed_active(redis_fake, ME.lower())
+        _seed_active(redis_fake, ME)
         assert _pass(self.LATE) == "not_due"
         self._bump(redis_fake)
         assert _pass(self.LATE + timedelta(minutes=5)) == "not_due"
@@ -934,8 +962,10 @@ class TestTheBound:
         assert live["peak"] == 3
 
     def test_each_member_runs_in_its_own_tenant_context(self, monkeypatch) -> None:
-        """``member_context`` binds for ever. The binding of one member never
-        reaches the next one, nor the loop."""
+        """``member_context`` binds for ever. One caller runs two members, one
+        after the other, IN ONE TASK. Without ``_one_member``'s own task the
+        first member's binding reaches the second, and the caller (fix round
+        1, P2-3: ``gather`` alone cannot show it, so this does not use it)."""
         from acb_common.db import bind_tenant, current_tenant
 
         seen: list[str | None] = []
@@ -948,12 +978,13 @@ class TestTheBound:
         monkeypatch.setattr(my_day_loop, "member_pass", _pass_fake)
 
         async def go() -> str | None:
-            await my_day_loop.run_members(ORG_A, ["a@a.test", "b@a.test", "c@a.test"],
-                                          asyncio.Semaphore(1))
+            gate = asyncio.Semaphore(1)
+            await my_day_loop._one_member(ORG_A, "a@a.test", gate, None)
+            await my_day_loop._one_member(ORG_A, "b@a.test", gate, None)
             return current_tenant()
 
         assert asyncio.run(go()) is None
-        assert seen == [None, None, None]
+        assert seen == [None, None]
 
     def test_the_member_pass_runs_after_the_org_and_outside_its_bound(
             self, monkeypatch) -> None:
@@ -995,3 +1026,171 @@ class TestTheJudgmentsSweep:
             if pattern.search(p.read_text(encoding="utf-8", errors="ignore"))
         ]
         assert writers == ["feed_decide.py"], writers
+
+
+# ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+
+def _members(org: str = ORG_A) -> list[str]:
+    return asyncio.run(my_day_loop.active_members(org))
+
+
+def _run(members: list[str], when: datetime, org: str = ORG_A) -> list[str | None]:
+    return asyncio.run(my_day_loop.run_members(org, members, now=when))
+
+
+class TestTheExactAddress:
+    """P1: a mixed-case session address goes end to end with its own
+    spelling. ``my_day_card_state``, ``user_settings`` and
+    ``my_day_judgments`` key on that spelling, so a lower-case copy finds
+    none of the member's rows."""
+
+    def test_the_session_spelling_reaches_every_read_and_judge(
+            self, world, redis_fake, switch, monkeypatch) -> None:
+        switch(True)
+        monkeypatch.setattr(my_day_loop, "judging_on", lambda org: True)
+        asyncio.run(my_day_loop.note_active(_user()))
+        members = _members()
+        assert members == [ME]
+        assert _run(members, EARLY + timedelta(minutes=15)) == ["judged:asked"]
+        assert world.emails == {"resolve_identity": [ME], "status": [ME],
+                                "member_context": [ME]}
+        (user, _now), = world.judged
+        assert user.email == ME
+        # The loop's own guards key on the lower case, as the cache does.
+        assert f"{KEY_ROOT}:{ORG_A}:my_day:morning:{ME.lower()}:2026-10-14" in \
+            redis_fake.strings
+
+    def test_a_departed_mixed_case_member_leaves_the_set(self, world, redis_fake) -> None:
+        _seed_active(redis_fake, ME)
+        world.status = "removed"
+        assert _pass(EARLY) == "departed"
+        assert redis_fake.zsets[_zkey(ORG_A)] == {}
+
+
+class TestTheDayRead:
+    """P2-1: the day read holds one pool connection at most."""
+
+    @pytest.fixture
+    def hours(self, monkeypatch) -> tuple[list[Any], list[str]]:
+        from contextlib import asynccontextmanager
+
+        got: list[Any] = []
+        opened: list[str] = []
+
+        async def _hours(user: Any, db: Any) -> Any:
+            got.append(db)
+            return state.Day(state._zone(ZONE))
+
+        @asynccontextmanager
+        async def _session(org: str | None = None):
+            opened.append(str(org))
+            yield "db"
+
+        monkeypatch.setattr(state, "_hours", _hours)
+        monkeypatch.setattr(my_day_loop, "tenant_session", _session)
+        return got, opened
+
+    def test_a_tasks_holder_opens_no_session_around_the_settings_read(self, hours) -> None:
+        got, opened = hours
+        asyncio.run(my_day_loop._read_day(ORG_A, _ctx(ORG_A, "feature:tasks")))
+        assert got == [None] and opened == []
+
+    def test_any_other_member_reads_the_zone_in_one_session(self, hours) -> None:
+        got, opened = hours
+        asyncio.run(my_day_loop._read_day(ORG_A, _ctx(ORG_A, "feature:projects")))
+        assert got == ["db"] and opened == [ORG_A]
+
+
+class TestTheFailureThrottle:
+    """P2-2: a failure holds the member back for 2 minutes, so a starved
+    database does not get the slow path again at each tick."""
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self, monkeypatch) -> None:
+        monkeypatch.setattr(my_day_loop, "judging_on", lambda org: True)
+
+    HOLD = f"{KEY_ROOT}:{ORG_A}:my_day:hold:{ME.lower()}"
+
+    def test_a_failed_identity_read_holds_the_member(self, world, redis_fake) -> None:
+        _seed_active(redis_fake, ME)
+        world.failed = True
+        assert _run([ME], EARLY) == ["identity_failed"]
+        assert redis_fake.strings[self.HOLD][1] == {"nx": True, "ex": 120}
+        world.log.clear()
+        assert _run([ME], EARLY + timedelta(seconds=60)) == ["held"]
+        assert world.log == []
+        del redis_fake.strings[self.HOLD]  # the 2 minutes pass
+        world.failed = False
+        assert _run([ME], EARLY + timedelta(seconds=130)) == ["not_due"]
+        assert "member_context" in world.log
+
+    def test_a_failed_pass_holds_the_member(self, world, redis_fake, monkeypatch) -> None:
+        import acb_auth.deps as deps
+
+        async def _boom(email: str) -> Any:
+            raise ConnectionError("pool exhausted")
+
+        monkeypatch.setattr(deps, "member_context", _boom)
+        _seed_active(redis_fake, ME)
+        assert _run([ME], EARLY) == ["failed"]
+        assert self.HOLD in redis_fake.strings
+        assert _run([ME], EARLY + timedelta(seconds=60)) == ["held"]
+
+    def test_a_timed_out_pass_holds_the_member(self, world, redis_fake, monkeypatch) -> None:
+        async def _slow(org: str, user: Any) -> Any:
+            await asyncio.sleep(60)
+
+        monkeypatch.setattr(my_day_loop, "_read_day", _slow)
+        monkeypatch.setattr(my_day_loop, "MEMBER_TIMEOUT_S", 0.05)
+        _seed_active(redis_fake, ME)
+        assert _run([ME], EARLY) == ["timeout"]
+        assert self.HOLD in redis_fake.strings
+
+    def test_an_org_in_its_cool_down_skips_the_slow_path(self, world, redis_fake,
+                                                         monkeypatch) -> None:
+        from gateway import decide_features as df
+
+        monkeypatch.setitem(df._cooldown_until, ORG_A, df._now() + 600)
+        _seed_active(redis_fake, ME)
+        assert _pass(EARLY) == "cooldown"
+        assert world.log == []
+        assert self.HOLD not in redis_fake.strings
+
+    @pytest.mark.parametrize("reason", ["cooldown", "cap", "failed"])
+    def test_a_morning_that_judged_nothing_is_not_lost(self, world, redis_fake,
+                                                       monkeypatch, reason) -> None:
+        outcomes = [reason, "asked"]
+
+        async def _judge(user: UserContext, now: datetime | None = None) -> Any:
+            world.judged.append((user, now))
+            return feed_decide.Judged(outcomes.pop(0))
+
+        monkeypatch.setattr(feed_decide, "judge", _judge)
+        _seed_active(redis_fake, ME)
+        guard = f"{KEY_ROOT}:{ORG_A}:my_day:morning:{ME.lower()}:2026-10-14"
+        assert _run([ME], EARLY + timedelta(minutes=15)) == [f"judged:{reason}"]
+        assert guard not in redis_fake.strings, "the morning was given back"
+        assert self.HOLD in redis_fake.strings
+        assert _run([ME], EARLY + timedelta(minutes=16)) == ["held"]
+        del redis_fake.strings[self.HOLD]
+        del redis_fake.strings[f"{KEY_ROOT}:{ORG_A}:my_day:dirty:{ME.lower()}"]
+        assert _run([ME], EARLY + timedelta(minutes=18)) == ["judged:asked"]
+        assert guard in redis_fake.strings and len(world.judged) == 2
+
+
+class TestTheMorningTakesTheDirtyGuard:
+    """Verifier P3: the morning pass takes the 2-minute guard too, so a
+    dirty member gets no second pass a tick later."""
+
+    def test_no_dirty_pass_a_tick_after_the_morning(self, world, redis_fake,
+                                                    monkeypatch) -> None:
+        monkeypatch.setattr(get_settings(), "my_day_cache", True)
+        _seed_active(redis_fake, ME)
+        # The first look reads the day and judges: never judged is dirty.
+        assert _pass(EARLY + timedelta(minutes=15)) == "judged:asked"
+        dirty = f"{KEY_ROOT}:{ORG_A}:my_day:dirty:{ME.lower()}"
+        assert dirty in redis_fake.strings
+        redis_fake.strings[f"{KEY_ROOT}:{ORG_A}:my_day:ver:{ME.lower()}"] = ("1", {})
+        assert _pass(EARLY + timedelta(minutes=16)) == "not_due"
+        assert len(world.judged) == 1

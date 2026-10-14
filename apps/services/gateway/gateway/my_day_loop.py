@@ -52,8 +52,14 @@ own. Three members run at once at most, and each has 30 seconds.
 **Members come from the active set only.** :func:`note_active` is the one
 writer of the set. ``GET /shell/feed`` calls it with the session's own
 ``UserContext``, so each email in the set came from a signed-in session and
-never from request input (§8.3, item 22). It writes the lower-case email,
-scored by the time of the read.
+never from request input (§8.3, item 22). It writes the session's exact
+email, scored by the time of the read (fix round 1: the member tables key on
+that spelling). The loop's own guard keys use the lower case.
+
+**A failure holds the member** (fix round 1). After a failed identity read,
+or a pass that failed, timed out or judged nothing, ``key("my_day", "hold",
+<member>)`` holds the member for :data:`HOLD_S`. An org in the ``decide``
+cool-down skips the slow path.
 
 **Dark by default** (item 10). ``MY_DAY_LOOP_ENABLED`` is a ``Settings``
 field, default false, and :func:`loop_enabled` is its one reader. With it
@@ -125,6 +131,9 @@ MORNING_GUARD_S = 26 * 3600
 JUDGED_TTL_S = 26 * 3600
 #: A dirty member gets one pass in this many seconds at most (§8.3).
 DIRTY_GAP_S = 120
+#: After a failed identity read, a failed or timed-out pass, or a pass that
+#: judged nothing, the member waits this many seconds (fix round 1, P2-2).
+HOLD_S = 120
 
 _task: asyncio.Task[None] | None = None
 _stopping = asyncio.Event()
@@ -148,18 +157,29 @@ async def note_active(user: Any) -> None:
     ``GET /shell/feed`` calls this with its session ``UserContext``. The
     email and the organization come from that context and nothing else.
     With the switch off it does nothing. A failure logs, and never raises.
+
+    ⚠️ **The set holds the session's EXACT address** (MD-6a-2 fix round 1).
+    ``my_day_card_state``, ``user_settings`` and ``my_day_judgments`` key on
+    the session's own spelling, and an IdP can send ``First.Last@...``. A
+    lower-case copy would build a context that finds none of the member's
+    rows. A lower-case copy that an older build wrote leaves the set here.
     """
     if not loop_enabled():
         return
-    email = (getattr(user, "email", None) or "").strip().lower()
+    email = (getattr(user, "email", None) or "").strip()
     org = getattr(user, "organization_id", None)
     if not email or not org:
         return
+
+    async def _write() -> None:
+        redis = tenant_redis.get_tenant_redis()
+        await redis.zadd(_active_key(), {email: time.time()})
+        if email.lower() != email:
+            await redis.zrem(_active_key(), email.lower())
+
     try:
         with organization_scope(str(org)):
-            await asyncio.wait_for(
-                tenant_redis.get_tenant_redis().zadd(_active_key(), {email: time.time()}),
-                ACTIVE_WRITE_TIMEOUT_S)
+            await asyncio.wait_for(_write(), ACTIVE_WRITE_TIMEOUT_S)
     except Exception as exc:
         _log.warning("my_day.active_write_failed class=%s", type(exc).__name__)
 
@@ -276,11 +296,13 @@ class IdentityReadFailed(RuntimeError):
 #: The member's status in the bound org (§8.4 item 24). ``resolve_identity``
 #: reads ``app_user`` with no status filter while ``IDENTITY_CUTOVER`` is
 #: off, and the shadow ``org_membership.status`` can be stale while it is
-#: on. So the loop reads the status of record itself.
+#: on. So the loop reads the status of record itself. Both sides are lower
+#: case: the set holds the session's spelling, and ``app_user`` holds the
+#: spelling it was stored with (migration 162 kept it).
 _STATUS_SQL = (
     "SELECT status FROM app_user "
     "WHERE organization_id = CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid) "
-    "AND lower(email) = :email LIMIT 1"
+    "AND lower(email) = lower(:email) LIMIT 1"
 )
 
 
@@ -338,16 +360,39 @@ async def admit(org: str, member: str) -> str | None:
     return "departed"
 
 
+def _guard(member: str) -> str:
+    """The member in the loop's own keys: lower case, as ``cache`` keys it.
+    So one person has one guard, whatever the spelling in the set."""
+    return member.strip().lower()
+
+
 def _judged_key(member: str) -> Any:
-    return key("my_day", "judged", member)
+    return key("my_day", "judged", _guard(member))
 
 
 def _morning_key(member: str, local_date: str) -> Any:
-    return key("my_day", "morning", member, local_date)
+    return key("my_day", "morning", _guard(member), local_date)
 
 
 def _dirty_key(member: str) -> Any:
-    return key("my_day", "dirty", member)
+    return key("my_day", "dirty", _guard(member))
+
+
+def _hold_key(member: str) -> Any:
+    return key("my_day", "hold", _guard(member))
+
+
+def org_cooling(org: str) -> bool:
+    """Whether *org* is in the ``decide`` cool-down after a 402 or a 403.
+    ``judge`` would stop there, so the pass skips the slow path. An
+    in-memory read: no Redis and no SQL."""
+    from gateway import decide_features as df
+
+    token = bind_tenant(org)
+    try:
+        return df.cooling()
+    finally:
+        release_tenant(token)
 
 
 def _day_hint(day: Any) -> dict[str, Any]:
@@ -381,23 +426,36 @@ def morning_date(day: Any, now: datetime) -> str | None:
 
 
 async def _read_day(org: str, user: Any) -> Any:
-    """The member's day, through the state module's read (``state._hours``)."""
+    """The member's day, through the state module's read (``state._hours``).
+
+    A member who holds ``feature:tasks`` reads it through
+    ``get_user_settings``, which opens its own session. So this opens none
+    for them, as ``state.apply_state`` does. A session held around that read
+    would hold two pool connections for one member (fix round 1, P2-1)."""
     from gateway.routes.shell import state
 
+    if user.has_permission("feature:tasks"):
+        return await state._hours(user, None)
     async with tenant_session(org) as db:
         return await state._hours(user, db)
 
 
-async def member_pass(org: str, member: str, now: datetime | None = None) -> str:
-    """One member's pass (§8.3, §8.4 items 12 and 24, §10.9 item 7).
+#: The ``judge`` outcomes that judged nothing. A morning pass that ends so
+#: gives its guard back, and the member is held for :data:`HOLD_S`.
+NOT_JUDGED = frozenset({"cooldown", "cap", "failed"})
+#: The results that hold a member back for :data:`HOLD_S`, so a starved
+#: database does not get the slow path again at each tick (P2-2).
+HELD_AFTER = frozenset({"identity_failed", "timeout", "failed",
+                        *(f"judged:{r}" for r in NOT_JUDGED)})
 
-    Answers what it did: ``not_due``, ``departed``, ``identity_failed``,
-    ``other_org``, or ``judged:<reason>``. Run it in a task of its own,
-    because ``member_context`` binds a tenant and never releases it.
-    """
+
+async def _look(org: str, member: str, when: datetime
+                ) -> tuple[dict[str, Any] | None, list[str] | None, bool, Any, str | None]:
+    """What Redis says of *member*: the judged value, the versions now, if
+    the member is dirty, the stored day and the morning date that is due.
+    Redis only."""
     from gateway.routes.shell import cache
 
-    when = now or datetime.now(UTC)
     with organization_scope(org):
         redis = tenant_redis.get_tenant_redis()
         raw = await redis.get(_judged_key(member))
@@ -416,9 +474,47 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
         if morning is not None and await redis.exists(_morning_key(member, morning)):
             morning = None  # the morning pass of that date already ran
         if dirty and await redis.exists(_dirty_key(member)):
-            dirty = False  # a dirty pass ran less than 2 minutes ago
+            dirty = False  # a pass ran less than 2 minutes ago
+    return judged, seen, dirty, day, morning
+
+
+async def _claim(org: str, member: str, morning: str | None, dirty: bool
+                 ) -> tuple[bool, bool]:
+    """Take the guards of a pass. Answers whether the pass runs, and whether
+    it took the morning guard. Each pass takes the 2-minute guard, the
+    morning pass too, so a dirty member gets no second pass a tick later."""
+    redis = tenant_redis.get_tenant_redis()
+    with organization_scope(org):
+        by_morning = False
+        if morning is not None:
+            by_morning = bool(await redis.set(_morning_key(member, morning), "1", nx=True,
+                                              ex=MORNING_GUARD_S))
+        by_dirty = False
+        if by_morning or dirty:
+            by_dirty = bool(await redis.set(_dirty_key(member), "1", nx=True,
+                                            ex=DIRTY_GAP_S))
+    return by_morning or by_dirty, by_morning
+
+
+async def member_pass(org: str, member: str, now: datetime | None = None) -> str:
+    """One member's pass (§8.3, §8.4 items 12 and 24, §10.9 item 7).
+
+    *member* is the session's exact address, as the active set holds it.
+    Answers what it did: ``not_due``, ``held``, ``cooldown``, ``departed``,
+    ``identity_failed``, ``other_org``, or ``judged:<reason>``. Run it in a
+    task of its own, because ``member_context`` binds a tenant and never
+    releases it.
+    """
+    when = now or datetime.now(UTC)
+    judged, seen, dirty, day, morning = await _look(org, member, when)
     if day is not None and not dirty and morning is None:
         return "not_due"  # Redis alone: no identity read, and no SQL
+    redis = tenant_redis.get_tenant_redis()
+    with organization_scope(org):
+        if await redis.exists(_hold_key(member)):
+            return "held"  # a read failed less than 2 minutes ago
+    if org_cooling(org):
+        return "cooldown"
 
     # §8.4 item 24, BEFORE member_context: a departed address never reaches
     # the request path's resolve, so it files no sign-in request.
@@ -441,13 +537,7 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
                 if await redis.exists(_morning_key(member, morning)):
                     morning = None
 
-    with organization_scope(org):
-        ran = False
-        if morning is not None:
-            ran = bool(await redis.set(_morning_key(member, morning), "1", nx=True,
-                                       ex=MORNING_GUARD_S))
-        if not ran and dirty:
-            ran = bool(await redis.set(_dirty_key(member), "1", nx=True, ex=DIRTY_GAP_S))
+    ran, by_morning = await _claim(org, member, morning, dirty)
     if not ran:
         # Keep the day for the next tick, and the versions as they were.
         with organization_scope(org):
@@ -459,13 +549,32 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
     from gateway.routes.shell import feed_decide
 
     result = await feed_decide.judge(user, when)
-    # The versions read BEFORE the pass (§8.4 item 17): a write during the
-    # pass bumps past them, so the member is dirty again at the next tick.
     with organization_scope(org):
-        await redis.set(_judged_key(member), json.dumps({"ver": seen, "day": fresh}),
+        if result.reason in NOT_JUDGED:
+            # Nothing was judged. Give the morning back, keep the old
+            # versions, and let the hold space out the next try.
+            if by_morning and morning is not None:
+                await redis.delete(_morning_key(member, morning))
+            ver = (judged or {}).get("ver")
+        else:
+            # The versions read BEFORE the pass (§8.4 item 17): a write
+            # during the pass bumps past them, so the member is dirty again.
+            ver = seen
+        await redis.set(_judged_key(member), json.dumps({"ver": ver, "day": fresh}),
                         ex=JUDGED_TTL_S)
     _log.info("my_day.member_judged reason=%s rows=%s", result.reason, result.rows)
     return f"judged:{result.reason}"
+
+
+async def _hold(org: str, member: str) -> None:
+    """Hold *member* back for :data:`HOLD_S` after a failure. A Redis
+    failure here only logs."""
+    try:
+        with organization_scope(org):
+            await tenant_redis.get_tenant_redis().set(
+                _hold_key(member), "1", nx=True, ex=HOLD_S)
+    except Exception as exc:
+        _log.warning("my_day.member_hold_failed class=%s", type(exc).__name__)
 
 
 async def _one_member(org: str, member: str, gate: asyncio.Semaphore,
@@ -473,20 +582,25 @@ async def _one_member(org: str, member: str, gate: asyncio.Semaphore,
     async with gate:
         if _stopping.is_set():
             return None
-        # A task of its own: member_context binds a tenant and never releases
-        # it, and wait_for on a bare coroutine would run it in OUR context.
+        # A task of its own, so the tenant that member_context binds for ever
+        # stays in that task. In Python 3.12, wait_for on a bare coroutine
+        # awaits it in OUR task, and the binding would reach the next member
+        # that this caller runs.
         task = asyncio.get_running_loop().create_task(
             member_pass(org, member, now), name="my-day-member")
         try:
-            return await asyncio.wait_for(task, MEMBER_TIMEOUT_S)
+            did = await asyncio.wait_for(task, MEMBER_TIMEOUT_S)
         except TimeoutError:  # §10.9 item 8: cancelled, and the next one runs
             _log.warning("my_day.member_timed_out")
-            return "timeout"
+            did = "timeout"
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # one member must not stop the others
             _log.warning("my_day.member_failed class=%s", type(exc).__name__)
-            return "failed"
+            did = "failed"
+        if did in HELD_AFTER:
+            await _hold(org, member)
+        return did
 
 
 async def run_members(org: str, members: list[str], gate: asyncio.Semaphore | None = None,

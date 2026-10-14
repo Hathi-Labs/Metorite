@@ -415,3 +415,46 @@ def test_the_org_predicate_holds_without_rls(promoted, redis_fake) -> None:  # n
         with p.admin_engine.begin() as c:
             c.execute(text("DELETE FROM my_day_judgments WHERE member_email = :m"),
                       {"m": JM})
+
+
+# ── Fix round 1: the status read as the owner, and the address case ────────
+
+
+def test_the_status_read_names_its_org_without_rls(promoted) -> None:  # noqa: F811
+    """As the database owner, which production uses today, RLS does not
+    filter, so the org predicate of ``_STATUS_SQL`` is the only fence.
+
+    ``app_user_email_lower_key`` is unique on ``lower(email)`` across the
+    table (migration 162), so one address cannot have a row in two orgs.
+    The case reads org A's row while it is bound to org B instead."""
+    p = promoted
+    member = f"owner-read-{TAG}@md6a2.test"
+    _seed_user(p, member, p.org_a, "removed")
+
+    async def go() -> tuple[str | None, str | None]:
+        async with tenant_engine_scope(_dsn(p.admin_engine.url)):
+            return (await my_day_loop._member_status(p.org_a, member),
+                    await my_day_loop._member_status(p.org_b, member))
+
+    try:
+        assert asyncio.run(go()) == ("removed", None)
+    finally:
+        _unseed(p, member)
+
+
+def test_the_status_read_ignores_the_case_of_the_address(promoted) -> None:  # noqa: F811
+    """P1: the active set holds the session's spelling, and ``app_user``
+    holds the spelling it was stored with. Migration 162 kept each one."""
+    p = promoted
+    stored = f"Mixed.Case-{TAG}@MD6A2.test"
+    _seed_user(p, stored, p.org_a, "active")
+
+    async def go() -> list[str | None]:
+        async with tenant_engine_scope(_dsn(p.app_url)):
+            return [await my_day_loop._member_status(p.org_a, spelling)
+                    for spelling in (stored, stored.lower(), f"mixed.case-{TAG}@Md6a2.Test")]
+
+    try:
+        assert asyncio.run(go()) == ["active", "active", "active"]
+    finally:
+        _unseed(p, stored)
