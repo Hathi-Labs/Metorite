@@ -89,6 +89,28 @@ export function plainTitle(value: string): string {
     .trim();
 }
 
+/** The marks a cut drops from its end, before the ellipsis. */
+const CUT_MARKS = /[ ,;:.\-–—]+$/;
+
+/**
+ * A text cut at a word to at most `limit` characters, with an ellipsis: the
+ * client twin of the server's `acb_skills.ask_tools.clip_words`. A text that
+ * fits comes back whole. A cut never ends inside a word, unless the text has
+ * no space in the first half of the limit (one long token). Fence:
+ * `src/components/email/emailCards.test.ts`.
+ */
+export function clipWords(text: string, limit: number): string {
+  const t = String(text ?? "").trim();
+  if (t.length <= limit) return t;
+  const room = Math.max(limit - 1, 0);
+  const head = t.slice(0, room);
+  let cut = head.trimEnd();
+  const insideWord = !/\s/.test(t[room] ?? "") && !/\s$/.test(head);
+  const space = cut.lastIndexOf(" ");
+  if (insideWord && space >= Math.floor(room / 2)) cut = cut.slice(0, space);
+  return `${cut.replace(CUT_MARKS, "")}…`;
+}
+
 /** True when the text holds a fence mark at all. */
 export function hasFence(value: string): boolean {
   return /[«»]/.test(String(value ?? ""));
