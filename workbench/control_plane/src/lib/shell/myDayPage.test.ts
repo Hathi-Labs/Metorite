@@ -236,12 +236,19 @@ describe("/ with the My Day feed flag", () => {
     acts: [{ id: "done", label: "Done", class: "A", way: "tap", act: "done", act_ref: id }],
   });
 
-  /** Render `/` with this feed answer already in the cache (a revisit). */
-  async function renderWithFeed(answer: unknown): Promise<string> {
+  /**
+   * Render `/` with this feed answer already in the cache (a revisit), and
+   * the bell's needs view too when the test gives one.
+   */
+  async function renderWithFeed(answer: unknown, needsView?: unknown): Promise<string> {
     vi.resetModules();
     const { put } = await import("@/lib/dataCache");
     const { feedKey, readFeedAnswer } = await import("./feed");
     put(feedKey(), readFeedAnswer(answer));
+    if (needsView !== undefined) {
+      const { needsKey, readFeed } = await import("./needs");
+      put(needsKey(), readFeed(needsView));
+    }
     const { default: Home } = await import("@/app/page");
     return renderToStaticMarkup(createElement(Home));
   }
@@ -329,6 +336,61 @@ describe("/ with the My Day feed flag", () => {
     expect(html).toContain('data-feed-seen="tasks:open1"');
     expect(html).toContain('aria-label="More for Card open1"');
     expect(html).not.toContain('data-feed-seen="tasks:folded1"');
+  });
+
+  /**
+   * The honest summary (MD-2c, §6.7). The bell's needs view says 7, and the
+   * feed holds 2 open cards in Now and Needs you. With no Calendar pane the
+   * summary waits on no calendar read, so the server render draws it.
+   *
+   * Mutations, run by hand (2026-10-14): give `summaryLine` the bell's
+   * `needs.count` with the feed on, and the first test fails. Pass the claim
+   * whatever the sources say, and the second one fails.
+   */
+  const handledAnswer = (sources: Record<string, string>) => ({
+    cards: [card("n", "now"), card("y", "needs_you"), card("f", "fyi"), card("l", "later")],
+    groups: [
+      { id: "now", count: 1 },
+      { id: "needs_you", count: 1 },
+      { id: "fyi", count: 1 },
+      { id: "later", count: 1 },
+    ],
+    sources,
+    handled: [
+      { app: "tasks", title: "Send the quote", href: "/tasks?task=q", by: { kind: "you", name: null }, at: null },
+      { app: "email", title: "Receipts", href: "/email", by: { kind: "rules", name: null }, at: null },
+    ],
+    handled_ok: true,
+  });
+  const BELL = { count: 7, total: 7, items: [], sources: { tasks: "ok", projects: "ok", email: "ok" } };
+  const OK = { tasks: "ok", projects: "ok", email: "ok", approvals: "absent", calendar: "ok" };
+
+  it("counts the summary from the feed, not the bell, and says the rest is handled (MD-2c)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY_FEED", "1");
+    access.features = ["projects", "email"];
+    const html = await renderWithFeed(handledAnswer(OK), BELL);
+    expect(html).toMatch(/data-testid="my-day-summary">2 things need you\. The rest is handled\.</);
+    expect(html).toMatch(/aria-expanded="false"[^>]*>[\s\S]*?Handled today[\s\S]*?data-feed-handled-count="">2</);
+  });
+
+  it("drops the claim when a source failed, and keeps the count (MD-2c)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY_FEED", "1");
+    access.features = ["projects", "email"];
+    const html = await renderWithFeed(handledAnswer({ ...OK, email: "failed" }), BELL);
+    expect(html).toMatch(/data-testid="my-day-summary">2 things need you\.</);
+    expect(html).not.toContain("The rest is handled");
+  });
+
+  it("keeps the summary of NS-3 with the feed flag off: the bell's count, and no claim (MD-2c)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY_FEED", "");
+    access.features = ["projects", "email"];
+    const html = await renderWithFeed(handledAnswer(OK), BELL);
+    expect(html).toMatch(/data-testid="my-day-summary">7 things need you\.</);
+    expect(html).not.toContain("The rest is handled");
+    expect(html).not.toContain("Handled today");
   });
 
   it("asks for the feed once, at the default limit", async () => {
