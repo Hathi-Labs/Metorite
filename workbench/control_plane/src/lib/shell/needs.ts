@@ -235,21 +235,46 @@ export function carryNeeds(source: () => Promise<NeedsFeed | null>): () => void 
 }
 
 /**
+ * How long a needs read waits on the carrier, in ms (WS-58 MD-2b). The feed
+ * route may take 8 seconds, and the bell must not wait that long on My Day.
+ * After this time, the read goes to the needs route.
+ */
+export const CARRIER_WAIT_MS = 4_000;
+
+/**
+ * The carried view, or null when the carrier fails, carries no view, or takes
+ * longer than `CARRIER_WAIT_MS`. The carrier's request runs on, and its
+ * answer still goes into the needs key through `guardedPut`.
+ */
+async function carriedView(carried: () => Promise<NeedsFeed | null>): Promise<NeedsFeed | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), CARRIER_WAIT_MS);
+  });
+  try {
+    // `then` also catches a carrier that throws before it returns a promise.
+    const view = Promise.resolve()
+      .then(carried)
+      .catch(() => null);
+    return await Promise.race([view, limit]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Fetch the feed. A refusal or an outage throws, so the card can say so.
  *
  * With a carrier (`carryNeeds`), the default read takes the carried view.
- * A carrier that fails, or carries no view, falls back to the needs route,
- * so the bell's counts never wait on a broken feed.
+ * A carrier that fails, carries no view, or takes longer than
+ * `CARRIER_WAIT_MS`, falls back to the needs route. So the bell's counts never
+ * wait long on a slow or broken feed.
  */
 export async function fetchNeeds(limit = NEEDS_LIMIT): Promise<NeedsFeed> {
   const carried = limit === NEEDS_LIMIT ? carrier : null;
   if (carried) {
-    try {
-      const view = await carried();
-      if (view) return view;
-    } catch {
-      // The feed failed: read the needs route below.
-    }
+    const view = await carriedView(carried);
+    if (view) return view;
   }
   const res = await fetch(`/api/shell/needs?limit=${limit}`, { cache: "no-store" });
   if (!res.ok) throw new Error("What needs you could not load.");
