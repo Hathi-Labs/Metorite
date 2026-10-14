@@ -125,8 +125,6 @@ ALLOWED: dict[str, str] = {
         "The gateway's word rule: at most 8 query words count. Words, not rows.",
     'apps/skills/skill-projects/skill_projects/choices.py::close_rows::scored[:NAME_CANDIDATES_MAX]':
         'The options of one typed question. A question card holds a few choices, not a read.',
-    'apps/skills/skill-projects/skill_projects/choices.py::trim_to_bound::pairs[:-1]':
-        'Drops the last pair to fit a token bound, inside a question card. Not a read.',
     'apps/skills/skill-projects/skill_projects/choices.py::twin_pairs::pairs[:TWIN_PAIRS_MAX]':
         'The options of one typed question. Not a read.',
     'apps/skills/skill-projects/skill_projects/choices.py::twin_pairs::scored[:TWINS_PER_TITLE]':
@@ -215,10 +213,40 @@ ALLOWED: dict[str, str] = {
         'Silent cut. The second PR of the agent-read-paging change fixes it.',
     'packages/acb_skills/acb_skills/crm_tools.py::crm_list_modules::modules[:MAX_ROWS]':
         'Silent cut. The second PR of the agent-read-paging change fixes it.',
+    'apps/services/orchestrator/orchestrator/agents.py::spawn_copilot_agent::run_id[:8]':
+        'Text, not rows: the cut shortens one string.',
+    'apps/skills/skill-my-tasks/skill_my_tasks/core.py::my_tasks_people::summary[:160]':
+        'Text, not rows: the cut shortens one string.',
+    "apps/skills/skill-my-tasks/skill_my_tasks/core.py::my_tasks_people::(p.get('skills') or [])[:6]":
+        "Six skills of one person, inside that person's line. Not rows.",
+    'apps/skills/skill-projects/skill_projects/reads.py::_fenced::flat[:DATASET_CELL]':
+        'Text, not rows: the cut shortens one string.',
+    'packages/acb_skills/acb_skills/memory_tools.py::save_agent_memory::agent[:30]':
+        'Text, not rows: the cut shortens one string.',
+    'packages/acb_skills/acb_skills/memory_tools.py::save_agent_memory::fact[:80]':
+        'Text, not rows: the cut shortens one string.',
+    'packages/acb_skills/acb_skills/memory_tools.py::save_episode::name[:60]':
+        'Text, not rows: the cut shortens one string.',
+    'packages/acb_skills/acb_skills/memory_tools.py::save_memory::fact[:80]':
+        'Text, not rows: the cut shortens one string.',
+    'packages/acb_skills/acb_skills/memory_tools.py::save_memory::user_id[:20]':
+        'Text, not rows: the cut shortens one string.',
+    'packages/acb_skills/acb_skills/memory_tools.py::save_org_memory::fact[:80]':
+        'Text, not rows: the cut shortens one string.',
+    'packages/acb_skills/acb_skills/sandbox_tools.py::_format::saved[:20]':
+        "A run receipt. It prints the count and '…', and the files are in outputs/.",
+    'apps/agents/agent-email-assistant/agents.py::read_thread::msgs[:25]':
+        'Silent cut. The second PR of the agent-read-paging change fixes it.',
+    "packages/acb_skills/acb_skills/crm_tools.py::crm_get_module_record::_custom_lines(row.get('fields'), defs)[:MAX_ROWS]":
+        'Silent cut. The second PR of the agent-read-paging change fixes it.',
+    'packages/acb_skills/acb_skills/crm_tools.py::crm_list_fields::options[:20]':
+        'Silent cut. The second PR of the agent-read-paging change fixes it.',
+    'packages/acb_skills/acb_skills/crm_tools.py::crm_report::lines[:MAX_ROWS + 2]':
+        'Silent cut. The second PR of the agent-read-paging change fixes it.',
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
-ALLOWED_CEILING = 58
+ALLOWED_CEILING = 72
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -240,14 +268,26 @@ def _stringy(node: ast.AST) -> bool:
 
 
 def _head_cut(node: ast.AST) -> bool:
-    return (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice)
-            and node.slice.lower is None and node.slice.upper is not None
+    """``x[:N]`` on something that is not plainly text. ``x[:-1]`` drops the
+    last item by construction ("a, b and c"), so it is never a page cut."""
+    if not (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice)):
+        return False
+    upper = node.slice.upper
+    if isinstance(upper, ast.UnaryOp) and isinstance(upper.op, ast.USub):
+        return False
+    return (node.slice.lower is None and upper is not None
             and node.slice.step is None and not _stringy(node.value))
 
 
 def _cuts(path: Path) -> set[str]:
     rel = path.relative_to(REPO).as_posix()
-    tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    return {f"{rel}::{hit}" for hit in _cuts_in_source(path.read_text(encoding="utf-8-sig"))}
+
+
+def _cuts_in_source(source: str) -> set[str]:
+    """``"<function>::<slice source>"`` for each head slice that a loop, a
+    comprehension, an assignment, a return or a call takes."""
+    tree = ast.parse(source)
     found: set[str] = set()
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -257,9 +297,13 @@ def _cuts(path: Path) -> set[str]:
                 sources = [node.iter]
             elif isinstance(node, ast.Assign | ast.AnnAssign | ast.Return):
                 sources = [node.value] if node.value is not None else []
+            elif isinstance(node, ast.Call):
+                # `Page(rows[:30], ...)` or `", ".join(lines[:52])`: a cut
+                # handed straight to a call is the same cut.
+                sources = [*node.args, *(k.value for k in node.keywords)]
             else:
                 continue
-            found |= {f"{rel}::{fn.name}::{ast.unparse(s)}" for s in sources if _head_cut(s)}
+            found |= {f"{fn.name}::{ast.unparse(s)}" for s in sources if _head_cut(s)}
     return found
 
 
@@ -306,6 +350,9 @@ def test_the_fence_catches_the_shape_that_hid_items_31_to_35(tmp_path: Path) -> 
     hits += [ast.unparse(n.value) for n in ast.walk(tree)
              if isinstance(n, ast.Return) and _head_cut(n.value)]
     assert hits == ["_ordered(items)[:30]", "senders[:20]"]
+    assert _cuts_in_source("def t(rows):\n    return Page(rows[:30], 1, 0, '')\n") == {
+        "t::rows[:30]"}
+    assert _cuts_in_source("def t(n):\n    return ', '.join(n[:-1])\n") == set()
 
 
 # ── 3. My Tasks ─────────────────────────────────────────────────────────────
