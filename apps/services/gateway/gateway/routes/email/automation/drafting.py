@@ -662,14 +662,19 @@ async def _learn_from_sent(account_id: str, thread_id: str, sent_text: str) -> N
                     urow = (await db.execute(text(
                         "SELECT user_id FROM email_accounts WHERE id = :aid"
                     ), {"aid": account_id})).fetchone()
-                uid = (urow.user_id if urow else None) or "default"
-                from acb_memory import add_memories_background  # noqa: PLC0415
-                await add_memories_background(
-                    email_memory_scope(uid, account_id),
-                    [{"role": "assistant",
-                      "content": f"Email reply preference: {stored[0]}"}],
-                    agent_id="email",
-                )
+                # EM-G11f2 item 2: no owner means the mailbox is gone, and a
+                # "default" key is one that no purge finds. So skip the write.
+                scope = _purgeable_memory_scope(
+                    (urow.user_id if urow else None) or "", account_id,
+                    "reply_preference")
+                if scope is not None:
+                    from acb_memory import add_memories_background  # noqa: PLC0415
+                    await add_memories_background(
+                        scope,
+                        [{"role": "assistant",
+                          "content": f"Email reply preference: {stored[0]}"}],
+                        agent_id="email",
+                    )
             except Exception:  # noqa: BLE001
                 pass
             # Regenerate the learned writing style once enough new evidence
@@ -1505,6 +1510,27 @@ SIDE_STEP_BOUND_S = 5.0
 CONTEXT_STEP_BOUND_S = 20.0
 
 
+def _purgeable_memory_scope(owner: str, account_id: Any, writer: str) -> str | None:
+    """The Mem0 key of one mailbox, or ``None`` when no purge could find it.
+
+    WS-17 EM-G11f2 item 2 (``email_app_master_plan.md`` §12.3.13.9). A drafter
+    write goes only to the key that ``memory_purge.mailbox_memory_scope``
+    builds, the key that a disconnect deletes. With no owner or no mailbox id,
+    the write is REFUSED, not moved to another key. It logs
+    ``email.memory_write_refused`` with the writer name and no text.
+    """
+    from gateway.routes.email.memory_purge import (
+        ScopeRefused,
+        mailbox_memory_scope,
+    )
+    try:
+        return mailbox_memory_scope(owner or "", account_id)
+    except ScopeRefused:
+        _log.info("email.memory_write_refused", writer=writer,
+                  reason="no_mailbox_scope")
+        return None
+
+
 async def _side_step(aw: Awaitable[Any], *, step: str, default: Any) -> Any:
     """Await one side step under ``SIDE_STEP_BOUND_S``. Past the bound it
     logs ``email.side_step_timeout`` with the step and the bound, and gives
@@ -1652,12 +1678,17 @@ async def _orchestrate_draft(
     # Scoped to this inbox (mem_scope) so it reads back under the same key.
     # Skip when the drafter declined or failed: storing "I replied: NO_DRAFT"
     # (or a boilerplate fallback) as precedent poisons future retrievals.
-    if not _is_no_draft(draft):
+    # EM-G11f2 item 2: the write goes only to a key that a mailbox purge
+    # finds. With no mailbox, the old code wrote "default" or the bare member
+    # key, and no disconnect could ever delete that memory.
+    write_scope = (_purgeable_memory_scope(user_email, account_id, "draft_precedent")
+                   if not _is_no_draft(draft) else None)
+    if write_scope is not None:
         try:
             from acb_memory import add_memories_background  # noqa: PLC0415
             _spawn_background(
                 add_memories_background(
-                    mem_scope or "default",
+                    write_scope,
                     [
                         {"role": "user",
                          "content": (
