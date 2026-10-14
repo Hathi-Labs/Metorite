@@ -468,6 +468,16 @@ Seven rules on top of the three above. Each one exists because it was broken:
    review, and no test holds it. `e2e/rail-rows.spec.ts` measures the hover,
    the tip, the width and the phone drawer. `DESIGN_SYSTEM.md` §6b holds the
    shape.
+13. **Every animation answers a member who asked for less motion.** An
+   entrance shows at once, and a decoration stops. Only a status loop may
+   stay. New motion uses the motion tokens and moves `transform` and
+   `opacity` only.
+
+   **Fence.** `src/lib/theme/motion.test.ts` fails when an `@keyframes` in
+   `globals.css` has no reduced-motion answer. Put an exception in its
+   `MOTION_EXEMPT`, with the reason. A `<style>` string in a component is
+   outside the test, so that part is review. `DESIGN_SYSTEM.md` §4 holds the
+   rules, and §9 and §10 hold the advisory rules for states and words.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that
