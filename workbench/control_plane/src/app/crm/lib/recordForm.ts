@@ -150,16 +150,15 @@ export function createCustom(defs: readonly FieldDef[], edited: Row): Row {
 }
 
 /**
- * The labels of the required fields with no value. A boolean is never on
- * the list, because `formValue` always gives it a value.
+ * The labels of the required fields with no value. Give it `createValue`,
+ * and a boolean is never on the list, because `formValue` always gives it a
+ * value.
  */
 export function missingRequired(
   defs: readonly FieldDef[],
   valueOf: (def: FieldDef) => unknown,
 ): string[] {
-  return defs
-    .filter((d) => d.required && d.type !== "boolean" && isEmptyValue(valueOf(d)))
-    .map((d) => d.label);
+  return defs.filter((d) => d.required && isEmptyValue(valueOf(d))).map((d) => d.label);
 }
 
 /** The message of the client check for each field that fails it, by key. */

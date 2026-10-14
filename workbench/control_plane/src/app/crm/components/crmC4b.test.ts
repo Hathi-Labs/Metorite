@@ -539,7 +539,13 @@ describe("a refused save keeps the form open (done-when 8)", () => {
     const page = source("page.tsx");
     const hunk = page.slice(page.indexOf("<QuickCreateModal"), page.indexOf("{converting && ("));
     expect(hunk).toContain("refusal={store.refusal}");
-    expect(hunk).toMatch(/const id = await store\.createRecord\(entity, body\);[\s\S]*if \(!id\) return;[\s\S]*setCreating\(null\);/);
+    const save = hunk.indexOf("await store.createRecord(entity, body);");
+    const guard = hunk.indexOf("if (!id) return;");
+    expect(save).toBeGreaterThan(0);
+    expect(guard).toBeGreaterThan(save);
+    // Nothing closes the form between the save and the guard.
+    expect(hunk.slice(save, guard)).not.toContain("setCreating(null)");
+    expect(hunk.slice(guard)).toContain("setCreating(null)");
   });
 
   it("draws a refusal of the store only after this form sent a save", () => {
