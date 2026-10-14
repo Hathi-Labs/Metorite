@@ -2309,15 +2309,18 @@ def _oauth_wanted(agent_name: str, native: bool, is_authorized: Any) -> Any:
 
 
 def _mark_unauthorized_for(org: str) -> Any:
-    """WS-54 IN-8b: the callback for a 401 on the connect of an OAuth server
-    whose token the registry refreshed in this run. It sets
-    ``needs_reconnect`` on the row of *org*, the run binding, never request
-    input (``integrations_console.md`` §3.6.7)."""
+    """WS-54 IN-8b: the callback for a 401 on the connect of an OAuth server.
+    It marks the row of *org*, the run binding, never request input, and it
+    says whether the registry refreshed the token in this run
+    (``integrations_console.md`` §3.6.7)."""
 
     async def _mark(server: Any) -> None:
         from gateway.connections import mcp as mcp_registry
 
-        await mcp_registry.mark_unauthorized(org, str(server.name), dict(server.headers))
+        await mcp_registry.mark_unauthorized(
+            org, str(server.name), dict(server.headers),
+            refreshed=getattr(server, "oauth_refreshed", False) is True,
+        )
 
     return _mark
 

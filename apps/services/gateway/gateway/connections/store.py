@@ -385,6 +385,8 @@ def _seal(credential: SourceCredential) -> str:
     }
     if credential.client_secret:
         sealed["client_secret"] = credential.client_secret
+    if credential.issued_at is not None:  # IN-8b: only an MCP OAuth blob
+        sealed["issued_at"] = credential.issued_at.isoformat()
     return _keys().encrypt(json.dumps(sealed, separators=(",", ":")))
 
 
@@ -411,6 +413,8 @@ def _unseal(blob: str) -> SourceCredential:
                 str(k): str(v) for k, v in (data.get("provider_meta") or {}).items()
             },
             client_secret=str(data.get("client_secret") or ""),
+            issued_at=(datetime.fromisoformat(data["issued_at"])
+                       if data.get("issued_at") else None),
         )
     # ValueError covers binascii.Error, UnicodeDecodeError and a bad JSON.
     except (InvalidToken, ValueError, KeyError, TypeError) as exc:

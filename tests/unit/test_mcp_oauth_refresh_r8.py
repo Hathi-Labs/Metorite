@@ -108,8 +108,12 @@ ADMIN_A = "admin-a@in8b-r8.test"
 ADMIN_B = "admin-b@in8b-r8.test"
 TOKEN_A = "SENTINEL-in8b-r8-token-org-a"
 TOKEN_B = "SENTINEL-in8b-r8-token-org-b"
-#: Inside the 900 s margin of a run, and past the 60 s skew.
+#: Inside the margin of a run, and past the 60 s skew. A consent with this
+#: ``expires_in`` is stored as a one-hour token with 600 s left
+#: (:func:`_make_near`): a new token is due only at half its life.
 NEAR = 600
+#: The life of a NEAR token.
+NEAR_LIFE = 3600
 #: Past the margin: no refresh.
 FAR = 3600
 
@@ -143,6 +147,27 @@ async def _connected(world: f.World, org: str, admin: str, name: str, token: str
     res = await f.finish(f.user(admin, org), code, state, iss=f.ISSUER)
     assert res.status_code == 302 and res.headers["location"].endswith(name), res.text
     world.expires_in = FAR
+    if expires_in == NEAR:
+        await _make_near(org, name)
+
+
+async def _make_near(org: str, name: str) -> None:
+    """Age the stored token: issued ``NEAR_LIFE - NEAR`` seconds ago, with
+    ``NEAR`` seconds left. So it is past half its life, and due."""
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+
+    from acb_common.db import tenant_session
+    from gateway.connections import mcp, store
+
+    now = datetime.now(UTC)
+    async with tenant_session(org) as db:
+        conn = await store.get(db, org, mcp.provider_for(name), mcp.OWNING_APP)
+        cred = await store.load_credential(db, org, mcp.provider_for(name), mcp.OWNING_APP)
+        assert conn is not None and cred is not None
+        await store.update_tokens(db, org, conn.id, replace(
+            cred, issued_at=now - timedelta(seconds=NEAR_LIFE - NEAR),
+            expires_at=now + timedelta(seconds=NEAR)))
 
 
 async def _stored(org: str, name: str) -> Any:
@@ -551,7 +576,7 @@ async def test_an_org_whose_auth_server_stalls_never_delays_another_org(
     refresh takes the other slot, and finishes while A still waits."""
     from gateway.connections import mcp
 
-    a1, a2, b1 = _name("stallA1"), _name("stallA2"), _name("freeB1")
+    a1, a2, b1 = _name("stall-a1"), _name("stall-a2"), _name("free-b1")
     await _connected(world, ns.org_a, ADMIN_A, a1, f"{TOKEN_A}-1", expires_in=NEAR)
     await _connected(world, ns.org_a, ADMIN_A, a2, f"{TOKEN_A}-2", expires_in=NEAR)
     await _connected(world, ns.org_b, ADMIN_B, b1, TOKEN_B, expires_in=NEAR)

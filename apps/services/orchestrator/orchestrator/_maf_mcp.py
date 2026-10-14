@@ -59,11 +59,14 @@ The rules:
    ``integrations_console.md`` §3.6.7). The registry refreshed the token
    BEFORE the connect, so the header is fixed for the run
    (``static_headers``). A 401 on the connect leaves the server out, logs
-   ``mcp.oauth_unauthorized`` with the name only, and the run goes on. Only
-   when the registry refreshed the token in THIS run does the 401 also call
-   ``on_unauthorized``, which sets ``needs_reconnect``. A 401 with no refresh
-   changes nothing: the next run refreshes, and an ``invalid_grant`` then
-   sets it. So one expired token never asks an admin to connect again.
+   ``mcp.oauth_unauthorized`` with the name only, and the run goes on. Each
+   such 401 calls ``on_unauthorized``, and the server says whether the
+   registry refreshed the token in THIS run. The registry decides: after a
+   refresh, ``needs_reconnect``. With no refresh, it ends the stored token,
+   so the next run refreshes, and an ``invalid_grant`` then marks the row.
+   A token that cannot refresh gets ``needs_reconnect`` at once. So one
+   expired token never asks an admin to connect again, and a token that
+   never says when it ends cannot stay dead for ever (review of #1011).
 
 Fences: ``tests/unit/test_maf_mcp_injection.py``,
 ``tests/unit/test_maf_mcp_org_scope_r8.py``,
@@ -151,7 +154,7 @@ class McpServer:
     #: IN-8b: the header is the bearer token of an OAuth consent.
     oauth: bool = False
     #: IN-8b: the registry refreshed that token in THIS run, before the
-    #: connect. Only then does a 401 set ``needs_reconnect`` (rule 9).
+    #: connect. The registry reads it on a 401 (rule 9).
     oauth_refreshed: bool = False
 
 
@@ -757,8 +760,8 @@ async def attach_mcp_tools(
     the tools that the loaders hide.
 
     *on_unauthorized* (WS-54 IN-8b, rule 9) is called for an OAuth server
-    whose token the registry refreshed in this run, when its connect gets a
-    401. The caller sets ``needs_reconnect`` there."""
+    whose connect gets a 401. The caller reads ``oauth_refreshed`` and marks
+    the row."""
     try:
         tool_cls = _run_scoped_tool_class()
         from agent_framework._feature_stage import ExperimentalWarning
@@ -819,7 +822,7 @@ async def attach_mcp_tools(
                 # Rule 9. The name only: no host, no reason, no header.
                 _log.warning("mcp.oauth_unauthorized", name=server.name)
                 await _close_one(tool, client, client_first=True)
-                if server.oauth_refreshed and on_unauthorized is not None:
+                if on_unauthorized is not None:
                     await _report_unauthorized(on_unauthorized, server)
                 continue
             _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))

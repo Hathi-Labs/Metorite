@@ -50,6 +50,7 @@ import asyncio
 import hmac
 import json
 import re
+import time
 import uuid
 import weakref
 from collections.abc import Callable, Mapping, Sequence
@@ -309,7 +310,8 @@ async def _clear_legacy(db: Any, org: str, name: str) -> None:
 _OAUTH_SKEW_S = 60
 #: IN-8b (§3.6.7): before the connect, a run refreshes a token that ends
 #: within this many seconds. 15 minutes covers a run, so the token never
-#: changes inside one, and MAF never connects the session again.
+#: changes inside one, and MAF never connects the session again. A token
+#: that lives a shorter time gets half its life (:func:`_margin`).
 TOKEN_MARGIN_S = 900
 #: IN-8b: the most seconds for ONE token fetch of a refresh. The guard caps a
 #: fetch at 10 s, and this cap is shorter. A fetch past it is not final: the
@@ -326,25 +328,66 @@ REFRESH_BUDGET_S = 20.0
 #: from taking the pool of every org (review of #1011, P1). A step that waits
 #: past :data:`REFRESH_BUDGET_S` for a slot sends nothing.
 REFRESH_SLOTS = 2
+#: IN-8b: the most of those slots that ONE org holds at one time. So an org
+#: whose auth servers stall never keeps another org waiting (review 2 of
+#: #1011, P1). An org takes its own slot first, then a slot of the process.
+REFRESH_SLOTS_PER_ORG = 1
+#: IN-8b: after a refresh fails for a reason that is not final, the process
+#: does not try that server of that org again for this many seconds. A run
+#: in the gap uses the stored token while it lives (review 2 of #1011, P1).
+REFRESH_BACKOFF_S = 60.0
 #: IN-8b: the ``last_error`` of a row whose refreshed token got a 401.
 UNAUTHORIZED = "unauthorized"
 
 #: One semaphore for each event loop: an ``asyncio.Semaphore`` binds to the
 #: loop that first waits on it.
 _SLOTS: weakref.WeakKeyDictionary[Any, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+#: The slot of each org, for each event loop.
+_ORG_SLOTS: weakref.WeakKeyDictionary[Any, dict[str, asyncio.Semaphore]] = (
+    weakref.WeakKeyDictionary())
 #: The refresh steps that run on, after their run stopped waiting. A task
 #: with no reference can be collected before it ends.
 _INFLIGHT: set[asyncio.Task[Any]] = set()
+#: (org, provider) -> the monotonic second when this process may try that
+#: refresh again (:data:`REFRESH_BACKOFF_S`). Process-local, on purpose.
+_BACKOFF: dict[tuple[str, str], float] = {}
+
+
+def _utcnow() -> datetime:
+    """The clock of the run-time refresh. A test moves it."""
+    return datetime.now(UTC)
+
+
+def _monotonic() -> float:
+    """The clock of :data:`_BACKOFF`. A test moves it."""
+    return time.monotonic()
+
+
+def _margin(credential: SourceCredential) -> float:
+    """Seconds before its end that a token is due (review 2 of #1011, P2).
+
+    :data:`TOKEN_MARGIN_S`, or half the life of the token when that is
+    shorter, and never less than :data:`_OAUTH_SKEW_S`. A token that lives
+    300 s is then due at 150 s, not at once, so a second worker that reads
+    the new token under the lock does not refresh it again. A blob with no
+    issue time (stored before this rule) keeps :data:`TOKEN_MARGIN_S`. A
+    token with no refresh token gets the skew only."""
+    if not credential.refresh_token:
+        return _OAUTH_SKEW_S
+    if credential.issued_at is None:
+        return TOKEN_MARGIN_S
+    life = (credential.expires_at - credential.issued_at).total_seconds()
+    return max(_OAUTH_SKEW_S, min(TOKEN_MARGIN_S, life / 2))
 
 
 def _needs_refresh(credential: SourceCredential, now: datetime) -> bool:
     """True when the run must refresh *credential* first (§3.6.7).
 
-    With a refresh token, inside :data:`TOKEN_MARGIN_S`. With none, the
-    token cannot be refreshed, so only one that has ended goes on to the
-    refresh, which stops it with ``no_refresh_token``."""
-    margin = TOKEN_MARGIN_S if credential.refresh_token else _OAUTH_SKEW_S
-    return credential.expires_at <= now + timedelta(seconds=margin)
+    Inside :func:`_margin`. The unlocked check of :func:`_oauth_plan` and the
+    check under the lock of ``fresh_credential`` both call it. With no
+    refresh token, only a token that has ended goes on to the refresh, which
+    stops it with ``no_refresh_token``."""
+    return credential.expires_at <= now + timedelta(seconds=_margin(credential))
 
 
 def _source_error(code: str) -> SourceError:
@@ -373,6 +416,24 @@ def _slots() -> asyncio.Semaphore:
     return sem
 
 
+def _org_slots(org: str) -> asyncio.Semaphore:
+    by_org = _ORG_SLOTS.setdefault(asyncio.get_running_loop(), {})
+    sem = by_org.get(org)
+    if sem is None:
+        sem = by_org[org] = asyncio.Semaphore(REFRESH_SLOTS_PER_ORG)
+    return sem
+
+
+def _backed_off(org: str, provider: str) -> bool:
+    until = _BACKOFF.get((org, provider))
+    if until is None:
+        return False
+    if _monotonic() >= until:
+        _BACKOFF.pop((org, provider), None)
+        return False
+    return True
+
+
 def _settle(task: asyncio.Task[Any]) -> None:
     """Forget a finished step, and read its outcome so asyncio never logs an
     exception that nobody retrieved (the message could hold nothing secret,
@@ -397,7 +458,7 @@ async def _refresh_step(
         seen["stored"] = credential
         try:
             async with asyncio.timeout(REFRESH_FETCH_S):
-                fresh = await mcp_oauth.refresh(credential)
+                fresh = await mcp_oauth.refresh(credential, now=_utcnow())
         except TimeoutError:
             raise _source_error("timeout") from None
         except mcp_oauth.OAuthFailed as exc:
@@ -405,20 +466,38 @@ async def _refresh_step(
         seen["refreshed"] = True
         return fresh
 
-    slots = _slots()
+    org_slots, slots = _org_slots(org), _slots()
     try:
         async with asyncio.timeout(REFRESH_BUDGET_S):
-            await slots.acquire()
+            # The org's own slot first, so an org that waits holds no slot
+            # of the process (review 2 of #1011, P1).
+            await org_slots.acquire()
+            try:
+                await slots.acquire()
+            except BaseException:
+                org_slots.release()
+                raise
     except TimeoutError:
         raise _source_error("busy") from None
     try:
-        return await shared_token.fresh_credential(
+        fresh = await shared_token.fresh_credential(
             org, provider=conn.provider, owning_app=OWNING_APP,
-            refresh=_refresh, needs_refresh=_needs_refresh,
-            now=lambda: datetime.now(UTC),
+            refresh=_refresh, needs_refresh=_needs_refresh, now=_utcnow,
+            # A server deleted and registered again with headers in the
+            # wait is no longer this row (review 2 of #1011).
+            accept=_is_oauth,
         )
+    except NeedsReconnect:
+        raise
+    except SourceError:
+        # Not final, and the provider's fault: wait before the next try.
+        _BACKOFF[(org, conn.provider)] = _monotonic() + REFRESH_BACKOFF_S
+        raise
     finally:
         slots.release()
+        org_slots.release()
+    _BACKOFF.pop((org, conn.provider), None)
+    return fresh
 
 
 async def _oauth_header(
@@ -459,7 +538,7 @@ async def _oauth_header(
     if credential is None or not credential.access_token:
         _log.warning("mcp.oauth_unreadable", name=name)
         return None
-    if credential.expires_at <= datetime.now(UTC) + timedelta(seconds=_OAUTH_SKEW_S):
+    if credential.expires_at <= _utcnow() + timedelta(seconds=_OAUTH_SKEW_S):
         _log.info("mcp.oauth_expired", name=name)
         return None
     if seen["refreshed"]:
@@ -500,15 +579,22 @@ async def _oauth_plan(
         return {}, []
     ready: dict[str, tuple[dict[str, str], bool]] = {}
     due: list[tuple[store.Connection, SourceCredential | None]] = []
-    now = datetime.now(UTC)
+    now = _utcnow()
+    edge = now + timedelta(seconds=_OAUTH_SKEW_S)
     for conn in rows:
+        name = conn.provider[len(PREFIX):]
         if wanted is not None and not wanted(_server(conn, {}, with_headers=False)):
-            _log.info("mcp.oauth_not_wanted", name=conn.provider[len(PREFIX):])
+            _log.info("mcp.oauth_not_wanted", name=name)
             continue
         credential = await store.load_credential(db, org, conn.provider, OWNING_APP)
-        if credential is not None and credential.access_token and not _needs_refresh(
-                credential, now):
+        live = credential is not None and bool(credential.access_token)
+        if live and not _needs_refresh(credential, now):
             ready[conn.provider] = (_bearer(credential), False)
+        elif _backed_off(org, conn.provider):
+            # A refresh of this server failed a moment ago: no new try yet.
+            _log.info("mcp.oauth_refresh_backoff", name=name)
+            if live and credential.expires_at > edge:
+                ready[conn.provider] = (_bearer(credential), False)
         else:
             due.append((conn, credential))
     return ready, due
@@ -527,32 +613,55 @@ async def _oauth_refresh_due(
             if got is not None}
 
 
-async def mark_unauthorized(org: str, name: str, sent: Mapping[str, str]) -> bool:
-    """A 401 on the connect, after THIS run refreshed the token (§3.6.7, O14).
+#: The answers of :func:`mark_unauthorized`.
+MARK_NEEDS_RECONNECT = "needs_reconnect"
+MARK_EXPIRED = "expired"
+MARK_UNCHANGED = "unchanged"
 
-    Sets ``needs_reconnect`` with :data:`UNAUTHORIZED` on the row, under its
-    row lock. Only when the row still holds the token that the run sent: a
-    new consent or another refresh in the meantime keeps the row as it is.
-    ``True`` when the row changed. The caller decides that this run refreshed
-    the token, so a 401 with no refresh never comes here.
+
+async def mark_unauthorized(
+    org: str, name: str, sent: Mapping[str, str], *, refreshed: bool,
+) -> str:
+    """A 401 on the connect of an OAuth server (§3.6.7, O14).
+
+    Under the row lock, and only when the row still holds the token that the
+    run sent: a new consent or another refresh in the meantime keeps the row
+    as it is (:data:`MARK_UNCHANGED`).
+
+    * *refreshed* (THIS run refreshed the token), or a token with no refresh
+      token: ``needs_reconnect`` with :data:`UNAUTHORIZED`
+      (:data:`MARK_NEEDS_RECONNECT`). Only a new consent repairs it.
+    * Else the stored token ends now (:data:`MARK_EXPIRED`). The next run
+      refreshes it, and an ``invalid_grant`` then marks the row. So a token
+      whose answer had no ``expires_in`` (stored for ten years) and that the
+      provider ended cannot stay dead for ever (review 2 of #1011, P1).
     """
     if not NAME_RE.match(name or ""):
-        return False
+        return MARK_UNCHANGED
     org = _org(org)
     async with tenant_session(org) as db:
         locked = await store.lock_row(db, org, provider_for(name), OWNING_APP)
         if locked is None:
-            return False
+            return MARK_UNCHANGED
         conn, credential = locked
         if (not _is_oauth(conn) or conn.status != store.STATUS_CONNECTED
                 or credential is None or not credential.access_token):
-            return False
+            return MARK_UNCHANGED
         stored = f"Bearer {credential.access_token}".encode()
         if not hmac.compare_digest(stored, str(sent.get("Authorization", "")).encode()):
-            return False
-        await store.mark_needs_reconnect(db, org, conn.id, UNAUTHORIZED)
-    _log.warning("mcp.oauth_needs_reconnect", name=name, code=UNAUTHORIZED)
-    return True
+            return MARK_UNCHANGED
+        if refreshed or not credential.refresh_token:
+            await store.mark_needs_reconnect(db, org, conn.id, UNAUTHORIZED)
+            outcome = MARK_NEEDS_RECONNECT
+        else:
+            await store.update_tokens(db, org, conn.id,
+                                      replace(credential, expires_at=_utcnow()))
+            outcome = MARK_EXPIRED
+    if outcome == MARK_NEEDS_RECONNECT:
+        _log.warning("mcp.oauth_needs_reconnect", name=name, code=UNAUTHORIZED)
+    else:
+        _log.info("mcp.oauth_token_ended", name=name)
+    return outcome
 
 
 #: The answers of :func:`oauth_test_header`.

@@ -46,8 +46,15 @@ async def fresh_credential(
     refresh: Callable[[SourceCredential], Awaitable[SourceCredential]],
     needs_refresh: Callable[[SourceCredential, datetime], bool],
     now: Callable[[], datetime],
+    accept: Callable[[store.Connection], bool] | None = None,
 ) -> SourceCredential | None:
     """The credential of the org connection, refreshed and stored when due.
+
+    *accept* (WS-54 IN-8b) checks the row before its blob is read. A row
+    that it refuses gives ``None`` and is never marked. The MCP runtime
+    passes "still an OAuth row": a server deleted and registered again with
+    headers during the wait must not be marked ``undecryptable``. The lock
+    is by row id, so a delete and a new insert in the gap give ``None`` too.
 
     Returns ``None`` when the org has no live connection. Raises
     :class:`NeedsReconnect` when the connection needs an admin, and any other
@@ -58,6 +65,8 @@ async def fresh_credential(
     async with tenant_session(org) as db:
         row = await store.get(db, org, provider, owning_app)
         if row is None or row.status == store.STATUS_DISCONNECTED:
+            return None
+        if accept is not None and not accept(row):
             return None
         if row.status == store.STATUS_NEEDS_RESET:
             # CRM-X0: the stored token belongs to an account whose records the

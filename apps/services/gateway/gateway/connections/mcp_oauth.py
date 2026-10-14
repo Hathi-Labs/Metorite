@@ -576,6 +576,7 @@ async def exchange_code(
         scopes=tuple(scope.split()),
         provider_meta=public_meta(pending),
         client_secret=pending.client_secret,
+        issued_at=issued,  # IN-8b: the life of the token (review of #1011)
     )
 
 
@@ -645,6 +646,7 @@ async def refresh(
         scopes=scopes,
         provider_meta=dict(meta),
         client_secret=credential.client_secret,
+        issued_at=issued,
     )
 
 

@@ -82,6 +82,10 @@ class SourceCredential:
     scopes: tuple[str, ...] = ()
     provider_meta: Mapping[str, str] = field(default_factory=dict)
     client_secret: str = field(default="", repr=False)
+    #: WS-54 IN-8b: when the provider issued the access token, if known. The
+    #: MCP runtime reads the life of the token from it (review of #1011,
+    #: P2). ``None`` for every other connection, and for an older blob.
+    issued_at: datetime | None = None
 
 
 # ── Records and paging ──────────────────────────────────────────────────────
