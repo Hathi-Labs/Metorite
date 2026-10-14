@@ -120,12 +120,16 @@ BUILTIN_KEYS_PINNED = frozenset({
 })
 
 #: Pinned: the guide keys that the operator sets on the box (decision 2).
+#: WS-17 EM-G11b removed the Gmail guides, so GMAIL_SA_JSON_PATH and
+#: GMAIL_DEFAULT_USER left this list. `TestTheRetiredGmailNamesAreRefused`
+#: holds their refusal.
 OPERATOR_ONLY_PINNED = frozenset({
-    "GMAIL_SA_JSON_PATH", "GOOGLE_SHEETS_SA_JSON_PATH", "SMTP_HOST", "SMTP_PORT",
-    "ZOHO_ACCOUNTS_URL", "ZOHO_API_DOMAIN", "ZOHO_REGION", "GMAIL_DEFAULT_USER",
+    "GOOGLE_SHEETS_SA_JSON_PATH", "SMTP_HOST", "SMTP_PORT",
+    "ZOHO_ACCOUNTS_URL", "ZOHO_API_DOMAIN", "ZOHO_REGION",
 })
 
 #: Pinned: the service ids that a custom integration may not take (round 2).
+#: `gmail` and `gmail-send` stay, as `integrations.RETIRED_SERVICE_IDS`.
 RESERVED_IDS_PINNED = frozenset({
     "anymailfinder", "apify", "apollo", "github", "gmail", "gmail-oauth",
     "gmail-send", "google-maps", "google-sheets", "instantly",
@@ -143,12 +147,12 @@ MAIL_APP_GUIDE_KEYS = frozenset({
 #: The `Settings` fields that a tenant surface writes: the built-in allowlist
 #: and the tokens that the OAuth callback writes. Every OTHER field must be on
 #: the deny list. A new field fails `test_every_settings_field_is_sorted`
-#: until somebody puts it in one place.
+#: until somebody puts it in one place. WS-17 EM-G11b removed the three
+#: `google_*_token` fields with the `google` entry of the OAuth route.
 INTEGRATION_SETTINGS_FIELDS = frozenset({
     "anymailfinder_api_key", "apify_api_token", "apollo_api_key",
     "github_client_id", "github_token",
-    "google_access_token", "google_maps_api_key", "google_refresh_token",
-    "google_token_expiry", "instantly_api_key", "serpapi_api_key",
+    "google_maps_api_key", "instantly_api_key", "serpapi_api_key",
     "smtp_password", "smtp_username", "zoho_access_token", "zoho_client_id",
     "zoho_client_secret", "zoho_refresh_token", "zoho_token_expiry",
 })
@@ -606,8 +610,11 @@ class TestTheKeyStoreStartup:
         ("zoho-crm:accounts_url", "ZOHO_ACCOUNTS_URL"),
         ("zoho-crm:region", "ZOHO_REGION"),
         ("smtp:host", "SMTP_HOST"),
+        # WS-17 EM-G11b: the key store maps no `gmail` service now, and an
+        # older row under it still must not reach the env.
         ("gmail:sa_json_path", "GMAIL_SA_JSON_PATH"),
         ("gmail:default_user", "GMAIL_DEFAULT_USER"),
+        ("gmail-send:default_user", "GMAIL_DEFAULT_USER"),
     ])
     async def test_a_platform_row_never_overrides_the_box(self, provider, env_var, monkeypatch):
         # Layer B at startup. A row that an older route wrote must not
@@ -823,7 +830,11 @@ class TestLayerBRefusesPlatformKeys:
         "GODEBUG", "CC", "GO",
         # The operator-only family.
         "ZOHO_ACCOUNTS_URL", "ZOHO_API_DOMAIN", "SMTP_HOST", "SMTP_PORT",
-        "GMAIL_SA_JSON_PATH", "ZOHO_REGION",
+        "ZOHO_REGION",
+        # The retired Gmail service account and Google OAuth app
+        # (WS-17 EM-G11b). The names stay refused.
+        "GMAIL_SA_JSON_PATH", "GMAIL_DEFAULT_USER", "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
         # The process environment.
         "PATH", "LD_PRELOAD", "PYTHONPATH", "HTTPS_PROXY", "https_proxy",
         "GIT_SSH_COMMAND", "NODE_OPTIONS", "SSL_CERT_FILE", "DOCKER_HOST",
@@ -878,7 +889,7 @@ class TestLayerCTheBuiltInAllowlist:
         suffixes = ("_URL", "_HOST", "_DOMAIN", "_PATH", "_ENDPOINT", "_DIR", "_PORT")
         by_rule = {k for k in integrations.GUIDE_ENV_KEYS if k.endswith(suffixes)}
         assert by_rule <= integrations.OPERATOR_ONLY_ENV_KEYS
-        assert integrations.OPERATOR_ONLY_ENV_KEYS - by_rule == {"ZOHO_REGION", "GMAIL_DEFAULT_USER"}
+        assert integrations.OPERATOR_ONLY_ENV_KEYS - by_rule == {"ZOHO_REGION"}
 
     def test_the_allowlist_is_built_from_the_guides(self):
         guides = integrations.GUIDE_ENV_KEYS
@@ -942,19 +953,16 @@ class TestLayerCTheBuiltInAllowlist:
         for row in rows:
             for var in row["env_vars"]:
                 assert var["key"] in integrations.BUILTIN_ENV_KEYS, (row["service"], var["key"])
+        # The CRM owns Zoho, so its tile offers no key form at all (WS-54,
+        # `APP_OWNED_SERVICES`, `test_integrations_zoho_tile.py`).
         zoho = by_service["zoho-crm"]
-        assert [v["key"] for v in zoho["env_vars"]] == [
-            "ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN",
-        ]
-        assert [v["key"] for v in zoho["operator_env_vars"]] == [
-            "ZOHO_API_DOMAIN", "ZOHO_ACCOUNTS_URL", "ZOHO_REGION",
-        ]
+        assert zoho["env_vars"] == [] and zoho["operator_env_vars"] == []
         smtp = by_service["smtp"]
         assert [v["key"] for v in smtp["env_vars"]] == ["SMTP_USERNAME", "SMTP_PASSWORD"]
         assert [v["key"] for v in smtp["operator_env_vars"]] == ["SMTP_HOST", "SMTP_PORT"]
-        gmail = by_service["gmail"]
-        assert gmail["env_vars"] == []
-        assert [v["key"] for v in gmail["operator_env_vars"]] == ["GMAIL_SA_JSON_PATH", "GMAIL_DEFAULT_USER"]
+        # WS-17 EM-G11b: the page lists no service-account Gmail.
+        assert "gmail" not in by_service
+        assert "gmail-send" not in by_service
 
     async def test_the_status_reads_a_custom_key_from_the_store(self, env_file, store, custom):
         custom.declare("notion", "NOTION_API_TOKEN")
@@ -1522,28 +1530,40 @@ class TestACustomServiceIdIsNeverABuiltInOne:
         assert os.environ["APOLLO_API_KEY"] == "real_apollo_1"
 
 
-# ── Round 2: GMAIL_DEFAULT_USER is operator-only ────────────────────────────
+# ── Round 2, after WS-17 EM-G11b: the retired Gmail names stay refused ─────
 #
-# It picks the mailbox that the operator's domain-wide Gmail service account
-# impersonates (`ingestion/sources/gmail/client.py`), and `credential()` lets
-# `os.environ` win. A tenant value would read another member's mail.
+# GMAIL_DEFAULT_USER picked the mailbox that the Gmail service account
+# impersonated, and `credential()` lets `os.environ` win. EM-G11b removed the
+# service-account path and its two guides. No guide declares either name
+# now, and layer B still refuses both, so a write cannot bring the path back.
+
+_RETIRED_GMAIL_NAMES = ("GMAIL_DEFAULT_USER", "GMAIL_SA_JSON_PATH")
 
 
-class TestGmailDefaultUserIsOperatorOnly:
-    def test_it_is_operator_only_and_deny_listed(self):
-        assert "GMAIL_DEFAULT_USER" in integrations.OPERATOR_ONLY_ENV_KEYS
-        assert "GMAIL_DEFAULT_USER" not in integrations.BUILTIN_ENV_KEYS
-        assert env_guard.is_platform_env("GMAIL_DEFAULT_USER")
+class TestTheRetiredGmailNamesAreRefused:
+    @pytest.mark.parametrize("name", _RETIRED_GMAIL_NAMES)
+    def test_no_guide_declares_it_and_layer_b_refuses_it(self, name):
+        assert name not in integrations.GUIDE_ENV_KEYS
+        assert name not in integrations.BUILTIN_ENV_KEYS
+        assert env_guard.is_platform_env(name)
 
-    async def test_configure_refuses_it(self, env_file, store, custom):
+    def test_the_gmail_ids_have_no_guide_and_stay_reserved(self):
+        for service in ("gmail", "gmail-send"):
+            assert service not in integrations._SETUP_GUIDES
+            assert service in integrations.RESERVED_SERVICE_IDS
+
+    @pytest.mark.parametrize("name", _RETIRED_GMAIL_NAMES)
+    async def test_configure_refuses_it(self, name, env_file, store, custom):
         before = _snapshot(env_file)
-        await _expect(403, _configure(("GMAIL_DEFAULT_USER", "ceo@example.com")))
+        await _expect(403, _configure((name, "ceo@example.com")))
         _assert_untouched(env_file, before)
         assert store.puts == []
 
-    async def test_put_keys_refuses_it(self, env_file, store):
+    @pytest.mark.parametrize("service", ["gmail", "gmail-send"])
+    async def test_put_keys_refuses_it(self, service, env_file, store):
+        # No guide, so the route refuses the service before any key check.
         before = _snapshot(env_file)
-        await _expect(403, _put("gmail", "default_user", "ceo@example.com"))
+        await _expect(400, _put(service, "default_user", "ceo@example.com"))
         _assert_untouched(env_file, before)
         assert store.puts == []
 

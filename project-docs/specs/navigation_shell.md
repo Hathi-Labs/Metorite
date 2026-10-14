@@ -51,7 +51,8 @@ sidebar's foot, with one menu.** With the shell bar on, the foot is the
 account row: the avatar, the name and the email. It opens ONE menu, in this
 order: the accounts, Add, You, Settings and sign-out. The bar's right end is
 the assistant, the bell and the activity control. The Metorite logo left the
-shell, and its new place is not decided (owner, "later"). It rides the shell
+bar and the sidebar. **The Metorite mark signs the foot of the account menu
+(owner, 2026-10-14).** It rides the shell
 bar flag, which is on, so the merge is its release. §3.1 and §3.3 hold the
 shape.
 
@@ -624,6 +625,7 @@ sidebar's foot (`MetoriteFoot.tsx`). This change deletes both.
    - "Sign out". With one account it signs out. With more, it leaves this
      account and lands on the next one (`signOutThis`: the `switch` action,
      then `remove` of the same slot). "Sign out of all accounts" follows.
+   - our signature, the last row: the comet and the word "Metorite" (item 7)
    With the switcher flag off, the menu shows the current account, You,
    Settings and "Sign out". With the shell nav off, the rail itself lists My
    Profile and Appearance, so the menu has no You group, and Settings holds
@@ -654,6 +656,26 @@ sidebar's foot (`MetoriteFoot.tsx`). This change deletes both.
    decision to expose one.
 6. **The classic frame and the phone do not change.** With the shell bar
    off, the foot below stays as it was. The phone keeps its drawer.
+7. **The Metorite mark signs the foot of the account menu** (owner,
+   2026-10-14, "go ahead with your recommendation"). Notion, Slack and
+   Linear sign their app menus the same way. The customer's organization
+   owns the screen, and the product signs where a member looks for "about
+   this app".
+   - The row is the `brand` group, the last group of `accountMenu`, after
+     sign-out. `AccountFootMenu` draws it as a 14px comet (`MetoriteMark`)
+     and the word "Metorite", in `text-[11px] text-muted-foreground`. The
+     menu's own divider (`border-border`) sets it off from sign-out.
+   - It is not a control. It has no button, no link, no hover fill and no
+     focus stop. The comet is decorative (`aria-hidden`), so a screen reader
+     reads "Metorite" once, from the word.
+   - It is the end of the scroll content, and it is not sticky. In a short
+     window the member scrolls to it.
+   - Only the desktop menu shows it. The org-less card (`pages: false`) is
+     not the app menu, so it has none. The classic frame's
+     `SidebarAccountFooter` and the phone drawer have none.
+   - It holds no version and no link today. The `brand` group keeps a
+     one-line slot, so a later row (the version, Help, About, What's new)
+     is one line in `accountMenu`.
 
 Fences: `src/lib/shell/shellAccount.test.ts`, `src/lib/shell/shellNav.test.ts`,
 `src/lib/accountSwitch.test.ts` and `e2e/shell-account.spec.ts`. The text below is the shape of NS-2 slice

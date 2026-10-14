@@ -624,10 +624,10 @@ class Settings(BaseSettings):
     #: `SELECT slug`, and does nothing at all in the steady state.
     console_bootstrap_interval_seconds: int = 60
 
-    # Gmail (Phase 1, WBS 1.3)
-    gmail_sa_json_path: str = ""         # service-account key file
-    gmail_workspace_domain: str = ""     # e.g. fracktal.in
-    gmail_default_user: str = ""         # default mailbox to impersonate
+    # Gmail push (Phase 1, WBS 1.3). The service-account settings
+    # (`gmail_sa_json_path`, `gmail_workspace_domain`, `gmail_default_user`)
+    # were REMOVED 2026-10-14 by WS-17 EM-G11b. A box that still holds a value
+    # starts, because `extra="ignore"`.
     gmail_pubsub_token: str = ""         # bearer token expected on /webhooks/gmail
 
     # Email OAuth (Gmail + Microsoft). Metorite owns ONE app for each provider
@@ -997,12 +997,11 @@ class Settings(BaseSettings):
 
     # ⚠️ The ClickUp OAuth app fields were REMOVED 2026-08-24 by D52.
 
-    # Google OAuth app (console.cloud.google.com — Gmail scopes)
-    google_client_id: str = ""
-    google_client_secret: str = ""
-    google_access_token: str = ""         # set by the OAuth callback
-    google_refresh_token: str = ""
-    google_token_expiry: str = ""         # ISO-8601 expiry of the access token
+    # ⚠️ The Google OAuth app fields of the retired route (`google_client_id`,
+    # `google_client_secret` and the three `google_*_token` names) were
+    # REMOVED 2026-10-14 by WS-17 EM-G11b. `extra="ignore"` lets a box that
+    # still holds a value start. `env_guard` keeps GOOGLE_CLIENT_ID and
+    # GOOGLE_CLIENT_SECRET on the platform list.
 
     # Zoho access token cache (refresh_token already above)
     zoho_access_token: str = ""
@@ -1036,7 +1035,7 @@ class Settings(BaseSettings):
     # AnyMailFinder (email discovery)
     anymailfinder_api_key: str = ""
 
-    # Google Sheets (service-account key path — can reuse gmail_sa_json_path)
+    # Google Sheets (service-account key path, its own key only since EM-G11b)
     google_sheets_sa_json_path: str = ""
 
     # ---------------------------------------------------------------------------

@@ -4,8 +4,9 @@
  * The top-left of the app: the customer's logo, and nothing of ours beside it.
  *
  * ⚠️ Owner decision, 2026-10-11: our own mark left this lockup. Since
- * 2026-10-14 the shell shows no Metorite logo at all, and its place is not
- * decided yet (owner, "later"). A workspace with no logo still shows the comet
+ * 2026-10-14 the bar and the sidebar show no Metorite logo, and the comet
+ * signs the foot of the account menu instead (owner, 2026-10-14). A
+ * workspace with no logo still shows the comet
  * as its badge (`OurMark`). A customer's logo carries no "powered by" caption
  * here, in the bar or anywhere else. Fence:
  * `orgBrandLockup.mode.test.ts` "no caption beside a customer's logo".

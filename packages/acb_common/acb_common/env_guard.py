@@ -115,13 +115,17 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "SHARED_TOKEN",
     # The mail apps are the deployment's (D-EM-1). MICROSOFT_TENANT_ID pins
     # the directory of the Microsoft app, a per-deployment decision
-    # (deploy.sh, H-13(a)). GOOGLE_CLIENT_* is the app of oauth.py.
+    # (deploy.sh, H-13(a)). GOOGLE_CLIENT_* was the app of the retired
+    # `google` entry of oauth.py (removed by WS-17 EM-G11b). The names stay
+    # refused, so that no tenant can set a Google client on the box.
     "MICROSOFT_TENANT_ID", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
     "GOOGLE_APPLICATION_CREDENTIALS",
     # Operator-only keys of the built-in guides. ZOHO_REGION picks the Zoho
     # data-centre domain. SMTP_USE_TLS sets the transport of the SMTP host.
-    # GMAIL_DEFAULT_USER picks the mailbox that the operator's domain-wide
-    # Gmail service account impersonates (round 2).
+    # GMAIL_DEFAULT_USER picked the mailbox that the Gmail service account
+    # impersonated (round 2). WS-17 EM-G11b removed that path, and the name
+    # stays refused, so that a tenant cannot bring it back by a write.
+    # GMAIL_SA_JSON_PATH is refused by the `_PATH` suffix.
     "ZOHO_REGION", "SMTP_USE_TLS", "GMAIL_DEFAULT_USER",
     # LLM and speech provider keys. Only the BYOK-gated Models routes and the
     # key store write them, and each passes them as ``owned``.

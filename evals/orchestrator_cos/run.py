@@ -320,7 +320,34 @@ def _tool_def(name: str) -> dict[str, Any]:
     }}
 
 
-def messages_for(case: dict[str, Any], system: str) -> list[dict[str, Any]]:
+#: The key under which a thinking model (DeepSeek) returns its reasoning. The
+#: model demands it back on each replayed assistant turn that holds tool
+#: calls. Without it, ``tier-balanced`` answered 400 "upstream provider error"
+#: on 2026-10-14. The app does not hit this: the Router adds the key (H-179,
+#: ``customer_console/reasoning.py``). This harness posts its turns itself, so
+#: it adds the key here. ``--no-reasoning-replay`` turns it off, for a model
+#: whose vendor refuses an unknown key.
+REASONING_KEY = "reasoning_content"
+
+
+def tool_call_turn(
+    tool_calls: list[dict[str, Any]], content: str = "", reasoning: Any = None,
+    *, replay_reasoning: bool = True,
+) -> dict[str, Any]:
+    """One assistant turn that calls tools, as the harness replays it.
+
+    It carries ``reasoning_content``: the model's own reasoning when its
+    reply held some, or "" for a scripted read, which had none.
+    """
+    turn: dict[str, Any] = {"role": "assistant", "content": content, "tool_calls": tool_calls}
+    if replay_reasoning:
+        turn[REASONING_KEY] = reasoning if isinstance(reasoning, str) else ""
+    return turn
+
+
+def messages_for(
+    case: dict[str, Any], system: str, *, replay_reasoning: bool = True,
+) -> list[dict[str, Any]]:
     """The turn as the model sees it: the prompt, any history, the ask, then
     each read as a tool call and its result."""
     msgs: list[dict[str, Any]] = [{"role": "system", "content": f"{system}\n\n{TODAY}"}]
@@ -328,20 +355,22 @@ def messages_for(case: dict[str, Any], system: str) -> list[dict[str, Any]]:
     msgs.append({"role": "user", "content": case["ask"]})
     for i, read in enumerate(case.get("reads", [])):
         call_id = f"call_{case['id']}_{i}"
-        msgs.append({"role": "assistant", "content": "", "tool_calls": [{
+        msgs.append(tool_call_turn([{
             "id": call_id, "type": "function",
             "function": {"name": read["tool"], "arguments": json.dumps(read["args"])},
-        }]})
+        }], replay_reasoning=replay_reasoning))
         msgs.append({"role": "tool", "tool_call_id": call_id, "content": read["result"]})
     return msgs
 
 
-def ask_live(case: dict[str, Any], system: str, model: str) -> dict[str, Any]:
+def ask_live(
+    case: dict[str, Any], system: str, model: str, *, replay_reasoning: bool = True,
+) -> dict[str, Any]:
     """One reply, through the Router. A card call gets "Rendered." and the
     model goes on. Any other call gets "no new data". Three rounds at most."""
     from evals._runner import post_chat_completion  # noqa: PLC0415
 
-    msgs = messages_for(case, system)
+    msgs = messages_for(case, system, replay_reasoning=replay_reasoning)
     tools = [_tool_def(n) for n in sorted({r["tool"] for r in case["reads"]} | {UI_TOOL})]
     prose: list[str] = []
     cards: list[str] = []
@@ -362,7 +391,10 @@ def ask_live(case: dict[str, Any], system: str, model: str) -> dict[str, Any]:
         calls = msg.get("tool_calls") or []
         if not calls:
             break
-        msgs.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
+        msgs.append(tool_call_turn(
+            calls, msg.get("content") or "", msg.get(REASONING_KEY),
+            replay_reasoning=replay_reasoning,
+        ))
         for call in calls:
             fn = call.get("function") or {}
             if fn.get("name") == UI_TOOL:
@@ -438,10 +470,11 @@ def judge(case: dict[str, Any], reply: dict[str, Any], model: str) -> dict[str, 
 
 def run_live(
     cases: list[dict[str, Any]], system: str, model: str, judge_model: str | None,
+    *, replay_reasoning: bool = True,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for case in cases:
-        reply = ask_live(case, system, model)
+        reply = ask_live(case, system, model, replay_reasoning=replay_reasoning)
         result = check(case, reply["text"], reply["card"])
         row = {"id": case["id"], "kind": case["kind"], **reply,
                "words": words(reply["text"]), "checks": result, "pass": passed(result)}
@@ -505,6 +538,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arm", default="after")
     parser.add_argument("--only", default=None, help="comma-separated case ids")
     parser.add_argument("--out", default=str(HERE / "results.json"))
+    parser.add_argument(
+        "--no-reasoning-replay", action="store_true",
+        help="send no reasoning_content on a replayed tool turn",
+    )
     args = parser.parse_args(argv)
 
     cases = load_cases()
@@ -536,7 +573,10 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file
         else built_prompt()
     )
-    data["arms"][args.arm] = run_live(cases, system, args.model, args.judge_model)
+    data["arms"][args.arm] = run_live(
+        cases, system, args.model, args.judge_model,
+        replay_reasoning=not args.no_reasoning_replay,
+    )
     out.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(report(data["arms"]))
     return EXIT_PASS

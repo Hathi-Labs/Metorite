@@ -8,7 +8,8 @@ compute (``feed.feed_cards``), asks ``decide`` about the cards that are new
 or changed, and writes one ``my_day_judgments`` row for each comparison. In
 ``shadow`` the feed never reads an answer: every card keeps its old-path
 group, weight and act. MD-6a-2 calls :func:`judge` from the member pass of
-the ``my_day`` loop. Nothing calls it before that.
+the ``my_day`` loop. :func:`sweep_old_rows` is the daily sweep of the table,
+and the loop calls it too. This module stays the one writer of the table.
 
 **The four features it asks** (§10.9 item 3): ``my_day.triage``,
 ``my_day.weight``, ``my_day.next_act`` and ``my_day.resurface``. The other
@@ -515,6 +516,30 @@ async def write_rows(member: str, rows: Sequence[dict[str, Any]]) -> int:
     async with tenant_session() as db:
         await db.execute(text(_INSERT_SQL), [{**r, "member": member} for r in rows])
     return len(rows)
+
+
+#: The daily sweep of ``my_day_judgments`` (WS-58 MD-6a-2, §8.4 item 14,
+#: §13.2): rows older than :data:`SWEEP_AFTER_DAYS` days, of the bound org
+#: only. The org predicate sits beside RLS, not instead of it. The index on
+#: ``(organization_id, created_at)`` serves it.
+SWEEP_AFTER_DAYS = 30
+
+
+def _sweep_sql() -> str:
+    from gateway.routes.shell.state import _BOUND_ORG
+
+    return (f"DELETE FROM my_day_judgments WHERE organization_id = {_BOUND_ORG} "
+            f"AND created_at < now() - interval '{SWEEP_AFTER_DAYS} days'")
+
+
+async def sweep_old_rows(db: Any) -> int:
+    """Run the sweep in *db*, a session bound to one organization. Answers
+    the count of rows it deleted. The ``my_day`` loop is the one caller,
+    once a day for each org, behind its guard."""
+    from sqlalchemy import text
+
+    result = await db.execute(text(_sweep_sql()))
+    return int(result.rowcount or 0)
 
 
 # ── The context (§10.4) ─────────────────────────────────────────────────────

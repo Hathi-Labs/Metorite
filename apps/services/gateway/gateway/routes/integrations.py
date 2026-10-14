@@ -39,6 +39,7 @@ from acb_llm.key_store import CUSTOM_INTEGRATION_TYPE, INTEGRATION_ENV_MAP
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway import outbound_guard
 from gateway.connections import github as github_connection
+from gateway.connections import store as connection_store
 from gateway.db import current_tenant, tenant_session
 from pydantic import BaseModel, StrictBool
 from sqlalchemy import text
@@ -95,7 +96,9 @@ _REQUIRE_MANAGE = require_permission(MANAGE_PERMISSION)
 # organization is the only tenant, so the copy crosses no tenant line.
 # `_is_configured` and `missing_keys` below still read the env, so the
 # `configured` and `env-file` columns of `/integrations/status` stay
-# deployment-wide until IN-1.
+# deployment-wide until IN-1. Two exceptions read the org's row in the
+# registry instead: GitHub (IN-7) and each tile in `APP_OWNED_SERVICES`,
+# which is Zoho CRM today.
 #
 # 🔒 **Every writer needs `integrations:manage`** (`_REQUIRE_MANAGE`, IN-0).
 # The router gate `feature:integrations` still covers each read. The fence is
@@ -128,17 +131,17 @@ _REQUIRE_MANAGE = require_permission(MANAGE_PERMISSION)
 # ---------------------------------------------------------------------------
 
 _SETUP_GUIDES: dict[str, dict[str, Any]] = {
+    # 🔒 The CRM owns the Zoho connect flow (D96.1, CRM-Z2). A customer never
+    # makes a Self Client or pastes a key, so this guide has no steps and no
+    # links. The status offers no form for it (`APP_OWNED_SERVICES`). The
+    # `env_vars` stay only because the key sets of layers B and C below are
+    # derived from them, and `test_integrations_env_hardening.py` pins those.
     "zoho-crm": {
         "label": "Zoho CRM",
         "description": "Deal management, contacts, accounts, and pipeline.",
-        "setup_url": "https://accounts.zoho.in/developerconsole",
-        "docs_url": "https://www.zoho.com/crm/developer/docs/api/v5/oauth-overview.html",
-        "instructions": (
-            "1. Go to Zoho Developer Console → Add Client → Self Client.\n"
-            "2. Generate a code with scope: ZohoCRM.modules.ALL,ZohoCRM.settings.ALL\n"
-            "3. Exchange the code for tokens (one-time). Copy the refresh_token.\n"
-            "4. Copy Client ID and Client Secret from the app settings."
-        ),
+        "setup_url": "",
+        "docs_url": "",
+        "instructions": "",
         "env_vars": [
             {"key": "ZOHO_CLIENT_ID", "label": "Client ID", "sensitive": False},
             {"key": "ZOHO_CLIENT_SECRET", "label": "Client Secret", "sensitive": True},
@@ -190,33 +193,11 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             {"key": "INSTANTLY_API_KEY", "label": "API Key", "sensitive": True},
         ],
     },
-    "gmail": {
-        "label": "Gmail (Google Workspace)",
-        "description": "Read and send email via service-account impersonation.",
-        "setup_url": "https://console.cloud.google.com/iam-admin/serviceaccounts",
-        "docs_url": "https://developers.google.com/gmail/api/guides/",
-        "instructions": (
-            "1. Create a service account in Google Cloud Console.\n"
-            "2. Enable domain-wide delegation for the service account.\n"
-            "3. In Google Workspace Admin, grant the service account access to Gmail scopes.\n"
-            "4. Download the JSON key file and set its path below."
-        ),
-        "env_vars": [
-            {"key": "GMAIL_SA_JSON_PATH", "label": "Service Account Key Path", "sensitive": False},
-            {"key": "GMAIL_DEFAULT_USER", "label": "Default Mailbox (e.g. you@domain.com)", "sensitive": False},
-        ],
-    },
-    "gmail-send": {
-        "label": "Gmail (send only)",
-        "description": "Outbound email send via Google Workspace.",
-        "setup_url": "https://console.cloud.google.com/iam-admin/serviceaccounts",
-        "docs_url": "https://developers.google.com/gmail/api/guides/",
-        "instructions": "Same setup as Gmail — service account + domain-wide delegation.",
-        "env_vars": [
-            {"key": "GMAIL_SA_JSON_PATH", "label": "Service Account Key Path", "sensitive": False},
-            {"key": "GMAIL_DEFAULT_USER", "label": "Default Mailbox", "sensitive": False},
-        ],
-    },
+    # ⚠️ NO `gmail` AND NO `gmail-send` ENTRY (WS-17 EM-G11b, 2026-10-14).
+    # They were the service-account Gmail path, with a second set of Gmail
+    # scopes. A member connects Gmail in the Email app, and the app asks for
+    # `GMAIL_SCOPES` only (D-EM-31). Both ids stay reserved
+    # (`RETIRED_SERVICE_IDS`). Fence: `tests/unit/test_gmail_one_scope_set.py`.
     "whatsapp": {
         "label": "WhatsApp Business",
         "description": "Manage WhatsApp Business numbers via Meta's official "
@@ -368,8 +349,7 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             "1. Create a service account in Google Cloud Console.\n"
             "2. Enable the Google Sheets API for your project.\n"
             "3. Share your target Sheets with the service account email.\n"
-            "4. Download the JSON key file and set its path below.\n"
-            "   (You can reuse the same service account key as Gmail if already set up.)"
+            "4. Download the JSON key file and set its path below."
         ),
         "env_vars": [
             {"key": "GOOGLE_SHEETS_SA_JSON_PATH", "label": "Service Account Key Path (JSON file)", "sensitive": False},
@@ -389,8 +369,6 @@ _GUIDE_CATEGORIES: dict[str, str] = {
     "apollo":         "prospecting",
     "google-maps":    "prospecting",
     "instantly":      "email",
-    "gmail":          "email",
-    "gmail-send":     "email",
     "whatsapp":       "communication",
     "smtp":           "email",
     "serpapi":        "search",
@@ -410,15 +388,36 @@ async def _db_query(sql: str, **params: Any) -> list[dict[str, Any]]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+#: The tiles whose connection an app owns (D96.1), and the registry key of
+#: that connection, ``(provider, owning_app)`` in ``integration_connections``.
+#: In the tile view (no ``agent``), such a tile is configured when the bound
+#: org holds that org row with the status ``connected``. The status offers no
+#: key form for it in either mode. AGENT mode keeps the env check of
+#: ``_is_configured``, because the agent runtime reads the env until IN-3. ``tests/unit/test_integrations_zoho_tile.py``
+#: pins the CRM key to ``routes/crm/connection.py``. The client mirror is
+#: ``APP_OWNED_TILES`` in ``src/app/integrations/lib/connections.ts``.
+APP_OWNED_SERVICES: dict[str, tuple[str, str]] = {
+    "zoho-crm": ("zoho", "crm"),
+}
+
+#: What the Zoho CRM test says when the org has no live CRM connection.
+ZOHO_CRM_NOT_CONNECTED = (
+    "Zoho is not connected for your organization. Connect it in CRM settings."
+)
+
+
 def _is_configured(service_name: str, settings: Any) -> bool:
     """Return True if all required env vars for *service_name* are non-empty."""
     checkers: dict[str, Any] = {
+        # ⚠️ Read in AGENT mode only (`integration_status(agent=...)`). The
+        # agent runtime (`acb_skills.integrations._zoho_crm`) still reads the
+        # operator's ZOHO_* env, so the agent gate must report what a run
+        # uses. IN-3 owns moving that runtime onto the org's CRM connection.
+        # The tile view reads the CRM row instead (`APP_OWNED_SERVICES`).
         "zoho-crm":      lambda s: bool(s.zoho_client_id and s.zoho_client_secret and s.zoho_refresh_token),
-        "apollo":        lambda s: bool(s.apollo_api_key),
+        "apollo":       lambda s: bool(s.apollo_api_key),
         "google-maps":   lambda s: bool(s.google_maps_api_key),
         "instantly":     lambda s: bool(s.instantly_api_key),
-        "gmail":           lambda s: bool(s.gmail_sa_json_path),
-        "gmail-send":      lambda s: bool(s.gmail_sa_json_path),
         "gmail-oauth":     lambda s: bool(s.gmail_oauth_client_id and s.gmail_oauth_client_secret),
         "microsoft-oauth": lambda s: bool(
             (s.msft_oauth_client_id and s.msft_oauth_client_secret)
@@ -438,9 +437,9 @@ def _is_configured(service_name: str, settings: Any) -> bool:
         "serpapi":       lambda s: bool(getattr(s, "serpapi_api_key", "") or os.getenv("SERPAPI_API_KEY", "")),
         "apify":         lambda s: bool(getattr(s, "apify_api_token", "") or os.getenv("APIFY_API_TOKEN", "")),
         "anymailfinder": lambda s: bool(getattr(s, "anymailfinder_api_key", "") or os.getenv("ANYMAILFINDER_API_KEY", "")),
+        # EM-G11b: its own key only. The Gmail service-account key is gone.
         "google-sheets": lambda s: bool(
             getattr(s, "google_sheets_sa_json_path", "") or os.getenv("GOOGLE_SHEETS_SA_JSON_PATH", "")
-            or getattr(s, "gmail_sa_json_path", "") or os.getenv("GMAIL_SA_JSON_PATH", "")
         ),
     }
     checker = checkers.get(service_name)
@@ -467,11 +466,11 @@ def _is_configured(service_name: str, settings: Any) -> bool:
 #   domain, a port, a file path or an endpoint. A tenant route refuses it
 #   with 403, and the operator sets it in the env file of the box. A
 #   redirected Zoho accounts URL or SMTP host receives the deployment's
-#   secrets on the next refresh. Two keys are named, not matched by a
+#   secrets on the next refresh. One key is named, not matched by a
 #   suffix. ZOHO_REGION picks the Zoho data-centre domain.
-#   GMAIL_DEFAULT_USER picks the mailbox that the operator's domain-wide
-#   service account impersonates (round 2), and `credential()` lets
-#   `os.environ` win, so a tenant value would read another member's mail.
+#   GMAIL_DEFAULT_USER was the second named key (round 2). WS-17 EM-G11b
+#   removed the Gmail guides that declared it, and `env_guard` still
+#   refuses the name.
 # * `BUILTIN_ENV_KEYS`: the allowlist. The guide keys minus the operator-only
 #   keys minus the platform names (the mail-app keys). Configure and
 #   `PUT /integrations/keys` store these keys as `integration` rows of the
@@ -492,7 +491,7 @@ GUIDE_ENV_KEYS: frozenset[str] = frozenset(
     for var in guide["env_vars"]
 )
 _OPERATOR_SUFFIXES = ("_URL", "_HOST", "_DOMAIN", "_PATH", "_ENDPOINT", "_DIR", "_PORT")
-_OPERATOR_NAMED = frozenset({"ZOHO_REGION", "GMAIL_DEFAULT_USER"})
+_OPERATOR_NAMED = frozenset({"ZOHO_REGION"})
 OPERATOR_ONLY_ENV_KEYS: frozenset[str] = frozenset(
     k for k in GUIDE_ENV_KEYS if k.endswith(_OPERATOR_SUFFIXES) or k in _OPERATOR_NAMED
 )
@@ -518,11 +517,16 @@ BUILTIN_PROVIDER: dict[str, tuple[str, str]] = {
 #: either one, and the key store loads neither at startup. They stay
 #: reserved, so a custom integration cannot take the name of a mail app.
 MAIL_APP_SERVICE_IDS: frozenset[str] = frozenset({"gmail-oauth", "microsoft-oauth"})
+#: The ids of the retired service-account Gmail path (WS-17 EM-G11b). No
+#: guide, store row or resolver uses them now. They stay reserved, so a
+#: custom integration cannot take the name of a Gmail service.
+RETIRED_SERVICE_IDS: frozenset[str] = frozenset({"gmail", "gmail-send"})
 #: The ids of the built-in integrations: the setup guides, the services
-#: that the key store loads at startup and the mail apps. A custom
-#: integration may not take one.
+#: that the key store loads at startup, the mail apps and the retired ids.
+#: A custom integration may not take one.
 RESERVED_SERVICE_IDS: frozenset[str] = (
-    frozenset(_SETUP_GUIDES) | frozenset(INTEGRATION_ENV_MAP) | MAIL_APP_SERVICE_IDS
+    frozenset(_SETUP_GUIDES) | frozenset(INTEGRATION_ENV_MAP)
+    | MAIL_APP_SERVICE_IDS | RETIRED_SERVICE_IDS
 )
 
 
@@ -794,6 +798,11 @@ async def integration_status(
         configured = _is_configured(svc, settings)
         if svc == "github":
             configured = await _github_connected()
+        app_owned = svc in APP_OWNED_SERVICES
+        # The tile view reads the app's row. AGENT mode keeps the env check,
+        # because the agent runtime still reads the operator env until IN-3.
+        if app_owned and not agent:
+            configured = await _app_connected(svc)
         # 🔒 A form offers only the keys that a tenant may write
         # (`BUILTIN_ENV_KEYS`). The rest go to `operator_env_vars`, which the
         # Integrations page shows read-only: the operator sets them on the box.
@@ -828,12 +837,17 @@ async def integration_status(
                     if not os.getenv(v["key"], "").strip()
                 ]
             )
+        # The app connects it, so the tile offers no key and names no key.
+        if app_owned:
+            tenant_vars, operator_vars, missing_keys = [], [], []
 
         # Determine which keys are stored in the encrypted DB
-        db_stored_keys = db_keys_by_service.get(svc, [])
+        db_stored_keys = [] if app_owned else db_keys_by_service.get(svc, [])
 
         # Determine storage source for display
-        if db_stored_keys:
+        if app_owned and not agent:
+            storage = "app" if configured else "none"
+        elif db_stored_keys:
             storage = "encrypted-db"
         elif configured:
             storage = "env-file"
@@ -1627,6 +1641,71 @@ async def _test_github(user: UserContext) -> dict[str, Any]:
     return {"ok": False, "detail": f"GitHub answered status {resp.status_code}."}
 
 
+async def _app_connection(service: str) -> connection_store.Connection | None:
+    """The org row of an app-owned tile, read in the bound tenant's session.
+
+    ``None`` with no bound organization. The organization comes from the
+    authenticated session only (R5), never from the request.
+    """
+    org = current_tenant()
+    if not org:
+        return None
+    provider, owning_app = APP_OWNED_SERVICES[service]
+    async with tenant_session(str(org)) as db:
+        return await connection_store.get(db, str(org), provider, owning_app)
+
+
+async def _app_connected(service: str) -> bool:
+    """True when the bound org holds the app's org row with status connected."""
+    try:
+        row = await _app_connection(service)
+    except Exception as exc:
+        _log.warning("integrations.app_status_unreadable", service=service, error=type(exc).__name__)
+        return False
+    return bool(row and row.status == connection_store.STATUS_CONNECTED)
+
+
+_ZOHO_CRM_RECONNECT = "Zoho needs a new consent. Connect it again in CRM settings."
+
+
+async def _test_crm_zoho() -> dict[str, Any]:
+    """Test the org's CRM Zoho connection through the CRM's own credential path.
+
+    It reads the row first, so an org with no live row opens no lock and calls
+    no provider. A live row goes through ``fresh_zoho_credential``, which
+    refreshes the token only when it is due. The operator's ZOHO_* keys are
+    never read. No reply holds a token or a provider message.
+    """
+    try:
+        row = await _app_connection("zoho-crm")
+    except Exception as exc:
+        _log.warning("integrations.zoho_crm_test_unreadable", error=type(exc).__name__)
+        return {"ok": False, "detail": "The CRM Zoho connection could not be read."}
+    if row is None or row.status == connection_store.STATUS_DISCONNECTED:
+        return {"ok": False, "detail": ZOHO_CRM_NOT_CONNECTED}
+    if row.status != connection_store.STATUS_CONNECTED:
+        return {"ok": False, "detail": _ZOHO_CRM_RECONNECT}
+
+    from gateway.crm_sources.base import NeedsReconnect, SourceError
+    from gateway.routes.crm import connection as crm_connection
+
+    try:
+        credential = await crm_connection.fresh_zoho_credential(row.organization_id)
+    except NeedsReconnect:
+        return {"ok": False, "detail": _ZOHO_CRM_RECONNECT}
+    except HTTPException:
+        # `zoho_oauth_config` answers 503 when Metorite's own Zoho client is unset.
+        return {"ok": False, "detail": "This server has no Zoho client. An operator must set it."}
+    except SourceError:
+        return {"ok": False, "detail": "Zoho did not answer the token refresh. Try again later."}
+    except Exception as exc:
+        _log.warning("integrations.zoho_crm_test_failed", error=type(exc).__name__)
+        return {"ok": False, "detail": "The CRM Zoho connection could not be read."}
+    if credential is None:
+        return {"ok": False, "detail": ZOHO_CRM_NOT_CONNECTED}
+    return {"ok": True, "detail": "The CRM holds a live Zoho connection."}
+
+
 @router.get("/test")
 async def test_integration(
     service: str,
@@ -1650,6 +1729,18 @@ async def test_integration(
         result = await _test_github(user)
         return {"service": service, **result}
 
+    if service == "zoho-crm":
+        # The CRM owns Zoho. A refresh writes the org's row, so the test needs
+        # the manage right too, as GitHub's does.
+        if not user.has_permission(MANAGE_PERMISSION):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Forbidden: missing permission(s) ['{MANAGE_PERMISSION}'].",
+            )
+        result = await _test_crm_zoho()
+        _log.info("integrations.test", service=service, ok=result.get("ok"), actor=user.email)
+        return {"service": service, **result}
+
     if not _is_configured(service, settings):
         return {
             "service": service,
@@ -1669,21 +1760,8 @@ async def test_integration(
 async def _run_test(service: str, settings: Any) -> dict[str, Any]:
     """Run a real connectivity check per integration."""
     async with httpx.AsyncClient(timeout=10) as client:
-        if service == "zoho-crm":
-            # Exchange refresh token for access token
-            resp = await client.post(
-                f"{settings.zoho_accounts_url}/oauth/v2/token",
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": settings.zoho_client_id,
-                    "client_secret": settings.zoho_client_secret,
-                    "refresh_token": settings.zoho_refresh_token,
-                },
-            )
-            if resp.status_code == 200 and "access_token" in resp.json():
-                return {"ok": True, "detail": "Token exchange succeeded."}
-            return {"ok": False, "detail": f"Token exchange failed: {resp.text[:200]}"}
-
+        # zoho-crm never reaches here: `test_integration` tests the CRM's
+        # connection, and the operator's ZOHO_* keys test no customer.
         if service == "apollo":
             resp = await client.get(
                 f"{settings.apollo_base_url}/auth/health",
@@ -1711,12 +1789,6 @@ async def _run_test(service: str, settings: Any) -> dict[str, Any]:
             if resp.status_code == 200:
                 return {"ok": True, "detail": "Instantly API reachable."}
             return {"ok": False, "detail": f"Status {resp.status_code}: {resp.text[:200]}"}
-
-        if service in ("gmail", "gmail-send"):
-            sa_path = Path(settings.gmail_sa_json_path)
-            if sa_path.exists():
-                return {"ok": True, "detail": "Service account key file found."}
-            return {"ok": False, "detail": f"Key file not found: {sa_path}"}
 
         if service == "gmail-oauth":
             client_id = (

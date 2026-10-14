@@ -3,10 +3,14 @@
  * member's pages and the settings (owner, 2026-10-14).
  *
  * The owner moved the account back from the bar's top right to the bottom
- * left, folded the Metorite menu into it, and removed the Metorite logo.
- * These checks fail on the wrong builds that look right:
+ * left, folded the Metorite menu into it, and removed the Metorite logo. Our
+ * comet and the word "Metorite" then came back as the menu's last row, a
+ * quiet signature (owner, 2026-10-14). These checks fail on the wrong builds
+ * that look right:
  *   1. An account control came back to the bar.
- *   2. Our comet came back to the bar or to the foot.
+ *   2. Our comet came back to the bar, to the sidebar or to the foot's
+ *      trigger, or the menu's signature is a control, is not last, or shows
+ *      twice.
  *   3. The foot lost its name, its tip, its avatar or its quiet email.
  *   4. The menu lost the current account's mark, the switch list, "Add
  *      another account", You, Settings, or the sign-out that fits the count.
@@ -88,9 +92,19 @@ describe("the bar holds no account", () => {
   });
 
   it("our comet signs neither the bar nor the foot", () => {
-    for (const rel of ["lib/shell/ShellBar.tsx", "components/AccountSwitcher.tsx", "components/Sidebar.tsx", "lib/orgBranding.ts"]) {
+    for (const rel of ["lib/shell/ShellBar.tsx", "components/Sidebar.tsx", "lib/orgBranding.ts"]) {
       expect(code(read(rel)), rel).not.toMatch(/BarSignature|data-shell-signature|MetoriteMark|MetoriteFoot|data-metorite|ourMarkLeads/);
     }
+    // The switcher draws the comet once, in the menu's signature row, and
+    // nowhere else: not in the trigger, the classic foot or the phone.
+    const src = SWITCHER();
+    expect(src).not.toMatch(/BarSignature|data-shell-signature|MetoriteFoot|data-metorite|ourMarkLeads/);
+    expect(src.match(/<MetoriteMark\b/g) ?? []).toHaveLength(1);
+    expect(src).toMatch(/case "brand":\s*return \(\s*<div data-account-brand=""[^>]*>\s*<MetoriteMark size=\{14\} \/>\s*<span>Metorite<\/span>\s*<\/div>\s*\);/);
+    // The trigger, the classic foot and the phone draw no comet.
+    const foot = src.slice(src.indexOf("export function AccountFoot("), src.indexOf("export function AccountFootMenu"));
+    const rest = src.slice(src.indexOf("export function OrglessAccounts"));
+    for (const part of [foot, rest, src.slice(0, src.indexOf("export function AccountFoot("))]) expect(part).not.toContain("MetoriteMark size");
     // The Metorite foot is gone, and its file with it.
     expect(existsSync(join(SRC, "components/MetoriteFoot.tsx"))).toBe(false);
   });
@@ -156,13 +170,13 @@ describe("the foot's menu: the accounts, You, Settings, then sign-out", () => {
 
   it("with three accounts: every group, in order, and both sign-outs last", () => {
     const html = menu(MANY);
-    expect(groups(html)).toEqual(["current", "accounts", "you", "settings", "sign-out"]);
+    expect(groups(html)).toEqual(["current", "accounts", "you", "settings", "sign-out", "brand"]);
     expect(html.match(/role="listitem"/g) ?? []).toHaveLength(2);
     expect(text(html)).toContain("Fracktal Works · asha@fracktal.in");
     // Each other account keeps its own Remove.
     expect(html.match(/aria-label="Remove [^"]+ from this browser"/g) ?? []).toHaveLength(2);
     expect(text(html)).toMatch(
-      /ops@acme\.com Add another account You My Profile My access Settings Appearance Colour mode Change my layout Sign out Sign out of all accounts$/,
+      /ops@acme\.com Add another account You My Profile My access Settings Appearance Colour mode Change my layout Sign out Sign out of all accounts Metorite$/,
     );
     expect(html).toMatch(/role="group" aria-label="You"/);
     expect(html).toMatch(/role="group" aria-label="Settings"/);
@@ -171,15 +185,15 @@ describe("the foot's menu: the accounts, You, Settings, then sign-out", () => {
   it("with one account: Add, You, Settings and one Sign out", () => {
     const t = text(menu({ enabled: true, active: ACTIVE, others: [] }));
     expect(t).not.toContain("Switch account");
-    expect(t).toMatch(/Add another account You My Profile My access Settings .* Sign out$/);
+    expect(t).toMatch(/Add another account You My Profile My access Settings .* Sign out Metorite$/);
     expect(t).not.toContain("Sign out of all accounts");
   });
 
   it("with the switcher flag off: the account, You, Settings and Sign out, and no account act", () => {
     const html = menu({ enabled: false, active: ACTIVE, others: [] });
-    expect(groups(html)).toEqual(["current", "you", "settings", "sign-out"]);
+    expect(groups(html)).toEqual(["current", "you", "settings", "sign-out", "brand"]);
     expect(text(html)).toBe(
-      "A Asha Rao asha@example.com Acme Signed in You My Profile My access Settings Appearance Colour mode Change my layout Sign out",
+      "A Asha Rao asha@example.com Acme Signed in You My Profile My access Settings Appearance Colour mode Change my layout Sign out Metorite",
     );
   });
 
@@ -187,9 +201,9 @@ describe("the foot's menu: the accounts, You, Settings, then sign-out", () => {
     // The classic rail lists My Profile and Appearance itself, so the foot
     // gets no sections then (#918's rule, kept).
     const html = menu(MANY, [], false);
-    expect(groups(html)).toEqual(["current", "accounts", "settings", "sign-out"]);
+    expect(groups(html)).toEqual(["current", "accounts", "settings", "sign-out", "brand"]);
     expect(html).not.toContain("<a ");
-    expect(text(html)).toMatch(/Settings Colour mode Sign out Sign out of all accounts$/);
+    expect(text(html)).toMatch(/Settings Colour mode Sign out Sign out of all accounts Metorite$/);
     const sidebar = code(read("components/Sidebar.tsx"));
     expect(sidebar).toMatch(/<AccountFoot [^>]*sections=\{shellNav \? sections : \[\]\}[^>]*layout=\{shellNav\}/);
   });
@@ -236,6 +250,51 @@ describe("the foot's menu: the accounts, You, Settings, then sign-out", () => {
     const dismiss = code(read("hooks/useDismiss.ts"));
     expect(dismiss).toMatch(/if \(coverUp\(\)\) return;/);
     expect(dismiss).toMatch(/e\.key === "Escape" && !coverUp\(\)/);
+  });
+});
+
+// Owner, 2026-10-14: our comet and "Metorite" sign the foot of the menu, as
+// Notion, Slack and Linear sign theirs. A quiet row, never a control.
+describe("the menu's signature", () => {
+  const ACTIVE = { email: "asha@example.com", name: "Asha Rao" };
+  const render = (accounts: Accounts, pages = true) =>
+    renderToStaticMarkup(createElement(AccountFootMenu, { accounts, orgName: "Acme", sections: SECTIONS, layout: true, pages, onChanged: () => {} }));
+  const ONE: Accounts = { enabled: true, active: ACTIVE, others: [] };
+  const MANY: Accounts = { ...ONE, others: [{ slot: 2, email: "asha@fracktal.in", name: "Asha R", organization: "Fracktal Works" }] };
+  /** The signature group's own markup, from its open tag to the menu's end. */
+  const brandOf = (html: string) => html.slice(html.lastIndexOf("<", html.indexOf('data-account-group="brand"')));
+
+  it("is the last group, with exactly one comet in the whole menu, and the word once", () => {
+    for (const html of [render(ONE), render(MANY), render({ enabled: false, active: ACTIVE, others: [] })]) {
+      expect([...html.matchAll(/data-account-group="([^"]+)"/g)].map((m) => m[1]).at(-1)).toBe("brand");
+      expect(html.match(/data-metorite-mark=""/g) ?? []).toHaveLength(1);
+      const brand = brandOf(html);
+      expect(brand).toMatch(/data-metorite-mark=""/);
+      expect(text(brand)).toBe("Metorite");
+      expect(text(html).match(/Metorite/g) ?? []).toHaveLength(1);
+    }
+  });
+
+  it("is not focusable and not a control: no button, link, tab stop, role or menu item", () => {
+    const brand = brandOf(render(MANY));
+    expect(brand).not.toMatch(/<(button|a|input|select|textarea)\b/);
+    expect(brand).not.toMatch(/tabindex|role="(button|link|menuitem|img)"|href=|onclick/i);
+    // No hover fill: the row is quiet text.
+    expect(brand).not.toMatch(/hover:/);
+    // The comet is decorative, so a screen reader reads the word alone.
+    expect(brand).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+    // Muted text at the caption size, from tokens only.
+    expect(brand).toMatch(/data-account-brand="" class="[^"]*\btext-\[11px\] text-muted-foreground\b/);
+    // Set off from sign-out by the menu's own divider token.
+    expect(brand).toMatch(/^<div data-account-group="brand" class="border-t border-border /);
+  });
+
+  it("is absent from the org-less card", () => {
+    for (const html of [render(ONE, false), render(MANY, false), renderToStaticMarkup(createElement(OrglessAccounts))]) {
+      expect(html).not.toContain('data-account-group="brand"');
+      expect(html).not.toContain("data-metorite-mark");
+      expect(text(html)).not.toContain("Metorite");
+    }
   });
 });
 
