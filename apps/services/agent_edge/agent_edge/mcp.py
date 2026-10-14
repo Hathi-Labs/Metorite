@@ -37,6 +37,7 @@ posts, gets 202 with no body.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -99,10 +100,12 @@ _RUN_INSTRUCTIONS = (
 )
 
 
-def instructions() -> str:
-    """The ``instructions`` of ``initialize``. The agent-run part follows the
-    one reader of the flag, as ``tools/list`` does."""
-    if agent_oauth.runs_enabled():
+def instructions(scopes: Iterable[str] = ()) -> str:
+    """The ``instructions`` of ``initialize``. The agent-run part shows only
+    when ``tools/list`` shows the run writes: the runs flag, the writes flag
+    and ``projects:write`` on the connection."""
+    if (agent_oauth.runs_enabled() and agent_oauth.writes_enabled()
+            and agent_oauth.PROJECTS_WRITE in set(scopes)):
         return _INSTRUCTIONS + _RUN_INSTRUCTIONS
     return _INSTRUCTIONS
 
@@ -301,7 +304,7 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": dict(SERVER_INFO),
-            "instructions": instructions(),
+            "instructions": instructions(caller.scopes),
         })
     if method == "ping":
         return _result(request_id, {})

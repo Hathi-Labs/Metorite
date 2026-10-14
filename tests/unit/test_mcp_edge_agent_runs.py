@@ -323,6 +323,13 @@ class TestTheInstructions:
         assert not [name for name in RUN_TOOLS if name in text]
 
 
+    async def test_with_writes_off_initialize_names_no_run_tool(self, runs_on, monkeypatch):
+        # The run tools are writes. With writes off, tools/list hides them,
+        # so initialize must not name them either (fix round 2).
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
+        text = await self._instructions()
+        assert not [name for name in RUN_TOOLS if name in text]
+
 # ═══════════════════════════════════════════════════════════════════════════
 # R8: the real gateway app on a promoted catalog, as a NON-privileged role
 # ═══════════════════════════════════════════════════════════════════════════

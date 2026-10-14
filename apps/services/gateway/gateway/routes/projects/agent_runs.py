@@ -251,7 +251,11 @@ def transition(status: str, event: str) -> str:
     if to is None:
         raise HTTPException(
             status_code=409,
-            detail=f"This agent run is {status}. It cannot take this activity.",
+            detail=(
+                "The agent has not picked this run up yet. Wait for it to start, then reply."
+                if status == "created" and event == "member_prompt"
+                else f"This agent run is {status}. It cannot take this activity."
+            ),
         )
     return to
 
@@ -837,6 +841,22 @@ _INSERT_RUN_SQL = (
 )
 
 
+async def _replay_start(db: Any, me: str, key: str | None, task_id: str) -> dict | None:
+    """The first answer of a start that carried this ``idempotency_key``, or
+    None. A key that started a run on another task is a 409."""
+    if not key:
+        return None
+    by_key = (await db.execute(
+        text(f"{_RUN_SELECT} WHERE r.member_email = :me AND r.idempotency_key = :key"),
+        {"me": me, "key": key},
+    )).fetchone()
+    if by_key is None:
+        return None
+    if str(by_key.task_id) != task_id:
+        raise HTTPException(status_code=409, detail="This idempotency_key started another run.")
+    return {"run": (await _runs_out(db, [by_key]))[0], "created": False}
+
+
 @router.post("/tasks/{task_id}/agent-runs", status_code=201, dependencies=_ENABLED)
 async def start_agent_run(
     task_id: str, payload: StartIn, response: Response,
@@ -886,21 +906,10 @@ async def start_agent_run(
                 )
             connection_id = cid
 
-        if payload.idempotency_key:
-            by_key = (await db.execute(
-                text(
-                    f"{_RUN_SELECT} WHERE r.member_email = :me "
-                    "   AND r.idempotency_key = :key"
-                ),
-                {"me": me, "key": payload.idempotency_key},
-            )).fetchone()
-            if by_key is not None:
-                if str(by_key.task_id) != task_id:
-                    raise HTTPException(
-                        status_code=409, detail="This idempotency_key started another run.",
-                    )
-                response.status_code = 200
-                return {"run": (await _runs_out(db, [by_key]))[0], "created": False}
+        replay = await _replay_start(db, me, payload.idempotency_key, task_id)
+        if replay is not None:
+            response.status_code = 200
+            return replay
 
         open_sql = (
             f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
@@ -920,6 +929,12 @@ async def start_agent_run(
                 "key": payload.idempotency_key,
             })).fetchone()
             if made is None:  # a concurrent start won the open-run or the key index
+                # A retry with the same key that lost the race replays the
+                # winner, as the key read above would have, and writes nothing.
+                replay = await _replay_start(db, me, payload.idempotency_key, task_id)
+                if replay is not None:
+                    response.status_code = 200
+                    return replay
                 existing = (await db.execute(text(open_sql), open_args)).fetchone()
                 if existing is None:
                     raise HTTPException(status_code=409, detail="Start the run again.")
