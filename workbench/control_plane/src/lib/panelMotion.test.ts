@@ -251,4 +251,23 @@ describe("the full-view switch", () => {
     expect(swapPanelForm(dom.panel, update)).toBe(false);
     expect(update).toHaveBeenCalledTimes(1);
   });
+
+  it("a second press mid-swap keeps its name: the first swap's end cleans up nothing", async () => {
+    const dom = fakeDom(false, true);
+    const ends: (() => void)[] = [];
+    dom.start.mockImplementation((update: () => void) => {
+      update();
+      return { finished: new Promise<void>((r) => ends.push(r)) };
+    });
+    swapPanelForm(dom.panel, vi.fn());
+    swapPanelForm(dom.panel, vi.fn());
+    ends[0]();
+    await Promise.resolve();
+    expect(dom.props.get("view-transition-name")).toBe(PANEL_SWAP_NAME);
+    expect(dom.classes.has(PANEL_SWAP_CLASS)).toBe(true);
+    ends[1]();
+    await Promise.resolve();
+    expect(dom.props.has("view-transition-name")).toBe(false);
+    expect(dom.classes.has(PANEL_SWAP_CLASS)).toBe(false);
+  });
 });

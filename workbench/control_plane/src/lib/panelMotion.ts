@@ -201,6 +201,9 @@ export const PANEL_SWAP_NAME = "assistant-panel";
 /** The class on `<html>` that scopes the swap's CSS to this one transition. */
 export const PANEL_SWAP_CLASS = "panel-swap";
 
+/** Grows with each swap, so only the newest one cleans up. */
+let _swapSeq = 0;
+
 interface ViewTransitionLike {
   finished: Promise<unknown>;
 }
@@ -225,7 +228,12 @@ export function swapPanelForm(panel: HTMLElement | null, update: () => void): bo
   }
   panel.style.setProperty("view-transition-name", PANEL_SWAP_NAME);
   doc.documentElement.classList.add(PANEL_SWAP_CLASS);
+  // ⚠️ A second press during a swap starts a new transition, and the browser
+  // skips the first. The first one's end then comes DURING the second. Only
+  // the newest swap may clean up, or the second loses its name mid-way.
+  const mine = ++_swapSeq;
   const done = () => {
+    if (mine !== _swapSeq) return;
     panel.style.removeProperty("view-transition-name");
     doc.documentElement.classList.remove(PANEL_SWAP_CLASS);
   };
