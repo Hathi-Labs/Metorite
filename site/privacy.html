@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Privacy Policy — Metorite</title>
-  <meta name="description" content="How Metorite collects, uses, stores and shares personal data.">
+  <meta name="description" content="How Metorite collects, uses, stores and shares personal data, including Google user data from a Gmail mailbox you connect.">
   <meta name="robots" content="index, follow">
   <meta name="theme-color" content="#0b1020">
   <style>
@@ -56,14 +56,15 @@
     p, li { color: var(--fg-muted); }
     li { margin-bottom: 6px; }
     .updated { font-size: 0.9rem; color: var(--fg-muted); margin: 0 0 28px; }
-    .draft {
+    .callout {
       border: 1px solid var(--brand);
       border-radius: var(--radius);
       background: var(--bg-soft);
       padding: 16px 20px;
-      margin: 0 0 32px;
+      margin: 12px 0 20px;
     }
-    .draft strong { color: var(--fg); }
+    .callout strong { color: var(--fg); }
+    .url { overflow-wrap: anywhere; }
     table { border-collapse: collapse; width: 100%; margin: 12px 0 4px; font-size: 0.94rem; }
     th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; color: var(--fg-muted); }
     th { background: var(--bg-soft); color: var(--fg); font-weight: 600; }
@@ -79,6 +80,7 @@
       <a class="brand" href="/">Met<span>o</span>rite</a>
       <nav>
         <a href="/">Home</a>
+        <a href="/help.html">Help</a>
         <a href="/terms.html">Terms</a>
         <a href="https://app.metorite.com">Sign in</a>
       </nav>
@@ -87,17 +89,14 @@
 
   <main class="wrap">
     <h1>Privacy Policy</h1>
-    <p class="updated">Last updated: 8 October 2026</p>
+    <p class="updated">Last updated: 14 October 2026</p>
 
-    <div class="draft">
-      <p><strong>Please review before relying on this.</strong> This policy describes how the Metorite service actually behaves, but the operator of this service must confirm the company details, the contact address and the retention periods below are correct for their business, and should take legal advice before treating it as final.</p>
-    </div>
-
-    <p>Metorite is a company operating system provided as software as a service. This policy explains what personal data we collect, why we collect it, who we share it with, and what rights you have. It applies to <code>metorite.com</code>, <code>app.metorite.com</code> and the Metorite application.</p>
+    <p>Metorite is a company operating system provided as software as a service by Hathi Labs Private Limited. This policy explains what personal data we collect, why we collect it, who we share it with, and what rights you have. It applies to <code>metorite.com</code>, <code>app.metorite.com</code> and the Metorite application.</p>
+    <p>If you connect a Gmail or Google Workspace mailbox, <a href="#google-user-data">section 3, Google user data (Gmail)</a>, explains exactly what Metorite does with the data it receives from Google.</p>
 
     <h2>1. Who we are</h2>
-    <p>Metorite is operated by Hathi Labs ("we", "us"). We are the data controller for account and billing data. For the content our customers put into the product, the customer organisation is the controller and we act as a processor on their instructions.</p>
-    <p>Questions about this policy: <strong>privacy@metorite.com</strong>.</p>
+    <p>Metorite is operated by Hathi Labs Private Limited, a company registered in India ("we", "us"). We are the data controller for account and billing data. For the content our customers put into the product, the customer organisation is the controller and we act as a processor on their instructions.</p>
+    <p>Questions about this policy: <strong>info@hathilabs.com</strong>. You can also write to <strong>privacy@metorite.com</strong>.</p>
 
     <h2>2. What we collect</h2>
 
@@ -117,7 +116,10 @@
     </ul>
 
     <h3>Content you put into the product</h3>
-    <p>Metorite stores the work you do in it. Depending on which parts you use, that can include tasks and projects, notes, calendar entries, meeting records and transcripts, customer records, and messages and attachments from accounts you choose to connect. We do not inspect this content except as needed to run, support and secure the service.</p>
+    <p>Metorite stores the work you do in it. Depending on which parts you use, that can include tasks and projects, notes, calendar entries, meeting records and transcripts, customer records, and messages and attachments from accounts you choose to connect, such as a Gmail, Google Workspace or Microsoft 365 mailbox. We do not inspect this content except as needed to run, support and secure the service.</p>
+
+    <h3>A mailbox you connect</h3>
+    <p>You can connect a Gmail or Google Workspace mailbox, or a Microsoft 365 (Outlook) mailbox, to the Email app. You connect it yourself, at your mail provider's own sign-in page, and you can disconnect it at any time. A mailbox you connect is private to you: other members of your organisation cannot read it in Metorite. For a Google mailbox, section 3 below gives the full detail.</p>
 
     <h3>A WhatsApp Business account you connect</h3>
     <p>If you connect a WhatsApp Business account, you do it through Meta's own sign-in window, and you choose the business and the phone number. Metorite then receives, through the WhatsApp Business Platform:</p>
@@ -135,7 +137,122 @@
       <li>We do not collect special category data on purpose. Please do not put it into free text fields.</li>
     </ul>
 
-    <h2>3. Why we use it, and on what basis</h2>
+    <h2 id="google-user-data">3. Google user data (Gmail)</h2>
+    <p>This section applies when you connect a Gmail or Google Workspace mailbox to Metorite. On Google's consent screen the app is named <strong>Metorite</strong>, and Hathi Labs Private Limited operates it. This section adds to the rest of this policy. Where they differ about data that Metorite receives from Google APIs, this section applies.</p>
+
+    <div class="callout">
+      <p><strong>Limited Use.</strong> Metorite's use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+      <p><strong>AI and machine learning.</strong> Google Workspace APIs are not used to develop, improve, or train non-personalized AI and/or ML models.</p>
+    </div>
+
+    <h3>3.1 How you connect, and the permissions Metorite asks for</h3>
+    <p>You choose to connect a Google mailbox in the Email app. You then sign in at Google, and Google shows you the permissions before you agree. We never receive or store your Google password. Metorite asks for exactly two Google permissions, and no others:</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Google permission</th><th>What it lets Metorite do</th><th>The features that need it</th></tr>
+      <tr><td><code>gmail.modify</code></td><td>Read your messages, their attachments, your labels and your drafts. Send mail and save drafts. Add and remove labels, and move mail to the archive, spam or trash. Read your mailbox address and its change history, so that Metorite stays in step with Gmail.</td><td>The inbox and reading pane, search, sending and replying, drafts, triage and rules, labels, the inbox digest, AI drafting, and the email assistant.</td></tr>
+      <tr><td><code>gmail.settings.basic</code></td><td>Read your Gmail filters, and create or remove a filter.</td><td>The filter list in the Email app, and "block sender", which adds a Gmail filter for a sender that you choose.</td></tr>
+    </table>
+    </div>
+    <p>Metorite never deletes a message permanently. When you delete a message in Metorite, it goes to your Gmail Trash, where Gmail's own rules apply. Metorite does not access your Google Contacts, Calendar, Drive or any other Google service through this connection.</p>
+
+    <h3>3.2 What Google data Metorite accesses</h3>
+    <ul>
+      <li><strong>Message headers:</strong> the sender, the recipients, the subject and the date.</li>
+      <li><strong>Message bodies:</strong> the text and the formatted body of each message.</li>
+      <li><strong>Attachments:</strong> the name, type and size of each attachment, and its content when you open it or ask the AI to read it.</li>
+      <li><strong>Labels:</strong> Gmail's system labels, such as Inbox, Sent and Spam, and the labels that you created.</li>
+      <li><strong>Drafts:</strong> the drafts in your mailbox, and the drafts that you or Metorite save there.</li>
+      <li><strong>Settings and filters:</strong> your Gmail filters, through <code>gmail.settings.basic</code>.</li>
+      <li><strong>Mailbox details:</strong> the address of the mailbox, and Gmail's change history, which tells Metorite what changed since the last sync.</li>
+    </ul>
+
+    <h3>3.3 How Metorite uses it</h3>
+    <p>We use Google user data only to provide the user-facing email features that you see and use in Metorite. We do not use it for any other purpose. The features are:</p>
+    <ul>
+      <li><strong>Your inbox and two-way sync.</strong> We show your mail in the Email app, and we keep it in step with Gmail in both directions. When you read, label, archive or move a message in Metorite, the same change happens in Gmail.</li>
+      <li><strong>Search.</strong> We search your stored mail when you ask.</li>
+      <li><strong>Sending and drafts.</strong> We send mail only when you tell us to: when you send a message, or when you turn on the inbox digest, which Metorite then sends from your mailbox to you. The digest is off until you turn it on. A rule can save a reply or a forward as a draft, and it stays a draft until you send it.</li>
+      <li><strong>Triage and rules.</strong> We sort new mail, add the labels that your rules name, and mark threads that need your reply. You write the rules, and you can turn automatic sorting off.</li>
+      <li><strong>Labels and filters.</strong> We apply your Gmail labels, and we list your filters. When you block a sender, we add a Gmail filter for that sender.</li>
+      <li><strong>AI drafting.</strong> When you ask for a draft, or turn on automatic drafts, the AI writes a reply in your style. Automatic drafts are off until you turn them on. Nothing is sent until you send it.</li>
+      <li><strong>The email assistant.</strong> When you ask the assistant a question, it reads the mail it needs to answer you.</li>
+      <li><strong>Insights.</strong> If you turn on insights, Metorite notes facts from your mail, such as due dates and amounts, for you to see.</li>
+    </ul>
+    <p>The AI features process your mail automatically to produce a result for you. A person does not read it to do this. The style that the AI learns for your drafts is personal to you and to that mailbox, and it is deleted when you disconnect the mailbox.</p>
+
+    <h3>3.4 Who we share it with</h3>
+    <p>We share Google user data only with the suppliers below, and only so they can run the features in section 3.3 for you. Each one receives only what a feature needs, and returns a result to Metorite.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Supplier</th><th>What it receives, and why</th></tr>
+      <tr><td>Supabase (on Amazon Web Services)</td><td>Hosts our database, which stores the copy of your mailbox.</td></tr>
+      <tr><td>Hostinger</td><td>Hosts our application servers, which run the sync and the email features, and our backups.</td></tr>
+      <tr><td>DeepSeek</td><td>An AI model provider. It receives the text of the mail that an AI feature works on, to write a draft, answer the email assistant, decide a thread's reply status, write a summary or note an insight.</td></tr>
+      <tr><td>Google (Gemini API)</td><td>An AI model provider, for the same AI features as DeepSeek.</td></tr>
+      <tr><td>TypeSafe</td><td>A decision model. It receives the parts of a message that a sorting decision needs, to decide which of your rules matches and whether a thread needs your reply.</td></tr>
+      <tr><td>AI/ML API</td><td>Gives us access to the TypeSafe decision model. The same data passes through it to TypeSafe.</td></tr>
+    </table>
+    </div>
+    <p>We do not transfer or disclose your information to third parties for purposes other than the ones provided. We also disclose it where you direct us to, for example when you send an email, and where the law requires it.</p>
+    <p>If Hathi Labs Private Limited is part of a merger, an acquisition or a sale of assets, we will transfer Google user data only after obtaining your explicit prior consent.</p>
+
+    <h3>3.5 What we do not do with Google user data</h3>
+    <ul>
+      <li>We do not sell it.</li>
+      <li>We do not use it, or transfer it, to serve advertising, including personalised, retargeted or interest-based advertising.</li>
+      <li>We do not transfer it to data brokers or information resellers.</li>
+      <li>We do not use it to decide whether you are creditworthy, or for any lending purpose.</li>
+      <li>We do not use it, and we do not transfer it to anyone, to develop, improve or train generalised AI or machine-learning models. We send it to the AI providers in section 3.4 only to get a result back for you, and never so that they can train or improve their models.</li>
+    </ul>
+
+    <h3>3.6 Who can read it</h3>
+    <p>A mailbox that you connect is private to you. Other members of your organisation cannot read it in Metorite, unless you choose to share a message, for example by turning it into a task in a shared project.</p>
+    <p>Our staff do not read your Google user data, except in these cases:</p>
+    <ul>
+      <li>you give us your explicit consent to read specific messages, for example to help with a support request;</li>
+      <li>it is necessary for security purposes, such as investigating a bug or abuse;</li>
+      <li>it is necessary to comply with applicable law; or</li>
+      <li>the data is aggregated and anonymised, and we use it for our internal operations.</li>
+    </ul>
+
+    <h3>3.7 How it is protected</h3>
+    <ul>
+      <li><strong>In transit.</strong> All data moves between Google, Metorite, our suppliers and your browser over encrypted TLS connections.</li>
+      <li><strong>At rest.</strong> Our database host encrypts the stored data at rest.</li>
+      <li><strong>Access tokens.</strong> The OAuth tokens that Google gives us for your mailbox are encrypted by Metorite with a separate key before we store them. We never store your Google password.</li>
+      <li><strong>Isolation.</strong> Each organisation's data is isolated in the database, and the database itself enforces that isolation.</li>
+      <li><strong>Staff access.</strong> Access to production systems is limited to the people who need it.</li>
+    </ul>
+
+    <h3>3.8 How long we keep it</h3>
+    <ul>
+      <li><strong>What we store.</strong> When you connect, you choose how much earlier mail to import: none, or up to the last six months. After that, Metorite keeps a copy of new mail while the mailbox stays connected. It also stores your labels, the drafts it saves, your rules, and the results of the AI features.</li>
+      <li><strong>Older formatted mail.</strong> For a message older than 90 days, Metorite may keep only its text, and fetch the formatted version from Gmail again when you open it.</li>
+      <li><strong>Short-lived caches.</strong> When you open an attachment, Metorite may keep its text in a cache on our servers for up to one hour.</li>
+      <li><strong>How long.</strong> We keep the copy while the mailbox stays connected. We delete it when you disconnect the mailbox, as section 3.9 describes.</li>
+      <li><strong>Backups.</strong> Our backups hold a copy for up to 30 days, until they roll over.</li>
+    </ul>
+
+    <h3 id="gmail-delete">3.9 How to revoke access, and how to delete your data</h3>
+    <p><strong>Disconnect the mailbox in Metorite.</strong></p>
+    <ol>
+      <li>Sign in at <a href="https://app.metorite.com">app.metorite.com</a> and open <strong>Email</strong>.</li>
+      <li>Open the <strong>Account menu</strong> of the mailbox, choose <strong>Disconnect mailbox</strong>, and confirm.</li>
+    </ol>
+    <p>When you disconnect, Metorite stops reaching the mailbox at once. It deletes, at once, its stored copy of that mailbox: the messages, the attachment records, the labels and folders, the drafts it saved, the rules, the AI drafts, the insights, the learned patterns and the encrypted access tokens. It then deletes the drafting memory of that mailbox. Your mail stays in Gmail.</p>
+    <p><strong>Remove Metorite in your Google Account.</strong> Disconnecting in Metorite does not remove Metorite from your Google Account's list of connected apps. To remove it there too, open <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>, choose Metorite, and remove its access. If you remove access only at Google, Metorite can no longer reach your mailbox, and it shows the mailbox as needing to reconnect. Its stored copy stays until you disconnect the mailbox in Metorite, or ask us to delete it.</p>
+    <p><strong>What outlives a disconnect.</strong> A task, a note or a chat message that you made from an email stays until you delete it, or until your organisation is deleted. Backups roll over within 30 days.</p>
+    <p><strong>Ask us to delete it.</strong> Write to <strong>info@hathilabs.com</strong> from the address of your Metorite account. We confirm the request and complete it within 30 days. If your organisation cancels its subscription, we delete all of its data after the export window described in section 7.</p>
+    <p>The <a href="/help.html#gmail">help page</a> gives these steps one by one.</p>
+
+    <h3>3.10 Changes to how we use Google user data</h3>
+    <p>We will not use Google user data in a new way, or for a new purpose, until we have updated this policy and asked for your consent again.</p>
+
+    <h3>3.11 Contact</h3>
+    <p>For any question about Google user data, write to Hathi Labs Private Limited at <strong>info@hathilabs.com</strong>.</p>
+
+    <h2>4. Why we use it, and on what basis</h2>
     <div class="scroll">
     <table>
       <tr><th>Purpose</th><th>Data</th><th>Lawful basis</th></tr>
@@ -147,47 +264,56 @@
     </table>
     </div>
 
-    <h2>4. Who we share it with</h2>
-    <p>We share personal data only with the suppliers that run the service for us. Each one is bound by contract and may use the data only to provide their service to us.</p>
+    <h2>5. Who we share it with</h2>
+    <p>We share personal data only with the suppliers that run the service for us. Each one is bound by contract and may use the data only to provide their service to us. We add a supplier to this list before it receives your data.</p>
     <div class="scroll">
     <table>
       <tr><th>Supplier</th><th>What they handle</th></tr>
       <tr><td>Supabase (on Amazon Web Services)</td><td>Database hosting</td></tr>
-      <tr><td>Hostinger</td><td>Application server hosting</td></tr>
+      <tr><td>Hostinger</td><td>Application server hosting, and our backups</td></tr>
       <tr><td>Resend</td><td>Sending sign-in codes and product email</td></tr>
-      <tr><td>Google</td><td>Sign in with Google, if you choose it</td></tr>
-      <tr><td>AI model providers</td><td>Processing the prompts that AI features send</td></tr>
+      <tr><td>Google</td><td>Sign in with Google, if you choose it. The Gmail API, for a Gmail or Google Workspace mailbox you connect.</td></tr>
+      <tr><td>Microsoft</td><td>The Microsoft Graph API, for a Microsoft 365 mailbox you connect</td></tr>
+      <tr><td>DeepSeek</td><td>An AI model provider. It processes the content that AI features send, including the text of email.</td></tr>
+      <tr><td>Google (Gemini API)</td><td>An AI model provider. It processes the content that AI features send, including the text of email.</td></tr>
+      <tr><td>TypeSafe</td><td>A decision model that sorts email and messages for the triage features</td></tr>
+      <tr><td>AI/ML API</td><td>Access to the TypeSafe decision model</td></tr>
       <tr><td>Meta Platforms (WhatsApp Business Platform)</td><td>Carrying WhatsApp messages between Metorite and a WhatsApp Business account you connect</td></tr>
     </table>
     </div>
-    <p>We may also disclose data where the law requires it, or to establish or defend legal claims. If the business is sold or merged, account data may transfer to the buyer, and we will tell you before that happens.</p>
+    <p>We may also disclose data where the law requires it, or to establish or defend legal claims. If the business is sold or merged, account data may transfer to the buyer, and we will tell you before that happens. Google user data transfers in that case only after obtaining your explicit prior consent, as section 3.4 says.</p>
 
-    <h2>5. Where your data is held</h2>
-    <p>Our databases and application servers are hosted in India. Some suppliers named above process data outside India. Where they do, transfers rely on the supplier's standard contractual protections.</p>
+    <h2>6. Where your data is held</h2>
+    <p>Our databases and application servers are hosted in India. Some suppliers named above, including the AI model providers, process data outside India. Where they do, transfers rely on the supplier's contractual protections.</p>
 
-    <h2>6. How long we keep it</h2>
+    <h2>7. How long we keep it</h2>
     <ul>
       <li><strong>Sign-in codes</strong> expire ten minutes after we issue them and are removed once used.</li>
       <li><strong>Account and content data</strong> is kept while your organisation has an account with us.</li>
+      <li><strong>A connected mailbox</strong> is kept while it stays connected, and deleted when you disconnect it. Section 3.9 gives the detail.</li>
       <li><strong>After cancellation</strong>, sign-in stays open for an export window so you can take your data out. After that window we delete the organisation and its content.</li>
+      <li><strong>Backups</strong> roll over within 30 days.</li>
       <li><strong>Billing and tax records</strong> are kept for as long as tax law requires.</li>
     </ul>
 
-    <h2>7. How we protect it</h2>
+    <h2>8. How we protect it</h2>
     <ul>
       <li>Traffic to and from the service is encrypted with TLS.</li>
       <li>Each organisation's data is isolated at the database level, and that isolation is enforced by the database itself rather than only by application code.</li>
+      <li>The access tokens for a mailbox you connect are encrypted before we store them.</li>
       <li>Access to production systems is limited to the people who need it.</li>
       <li>We do not store passwords for Metorite itself. Sign-in is by one-time code or by Google.</li>
     </ul>
 
-    <h2>8. Your rights</h2>
+    <h2>9. Your rights</h2>
     <p>Subject to local law, you can ask us to give you a copy of your personal data, correct it, delete it, restrict or object to how we use it, or provide it in a portable form. You can also complain to your data protection authority.</p>
     <p>If your data sits inside a customer organisation's workspace, send your request to that organisation first. We will help them answer it.</p>
-    <p>To make a request, write to <strong>privacy@metorite.com</strong>. We answer within one month.</p>
+    <p>To make a request, write to <strong>info@hathilabs.com</strong> or <strong>privacy@metorite.com</strong>. We answer within one month.</p>
 
-    <h2 id="data-deletion">9. Deleting your data</h2>
-    <p>You can delete data yourself, or ask us to delete it.</p>
+    <h2 id="data-deletion">10. Deleting your data</h2>
+    <p>You can delete data yourself, or ask us to delete it. The <a href="/help.html">help page</a> gives the steps.</p>
+    <h3>Disconnect a Gmail, Google Workspace or Microsoft 365 mailbox</h3>
+    <p>Open <strong>Email</strong> in Metorite, open the <strong>Account menu</strong> of the mailbox, and choose <strong>Disconnect mailbox</strong>. Metorite deletes its stored copy of that mailbox at once. For a Google mailbox, <a href="#gmail-delete">section 3.9</a> says exactly what is deleted, and how to remove Metorite's access in your Google Account.</p>
     <h3>Disconnect a WhatsApp Business account</h3>
     <ol>
       <li>Sign in at <a href="https://app.metorite.com">app.metorite.com</a> and open <strong>WhatsApp</strong>, then <strong>Numbers</strong>.</li>
@@ -195,19 +321,19 @@
     </ol>
     <p>Disconnecting deletes, at once, every message, chat, contact and attachment that Metorite stored from that number. You can also remove Metorite's access on Meta's side, in the business settings of your WhatsApp Business account.</p>
     <h3>Delete your account or your organisation</h3>
-    <p>An administrator can cancel the organisation's subscription. After the export window described in section 6, we delete the organisation and all of its content.</p>
+    <p>An administrator can cancel the organisation's subscription. After the export window described in section 7, we delete the organisation and all of its content.</p>
     <h3>Ask us to delete it</h3>
-    <p>Write to <strong>privacy@metorite.com</strong> from the email address of your Metorite account, and say what you want deleted. We confirm the request and complete it within 30 days, except where the law requires us to keep a record, such as tax records.</p>
+    <p>Write to <strong>info@hathilabs.com</strong> from the email address of your Metorite account, and say what you want deleted. We confirm the request and complete it within 30 days, except where the law requires us to keep a record, such as tax records.</p>
 
-    <h2>10. Children</h2>
+    <h2>11. Children</h2>
     <p>Metorite is a product for businesses. It is not meant for children, and we do not knowingly collect data from anyone under 16.</p>
 
-    <h2>11. Changes</h2>
-    <p>If we change this policy we will update the date at the top. If a change materially affects you, we will tell account administrators by email.</p>
+    <h2>12. Changes</h2>
+    <p>If we change this policy we will update the date at the top. If a change materially affects you, we will tell account administrators by email. A new use of Google user data also needs your consent first, as section 3.10 says.</p>
   </main>
 
   <footer class="wrap">
-    <p>&copy; 2026 Hathi Labs &middot; <a href="/">Home</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/privacy.html">Privacy</a> &middot; <a href="/refunds.html">Cancellation &amp; Refunds</a> &middot; <a href="/contact.html">Contact</a></p>
+    <p>&copy; 2026 Hathi Labs Private Limited &middot; <a href="/">Home</a> &middot; <a href="/help.html">Help</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/privacy.html">Privacy</a> &middot; <a href="/refunds.html">Cancellation &amp; Refunds</a> &middot; <a href="/contact.html">Contact</a></p>
   </footer>
 </body>
 </html>

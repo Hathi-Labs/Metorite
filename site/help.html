@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Help: your connected accounts and your data — Metorite</title>
+  <meta name="description" content="How to connect a Gmail or Microsoft 365 mailbox to Metorite, disconnect it, remove Metorite's access, and delete your data.">
+  <meta name="robots" content="index, follow">
+  <meta name="theme-color" content="#0b1020">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-soft: #f5f7fb;
+      --border: #e4e8f0;
+      --fg: #0b1020;
+      --fg-muted: #55607a;
+      --brand: #5b4ae0;
+      --radius: 14px;
+      --maxw: 760px;
+      --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1020;
+        --bg-soft: #0f1530;
+        --border: #26305a;
+        --fg: #eef1fb;
+        --fg-muted: #a4adca;
+        --brand: #8b7cf6;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--fg);
+      background: var(--bg);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 18px 0;
+      background: var(--bg-soft);
+    }
+    header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .brand { font-weight: 700; letter-spacing: -0.02em; text-decoration: none; color: var(--fg); }
+    .brand span { color: var(--brand); }
+    nav a { color: var(--fg-muted); text-decoration: none; margin-left: 18px; font-size: 0.94rem; }
+    nav a:hover { color: var(--fg); text-decoration: underline; }
+    main { padding: 40px 0 72px; }
+    h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 8px; }
+    h2 { font-size: 1.2rem; margin: 36px 0 10px; letter-spacing: -0.01em; }
+    h3 { font-size: 1rem; margin: 22px 0 6px; }
+    p, li { color: var(--fg-muted); }
+    li { margin-bottom: 6px; }
+    .updated { font-size: 0.9rem; color: var(--fg-muted); margin: 0 0 28px; }
+    footer { border-top: 1px solid var(--border); padding: 24px 0 48px; font-size: 0.9rem; color: var(--fg-muted); }
+    footer a { color: var(--fg-muted); }
+    code { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 6px; padding: 1px 5px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <a class="brand" href="/">Met<span>o</span>rite</a>
+      <nav>
+        <a href="/">Home</a>
+        <a href="/privacy.html">Privacy</a>
+        <a href="https://app.metorite.com">Sign in</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <h1>Help: your connected accounts and your data</h1>
+    <p class="updated">Last updated: 14 October 2026</p>
+
+    <p>This page tells you how to connect a mailbox to Metorite, how to disconnect it, how to remove Metorite's access at your mail provider, and how to delete your data. The <a href="/privacy.html">Privacy Policy</a> says what Metorite does with that data.</p>
+
+    <h2 id="gmail">1. A Gmail or Google Workspace mailbox</h2>
+
+    <h3>Connect it</h3>
+    <ol>
+      <li>Sign in at <a href="https://app.metorite.com">app.metorite.com</a> and open <strong>Email</strong>.</li>
+      <li>Choose <strong>Add email account</strong>, then choose <strong>Google / Gmail</strong>.</li>
+      <li>Sign in at Google with the account you want to connect.</li>
+      <li>Google shows the two permissions that Metorite asks for. Read them, then choose <strong>Allow</strong>.</li>
+      <li>Back in Metorite, choose how much earlier mail to import: none, or up to the last six months.</li>
+    </ol>
+    <p>Metorite asks for two Google permissions. <code>gmail.modify</code> lets it read, send and organise your mail, its labels and its drafts. <code>gmail.settings.basic</code> lets it read and manage your Gmail filters. Metorite never receives your Google password. The <a href="/privacy.html#google-user-data">Google user data section of the Privacy Policy</a> lists each feature that uses these permissions.</p>
+
+    <h3>Turn AI features on or off</h3>
+    <p>Open <strong>AI Settings</strong> in the Email app to turn automatic sorting and automatic drafts on or off. The inbox digest has its own settings. Automatic drafts, the digest and insights are off until you turn them on.</p>
+
+    <h3>Disconnect it, and delete Metorite's copy</h3>
+    <ol>
+      <li>Open <strong>Email</strong> in Metorite.</li>
+      <li>Open the <strong>Account menu</strong> of the mailbox, and choose <strong>Disconnect mailbox</strong>.</li>
+      <li>Confirm with <strong>Disconnect</strong>.</li>
+    </ol>
+    <p>Metorite then stops reaching the mailbox, and deletes its stored copy of it at once: the messages, the attachment records, the labels, the drafts it saved, the rules, the AI drafts, the insights and the access tokens. Your mail stays in Gmail.</p>
+
+    <h3>Remove Metorite's access in your Google Account</h3>
+    <ol>
+      <li>Open <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> and sign in.</li>
+      <li>Choose <strong>Metorite</strong> in the list of apps.</li>
+      <li>Remove its access.</li>
+    </ol>
+    <p>Do this as well as disconnecting in Metorite. If you only remove access at Google, Metorite can no longer reach your mailbox, but it keeps its stored copy until you disconnect the mailbox in Metorite or ask us to delete it.</p>
+
+    <h3>Ask us to delete your data</h3>
+    <p>Write to <strong>info@hathilabs.com</strong> from the address of your Metorite account, and say what you want deleted. We confirm the request and complete it within 30 days.</p>
+
+    <h2 id="outlook">2. A Microsoft 365 (Outlook) mailbox</h2>
+    <p>Connect it in the same way: open <strong>Email</strong>, choose <strong>Add email account</strong>, choose <strong>Microsoft 365 / Outlook</strong>, and sign in at Microsoft. To disconnect it, open the <strong>Account menu</strong> of the mailbox and choose <strong>Disconnect mailbox</strong>. Metorite deletes its stored copy at once. To remove Metorite's access at Microsoft, open the apps page of your Microsoft account and remove Metorite.</p>
+
+    <h2 id="whatsapp">3. A WhatsApp Business number</h2>
+    <p>Open <strong>WhatsApp</strong>, then <strong>Numbers</strong>, and choose <strong>Disconnect</strong> on the number. Metorite deletes every message, chat, contact and attachment it stored from that number at once.</p>
+
+    <h2 id="account">4. Your account and your organisation</h2>
+    <p>An administrator can cancel the organisation's subscription. Sign-in then stays open for an export window, so you can take your data out. After that window we delete the organisation and all of its content. Backups roll over within 30 days.</p>
+
+    <h2 id="contact">5. Contact</h2>
+    <p>For help with your data, write to Hathi Labs Private Limited at <strong>info@hathilabs.com</strong>.</p>
+  </main>
+
+  <footer class="wrap">
+    <p>&copy; 2026 Hathi Labs Private Limited &middot; <a href="/">Home</a> &middot; <a href="/help.html">Help</a> &middot; <a href="/terms.html">Terms</a> &middot; <a href="/privacy.html">Privacy</a> &middot; <a href="/refunds.html">Cancellation &amp; Refunds</a> &middot; <a href="/contact.html">Contact</a></p>
+  </footer>
+</body>
+</html>
