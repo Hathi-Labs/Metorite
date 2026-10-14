@@ -47,8 +47,8 @@ import { revealWithin } from "@/lib/scrollWithin";
 import {
   FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
   draftToUpdate, holdPick, pickProblem, recordSave, saveFailureText, sendFailureText,
-  supersededDraft, NO_COMPOSER_DRAFTS, newReplyDrafts, ownDraft, retireDrafts,
-  threadWithoutComposerDrafts,
+  supersededDraft, NO_COMPOSER_DRAFTS, draftsAfterSend, markGone, newReplyDrafts, ownDraft,
+  retireDrafts, threadWithoutComposerDrafts,
   type ComposerDrafts, type DraftHandOver, type DraftStatus, type SavedDraft,
 } from "../lib/draftAutosave";
 
@@ -62,6 +62,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     accounts, selectedAccountId, sendEmail, saveDraft, sendDraft,
     viewerCommand, setViewerCommand, triggerSync, softRefresh,
     captureEmailToTasks, authErrors, viewAll, selectFolder,
+    composeOpen, composeDraftId,
   } = useEmailStore();
   // The mailbox of the open mail. Every act on it runs there: the signature,
   // the thread, the drafts, the AI draft and the send. The selected view never
@@ -634,9 +635,14 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const replyTarget: Email =
     (replyTargetId ? thread?.find((m) => m.id === replyTargetId) : undefined) ??
     view;
-  // The thread as drawn: the drafts that the inline reply holds are not in it.
+  // The thread as drawn: the drafts that the inline reply holds are not in
+  // it, nor the draft of the full composer after a pop-out (review round 1).
   const shownThread = thread
-    ? threadWithoutComposerDrafts(thread, composerDrafts, replyMode !== null, isDraftEmail)
+    ? threadWithoutComposerDrafts(
+        thread, composerDrafts,
+        { replyOpen: replyMode !== null, composeOpen, composeDraftId },
+        isDraftEmail,
+      )
     : null;
   replyTargetRef.current = replyTarget;
   // The files of the email can arrive after the forward opened (the detail
@@ -879,9 +885,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const finishForward = async (session: number, stale: string[]) => {
     // A save that an edit scheduled after the first drain goes, and a save
     // that runs settles first, so its draft id is known. Then the reset ends
-    // the session, as in `discardReply` (review round 1, P3-a).
+    // the session, as in `discardReply` (review round 1, P3-a). A reply that
+    // the member opened during the send stays open, with its drafts.
     const drained = autosave.drain(session);
-    resetReplySession();
+    const live = replySessionRef.current === session;
+    if (live) resetReplySession();
     await drained;
     const ids = draftsToDiscard(
       session,
@@ -889,7 +897,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       lastSaveRef.current,
       stale.splice(0),
     );
-    setComposerDrafts((d) => retireDrafts(d, ids));
+    setComposerDrafts((d) => markGone(d, ids));
     for (const id of ids) void deleteEmail(id);
     refreshThreadAfterSend();
   };
@@ -939,6 +947,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setSending(true);
     setOfferNoFiles(false);
     setForwardUnsure(false);
+    // The draft that this send sent, so it hides once the send ends.
+    let sentDraftId: string | null = null;
     try {
       // The send carries the last edit, so each queued autosave goes. A save
       // that runs settles first: a first save gives its draft id, and no older
@@ -980,8 +990,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
         // When the send fails, the next autosave updates this draft, and it
         // holds the files now (EM-G3c-2 item 12).
         if (saved.id === draftIdRef.current) replyHasFileRef.current = saved.hasAttachments;
-        // The reply holds this draft too, so the reset ends it.
-        setComposerDrafts((d) => ownDraft(d, saved.id));
+        // The reply holds this draft too, so the reset ends it. A reply that
+        // the member opened since then does not take it (review round 1, P2).
+        if (replySessionRef.current === session) setComposerDrafts((d) => ownDraft(d, saved.id));
+        sentDraftId = saved.id;
         await sendDraft(fromId, saved.id);
         dropStaleDrafts();
       } else {
@@ -1031,7 +1043,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
             replyAttachments.length > 0 || replyArtifacts.length > 0,
         })
       : undefined;
-    resetReplySession();
+    // The member can open another reply while the send runs. That reply
+    // stays open, and its drafts stay its own. Only the draft that went out
+    // ends (review round 1, P2).
+    const live = replySessionRef.current === session;
+    setComposerDrafts((d) => draftsAfterSend(d, sentDraftId ? [sentDraftId] : [], live));
+    if (live) resetReplySession();
     refreshThreadAfterSend(sent);
   };
 

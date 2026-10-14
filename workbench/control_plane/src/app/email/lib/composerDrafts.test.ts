@@ -5,6 +5,9 @@
 // a DraftCard above the open composer, so the AI draft showed twice. The
 // pane now keeps the ids of its drafts in React state, and
 // `threadWithoutComposerDrafts` drops them while the reply is open.
+// Review round 1: a pop-out hands the draft to the full composer, so the
+// thread hides it while that composer is open too (P1). A send that ends
+// after the member opened another reply leaves that reply alone (P2).
 //
 // Part 2, no banner after a send. The pane syncs the mailbox after a send.
 // A sync that runs already answers 409, and the store showed its detail as
@@ -24,8 +27,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ConversationView, isDraftEmail } from "../components/ConversationView";
 import {
-  NO_COMPOSER_DRAFTS, newReplyDrafts, ownDraft, retireDrafts, threadWithoutComposerDrafts,
-  type ComposerDrafts,
+  NO_COMPOSER_DRAFTS, draftsAfterSend, newReplyDrafts, ownDraft, retireDrafts,
+  threadWithoutComposerDrafts,
+  type ComposerDrafts, type DraftEditors,
 } from "./draftAutosave";
 import type { Email } from "./types";
 
@@ -77,8 +81,14 @@ const OTHER_DRAFT = mail({
 const THREAD = [ORIGINAL, COMPOSER_DRAFT, OTHER_DRAFT];
 
 /** The thread as the pane draws it, rendered to markup. */
-function drawn(drafts: ComposerDrafts, replyOpen: boolean): string {
-  const messages = threadWithoutComposerDrafts(THREAD, drafts, replyOpen, isDraftEmail);
+/** The inline reply is open, and the full composer is closed. */
+const REPLY: DraftEditors = { replyOpen: true, composeOpen: false, composeDraftId: null };
+/** Both editors are closed. */
+const NONE: DraftEditors = { replyOpen: false, composeOpen: false, composeDraftId: null };
+
+function drawn(drafts: ComposerDrafts, replyOpen: boolean | DraftEditors): string {
+  const editors = typeof replyOpen === "boolean" ? (replyOpen ? REPLY : NONE) : replyOpen;
+  const messages = threadWithoutComposerDrafts(THREAD, drafts, editors, isDraftEmail);
   return renderToStaticMarkup(createElement(ConversationView, { messages, openedId: "orig" }));
 }
 
@@ -124,7 +134,7 @@ describe("the inline reply owns its draft (email-composer-owns-its-draft)", () =
 
   it("hides only drafts, never a message with the same id", () => {
     const hold = ownDraft(NO_COMPOSER_DRAFTS, ORIGINAL.id);
-    expect(threadWithoutComposerDrafts(THREAD, hold, true, isDraftEmail)).toHaveLength(3);
+    expect(threadWithoutComposerDrafts(THREAD, hold, REPLY, isDraftEmail)).toHaveLength(3);
   });
 
   it("records each id once", () => {
@@ -150,7 +160,7 @@ describe("the inline reply owns its draft (email-composer-owns-its-draft)", () =
 
     it("draws the thread without the drafts of the open reply", () => {
       expect(detail).toContain(
-        "threadWithoutComposerDrafts(thread, composerDrafts, replyMode !== null, isDraftEmail)",
+        "{ replyOpen: replyMode !== null, composeOpen, composeDraftId },",
       );
       expect(detail).toContain("shownThread && shownThread.length > 1 ? (");
       expect(detail).toContain("messages={shownThread}");
@@ -160,9 +170,82 @@ describe("the inline reply owns its draft (email-composer-owns-its-draft)", () =
     it("a send and a discard retire the drafts, and a new reply starts empty", () => {
       expect(detail).toContain("setComposerDrafts((d) => retireDrafts(d));");
       expect(detail).toContain("setComposerDrafts((d) => retireDrafts(d, ids));");
+      expect(detail).toContain("setComposerDrafts((d) => markGone(d, ids));");
       expect(detail).toContain("setComposerDrafts(newReplyDrafts);");
       expect(detail).toContain("setComposerDrafts(NO_COMPOSER_DRAFTS);");
     });
+  });
+});
+
+describe("a pop-out keeps the draft out of the thread (review round 1, P1)", () => {
+  // The full composer saved its own first draft: the pop-out came before the
+  // first autosave, or the reply had a Bcc. The hand-over then held no id.
+  const COMPOSE_OWN = mail({
+    id: "draft-compose", folder: "drafts", subject: "Re: Quote",
+    from: { name: "Me", email: "me@example.test" },
+    bodyText: "COMPOSE-PANEL-DRAFT body text",
+  });
+
+  it("hides the draft that the full composer made when the hand-over held no id", () => {
+    const thread = [ORIGINAL, COMPOSE_OWN, OTHER_DRAFT];
+    const editors = { replyOpen: false, composeOpen: true, composeDraftId: COMPOSE_OWN.id };
+    const shown = threadWithoutComposerDrafts(thread, NO_COMPOSER_DRAFTS, editors, isDraftEmail);
+    expect(shown.map((m) => m.id)).toEqual([ORIGINAL.id, OTHER_DRAFT.id]);
+  });
+
+  it("hides the handed-over draft while the full composer is open", () => {
+    // Before the hand-over settles, the composer names no draft yet.
+    expect(drawn(saved, { replyOpen: false, composeOpen: true, composeDraftId: null }))
+      .not.toContain("COMPOSER-AI-DRAFT");
+    // After it settles, the composer names the same draft.
+    const after = drawn(saved, { replyOpen: false, composeOpen: true, composeDraftId: COMPOSER_DRAFT.id });
+    expect(after).not.toContain("COMPOSER-AI-DRAFT");
+    expect(after).toContain("OTHER-DEVICE-DRAFT");
+  });
+
+  it("draws the draft again once the full composer closes and keeps it", () => {
+    // A close clears the id in the store, and the reading pane shows the draft.
+    expect(drawn(saved, NONE)).toContain("COMPOSER-AI-DRAFT");
+    const thread = [ORIGINAL, COMPOSE_OWN];
+    const closed = { replyOpen: false, composeOpen: false, composeDraftId: COMPOSE_OWN.id };
+    expect(threadWithoutComposerDrafts(thread, NO_COMPOSER_DRAFTS, closed, isDraftEmail)).toHaveLength(2);
+  });
+
+  it("ComposePanel and the store keep the id of the composer draft", () => {
+    const panel = codeOnly(read("components/ComposePanel.tsx"));
+    expect(panel).toMatch(/draftIdRef\.current = draftId;\s*draftHasFileRef\.current = Boolean\(draftHasFile\);\s*setComposeDraftId\(draftId\);/);
+    expect(panel).toMatch(/draftIdRef\.current = saved\.id;[\s\S]{0,200}setComposeDraftId\(saved\.id\);/);
+    const store = codeOnly(read("lib/emailStore.ts"));
+    expect(store).toContain("set({ composeOpen: false, composeDraftId: null, composeDefaults: null });");
+    expect(store).toContain("set({ composeOpen: true, composeDraftId: null, composeDefaults: defaults || null });");
+  });
+});
+
+describe("a send that ends after a new reply opened (review round 1, P2)", () => {
+  const NEW_REPLY = "draft-new-reply";
+
+  it("ends only the sent draft, and the new reply keeps its own", () => {
+    // The new reply saved its draft while the send of the old reply ran.
+    const during = ownDraft(newReplyDrafts(saved), NEW_REPLY);
+    const after = draftsAfterSend(during, [COMPOSER_DRAFT.id], false);
+    expect(after.own).toEqual([NEW_REPLY]);
+    expect(after.gone).toEqual([COMPOSER_DRAFT.id]);
+  });
+
+  it("a send of the open reply ends each of its drafts", () => {
+    const after = draftsAfterSend(saved, [COMPOSER_DRAFT.id], true);
+    expect(after).toEqual({ own: [], gone: [COMPOSER_DRAFT.id] });
+  });
+
+  it("EmailDetail resets the reply only when the reply that sent is still open", () => {
+    const detail = codeOnly(read("components/EmailDetail.tsx"));
+    expect(detail).toMatch(
+      /const live = replySessionRef\.current === session;\s*setComposerDrafts\(\(d\) => draftsAfterSend\(d, sentDraftId \? \[sentDraftId\] : \[\], live\)\);\s*if \(live\) resetReplySession\(\);\s*refreshThreadAfterSend\(sent\);/,
+    );
+    expect(detail).toMatch(/const live = replySessionRef\.current === session;\s*if \(live\) resetReplySession\(\);\s*await drained;/);
+    expect(detail).toContain(
+      "if (replySessionRef.current === session) setComposerDrafts((d) => ownDraft(d, saved.id));",
+    );
   });
 });
 

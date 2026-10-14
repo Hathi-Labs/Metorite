@@ -384,6 +384,14 @@ interface EmailState {
 
   // UI
   composeOpen: boolean;
+  /**
+   * The draft that the full composer edits now, or null. ComposePanel sets it
+   * when it saves or takes a draft over. Each close clears it. The reading
+   * pane hides this draft from the thread while the composer is open, so one
+   * draft never shows in two editors (owner report, 2026-10-14).
+   */
+  composeDraftId: string | null;
+  setComposeDraftId: (id: string | null) => void;
   composeDefaults: {
     /** The mailbox that sends. A reply carries the mailbox of the mail it
      *  answers. Absent = the selected mailbox (EM-T8a, D-EM-20). */
@@ -1013,6 +1021,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   // UI
   composeOpen: false,
+  composeDraftId: null,
   composeDefaults: null,
   pendingSend: null,
   pendingChatPrompt: null,
@@ -1689,11 +1698,15 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   },
 
   openCompose: (defaults) => {
-    set({ composeOpen: true, composeDefaults: defaults || null });
+    set({ composeOpen: true, composeDraftId: null, composeDefaults: defaults || null });
   },
 
   closeCompose: () => {
-    set({ composeOpen: false, composeDefaults: null });
+    set({ composeOpen: false, composeDraftId: null, composeDefaults: null });
+  },
+
+  setComposeDraftId: (id) => {
+    set({ composeDraftId: id });
   },
 
   hydrateEmail: (full) => {
@@ -1965,6 +1978,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     // so it can be undone before it actually leaves.
     set({
       composeOpen: false,
+      composeDraftId: null,
       composeDefaults: null,
       pendingSend: params,
       error: null,
@@ -1999,6 +2013,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       const { main, quoted } = splitQuotedText(p.bodyText || "");
       set({
         composeOpen: true,
+        composeDraftId: null,
         composeDefaults: {
           accountId: p.accountId,
           to: p.to.join(", "),

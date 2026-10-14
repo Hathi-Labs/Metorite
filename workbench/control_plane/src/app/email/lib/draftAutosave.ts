@@ -451,28 +451,65 @@ export function newReplyDrafts(s: ComposerDrafts): ComposerDrafts {
   return s.own.length === 0 ? s : { ...s, own: [] };
 }
 
+/** The record after the drafts in `ids` ended: a send or a discard of an
+ *  earlier reply. Each one leaves `own` and joins `gone`. Each other draft of
+ *  the open reply stays its own, so the thread still hides it only while the
+ *  reply is open. */
+export function markGone(s: ComposerDrafts, ids: readonly string[]): ComposerDrafts {
+  if (ids.length === 0) return s;
+  const gone = [...s.gone];
+  for (const id of ids) if (!gone.includes(id)) gone.push(id);
+  return { own: s.own.filter((id) => !ids.includes(id)), gone };
+}
+
 /** The record after a send or a discard ended the reply. Each of its drafts,
  *  and each id in `also`, stays hidden until the member opens another mail. */
 export function retireDrafts(s: ComposerDrafts, also: readonly string[] = []): ComposerDrafts {
-  const gone = [...s.gone];
-  for (const id of [...s.own, ...also]) if (!gone.includes(id)) gone.push(id);
-  return { own: [], gone };
+  return markGone(s, [...s.own, ...also]);
+}
+
+/**
+ * The record after a send of the inline reply settled (review round 1, P2).
+ * `live` is true when the reply that sent is still the open reply. Then each
+ * draft of it ends. Else the member opened another reply during the send,
+ * and only the draft that went out ends. The new reply keeps its own drafts,
+ * so the only copy of its text never hides.
+ */
+export function draftsAfterSend(
+  s: ComposerDrafts, sent: readonly string[], live: boolean,
+): ComposerDrafts {
+  return live ? retireDrafts(s, sent) : markGone(s, sent);
+}
+
+/** What the thread hides besides `gone`. The full composer edits a draft
+ *  too, after a pop-out or a New (review round 1, P1). */
+export interface DraftEditors {
+  /** The inline reply of the reading pane is open. */
+  replyOpen: boolean;
+  /** The full composer is open. */
+  composeOpen: boolean;
+  /** The draft that the full composer saved or took over, or null. */
+  composeDraftId: string | null;
 }
 
 /**
  * The thread as the reading pane draws it. While the inline reply is open,
- * it owns its drafts, so the thread drops them. Once the reply closes and
- * keeps its draft, the draft shows again as a DraftCard. Each other draft
- * shows, and so does each message that is not a draft. `isDraft` is the
- * draft test of the conversation view (`isDraftEmail`), so the two agree.
+ * it owns its drafts, so the thread drops them. A pop-out hands those drafts
+ * to the full composer, so they stay hidden while it is open, and so does the
+ * draft that the full composer saved. Once both close and keep the draft,
+ * the draft shows again as a DraftCard. Each other draft shows, and so does
+ * each message that is not a draft. `isDraft` is the draft test of the
+ * conversation view (`isDraftEmail`), so the two agree.
  */
 export function threadWithoutComposerDrafts<T extends { id: string }>(
   messages: readonly T[],
   drafts: ComposerDrafts,
-  replyOpen: boolean,
+  editors: DraftEditors,
   isDraft: (m: T) => boolean,
 ): T[] {
-  const hidden = new Set(replyOpen ? [...drafts.own, ...drafts.gone] : drafts.gone);
+  const hidden = new Set(drafts.gone);
+  if (editors.replyOpen || editors.composeOpen) for (const id of drafts.own) hidden.add(id);
+  if (editors.composeOpen && editors.composeDraftId) hidden.add(editors.composeDraftId);
   if (hidden.size === 0) return [...messages];
   return messages.filter((m) => !(hidden.has(m.id) && isDraft(m)));
 }
