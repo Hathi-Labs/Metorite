@@ -11,7 +11,9 @@
  * column says it could not load and offers Retry.
  *
  * The identity is the session's. The request carries no tenant and no
- * member (R11), and `limit` is the only value passed on, capped.
+ * member (R11). `limit` is the only value passed on, capped, with the
+ * `If-None-Match` of the gateway's read cache (MD-5a). A 304 and its `ETag`
+ * come back as they are.
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { GATEWAY_URL, gatewayFetch, gatewayHeaders, requireIdentity } from "@/lib/gateway";
@@ -41,13 +43,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const params = new URLSearchParams({
     limit: String(feedLimit(req.nextUrl.searchParams.get("limit"))),
   });
+  // The client's tag goes on, so the gateway can answer 304 (MD-5a, §8.4 item 5).
+  const tag = req.headers.get("if-none-match");
   try {
     const res = await gatewayFetch(`${GATEWAY_URL}/shell/feed?${params}`, {
-      headers: await gatewayHeaders(),
+      headers: await gatewayHeaders(tag ? { "If-None-Match": tag } : {}),
       cache: "no-store",
       signal: AbortSignal.any([req.signal, AbortSignal.timeout(TIMEOUT_MS)]),
     });
-    if (res.ok) return NextResponse.json(await res.json());
+    const etag = res.headers.get("etag");
+    const tagged = etag ? { ETag: etag } : undefined;
+    // A 304 is not `ok`, and it has no body. It passes on as a 304 with its
+    // tag, never as a JSON answer, which would drop the tag.
+    if (res.status === 304) return new NextResponse(null, { status: 304, headers: tagged });
+    if (res.ok) return NextResponse.json(await res.json(), { headers: tagged });
     // A refusal keeps its status, so the column can tell "not yours" from
     // "not reachable".
     return NextResponse.json({ error: "feed_unavailable" }, { status: res.status });
