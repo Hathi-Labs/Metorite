@@ -7,12 +7,14 @@ migration 259, dark by the absence of a caller). MD-2a is BUILT (the card
 state on the server, migration 258). MD-2b is BUILT (the card menu and the
 seen observer, dark behind `NEXT_PUBLIC_MY_DAY_FEED`).**
 
-**The server half of MD-2c is BUILT, 2026-10-14** (Handled in
-`GET /shell/feed`, no migration, dark by the absence of a caller).
+**MD-2c is BUILT, 2026-10-14.** The server half puts Handled in
+`GET /shell/feed`, with no migration. The client half draws the Handled
+group and the honest summary, dark behind `NEXT_PUBLIC_MY_DAY_FEED`. So MD-2
+is complete.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are the
-client half of MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7,
-MD-8, MD-9 and MD-12. Each ships dark.
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3 to
+MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12. Each
+ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -1994,6 +1996,37 @@ fix:
   read them. The read cache of MD-5 can share them.
 - **`completed_at` has no index.** The membership join of the lens bounds
   the read, as the ticket records.
+
+**BUILT (client half), 2026-10-14, on branch `my-day-feed-md2c-client`.**
+It is dark behind `NEXT_PUBLIC_MY_DAY_FEED`. The parts:
+
+- **The reader.** `readFeedAnswer` in `src/lib/shell/feed.ts` reads
+  `handled` and `handled_ok`. An older gateway sends neither, so the page
+  shows no Handled group and makes no claim. The reader drops an entry with
+  no title, a `by` kind it does not know, or a link that is not a path of
+  this app. It also drops a card in the group `handled`.
+- **The group.** `FeedColumn` draws Handled folded after Later, as "Handled
+  today" and its count. Each row is the app's icon, the title as a link, and
+  who closed it with the time, for example "You · 09:30". `handledBy` writes
+  the words of the `by` table. Handled never enters `cards`, the cut, the
+  pill or the visit.
+- **The summary.** With the flag on, `feedNeedsCount` counts the open cards
+  of Now and Needs you, after the column's own hides. `handledClaim` holds
+  the claim. With the flag off, the summary is the line of NS-3.
+- **The fences.** `feedHandled.test.ts` (18 tests), three tests in
+  `myDayPage.test.ts`, and two checks in `e2e/my-day-feed.spec.ts`.
+
+The build made these choices, which this file did not fix:
+
+- **The claim follows a count of needs only.** When nothing needs the
+  member, the line stays "Nothing needs you right now.", because "The rest"
+  then has nothing to follow.
+- **A failed Calendar silences the claim too.** A calendar card can sit in
+  Now, so the page cannot back "The rest is handled." without it.
+- **A name the server left out** reads "Somebody" for a person, as the bell
+  writes it, and "An agent" for an agent.
+- **The words do not say how an approval ended.** The `by` word names who
+  decided, and the row opens Approvals. A later ticket can add a status.
 
 ### MD-2d · Feed preferences — AGENT-SAFE
 
