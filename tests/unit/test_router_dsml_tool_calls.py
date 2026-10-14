@@ -863,6 +863,141 @@ class TestABareMarkerIsText:
         assert_linear_count(_scanned, 40_000)
 
 
+# ── The chunking never changes the answer ───────────────────────────────────
+
+
+#: Real-shaped replies, and the policy each one runs under. Each one holds a
+#: behaviour that a change to ``DsmlStream.feed`` must keep. The reply goes in
+#: whole, at every single cut, one character at a time, and in random chunks.
+_REPLIES: dict[str, tuple[str, DsmlPolicy | frozenset[str]]] = {
+    "plain_text": (f"a < b, c | d, <tags>, a lone {BAR} and <{BAR}Dog. No markup.", TASK_TOOLS),
+    "near_markers": (f"a <{BAR}D, a <{BAR}DSM and </{BAR}DSMLx, then done", TASK_TOOLS),
+    "owner_answer": (ANSWER, TASK_TOOLS),
+    "bare_invoke": ("ok " + invoke("create_task", param("title", "t")), TASK_TOOLS),
+    "function_calls_json": ("Two. " + block(
+        invoke("create_task", param("count", "3", "false"), param("meta", '{"a": [1]}', "false")),
+        invoke("update_task", param("task_id", "t2"), param("title", "कार्य “q” ✅", None)),
+        kind="function_calls") + "\n", TASK_TOOLS),
+    "two_trailing_blocks": (
+        OWNER_BLOCK + "\n" + block(invoke("create_task", param("title", "t")), kind="tool_calls"),
+        TASK_TOOLS),
+    "prose_after_block": ("Summary: " + OWNER_BLOCK + " and that is all.", TASK_TOOLS),
+    "undeclared_tool": ("Sure. " + block(invoke("delete_org", param("org", "acme"))), TASK_TOOLS),
+    "malformed_invokes": ("ok " + block(
+        invoke("create_task", param("n", "{not json", "false")),
+        f"<{BAR}DSML{BAR}invoke>" + param("x", "1") + close("invoke"),
+        invoke("create_task", param("title", "good"))), TASK_TOOLS),
+    "stray_closing_tags": ("a " + close("invoke") + " b " + close("calls") + " c", TASK_TOOLS),
+    "block_without_invoke": ("a " + tag("calls") + " junk " + close("calls"), TASK_TOOLS),
+    "nested_block": ("n " + tag("calls") + " " + tag("calls") + " " + invoke(
+        "create_task", param("title", "in")) + " " + close("calls") + " " + close("calls"),
+        TASK_TOOLS),
+    "fenced_then_real": (
+        f"The email says:\n```\n{OWNER_BLOCK}\n```\nDoing it now. " + OWNER_BLOCK, TASK_TOOLS),
+    "ends_mid_call": ("Let me do it. " + tag("calls") + " " + invoke(
+        "update_task", param("task_id", "abc")) + f' <{BAR}DSML{BAR}invoke name="create_task">'
+        + param("title", "half"), TASK_TOOLS),
+    "ends_mid_tag": (f"done <{BAR}DSML{BAR}inv", TASK_TOOLS),
+    "marker_without_tag_name": (
+        f"The token <{BAR}DSML{BAR} is odd, <{BAR}DSML{BAR}1 too.", TASK_TOOLS),
+    "marker_then_prose": (f"I saw <{BAR}DSML{BAR}hello world. It is fine. " + OWNER_BLOCK,
+                          TASK_TOOLS),
+    "long_head_released": (
+        f'<{BAR}DSML{BAR}invoke name="' + "x" * 200 + " the rest of the answer", TASK_TOOLS),
+    "echoed_input": (ANSWER, DsmlPolicy(declared=TASK_TOOLS, tainted=True)),
+    "parallel_disabled": (block(
+        invoke("create_task", param("title", "1")), invoke("create_task", param("title", "2"))),
+        DsmlPolicy(declared=TASK_TOOLS, single_call=True)),
+}
+
+
+class _Drops(logging.Handler):
+    """Every ``router.dsml_dropped`` line, with its ``dsml_*`` fields."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.seen: list[tuple[tuple[str, Any], ...]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.msg == "router.dsml_dropped":
+            self.seen.append(tuple(sorted(
+                (k, v) for k, v in vars(record).items() if k.startswith("dsml_"))))
+
+
+def _events(policy: DsmlPolicy | frozenset[str], pieces: list[str]) -> tuple[Any, ...]:
+    """What one stream emits for these deltas: text, calls, markup flag, drop lines.
+
+    The call ids are random, so a call counts as its name and arguments."""
+    logger = logging.getLogger("platform.router")
+    drops, level = _Drops(), logger.level
+    logger.addHandler(drops)
+    logger.setLevel(logging.WARNING)
+    try:
+        st = DsmlStream(policy)
+        shown = "".join(st.feed(0, p) for p in pieces)
+        tail, calls = st.finish(0)
+    finally:
+        logger.removeHandler(drops)
+        logger.setLevel(level)
+    named = [(c["function"]["name"], args_of(c)) for c in calls]
+    return shown + tail, named, st.saw_markup(0), drops.seen
+
+
+class TestTheChunkingNeverChangesTheAnswer:
+    """A characterisation of ``DsmlStream.feed``, written before its linear rewrite.
+
+    A long reply reaches the Router in many small deltas. Where the deltas
+    split the text must not change what the member sees, which calls run, or
+    which drop lines the log gets."""
+
+    @pytest.mark.parametrize("name", list(_REPLIES))
+    def test_EVERY_single_cut_gives_the_whole_feed_answer(self, name):
+        text, policy = _REPLIES[name]
+        whole = _events(policy, [text])
+        for n in range(len(text) + 1):
+            assert _events(policy, [text[:n], text[n:]]) == whole, n
+
+    @pytest.mark.parametrize("name", list(_REPLIES))
+    def test_ONE_CHARACTER_per_delta_gives_the_whole_feed_answer(self, name):
+        text, policy = _REPLIES[name]
+        assert _events(policy, list(text)) == _events(policy, [text])
+
+    @pytest.mark.parametrize("name", list(_REPLIES))
+    def test_RANDOM_chunks_and_EMPTY_deltas_give_the_whole_feed_answer(self, name):
+        """An empty delta is how a byte cut inside the bar reaches the Router."""
+        text, policy = _REPLIES[name]
+        whole = _events(policy, [text])
+        rng = random.Random(f"dsml-{name}")
+        for _ in range(100):
+            pieces, at = [], 0
+            while at < len(text):
+                size = rng.randint(0, 16)
+                pieces.append(text[at:at + size])
+                at += size
+            assert _events(policy, pieces) == whole, pieces
+
+    @pytest.mark.parametrize("name", ["owner_answer", "function_calls_json", "prose_after_block"])
+    def test_REASONING_deltas_pass_untouched_around_the_content(self, name):
+        """``reasoning_content`` is not text the filter reads. Each reasoning
+        chunk leaves as the same object, and the content reads the same."""
+        text, policy = _REPLIES[name]
+        shown, calls, _, _ = _events(policy, [text])
+        thought = "First I check the task. Then I call <the tool> | done."
+        rng = random.Random(f"reasoning-{name}")
+        for _ in range(40):
+            cuts = rng.sample(range(1, len(text)), rng.randint(1, 30))
+            reasoning = [
+                {**_chunk(), "choices": [{"index": 0, "finish_reason": None,
+                                          "delta": {"reasoning_content": part}}]}
+                for part in _pieces(thought, rng.sample(range(1, len(thought)), 5))]
+            chunks = [*reasoning, *(_chunk(p) for p in _pieces(text, cuts)), _chunk(finish="stop")]
+            out = _run(_collect(chunks, policy))
+            # The same objects, all of them, in their order.
+            assert [o for o in out if any(o is r for r in reasoning)] == reasoning
+            assert _visible(out) == shown, cuts
+            assert [(c["function"]["name"], args_of(c)) for c in _streamed_calls(out)] == calls
+
+
 class TestParallelToolCallsFalse:
 
     def test_only_the_FIRST_call_runs(self, caplog):
