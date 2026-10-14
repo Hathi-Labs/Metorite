@@ -9,6 +9,8 @@
 //
 // Spec: project-docs/specs/crm_app.md §3, §4, §5.
 
+import type { SkippedValue } from "./convertMapping";
+
 /** The four record types, and the URL segment each one lives at. */
 export const ENTITIES = ["deals", "leads", "contacts", "organizations"] as const;
 export type EntitySlug = (typeof ENTITIES)[number];
@@ -476,4 +478,6 @@ export type ConvertResult = {
   contact?: Contact | null;
   organization?: Organization | null;
   deal: Deal;
+  /** CRM-C6a: the lead values that the conversion mapping did not copy. */
+  skipped?: SkippedValue[];
 };

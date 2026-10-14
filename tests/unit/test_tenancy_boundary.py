@@ -146,6 +146,8 @@ EXPECTED_SCOPED = {
     "crm_field_rules",
     # WS-53 CRM-C4a (2026-10-13): the sections of the field studio.
     "crm_field_sections",
+    # WS-53 CRM-C6a (2026-10-14): the lead-conversion mapping.
+    "crm_convert_mappings",
     # WS-57 TR-1 (2026-10-13): the URL references of a task.
     "pm_task_refs",
 }

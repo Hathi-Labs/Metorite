@@ -1784,6 +1784,9 @@ MIRROR_SETTINGS_TABLES: frozenset[str] = frozenset({
     # fields until CRM-C5, so each studio route gives 409. The sync writes
     # `crm_field_defs` with raw SQL and never calls the guard.
     "crm_field_defs", "crm_field_sections",
+    # CRM-C6a (§20.9): the lead-conversion mapping. In Mirror mode Zoho owns
+    # it (CRM-C6b reads it), so each mapping route gives 409.
+    "crm_convert_mappings",
 })
 
 #: The tables of the field studio, for the sentence of their 409.
@@ -1878,6 +1881,11 @@ async def assert_writable(
         overlay = MIRROR_OVERLAY_COLUMNS.get(table, frozenset())
         if fields and not creating and set(fields) <= overlay:
             return
+        if table == "crm_convert_mappings":
+            raise _conflict(
+                "mirror_mode_settings",
+                "The conversion mapping comes from Zoho. Change it in Zoho.",
+            )
         if table in FIELD_STUDIO_TABLES:
             raise _conflict(
                 "mirror_mode_settings",
@@ -2531,6 +2539,8 @@ RESET_TABLES: tuple[str, ...] = (
     # CRM-C4a: the studio sections. ``crm_field_defs`` above holds the
     # ``source = 'metorite'`` fields too, so the start over takes both.
     "crm_field_sections",
+    # CRM-C6a: the lead-conversion mapping names the fields above.
+    "crm_convert_mappings",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved

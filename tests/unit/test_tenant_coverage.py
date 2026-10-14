@@ -140,7 +140,8 @@ def test_the_crm_sync_runs_table_is_tenant_scoped() -> None:
 @pytest.mark.parametrize(
     "table",
     ["crm_source_profiles", "crm_pipelines", "crm_pipeline_stages", "crm_views",
-     "crm_module_records", "crm_field_rules", "crm_field_sections"],
+     "crm_module_records", "crm_field_rules", "crm_field_sections",
+     "crm_convert_mappings"],
 )
 def test_the_crm_q1_q2_tables_are_tenant_scoped(table: str) -> None:
     """WS-53 CRM-Q1/Q2 (``crm_platform.md`` §18). The source profile and the
@@ -183,6 +184,20 @@ def test_the_my_day_card_state_table_is_tenant_scoped() -> None:
         encoding="utf-8",
     )
     assert "ALTER TABLE my_day_card_state FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_my_day_judgments_table_is_tenant_scoped() -> None:
+    """WS-58 MD-6a-1 (``my_day_feed.md`` §13.2). ``my_day_judgments`` holds
+    what ``decide`` judged about one member's cards. It must never be exempt,
+    and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "my_day_judgments" in gen.discover_tables()
+    assert "my_day_judgments" not in gen.EXEMPT
+    assert "my_day_judgments" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE my_day_judgments FORCE  ROW LEVEL SECURITY" in policies
 
 
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:

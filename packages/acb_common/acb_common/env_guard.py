@@ -154,6 +154,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-58 MD-5a: My Day's read cache. It changes what every member's feed
     # serves, so only the operator writes it (my_day_feed.md §8.4 item 7).
     "MY_DAY_CACHE",
+    # WS-58 MD-6a-1: the orgs that may ask `decide` for My Day, and their
+    # daily ceiling. Each moves what an org pays, so only the operator writes
+    # them (my_day_feed.md §10.9 items 5 and 6).
+    "MY_DAY_DECIDE_ORGS", "MY_DAY_DECIDE_ORG_DAILY_CALLS",
     # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
     # Only its tests set it. A tenant that set it would break each verb.
     "DATA_ENGINE_FAULT",

@@ -89,12 +89,18 @@ A view is not a CRM record, so the routes work in Mirror mode as well.
 ``GET /crm/aggregate/stage-dwell``, the totals that an agent reads. Read only.
 It builds its filters with ``records.list_query``, the one list builder.
 ``settings.py`` also holds ``GET /crm/mode``, the mode for any admitted member.
+
+``convert_mapping.py`` is WS-53 CRM-C6a — ``GET`` and ``PUT
+/crm/conversion-mapping``, the lead-conversion mapping of a Native CRM (table
+``crm_convert_mappings``). Admin only, behind ``CRM_FIELD_STUDIO_ORGS``, and
+409 in Mirror mode. ``pipeline.convert_lead`` applies the map.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
 from gateway.routes.crm import admin as _admin  # noqa: F401
 from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
+from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
 from gateway.routes.crm import field_rules as _field_rules  # noqa: F401
