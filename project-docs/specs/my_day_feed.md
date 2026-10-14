@@ -58,8 +58,12 @@ providers and reads.
 So the answer is the same as before, byte for byte, and so is the email
 digest.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3e,
-MD-3f, MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+**MD-3e is BUILT, 2026-10-15** (the CRM kinds, no migration).
+`MY_DAY_PROVIDERS` gates the source `crm`, and that list is empty in
+production. So the answer is the same as before, byte for byte.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3f,
+MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -536,9 +540,9 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 
 | Kind | Signal | Why line | Acts | AI | Phase |
 |---|---|---|---|---|---|
-| `crm_followup_due` | An activity I own has `due_at` today or earlier | Template | Open deal | None | MD-3. It needs a new "my due activities" read in `routes/crm/activities.py`. Feed only, until a §7.2 amendment |
-| `deal_quiet` | A deal I own passed its stage's `max_dwell_days` | Template: "No activity for 12 days in Proposal." | "Log a call" (opens the CRM form), Snooze | None | MD-3 |
-| `deal_close_passed` | A deal I own passed its close date and is open | Template | "Move the date" (opens the CRM form) | None | MD-3 |
+| `crm_followup_due` | An activity I own has `due_at` today or earlier | Template | Open deal | None | MD-3e, BUILT. §5.9 item 13 holds the rule. Feed only, until a §7.2 amendment |
+| `deal_quiet` | A deal I own passed its stage's `max_dwell_days` | Template: "No activity for 12 days in Proposal." | "Log a call" (opens the CRM form), Snooze | None | MD-3e, BUILT. §5.9 item 13 holds the rule and the text |
+| `deal_close_passed` | A deal I own passed its close date and is open | Template | "Move the date" (opens the CRM form) | None | MD-3e, BUILT. §5.9 item 13 holds the rule |
 | `lead_replied` | A lead I own replied by mail | Template | Open thread | None | MD-9 |
 
 ### 5.6 People, approvals, agents and WhatsApp
@@ -3410,6 +3414,64 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell/f
 node .claude/hooks/ste-lint.mjs project-docs/specs/my_day_feed.md
 ```
 
+**BUILT, 2026-10-15.** No migration, and no flag changed.
+`MY_DAY_PROVIDERS` gates the source `crm`, so it runs only when the list
+names it. These are the parts:
+
+- `feed.py`: the provider `_crm`, its gate `_crm_gate` and its three
+  signals. This file opens no session.
+- `crm/aggregate.py`: `my_overdue_deals`, `my_close_passed_deals` and
+  `my_day_rows`. `my_day_rows` opens the one session of the source. It
+  reads the zone, and then it runs the three reads.
+- `crm/activities.py`: `my_due_activities`. It gives one row for each
+  record, with the earliest open due time.
+- `shell/search.py`: `crm_href`, the one link to a CRM record. The search
+  bar calls it too.
+- `crm/settings.py`: `PATCH /crm/settings` calls `bump_org` after the
+  commit.
+- `feed.ts` did not change. MD-3c added the three labels.
+
+**What the build found, for the slices after it.**
+
+- The three reads take the session from their caller, so they can share
+  one session. §5.9 item 13 named `(user, limit)`. `my_day_rows` opens the
+  session, because `test_shell_feed.py` refuses a session in `feed.py`.
+- `personal.stored_zone` does not name the tenant. Under the owner role,
+  it can give a member of two organizations the zone of the other row. So
+  the rule "each statement names the tenant" does not hold for that one
+  statement. A later slice must fix `stored_zone` itself.
+- `_OVERDUE_FROM` reads the clock of the database (`now()`), not
+  `needs._now()`. So the edge of `deal_quiet` follows the database time.
+  The cache waits 600 seconds at most for it (§5.8 item 2).
+- Each act of the three kinds links to the record. So `_merge_acts` keeps
+  only the act of the main kind on a folded card. MD-8 makes these acts
+  taps.
+- Rule 4 of the state join can move a follow-up to Now. It does so when
+  the due time, minus 2 hours, came after the start of the member's day.
+- `test_shell_feed.py` counts `needs._now()` in `feed.py`, and it lists the
+  registry in order. Each MD-3 provider changes both, so MD-3f must change
+  them again.
+
+**The measure on the R8 seed** (§5.9 item 7). The provider ran 40 times on
+a local database. The p50 was 37 ms and the p95 was 49 ms for the app role.
+The p50 was 45 ms and the p95 was 56 ms for the owner role. A box measures
+again before the flip.
+
+**Mutations, run by hand on 2026-10-15.** Each one failed a fence:
+
+1. The owner clause dropped from the two deal reads.
+2. The access rule runs after the reads.
+3. Mirror mode raises `SourceAbsent`, and does not give an empty `ok`.
+4. The follow-up read does not leave out `status_change`.
+5. The `bump_org` of `PATCH /crm/settings` dropped.
+6. The org clause dropped from the two deal reads (the owner role).
+7. The org clause dropped from the follow-up read (the owner role).
+8. The member clause dropped from the follow-up read.
+9. The close read lets a won or a lost deal through.
+10. A 403 of the access rule raises, and does not give `absent`.
+11. The search bar writes the CRM link itself, not through `crm_href`.
+12. A record takes its latest follow-up, not its earliest.
+
 ### MD-3f · People and chat — AGENT-SAFE, after MD-3b
 
 `colleague_out` from the source `people`, and `agent_asks` from the source
@@ -3944,6 +4006,8 @@ npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts  # MD-3
 uv run pytest tests/unit/test_feed_mail_kinds.py tests/unit/test_feed_mail_kinds_r8.py tests/unit/test_email_digest.py tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_email_follow_up_scan.py tests/unit/test_email_reply_zero.py -q  # MD-3d
 uv run ruff check apps/services/gateway/gateway/routes/shell  # MD-3d
 npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts  # MD-3d
+uv run pytest tests/unit/test_feed_crm_kinds.py tests/unit/test_feed_crm_kinds_r8.py tests/unit/test_crm_access.py tests/unit/test_crm_access_r8.py tests/unit/test_crm_aggregate.py tests/unit/test_crm_aggregate_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_no_new_clock_flakes.py -q  # MD-3e
+uv run ruff check apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/routes/crm  # MD-3e
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 uv run pytest tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_my_day_cache.py -q -rs  # MD-3a

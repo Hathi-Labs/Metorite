@@ -770,7 +770,7 @@ async def _crm(user: UserContext) -> Found:
     signals += [_quiet_deal_signal(r, today, tz) for r in quiet]
     signals += [_close_passed_signal(r, tz) for r in passed]
     signals.sort(key=_followup_order)
-    full = any(len(rows) >= size for rows in (due, quiet, passed))
+    full = any(len(part) >= size for part in (due, quiet, passed))
     return Found([], 0, capped=full or len(signals) > PER_APP,
                  signals=lambda: signals[:PER_APP], zone=zone)
 
