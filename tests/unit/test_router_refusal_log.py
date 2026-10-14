@@ -111,14 +111,26 @@ def test_the_journal_line_names_the_status_the_vendor_and_the_hint(caplog) -> No
     assert record.upstream_status == 400  # the structured copy stays
 
 
+#: The LogRecord fields that describe the run, never the message.
+_RUN_FIELDS = frozenset(vars(logging.makeLogRecord({}))) - {
+    "msg", "args", "exc_text", "stack_info"}
+
+
+def _leak_fields(record: logging.LogRecord) -> dict:
+    return {k: v for k, v in vars(record).items() if k not in _RUN_FIELDS}
+
+
 def test_the_line_holds_no_text_of_the_vendor_message(caplog) -> None:
     main = pytest.importorskip("customer_console.main")
     failed = _refused(f"{SECRET} json_schema is not supported, see {SECRET}")
     with caplog.at_level(logging.DEBUG):
         main._upstream_refusal(failed)
         main._log_refusal("router.stream_open_failed", failed)
+    # Scan the message, its args and the extra fields, where vendor text
+    # could leak. Leave out the fields of the run itself (thread and process
+    # ids, timestamps): a thread id such as 140444471424832 holds "4471".
     text = "\n".join(
-        f"{r.getMessage()} {r.__dict__}" for r in caplog.records
+        f"{r.getMessage()} {_leak_fields(r)}" for r in caplog.records
     )
     assert "router.stream_open_failed upstream_status=400" in text
     assert "hints=json_schema" in text
