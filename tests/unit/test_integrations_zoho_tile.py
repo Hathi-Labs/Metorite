@@ -143,6 +143,42 @@ async def test_the_tile_offers_no_key_form_and_no_missing_keys(world, org) -> No
     assert zoho["missing_keys"] == []
 
 
+async def _agent_status(org: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """``?agent=sales``. The sales agent declares zoho-crm (agent_registry.json)."""
+    from gateway.routes import agent as agent_routes
+
+    monkeypatch.setattr(agent_routes, "_AGENT_REGISTRY", [
+        {"name": "sales", "integrations": ["zoho-crm"], "optional_integrations": []},
+    ])
+
+    async def _no_github() -> bool:
+        return False
+
+    monkeypatch.setattr(integrations, "_github_connected", _no_github)
+    scope = clear_tenant()
+    bind_tenant(org)
+    try:
+        out = await integrations.integration_status(agent="sales", user=_user(org))
+    finally:
+        release_tenant(scope)
+    return next(r for r in out if r["service"] == "zoho-crm")
+
+
+async def test_the_agent_gate_reads_the_env_the_run_uses_not_the_crm_row(world, monkeypatch) -> None:
+    # The agent runtime (`acb_skills.integrations._zoho_crm`) reads only the
+    # operator env until IN-3. So the gate does too, in both directions.
+    from acb_common import get_settings
+
+    without_row = await _agent_status(ORG_WITHOUT, monkeypatch)
+    assert without_row["configured"] is True  # the env holds the keys, no row
+    monkeypatch.setattr(get_settings(), "zoho_refresh_token", "", raising=False)
+    with_row = await _agent_status(ORG_WITH, monkeypatch)
+    assert with_row["configured"] is False  # a live CRM row, but no env keys
+    assert world["sessions"] == []  # the agent gate never read the CRM row
+    for tile in (without_row, with_row):
+        assert (tile["env_vars"], tile["missing_keys"]) == ([], [])
+
+
 def test_the_guide_holds_no_self_client_steps() -> None:
     guide = integrations._SETUP_GUIDES["zoho-crm"]
     assert (guide["label"], integrations._GUIDE_CATEGORIES["zoho-crm"]) == ("Zoho CRM", "crm")
@@ -154,7 +190,6 @@ def test_the_guide_holds_no_self_client_steps() -> None:
 def test_the_app_owned_key_is_the_crm_connection_key() -> None:
     from gateway.routes.crm import connection as crm_connection
 
-    assert integrations._is_configured("zoho-crm", object()) is False
     assert integrations.APP_OWNED_SERVICES["zoho-crm"] == (
         crm_connection.PROVIDER, crm_connection.OWNING_APP,
     )

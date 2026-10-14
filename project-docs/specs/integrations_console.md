@@ -45,6 +45,14 @@
 > panel links to CRM settings. The fences are `test_integrations_zoho_tile.py`,
 > `test_integrations_zoho_tile_r8.py` and `appOwnedTile.test.ts`.
 
+> **Two gaps stay for IN-3.** The agent gate (`?agent=`) still reads the
+> operator's `ZOHO_*` keys, because the agent runtime
+> (`acb_skills.integrations._zoho_crm`) reads them. IN-3 moves that runtime
+> onto the org's CRM connection. A tenant can also still `PUT` a
+> `ZOHO_CLIENT_ID` key into `provider_keys`, because the layer C allowlist
+> holds it. Only the startup copy reads that row, and only on a box with one
+> organization. IN-5 retires that copy.
+
 **Five facts of IN-8a that the design did not state:**
 
 1. **The runtime of IN-8a.** With the flag on, a run sends the stored access

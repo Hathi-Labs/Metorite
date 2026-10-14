@@ -421,14 +421,35 @@ export const APP_OWNED_TILES: Record<
   "zoho-crm": { provider: "zoho", owningApp: "crm", settingsHref: "/crm?tab=settings&section=setup" },
 };
 
+/** The entry of an app-owned tile, or undefined. An own key only, never "constructor". */
+export function appOwnedTile(service: string): (typeof APP_OWNED_TILES)[string] | undefined {
+  return Object.prototype.hasOwnProperty.call(APP_OWNED_TILES, service)
+    ? APP_OWNED_TILES[service]
+    : undefined;
+}
+
 const LIVE: ReadonlySet<ConnectionStatus> = new Set(["connected", "configured"]);
+
+/**
+ * The rows that a tile may read. An app-owned tile reads the `registry`
+ * source, so when the read model names that source in `unavailable`, the
+ * tile gets `null` and the server's status stands. A key tile keeps the rows.
+ */
+export function rowsForTile(
+  rows: readonly Connection[] | null,
+  unavailable: readonly string[],
+  service: string,
+): readonly Connection[] | null {
+  if (rows !== null && appOwnedTile(service) && unavailable.includes("registry")) return null;
+  return rows;
+}
 
 /** The app's registry row for an app-owned tile, or null. */
 export function appConnection(
   rows: readonly Connection[] | null,
   service: string,
 ): Connection | null {
-  const owned = APP_OWNED_TILES[service];
+  const owned = appOwnedTile(service);
   if (!owned || rows === null) return null;
   return rows.find((r) => r.provider === owned.provider && r.owning_app === owned.owningApp) ?? null;
 }
@@ -444,7 +465,7 @@ export function orgKeyConfigured(
   fallback: boolean,
 ): boolean {
   if (rows === null) return fallback;
-  const owned = APP_OWNED_TILES[service];
+  const owned = appOwnedTile(service);
   if (owned) {
     return rows.some(
       (r) => r.provider === owned.provider && r.owning_app === owned.owningApp && LIVE.has(r.status),

@@ -200,7 +200,7 @@ describe("the API keys view", () => {
   const keys = readFileSync(join(DIR, "components/ApiKeysView.tsx"), { encoding: "utf-8" });
   it("gives Zoho a line and a CRM settings button, not a key form", () => {
     // appOwnedTile.test.ts renders the panel and checks its words.
-    expect(keys).toContain("Manage in CRM settings");
+    expect(keys).toContain("<ZohoInCrm");
     expect(keys).toMatch(/api\.service === ZOHO_SERVICE \? \(/);
   });
   it("has no toolbar Add API button, and lets a card name wrap", () => {

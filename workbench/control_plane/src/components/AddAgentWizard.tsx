@@ -22,6 +22,8 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import GitHubDeviceConnect from "@/components/GitHubDeviceConnect";
+import ZohoInCrm from "@/components/ZohoInCrm";
+import { appOwnedTile } from "@/app/integrations/lib/connections";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -64,7 +66,7 @@ function ProgressBar({ current, total }: { current: number; total: number }) {
 // Integration card (plain credentials form)
 // ---------------------------------------------------------------------------
 
-function IntegrationFormCard({
+export function IntegrationFormCard({
   integration,
   state,
   optional,
@@ -81,7 +83,10 @@ function IntegrationFormCard({
   onTest: () => void;
   onSkip?: () => void;
 }) {
-  const allFilled = integration.env_vars.every((v) => state.values[v.key]?.trim());
+  // Zoho CRM connects in the CRM (WS-54). The card links there, and it has
+  // no form, so it never posts an empty save as "Configured".
+  const appOwned = appOwnedTile(integration.service) !== undefined;
+  const allFilled = !appOwned && integration.env_vars.every((v) => state.values[v.key]?.trim());
 
   return (
     <div
@@ -135,8 +140,13 @@ function IntegrationFormCard({
         </pre>
       )}
 
+      {/* The app-owned card: a link to the app, no inputs */}
+      {appOwned && !state.skipped && (
+        <ZohoInCrm connected={integration.configured} connection={null} />
+      )}
+
       {/* Inputs */}
-      {!state.saved && !state.skipped && (
+      {!state.saved && !state.skipped && !appOwned && (
         <div className="space-y-3">
           {integration.env_vars.map((v) => (
             <div key={v.key}>
@@ -179,16 +189,20 @@ function IntegrationFormCard({
       {/* Actions */}
       {!state.saved && !state.skipped && (
         <div className="flex gap-3 pt-1">
-          <Button size="none" layout="" onClick={onSave} disabled={!allFilled || state.saving} className="flex-1 py-2 text-sm">
-            {state.saving ? "Saving…" : "Save & continue"}
-          </Button>
-          <button
-            onClick={onTest}
-            disabled={!allFilled || state.testing}
-            className="px-4 py-2 rounded-lg border border-border hover:bg-secondary disabled:opacity-40 text-sm text-foreground transition-colors"
-          >
-            {state.testing ? "Testing…" : "Test"}
-          </button>
+          {!appOwned && (
+            <>
+              <Button size="none" layout="" onClick={onSave} disabled={!allFilled || state.saving} className="flex-1 py-2 text-sm">
+                {state.saving ? "Saving…" : "Save & continue"}
+              </Button>
+              <button
+                onClick={onTest}
+                disabled={!allFilled || state.testing}
+                className="px-4 py-2 rounded-lg border border-border hover:bg-secondary disabled:opacity-40 text-sm text-foreground transition-colors"
+              >
+                {state.testing ? "Testing…" : "Test"}
+              </button>
+            </>
+          )}
           {optional && onSkip && (
             <button
               onClick={onSkip}
@@ -201,7 +215,7 @@ function IntegrationFormCard({
       )}
 
       {/* Re-test after saved */}
-      {state.saved && (
+      {state.saved && !appOwned && (
         <button
           onClick={onTest}
           disabled={state.testing}

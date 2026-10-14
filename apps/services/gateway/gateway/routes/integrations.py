@@ -415,9 +415,10 @@ async def _db_query(sql: str, **params: Any) -> list[dict[str, Any]]:
 
 #: The tiles whose connection an app owns (D96.1), and the registry key of
 #: that connection, ``(provider, owning_app)`` in ``integration_connections``.
-#: Such a tile is configured when the bound org holds that org row with the
-#: status ``connected``. The operator env never decides it, and the status
-#: offers no key form for it. ``tests/unit/test_integrations_zoho_tile.py``
+#: In the tile view (no ``agent``), such a tile is configured when the bound
+#: org holds that org row with the status ``connected``. The status offers no
+#: key form for it in either mode. AGENT mode keeps the env check of
+#: ``_is_configured``, because the agent runtime reads the env until IN-3. ``tests/unit/test_integrations_zoho_tile.py``
 #: pins the CRM key to ``routes/crm/connection.py``. The client mirror is
 #: ``APP_OWNED_TILES`` in ``src/app/integrations/lib/connections.ts``.
 APP_OWNED_SERVICES: dict[str, tuple[str, str]] = {
@@ -433,9 +434,12 @@ ZOHO_CRM_NOT_CONNECTED = (
 def _is_configured(service_name: str, settings: Any) -> bool:
     """Return True if all required env vars for *service_name* are non-empty."""
     checkers: dict[str, Any] = {
-        # The CRM owns Zoho (`APP_OWNED_SERVICES`). The ZOHO_* keys of the
-        # deployment are the operator's, so they never configure a customer.
-        "zoho-crm":      lambda s: False,
+        # ⚠️ Read in AGENT mode only (`integration_status(agent=...)`). The
+        # agent runtime (`acb_skills.integrations._zoho_crm`) still reads the
+        # operator's ZOHO_* env, so the agent gate must report what a run
+        # uses. IN-3 owns moving that runtime onto the org's CRM connection.
+        # The tile view reads the CRM row instead (`APP_OWNED_SERVICES`).
+        "zoho-crm":      lambda s: bool(s.zoho_client_id and s.zoho_client_secret and s.zoho_refresh_token),
         "apollo":       lambda s: bool(s.apollo_api_key),
         "google-maps":   lambda s: bool(s.google_maps_api_key),
         "instantly":     lambda s: bool(s.instantly_api_key),
@@ -817,7 +821,9 @@ async def integration_status(
         if svc == "github":
             configured = await _github_connected()
         app_owned = svc in APP_OWNED_SERVICES
-        if app_owned:
+        # The tile view reads the app's row. AGENT mode keeps the env check,
+        # because the agent runtime still reads the operator env until IN-3.
+        if app_owned and not agent:
             configured = await _app_connected(svc)
         # 🔒 A form offers only the keys that a tenant may write
         # (`BUILTIN_ENV_KEYS`). The rest go to `operator_env_vars`, which the
@@ -861,7 +867,7 @@ async def integration_status(
         db_stored_keys = [] if app_owned else db_keys_by_service.get(svc, [])
 
         # Determine storage source for display
-        if app_owned:
+        if app_owned and not agent:
             storage = "app" if configured else "none"
         elif db_stored_keys:
             storage = "encrypted-db"
