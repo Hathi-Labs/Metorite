@@ -125,7 +125,7 @@ export function FieldStudioView({
   return (
     <section className="rounded-xl border border-border bg-card/40" aria-label={STUDIO_TITLE}>
       <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-64">
           <h2 className="text-sm font-semibold text-foreground">{STUDIO_TITLE}</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">{STUDIO_NOTE}</p>
         </div>
