@@ -110,6 +110,12 @@ type CrmState = {
   saving: boolean;
   error: string | null;
   /**
+   * CRM-C4b: the last refusal of `createRecord` or `patchRecord`, with the
+   * field that it names. A form stays open after a refusal, and it shows the
+   * message beside that field. `null` at the start of each of the two writes.
+   */
+  refusal: CrmRefusal | null;
+  /**
    * CRM-C1: the unsaved edits of the settings rows, by row key. A section
    * change unmounts the rows, and this keeps the edits (`draftOf`).
    */
@@ -243,6 +249,19 @@ function message(err: unknown): string | null {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * A refused create or edit (CRM-C4b, the 422 rule). `field` is the key that
+ * `detail.field` names, or null. A form shows the message beside that field,
+ * or at its top when the field is null or not in the form.
+ */
+export type CrmRefusal = { message: string; field: string | null };
+
+/** The refusal of a create or an edit, or null when the toast said it already. */
+function refusalOf(err: unknown, text: string | null): CrmRefusal | null {
+  if (text === null) return null;
+  return { message: text, field: err instanceof CrmError ? (err.field ?? null) : null };
+}
+
 export const useCrmStore = create<CrmState>((set, get) => ({
   lanes: [],
   leadLanes: [],
@@ -264,6 +283,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   loading: false,
   saving: false,
   error: null,
+  refusal: null,
   lastView: null,
   settingsDrafts: {},
 
@@ -574,7 +594,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async patchRecord(entity, id, body) {
-    set({ saving: true, error: null });
+    set({ saving: true, error: null, refusal: null });
     try {
       const record = await api.patchRecord<Record<string, unknown>>(
         entity,
@@ -589,7 +609,8 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       await get().refreshCollection();
       return true;
     } catch (err) {
-      set({ error: message(err) });
+      const text = message(err);
+      set({ error: text, refusal: refusalOf(err, text) });
       // Re-read on EVERY response, refusals included: a stale row after a 409
       // reads as success.
       await get().loadRecord(entity, id);
@@ -600,7 +621,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async createRecord(entity, body) {
-    set({ saving: true, error: null });
+    set({ saving: true, error: null, refusal: null });
     try {
       const created = await api.createRecord<{ id: string }>(entity, body);
       // Nothing else re-fetches the collection: opening the new record's
@@ -610,7 +631,8 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       await get().refreshCollection();
       return created.id;
     } catch (err) {
-      set({ error: message(err) });
+      const text = message(err);
+      set({ error: text, refusal: refusalOf(err, text) });
       return null;
     } finally {
       set({ saving: false });

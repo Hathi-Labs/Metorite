@@ -5,8 +5,9 @@
 
 import { coalesce } from "@/lib/useCachedResource";
 
+import { isDateValue, toWire } from "./fieldLayout";
 import type { FieldDef } from "./fields";
-import { pickable } from "./fields";
+import { fieldOptions, pickable } from "./fields";
 import type { EntitySlug } from "./types";
 import { RANGE_KEYS, type CrmView, type RangeKey } from "./urlState";
 
@@ -129,22 +130,15 @@ export function searchCommitter(
   };
 }
 
-/** The options of a picklist definition. The sync writes `{label, value}`. */
+/**
+ * The active options of a picklist definition. `fieldOptions` is the one
+ * reader of the options (CRM-C4p). A retired option is left out, because no
+ * picker offers it.
+ */
 export function optionsOf(def: FieldDef): Array<{ value: string; label: string }> {
-  const out: Array<{ value: string; label: string }> = [];
-  for (const raw of def.options ?? []) {
-    if (typeof raw === "string") {
-      out.push({ value: raw, label: raw });
-    } else if (raw && typeof raw === "object") {
-      const o = raw as Record<string, unknown>;
-      const value =
-        typeof o.value === "string" ? o.value : typeof o.label === "string" ? o.label : null;
-      if (value) {
-        out.push({ value, label: typeof o.label === "string" && o.label ? o.label : value });
-      }
-    }
-  }
-  return out;
+  return fieldOptions(def)
+    .filter((o) => !o.retired)
+    .map(({ value, label }) => ({ value, label }));
 }
 
 /** The custom fields a member may filter by: picklists that carry options. */
@@ -152,6 +146,85 @@ export function picklistDefs(defs: FieldDef[] | null | undefined): FieldDef[] {
   return pickable(defs).filter(
     (d) => (d.type === "select" || d.type === "multiselect") && optionsOf(d).length > 0,
   );
+}
+
+// ── The custom filters of the field studio (WS-53 CRM-C4b) ──────────────────
+//
+// Spec section 20.7, CRM-C4b Scope item 5, with the audit fix B: each filter
+// sends `custom.<key>.in` with one value, through `extraQuery`. The gateway
+// matches it the same way as `custom.<key>=` (`core.py`, the custom filter):
+// the text of the stored value, or an item of a stored array. So each filter
+// is equality only. A range needs a new gateway operator, and it is a
+// follow-up.
+
+/** How the bar draws the filter of one custom field. */
+export type CustomFilterKind = "options" | "boolean" | "number" | "date";
+
+/** The types that the studio adds to the bar, and the control of each. */
+const STUDIO_FILTERS: Readonly<Record<string, CustomFilterKind>> = {
+  boolean: "boolean",
+  number: "number",
+  decimal: "number",
+  currency: "number",
+  date: "date",
+};
+
+export type CustomFilter = { def: FieldDef; kind: CustomFilterKind };
+
+/**
+ * The custom filters of the bar. Without the studio: the picklists, as
+ * before. With it: also a checkbox, a number, a decimal, a currency and a
+ * date. Each one reads `pickable`, so a retired field and a system row are
+ * never offered (done-when 6).
+ */
+export function customFilters(defs: FieldDef[] | null | undefined, studio: boolean): CustomFilter[] {
+  const out: CustomFilter[] = [];
+  for (const def of pickable(defs)) {
+    if (def.type === "select" || def.type === "multiselect") {
+      if (optionsOf(def).length > 0) out.push({ def, kind: "options" });
+    } else if (studio && Object.hasOwn(STUDIO_FILTERS, def.type)) {
+      out.push({ def, kind: STUDIO_FILTERS[def.type] });
+    }
+  }
+  return out;
+}
+
+/**
+ * The hint of the "No" choice. The gateway compares the stored text, so a
+ * record with no value for the key is not "No".
+ */
+export const NO_HINT = "A record with no value is not found.";
+
+/** The choices of a checkbox filter: any, Yes (`true`) or No (`false`). */
+export function booleanFilterOptions(
+  def: FieldDef,
+): Array<{ value: string; label: string; description?: string }> {
+  return [
+    { value: ANY, label: `Any ${def.label.toLowerCase()}` },
+    { value: "true", label: "Yes" },
+    { value: "false", label: "No", description: NO_HINT },
+  ];
+}
+
+/**
+ * The value of a number filter for the text that the member typed. `""`
+ * clears the filter, and `null` means the text is not a number.
+ *
+ * `toWire` reads the text as the record form does, so `1,20,000` is
+ * 120000. The value is `String(Number(text))`, the text that Postgres gives
+ * for a JSON number that the client wrote.
+ */
+export function numberFilterValue(def: FieldDef, text: string): string | null {
+  const value = toWire(def, text);
+  if (value === null) return ANY;
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : null;
+}
+
+/** The value of a date filter: `YYYY-MM-DD`, `""` to clear, or null when not a day. */
+export function dateFilterValue(text: string): string | null {
+  const day = text.trim();
+  if (day === "") return ANY;
+  return isDateValue(day) ? day : null;
 }
 
 /** Choose one option of a picklist, or none. Other fields stay as they are. */
