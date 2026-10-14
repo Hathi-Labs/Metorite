@@ -106,6 +106,13 @@ export interface FeedAct {
 export interface FeedCard {
   signal_id: string;
   app: FeedApp;
+  /**
+   * The source of the card's main signal, when it is not `app` (MD-3c,
+   * §5.9 item 1, §14.1a). The source `tasks_followups` gives cards of the
+   * `tasks` app, so the carry of a failed source keys on this. Absent, the
+   * source is the app, as for every source before MD-3c.
+   */
+  source?: string;
   kind: string;
   folded: string[];
   group: FeedGroupId;
@@ -270,6 +277,7 @@ function readCard(raw: unknown): FeedCard | null {
   return {
     signal_id: c.signal_id,
     app: c.app as FeedApp,
+    ...(typeof c.source === "string" && c.source ? { source: c.source } : {}),
     kind: c.kind,
     folded: Array.isArray(c.folded) ? c.folded.filter((k): k is string => typeof k === "string") : [],
     group: c.group,
@@ -438,16 +446,22 @@ const lastOk = new Map<number, ReadonlyMap<string, OkCards>>();
  */
 const lastTagged = new Map<number, { tag: string; answer: FeedAnswer }>();
 
-/** Record the cards of each source that read `ok` in this raw answer. */
+/**
+ * Record the cards of each source that read `ok` in this raw answer. A card
+ * belongs to the source of its main signal: `source`, or else its app (MD-3c,
+ * §5.9 item 1). So `tasks_followups` keeps its own cards, and never a card
+ * of the `tasks` source, although both give cards of the `tasks` app.
+ */
 export function noteOk(
   before: ReadonlyMap<string, OkCards>,
   raw: Pick<FeedAnswer, "cards" | "sources">,
   fetchedAt: number,
 ): ReadonlyMap<string, OkCards> {
   const next = new Map(before);
-  for (const [app, state] of Object.entries(raw.sources)) {
-    if (state === "ok") next.set(app, { cards: raw.cards.filter((c) => c.app === app), at: fetchedAt });
-    else if (state !== "failed") next.delete(app);
+  for (const [source, state] of Object.entries(raw.sources)) {
+    if (state === "ok") {
+      next.set(source, { cards: raw.cards.filter((c) => (c.source ?? c.app) === source), at: fetchedAt });
+    } else if (state !== "failed") next.delete(source);
   }
   return next;
 }
@@ -727,11 +741,22 @@ export function needsRowFor(card: FeedCard, act: FeedAct): NeedsItem | null {
 
 /**
  * The kinds each act closes. A done closes the task, and a block belongs to
- * its task (§4.1), so it closes the task's blocks too. A read closes the
- * task's notifications and nothing else.
+ * its task (§4.1), so it closes the task's blocks too. A done also closes the
+ * task kinds of MD-3 and `promise_due`, each of which is about the task
+ * (§5.9 item 5). A read closes the task's notifications and nothing else.
  */
 const CLOSES: Readonly<Record<string, ReadonlySet<string>>> = {
-  done: new Set(["overdue", "due_today", "block_soon", "block_overlap"]),
+  done: new Set([
+    "overdue",
+    "due_today",
+    "block_soon",
+    "block_overlap",
+    "waiting_quiet",
+    "stale_next",
+    "unblocked",
+    "absent_on_due",
+    "promise_due",
+  ]),
   read: new Set(["notification"]),
 };
 
@@ -882,6 +907,18 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   block_overlap: "Overlap",
   day_overbooked: "Day is full",
   no_plan_yet: "No plan yet",
+  // The eleven MD-3 kinds (§5.9 item 6), added at once by MD-3c.
+  waiting_quiet: "Waiting too long",
+  stale_next: "No change",
+  unblocked: "Unblocked",
+  absent_on_due: "Due while you are away",
+  promise_due: "You promised",
+  no_answer: "No answer yet",
+  crm_followup_due: "Follow-up due",
+  deal_quiet: "Quiet deal",
+  deal_close_passed: "Close date passed",
+  colleague_out: "Colleague away",
+  agent_asks: "Waiting for your answer",
 };
 
 /**

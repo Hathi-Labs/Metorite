@@ -16,9 +16,12 @@ Key                Value
                    reads it.
 =================  ==========================================================
 
-A kind is a kind that a provider of ``needs.REGISTRY`` gives. The write is
-strict and the read is lenient, as ``routes/admin/me.py`` does for the shell
-layout: a kind that leaves the registry drops from the read.
+A kind is a row of ``feed_rank.BASE``, the one table of the feed's kinds.
+Each kind that a provider of ``needs.REGISTRY`` gives is in it, and so is
+each MD-3 kind whose provider is dark or not built yet (WS-58 MD-3c,
+``my_day_feed.md`` §5.9). The write is strict and the read is lenient, as
+``routes/admin/me.py`` does for the shell layout: a kind that leaves the
+table drops from the read.
 
 **One key at a time.** The body is ``{key, value}``. The server merges that
 one key into the column with ``jsonb_set``, and never replaces the column.
@@ -48,7 +51,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from fastapi import Body, Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
-from gateway.routes.shell import cache, needs
+from gateway.routes.shell import cache, feed_rank
 from gateway.routes.shell import feed as _feed  # noqa: F401  (registers the feed kinds)
 from gateway.routes.shell.search import router
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
@@ -68,8 +71,11 @@ CORRECTIONS_CLIP = 1_500
 
 
 def feed_kinds() -> frozenset[str]:
-    """Every kind that a registered provider may give (§4.4)."""
-    return frozenset().union(*(p.kinds for p in needs.REGISTRY.values()))
+    """Every kind of the feed: the rows of ``feed_rank.BASE`` (§4.4, §5.9).
+    A registered provider gives only these kinds, so a member may mute a
+    kind before its provider is listed in ``MY_DAY_PROVIDERS``. 20 kinds
+    after MD-3, which is ``MAX_KINDS`` (§5.9 item 10.6)."""
+    return frozenset(feed_rank.BASE)
 
 
 def _unique(values: list[str]) -> list[str]:

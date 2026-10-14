@@ -1773,11 +1773,17 @@ async def my_due_tasks(user: UserContext, *, limit: int) -> dict[str, Any]:
 #: email, ``agent:<name>``, ``system:sync`` or ``system:workflow:<id>``.
 #: ``seq`` breaks a tie of ``created_at`` (migration 213, H-159), in the order
 #: of ``idx_pm_activities_task_seq``.
-_CLOSED_BY_SQL = (
-    "(SELECT a.created_by FROM pm_activities a"
-    " WHERE a.task_id = t.id AND a.type = 'status_change'"
-    " ORDER BY a.created_at DESC, a.seq DESC LIMIT 1)"
-)
+def _closed_by_sql(alias: str) -> str:
+    """:data:`_CLOSED_BY_SQL` for the task of ``alias``. The blocker of
+    :func:`my_unblocked_since` reads it on the alias ``b``."""
+    return (
+        "(SELECT a.created_by FROM pm_activities a"
+        f" WHERE a.task_id = {alias}.id AND a.type = 'status_change'"
+        " ORDER BY a.created_at DESC, a.seq DESC LIMIT 1)"
+    )
+
+
+_CLOSED_BY_SQL = _closed_by_sql("t")
 
 #: The lens rows closed at or after ``:since``, the newest first. One row
 #: for each task, so the shell's Handled group needs no dedup of its own.
@@ -1818,6 +1824,240 @@ async def my_completed_since(
         "completed_at": _iso(r, "completed_at"),
         "closed_by": r.closed_by,
     } for r in rows]}
+
+
+# ── The task kinds of My Day (WS-58 MD-3c, my_day_feed.md §5.9 item 11) ─────
+#
+# Three bounded reads of the lens for the feed's `tasks_followups` source.
+# Each is `_MY_TASKS_SQL` over the one membership fragment and
+# :func:`my_tasks_binds`, so each one binds the tenant and reads only the
+# member's own lens. None is a route. The shell calls each after its own
+# `feature:projects` check, and none writes.
+
+#: The head of the select list of ``_MY_TASKS_SQL``. A feed read that needs
+#: one more column puts it after this head (:func:`_with_columns`), so the
+#: projection of a task stays the one projection.
+_SELECT_HEAD = "SELECT t.*,"
+
+
+def _with_columns(columns: str) -> str:
+    """``_MY_TASKS_SQL`` with ``columns`` added to its select list. It raises
+    when the head moved, so a change to the projection fails at import."""
+    cut = _MY_TASKS_SQL.index(_SELECT_HEAD) + len(_SELECT_HEAD)
+    return _MY_TASKS_SQL[:cut] + f"\n       {columns}," + _MY_TASKS_SQL[cut:]
+
+
+#: The last change of a task, for me: the later of the shared row's and my
+#: overlay's ``updated_at``. ``greatest`` skips a NULL, so a task with no
+#: overlay row reads the shared row alone.
+_LAST_CHANGE = "greatest(t.updated_at, p.updated_at)"
+
+#: A waiting task that may be quiet: my overlay names when I delegated it.
+#: The effective disposition is checked again in Python.
+_QUIET_WAIT = (
+    "(p.delegated_at IS NOT NULL"
+    " AND p.delegated_at < CAST(:quiet_before AS timestamptz)"
+    " AND (p.disposition = 'WAITING' OR p.disposition IS NULL))"
+)
+#: A next action that may be stale. A stated DONE on an open lane reads NEXT
+#: (:func:`effective_disposition`), and so does an untriaged task of mine.
+_QUIET_NEXT = (
+    "(" + _LAST_CHANGE + " < CAST(:stale_before AS timestamptz)"
+    " AND (p.disposition IN ('NEXT', 'DONE')"
+    "      OR (p.disposition IS NULL AND EXISTS (SELECT 1 FROM pm_task_assignees a6"
+    "          WHERE a6.task_id = t.id AND lower(a6.assignee) = :who))))"
+)
+
+#: The quiet read: the waiting rows first (their base is higher), then the
+#: oldest, then the id, so the LIMIT keeps the same rows on every load.
+_QUIET_SQL = (
+    _with_columns(_LAST_CHANGE + " AS last_change_at")
+    + f" AND {DEFERRED_CLAUSE} AND {ACTIONABLE_CLAUSE}"
+    + f" AND ({_QUIET_WAIT} OR {_QUIET_NEXT})"
+    + f" ORDER BY (CASE WHEN {_QUIET_WAIT} THEN 0 ELSE 1 END),"
+    + f" coalesce(p.delegated_at, {_LAST_CHANGE}) ASC, t.id LIMIT :limit"
+)
+
+#: The day start hour as stored. NULL, or no row, reads as the column
+#: default in the caller (``77_gtd_calendar_prefs.sql``).
+_DAY_START_SQL = "SELECT day_start_hour FROM user_settings WHERE user_id = :uid"
+
+
+async def my_quiet_tasks(
+    user: UserContext, *, limit: int, now: datetime | None = None,
+) -> dict[str, Any]:
+    """My waiting tasks that went quiet, and my next actions that went stale.
+
+    For the feed's ``waiting_quiet`` and ``stale_next`` (``my_day_feed.md``
+    §5.9 item 11). One bounded read of the lens: ``_MY_TASKS_SQL`` with the
+    inbox's ``DEFERRED_CLAUSE``, ``ACTIONABLE_CLAUSE`` and the two time
+    filters. Then the rule of :func:`effective_disposition` narrows the rows:
+
+    * **waiting**: the effective disposition is ``WAITING``, and my
+      ``delegated_at`` is MORE than ``item_lens.STALE_WAITING_DAYS`` days ago.
+      The one rule of the app, so a nudge does not reset it. A task with no
+      ``delegated_at`` never returns.
+    * **stale**: the effective disposition is ``NEXT``, and the later of the
+      task's and my overlay's ``updated_at`` is more than
+      ``analytics.STALE_DAYS`` days ago.
+
+    Each row carries its effective ``disposition`` and ``last_change_at``.
+    The answer also gives the member's ``today``, ``timezone`` and stored
+    ``day_start_hour`` (None for no row), so the feed's provider opens no
+    second session to learn the member's day.
+    """
+    # Imported here: `item_lens` and `analytics` import this module.
+    from gateway.routes.projects.analytics import STALE_DAYS
+    from gateway.routes.projects.item_lens import STALE_WAITING_DAYS
+
+    email = actor(user).lower()
+    at = now or datetime.now(UTC)
+    quiet_before = at - timedelta(days=STALE_WAITING_DAYS)
+    stale_before = at - timedelta(days=STALE_DAYS)
+    items: list[dict[str, Any]] = []
+    async with _tenant_session() as db:
+        zone = zone_name(await stored_zone(db, email))
+        hour_row = (await db.execute(text(_DAY_START_SQL), {"uid": email})).fetchone()
+        today = local_date(zone, at)
+        params = await my_tasks_binds(
+            db, email, archived=False, today=today, quiet_before=quiet_before,
+            stale_before=stale_before, limit=max(1, int(limit)),
+        )
+        for row in (await db.execute(text(_QUIET_SQL), params)).fetchall():
+            task, effective = _project_task(row)
+            changed = getattr(row, "last_change_at", None)
+            delegated = getattr(row, "p_delegated_at", None)
+            if effective == "WAITING":
+                if delegated is None or not delegated < quiet_before:
+                    continue
+            elif effective == "NEXT":
+                if changed is None or not changed < stale_before:
+                    continue
+            else:
+                continue
+            task["last_change_at"] = changed.isoformat() if changed is not None else None
+            items.append(task)
+    return {"rows": items, "today": today.isoformat(), "timezone": zone,
+            "day_start_hour": getattr(hour_row, "day_start_hour", None)}
+
+
+#: My task's blocker may be read by me: ``core.task_visibility_clause`` on
+#: the alias ``b``, with my OWN grants, as ``_CHILD_VISIBLE`` does.
+_BLOCKER_VISIBLE = task_visibility_clause(
+    Visibility(unrestricted=False, email="", groups=()), "b",
+)
+
+#: The ``blocks`` links INTO my task, from a blocker in my organization.
+_BLOCKERS_FROM = (
+    " FROM pm_task_links l"
+    " JOIN pm_tasks b ON b.id = l.source_task_id"
+    " JOIN pm_task_statuses bs ON bs.id = b.status_id"
+    " WHERE l.target_task_id = t.id AND l.link_type = 'blocks'"
+    " AND b.organization_id = CAST(:vis_org AS uuid)"
+)
+#: A blocker that closed at or after ``:since``.
+_CLOSED_SINCE = (
+    f" AND bs.category IN ({_CLOSED_LITERAL})"
+    " AND b.completed_at >= CAST(:since AS timestamptz)"
+)
+
+#: The newest blocker that closed since ``:since``. ⚠️ Its id, its title and
+#: who closed it come back ONLY when I may read it. Else the row says only
+#: that it is closed, and when, so no hidden title reaches the feed.
+_UNBLOCKED_BY = (
+    "(SELECT jsonb_build_object("
+    f"'readable', ({_BLOCKER_VISIBLE}),"
+    f" 'id', CASE WHEN ({_BLOCKER_VISIBLE}) THEN CAST(b.id AS text) END,"
+    f" 'title', CASE WHEN ({_BLOCKER_VISIBLE}) THEN b.title END,"
+    f" 'closed_by', CASE WHEN ({_BLOCKER_VISIBLE}) THEN {_closed_by_sql('b')} END,"
+    " 'closed_at', b.completed_at)"
+    + _BLOCKERS_FROM + _CLOSED_SINCE
+    + " ORDER BY b.completed_at DESC, b.id LIMIT 1) AS unblocked_by"
+)
+
+#: An open task of my lens that a blocker closed since ``:since``, and that
+#: no blocker still blocks. "Still blocks" is ``relations.blocked_by_open``:
+#: a blocker outside the closing categories. A blocker I cannot read counts
+#: too, so a task stays blocked by work that I cannot see.
+_UNBLOCKED_SQL = (
+    _with_columns(_UNBLOCKED_BY)
+    + f" AND {ACTIONABLE_CLAUSE}"
+    + " AND EXISTS (SELECT 1" + _BLOCKERS_FROM + _CLOSED_SINCE + ")"
+    + " AND NOT EXISTS (SELECT 1" + _BLOCKERS_FROM
+    + f" AND (bs.category IS NULL OR bs.category NOT IN ({_CLOSED_LITERAL})))"
+    + " ORDER BY t.id LIMIT :limit"
+)
+
+
+async def my_unblocked_since(
+    user: UserContext, since: datetime, *, limit: int,
+) -> dict[str, Any]:
+    """My open tasks whose last blocker closed at or after ``since``.
+
+    For the feed's ``unblocked`` (``my_day_feed.md`` §5.9 item 11). One
+    bounded read of the lens. It reads the incoming ``blocks`` links through
+    ``idx_pm_task_links_target_task_id`` (``146_projects.sql``). Each row
+    carries ``unblocked_by``: ``{readable, id, title, closed_by,
+    closed_at}`` of the newest blocker that closed since ``since``. The id,
+    the title and ``closed_by`` are None for a blocker that I cannot read.
+    """
+    email = actor(user).lower()
+    items: list[dict[str, Any]] = []
+    async with _tenant_session() as db:
+        params = await my_tasks_binds(
+            db, email, archived=False, since=since, limit=max(1, int(limit)),
+        )
+        for row in (await db.execute(text(_UNBLOCKED_SQL), params)).fetchall():
+            task, effective = _project_task(row)
+            if effective in NOT_DUE_WORK:
+                continue
+            blocker = from_jsonb(getattr(row, "unblocked_by", None)) or {}
+            readable = blocker.get("readable") is True
+            task["unblocked_by"] = {
+                "readable": readable,
+                "id": str(blocker["id"]) if readable and blocker.get("id") else None,
+                "title": blocker.get("title") if readable else None,
+                "closed_by": blocker.get("closed_by") if readable else None,
+                "closed_at": blocker.get("closed_at"),
+            }
+            items.append(task)
+    return {"rows": items}
+
+
+#: The lens tasks due in a window, the soonest first. ``t.completed_at IS
+#: NULL`` lets the read use ``idx_pm_tasks_due_at``, which holds only the
+#: open rows.
+_DUE_AHEAD_SQL = (
+    _MY_TASKS_SQL
+    + f" AND {ACTIONABLE_CLAUSE} AND t.completed_at IS NULL"
+    " AND t.due_at >= CAST(:due_from AS timestamptz)"
+    " AND t.due_at < CAST(:due_before AS timestamptz)"
+    + _DUE_ORDER
+)
+
+
+async def my_due_ahead(
+    user: UserContext, start: datetime, end: datetime, *, limit: int,
+) -> dict[str, Any]:
+    """My actionable tasks due at or after ``start`` and before ``end``.
+
+    For the feed's ``absent_on_due`` (``my_day_feed.md`` §5.9 item 11). The
+    feed calls it only when one of my absences falls in its window. One
+    bounded read of the lens, the soonest deadline first.
+    """
+    email = actor(user).lower()
+    items: list[dict[str, Any]] = []
+    async with _tenant_session() as db:
+        params = await my_tasks_binds(
+            db, email, archived=False, due_from=start, due_before=end,
+            limit=max(1, int(limit)),
+        )
+        for row in (await db.execute(text(_DUE_AHEAD_SQL), params)).fetchall():
+            task, effective = _project_task(row)
+            if effective in NOT_DUE_WORK:
+                continue
+            items.append(task)
+    return {"rows": items}
 
 
 # ── The projects I lead (WS-39 S6e, §4.8 point 1) ───────────────────────────

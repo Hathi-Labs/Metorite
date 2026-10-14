@@ -36,11 +36,15 @@ TODAY = NOW.date()
 
 
 class TestTheTable:
-    def test_the_base_of_each_md1_kind(self):
+    def test_the_base_of_each_kind(self):
+        # MD-1, and the eleven MD-3 kinds of §5.9 item 2 (MD-3c).
         assert feed_rank.BASE == {
             "overdue": 60, "approval": 56, "due_today": 52, "notification": 48,
-            "needs_reply": 44, "block_overlap": 40, "block_soon": 36,
-            "day_overbooked": 32, "no_plan_yet": 28,
+            "needs_reply": 44, "agent_asks": 43, "promise_due": 42,
+            "crm_followup_due": 41, "block_overlap": 40, "absent_on_due": 39,
+            "unblocked": 38, "waiting_quiet": 37, "block_soon": 36, "no_answer": 35,
+            "deal_close_passed": 34, "deal_quiet": 33, "day_overbooked": 32,
+            "stale_next": 30, "no_plan_yet": 28, "colleague_out": 26,
         }
 
     def test_the_needs_kinds_start_above_every_other_kind(self):
@@ -53,10 +57,11 @@ class TestTheTable:
         assert by_base == sorted(KIND_ORDER, key=KIND_ORDER.__getitem__)
 
     def test_an_unknown_kind_raises(self):
+        # An MD-9 kind, which no slice has added yet.
         with pytest.raises(KeyError):
-            feed_rank.base("crm_followup_due")
+            feed_rank.base("lead_replied")
         with pytest.raises(KeyError):
-            feed_rank.group("crm_followup_due", {}, NOW, TODAY)
+            feed_rank.group("lead_replied", {}, NOW, TODAY)
 
     def test_the_groups_and_their_order(self):
         assert feed_rank.GROUPS == ("now", "needs_you", "ready", "fyi", "later", "handled")
@@ -148,6 +153,25 @@ class TestTheGroupTable:
         ("day_overbooked", {"day": TODAY.isoformat()}, "needs_you"),
         ("day_overbooked", {"day": (TODAY + timedelta(days=1)).isoformat()}, "fyi"),
         ("no_plan_yet", {}, "needs_you"),
+        # The MD-3 rows (§5.9 item 3, MD-3c).
+        ("unblocked", {}, "ready"),
+        ("waiting_quiet", {}, "needs_you"),
+        ("stale_next", {}, "fyi"),
+        ("absent_on_due", {}, "needs_you"),
+        ("promise_due", {"due_at": (NOW + timedelta(minutes=90)).isoformat()}, "now"),
+        ("promise_due", {"due_at": NOW.isoformat()}, "now"),
+        ("promise_due", {"due_at": (NOW + timedelta(hours=3)).isoformat()}, "needs_you"),
+        ("promise_due", {"due_at": (NOW - timedelta(minutes=1)).isoformat()}, "needs_you"),
+        ("promise_due", {}, "needs_you"),
+        ("no_answer", {}, "needs_you"),
+        ("crm_followup_due", {"due_at": (NOW + timedelta(hours=2)).isoformat()}, "now"),
+        ("crm_followup_due", {"due_at": (NOW + timedelta(hours=2, seconds=1)).isoformat()},
+         "needs_you"),
+        ("crm_followup_due", {"due_at": (NOW - timedelta(days=1)).isoformat()}, "needs_you"),
+        ("deal_quiet", {}, "fyi"),
+        ("deal_close_passed", {}, "needs_you"),
+        ("colleague_out", {}, "fyi"),
+        ("agent_asks", {}, "needs_you"),
     ])
     def test_each_row_of_section_4_3(self, kind, facts, group):
         assert feed_rank.group(kind, facts, NOW, TODAY) == group

@@ -161,6 +161,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -236,6 +237,11 @@ class Signal:
     at: str | None = None
     urgent_at: str | None = None
     expires_at: str | None = None
+    #: The id of the source that gave the signal (MD-3c, ``my_day_feed.md``
+    #: §5.9 item 1). The feed tags each signal after its provider ran, so a
+    #: provider leaves it None. The card copies the source of its main
+    #: signal, for the carry of a failed source.
+    source: str | None = None
 
 
 def tap(act_id: str, label: str, act: str, act_ref: str,
@@ -1068,15 +1074,28 @@ async def needs_run(user: UserContext) -> Run:
 async def _attempt(provider: Provider, user: UserContext, timeout: float,
                    event: str) -> Found | str:
     """One provider's run: what it found, or ``absent`` or ``failed``. It
-    never raises, except a cancel of the whole read."""
+    never raises, except a cancel of the whole read.
+
+    Each run writes one log line with ``elapsed_ms``, the time from the start
+    of the run to its end (MD-3c, ``my_day_feed.md`` §5.9 item 7). The rule
+    for a flip of ``MY_DAY_PROVIDERS`` takes the p95 of each provider from
+    these lines. A run that ends well writes ``provider answered``."""
     key = provider.source
+    began = time.monotonic()
+
+    def _ms() -> int:
+        return int((time.monotonic() - began) * 1000)
+
     try:
-        return await asyncio.wait_for(provider.run(user), timeout)
+        found = await asyncio.wait_for(provider.run(user), timeout)
     except SourceAbsent:
         # A refusal, not a failure (MD-3b, §5.8 item 4).
+        logger.info(f"{event} provider answered",
+                    extra={"provider": key, "outcome": "absent", "elapsed_ms": _ms()})
         return "absent"
     except TimeoutError:
-        logger.info(f"{event} provider timed out", extra={"provider": key})
+        logger.info(f"{event} provider timed out",
+                    extra={"provider": key, "elapsed_ms": _ms()})
         return "failed"
     except Exception as exc:
         # The error's TYPE only. A database error's text can carry the
@@ -1084,9 +1103,12 @@ async def _attempt(provider: Provider, user: UserContext, timeout: float,
         # own refusal (HTTPException) lands here too.
         logger.warning(
             f"{event} provider failed",
-            extra={"provider": key, "error": type(exc).__name__},
+            extra={"provider": key, "error": type(exc).__name__, "elapsed_ms": _ms()},
         )
         return "failed"
+    logger.info(f"{event} provider answered",
+                extra={"provider": key, "outcome": "ok", "elapsed_ms": _ms()})
+    return found
 
 
 def _record(run: Run, key: str, outcome: Found | str) -> None:
