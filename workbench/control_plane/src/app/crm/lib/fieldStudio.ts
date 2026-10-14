@@ -478,44 +478,49 @@ export function studioLayout(layout: FieldLayout): StudioLayout {
   };
 }
 
+/** `item` put into `list` at `index`, or last when `index` is past the end. */
+function insertAt<T>(list: readonly T[], index: number, item: T): T[] {
+  const at = Math.max(0, Math.min(index, list.length));
+  return [...list.slice(0, at), item, ...list.slice(at)];
+}
+
 /**
- * The layout after a drag of one field (done-when 3). The field goes into
- * `section` (null: no section), before the field `before`, or last when
- * `before` is null. A drop on its own place gives the same layout back.
+ * The layout after a drag of one field (done-when 3), as the stage grid
+ * moves a row (`PipelineSettings.tsx`). The field takes the place `index` of
+ * the group of `section` (null: no section). A drop on a row takes that row's
+ * place. A drop on the end of a group passes the length of the group. A drop
+ * on its own place gives the same layout back.
  */
 export function moveField(
   layout: StudioLayout,
   key: string,
-  to: { section: string | null; before: string | null },
+  to: { section: string | null; index: number },
 ): StudioLayout {
-  if (key === to.before) return layout;
   const moving = layout.groups.flatMap((g) => g.fields).find((f) => f.key === key);
   const target = layout.groups.find((g) => (g.section?.id ?? null) === to.section);
   if (!moving || !target) return layout;
   const groups = layout.groups.map((g) => {
     const rest = g.fields.filter((f) => f.key !== key);
     if (g !== target) return { ...g, fields: rest };
-    const at = to.before === null ? -1 : rest.findIndex((f) => f.key === to.before);
-    const placed = { ...moving, section_id: to.section };
-    const fields = at < 0 ? [...rest, placed] : [...rest.slice(0, at), placed, ...rest.slice(at)];
-    return { ...g, fields };
+    return { ...g, fields: insertAt(rest, to.index, { ...moving, section_id: to.section }) };
   });
   const next = { ...layout, groups };
   return same(layoutBody(next), layoutBody(layout)) ? layout : next;
 }
 
 /**
- * The layout after a drag of one section (done-when 4). It goes before the
- * section `before`, or last. The fields in no section stay first.
+ * The layout after a drag of one section (done-when 4). The section takes the
+ * place `index` among the sections. The fields in no section stay first.
  */
-export function moveSection(layout: StudioLayout, id: string, before: string | null): StudioLayout {
-  if (id === before) return layout;
+export function moveSection(layout: StudioLayout, id: string, index: number): StudioLayout {
   const [loose, ...sections] = layout.groups;
   const moving = sections.find((g) => g.section?.id === id);
-  if (!moving) return layout;
-  const rest = sections.filter((g) => g !== moving);
-  const at = before === null ? -1 : rest.findIndex((g) => g.section?.id === before);
-  const ordered = at < 0 ? [...rest, moving] : [...rest.slice(0, at), moving, ...rest.slice(at)];
+  if (!loose || !moving) return layout;
+  const ordered = insertAt(
+    sections.filter((g) => g !== moving),
+    index,
+    moving,
+  );
   const next = { ...layout, groups: [loose, ...ordered] };
   return same(layoutBody(next), layoutBody(layout)) ? layout : next;
 }
