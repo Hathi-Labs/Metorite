@@ -367,6 +367,7 @@ def runtime(monkeypatch) -> dict[str, Any]:
         "expires_at": datetime.now(UTC) + timedelta(hours=1),
         "refresh_token": "r",
         "marked": [],
+        "locked": 0,
     }
 
     @asynccontextmanager
@@ -381,12 +382,20 @@ def runtime(monkeypatch) -> dict[str, Any]:
 
     async def _get(db, org, provider, app, **kw):
         assert provider == "mcp:notion"
+        state["locked"] += 1
         return next(c for c in state["conns"] if c.provider == provider)
 
-    async def _cred(db, org, connection_id):
+    def _stored() -> SourceCredential:
         return SourceCredential(access_token=f.SENTINEL_ACCESS,
                                 refresh_token=state["refresh_token"],
                                 expires_at=state["expires_at"])
+
+    async def _cred(db, org, connection_id):
+        return _stored()
+
+    async def _unlocked(db, org, provider, app, **kw):
+        assert provider == "mcp:notion"
+        return _stored()
 
     async def _mark(db, org, connection_id, code):
         state["marked"].append(code)
@@ -401,6 +410,7 @@ def runtime(monkeypatch) -> dict[str, Any]:
     monkeypatch.setattr(store, "load_headers_by_prefix", _headers)
     monkeypatch.setattr(store, "get", _get)
     monkeypatch.setattr(store, "load_credential_locked", _cred)
+    monkeypatch.setattr(store, "load_credential", _unlocked)
     monkeypatch.setattr(store, "mark_needs_reconnect", _mark)
     return state
 
@@ -428,6 +438,26 @@ async def test_flag_on_a_run_sends_the_bearer_token(runtime) -> None:
     assert servers["notion"].headers == {"Authorization": f"Bearer {f.SENTINEL_ACCESS}"}
     assert servers["plain"].headers == {"X-Key": "header-value"}
     assert f.SENTINEL_ACCESS not in repr(servers["notion"])
+    # IN-8b, review of #1011 (P1): a token that is good past the margin is
+    # read with no row lock and no second session.
+    assert runtime["locked"] == 0 and servers["notion"].refreshed is False
+
+
+async def test_a_row_that_the_run_does_not_want_is_left_out_before_its_refresh(
+        runtime) -> None:
+    """IN-8b, review of #1011 (P2 1): the filter runs before the refresh."""
+    from gateway.connections import mcp
+
+    runtime["expires_at"] = datetime.now(UTC) + timedelta(seconds=30)
+    seen: list[str] = []
+
+    def _want(srv: Any) -> bool:
+        seen.append(srv.name)
+        return False
+
+    servers = {s.name for s in await mcp.servers_for_org(ORG_A, oauth_wanted=_want)}
+    assert servers == {"plain"} and seen == ["notion"]
+    assert runtime["locked"] == 0 and runtime["marked"] == []
 
 
 async def test_an_ended_token_with_no_refresh_token_needs_reconnect(runtime) -> None:

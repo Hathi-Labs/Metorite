@@ -22,6 +22,9 @@ reaches a real provider.
 - With ``MCP_OAUTH_ENABLED`` off, nothing refreshes and the row stays out.
 - Org B's refresh never touches org A's row of the same name.
 - No token reaches a log line, a column, ``provider_meta`` or the console.
+- Review of #1011: a run refreshes no row that it cannot use, a process
+  runs at most ``REFRESH_SLOTS`` refreshes at one time, and a Stop during
+  the fetch still commits the rotated refresh token.
 
 Mutation table (IN-8b). Each mutation is made by hand, and the named test
 must fail. Results are in the PR.
@@ -35,6 +38,15 @@ must fail. Results are in the PR.
 | R5 | the refresh hop bypasses the guard (``httpx`` directly) | ``test_mcp_oauth_guard.py::test_no_oauth_module_fetches_by_itself`` and ``test_each_hop_refuses[refresh-*]`` |
 | R6 | a token is logged (``mcp.oauth_refreshed`` carries it) | ``test_no_token_reaches_a_log_a_column_or_the_console`` |
 | R7 | no cap on the refresh fetch (``REFRESH_FETCH_S`` is not applied) | ``test_a_stalled_token_endpoint_does_not_stall_the_run`` |
+
+Rows R8 to R11 fence the review of #1011.
+
+| # | Mutation | Test that fails |
+|---|---|---|
+| R8 | no slot cap: the step does not wait on ``_slots()`` | ``test_one_process_runs_at_most_the_slot_cap_of_refreshes`` |
+| R9 | no unlocked check: every OAuth row goes to the locked refresh step | ``test_mcp_oauth_flow.py::test_flag_on_a_run_sends_the_bearer_token`` |
+| R10 | the reader ignores ``oauth_wanted`` | ``test_a_run_never_refreshes_a_row_that_it_cannot_use`` |
+| R11 | the run waits on the step with no ``asyncio.shield`` | ``test_a_stop_during_the_fetch_still_keeps_the_rotated_token`` |
 
 Run::
 
@@ -101,13 +113,13 @@ def world(ns, monkeypatch) -> f.World:  # noqa: F811 - a fixture
 
 
 async def _connected(world: f.World, org: str, admin: str, name: str, token: str, *,
-                     expires_in: int) -> None:
+                     expires_in: int, scope: tuple[str, ...] = ("*",)) -> None:
     """Register *name* in *org*, and connect it by a consent whose access
     token ends in *expires_in* seconds. A refresh then lives an hour."""
     from gateway.connections import mcp
 
     await mcp.save(org, name=name, url=f.MCP_URL, headers={}, connected_by="r8-seed",
-                   label=f"Label {name}")
+                   label=f"Label {name}", agent_scope=scope)
     world.access_token, world.refresh_token = token, f"refresh-{token}"
     world.expires_in = expires_in
     _, code, state = await f.start_and_consent(f.user(admin, org), world, name)
@@ -373,3 +385,87 @@ async def test_no_token_reaches_a_log_a_column_or_the_console(
         assert secret not in listed.text, f"{secret} reached the console"
     assert any(e.get("event") == "mcp.oauth_refreshed" for e in logs)
     assert any(e.get("event") == "mcp.oauth_needs_reconnect" for e in logs)
+
+
+# ── Review of #1011 ─────────────────────────────────────────────────────────
+
+
+async def test_a_run_never_refreshes_a_row_that_it_cannot_use(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    """P2 1: the scope filter runs before the refresh."""
+    set_flag(monkeypatch, "*")
+    install_offline(monkeypatch)
+    name = _name("scope")
+    await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=NEAR,
+                     scope=("another-agent",))
+    before = _registry(ns, ns.org_a)[name]
+    agent = await _inject(ns.org_a)
+    assert name not in {t.name for t in agent.mcp_tools}
+    assert world.refreshes == [], "a run refreshed a server that it cannot use"
+    assert _registry(ns, ns.org_a)[name]["whole"] == before["whole"]
+
+
+async def test_one_process_runs_at_most_the_slot_cap_of_refreshes(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    """P1: each step holds a pool connection across its fetch, so the steps
+    of one process are capped, and the pool of other orgs stays free."""
+    from gateway.connections import mcp
+
+    names = [_name(f"slot{i}") for i in range(3)]
+    for i, name in enumerate(names):
+        await _connected(world, ns.org_a, ADMIN_A, name, f"{TOKEN_A}-{i}", expires_in=NEAR)
+    monkeypatch.setattr(mcp, "REFRESH_SLOTS", 1)
+    world.token_delay_s = 0.3
+    live = {"now": 0, "most": 0}
+    inner = world.ahandle
+
+    async def _counted(request: httpx.Request) -> httpx.Response:
+        refresh = b"grant_type=refresh_token" in request.content
+        if refresh:
+            live["now"] += 1
+            live["most"] = max(live["most"], live["now"])
+        try:
+            return await inner(request)
+        finally:
+            if refresh:
+                live["now"] -= 1
+
+    monkeypatch.setattr(world, "ahandle", _counted)
+    got = _by_name(await mcp.servers_for_org(ns.org_a))
+    assert len(world.refreshes) == 3
+    assert live["most"] == 1, f"{live['most']} refreshes ran at one time"
+    assert all(got[n].refreshed for n in names)
+
+
+async def test_a_stop_during_the_fetch_still_keeps_the_rotated_token(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    """P2 2: the step runs in its own task, so a Stop cancels the wait and
+    not the write. The provider rotated the refresh token, and the row keeps
+    the new one."""
+    from gateway.connections import mcp
+
+    name = _name("stop")
+    await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=NEAR)
+    world.token_delay_s = 0.5
+    sent = asyncio.Event()
+    inner = world.ahandle
+
+    async def _marked(request: httpx.Request) -> httpx.Response:
+        if b"grant_type=refresh_token" in request.content:
+            sent.set()
+        return await inner(request)
+
+    monkeypatch.setattr(world, "ahandle", _marked)
+    run = asyncio.create_task(mcp.servers_for_org(ns.org_a))
+    await asyncio.wait_for(sent.wait(), 10)
+    run.cancel()  # the provider has the request, and rotates the token
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    for _ in range(100):
+        if not mcp._INFLIGHT:
+            break
+        await asyncio.sleep(0.05)
+    stored = await _stored(ns.org_a, name)
+    assert stored.refresh_token == f"{f.SENTINEL_REFRESH}-rotated-1", (
+        "a Stop lost the rotated refresh token")
+    assert _registry(ns, ns.org_a)[name]["status"] == "connected"

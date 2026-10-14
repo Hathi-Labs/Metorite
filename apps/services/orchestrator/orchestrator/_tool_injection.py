@@ -2267,7 +2267,10 @@ async def _inject_mcp_servers(
         # orchestrator runs inside the gateway process.
         from gateway.connections import mcp as mcp_registry
 
-        stored = await mcp_registry.servers_for_org(str(org))
+        # IN-8b: an OAuth row that this run cannot use is never refreshed.
+        stored = await mcp_registry.servers_for_org(
+            str(org), oauth_wanted=_oauth_wanted(agent_name, native, is_authorized),
+        )
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("mcp.registry_unavailable", error=type(exc).__name__)
         return
@@ -2285,6 +2288,24 @@ async def _inject_mcp_servers(
 
     for srv in servers:
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
+
+
+def _oauth_wanted(agent_name: str, native: bool, is_authorized: Any) -> Any:
+    """WS-54 IN-8b: the filter that ``servers_for_org`` applies to an OAuth
+    row BEFORE its refresh. It is the filter that this module applies after
+    the read (the scope, the transport and the grant), and a Copilot agent
+    wants no OAuth row, because only MAF connects one. It logs nothing: the
+    log lines stay with the filters after the read (review of #1011, P2 1)."""
+    from orchestrator import _maf_mcp
+
+    def _want(srv: Any) -> bool:
+        if not native or not _in_scope(list(srv.agent_scope), agent_name):
+            return False
+        if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+            return False
+        return is_authorized is None or bool(is_authorized(_maf_mcp.mcp_service(str(srv.name))))
+
+    return _want
 
 
 def _mark_unauthorized_for(org: str) -> Any:

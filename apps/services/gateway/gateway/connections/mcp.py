@@ -38,7 +38,8 @@ and §7.3. The shape follows :mod:`gateway.connections.github`.
   (``FOR UPDATE``) across the refresh, so two workers send ONE refresh and
   both get the new token. An ``invalid_grant`` sets ``needs_reconnect``. A
   401 on the connect sets it only when this run refreshed the token
-  (:func:`mark_unauthorized`). :data:`REFRESH_BUDGET_S` caps the step.
+  (:func:`mark_unauthorized`). :data:`REFRESH_BUDGET_S` caps the wait,
+  and :data:`REFRESH_SLOTS` caps the steps of one process.
 * **No secret out.** No function here logs a header or puts one in an error.
   :class:`StoredServer` keeps the headers out of its ``repr``.
 """
@@ -50,7 +51,8 @@ import hmac
 import json
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+import weakref
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -313,14 +315,26 @@ TOKEN_MARGIN_S = 900
 #: fetch at 10 s, and this cap is shorter. A fetch past it is not final: the
 #: run keeps the stored token while it lives, and the next run tries again.
 REFRESH_FETCH_S = 8.0
-#: IN-8b: the most seconds that the refresh step of ONE server may cost a
-#: run: the wait on the row lock (another worker's fetch), this worker's own
-#: fetch, and the write. Past it, the server is left out of the run.
-#: ⚠️ It is larger than two fetches, so the cap never cancels a write that
-#: follows a good fetch. A cancel there would lose a rotated refresh token.
+#: IN-8b: the most seconds that a run WAITS for the refresh step of one
+#: server. Past it, the run goes on without the new token. The step itself
+#: goes on in its own task and commits, so a cap or a Stop never cancels a
+#: write that follows a good fetch (a cancel there would lose a rotated
+#: refresh token, review of #1011). Only a process restart can still do so.
 REFRESH_BUDGET_S = 20.0
+#: IN-8b: the most refresh steps that ONE process runs at one time. Each step
+#: holds a pool connection across its fetch, so the cap keeps a slow provider
+#: from taking the pool of every org (review of #1011, P1). A step that waits
+#: past :data:`REFRESH_BUDGET_S` for a slot sends nothing.
+REFRESH_SLOTS = 2
 #: IN-8b: the ``last_error`` of a row whose refreshed token got a 401.
 UNAUTHORIZED = "unauthorized"
+
+#: One semaphore for each event loop: an ``asyncio.Semaphore`` binds to the
+#: loop that first waits on it.
+_SLOTS: weakref.WeakKeyDictionary[Any, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+#: The refresh steps that run on, after their run stopped waiting. A task
+#: with no reference can be collected before it ends.
+_INFLIGHT: set[asyncio.Task[Any]] = set()
 
 
 def _needs_refresh(credential: SourceCredential, now: datetime) -> bool:
@@ -347,22 +361,37 @@ def _source_error(code: str) -> SourceError:
     return err
 
 
-async def _oauth_header(
-    org: str, conn: store.Connection,
-) -> tuple[dict[str, str], bool] | None:
-    """The ``Authorization`` header of one OAuth row, and whether this call
-    refreshed its token. ``None`` leaves the server out of the run.
+def _bearer(credential: SourceCredential) -> dict[str, str]:
+    return {"Authorization": f"Bearer {credential.access_token}"}
 
-    ⚠️ The refresh runs BEFORE the connect, and under the row lock of
-    ``fresh_credential`` (O7). A refresh that fails for a reason that is not
-    final, or that runs past :data:`REFRESH_BUDGET_S`, keeps the stored token
-    when it still lives past :data:`_OAUTH_SKEW_S`. The token goes to the MCP
-    client as an argument only, never to a log line.
-    """
+
+def _slots() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _SLOTS.get(loop)
+    if sem is None:
+        sem = _SLOTS[loop] = asyncio.Semaphore(REFRESH_SLOTS)
+    return sem
+
+
+def _settle(task: asyncio.Task[Any]) -> None:
+    """Forget a finished step, and read its outcome so asyncio never logs an
+    exception that nobody retrieved (the message could hold nothing secret,
+    but a log line per step is noise)."""
+    _INFLIGHT.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+async def _refresh_step(
+    org: str, conn: store.Connection, seen: dict[str, Any],
+) -> SourceCredential | None:
+    """ONE refresh step, in its own task: a slot, then ``fresh_credential``.
+
+    The wait for a slot is capped, and nothing has happened before it, so a
+    cap there is safe. Once the step holds a slot it runs to its end: the
+    lock wait is bounded by the other holder's capped fetch, and the fetch by
+    :data:`REFRESH_FETCH_S`."""
     from gateway.connections import mcp_oauth
-
-    name = conn.provider[len(PREFIX):]
-    seen: dict[str, Any] = {"refreshed": False, "stored": None}
 
     async def _refresh(credential: SourceCredential) -> SourceCredential:
         seen["stored"] = credential
@@ -376,16 +405,44 @@ async def _oauth_header(
         seen["refreshed"] = True
         return fresh
 
-    def _now() -> datetime:
-        return datetime.now(UTC)
+    slots = _slots()
+    try:
+        async with asyncio.timeout(REFRESH_BUDGET_S):
+            await slots.acquire()
+    except TimeoutError:
+        raise _source_error("busy") from None
+    try:
+        return await shared_token.fresh_credential(
+            org, provider=conn.provider, owning_app=OWNING_APP,
+            refresh=_refresh, needs_refresh=_needs_refresh,
+            now=lambda: datetime.now(UTC),
+        )
+    finally:
+        slots.release()
 
+
+async def _oauth_header(
+    org: str, conn: store.Connection, stored: SourceCredential | None,
+) -> tuple[dict[str, str], bool] | None:
+    """The header of one OAuth row that is due for a refresh, and whether
+    this call refreshed its token. ``None`` leaves the server out of the run.
+
+    ⚠️ The refresh runs BEFORE the connect, under the row lock of
+    ``fresh_credential`` (O7), in a task that the run waits on for
+    :data:`REFRESH_BUDGET_S` at most. A refresh that fails for a reason that
+    is not final, or that runs past the cap, keeps *stored* (the token that
+    the unlocked read found) when it still lives past :data:`_OAUTH_SKEW_S`.
+    The token goes to the MCP client as an argument only, never to a log line.
+    """
+    name = conn.provider[len(PREFIX):]
+    seen: dict[str, Any] = {"refreshed": False, "stored": stored}
+    task = asyncio.create_task(_refresh_step(org, conn, seen))
+    _INFLIGHT.add(task)
+    task.add_done_callback(_settle)
     credential: SourceCredential | None
     try:
         async with asyncio.timeout(REFRESH_BUDGET_S):
-            credential = await shared_token.fresh_credential(
-                org, provider=conn.provider, owning_app=OWNING_APP,
-                refresh=_refresh, needs_refresh=_needs_refresh, now=_now,
-            )
+            credential = await asyncio.shield(task)
     except NeedsReconnect:
         _log.warning("mcp.oauth_needs_reconnect", name=name)
         return None
@@ -394,48 +451,79 @@ async def _oauth_header(
         # row keeps its token, and the next run tries again.
         why = (getattr(exc, "code", "") or "") if isinstance(exc, SourceError) else "timeout"
         _log.warning("mcp.oauth_refresh_failed", name=name, code=store.safe_error_code(why))
-        if seen["stored"] is None:  # the cap fired before the refresh began
-            return None
-        credential, seen["refreshed"] = seen["stored"], False
+        credential = seen["stored"]
+        seen["refreshed"] = False
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("mcp.oauth_refresh_failed", name=name, error=type(exc).__name__)
         return None
     if credential is None or not credential.access_token:
         _log.warning("mcp.oauth_unreadable", name=name)
         return None
-    if credential.expires_at <= _now() + timedelta(seconds=_OAUTH_SKEW_S):
+    if credential.expires_at <= datetime.now(UTC) + timedelta(seconds=_OAUTH_SKEW_S):
         _log.info("mcp.oauth_expired", name=name)
         return None
     if seen["refreshed"]:
         _log.info("mcp.oauth_refreshed", name=name)
-    return {"Authorization": f"Bearer {credential.access_token}"}, bool(seen["refreshed"])
+    return _bearer(credential), bool(seen["refreshed"])
 
 
-async def _oauth_runtime_headers(
-    org: str, conns: Sequence[store.Connection],
-) -> dict[str, tuple[dict[str, str], bool]]:
-    """The header of each OAuth row that a run may use, by provider, and
-    whether this read refreshed its token (IN-8b).
+#: The type of the ``oauth_wanted`` filter of :func:`servers_for_org`.
+OAuthWanted = Callable[["StoredServer"], bool]
+
+
+async def _oauth_plan(
+    db: Any, org: str, conns: Sequence[store.Connection], wanted: OAuthWanted | None,
+) -> tuple[dict[str, tuple[dict[str, str], bool]],
+           list[tuple[store.Connection, SourceCredential | None]]]:
+    """Split the OAuth rows of a run, inside the read session (IN-8b).
+
+    Returns the header of each row whose token is good past the margin, and
+    the rows that are due for a refresh. The check is an UNLOCKED read, so a
+    run that refreshes nothing takes no second session and no row lock
+    (review of #1011, P1).
 
     ⚠️ With ``MCP_OAUTH_ENABLED`` off, none: the run leaves the row out, logs
-    ``mcp.oauth_disabled`` and sends no refresh (§3.6.7, O12). Each row gets
-    its own session, because ``fresh_credential`` commits the new token with
-    the row lock. The rows refresh at one time, so one slow provider costs a
-    run :data:`REFRESH_BUDGET_S` at most.
+    ``mcp.oauth_disabled`` and sends no refresh (§3.6.7, O12). A row that
+    *wanted* refuses (another agent's scope, a grant the run lacks, a Copilot
+    agent) is left out and never refreshed (review of #1011, P2 1).
     """
-    oauth_rows = [c for c in conns if _is_oauth(c) and c.status == store.STATUS_CONNECTED]
-    if not oauth_rows:
-        return {}
+    rows = [c for c in conns if _is_oauth(c) and c.status == store.STATUS_CONNECTED]
+    if not rows:
+        return {}, []
     # Only here, after an OAuth row is found: a broken import of the OAuth
     # module must never drop the header servers of a run (review of #931).
     from gateway.connections import mcp_oauth
 
     if not mcp_oauth.oauth_enabled():
-        for conn in oauth_rows:
+        for conn in rows:
             _log.info("mcp.oauth_disabled", name=conn.provider[len(PREFIX):])
+        return {}, []
+    ready: dict[str, tuple[dict[str, str], bool]] = {}
+    due: list[tuple[store.Connection, SourceCredential | None]] = []
+    now = datetime.now(UTC)
+    for conn in rows:
+        if wanted is not None and not wanted(_server(conn, {}, with_headers=False)):
+            _log.info("mcp.oauth_not_wanted", name=conn.provider[len(PREFIX):])
+            continue
+        credential = await store.load_credential(db, org, conn.provider, OWNING_APP)
+        if credential is not None and credential.access_token and not _needs_refresh(
+                credential, now):
+            ready[conn.provider] = (_bearer(credential), False)
+        else:
+            due.append((conn, credential))
+    return ready, due
+
+
+async def _oauth_refresh_due(
+    org: str, due: Sequence[tuple[store.Connection, SourceCredential | None]],
+) -> dict[str, tuple[dict[str, str], bool]]:
+    """The header of each due row, after its refresh. The rows wait at one
+    time, so one slow provider costs a run :data:`REFRESH_BUDGET_S` at most,
+    and :data:`REFRESH_SLOTS` bounds the pool connections they hold."""
+    if not due:
         return {}
-    found = await asyncio.gather(*(_oauth_header(org, conn) for conn in oauth_rows))
-    return {conn.provider: got for conn, got in zip(oauth_rows, found, strict=True)
+    found = await asyncio.gather(*(_oauth_header(org, conn, cred) for conn, cred in due))
+    return {conn.provider: got for (conn, _), got in zip(due, found, strict=True)
             if got is not None}
 
 
@@ -477,7 +565,7 @@ TEST_BEARER_UNREADABLE = "unreadable"
 async def oauth_test_header(org: str, name: str) -> tuple[str, dict[str, str]]:
     """The header that the Test button sends for an OAuth server (#931, P2 3).
 
-    It is the header that a run sends (:func:`_oauth_runtime_headers`), by
+    It is the header that a run sends (:func:`_oauth_plan`), by
     the same rule. With the flag off, :data:`TEST_BEARER_OFF` and no header.
     A token that has ended, or ends within :data:`_OAUTH_SKEW_S`, is
     :data:`TEST_BEARER_EXPIRED`. The token goes to the caller only.
@@ -496,22 +584,29 @@ async def oauth_test_header(org: str, name: str) -> tuple[str, dict[str, str]]:
     return TEST_BEARER_OK, {"Authorization": f"Bearer {credential.access_token}"}
 
 
-async def _read(org: str, *, enabled_only: bool, with_headers: bool) -> list[StoredServer]:
+async def _read(
+    org: str, *, enabled_only: bool, with_headers: bool,
+    oauth_wanted: OAuthWanted | None = None,
+) -> list[StoredServer]:
     org = _org(org)
+    due: list[tuple[store.Connection, SourceCredential | None]] = []
+    tokens: dict[str, tuple[dict[str, str], bool]] = {}
     async with tenant_session(org) as db:
         await migrate_legacy(db, org)
         conns = await store.list_by_prefix(db, org, PREFIX, OWNING_APP)
         headers = await store.load_headers_by_prefix(db, org, PREFIX, OWNING_APP)
-    # IN-8b: after the read commits. Each OAuth row refreshes in its own
-    # session, under its own row lock, before any connect.
-    tokens = (await _oauth_runtime_headers(org, conns)) if enabled_only else {}
+        if enabled_only:
+            tokens, due = await _oauth_plan(db, org, conns, oauth_wanted)
+    # IN-8b: after the read commits. A due row refreshes in its own session,
+    # under its own row lock, before any connect.
+    tokens.update(await _oauth_refresh_due(org, due))
     out: list[StoredServer] = []
     for conn in conns:
         if enabled_only and conn.status != store.STATUS_CONNECTED:
             continue
         if _is_oauth(conn):
             # IN-8a. The console lists the row with no header. A run gets it
-            # only with its bearer token (see ``_oauth_runtime_headers``).
+            # only with its bearer token (see ``_oauth_plan``).
             if enabled_only:
                 if conn.provider not in tokens:
                     continue
@@ -533,13 +628,20 @@ async def _read(org: str, *, enabled_only: bool, with_headers: bool) -> list[Sto
     return out
 
 
-async def servers_for_org(org: str) -> list[StoredServer]:
+async def servers_for_org(
+    org: str, *, oauth_wanted: OAuthWanted | None = None,
+) -> list[StoredServer]:
     """The enabled servers of *org*, with their decrypted headers.
 
     The one runtime reader: the orchestrator calls it for a MAF run. The
     headers go to the MCP client as an argument, never to a log.
+
+    *oauth_wanted* (IN-8b) says which OAuth rows the run can use. A row that
+    it refuses is left out BEFORE its refresh, so a run never refreshes a
+    token for a server that it never connects. ``None`` wants every row.
     """
-    return await _read(org, enabled_only=True, with_headers=True)
+    return await _read(org, enabled_only=True, with_headers=True,
+                       oauth_wanted=oauth_wanted)
 
 
 async def list_servers(org: str) -> list[StoredServer]:

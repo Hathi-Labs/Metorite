@@ -226,7 +226,7 @@ async def test_the_injection_passes_the_flags_and_names_the_org(
     spy = RegistrySpy([]).install(monkeypatch)
     header = {"Authorization": f"Bearer {f.SENTINEL_ACCESS}"}
 
-    async def _servers(org: str) -> list[Any]:
+    async def _servers(org: str, **_kw: Any) -> list[Any]:
         spy.statements.append(("servers_for_org", {"org": org}))
         return [mcp.StoredServer(
             name="notion", label="notion", description="", transport="http-sse",
