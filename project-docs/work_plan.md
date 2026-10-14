@@ -519,7 +519,7 @@ owning specs are the archive; this file owns ordering, gates and states only.
 | WS-56 | **External agent dispatch — start a session on the member's own AI account** *(minted 2026-10-11, owner directive)* | 📝 **SPECIFIED, no decision taken, nothing built** (2026-10-11). Outbound twin of WS-55. A task in Projects offers **Run with…** and Metorite starts Copilot, Jules or a GitHub-based agent as the member. A personal credential never becomes an organization credential. | **`specs/external_agent_dispatch.md`** · reuses the WS-54 registry | AGENT-SAFE: DX-1, DX-2, DX-4 after DX-0. The credentialed adapters (DX-5 to DX-9) wait for the WS-54 registry slice. 🔴 OWNER-GATE: DX-0 (decisions D-DX-1 to D-DX-8), and the GitHub App registration in DX-5. |
 | WS-57 | **Task references — links, PRs, commits, pasted images and `#123` pills** *(minted 2026-10-13, owner directive)* | ✅ **BUILT.** TR-1, TR-2 and TR-3 are LIVE (2026-10-13, PR #956, migration 255 applied). TR-4 is LIVE (2026-10-13, PR #955). TR-5 is BUILT on branch `task-pills-v2` (2026-10-13): `#123` pills on the card, and links and references from the text (`routes/projects/text_links.py`, no migration). Migration 255 holds `pm_task_refs`, `routes/projects/refs.py` holds the route and the GitHub read, and `add_task_ref` and `remove_task_ref` are the chat tools. ⚠️ Check migration 255 again at merge (R1). | **`specs/task_references.md`** · `external_agent_access.md` §11 | All five slices are built. 🔴 OWNER-GATE: a GitHub App (§8). **Next: merge TR-5 (branch `task-pills-v2`). Later: a GitHub App (§8), an OWNER-GATE.** |
 | WS-58 | **My Day as a live feed — the chief of staff** *(minted 2026-10-13, owner directive)* | 🔨 **MD-1a, MD-1b, MD-2a, MD-2d and the server half of MD-2c BUILT and merged** (#964, #967, #983, #980, #986), and MD-2b and the client half of MD-2c BUILT (2026-10-14), all dark behind `NEXT_PUBLIC_MY_DAY_FEED`. MD-2 is split in four (2a to 2d), and it is complete when the client half of MD-2c merges. MD-6a-1 BUILT 2026-10-14 (the `my_day.*` features, the helpers and `my_day_judgments`, migration 262), dark: each `my_day.*` mode is `off`. MD-6a-2 BUILT 2026-10-14 (the member pass of the `my_day` loop, no migration). It stops at its gate while each `my_day.*` mode is `off`. MD-6a-3 BUILT 2026-10-14 (the admin measure read `GET /shell/feed/decide-measure`, no migration). MD-3 is split in six, MD-3a to MD-3f (2026-10-14, spec §5.8 and §16). MD-3a BUILT 2026-10-14 (the links `/calendar?date=&at=` and `/approvals?action=`, no migration and no flag). It is live when it deploys, because the feed is live. MD-3b BUILT 2026-10-14 (the seam, no migration): the `MY_DAY_PROVIDERS` list, two feed-only providers at a time under a 2.3-second ceiling, `SourceAbsent` and `source_apps`. While the list is empty, `source_apps` is the only change to the answer. MD-3c to MD-3f ship dark behind `MY_DAY_PROVIDERS`. D100 and D101 taken 2026-10-13. My Day becomes one ranked column of cards. Code finds the signals and a template writes every card. `decide` makes the judgment calls as typed questions, and a text model writes only a gist or a prep list. The owner answered Q2 (the customer pays in AI credits) and Q3 (calendar clashes fold in when calendar sync lands) on 2026-10-13. A card has a life, and fixed rules bring it back when it matters again. It extends the one needs feed of WS-44 and adds no second feed | **`specs/my_day_feed.md`** · the page frame, the bell and the shell flags stay in `specs/navigation_shell.md` | AGENT-SAFE: MD-1a (the gateway feed) and MD-1b (the frontend), MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12, all dark. MD-1a and MD-1b are built. 🔴 OWNER-GATE: turning on `NEXT_PUBLIC_MY_DAY_FEED`, `MY_DAY_COMPOSE` or any `my_day.*` decide mode, and MD-10 (messages outside the app). MD-6c also waits on H-171 and H-69. Repair round 1 of PR #939 fixed 14 P1 and 5 P2 review findings on 2026-10-13. MD-11 (meeting overlaps) is BLOCKED on calendar P4 |
-| WS-59 | **Reach — the chief of staff speaks first** *(minted 2026-10-14, owner directive)* | 📝 **PROPOSED 2026-10-14, nothing built.** Metorite messages a member first, on WhatsApp and later web push, about what needs them: important email, the day's work, and context from projects. Reach is the one outbound seam. It reads My Day's judged cards and adds no second feed, registry or judge. Each app joins through a reach class on its card kinds, so meetings, tickets, notes, a knowledge base and insights fit later. A funnel keeps it cheap: a free gate in code, then `my_day.nudge` packed into the member pass, then one brief composition each day. An attention budget (3 interrupts a day, quiet hours, a 15-minute batch) keeps it useful. A Postgres outbox drained with `SKIP LOCKED` makes delivery scale out. §13 plans the move of the loop out of the gateway | **`specs/proactive_reach.md`** · the signals and the judge stay in `specs/my_day_feed.md`, the bot in `specs/whatsapp_assistant_channel.md` | **Next: the owner reads §12 (D-RE-1 to D-RE-6, Q1 to Q5), then RE-1.** AGENT-SAFE: RE-1 to RE-10 to build, each dark. 🔴 OWNER-GATE: the Meta templates (H-251), turning `REACH_ENABLED` or `my_day.nudge` on for any member (MD-10), Q1 (who pays the template charge), and the `acb-reach` unit on the box (RE-8) |
+| WS-59 | **Reach — the chief of staff speaks first** *(minted 2026-10-14, owner directive)* | 🔨 **ACTIVE 2026-10-14 (D103).** The owner accepted every proposal the same day. RE-1a, the demo slice (§16.1), is in build on branch `ws59-proactive-reach`. Metorite messages a member first, on WhatsApp and later web push, about what needs them: important email, the day's work, and context from projects. Reach is the one outbound seam. It reads My Day's judged cards and adds no second feed, registry or judge. Each app joins through a reach class on its card kinds, so meetings, tickets, notes, a knowledge base and insights fit later. A funnel keeps it cheap: a free gate in code, then `my_day.nudge` packed into the member pass, then one brief composition each day. An attention budget (3 interrupts a day, quiet hours, a 15-minute batch) keeps it useful. A Postgres outbox drained with `SKIP LOCKED` makes delivery scale out. §13 plans the move of the loop out of the gateway | **`specs/proactive_reach.md`** · the signals and the judge stay in `specs/my_day_feed.md`, the bot in `specs/whatsapp_assistant_channel.md` | **Next: RE-1a, then RE-4 with the context join that §17 asks of WS-58.** AGENT-SAFE: RE-1 to RE-10 to build, each dark. 🔴 OWNER-GATE: the Meta templates (H-251), turning `REACH_ENABLED` or `my_day.nudge` on for any member (MD-10), Q1 (who pays the template charge), and the `acb-reach` unit on the box (RE-8) |
 
 ### Product — Centers (`department_centers.md` §3 · combined board record 2026-08-09 there)
 
@@ -5250,6 +5250,33 @@ is metered and dark. Only the place of the field changes.
 
 **Fences:** `src/lib/shell/oneBar.test.ts` (new) and
 `src/lib/shell/appBar.test.ts`.
+
+### D103 — Reach is the one way Metorite contacts a member first (2026-10-14)
+
+Owner direction, 2026-10-14, in chat. The WhatsApp bot should send messages
+first, about "what it thinks I should know". Then, on the proposal: "I am fine with your
+suggestions, go ahead with your recommendations." Board: **WS-59**. Owning
+spec: **`specs/proactive_reach.md`**.
+
+1. **One outbound seam.** An app reaches a member outside the app only
+   through a My Day card with a reach class. No app sends to a member
+   channel itself (D-RE-1).
+2. **My Day judges, Reach delivers.** The judge is `my_day.nudge`, packed
+   into the member pass. Reach adds no model call of its own, except one
+   brief sentence each day (D-RE-2).
+3. **The budget.** 3 interrupts and 1 urgent each day, inside working
+   hours. A member may raise the cap to 6. Only the member's own rule may
+   break quiet hours (D-RE-3, D-RE-4).
+4. **The outbox in Postgres is the delivery truth** (D-RE-5). Every
+   WhatsApp message is utility or free text in an open window, never
+   marketing (D-RE-6).
+5. **The owner's answers.** Metorite absorbs Meta's template charge inside
+   the seat. Opt-in is off until the member says yes. The brief follows
+   `work_schedule`. An org admin has one switch for the org.
+
+**What it does not change.** `my_day_feed.md` keeps the signals, the cards
+and the judge. `whatsapp_assistant_channel.md` keeps the bot. CLAUDE.md §3a
+rule 3 still binds: a flag that sends to a real person is the owner's flip.
 
 ---
 

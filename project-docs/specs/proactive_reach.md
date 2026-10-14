@@ -1,8 +1,8 @@
 # Reach — the chief of staff speaks first
 
-**Status: PROPOSED, 2026-10-14.** Owner directive of 2026-10-14. Nothing is
-built. Board row **WS-59**. The owner accepts or changes the proposed
-decisions of §12 before RE-1 starts.
+**Status: ACTIVE, 2026-10-14.** Owner directive of 2026-10-14. The owner
+accepted every proposal of §12 the same day, recorded as **D103**. Board row
+**WS-59**. RE-1a, the demo slice (§16.1), is the first build.
 
 **What this spec owns.** How Metorite decides to contact a member outside the
 app, and how the message reaches them. That covers the outbound path, the
@@ -184,6 +184,45 @@ spec, not here.
 | Operations | `stock_below_minimum`, `order_late` | `interrupt`, `brief` |
 | Notes and knowledge base | `doc_shared_with_me`, `doc_needs_review` | `brief`, `brief` |
 | Insights (project "Proactive Intelligence") | `metric_moved`, `opportunity_found`, `decision_needed` | `brief`, `brief`, `interrupt` |
+
+### 4.4 The apps of a company, and what makes each item matter
+
+An item matters because of what it touches in other apps. An email alone is
+one more email. An email from the buyer on an open deal that closes this
+week is the item of the day. So each row below names the join that lifts it.
+
+| App | Kinds (class) | The join that makes it matter | Source of the kind |
+|---|---|---|---|
+| **Email** | `needs_reply` (interrupt), `no_answer` (brief), `promise_due` (brief) | The sender is a CRM contact on an open deal, a person on my project, or my manager | Live, and MD-3 for the other two |
+| **CRM and sales** | `lead_replied` (interrupt), `crm_followup_due` (interrupt), `deal_close_passed` (brief), `deal_quiet` (brief), `deal_stage_changed` (brief) | The deal's value and close date. A meeting today with the contact | MD-3 and MD-9 |
+| **Sales follow-ups** | `no_answer` on a deal thread (interrupt), `crm_followup_due` (interrupt) | A quote I sent waits for an answer, and the deal is open | MD-3 |
+| **Calendar** | `block_soon` (interrupt), `block_overlap` (brief), `meeting_prep_ready` (interrupt, later) | The attendees' open deals, open threads and tasks | Live, and MD-11 for meetings |
+| **Projects and tasks** | `notification` assigned or mention (interrupt), `overdue` (brief), `due_today` (brief), `unblocked` (brief) | A task blocks someone else, or the project has a date this week | Live, and MD-3 |
+| **Finance** | `invoice_overdue`, `payment_received`, `bill_due` (each brief, later) | The customer is a CRM organization with an open deal | No app yet. Mail about invoices reaches the member as email until then |
+| **Approvals and people** | `approval` (interrupt), `colleague_out` (brief) | The action waits on me and blocks a person | Live, and MD-3 |
+| **Agents** | `agent_asks` (interrupt), `agent_done` (brief) | I started the run | MD-3 and MD-9 |
+
+### 4.5 The context join — what Reach asks of My Day
+
+A judge is only as good as the facts it reads. So Reach asks My Day for one
+new step, after the providers and before the fold: **the context join**.
+
+- **What it adds.** Each card gets a `related` fact. It is a short list of
+  `{app, type, id, label, facts}` for the entities that the card touches in
+  other apps. Examples: the open deal of an email's sender, the project of a
+  task, the attendees of a block.
+- **How it runs.** Code does the join with bounded, indexed reads, and no
+  model. Each lookup goes through the owning app's own authorized read, with
+  the member's `UserContext`. So a member never sees a deal that they cannot
+  open in the CRM.
+- **The first three joins.** Email sender to CRM contact to open deals.
+  Email sender to a person in the People app. A task to its project and
+  that project's next date.
+- **What it gives.** The judge reads `related` in its state, so "the buyer
+  on a large deal wrote" outranks a newsletter with no rule. The message
+  names the join in one clause: "Priya Shah (Acme, Proposal, closes Fri)".
+- **The owner of the join is WS-58,** because it changes the cards. §17
+  lists it as a request to that workstream.
 
 ---
 
@@ -485,9 +524,13 @@ the planner.
 
 ---
 
-## 12. Proposed decisions and open questions
+## 12. Decisions and the owner's answers
 
-### 12.1 Proposed decisions (the owner accepts them or changes them)
+**The owner accepted every proposal below on 2026-10-14**: "I am fine with
+your suggestions, go ahead with your recommendations." `work_plan.md` §3
+records them as **D103**.
+
+### 12.1 Decisions (accepted 2026-10-14)
 
 | Id | Decision |
 |---|---|
@@ -498,9 +541,9 @@ the planner.
 | D-RE-5 | The outbox in Postgres is the delivery truth. Redis holds only counters that the outbox can rebuild |
 | D-RE-6 | Every proactive WhatsApp message is a utility template or free text in an open window. Never marketing |
 
-### 12.2 Open questions for the owner, each with a default
+### 12.2 Questions, answered with their defaults (2026-10-14)
 
-| # | Question | Default |
+| # | Question | Answer |
 |---|---|---|
 | Q1 | Who pays Meta's template charge? It is about one utility message for each member each working day | Metorite absorbs it inside the ₹500 seat. Commercial call, so the owner decides |
 | Q2 | Is opt-in on by default for a member who links a phone? | Off. The member says yes once in the link flow |
@@ -651,9 +694,50 @@ is an owner gate (MD-10, CLAUDE.md §3a rule 3).
 owner's org: a daily brief on WhatsApp. RE-4 and RE-5 then add the important
 email.
 
+### 16.1 RE-1a — the demo slice (owner, 2026-10-14)
+
+The owner asked for a basic demo in 2 to 3 hours. RE-1a cuts RE-1, RE-2 and
+RE-3 to what a demo needs. Each later ticket builds on it, and none of it is
+thrown away.
+
+| Part | In RE-1a | Left for later |
+|---|---|---|
+| Members | An allowlist, `REACH_MEMBERS`, inside `REACH_ORGS` | Opt-in in the link flow (RE-2) |
+| The judge | The reach class and code rules only. A `needs_reply` card interrupts only when it waited less than 12 hours | `my_day.nudge` (RE-4), the context join (§4.5) |
+| The first run | Each card that exists is logged as `baseline`, so nothing old interrupts | — |
+| Budget | The daily cap and quiet hours | The batch window, the urgent allowance |
+| Channel | WhatsApp free text in an open window. A template only when `REACH_BRIEF_TEMPLATE` names an approved one | The other templates, STOP and START (RE-2) |
+| The loop | Its own 60 s loop in the gateway, one member at a time | The worker unit and the shards (RE-8) |
+| The thread | Each message is also an assistant turn in the member's WhatsApp chat thread, so a reply has context | The buttons (RE-6) |
+| Routes | `GET /reach/preview` and `POST /reach/brief`, for the signed-in member only | Settings → Notifications (RE-7) |
+
+**Data.** Migration 265 adds `reach_outbox` and `reach_signal_log`. The log
+holds one row for each signal and fingerprint that Reach considered, with its
+outcome. It is the dedupe of an interrupt, and the baseline of the first
+run.
+
+**Fences.** `tests/unit/test_reach_plan.py`, `test_reach_loop.py` and
+`test_reach_r8.py` (a real database, with the DB gate).
+
 ---
 
-## 17. Verification
+## 17. Requests to WS-58 (My Day)
+
+Reach is as good as the cards it reads. The owner noted on 2026-10-14 that
+the My Day intelligence is built in a parallel session. These are the asks
+of this spec to that work. None of them blocks RE-1a.
+
+| # | Ask | Why Reach needs it |
+|---|---|---|
+| W1 | The context join of §4.5, the `related` fact | The judge cannot tell an important email from a loud one without it |
+| W2 | Each new kind of MD-3 and MD-9 ships with its reach class in `gateway/reach/classes.py`, in the same PR | §4.1. A kind without a class never leaves the app |
+| W3 | `my_day.nudge` reads `related`, the corrections of §10.3, and the member's focus for today | §5.2 |
+| W4 | A member with an active, opted-in WhatsApp link stays in the active set | §13.1. A member who lives on WhatsApp would drop out after 3 days |
+| W5 | The brief card of MD-7 and the WhatsApp brief come from one composition | §9.1 |
+
+---
+
+## 18. Verification
 
 Each ticket's PR runs, with the dev database up (R8):
 
