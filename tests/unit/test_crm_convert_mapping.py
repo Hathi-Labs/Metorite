@@ -124,6 +124,22 @@ def test_an_explicit_row_names_the_problem_of_its_target() -> None:
     assert cells[("c", "deal")].problem == "type_mismatch"
 
 
+def test_a_broken_explicit_claim_marks_the_auto_cell_it_blocks() -> None:
+    """C6a review, note 4: the explicit row keeps its claim, and the blocked
+    auto cell carries ``type_mismatch``, so the conversion reports it."""
+    sources = {"region": _f("region"), "area": _f("area", "number")}
+    targets = _targets(deal={"region": _f("region")})
+    cells = effective_map(sources, targets, [MapRow("area", "deal", "region", False)])
+    assert cells[("area", "deal")] == Cell("region", "explicit", "type_mismatch")
+    assert cells[("region", "deal")] == Cell(None, "auto", "type_mismatch")
+    # A sound explicit claim blocks auto with no problem: explicit wins.
+    sound = effective_map(
+        {"region": _f("region"), "area": _f("area")}, targets,
+        [MapRow("area", "deal", "region", False)],
+    )
+    assert sound[("region", "deal")] == Cell(None, "auto")
+
+
 def test_a_retired_lead_field_is_not_in_the_map() -> None:
     sources = {"old": _f("old", retired=True)}
     targets = _targets(deal={"old": _f("old")})
@@ -184,6 +200,42 @@ def _code(rows: list[dict[str, Any]]) -> str | None:
 ])
 def test_the_put_refuses_each_bad_row(rows: list[dict[str, Any]], code: str | None) -> None:
     assert _code(rows) == code
+
+
+@pytest.mark.parametrize("target", ["gone", "amount_x", "missing"])
+def test_an_unchanged_broken_row_passes_and_a_new_one_does_not(target: str) -> None:
+    """C6a review, P1: the screen sends the whole map. A stored explicit row
+    whose target is now retired, retyped or gone passes when the body keeps it
+    unchanged. The same row as a new row gives 422."""
+    read = _read()
+    body = ConversionMappingIn(rows=[
+        {"source_key": "region", "target_entity": "deal", "target_key": target},
+        {"source_key": "budget", "target_entity": "deal", "skip": True},
+    ]).rows
+    with pytest.raises(HTTPException):
+        check_rows(read, body)
+    read.rows.append(MapRow("region", "deal", target, False))
+    check_rows(read, body)
+    # A second row on the same broken target is still refused.
+    read.sources["area"] = _f("area")
+    with pytest.raises(HTTPException) as caught:
+        check_rows(read, [*body, *ConversionMappingIn(rows=[
+            {"source_key": "area", "target_entity": "deal", "target_key": target},
+        ]).rows])
+    assert caught.value.detail["code"] in {
+        "mapping_target", "mapping_target_retired", "mapping_type", "mapping_target_twice"}
+
+
+def test_the_retired_message_names_the_way_out() -> None:
+    try:
+        check_rows(_read(), ConversionMappingIn(rows=[
+            {"source_key": "region", "target_entity": "deal", "target_key": "gone"},
+        ]).rows)
+    except HTTPException as exc:
+        assert exc.detail["message"] == (
+            "Gone is retired. Set this cell to Auto or Skip, or restore the field.")
+    else:
+        raise AssertionError("no 422")
 
 
 def test_two_explicit_rows_on_one_target_give_422() -> None:
@@ -260,6 +312,12 @@ def rls_problems(sql: str) -> list[str]:
             r"\s+ON\s+DELETE\s+CASCADE"
         ),
         "UNIQUE": r"UNIQUE\s*\(\s*organization_id\s*,\s*source_key\s*,\s*target_entity\s*\)",
+        # C6a review, P2: one explicit row for each target, also in a race.
+        "ONE_TARGET": (
+            r"CREATE\s+UNIQUE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+\w+\s+ON\s+crm_convert_mappings\s*"
+            r"\(\s*organization_id\s*,\s*target_entity\s*,\s*target_key\s*\)\s*"
+            r"WHERE\s+target_key\s+IS\s+NOT\s+NULL\s+AND\s+NOT\s+skip"
+        ),
     }
     return [name for name, pattern in wanted.items() if not re.search(pattern, body, re.I)]
 
@@ -279,3 +337,5 @@ def test_the_rls_fence_sees_a_missing_block() -> None:
     assert rls_problems(no_force) == ["FORCE"]
     no_unique = sql.replace("UNIQUE (organization_id, source_key, target_entity)", "")
     assert rls_problems(no_unique) == ["UNIQUE"]
+    no_target_index = sql.replace("WHERE target_key IS NOT NULL AND NOT skip", "")
+    assert rls_problems(no_target_index) == ["ONE_TARGET"]

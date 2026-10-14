@@ -406,3 +406,148 @@ async def test_the_database_refuses_a_skip_row_with_a_target(mapped) -> None:
                 "target_entity) VALUES (CAST(:o AS uuid), 'a', 'deal')"),
                 {"o": p.org_b})
     assert uuid.UUID(p.org_a) != uuid.UUID(p.org_b)
+
+
+# ── Review round 1 (2026-10-14) ─────────────────────────────────────────────
+
+
+async def test_a_broken_stored_row_does_not_block_a_change_to_another_cell(mapped) -> None:
+    """P1: the screen sends the whole map. A stored row whose target retired
+    passes unchanged, the other change lands, and the read still names it."""
+    p = mapped
+    await _field(p.org_a, "leads", {"label": "Note", "type": "text"})
+    await _field(p.org_a, "leads", {"label": "Other", "type": "text"})
+    await _field(p.org_a, "deals", {"label": "Memo", "type": "text"})
+    keep = {"source_key": "note", "target_entity": "deal", "target_key": "memo"}
+    assert (await _put(p.org_a, [keep])).status_code == 200
+    assert (await _as_admin(p.org_a, "DELETE", "/crm/fields/deals/memo")).status_code == 200
+    got = await _put(p.org_a, [keep, {"source_key": "other", "target_entity": "contact",
+                                      "skip": True}])
+    assert got.status_code == 200, got.text
+    assert _stored(p, p.org_a) == [("note", "deal", "memo", False),
+                                   ("other", "contact", None, True)]
+    assert _cell(got.json(), "note", "deal")["problem"] == "target_retired"
+    # A NEW row on the retired target is still refused, with the way out.
+    again = await _put(p.org_a, [{"source_key": "other", "target_entity": "deal",
+                                  "target_key": "memo"}])
+    assert again.status_code == 422
+    assert again.json()["detail"]["message"] == (
+        "Memo is retired. Set this cell to Auto or Skip, or restore the field.")
+
+
+async def test_two_puts_at_once_both_land_one_after_the_other(mapped) -> None:
+    """P2: the advisory lock makes the second write wait, so it never meets
+    the rows of the first one."""
+    import asyncio
+
+    p = mapped
+    for label in ("Alpha", "Beta"):
+        await _field(p.org_a, "leads", {"label": label, "type": "text"})
+        await _field(p.org_a, "deals", {"label": f"{label} target", "type": "text"})
+    one = [{"source_key": "alpha", "target_entity": "deal", "target_key": "alpha_target"},
+           {"source_key": "beta", "target_entity": "deal", "target_key": "beta_target"}]
+    two = [{"source_key": "alpha", "target_entity": "deal", "target_key": "beta_target"},
+           {"source_key": "beta", "target_entity": "deal", "target_key": "alpha_target"}]
+    for _ in range(3):
+        results = await asyncio.gather(_put(p.org_a, one), _put(p.org_a, two))
+        assert [r.status_code for r in results] == [200, 200], [r.text for r in results]
+        stored = {(r[0], r[2]) for r in _stored(p, p.org_a)}
+        assert stored in ({("alpha", "alpha_target"), ("beta", "beta_target")},
+                          {("alpha", "beta_target"), ("beta", "alpha_target")})
+
+
+def test_the_database_holds_one_explicit_row_for_each_target(mapped) -> None:
+    """P2: the partial unique index of migration 261."""
+    from sqlalchemy.exc import IntegrityError
+
+    p = mapped
+    insert = ("INSERT INTO crm_convert_mappings (organization_id, source_key, "
+              "target_entity, target_key, skip) VALUES (CAST(:o AS uuid), :s, 'deal', "
+              ":t, false)")
+    with p.admin_engine.begin() as c:
+        c.execute(text(insert), {"o": p.org_a, "s": "a", "t": "x"})
+        # A skip row and a NULL row name no target, so they never clash.
+        c.execute(text(insert.replace(":t, false", "NULL, true")),
+                  {"o": p.org_a, "s": "b"})
+    with pytest.raises(IntegrityError), p.admin_engine.begin() as c:
+        c.execute(text(insert), {"o": p.org_a, "s": "c", "t": "x"})
+    with p.admin_engine.begin() as c:
+        c.execute(text(insert), {"o": p.org_b, "s": "c", "t": "x"})
+
+
+async def test_a_unique_violation_gives_409_mapping_changed(mapped, monkeypatch) -> None:
+    """The 409 path. With the check off, two rows on one target reach the
+    partial unique index, and the route answers 409, not 500."""
+    from gateway.routes.crm import convert_mapping
+
+    p = mapped
+    monkeypatch.setattr(convert_mapping, "check_rows", lambda read, rows: None)
+    got = await _put(p.org_a, [
+        {"source_key": "a", "target_entity": "deal", "target_key": "x"},
+        {"source_key": "b", "target_entity": "deal", "target_key": "x"},
+    ])
+    assert got.status_code == 409, got.text
+    assert got.json()["detail"]["code"] == "mapping_changed"
+    assert _stored(p, p.org_a) == []
+
+
+async def test_the_fill_reads_the_record_again_under_a_lock(mapped) -> None:
+    """P2: a value written after the match is seen, and never replaced. The
+    row that the fill gets is stale on purpose."""
+    from types import SimpleNamespace
+
+    from acb_common.db import tenant_session
+    from gateway.routes.crm.convert_mapping import ConversionPlan, fill_existing
+
+    p = mapped
+    await _field(p.org_a, "contacts", {"label": "Tier", "type": "text"})
+    contact = await _record(p.org_a, "contacts", {
+        "first_name": "Raced", "custom": {"tier": "Gold"}})
+    stale = SimpleNamespace(id=contact["id"], custom={})
+    plan = ConversionPlan(values={"contact": {"tier": ("tier", "Silver")}})
+    async with tenant_session(p.org_a) as db:
+        _row, kept = await fill_existing(db, plan, "contact", "crm_contacts", stale)
+    assert [k["reason"] for k in kept] == ["record_has_value"]
+    assert _custom(p, "contacts", contact["id"]) == {"tier": "Gold"}
+
+
+async def test_a_retyped_explicit_claim_reports_the_auto_copy_it_blocks(mapped) -> None:
+    """Note 4: the explicit row keeps its claim. The same-key auto copy does
+    not run, and `skipped` says so with `type_mismatch`."""
+    p = mapped
+    opts = {"options": [{"label": "Gold"}, {"label": "Silver"}]}
+    await _field(p.org_a, "leads", {"label": "Grade", "type": "select", **opts})
+    await _field(p.org_a, "leads", {"label": "Grade2", "type": "select", **opts})
+    await _field(p.org_a, "deals", {"label": "Grade2", "type": "select", **opts})
+    assert (await _put(p.org_a, [{"source_key": "grade", "target_entity": "deal",
+                                  "target_key": "grade2"}])).status_code == 200
+    retyped = await _as_admin(p.org_a, "PATCH", "/crm/fields/leads/grade",
+                              {"type": "multiselect"})
+    assert retyped.status_code == 200, retyped.text
+    read = await _get(p.org_a)
+    assert _cell(read, "grade", "deal")["problem"] == "type_mismatch"
+    assert _cell(read, "grade2", "deal") == {
+        "target_key": None, "reason": "auto", "problem": "type_mismatch",
+        "choices": ["grade2"]}
+    lead = await _record(p.org_a, "leads", {
+        "first_name": "Retyped", "custom": {"grade": ["gold"], "grade2": "silver"}})
+    body = await _convert(p.org_a, lead["id"])
+    assert _custom(p, "deals", body["deal"]["id"]) == {}
+    assert {(s["source_key"], s["reason"]) for s in body["skipped"]} == {
+        ("grade", "type_mismatch"), ("grade2", "type_mismatch")}
+
+
+async def test_a_conversion_in_org_b_never_reads_the_map_of_org_a(mapped) -> None:
+    p = mapped
+    for org in (p.org_a, p.org_b):
+        await _field(org, "leads", {"label": "Budget", "type": "number"})
+        await _field(org, "deals", {"label": "Budget", "type": "number"})
+        await _field(org, "deals", {"label": "Deal budget", "type": "decimal"})
+    assert (await _put(p.org_a, [{"source_key": "budget", "target_entity": "deal",
+                                  "target_key": "deal_budget"}])).status_code == 200
+    lead_b = await _record(p.org_b, "leads", {"first_name": "B", "custom": {"budget": 7}})
+    body_b = await _convert(p.org_b, lead_b["id"])
+    assert _custom(p, "deals", body_b["deal"]["id"]) == {"budget": 7}, "auto in org B"
+    lead_a = await _record(p.org_a, "leads", {"first_name": "A", "custom": {"budget": 5}})
+    body_a = await _convert(p.org_a, lead_a["id"])
+    assert _custom(p, "deals", body_a["deal"]["id"]) == {"deal_budget": 5}

@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS crm_convert_mappings (
         UNIQUE (organization_id, source_key, target_entity)
 );
 
+-- A target field takes one explicit row at most (C6a review, P2). The PUT
+-- route refuses two, and this index holds the rule against a race too.
+CREATE UNIQUE INDEX IF NOT EXISTS crm_convert_mappings_one_target
+    ON crm_convert_mappings (organization_id, target_entity, target_key)
+    WHERE target_key IS NOT NULL AND NOT skip;
+
 DO $rls$
 BEGIN
     IF NOT EXISTS (

@@ -8,7 +8,7 @@ Spec: ``project-docs/specs/crm_platform.md`` §20.9, the CRM-C6a contract.
 
 An admin says which contact, company and deal field takes the value of each
 custom lead field when a lead converts. ``pipeline.convert_lead`` reads the map
-through :func:`conversion_plan`, :func:`mapped_for_new` and
+through :func:`conversion_plan`, ``ConversionPlan.new_custom`` and
 :func:`fill_existing`. The fixed columns keep their mapping in code.
 
 **What a row of ``crm_convert_mappings`` means.**
@@ -74,6 +74,12 @@ Reason = Literal["auto", "skip", "explicit"]
 MAX_ROWS = 1500
 
 MIRROR_MESSAGE = "The conversion mapping comes from Zoho. Change it in Zoho."
+
+#: One ``PUT`` at a time for each org, until the commit (C6a review, P2). The
+#: idiom of ``connection.py``: a transaction lock on a key of the org. Without
+#: it, two writes each delete the old rows and insert their own, and the
+#: second insert meets the first one's rows.
+_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
 
 
 def _unprocessable(code: str, message: str, **extra: Any) -> HTTPException:
@@ -143,10 +149,14 @@ def effective_map(
     *sources* are the custom lead fields, *targets* the custom fields of each
     target entity by key. A retired lead field is not in the map. "Auto" never
     takes a target that an explicit row names.
+
+    An explicit row whose target now has another type still claims it. The
+    auto cell that it blocks gets the problem ``type_mismatch``, so the
+    conversion reports the value in ``skipped`` (C6a review, note 4).
     """
     stored = {(r.source_key, r.target_entity): r for r in rows}
     claimed = {
-        (r.target_entity, r.target_key) for r in rows
+        (r.target_entity, r.target_key): r for r in rows
         if r.target_key is not None and not r.skip
         and r.source_key in sources and not sources[r.source_key].retired
     }
@@ -166,11 +176,16 @@ def effective_map(
                 )
             else:
                 same = fields.get(key)
-                takes = (
-                    same is not None and (entity, key) not in claimed
-                    and target_problem(source, same) is None
-                )
-                out[(key, entity)] = Cell(key if takes else None, "auto")
+                open_ = same is not None and target_problem(source, same) is None
+                claim = claimed.get((entity, key))
+                if open_ and claim is None:
+                    out[(key, entity)] = Cell(key, "auto")
+                elif open_ and claim is not None and target_problem(
+                    sources[claim.source_key], same,
+                ) == "type_mismatch":
+                    out[(key, entity)] = Cell(None, "auto", "type_mismatch")
+                else:
+                    out[(key, entity)] = Cell(None, "auto")
     return out
 
 
@@ -347,8 +362,44 @@ async def get_conversion_mapping(
         return _wire(await _read(db))
 
 
+def _check_target(
+    source: CustomField, target: CustomField | None, entity: str, key: str,
+    where: dict[str, Any],
+) -> None:
+    """422 when a new or changed explicit row names a target that cannot take
+    the value of *source*: missing, retired, or of an incompatible type."""
+    if target is None:
+        raise _unprocessable(
+            "mapping_target", f"'{key}' is not a custom field of the {entity}.", **where,
+        )
+    if target.retired:
+        raise _unprocessable(
+            "mapping_target_retired",
+            f"{target.label} is retired. Set this cell to Auto or Skip, or restore "
+            "the field.",
+            **where,
+        )
+    if not compatible(source, target):
+        raise _unprocessable(
+            "mapping_type",
+            f"{source.label} ({source.type}) cannot fill {target.label} ({target.type}).",
+            **where,
+        )
+
+
 def check_rows(read: _Read, rows: list[MappingIn]) -> None:
-    """422 for the first row that the map cannot hold. Nothing is written."""
+    """422 for the first row that the map cannot hold. Nothing is written.
+
+    An explicit row that equals its stored row passes unchecked, also when its
+    target is retired or has another type now (C6a review, P1). The screen
+    sends the whole map, so a broken row must not block a change to another
+    cell. The read names its problem, and the conversion skips it. Only a new
+    or a changed row is checked against the target.
+    """
+    kept = {
+        (r.source_key, r.target_entity, r.target_key) for r in read.rows
+        if r.target_key is not None and not r.skip
+    }
     seen: set[tuple[str, str]] = set()
     taken: dict[tuple[str, str], str] = {}
     for row in rows:
@@ -378,30 +429,14 @@ def check_rows(read: _Read, rows: list[MappingIn]) -> None:
         target = read.targets[row.target_entity].get(row.target_key)
         where = {"source_key": row.source_key, "target_entity": row.target_entity,
                  "target_key": row.target_key}
-        if target is None:
-            raise _unprocessable(
-                "mapping_target",
-                f"'{row.target_key}' is not a custom field of the {row.target_entity}.",
-                **where,
-            )
-        if target.retired:
-            raise _unprocessable(
-                "mapping_target_retired",
-                f"{target.label} is retired. Restore it to map a field to it.",
-                **where,
-            )
-        if not compatible(source, target):
-            raise _unprocessable(
-                "mapping_type",
-                f"{source.label} ({source.type}) cannot fill {target.label} "
-                f"({target.type}).",
-                **where,
-            )
-        other = taken.get((row.target_entity, row.target_key))
+        if (row.source_key, row.target_entity, row.target_key) not in kept:
+            _check_target(source, target, row.target_entity, row.target_key, where)
+        other =taken.get((row.target_entity, row.target_key))
         if other is not None:
+            name = target.label if target is not None else row.target_key
             raise _unprocessable(
                 "mapping_target_twice",
-                f"{target.label} takes one lead field only. "
+                f"{name} takes one lead field only. "
                 f"{read.sources[other].label} maps to it too.",
                 **where,
             )
@@ -418,6 +453,9 @@ async def put_conversion_mapping(
     try:
         async with _tenant_session() as db:
             await assert_writable(db, current_tenant(), "crm_convert_mappings", None)
+            await db.execute(
+                text(_LOCK_SQL), {"key": f"crm.convert_mapping:{current_tenant()}"},
+            )
             check_rows(await _read(db), payload.rows)
             await db.execute(text("DELETE FROM crm_convert_mappings"))
             for row in payload.rows:
@@ -488,7 +526,16 @@ async def conversion_plan(db: Any, lead: Any, organization_id: Any) -> Conversio
         return plan
     for (source_key, entity), cell in read.cells.items():
         value = stored.get(source_key)
-        if cell.target_key is None or is_empty(value):
+        if is_empty(value):
+            continue
+        if cell.reason == "auto" and cell.problem is not None:
+            plan.skipped.setdefault(entity, []).append(_skip(
+                entity, source_key, source_key, cell.problem,
+                "An explicit row names the field with the same key, and its type "
+                "cannot take the value of that row. So the auto copy does not run.",
+            ))
+            continue
+        if cell.target_key is None:
             continue
         if cell.problem is not None:
             plan.skipped.setdefault(entity, []).append(_skip(
@@ -530,7 +577,16 @@ async def fill_existing(
     per key (``core.CustomMerge``), through the guarded ``update_row``.
     """
     wanted = plan.values.get(entity, {})
-    held = from_jsonb(getattr(row, "custom", None)) or {}
+    if not wanted:
+        return row, []
+    # C6a review, P2: read `custom` again under a row lock, so a write that
+    # lands between the match and this fill is seen and never replaced.
+    locked = (await db.execute(
+        text(f"SELECT custom FROM {table} WHERE id = CAST(:id AS uuid) FOR UPDATE"),
+        {"id": str(row.id)},
+    )).first()
+    held = from_jsonb(getattr(locked, "custom", None)) if locked is not None else None
+    held = held or {}
     if not isinstance(held, dict):
         held = {}
     put: dict[str, Any] = {}
