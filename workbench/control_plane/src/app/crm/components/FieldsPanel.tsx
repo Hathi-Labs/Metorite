@@ -24,7 +24,7 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { isMirrored, LOCK_TIP } from "../lib/connect";
 import { formValue, type FieldLayout } from "../lib/fieldLayout";
 import {
@@ -616,27 +616,28 @@ function LayoutFieldRow({
   /** The gateway refused the last save of this row. */
   const [refused, setRefused] = useState(false);
   /** Where the focus goes after the next render: the control, or the Pencil. */
-  const [focusTo, setFocusTo] = useState<"control" | "pencil" | null>(null);
+  const focusTo = useRef<"control" | "pencil" | null>(null);
   const error = problem ?? (refused && !saving ? (refusal?.message ?? null) : null);
 
   useEffect(() => {
-    if (focusTo === null) return;
-    if (focusTo === "control") focusControl(id);
+    const to = focusTo.current;
+    if (to === null) return;
+    focusTo.current = null;
+    if (to === "control") focusControl(id);
     else document.getElementById(editId)?.focus();
-    setFocusTo(null);
-  }, [focusTo, id, editId]);
+  });
 
   function begin() {
     setDraft(formValue(def, stored));
     setProblem(null);
     setRefused(false);
     setEditing(true);
-    setFocusTo("control");
+    focusTo.current = "control";
   }
 
   function close() {
     setEditing(false);
-    setFocusTo("pencil");
+    focusTo.current = "pencil";
   }
 
   async function commit() {

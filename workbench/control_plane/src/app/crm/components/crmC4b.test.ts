@@ -41,18 +41,22 @@ import {
   createGroups,
   createSubmission,
   createValue,
+  editKey,
   fieldPatch,
+  layoutValue,
   missingRequired,
   placeRefusal,
   referenceValue,
   saveEdit,
   storedValue,
 } from "../lib/recordForm";
+import { CrmModeContext } from "../lib/modeContext";
+import { money } from "../lib/format";
 import { useCrmStore } from "../lib/store";
 import type { EntitySlug } from "../lib/types";
 import { DEFAULT_VIEW, type CrmView } from "../lib/urlState";
 import { fieldLayoutKey } from "../lib/useCrmMode";
-import FieldInput, { pickLookup, toggleOption } from "./FieldInput";
+import FieldInput, { NOT_AN_OPTION, pickLookup, strayValues, toggleOption } from "./FieldInput";
 import FieldsPanel from "./FieldsPanel";
 import FilterBar from "./FilterBar";
 import { QuickCreateForm } from "./QuickCreateModal";
@@ -251,7 +255,8 @@ describe("an edit sends only the key that changed (done-when 2)", () => {
   it("sends nothing when the value did not change", () => {
     expect(fieldPatch(byKey("code"), "007", "007")).toBeNull();
     expect(fieldPatch(byKey("code"), undefined, "")).toBeNull();
-    expect(fieldPatch(byKey("signed"), undefined, false)).toBeNull();
+    expect(fieldPatch(byKey("signed"), true, true)).toBeNull();
+    expect(fieldPatch(byKey("signed"), false, false)).toBeNull();
   });
 
   it("sends a system field as its own column", () => {
@@ -338,7 +343,7 @@ const panelProps = {
   fieldDefs: FIELDS.filter((f) => !f.is_system),
 };
 
-const drawFields = (value: FieldLayout | null, row = record()) =>
+const drawFields = (value: FieldLayout | null, row: Record<string, unknown> = record()) =>
   renderToStaticMarkup(createElement(FieldsPanel, { ...panelProps, record: row, layout: value }));
 
 describe("the Fields tab draws the layout (done-when 5)", () => {
@@ -616,5 +621,127 @@ describe("layoutGroups", () => {
     const groups = layoutGroups(layout({ sections: [SALES, MORE, { id: "e", label: "Empty", position: 9 }] }));
     expect(groups.map((g) => g.section?.label ?? null)).toEqual([null, "More detail", "Sales facts"]);
     expect(groups[0].fields.map((f) => f.key)).toContain("lost");
+  });
+});
+
+// ── Review round 1 (2026-10-14) ─────────────────────────────────────────────
+
+describe("an amount keeps the currency of the record (review P1)", () => {
+  const amount = def("amount", "currency", { label: "Amount", is_system: true, position: 0 });
+  const usd = { id: "d9", name: "Acme", currency: "USD", amount: 5000, custom: {} };
+  const usdLayout = layout({ sections: [], fields: [amount] });
+
+  it("formats a system currency field with record.currency, as the Overview does", () => {
+    expect(layoutValue(amount, usd, [])).toEqual({ kind: "text", text: money(5000, "USD") });
+    expect(money(5000, "USD")).not.toContain("₹");
+    // A record with no currency reads in rupees, as before.
+    expect(layoutValue(amount, { amount: 5000 }, [])).toEqual({ kind: "text", text: money(5000, "INR") });
+  });
+
+  it("draws the Fields tab of a USD deal in dollars, also locked", () => {
+    for (const row of [usd, { ...usd, ext_source: "zoho" }]) {
+      const html = drawFields(usdLayout, row);
+      expect(html).toContain(money(5000, "USD"));
+      expect(html).not.toContain("₹");
+    }
+  });
+
+  it("shows the probability of the stage, as the Overview does", () => {
+    const probability = def("probability", "percent", { label: "Probability", is_system: true });
+    const stages = [{ id: "s1", name: "Proposal", color: "blue", position: 0, type: "open", is_default: true, probability: 40 }];
+    expect(fieldText(layoutValue(probability, record(), stages as never))).toBe("40% (from Proposal)");
+    expect(fieldText(layoutValue(probability, record({ probability: 70 }), stages as never))).toBe("70%");
+  });
+});
+
+describe("an unset boolean that the member saves sends its value (review P2)", () => {
+  it("sends No or Yes when the record holds no boolean", () => {
+    const signed = byKey("signed");
+    expect(fieldPatch(signed, undefined, false)).toEqual({ custom: { signed: false } });
+    expect(fieldPatch(signed, null, true)).toEqual({ custom: { signed: true } });
+    // The read view stays honest: an unset boolean reads "—".
+    expect(fieldText(formatField(signed, undefined))).toBe("—");
+  });
+});
+
+describe("the keyboard of the inline edit (review P2)", () => {
+  it("saves on Enter and cancels on Escape, as EditableField does", () => {
+    expect(editKey("Enter", "INPUT")).toBe("commit");
+    expect(editKey("Escape", "INPUT")).toBe("cancel");
+    expect(editKey("Escape", "TEXTAREA")).toBe("cancel");
+    // Enter in a long text is a new line, and on a button it presses it.
+    expect(editKey("Enter", "TEXTAREA")).toBeNull();
+    expect(editKey("Enter", "BUTTON")).toBeNull();
+    expect(editKey("a", "INPUT")).toBeNull();
+  });
+
+  it("focuses the control on edit, and gives the focus back to the Pencil", () => {
+    const text = source("components/FieldsPanel.tsx");
+    const row = text.slice(text.indexOf("function LayoutFieldRow"));
+    expect(row).toMatch(/function begin\(\) \{[\s\S]*?focusTo\.current = "control";[\s\S]*?\}/);
+    expect(row).toMatch(/function close\(\) \{\s*setEditing\(false\);\s*focusTo\.current = "pencil";\s*\}/);
+    expect(row).toMatch(/if \(outcome\.done\) \{\s*close\(\);/);
+    expect(row).toContain('icon="X"');
+    expect(row).toMatch(/aria-label="Cancel"\s*onClick=\{close\}/);
+    expect(row).toMatch(/editKey\(e\.key, \(e\.target as HTMLElement\)\.tagName\)/);
+    expect(row).toMatch(/id=\{editId\}[\s\S]*?icon="Pencil"/);
+  });
+});
+
+describe("the one deliberate flag-off change: the 422 rule (review F4)", () => {
+  it("keeps a refused create open in every case, with no studio condition", () => {
+    const page = source("page.tsx");
+    const hunk = page.slice(page.indexOf("<QuickCreateModal"), page.indexOf("{converting && ("));
+    expect(hunk).not.toMatch(/studio/);
+    expect(hunk).toMatch(/if \(!id\) return;/);
+  });
+
+  it("never closes the create form from a save, only from Cancel and the Modal", () => {
+    const text = source("components/QuickCreateModal.tsx")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    const uses = text.split("\n").filter((line) => /onClose/.test(line)).map((line) => line.trim());
+    expect(uses.sort()).toEqual(
+      [
+        "onClose,",
+        "onClose: () => void;",
+        "onClose={props.onClose}",
+        '<Button variant="secondary" size="sm" onClick={onClose}>',
+      ].sort(),
+    );
+  });
+});
+
+describe("a Mirror create sends no custom value (review F3)", () => {
+  it("draws each custom field locked under the Mirror mode", () => {
+    const html = withLayout("deals", layout(), () =>
+      renderToStaticMarkup(
+        createElement(CrmModeContext.Provider, { value: "mirror" }, createElement(QuickCreateForm, createProps)),
+      ),
+    );
+    expect(html).toContain(LOCK_TIP);
+    expect(html).not.toContain('aria-label="Deal code"');
+    expect(html).not.toContain('value="007"');
+  });
+});
+
+describe("the review notes", () => {
+  it("names each section of the Columns control as a group", () => {
+    const html = renderToStaticMarkup(
+      createElement(ColumnChoices, { groups: columnGroups(layout()), chosen: [], onToggle: noop }),
+    );
+    const groups = [...html.matchAll(/role="group" aria-labelledby="([^"]+)"/g)].map((m) => m[1]);
+    expect(groups).toHaveLength(2);
+    for (const id of groups) expect(html).toMatch(new RegExp(`id="${id}"[^>]*>(More detail|Sales facts)<`));
+  });
+
+  it("shows a multi-select value that is in no option as a removable chip", () => {
+    const colours = byKey("colours");
+    expect(strayValues(colours, ["gold", "teal"])).toEqual(["teal"]);
+    const html = renderToStaticMarkup(
+      createElement(FieldInput, { def: colours, value: ["gold", "teal"], onChange: noop }),
+    );
+    expect(html).toContain(`teal<span class="text-muted-foreground">(${NOT_AN_OPTION})</span>`);
+    expect(html).toContain('aria-label="Remove teal"');
   });
 });
