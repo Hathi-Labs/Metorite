@@ -10,6 +10,12 @@
 
 Each is dark behind `NEXT_PUBLIC_MY_DAY_FEED`, or by the absence of a caller.
 
+**Live in production since 2026-10-14.** The owner turned the feed on. So
+`NEXT_PUBLIC_MY_DAY_FEED`, `MY_DAY_CACHE` and `MY_DAY_LOOP_ENABLED` are each
+on, on the production box. Each `my_day.*` decide mode stays `off`, and
+`MY_DAY_DECIDE_ORGS` stays empty. A new provider now reaches each member when
+it deploys, so MD-3 adds `MY_DAY_PROVIDERS` (§5.8).
+
 **MD-2c is BUILT, 2026-10-14.** The server half puts Handled in
 `GET /shell/feed`, with no migration. The client half draws the Handled
 group and the honest summary, dark behind `NEXT_PUBLIC_MY_DAY_FEED`. So MD-2
@@ -32,8 +38,12 @@ the pass stops before it reads Redis, an identity or a row.
 **MD-6a-3 is BUILT, 2026-10-14** (the measure read, no migration). It is an
 admin read, and nothing calls it until MD-6b.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3,
-MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+**MD-3a is BUILT, 2026-10-14** (the links, no migration and no flag). It
+is live when it deploys, because the feed is live. A URL with no new
+parameter opens as before.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3b
+to MD-3f, MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -439,8 +449,8 @@ each renders as a link that opens the owning app at the right place.
   <title>". When the other task has a card of its own, that card carries the
   same fact.
 - **Until MD-8**, the overlap card's act is "Open the day", a link to
-  `/calendar`. A slot act waits for MD-8, and a link to the day waits for
-  MD-3.
+  `/calendar?date=&at=` at the block's start (MD-3a). A slot act waits for
+  MD-8.
 - **A provider opens no session of its own.** It calls the app functions,
   which open theirs, as `my_due_tasks` does (R5b).
 
@@ -518,6 +528,97 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 | `brief` | The first visit of the day | The header line of card D. "3 things need you. The rest is handled." Code writes it from the counts. `my_day.reason` picks one lead line from the templates, for example "Dana waits on the Q3 proposal" | None beyond the common pass | MD-7 |
 | `while_away` | The first visit after 4 hours or more away | The counts of what came in and what closed, and the top three | None | MD-7 |
 | `day_end` | Within 60 minutes of `day_end_hour` | "4 open items left today." Links to Calendar's `EndOfDayReview` and to rollover | None | MD-7 |
+
+### 5.8 How MD-3 runs (decided 2026-10-14)
+
+The MD-3 audit gave NO-GO, with eleven gaps. These answers close them.
+Where this section and an earlier one differ, this section wins.
+
+**1. A flag for each new source.** The feed is live, so a new provider
+reaches each member when it deploys. `MY_DAY_PROVIDERS` is a settings list
+of source ids, empty by default. It is read in one place and is in
+`env_guard.py`. It filters `feed_only_providers()` when the feed runs.
+
+The kinds stay registered, so the prefs and the state POST accept them.
+
+With the list empty, the answer is the same as today, byte for byte. The
+list is part of `features_hash`, so a change takes effect at once.
+
+**2. The cache.** These rows join §8.4:
+
+- `features_hash` also covers `admin:members:read`. A member who loses the
+  grant then loses the HR cards at the next read.
+- `PATCH /crm/settings` bumps the org version, because CRM access is a row.
+- The member's own absence writes bump the member version. An admin's
+  absence write bumps the org version.
+- A `chat_pending_ask` insert bumps the version of the member it asks.
+- These wait for the edge, or 600 seconds at most: CRM data, the Zoho
+  mirror sync, the AWAITING status, and the quiet thresholds.
+
+**3. The budget.** The feed-only providers run at the same time, with
+`asyncio.gather`. Each has its own budget of 2 seconds. A slow provider then
+fails alone, and does not fail the next one.
+
+**4. Absent, not failed.** A refusal is not a failure. These each read as
+`absent`: CRM off, CRM access refused, and no People row. A provider raises a
+sentinel, `SourceAbsent`, to say so. `Provider` gains `permission: str |
+None` for a grant such as `admin:members:read`.
+
+**5. The rows of each kind.** Each new kind gets these:
+
+- a `BASE` number, and an old group (§4.3)
+- a why template with its `why_key`, and its `STABLE_FACTS`
+- a `signal_id`, a label in `FEED_KIND_LABELS`, and a `CLOSES` entry
+
+The ids:
+
+- every task kind: `tasks:<id>`, `promise_due` and `absent_on_due` too
+- CRM: `crm:<deal|lead|contact|organization>:<id>`
+- chat: `chat:<thread_id>`
+- `colleague_out`: `calendar:<date>`
+
+`STATE_FACTS` does not grow in MD-3.
+
+**6. The app ids.** §14.1a gains `crm`, `people` and `chat`. Each source has
+an id of its own, for example `email_followups`. A needs provider cannot
+give a new kind (`needs.py:868`).
+
+**7. The sources, defined:**
+
+- `crm_followup_due`: an open activity (`completed_at IS NULL`) due by the
+  end of the member's today, where `lower(created_by)` is the member. The
+  card links to the record the activity is on.
+- `deal_quiet`: the template reads "In Proposal for 12 days", because the
+  data is the time in the stage. It is empty in Mirror mode.
+- `colleague_out`: a co-assignee of a task that has a block today.
+- `unblocked`: a blocker closed since the member's day start. The card
+  names the blocker only when the member can read it.
+- `absent_on_due`: a task due on one of the member's absence days, in the
+  next 14 days.
+- `promise_due` and `no_answer` read through owner-checked wrappers in
+  `digest.py`, as `needs_reply_threads` does. Their errors raise.
+
+**8. Deferred to MD-9.** `agent_done` has no source, because no table
+records a run that ended. `due_at_risk` has no source for one task.
+
+**9. The links.**
+
+- `/calendar?date=YYYY-MM-DD&at=HH:MM` opens the day at that date and
+  scrolls to that time. A bad value is ignored.
+- `/approvals?action=<id>` scrolls to that row and marks it. When the row
+  is not pending, the page says so above the queue.
+- The feed's signal links change, and the needs row keeps `/approvals`
+  (§4.4).
+- The acts that change: `block_overlap`, `day_overbooked` and
+  `no_plan_yet`.
+- "Block time" on a `due_today` card opens the member's today too (MD-3a
+  review). A card keeps one link for each place, and the main kind's link
+  wins. The time of a Calendar link is not part of its place. So a folded
+  overlap on the same day adds no second Calendar link. An overlap on
+  another day keeps its own link.
+
+**10. The pills move to MD-4,** which draws the bodies that use them. MD-4
+also fixes `pillLinkName`, which says "in Projects" for each kind.
 
 ---
 
@@ -1697,7 +1798,7 @@ and is off by default (`packages/acb_memory`).
       "href": "/projects?task=9b2e…",
       "acts": [
         {"id": "done", "label": "Done", "class": "A", "way": "tap", "act": "done", "act_ref": "9b2e…"},
-        {"id": "open-day", "label": "Open the day", "class": "A", "way": "open", "href": "/calendar"}
+        {"id": "open-day", "label": "Open the day", "class": "A", "way": "open", "href": "/calendar?date=2026-10-14&at=14:00"}
       ]
     }
   ],
@@ -2380,14 +2481,102 @@ The build made three choices that the ticket did not record:
 - The server refuses a correction value over a limit with 422, and never
   clips it. The client clips the list, newest first, before it saves.
 
-### MD-3 · More signals, and the three link gaps — AGENT-SAFE
+### MD-3 · More signals, and the three link gaps — AGENT-SAFE, in six slices
 
-The MD-3 kinds of §5, the CRM "my due activities" read, `/calendar?date=&at=`,
-`/approvals?action=`, and three `EntityPill` kinds. Each provider has its own
-negative test, as NS-3 done-when 3 has. Two more:
+The MD-3 audit of 2026-10-14 gave NO-GO, and split the ticket. §5.8 holds
+the answers. MD-3a needs no flag. Each other slice is dark behind
+`MY_DAY_PROVIDERS` until its source id is in the list. A change to that
+list is an `enforcement-flip`. Name the flag and the box in the same message.
 
-- `absent_on_due` reads the member's own absences only.
-- `colleague_out` gives no row to a member who fails `can_read_hr_fields`.
+### MD-3a · The links — AGENT-SAFE
+
+Files: `src/app/calendar/CalendarView.tsx`, `src/app/approvals/page.tsx`,
+and `routes/shell/feed.py` for the links of three acts and of the approval
+signal.
+
+Done when:
+
+1. `/calendar?date=&at=` opens the day at that date and time. A bad value
+   leaves the page as it is today. A vitest covers the parser.
+2. `/approvals?action=<id>` marks that row. A row that is not pending shows
+   a line above the queue. A vitest covers the parser.
+3. `block_overlap`, `day_overbooked`, `no_plan_yet` and the approval card
+   link to these paths. The needs row keeps `/approvals`.
+
+**BUILT, 2026-10-14.** No migration and no flag. These are the parts:
+
+- The gateway builds the links. `day_href` in `routes/shell/needs.py` gives
+  `/calendar?date=YYYY-MM-DD`, and adds `&at=HH:MM` for an overlap. The time
+  is the block's start in the member's zone. `approval_href` in
+  `routes/shell/needs.py` gives `/approvals?action=<id>`. Only the feed
+  signal uses it, and the needs row keeps `/approvals`.
+- `app/calendar/lib/calendarLink.ts` reads the Calendar link.
+  `components/CalendarDeepLink.tsx` hands it to `CalendarView.tsx`, which
+  opens the day view on that day. The grid scrolls to one hour above the
+  link's time, as it scrolls above the current hour today.
+- `app/approvals/lib/approvalLink.ts` reads the Approvals link. The page
+  scrolls to the row and marks it with the cursor look of `InboxCard.tsx`.
+- The fences are `calendarLink.test.ts`, `approvalLink.test.ts`,
+  `api/actions/pending/route.test.ts` and `test_shell_feed.py::TestTheLinks`.
+
+Review round 1 fixed four findings:
+
+- `GET /api/actions/pending` answers 502 when the gateway fails, never an
+  empty list. The page says "no longer waiting" only after a good load. A
+  failed reload keeps the rows that the member sees.
+- "Block time" opens today, and the merge keeps one link for each place
+  (§5.8 item 9).
+- A change of mode or day by hand ends the link's time. Day, then week,
+  then day scrolls to the current hour again.
+- The status line of Approvals stays mounted, and it is empty when there
+  is nothing to say.
+
+The build made three choices that the ticket did not record:
+
+- Each part of the Calendar link is read on its own. A bad date opens
+  today, and keeps a good time. A bad time keeps a good date.
+- The Approvals link takes a UUID only, the key of `pending_actions`.
+- The card's own `href` changes too, for `day_overbooked`, `no_plan_yet`
+  and the approval card. The `block_overlap` card keeps the task link, and
+  only its act changes.
+
+### MD-3b · The seam — AGENT-SAFE
+
+Files: `packages/acb_common/acb_common/settings.py`, `env_guard.py`,
+`routes/shell/needs.py`, `feed.py` and `cache.py`, and `src/lib/shell/feed.ts`.
+
+Done when:
+
+1. With `MY_DAY_PROVIDERS` empty, the answer is the same as before.
+2. The feed-only providers run at the same time. A slow one fails alone.
+3. `SourceAbsent` reads as `absent`, and `Provider.permission` gates a
+   provider.
+4. The features hash covers `admin:members:read` and `MY_DAY_PROVIDERS`.
+5. The client knows `crm`, `people` and `chat`, with a name and an icon.
+
+### MD-3c · The task kinds — AGENT-SAFE, after MD-3b
+
+`waiting_quiet`, `stale_next`, `unblocked` and `absent_on_due`. Each has a
+negative test. `absent_on_due` reads the member's own absences only.
+`unblocked` names no blocker that the member cannot read.
+
+### MD-3d · The mail kinds — AGENT-SAFE, after MD-3b
+
+`promise_due` and `no_answer`, through owner-checked wrappers in
+`digest.py`. A test shows that another member's thread gives no row.
+
+### MD-3e · The CRM kinds — AGENT-SAFE, after MD-3b
+
+`crm_followup_due`, `deal_quiet` and `deal_close_passed`. CRM off, or CRM
+access refused, reads as `absent`. A test shows each gate.
+
+### MD-3f · People and chat — AGENT-SAFE, after MD-3b
+
+`colleague_out` and `agent_asks`. `colleague_out` gives no row to a member
+who fails `can_read_hr_fields`. `agent_asks` needs `feature:chat` and
+`CHAT_DURABLE_ASKS`.
+
+Each slice adds its own pytest and vitest lines to §18.
 
 ### MD-4 · Card bodies — AGENT-SAFE
 
@@ -2849,6 +3038,9 @@ uv run ruff check apps/services/gateway/gateway/decide_features.py apps/services
 uv run pytest tests/unit/test_feed_measure.py tests/unit/test_feed_measure_r8.py tests/unit/test_org_access_enforcement.py -q  # MD-6a-3
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
+uv run pytest tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_my_day_cache.py -q -rs  # MD-3a
+uv run ruff check apps/services/gateway/gateway/routes/shell tests/unit/test_shell_feed.py  # MD-3a
+npx vitest run src/app/calendar src/app/approvals src/lib/shell/  # MD-3a, in workbench/control_plane
 
 # This spec's prose
 node .claude/hooks/ste-lint.mjs project-docs/specs/my_day_feed.md

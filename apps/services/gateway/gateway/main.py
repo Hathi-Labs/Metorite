@@ -1400,6 +1400,17 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-55 EA-4b — every agent connection of the org, for an admin of the
+    # Integrations app (external_agent_access.md §5.4). Gated on
+    # feature:integrations AND integrations:manage at the router. With
+    # `agent_access_enabled` off, each route answers 404.
+    from gateway.routes.integrations_agents import router as _integrations_agents_router
+
+    app.include_router(_integrations_agents_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-23 S1 — read-only skills catalog (skill families + token costs).
     from gateway.routes.integrations_skills import router as _skills_router
 

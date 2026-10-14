@@ -29,6 +29,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
 import Modal from "@/components/ui/Modal";
 import type { NavPane } from "@/lib/nav";
@@ -163,7 +164,11 @@ export function useBarResults({
     wasActive.current = active;
   }, [active, email]);
 
-  const items = useMemo(() => buildItems(panes), [panes]);
+  // A job with its own `feature` (the Integrations org jobs, EA-4b) needs the
+  // member's features as well as the pane.
+  const { access } = useAccess();
+  const features = access.features;
+  const items = useMemo(() => buildItems(panes, undefined, features), [panes, features]);
 
   // Tier 1: ask the apps, once the member pauses. A late answer for words the
   // member has since changed is dropped, never shown.

@@ -88,6 +88,7 @@ from gateway.routes.shell.needs import (
     Signal,
     _instant,
     _iso,
+    day_href,
     link,
     register,
     task_entity,
@@ -155,7 +156,7 @@ async def _calendar(user: UserContext) -> Found:
             title="Today is overbooked",
             facts={"day": today.isoformat(), "planned_mins": planned,
                    "capacity_mins": capacity},
-            href="/calendar", acts=(link("fit", "Fit what's left", "/calendar"),),
+            href=day_href(today), acts=(link("fit", "Fit what's left", day_href(today)),),
             expires_at=_iso(tomorrow0),
         ))
     elif not blocks and not any(
@@ -172,7 +173,8 @@ async def _calendar(user: UserContext) -> Found:
                 signal_id=day_key, app="calendar", kind="no_plan_yet", entity=day_entity,
                 title="Nothing is planned for today",
                 facts={"day": today.isoformat(), "day_start": _iso(started)},
-                href="/calendar", acts=(link("plan-day", "Plan my day", "/calendar"),),
+                href=day_href(today),
+                acts=(link("plan-day", "Plan my day", day_href(today)),),
                 expires_at=_iso(tomorrow0),
             ))
     signals.extend(_overlaps(rows, level, now, tz))
@@ -271,9 +273,11 @@ def _overlaps(rows: list[dict[str, Any]], level: dict[str, str], now: datetime,
                    "overlap_day": first.astimezone(tz).date().isoformat(),
                    "block_start": _iso(start), "block_end": _iso(end),
                    "priority": level.get(task_id)},
-            # Until MD-8 the act is a link to the Calendar, and until MD-3
-            # the Calendar has no link to one day (§5.1).
-            href=task_href(task_id), acts=(link("open-day", "Open the day", "/calendar"),),
+            # Until MD-8 the act is a link to the Calendar. It opens the day
+            # of the block at its start, in the member's zone (MD-3a, §5.8).
+            href=task_href(task_id),
+            acts=(link("open-day", "Open the day", day_href(start.astimezone(tz).date(),
+                                                            start.astimezone(tz))),),
             at=_iso(start), urgent_at=_iso(first), expires_at=_iso(last),
         ))
     return out
@@ -433,19 +437,30 @@ def _fingerprint(signal_id: str, kind: str, folded: list[str],
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:8]
 
 
+def _place(href: str) -> str:
+    """The place a link opens. The time of a Calendar link (``at``) is where
+    the day view scrolls, not another place, so it is left out. A link to the
+    same day at two times is one place (MD-3a review)."""
+    path, _, query = href.partition("?")
+    kept = [part for part in query.split("&") if part and not part.startswith("at=")]
+    return f"{path}?{'&'.join(kept)}" if kept else path
+
+
 def _merge_acts(signals: list[Signal]) -> list[dict[str, Any]]:
     """The acts of every signal on the card, the main kind's first. One act
-    for each id, and one link for each place."""
+    for each id, and one link for each place (``_place``). So the main kind's
+    link wins a place: a due-today task's "Block time" keeps today, and a
+    folded overlap on the same day adds no second Calendar link."""
     acts: list[dict[str, Any]] = []
     ids: set[str] = set()
-    hrefs: set[str] = set()
+    places: set[str] = set()
     for signal in signals:
         for act in signal.acts:
-            if act["id"] in ids or (act["way"] == "open" and act.get("href") in hrefs):
+            if act["id"] in ids or (act["way"] == "open" and _place(act["href"]) in places):
                 continue
             ids.add(act["id"])
             if act["way"] == "open":
-                hrefs.add(act["href"])
+                places.add(_place(act["href"]))
             acts.append(dict(act))
     return acts
 

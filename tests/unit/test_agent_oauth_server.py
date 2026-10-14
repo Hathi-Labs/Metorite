@@ -1368,8 +1368,11 @@ class TestTheStructuralFences:
             r.path: r for r in served_routes(main.app.routes)
             if getattr(r, "path", "").startswith("/agent-access/")
         }
+        # EA-4b added the member's own list and revoke (spec §15 EA-4b).
         assert set(routes) == {"/agent-access/authorize/check",
-                               "/agent-access/authorize/approve"}, (
+                               "/agent-access/authorize/approve",
+                               "/agent-access/connections",
+                               "/agent-access/connections/{connection_id}"}, (
             "the router did not mount — main.py swallows an import error")
         for path, route in routes.items():
             assert _is_guarded(route), path

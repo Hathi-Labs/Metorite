@@ -129,6 +129,12 @@ JOBS: tuple[Job, ...] = (
         "integrations", "/integrations?do=add-mcp"),
     Job("review-integrations", "Review connections", "review the connections the company has made and their health",
         "integrations", "/integrations"),
+    # WS-55 EA-4b (D-EA-9). The AI agents view of Integrations is open to every
+    # member, so this job needs no feature. The two jobs above keep
+    # `integrations`, which `registry.ts` names on each job.
+    Job("connect-agent", "Connect an AI agent",
+        "connect an outside AI agent such as Claude Code to Metorite, or see and revoke their agents",
+        None, "/integrations?view=agents"),
     Job("find-person", "Find a colleague", "find a colleague, or who knows or does something",
         "people", "/people"),
     Job("edit-profile", "Update my profile", "change their own profile, skills, CV or working hours",
