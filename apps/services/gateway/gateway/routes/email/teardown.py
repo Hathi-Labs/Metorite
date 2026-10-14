@@ -35,7 +35,7 @@ The rules of this module:
 * The revoke sends the token in the form body of a POST, never in the URL.
 * Google keeps one grant for each Google account and each OAuth client. So a
   revoke ends the grant of EVERY Metorite row of that Gmail account, in any
-  organization. Migration 262's ``email_gmail_grant_shared`` answers whether
+  organization. Migration 263's ``email_gmail_grant_shared`` answers whether
   another such row exists, and the revoke runs only on a clear ``false``. A
   ``true``, a ``NULL`` or a failed check skips it (review round 1, P1).
 * An Outlook mailbox keeps the behaviour of ``main``. Its filters stay, and
@@ -73,7 +73,7 @@ CACHE_DROP_TIMEOUT_S = 5.0
 #: The page size of one Redis ``DELETE``.
 _CACHE_DELETE_BATCH = 200
 
-#: Another Gmail row of this address, in any tenant (migration 262). One bit,
+#: Another Gmail row of this address, in any tenant (migration 263). One bit,
 #: never a row. NULL means that the function cannot tell.
 GRANT_SHARED_SQL = (
     "SELECT public.email_gmail_grant_shared(:email, CAST(:exclude AS uuid))")
@@ -197,7 +197,7 @@ async def grant_shared_elsewhere(
     """True when another Metorite Gmail row of ``email`` exists, in any tenant.
 
     One short block of ``open_session``, which is the ``_tenant_session`` of
-    the caller. Migration 262's function answers one bit across tenants and
+    the caller. Migration 263's function answers one bit across tenants and
     never a row. ``None`` means "cannot tell": an empty address, a function
     that cannot see through RLS, or a check that failed. The caller skips
     the revoke unless the answer is ``False``. It never raises.

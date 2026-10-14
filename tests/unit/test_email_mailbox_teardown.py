@@ -23,7 +23,7 @@ test reads the request that Google would get.
   and the route answers 204.
 * ``test_outlook_revokes_nothing``: an Outlook row makes no Google call and
   reads no filter. Its Graph subscription goes, as on ``main``.
-* A shared grant is not revoked: when migration 262's function answers true,
+* A shared grant is not revoked: when migration 263's function answers true,
   NULL, or fails, the revoke is skipped (review round 1, P1).
 * The Redis keys of the mailbox go, and the keys of another mailbox and of
   another organization stay.

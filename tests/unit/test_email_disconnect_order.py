@@ -151,7 +151,7 @@ class _FakeDB:
         self.ledger = ledger
         self.rows = rows
         self.delete_fails = delete_fails
-        # EM-G11f1: the answer of migration 262's shared-grant function, or
+        # EM-G11f1: the answer of migration 263's shared-grant function, or
         # "raise" for a check that fails.
         self.shared = shared
         # When set, the DELETE waits on this event, so a test can cancel the
@@ -741,7 +741,7 @@ def _seed_message(admin, *, org: str, account_id: str) -> None:
 
 
 def _grant_check_to_app_role(admin) -> None:
-    """Migration 262 grants its function to ``acb_app`` only. The rehearsal
+    """Migration 263 grants its function to ``acb_app`` only. The rehearsal
     role has a suite-private name, so it gets the same grant here."""
     from tests.unit.test_h3_rls_promotion_rehearsal import _APP_ROLE
 
@@ -828,7 +828,7 @@ class TestTheDisconnectUnderForceRLS:
         sender row of the mailbox that carries ANOTHER organization stays out
         of the read. The ids live through the cascade, so each filter goes at
         Gmail after the DELETE commits (review round 1). With no other row of
-        the address, migration 262 answers false, and the revoke runs."""
+        the address, migration 263 answers false, and the revoke runs."""
         _assert_non_priv(app_engine)
         p = promoted
         _grant_check_to_app_role(p.admin_engine)
@@ -925,7 +925,7 @@ class TestTheDisconnectUnderForceRLS:
     def test_the_shared_grant_function_answers_one_bit_to_the_app_role_only(
         self, promoted, app_engine,  # noqa: F811
     ):
-        """Migration 262: a SECURITY DEFINER function with a fixed search_path,
+        """Migration 263: a SECURITY DEFINER function with a fixed search_path,
         a boolean result, no grant to PUBLIC, and EXECUTE for the app role.
         Bound to org B, the app role reads no row of org A, and the function
         still answers true for the address of that row. It leaks one bit."""

@@ -1,4 +1,4 @@
--- 262_email_gmail_grant_shared.sql — does another Metorite mailbox use this Gmail grant?
+-- 263_email_gmail_grant_shared.sql — does another Metorite mailbox use this Gmail grant?
 --
 -- What: one function, `email_gmail_grant_shared(p_email text, p_exclude uuid)
 --       RETURNS boolean`. It answers only whether ANOTHER `email_accounts`
@@ -21,7 +21,8 @@
 --
 -- Expand only (R6): one new function. No table, no column, no rename. Old code
 -- names no new object. The number is taken at build time (R1). On 2026-10-14
--- main held 260 and the open PR #1002 held 261. Check it again at merge.
+-- main held 260, the open PR #1002 held 261 and the open PR #1003 held 262.
+-- Check it again at merge.
 --
 -- ── Why SECURITY DEFINER, and why it is safe here ───────────────────────────
 --

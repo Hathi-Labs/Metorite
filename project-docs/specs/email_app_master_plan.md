@@ -14369,7 +14369,7 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
   3. **The shared-grant rule** (review round 1). Google keeps one grant for each Google account and
      the app. So a revoke ends the grant of each Metorite row of that Gmail account, in any
      organization. Two members can share `support@`, and one person can connect one Gmail in two
-     organizations. Before the revoke, the route asks migration 262's
+     organizations. Before the revoke, the route asks migration 263's
      `email_gmail_grant_shared(email, exclude_account_id)`. The revoke runs only when the answer is
      `false`. A `true` logs `email.revoke_skipped` with `reason=shared_grant`. A `NULL` or a failed
      check logs `reason=check_failed`, so the rule fails safe toward the other mailbox.
@@ -14381,11 +14381,12 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
      `email-status-backoff` (`automation/replyzero.py`) and `email-llm`
      (`email_ingestion/llm_cap.py`). The keys that step 1.7 names above carry a message row id, and
      they end within one hour. Then it bumps the My Day version of the owner.
-- **Migration 262** (`infra/postgres/262_email_gmail_grant_shared.sql`), expand only. One function
+- **Migration 263** (`infra/postgres/263_email_gmail_grant_shared.sql`), expand only. One function
   with SECURITY DEFINER and `search_path = pg_catalog, pg_temp`. It returns one boolean and never a
   row. It compares the address with no case. When its owner cannot see through RLS, it returns
   `NULL`. The file revokes EXECUTE from PUBLIC and from the Supabase roles, and grants it to
-  `acb_app` only. Check the number again at merge (R1). On 2026-10-14 the open PR #1002 held 261.
+  `acb_app` only. Check the number again at merge (R1). On 2026-10-14 the open PRs #1002 and #1003
+  held 261 and 262.
 - **Narrowed acceptance.** These pass in `tests/unit/test_email_mailbox_teardown.py`:
   `test_filters_go_after_the_commit` (it replaces `test_filters_go_before_the_row`),
   `test_gmail_revokes_the_refresh_token`, `test_a_failed_revoke_still_answers_204` and
