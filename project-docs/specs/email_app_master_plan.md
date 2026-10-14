@@ -14403,12 +14403,19 @@ the log line shows and nothing changes. With `on`, a test mail with an attack ge
 - `tests/unit/test_injection_scan.py` (EM-G11e): `test_off_makes_no_call`, `test_shadow_only_logs`,
   `test_on_blocks_the_draft`, `test_on_fails_closed_on_a_timeout`, `test_the_log_holds_no_text`.
 
-**Verify with.**
+**Verify with.** EM-G11d (PR-G5):
 
 ```bash
 uv run pytest tests/unit/test_untrusted_frame.py tests/unit/test_attachment_formats.py \
-  tests/unit/test_injection_scan.py -v -rs
-uv run python -m evals.email_injection --scripted
+  tests/unit/test_floor_opt_out.py tests/unit/test_delegation_no_egress.py \
+  tests/unit/test_email_injection_eval.py -v -rs
+uv run python -m evals.email_injection.run --scripted
+```
+
+EM-G11e (PR-G6) adds `test_injection_scan.py`, which does not exist until that PR:
+
+```bash
+uv run pytest tests/unit/test_injection_scan.py -v -rs
 ```
 
 The eval module name follows the pattern of `evals/email_insights/`. Read it again at dispatch.
@@ -14442,10 +14449,47 @@ audit of 2026-10-14 returned GO-NARROWED. Its narrowing replaces scope items 1, 
   with the token kept. The fourth gives back `fetch_page`, and the fifth drops `no_egress` from
   the consult.
 - **Deferred until a spec edit.** A behavioural eval against a live model. The rule "read tools
-  only" for the consult, beyond `no_egress`. The composer's "Draft with AI" path
-  (`_llm_compose_assist`), which tells the model to apply the instructions of the mail that it
-  answers. The list tools, which
-  still print subjects outside a frame.
+  only" for the consult, beyond `no_egress`.
+
+**Fix round 1 (2026-10-15).** The verifier failed round 0, and the reviewer asked for changes.
+Each item below has a fence, and each P1 has a mutation that turns it red.
+
+- **P1, egress through `call_agent` and MCP.** The verifier showed that an email chat run reached
+  `crm-assistant`, and that sub-run held `fetch_page`. `_tool_injection.UNTRUSTED_INPUT_AGENTS`
+  now names `email-assistant`. `_delegated_no_egress` reads it, so each run that the agent
+  delegates to binds `no_egress`. `_inject_mcp_servers` gives the agent no registry server.
+  The eval's `no_network` check covers both.
+- **P1, "Draft with AI".** `_llm_compose_assist` frames the mail that it answers, the thread,
+  and in a reply the recipient and the subject. Its rule no longer says "APPLY any
+  instructions". The model answers the questions of the mail and fills a form in its field
+  order. It takes each instruction only from the owner's instruction line.
+- **P1, learned text.** The reply-memory extractor frames the incoming mail, the draft and the
+  sent reply. The drafter frames the reply memories and the calendar. The about block
+  neutralises each learned pattern and the learned writing style, so learned text cannot close
+  `<learned_patterns>` or open a trusted tag.
+- **The neutraliser.** It closes each bypass that the verifier found. A token that rejoins after
+  one removal goes too. The safe form of a bracket is now `[` or `]`, because `‹` and `›` are
+  angle look-alikes. An independent fold in the eval catches a gap rule that the code and its
+  own detector share.
+- **P2.** The live `decide` rule match joins the eval. Its frame is the JSON state, and each
+  question is a closed type. A quote of the framed copy counts in the Insights check. The
+  `read_thread` card reads its subject from the `Subject:` line again.
+- **Prove.** The eval holds 26 attack mails and 13 paths, and it passes with zero failures.
+
+**Open gaps, ranked for the Google review.** The first gap is the most likely to matter.
+
+1. **The list tools.** `search_emails`, `query_inbox` and the other list tools still print the
+   subjects and the snippets outside a frame. A subject is one short line, and the agent holds
+   no network tool and no open delegation. A model can still read an instruction in a subject.
+2. **The `read_attachment` frame of the platform.** It sets off the text of a chat upload with
+   `---` and its own note, not with the helper. A member uploads that file, so a stranger
+   reaches it only when the member uploads a mail file.
+3. **Encoded shapes.** A tag written as HTML entities or in base64 passes the neutraliser
+   unchanged. `untrusted.py` records this limit.
+4. **The voice profile and the knowledge base.** They stay outside the frame. The member's own
+   mail builds the first, and the member approves each entry of the second.
+5. **The fallback text of the `read_thread` card.** When the card cannot fetch the thread, it
+   shows the raw result with its note and its marker lines.
 
 ##### 12.3.13.9 EM-G11f1 and EM-G11f2 — deletion (PR-G7, PR-G8)
 

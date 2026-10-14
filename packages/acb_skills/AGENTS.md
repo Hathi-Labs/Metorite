@@ -334,8 +334,10 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    `UntrustedFrame` for each model call. `wrap(label, text)` puts the text
    between two marker lines that hold a random token, and `note(what)` is the
    data note. The frame removes each copy of the token, and it breaks each
-   marker shape, trusted tag, chat-role token and heading line. It cuts no
-   text. The email paths, the attachment frame and the Insights frames use
+   marker shape, trusted tag, chat-role token and heading line, also in the
+   look-alike and invisible forms. A broken bracket becomes `[` or `]`. It
+   cuts no text. `neutralise(text, "")` serves learned text that sits in a
+   trusted tag. The email paths, the attachment frame and the Insights frames use
    it. Do not build a `<<<` marker anywhere else. `agent_edge/tools.py`
    keeps its own `{"untrusted_text"}` shape for WS-55. Fences:
    `tests/unit/test_untrusted_frame.py` (the scan for a second framer) and
