@@ -918,6 +918,14 @@ class TestABareMarkerIsText:
 # ── The chunking never changes the answer ───────────────────────────────────
 
 
+#: A tool name that makes ``<｜DSML｜invoke name="...">`` exactly 96 characters.
+_LONG_TOOL = "projects_update_task_dependencies_bulk_for_project_" + "x" * 23
+assert len(f'<{BAR}DSML{BAR}invoke name="{_LONG_TOOL}">') == dsml_mod.MAX_FIRST_TAG
+#: A closing block tag with ten spaces before its ``>``: 33 characters.
+_LONG_CLOSER = f"</{BAR}DSML{BAR}function_calls{' ' * 10}>"
+assert len(_LONG_CLOSER) == 33
+
+
 #: Real-shaped replies, and the policy each one runs under. Each one holds a
 #: behaviour that a change to ``DsmlStream.feed`` must keep. The reply goes in
 #: whole, at every single cut, one character at a time, and in random chunks.
@@ -956,6 +964,20 @@ _REPLIES: dict[str, tuple[str, DsmlPolicy | frozenset[str]]] = {
                           TASK_TOOLS),
     "long_head_released": (
         f'<{BAR}DSML{BAR}invoke name="' + "x" * 200 + " the rest of the answer", TASK_TOOLS),
+    # A first tag of 96 characters, the longest that is still a tag. It fences
+    # ``dsml._HEAD``: a head shorter than the tag shows the markup and runs nothing.
+    "first_tag_96_chars": (
+        "Linking. " + invoke(_LONG_TOOL, param("task_id", "t1")) + "\n",
+        DsmlPolicy(declared=TASK_TOOLS | {_LONG_TOOL})),
+    # A first tag of 97 characters is too long, so it stays text.
+    "first_tag_97_chars": (
+        "Linking. " + invoke(_LONG_TOOL + "s", param("task_id", "t1")) + "\n",
+        DsmlPolicy(declared=TASK_TOOLS | {_LONG_TOOL + "s"})),
+    # A closing tag of 33 characters, the longest that the 32-character
+    # lookback finds at every cut. It fences ``dsml._CLOSE_LOOKBACK``.
+    "closer_33_chars": (
+        "Two. " + tag("function_calls") + " " + invoke("create_task", param("title", "t"))
+        + " " + _LONG_CLOSER + "\n", TASK_TOOLS),
     "echoed_input": (ANSWER, DsmlPolicy(declared=TASK_TOOLS, tainted=True)),
     "parallel_disabled": (block(
         invoke("create_task", param("title", "1")), invoke("create_task", param("title", "2"))),
