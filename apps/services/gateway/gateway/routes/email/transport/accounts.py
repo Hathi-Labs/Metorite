@@ -670,10 +670,14 @@ async def delete_account(
 
     EM-G11f1 (``email_app_master_plan.md`` §12.3.13.9) adds the legs of
     ``routes/email/teardown.py``. The ownership read of a Gmail row also reads
-    the filter ids that Metorite made. After the stop and before the
-    ``DELETE``, those filters go at Gmail. After the commit, the Google grant
-    is revoked, and the Redis keys of the mailbox go. No leg blocks the 204.
-    The fence is ``tests/unit/test_email_mailbox_teardown.py``.
+    the filter ids that Metorite made, because the cascade deletes them. Each
+    leg runs only after the ``DELETE`` commits, so a 404, a 409 or a failed
+    ``DELETE`` changes nothing at Google, and no await sits between the stop
+    and the ``try`` that starts the loop again. After the commit, the filters
+    go at Gmail, and then the Google grant is revoked, unless another
+    Metorite mailbox uses the same Gmail account. Last, the Redis keys of the
+    mailbox go. No leg blocks the 204. The fence is
+    ``tests/unit/test_email_mailbox_teardown.py``.
     """
     owner = user.email or "anonymous"
 
@@ -689,17 +693,14 @@ async def delete_account(
         )).fetchone()
         if found is None:
             raise HTTPException(status_code=404, detail="Account not found")
-        # The cascade of step 3 deletes these ids, so read them first.
+        # The cascade of step 3 deletes these ids, so read them first. The
+        # filters themselves go only after the DELETE commits (step 4a).
         filter_ids = (await read_filter_ids(db, account_id, owner)
                       if found.provider == "gmail" else [])
     org = str(found.organization_id) if found.organization_id else None
 
     # ── 2. stop the sync loop, with no session open ─────────────────────────
     had_loop = await _stop_sync(account_id)
-
-    # ── 2a. the filters that Metorite made, before the row goes (EM-G11f1) ──
-    await remove_metorite_filters(
-        account_id, found.provider, found.credentials_encrypted, filter_ids)
 
     # ── 3. the delete and the default re-election, with a lock bound ────────
     try:
@@ -710,7 +711,7 @@ async def delete_account(
                     """DELETE FROM email_accounts
                        WHERE id = :id AND user_id = :user_id
                        RETURNING is_default, provider, credentials_encrypted,
-                                 webhook_subscription_id"""
+                                 webhook_subscription_id, email_address"""
                 ),
                 {"id": account_id, "user_id": owner},
             )
@@ -754,9 +755,13 @@ async def delete_account(
     # ``owner``. The writers key the memory on that member (EM-T8f-1).
     schedule_mailbox_memory_purge(owner, account_id)
 
-    # ── 4a. the Google grant, best effort, with no session open (EM-G11f1) ──
-    # After the purge task starts, so a cancel of this await cannot skip it.
-    await revoke_grant(account_id, deleted)
+    # ── 4a. the Gmail filters, then the Google grant (EM-G11f1) ────────────
+    # After the purge task starts, so a cancel of these awaits cannot skip it.
+    # The filters go first, while the grant is still valid. The ids came from
+    # step 1, because the cascade of step 3 deleted them.
+    await remove_metorite_filters(
+        account_id, deleted.provider, deleted.credentials_encrypted, filter_ids)
+    await revoke_grant(account_id, deleted, _tenant_session)
 
     # ── 5. the Graph subscription, best effort, with no session open ────────
     await _drop_graph_subscription(account_id, deleted)

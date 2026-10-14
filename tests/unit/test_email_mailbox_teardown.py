@@ -10,9 +10,11 @@ R7 fence named here: ``email-mailbox-teardown``. EM-G11f1 wires
 The revoke runs the REAL ``httpx`` client over ``httpx.MockTransport``, so the
 test reads the request that Google would get.
 
-* ``test_filters_go_before_the_row``: each filter id of a Gmail row goes at
-  Gmail after the loop stops and before the ``DELETE``, with no block open. A
-  filter that fails does not stop the next one or the 204.
+* ``test_filters_go_after_the_commit``: the ownership read keeps each filter
+  id of a Gmail row, because the cascade deletes the ids. Each filter goes at
+  Gmail after the ``DELETE`` commits and before the revoke, with no block
+  open (review round 1). A refused ``DELETE`` removes no filter. A filter that
+  fails does not stop the next one or the 204.
 * ``test_gmail_revokes_the_refresh_token``: one POST to
   ``https://oauth2.googleapis.com/revoke``, after the ``DELETE``, with the
   refresh token in the form body and no query.
@@ -21,12 +23,15 @@ test reads the request that Google would get.
   and the route answers 204.
 * ``test_outlook_revokes_nothing``: an Outlook row makes no Google call and
   reads no filter. Its Graph subscription goes, as on ``main``.
+* A shared grant is not revoked: when migration 262's function answers true,
+  NULL, or fails, the revoke is skipped (review round 1, P1).
 * The Redis keys of the mailbox go, and the keys of another mailbox and of
   another organization stay.
 
 The R8 case is in ``test_email_disconnect_order.py``
 (``TestTheDisconnectUnderForceRLS``): the filter ids are read under FORCE RLS
-before the ``DELETE``.
+before the ``DELETE``, and the real shared-grant function sees a row of the
+same address in the same org and in another org.
 
 Run::
 
@@ -152,10 +157,10 @@ def _no_secret(*records: Any) -> None:
     assert REFRESH not in text_of and ACCESS not in text_of, "a token reached a log"
 
 
-# ── test_filters_go_before_the_row ──────────────────────────────────────────
+# ── test_filters_go_after_the_commit ────────────────────────────────────────
 
 
-async def test_filters_go_before_the_row(gmail):
+async def test_filters_go_after_the_commit(gmail):
     rows = {ACC: _row(provider="gmail", sub=None, filters=("flt-1", "flt-2", "flt-1"))}
     g = gmail(rows)
     assert await accounts.delete_account(ACC, user=_user()) is None
@@ -164,10 +169,14 @@ async def test_filters_go_before_the_row(gmail):
     assert [e[2] for e in deletes] == ["flt-1", "flt-2"], "each id goes once, in order"
     assert all(e[1] == 0 for e in deletes), "a filter went with a block open"
     assert g.ledger.first("filter_read")[1] == 1, "the ids were read outside a block"
-    assert kinds.index("filter_read") < kinds.index("stop")
+    assert kinds.index("filter_read") < kinds.index("delete"), (
+        "the cascade deleted the ids before they were read")
+    delete_at = kinds.index("delete")
+    commit_at = next(i for i, k in enumerate(kinds) if k == "close" and i > delete_at)
+    first_filter = kinds.index("filter_delete")
+    assert first_filter > commit_at, "a filter went before the DELETE committed"
     last_filter = max(i for i, k in enumerate(kinds) if k == "filter_delete")
-    assert kinds.index("stop") < kinds.index("filter_delete")
-    assert last_filter < kinds.index("delete"), "a filter went after the row"
+    assert last_filter < kinds.index("google"), "the revoke ended the grant first"
     assert ACC not in rows
     assert ("info", "email.disconnect.filters_removed",
             {"account_id": ACC, "removed": 2, "failed": 0}) in g.log.lines
@@ -282,15 +291,88 @@ async def test_a_grant_with_no_token_logs_the_reason(gmail, monkeypatch):
             {"account_id": ACC, "provider": "gmail", "reason": "no_token"}) in g.log.lines
 
 
-async def test_a_refused_delete_revokes_nothing(gmail):
-    rows = {ACC: _row(provider="gmail", sub=None)}
-    g = gmail(rows, delete_fails=_lock_timeout_error())
-    with pytest.raises(HTTPException) as err:
+@pytest.mark.parametrize("failure", ["lock-timeout", "error"])
+async def test_a_refused_delete_removes_no_filter_and_revokes_nothing(gmail, failure):
+    """Review round 1. A 409 or a failed DELETE keeps the mailbox connected,
+    so its filters and its grant must stay. The loop starts again."""
+    rows = {ACC: _row(provider="gmail", sub=None, filters=("flt-1", "flt-2"))}
+    fails = _lock_timeout_error() if failure == "lock-timeout" else RuntimeError("reset")
+    g = gmail(rows, delete_fails=fails, loops=(ACC,))
+    with pytest.raises((HTTPException, RuntimeError)) as err:
         await accounts.delete_account(ACC, user=_user())
-    assert err.value.status_code == 409
+    if failure == "lock-timeout":
+        assert err.value.status_code == 409
     assert ACC in rows
+    assert "filter_delete" not in g.ledger.kinds(), "a refused disconnect removed a filter"
     assert g.requests == [], "a refused disconnect revoked the grant"
+    assert "grant_check" not in g.ledger.kinds()
+    assert ("restart", 0, ACC, ROW_ORG) in g.ledger.events
     assert "email.disconnect.cache_dropped" not in g.log.names()
+
+
+async def test_a_cancel_during_the_delete_still_restarts_and_removes_no_filter(gmail):
+    """Review round 1, P2. No await sits between the stop and the ``try``
+    that starts the loop again. A cancel during the DELETE restarts the loop,
+    and no filter goes."""
+    gate = asyncio.Event()
+    rows = {ACC: _row(provider="gmail", sub=None, filters=("flt-1",))}
+    g = gmail(rows, delete_gate=gate, loops=(ACC,))
+    route = asyncio.create_task(accounts.delete_account(ACC, user=_user()))
+    while "delete" not in g.ledger.kinds():
+        await asyncio.sleep(0)
+    kinds = g.ledger.kinds()
+    assert kinds.index("stop") < kinds.index("delete")
+    assert "filter_delete" not in kinds, "a network call ran between the stop and the try"
+    route.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await route
+    await asyncio.wait_for(asyncio.gather(*accounts._RESTARTS), timeout=5)
+    assert ("restart", 0, ACC, ROW_ORG) in g.ledger.events
+    assert "filter_delete" not in g.ledger.kinds()
+    assert ACC in rows
+
+
+# ── a shared grant is not revoked (review round 1, P1) ──────────────────────
+
+
+async def test_the_grant_check_asks_with_the_deleted_address(gmail):
+    rows = {ACC.upper(): _row(provider="gmail", sub=None)}
+    rows[ACC.upper()]["email"] = "Box@Example.test"
+    g = gmail(rows)
+    assert await accounts.delete_account(ACC.upper(), user=_user()) is None
+    check = g.ledger.first("grant_check")
+    assert check[1] == 1, "the check ran outside a block"
+    assert check[2] == {"email": "Box@Example.test", "exclude": ACC}
+    kinds = g.ledger.kinds()
+    assert kinds.index("delete") < kinds.index("grant_check") < kinds.index("google")
+
+
+@pytest.mark.parametrize("shared,reason", [
+    (True, "shared_grant"),
+    (None, "check_failed"),
+    ("raise", "check_failed"),
+], ids=["another-row", "cannot-tell", "check-raises"])
+async def test_a_shared_or_unknown_grant_is_not_revoked(gmail, shared, reason):
+    rows = {ACC: _row(provider="gmail", sub=None, filters=("flt-1",))}
+    g = gmail(rows, shared=shared)
+    assert await accounts.delete_account(ACC, user=_user()) is None
+    assert ACC not in rows, "the mailbox was not deleted"
+    assert g.requests == [], "a shared grant was revoked at Google"
+    assert ("info", "email.revoke_skipped",
+            {"account_id": ACC, "provider": "gmail", "reason": reason}) in g.log.lines
+    # The filters belong to this mailbox, so they still go.
+    assert [e[2] for e in g.ledger.events if e[0] == "filter_delete"] == ["flt-1"]
+    if shared == "raise":
+        assert ("warning", "email.disconnect.grant_check_failed",
+                {"account_id": ACC, "error": "RuntimeError"}) in g.log.lines
+    _no_secret(g.log.lines)
+
+
+async def test_an_outlook_row_asks_no_grant_check(gmail):
+    rows = {ACC: _row(provider="microsoft", sub=None)}
+    g = gmail(rows)
+    await accounts.delete_account(ACC, user=_user())
+    assert "grant_check" not in g.ledger.kinds()
 
 
 # ── test_outlook_revokes_nothing ────────────────────────────────────────────

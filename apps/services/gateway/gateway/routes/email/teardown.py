@@ -7,22 +7,25 @@ runs a disconnect in this order. Each step is bounded, and no session is open
 across a network call:
 
 1. The ownership read, in one block. For a Gmail row, the same block reads the
-   filter ids that Metorite made (:func:`read_filter_ids`).
+   filter ids that Metorite made (:func:`read_filter_ids`), because the
+   cascade of step 3 deletes them.
 2. The sync loop stops, with no block open.
-3. :func:`remove_metorite_filters` deletes those filters at Gmail (gap D2).
-   It runs BEFORE the row delete, because the cascade deletes the ids.
-4. The ``DELETE`` of the ``email_accounts`` row. The cascade deletes the
-   children.
-5. The Mem0 purge starts in a task (``memory_purge.py``). It starts before any
+3. The ``DELETE`` of the ``email_accounts`` row. The cascade deletes the
+   children. A 404, a 409 or a failed ``DELETE`` raises here, so no later
+   step runs, and nothing changes at Google.
+4. The Mem0 purge starts in a task (``memory_purge.py``). It starts before any
    new await, so a cancel of the request cannot skip it.
-6. :func:`revoke_grant` revokes the Google grant (gap D1).
+5. :func:`remove_metorite_filters` deletes the filters at Gmail (gap D2),
+   from the ids of step 1, while the grant is still valid.
+6. :func:`revoke_grant` revokes the Google grant (gap D1), unless another
+   Metorite mailbox uses the same Gmail account (:func:`grant_shared_elsewhere`).
 7. The Graph subscription of an Outlook row goes, as before EM-G11f1.
 8. :func:`drop_mailbox_cache` deletes the Redis keys that carry the mailbox id,
-   and bumps the My Day version of the owner.
+   for each provider, and bumps the My Day version of the owner.
 
-This module holds the legs that EM-G11f1 adds: steps 1 (the filter read), 3,
+This module holds the legs that EM-G11f1 adds: steps 1 (the filter read), 5,
 6 and 8. EM-G11f1 wires the disconnect route ONLY. The admin member purge and
-the org purge wait for a spec edit (§12.3.13.9, "f1 now covers").
+the org purge wait for a spec edit (§12.3.13.9).
 
 The rules of this module:
 
@@ -30,6 +33,11 @@ The rules of this module:
 * No log line holds a token, a refresh token or mail text. A failure logs the
   error class or a fixed reason.
 * The revoke sends the token in the form body of a POST, never in the URL.
+* Google keeps one grant for each Google account and each OAuth client. So a
+  revoke ends the grant of EVERY Metorite row of that Gmail account, in any
+  organization. Migration 262's ``email_gmail_grant_shared`` answers whether
+  another such row exists, and the revoke runs only on a clear ``false``. A
+  ``true``, a ``NULL`` or a failed check skips it (review round 1, P1).
 * An Outlook mailbox keeps the behaviour of ``main``. Its filters stay, and
   Microsoft has no revoke for one delegated grant. The spec records the open
   point about the Outlook filters (§12.3.13.9).
@@ -41,6 +49,7 @@ Fence: ``tests/unit/test_email_mailbox_teardown.py`` and the R8 case in
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
@@ -63,6 +72,11 @@ CACHE_DROP_TIMEOUT_S = 5.0
 
 #: The page size of one Redis ``DELETE``.
 _CACHE_DELETE_BATCH = 200
+
+#: Another Gmail row of this address, in any tenant (migration 262). One bit,
+#: never a row. NULL means that the function cannot tell.
+GRANT_SHARED_SQL = (
+    "SELECT public.email_gmail_grant_shared(:email, CAST(:exclude AS uuid))")
 
 #: The filter ids that Metorite made for one mailbox. The owner predicate
 #: repeats the one of the ownership read, in the same block.
@@ -95,7 +109,7 @@ async def read_filter_ids(db: Any, account_id: str, owner: str) -> list[str]:
     return list(seen)
 
 
-# ── step 3: the filters at Gmail, before the row delete ─────────────────────
+# ── step 5: the filters at Gmail, after the commit ──────────────────────────
 
 
 async def remove_metorite_filters(
@@ -109,7 +123,9 @@ async def remove_metorite_filters(
     filter still goes. The whole step has a bound of
     ``FILTER_REMOVAL_TIMEOUT_S``. It never raises.
 
-    The caller holds no session open, because each delete is a network call.
+    The caller runs it only after the ``DELETE`` commits, with the ids that
+    its ownership read kept, and before the revoke ends the grant. It holds
+    no session open, because each delete is a network call.
     """
     if provider != "gmail" or not filter_ids:
         return
@@ -144,7 +160,7 @@ def _status_of(exc: BaseException) -> int | None:
     return getattr(getattr(exc, "response", None), "status_code", None)
 
 
-# ── step 6: the revoke at Google ────────────────────────────────────────────
+# ── step 6: the revoke at Google, unless the grant is shared ───────────────
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -175,13 +191,53 @@ def _grant_token(creds: Any) -> str | None:
     return None
 
 
-async def revoke_grant(account_id: str, row: Any) -> None:
+async def grant_shared_elsewhere(
+    open_session: Callable[[], Any], email: Any, account_id: str,
+) -> bool | None:
+    """True when another Metorite Gmail row of ``email`` exists, in any tenant.
+
+    One short block of ``open_session``, which is the ``_tenant_session`` of
+    the caller. Migration 262's function answers one bit across tenants and
+    never a row. ``None`` means "cannot tell": an empty address, a function
+    that cannot see through RLS, or a check that failed. The caller skips
+    the revoke unless the answer is ``False``. It never raises.
+    """
+    address = str(email or "").strip()
+    if not address:
+        return None
+    try:
+        exclude: str | None = str(UUID(str(account_id).strip()))
+    except (TypeError, ValueError, AttributeError):
+        exclude = None
+    try:
+        async with asyncio.timeout(REVOKE_TIMEOUT_S):
+            async with open_session() as db:
+                answer = (await db.execute(
+                    text(GRANT_SHARED_SQL),
+                    {"email": address, "exclude": exclude})).scalar()
+    except Exception as exc:
+        _log.warning("email.disconnect.grant_check_failed",
+                     account_id=exclude or str(account_id)[:64],
+                     error=type(exc).__name__)
+        return None
+    return answer if isinstance(answer, bool) else None
+
+
+async def revoke_grant(
+    account_id: str, row: Any, open_session: Callable[[], Any],
+) -> None:
     """Revoke the OAuth grant of a deleted Gmail mailbox, best effort (gap D1).
 
     ``row`` is the ``RETURNING`` row of the ``DELETE``. It carries the
-    provider and the credential blob. Only a ``gmail`` row gets a call.
-    Microsoft has no revoke for one delegated grant, so an Outlook row
-    revokes nothing. An IMAP row has no grant.
+    provider, the address and the credential blob. Only a ``gmail`` row gets
+    a call. Microsoft has no revoke for one delegated grant, so an Outlook
+    row revokes nothing. An IMAP row has no grant.
+
+    Google keeps one grant for each Google account and OAuth client. So when
+    :func:`grant_shared_elsewhere` does not answer ``False``, the revoke is
+    skipped, and ``email.revoke_skipped`` logs ``shared_grant`` or
+    ``check_failed``. A wrong revoke breaks a live mailbox of another member.
+    A skipped one leaves a grant that the member can remove at Google.
 
     Google answers 200 when the grant ends. Any other outcome logs
     ``email.revoke_failed`` with the provider and a fixed reason, and the
@@ -189,6 +245,13 @@ async def revoke_grant(account_id: str, row: Any) -> None:
     It never raises.
     """
     if row.provider != "gmail":
+        return
+    shared = await grant_shared_elsewhere(
+        open_session, getattr(row, "email_address", None), account_id)
+    if shared is not False:
+        _log.info("email.revoke_skipped", account_id=account_id,
+                  provider="gmail",
+                  reason="shared_grant" if shared else "check_failed")
         return
     reason = await _revoke_reason(row.credentials_encrypted)
     if reason is None:

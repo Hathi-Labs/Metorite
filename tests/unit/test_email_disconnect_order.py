@@ -123,6 +123,9 @@ class _Result:
     def fetchall(self) -> list[Any]:
         return self._rows
 
+    def scalar(self) -> Any:
+        return self._row
+
 
 class _DriverError(Exception):
     """Stands in for the adapted asyncpg error, which carries ``sqlstate``."""
@@ -143,10 +146,14 @@ class _FakeDB:
 
     def __init__(self, ledger: _Ledger, rows: dict[str, dict[str, Any]],
                  delete_fails: BaseException | None,
-                 delete_gate: asyncio.Event | None = None) -> None:
+                 delete_gate: asyncio.Event | None = None,
+                 shared: Any = False) -> None:
         self.ledger = ledger
         self.rows = rows
         self.delete_fails = delete_fails
+        # EM-G11f1: the answer of migration 262's shared-grant function, or
+        # "raise" for a check that fails.
+        self.shared = shared
         # When set, the DELETE waits on this event, so a test can cancel the
         # route while the DELETE runs.
         self.delete_gate = delete_gate
@@ -185,7 +192,13 @@ class _FakeDB:
                 provider=row["provider"],
                 credentials_encrypted=row["creds"],
                 webhook_subscription_id=row["sub"],
+                email_address=row.get("email", "box@em-t4f.test"),
             ))
+        if sql.startswith("SELECT public.email_gmail_grant_shared"):
+            self.ledger.events.append(("grant_check", self.ledger.open, p))
+            if self.shared == "raise":
+                raise RuntimeError("function email_gmail_grant_shared does not exist")
+            return _Result(self.shared)
         if sql.startswith("UPDATE email_accounts SET is_default = true"):
             self.ledger.events.append(("reelect", self.ledger.open))
             return _Result(None)
@@ -284,9 +297,10 @@ def wired(monkeypatch):
                delete_fails: BaseException | None = None,
                loops: tuple[str, ...] = ("acc-1",),
                fake_scheduler: bool = True,
-               delete_gate: asyncio.Event | None = None):
+               delete_gate: asyncio.Event | None = None,
+               shared: Any = False):
         ledger = _Ledger()
-        db = _FakeDB(ledger, rows, delete_fails, delete_gate)
+        db = _FakeDB(ledger, rows, delete_fails, delete_gate, shared)
         monkeypatch.setattr(accounts, "_tenant_session", _watched_session(ledger, db))
         monkeypatch.setattr(accounts, "_log", _RecordingLog(ledger))
 
@@ -686,7 +700,8 @@ def _assert_non_priv(app_eng) -> None:
 
 
 def _seed_account(admin, *, org: str, owner: str, default: bool,
-                  sub: str | None, provider: str = "microsoft") -> str:
+                  sub: str | None, provider: str = "microsoft",
+                  email: str | None = None) -> str:
     with admin.begin() as c:
         return str(c.execute(text(
             "INSERT INTO email_accounts (user_id, provider, email_address, "
@@ -695,7 +710,7 @@ def _seed_account(admin, *, org: str, owner: str, default: bool,
             "VALUES (:u, :p, :m, 'blob-r8', :d, :s, "
             "now() - CAST(:age AS interval), CAST(:o AS uuid)) RETURNING id"),
             {"u": owner, "p": provider,
-             "m": f"box-{uuid.uuid4().hex[:8]}@em-t4f.test",
+             "m": email or f"box-{uuid.uuid4().hex[:8]}@em-t4f.test",
              "d": default, "s": sub, "age": "1 hour" if default else "1 minute",
              "o": org}).scalar_one())
 
@@ -723,6 +738,17 @@ def _seed_message(admin, *, org: str, account_id: str) -> None:
             {"a": account_id, "pm": f"pm-{uuid.uuid4().hex[:12]}",
              "f": json.dumps({"email": "s@sender.test"}),
              "t": json.dumps([{"email": "to@em-t4f.test"}]), "o": org})
+
+
+def _grant_check_to_app_role(admin) -> None:
+    """Migration 262 grants its function to ``acb_app`` only. The rehearsal
+    role has a suite-private name, so it gets the same grant here."""
+    from tests.unit.test_h3_rls_promotion_rehearsal import _APP_ROLE
+
+    with admin.begin() as c:
+        c.execute(text(
+            "GRANT EXECUTE ON FUNCTION public.email_gmail_grant_shared(text, uuid) "
+            f"TO {_APP_ROLE}"))
 
 
 def _admin_read(admin, sql: str, **params: Any) -> list[Any]:
@@ -800,10 +826,12 @@ class TestTheDisconnectUnderForceRLS:
         """EM-G11f1 (§12.3.13.9, gap D2). The ownership read of a Gmail row
         reads its filter ids as the non-privileged role, under FORCE RLS. A
         sender row of the mailbox that carries ANOTHER organization stays out
-        of the read. Each filter goes at Gmail while the row still exists,
-        and the revoke runs after the DELETE."""
+        of the read. The ids live through the cascade, so each filter goes at
+        Gmail after the DELETE commits (review round 1). With no other row of
+        the address, migration 262 answers false, and the revoke runs."""
         _assert_non_priv(app_engine)
         p = promoted
+        _grant_check_to_app_role(p.admin_engine)
         owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
         acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
                             default=True, sub=None, provider="gmail")
@@ -835,8 +863,8 @@ class TestTheDisconnectUnderForceRLS:
         try:
             async with tenant_engine_scope(app_dsn):
                 assert await accounts.delete_account(acc, user=user) is None
-            assert sorted(removed) == [("flt-r8-one", True), ("flt-r8-two", True)], (
-                "the filters were not read under RLS, or went after the DELETE")
+            assert sorted(removed) == [("flt-r8-one", False), ("flt-r8-two", False)], (
+                "the filters were not read under RLS, or went before the commit")
             assert r8_doubles["revoke"] == [TOKEN], "the Gmail grant was not revoked"
             assert r8_doubles["graph"] == [], "a Gmail row reached Graph"
             assert _admin_read(p.admin_engine,
@@ -848,6 +876,136 @@ class TestTheDisconnectUnderForceRLS:
         finally:
             release_tenant(token)
             with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
+                          {"u": owner})
+
+    @pytest.mark.parametrize("sibling_org", ["same", "other"])
+    async def test_a_shared_gmail_grant_is_not_revoked(
+        self, promoted, app_engine, r8_doubles, sibling_org,  # noqa: F811
+    ):
+        """Review round 1, P1. Google keeps ONE grant for a Gmail account and
+        the app. Member A of org B disconnects ``shared@``, and another row of
+        that address lives in the same org (a second member) or in org A.
+        The real function, called as the non-privileged role, sees the other
+        row through RLS, so the revoke is skipped. The row of A still goes."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        _grant_check_to_app_role(p.admin_engine)
+        address = f"Shared-{uuid.uuid4().hex[:8]}@em-g11f1.test"
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        other = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            default=True, sub=None, provider="gmail",
+                            email=address.lower())
+        kept = _seed_account(
+            p.admin_engine, org=p.org_b if sibling_org == "same" else p.org_a,
+            owner=other, default=True, sub=None, provider="gmail",
+            email=address.upper())
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                           organization_id=p.org_b)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(app_dsn):
+                assert await accounts.delete_account(acc, user=user) is None
+            assert r8_doubles["revoke"] == [], (
+                "a disconnect revoked a grant that another mailbox uses")
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                               a=acc) == []
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                               a=kept) != []
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id IN (:u, :o)"),
+                          {"u": owner, "o": other})
+
+    def test_the_shared_grant_function_answers_one_bit_to_the_app_role_only(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Migration 262: a SECURITY DEFINER function with a fixed search_path,
+        a boolean result, no grant to PUBLIC, and EXECUTE for the app role.
+        Bound to org B, the app role reads no row of org A, and the function
+        still answers true for the address of that row. It leaks one bit."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        _grant_check_to_app_role(p.admin_engine)
+        from tests.unit.test_h3_rls_promotion_rehearsal import _APP_ROLE
+
+        [(definer, result, config, acl, args)] = _admin_read(
+            p.admin_engine,
+            "SELECT prosecdef, prorettype::regtype::text, proconfig, proacl::text, "
+            "pg_get_function_identity_arguments(oid) FROM pg_proc "
+            "WHERE proname = 'email_gmail_grant_shared'")
+        assert definer is True
+        assert result == "boolean", "the function must return one bit, never a row"
+        assert args == "p_email text, p_exclude uuid"
+        assert any(c.startswith("search_path=pg_catalog") for c in config or [])
+        entries = (acl or "").strip("{}").split(",")
+        assert not [e for e in entries if e.startswith("=")], acl
+        assert f"{_APP_ROLE}=X/" in acl
+        address = f"hidden-{uuid.uuid4().hex[:8]}@em-g11f1.test"
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        hidden = _seed_account(p.admin_engine, org=p.org_a, owner=owner,
+                               default=True, sub=None, provider="gmail",
+                               email=address)
+        try:
+            with app_engine.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": p.org_b})
+                assert c.execute(text(
+                    "SELECT count(*) FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                    {"a": hidden}).scalar() == 0, "RLS let org B read a row of org A"
+                ask = text("SELECT public.email_gmail_grant_shared(:e, CAST(:x AS uuid))")
+                assert c.execute(ask, {"e": address.upper(), "x": None}).scalar() is True
+                assert c.execute(ask, {"e": address, "x": hidden}).scalar() is False
+                assert c.execute(ask, {"e": "", "x": None}).scalar() is None
+        finally:
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
+                          {"u": owner})
+
+    async def test_a_function_that_cannot_see_through_rls_skips_the_revoke(
+        self, promoted, app_engine, r8_doubles,  # noqa: F811
+    ):
+        """Owned by a role that cannot bypass RLS, the function answers NULL.
+        NULL is "cannot tell", so the revoke is skipped. It fails safe toward
+        a mailbox of another member."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        _grant_check_to_app_role(p.admin_engine)
+        from tests.unit.test_h3_rls_promotion_rehearsal import _APP_ROLE
+
+        [(prior,)] = _admin_read(
+            p.admin_engine,
+            "SELECT pg_get_userbyid(proowner) FROM pg_proc "
+            "WHERE proname = 'email_gmail_grant_shared'")
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            default=True, sub=None, provider="gmail")
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                           organization_id=p.org_b)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "ALTER FUNCTION public.email_gmail_grant_shared(text, uuid) "
+                f"OWNER TO {_APP_ROLE}"))
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(app_dsn):
+                assert await accounts.delete_account(acc, user=user) is None
+            assert r8_doubles["revoke"] == [], "a check that cannot tell still revoked"
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                               a=acc) == []
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
+                c.execute(text(
+                    "ALTER FUNCTION public.email_gmail_grant_shared(text, uuid) "
+                    f'OWNER TO "{prior}"'))
                 c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
                           {"u": owner})
 
