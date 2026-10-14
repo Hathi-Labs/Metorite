@@ -38,8 +38,12 @@ the pass stops before it reads Redis, an identity or a row.
 **MD-6a-3 is BUILT, 2026-10-14** (the measure read, no migration). It is an
 admin read, and nothing calls it until MD-6b.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3,
-MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+**MD-3a is BUILT, 2026-10-14** (the links, no migration and no flag). It
+is live when it deploys, because the feed is live. A URL with no new
+parameter opens as before.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3b
+to MD-3f, MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -445,8 +449,8 @@ each renders as a link that opens the owning app at the right place.
   <title>". When the other task has a card of its own, that card carries the
   same fact.
 - **Until MD-8**, the overlap card's act is "Open the day", a link to
-  `/calendar`. A slot act waits for MD-8, and a link to the day waits for
-  MD-3.
+  `/calendar?date=&at=` at the block's start (MD-3a). A slot act waits for
+  MD-8.
 - **A provider opens no session of its own.** It calls the app functions,
   which open theirs, as `my_due_tasks` does (R5b).
 
@@ -2494,6 +2498,31 @@ Done when:
 3. `block_overlap`, `day_overbooked`, `no_plan_yet` and the approval card
    link to these paths. The needs row keeps `/approvals`.
 
+**BUILT, 2026-10-14.** No migration and no flag. These are the parts:
+
+- The gateway builds the links. `day_href` in `routes/shell/feed.py` gives
+  `/calendar?date=YYYY-MM-DD`, and adds `&at=HH:MM` for an overlap. The time
+  is the block's start in the member's zone. `approval_href` in
+  `routes/shell/needs.py` gives `/approvals?action=<id>`. Only the feed
+  signal uses it, and the needs row keeps `/approvals`.
+- `app/calendar/lib/calendarLink.ts` reads the Calendar link.
+  `components/CalendarDeepLink.tsx` hands it to `CalendarView.tsx`, which
+  opens the day view on that day. The grid scrolls to one hour above the
+  link's time, as it scrolls above the current hour today.
+- `app/approvals/lib/approvalLink.ts` reads the Approvals link. The page
+  scrolls to the row and marks it with the cursor look of `InboxCard.tsx`.
+- The fences are `calendarLink.test.ts`, `approvalLink.test.ts` and
+  `test_shell_feed.py::TestTheLinks`.
+
+The build made three choices that the ticket did not record:
+
+- Each part of the Calendar link is read on its own. A bad date opens
+  today, and keeps a good time. A bad time keeps a good date.
+- The Approvals link takes a UUID only, the key of `pending_actions`.
+- The card's own `href` changes too, for `day_overbooked`, `no_plan_yet`
+  and the approval card. The `block_overlap` card keeps the task link, and
+  only its act changes.
+
 ### MD-3b · The seam — AGENT-SAFE
 
 Files: `packages/acb_common/acb_common/settings.py`, `env_guard.py`,
@@ -2992,6 +3021,9 @@ uv run ruff check apps/services/gateway/gateway/decide_features.py apps/services
 uv run pytest tests/unit/test_feed_measure.py tests/unit/test_feed_measure_r8.py tests/unit/test_org_access_enforcement.py -q  # MD-6a-3
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
+uv run pytest tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_my_day_cache.py -q -rs  # MD-3a
+uv run ruff check apps/services/gateway/gateway/routes/shell tests/unit/test_shell_feed.py  # MD-3a
+npx vitest run src/app/calendar src/app/approvals src/lib/shell/  # MD-3a, in workbench/control_plane
 
 # This spec's prose
 node .claude/hooks/ste-lint.mjs project-docs/specs/my_day_feed.md

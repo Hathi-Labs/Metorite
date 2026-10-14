@@ -13,13 +13,34 @@
  *
  * When enforcement is off (the default) this queue is empty — every outward
  * write auto-applies through the broker (chokepointed + audited, no hold).
+ *
+ * `/approvals?action=<id>` (WS-58 MD-3a, `my_day_feed.md` §5.8 item 9) is the
+ * My Day card's link to one proposal. The page scrolls to that row and marks
+ * it. When the row is not in the queue, a line above the queue says so.
+ * `lib/approvalLink.ts` reads the link. A bare `/approvals` opens as before.
  */
 
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import type { PendingAction } from "@/app/api/actions/pending/route";
+
+import { actionIdFromSearch, approvalRowDomId, markedRow } from "./lib/approvalLink";
+
+/**
+ * The reader of `?action=<id>`. `useSearchParams` needs a Suspense boundary,
+ * and this one holds only the reader, so the page still renders on the
+ * server. The email app's `EmailDeepLink.tsx` is the same shape.
+ */
+function ActionParam({ onAction }: { onAction: (id: string | null) => void }) {
+  const id = actionIdFromSearch(useSearchParams());
+  useEffect(() => {
+    onAction(id);
+  }, [id, onAction]);
+  return null;
+}
 
 export default function ApprovalsPage() {
   const [rows, setRows] = useState<PendingAction[]>([]);
@@ -27,6 +48,17 @@ export default function ApprovalsPage() {
   const [fetched, setFetched] = useState(false);
   const [busy, setBusy] = useState<Record<string, "approve" | "reject">>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // The proposal a link names (MD-3a), and the row it marks.
+  const [actionId, setActionId] = useState<string | null>(null);
+  const { marked, gone } = markedRow(rows, actionId, fetched);
+  // Scroll to the marked row once, when it first shows. The queue reloads
+  // every 15 seconds, and a reload must not pull the page back to the row.
+  const scrolledTo = useRef<string | null>(null);
+  useEffect(() => {
+    if (!marked || scrolledTo.current === marked) return;
+    scrolledTo.current = marked;
+    document.getElementById(approvalRowDomId(marked))?.scrollIntoView({ block: "center" });
+  }, [marked]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -82,6 +114,9 @@ export default function ApprovalsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <Suspense fallback={null}>
+        <ActionParam onAction={setActionId} />
+      </Suspense>
       {/* The app's title bar (owner, 2026-10-10): the name, how many wait,
           and Refresh at the right end. */}
       <AppTopBar
@@ -111,6 +146,15 @@ export default function ApprovalsPage() {
       </p>
 
       <div className="mt-4 flex flex-col gap-2">
+        {gone && (
+          <p
+            role="status"
+            className="rounded-lg border border-border bg-card/50 px-3 py-2 text-xs text-muted-foreground"
+          >
+            That request is no longer waiting for you.
+          </p>
+        )}
+
         {fetched && rows.length === 0 && (
           <div className="rounded-lg border border-border bg-card/50 px-4 py-8 text-center">
             <p className="text-sm text-muted-foreground">
@@ -127,10 +171,18 @@ export default function ApprovalsPage() {
         {rows.map((r) => {
           const args =
             (r.payload?.args as Record<string, unknown> | undefined) ?? {};
+          // The row a link names wears the house selected look, the cursor
+          // look of `InboxCard.tsx`. No look of this page's own (MD-3a).
+          const isMarked = r.id === marked;
           return (
             <div
               key={r.id}
-              className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs"
+              id={approvalRowDomId(r.id)}
+              aria-current={isMarked ? "true" : undefined}
+              className={[
+                "rounded-lg border bg-primary/5 p-3 text-xs",
+                isMarked ? "border-primary ring-1 ring-primary/40" : "border-primary/20",
+              ].join(" ")}
             >
               <div className="flex items-start gap-2">
                 <span className="shrink-0 rounded border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">

@@ -122,6 +122,15 @@ CALENDAR_KINDS = frozenset({"block_soon", "block_overlap", "day_overbooked", "no
 # ── The Calendar provider (§5.1, feed only) ─────────────────────────────────
 
 
+def day_href(day: date, at: datetime | None = None) -> str:
+    """The Calendar's link to one day, and to a time on it (MD-3a, §5.8 item
+    9): ``/calendar?date=YYYY-MM-DD&at=HH:MM``. ``at`` is a local time, so
+    the caller converts it to the member's zone first. The page reads the two
+    names back in ``app/calendar/lib/calendarLink.ts``."""
+    href = f"/calendar?date={day.isoformat()}"
+    return href if at is None else f"{href}&at={at.hour:02d}:{at.minute:02d}"
+
+
 async def _calendar(user: UserContext) -> Found:
     from gateway.routes.projects.personal import my_calendar, zone_name
     from gateway.routes.tasks.calendar import day_summary
@@ -155,7 +164,7 @@ async def _calendar(user: UserContext) -> Found:
             title="Today is overbooked",
             facts={"day": today.isoformat(), "planned_mins": planned,
                    "capacity_mins": capacity},
-            href="/calendar", acts=(link("fit", "Fit what's left", "/calendar"),),
+            href=day_href(today), acts=(link("fit", "Fit what's left", day_href(today)),),
             expires_at=_iso(tomorrow0),
         ))
     elif not blocks and not any(
@@ -172,7 +181,8 @@ async def _calendar(user: UserContext) -> Found:
                 signal_id=day_key, app="calendar", kind="no_plan_yet", entity=day_entity,
                 title="Nothing is planned for today",
                 facts={"day": today.isoformat(), "day_start": _iso(started)},
-                href="/calendar", acts=(link("plan-day", "Plan my day", "/calendar"),),
+                href=day_href(today),
+                acts=(link("plan-day", "Plan my day", day_href(today)),),
                 expires_at=_iso(tomorrow0),
             ))
     signals.extend(_overlaps(rows, level, now, tz))
@@ -271,9 +281,11 @@ def _overlaps(rows: list[dict[str, Any]], level: dict[str, str], now: datetime,
                    "overlap_day": first.astimezone(tz).date().isoformat(),
                    "block_start": _iso(start), "block_end": _iso(end),
                    "priority": level.get(task_id)},
-            # Until MD-8 the act is a link to the Calendar, and until MD-3
-            # the Calendar has no link to one day (§5.1).
-            href=task_href(task_id), acts=(link("open-day", "Open the day", "/calendar"),),
+            # Until MD-8 the act is a link to the Calendar. It opens the day
+            # of the block at its start, in the member's zone (MD-3a, §5.8).
+            href=task_href(task_id),
+            acts=(link("open-day", "Open the day", day_href(start.astimezone(tz).date(),
+                                                            start.astimezone(tz))),),
             at=_iso(start), urgent_at=_iso(first), expires_at=_iso(last),
         ))
     return out

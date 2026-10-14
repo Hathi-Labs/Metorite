@@ -94,9 +94,10 @@ own time limit. The source reads ``failed`` only when every mailbox failed.
   (``app/projects/lib/notifications.ts`` ``linkTo``).
 * an email: ``/email?email=<message id>&account=<account id>``
   (``app/email/lib/emailLink.ts`` ``emailLink``).
-* an approval: ``/approvals``. The Approvals app reads no link to one
-  action (``app/approvals/page.tsx`` reads no search value), so the row
-  opens the queue.
+* an approval: ``/approvals``. The row opens the queue, because nothing
+  in the bell changes (``my_day_feed.md`` §4.4). The feed's approval card
+  opens the one proposal, ``/approvals?action=<id>`` (``approval_href``,
+  MD-3a).
 
 **The one-click acts** (``act``), each through the OWNING app's route:
 
@@ -350,6 +351,14 @@ async def _tasks(user: UserContext) -> Found:
 def task_href(task_id: str) -> str:
     """The task deep link (``app/projects/lib/card.ts`` ``taskDeepLink``)."""
     return f"/projects?task={quote(task_id)}"
+
+
+def approval_href(action_id: str) -> str:
+    """The link to one proposal in the queue (MD-3a, ``my_day_feed.md`` §5.8
+    item 9). The page reads the name back in ``app/approvals/lib/
+    approvalLink.ts``. Only the feed's signal uses it: the needs row keeps
+    ``/approvals``."""
+    return f"/approvals?action={quote(action_id, safe='')}"
 
 
 def task_entity(task_id: str, title: Any) -> dict[str, Any]:
@@ -793,10 +802,13 @@ async def _approvals(user: UserContext) -> Found:
             title=item["title"],
             facts={"action": actions.get(item["id"].split(":", 1)[1], ""),
                    "proposer": (item["detail"] or "")[len("Proposed by "):]},
-            href="/approvals",
+            # The feed's card opens the one proposal (MD-3a). The needs row
+            # above keeps the queue, because nothing in the bell changes (§4.4).
+            href=approval_href(item["id"].split(":", 1)[1]),
             # Class C: to approve is an outward write, so it always opens
             # the app (§11.4). The member reads the proposal there first.
-            acts=(link("open-approvals", "Open Approvals", "/approvals", cls="C"),),
+            acts=(link("open-approvals", "Open Approvals",
+                       approval_href(item["id"].split(":", 1)[1]), cls="C"),),
             at=item.get("at"),
         ) for item in shown]
 
