@@ -1764,16 +1764,29 @@ and the target list as its only arguments.
 - The call has a bound of 25 seconds, because the `/api/crm` proxy cuts a
   request at 30 seconds. A failure or a bad answer gives 502 with the code
   `suggest_failed` or `suggest_bad_answer`, and writes no row.
+- The route sends the fields in batches of 40, one call for each, and the
+  calls run at the same time. So "one entity is one call" is now one call
+  for each batch. The route reads each answer on its own and keeps what it
+  can read. `unread` counts the fields of a batch that failed.
+- One press for each organization and entity in 60 seconds reaches the
+  model. The route sets a tenant Redis key with `NX` and a TTL of 60 seconds
+  before the call, through `acb_common.tenant_redis`. A second press gets
+  429 "Wait a minute before you ask again." A Redis outage gets 503.
 - The insert writes the literal `'proposed'`. Its update replaces only an
   older proposal of the assistant, so a decided rule keeps its row.
-- `mapping.legal_columns` is now the one list of the columns that a field
-  may fill. The GET route and the proposer both call it.
+- An approve or a reject updates a rule only when its status and target are
+  still the ones the route read. Else the admin gets 409 "This proposal
+  changed. Reload to see it."
+- `mapping.legal_columns` is the one list of the columns that a field may
+  fill, and the GET route calls it. The proposer uses `mapping.rule_problem`
+  and `mapping.types_agree` for the same rule.
 - The Field map card has a "Suggest mappings" button for each entity. It
   shows a spinner while the call runs, and an error under the entity.
-- ⚠️ The second-press rule needs a proposal of the assistant at the current
-  profile version. An answer that keeps no item writes no row, so the next
-  press calls the model again.
-- Fences: `tests/unit/test_crm_field_map_ai.py` (R8, red first, five
+- ⚠️ The second-press rule needs an open proposal of the assistant at the
+  current profile version. A decided row does not count. An answer that
+  keeps no item writes no row, so the next press after the cool-down calls
+  the model again.
+- Fences: `tests/unit/test_crm_field_map_ai.py` (R8, red first, eleven
   mutations) and `src/app/crm/components/crmQ7b.test.ts` (red first, three
   mutations).
 
