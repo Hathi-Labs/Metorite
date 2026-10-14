@@ -173,14 +173,6 @@ ALLOWED: dict[str, str] = {
         'The web, not company data. max_results asks for more.',
     'apps/agents/agent-email-assistant/agents.py::search_emails::emails[:10]':
         "Not a tool: it is not in _TOOLS, so no model calls it. It prints '… and N more'.",
-    'apps/agents/agent-whatsapp-assistant/agents.py::list_whatsapp_chats::chats[:20]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-whatsapp-assistant/agents.py::search_whatsapp::msgs[:15]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-whatsapp-assistant/agents.py::whatsapp_chat_context::loops[:5]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-whatsapp-assistant/agents.py::whatsapp_chat_context::waiting[:5]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
     'packages/acb_skills/acb_skills/agent_tools.py::call_agents_parallel::task_list[:5]':
         'Silent cut. The second PR of the agent-read-paging change fixes it.',
     "packages/acb_skills/acb_skills/attachment_tools.py::_listing::[n for n, kind in entries if kind == 'file' and (not n.startswith('.'))][:50]":
@@ -224,7 +216,7 @@ ALLOWED: dict[str, str] = {
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
-ALLOWED_CEILING = 61
+ALLOWED_CEILING = 57
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -794,3 +786,66 @@ def test_unsubscribe_candidates_page(monkeypatch, ea) -> None:
     first = asyncio.run(ea.list_senders("a1", view="unsubscribe"))
     assert "Showing 1-10 of 15. Call again with offset=10 for the rest." in first
     assert "n15@x.io" in asyncio.run(ea.list_senders("a1", view="unsubscribe", offset=10))
+
+
+# ── 7. WhatsApp ─────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def wa():
+    import importlib.util
+
+    path = REPO / "apps" / "agents" / "agent-whatsapp-assistant" / "agents.py"
+    spec = importlib.util.spec_from_file_location("wa_paging", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_whatsapp_chats_page_past_twenty(monkeypatch, wa) -> None:
+    chats = [{"id": f"c{k}", "name": f"Chat {k}"} for k in range(1, 36)]
+    seen = _gw(monkeypatch, wa, lambda p, q: chats[: int(q.get("limit") or 50)])
+    first = asyncio.run(wa.list_whatsapp_chats())
+    assert seen[-1][1]["limit"] == 21
+    assert "Call again with offset=20 for the rest." in first
+    last = asyncio.run(wa.list_whatsapp_chats(offset=30))
+    assert "chat_id=c35)" in last and "chat_id=c30)" not in last
+    assert "Showing 31-35 of 35. This is the last page." in last
+
+
+def test_whatsapp_search_pages_past_fifteen(monkeypatch, wa) -> None:
+    msgs = [{"id": f"m{k}", "chat_id": "c1", "body_text": f"b{k}"} for k in range(1, 36)]
+    _gw(monkeypatch, wa, lambda p, q: msgs[: int(q.get("limit") or 50)])
+    assert "Call again with offset=15" in asyncio.run(wa.search_whatsapp("b"))
+    last = asyncio.run(wa.search_whatsapp("b", offset=30))
+    assert "message_id=m35)" in last and "This is the last page." in last
+
+
+def test_whatsapp_chat_reads_back_past_the_newest(monkeypatch, wa) -> None:
+    """The route gives the newest `limit`, oldest first. offset counts back
+    from the newest, so offset=20 reads the 20 before them."""
+    msgs = [{"id": f"m{k}", "direction": "in", "body_text": f"b{k}"} for k in range(1, 36)]
+
+    def answer(path, q):
+        n = int(q.get("limit") or 100)
+        return msgs[-n:]
+
+    _gw(monkeypatch, wa, answer)
+    first = asyncio.run(wa.read_whatsapp_chat("c1"))
+    assert "Them: b35" in first and "Them: b16" in first and "Them: b15" not in first
+    assert "Call again with offset=20 for the rest." in first
+    older = asyncio.run(wa.read_whatsapp_chat("c1", offset=20))
+    assert "Them: b15" in older and "Them: b1\n" in older + "\n" and "Them: b16" not in older
+    assert older.index("Them: b1\n") < older.index("Them: b15")
+    assert "This is the last page." in older
+
+
+def test_whatsapp_context_prints_what_the_route_sent(monkeypatch, wa) -> None:
+    ctx = {"contact": {"display_name": "Ann"},
+           "open_loops": [{"title": f"loop {k}"} for k in range(10)],
+           "waiting_on": [{"text": f"owes {k}", "id": f"w{k}"} for k in range(5)]}
+    _gw(monkeypatch, wa, lambda p, q: ctx)
+    out = asyncio.run(wa.whatsapp_chat_context("c1"))
+    assert "loop 9" in out and "owes 4" in out
+    assert "That is the first 10 open loops" in out
+    assert "whatsapp_waiting_on lists every open promise" in out
