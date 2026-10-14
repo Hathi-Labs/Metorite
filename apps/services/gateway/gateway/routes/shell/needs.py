@@ -353,6 +353,15 @@ def task_href(task_id: str) -> str:
     return f"/projects?task={quote(task_id)}"
 
 
+def day_href(day: date, at: datetime | None = None) -> str:
+    """The Calendar's link to one day, and to a time on it (MD-3a, §5.8 item
+    9): ``/calendar?date=YYYY-MM-DD&at=HH:MM``. ``at`` is a local time, so
+    the caller converts it to the member's zone first. The page reads the two
+    names back in ``app/calendar/lib/calendarLink.ts``."""
+    href = f"/calendar?date={day.isoformat()}"
+    return href if at is None else f"{href}&at={at.hour:02d}:{at.minute:02d}"
+
+
 def approval_href(action_id: str) -> str:
     """The link to one proposal in the queue (MD-3a, ``my_day_feed.md`` §5.8
     item 9). The page reads the name back in ``app/approvals/lib/
@@ -370,7 +379,8 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
     """The feed signals of the due rows: one for each task, keyed on it.
 
     ``calendar`` says that the member holds the Calendar pane
-    (``feature:tasks``). Without it, no act links to ``/calendar``.
+    (``feature:tasks``). Without it, no act links to the Calendar. With it,
+    "Block time" opens the member's today (``day_href``).
 
     ``days_late`` counts the member's own dates, in the zone the lens read
     reports. ``priority`` is the D78 level, from the one server matrix
@@ -399,7 +409,9 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
             facts["days_late"] = max(0, late)
             acts.append(link("move-tomorrow", "Move to tomorrow", task_href(task_id)))
         elif calendar:
-            acts.append(link("block-time", "Block time", "/calendar"))
+            # "Find time today": the Calendar's day view on the member's
+            # today (MD-3a review), never a bare `/calendar`.
+            acts.append(link("block-time", "Block time", day_href(local_today)))
         out.append(Signal(
             signal_id=f"tasks:{task_id}", app="tasks", kind=kind,
             entity=task_entity(task_id, task.get("title")),

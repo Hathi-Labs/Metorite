@@ -611,6 +611,11 @@ records a run that ended. `due_at_risk` has no source for one task.
   (§4.4).
 - The acts that change: `block_overlap`, `day_overbooked` and
   `no_plan_yet`.
+- "Block time" on a `due_today` card opens the member's today too (MD-3a
+  review). A card keeps one link for each place, and the main kind's link
+  wins. The time of a Calendar link is not part of its place. So a folded
+  overlap on the same day adds no second Calendar link. An overlap on
+  another day keeps its own link.
 
 **10. The pills move to MD-4,** which draws the bodies that use them. MD-4
 also fixes `pillLinkName`, which says "in Projects" for each kind.
@@ -1793,7 +1798,7 @@ and is off by default (`packages/acb_memory`).
       "href": "/projects?task=9b2e…",
       "acts": [
         {"id": "done", "label": "Done", "class": "A", "way": "tap", "act": "done", "act_ref": "9b2e…"},
-        {"id": "open-day", "label": "Open the day", "class": "A", "way": "open", "href": "/calendar"}
+        {"id": "open-day", "label": "Open the day", "class": "A", "way": "open", "href": "/calendar?date=2026-10-14&at=14:00"}
       ]
     }
   ],
@@ -2500,7 +2505,7 @@ Done when:
 
 **BUILT, 2026-10-14.** No migration and no flag. These are the parts:
 
-- The gateway builds the links. `day_href` in `routes/shell/feed.py` gives
+- The gateway builds the links. `day_href` in `routes/shell/needs.py` gives
   `/calendar?date=YYYY-MM-DD`, and adds `&at=HH:MM` for an overlap. The time
   is the block's start in the member's zone. `approval_href` in
   `routes/shell/needs.py` gives `/approvals?action=<id>`. Only the feed
@@ -2511,8 +2516,20 @@ Done when:
   link's time, as it scrolls above the current hour today.
 - `app/approvals/lib/approvalLink.ts` reads the Approvals link. The page
   scrolls to the row and marks it with the cursor look of `InboxCard.tsx`.
-- The fences are `calendarLink.test.ts`, `approvalLink.test.ts` and
-  `test_shell_feed.py::TestTheLinks`.
+- The fences are `calendarLink.test.ts`, `approvalLink.test.ts`,
+  `api/actions/pending/route.test.ts` and `test_shell_feed.py::TestTheLinks`.
+
+Review round 1 fixed four findings:
+
+- `GET /api/actions/pending` answers 502 when the gateway fails, never an
+  empty list. The page says "no longer waiting" only after a good load. A
+  failed reload keeps the rows that the member sees.
+- "Block time" opens today, and the merge keeps one link for each place
+  (§5.8 item 9).
+- A change of mode or day by hand ends the link's time. Day, then week,
+  then day scrolls to the current hour again.
+- The status line of Approvals stays mounted, and it is empty when there
+  is nothing to say.
 
 The build made three choices that the ticket did not record:
 

@@ -27,7 +27,14 @@ import { useSearchParams } from "next/navigation";
 
 import type { PendingAction } from "@/app/api/actions/pending/route";
 
-import { actionIdFromSearch, approvalRowDomId, markedRow } from "./lib/approvalLink";
+import {
+  actionIdFromSearch,
+  afterLoad,
+  approvalRowDomId,
+  markedRow,
+  type LoadResult,
+  type QueueState,
+} from "./lib/approvalLink";
 
 /**
  * The reader of `?action=<id>`. `useSearchParams` needs a Suspense boundary,
@@ -43,14 +50,16 @@ function ActionParam({ onAction }: { onAction: (id: string | null) => void }) {
 }
 
 export default function ApprovalsPage() {
-  const [rows, setRows] = useState<PendingAction[]>([]);
+  // The queue and how its last load ended. A failed load keeps the rows the
+  // member sees (`afterLoad`), and never reads as an empty queue.
+  const [queue, setQueue] = useState<QueueState<PendingAction>>({ rows: [], load: "pending" });
+  const rows = queue.rows;
   const [loading, setLoading] = useState(true);
-  const [fetched, setFetched] = useState(false);
   const [busy, setBusy] = useState<Record<string, "approve" | "reject">>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   // The proposal a link names (MD-3a), and the row it marks.
   const [actionId, setActionId] = useState<string | null>(null);
-  const { marked, gone } = markedRow(rows, actionId, fetched);
+  const { marked, gone } = markedRow(rows, actionId, queue.load);
   // Scroll to the marked row once, when it first shows. The queue reloads
   // every 15 seconds, and a reload must not pull the page back to the row.
   const scrolledTo = useRef<string | null>(null);
@@ -62,16 +71,16 @@ export default function ApprovalsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    let result: LoadResult<PendingAction> = { ok: false };
     try {
       const res = await fetch("/api/actions/pending");
-      const all: PendingAction[] = res.ok ? await res.json() : [];
-      setRows(all);
+      const body: unknown = res.ok ? await res.json() : null;
+      if (Array.isArray(body)) result = { ok: true, rows: body as PendingAction[] };
     } catch {
-      setRows([]);
-    } finally {
-      setLoading(false);
-      setFetched(true);
+      // The request did not arrive. `result` stays a failed load.
     }
+    setQueue((q) => afterLoad(q, result));
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -94,7 +103,7 @@ export default function ApprovalsPage() {
       );
       const body = await res.json().catch(() => ({}));
       if (res.ok && body.ok !== false) {
-        setRows((rs) => rs.filter((r) => r.id !== id));
+        setQueue((q) => ({ ...q, rows: q.rows.filter((r) => r.id !== id) }));
       } else {
         setErrors((e) => ({
           ...e,
@@ -145,17 +154,23 @@ export default function ApprovalsPage() {
         is on.
       </p>
 
-      <div className="mt-4 flex flex-col gap-2">
+      {/* One live region, always mounted, so a screen reader announces the
+          line when it arrives. It is empty when there is nothing to say. */}
+      <div role="status">
+        {queue.load === "failed" && (
+          <p className="mt-4 text-xs text-destructive">
+            Could not load the queue. Refresh to try again.
+          </p>
+        )}
         {gone && (
-          <p
-            role="status"
-            className="rounded-lg border border-border bg-card/50 px-3 py-2 text-xs text-muted-foreground"
-          >
+          <p className="mt-4 rounded-lg border border-border bg-card/50 px-3 py-2 text-xs text-muted-foreground">
             That request is no longer waiting for you.
           </p>
         )}
+      </div>
 
-        {fetched && rows.length === 0 && (
+      <div className="mt-4 flex flex-col gap-2">
+        {queue.load === "ok" && rows.length === 0 && (
           <div className="rounded-lg border border-border bg-card/50 px-4 py-8 text-center">
             <p className="text-sm text-muted-foreground">
               Nothing awaiting approval.

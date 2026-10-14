@@ -32,18 +32,44 @@ export function approvalRowDomId(id: string): string {
 }
 
 /**
+ * How the last load of the queue ended. `pending` is before the first
+ * answer. `failed` is a load that did not give a queue: the route answered
+ * an error, or the request did not arrive.
+ */
+export type QueueLoad = "pending" | "ok" | "failed";
+
+/** The queue the page shows, and how its last load ended. */
+export interface QueueState<R> {
+  rows: R[];
+  load: QueueLoad;
+}
+
+/** What one load gave: the queue, or nothing. */
+export type LoadResult<R> = { ok: true; rows: R[] } | { ok: false };
+
+/**
+ * The queue after one load. A good load replaces the rows. A failed load
+ * keeps the rows the member already sees, and never empties them, because an
+ * empty queue reads as "nothing waits" (MD-3a review).
+ */
+export function afterLoad<R>(prev: QueueState<R>, result: LoadResult<R>): QueueState<R> {
+  return result.ok ? { rows: result.rows, load: "ok" } : { rows: prev.rows, load: "failed" };
+}
+
+/**
  * Which row the link marks, and whether the proposal left the queue.
  *
  * `marked` is the id of the row as the queue spells it. `gone` is true only
- * after the queue has loaded and holds no row with that id: a person already
- * approved or rejected it. Until the first load, nothing is gone.
+ * when the LAST load was good and the queue holds no row with that id: a
+ * person already approved or rejected it. Before the first load, and after a
+ * failed load, nothing is gone, because the page does not know.
  */
 export function markedRow(
   rows: readonly { id: string }[],
   actionId: string | null,
-  fetched: boolean,
+  load: QueueLoad,
 ): { marked: string | null; gone: boolean } {
   if (!actionId) return { marked: null, gone: false };
   const row = rows.find((r) => r.id.toLowerCase() === actionId);
-  return { marked: row ? row.id : null, gone: fetched && !row };
+  return { marked: row ? row.id : null, gone: load === "ok" && !row };
 }

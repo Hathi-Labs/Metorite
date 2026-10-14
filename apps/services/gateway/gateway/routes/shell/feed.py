@@ -88,6 +88,7 @@ from gateway.routes.shell.needs import (
     Signal,
     _instant,
     _iso,
+    day_href,
     link,
     register,
     task_entity,
@@ -120,15 +121,6 @@ CALENDAR_KINDS = frozenset({"block_soon", "block_overlap", "day_overbooked", "no
 
 
 # ── The Calendar provider (§5.1, feed only) ─────────────────────────────────
-
-
-def day_href(day: date, at: datetime | None = None) -> str:
-    """The Calendar's link to one day, and to a time on it (MD-3a, §5.8 item
-    9): ``/calendar?date=YYYY-MM-DD&at=HH:MM``. ``at`` is a local time, so
-    the caller converts it to the member's zone first. The page reads the two
-    names back in ``app/calendar/lib/calendarLink.ts``."""
-    href = f"/calendar?date={day.isoformat()}"
-    return href if at is None else f"{href}&at={at.hour:02d}:{at.minute:02d}"
 
 
 async def _calendar(user: UserContext) -> Found:
@@ -445,19 +437,30 @@ def _fingerprint(signal_id: str, kind: str, folded: list[str],
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:8]
 
 
+def _place(href: str) -> str:
+    """The place a link opens. The time of a Calendar link (``at``) is where
+    the day view scrolls, not another place, so it is left out. A link to the
+    same day at two times is one place (MD-3a review)."""
+    path, _, query = href.partition("?")
+    kept = [part for part in query.split("&") if part and not part.startswith("at=")]
+    return f"{path}?{'&'.join(kept)}" if kept else path
+
+
 def _merge_acts(signals: list[Signal]) -> list[dict[str, Any]]:
     """The acts of every signal on the card, the main kind's first. One act
-    for each id, and one link for each place."""
+    for each id, and one link for each place (``_place``). So the main kind's
+    link wins a place: a due-today task's "Block time" keeps today, and a
+    folded overlap on the same day adds no second Calendar link."""
     acts: list[dict[str, Any]] = []
     ids: set[str] = set()
-    hrefs: set[str] = set()
+    places: set[str] = set()
     for signal in signals:
         for act in signal.acts:
-            if act["id"] in ids or (act["way"] == "open" and act.get("href") in hrefs):
+            if act["id"] in ids or (act["way"] == "open" and _place(act["href"]) in places):
                 continue
             ids.add(act["id"])
             if act["way"] == "open":
-                hrefs.add(act["href"])
+                places.add(_place(act["href"]))
             acts.append(dict(act))
     return acts
 

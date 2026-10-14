@@ -5,7 +5,8 @@
  * Mutations caught: the parser takes a day that does not exist; a bad part
  * spoils the good one; a link with nothing good in it moves the page; the
  * scroll lands on the time instead of an hour above it; the page stops
- * reading the link, or reads it outside a Suspense boundary.
+ * reading the link, or reads it outside a Suspense boundary; the scroll stops
+ * re-running on a link; a change by hand keeps the link's time.
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -129,5 +130,26 @@ describe("the page reads the link", () => {
     expect(body).toMatch(/setMode\("day"\)/);
     expect(body).toMatch(/setJumpAt\(link\.at\)/);
     expect(view).toMatch(/jumpAt\s*\?\s*scrollTopFor\(jumpAt\)/);
+    // The scroll runs again when a link arrives, not only on a mode change.
+    expect(view).toMatch(/\}, \[mode, jumpAt\]\)/);
+  });
+
+  it("a change of mode or day by hand ends the link's time", () => {
+    const view = read("../CalendarView.tsx");
+    const body = (name: string) => {
+      const from = view.indexOf(`const ${name} = (`);
+      expect(from, name).toBeGreaterThan(-1);
+      return view.slice(from, view.indexOf("};", from));
+    };
+    expect(body("pickMode")).toMatch(/setJumpAt\(null\);\s*setMode\(m\)/);
+    expect(body("pickAnchor")).toMatch(/setJumpAt\(null\);\s*setAnchor\(d\)/);
+    // Every hand control goes through them. Only the link sets the two
+    // directly, and the month grid's pick sets the mode after pickAnchor.
+    expect(view).toMatch(/onClick=\{\(\) => pickMode\(m\)\}/);
+    expect(view).toMatch(/onClick=\{\(\) => pickAnchor\(startOfDay\(new Date\(\)\)\)\}/);
+    expect(view).toMatch(/const step = \(dir: 1 \| -1\) =>\s*pickAnchor\(/);
+    expect(view).toMatch(/pickAnchor\(d\);\s*setMode\("day"\)/);
+    expect(view.match(/setAnchor\(/g)).toHaveLength(2); // the link, and pickAnchor
+    expect(view.match(/setMode\(/g)).toHaveLength(3); // the link, pickMode, the month pick
   });
 });

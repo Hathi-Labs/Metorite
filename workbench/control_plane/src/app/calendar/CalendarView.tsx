@@ -130,6 +130,17 @@ export function CalendarView() {
     setMode("day");
     setJumpAt(link.at);
   }, []);
+  // A change by hand ends the link's time, so day → week → day lands on the
+  // current hour again, as it does with no link (MD-3a review). With no link
+  // `jumpAt` is already null, and the set changes nothing.
+  const pickMode = (m: Mode) => {
+    setJumpAt(null);
+    setMode(m);
+  };
+  const pickAnchor = (d: Date) => {
+    setJumpAt(null);
+    setAnchor(d);
+  };
   // The 24h grid is tall, so on open (and when switching to day/week) scroll to
   // ~1h before the current time — you land where the action is, not at midnight.
   // A link's time wins over the current time.
@@ -386,10 +397,10 @@ export function CalendarView() {
   };
 
   const step = (dir: 1 | -1) =>
-    setAnchor((a) =>
+    pickAnchor(
       mode === "month"
-        ? addMonths(a, dir)
-        : addDays(a, dir * (mode === "week" ? 7 : 1)),
+        ? addMonths(anchor, dir)
+        : addDays(anchor, dir * (mode === "week" ? 7 : 1)),
     );
 
   const title =
@@ -415,7 +426,7 @@ export function CalendarView() {
       <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Previous" onClick={() => step(-1)} className="rounded-md">
         <Icon name="ChevronLeft" className="h-4 w-4" />
       </Button>
-      <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
+      <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => pickAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
         Today
       </Button>
       <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Next" onClick={() => step(1)} className="rounded-md">
@@ -508,7 +519,7 @@ export function CalendarView() {
           <button
             key={m}
             type="button"
-            onClick={() => setMode(m)}
+            onClick={() => pickMode(m)}
             className={[
               "tech-transition rounded-md px-2.5 py-1 font-medium capitalize",
               mode === m
@@ -631,7 +642,7 @@ export function CalendarView() {
               anchor={anchor}
               items={items}
               onPickDay={(d) => {
-                setAnchor(d);
+                pickAnchor(d);
                 setMode("day");
               }}
               onOpen={openFocus}

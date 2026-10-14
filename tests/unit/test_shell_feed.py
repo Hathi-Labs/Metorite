@@ -916,6 +916,47 @@ class TestTheLinks:
         hrefs = {i["href"] for i in answer["items"] if i["kind"] == "approval"}
         assert hrefs == {"/approvals"}
 
+    def test_block_time_opens_the_members_today(self, fakes):
+        soon = card(run_feed(member(*FULL)), "tasks:t-soon")
+        block = next(a for a in soon["acts"] if a["id"] == "block-time")
+        assert block["href"] == f"/calendar?date={fakes._today().isoformat()}"
+
+    def test_a_due_today_card_with_an_overlap_today_has_one_calendar_link(self, fakes):
+        # MD-3a review, item 2. The overlap's "Open the day" names today at a
+        # time, and "Block time" names today. One place, so one link, and the
+        # main kind's act wins it.
+        start = fakes.now + timedelta(minutes=40)
+        fakes.blocks[ME] = [_block("t-soon", "Fix the hopper", start, 60),
+                            _block("t-other", "Other work", start + timedelta(minutes=30), 60)]
+        soon = card(run_feed(member(*FULL)), "tasks:t-soon")
+        assert (soon["kind"], soon["folded"]) == ("due_today", ["block_overlap"])
+        assert soon["acts"] == [
+            {"id": "done", "label": "Done", "class": "A", "way": "tap", "act": "done",
+             "act_ref": "t-soon"},
+            {"id": "block-time", "label": "Block time", "class": "A", "way": "open",
+             "href": f"/calendar?date={fakes._today().isoformat()}"},
+        ]
+
+    def test_an_overlap_on_another_day_keeps_its_own_link(self, fakes):
+        # Non-vacuity: a day later in the week is another place, so the card
+        # keeps "Open the day" beside "Block time".
+        later = fakes.now + timedelta(days=3)
+        fakes.blocks[ME] = [_block("t-soon", "Fix the hopper", later, 60),
+                            _block("t-other", "Other work", later + timedelta(minutes=30), 60)]
+        soon = card(run_feed(member(*FULL)), "tasks:t-soon")
+        local = later.astimezone(ZoneInfo(fakes.zone))
+        assert [(a["id"], a.get("href")) for a in soon["acts"]] == [
+            ("done", None),
+            ("block-time", f"/calendar?date={fakes._today().isoformat()}"),
+            ("open-day", f"/calendar?date={local.date().isoformat()}&at={local:%H:%M}"),
+        ]
+
+    def test_the_place_of_a_link_leaves_out_the_time(self):
+        assert feed._place("/calendar?date=2026-10-14&at=14:00") == "/calendar?date=2026-10-14"
+        assert feed._place("/calendar?date=2026-10-14") == "/calendar?date=2026-10-14"
+        assert feed._place("/calendar") == "/calendar"
+        assert feed._place("/projects?task=t-1") == "/projects?task=t-1"
+
     def test_the_approval_id_is_quoted_in_the_link(self):
         assert shell.approval_href("a b/c") == "/approvals?action=a%20b%2Fc"
         assert shell.approval_href("7f9c2b1e-0000-4000-8000-000000000001") == (
