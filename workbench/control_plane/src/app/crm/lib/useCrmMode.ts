@@ -15,6 +15,7 @@ import { denialOf, isNotFound, type Denial } from "./access";
 import { startPoller } from "./poller";
 import { isRunning, type SyncHealth } from "./syncHealth";
 import type { FieldDef } from "./fields";
+import type { FieldLayout } from "./fieldLayout";
 import type { CrmOwner } from "./filterBar";
 import type { RecordCounts } from "./setup";
 import type { DealPipeline, EntitySlug } from "./types";
@@ -262,6 +263,53 @@ export function useFieldDefs(entity: EntitySlug | null): FieldDefsState {
     () => api.listFields(entity!).catch(() => null),
   );
   return { defs: res.data ?? null, loading: entity !== null && res.loading };
+}
+
+export type FieldLayoutState = {
+  /**
+   * `null` while unread, and when no read has given a layout. The caller then
+   * draws the view of today. A failed re-read keeps the last good layout.
+   */
+  layout: FieldLayout | null;
+  /** The message of the last failed read, or null. */
+  error: string | null;
+  loading: boolean;
+  refresh: () => void;
+};
+
+/** The cache key of the layout of one entity. */
+export function fieldLayoutKey(entity: EntitySlug): string {
+  return `crm:field-layout:${entity}`;
+}
+
+/**
+ * The layout read of one entity (CRM-C4p item 3).
+ *
+ * ⚠️ It THROWS on a failure, and it must not turn one into `null` (review
+ * P2). `useCachedResource` keeps `prev.data` over a failed read, so a re-read
+ * that fails in the middle of an edit keeps the good layout. A `null` from
+ * here would be a good answer, and it would replace the layout.
+ */
+export function readFieldLayout(entity: EntitySlug): Promise<FieldLayout> {
+  return api.getFieldLayout(entity);
+}
+
+/**
+ * The one layout of an entity (CRM-C4a item 12), with `studio` and
+ * `studio_admin`. C4b and C4c read it. `invalidateCrmMode` wakes it, as it
+ * wakes every other CRM read.
+ */
+export function useFieldLayout(entity: EntitySlug | null): FieldLayoutState {
+  const res = useCachedResource<FieldLayout>(
+    entity ? fieldLayoutKey(entity) : null,
+    () => readFieldLayout(entity!),
+  );
+  return {
+    layout: res.data ?? null,
+    error: res.error,
+    loading: entity !== null && res.loading,
+    refresh: res.refresh,
+  };
 }
 
 const KEY_RECORD_COUNTS = "crm:record-counts";
