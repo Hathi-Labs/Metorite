@@ -1105,8 +1105,9 @@ def _record(run: Run, key: str, outcome: Found | str) -> None:
 
 #: Seconds that a cancelled run waits for its cancelled providers, so each
 #: one closes its session before the read unwinds. It is short, so a stuck
-#: release cannot hang the cancel.
-CANCEL_WAIT_S = 0.5
+#: release cannot hang the cancel. It also runs when the ceiling fires, so
+#: it counts in the feed's worst case (``feed.FEED_TOTAL_S``).
+CANCEL_WAIT_S = 0.1
 
 
 async def _run_bounded(user: UserContext, providers: list[Provider], *, limit: float,

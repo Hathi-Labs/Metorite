@@ -576,18 +576,19 @@ For the My Day pass of the loop, only one provider runs at a time
 once, so two slots for each would hold six of the nine connections of the
 pool.
 
-One ceiling bounds the whole run: `FEED_TOTAL_S = 2.4`, from the start. At
+One ceiling bounds the whole run: `FEED_TOTAL_S = 2.3`, from the start. At
 the ceiling, each provider that still waits for a slot or still runs reads
 `failed`. The cache keeps no answer with a failed source, so the next poll
 tries again.
 
-A cancel of the whole read cancels each provider. Then it waits 0.5 seconds
-at most, so that each provider closes its session before the read ends.
+A cancel cancels each provider. Then it waits 0.1 seconds at most
+(`CANCEL_WAIT_S`), so that each provider closes its session first. The
+wait also runs when the ceiling fires.
 
-The worst case of a read is 4.0 + 2.4 + 1.5 = 7.9 seconds: the needs run,
-this run and the state join. That is under the 8 seconds of the BFF route,
-so a slow database gives a partial answer and not an error. 2.5 seconds
-would make 8.0, with no margin. Fence:
+The worst case of a read is 4.0 + 2.3 + 0.1 + 1.5 = 7.9 seconds: the needs
+run, this run, its cancel wait and the state join. That is under the 8 seconds of the BFF route,
+so a slow database gives a partial answer and not an error. A ceiling of 2.4 with a
+wait of 0.5 made 8.4, past the limit. Fence:
 `test_shell_feed.py::TestTheBudgetSum`.
 
 The MD-3b review decided these rules on 2026-10-14. Pool exhaustion caused
@@ -2369,7 +2370,7 @@ The client writes the words, for example "You", "Ravi", "Email rules",
 
 **The budget.** The handled reads run at the same time as the state join,
 after the providers, inside the same 1.5 seconds. So the feed's worst case
-is 7.9 seconds since MD-3b (4.0 + 2.4 + 1.5, §5.8 item 3), under the 8
+is 7.9 seconds since MD-3b (4.0 + 2.3 + 0.1 + 1.5, §5.8 item 3), under the 8
 seconds of the BFF route. A read past its
 limit counts as failed.
 
@@ -2608,7 +2609,7 @@ parts:
 - `needs.run_providers(..., slots=, ceiling_s=)` runs the feed-only
   providers two at a time at most for a read (`FEED_CONCURRENCY`), and one
   at a time for the loop's pass (`FEED_PASS_CONCURRENCY`). Each limit of 2
-  seconds starts when the provider gets its slot. At `FEED_TOTAL_S`, 2.4
+  seconds starts when the provider gets its slot. At `FEED_TOTAL_S`, 2.3
   seconds, the rest read `failed`. The needs providers still run one after
   another.
 - The register refuses a gated provider that carries a Handled read, until

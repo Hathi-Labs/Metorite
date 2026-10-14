@@ -1473,11 +1473,13 @@ class TestTheBudgetSum:
         found = re.search(r"const TIMEOUT_MS = ([0-9_]+);", route.read_text(encoding="utf-8"))
         assert found, "route.ts names no TIMEOUT_MS"
         limit_s = int(found.group(1).replace("_", "")) / 1000
-        worst = shell.TOTAL_BUDGET_S + feed.FEED_TOTAL_S + state.STATE_TIMEOUT_S
+        # The cancel wait counts: it also runs when the ceiling fires.
+        worst = (shell.TOTAL_BUDGET_S + feed.FEED_TOTAL_S + shell.CANCEL_WAIT_S
+                 + state.STATE_TIMEOUT_S)
         assert worst < limit_s, (worst, limit_s)
         # The numbers that §5.8 item 3 and handled.py state.
-        assert (shell.TOTAL_BUDGET_S, feed.FEED_TOTAL_S, state.STATE_TIMEOUT_S, limit_s) \
-            == (4.0, 2.4, 1.5, 8.0)
+        assert (shell.TOTAL_BUDGET_S, feed.FEED_TOTAL_S, shell.CANCEL_WAIT_S,
+                state.STATE_TIMEOUT_S, limit_s) == (4.0, 2.3, 0.1, 1.5, 8.0)
 
 
 class TestTheFeedOnlyGather:

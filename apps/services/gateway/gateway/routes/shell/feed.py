@@ -118,11 +118,12 @@ FEED_CONCURRENCY = 2
 FEED_PASS_CONCURRENCY = 1
 #: Seconds for all the feed-only providers, from the start of their run. A
 #: provider still queued or running then reads ``failed`` (MD-3b). The read's
-#: worst case is ``needs.TOTAL_BUDGET_S`` + this + ``state.STATE_TIMEOUT_S``:
-#: 4.0 + 2.4 + 1.5 = 7.9 seconds, under the 8 seconds of the BFF route
-#: (``app/api/shell/feed/route.ts`` ``TIMEOUT_MS``). 2.5 would make 8.0, which
-#: is no margin. Fence: ``test_shell_feed.py::TestTheBudgetSum``.
-FEED_TOTAL_S = 2.4
+#: worst case is ``needs.TOTAL_BUDGET_S`` + this + ``needs.CANCEL_WAIT_S`` +
+#: ``state.STATE_TIMEOUT_S``: 4.0 + 2.3 + 0.1 + 1.5 = 7.9 seconds, under the
+#: 8 seconds of the BFF route (``app/api/shell/feed/route.ts``
+#: ``TIMEOUT_MS``). The cancel wait counts, because it also runs when the
+#: ceiling fires. Fence: ``test_shell_feed.py::TestTheBudgetSum``.
+FEED_TOTAL_S = 2.3
 #: The days of blocks that ``block_overlap`` reads, today first.
 WEEK_DAYS = 7
 #: A block that starts within this time is ``block_soon``.
