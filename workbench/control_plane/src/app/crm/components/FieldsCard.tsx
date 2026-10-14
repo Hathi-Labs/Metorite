@@ -5,14 +5,25 @@
  *
  * It lists the custom fields of each entity: the label, the type and the
  * source, with a flag for a hidden field and the options of a picklist in a
- * disclosure. It is a list to read. In Mirror mode Zoho owns the fields. In
- * Native mode the editor comes with CRM-S6, so this card builds none.
+ * disclosure. It is a list to read.
+ *
+ * **The field studio** (WS-53 CRM-C4, section 20.7). When the layout says
+ * `studio_admin`, the card draws `FieldStudio` instead: the flag
+ * `CRM_FIELD_STUDIO_ORGS` allows the org, the caller is an admin, and the mode
+ * is Native (`fieldsCardShape` in `lib/fieldStudio.ts`). In each other case it
+ * draws the list to read. In Mirror mode Zoho owns the fields until CRM-C5, so
+ * the note sends the admin to Zoho. The `fields` section is for an admin only,
+ * so a member never sees this card.
  */
 
+import Button from "@/components/ui/Button";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 import type { FieldDef } from "../lib/fields";
-import { useFieldDefs } from "../lib/useCrmMode";
+import { fieldsCardShape } from "../lib/fieldStudio";
+import { useFieldDefs, useFieldLayout } from "../lib/useCrmMode";
 import type { EntitySlug } from "../lib/types";
+import FieldStudio from "./FieldStudio";
 import { Card } from "./SettingsCards";
 
 export const FIELD_ENTITIES: { slug: EntitySlug; label: string }[] = [
@@ -22,7 +33,7 @@ export const FIELD_ENTITIES: { slug: EntitySlug; label: string }[] = [
   { slug: "deals", label: "Deals" },
 ];
 
-export const FIELDS_MIRROR_NOTE = "Fields come from Zoho.";
+export const FIELDS_MIRROR_NOTE = "Fields come from Zoho. Edit fields in Zoho.";
 export const FIELDS_NATIVE_NOTE = "Field editing comes later.";
 
 const SOURCE_LABEL: Record<FieldDef["source"], string> = {
@@ -120,8 +131,51 @@ export function FieldsCardView({
   );
 }
 
-/** The card with its own reads. Each entity has one cached read. */
+/**
+ * The card with its own reads. The layout read of the first entity says
+ * whether the caller gets the studio (CRM-C4c). The studio reads the same
+ * entity first, so the two share one cached read. Mirror mode reads no layout.
+ */
 export default function FieldsCard({ readOnly }: { readOnly: boolean }) {
+  const probe = useFieldLayout(readOnly ? null : FIELD_ENTITIES[0].slug);
+  const shape = fieldsCardShape(readOnly, probe);
+  if (shape === "studio") return <FieldStudio entities={FIELD_ENTITIES} />;
+  if (shape === "loading") {
+    return (
+      <Card title="Fields">
+        <SkeletonRows count={4} className="p-4" />
+      </Card>
+    );
+  }
+  if (shape === "error") return <FieldsCardError error={probe.error} onRetry={probe.refresh} />;
+  return <FieldsCardRead readOnly={readOnly} />;
+}
+
+/** The words of a failed layout read (review P2). */
+export const FIELDS_READ_FAILED = "The fields could not be read.";
+
+/**
+ * A failed layout read. It does not say "Field editing comes later", because
+ * the admin may have the studio. Retry reads the layout again.
+ */
+export function FieldsCardError({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+  return (
+    <Card title="Fields">
+      <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs text-muted-foreground">
+        <span>
+          {FIELDS_READ_FAILED}
+          {error ? ` ${error}` : ""}
+        </span>
+        <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+/** The list to read, with one cached read for each entity. */
+function FieldsCardRead({ readOnly }: { readOnly: boolean }) {
   const leads = useFieldDefs("leads").defs;
   const contacts = useFieldDefs("contacts").defs;
   const organizations = useFieldDefs("organizations").defs;
