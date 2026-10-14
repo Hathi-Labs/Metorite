@@ -31,6 +31,7 @@ import { AbsencePanel, AwayBadge } from "../components/AbsencePanel";
 import { AvatarPicker } from "../components/AvatarPicker";
 import { ProfilePanels } from "../components/ProfilePanels";
 import { WhatsAppLinkSection } from "../components/WhatsAppLinkSection";
+import { ReachSection } from "../components/ReachSection";
 import { type PersonDetail, type WorkRow, peopleApi } from "../lib/api";
 import { initials } from "../lib/directory";
 import { PAGE_FRAME } from "../lib/frame";
@@ -298,6 +299,8 @@ export default function MyProfilePage() {
         the channel is open for this member's organization.
       */}
       <WhatsAppLinkSection />
+      {/* Messages Metorite starts (WS-59 RE-1a). Draws nothing while Reach is dark. */}
+      <ReachSection />
     </main>
   );
 }
