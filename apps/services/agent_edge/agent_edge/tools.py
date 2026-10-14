@@ -55,9 +55,11 @@ transport hands it the parsed arguments and the authenticated caller.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -81,6 +83,25 @@ _log = get_logger("agent_edge.tools")
 
 #: The limit of one tool call, for all of its gateway requests (EA3-17).
 TOOL_TIMEOUT_S = 25.0
+
+#: EA-6d fix round 2. A write that landed is never reported as busy. When a
+#: write answers 2xx, the tool limit moves out to at least this many seconds
+#: from that moment (:func:`_landed`), so the call can record the write (the
+#: idempotency slot, at most ``idempotency.STORE_TIMEOUT_S``) and report it.
+POST_WRITE_GRACE_S = 8.0
+
+#: Each read after a landed write (the re-read and the status names) gets at
+#: most this many seconds, and never more than the time left in the call less
+#: :data:`POST_WRITE_MARGIN_S`. A read that runs out gives the write's own
+#: answer (:func:`_after_write`).
+POST_WRITE_READ_CAP_S = 4.0
+POST_WRITE_MARGIN_S = 1.0
+
+#: The limit of the tool call that runs now (:func:`call`), so a write can
+#: move it out (:func:`_landed`) and a later read can see what is left.
+_TOOL_TIMER: ContextVar[asyncio.Timeout | None] = ContextVar("edge_tool_timer",
+                                                             default=None)
+
 
 #: ``list_tasks`` reads the statuses of at most this many projects (EA3-17).
 MAX_STATUS_READS = 10
@@ -278,7 +299,55 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         raise ToolError(TEXT_BAD_REQUEST) from None
     if texts and answer.status in texts:
         raise ToolError(texts[answer.status])
-    return answer.status, _body_of(answer, not_found, write=True)
+    body = _body_of(answer, not_found, write=True)
+    # The write landed. From here on the call must report it (fix round 2).
+    _landed()
+    return answer.status, body
+
+
+def _landed() -> None:
+    """Move the tool limit out to at least :data:`POST_WRITE_GRACE_S` from
+    now, because a write landed (EA-6d fix round 2).
+
+    Without it, a limit that fires after the write made the call answer busy,
+    and with a key it marked the slot ``unknown``. An agent that retried then
+    made a second task. The limit never moves in: a later deadline stays.
+    """
+    timer = _TOOL_TIMER.get()
+    if timer is None:
+        return
+    floor = asyncio.get_running_loop().time() + POST_WRITE_GRACE_S
+    when = timer.when()
+    if when is not None and when < floor:
+        # A RuntimeError: the limit already fired, and its cancel is on its way.
+        with contextlib.suppress(RuntimeError):
+            timer.reschedule(floor)
+
+
+def _post_write_budget() -> float:
+    """The seconds that one read after a landed write may take."""
+    timer = _TOOL_TIMER.get()
+    when = timer.when() if timer is not None else None
+    if when is None:
+        return POST_WRITE_READ_CAP_S
+    left = when - asyncio.get_running_loop().time() - POST_WRITE_MARGIN_S
+    return min(POST_WRITE_READ_CAP_S, left)
+
+
+async def _after_write[T](read: Callable[[], Awaitable[T]], fallback: T) -> T:
+    """Run one read after a write that landed, inside its own small limit
+    (:func:`_post_write_budget`). A read that fails or runs out gives
+    *fallback*, the write's own answer. It never raises a tool error and never
+    lets the tool limit fire, so a landed write never comes back as busy
+    (EA-6d fix round 2)."""
+    budget = _post_write_budget()
+    if budget <= 0:
+        return fallback
+    try:
+        async with asyncio.timeout(budget):
+            return await read()
+    except (ToolError, GatewayUnauthorized, TimeoutError):
+        return fallback
 
 
 async def _together(*reads: Coroutine[Any, Any, Any]) -> list[Any]:
@@ -2035,8 +2104,10 @@ class _Sent:
         self.post = False
 
 
-async def _create(ctx: Context, args: dict[str, Any], sent: _Sent) -> dict[str, Any]:
-    """Check the inputs against the project, then POST the task.
+async def _create(ctx: Context, args: dict[str, Any],
+                  sent: _Sent) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Check the inputs against the project, then POST the task. Returns the
+    POST answer and the project's statuses, and reads nothing after the POST.
 
     The checks of ``set_task_status`` hold for ``status_id``: a status
     outside the project's set is the bad-request text, and a ``done`` or
@@ -2066,9 +2137,16 @@ async def _create(ctx: Context, args: dict[str, Any], sent: _Sent) -> dict[str, 
                           json_body=payload)
     if not isinstance(row, dict) or _id(row.get("id")) is None:
         raise ToolError(TEXT_BUSY)
-    # Fix round 1: the version after the links of the new text (`_reread`).
-    row = await _reread(ctx, row)
-    return {"task": _task(row, _names(statuses)), "created": True}
+    return row, statuses
+
+
+async def _created(ctx: Context, row: dict[str, Any],
+                   statuses: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """The result of a create that landed. Fix round 1: the re-read gives the
+    version after the links of the new text (`_reread`). Fix round 2: the
+    re-read is bounded, and the POST answer stands in for it."""
+    current = await _after_write(lambda: _reread(ctx, row), row)
+    return {"task": _task(current, _names(statuses)), "created": True}
 
 
 async def _check_type(ctx: Context, project: str, type_id: str) -> None:
@@ -2145,7 +2223,7 @@ async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     key = args.get("idempotency_key")
     sent = _Sent()
     if key is None:
-        return await _create(ctx, args, sent)
+        return await _created(ctx, *await _create(ctx, args, sent))
     fingerprint = idempotency.fingerprint(
         {k: v for k, v in args.items() if k != "idempotency_key"})
     slot = idempotency.Slot(ctx.caller.lookup, str(key))
@@ -2156,7 +2234,7 @@ async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if earlier is not None:
         return await _first_result(ctx, earlier, fingerprint)
     try:
-        result = await _create(ctx, args, sent)
+        row, statuses = await _create(ctx, args, sent)
     except ToolError as exc:
         # A busy text after the POST went out: the gateway may have made the
         # task. Any other text is a clear refusal, and no row exists. A POST
@@ -2177,8 +2255,11 @@ async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         else:
             await slot.release()
         raise
-    await slot.finish(fingerprint, str(result["task"]["id"]))
-    return result
+    # Fix round 2: record the write FIRST, outside the `try`, and only then
+    # read anything. A read after this point can never turn the slot
+    # `unknown`.
+    await slot.finish(fingerprint, str(row["id"]))
+    return await _created(ctx, row, statuses)
 
 
 CREATE_TASK = Tool(
@@ -2238,9 +2319,15 @@ async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if_match=str(args["expected_version"]))
     if not isinstance(after, dict):
         raise ToolError(TEXT_BUSY)
+    written: dict[str, Any] = after
     # Fix round 1: the version after the links of the new text (`_reread`).
-    after = await _reread(ctx, after)
-    task = _task(after, await _names_after_write(ctx, after.get("project_id")))
+    # Fix round 2: each read after the PATCH is bounded, and the PATCH answer
+    # stands in for it.
+    current = await _after_write(lambda: _reread(ctx, written), written)
+    no_names: dict[str, str] = {}
+    names = await _after_write(
+        lambda: _names_after_write(ctx, current.get("project_id")), no_names)
+    task = _task(current, names)
     return {"task": {k: task[k] for k in UPDATED_TASK_KEYS}}
 
 
@@ -2309,8 +2396,12 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
         return error_result(TEXT_WRITES_OFF)
     try:
         args = check_input(tool.input_schema, arguments)
-        async with asyncio.timeout(TOOL_TIMEOUT_S):
-            structured = await tool.run(ctx, args)
+        async with asyncio.timeout(TOOL_TIMEOUT_S) as timer:
+            token = _TOOL_TIMER.set(timer)
+            try:
+                structured = await tool.run(ctx, args)
+            finally:
+                _TOOL_TIMER.reset(token)
     except ToolError as exc:
         return error_result(exc.text)
     except TimeoutError:

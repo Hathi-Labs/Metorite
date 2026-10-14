@@ -27,6 +27,45 @@ Run::
 
     eval "$(bash scripts/dev_db.sh --export)"
     uv run pytest tests/unit/test_mcp_edge_task_writes.py tests/unit/test_mcp_edge_writes.py -v -rs
+
+**The mutations (R7).** Each one turned the named test red. Re-run them by
+name. ``E`` is ``apps/services/agent_edge/agent_edge``, ``G`` is
+``apps/services/gateway/gateway/routes/projects`` and ``T`` is this file.
+
+* M1. ``G/tasks.py``: stamp ``manual`` for an agent. ``test_a_task_an_agent_makes_reads_mcp``.
+* M2. ``G/core.py``: ``CLIENT_TASK_SOURCES`` keeps ``mcp``. ``test_a_member_create_that_names_mcp_is_422``.
+* M3. The migration leaves out ``mcp``. ``test_the_task_source_vocabulary_mirror_is_exact`` and ``test_the_check_accepts_exactly_the_task_sources``.
+* M4. ``E/tools.py``: skip the claim. ``test_the_same_key_twice_makes_one_task``.
+* M5. ``E/idempotency.py``: the claim without ``nx``. ``test_two_calls_at_once_make_one_task``.
+* M6. A refusal keeps the key. ``test_a_clear_refusal_frees_the_key``.
+* M7. A POST with no answer frees the key. ``test_a_post_with_no_clear_answer_keeps_the_key``.
+* M8. No fingerprint check. ``test_the_same_key_with_other_inputs_is_refused``.
+* M9. The update body carries ``task_id``. ``test_it_patches_the_named_fields_only_with_if_match``.
+* M10. The edge lets a closing status through on create. ``test_a_closing_status_is_refused_before_the_write``.
+* M11. The gateway does not narrow an agent body. ``test_a_create_with_another_key_is_422`` and ``test_a_patch_with_another_key_or_the_cascade_is_422``.
+* M12. The gateway lets an agent close a task. ``test_a_create_into_a_closing_status_is_422`` and ``test_a_patch_into_a_closing_status_rolls_back_all_of_it``.
+* M13. The gateway lets a parent of another project through. ``test_a_create_under_a_parent_of_another_project_is_422``.
+* M14. The edge lets a parent of another project through. ``test_a_parent_in_another_project_is_refused``.
+* M15. The update sends no ``If-Match``. ``test_it_patches_the_named_fields_only_with_if_match`` and the R8 update test.
+* M16. ``create_task`` claims ``idempotentHint: true``. ``test_mcp_edge_coverage.py::test_rule_3_each_tool_declares_its_scope_hints_and_schemas``.
+* M17. The create pair leaves ``MCP_WRITE_ROUTES``. ``test_the_write_pairs_are_those_of_ea_6a_and_ea_6d`` and the R8 create test.
+* M18. ``RESULT_TTL_S`` is 60. ``test_the_slot_is_tenant_prefixed_and_holds_no_raw_key``.
+* M19. ``G/intake.py`` reads ``TASK_SOURCES``. ``test_every_route_checks_a_request_source_against_the_client_tuple``.
+* M20. The edge does not check the type. ``test_a_type_outside_the_project_is_refused_before_the_write``.
+* M21. The gateway does not check the type. ``test_a_create_with_a_type_outside_the_project_is_422``.
+* M22. Create returns the POST version. ``test_it_posts_the_named_keys_only_and_maps_the_task`` and ``test_the_returned_version_survives_the_links_of_the_text``.
+* M23. Update returns the PATCH version. ``test_it_patches_the_named_fields_only_with_if_match`` and ``test_the_returned_version_survives_the_links_of_the_text``.
+* M24. A failed re-read raises. ``test_a_failed_re_read_still_reports_the_task`` and ``test_a_failed_re_read_gives_the_patch_answer``.
+* M25. The fingerprint before the state. ``test_an_unknown_or_unreadable_slot_always_gives_the_unknown_text``.
+* M26. A connect error keeps the key. ``test_a_post_that_never_left_the_edge_frees_the_key``.
+* M27. ``E/gateway_client.py`` raises ``GatewayUnreachable`` for a connect error. The same test.
+* M28. ``taskCard.ts`` loses ``mcp``. ``card.test.ts``, "covers exactly the non-manual half".
+* M29. The CHECK gains a value that the UI lacks. The same vitest.
+* M30. The re-read before ``slot.finish``. ``test_the_write_is_recorded_before_any_re_read``.
+* M31. An unbounded re-read after a create. ``test_a_slow_re_read_after_a_create_gives_the_post_answer``.
+* M32. An unbounded re-read after an update. ``test_a_slow_re_read_after_an_update_gives_the_patch_answer``.
+* M33. No grace after a landed write (``_landed`` does nothing). ``test_a_landed_write_moves_the_tool_limit_out``.
+* M34. ``G/tasks.py``: the type check reads root-local types only. ``test_a_create_with_an_org_wide_type_lands``.
 """
 from __future__ import annotations
 
@@ -134,12 +173,20 @@ class _Gateway(w._Gateway):
             "title": "old title", "custom_fields": {}, "tags": [],
             "assignees": ["m@x.test"]}
         self.types = [{"id": TYPE, "name": "Bug", "is_epic": False}]
+        #: Fix round 2: `{path: seconds}` of a GET that answers late, and a
+        #: hook that sees the moment such a GET starts.
+        self.slow: dict[str, float] = {}
+        self.on_slow: Any = None
 
     async def __call__(self, scope, receive, send) -> None:
         if (scope["method"], scope["path"]) == ("POST", "/projects/tasks"):
             self.posting.set()
             if self.hold is not None:
                 await self.hold.wait()
+        if scope["method"] == "GET" and scope["path"] in self.slow:
+            if self.on_slow is not None:
+                self.on_slow()
+            await asyncio.sleep(self.slow[scope["path"]])
         await super().__call__(scope, receive, send)
 
     def _answer(self, r: SimpleNamespace) -> tuple[int, Any]:
@@ -624,6 +671,88 @@ class TestUpdateTask:
         assert result["structuredContent"]["task"]["status"]["name"] is None
 
 
+class TestALandedWriteIsNeverBusy:
+    """Fix round 2 (F1). A write that landed comes back as the write's own
+    answer, whatever the tool limit and however slow the reads after it.
+
+    The tool limit here is 1 second, and the re-read takes 10, which is longer
+    than the grace of a landed write (``POST_WRITE_GRACE_S``). So an unbounded
+    re-read lets the tool limit fire, and the call reads busy.
+    """
+
+    @pytest.fixture(autouse=True)
+    def short_limit(self, monkeypatch):
+        monkeypatch.setattr(tools, "TOOL_TIMEOUT_S", 1.0)
+        monkeypatch.setattr(tools, "POST_WRITE_READ_CAP_S", 0.5)
+
+    @pytest.mark.parametrize("key", [None, IDEM])
+    async def test_a_slow_re_read_after_a_create_gives_the_post_answer(self, edge, key):
+        edge.gateway.slow[f"/projects/tasks/{NEW}"] = 10.0
+        args = _create_args() if key is None else _create_args(idempotency_key=key)
+        result = await _tool("create_task", args)
+        assert result["isError"] is False, result
+        body = result["structuredContent"]
+        assert (body["created"], body["task"]["id"], body["task"]["version"]) == (
+            True, NEW, V1)
+        assert len(edge.gateway.posts()) == 1
+        if key is None:
+            assert edge.redis.slots() == {}
+            return
+        [slot] = edge.redis.slots().values()
+        assert (slot["state"], slot["task"]) == ("done", NEW)
+        # A retry with the key gives the same task back and writes nothing.
+        edge.gateway.slow.clear()
+        again = await _tool("create_task", args)
+        assert again["structuredContent"]["created"] is False
+        assert len(edge.gateway.posts()) == 1
+
+    async def test_a_slow_re_read_after_an_update_gives_the_patch_answer(self, edge):
+        edge.gateway.slow[f"/projects/tasks/{TASK}"] = 10.0
+        result = await _tool("update_task", _update_args(title="x"))
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["task"]["version"] == V2
+        assert len(edge.gateway.writes()) == 1
+
+    async def test_the_default_caps_hold_the_verifiers_case(self, edge, monkeypatch):
+        """The case of the re-verify: a 1 second limit, a 5 second GET, and
+        the default read cap."""
+        monkeypatch.setattr(tools, "POST_WRITE_READ_CAP_S", 4.0)
+        edge.gateway.slow[f"/projects/tasks/{NEW}"] = 5.0
+        result = await _tool("create_task", _create_args(idempotency_key=IDEM))
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["task"]["version"] == V1
+        [slot] = edge.redis.slots().values()
+        assert slot["state"] == "done"
+
+    async def test_the_write_is_recorded_before_any_re_read(self, edge, monkeypatch):
+        """F1 (a). The slot reads `done` at the moment the re-read starts, so
+        nothing that happens to the read can turn it `unknown`."""
+        monkeypatch.setattr(tools, "TOOL_TIMEOUT_S", 25.0)
+        seen: list[Any] = []
+        edge.gateway.slow[f"/projects/tasks/{NEW}"] = 0.0
+        edge.gateway.on_slow = lambda: seen.append(
+            [v["state"] for v in edge.redis.slots().values()])
+        result = await _tool("create_task", _create_args(idempotency_key=IDEM))
+        assert result["isError"] is False, result
+        assert seen == [["done"]]
+
+    async def test_a_landed_write_moves_the_tool_limit_out(self):
+        """F1. `_landed` gives the call at least `POST_WRITE_GRACE_S` from the
+        moment a write lands, and never moves the limit in."""
+        loop = asyncio.get_running_loop()
+        async with asyncio.timeout(1.0) as timer:
+            token = tools._TOOL_TIMER.set(timer)
+            try:
+                tools._landed()
+                assert timer.when() >= loop.time() + tools.POST_WRITE_GRACE_S - 0.5
+                later = timer.when()
+                timer.reschedule(later + 100)
+                tools._landed()
+                assert timer.when() == later + 100
+            finally:
+                tools._TOOL_TIMER.reset(token)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # R8: the real gateway app on a promoted catalog, as a NON-privileged role
 # ═══════════════════════════════════════════════════════════════════════════
@@ -688,6 +817,11 @@ def world():
                         " VALUES (CAST(:p AS uuid), :n, CAST(:o AS uuid)) RETURNING id",
                         p=project, n="Bug", o=org))
         for name, project in (("team", team), ("other", other))})
+    # Fix round 2 (F2): an ORG-WIDE type, `project_id IS NULL` (migration 175).
+    # It is in the vocabulary of every project of the organization.
+    types.org = str(a.one(
+        "INSERT INTO pm_task_types (project_id, name, organization_id)"
+        " VALUES (NULL, 'Org-wide', CAST(:o AS uuid)) RETURNING id", o=org))
     world_ = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, other=other, s=s,
                              c={}, tok={}, task=a.task, types=types)
     for name, scopes in (("write", w.WRITE_SCOPES), ("read", ("projects:read",))):
@@ -872,6 +1006,12 @@ class TestTheSourceAndTheToolsOnARealDatabase:
         assert ok["isError"] is False, ok
         assert str(_row(live, ok["structuredContent"]["task"]["id"]).type_id) == (
             live.types.team)
+        # Fix round 2 (F2): an org-wide type is in the project's vocabulary.
+        org = await _mcp(live, "write", "create_task", {
+            "project_id": live.team, "title": "org typed", "type_id": live.types.org})
+        assert org["isError"] is False, org
+        assert str(_row(live, org["structuredContent"]["task"]["id"]).type_id) == (
+            live.types.org)
         for type_id in (live.types.other, str(uuid.uuid4())):
             refused = await _mcp(live, "write", "create_task", {
                 "project_id": live.team, "title": "mistyped", "type_id": type_id})
@@ -952,6 +1092,18 @@ class TestTheGatewayNarrowsAnAgentWrite:
             "project_id": live.team, "title": title, "type_id": type_id})
         assert r.status_code == 422, r.text
         assert _count(live, title) == 0
+
+    @pytest.mark.parametrize("which", ["team", "org"])
+    async def test_a_create_with_an_org_wide_type_lands(self, live, which):
+        """Fix round 2 (F2). The gateway's type check reads the whole
+        vocabulary of the root: the root's own types AND the org-wide ones
+        (`project_id IS NULL`). The control is a root-local type."""
+        type_id = getattr(live.types, which)
+        title = f"type ok {which}"
+        r = await _send(live, "POST", "/projects/tasks", body={
+            "project_id": live.team, "title": title, "type_id": type_id})
+        assert r.status_code == 201, r.text
+        assert str(_row(live, r.json()["id"]).type_id) == type_id
 
     async def test_a_create_under_a_parent_of_another_project_is_422(self, live):
         parent = live.task(live.other, live.s.other, "foreign parent")
