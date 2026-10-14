@@ -53,6 +53,8 @@ import { Input, Textarea } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { TaskLinks } from "./TaskLinks";
+import { AgentRunPanel } from "./AgentRunPanel";
+import { agentKindLabel, clientName } from "../lib/agentRuns";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { taskRefResolverFor, type TaskRefResolver } from "@/lib/taskRefs";
 import { useEffect, useRef, useState } from "react";
@@ -261,12 +263,29 @@ function Entry({
   refResolver?: TaskRefResolver;
 }) {
   const who = activity.created_by ?? "";
+  const agentKind = agentKindLabel(activity.meta?.agent_kind);
+  const agentVia = typeof activity.meta?.via === "string" ? activity.meta.via : null;
   return (
     <div className="text-sm">
       <p className="flex items-center gap-1 text-xs text-muted-foreground">
         {isAutomated(activity) ? (
           <Badge size="xs" icon="Bot" title="Automated by a workflow">
             auto
+          </Badge>
+        ) : null}
+        {/* WS-55 EA-12c — a row an agent run wrote. The run panel above
+            draws the question card, so this row stays text with a mark. */}
+        {agentKind ? (
+          <Badge
+            size="xs"
+            icon="Bot"
+            title={
+              agentVia
+                ? `Written in an agent run of ${clientName(agentVia)}`
+                : "Written in an agent run"
+            }
+          >
+            {agentKind}
           </Badge>
         ) : null}
         <span className="min-w-0 truncate">
@@ -648,6 +667,15 @@ export function TaskBody({
       setEvents(got.events);
     }
     onChanged(fresh);
+  }
+
+  /** The two streams again, and not the task: an agent write (EA-12c). */
+  async function reloadStreams() {
+    const got = await loadStreams(task.id, allEvents);
+    if (got) {
+      setComments(got.comments);
+      setEvents(got.events);
+    }
   }
 
   const shownEvents = rollUp(events.rows, {
@@ -1294,6 +1322,14 @@ export function TaskBody({
             className={twoColumn ? "min-w-0" : undefined}
             {...fold("activity")}
           >
+            {/* WS-55 EA-12c — the open agent run, at the top of the
+                discussion. It draws nothing while the routes are off. */}
+            <AgentRunPanel
+              task={task}
+              personLabels={personLabels}
+              onTaskChanged={onChanged}
+              onActivity={() => void reloadStreams()}
+            />
             <Tabs
               chrome="inline"
               className="mb-3"

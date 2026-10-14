@@ -224,6 +224,14 @@ interface Props {
    * project rather than the view.
    */
   onExport: () => Promise<void>;
+  /**
+   * WS-55 EA-12c — the "Waiting on me" filter: tasks whose agent waits for
+   * the viewer. Absent while the agent-run routes are off, and then the bar
+   * draws no button. It is page state, not a saved-view key: this slice
+   * filters the loaded rows in the browser (`agentRuns.isWaitingOnMe`).
+   */
+  waitingOnMe?: boolean;
+  onWaitingOnMe?: (next: boolean) => void;
 }
 
 export function FilterBar({
@@ -253,6 +261,8 @@ export function FilterBar({
   onUpdateView,
   canSave,
   onExport,
+  waitingOnMe = false,
+  onWaitingOnMe,
 }: Props) {
   const subGroupBy = lanes.subGroupBy;
 
@@ -481,6 +491,18 @@ export function FilterBar({
         >
           Watching
         </Button>
+        {onWaitingOnMe ? (
+          <Button
+            variant={waitingOnMe ? "primary" : "secondary"}
+            size="sm"
+            icon="MessageCircleQuestion"
+            aria-pressed={waitingOnMe}
+            title="Tasks where an agent waits for your answer"
+            onClick={() => onWaitingOnMe(!waitingOnMe)}
+          >
+            Waiting on me
+          </Button>
+        ) : null}
         {/*
           The archive, as a place you can go. Owner request, 2026-09-20.
 
