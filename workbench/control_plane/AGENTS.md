@@ -408,8 +408,11 @@ Seven rules on top of the three above. Each one exists because it was broken:
    avatar alone. It opens ONE menu, upward: the current account, the other
    accounts, Add, You, Settings and sign-out. The menu comes from ONE list
    (`accountMenu` in `shellNav.ts`). Add a new option there, in one line.
-   The Metorite logo left the shell, and its place is not decided (owner,
-   "later"). A workspace with no logo keeps the comet as its badge. The
+   The Metorite logo left the bar and the sidebar. **The Metorite mark signs
+   the foot of the account menu** (owner, 2026-10-14). The `brand` group
+   comes after sign-out: a 14px comet and the word "Metorite", in muted
+   text. It is not a control and not a focus stop. Only the desktop menu
+   shows it. A workspace with no logo keeps the comet as its badge. The
    right group has no `min-w-0`, so it never spills over the command bar.
    The classic frame and the phone keep their account surfaces. Fences:
    `src/lib/shell/shellAccount.test.ts` and `e2e/shell-account.spec.ts`.

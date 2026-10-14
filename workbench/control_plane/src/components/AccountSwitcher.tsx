@@ -8,9 +8,10 @@
  *   • `AccountFoot` — the desktop sidebar's foot with the shell bar on
  *     (owner, 2026-10-14). The avatar, the name and the email open ONE menu:
  *     the current account, the others, "Add another account", You, Settings
- *     and sign-out (`accountMenu` in `lib/shell/shellNav.ts`). It replaced
- *     the 2026-10-12 shape, an account in the bar and a Metorite logo in the
- *     foot.
+ *     and sign-out (`accountMenu` in `lib/shell/shellNav.ts`). Our comet and
+ *     the word "Metorite" sign the menu's last row (owner, 2026-10-14). It
+ *     replaced the 2026-10-12 shape, an account in the bar and a Metorite
+ *     logo in the foot.
  *   • `SidebarAccountFooter` — the desktop sidebar's foot, in the classic
  *     frame only (shell bar off). Expanded, a button with the name and email.
  *     Folded, an avatar at the foot of the rail.
@@ -30,6 +31,7 @@ import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import ThemeToggle, { ThemeToggleMenuItem } from "@/components/ThemeToggle";
 import { useAccess } from "@/components/AccessProvider";
+import { MetoriteMark } from "@/components/MetoriteMark";
 import { BrandMark, useOrgBranding } from "@/components/OrgBrandLockup";
 import { categoricalAccent } from "@/lib/categorical";
 import { useDismiss } from "@/hooks/useDismiss";
@@ -622,7 +624,7 @@ function rowKey(item: AccountMenuItem): string {
 /**
  * The foot menu's body, in the groups of `accountMenu`: the current account,
  * marked, then the other accounts and "Add another account", then You, then
- * Settings, then sign-out.
+ * Settings, then sign-out, then our signature.
  *
  * Sign-out follows the count. One account signs out with "Sign out". With
  * more, "Sign out" leaves this account and lands on the next one
@@ -796,6 +798,17 @@ export function AccountFootMenu({
           <Button variant="ghost" size="none" layout="flex items-center" icon="LogOut" onClick={() => void signOutAll()} className={ROW}>
             Sign out of all accounts
           </Button>
+        );
+      case "brand":
+        // Our signature (owner, 2026-10-14), the way Notion, Slack and Linear
+        // sign their app menus. It is text, not a control: no button, no link,
+        // no hover fill and no focus stop. The comet is decorative, so a
+        // screen reader reads "Metorite" once, from the word.
+        return (
+          <div data-account-brand="" className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-muted-foreground">
+            <MetoriteMark size={14} />
+            <span>Metorite</span>
+          </div>
         );
     }
   };

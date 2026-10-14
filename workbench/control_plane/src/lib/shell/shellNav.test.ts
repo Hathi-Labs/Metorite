@@ -109,9 +109,10 @@ describe("the account menu holds pages about the member", () => {
 
 /**
  * The sidebar foot's one menu (owner, 2026-10-14): the accounts, then You,
- * then Settings, then sign-out, from ONE list. These fail on the wrong builds
- * that look right: Settings missing, the order changed, an account act shown
- * with the switcher off, or "Sign out of all accounts" with one account.
+ * then Settings, then sign-out, then our signature, from ONE list. These fail
+ * on the wrong builds that look right: Settings missing, the order changed,
+ * an account act shown with the switcher off, "Sign out of all accounts" with
+ * one account, or a signature that is a control or is out of place.
  */
 describe("accountMenu: the account, You, Settings and sign-out, from one list", () => {
   const rows = (g: ReturnType<typeof accountMenu>) =>
@@ -125,13 +126,14 @@ describe("accountMenu: the account, You, Settings and sign-out, from one list", 
       ["you", ["/people/me", "/people/access"]],
       ["settings", ["/settings/appearance", "colour-mode", "change-layout"]],
       ["sign-out", ["sign-out", "sign-out-all"]],
+      ["brand", ["brand"]],
     ]);
   });
 
   it("with one account: Add, and one Sign out", () => {
     const g = accountMenu(member, { layout: true, switcher: true, others: 0 });
     expect(rows(g).find(([id]) => id === "accounts")).toEqual(["accounts", ["add-account"]]);
-    expect(rows(g).at(-1)).toEqual(["sign-out", ["sign-out"]]);
+    expect(rows(g).at(-2)).toEqual(["sign-out", ["sign-out"]]);
   });
 
   it("with the switcher flag off: the header, You, Settings and one Sign out, whatever the count", () => {
@@ -140,6 +142,7 @@ describe("accountMenu: the account, You, Settings and sign-out, from one list", 
       ["you", ["/people/me", "/people/access"]],
       ["settings", ["/settings/appearance", "colour-mode", "change-layout"]],
       ["sign-out", ["sign-out"]],
+      ["brand", ["brand"]],
     ]);
   });
 
@@ -154,15 +157,17 @@ describe("accountMenu: the account, You, Settings and sign-out, from one list", 
       ["accounts", ["others", "add-account"]],
       ["settings", ["colour-mode"]],
       ["sign-out", ["sign-out", "sign-out-all"]],
+      ["brand", ["brand"]],
     ]);
     expect(rows(accountMenu(visibleSections(null, false), { layout: false, switcher: false, others: 0 }))).toEqual([
       ["current", ["current"]],
       ["settings", ["colour-mode"]],
       ["sign-out", ["sign-out"]],
+      ["brand", ["brand"]],
     ]);
   });
 
-  it("pages: false (no organization) keeps the account acts and drops You and Settings", () => {
+  it("pages: false (no organization) keeps the account acts and drops You, Settings and the signature", () => {
     expect(rows(accountMenu(member, { layout: true, switcher: true, others: 2, pages: false }))).toEqual([
       ["current", ["current"]],
       ["accounts", ["others", "add-account"]],
@@ -172,7 +177,46 @@ describe("accountMenu: the account, You, Settings and sign-out, from one list", 
 
   it("captions You and Settings, and no other group", () => {
     const g = accountMenu(member, { layout: true, switcher: true, others: 2 });
-    expect(g.map((x) => x.label)).toEqual([null, null, "You", "Settings", null]);
+    expect(g.map((x) => x.label)).toEqual([null, null, "You", "Settings", null, null]);
+  });
+
+  // Owner, 2026-10-14: our comet and "Metorite" sign the foot of the menu.
+  describe("the signature", () => {
+    const shapes = [
+      { layout: true, switcher: true, others: 2 },
+      { layout: true, switcher: true, others: 0 },
+      { layout: false, switcher: false, others: 0 },
+    ];
+
+    it("is the last group, after sign-out, in every shape", () => {
+      for (const o of shapes) {
+        for (const sections of [member, []]) {
+          const ids = accountMenu(sections, o).map((x) => x.id);
+          expect(ids.at(-1)).toBe("brand");
+          expect(ids.at(-2)).toBe("sign-out");
+          expect(ids.filter((id) => id === "brand")).toHaveLength(1);
+        }
+      }
+    });
+
+    it("holds the brand row, with no caption, and no item with an href or an action", () => {
+      const brand = accountMenu(member, shapes[0]).find((x) => x.id === "brand");
+      expect(brand).toEqual({ id: "brand", label: null, items: [{ kind: "brand" }] });
+      for (const item of brand?.items ?? []) {
+        expect(item).not.toHaveProperty("href");
+        expect(item.kind).not.toMatch(/^(link|action|sign-out|sign-out-all|add-account|colour-mode|others)$/);
+      }
+    });
+
+    it("is absent with pages: false, and nowhere else in the list", () => {
+      for (const o of shapes) {
+        const g = accountMenu(member, { ...o, pages: false });
+        expect(g.map((x) => x.id)).not.toContain("brand");
+        expect(g.flatMap((x) => x.items).map((i) => i.kind)).not.toContain("brand");
+      }
+      const full = accountMenu(member, shapes[0]);
+      expect(full.slice(0, -1).flatMap((x) => x.items).map((i) => i.kind)).not.toContain("brand");
+    });
   });
 });
 

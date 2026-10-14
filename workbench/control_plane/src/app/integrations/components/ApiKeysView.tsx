@@ -71,8 +71,6 @@ const KNOWN_DOMAINS: Record<string, string> = {
   "apollo":          "apollo.io",
   "google-maps":     "google.com",
   "instantly":       "instantly.ai",
-  "gmail":           "mail.google.com",
-  "gmail-send":      "mail.google.com",
   "gmail-oauth":     "mail.google.com",
   "microsoft-oauth": "outlook.office.com",
   "whatsapp":        "whatsapp.com",
@@ -89,8 +87,6 @@ const KNOWN_DOMAINS: Record<string, string> = {
 const KNOWN_LOGOS: Record<string, string> = {
   // Google services — the favicon for mail.google.com returns the generic Google "G",
   // so we use Gmail's own static icon.
-  "gmail":         "https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico",
-  "gmail-send":    "https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico",
   "gmail-oauth":   "https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico",
   // Microsoft / Outlook
   "microsoft-oauth": "https://outlook.live.com/favicon.ico",

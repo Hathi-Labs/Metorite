@@ -2,10 +2,15 @@
  * The Metorite comet, the one mark of our own brand in the app.
  *
  * Owner decisions, 2026-10-11 and 2026-10-14. The shell bar's left end shows
- * the customer's logo alone, with no words of ours. The shell shows no
- * Metorite logo of its own, and its place is not decided yet (owner,
- * "later"). A workspace with no logo shows the comet in its lockup
- * (`BrandMark`), as the workspace's badge.
+ * the customer's logo alone, with no words of ours. The bar and the sidebar
+ * show no Metorite logo of their own. The comet has two users:
+ *
+ * - `AccountFootMenu` (`AccountSwitcher.tsx`) signs the last row of the
+ *   account menu with it, beside the word "Metorite" (owner, 2026-10-14).
+ *   Only the desktop menu shows it. The org-less card, the classic frame and
+ *   the phone drawer do not.
+ * - A workspace with no logo shows the comet in its lockup (`BrandMark`), as
+ *   the workspace's badge.
  *
  * ⚠️ **This file is the ONE in-app component that draws the comet.** The only
  * other copy of the path is the tab-icon asset `src/app/icon.svg` (#854),

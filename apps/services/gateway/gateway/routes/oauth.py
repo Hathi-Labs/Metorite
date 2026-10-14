@@ -82,17 +82,11 @@ _PROVIDERS: dict[str, dict[str, Any]] = {
         "expiry_env": "ZOHO_TOKEN_EXPIRY",
         "extra_authorize": {"access_type": "offline", "prompt": "consent"},
     },
-    "google": {
-        "authorize_url": lambda s: "https://accounts.google.com/o/oauth2/v2/auth",
-        "token_url": lambda s: "https://oauth2.googleapis.com/token",
-        "scopes": "https://www.googleapis.com/auth/gmail.readonly",
-        "client_id_attr": "google_client_id",
-        "client_secret_attr": "google_client_secret",
-        "access_env": "GOOGLE_ACCESS_TOKEN",
-        "refresh_env": "GOOGLE_REFRESH_TOKEN",
-        "expiry_env": "GOOGLE_TOKEN_EXPIRY",
-        "extra_authorize": {"access_type": "offline", "prompt": "consent"},
-    },
+    # ⚠️ No `google` entry (WS-17 EM-G11b, 2026-10-14). It named the scope
+    # `gmail.readonly`, and the Gmail app asks for one set of scopes only:
+    # `GMAIL_SCOPES` in `email_ingestion/providers/gmail.py` (D-EM-31). The
+    # retired routes still answer 410 for each service. Fence:
+    # `tests/unit/test_gmail_one_scope_set.py`.
 }
 
 

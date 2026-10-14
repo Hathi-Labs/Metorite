@@ -461,10 +461,18 @@ Naming both, because a third appears whenever the set is left implicit.
 - ~~Our comet signs the right end~~ (2026-10-11, `BarSignature`), and
   ~~our comet and the word "Metorite" are the sidebar's foot~~ (2026-10-12,
   `MetoriteFoot`). **Both superseded.** The owner removed the Metorite logo
-  from the shell on 2026-10-14. Its new place is not decided (owner,
-  "later"). A workspace with no logo still shows the comet as its badge at
-  the top left (`OurMark`). That badge is the workspace's identity, not our
-  signature.
+  from the bar and the sidebar on 2026-10-14. A workspace with no logo still
+  shows the comet as its badge at the top left (`OurMark`). That badge is the
+  workspace's identity, not our signature.
+- **The Metorite mark signs the foot of the account menu** (owner,
+  2026-10-14). It is the menu's last row, after sign-out, as Notion, Slack
+  and Linear sign their app menus. The row is a 14px comet and the word
+  "Metorite" in `text-[11px] text-muted-foreground`. The menu's own divider
+  (`border-border`) sets it off. It is quiet text: no button, no link, no
+  hover fill and no focus stop. The comet is decorative, so a screen reader
+  reads the word once. It ends the scroll content and is not sticky. Only
+  the desktop menu shows it. The org-less card, the classic frame and the
+  phone drawer do not.
 - **The sidebar's foot is the account row** (owner, 2026-10-14,
   `AccountFoot` in `src/components/AccountSwitcher.tsx`). Open, it shows the
   avatar, the name, and the email in muted text under it. Both truncate. The
@@ -474,9 +482,9 @@ Naming both, because a third appears whenever the set is left implicit.
 - **The foot opens ONE menu, upward.** In order: the current account with a
   "Signed in" mark, the other accounts, "Add another account", You (My
   Profile, My access), Settings (Appearance, the colour mode, "Change my
-  layout"), "Sign out", and "Sign out of all accounts" with more than one
-  account. `accountMenu` in `src/lib/shell/shellNav.ts` is its one list. Add
-  a new option there, in one line.
+  layout"), "Sign out", "Sign out of all accounts" with more than one
+  account, and our signature. `accountMenu` in `src/lib/shell/shellNav.ts`
+  is its one list. Add a new option there, in one line.
 - Fences: `src/lib/shell/shellAccount.test.ts`, `shellNav.test.ts` and
   `e2e/shell-account.spec.ts`. The classic frame (shell bar off) and the
   phone keep their account surfaces.

@@ -14,6 +14,14 @@
             "no_relay",
             "no_tool_name"
           ]
+        },
+        {
+          "source": "live, arm after, 2026-10-14, tier-balanced (deepseek-v4-pro), 227 words",
+          "why": "Lists the healthy project and the pipeline figures on lines of their own, adds an 'Also on the board' tail, and ends on a menu of three choices.",
+          "text": "**Bottom line:** most things are moving, but three items need your attention this week: a supplier delay on Lyra, an unsigned renewal that expires Friday, and a stalled plant project.\n\n- **Lyra launch (6 Nov)** is at risk. Priya Shah at Lyra Components emailed 11 Oct that the motor driver boards ship 27 Oct instead of 13 Oct, two weeks late.\n- **Acme Robotics renewal** (Rs 22 lakh) expires Friday 16 Oct and is still unsigned. Kiran asked for it by Thursday.\n- **Orion plant setup** is slipping. 9 of 25 tasks done, 4 overdue (oldest is electrical sign-off, task #388, 11 days late). Divya Nair hasn't commented since 2 Oct.\n- **Kestrel printer refresh** is healthy: 14 of 22 tasks done, on track for 30 Oct, no blockers.\n- **Pipeline** holds 18 open deals worth Rs 2.4 crore. Three moved to Negotiation (Helios Labs Rs 38 lakh, Tarang Foods Rs 12 lakh, Nimbus Schools Rs 9 lakh). One loss: Corvid Tools, Rs 6 lakh, on price. Win rate dipped to 31 percent from 36.\n\nAlso on the board: Vega design review is booked Thursday 15 Oct at 11:00, but its CAD export task waits on a licence renewal; the internal wiki has been paused since September; and 9 emails need replies.\n\nWhat do you want to tackle first: the Acme renewal, the Lyra board delay, or the Orion overdue tasks?",
+          "expected_fail": [
+            "length"
+          ]
         }
       ]
     },
@@ -28,6 +36,15 @@
             "bluf",
             "mentions",
             "no_relay"
+          ]
+        },
+        {
+          "source": "live, arm after, 2026-10-14, tier-balanced (deepseek-v4-pro), 149 words",
+          "why": "Opens with 'Here's', splits the reply under headings, adds a stale low-priority task and a calendar paragraph, and ends on a menu.",
+          "text": "Here's what's on your plate today, most urgent first.\n\n**Needs you now**\n- Acme Robotics renewal (Rs 22 lakh) expires Friday. The contract has been sitting with you since 8 Oct and Kiran wants it back by Thursday 15 Oct.\n- Approve the Vega CAD licence renewal, Rs 1.8 lakh. It's 2 days overdue and Meera Pillai is blocked on it.\n- Reply to the auditor's questions. Overdue 6 days.\n\n**Due today**\n- Review the Q3 board deck.\n- Sign off the travel policy.\n\n**Low priority but stale**\n- Update your LinkedIn bio. Overdue 20 days, so either do it in 10 minutes today or close the task.\n\nYour calendar is full from 10:00 to 17:30, with one 45-minute gap at 13:15. That gap is the practical window for the Acme signature and the CAD approval.\n\nWant me to draft the Acme contract follow-up to Kiran, or start with the auditor reply?",
+          "expected_fail": [
+            "bluf",
+            "length"
           ]
         }
       ]
@@ -50,6 +67,14 @@
             "bluf",
             "recommendation"
           ]
+        },
+        {
+          "source": "live, arm after, 2026-10-14, tier-balanced (deepseek-v4-pro), 232 words",
+          "why": "Gives a list of reasons, then the options again with their numbers, then an 'If you want' offer.",
+          "text": "Counter at 8 percent. Don't give 12.\n\nThe numbers: 12 percent off drops you to Rs 10.56 lakh at 25 percent margin; 8 percent off is Rs 11.04 lakh at 28 percent. Leela's competitor quote is 10 percent below list, so she's asking you to beat it by 2 percent for no reason.\n\n- Your ceiling without founder sign-off is 8 percent, and it still beats the repeat-buyer case: Tarang paid on time last year.\n- Capacity is not the excuse it might look like. You hold 52 K2 units and make 60 a month against 34 committed for Oct-Nov [entity:7c1e] [entity:91aa], so you can absorb 40 units easily and want the volume.\n- The real asset is 2027: three more plants could order. That's the lever to protect margin now.\n\nOptions:\n\n- Hold list: Rs 12 lakh, 34 percent margin. You likely lose to the 10-percent competitor.\n- Counter at 8 percent (recommended): Rs 11.04 lakh, 28 percent, no approval needed. Offer a written 2027 three-plant commitment as the reason.\n- Match at 10 percent: Rs 10.8 lakh, about 26.5 percent, needs your approval. Only if Leela won't move off the competitor and you want to lock the relationship.\n- Give 12: Rs 10.56 lakh, 25 percent, needs your approval. Leaves 2 percent on the table versus the competitor quote.\n\nIf you want, I'll draft the counter to Leela at 8 percent with the 2027 hook.",
+          "expected_fail": [
+            "length"
+          ]
         }
       ]
     },
@@ -62,6 +87,14 @@
           "text": "Kestrel is on track for the 30 Oct release.\n\n## In progress\n- Task #312 Firmware OTA test, Joel Dsouza, due 16 Oct. 60 percent done.\n- Task #314 Packaging artwork, Neha Joshi, due 19 Oct. Waiting on the final product photos.\n\n## Risks\n- The CE test lab slot on 19 Oct is the only one before the release. If the test fails, the release moves to mid-November.",
           "expected_fail": [
             "no_relay"
+          ]
+        },
+        {
+          "source": "live, arm after, 2026-10-14, tier-balanced (deepseek-v4-pro), 127 words",
+          "why": "Gives one line for each fact of the read, then repeats the top risk as a closing line, then an offer.",
+          "text": "**Kestrel printer refresh** is on track for the 30 Oct release: 14 of 22 tasks done, owner Anil Rao.\n\n- The CE test lab slot on 19 Oct is the only one before release. If it fails, release slips to mid-November.\n- Firmware OTA test (Joel) is 60% done, due 16 Oct; firmware freeze is the next milestone on 16 Oct.\n- Neha holds two tasks due within 4 days: packaging artwork (19 Oct, waiting on product photos) and the user manual (23 Oct).\n- Four launch tasks are not started yet: webinar, sales training, price list, spare parts SKUs.\n- Budget at Rs 18.2 lakh of Rs 24 lakh (76%).\n\nBiggest risk is the CE lab slot on 19 Oct. Want me to flag the not-started launch tasks to their owners?",
+          "expected_fail": [
+            "length"
           ]
         }
       ]
@@ -147,6 +180,14 @@
             "bluf",
             "recommendation"
           ]
+        },
+        {
+          "source": "live, arm after, 2026-10-14, tier-balanced (deepseek-v4-pro), 176 words",
+          "why": "Writes two or three sentences in each point, restates the scores and the salaries, and ends on a 'What happens next' line.",
+          "text": "Hire Tomas Pereira.\n\nThe brief has two hard gates, and Tomas clears both. Asha fails one.\n\n- **Start date**: you need someone by 1 Dec 2026. Tomas has a 30-day notice and can start mid-November. Asha needs 90 days, so she lands mid-January, six weeks late for a Q1 2027 CE deadline.\n- **The core job is CE certification** for Kestrel and Lyra. Tomas has done CE work directly. Asha's strength is ISO 13485 and medical device QA, which is adjacent but not the certification you need.\n- **Experience gap is real but manageable**: Asha has 9 years (4 as lead) vs Tomas's 6 (2 as lead), and scores higher (4.4 vs 4.1). That matters less than the two gates above.\n- **Cost favours Tomas**: Rs 26 lakh vs Rs 32 lakh.\n\nOne open item before you sign: run Tomas's reference call. He has none done yet, while Asha has one positive. If the reference comes back weak, revisit before the offer.\n\nWhat happens next: you confirm the hire, and I'll flag that the reference call goes out this week.",
+          "expected_fail": [
+            "length"
+          ]
         }
       ]
     },
@@ -160,6 +201,15 @@
           "expected_fail": [
             "bluf",
             "length"
+          ]
+        },
+        {
+          "source": "live, arm after, 2026-10-14, tier-balanced (deepseek-v4-pro), 85 words",
+          "why": "Gives each healthy fact a line of its own on a quiet account, then an offer.",
+          "text": "Healthy account, nothing urgent. One open deal worth watching.\n\n- **Open deal: \"Nimbus 6 more printers\"** — Rs 9 lakh, in negotiation, next call 22 Oct, owned by Rohan Kulkarni.\n- **Installed base:** 14 printers, all on warranty until 2027.\n- **Support:** last ticket (filament jam) closed 30 Sep in one day. No open issues.\n- **Billing:** all invoices paid on time.\n- **Sentiment:** NPS 9/10 on 5 Oct.\n\nThe one thing on your calendar is that 22 Oct call. Want me to prep a note on where the negotiation stands?",
+          "expected_fail": [
+            "length",
+            "voice"
           ]
         }
       ]

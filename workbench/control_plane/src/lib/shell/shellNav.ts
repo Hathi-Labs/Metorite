@@ -214,6 +214,8 @@ export function accountLinks(sections: readonly NavSection[]): AccountLink[] {
  * - `link` opens a page. `colour-mode` is the light and dark toggle.
  * - `action` sends a shell event, and the component maps each id to it.
  * - `sign-out` leaves this account. `sign-out-all` leaves every account.
+ * - `brand` is our signature, the comet and the word "Metorite". It is not a
+ *   control: no link, no act and no focus stop.
  */
 export type AccountMenuItem =
   | { kind: "current" }
@@ -223,14 +225,22 @@ export type AccountMenuItem =
   | { kind: "colour-mode" }
   | { kind: "action"; id: "change-layout"; label: string; icon: string }
   | { kind: "sign-out" }
-  | { kind: "sign-out-all" };
+  | { kind: "sign-out-all" }
+  | { kind: "brand" };
 
 export interface AccountMenuGroup {
-  id: "current" | "accounts" | "you" | "settings" | "sign-out";
+  id: "current" | "accounts" | "you" | "settings" | "sign-out" | "brand";
   /** The caption over the group. Null draws no caption. */
   label: string | null;
   items: AccountMenuItem[];
 }
+
+/**
+ * The groups of the app's own menu, which the org-less card leaves out
+ * (`pages: false`). You and Settings need an organization. The signature
+ * belongs to the app menu, and the org-less card is not that menu.
+ */
+const APP_MENU_ONLY: ReadonlySet<AccountMenuGroup["id"]> = new Set(["you", "settings", "brand"]);
 
 /** The account pages that are settings, not facts about the member. */
 const SETTINGS_PAGES: ReadonlySet<string> = new Set(["/settings/appearance"]);
@@ -255,13 +265,16 @@ export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
  * 4. **Settings**: Appearance, the colour mode, and "Change my layout" while
  *    the shell nav is on (NS-7 asks the question only then).
  * 5. **Sign out**, then "Sign out of all accounts" with another account held.
+ * 6. **Our signature**: the comet and the word "Metorite", a quiet row at the
+ *    end (owner, 2026-10-14). It is not a control.
  *
  * It reads `accountLinks`, so a page is listed once, in one place. ⚠️ A new
  * option is ONE line here, in the group it belongs to. Do not add a row in
  * the component. Fences: `shellNav.test.ts` and `shellAccount.test.ts`.
  *
- * `pages: false` drops You and Settings, for a member with no organization
- * (`OrglessAccounts`). Those pages need an org, and the account acts do not.
+ * `pages: false` drops You, Settings and the signature, for a member with no
+ * organization (`OrglessAccounts`). Those pages need an org, and the account
+ * acts do not.
  */
 export function accountMenu(
   sections: readonly NavSection[],
@@ -295,9 +308,17 @@ export function accountMenu(
       label: null,
       items: [{ kind: "sign-out" }, ...(others > 0 ? [{ kind: "sign-out-all" } as const] : [])],
     },
+    {
+      id: "brand",
+      label: null,
+      items: [
+        { kind: "brand" },
+        // A later row (the version, Help, About, What's new) is one line here.
+      ],
+    },
   ];
   const pages = opts.pages ?? true;
-  return groups.filter((g) => g.items.length > 0 && (pages || (g.id !== "you" && g.id !== "settings")));
+  return groups.filter((g) => g.items.length > 0 && (pages || !APP_MENU_ONLY.has(g.id)));
 }
 
 /** All apps: every held pane that is an app, by team. */
