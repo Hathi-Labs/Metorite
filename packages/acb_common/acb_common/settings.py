@@ -1264,6 +1264,18 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Fence: tests/unit/test_my_day_cache.py.
     my_day_cache: bool = False
 
+    # ── My Day's new sources (WS-58 MD-3b, 2026-10-14) ──────────────────────
+    #
+    # `my_day_providers` lists the source ids of the gated feed-only
+    # providers that may run, with a comma between ids
+    # (`project-docs/specs/my_day_feed.md` §5.8 item 1). Default EMPTY: no
+    # gated provider runs, and the feed answer is the same as before MD-3b.
+    # The Calendar provider is not gated. The one reader is
+    # `gateway.routes.shell.needs.listed_sources`, and the features hash of
+    # the read cache covers the value. 🔴 A change on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_shell_feed.py.
+    my_day_providers: str = ""
+
     # ── Token accessors ────────────────────────────────────────────────────
 
     @property

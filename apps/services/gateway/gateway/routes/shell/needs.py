@@ -127,6 +127,29 @@ runs no feed code. Fence: ``tests/unit/test_shell_feed.py::TestOneRegistry``.
 entries also carry a ``handled`` read: what the app closed for the member
 since an instant, through a new function in the app that owns the table.
 Only the feed calls it (``handled.py``). ``closed_by`` is the ``by`` table.
+
+**The seam of the new sources** (``my_day_feed.md`` §5.8 items 1, 3, 4 and
+6, WS-58 MD-3b). Four rules, each for the feed-only providers that MD-3 adds:
+
+* A provider with ``gated=True`` runs only when its source id is in
+  ``MY_DAY_PROVIDERS``. :func:`listed_sources` is the one reader, and
+  :func:`feed_only_providers` applies it. A source that is not listed has no
+  entry in ``sources``. So with the list empty, the feed answer is the same
+  as before MD-3b. The Calendar provider is not gated.
+* The feed-only providers run at the same time (``run_providers`` with
+  ``concurrent=True``), each with its own time limit. A slow one fails alone.
+  The needs providers still run one after another, on today's budget.
+* A provider raises :class:`SourceAbsent` for a refusal that is not a
+  failure: CRM off, CRM access refused, no People row. Its source reads
+  ``absent``. The read cache keeps such an answer, and keeps no answer with a
+  ``failed`` source.
+* ``Provider.permission`` names one more grant, such as
+  ``admin:members:read``. A member without it gets the source ``absent``, and
+  the provider never runs.
+
+Fences: ``tests/unit/test_shell_feed.py`` (``TestTheAnswerBeforeMD3b``,
+``TestTheProviderList``, ``TestTheFeedOnlyGather``, ``TestSourceAbsent`` and
+``TestThePermissionGate``).
 """
 
 from __future__ import annotations
@@ -257,6 +280,13 @@ class Found:
     signals: Callable[[], list[Signal]] | None = None
     zone: str | None = None
     next_edge: str | None = None
+
+
+class SourceAbsent(Exception):
+    """A provider's refusal that is NOT a failure (``my_day_feed.md`` §5.8
+    item 4): CRM off, CRM access refused, or no People row. The run reads
+    the source as ``absent``, as for a member who does not hold the app. So
+    the read cache keeps the answer, which it never does for ``failed``."""
 
 
 def _now() -> datetime:
@@ -860,6 +890,12 @@ class Provider:
     the app closed for the member since an instant, through the app's own
     authorized read. Only the feed calls it (``handled.handled_run``), with
     the same gate as ``run``. The needs view never does.
+
+    ``permission`` names one more grant that the member must hold, such as
+    ``admin:members:read`` (MD-3b, §5.8 item 4). A member without it gets
+    the source ``absent``, and the provider never runs. ``gated`` says that
+    the provider runs only when ``MY_DAY_PROVIDERS`` lists its source id
+    (§5.8 item 1). Only a feed-only provider may be gated.
     """
 
     source: str
@@ -869,10 +905,15 @@ class Provider:
     admin: bool = False
     needs: bool = True
     handled: Callable[[UserContext, datetime], Awaitable[list[Closed]]] | None = None
+    permission: str | None = None
+    gated: bool = False
 
     def held_by(self, user: UserContext) -> bool:
-        """The gate the app's router would have applied (the module note)."""
+        """The gate the app's router would have applied (the module note),
+        and the provider's own ``permission``."""
         if not all(user.has_permission(f"feature:{f}") for f in self.features):
+            return False
+        if self.permission and not user.has_permission(self.permission):
             return False
         return not self.admin or user.has_permission(ADMIN_PERMISSION)
 
@@ -894,6 +935,9 @@ def register(provider: Provider) -> Provider:
             f"{sorted(provider.kinds - KIND_ORDER.keys())}")
     if provider.needs and any(not p.needs for p in REGISTRY.values()):
         raise ValueError("a needs provider must register before every feed-only one")
+    if provider.needs and provider.gated:
+        # MD-3b: the list gates the feed only. The bell never changes.
+        raise ValueError(f"the needs provider {provider.source!r} is gated")
     REGISTRY[provider.source] = provider
     return provider
 
@@ -915,9 +959,27 @@ def needs_providers() -> list[Provider]:
     return [p for p in REGISTRY.values() if p.needs]
 
 
+def listed_sources() -> frozenset[str]:
+    """The ONE reader of ``MY_DAY_PROVIDERS`` (``my_day_feed.md`` §5.8 item
+    1): the source ids of the gated providers that may run. Ids are trimmed
+    and in lower case, with a comma between them. Empty by default. It is
+    read on each call, so a change takes effect at the next read. The read
+    cache's ``features_hash`` covers it through this function."""
+    from acb_common.settings import get_settings
+
+    raw = str(get_settings().my_day_providers or "")
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
 def feed_only_providers() -> list[Provider]:
-    """The providers that serve the feed only. They run after the needs ones."""
-    return [p for p in REGISTRY.values() if not p.needs]
+    """The providers that serve the feed only. They run after the needs ones.
+
+    A gated provider is here only when ``MY_DAY_PROVIDERS`` lists its source
+    (MD-3b). Each kind stays in ``REGISTRY``, so the prefs and the state POST
+    accept it while the provider is dark."""
+    listed = listed_sources()
+    return [p for p in REGISTRY.values()
+            if not p.needs and (not p.gated or p.source in listed)]
 
 
 #: source → (the feature its app's router demands, the provider), for the
@@ -977,13 +1039,65 @@ async def needs_run(user: UserContext) -> Run:
                                timeout_s=PROVIDER_TIMEOUT_S, event="shell.needs")
 
 
+async def _attempt(provider: Provider, user: UserContext, timeout: float,
+                   event: str) -> Found | str:
+    """One provider's run: what it found, or ``absent`` or ``failed``. It
+    never raises, except a cancel of the whole read."""
+    key = provider.source
+    try:
+        return await asyncio.wait_for(provider.run(user), timeout)
+    except SourceAbsent:
+        # A refusal, not a failure (MD-3b, §5.8 item 4).
+        return "absent"
+    except TimeoutError:
+        logger.info(f"{event} provider timed out", extra={"provider": key})
+        return "failed"
+    except Exception as exc:
+        # The error's TYPE only. A database error's text can carry the
+        # query's parameters, which hold the member's address. An app's
+        # own refusal (HTTPException) lands here too.
+        logger.warning(
+            f"{event} provider failed",
+            extra={"provider": key, "error": type(exc).__name__},
+        )
+        return "failed"
+
+
+def _record(run: Run, key: str, outcome: Found | str) -> None:
+    """Put one provider's outcome in ``run``."""
+    if isinstance(outcome, str):
+        run.sources[key] = outcome
+        return
+    found = outcome
+    run.sources[key] = "ok"
+    run.found[key] = found
+    run.items.extend(found.rows[:PER_APP])
+    run.totals[key] = max(found.total, len(found.rows[:PER_APP]))
+    if found.capped:
+        run.capped.append(key)
+
+
 async def run_providers(user: UserContext, providers: list[Provider], *,
-                        budget_s: float, timeout_s: float, event: str) -> Run:
+                        budget_s: float, timeout_s: float, event: str,
+                        concurrent: bool = False) -> Run:
     """Run ``providers`` one after another, each inside what is left of
-    ``budget_s``. A provider the member does not hold reads ``absent``. One
-    that fails, refuses or runs out of time reads ``failed``, and never
-    fails the run."""
+    ``budget_s``. A provider the member does not hold reads ``absent``, and
+    so does one that raises :class:`SourceAbsent`. One that fails, refuses
+    or runs out of time reads ``failed``, and never fails the run.
+
+    ``concurrent=True`` (the feed-only providers, MD-3b, §5.8 item 3) starts
+    each held provider at once, with ``asyncio.gather``. Each gets its own
+    limit, ``min(timeout_s, budget_s)``, so a slow one fails alone. The
+    outcomes go into ``run`` in the order of ``providers``, as before."""
     run = Run()
+    if concurrent:
+        held = [p for p in providers if p.held_by(user)]
+        limit = min(timeout_s, budget_s)
+        outcomes = await asyncio.gather(*(_attempt(p, user, limit, event) for p in held))
+        by_source = {p.source: o for p, o in zip(held, outcomes, strict=True)}
+        for provider in providers:
+            _record(run, provider.source, by_source.get(provider.source, "absent"))
+        return run
     loop = asyncio.get_running_loop()
     deadline = loop.time() + budget_s
     for provider in providers:
@@ -995,28 +1109,7 @@ async def run_providers(user: UserContext, providers: list[Provider], *,
         if left <= 0.05:
             run.sources[key] = "failed"
             continue
-        try:
-            found = await asyncio.wait_for(provider.run(user), min(timeout_s, left))
-        except TimeoutError:
-            logger.info(f"{event} provider timed out", extra={"provider": key})
-            run.sources[key] = "failed"
-            continue
-        except Exception as exc:
-            # The error's TYPE only. A database error's text can carry the
-            # query's parameters, which hold the member's address. An app's
-            # own refusal (HTTPException) lands here too.
-            logger.warning(
-                f"{event} provider failed",
-                extra={"provider": key, "error": type(exc).__name__},
-            )
-            run.sources[key] = "failed"
-            continue
-        run.sources[key] = "ok"
-        run.found[key] = found
-        run.items.extend(found.rows[:PER_APP])
-        run.totals[key] = max(found.total, len(found.rows[:PER_APP]))
-        if found.capped:
-            run.capped.append(key)
+        _record(run, key, await _attempt(provider, user, min(timeout_s, left), event))
     return run
 
 

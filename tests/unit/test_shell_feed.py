@@ -19,14 +19,25 @@ and each case is written so a wrong build fails it:
   ``feature:projects``.
 * **The budgets.** The needs providers run first, on today's budget. A slow
   feed-only provider never turns a needs source to ``failed``.
+* **The seam of MD-3b** (§5.8). With ``MY_DAY_PROVIDERS`` empty, the answer
+  is byte-equal to the golden that the code before MD-3b wrote
+  (``fixtures/my_day_feed_golden.json``). A gated provider runs only when the
+  list names it. The feed-only providers run at the same time, so a slow one
+  fails alone. ``SourceAbsent`` reads ``absent``. ``Provider.permission``
+  keeps the read from a member who lacks the grant.
+
+Mutations, run by hand (2026-10-14), each killed: the gated filter removed,
+the gather made sequential, ``SourceAbsent`` read as ``failed``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -1150,3 +1161,240 @@ class TestTheRouteIsMounted:
         paths = {getattr(c, "path", None) for c in iter_route_contexts(app.routes)}
         assert "/shell/feed" in paths
         assert "/shell/needs" in paths  # non-vacuity: the walk sees the router
+
+
+# ── MD-3b done-when 1: the answer with MY_DAY_PROVIDERS empty ──────────────
+
+#: The answers of the feed for a fixed seed, written by the code BEFORE MD-3b
+#: (15e418c11). With ``MY_DAY_PROVIDERS`` empty, the answer must not change by
+#: one byte, because the feed is live (``my_day_feed.md`` §5.8 item 1).
+GOLDEN = Path(__file__).resolve().parent / "fixtures" / "my_day_feed_golden.json"
+
+
+def golden_answers(fakes: FeedFakes, monkeypatch) -> dict[str, str]:
+    """Each scenario's answer, as the JSON text that the route serves."""
+    out: dict[str, str] = {}
+    for name, user, limit in (
+        ("full", member(*FULL), feed.DEFAULT_FEED_LIMIT),
+        ("admin", admin(*FULL, "approvals"), feed.DEFAULT_FEED_LIMIT),
+        ("no_calendar", member("projects", "email"), feed.DEFAULT_FEED_LIMIT),
+        ("projects_only", member("projects"), feed.DEFAULT_FEED_LIMIT),
+        ("short", member(*FULL), 3),
+    ):
+        out[name] = json.dumps(run_feed(user, limit=limit), default=str)
+    # A Calendar that runs out of time reads `failed`, as before.
+    monkeypatch.setattr(feed, "FEED_PROVIDER_TIMEOUT_S", 0.05)
+    fakes.slow_calendar = 5.0
+    out["calendar_failed"] = json.dumps(run_feed(member(*FULL)), default=str)
+    return out
+
+
+class TestTheAnswerBeforeMD3b:
+    def test_with_the_list_empty_the_answer_is_byte_equal(self, fakes, monkeypatch):
+        from acb_common.settings import get_settings
+
+        monkeypatch.setattr(get_settings(), "my_day_providers", "")
+        expected = json.loads(GOLDEN.read_text(encoding="utf-8"))
+        got = golden_answers(fakes, monkeypatch)
+        assert list(got) == list(expected)
+        for name, text in got.items():
+            assert text == expected[name], name
+
+
+# ── MD-3b done-whens 2 and 3: the seam of the new sources (§5.8) ────────────
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def _list(monkeypatch, value: str) -> None:
+    """``MY_DAY_PROVIDERS``, through its one reader's own source."""
+    from acb_common.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "my_day_providers", value)
+
+
+def _feed_only(source: str, run, **kw) -> shell.Provider:
+    return shell.Provider(source, ("projects",), run, frozenset({"no_plan_yet"}),
+                          needs=False, **kw)
+
+
+def _with(monkeypatch, *providers: shell.Provider) -> None:
+    """A copy of ``REGISTRY`` with *providers* added through ``register``,
+    after the Calendar provider."""
+    monkeypatch.setattr(shell, "REGISTRY", dict(shell.REGISTRY))
+    for provider in providers:
+        shell.register(provider)
+
+
+def _recorder(ran: list[str], source: str, *, sleep: float = 0.0, raises=None):
+    async def _run(user):
+        ran.append(source)
+        if sleep:
+            await asyncio.sleep(sleep)
+        if raises is not None:
+            raise raises
+        return shell.Found(rows=[], total=0, capped=False)
+    return _run
+
+
+class TestTheProviderList:
+    def test_the_default_is_empty(self):
+        from acb_common.settings import Settings
+
+        assert Settings.model_fields["my_day_providers"].default == ""
+
+    def test_a_gated_provider_runs_only_when_listed(self, fakes, monkeypatch):
+        ran: list[str] = []
+        _with(monkeypatch, _feed_only("crm_test", _recorder(ran, "crm_test"), gated=True))
+        _list(monkeypatch, "")
+        answer = run_feed(member(*FULL))
+        assert ran == [] and "crm_test" not in answer["sources"]
+        assert [p.source for p in shell.feed_only_providers()] == ["calendar"]
+        _list(monkeypatch, " Other , CRM_TEST ")
+        answer = run_feed(member(*FULL))
+        assert ran == ["crm_test"] and answer["sources"]["crm_test"] == "ok"
+        assert [p.source for p in shell.feed_only_providers()] == ["calendar", "crm_test"]
+
+    def test_the_list_takes_effect_at_the_next_read(self, monkeypatch):
+        _list(monkeypatch, "crm_deals")
+        assert shell.listed_sources() == frozenset({"crm_deals"})
+        _list(monkeypatch, "")
+        assert shell.listed_sources() == frozenset()
+
+    def test_the_calendar_is_not_gated(self, fakes, monkeypatch):
+        _list(monkeypatch, "")
+        assert shell.REGISTRY["calendar"].gated is False
+        assert run_feed(member(*FULL))["sources"]["calendar"] == "ok"
+
+    def test_a_needs_provider_is_never_gated(self, monkeypatch):
+        monkeypatch.setattr(shell, "REGISTRY", {})
+        with pytest.raises(ValueError, match="is gated"):
+            shell.register(shell.Provider("x", ("projects",), feed._calendar,
+                                          frozenset({"overdue"}), gated=True))
+        assert shell.REGISTRY == {}
+
+    def test_one_reader(self):
+        """§5.8 item 1: the list is read in one place."""
+        readers = []
+        for root in ("apps", "packages"):
+            for path in (REPO / root).rglob("*.py"):
+                if "node_modules" in path.parts or ".venv" in path.parts:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                if "my_day_providers" in text:
+                    readers.append(path.relative_to(REPO).as_posix())
+        assert sorted(readers) == [
+            "apps/services/gateway/gateway/routes/shell/needs.py",
+            "packages/acb_common/acb_common/settings.py",
+        ]
+
+
+class TestTheFeedOnlyGather:
+    def test_a_slow_provider_fails_alone(self, fakes, monkeypatch):
+        # The slow one runs first. One after another, on one budget, it
+        # would spend the time of the quick one too.
+        monkeypatch.setattr(feed, "FEED_BUDGET_S", 0.3)
+        monkeypatch.setattr(feed, "FEED_PROVIDER_TIMEOUT_S", 0.3)
+        ran: list[str] = []
+        _with(monkeypatch, _feed_only("slow", _recorder(ran, "slow", sleep=5.0)),
+              _feed_only("quick", _recorder(ran, "quick")))
+        answer = run_feed(member(*FULL))
+        assert answer["sources"]["slow"] == "failed"
+        assert answer["sources"]["quick"] == "ok"
+        assert answer["sources"]["calendar"] == "ok"
+        assert {answer["sources"][k] for k in ("tasks", "projects", "email")} == {"ok"}
+
+    def test_they_run_at_the_same_time(self, fakes, monkeypatch):
+        # Each waits until the other has started. One after another, the
+        # first would wait for the second, which would not start.
+        monkeypatch.setattr(feed, "FEED_PROVIDER_TIMEOUT_S", 1.0)
+        started: dict[str, asyncio.Event] = {}
+
+        def _pair(me: str, other: str):
+            async def _run(user):
+                started.setdefault(me, asyncio.Event()).set()
+                await started.setdefault(other, asyncio.Event()).wait()
+                return shell.Found(rows=[], total=0, capped=False)
+            return _run
+
+        _with(monkeypatch, _feed_only("a", _pair("a", "b")), _feed_only("b", _pair("b", "a")))
+        answer = run_feed(member(*FULL))
+        assert answer["sources"]["a"] == "ok" and answer["sources"]["b"] == "ok"
+
+    def test_the_sources_keep_the_registry_order(self, fakes, monkeypatch):
+        ran: list[str] = []
+        _with(monkeypatch, _feed_only("late", _recorder(ran, "late", sleep=0.2)),
+              _feed_only("early", _recorder(ran, "early")))
+        answer = run_feed(member(*FULL))
+        assert list(answer["sources"]) == [
+            "tasks", "projects", "email", "approvals", "calendar", "late", "early"]
+
+    def test_the_needs_providers_still_run_one_after_another(self, fakes, monkeypatch):
+        live = {"now": 0, "most": 0}
+
+        def _wrap(run):
+            async def _counted(user):
+                live["now"] += 1
+                live["most"] = max(live["most"], live["now"])
+                try:
+                    await asyncio.sleep(0.01)
+                    return await run(user)
+                finally:
+                    live["now"] -= 1
+            return _counted
+
+        for source, provider in list(shell.REGISTRY.items()):
+            if provider.needs:
+                monkeypatch.setitem(shell.REGISTRY, source,
+                                    dataclasses.replace(provider, run=_wrap(provider.run)))
+        answer = run_feed(admin(*FULL, "approvals"))
+        assert {answer["sources"][k] for k in shell.PROVIDERS} == {"ok"}
+        assert live["most"] == 1
+
+
+class TestSourceAbsent:
+    def test_a_refusal_reads_absent_and_may_be_stored(self, fakes, monkeypatch):
+        from gateway.routes.shell import cache
+
+        ran: list[str] = []
+        _with(monkeypatch, _feed_only("crm_off", _recorder(ran, "crm_off",
+                                                           raises=shell.SourceAbsent())))
+        answer = run_feed(member(*FULL))
+        assert ran == ["crm_off"]
+        assert answer["sources"]["crm_off"] == "absent"
+        assert cache.storable(answer)
+
+    def test_a_failure_still_reads_failed(self, fakes, monkeypatch):
+        # Non-vacuity of the case above: another error is a failure.
+        from gateway.routes.shell import cache
+
+        ran: list[str] = []
+        _with(monkeypatch, _feed_only("crm_down", _recorder(ran, "crm_down",
+                                                            raises=RuntimeError("down"))))
+        answer = run_feed(member(*FULL))
+        assert answer["sources"]["crm_down"] == "failed"
+        assert not cache.storable(answer)
+
+
+class TestThePermissionGate:
+    def test_a_member_without_the_grant_gets_absent_and_no_read(self, fakes, monkeypatch):
+        ran: list[str] = []
+        _with(monkeypatch, _feed_only("people_out", _recorder(ran, "people_out"),
+                                      permission="admin:members:read"))
+        answer = run_feed(member(*FULL))
+        assert ran == []
+        assert answer["sources"]["people_out"] == "absent"
+
+    def test_a_member_with_the_grant_runs_it(self, fakes, monkeypatch):
+        ran: list[str] = []
+        _with(monkeypatch, _feed_only("people_out", _recorder(ran, "people_out"),
+                                      permission="admin:members:read"))
+        answer = run_feed(admin(*FULL))
+        assert ran == ["people_out"]
+        assert answer["sources"]["people_out"] == "ok"
+
+    def test_held_by_reads_the_permission(self):
+        p = _feed_only("x", feed._calendar, permission="admin:members:read")
+        assert not p.held_by(member(*FULL))
+        assert p.held_by(admin(*FULL))
+        assert _feed_only("y", feed._calendar).held_by(member(*FULL))

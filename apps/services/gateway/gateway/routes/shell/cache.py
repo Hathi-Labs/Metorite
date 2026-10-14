@@ -127,13 +127,27 @@ def _member(email: Any) -> str:
 def features_hash(user: Any) -> str:
     """The hash of each grant that gates a provider (§8.4 item 21): the
     member's ``feature:*`` grants and ``ADMIN_PERMISSION``, sorted. So a
-    revoked app, or a revoked admin test, is a new key at the next read."""
+    revoked app, or a revoked admin test, is a new key at the next read.
+
+    MD-3b (§5.8 item 2) adds two parts. ``ADMIN_PERMISSION`` is
+    ``admin:members:read``, so a member who loses that grant loses the HR
+    cards at once. Each other ``Provider.permission`` of the registry that
+    the member holds joins the hash too. Then the list of gated sources joins
+    it, through ``needs.listed_sources``, so a change of the list misses at
+    once. With no such permission and an empty list, the hash is the hash of
+    before MD-3b."""
     from acb_auth.permissions import FEATURES
+    from gateway.routes.shell import needs
     from gateway.routes.shell.intent import ADMIN_PERMISSION
 
     held = sorted(f"feature:{f}" for f in FEATURES if user.has_permission(f"feature:{f}"))
     if user.has_permission(ADMIN_PERMISSION):
         held.append(ADMIN_PERMISSION)
+    gates = {p.permission for p in needs.REGISTRY.values() if p.permission}
+    held += sorted(g for g in gates - {ADMIN_PERMISSION} if user.has_permission(g))
+    listed = needs.listed_sources()
+    if listed:
+        held.append("providers=" + "|".join(sorted(listed)))
     return hashlib.sha256(",".join(held).encode("utf-8")).hexdigest()[:16]
 
 

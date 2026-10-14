@@ -6,7 +6,9 @@ The page frame, the bell and the needs contract stay ``navigation_shell.md``'s.
 **One provider run.** The feed runs the needs providers of ``needs.REGISTRY``
 first, in today's order and on today's budget (``needs.needs_run``). Then it
 runs the feed-only providers, on a budget of their own. So a slow feed-only
-provider can never turn a needs source to ``failed``.
+provider can never turn a needs source to ``failed``. The feed-only providers
+run at the same time, each with its own limit, so a slow one fails alone
+(MD-3b). A gated one runs only when ``MY_DAY_PROVIDERS`` lists it.
 
 **The answer carries the needs view.** ``needs`` is exactly the answer of
 ``GET /shell/needs?limit=30``, from the same run, before the fold. The
@@ -101,7 +103,8 @@ logger = logging.getLogger(__name__)
 #: The feed's default length, and its ceiling (§14.1a).
 DEFAULT_FEED_LIMIT = 40
 MAX_FEED_LIMIT = 80
-#: Seconds for the feed-only providers, all together, AFTER the needs run.
+#: Seconds for EACH feed-only provider, AFTER the needs run. They run at the
+#: same time (MD-3b, §5.8 item 3), so a slow one fails alone.
 FEED_BUDGET_S = 2.0
 #: Seconds one feed-only provider may take.
 FEED_PROVIDER_TIMEOUT_S = 2.0
@@ -594,10 +597,12 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
     # The needs view, at the needs route's own default limit, whatever the
     # feed's limit: the client keeps it under the key of ?limit=30.
     needs_view = needs.needs_answer(run, needs.DEFAULT_LIMIT) if read else None
-    # Then the feed-only providers, on a budget of their own.
+    # Then the feed-only providers, on a budget of their own: at the same
+    # time, each with its own limit (MD-3b). MY_DAY_PROVIDERS picks the
+    # gated ones (`needs.feed_only_providers`).
     extra = await needs.run_providers(
         user, needs.feed_only_providers(), budget_s=FEED_BUDGET_S,
-        timeout_s=FEED_PROVIDER_TIMEOUT_S, event="shell.feed")
+        timeout_s=FEED_PROVIDER_TIMEOUT_S, event="shell.feed", concurrent=True)
 
     sources = {**run.sources, **extra.sources}
     capped = [*run.capped, *extra.capped]

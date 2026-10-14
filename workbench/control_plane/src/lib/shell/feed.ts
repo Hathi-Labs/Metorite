@@ -54,8 +54,21 @@ import { ACT_HOLD_MS } from "./needsActs";
 
 // ── The shape (§14.1a) ──────────────────────────────────────────────────────
 
-/** The app ids of the feed. `calendar` is a feed source only, never a needs app. */
-export type FeedApp = NeedsApp | "calendar";
+/**
+ * The app ids of the feed apps that are never a needs app, and the pane each
+ * one opens. `calendar` came with MD-1. `crm`, `people` and `chat` come with
+ * MD-3b (§5.8 item 6), before any of their kinds. A card's icon is the icon
+ * of this pane in the manifest (`feedAppIcon`).
+ */
+const FEED_ONLY_APP_HREF = {
+  calendar: "/calendar",
+  crm: "/crm",
+  people: "/people",
+  chat: "/chat",
+} as const;
+
+/** The app ids of the feed: the needs apps, and the feed-only apps above. */
+export type FeedApp = NeedsApp | keyof typeof FEED_ONLY_APP_HREF;
 
 /** The group ids, in their one order. MD-1 emits the first four. */
 export const GROUP_ORDER = ["now", "needs_you", "ready", "fyi", "later", "handled"] as const;
@@ -597,7 +610,7 @@ export function feedGroups(
 }
 
 /** Where "Show all in <app>" goes, for each feed app. */
-const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = { ...NEEDS_APP_HREF, calendar: "/calendar" };
+const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = { ...NEEDS_APP_HREF, ...FEED_ONLY_APP_HREF };
 
 /**
  * The "Show all in <app>" links at the end of a group (§6.1, MD-2b): one for
@@ -808,13 +821,23 @@ export function coversNeeds(answer: Pick<FeedAnswer, "needs"> | undefined, error
 
 // ── The words ───────────────────────────────────────────────────────────────
 
-/** The member-facing name of each feed app. Calendar is the feed's own. */
-export const FEED_APP_NAMES: Readonly<Record<FeedApp, string>> = { ...APP_NAMES, calendar: "Calendar" };
+/**
+ * The member-facing name of each feed app. The needs apps keep their needs
+ * names. Each feed-only app takes the label of its pane in the manifest.
+ */
+export const FEED_APP_NAMES: Readonly<Record<FeedApp, string>> = {
+  ...APP_NAMES,
+  calendar: "Calendar",
+  crm: "CRM",
+  people: "People",
+  chat: "Chat",
+};
 
 /** A card's icon: its app's own icon from the manifest, never a second list. */
 export function feedAppIcon(app: FeedApp | string): string {
-  if (app === "calendar") {
-    return NAV_SECTIONS.flatMap((s) => s.items).find((p) => p.href === "/calendar")?.icon ?? "Circle";
+  if (Object.hasOwn(FEED_ONLY_APP_HREF, app)) {
+    const href = FEED_ONLY_APP_HREF[app as keyof typeof FEED_ONLY_APP_HREF];
+    return NAV_SECTIONS.flatMap((s) => s.items).find((p) => p.href === href)?.icon ?? "Circle";
   }
   return app in APP_NAMES ? appIcon(app as NeedsApp) : "Circle";
 }

@@ -22,6 +22,10 @@ Each class fences one done-when, and each is written so a wrong build fails:
 * ``TestTheETag`` (10): a body that differs never answers 304.
 * ``TestAWriteDuringACompute`` (11): the versions are read before the compute.
 * ``TestWhatIsNotStored`` (12): a failed source or Handled read is not kept.
+* ``TestTheHashOfMD3b`` (MD-3b done-when 4): the hash moves with
+  ``admin:members:read``, with a provider's permission and with
+  ``MY_DAY_PROVIDERS``. ``TestTheSourcesOfMD3b``: an absent source is kept,
+  and a slow feed-only source is not.
 """
 
 from __future__ import annotations
@@ -730,6 +734,100 @@ class TestTheGrantHash:
         assert cache.features_hash(member(*FULL)) == base
         assert cache.features_hash(member("projects", "email")) != base
         assert cache.features_hash(member(*FULL, admin=True)) != base
+
+
+# ── MD-3b done-when 4: the hash covers admin:members:read and the list ──────
+
+
+def _grants(*grants: str) -> UserContext:
+    return UserContext(email=ME, role=UserRole.EMPLOYEE, organization_id=ORG,
+                       access=EffectiveAccess(role_granted=frozenset(grants)))
+
+
+def _list(monkeypatch, value: str) -> None:
+    monkeypatch.setattr(get_settings(), "my_day_providers", value)
+
+
+class TestTheHashOfMD3b:
+    def test_the_hash_moves_with_admin_members_read(self, monkeypatch):
+        _list(monkeypatch, "")
+        features = [f"feature:{f}" for f in FULL]
+        assert cache.features_hash(_grants(*features, "admin:members:read")) \
+            != cache.features_hash(_grants(*features))
+
+    def test_the_hash_moves_with_the_provider_list(self, monkeypatch):
+        user = member(*FULL)
+        _list(monkeypatch, "")
+        empty = cache.features_hash(user)
+        _list(monkeypatch, "crm_deals")
+        one = cache.features_hash(user)
+        _list(monkeypatch, "crm_deals,people_out")
+        two = cache.features_hash(user)
+        assert len({empty, one, two}) == 3
+        # The same set in another spelling is the same key.
+        _list(monkeypatch, " PEOPLE_OUT , crm_deals ")
+        assert cache.features_hash(user) == two
+
+    def test_an_empty_list_keeps_the_hash_of_before(self, monkeypatch):
+        # The keys of the live cache stay valid across the deploy.
+        import hashlib
+
+        _list(monkeypatch, "")
+        held = ",".join(sorted(f"feature:{f}" for f in FULL))
+        assert cache.features_hash(member(*FULL)) == \
+            hashlib.sha256(held.encode("utf-8")).hexdigest()[:16]
+
+    def test_the_hash_moves_with_a_provider_permission(self, monkeypatch):
+        _list(monkeypatch, "")
+        monkeypatch.setattr(shell, "REGISTRY", dict(shell.REGISTRY))
+        user_with = _grants(*(f"feature:{f}" for f in FULL), "people:hr:read")
+        user_without = _grants(*(f"feature:{f}" for f in FULL))
+        before = cache.features_hash(user_with)
+        assert before == cache.features_hash(user_without)
+        shell.register(shell.Provider("people_out", ("projects",), feed._calendar,
+                                      frozenset({"no_plan_yet"}), needs=False,
+                                      permission="people:hr:read"))
+        assert cache.features_hash(user_with) != cache.features_hash(user_without)
+
+    def test_a_flip_of_the_list_misses_at_once(self, fakes, redis, on, monkeypatch):  # noqa: F811
+        _list(monkeypatch, "")
+        user = member(*FULL)
+        read(user)
+        assert len(answer_keys(redis)) == 1
+        before = app_calls(fakes)
+        _list(monkeypatch, "crm_deals")
+        read(user)
+        assert app_calls(fakes) > before, "the flip got the stored answer"
+        assert len(answer_keys(redis)) == 2
+
+
+class TestTheSourcesOfMD3b:
+    @staticmethod
+    def _add(monkeypatch, source: str, run) -> None:
+        monkeypatch.setattr(shell, "REGISTRY", dict(shell.REGISTRY))
+        shell.register(shell.Provider(source, ("projects",), run, frozenset({"no_plan_yet"}),
+                                      needs=False))
+
+    def test_an_absent_source_is_stored(self, fakes, redis, on, monkeypatch):  # noqa: F811
+        async def refused(user):
+            raise shell.SourceAbsent()
+
+        self._add(monkeypatch, "crm_off", refused)
+        answer, _ = read(member(*FULL))
+        assert answer["sources"]["crm_off"] == "absent"
+        assert len(answer_keys(redis)) == 1
+
+    def test_a_slow_source_is_failed_and_not_stored(self, fakes, redis, on, monkeypatch):  # noqa: F811
+        # §8.4 item 18 still holds with the gather.
+        async def slow(user):
+            await asyncio.sleep(5.0)
+
+        monkeypatch.setattr(feed, "FEED_PROVIDER_TIMEOUT_S", 0.5)
+        self._add(monkeypatch, "crm_slow", slow)
+        answer, _ = read(member(*FULL))
+        assert answer["sources"]["crm_slow"] == "failed"
+        assert answer["sources"]["calendar"] == "ok"
+        assert answer_keys(redis) == []
 
 
 # ── done-when 10 ────────────────────────────────────────────────────────────

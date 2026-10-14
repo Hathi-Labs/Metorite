@@ -27,6 +27,10 @@ is complete.
 **MD-5b is BUILT, 2026-10-14** (the `my_day` loop, no migration, dark
 behind `MY_DAY_LOOP_ENABLED`).
 
+**MD-3b is BUILT, 2026-10-14** (the seam of the new sources, no migration).
+`MY_DAY_PROVIDERS` is empty by default, so the feed answer is the same as
+before, byte for byte. No provider is gated yet, and no kind is added.
+
 **MD-6a-1 is BUILT, 2026-10-14** (the features, the helpers and the table,
 migration 262). Each `my_day.*` mode is `off` and `MY_DAY_DECIDE_ORGS` is
 empty, so nothing asks `decide`.
@@ -1821,8 +1825,10 @@ and is off by default (`packages/acb_memory`).
   cache key, so the bell's counts stay true.
 - **The group ids** are `now`, `needs_you`, `ready`, `fyi`, `later` and
   `handled`, in that order. MD-1 emits only the first four.
-- **The app ids** are `tasks`, `projects`, `email`, `approvals` and
-  `calendar`. The `sources` key of the Calendar provider is `calendar`.
+- **The app ids** are `tasks`, `projects`, `email`, `approvals`,
+  `calendar`, `crm`, `people` and `chat`. MD-3b added the last three. The
+  `sources` key of the Calendar provider is `calendar`. A `sources` key is
+  the id of a source, and an MD-3 source has an id of its own (§5.8 item 6).
 - `groups` lists only the groups that hold a card, in the order above.
 - `folded` names the kinds that §4.5 folded into the card.
 - An act with `way: "tap"` names its `act` and `act_ref`, as the needs items
@@ -2554,6 +2560,34 @@ Done when:
 4. The features hash covers `admin:members:read` and `MY_DAY_PROVIDERS`.
 5. The client knows `crm`, `people` and `chat`, with a name and an icon.
 
+**BUILT, 2026-10-14.** No migration, and no flag changed. These are the
+parts:
+
+- `MY_DAY_PROVIDERS` is a Settings field and a name in `env_guard.py`.
+  `needs.listed_sources` is its one reader. `needs.feed_only_providers`
+  keeps a provider with `gated=True` only when the list holds its source
+  id. The register refuses a gated needs provider.
+- `needs.run_providers(..., concurrent=True)` runs the feed-only providers
+  with `asyncio.gather`. Each has its own limit of 2 seconds. The needs
+  providers still run one after another.
+- `needs.SourceAbsent` makes a source read `absent`. `Provider.permission`
+  is part of `held_by`, so it gates the Handled read too.
+- `cache.features_hash` also covers each `Provider.permission` that the
+  member holds, and the list. With an empty list, the hash does not change,
+  so the keys of the live cache stay valid.
+- `feed.ts` names the three apps, and takes each icon from its pane in
+  `nav.ts`.
+
+**Two facts the spec did not record.**
+
+- `ADMIN_PERMISSION` (`routes/shell/intent.py`) is `admin:members:read`. So
+  the hash covered that grant before MD-3b. Done-when 4 adds a test, and it
+  adds no new term for the grant.
+- A feed read held one pool connection for its feed-only providers. With
+  the gather, it holds one for each feed-only provider that the member
+  holds. The MD-2c note on the pool still binds. MD-3c to MD-3f must keep
+  the count of their sources small, or share one session.
+
 ### MD-3c · The task kinds — AGENT-SAFE, after MD-3b
 
 `waiting_quiet`, `stale_next`, `unblocked` and `absent_on_due`. Each has a
@@ -3036,6 +3070,8 @@ uv run pytest tests/unit/test_feed_decide.py tests/unit/test_feed_decide_r8.py t
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_email_llm_cap.py tests/unit/test_background_ai_member.py -q  # MD-6a, email regression
 uv run ruff check apps/services/gateway/gateway/decide_features.py apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/my_day_loop.py  # MD-6a
 uv run pytest tests/unit/test_feed_measure.py tests/unit/test_feed_measure_r8.py tests/unit/test_org_access_enforcement.py -q  # MD-6a-3
+uv run pytest tests/unit/test_shell_feed.py tests/unit/test_my_day_cache.py tests/unit/test_integrations_env_hardening.py -q  # MD-3b
+npx vitest run src/lib/shell/feedApps.test.ts  # MD-3b
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 uv run pytest tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_my_day_cache.py -q -rs  # MD-3a
