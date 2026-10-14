@@ -285,4 +285,16 @@ test.describe("the Email waiting card draws the shared header, and no toggle whi
     await expect(draft.getByText("Saved to Drafts")).toBeVisible();
     await expect(draft.locator("[data-rollup-toggle]")).toHaveCount(1);
   });
+
+  test("a folded rule card still says Disabled. after Disable (review of #1012)", async ({ page }) => {
+    // The header's aside shows only while the card is open. The result of
+    // an act sat there, so a folded card lost its buttons and said nothing.
+    await startTurn(page, [...RULE_EVENT, ...SETTINGS]);
+    const rule = page.locator('[data-rollup-card="tool:t-rule"]');
+    await rule.locator("[data-rollup-toggle]").click();
+    await expect(rule.locator('[data-rollup="closed"]')).toHaveCount(1);
+    await rule.getByRole("button", { name: "Disable", exact: true }).click();
+    await expect(rule.getByText("Disabled.", { exact: true })).toBeVisible();
+    await expect(rule.locator('[data-rollup="closed"]')).toHaveCount(1);
+  });
 });

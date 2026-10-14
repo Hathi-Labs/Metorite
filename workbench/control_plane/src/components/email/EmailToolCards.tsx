@@ -823,14 +823,12 @@ function RuleResultCard({
   return (
     <RollupCard id={`tool:${e.id}`} title={title} icon="Sparkles" header="own">
     <div data-email-card="rule" className={tone.frame}>
-      <CardHead
-        tone={tone.icon}
-        aside={
-          state === "deleted" ? <span className="text-destructive">Deleted.</span>
-            : state === "disabled" ? "Disabled."
-              : undefined
-        }
-      >
+      {/* The result of an act sits BESIDE the header, with the buttons it
+          replaces. The header's aside shows only while the card is open, so
+          a member who folds the card and clicks Disable still sees it. */}
+      <CardHead tone={tone.icon}>
+        {state === "deleted" && <span data-rule-status="" className="text-[10px] text-destructive">Deleted.</span>}
+        {state === "disabled" && <span data-rule-status="" className="text-[10px] text-muted-foreground">Disabled.</span>}
         {state === "idle" && ruleId && (
           <>
             {acctId && (
@@ -1527,6 +1525,11 @@ function EmailRow({
                 title="Categorize"
                 aria-label="Categorize"
                 aria-expanded={catOpen}
+                // The house tint while its menu is open. The explicit role
+                // keeps `aria-expanded` its one state: `Button` adds no
+                // `aria-pressed` to a control that names its role.
+                selected={catOpen}
+                role="button"
                 className="rounded"
               >
                 {catBusy ? (

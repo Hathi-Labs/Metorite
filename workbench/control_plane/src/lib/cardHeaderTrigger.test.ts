@@ -223,6 +223,14 @@ describe("an Email card's fold toggle holds no link and no control", () => {
     }
   });
 
+  it("a title cut to one line keeps its whole words as its tooltip (review of #1012)", () => {
+    expect(toggleOf(byId["tool:t-rule"])).toContain('title="Created rule: Invoices"');
+    // A row with no body, so no toggle: the plain title row keeps it too.
+    const moved = ev("t-move", "manage_inbox", { action: "move", folder: "Vendors and suppliers", message_ids: ["a", "b"] }, "Moved 2 emails.");
+    const out = inTranscript(createElement(EmailToolCards, { toolEvents: [moved] }));
+    expect(out).toContain('title="Moved 2 emails → Vendors and suppliers"');
+  });
+
   it("the draft waits on the member: no toggle, so it never folds", () => {
     expect(byId["tool:t-draft"]).toContain("Draft reply");
     expect(byId["tool:t-draft"]).not.toContain("data-rollup-toggle");
