@@ -190,6 +190,10 @@ def seeded(promoted):  # noqa: F811
         ids["away"] = task("Pay the vendor", due=_at(3))
         ids["coll_day"] = task("Due on their day off", due=_at(4))
         ids["partial_day"] = task("Due on my half day", due=_at(5))
+        # A second day away AFTER the two days above, so the window of the
+        # due read (my first day away to my last) holds both of them. Only
+        # the rule of the provider keeps them out, not the window.
+        ids["away_late"] = task("Sign the lease", due=_at(6, hour=9))
 
         def absence(email: str, day: int, kind: str) -> None:
             c.execute(text(
@@ -202,6 +206,7 @@ def seeded(promoted):  # noqa: F811
         absence(ME, 3, "holiday")
         absence(COLL, 4, "away")
         absence(ME, 5, "partial")
+        absence(ME, 6, "away")
         # NOROW: one task of each of the other three kinds.
         ids["nr_wait"] = task("Their quiet wait", assignee=COLL, updated=old)
         c.execute(text(
@@ -265,7 +270,7 @@ class TestTheKindsOnARealDatabase:
         assert c["why"] == f"{COLL.split('@')[0]} closed Ship the API, which you waited on."
         assert c["facts"]["blocker_ids"] == [s["free_blocker"]]
         away = _by_kind(answer, "absent_on_due")
-        assert set(away) == {f"tasks:{s['away']}"}, "done-when 8, 9"
+        assert set(away) == {f"tasks:{s['away']}", f"tasks:{s['away_late']}"}, "done-when 8, 9"
         assert away[f"tasks:{s['away']}"]["facts"]["absence_day"] == \
             (TODAY + timedelta(days=3)).isoformat()
 
@@ -301,8 +306,8 @@ class TestTheKindsOnARealDatabase:
                                        "closed_at": rows[seeded["hid"]]["closed_at"]}
         assert rows[seeded["free"]]["readable"] is True
         assert rows[seeded["free"]]["closed_by"] == COLL
-        assert {seeded["away"], seeded["coll_day"], seeded["partial_day"]} <= {
-            r["id"] for r in ahead["rows"]}
+        assert {seeded["away"], seeded["coll_day"], seeded["partial_day"],
+                seeded["away_late"]} <= {r["id"] for r in ahead["rows"]}
 
     async def test_a_member_with_no_people_row_gets_the_other_three(
         self, promoted, seeded, monkeypatch,  # noqa: F811
