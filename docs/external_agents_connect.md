@@ -1,88 +1,94 @@
 # Connect an outside agent to Metorite
 
-**Status: DRAFT. This feature does not exist yet.** The place of the screens (the Integrations app) is a recommendation that the owner has not yet confirmed. This page describes how it will work after the build in `project-docs/specs/external_agent_access.md`. Do not give this page to a customer before the owner turns the feature on.
+**Status: LIVE since 2026-10-14, for each organization.** This page says only what is built. The design and the build slices are in `project-docs/specs/external_agent_access.md` (WS-55).
 
 ## What you get
 
-An outside agent reads and updates your work in Metorite. The agent acts as you. It sees only what you see. You choose what it may do, and you can stop it at any time.
+An outside AI agent reads your projects and tasks in Metorite, and it makes two kinds of change. The agent acts as you. It sees only what you see. You choose what it may do on the consent page. You can revoke it at any time.
 
-## Before you start
+## The address
 
-- Your organization admin must switch on **Connected agents**. The switch is off by default.
-- You need a Metorite seat. The agent uses your seat and costs nothing extra.
-- Your agent client must support remote MCP servers with sign-in. Claude and ChatGPT do. Claude Code does.
+`https://mcp.metorite.com/mcp`
 
-## Connect an agent
+The **AI agents** view of the Integrations app shows this address, with a copy button and the steps for each client.
 
-1. Open your agent client. Find the setting that adds an MCP server or a custom connector.
-2. Enter this URL: `https://mcp.metorite.com/mcp`
-3. Sign in to Metorite when the browser opens.
-4. Read the consent screen. It names the agent and the address it connects from.
-5. Select what the agent may do. See the table below.
-6. Pin the agent to one or more projects if you want to limit it.
-7. Select **Approve**.
+## Connect Claude Code
 
-The agent now shows in **Integrations**, filtered to inbound connections.
+1. In a terminal, run this command:
 
-## What each choice lets the agent do
+   ```
+   claude mcp add --transport http metorite https://mcp.metorite.com/mcp
+   ```
 
-| Choice | The agent may |
+2. In Claude Code, run `/mcp`. Choose **metorite**, then **Authenticate**.
+3. Your browser opens the Metorite consent page. Sign in if Metorite asks.
+4. Read the page. Its headline names the verified host of the agent. The name that the agent gives itself shows second, as "It calls itself".
+5. Make your choices on the page (see below), then select **Approve**.
+
+## The choices on the consent page
+
+- **The scopes.** Clear a box to give less. You cannot add a scope that the agent did not ask for.
+- **Project pins.** Pin the agent to one or more projects. With no pin, the agent reaches each project that you see.
+- **Personal projects.** Your personal projects stay out. The box that includes them is off. Select it only if you want the agent to read them.
+
+## What the agent can do
+
+Seven tools read:
+
+| Tool | What it reads |
 |---|---|
-| Read projects | Read the projects, tasks, comments and history that you can see |
-| Change projects | Create tasks, change fields and status, comment, claim a task, and add a pull request or commit to a task |
-| Read company context | Read your company name, domain, branding and shared memory |
-| Stay connected | Keep working without a new sign-in until you stop it |
+| `whoami` | The member and the organization of the connection, its scopes and its pins |
+| `list_projects` | The projects you see |
+| `get_project` | One project |
+| `list_tasks` | The tasks you see, at most 100 in one call |
+| `get_task` | One task, with its references |
+| `get_task_timeline` | The history of one task |
+| `search_tasks` | A search of the tasks you see, at most 50 hits |
 
-The agent never gets more than you have. If an admin removes your access to a project, the agent loses it on the next call.
+Two tools change a task:
 
-Your **personal projects** stay private. The consent screen has a box to include them. The box is off.
+| Tool | What it does |
+|---|---|
+| `set_task_status` | It moves a task to another status. It never moves a task to a done or cancelled status. A person does that step |
+| `add_task_reference` | It links a pull request, a commit or a branch to a task |
 
-The agent cannot delete anything. It cannot change who can see a project. It cannot read your email or your messages.
+Each change shows in the task history, with the agent as `mcp:<host>`. A connection makes at most 120 changes in 10 minutes.
 
-## Example: a coding agent works on project 7
+## What the agent cannot do
 
-1. Connect the agent with **Read projects** and **Change projects**. Pin it to project 7.
-2. Ask the agent: "Take the next coding task in project 7."
-3. The agent lists the coding tasks that wait. It claims one. You become the assignee and the status moves to "in progress".
-4. The agent works in your code checkout. Metorite does not see your code.
-5. The agent adds the branch and the pull request to the task. It writes a short comment.
-6. The agent sets the status to "in review". A person merges and closes the task.
+- It cannot close or cancel a task.
+- It cannot see what you cannot see. If an admin removes your access to a project, the agent loses it on the next call.
+- It cannot act after you revoke it.
 
-Each change shows in the task history. The history names the agent, for example `mcp:claude-code`.
+## Revoke an agent
 
-## Example: design a page from company context
+1. Open **Integrations**, then the **AI agents** view.
+2. Find the agent in **My connected agents**.
+3. Select **Revoke**, then confirm.
 
-1. Connect Claude with **Read company context** only.
-2. Ask Claude to design a landing page for your company.
-3. Claude reads your company context and writes the page in its own window.
+The next call of the agent gets a sign-in error, and its next token refresh fails. An admin with `integrations:manage` sees each agent connection of the organization in the same view, and can revoke any of them.
 
-Claude cannot see your projects in this example. Add **Read projects** only if you want it to.
+Metorite also ends a connection that nobody uses for 90 days.
 
-## Stop an agent
+## The clients
 
-1. Open **Integrations** and filter to inbound connections.
-2. Select the agent.
-3. Select **Remove**.
+| Client | State |
+|---|---|
+| Claude Code | Tested, version 2.1.296 |
+| claude.ai | Not tested yet |
+| Claude Desktop | Not tested yet |
+| VS Code | Not tested yet. It may need Dynamic Client Registration, which is not built |
+| Cursor | Not supported yet |
 
-The agent gets a sign-in error on its next call. An organization admin can remove any agent in the organization.
-
-## What Metorite records
-
-Metorite writes one audit row for each call. The row holds the member, the agent, the tool, the target and the result. An admin reads the rows in the admin view.
+For claude.ai and Claude Desktop, the setup is **Settings**, then **Connectors**, then **Add custom connector**. Paste the address there.
 
 ## What you must know
 
 - Data that the agent reads goes to the company that runs the agent. Metorite does not control that company.
-- A task title or comment can hold text written by other people. A hostile text can try to give the agent orders. Use an agent that asks you before it writes.
+- A task title or comment can hold text that other people wrote. A hostile text can try to give the agent orders. Use an agent that asks you before it makes a change.
 - An agent token is not a password. Do not paste it anywhere.
-
-## Limits
-
-- 100 rows in one list call.
-- A call limit for each agent and each member. The numbers are set in the build.
-- Metorite removes an agent that you do not use for 90 days.
 
 ## Related
 
-- `project-docs/specs/external_agent_access.md` — the design, the decisions and the build slices.
-- `project-docs/specs/mcp_plugin_integration.md` — the other direction, where Metorite reads outside MCP servers.
+- `project-docs/specs/external_agent_access.md`: the design, the decisions and the build slices.
+- `project-docs/specs/mcp_plugin_integration.md`: the other direction, where Metorite reads outside MCP servers.
