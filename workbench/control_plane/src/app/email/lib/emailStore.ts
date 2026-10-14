@@ -576,7 +576,14 @@ interface EmailState {
   stopTestRun: () => void;
   /** Clear cached per-message results (e.g. when switching Test↔Apply). */
   clearTestResults: () => void;
-  triggerSync: (accountId: string) => Promise<void>;
+  /**
+   * Sync one mailbox. `quiet` marks a sync that no member asked for, such as
+   * the sync after a send. The 409 of a sync that runs already is then no
+   * error, because the gateway runs the mailbox once more and the new mail
+   * comes anyway. Each other failure of a quiet sync shows as before. A
+   * sync that the member starts keeps the words of the 409 (EM-T4f).
+   */
+  triggerSync: (accountId: string, opts?: { quiet?: boolean }) => Promise<void>;
   /**
    * Disconnect a mailbox: `DELETE /email/accounts/{id}`. `{ ok: true }` on
    * success. On a refusal it sets `error`, re-reads the accounts so the list on
@@ -2054,7 +2061,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     }
   },
 
-  triggerSync: async (accountId: string) => {
+  triggerSync: async (accountId: string, opts?: { quiet?: boolean }) => {
     // Cancel any catch-up refetches still pending from a previous sync.
     (_postSyncTimers[accountId] || []).forEach(clearTimeout);
     _postSyncTimers[accountId] = [];
@@ -2100,6 +2107,12 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // 409: another sync of this mailbox runs now (EM-T4f). The mailbox is
       // not in error, and the detail of the gateway says when new mail appears.
       const busy = err?.status === 409;
+      // A sync that no member asked for shows nothing for the 409. The
+      // gateway runs the mailbox again, so the sent copy still comes.
+      if (busy && opts?.quiet) {
+        set({ syncStatus: { ...get().syncStatus, [accountId]: "idle" } });
+        return;
+      }
       set({
         syncStatus: { ...get().syncStatus, [accountId]: busy ? "idle" : "error" },
         error: err.message || "Sync failed",

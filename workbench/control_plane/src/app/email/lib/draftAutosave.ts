@@ -418,3 +418,61 @@ export function supersededDraft(
     ? last.id
     : null;
 }
+
+/**
+ * The drafts that the inline reply of the reading pane holds (owner report,
+ * 2026-10-14). The autosave writes the reply to a provider draft, and the
+ * thread refetch then brings that draft back as a row. Without this record
+ * the thread drew it as a DraftCard above the open composer, so the member
+ * saw one reply in two boxes.
+ *
+ * `own` holds each draft that the open reply saved. `gone` holds each draft
+ * that a send or a discard ended, so a refetch that comes before the
+ * provider delete cannot show it again. The record lives in React state, so
+ * the hide applies in the same render that gets the row. A ref would not
+ * make a render.
+ */
+export interface ComposerDrafts {
+  own: readonly string[];
+  gone: readonly string[];
+}
+
+/** The record of a new mail: no draft is held. */
+export const NO_COMPOSER_DRAFTS: ComposerDrafts = { own: [], gone: [] };
+
+/** The record after a save of the open reply gave `id`. */
+export function ownDraft(s: ComposerDrafts, id: string): ComposerDrafts {
+  return s.own.includes(id) ? s : { ...s, own: [...s.own, id] };
+}
+
+/** The record of a new reply. Its drafts start empty, and an earlier reply
+ *  that the member closed keeps its draft, which the thread shows again. */
+export function newReplyDrafts(s: ComposerDrafts): ComposerDrafts {
+  return s.own.length === 0 ? s : { ...s, own: [] };
+}
+
+/** The record after a send or a discard ended the reply. Each of its drafts,
+ *  and each id in `also`, stays hidden until the member opens another mail. */
+export function retireDrafts(s: ComposerDrafts, also: readonly string[] = []): ComposerDrafts {
+  const gone = [...s.gone];
+  for (const id of [...s.own, ...also]) if (!gone.includes(id)) gone.push(id);
+  return { own: [], gone };
+}
+
+/**
+ * The thread as the reading pane draws it. While the inline reply is open,
+ * it owns its drafts, so the thread drops them. Once the reply closes and
+ * keeps its draft, the draft shows again as a DraftCard. Each other draft
+ * shows, and so does each message that is not a draft. `isDraft` is the
+ * draft test of the conversation view (`isDraftEmail`), so the two agree.
+ */
+export function threadWithoutComposerDrafts<T extends { id: string }>(
+  messages: readonly T[],
+  drafts: ComposerDrafts,
+  replyOpen: boolean,
+  isDraft: (m: T) => boolean,
+): T[] {
+  const hidden = new Set(replyOpen ? [...drafts.own, ...drafts.gone] : drafts.gone);
+  if (hidden.size === 0) return [...messages];
+  return messages.filter((m) => !(hidden.has(m.id) && isDraft(m)));
+}
