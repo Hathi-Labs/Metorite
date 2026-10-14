@@ -542,6 +542,12 @@ def _email_line(thread: dict[str, Any]) -> str:
     )
 
 
+#: The deepest timeline offset the route takes: ``MAX_TIMELINE_OFFSET`` in
+#: ``gateway/routes/crm/activities.py``. A copy, because an agent does not
+#: import gateway code. ``test_read_tool_paging.py`` holds the two equal.
+_TIMELINE_OFFSET_MAX = 5000
+
+
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def get_timeline(entity: str, record_id: str, limit: int = 20,
                        offset: int = 0) -> str:
@@ -564,10 +570,17 @@ async def get_timeline(entity: str, record_id: str, limit: int = 20,
     # Its unpaged read gives mail half the page, so a bigger LIMIT is a
     # different mix and cannot be cut into pages.
     start, size = bounds(offset, limit, default=20)
+    # The route refuses an offset past its MAX_TIMELINE_OFFSET with a 422.
+    # Clamp it here and say so, so the model reads a line, not an error.
+    deep = start > _TIMELINE_OFFSET_MAX
+    start = min(start, _TIMELINE_OFFSET_MAX)
     data = await _get(f"/crm/{slug}/{record}/timeline", {"limit": size, "offset": start})
     entries = (data or {}).get("entries") or []
     line = page_line(None, start, len(entries), more=bool((data or {}).get("has_more")),
                      noun="entries")
+    if deep:
+        line = (f"The timeline reads back at most {_TIMELINE_OFFSET_MAX} entries, "
+                f"so this page starts at offset={_TIMELINE_OFFSET_MAX}. {line}").strip()
     if not entries:
         return line or f"No activity recorded on this {ENTITY_LABELS[slug].lower()} yet."
     out = [f"{ENTITY_LABELS[slug]} timeline ({len(entries)} entries, newest first):"]

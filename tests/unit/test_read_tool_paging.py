@@ -221,6 +221,12 @@ ALLOWED: dict[str, str] = {
         "Text: one web page, cut and marked '[... truncated'. max_chars asks for more.",
     'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
         "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
+    'apps/agents/agent-email-assistant/agents.py::_card_name::\' \'.join(\'\'.join((ch for ch in text if ch not in \'"\\\'`()[]{}\')).split())[:80]':
+        'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
+    "apps/agents/agent-email-assistant/agents.py::_card_text::' '.join(kept.split())[:limit]":
+        'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
+    "apps/agents/agent-email-assistant/agents.py::_one_line::' '.join(str(value or '').split())[:limit]":
+        'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -228,8 +234,10 @@ ALLOWED: dict[str, str] = {
 #: function: 15 entries joined (listed last, each with its reason). Three
 #: left, because the scan now reads a slice inside an f-string, and a
 #: `" ".join(...)` result, as text. 48 - 3 + 15 = 60. #1019 on main added one
-#: confirm-card line (61).
-ALLOWED_CEILING = 61
+#: confirm-card line (61). The re-review of #1014 stopped exempting a
+#: `join(...)[:N]`, so the three email entries that collapse one string's
+#: whitespace came back with their reason (64).
+ALLOWED_CEILING = 64
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -246,8 +254,6 @@ def _stringy(node: ast.AST) -> bool:
         if node.func.attr in ("strip", "lower", "upper", "replace", "dumps",
                               "isoformat", "decode", "read_text"):
             return True
-        if node.func.attr == "join" and _stringy(node.func.value):
-            return True  # `" ".join(...)` is a string
         return node.func.attr == "get" and len(node.args) == 2 and _stringy(node.args[1])
     return False
 
@@ -281,26 +287,47 @@ def _cuts(path: Path) -> set[str]:
     return {f"{rel}::{hit}" for hit in _cuts_in_source(path.read_text(encoding="utf-8-sig"))}
 
 
-def _in_fstrings(fn: ast.AST) -> set[int]:
-    """The ids of the nodes inside an f-string. A slice there formats text."""
-    inside: set[int] = set()
+def _formatted_text(fn: ast.AST) -> set[int]:
+    """The ids of the slices that format ONE text value inside an f-string.
+
+    Exempt: ``f"{body[:80]}"`` and ``f"{_data(summary[:160])}"``, where the
+    slice sits on a Name, an Attribute or a Call and only calls lie between
+    it and the f-string. Not exempt (review of #1014): a slice that a
+    generator or a comprehension iterates (``{', '.join(r for r in rows[:30])}``),
+    and a slice of a ``join`` (``' | '.join(lines)[:4000]`` cuts rows' text)."""
+    parent: dict[int, ast.AST] = {}
     for node in ast.walk(fn):
-        if isinstance(node, ast.JoinedStr):
-            inside |= {id(n) for n in ast.walk(node)}
-    return inside
+        for child in ast.iter_child_nodes(node):
+            parent[id(child)] = node
+    exempt: set[int] = set()
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice)):
+            continue
+        value = node.value
+        one_item = isinstance(value, ast.Subscript) and not isinstance(value.slice, ast.Slice)
+        if not (isinstance(value, ast.Name | ast.Attribute | ast.Call) or one_item):
+            continue  # `row["due"][:10]` slices ONE item, so it is text too
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)                 and value.func.attr == "join":
+            continue
+        up = parent.get(id(node))
+        while isinstance(up, ast.Call):
+            up = parent.get(id(up))
+        if isinstance(up, ast.FormattedValue):
+            exempt.add(id(node))
+    return exempt
 
 
 def _cuts_in_source(source: str) -> set[str]:
     """``"<function>::<slice source>"`` for EVERY head slice and every islice
     in a function: in a loop, a literal, an ``+=``, a concatenation, a tuple
-    assign or a call. The one exemption is a slice inside an f-string, which
-    formats text."""
+    assign or a call. The one exemption is a slice that formats one text
+    value inside an f-string (:func:`_formatted_text`)."""
     tree = ast.parse(source)
     found: set[str] = set()
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
-        text_nodes = _in_fstrings(fn)
+        text_nodes = _formatted_text(fn)
         for node in ast.walk(fn):
             if id(node) in text_nodes:
                 continue
@@ -357,6 +384,9 @@ def test_the_fence_catches_the_shape_that_hid_items_31_to_35() -> None:
     ("return ['h'] + rows[:30]", "rows[:30]"),
     ("a, b = rows[:30], 1", "rows[:30]"),
     ("return list(itertools.islice(rows, 30))", "itertools.islice(rows, 30)"),
+    # Re-review of #1014: two cuts that hid behind the text exemptions.
+    ("return f\"{', '.join(r['t'] for r in rows[:30])}\"", "rows[:30]"),
+    ("return ' | '.join(rows)[:4000]", "' | '.join(rows)[:4000]"),
 ])
 def test_the_fence_catches_the_six_shapes_the_review_named(shape: str, hit: str) -> None:
     """Review of #1014: a slice in a literal, a 0 lower bound, an ``+=``, a
@@ -847,6 +877,16 @@ def test_unsubscribe_candidates_say_the_scan_stopped_at_200(monkeypatch, ea) -> 
         ea.list_senders("a1", view="unsubscribe"))
 
 
+def test_no_unsubscribe_candidate_still_says_the_scan_stopped_at_200(monkeypatch, ea) -> None:
+    """Re-review of #1014: "no newsletters" from a scan of the 200 biggest
+    senders must say that it read only those."""
+    rows = [{"email": f"n{k}@x.io", "count": 3, "read_rate": 0.9} for k in range(200)]
+    _gw(monkeypatch, ea, lambda p, q: {"senders": rows, "total": 900})
+    out = asyncio.run(ea.list_senders("a1", view="unsubscribe"))
+    assert out.startswith("No obvious newsletters")
+    assert "Checked only the 200 biggest of 900 senders." in out
+
+
 def test_unsubscribe_candidates_page(monkeypatch, ea) -> None:
     rows = [{"email": f"n{k}@x.io", "count": 3, "read_rate": 0.1} for k in range(1, 16)]
     _gw(monkeypatch, ea, lambda p, q: {"senders": rows, "total": 15})
@@ -1049,6 +1089,20 @@ def test_crm_timeline_pages_with_no_repeat_and_no_gap(monkeypatch, crm_agent) ->
     assert [x.split(" — ")[0].split(" (")[0] for x in subjects] == want
     assert "Call again with offset=20 for the rest." in pages[0]
     assert "This is the last page." in pages[2]
+
+
+def test_crm_timeline_clamps_a_deep_offset_and_says_so(monkeypatch, crm_agent) -> None:
+    """Re-review of #1014: the route refuses an offset past 5,000 with a 422.
+    The tool clamps it and prints a line, so the model never sees the 422."""
+    pytest.importorskip("gateway.routes.crm.activities")
+    from gateway.routes.crm.activities import MAX_TIMELINE_OFFSET
+
+    seen = _gw(monkeypatch, crm_agent, lambda p, q: {"entries": [], "has_more": False})
+    rid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    out = asyncio.run(crm_agent.get_timeline("deal", rid, offset=9000))
+    assert crm_agent._TIMELINE_OFFSET_MAX == MAX_TIMELINE_OFFSET
+    assert seen[-1][1]["offset"] == MAX_TIMELINE_OFFSET
+    assert "The timeline reads back at most 5000 entries" in out
 
 
 # ── 9. The shared tools: the parallel join and the attachment listing ──────

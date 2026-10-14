@@ -276,8 +276,12 @@ def _email_budget(limit: int) -> int:
     source at ``limit`` is NOT enough on its own: the merge sorts newest-first
     and then truncates to ``limit``, so ``limit`` recent threads evict every
     activity and every status change the record has. That is the common case,
-    not the pathological one — the CRM agent's ``get_timeline`` defaults to 20,
-    and twenty recent emails is an ordinary week on an active deal.
+    not the pathological one: the CRM panel draws one unpaged read, and twenty
+    recent emails is an ordinary week on an active deal.
+
+    The budget applies to the unpaged read only. The CRM agent's
+    ``get_timeline`` pages with ``offset``, and a paged read has no budget
+    (:func:`merge_page` says why). Its hint line leads to the older history.
 
     Rounded UP so a limit of 1 still admits email, and so the reserved half is
     the one that can be empty: a record with no activity at all still fills the
