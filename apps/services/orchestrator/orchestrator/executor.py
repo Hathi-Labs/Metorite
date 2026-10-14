@@ -3750,8 +3750,9 @@ async def run_agent_stream(
 
     The switch is a ContextVar, so it covers the tools of a MAF agent. A
     Copilot SDK tool that runs in a JSON-RPC thread reads a fresh context,
-    so it is NOT covered. Only the email chat passes ``False`` today, and it
-    runs MAF.
+    so it is NOT covered. Only the unused route ``/email/ai/chat`` passes
+    ``False`` today, and it runs MAF. The chat pane of the Email app does not
+    call it.
 
     Strategy (two-tier with automatic fallback):
 

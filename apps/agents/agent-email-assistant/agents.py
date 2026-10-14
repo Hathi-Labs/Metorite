@@ -62,15 +62,16 @@ async def _confirm_destructive(title: str, detail: str, context: str = "") -> bo
 
 
 #: EM-G11c1 (§12.3.13.6): the answer of each tool of ``MAILBOX_WRITE_TOOLS``
-#: when no card can show. The email chat pane shows no card
-#: (``shows_cards=False``) and a scheduled run has no member, so the card
-#: answers "no" at once. The member refused nothing, so the answer is never
-#: "Cancelled": it sends the member to the Chat app, which shows the card.
+#: when no card can show. A scheduled run, a batch run and a WhatsApp run
+#: have no card channel, so the card answers "no" at once. The member refused
+#: nothing, so the answer is never "Cancelled". It sends the member to the
+#: Chat app or the Email app, which both show the card (EM-G11c1b,
+#: §12.3.13.6b). It never names a chat as a place with no card.
 #: It starts "Nothing changed.", which ``noActionOf`` in
 #: ``EmailToolCards.tsx`` draws as an act that did not happen.
-_USE_CHAT_APP = (
-    "Nothing changed. This needs your approval on a card, and this chat "
-    "cannot show one. Ask for it in the Chat app."
+_NO_CARD_CHANNEL = (
+    "Nothing changed. This needs your approval on a card, and a card cannot "
+    "show here. Ask for it in the Chat app or the Email app."
 )
 
 
@@ -86,11 +87,11 @@ async def _card_refusal(
     """None when the member approves the card. Else the answer of the tool.
 
     The one gate of EM-G11c1. A "no" in a live chat answers *cancelled*. A run
-    with no card channel answers ``_USE_CHAT_APP``. ``request_confirmation``
+    with no card channel answers ``_NO_CARD_CHANNEL``. ``request_confirmation``
     fails closed in both, so the tool writes nothing."""
     if await _confirm_destructive(title=title, detail=detail, context=context):
         return None
-    return cancelled if _card_channel_open() else _USE_CHAT_APP
+    return cancelled if _card_channel_open() else _NO_CARD_CHANNEL
 
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
@@ -1518,7 +1519,7 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
     provider draft in the user's Drafts folder, after a card. The draft is
     always made in the mailbox that received the email, whatever
     ``account_id`` says. Where no card can show, the tool saves nothing and
-    returns the draft, which the user saves or sends from the composer."""
+    returns the draft, which the user saves or sends in the Email app."""
     try:
         # A read for the card: it must not mark the email read (fix round 1).
         orig = await _get(f"/email/messages/{email_id}", {"mark_read": "false"})
@@ -1529,13 +1530,13 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
         account_id = own
     unsaved = ""
     if save and not _card_channel_open():
-        # EM-G11c1 fix round 1 (P1-a): the email chat pane shows no card, and
-        # drafting must still work there. So the tool writes the draft and
-        # saves nothing. The draft card of the pane has Save and Send. The
-        # note goes in the first line, because the card edits the rest.
+        # EM-G11c1 fix round 1 (P1-a): a run with no card channel must still
+        # draft. So the tool writes the draft and saves nothing. The draft
+        # card has Save and Send. The note goes in the first line, because
+        # the card edits the rest. It names no chat (EM-G11c1b).
         save = False
-        unsaved = (" (Drafts is unchanged, because this chat cannot show the "
-                   "approval card. Save or send this draft from the composer)")
+        unsaved = (" (Drafts is unchanged, because a card cannot show here. "
+                   "Save or send this draft in the Email app)")
     if save:
         # EM-G11c1: a saved draft is one click from a send, so it asks first.
         # A draft that only shows in the chat (save=false) asks nothing.
@@ -1712,9 +1713,6 @@ _CARD_KINDS = {"FORWARD": "forward", "CALL_WEBHOOK": "webhook",
                "DRAFT_EMAIL": "draft email"}
 _CARD_DETAIL_LIMIT = 500
 _CARD_CONTEXT_LIMIT = 4000
-# EM-G11c1: one headless answer for each rule tool, the inward card and the
-# outward card alike.
-_NO_CARD_CHANNEL = _USE_CHAT_APP
 
 
 def _is_hidden_char(ch: str) -> bool:
@@ -3291,7 +3289,7 @@ async def send_email(
         ),
     ):
         if not _card_channel_open():
-            return _USE_CHAT_APP
+            return _NO_CARD_CHANNEL
         return f"Send cancelled — the {verb} was not sent."
     res = await _post("/email/send", payload)
     note = f" with {len(refs)} attachment(s)" if refs else ""
@@ -3423,7 +3421,7 @@ async def forward_email(
             note),
     ):
         if not _card_channel_open():
-            return _USE_CHAT_APP
+            return _NO_CARD_CHANNEL
         return "Forward cancelled. The email was not forwarded."
     payload: dict[str, Any] = {
         "message_id": mid,
@@ -3582,7 +3580,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     ):
         if _channel_open():
             return "Send cancelled — the draft was not sent."
-        return _USE_CHAT_APP
+        return _NO_CARD_CHANNEL
     try:
         await _post(
             "/email/drafts/send",
@@ -3751,7 +3749,7 @@ async def unsubscribe_sender(
     ):
         if _channel_open():
             return f"Cancelled — still subscribed to {shown}."
-        return _USE_CHAT_APP
+        return _NO_CARD_CHANNEL
     if target.get("kind") == "block":
         # No link to use. ``POST /unsubscribe`` with no link reads the stored
         # link again, and a new mail can store one that the card did not show.
@@ -4469,7 +4467,7 @@ _TOOLS = [
 #: rules, a preview of ``auto_categorize_inbox``, a draft that only shows in
 #: the chat, a digest preview, a sync without a purge, a pause of a rule, a
 #: settings change that turns no write on. With no card channel each one
-#: answers ``_USE_CHAT_APP`` and writes nothing.
+#: answers ``_NO_CARD_CHANNEL`` and writes nothing.
 #: Fence: ``tests/unit/test_email_agent_write_cards.py``.
 MAILBOX_WRITE_TOOLS: frozenset[str] = frozenset({
     # The tools that asked a card before EM-G11c1.

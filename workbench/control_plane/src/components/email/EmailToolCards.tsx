@@ -659,7 +659,11 @@ function DraftResultCard({
   // named, so the card acts there too (EM-T8a, D-EM-19).
   const acctId = head.mailboxId || (args?.account_id as string) || accountId || "";
   const [body, setBody] = useState(initial);
-  const [state, setState] = useState<"idle" | "saving" | "saved" | "sending" | "sent" | "error">("idle");
+  // A draft that the tool saved after a yes on its card starts saved
+  // (EM-G11c1b), so its Save cannot make a second provider draft.
+  const [state, setState] = useState<"idle" | "saving" | "saved" | "sending" | "sent" | "error">(
+    () => draftCardStart(raw),
+  );
 
   const canAct = !!acctId && !!targetId && !!body.trim();
 
@@ -2220,10 +2224,24 @@ export function isThreadRead(raw: string | null | undefined): boolean {
   return /^Thread:/.test((raw || "").trimStart());
 }
 
-/** The first line of a `draft_reply` result: the From mailbox and its id.
- *  Both are absent from a result of an agent before EM-T8a. */
-export function draftReplyHead(raw: string): { from: string | null; mailboxId: string | null } {
+/** The first line of a `draft_reply` result: the From mailbox and its id,
+ *  and whether the tool saved the draft. The mailbox is absent from a result
+ *  of an agent before EM-T8a. `saved` is true only when the first line says
+ *  "(saved to Drafts)", which the tool writes after a yes on its card
+ *  (EM-G11c1b). The note of an unsaved draft says "Drafts is unchanged". */
+export function draftReplyHead(
+  raw: string,
+): { from: string | null; mailboxId: string | null; saved: boolean } {
   const first = (raw || "").split("\n", 1)[0];
+  const saved = first.includes("(saved to Drafts)");
   const m = /^Draft from (.+?) \(mailbox ([^)\s]+)\)/.exec(first);
-  return m ? { from: m[1], mailboxId: m[2] } : { from: null, mailboxId: null };
+  return m ? { from: m[1], mailboxId: m[2], saved } : { from: null, mailboxId: null, saved };
+}
+
+/** The state the draft card starts in. A draft that the tool saved starts
+ *  as after a manual save: no Save, so one click cannot make a second
+ *  provider draft, and no Send, because the result names no draft id
+ *  (Q-GM-15). Every other draft starts `idle`, as before EM-G11c1b. */
+export function draftCardStart(raw: string): "saved" | "idle" {
+  return draftReplyHead(raw).saved ? "saved" : "idle";
 }
