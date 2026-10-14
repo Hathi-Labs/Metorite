@@ -2,7 +2,13 @@
 
 **Status: ACTIVE, 2026-10-14.** Owner directive of 2026-10-14. The owner
 accepted every proposal of §12 the same day, recorded as **D103**. Board row
-**WS-59**. RE-1a, the demo slice (§16.1), is the first build.
+**WS-59**.
+
+**RE-1a is BUILT, 2026-10-14** (branch `ws59-proactive-reach`, migration
+266, dark). `gateway/reach/` holds the classes, the planner, the outbox, the
+WhatsApp adapter, the loop and two routes. My Profile shows "Messages
+Metorite starts", with a preview and "Send my brief now". `REACH_ENABLED` is
+off, and `REACH_ORGS` and `REACH_MEMBERS` are empty.
 
 **What this spec owns.** How Metorite decides to contact a member outside the
 app, and how the message reaches them. That covers the outbound path, the
@@ -709,9 +715,9 @@ thrown away.
 | Channel | WhatsApp free text in an open window. A template only when `REACH_BRIEF_TEMPLATE` names an approved one | The other templates, STOP and START (RE-2) |
 | The loop | Its own 60 s loop in the gateway, one member at a time | The worker unit and the shards (RE-8) |
 | The thread | Each message is also an assistant turn in the member's WhatsApp chat thread, so a reply has context | The buttons (RE-6) |
-| Routes | `GET /reach/preview` and `POST /reach/brief`, for the signed-in member only | Settings → Notifications (RE-7) |
+| Routes | `GET /reach/preview` and `POST /reach/brief`, for the signed-in member only. My Profile shows both, under "Chat on WhatsApp" | Settings → Notifications (RE-7) |
 
-**Data.** Migration 265 adds `reach_outbox` and `reach_signal_log`. The log
+**Data.** Migration 266 adds `reach_outbox` and `reach_signal_log`. The log
 holds one row for each signal and fingerprint that Reach considered, with its
 outcome. It is the dedupe of an interrupt, and the baseline of the first
 run.
