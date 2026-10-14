@@ -337,7 +337,10 @@ async def test_a_draft_in_the_email_pane_shows_and_saves_nothing(
         out = await agents.draft_reply("m1", BOX, save=True)
     head, _, body = out.partition("\n\n")
     assert head.startswith(f"Draft from {BOX_TEXT} (mailbox {BOX})")
-    assert "not saved to Drafts" in head and "composer" in head
+    assert "Drafts is unchanged" in head and "composer" in head
+    # Round 2: the note of an unsaved draft shares no text with the note
+    # of a saved one, so no reader takes it for a save.
+    assert "saved to Drafts" not in head
     assert body == "Hi"
     [(method, path, sent)] = [c for c in gw.calls if c[0] != "GET"]
     assert (method, path) == ("POST", "/email/draft-reply")

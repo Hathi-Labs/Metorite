@@ -14241,7 +14241,7 @@ returned GO-NARROWED.
 item below has a fence in the same file, and each P1 has a mutation that turns it red.
 
 - **P1-a, drafting in the pane.** With no card channel, `draft_reply(save=true)` saves nothing. It
-  returns the draft, and its first line says "not saved to Drafts" and points to the composer. A
+  returns the draft, and its first line says "Drafts is unchanged" and points to the composer. A
   live chat still asks a card before it saves. `find_follow_ups` keeps its card and its Chat-app
   text in the pane, because its route has no read-only mode: the label is the act.
 - **P1-b, rule cards.** Each rule card lists each rule of the call and each action of each rule,

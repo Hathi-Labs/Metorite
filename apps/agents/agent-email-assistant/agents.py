@@ -1534,8 +1534,8 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
         # saves nothing. The draft card of the pane has Save and Send. The
         # note goes in the first line, because the card edits the rest.
         save = False
-        unsaved = (" (not saved to Drafts, because this chat cannot show the "
-                   "approval card. Save or send it from the composer)")
+        unsaved = (" (Drafts is unchanged, because this chat cannot show the "
+                   "approval card. Save or send this draft from the composer)")
     if save:
         # EM-G11c1: a saved draft is one click from a send, so it asks first.
         # A draft that only shows in the chat (save=false) asks nothing.
@@ -1906,12 +1906,16 @@ async def _outward_rule_refusal(
     # EM-G11c1 fix round 1 (P1-b): the card also lists EACH rule of the call
     # and EACH action of it, so a TRASH beside a FORWARD, or an inward rule in
     # the same batch, is on the card that saves it.
-    if context:
-        context += "\n\nEach rule, with each action:\n" + _rule_lines(rules)
-    if not context or len(context) > _CARD_CONTEXT_LIMIT:
+    if not context:
         return (
             "Not saved. These rules name too many targets to show on one "
             "card. Ask the user for fewer rules or fewer targets at a time."
+        )
+    context += "\n\nEach rule, with each action:\n" + _rule_lines(rules)
+    if len(context) > _CARD_CONTEXT_LIMIT:
+        return (
+            "Not saved. These are too many rules to show on one card. Ask "
+            "the user for fewer rules at a time."
         )
     if await _confirm_destructive(title=title, detail=detail, context=context):
         return None
@@ -2118,6 +2122,30 @@ async def delete_rule(account_id: str, rule_id: str) -> str:
     return f"Deleted rule {rule_id}."
 
 
+def _run_rules_listing(rules: list[dict[str, Any]]) -> str | None:
+    """The ``context`` of a rule run card, or None when it cannot be honest.
+
+    Round 2: each rule that sends email out comes first, and the card never
+    cuts one. None when those alone do not fit. The other rules follow until
+    the card is full, and a last line counts the rest, so no cut is silent."""
+    outward = [r for r in rules if _has_outward_action(r.get("actions"))]
+    inward = [r for r in rules if not _has_outward_action(r.get("actions"))]
+    lines = _rule_lines(outward).split("\n") if outward else []
+    if len("\n".join(lines)) > _CARD_CONTEXT_LIMIT:
+        return None
+    # Keep room for the last line, which is at most about 60 characters.
+    budget = _CARD_CONTEXT_LIMIT - 80
+    shown = 0
+    for line in _rule_lines(inward).split("\n") if inward else []:
+        if len("\n".join([*lines, line])) > budget:
+            break
+        lines.append(line)
+        shown += 1
+    if shown < len(inward):
+        lines.append(f"+{len(inward) - shown} more rules that send no email out")
+    return "\n".join(lines)
+
+
 @_annotate_risk(open_world=True)
 async def run_rules(
     account_id: str | None = None,
@@ -2162,13 +2190,19 @@ async def run_rules(
                 if isinstance(r, dict) and r.get("enabled")]
         except Exception:  # the card then names no rule
             rules = []
+        listing = _run_rules_listing(rules)
+        if listing is None:
+            return (
+                "Nothing changed. Too many rules that send email out are on to "
+                "show on one card. Run them from the rules screen of the Email app."
+            )
         refusal = await _card_refusal(
             f"Apply the rules to {what} in {box}?",
             "Each rule that matches acts now: it labels, moves, drafts, and "
             "sends what the rule says to send. Each rule that is on is in the "
             f"list below. Mailbox: {box}.",
             "Cancelled — no rule ran.",
-            _rule_lines(rules)[:_CARD_CONTEXT_LIMIT],
+            listing,
         )
         if refusal:
             return refusal
@@ -2741,7 +2775,7 @@ async def install_default_rules(
 
     ``reset=false`` (default) adds the defaults, skipping any the user already
     has. ``reset=true`` first DELETES all existing rules and reinstalls the
-    defaults fresh — destructive, so always confirm with the user first.
+    defaults fresh. The card says so, so do not ask in text first.
 
     Mailbox: the rules belong to one mailbox. Leave ``account_id`` out when
     the user named no mailbox. One mailbox then acts. With two or more, the
@@ -2754,9 +2788,18 @@ async def install_default_rules(
     # draft of Needs Reply when the member turned drafting on.
     try:
         accounts = await _accounts()
-    except Exception:  # the card then lists the presets of Gmail
+    except Exception:
         accounts = []
     box = next((a for a in accounts if str(a.get("id")) == str(account_id)), {})
+    if not box.get("provider"):
+        # Round 2: the provider decides the actions (Outlook moves to folders,
+        # Gmail labels and archives). With no provider the card would show
+        # another mailbox's rules, so the tool installs nothing.
+        return (
+            f"Nothing changed. I could not read the mailbox {account_id}, so I "
+            "cannot show which default rules it gets. Call list_accounts, and "
+            "try again."
+        )
     try:
         cur = await _get("/email/assistant/settings", {"account_id": account_id})
     except Exception:
@@ -4033,7 +4076,7 @@ async def digest(account_id: str, period: str = "day", send: bool = False) -> st
     """Preview OR send the inbox digest for ``period`` ('day' | 'week').
 
     ``send=false`` (default) previews the digest — counts and highlights per
-    section. ``send=true`` emails it to the account now. Confirm before sending."""
+    section. ``send=true`` emails it to the account now, after a card."""
     if send:
         refusal = await _card_refusal(
             "Email the digest now?",
@@ -4064,7 +4107,7 @@ async def sync_account(
 
     Default (``full=false``) is a fast incremental sync. ``full=true`` forces a
     COMPLETE re-sync; add ``purge=true`` to delete local mail first (for
-    stale/corrupt local data — confirm purge with the user). ``purge`` implies a
+    stale/corrupt local data). A purge shows a card first. ``purge`` implies a
     full re-sync."""
     if purge:
         refusal = await _card_refusal(

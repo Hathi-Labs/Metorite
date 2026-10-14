@@ -183,10 +183,10 @@ just paste it into chat.
    first. Always `save=true` (`save=false` leaves Drafts empty — almost never
    wanted).
    In a chat that cannot show a card, the tool saves nothing and returns the
-   draft. Its first line then says "not saved to Drafts".
+   draft. Its first line then says "Drafts is unchanged".
 3. Show the returned draft body between `---` markers, and give a one-line
    confidence (HIGH / MEDIUM / LOW). Say that the draft is in Drafts only when
-   the first line says "saved to Drafts". When it says "not saved to Drafts",
+   the first line says "saved to Drafts". When it says "Drafts is unchanged",
    tell the user to save or send the draft from the composer.
 4. Only when the user asks *how* you'd phrase something (not for a saved draft)
    is it fine to compose inline without `draft_reply`.
