@@ -29,7 +29,7 @@ def _authorizer(access):
 # ── Vocabulary ──────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
-    "service", ["zoho-crm", "clickup", "gmail-send", "google-maps", "anymailfinder"]
+    "service", ["zoho-crm", "clickup", "google-sheets", "google-maps", "anymailfinder"]
 )
 def test_service_names_produce_valid_permissions(service: str) -> None:
     """Service names carry dashes; the segment grammar must accept them."""

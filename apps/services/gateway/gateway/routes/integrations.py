@@ -190,33 +190,11 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             {"key": "INSTANTLY_API_KEY", "label": "API Key", "sensitive": True},
         ],
     },
-    "gmail": {
-        "label": "Gmail (Google Workspace)",
-        "description": "Read and send email via service-account impersonation.",
-        "setup_url": "https://console.cloud.google.com/iam-admin/serviceaccounts",
-        "docs_url": "https://developers.google.com/gmail/api/guides/",
-        "instructions": (
-            "1. Create a service account in Google Cloud Console.\n"
-            "2. Enable domain-wide delegation for the service account.\n"
-            "3. In Google Workspace Admin, grant the service account access to Gmail scopes.\n"
-            "4. Download the JSON key file and set its path below."
-        ),
-        "env_vars": [
-            {"key": "GMAIL_SA_JSON_PATH", "label": "Service Account Key Path", "sensitive": False},
-            {"key": "GMAIL_DEFAULT_USER", "label": "Default Mailbox (e.g. you@domain.com)", "sensitive": False},
-        ],
-    },
-    "gmail-send": {
-        "label": "Gmail (send only)",
-        "description": "Outbound email send via Google Workspace.",
-        "setup_url": "https://console.cloud.google.com/iam-admin/serviceaccounts",
-        "docs_url": "https://developers.google.com/gmail/api/guides/",
-        "instructions": "Same setup as Gmail — service account + domain-wide delegation.",
-        "env_vars": [
-            {"key": "GMAIL_SA_JSON_PATH", "label": "Service Account Key Path", "sensitive": False},
-            {"key": "GMAIL_DEFAULT_USER", "label": "Default Mailbox", "sensitive": False},
-        ],
-    },
+    # ⚠️ NO `gmail` AND NO `gmail-send` ENTRY (WS-17 EM-G11b, 2026-10-14).
+    # They were the service-account Gmail path, with a second set of Gmail
+    # scopes. A member connects Gmail in the Email app, and the app asks for
+    # `GMAIL_SCOPES` only (D-EM-31). Both ids stay reserved
+    # (`RETIRED_SERVICE_IDS`). Fence: `tests/unit/test_gmail_one_scope_set.py`.
     "whatsapp": {
         "label": "WhatsApp Business",
         "description": "Manage WhatsApp Business numbers via Meta's official "
@@ -368,8 +346,7 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             "1. Create a service account in Google Cloud Console.\n"
             "2. Enable the Google Sheets API for your project.\n"
             "3. Share your target Sheets with the service account email.\n"
-            "4. Download the JSON key file and set its path below.\n"
-            "   (You can reuse the same service account key as Gmail if already set up.)"
+            "4. Download the JSON key file and set its path below."
         ),
         "env_vars": [
             {"key": "GOOGLE_SHEETS_SA_JSON_PATH", "label": "Service Account Key Path (JSON file)", "sensitive": False},
@@ -389,8 +366,6 @@ _GUIDE_CATEGORIES: dict[str, str] = {
     "apollo":         "prospecting",
     "google-maps":    "prospecting",
     "instantly":      "email",
-    "gmail":          "email",
-    "gmail-send":     "email",
     "whatsapp":       "communication",
     "smtp":           "email",
     "serpapi":        "search",
@@ -417,8 +392,6 @@ def _is_configured(service_name: str, settings: Any) -> bool:
         "apollo":        lambda s: bool(s.apollo_api_key),
         "google-maps":   lambda s: bool(s.google_maps_api_key),
         "instantly":     lambda s: bool(s.instantly_api_key),
-        "gmail":           lambda s: bool(s.gmail_sa_json_path),
-        "gmail-send":      lambda s: bool(s.gmail_sa_json_path),
         "gmail-oauth":     lambda s: bool(s.gmail_oauth_client_id and s.gmail_oauth_client_secret),
         "microsoft-oauth": lambda s: bool(
             (s.msft_oauth_client_id and s.msft_oauth_client_secret)
@@ -438,9 +411,9 @@ def _is_configured(service_name: str, settings: Any) -> bool:
         "serpapi":       lambda s: bool(getattr(s, "serpapi_api_key", "") or os.getenv("SERPAPI_API_KEY", "")),
         "apify":         lambda s: bool(getattr(s, "apify_api_token", "") or os.getenv("APIFY_API_TOKEN", "")),
         "anymailfinder": lambda s: bool(getattr(s, "anymailfinder_api_key", "") or os.getenv("ANYMAILFINDER_API_KEY", "")),
+        # EM-G11b: its own key only. The Gmail service-account key is gone.
         "google-sheets": lambda s: bool(
             getattr(s, "google_sheets_sa_json_path", "") or os.getenv("GOOGLE_SHEETS_SA_JSON_PATH", "")
-            or getattr(s, "gmail_sa_json_path", "") or os.getenv("GMAIL_SA_JSON_PATH", "")
         ),
     }
     checker = checkers.get(service_name)
@@ -467,11 +440,11 @@ def _is_configured(service_name: str, settings: Any) -> bool:
 #   domain, a port, a file path or an endpoint. A tenant route refuses it
 #   with 403, and the operator sets it in the env file of the box. A
 #   redirected Zoho accounts URL or SMTP host receives the deployment's
-#   secrets on the next refresh. Two keys are named, not matched by a
+#   secrets on the next refresh. One key is named, not matched by a
 #   suffix. ZOHO_REGION picks the Zoho data-centre domain.
-#   GMAIL_DEFAULT_USER picks the mailbox that the operator's domain-wide
-#   service account impersonates (round 2), and `credential()` lets
-#   `os.environ` win, so a tenant value would read another member's mail.
+#   GMAIL_DEFAULT_USER was the second named key (round 2). WS-17 EM-G11b
+#   removed the Gmail guides that declared it, and `env_guard` still
+#   refuses the name.
 # * `BUILTIN_ENV_KEYS`: the allowlist. The guide keys minus the operator-only
 #   keys minus the platform names (the mail-app keys). Configure and
 #   `PUT /integrations/keys` store these keys as `integration` rows of the
@@ -492,7 +465,7 @@ GUIDE_ENV_KEYS: frozenset[str] = frozenset(
     for var in guide["env_vars"]
 )
 _OPERATOR_SUFFIXES = ("_URL", "_HOST", "_DOMAIN", "_PATH", "_ENDPOINT", "_DIR", "_PORT")
-_OPERATOR_NAMED = frozenset({"ZOHO_REGION", "GMAIL_DEFAULT_USER"})
+_OPERATOR_NAMED = frozenset({"ZOHO_REGION"})
 OPERATOR_ONLY_ENV_KEYS: frozenset[str] = frozenset(
     k for k in GUIDE_ENV_KEYS if k.endswith(_OPERATOR_SUFFIXES) or k in _OPERATOR_NAMED
 )
@@ -518,11 +491,16 @@ BUILTIN_PROVIDER: dict[str, tuple[str, str]] = {
 #: either one, and the key store loads neither at startup. They stay
 #: reserved, so a custom integration cannot take the name of a mail app.
 MAIL_APP_SERVICE_IDS: frozenset[str] = frozenset({"gmail-oauth", "microsoft-oauth"})
+#: The ids of the retired service-account Gmail path (WS-17 EM-G11b). No
+#: guide, store row or resolver uses them now. They stay reserved, so a
+#: custom integration cannot take the name of a Gmail service.
+RETIRED_SERVICE_IDS: frozenset[str] = frozenset({"gmail", "gmail-send"})
 #: The ids of the built-in integrations: the setup guides, the services
-#: that the key store loads at startup and the mail apps. A custom
-#: integration may not take one.
+#: that the key store loads at startup, the mail apps and the retired ids.
+#: A custom integration may not take one.
 RESERVED_SERVICE_IDS: frozenset[str] = (
-    frozenset(_SETUP_GUIDES) | frozenset(INTEGRATION_ENV_MAP) | MAIL_APP_SERVICE_IDS
+    frozenset(_SETUP_GUIDES) | frozenset(INTEGRATION_ENV_MAP)
+    | MAIL_APP_SERVICE_IDS | RETIRED_SERVICE_IDS
 )
 
 
@@ -1711,12 +1689,6 @@ async def _run_test(service: str, settings: Any) -> dict[str, Any]:
             if resp.status_code == 200:
                 return {"ok": True, "detail": "Instantly API reachable."}
             return {"ok": False, "detail": f"Status {resp.status_code}: {resp.text[:200]}"}
-
-        if service in ("gmail", "gmail-send"):
-            sa_path = Path(settings.gmail_sa_json_path)
-            if sa_path.exists():
-                return {"ok": True, "detail": "Service account key file found."}
-            return {"ok": False, "detail": f"Key file not found: {sa_path}"}
 
         if service == "gmail-oauth":
             client_id = (
