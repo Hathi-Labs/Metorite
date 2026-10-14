@@ -16,7 +16,8 @@ our code built, and each one fails for one named reason:
 * ``noted`` -- the data note that names the token is in the system message,
   or in the tool result before its first block;
 * ``no_network`` -- the call has no tools, or the run holds no network tool,
-  or the consulted run binds ``no_egress``.
+  each run that it delegates to binds ``no_egress`` and it reads no registry
+  MCP server, or the consulted run binds ``no_egress``.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from acb_skills.egress import DELEGATION_TOOLS
 from acb_skills.sandbox_tools import HOST_NETWORK_TOOLS
 from acb_skills.untrusted import MARKER_LINE_RE, has_marker_shape
 
@@ -178,8 +180,15 @@ def _check_network(cap: Capture, fail: Callable[[str, str], None]) -> None:
         return
     if cap.tools is None:
         fail("no_network", "the path reported no tool list")
-    elif cap.tools & (HOST_NETWORK_TOOLS | {"<tools>"}):
-        fail("no_network", f"the path holds {sorted(cap.tools & (HOST_NETWORK_TOOLS | {'<tools>'}))}")
+        return
+    held = cap.tools & (HOST_NETWORK_TOOLS | {"<tools>"})
+    if held:
+        fail("no_network", f"the path holds {sorted(held)}")
+    if cap.tools & DELEGATION_TOOLS and cap.delegate_no_egress is not True:
+        # call_agent reaches another agent, which may hold fetch_page.
+        fail("no_network", "a run that the path delegates to does not bind no_egress")
+    if cap.delegate_no_egress is not None and cap.mcp_reads != 0:
+        fail("no_network", f"the run reads {cap.mcp_reads} registry MCP rows")
 
 
 def _head(texts: list[str], token: str) -> str:

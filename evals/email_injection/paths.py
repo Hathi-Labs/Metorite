@@ -49,6 +49,11 @@ class Capture:
     no_egress: list[bool] = field(default_factory=list)
     #: The fields of a mail that this path reads.
     fields: frozenset[str] = frozenset()
+    #: For a path of the email assistant's own run, what that run reaches past
+    #: its own tools: the H-236 answer of a run that it delegates to with
+    #: ``call_agent``, and the count of registry reads of the MCP injection.
+    delegate_no_egress: bool | None = None
+    mcp_reads: int | None = None
 
 
 @contextlib.contextmanager
@@ -114,6 +119,48 @@ def email_agent_tools() -> frozenset[str]:
     return _AGENT_TOOLS
 
 
+_REACH: tuple[bool, int] | None = None
+
+
+def email_agent_reach() -> tuple[bool, int]:
+    """What a run of the email assistant reaches past its own tools.
+
+    The first value is the H-236 answer for a run that the email assistant
+    delegates to (``crm-assistant``, which holds ``fetch_page`` alone). The
+    second counts the registry reads of the real MCP injection for the email
+    assistant, with ``MAF_MCP_ORGS`` allowing the org. Both run the real code,
+    and only the registry is a fake."""
+    global _REACH
+    if _REACH is None:
+        import gateway.connections.mcp as mcp_registry
+        import orchestrator._tool_injection as ti
+        from orchestrator import _maf_mcp
+
+        reads: list[str] = []
+
+        async def servers_for_org(org: str, **_k: Any) -> list[Any]:
+            reads.append(org)
+            return []
+
+        parent = {"agent_name": "email-assistant", "no_egress": False}
+        delegated = ti._run_no_egress("crm-assistant", parent)
+        with _patched((mcp_registry, "servers_for_org", servers_for_org),
+                      (_maf_mcp, "maf_mcp_org_allowed", lambda _org: True),
+                      (_maf_mcp, "is_native_maf_agent", lambda _a: True)):
+            asyncio.run(ti._inject_mcp_servers(
+                object(), "email-assistant", organization_id="org-injection-eval"))
+        _REACH = (delegated, len(reads))
+    return _REACH
+
+
+def _assistant_capture(name: str, calls: list[list[str]], fields: set[str]) -> Capture:
+    """A capture of a path that the email assistant's own run reads."""
+    delegated, mcp_reads = email_agent_reach()
+    return Capture(name, calls=calls, tools=email_agent_tools(),
+                   fields=frozenset(fields), delegate_no_egress=delegated,
+                   mcp_reads=mcp_reads)
+
+
 def _gateway(mail: Mail) -> Callable[..., Awaitable[Any]]:
     """A fake ``_get`` of the agent: the gateway answers with *mail*."""
     sender = {"name": mail.value("from_name"), "email": mail.value("from")}
@@ -148,8 +195,7 @@ def _tool_path(name: str, fields: set[str],
         agents = email_agent()
         with _patched((agents, "_get", _gateway(mail))):
             out = asyncio.run(call(agents))
-        return Capture(name, calls=[[out]], tools=email_agent_tools(),
-                       fields=frozenset(fields))
+        return _assistant_capture(name, [[out]], fields)
     return run
 
 
@@ -329,9 +375,8 @@ def chat_context(mail: Mail) -> Capture:
     with _patched((chat, "_tenant_session", session)):
         _account, parts = asyncio.run(chat._build_chat_context(
             "owner@company.example", None, _MAIL_ID, False))
-    return Capture("chat_context", calls=[["\n\n".join(parts)]],
-                   tools=email_agent_tools(),
-                   fields=frozenset({"from_name", "from", "subject", "body"}))
+    return _assistant_capture("chat_context", [["\n\n".join(parts)]],
+                              {"from_name", "from", "subject", "body"})
 
 
 #: Every path of the eval, by name. ``consult_run`` reads no text into a

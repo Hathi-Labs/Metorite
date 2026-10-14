@@ -325,13 +325,33 @@ def _run_covered(agent_name: str, organization_id: str | None = None) -> bool:
         return True
 
 
-def _delegated_no_egress(parent_ctx: Any) -> bool:
+#: Agents whose context holds text that a stranger wrote (WS-17 EM-G11d,
+#: UMCC, ``email_app_master_plan.md`` §12.3.13.8). Their own run keeps its own
+#: tools, because the email assistant's writes ask a card (EM-G11c1). But a
+#: mail can steer the model, so H-236 holds what it reaches past its own tools:
+#:
+#: * each run that it delegates to binds ``no_egress``
+#:   (:func:`_delegated_no_egress`), so ``call_agent`` cannot reach an agent
+#:   that holds ``fetch_page``;
+#: * it gets no registry MCP server (:func:`_inject_mcp_servers`).
+#:
+#: Its own ``web_search`` and ``fetch_page`` leave through ``config.json:
+#: floor_opt_out``. Fences: ``tests/unit/test_delegation_no_egress.py`` and
+#: ``tests/unit/test_untrusted_frame.py``.
+UNTRUSTED_INPUT_AGENTS: frozenset[str] = frozenset({"email-assistant"})
+
+
+def _delegated_no_egress(parent_ctx: Any, child: str | None = None) -> bool:
     """True when the PARENT of a run that starts on this frame was no_egress.
 
     *parent_ctx* is the artifact context of the frame, read BEFORE the new run
     binds its own. An empty context means no parent. A parent that holds
     ``no_egress`` passes it on, so a child can never clear it, and a value that
-    is not an explicit ``False`` reads as set. Else the cover of the parent's
+    is not an explicit ``False`` reads as set. A parent in
+    :data:`UNTRUSTED_INPUT_AGENTS` passes it on to any OTHER agent *child*
+    (EM-G11d). The streaming sub-agent path binds the child's own name before
+    it starts the batch run, so that run reads itself as its parent, and the
+    same agent holds the same tools in both. Else the cover of the parent's
     agent decides, asked again now: that can only ADD the flag, so a parent
     whose binding predates a scope change, or a parent that bound no flag,
     still passes it on. No request field and no tool argument reaches this
@@ -341,7 +361,10 @@ def _delegated_no_egress(parent_ctx: Any) -> bool:
         return False
     if parent_ctx.get("no_egress", False) is not False:
         return True
-    return _run_covered(str(parent_ctx.get("agent_name") or ""))
+    parent = str(parent_ctx.get("agent_name") or "")
+    if parent in UNTRUSTED_INPUT_AGENTS and parent != (child or ""):
+        return True
+    return _run_covered(parent)
 
 
 def _run_no_egress(
@@ -354,7 +377,7 @@ def _run_no_egress(
     this run's own agent is covered (:func:`_run_covered`), whatever its parent.
     Each run boundary computes it once, before anything can fail, and binds it.
     """
-    return _delegated_no_egress(parent_ctx) or _run_covered(
+    return _delegated_no_egress(parent_ctx, str(agent_name or "")) or _run_covered(
         str(agent_name or ""), organization_id,
     )
 
@@ -2253,6 +2276,12 @@ async def _inject_mcp_servers(
     ``tests/unit/test_mcp_registry_r8.py``.
     """
     from orchestrator import _maf_mcp
+
+    if agent_name in UNTRUSTED_INPUT_AGENTS:
+        # EM-G11d (UMCC): a mail could tell the model to send mailbox data to
+        # a server, and no check here can prove that a server cannot fetch.
+        _log.info("mcp.untrusted_input_agent_skipped", agent=agent_name)
+        return
 
     org = organization_id or _run_org_or_none()
     if not org:

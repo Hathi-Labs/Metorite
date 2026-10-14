@@ -125,3 +125,19 @@ def test_no_network_fails_on_a_web_tool_or_an_open_consult() -> None:
     assert "no_network" in _checks(_capture(body, tools=frozenset({"fetch_page"})))
     assert "no_network" in _checks(Capture("consult_run", no_egress=[False]))
     assert "no_network" in _checks(Capture("consult_run", no_egress=[]))
+
+
+def test_no_network_fails_when_call_agent_or_mcp_can_reach_out() -> None:
+    """Round 1 (P1): a delegated run, or a registry MCP server, is a way out."""
+    body = f"<<<EMAIL {TOKEN}>>>\nCANARYOVERRIDE01\n<<<END EMAIL {TOKEN}>>>"
+    open_delegate = _capture(body, tools=frozenset({"call_agent"}))
+    open_delegate.delegate_no_egress, open_delegate.mcp_reads = False, 0
+    assert "no_network" in _checks(open_delegate)
+    unknown = _capture(body, tools=frozenset({"call_agent"}))
+    assert "no_network" in _checks(unknown), "an unknown answer is no answer"
+    mcp = _capture(body, tools=frozenset({"call_agent"}))
+    mcp.delegate_no_egress, mcp.mcp_reads = True, 1
+    assert "no_network" in _checks(mcp)
+    held = _capture(body, tools=frozenset({"call_agent"}))
+    held.delegate_no_egress, held.mcp_reads = True, 0
+    assert "no_network" not in _checks(held)
