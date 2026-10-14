@@ -112,9 +112,9 @@ async def test_a_refused_refresh_carries_the_provider_code(world: f.World, code:
     from gateway.connections import mcp_oauth
 
     world.refresh_error = code
-    with structlog.testing.capture_logs() as logs:
-        with pytest.raises(mcp_oauth.OAuthFailed) as err:
-            await mcp_oauth.refresh(_credential())
+    with (structlog.testing.capture_logs() as logs,
+          pytest.raises(mcp_oauth.OAuthFailed) as err):
+        await mcp_oauth.refresh(_credential())
     assert err.value.code == code
     for secret in f.SENTINELS:
         assert secret not in f.text_of(logs) and secret not in str(err.value)
