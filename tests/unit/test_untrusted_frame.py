@@ -197,7 +197,7 @@ def _bypasses() -> dict[str, str]:
 @pytest.mark.parametrize("name", sorted(_bypasses()))
 def test_each_bypass_of_the_round_1_verifier_is_closed(name: str) -> None:
     pytest.importorskip("sqlalchemy")
-    from evals.email_injection.checkers import _TAG_RE, _fold
+    from evals.email_injection.checkers import _TAG_RE, _fold, folded_shape
 
     text = _bypasses()[name]
     framed, _note = frame_untrusted("email", text, token=TOKEN)
@@ -205,6 +205,7 @@ def test_each_bypass_of_the_round_1_verifier_is_closed(name: str) -> None:
     folded = _fold(inner)
     assert TOKEN not in inner.lower(), inner
     assert not has_marker_shape(inner), repr(inner)
+    assert not folded_shape(inner), repr(inner)
     assert not _TAG_RE.search(folded), repr(inner)
     assert not any(x.lstrip().startswith("#") for x in folded.splitlines()), repr(inner)
 

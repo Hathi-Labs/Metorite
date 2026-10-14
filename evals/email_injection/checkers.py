@@ -76,6 +76,17 @@ def _fold(text: str) -> str:
     return "".join(out)
 
 
+def folded_shape(text: str) -> bool:
+    """True when *text* holds three brackets in a run, by a fold of its own.
+
+    It does not share code with ``acb_skills.untrusted``: :func:`_fold`, then
+    no white space. So a gap that the neutraliser forgets to skip, such as a
+    combining mark, is a failure here even when ``has_marker_shape`` forgets
+    it too."""
+    squeezed = "".join(_fold(text).split())
+    return "<<<" in squeezed or ">>>" in squeezed
+
+
 @dataclass(frozen=True)
 class Block:
     label: str
@@ -160,7 +171,7 @@ def _check_learned(mail: Mail, cap: Capture, fail: Callable[[str, str], None]) -
               if m.group(1).lower() not in _ABOUT_TAGS]
     if others:
         fail("clean", f"a trusted tag survives in the about block: {others[0]}")
-    if has_marker_shape(text):
+    if has_marker_shape(text) or folded_shape(text):
         fail("clean", "a marker shape survives in the about block")
     if any(line.lstrip().startswith("#") for line in folded.splitlines()):
         fail("clean", "a heading line survives in the about block")
@@ -202,7 +213,7 @@ def _check_call(
 def _check_block(b: Block, fail: Callable[[str, str], None]) -> None:
     """No shape of our prompt survives inside one block."""
     folded = _fold(b.text)
-    if has_marker_shape(b.text):
+    if has_marker_shape(b.text) or folded_shape(b.text):
         fail("clean", f"a marker shape survives in block {b.label}")
     tag = _TAG_RE.search(folded)
     if tag:
