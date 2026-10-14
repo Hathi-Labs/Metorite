@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 161
+-- Tables in this phase: 162
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1946,3 +1946,15 @@ ALTER TABLE my_day_card_state ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE my_day_card_state ADD CONSTRAINT my_day_card_state_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS my_day_card_state_org_idx ON my_day_card_state (organization_id);
+
+-- my_day_judgments
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM my_day_judgments WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: my_day_judgments still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE my_day_judgments ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE my_day_judgments ADD CONSTRAINT my_day_judgments_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS my_day_judgments_org_idx ON my_day_judgments (organization_id);
