@@ -8,7 +8,7 @@
 
 **LIVE on 2026-10-14 for every organization, reads and writes.** The owner turned it on (`AGENT_ACCESS_ENABLED=true`, `AGENT_ACCESS_ORGS=*`, `AGENT_ACCESS_WRITES_ENABLED=true`) on `acb-gateway` and `acb-agent-edge`. The EA-10c smoke of §15.3 passed: the metadata answers 200, `/mcp` answers 401 with the §9.6 challenge, a false token answers `invalid_token`, and the box fetches the Claude Code document. A member connects with `claude mcp add --transport http metorite https://mcp.metorite.com/mcp`.
 
-**EA-3a is MERGED and dark (#946, `d5d8244f5`, 2026-10-13), after fix rounds 1 to 5. EA-2c is MERGED and dark (#953, 2026-10-13). EA-3b-1 is MERGED and dark (#954, `355c18bcf`, 2026-10-13), after fix rounds 1 and 2. EA-3b-2 is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-4a is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-10p, the organization allowlist (EA3-27), is MERGED and dark (2026-10-13), after fix round 1. EA-10a and EA-10b are MERGED and dark (2026-10-13), after fix rounds 1 and 2: the unit is installed and not enabled (§15.3). EA-4b is MERGED and live (2026-10-14). EA-2b, EA-3c, EA-4c, EA-5 to EA-9, EA-10c and EA-11 are not built.**
+**EA-3a is MERGED and dark (#946, `d5d8244f5`, 2026-10-13), after fix rounds 1 to 5. EA-2c is MERGED and dark (#953, 2026-10-13). EA-3b-1 is MERGED and dark (#954, `355c18bcf`, 2026-10-13), after fix rounds 1 and 2. EA-3b-2 is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-4a is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-10p, the organization allowlist (EA3-27), is MERGED and dark (2026-10-13), after fix round 1. EA-10a and EA-10b are MERGED and dark (2026-10-13), after fix rounds 1 and 2: the unit is installed and not enabled (§15.3). EA-4b is MERGED and live (2026-10-14). EA-2b, EA-3c, EA-4c, EA-5 to EA-9, EA-10c, EA-11 and EA-12a to EA-12d are not built.**
 
 **EA-3b, 2026-10-13.** The spec audit of EA-3b gave NO-GO. The decisions EA3-9 to EA3-23 (§6.1) answer it. EA-3b now splits into EA-3b-1 and EA-3b-2. A new slice, EA-2c, accepts a loopback redirect on any port, and it comes before EA-4.
 
@@ -1002,7 +1002,7 @@ Each option `id` is 1 to 64 characters of `[A-Za-z0-9_-]`, and each `label` is 1
 
 A `prompt` that answers a `select` carries `selected`, a list of option ids. The list must name ids of that elicitation, one id unless `allow_multiple` is true. The `prompt` can also carry free text in `body`. An `action` carries `action` (a tool name) and `parameters`, a flat map of strings, as in Plane.
 
-**The comment.** A `response`, `elicitation`, `error` or `prompt` writes one `comment` row through `record_activity`, with `meta` of `{"agent_run_id", "agent_activity_id", "agent_kind"}`. The author is the member, and `meta.via` names the client, as EA-6a does for a status change. The comment body of an `elicitation` lists its options as Markdown, so a reader with no card still sees the choices. The task detail draws the comment as the answer card when `meta.agent_kind` is `elicitation`.
+**The comment.** A `response`, `elicitation`, `error` or `prompt` writes one `comment` row through `record_activity` (`core.py`), with `meta` of `{"agent_run_id", "agent_activity_id", "agent_kind"}`. The author is the member, and `meta.via` names the client, as EA-6a does for a status change. The comment body of an `elicitation` lists its options as Markdown, so a reader with no card still sees the choices. The task detail draws the comment as the answer card when `meta.agent_kind` is `elicitation`.
 
 **Who may do what.**
 
@@ -1056,11 +1056,33 @@ The pill shows in the List, the Board, the Calendar and the task detail. It uses
 
 Submit writes a `prompt` with `selected` and `body`. After the answer, the card collapses to "Answered by <name>: <labels>". A reply box under the run writes a free `prompt`. A Stop control writes a `prompt` with signal `stop`.
 
-**Notifications (EA-12c).** An `elicitation` notifies the run's member, the task's assignees and its watchers, through `notify()`, with the kind `agent_question`. The bell lists it under "needs your answer". The Projects filter "Waiting on me" lists tasks whose `agent_state` is `awaiting` and whose run member is the caller, or whose assignees include the caller.
+**Notifications (EA-12c).** An `elicitation` notifies the run's member, the task's assignees and its watchers, through `notify()`, with the kind `agent_question`. The bell lists it under "From your projects", as a question (see the EA-12c note below). The Projects filter "Waiting on me" lists tasks whose `agent_state` is `awaiting` and whose run member is the caller, or whose assignees include the caller.
 
 **A member starts a run (EA-12d).** The task detail offers "Ask an agent". The member picks one of their live agent connections and writes the instruction. The gateway creates a `created` run with that `prompt`. The pill reads "Queued for <client>".
 
 The member's agent session finds it with `list_agent_runs(needs_agent=true)`. This is the pull form of Plane's mention. Starting a session on the member's own AI account stays WS-56 (§14).
+
+**The engineering decisions of the EA-12 audit (EA12-1 to EA12-13, 2026-10-14).** The audit gave GO-NARROWED: build EA-12a first. These decisions answer it.
+
+| # | Decision |
+|---|---|
+| EA12-1 | **Migration 265**, found by its content (R1). It creates the two tables in the shape of 255. It also widens `pm_notifications_kind_check` with `agent_question`, by DROP and ADD as 214 does. `NOTIFICATION_KINDS` in `notifications.py` gains the same kind. Copy the companion edits of 255: `generated/01` to `04` by hand, the table list in `test_tenancy_boundary.py`, and an assertion in `test_tenant_coverage.py` |
+| EA12-2 | `pm_agent_run_activities` gains `seq BIGINT GENERATED ALWAYS AS IDENTITY`. The cursor `after` is a `seq`, and reads order by `seq`. A timestamp can tie, and the cap of 20 deletes rows |
+| EA12-3 | The routes live in the new module `routes/projects/agent_runs.py`, imported in `projects/__init__.py` beside `refs`. The setting `agent_runs_enabled: bool = False` goes in `acb_common` settings. A route dependency gives 404 while it is off, as `agent_access._require_enabled` does |
+| EA12-4 | **The long poll.** Each read opens and closes its own `_tenant_session()`. `asyncio.sleep(2)` runs with no session open, as `notes/events.py` does. Each read checks the task again with `load_visible_task`. A revoke takes effect at the next call, at most 20 seconds later. Fence R11: a test fails if a session is open while the route sleeps |
+| EA12-5 | **The status machine, in full.** Each write locks the run row with `SELECT ... FOR UPDATE`. A `thought`, `action` or `response` on `in_progress` or `awaiting` keeps the status, and that is not a 409. An agent `elicitation` on `awaiting` gives 409. A Stop wins: an `error` or a `finish` on `stopping` gives `stopped`. A member `prompt` on `stopping`, `failed` or `stopped` gives 409. Any agent write on a terminal run gives 409. `answered` comes before `stale`, and a `created` run never goes `stale` |
+| EA12-6 | A run is **open** when its status is `created`, `in_progress`, `awaiting` or `stopping`. A partial unique index allows one open run for each task, member and `client_via`. A second start returns that run with 200 and `created: false` |
+| EA12-7 | **The payloads.** An `elicitation` with `options` sets the signal `select`, with `signal_metadata` of `options` and `allow_multiple`. Without options it is a free question with a null signal. The server sets the `in_reply_to` of a `prompt` to the newest unanswered elicitation, and never takes it from input. A `prompt` needs `selected`, `body` or both. `selected` is valid only on a `select`. The signal `continue` is the default, and Stop is the signal `stop` |
+| EA12-8 | **The notifications.** An `elicitation` calls `notify(kind="agent_question")` for the run's member and `task_audience()`, with `actor_id` set to the run's `client_via`. With the member as the actor, `notifiable()` drops the member, and the person that the agent asks gets nothing. A `response`, `error` or `prompt` sends the `comment` kind to `task_audience()`, as `add_comment` does, with no mention pass. Each write emits `pm.task.comment_added` after the commit. Fence R12: the run's member gets the `agent_question` row |
+| EA12-9 | **The chat manifest (D-PM-37).** The six routes get rows in `skill_projects/manifest.py`, or `test_projects_chat_coverage.py` fails. The three GETs are class A, with a `PLANNED` read tool `agent_runs`. The three POSTs are class B, with `PLANNED` tools and the slice "WS-55 EA-12e, in-product chat parity". Their body fields go in `FIELD_PLANNED`. The fence `test_the_write_pairs_are_the_two_of_ea_6a` changes to list five pairs and cite §12.1 |
+| EA12-10 | `TaskModel` gains `agent_state: str | None = None`. One batched helper beside `attach_assignees` (`filters.py`) fills it for the list rows (`tasks.py`) and for `get_task`. SQL computes `stale` with the database `now()`. The Calendar rows join it in EA-12c |
+| EA12-11 | The test file is `tests/unit/test_agent_runs_r8.py`, with `pytestmark = _DB_GATE`. Without the gate the suite errors in `deploy.yml`, which has no ladder database |
+| EA12-12 | EA-12a has no dismiss. A `failed` pill stays until a newer run exists. Dismiss needs a seventh route, and it is later work |
+| EA12-13 | The cap does not change. The six pairs share the cap of EA3-30, 120 writes in 600 seconds for each connection. A heartbeat each minute uses 10 writes. A long-poll GET uses none |
+
+**For EA-12b.** `get_agent_run` uses a request timeout of `wait_seconds` plus 10 seconds, and a tool timeout of `wait_seconds` plus 12 seconds. Every other tool keeps `REQUEST_TIMEOUT_S` (10) and `TOOL_TIMEOUT_S` (25).
+
+**For EA-12c, the bell.** The bell lists `agent_question` under the existing group "From your projects", and no new group is made. `agent_question` joins `_VERB` and `ASKING_NOTIFICATIONS` in `routes/shell/needs.py`, so the row reads as a question and stays in the asking rows. `navigation_shell.md` §7.2 does not change.
 
 **Later work, named so it is not built by accident.** The in-product dispatch of WS-27f (`agent_dispatch.py`) writes its own `agent_run` timeline row. Moving it onto `pm_agent_runs` is a later slice. `auth_request` is later. A webhook push to an agent that can receive one is later.
 
@@ -1186,6 +1208,14 @@ uv run pytest tests/unit/test_mcp_edge_writes.py tests/unit/test_task_refs_route
 The R8 classes of `test_mcp_edge_writes.py` need `TENANT_LADDER_DATABASE_URL`, and they run the nonce and the cap on a fake under the real `TenantRedis`. One more class runs them on a real Redis 7 when `AGENT_WRITES_REDIS_URL` names one. CI has no Redis service, so that class skips there. Also run the D3 line, `tests/unit/test_tenant_request_binding.py` with the digest, and the lint and type lines above.
 
 Every file in these pytest lines existed on 2026-10-11, except the four new ones. With `-rs`, a skipped R8 test shows its reason. A skip is not a pass. Name the files you mean when you run pytest. Do not run `tests/unit/` as a directory.
+
+**EA-12a.** First run `eval "$(bash scripts/dev_db.sh --export)"`, or use a private ladder database. Then run:
+
+    uv run pytest tests/unit/test_agent_runs_r8.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_writes.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_field_parity.py tests/unit/test_projects_ui_actions.py tests/unit/test_projects_notifications.py tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_boundary.py -v -rs
+    uv run ruff check apps/services/gateway/gateway/routes/projects/agent_runs.py packages/acb_auth tests/unit/test_agent_runs_r8.py
+    uv run mypy --ignore-missing-imports packages/acb_auth/acb_auth/agent_oauth.py
+
+Run the D3 line above without change too. EA-12a adds R11 (EA12-4) and R12 (EA12-8) to its acceptance.
 
 ### 15.2 EA-3 acceptance (EA3-8)
 
@@ -1602,3 +1632,4 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   - **A6, as built.** A suspended member's agent gets 401 at the next call, from step 7 of branch 0. The member's own session gets 403 from the list and the revoke routes, because `_member` refuses a member who is not active, as the consent routes do.
   - **Choices this slice made.** The view shows a count of pinned projects, not their names. The admin routes also answer 404 while the flag is off. A revoke of an expired connection that is not yet revoked still succeeds, because it only removes access.
 - 2026-10-14 — §12.1 and the slices EA-12a to EA-12d: agent runs on a task, after Plane's run, activity and signal model. The owner took the three defaults of D-EA-10 in chat. No code.
+- 2026-10-14 — The EA-12 audit gave GO-NARROWED for EA-12a. §12.1 gains EA12-1 to EA12-13, two anchors are corrected, and §15.1 gains the EA-12a commands. The EA-12c bell uses the existing group "From your projects".
