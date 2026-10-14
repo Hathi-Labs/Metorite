@@ -635,6 +635,41 @@ class TestTheDurablePurgeOnARealDatabase:
             release_tenant(token)
             _wipe(p.admin_engine, owner, acc)
 
+    async def test_a_refused_purge_row_rolls_the_delete_back(
+        self, promoted, app_engine, r8_doubles, monkeypatch,  # noqa: F811
+    ):
+        """Atomicity. A trigger refuses each purge row. The DELETE is in the
+        same transaction, so it rolls back, and the mailbox stays. With the
+        INSERT in a block of its own, the DELETE commits first and the mailbox
+        is gone."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11f2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "CREATE OR REPLACE FUNCTION g8_refuse_purge_row() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'purge row refused'; "
+                "END $$"))
+            c.execute(text(
+                "CREATE TRIGGER g8_refuse_purge_row BEFORE INSERT ON "
+                "email_mailbox_purges FOR EACH ROW "
+                "EXECUTE FUNCTION g8_refuse_purge_row()"))
+        try:
+            with pytest.raises(Exception, match="purge row refused"):
+                await _disconnect_with_no_task(p, monkeypatch, owner, acc)
+            with p.admin_engine.connect() as c:
+                kept = c.execute(text(
+                    "SELECT count(*) FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                    {"a": acc}).scalar_one()
+            assert kept == 1, "the DELETE committed without its purge row"
+        finally:
+            with p.admin_engine.begin() as c:
+                c.execute(text("DROP TRIGGER IF EXISTS g8_refuse_purge_row "
+                               "ON email_mailbox_purges"))
+                c.execute(text("DROP FUNCTION IF EXISTS g8_refuse_purge_row()"))
+            _wipe(p.admin_engine, owner, acc)
+
     async def test_the_app_role_sees_no_row_of_another_org(
         self, promoted, app_engine, r8_doubles, monkeypatch,  # noqa: F811
     ):
@@ -707,6 +742,64 @@ _CHECKS_SQL = """
 SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
  WHERE contype = 'c' AND conrelid = CAST(:t AS regclass)"""
 
+#: The primary-key columns of one table.
+_PK_SQL = """
+SELECT a.attname FROM pg_index i
+  JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+ WHERE i.indrelid = CAST(:t AS regclass) AND i.indisprimary"""
+
+#: Each foreign key under a mailbox, at any depth, with its ON DELETE rule.
+#: The walk starts at ``email_accounts`` and takes each table that points at a
+#: table already in the set, so a grandchild such as ``email_actions`` joins.
+_EDGES_SQL = """
+WITH RECURSIVE under(tbl) AS (
+    SELECT 'email_accounts'::regclass
+    UNION
+    SELECT c.conrelid::regclass FROM pg_constraint c JOIN under ON c.confrelid = under.tbl
+     WHERE c.contype = 'f')
+SELECT c.conrelid::regclass::text AS child, a.attname AS col,
+       c.confrelid::regclass::text AS parent, c.confdeltype AS rule
+  FROM pg_constraint c
+  JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+ WHERE c.contype = 'f' AND c.confrelid IN (SELECT tbl FROM under)
+ ORDER BY 1, 2"""
+
+#: The foreign keys under a mailbox that do NOT cascade, each with its reason.
+#: Each table here ALSO cascades on ``account_id``, so the disconnect still
+#: deletes its row. A new edge that does not cascade fails the fence until it
+#: joins this map with a reason.
+_NOT_CASCADE: dict[tuple[str, str], str] = {
+    ("email_executed_rules", "message_id"):
+        "19_email_automation.sql: the rule history outlives a trashed mail, "
+        "and the row cascades on account_id",
+    ("email_executed_rules", "rule_id"):
+        "19_email_automation.sql: the history outlives a deleted rule, and "
+        "the row cascades on account_id",
+    ("email_rule_guidance", "message_id"):
+        "87_email_rule_guidance.sql: a correction outlives the mail that "
+        "prompted it, and the row cascades on account_id",
+}
+
+
+def _edge_violations(edges: list[tuple[str, str, str, str]]) -> list[str]:
+    """What is wrong with the delete rules under a mailbox. Empty is correct.
+
+    Each edge cascades, or it is in ``_NOT_CASCADE`` and its table cascades on
+    another edge. An entry of ``_NOT_CASCADE`` that matches no edge is stale.
+    """
+    problems = []
+    cascades = {child for child, _c, _p, rule in edges if rule == "c"}
+    for child, col, parent, rule in edges:
+        if rule == "c":
+            continue
+        if (child, col) not in _NOT_CASCADE:
+            problems.append(f"{child}.{col} -> {parent} is ON DELETE {rule}, not CASCADE")
+        elif child not in cascades:
+            problems.append(f"{child} has no CASCADE edge, so its row outlives the mailbox")
+    for key in sorted(set(_NOT_CASCADE) - {(c, col) for c, col, _p, r in edges if r != "c"}):
+        problems.append(f"stale _NOT_CASCADE entry {key}")
+    return problems
+
 
 def _check_literal(checks: list[str], col: str) -> str | None:
     """The first value that a CHECK of the table allows for ``col``."""
@@ -774,6 +867,11 @@ class _Seeder:
             return self.org
         return self.insert(c, fk.parent, depth + 1, returning=fk.parent_col)
 
+    def _key(self, c, table: str, row: dict[str, Any]) -> dict[str, Any]:
+        """The primary key of an inserted row, or the whole row with no key."""
+        pk = [r[0] for r in c.execute(text(_PK_SQL), {"t": table}).fetchall()]
+        return {k: row[k] for k in pk} if pk else row
+
     def insert(self, c, table: str, depth: int = 0, *, full: bool = False,
                returning: str | None = None) -> Any:
         assert depth < 4, f"the parent chain of {table} is too deep"
@@ -796,19 +894,19 @@ class _Seeder:
             exprs.append(expr.format(p=f"p{i}"))
             if value is not None:
                 params[f"p{i}"] = value
-        sql = (f'INSERT INTO "{table}" ({", ".join(names)}) VALUES ({", ".join(exprs)})'
-               + (f' RETURNING "{returning}"' if returning else ""))
-        result = c.execute(text(sql), params)
-        return str(result.scalar_one()) if returning else None
+        sql = (f'INSERT INTO "{table}" AS t ({", ".join(names)}) '
+               f'VALUES ({", ".join(exprs)}) '
+               + (f'RETURNING t."{returning}"' if returning else "RETURNING to_jsonb(t.*)"))
+        result = c.execute(text(sql), params).scalar_one()
+        return str(result) if returning else self._key(c, table, result)
 
-    def fill(self, table: str) -> None:
-        """One row in ``table``. A CHECK that needs a NULL column set gets a
-        second try that fills every column."""
+    def fill(self, table: str) -> dict[str, Any]:
+        """One row in ``table``, and its primary key. A CHECK that needs a NULL
+        column set gets a second try that fills every column."""
         for full in (False, True):
             try:
                 with self.admin.begin() as c:
-                    self.insert(c, table, full=full)
-                return
+                    return self.insert(c, table, full=full)
             except Exception as exc:
                 if full:
                     raise AssertionError(
@@ -827,6 +925,23 @@ class TestEachChildIsEmptyAfterADisconnect:
         assert ("email_messages", "account_id", "email_accounts") in schema
         assert not any(child == "email_mailbox_purges" for child, _c, _p in schema), (
             "the purge row has a foreign key, so the cascade deletes it")
+
+    def test_each_edge_under_a_mailbox_cascades(self, promoted):  # noqa: F811
+        """A child with ``ON DELETE SET NULL`` keeps its row after a
+        disconnect, with a NULL key that no count by mailbox finds."""
+        with promoted.admin_engine.connect() as c:
+            edges = [tuple(r) for r in c.execute(text(_EDGES_SQL)).fetchall()]
+        assert ("email_actions", "rule_id", "email_rules", "c") in edges, (
+            "the walk did not reach a grandchild")
+        assert _edge_violations(edges) == []
+
+    def test_the_edge_check_can_fail(self):
+        edges = [("email_rules", "account_id", "email_accounts", "c"),
+                 ("tmp_child", "account_id", "email_accounts", "n"),
+                 *[(c, col, "x", "n") for c, col in _NOT_CASCADE],
+                 *[(c, "account_id", "email_accounts", "c") for c, _col in _NOT_CASCADE]]
+        assert _edge_violations(edges) == [
+            "tmp_child.account_id -> email_accounts is ON DELETE n, not CASCADE"]
 
     async def test_each_child_is_empty_after_a_disconnect(
         self, promoted, app_engine, r8_doubles, monkeypatch,  # noqa: F811
@@ -848,8 +963,9 @@ class TestEachChildIsEmptyAfterADisconnect:
             children = list(c.execute(text(_CHILDREN_SQL)).fetchall())
         ids = {"email_accounts": acc, "email_messages": msg}
         seeder = _Seeder(p.admin_engine, p.org_b, ids)
-        for table in sorted({r.child for r in children} - {"email_messages"}):
-            seeder.fill(table)
+        seeded = {table: seeder.fill(table)
+                  for table in sorted({r.child for r in children} - {"email_messages"})}
+        seeded["email_messages"] = {"id": msg}
 
         def _counts() -> dict[tuple[str, str], int]:
             out = {}
@@ -858,14 +974,22 @@ class TestEachChildIsEmptyAfterADisconnect:
                     out[(r.child, r.col)] = c.execute(text(
                         f'SELECT count(*) FROM "{r.child}" WHERE "{r.col}" = '
                         "CAST(:v AS uuid)"), {"v": ids[r.parent]}).scalar_one()
+                # By the seeded row's own key too: a SET NULL child keeps its
+                # row with a NULL key, and a count by mailbox misses it.
+                for table, key in seeded.items():
+                    out[(table, "<own key>")] = c.execute(text(
+                        f'SELECT count(*) FROM "{table}" AS t WHERE to_jsonb(t.*) @> '
+                        "CAST(:k AS jsonb)"), {"k": json.dumps(key, default=str)}).scalar_one()
             return out
 
         try:
             before = _counts()
             # Each child holds a row of the mailbox, through at least one key.
             for table in {r.child for r in children}:
-                assert any(n for (t, _c), n in before.items() if t == table), (
+                assert any(n for (t, col), n in before.items()
+                           if t == table and col != "<own key>"), (
                     f"the seed put no row of the mailbox in {table}")
+                assert before[(table, "<own key>")] == 1, f"the key of {table} finds no row"
             await _disconnect_with_no_task(p, monkeypatch, owner, acc)
             after = _counts()
             left = {k: n for k, n in after.items() if n}
