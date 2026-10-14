@@ -1207,6 +1207,10 @@ In the first case, the card's `href`, `acts`, `act_ref` and why line must be
 byte-equal to an old-path card. In the second case, they must come from the
 chosen option.
 
+MD-6a-1 tests the reader only, because in `shadow` the caller always gets
+the old value. An off-list key reads as no answer. A valid key reads as its
+own option key. The two card cases above move to MD-6b.
+
 ### 10.3 The questions
 
 Each row is one feature in the one mode registry,
@@ -1389,7 +1393,11 @@ makes no facade call and writes no row. A test fences it. That keeps
 `ADMIN_PERMISSION`, and reads the bound org only. For each feature it answers
 the count of rows and the rate of agreement. It also answers the acted rate
 of the top five cards of each path. The judged top five is `feed_rank.order`,
-with the judged group and the judged level times six.
+with the judged group and the judged level times six. The pass stores each
+place in `old_rank` and `judged_rank` (§13.2).
+
+A card counts as acted when its `my_day_card_state` row has an `acted_at` at
+or after the judgment's `created_at`, on the same day for the member.
 
 ---
 
@@ -1563,6 +1571,7 @@ numbers only.
 | `confidence` | `REAL` | The probability or confidence |
 | `used` | `BOOLEAN NOT NULL` | Whether the judged value set the card |
 | `request_id` | `TEXT` | Joins the call to its `usage_event` row |
+| `old_rank`, `judged_rank` | `SMALLINT NULL` | The card's place on each path. The pass writes them on the `my_day.triage` row |
 | `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
 
 The primary key is `(organization_id, member_email, signal_id, feature,
@@ -2471,8 +2480,10 @@ Files:
 - a new `gateway/routes/shell/feed_decide.py`: the questions, the state
   builder, the caps and the answer cache
 - `gateway/routes/shell/feed.py`: `feed_cards` out of `feed_answer`
-- migration `<next free>_my_day_judgments.sql`, 262 at audit. Check the
-  number again at merge (R1).
+- migration `<next free>_my_day_judgments.sql`, 262 at audit, with the
+  rank columns of §13.2. Check the number again at merge (R1).
+
+Build it after MD-5a (#993) merges, because `feed_answer` comes from it.
 
 Done when:
 
@@ -2496,8 +2507,8 @@ Fences: `tests/unit/test_feed_decide.py`, and
 
 ### MD-6a-2 · The member pass — AGENT-SAFE
 
-Files: `gateway/my_day_loop.py`, and `gateway/routes/shell/cache.py` for
-`versions(member)`.
+Files: `apps/services/gateway/gateway/my_day_loop.py`, and
+`apps/services/gateway/gateway/routes/shell/cache.py` for `versions(member)`.
 
 Done when:
 
@@ -2511,17 +2522,23 @@ Done when:
 6. A dirty member gets one pass in 2 minutes at most.
 7. With each `my_day.*` mode `off`, the pass makes no facade call and writes
    no row (§10.9 item 9).
+8. A member pass that runs past 30 seconds is cancelled, and the next member
+   runs.
+9. The sweep deletes `my_day_judgments` rows older than 30 days, of the
+   bound org only.
 
 Fences: `tests/unit/test_my_day_loop.py`, and
 `tests/unit/test_my_day_loop_r8.py` for the departed checks.
 
 ### MD-6a-3 · The measure read — AGENT-SAFE
 
-Files: `gateway/routes/shell/feed_decide.py`, and the shell router.
+Files: `apps/services/gateway/gateway/routes/shell/feed_decide.py`, and
+`apps/services/gateway/gateway/routes/shell/__init__.py`.
 
 Done when:
 
-1. `GET /shell/feed/decide-measure` answers §10.9 item 10's shape.
+1. `GET /shell/feed/decide-measure` answers §10.9 item 10's shape, with the
+   acted window of that item.
 2. A member without `ADMIN_PERMISSION` gets 403.
 3. An R8 test with two orgs shows that the read counts the bound org only.
 
@@ -2605,7 +2622,7 @@ late, because it costs the most and waits on H-171 and H-69.
 | Act | Why it is the owner's | Gate |
 |---|---|---|
 | Turn on `NEXT_PUBLIC_MY_DAY_FEED` in production | It changes the first page of every member in every organization at once | Owner only, as `navigation_shell.md` §13.1. The dev-phase window does not open it |
-| Turn on `MY_DAY_COMPOSE`, or set any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` | It spends customer credits | Owner only. CLAUDE.md §3a rule 3. Residency is answered (D100) |
+| Turn on `MY_DAY_COMPOSE`. Or set any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` while `MY_DAY_DECIDE_ORGS` names an org | It spends customer credits | Owner only. CLAUDE.md §3a rule 3. Residency is answered (D100) |
 | MD-10, a message outside the app | It reaches a real person through a third party | Owner only. CLAUDE.md §3a rule 3 |
 
 ⚠️ These bind by prose only. `plan-guard.mjs` names none of these flags (R7,

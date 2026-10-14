@@ -5652,7 +5652,9 @@ and one thing that cannot be written until a second person exists.
 > turn on `NEXT_PUBLIC_MY_DAY_FEED` in production is an owner flip, for the
 > reason of the WS-44 flags above. `MY_DAY_COMPOSE`, and any `my_day.*` mode
 > other than `off` in `DECIDE_FEATURE_MODES`, are owner flips because they
-> spend the org's credits (CLAUDE.md §3a rule 3). MD-10, a message outside the
+> spend the org's credits (CLAUDE.md §3a rule 3). A `my_day.*` mode spends only
+> for an org in `MY_DAY_DECIDE_ORGS`, so a name in that list is half of the
+> same flip. MD-10, a message outside the
 > app, is owner-only because it reaches a real person. `specs/my_day_feed.md`
 > §17.1 is the authority. No plan-guard rule names these flags either.
 >
