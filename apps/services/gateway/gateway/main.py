@@ -407,6 +407,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.crm_mirror_sync_skipped", error=str(exc))
 
+    # Start the My Day loop (gateway/my_day_loop.py; spec my_day_feed.md §8.4,
+    # WS-58 MD-5b). It trims the active set of each org and sweeps old card
+    # state once a day. Dark by default: with MY_DAY_LOOP_ENABLED off it
+    # starts no task and logs once. The gate lives inside the start function.
+    try:
+        from gateway.my_day_loop import start_my_day_loop
+        my_day_started = await start_my_day_loop()
+        _log.info("gateway.my_day_loop", started=my_day_started)
+    except Exception as exc:
+        _log.warning("gateway.my_day_loop_skipped", error=str(exc))
+
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
     # as dead. The loop also sweeps: each run a dead process left is closed,
@@ -481,6 +492,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.crm_sync.scheduler import stop_crm_mirror_sync
         await stop_crm_mirror_sync()
+    except Exception:
+        pass
+
+    # Stop the My Day loop. Unconditional, like the CRM mirror stop above.
+    try:
+        from gateway.my_day_loop import stop_my_day_loop
+        await stop_my_day_loop()
     except Exception:
         pass
 

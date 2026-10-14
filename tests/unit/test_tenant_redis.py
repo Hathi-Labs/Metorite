@@ -112,6 +112,34 @@ class _FakeRedis:
         self.calls.append(("publish", (channel,)))
         return 1
 
+    # Sorted sets (WS-58 MD-5b). A zset is a dict of member -> score.
+    async def zadd(self, name: str, mapping: dict[str, float], **kwargs: Any) -> int:
+        self.calls.append(("zadd", (name,)))
+        zset = self.store.setdefault(name, {})
+        added = sum(1 for m in mapping if m not in zset)
+        zset.update(mapping)
+        return added
+
+    async def zrangebyscore(self, name: str, lo: Any, hi: Any, **kwargs: Any) -> list[str]:
+        self.calls.append(("zrangebyscore", (name,)))
+        lo_f, hi_f = float(lo), float(hi)
+        zset = self.store.get(name, {})
+        return [m for m, s in sorted(zset.items(), key=lambda kv: kv[1]) if lo_f <= s <= hi_f]
+
+    async def zrem(self, name: str, *members: str) -> int:
+        self.calls.append(("zrem", (name,)))
+        zset = self.store.get(name, {})
+        return sum(1 for m in members if zset.pop(m, None) is not None)
+
+    async def zremrangebyscore(self, name: str, lo: Any, hi: Any) -> int:
+        self.calls.append(("zremrangebyscore", (name,)))
+        lo_f, hi_f = float(lo), float(hi)
+        zset = self.store.get(name, {})
+        gone = [m for m, s in zset.items() if lo_f <= s <= hi_f]
+        for m in gone:
+            del zset[m]
+        return len(gone)
+
     async def scan_iter(self, match: str | None = None, count: int = 10):
         self.calls.append(("scan_iter", (match or "",)))
         for name in list(self.store):
@@ -544,6 +572,75 @@ def test_mget_stays_inside_the_r5c_ratchet() -> None:
     assert _rel(replyzero) not in _ALLOWED_DIRECT_REDIS
     with organization_scope(ORG_A):
         assert key("email-status-backoff", "a").value.startswith(f"{KEY_ROOT}:{ORG_A}:")
+
+
+# ---------------------------------------------------------------------------
+# 5d. Sorted sets (WS-58 MD-5b) — the My Day active set, same key discipline.
+# ---------------------------------------------------------------------------
+#
+# ``my_day_feed.md`` §8.4 item 15: ``zadd``, ``zrangebyscore``, ``zrem`` and
+# ``zremrangebyscore``, each with a typed key first. The generic test above
+# checks the annotation. These check what reaches redis-py.
+
+_ZSET_COMMANDS = ("zadd", "zrangebyscore", "zrem", "zremrangebyscore")
+
+
+def test_the_four_zset_commands_exist_and_take_a_typed_key_first() -> None:
+    for name in _ZSET_COMMANDS:
+        params = list(inspect.signature(getattr(TenantRedis, name)).parameters.values())
+        assert params[1].name == "k", name
+        assert "TenantKey" in str(params[1].annotation), name
+
+
+async def test_zset_commands_send_only_prefixed_keys_and_round_trip() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        k = client.key("my_day", "active")
+        await client.zadd(k, {"old@x.test": 10.0, "new@x.test": 500.0})
+        assert await client.zrangebyscore(k, 100, "+inf") == ["new@x.test"]
+        assert await client.zremrangebyscore(k, "-inf", 100) == 1
+        assert await client.zrangebyscore(k, "-inf", "+inf") == ["new@x.test"]
+        assert await client.zrem(k, "new@x.test") == 1
+        assert await client.zrem(k) == 0
+    sent = [args[0] for name, args in fake.calls if name in _ZSET_COMMANDS]
+    assert sent and set(sent) == {f"{KEY_ROOT}:{ORG_A}:my_day:active"}, sent
+
+
+async def test_zset_commands_refuse_a_raw_string_key() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        for name in _ZSET_COMMANDS:
+            with pytest.raises(TypeError, match="TenantKey"):
+                await _each_zset_command_one(client, name, "cc:my_day:active")
+    assert fake.calls == [], "a key reached redis-py before the refusal"
+
+
+async def test_zset_commands_refuse_a_key_of_another_tenant_and_an_unbound_call() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        stolen = key("my_day", "active")
+    with organization_scope(ORG_B):
+        for name in _ZSET_COMMANDS:
+            with pytest.raises(TenantMismatch):
+                await _each_zset_command_one(client, name, stolen)
+    for name in _ZSET_COMMANDS:
+        with pytest.raises(TenantNotBound):
+            await _each_zset_command_one(client, name, stolen)
+    assert fake.calls == []
+
+
+async def _each_zset_command_one(client: TenantRedis, name: str, k: Any) -> None:
+    if name == "zadd":
+        await client.zadd(k, {"a@x.test": 1.0})
+    elif name == "zrangebyscore":
+        await client.zrangebyscore(k, 0, "+inf")
+    elif name == "zrem":
+        await client.zrem(k, "a@x.test")
+    else:
+        await client.zremrangebyscore(k, "-inf", 0)
 
 
 # ---------------------------------------------------------------------------
