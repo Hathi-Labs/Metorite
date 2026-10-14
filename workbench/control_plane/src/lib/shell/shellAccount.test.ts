@@ -120,6 +120,10 @@ describe("the foot is the account row", () => {
     expect(open).toMatch(/<span class="[^"]*\btruncate\b[^"]*text-\[13px\] font-medium[^"]*">Asha Rao<\/span>/);
     const email = /<span data-account-email="" class="([^"]*)">asha@example.com<\/span>/.exec(open)?.[1] ?? "";
     expect(email.split(" ")).toEqual(expect.arrayContaining(["block", "truncate", "text-muted-foreground"]));
+    // On hover the muted grey drops to 4.23:1 on `sidebar-accent` in light
+    // mode, so it lifts there (measured 2026-10-14, 7.4:1 after).
+    expect(email.split(" ")).toContain("group-hover:text-foreground/70");
+    expect(open).toMatch(/<button[^>]*class="cc-link group /);
   });
 
   it("folded: the avatar alone, in the geometry of a folded nav row", () => {

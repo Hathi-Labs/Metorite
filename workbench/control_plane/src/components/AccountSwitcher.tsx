@@ -553,7 +553,7 @@ export function AccountFoot({
           aria-expanded={open}
           aria-label={`Account and settings: ${active.email}`}
           title={tip}
-          className={`cc-link flex items-center rounded-lg text-left hover:bg-sidebar-accent tech-transition ${
+          className={`cc-link group flex items-center rounded-lg text-left hover:bg-sidebar-accent tech-transition ${
             collapsed ? "justify-center p-1.5" : "w-full gap-2.5 px-2 py-1.5"
           }`}
         >
@@ -565,7 +565,10 @@ export function AccountFoot({
                   {name ?? active.email}
                 </span>
                 {name && (
-                  <span data-account-email="" className="block truncate text-[11px] text-muted-foreground">
+                  // On hover, the muted grey on `sidebar-accent` drops to 4.23:1 in
+                  // light mode (measured 2026-10-14), so the email lifts to 70%
+                  // foreground there. At rest it is 4.56:1, and 7.06:1 in dark.
+                  <span data-account-email="" className="block truncate text-[11px] text-muted-foreground group-hover:text-foreground/70">
                     {active.email}
                   </span>
                 )}
