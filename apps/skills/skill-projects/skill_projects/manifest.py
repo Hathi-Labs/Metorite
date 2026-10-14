@@ -919,6 +919,8 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("GET", "/projects/analytics/load"): {
         "project_id": "analytics_load.project_id",
         "include_subtree": "analytics_load",
+        # 2026-10-14: the page of people (test_read_tool_paging.py).
+        "people_offset": "analytics_load.offset",
     },
     ("GET", "/projects/analytics/throughput"): {
         "project_id": "analytics_throughput.project_id",

@@ -422,6 +422,8 @@ _SAMPLE: dict[str, Any] = {
     "watching": True,
     "weekdays": "1,3",
     "weeks": 3,
+    # 2026-10-14: the page of people in analytics_load (test_read_tool_paging.py).
+    "offset": 20,
     # WS-46 P7: a space's settings, the member's overlay, a view and a place.
     "icon_slot": 3,
     "archive_after_months": 6,

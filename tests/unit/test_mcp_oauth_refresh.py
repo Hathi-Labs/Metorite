@@ -248,3 +248,130 @@ async def test_the_injection_passes_the_flags_and_names_the_org(
     await _inject_mcp_servers(agent, "apis-config", organization_id=ORG_A, opened=[])
     assert list(getattr(agent, "mcp_tools", []) or []) == []
     assert marked == [(ORG_A, "notion", header, True)]
+
+
+# ── IN-8c: the Test button follows the rule of a run ───────────────────────
+#
+# ``mcp.oauth_test_header``, with the store and the refresh step faked. The
+# R8 half (the real row lock and the real refresh) is in
+# ``tests/unit/test_mcp_oauth_org_scope_r8.py``.
+
+
+def _conn(status: str = "connected", *, oauth: bool = True) -> Any:
+    from gateway.connections import store
+
+    meta: dict[str, Any] = {"url": f.MCP_URL}
+    if oauth:
+        meta["auth"] = "oauth"
+    return store.Connection(
+        id="00000000-0000-0000-0000-000000000001", organization_id=ORG_A,
+        provider="mcp:srv", owning_app="integrations", scope_kind="org", member_email=None,
+        status=status, provider_meta=meta, scopes=(), connected_by="a@x.test",
+        last_sync_at=None, last_error=None, created_at=None, updated_at=None,
+    )
+
+
+@pytest.fixture
+def test_store(monkeypatch) -> dict[str, Any]:
+    import contextlib
+
+    from gateway.connections import mcp, store
+
+    state: dict[str, Any] = {"conn": _conn(), "cred": _credential(), "steps": [],
+                             "step_answer": ({"Authorization": "Bearer fresh"}, True)}
+
+    @contextlib.asynccontextmanager
+    async def _session(_org: str):
+        yield object()
+
+    async def _list(_db, _org, _prefix, _app):
+        return [state["conn"]] if state["conn"] is not None else []
+
+    async def _load(_db, _org, _provider, _app):
+        return state["cred"]
+
+    async def _step(org, conn, stored):
+        state["steps"].append((org, conn.provider, stored))
+        return state["step_answer"]
+
+    set_flag(monkeypatch, "*")
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "mcp_oauth_enabled", True, raising=False)
+    monkeypatch.setattr(mcp, "tenant_session", _session)
+    monkeypatch.setattr(store, "list_by_prefix", _list)
+    monkeypatch.setattr(store, "load_credential", _load)
+    monkeypatch.setattr(mcp, "_oauth_header", _step)
+    mcp._BACKOFF.clear()
+    return state
+
+
+async def test_a_test_refreshes_a_due_token_through_the_run_step(test_store) -> None:
+    from gateway.connections import mcp
+
+    # 30 s left: inside the margin of a run, so the token is due.
+    outcome, header = await mcp.oauth_test_header(ORG_A, "srv")
+    assert (outcome, header) == (mcp.TEST_BEARER_OK, {"Authorization": "Bearer fresh"})
+    assert [s[1] for s in test_store["steps"]] == ["mcp:srv"]
+
+
+async def test_a_test_whose_refresh_gives_nothing_reads_expired(test_store) -> None:
+    from gateway.connections import mcp
+
+    test_store["step_answer"] = None
+    assert await mcp.oauth_test_header(ORG_A, "srv") == (mcp.TEST_BEARER_EXPIRED, {})
+
+
+async def test_a_test_of_a_live_token_sends_it_with_no_refresh(test_store) -> None:
+    from gateway.connections import mcp
+
+    test_store["cred"] = _credential(expires_at=datetime.now(UTC) + timedelta(hours=2))
+    outcome, header = await mcp.oauth_test_header(ORG_A, "srv")
+    assert outcome == mcp.TEST_BEARER_OK
+    assert header == {"Authorization": f"Bearer {f.SENTINEL_ACCESS}"}
+    assert test_store["steps"] == []
+
+
+async def test_a_test_of_a_row_in_needs_reconnect_sends_nothing(test_store) -> None:
+    from gateway.connections import mcp
+
+    test_store["conn"] = _conn("needs_reconnect")
+    assert await mcp.oauth_test_header(ORG_A, "srv") == (mcp.TEST_BEARER_EXPIRED, {})
+    assert test_store["steps"] == []
+
+
+async def test_a_test_of_a_disabled_row_keeps_the_rule_before_in8c(test_store) -> None:
+    """No run uses a disabled row, so a Test never refreshes it. It sends the
+    stored token while it lives, and an ended token reads expired."""
+    from gateway.connections import mcp
+
+    test_store["conn"] = _conn("disconnected")
+    # 5 minutes left: due for a run (inside the 15 minute margin), not ended.
+    test_store["cred"] = _credential(expires_at=datetime.now(UTC) + timedelta(seconds=300))
+    outcome, header = await mcp.oauth_test_header(ORG_A, "srv")
+    assert outcome == mcp.TEST_BEARER_OK
+    assert header == {"Authorization": f"Bearer {f.SENTINEL_ACCESS}"}
+    test_store["cred"] = _credential(expires_at=datetime.now(UTC) + timedelta(seconds=10))
+    assert await mcp.oauth_test_header(ORG_A, "srv") == (mcp.TEST_BEARER_EXPIRED, {})
+    assert test_store["steps"] == []
+
+
+async def test_a_test_of_a_header_row_or_a_missing_row_is_unreadable(test_store) -> None:
+    from gateway.connections import mcp
+
+    test_store["conn"] = _conn(oauth=False)
+    assert await mcp.oauth_test_header(ORG_A, "srv") == (mcp.TEST_BEARER_UNREADABLE, {})
+    test_store["conn"] = None
+    assert await mcp.oauth_test_header(ORG_A, "srv") == (mcp.TEST_BEARER_UNREADABLE, {})
+    assert test_store["steps"] == []
+
+
+async def test_a_test_in_the_backoff_sends_the_stored_token_while_it_lives(test_store) -> None:
+    from gateway.connections import mcp
+
+    test_store["cred"] = _credential(expires_at=datetime.now(UTC) + timedelta(seconds=300))
+    mcp._BACKOFF[(ORG_A, "mcp:srv")] = mcp._monotonic() + 60
+    outcome, header = await mcp.oauth_test_header(ORG_A, "srv")
+    assert outcome == mcp.TEST_BEARER_OK and test_store["steps"] == []
+    assert header == {"Authorization": f"Bearer {f.SENTINEL_ACCESS}"}
+    mcp._BACKOFF.clear()

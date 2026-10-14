@@ -177,7 +177,9 @@ def _listing(root: str, folder: str) -> list[str]:
         entries = safe_open.list_dir(Path(root), folder) or []
     except (safe_open.UnsafePath, OSError):
         return []
-    return [n for n, kind in entries if kind == "file" and not n.startswith(".")][:50]
+    # Every name: a cut at 50 hid the rest, and the model needs the exact
+    # name to read a file (2026-10-14). A chat holds what its members attach.
+    return [n for n, kind in entries if kind == "file" and not n.startswith(".")]
 
 
 def _covered_broker() -> Any | None:

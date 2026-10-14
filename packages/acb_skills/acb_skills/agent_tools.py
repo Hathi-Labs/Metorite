@@ -32,6 +32,8 @@ import json as _json
 import os as _os
 import uuid as _uuid
 
+from acb_common.paging import paged
+
 # ── Delegation guard (review P0-7) ──────────────────────────────────────────
 # Sub-agents receive the call_agent family too, so without a guard an
 # A→B→A chain recurses and call_agents_parallel fans out 5^depth runs.
@@ -41,6 +43,9 @@ _delegation_chain: contextvars.ContextVar[tuple[str, ...]] = (
     contextvars.ContextVar("_delegation_chain", default=())
 )
 _MAX_DELEGATION_DEPTH = int(_os.environ.get("SUB_AGENT_MAX_DEPTH", "2"))
+
+#: The most tasks one call_agents_parallel runs. The rest are named in the join.
+_PARALLEL_MAX = 5
 
 # Wall-clock budget for one awaited delegation (review P1-4): a sub-agent
 # that streams slowly-but-not-idle otherwise holds the parent open forever.
@@ -229,7 +234,11 @@ async def call_agents_parallel(tasks: str) -> str:
     if not isinstance(task_list, list) or len(task_list) == 0:
         return "Error: tasks must be a non-empty JSON array"
 
-    task_list = task_list[:5]  # hard cap
+    # At most _PARALLEL_MAX run in one call, to protect the system. The
+    # tasks past the cap are NAMED in the join, so none vanishes (2026-10-14).
+    batch = paged(task_list, 0, _PARALLEL_MAX, default=_PARALLEL_MAX,
+                  maximum=_PARALLEL_MAX, noun="tasks")
+    task_list, left_out = batch.items, task_list[_PARALLEL_MAX:]
 
     event_queue = None
     _run_sub_agent_streaming = None
@@ -312,13 +321,30 @@ async def call_agents_parallel(tasks: str) -> str:
         finally:
             _delegation_chain.reset(_tok)
 
-    coros = [
-        _run_one(str(t.get("agent", "")), str(t.get("message", "")))
-        for t in task_list
-        if t.get("agent") and t.get("message")
-    ]
+    runnable = [t for t in task_list
+                if isinstance(t, dict) and t.get("agent") and t.get("message")]
+    coros = [_run_one(str(t["agent"]), str(t["message"])) for t in runnable]
+
+    def _not_run() -> list[str]:
+        """The lines that name every task this call did not run."""
+        notes: list[str] = []
+        unread = len(task_list) - len(runnable)
+        if unread:
+            notes.append(f"{unread} task{' had' if unread == 1 else 's had'} no agent "
+                         f"or no message, so {'it' if unread == 1 else 'they'} did not run.")
+        if left_out:
+            names = ", ".join(str(t.get("agent") or "?") if isinstance(t, dict) else "?"
+                              for t in left_out)
+            # Count what RAN, not the cap: a bad task among the first five
+            # ran nothing (review of #1014).
+            notes.append(f"Ran {len(runnable)} of {batch.total} tasks: at most "
+                         f"{_PARALLEL_MAX} run in one call. These did not run: {names}. "
+                         "Call again with them.")
+        return notes
+
     if not coros:
-        return "Error: each task must have 'agent' and 'message' fields"
+        return "\n\n".join(
+            ["Error: each task must have 'agent' and 'message' fields", *_not_run()])
 
     # create_task per branch → each gets its own context copy, so one
     # branch's chain extension never leaks into a sibling.
@@ -329,6 +355,7 @@ async def call_agents_parallel(tasks: str) -> str:
     parts = []
     for agent_name, response in results:
         parts.append(f"[{agent_name}]\n{response}")
+    parts.extend(_not_run())
     return "\n\n".join(parts)
 
 

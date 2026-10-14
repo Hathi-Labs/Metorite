@@ -276,7 +276,9 @@ async def test_the_rows_carry_the_contract_fields_and_sort(ns, app_engine) -> No
     rows = res.json()["connections"]
     assert res.json()["unavailable"] == []
     keys = {"id", "kind", "provider", "label", "owning_app", "scope", "owner", "status",
-            "last_sync_at", "last_error", "setup_href", "can_disconnect", "detail"}
+            "last_sync_at", "last_error", "setup_href", "can_disconnect", "detail",
+            # IN-8c (D98): the admin an OAuth MCP row acts as, and the offer.
+            "acts_as", "can_connect"}
     assert all(set(r) == keys for r in rows)
     assert [(r["owning_app"], r["label"].lower()) for r in rows] == sorted(
         (r["owning_app"], r["label"].lower()) for r in rows)

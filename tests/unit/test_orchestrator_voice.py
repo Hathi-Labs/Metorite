@@ -341,8 +341,10 @@ def test_the_examples_reach_the_orchestrator_and_no_other_agent(
 #: 2026-10-14 before and after the brevity change: the two match. A change of
 #: either one changes every agent. Spec 11.8 says the brevity rules stay out of
 #: the core. Change these only in a PR that changes the core on purpose.
-PLAIN_AGENT_BLOCK_SHA256 = "b49783fa31cc955047b194c21e514c0e019e4f24c555964c81ed983167a42c6d"
-SUB_AGENT_BLOCK_SHA256 = "d36190c37ac645a614e0f2cc463efd9876a6a949c41a66c1c83749b0ebb776e4"
+#: 2026-10-14, on purpose: rule 10 gained the paging sentence, so a read that
+#: shows part of the data leads to the rest (``test_read_tool_paging.py``).
+PLAIN_AGENT_BLOCK_SHA256 = "8b103fd43151e20ea75f7fb6ff248d026faec7712715ae12007e76c59e271d0b"
+SUB_AGENT_BLOCK_SHA256 = "d316706914aba0cb97b696fd7ab19243c944f6270f159392c2841dc837dcb530"
 
 
 def test_the_voice_of_every_other_agent_is_byte_for_byte_the_same() -> None:
