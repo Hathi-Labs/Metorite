@@ -679,6 +679,18 @@ def rule_problem(
     return None
 
 
+def legal_columns(
+    entity: str, field_type: str | None, layout: Collection[str] | None,
+) -> list[str]:
+    """The columns that a field of ``field_type`` may fill now, in the order of
+    :data:`FIELD_RULE_TARGETS`. One rule for the Field map and the proposer
+    of CRM-Q7b: each column passes :func:`rule_problem`."""
+    return [
+        column for column in FIELD_RULE_TARGETS.get(entity) or {}
+        if rule_problem(entity, field_type, column, layout) is None
+    ]
+
+
 def rule_stale_reason(
     entity: str,
     field_api_name: str,

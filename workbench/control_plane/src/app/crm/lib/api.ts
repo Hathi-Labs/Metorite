@@ -15,7 +15,7 @@ import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type { FieldDef } from "./fields";
 import { asFieldLayout, type FieldLayout } from "./fieldLayout";
-import type { FieldMap, FieldRule } from "./fieldMap";
+import type { FieldMap, FieldRule, FieldSuggestion } from "./fieldMap";
 import type { CrmOwner } from "./filterBar";
 import type { SavedView, SavedViewBody } from "./savedViews";
 import type { SyncHealth } from "./syncHealth";
@@ -622,6 +622,20 @@ export function decideFieldRule(
   return call<FieldRule>(`/field-rules/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify({ status }),
+  });
+}
+
+/**
+ * Admin only (CRM-Q7b). The assistant proposes a column for the fields of one
+ * entity. Each answer is a `proposed` rule that waits for approve or reject.
+ * When the proposals of the current profile version exist, the gateway
+ * returns them and calls no model (`asked` is false). A model failure is a
+ * 502 with a short sentence.
+ */
+export function suggestFieldRules(entity: EntitySlug): Promise<FieldSuggestion> {
+  return call<FieldSuggestion>("/field-rules/suggest", {
+    method: "POST",
+    body: JSON.stringify({ entity }),
   });
 }
 

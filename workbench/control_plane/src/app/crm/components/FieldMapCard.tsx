@@ -11,6 +11,10 @@
  * It is for an admin in Mirror mode only. The page does not draw it in Native
  * mode. The gateway decides which columns a field may fill (`targets`), so
  * this card offers only those.
+ *
+ * "Suggest mappings" (CRM-Q7b) asks the assistant for one entity. Its answers
+ * arrive as proposals, each with approve and reject, and nothing is mapped
+ * until the admin approves. A failure shows its sentence under the entity.
  */
 
 import Badge from "@/components/ui/Badge";
@@ -28,6 +32,8 @@ import {
   NO_FIELDS,
   NO_TARGET,
   STALE_SENTENCE,
+  SUGGEST_FAILED,
+  SUGGEST_LABEL,
   actionsFor,
   columnLabel,
   pickOptions,
@@ -35,6 +41,7 @@ import {
   ruleLine,
   statusLabel,
   statusTone,
+  suggestionLine,
   type FieldMap,
   type FieldMapField,
   type FieldRule,
@@ -50,7 +57,40 @@ export type FieldMapHandlers = {
   busy: string | null;
   onPick: (entity: EntitySlug, field: string, column: string) => void;
   onDecide: (rule: FieldRule, status: "approved" | "rejected") => void;
+  /** CRM-Q7b. Without it the card draws no "Suggest mappings" button. */
+  onSuggest?: (entity: EntitySlug) => void;
+  /** The entity whose suggestion runs, or `null`. */
+  suggesting?: EntitySlug | null;
+  /** The sentence of a failed suggestion, by entity. */
+  suggestErrors?: Partial<Record<EntitySlug, string>>;
 };
+
+/** The "Suggest mappings" button of one entity. */
+function SuggestControl({
+  entity,
+  map,
+  handlers,
+}: {
+  entity: EntitySlug;
+  map: FieldMap | null;
+  handlers: FieldMapHandlers;
+}) {
+  const { onSuggest } = handlers;
+  if (!onSuggest || map === null || map.fields.length === 0) return null;
+  const running = handlers.suggesting === entity;
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      icon="Sparkles"
+      loading={running}
+      disabled={running || Boolean(handlers.suggesting) || handlers.busy !== null}
+      onClick={() => onSuggest(entity)}
+    >
+      {SUGGEST_LABEL}
+    </Button>
+  );
+}
 
 /** One field: its type, its rule, and the actions on it. */
 function FieldRow({
@@ -154,11 +194,20 @@ export function FieldMapCardView({
       <div className="divide-y divide-border/60">
         {FIELD_ENTITIES.map(({ slug, label }) => {
           const map = maps[slug];
+          const error = handlers.suggestErrors?.[slug];
           return (
             <div key={slug} aria-label={label} className="px-4 py-3">
-              <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                {label}
-              </h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {label}
+                </h3>
+                <SuggestControl entity={slug} map={map} handlers={handlers} />
+              </div>
+              {error && (
+                <p role="alert" className="pt-1 text-[11px] text-destructive">
+                  {error}
+                </p>
+              )}
               {map === null ? (
                 <p className="pt-2 text-xs text-muted-foreground">Loading.</p>
               ) : map.fields.length === 0 ? (
@@ -195,6 +244,8 @@ function useFieldMap(entity: EntitySlug): FieldMap | null {
 export default function FieldMapCard() {
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
+  const [suggesting, setSuggesting] = useState<EntitySlug | null>(null);
+  const [suggestErrors, setSuggestErrors] = useState<Partial<Record<EntitySlug, string>>>({});
   const leads = useFieldMap("leads");
   const contacts = useFieldMap("contacts");
   const organizations = useFieldMap("organizations");
@@ -214,8 +265,27 @@ export default function FieldMapCard() {
     }
   }
 
+  async function suggest(entity: EntitySlug) {
+    setSuggesting(entity);
+    setSuggestErrors((errors) => ({ ...errors, [entity]: undefined }));
+    try {
+      const result = await api.suggestFieldRules(entity);
+      toast.show({ key: "crm-field-map", variant: "success", title: suggestionLine(result) });
+    } catch (err) {
+      const message = err instanceof CrmError && err.message ? err.message : SUGGEST_FAILED;
+      setSuggestErrors((errors) => ({ ...errors, [entity]: message }));
+    } finally {
+      setSuggesting(null);
+      // The proposals are rules of the map, so the map reads them again.
+      invalidate(KEY_PREFIX);
+    }
+  }
+
   const handlers: FieldMapHandlers = {
     busy,
+    suggesting,
+    suggestErrors,
+    onSuggest: (entity) => void suggest(entity),
     onPick: (entity, field, column) =>
       run(
         `${entity}:${field}`,
