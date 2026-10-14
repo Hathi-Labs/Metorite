@@ -25,13 +25,16 @@ import { useState } from "react";
 import {
   MAX_COLUMNS,
   chosenDefs,
+  columnGroups,
   listCell,
   pickable,
   readColumns,
   toggleColumn,
   writeColumns,
   type FieldDef,
+  type FieldGroup,
 } from "../lib/fields";
+import { useFieldLayout } from "../lib/useCrmMode";
 import FieldValue from "./FieldValue";
 import { stageAccent } from "../lib/board";
 import type { CrmMode } from "../lib/connect";
@@ -161,8 +164,16 @@ export default function RecordList({
   }
   const owned = columnKeys !== undefined;
   if (owned) chosen = columnKeys;
-  const available = pickable(fieldDefs);
-  const extra = chosenDefs(chosen, fieldDefs);
+  // CRM-C4b: with the field studio on, the Columns control reads the layout
+  // and draws a heading for each section. A generic module has no layout.
+  const { layout } = useFieldLayout(entity.startsWith("module:") ? null : (entity as EntitySlug));
+  const studio = layout?.studio === true ? layout : null;
+  const defs = studio ? studio.fields : fieldDefs;
+  const available = pickable(defs);
+  const groups: FieldGroup[] = studio
+    ? columnGroups(studio)
+    : [{ section: null, fields: available }];
+  const extra = chosenDefs(chosen, defs);
   function toggle(key: string) {
     const keys = toggleColumn(chosen, key);
     if (owned) {
@@ -185,7 +196,7 @@ export default function RecordList({
       )}
       {choosing && (
         <ColumnChooser
-          available={available}
+          groups={groups}
           chosen={chosen}
           onToggle={toggle}
           onClose={() => setChoosing(false)}
@@ -273,17 +284,16 @@ export default function RecordList({
 }
 
 function ColumnChooser({
-  available,
+  groups,
   chosen,
   onToggle,
   onClose,
 }: {
-  available: FieldDef[];
+  groups: FieldGroup[];
   chosen: string[];
   onToggle: (key: string) => void;
   onClose: () => void;
 }) {
-  const full = chosen.length >= MAX_COLUMNS;
   return (
     <Modal
       open
@@ -294,8 +304,40 @@ function ColumnChooser({
       closeLabel="Close columns"
       className="max-h-[85vh]"
     >
-      <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
-        {available.map((def) => {
+      <ColumnChoices groups={groups} chosen={chosen} onToggle={onToggle} />
+    </Modal>
+  );
+}
+
+/**
+ * The list of the Columns control. A group with a section draws its label
+ * as a heading (CRM-C4b). A group with no section draws no heading, so the
+ * list of today, one group with no section, draws as before.
+ */
+export function ColumnChoices({
+  groups,
+  chosen,
+  onToggle,
+}: {
+  groups: FieldGroup[];
+  chosen: string[];
+  onToggle: (key: string) => void;
+}) {
+  const full = chosen.length >= MAX_COLUMNS;
+  return (
+    <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
+      {groups.flatMap((group) => [
+        ...(group.section
+          ? [
+              <li
+                key={`section:${group.section.id}`}
+                className="pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground first:pt-0"
+              >
+                {group.section.label}
+              </li>,
+            ]
+          : []),
+        ...group.fields.map((def) => {
           const on = chosen.includes(def.key);
           return (
             <li key={def.key}>
@@ -310,8 +352,8 @@ function ColumnChooser({
               </label>
             </li>
           );
-        })}
-      </ul>
-    </Modal>
+        }),
+      ])}
+    </ul>
   );
 }
