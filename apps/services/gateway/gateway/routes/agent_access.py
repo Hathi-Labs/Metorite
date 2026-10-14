@@ -70,11 +70,24 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
     no ``redirect_to``. The refusal comes before the client fetch and the
     ticket, so the ticket is not spent. The consent page shows the text.
 
+12. ⚠️ **The member's own connections (EA-4b, spec §5.4 and §15).**
+    ``GET /agent-access/connections`` lists the live connections of the
+    member, and ``DELETE /agent-access/connections/{connection_id}`` revokes
+    one. The member is :func:`_member` and the organization is
+    ``current_tenant()``, never input. They do NOT call
+    :func:`_require_org_allowed`: a revoke only removes access, so an
+    organization off the list can still list and revoke. An id of another
+    member or of another organization is 404 and changes nothing. Each revoke
+    writes one audit row through :func:`audit_revoke`. No answer holds a
+    token, a hash or a client id. The admin's pair of routes is
+    ``routes/integrations_agents.py``, and it shares :func:`connection_out`
+    and :func:`audit_revoke`. Fence: ``tests/unit/test_agent_connections_r8.py``.
+
 What is not here: dynamic client registration (EA-2b), pre-registered
-clients, the organization switch and the client allow list (EA-4c), the list
-of connections (EA-4b), the audit row (EA-8) and any rate limit (EA-7). The
-CSRF check of the browser request (``Sec-Fetch-Site``) is the BFF's, because
-this router sees only the BFF's server call (spec §10.5).
+clients, the organization switch and the client allow list (EA-4c), the audit
+row of each agent call (EA-8) and any rate limit (EA-7). The CSRF check of
+the browser request (``Sec-Fetch-Site``) is the BFF's, because this router
+sees only the BFF's server call (spec §10.5).
 """
 from __future__ import annotations
 
@@ -659,3 +672,110 @@ async def approve_authorize(
     )
     return JSONResponse(
         {"redirect_to": _redirect(req, {"code": code})}, headers=_NO_STORE)
+
+
+# ── The member's own connections (rule 12, EA-4b) ───────────────────────────
+
+
+#: The audit action of a revoke, for a member and for an admin alike.
+REVOKE_ACTION = "agent_connection.revoke"
+
+
+class AgentConnectionOut(BaseModel):
+    """One live connection, as the AI agents view shows it.
+
+    ⚠️ It names no token, no hash and no client id (rule 8). The view
+    headlines ``client_origin``, the verified part, and shows
+    ``client_name`` second, as the consent page does (spec §10.5).
+    ``last_used_at`` is the last token issue or refresh, not the last call.
+    """
+
+    id: str
+    member_email: str
+    client_name: str
+    client_origin: str
+    scopes: list[str]
+    pinned_projects: list[str]
+    include_personal: bool
+    created_at: str
+    last_used_at: str | None
+    expires_at: str
+
+
+class AgentConnectionsOut(BaseModel):
+    connections: list[AgentConnectionOut]
+
+
+def connection_out(row: agent_tokens.ConnectionRow) -> AgentConnectionOut:
+    """The answer shape of one row. The admin routes use it too."""
+    return AgentConnectionOut(
+        id=row.id,
+        member_email=row.member_email,
+        client_name=row.client_name,
+        client_origin=row.client_origin,
+        scopes=list(row.scopes),
+        pinned_projects=list(row.pinned_projects),
+        include_personal=row.include_personal,
+        created_at=row.created_at.isoformat(),
+        last_used_at=row.last_used_at.isoformat() if row.last_used_at else None,
+        expires_at=row.expires_at.isoformat(),
+    )
+
+
+def audit_revoke(actor_email: str, org: str, connection_id: str, *, admin: bool) -> None:
+    """One audit row of a revoke: who, which connection, which organization.
+
+    ``admin`` says whether an admin revoked a connection through the org
+    list. It never blocks the revoke: an audit backend that is down only logs.
+    The organization rides on the event itself, not in the payload: this
+    module names no identity input as a string (rule 1, and the structural
+    fence of ``test_agent_oauth_server.py``).
+    """
+    try:
+        from acb_audit import AuditEvent, record
+
+        record(AuditEvent(
+            actor=f"user:{actor_email}",
+            action=REVOKE_ACTION,
+            target=f"agent_connection:{connection_id}",
+            payload={"admin": admin},
+            organization_id=org,
+        ))
+    except Exception as exc:  # an audit backend that is down must not block this
+        _log.warning("agent_access.audit_failed", error=type(exc).__name__)
+
+
+def _not_found() -> HTTPException:
+    """The one answer for an id the caller may not revoke, or that is gone."""
+    return HTTPException(status_code=404, detail="No such agent connection.")
+
+
+@router.get("/connections", response_model=AgentConnectionsOut)
+async def list_my_connections(
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """The member's own live connections, newest first (rule 12)."""
+    email = _member(user)
+    rows = await agent_tokens.list_connections(
+        str(current_tenant()), member_email=email)
+    body = AgentConnectionsOut(connections=[connection_out(r) for r in rows])
+    return JSONResponse(body.model_dump(), headers=_NO_STORE)
+
+
+@router.delete("/connections/{connection_id}", status_code=204)
+async def revoke_my_connection(
+    connection_id: UUID,
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Revoke one of the member's own connections (rule 12).
+
+    404 for an id of another member, of another organization, or one that
+    is already revoked. Nothing changes then.
+    """
+    email = _member(user)
+    org = str(current_tenant())
+    revoked = await agent_tokens.revoke_connection_scoped(
+        org, str(connection_id), member_email=email)
+    if not revoked:
+        raise _not_found()
+    audit_revoke(email, org, str(connection_id), admin=False)
