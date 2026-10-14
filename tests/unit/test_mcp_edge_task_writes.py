@@ -568,7 +568,7 @@ class TestUpdateTask:
         assert "assignees" not in task
         # Fix round 1: the re-read's version (V3), not the PATCH answer's (V2).
         assert task["version"] == V3
-        assert [r.path for r in edge.gateway.requests if r.method == "GET"][0] == (
+        assert next(r.path for r in edge.gateway.requests if r.method == "GET") == (
             f"/projects/tasks/{TASK}")
         # The fake echoes the patch. A string value is (U), and null stays null.
         assert task["custom_fields"] == {"severity": {"untrusted_text": "high"},
