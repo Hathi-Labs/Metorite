@@ -728,6 +728,12 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "lists the RLS-EXEMPT `organization` table, so it does not go blind. "
         "The sweep after it binds one organization with `tenant_session`, and "
         "the Redis work binds it with `organization_scope`",
+    ("apps/services/gateway/gateway/routes/email/memory_purge.py",
+     "_organization_ids"):
+        "WS-17 EM-G11f2: which organizations the mailbox purge loop sweeps. "
+        "It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. Every purge-row read and write after it binds one "
+        "organization with `tenant_session`",
 }
 
 

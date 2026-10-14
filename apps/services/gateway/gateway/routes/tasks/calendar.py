@@ -1557,20 +1557,6 @@ async def _rollover_one_user(row: Any, org_id: str) -> None:
                   user=str(uid)[:12], count=len(overdue))
 
 
-def _start_mailbox_purge_sweep(org_ids: list[str]) -> None:
-    """Start the mailbox purge sweeper of WS-17 EM-G11f2, best effort.
-
-    The rollover never fails because of it. A failure logs the error class.
-    """
-    try:
-        from gateway.routes.email.memory_purge import start_purge_sweep
-
-        start_purge_sweep(org_ids)
-    except Exception as exc:  # never let the purge sweeper break a rollover
-        _log.warning("tasks.calendar.purge_sweep_start_failed",
-                     error=type(exc).__name__)
-
-
 async def _run_rollover_sweep() -> None:
     """One pass over every auto-rollover user, per tenant (H4 cross-tenant sweep).
 
@@ -1592,12 +1578,6 @@ async def _run_rollover_sweep() -> None:
             text("SELECT id FROM organization"))).fetchall()
     finally:
         await resolver.close()
-
-    # WS-17 EM-G11f2: this loop also hosts the sweeper of the Mem0 purges
-    # that a mailbox disconnect owes (routes/email/memory_purge.py). It takes
-    # this org list, opens no connection of its own, and runs in its own task,
-    # so a slow Mem0 never delays a rollover. With Mem0 off it does nothing.
-    _start_mailbox_purge_sweep([str(r.id) for r in org_rows])
 
     pending: list[tuple[Any, str]] = []
     for org_row in org_rows:

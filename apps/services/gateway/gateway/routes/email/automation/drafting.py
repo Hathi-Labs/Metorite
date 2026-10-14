@@ -50,6 +50,7 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
+from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from gateway.routes.email.signature import (
     append_signature_text,
@@ -664,7 +665,7 @@ async def _learn_from_sent(account_id: str, thread_id: str, sent_text: str) -> N
                     ), {"aid": account_id})).fetchone()
                 # EM-G11f2 item 2: no owner means the mailbox is gone, and a
                 # "default" key is one that no purge finds. So skip the write.
-                scope = _purgeable_memory_scope(
+                scope = writable_memory_scope(
                     (urow.user_id if urow else None) or "", account_id,
                     "reply_preference")
                 if scope is not None:
@@ -1510,27 +1511,6 @@ SIDE_STEP_BOUND_S = 5.0
 CONTEXT_STEP_BOUND_S = 20.0
 
 
-def _purgeable_memory_scope(owner: str, account_id: Any, writer: str) -> str | None:
-    """The Mem0 key of one mailbox, or ``None`` when no purge could find it.
-
-    WS-17 EM-G11f2 item 2 (``email_app_master_plan.md`` §12.3.13.9). A drafter
-    write goes only to the key that ``memory_purge.mailbox_memory_scope``
-    builds, the key that a disconnect deletes. With no owner or no mailbox id,
-    the write is REFUSED, not moved to another key. It logs
-    ``email.memory_write_refused`` with the writer name and no text.
-    """
-    from gateway.routes.email.memory_purge import (
-        ScopeRefused,
-        mailbox_memory_scope,
-    )
-    try:
-        return mailbox_memory_scope(owner or "", account_id)
-    except ScopeRefused:
-        _log.info("email.memory_write_refused", writer=writer,
-                  reason="no_mailbox_scope")
-        return None
-
-
 async def _side_step(aw: Awaitable[Any], *, step: str, default: Any) -> Any:
     """Await one side step under ``SIDE_STEP_BOUND_S``. Past the bound it
     logs ``email.side_step_timeout`` with the step and the bound, and gives
@@ -1681,7 +1661,7 @@ async def _orchestrate_draft(
     # EM-G11f2 item 2: the write goes only to a key that a mailbox purge
     # finds. With no mailbox, the old code wrote "default" or the bare member
     # key, and no disconnect could ever delete that memory.
-    write_scope = (_purgeable_memory_scope(user_email, account_id, "draft_precedent")
+    write_scope = (writable_memory_scope(user_email, account_id, "draft_precedent")
                    if not _is_no_draft(draft) else None)
     if write_scope is not None:
         try:

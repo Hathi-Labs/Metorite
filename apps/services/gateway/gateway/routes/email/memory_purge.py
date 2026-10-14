@@ -12,8 +12,8 @@ Three writers put the drafting memory of a mailbox into Mem0 under the key
   ``_orchestrate_draft``). It runs in a background task, and the follow-up
   job and the rule runner reach it too.
 
-The drafter reads them back under the same key. Before EM-T8f-1, a disconnect
-deleted the mailbox row and left those memories in Mem0 (MB-17).
+Each writer takes its key from :func:`writable_memory_scope`, so no writer
+puts a memory under a key that no purge finds (EM-G11f2 item 2).
 
 The rules of this module:
 
@@ -37,19 +37,24 @@ The rules of this module:
 5. The route's task holds a strong reference in ``_PURGES`` until it ends. The
    route answers 204 and does not wait for Mem0. When both passes work, the
    task marks the row ``done``. Otherwise the row stays ``open``.
-6. **The sweeper** (EM-G11f2). :func:`sweep_mailbox_purges` takes the open
-   rows that are due and runs ONE pass for each. A row is ``done`` only after
-   its second good pass. A failed pass sets ``next_try_at`` with a back-off,
-   and the row stays. A new row waits ``TASK_LEASE_S`` first, so the sweeper
-   does not race the route's own task. The host is the calendar auto-rollover
-   loop (``routes/tasks/calendar.py::_run_rollover_sweep``), an existing loop
-   that runs on every box with no flag and already lists each organization.
+6. **The sweeper loop** (EM-G11f2, fix round 1). ``main.py`` starts
+   :func:`start_purge_loop` in the lifespan and stops it with
+   :func:`stop_purge_loop`. Each ``TICK_SECONDS`` it lists the organizations
+   (one read of the RLS-EXEMPT ``organization`` table) and runs
+   :func:`sweep_mailbox_purges`. The sweep CLAIMS ONE ROW AT A TIME, just
+   before its pass, so the lease of each row covers one pass. That pass has
+   the bound ``SWEEP_PASS_BOUND_S``, well inside ``SWEEP_LEASE_S``. A tick
+   also stops at ``SWEEP_BUDGET_S``. A row is ``done`` only after its second
+   good pass. A failed pass sets ``next_try_at`` with a back-off, and the row
+   stays. A new row waits ``TASK_LEASE_S`` first, so the sweeper does not race
+   the route's own task.
 7. **Mem0 off.** :func:`mem0_on` is false when ``MEM0_ENABLED`` is off, or
-   when the client cannot start. Then the task runs no pass, and the sweeper
-   returns before any database read. The rows stay ``open``. A row closes only
-   after a real purge. Mem0 keeps its memories in the ``mem0_memories`` table
-   of the same Postgres, and that table outlives the flag. So a row that
-   closed while the flag was off would claim a purge that never ran.
+   when the client cannot start. Then the task runs no pass, and a tick ends
+   before any database read. The rows stay ``open``. A row closes only after a
+   real purge. Mem0 keeps its memories in the ``mem0_memories`` table of the
+   same Postgres, and that table outlives the flag. So a row that closed while
+   the flag was off would claim a purge that never ran. The probe builds the
+   client off the event loop, and a failed build waits ``MEM0_RETRY_S``.
 8. A failed pass logs ``email.disconnect.memory_purge_failed`` with the pass
    and the error class only. No log line holds memory text or an address.
 
@@ -60,10 +65,14 @@ Fences: ``tests/unit/test_email_disconnect_memory_purge.py`` and
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 from collections.abc import Callable, Iterable
 from typing import Any
 from uuid import UUID
 
+from acb_common import get_settings
+from gateway.db import get_db
 from gateway.routes.email.core import _log, _tenant_session, email_memory_scope
 from sqlalchemy import text
 
@@ -79,8 +88,9 @@ SECOND_PASS_DELAY_S = 120.0
 #: own task needs about ``SECOND_PASS_DELAY_S`` for its two passes.
 TASK_LEASE_S = 600.0
 
-#: The sweeper holds a row it took for this long. A process that stops in the
-#: middle of a pass frees the row when the lease ends.
+#: The sweeper holds a row it took for this long. One pass, bounded by
+#: ``SWEEP_PASS_BOUND_S``, runs inside it. A process that stops in the middle
+#: of a pass frees the row when the lease ends.
 SWEEP_LEASE_S = 900.0
 
 #: The back-off after a failed pass: ``RETRY_BASE_S`` doubled for each earlier
@@ -88,11 +98,23 @@ SWEEP_LEASE_S = 900.0
 RETRY_BASE_S = 300.0
 RETRY_CAP_S = 6 * 3600.0
 
-#: The rows that one sweep takes from one organization.
+#: The rows that one tick takes from one organization.
 SWEEP_BATCH = 20
 
 #: The bound of one pass in the sweeper.
 SWEEP_PASS_BOUND_S = 120.0
+
+#: One tick takes no new row after this time.
+SWEEP_BUDGET_S = 600.0
+
+#: The time between two ticks of the loop.
+TICK_SECONDS = 900.0
+
+#: A shutdown waits this long for a tick in progress, then cancels it.
+STOP_GRACE_SECONDS = 10.0
+
+#: After a failed build of the Mem0 client, the probe waits this long.
+MEM0_RETRY_S = 900.0
 
 #: The wait between the passes. Tests replace it, so a test does not wait two
 #: minutes.
@@ -102,8 +124,10 @@ _sleep = asyncio.sleep
 #: task until it ends, so the loop does not collect a purge part way.
 _PURGES: set[asyncio.Task[int | None]] = set()
 
-#: The sweeps that are still running. The host loop starts one at most.
-_SWEEPS: set[asyncio.Task[int]] = set()
+#: The loop task, its stop signal, and the time of the last failed build.
+_loop_task: asyncio.Task[None] | None = None
+_stopping: asyncio.Event | None = None
+_mem0_failed_at: float | None = None
 
 #: Rule 1. The row of the purge, in the transaction of the ``DELETE``. The
 #: organization is the column default, the tenant that the session binds.
@@ -119,7 +143,7 @@ _TASK_DONE_SQL = """UPDATE email_mailbox_purges
                            done_at = now(), updated_at = now()
                      WHERE account_id = CAST(:aid AS uuid) AND state = 'open'"""
 
-#: Rule 6. Take the due rows of one organization, and hold each one for
+#: Rule 6. Take ONE due row of one organization, and hold it for
 #: ``SWEEP_LEASE_S``. ``SKIP LOCKED`` lets two gateways sweep at once.
 _CLAIM_SQL = """UPDATE email_mailbox_purges p
                    SET tries = p.tries + 1, updated_at = now(),
@@ -129,7 +153,7 @@ _CLAIM_SQL = """UPDATE email_mailbox_purges p
                         WHERE state = 'open' AND next_try_at <= now()
                           AND organization_id = CAST(:org AS uuid)
                         ORDER BY next_try_at
-                        LIMIT :batch
+                        LIMIT 1
                         FOR UPDATE SKIP LOCKED)
              RETURNING p.id, p.owner_email, p.account_id, p.passes, p.tries"""
 
@@ -167,8 +191,6 @@ def mailbox_memory_scope(owner_email: str, account_id: Any) -> str:
 
     The key comes from ``email_memory_scope``, the one function that the
     writers and the reader use, with the account id in canonical UUID form.
-    A writer calls this too, so that it never writes a key that no purge
-    finds (EM-G11f2 item 2).
     """
     try:
         canonical = str(UUID(str(account_id).strip()))
@@ -181,20 +203,51 @@ def mailbox_memory_scope(owner_email: str, account_id: Any) -> str:
     return scope
 
 
-def mem0_on() -> bool:
+def writable_memory_scope(owner: str | None, account_id: Any, writer: str) -> str | None:
+    """The Mem0 key for a WRITE of one mailbox, or ``None`` (EM-G11f2 item 2).
+
+    Each email writer of Mem0 takes its key from here. It is the key that
+    :func:`mailbox_memory_scope` builds, so a disconnect deletes it. With no
+    owner or no mailbox id the write is REFUSED, not moved to another key. It
+    logs ``email.memory_write_refused`` with the writer name and no text.
+    """
+    try:
+        return mailbox_memory_scope(owner or "", account_id)
+    except ScopeRefused:
+        _log.info("email.memory_write_refused", writer=writer,
+                  reason="no_mailbox_scope")
+        return None
+
+
+async def mem0_on() -> bool:
     """True when the Mem0 client is ready (rule 7).
 
-    With ``MEM0_ENABLED`` off this reads one setting and nothing else. The
-    client keeps no public probe, so this asks its lazy builder, which returns
-    ``None`` when the flag is off or the client cannot start.
+    A client that is built answers at once. With ``MEM0_ENABLED`` off this
+    reads one setting. Otherwise it builds the client in a thread, so the
+    event loop does not wait for ``Memory.from_config``. A failed build is
+    kept for ``MEM0_RETRY_S``, so a tick does not build it again each time.
     """
+    global _mem0_failed_at
     try:
         from acb_memory.mem0_client import get_memory_client
 
-        return get_memory_client()._get_client() is not None
+        client = get_memory_client()
+        if getattr(client, "_client", None) is not None:
+            return True
+        if not getattr(get_settings(), "mem0_enabled", False):
+            return False
+        if (_mem0_failed_at is not None
+                and time.monotonic() - _mem0_failed_at < MEM0_RETRY_S):
+            return False
+        built = await asyncio.to_thread(client._get_client)
     except Exception as exc:
         _log.warning("email.purge.mem0_probe_failed", error=type(exc).__name__)
+        built = None
+    if built is None:
+        _mem0_failed_at = time.monotonic()
         return False
+    _mem0_failed_at = None
+    return True
 
 
 async def _one_pass(scope: str, account_id: str, phase: str) -> int | None:
@@ -250,7 +303,7 @@ async def purge_mailbox_memory(
     except ScopeRefused:
         _log.warning("email.disconnect.memory_purge_refused", account_id=shown)
         return None
-    if not mem0_on():
+    if not await mem0_on():
         # Rule 7: the row stays open until Mem0 runs again.
         _log.info("email.disconnect.memory_purge_deferred", account_id=shown,
                   reason="mem0_off")
@@ -335,18 +388,28 @@ async def _sweep_row(org: str, row: Any, open_session: Callable[..., Any]) -> bo
     return passes >= 2
 
 
-async def _sweep_org(org: str, open_session: Callable[..., Any]) -> int:
-    """Claim the due rows of one organization, then run one pass for each."""
+async def _claim_one(org: str, open_session: Callable[..., Any]) -> Any | None:
+    """Claim ONE due row of one organization, or ``None``."""
     async with open_session(org) as db:
-        rows = (await db.execute(text(_CLAIM_SQL), {
-            "org": org, "lease": SWEEP_LEASE_S, "batch": SWEEP_BATCH,
-        })).fetchall()
+        return (await db.execute(text(_CLAIM_SQL), {
+            "org": org, "lease": SWEEP_LEASE_S})).fetchone()
+
+
+async def _sweep_org(org: str, open_session: Callable[..., Any],
+                     deadline: float) -> int:
+    """Claim and pass the due rows of one organization, one row at a time,
+    until none is due, ``SWEEP_BATCH`` rows ran, or the deadline passes."""
     done = 0
-    for row in rows:
+    for _ in range(SWEEP_BATCH):
+        if time.monotonic() >= deadline:
+            break
+        row = await _claim_one(org, open_session)
+        if row is None:
+            break
         try:
             done += int(await _sweep_row(org, row, open_session))
         except Exception as exc:
-            # The lease frees the row, and a later sweep takes it again.
+            # The lease frees the row, and a later tick takes it again.
             _log.warning("email.purge_sweep.row_failed",
                          account_id=str(row.account_id), error=type(exc).__name__)
     return done
@@ -355,6 +418,7 @@ async def _sweep_org(org: str, open_session: Callable[..., Any]) -> int:
 async def sweep_mailbox_purges(
     org_ids: Iterable[str],
     *, open_session: Callable[..., Any] = _tenant_session,
+    budget_s: float = SWEEP_BUDGET_S,
 ) -> int:
     """Run one pass for each due purge row of each organization. Answers the
     count of rows that closed ``done``.
@@ -363,30 +427,85 @@ async def sweep_mailbox_purges(
     organization runs in its own ``tenant_session(org)`` blocks, and a failure
     in one organization does not stop the others. It never raises.
     """
-    if not mem0_on():
+    if not await mem0_on():
         return 0
+    deadline = time.monotonic() + budget_s
     done = 0
     for org in org_ids:
+        if time.monotonic() >= deadline:
+            _log.info("email.purge_sweep.budget_spent")
+            break
         try:
-            done += await _sweep_org(str(org), open_session)
+            done += await _sweep_org(str(org), open_session, deadline)
         except Exception as exc:
             _log.warning("email.purge_sweep.org_failed", org=str(org),
                          error=type(exc).__name__)
     return done
 
 
-def start_purge_sweep(org_ids: Iterable[str]) -> asyncio.Task[int] | None:
-    """Start one sweep in a task, for the host loop. ``None`` when Mem0 is off
-    or a sweep still runs.
+# ── the loop (rule 6) ───────────────────────────────────────────────────────
 
-    The host loop does not wait for the sweep, so a slow Mem0 never delays
-    the host's own work. The set keeps one sweep at most.
+
+async def _organization_ids() -> list[str]:
+    """Every organization id, from the RLS-EXEMPT ``organization`` table.
+
+    The tenant-discovery read of the loop. It answers "which tenants exist",
+    so it cannot run bound. Each read after it binds one organization.
     """
-    if not mem0_on():
-        return None
-    if any(not t.done() for t in _SWEEPS):
-        return None
-    task = asyncio.create_task(sweep_mailbox_purges(list(org_ids)))
-    _SWEEPS.add(task)
-    task.add_done_callback(_SWEEPS.discard)
-    return task
+    db = await get_db()
+    try:
+        rows = (await db.execute(text("SELECT id FROM organization ORDER BY id"))).fetchall()
+    finally:
+        await db.close()
+    return [str(r.id) for r in rows]
+
+
+async def run_tick() -> int:
+    """One tick: with Mem0 on, list the organizations and sweep them."""
+    if not await mem0_on():
+        return 0
+    return await sweep_mailbox_purges(await _organization_ids())
+
+
+async def _loop(stopping: asyncio.Event) -> None:
+    while not stopping.is_set():
+        try:
+            await run_tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # never let one bad tick end the loop
+            _log.warning("email.purge_loop.tick_failed", error=type(exc).__name__)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stopping.wait(), timeout=TICK_SECONDS)
+
+
+async def start_purge_loop() -> bool:
+    """Start the sweeper loop from the gateway lifespan. Idempotent.
+
+    The loop has no flag. With Mem0 off each tick ends before any database
+    read, so the loop costs one setting read each ``TICK_SECONDS``.
+    """
+    global _loop_task, _stopping
+    if _loop_task is not None and not _loop_task.done():
+        return True
+    _stopping = asyncio.Event()
+    _loop_task = asyncio.get_running_loop().create_task(
+        _loop(_stopping), name="email-purge-loop")
+    _log.info("email.purge_loop.started", tick_secs=TICK_SECONDS)
+    return True
+
+
+async def stop_purge_loop() -> None:
+    """Stop the loop and wait for a tick in progress. Safe when it never started."""
+    global _loop_task
+    if _stopping is not None:
+        _stopping.set()
+    task, _loop_task = _loop_task, None
+    if task is None or task.done():
+        return
+    _done, pending = await asyncio.wait({task}, timeout=STOP_GRACE_SECONDS)
+    for still in pending:
+        _log.warning("email.purge_loop.stop_timed_out")
+        still.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await still
