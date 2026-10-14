@@ -21,9 +21,13 @@ is complete.
 **MD-5b is BUILT, 2026-10-14** (the `my_day` loop, no migration, dark
 behind `MY_DAY_LOOP_ENABLED`).
 
+**MD-6a-1 is BUILT, 2026-10-14** (the features, the helpers and the table,
+migration 262). Each `my_day.*` mode is `off` and `MY_DAY_DECIDE_ORGS` is
+empty, so nothing asks `decide` and nothing calls the pass yet.
+
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-3,
-MD-4, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12. Each ships
-dark.
+MD-4, MD-6a-2, MD-6a-3, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and
+MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -1288,8 +1292,10 @@ with no training, no rule editor and no setting screen.
 The feed follows the adoption rule of D75 item 7 and `customer_console.md`
 §6A.14, with all four of its rules.
 
-1. **Register.** MD-6a adds the eight `my_day.*` features to `FEATURES` in
-   `gateway/decide_features.py`. Every default is `off`. MD-6b adds them to
+1. **Register.** MD-6a adds the eight `my_day.*` features to the one
+   registry in `gateway/decide_features.py`, as `MY_DAY_FEATURES`. They are
+   not in the tuple `FEATURES`, because the email suites pin that tuple as
+   the email set (MD-6a-1 done-when 7). Every default is `off`. MD-6b adds them to
    `ON_FEATURES`, or `on` resolves to `off` and logs `decide.mode_refused`
    (`decide_features.py:312-324`). No second registry, and no second helper.
 2. **Widen the helpers, do not copy them.** Four changes, in MD-6a:
@@ -2506,6 +2512,27 @@ Done when:
 
 Fences: `tests/unit/test_feed_decide.py`, and
 `tests/unit/test_feed_decide_r8.py` with `_DB_GATE` for the table.
+
+**BUILT, 2026-10-14, on branch `my-day-feed-md6a`.** Migration 262 adds
+`my_day_judgments`. `feed_decide.judge(user, now)` is the pass for one
+member, and MD-6a-2 calls it. The build made these choices:
+
+- **The registry.** The eight names are `MY_DAY_FEATURES`, beside
+  `FEATURES`, and `REGISTERED` holds both. The parser and `mode_for` are
+  the same. `FEATURES` stays the email set, because four email tests pin it
+  and done-when 7 forbids a change to them.
+- **The call name.** A pass calls `shadow` as `my_day.automation`, with
+  `features` set to the asked features. The agent name needs a dot
+  (`AUTOMATION_AGENT_RE`), so `my_day` alone binds no agent.
+- **The caps.** A pass reserves its calls before it asks. Past a cap it
+  sends fewer requests, or none. A Redis failure asks nothing.
+- **A key that is not ours** is stored as no value in `judged_value`.
+- **The state.** `read_context` reads the role, the local time, the day
+  hours, the One Thing, the corrections and the habit counts. No app read
+  gives the goals, the projects, the 7-day deadlines or today's blocks to
+  the module yet, so those fields stay empty.
+- **The cool-down.** It is per org and shared with email, because both
+  spend the same credits.
 
 ### MD-6a-2 · The member pass — AGENT-SAFE
 
