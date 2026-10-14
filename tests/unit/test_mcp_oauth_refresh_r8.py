@@ -48,6 +48,18 @@ Rows R8 to R11 fence the review of #1011.
 | R10 | the reader ignores ``oauth_wanted`` | ``test_a_run_never_refreshes_a_row_that_it_cannot_use`` |
 | R11 | the run waits on the step with no ``asyncio.shield`` | ``test_a_stop_during_the_fetch_still_keeps_the_rotated_token`` |
 
+Rows R12 to R16 fence review 2 of #1011. Row R3 changed with it: the
+registry, not ``attach_mcp_tools``, now decides what a 401 does.
+
+| # | Mutation | Test that fails |
+|---|---|---|
+| R3 | a 401 always sets ``needs_reconnect`` (``mark_unauthorized`` ignores *refreshed*) | ``test_a_401_with_no_refresh_ends_the_token_and_the_next_run_refreshes`` |
+| R12 | no slot per org | ``test_an_org_whose_auth_server_stalls_never_delays_another_org`` |
+| R13 | no back-off after a refresh that is not final | ``test_a_failed_refresh_is_not_tried_again_on_every_run`` |
+| R14 | a 401 with no refresh changes nothing | ``test_a_401_with_no_refresh_ends_the_token_and_the_next_run_refreshes`` |
+| R15 | the margin is :data:`TOKEN_MARGIN_S` for every token | ``test_a_short_token_gets_one_refresh_under_two_workers`` |
+| R16 | ``fresh_credential`` reads a row that is no longer OAuth | ``test_a_row_registered_again_with_headers_is_not_marked`` |
+
 Run::
 
     eval "$(bash scripts/dev_db.sh --export)"
@@ -56,6 +68,7 @@ Run::
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Any
 
@@ -107,19 +120,24 @@ def _name(tag: str) -> str:
 
 @pytest.fixture
 def world(ns, monkeypatch) -> f.World:  # noqa: F811 - a fixture
+    from gateway.connections import mcp
+
     f.configure(monkeypatch, keep_key=True)
+    monkeypatch.setattr(mcp, "_BACKOFF", {}, raising=False)  # process-local
     return f.install(monkeypatch, f.World())
 
 
 async def _connected(world: f.World, org: str, admin: str, name: str, token: str, *,
-                     expires_in: int, scope: tuple[str, ...] = ("*",)) -> None:
+                     expires_in: int | None, scope: tuple[str, ...] = ("*",),
+                     refresh: str | None = None) -> None:
     """Register *name* in *org*, and connect it by a consent whose access
     token ends in *expires_in* seconds. A refresh then lives an hour."""
     from gateway.connections import mcp
 
     await mcp.save(org, name=name, url=f.MCP_URL, headers={}, connected_by="r8-seed",
                    label=f"Label {name}", agent_scope=scope)
-    world.access_token, world.refresh_token = token, f"refresh-{token}"
+    world.access_token = token
+    world.refresh_token = f"refresh-{token}" if refresh is None else refresh
     world.expires_in = expires_in
     _, code, state = await f.start_and_consent(f.user(admin, org), world, name)
     res = await f.finish(f.user(admin, org), code, state, iss=f.ISSUER)
@@ -240,11 +258,21 @@ async def test_a_401_after_a_refresh_in_this_run_sets_needs_reconnect(
         assert secret not in text
 
 
-async def test_a_401_with_no_refresh_leaves_the_row_connected(
-        ns, world, monkeypatch) -> None:  # noqa: F811
+@pytest.mark.parametrize("expires_in", [FAR, None], ids=["far", "no-expires-in"])
+async def test_a_401_with_no_refresh_ends_the_token_and_the_next_run_refreshes(
+        ns, world, monkeypatch, expires_in) -> None:  # noqa: F811
+    """Review 2 of #1011 (P1). One 401 with no refresh never asks an admin
+    to connect again. It ends the stored token, so the next run refreshes.
+    ``no-expires-in``: a token answer with no ``expires_in`` is stored for
+    ten years, and without this rule a dead one would stay dead for ever."""
+    from datetime import UTC, datetime, timedelta
+
     set_flag(monkeypatch, "*")
     name = _name("o14n")
-    await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=FAR)
+    await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=expires_in)
+    if expires_in is None:
+        assert (await _stored(ns.org_a, name)).expires_at > datetime.now(UTC) + timedelta(
+            days=3000), "no expires_in is stored as ten years"
     _mcp_answers_401(monkeypatch, world)
     agent = await _inject(ns.org_a)
     assert name not in {t.name for t in agent.mcp_tools}
@@ -253,6 +281,31 @@ async def test_a_401_with_no_refresh_leaves_the_row_connected(
     assert sent[-1].headers["authorization"] == f"Bearer {TOKEN_A}"
     assert _registry(ns, ns.org_a)[name]["status"] == "connected", (
         "one 401 with no refresh asked the admin to connect again")
+    stored = await _stored(ns.org_a, name)
+    assert stored.access_token == TOKEN_A
+    assert stored.expires_at <= datetime.now(UTC), "the 401 did not end the stored token"
+
+    # The next run refreshes. Its new token gets the 401 too, so now the
+    # admin must act, and the console says so.
+    await _inject(ns.org_a)
+    assert len(world.refreshes) == 1
+    sent = [r for r in world.requests if r.url.path == "/mcp"]
+    assert sent[-1].headers["authorization"] == f"Bearer {f.SENTINEL_ACCESS}-refreshed-1"
+    assert _registry(ns, ns.org_a)[name]["status"] == "needs_reconnect"
+
+
+async def test_a_401_on_a_token_with_no_refresh_token_needs_reconnect(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    """Review 2 of #1011 (P1): nothing can refresh it, so the admin acts."""
+    set_flag(monkeypatch, "*")
+    name = _name("o14x")
+    await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=None, refresh="")
+    assert (await _stored(ns.org_a, name)).refresh_token == ""
+    _mcp_answers_401(monkeypatch, world)
+    await _inject(ns.org_a)
+    assert world.refreshes == []
+    row = _registry(ns, ns.org_a)[name]
+    assert row["status"] == "needs_reconnect"
 
 
 async def test_a_401_after_a_new_consent_keeps_the_new_consent(
@@ -264,12 +317,16 @@ async def test_a_401_after_a_new_consent_keeps_the_new_consent(
     name = _name("o14c")
     await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=FAR)
     stale = {"Authorization": "Bearer an-older-token"}
-    assert await mcp.mark_unauthorized(ns.org_a, name, stale) is False
-    assert _registry(ns, ns.org_a)[name]["status"] == "connected"
-    assert await mcp.mark_unauthorized(ns.org_b, name,
-                                       {"Authorization": f"Bearer {TOKEN_A}"}) is False
-    assert await mcp.mark_unauthorized(ns.org_a, name,
-                                       {"Authorization": f"Bearer {TOKEN_A}"}) is True
+    sent = {"Authorization": f"Bearer {TOKEN_A}"}
+    for refreshed in (True, False):
+        assert await mcp.mark_unauthorized(ns.org_a, name, stale,
+                                           refreshed=refreshed) == mcp.MARK_UNCHANGED
+        assert await mcp.mark_unauthorized(ns.org_b, name, sent,
+                                           refreshed=refreshed) == mcp.MARK_UNCHANGED
+    before = _registry(ns, ns.org_a)[name]
+    assert before["status"] == "connected"
+    assert await mcp.mark_unauthorized(ns.org_a, name, sent,
+                                       refreshed=True) == mcp.MARK_NEEDS_RECONNECT
     assert _registry(ns, ns.org_a)[name]["status"] == "needs_reconnect"
 
 
@@ -470,3 +527,124 @@ async def test_a_stop_during_the_fetch_still_keeps_the_rotated_token(
     assert stored.refresh_token == f"{f.SENTINEL_REFRESH}-rotated-1", (
         "a Stop lost the rotated refresh token")
     assert _registry(ns, ns.org_a)[name]["status"] == "connected"
+
+
+# ── Review 2 of #1011 ───────────────────────────────────────────────────────
+
+
+async def _until(check: Any, what: str) -> None:
+    """Wait for *check* to hold: an order, never a wall-clock budget. The 30 s
+    guard only catches a hang."""
+    async def _poll() -> None:
+        while not check():
+            await asyncio.sleep(0.02)
+
+    try:
+        await asyncio.wait_for(_poll(), 30)
+    except TimeoutError:
+        raise AssertionError(f"never happened: {what}") from None
+
+
+async def test_an_org_whose_auth_server_stalls_never_delays_another_org(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    """P1: org A's two stalled servers hold ONE slot of the process. Org B's
+    refresh takes the other slot, and finishes while A still waits."""
+    from gateway.connections import mcp
+
+    a1, a2, b1 = _name("stallA1"), _name("stallA2"), _name("freeB1")
+    await _connected(world, ns.org_a, ADMIN_A, a1, f"{TOKEN_A}-1", expires_in=NEAR)
+    await _connected(world, ns.org_a, ADMIN_A, a2, f"{TOKEN_A}-2", expires_in=NEAR)
+    await _connected(world, ns.org_b, ADMIN_B, b1, TOKEN_B, expires_in=NEAR)
+    # A short wait for a slot, so a run that waits gives up soon. The step of
+    # org A that holds a slot waits on the gate until the end of the test.
+    monkeypatch.setattr(mcp, "REFRESH_BUDGET_S", 3.0)
+    monkeypatch.setattr(mcp, "REFRESH_FETCH_S", 60.0)
+    world.gate = asyncio.Event()
+    world.gated = {f"refresh-{TOKEN_A}-1", f"refresh-{TOKEN_A}-2"}
+    run_a = asyncio.create_task(mcp.servers_for_org(ns.org_a))
+    try:
+        await _until(lambda: world.arrivals, "org A's refresh reached its auth server")
+        got = _by_name(await asyncio.wait_for(mcp.servers_for_org(ns.org_b), 30))
+        assert got[b1].refreshed is True, "org B waited behind org A's stalled servers"
+        a_seen = [t for t in world.arrivals if t in world.gated]
+        assert len(a_seen) == 1, f"org A held {len(a_seen)} slots at one time"
+    finally:
+        world.gate.set()
+        await asyncio.wait_for(run_a, 30)
+        await _until(lambda: not mcp._INFLIGHT, "the steps of org A ended")
+
+
+async def test_a_failed_refresh_is_not_tried_again_on_every_run(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    """P1: after a refresh fails for a reason that is not final, the process
+    waits ``REFRESH_BACKOFF_S`` before it tries that server again. A run in
+    the gap uses the stored token while it lives."""
+    from gateway.connections import mcp
+
+    name = _name("backoff")
+    await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=NEAR)
+    world.refresh_error = "temporarily_unavailable"
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(mcp, "_monotonic", lambda: clock["t"], raising=False)
+    stored = {"Authorization": f"Bearer {TOKEN_A}"}
+
+    first = _by_name(await mcp.servers_for_org(ns.org_a))[name]
+    assert len(world.refreshes) == 1 and first.headers == stored
+    second = _by_name(await mcp.servers_for_org(ns.org_a))[name]
+    assert len(world.refreshes) == 1, "a failed refresh was tried again at once"
+    assert second.headers == stored and second.refreshed is False
+
+    clock["t"] += mcp.REFRESH_BACKOFF_S + 1
+    world.refresh_error = None
+    third = _by_name(await mcp.servers_for_org(ns.org_a))[name]
+    assert len(world.refreshes) == 2 and third.refreshed is True
+    assert _registry(ns, ns.org_a)[name]["status"] == "connected"
+
+
+async def test_a_short_token_gets_one_refresh_under_two_workers(
+        ns, world, monkeypatch) -> None:  # noqa: F811
+    """P2: a token that lives 300 s (the Keycloak default) is due at half its
+    life, not at once. The second worker reads the new token under the lock
+    and sends nothing (O7 for a short token)."""
+    from datetime import UTC, datetime, timedelta
+
+    from gateway.connections import mcp
+
+    name = _name("short")
+    await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=300)
+    world.expires_in = 300  # each refresh lives 300 s too
+    # 200 s later: 100 s left, past half the life, so the token is due.
+    shift = timedelta(seconds=200)
+    monkeypatch.setattr(mcp, "_utcnow", lambda: datetime.now(UTC) + shift, raising=False)
+    world.token_delay_s = 0.5
+    one, two = await asyncio.gather(mcp.servers_for_org(ns.org_a),
+                                    mcp.servers_for_org(ns.org_a))
+    assert len(world.refreshes) == 1, f"{len(world.refreshes)} refreshes went out"
+    new = {"Authorization": f"Bearer {f.SENTINEL_ACCESS}-refreshed-1"}
+    assert _by_name(one)[name].headers == new and _by_name(two)[name].headers == new
+    assert _registry(ns, ns.org_a)[name]["status"] == "connected"
+    third = _by_name(await mcp.servers_for_org(ns.org_a))[name]
+    assert third.refreshed is False and len(world.refreshes) == 1
+
+
+async def test_a_row_registered_again_with_headers_is_not_marked(
+        ns, world) -> None:  # noqa: F811
+    """The noted item: a server deleted and registered again with headers
+    while a refresh step waited for its slot is no longer the OAuth row. The
+    step leaves it, and never marks it ``undecryptable``."""
+    from acb_common.db import tenant_session
+    from gateway.connections import mcp, store
+
+    name = _name("rereg")
+    await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=NEAR)
+    async with tenant_session(ns.org_a) as db:
+        stale = next(c for c in await store.list_by_prefix(
+            db, ns.org_a, mcp.PREFIX, mcp.OWNING_APP) if c.provider == mcp.provider_for(name))
+    assert await mcp.remove(ns.org_a, name)
+    await mcp.save(ns.org_a, name=name, url=f.MCP_URL, headers={"X-Key": "header-value"},
+                   connected_by="r8-seed")
+    assert await mcp._oauth_header(ns.org_a, stale, None) is None
+    row = _registry(ns, ns.org_a)[name]
+    assert row["status"] == "connected", "the step marked a header row"
+    assert json.loads(row["whole"])["last_error"] is None
+    assert world.refreshes == []

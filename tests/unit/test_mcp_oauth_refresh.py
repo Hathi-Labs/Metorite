@@ -92,6 +92,7 @@ async def test_a_refresh_sends_the_grant_through_the_guard_and_keeps_the_rotatio
     assert fresh.expires_at == now + timedelta(seconds=3600)
     assert dict(fresh.provider_meta) == dict(old.provider_meta)
     assert fresh.client_secret == f.SENTINEL_SECRET and fresh.scopes == ("read", "write")
+    assert fresh.issued_at == now, "review 2 of #1011: the life of the token"
     # The real guard: the hop went to the pinned address, on 443, by name.
     sent = [r for r in world.requests if r.url.path == "/token"]
     assert len(sent) == 1 and sent[0].url.host == f.PUBLIC_IP
@@ -155,7 +156,7 @@ async def _attach(servers: list[Any], calls: list[Any] | None = None, *,
 
     async def _mark(server: Any) -> None:
         if calls is not None:
-            calls.append(server.name)
+            calls.append((server.name, server.oauth_refreshed))
         if fail:
             raise RuntimeError(f"the store refused {f.SENTINEL_ACCESS}")
 
@@ -167,7 +168,7 @@ async def test_a_401_after_a_refresh_calls_on_unauthorized_and_the_run_goes_on(
     calls: list[str] = []
     with structlog.testing.capture_logs() as logs:
         names = await _attach([_server("notion", refreshed=True)], calls)
-    assert names == [] and calls == ["notion"]
+    assert names == [] and calls == [("notion", True)]
     sent = [r for r in session_world.requests if r.url.path == "/mcp"]
     assert sent and sent[0].headers["authorization"] == f"Bearer {f.SENTINEL_ACCESS}"
     assert sent[0].url.host == f.PUBLIC_IP, "the connect skipped the pinned transport"
@@ -177,11 +178,13 @@ async def test_a_401_after_a_refresh_calls_on_unauthorized_and_the_run_goes_on(
     assert f.SENTINEL_ACCESS not in logged_text(logs, caplog)
 
 
-async def test_a_401_with_no_refresh_in_this_run_calls_nothing(session_world: f.World) -> None:
-    calls: list[str] = []
+async def test_a_401_with_no_refresh_in_this_run_says_so(session_world: f.World) -> None:
+    """Review 2 of #1011 (P1): the registry decides, so the callback runs
+    and carries "no refresh in this run"."""
+    calls: list[Any] = []
     with structlog.testing.capture_logs() as logs:
         names = await _attach([_server("notion", refreshed=False)], calls)
-    assert names == [] and calls == []
+    assert names == [] and calls == [("notion", False)]
     assert [e for e in logs if e.get("event") == "mcp.oauth_unauthorized"]
 
 
@@ -208,7 +211,7 @@ async def test_a_failed_mark_never_fails_the_run(session_world: f.World, caplog)
     calls: list[str] = []
     with structlog.testing.capture_logs() as logs:
         names = await _attach([_server("notion", refreshed=True)], calls, fail=True)
-    assert names == [] and calls == ["notion"]
+    assert names == [] and calls == [("notion", True)]
     failed = [e for e in logs if e.get("event") == "mcp.oauth_mark_failed"]
     assert failed and failed[0]["error"] == "RuntimeError"
     assert f.SENTINEL_ACCESS not in logged_text(logs, caplog)
@@ -233,15 +236,15 @@ async def test_the_injection_passes_the_flags_and_names_the_org(
             url=f.MCP_URL, agent_scope=("*",), enabled=True, header_names=("Authorization",),
             headers=dict(header), oauth=True, refreshed=True)]
 
-    marked: list[tuple[str, str, dict[str, str]]] = []
+    marked: list[tuple[str, str, dict[str, str], bool]] = []
 
-    async def _mark(org: str, name: str, sent: dict[str, str]) -> bool:
-        marked.append((org, name, dict(sent)))
-        return True
+    async def _mark(org: str, name: str, sent: dict[str, str], *, refreshed: bool) -> str:
+        marked.append((org, name, dict(sent), refreshed))
+        return mcp.MARK_NEEDS_RECONNECT
 
     monkeypatch.setattr(mcp, "servers_for_org", _servers)
     monkeypatch.setattr(mcp, "mark_unauthorized", _mark)
     agent = native_agent()
     await _inject_mcp_servers(agent, "apis-config", organization_id=ORG_A, opened=[])
     assert list(getattr(agent, "mcp_tools", []) or []) == []
-    assert marked == [(ORG_A, "notion", header)]
+    assert marked == [(ORG_A, "notion", header, True)]

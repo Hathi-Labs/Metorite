@@ -130,6 +130,12 @@ class World:
     refresh_error: str | None = None
     #: Seconds that the token endpoint waits before it answers a refresh.
     token_delay_s: float = 0.0
+    #: Review 2 of #1011: the refresh token of each refresh that reached the
+    #: endpoint, in order, BEFORE any wait. A refresh whose token is in
+    #: :attr:`gated` waits on :attr:`gate` (an ``asyncio.Event``) first.
+    arrivals: list[str] = field(default_factory=list)
+    gated: set[str] = field(default_factory=set)
+    gate: Any = None
 
     # ── the resolver ────────────────────────────────────────────────────────
 
@@ -149,11 +155,15 @@ class World:
 
     async def ahandle(self, request: httpx.Request) -> httpx.Response:
         """:meth:`handle`, after :attr:`token_delay_s` for a refresh (IN-8b)."""
-        if self.token_delay_s and request.url.path == "/token" and (
-                b"grant_type=refresh_token" in request.content):
+        if request.url.path == "/token" and b"grant_type=refresh_token" in request.content:
             import asyncio
 
-            await asyncio.sleep(self.token_delay_s)
+            token = self._form(request).get("refresh_token", "")
+            self.arrivals.append(token)
+            if self.gate is not None and token in self.gated:
+                await self.gate.wait()
+            if self.token_delay_s:
+                await asyncio.sleep(self.token_delay_s)
         return self.handle(request)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
