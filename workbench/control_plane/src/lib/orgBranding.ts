@@ -3,8 +3,8 @@
  *
  * A customer uploads their logo in Settings → Organization and it replaces our
  * mark in the top-left of the shell. Since 2026-10-11 nothing of ours sits
- * beside it. Since 2026-10-14 the shell shows no Metorite logo, and its
- * place is not decided yet (owner, "later"). This module owns the
+ * beside it. Since 2026-10-14 the bar and the sidebar show no Metorite logo,
+ * and the comet signs the foot of the account menu. This module owns the
  * parts of that with a right and a wrong answer, so they can be tested
  * without a browser or a gateway.
  *
