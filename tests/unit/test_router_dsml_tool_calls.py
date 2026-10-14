@@ -918,7 +918,7 @@ class TestABareMarkerIsText:
 # ── The chunking never changes the answer ───────────────────────────────────
 
 
-#: A tool name that makes ``<｜DSML｜invoke name="...">`` exactly 96 characters.
+#: A tool name that makes its whole invoke tag exactly 96 characters long.
 _LONG_TOOL = "projects_update_task_dependencies_bulk_for_project_" + "x" * 23
 assert len(f'<{BAR}DSML{BAR}invoke name="{_LONG_TOOL}">') == dsml_mod.MAX_FIRST_TAG
 #: A closing block tag with ten spaces before its ``>``: 33 characters.
@@ -1049,6 +1049,25 @@ class TestTheChunkingNeverChangesTheAnswer:
                 pieces.append(text[at:at + size])
                 at += size
             assert _events(policy, pieces) == whole, pieces
+
+    def test_the_LIMITS_give_the_same_answer_as_before(self):
+        """The cases above compare a parser with itself, so a limit that moves
+        on both sides stays green. This test pins the answer at each limit.
+
+        ``dsml._HEAD`` below 96 turns the 96-character tag into text, and the
+        call never runs. ``dsml._CLOSE_LOOKBACK`` below 32 fails the cuts of
+        ``closer_33_chars`` above."""
+        text, policy = _REPLIES["first_tag_96_chars"]
+        shown, calls, found, drops = _events(policy, [text])
+        assert (shown, calls, found, drops) == (
+            "Linking. \n", [(_LONG_TOOL, {"task_id": "t1"})], True, [])
+        text, policy = _REPLIES["first_tag_97_chars"]
+        shown, calls, _, drops = _events(policy, [text])
+        assert shown.startswith(f'Linking. <{BAR}DSML{BAR}invoke name="{_LONG_TOOL}s">')
+        assert calls == []
+        assert [dict(d)["dsml_reason"] for d in drops] == ["stray_tag"] * 3
+        text, policy = _REPLIES["closer_33_chars"]
+        assert _events(policy, [text])[:2] == ("Two. \n", [("create_task", {"title": "t"})])
 
     @pytest.mark.parametrize("name", ["owner_answer", "function_calls_json", "prose_after_block"])
     def test_REASONING_deltas_pass_untouched_around_the_content(self, name):
