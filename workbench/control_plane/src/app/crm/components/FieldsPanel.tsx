@@ -24,19 +24,25 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { isMirrored, LOCK_TIP } from "../lib/connect";
 import { formValue, type FieldLayout } from "../lib/fieldLayout";
 import {
   contactValue,
   fieldRows,
-  formatField,
   layoutGroups,
   undefinedRows,
   type FieldDef,
 } from "../lib/fields";
 import { money, shortDate } from "../lib/format";
-import { isReference, referenceValue, saveEdit, storedValue } from "../lib/recordForm";
+import {
+  editKey,
+  isReference,
+  layoutValue,
+  referenceValue,
+  saveEdit,
+  storedValue,
+} from "../lib/recordForm";
 import type { CrmRefusal } from "../lib/store";
 import FieldInput from "./FieldInput";
 import FieldValue from "./FieldValue";
@@ -531,7 +537,8 @@ export function LayoutFields({
                 <LayoutFieldRow
                   key={def.key}
                   def={def}
-                  stored={storedValue(def, record)}
+                  record={record}
+                  statuses={statuses}
                   saving={saving}
                   refusal={refusal}
                   locked={locked}
@@ -558,6 +565,15 @@ export function LayoutFields({
   );
 }
 
+/** Focus the control of an inline edit: the input, or the first one in a group. */
+function focusControl(id: string): void {
+  const el = document.getElementById(id);
+  const target = el?.matches("input, textarea, button")
+    ? el
+    : el?.querySelector<HTMLElement>("input, textarea, button");
+  target?.focus();
+}
+
 /**
  * One field of the Fields tab: its value, and an inline edit through
  * `FieldInput`, as the Overview edits a fixed field.
@@ -566,43 +582,68 @@ export function LayoutFields({
  *   `"missing": true` in another row never reaches the save.
  * - The client check runs first. A refusal of the gateway keeps the edit
  *   open with the typed value, and its message shows under the input.
+ * - The keyboard works as in `EditableField`: the edit takes the focus,
+ *   Enter saves, Escape cancels (`editKey`). After a save or a cancel, the
+ *   focus goes back to the Pencil button.
+ * - The value reads by `layoutValue`, so an amount keeps the currency of
+ *   the record (review P1). The Mirror lock reads the same value.
  */
 function LayoutFieldRow({
   def,
-  stored,
+  record,
+  statuses,
   saving,
   refusal,
   locked,
   onPatch,
 }: {
   def: FieldDef;
-  stored: unknown;
+  record: Row;
+  statuses: Status[];
   saving: boolean;
   refusal: CrmRefusal | null;
   locked: boolean;
   onPatch: (body: Record<string, unknown>) => void | Promise<boolean>;
 }) {
   const id = useId();
+  const editId = `${id}-edit`;
+  const stored = storedValue(def, record);
+  const shown = layoutValue(def, record, statuses);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<unknown>(null);
   /** The message of the client check. */
   const [problem, setProblem] = useState<string | null>(null);
   /** The gateway refused the last save of this row. */
   const [refused, setRefused] = useState(false);
+  /** Where the focus goes after the next render: the control, or the Pencil. */
+  const [focusTo, setFocusTo] = useState<"control" | "pencil" | null>(null);
   const error = problem ?? (refused && !saving ? (refusal?.message ?? null) : null);
+
+  useEffect(() => {
+    if (focusTo === null) return;
+    if (focusTo === "control") focusControl(id);
+    else document.getElementById(editId)?.focus();
+    setFocusTo(null);
+  }, [focusTo, id, editId]);
 
   function begin() {
     setDraft(formValue(def, stored));
     setProblem(null);
     setRefused(false);
     setEditing(true);
+    setFocusTo("control");
+  }
+
+  function close() {
+    setEditing(false);
+    setFocusTo("pencil");
   }
 
   async function commit() {
     setRefused(false);
     const outcome = await saveEdit(def, stored, draft, onPatch);
     if (outcome.done) {
-      setEditing(false);
+      close();
     } else if (outcome.problem) {
       setProblem(outcome.problem);
     } else {
@@ -617,9 +658,31 @@ function LayoutFieldRow({
       </dt>
       <dd className="min-w-0 flex-1">
         {locked ? (
-          <FieldInput def={def} value={stored} onChange={() => undefined} locked />
+          // The C4p lock, with the value of `layoutValue`.
+          <span className="flex items-start gap-1.5 text-xs text-foreground" title={LOCK_TIP}>
+            <span className="min-w-0 flex-1 break-words">
+              <FieldValue value={shown} />
+            </span>
+            <Icon
+              name="Lock"
+              className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground"
+              aria-label={LOCK_TIP}
+            />
+          </span>
         ) : editing ? (
-          <div className="flex items-start gap-1">
+          <div
+            className="flex items-start gap-1"
+            onKeyDown={(e) => {
+              const act = editKey(e.key, (e.target as HTMLElement).tagName);
+              if (act === "cancel") {
+                e.stopPropagation();
+                close();
+              } else if (act === "commit") {
+                e.preventDefault();
+                void commit();
+              }
+            }}
+          >
             <div className="min-w-0 flex-1">
               <FieldInput
                 id={id}
@@ -647,15 +710,16 @@ function LayoutFieldRow({
               size="icon-xs"
               icon="X"
               aria-label="Cancel"
-              onClick={() => setEditing(false)}
+              onClick={close}
             />
           </div>
         ) : (
           <span className="flex items-start gap-1.5 text-xs text-foreground">
             <span className="min-w-0 flex-1 break-words">
-              <FieldValue value={formatField(def, stored)} />
+              <FieldValue value={shown} />
             </span>
             <Button
+              id={editId}
               variant="ghost"
               size="icon-xs"
               icon="Pencil"

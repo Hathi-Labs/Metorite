@@ -15,7 +15,8 @@
 //   sends that value. So a required boolean never blocks a save.
 
 import { checkValue, formValue, isEmptyValue, type FieldLayout } from "./fieldLayout";
-import { layoutGroups, type FieldDef, type FieldGroup, type FieldValue } from "./fields";
+import { formatField, layoutGroups, type FieldDef, type FieldGroup, type FieldValue } from "./fields";
+import { money } from "./format";
 import type { CrmRefusal } from "./store";
 import type { Status } from "./types";
 
@@ -56,9 +57,52 @@ export function sameValue(def: FieldDef, a: unknown, b: unknown): boolean {
  * own column.
  */
 export function fieldPatch(def: FieldDef, stored: unknown, next: unknown): Row | null {
-  if (sameValue(def, stored, next)) return null;
+  // A boolean that the record does not hold reads "—". The editor shows it
+  // as `formValue`, so a save of that value is a change (review P2).
+  const unsetBoolean = def.type === "boolean" && typeof stored !== "boolean";
+  if (!unsetBoolean && sameValue(def, stored, next)) return null;
   const value = def.type === "boolean" ? formValue(def, next) : isEmptyValue(next) ? null : next;
   return def.is_system ? { [def.key]: value } : { custom: { [def.key]: value } };
+}
+
+/**
+ * What the Fields tab shows for a field of a record (review P1).
+ *
+ * - A system `currency` field reads in the currency of the record, as the
+ *   Overview does. `formatField` alone reads each amount in rupees.
+ * - A deal with no probability of its own shows the probability of its
+ *   stage, "40% (from Proposal)", as the Overview does.
+ * - Each other field reads by `formatField`.
+ */
+export function layoutValue(
+  def: FieldDef,
+  record: Row,
+  statuses: ReadonlyArray<Status>,
+): FieldValue {
+  const stored = storedValue(def, record);
+  if (def.is_system && def.type === "currency" && typeof stored === "number") {
+    const currency = typeof record.currency === "string" && record.currency ? record.currency : "INR";
+    return { kind: "text", text: money(stored, currency) };
+  }
+  if (def.is_system && def.key === "probability" && (stored === null || stored === undefined)) {
+    const stage = statuses.find((s) => s.id === record.status_id);
+    const inherited = stage?.probability;
+    if (inherited !== null && inherited !== undefined) {
+      return { kind: "text", text: `${inherited}% (from ${stage?.name ?? "the stage"})` };
+    }
+  }
+  return formatField(def, stored);
+}
+
+/**
+ * What a key does in the inline edit of the Fields tab, as in the edit of a
+ * fixed field. Enter saves, except in a long text and on a button, where
+ * Enter has its own work. Escape cancels.
+ */
+export function editKey(key: string, target: string): "commit" | "cancel" | null {
+  if (key === "Escape") return "cancel";
+  if (key === "Enter" && target !== "TEXTAREA" && target !== "BUTTON") return "commit";
+  return null;
 }
 
 /** What became of an edit of one field. */

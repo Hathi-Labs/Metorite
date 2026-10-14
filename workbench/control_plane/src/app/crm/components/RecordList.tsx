@@ -21,7 +21,7 @@ import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import Modal from "@/components/ui/Modal";
 import { relativeTime } from "@/lib/taskCard";
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   MAX_COLUMNS,
   chosenDefs,
@@ -324,36 +324,46 @@ export function ColumnChoices({
   onToggle: (key: string) => void;
 }) {
   const full = chosen.length >= MAX_COLUMNS;
+  const baseId = useId();
+  const item = (def: FieldDef) => {
+    const on = chosen.includes(def.key);
+    return (
+      <li key={def.key}>
+        <label className="flex items-center gap-2 text-xs text-foreground">
+          <Checkbox
+            checked={on}
+            disabled={full && !on}
+            onChange={() => onToggle(def.key)}
+            aria-label={def.label}
+          />
+          {def.label}
+        </label>
+      </li>
+    );
+  };
   return (
     <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
-      {groups.flatMap((group) => [
-        ...(group.section
-          ? [
-              <li
-                key={`section:${group.section.id}`}
-                className="pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground first:pt-0"
-              >
-                {group.section.label}
-              </li>,
-            ]
-          : []),
-        ...group.fields.map((def) => {
-          const on = chosen.includes(def.key);
-          return (
-            <li key={def.key}>
-              <label className="flex items-center gap-2 text-xs text-foreground">
-                <Checkbox
-                  checked={on}
-                  disabled={full && !on}
-                  onChange={() => onToggle(def.key)}
-                  aria-label={def.label}
-                />
-                {def.label}
-              </label>
-            </li>
-          );
-        }),
-      ])}
+      {groups.flatMap((group) => {
+        if (!group.section) return group.fields.map(item);
+        // A section is a group with its label as the name (review note).
+        const headingId = `${baseId}-${group.section.id}`;
+        return [
+          <li
+            key={`section:${group.section.id}`}
+            role="group"
+            aria-labelledby={headingId}
+            className="pt-2 first:pt-0"
+          >
+            <span
+              id={headingId}
+              className="block text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+            >
+              {group.section.label}
+            </span>
+            <ul className="mt-1 space-y-1">{group.fields.map(item)}</ul>
+          </li>,
+        ];
+      })}
     </ul>
   );
 }
