@@ -298,6 +298,10 @@ integration resolvers. IN-5 removes the old writes.
 | Connect or disconnect your own member connection | The member, in the owning app |
 | Disconnect another member's connection | `integrations:manage`, and the member is told |
 | See a stored value | Nobody |
+| Open the app | Every member (D-EA-9, 2026-10-14). The pane is ungated, and each view gates itself |
+| Use Connections, API keys, Plugins and Skills | `feature:integrations`, as before. A member without it sees only the AI agents view |
+| See and revoke your own outside agents (AI agents view) | The member. WS-55 owns the routes (`external_agent_access.md` §15 EA-4b) |
+| See and revoke every agent connection of the organization | `feature:integrations` and `integrations:manage`. WS-55 owns the routes |
 
 ### 3.6 MCP OAuth for an org connection (IN-8)
 
@@ -676,11 +680,11 @@ No R8 suite may skip.
 |---|---|
 | `href` | `/integrations` |
 | `label` | Integrations |
-| `feature` | `integrations` |
-| `launch` | `preview` until IN-2 is done and the owner promotes it |
+| `feature` | none (each view gates itself), since D-EA-9 on 2026-10-14. `HREF_FEATURES` keeps `/integrations`, and `ALWAYS_ALLOWED` lists the exact path |
+| `launch` | `live` since 2026-10-13, by owner decision |
 | `team` | `admin` |
 | `blurb` | "Every tool your company has connected" |
-| `jobs` | `integrations.add_mcp`, `integrations.review` (a link to the list) |
+| `jobs` | `integrations.add_mcp`, `integrations.review` (a link to the list), and `connect-agent` of WS-55. The first two need `feature:integrations` |
 | `needs` | `integrations`. A connection in `needs_reconnect` or `error`, for admins |
 | `agent` | none |
 

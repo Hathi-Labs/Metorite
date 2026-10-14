@@ -37,6 +37,13 @@ def calls(monkeypatch):
 
     async def fake_get(path, params=None):
         rec["get"].append((path, params or {}))
+        # EM-G11c1 fix round 1: a card reads the row it names first.
+        if path == "/email/accounts":
+            return [{"id": "acc", "email_address": "me@x.com",
+                     "provider": "gmail"}]
+        if path == "/email/rules/history":
+            return {"history": [{"id": "e1", "rule_name": "Bank",
+                                 "subject": "Hi", "actions": ["ARCHIVE"]}]}
         if path == "/email/rules":
             return {"rules": [{"id": "r1", "name": "Bank", "enabled": True,
                                "actions": []}]}
@@ -91,6 +98,16 @@ def calls(monkeypatch):
     monkeypatch.setattr(agents, "_post", fake_post)
     monkeypatch.setattr(agents, "_patch", fake_patch)
     monkeypatch.setattr(agents, "_delete", fake_delete)
+
+    # EM-G11c1: each write tool asks a card first. These tests check the
+    # dispatch, so the member says yes, in a live chat. A test that checks a
+    # "no" patches the card again.
+    async def yes(**kw):
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", yes)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open",
+                        lambda: True)
     return rec
 
 

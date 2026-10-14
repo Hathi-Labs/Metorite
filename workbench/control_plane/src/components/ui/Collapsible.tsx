@@ -279,7 +279,11 @@ export function CollapsibleCardHeader({
         data-rollup-title=""
         className={`flex min-w-0 items-baseline gap-1 ${shut && summary ? "max-w-[60%] shrink-0" : ""}`}
       >
-        <span className={`min-w-0 truncate ${titleClassName}`}>{title ?? label}</span>
+        {/* The title cuts to one line, so its whole words are its tooltip
+            (review of #1012). A rich title gives the plain label. */}
+        <span className={`min-w-0 truncate ${titleClassName}`} title={typeof title === "string" ? title : label}>
+          {title ?? label}
+        </span>
         {counted ? <span className="shrink-0 font-normal tabular-nums text-muted-foreground">· {count}</span> : null}
       </span>
       {aside && !shut ? (

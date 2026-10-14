@@ -170,6 +170,21 @@ GATED_ROUTERS: dict[str, set[str]] = {
     "gateway.routes.whatsapp_channel": set(),
     "gateway.routes.actions": set(),
     "gateway.routes.integrations": set(),
+    # WS-54 — the three routers of the Integrations console. Each one is
+    # gated on `feature:integrations` at the router, and none was named here
+    # until WS-55 EA-4b. That left them unchecked. The client-metadata
+    # document of IN-8a is exempt from the feature gate only: it names
+    # nobody, and an auth server fetches it with no session.
+    "gateway.routes.integrations_connections": set(),
+    "gateway.routes.integrations_skills": set(),
+    "gateway.routes.integrations_mcp_oauth": {
+        "/integrations/mcp/oauth/client-metadata",
+    },
+    # WS-55 EA-4b — every agent connection of the org. Gated on
+    # `feature:integrations` AND `integrations:manage`, so the AI agents view
+    # of a member who holds neither cannot reach it. The member's own pair is
+    # `/agent-access/connections`, which needs no feature (D-EA-9).
+    "gateway.routes.integrations_agents": set(),
     "gateway.routes.workflows": {
         "/workflows/hooks/{hook_token}",
     },
@@ -317,6 +332,15 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "`/auth/me/shell` needs none. A body that names a member or an org "
             "gets 422 (`test_my_day_state.py::TestTheBodyContract`, "
             "`test_my_day_state_r8.py::TestTheTenancyBoundary`)."
+        ),
+        "/shell/feed/decide-measure": (
+            "WS-58 MD-6a-3. It needs `ADMIN_PERMISSION` through "
+            "`require_permission`, and a member without it gets 403 "
+            "(`test_feed_measure.py::TestTheAdminGate`). It reads no app data, "
+            "only counts from `my_day_judgments`, `my_day_card_state` and the "
+            "zone column of `user_settings`, of the bound org, and it takes no org "
+            "and no member from the request "
+            "(`test_feed_measure_r8.py::TestTheTenancyBoundary`)."
         ),
     },
 }

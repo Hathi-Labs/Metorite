@@ -265,8 +265,11 @@ clone cache.
    write a third copy of the pair.
 5j. ask_tools.py -- `request_confirmation` is the one HITL card gate, and it
    fails closed. `confirmation_channel_open()` reads the same two channels.
-   A tool reads it only after a denial, to tell a refusal from a run with
-   no live chat. It never decides an action (WS-17 EM-T13a).
+   A tool reads it after a denial, to tell a refusal from a run with no
+   live chat (WS-17 EM-T13a). A tool may read it before a card only to
+   choose a narrower act that writes less. `draft_reply` of the email
+   assistant returns an unsaved draft when no card can show (WS-17
+   EM-G11c1). It never approves a write.
    `refuse_cards()` is the scope of a run with no card channel (WS-47
    WAC-3, the WhatsApp bot). Inside it `request_confirmation` denies at
    once, `ask_questions` returns a fixed line, and nothing is pushed. WAC-4 is the one exception. In a WhatsApp run with writes on,

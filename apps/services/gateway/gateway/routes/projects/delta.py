@@ -1,4 +1,4 @@
-"""Projects · delta — the sync feed for agents and mobile (WS-27ae / P-27).
+"""Projects · delta — a sync feed built for a client cache (WS-27ae / P-27).
 
 Spec: ``project-docs/specs/project_management_app.md`` §9.2 (WS-27ae) and
 §11.27 (the as-built). Research: ``plane_pm_research_2026-08.md`` §3.7 / P-27.
@@ -7,6 +7,12 @@ Spec: ``project-docs/specs/project_management_app.md`` §9.2 (WS-27ae) and
 
 *"Give me what changed since X"*, so a phone or an agent does not re-pull a
 board of six hundred tasks to learn that one moved lane.
+
+⚠️ **No caller reads this feed today** (measured 2026-10-14). The web client
+does not call it. ``skill_projects/manifest.py`` classes it ``X`` ("A chat
+holds no cache"), and the MCP edge does not route it (it is absent from
+``agent_oauth.MCP_ROUTES``). So nothing reads ``removed[]`` either. HANDOFF
+H-306 holds the seal-removal work that waits for the first such caller.
 
 Three things about this endpoint are load-bearing, and each of them is a trap
 the naive version falls into.

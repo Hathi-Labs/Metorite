@@ -94,9 +94,10 @@ own time limit. The source reads ``failed`` only when every mailbox failed.
   (``app/projects/lib/notifications.ts`` ``linkTo``).
 * an email: ``/email?email=<message id>&account=<account id>``
   (``app/email/lib/emailLink.ts`` ``emailLink``).
-* an approval: ``/approvals``. The Approvals app reads no link to one
-  action (``app/approvals/page.tsx`` reads no search value), so the row
-  opens the queue.
+* an approval: ``/approvals``. The row opens the queue, because nothing
+  in the bell changes (``my_day_feed.md`` §4.4). The feed's approval card
+  opens the one proposal, ``/approvals?action=<id>`` (``approval_href``,
+  MD-3a).
 
 **The one-click acts** (``act``), each through the OWNING app's route:
 
@@ -138,7 +139,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import quote, urlencode
-from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from acb_common.priority import task_cell
@@ -353,6 +353,23 @@ def task_href(task_id: str) -> str:
     return f"/projects?task={quote(task_id)}"
 
 
+def day_href(day: date, at: datetime | None = None) -> str:
+    """The Calendar's link to one day, and to a time on it (MD-3a, §5.8 item
+    9): ``/calendar?date=YYYY-MM-DD&at=HH:MM``. ``at`` is a local time, so
+    the caller converts it to the member's zone first. The page reads the two
+    names back in ``app/calendar/lib/calendarLink.ts``."""
+    href = f"/calendar?date={day.isoformat()}"
+    return href if at is None else f"{href}&at={at.hour:02d}:{at.minute:02d}"
+
+
+def approval_href(action_id: str) -> str:
+    """The link to one proposal in the queue (MD-3a, ``my_day_feed.md`` §5.8
+    item 9). The page reads the name back in ``app/approvals/lib/
+    approvalLink.ts``. Only the feed's signal uses it: the needs row keeps
+    ``/approvals``."""
+    return f"/approvals?action={quote(action_id, safe='')}"
+
+
 def task_entity(task_id: str, title: Any) -> dict[str, Any]:
     return {"type": "task", "id": task_id, "label": str(title or "").strip() or "(untitled)"}
 
@@ -362,16 +379,17 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
     """The feed signals of the due rows: one for each task, keyed on it.
 
     ``calendar`` says that the member holds the Calendar pane
-    (``feature:tasks``). Without it, no act links to ``/calendar``.
+    (``feature:tasks``). Without it, no act links to the Calendar. With it,
+    "Block time" opens the member's today (``day_href``).
 
     ``days_late`` counts the member's own dates, in the zone the lens read
     reports. ``priority`` is the D78 level, from the one server matrix
     (``acb_common.priority.task_cell``), and the old-path weight reads it.
     """
-    try:
-        tz = ZoneInfo(str(zone or "UTC"))
-    except (ValueError, OSError):
-        tz = ZoneInfo("UTC")  # an unknown zone reads as UTC, as the lens does
+    # ``state`` imports this module, so the import waits for the call.
+    from gateway.routes.shell.state import zone_of
+
+    tz = zone_of(zone)  # an unknown zone reads as UTC, as the lens does
     try:
         local_today = date.fromisoformat(str(today))
     except ValueError:
@@ -391,7 +409,9 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
             facts["days_late"] = max(0, late)
             acts.append(link("move-tomorrow", "Move to tomorrow", task_href(task_id)))
         elif calendar:
-            acts.append(link("block-time", "Block time", "/calendar"))
+            # "Find time today": the Calendar's day view on the member's
+            # today (MD-3a review), never a bare `/calendar`.
+            acts.append(link("block-time", "Block time", day_href(local_today)))
         out.append(Signal(
             signal_id=f"tasks:{task_id}", app="tasks", kind=kind,
             entity=task_entity(task_id, task.get("title")),
@@ -794,10 +814,13 @@ async def _approvals(user: UserContext) -> Found:
             title=item["title"],
             facts={"action": actions.get(item["id"].split(":", 1)[1], ""),
                    "proposer": (item["detail"] or "")[len("Proposed by "):]},
-            href="/approvals",
+            # The feed's card opens the one proposal (MD-3a). The needs row
+            # above keeps the queue, because nothing in the bell changes (§4.4).
+            href=approval_href(item["id"].split(":", 1)[1]),
             # Class C: to approve is an outward write, so it always opens
             # the app (§11.4). The member reads the proposal there first.
-            acts=(link("open-approvals", "Open Approvals", "/approvals", cls="C"),),
+            acts=(link("open-approvals", "Open Approvals",
+                       approval_href(item["id"].split(":", 1)[1]), cls="C"),),
             at=item.get("at"),
         ) for item in shown]
 

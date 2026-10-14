@@ -556,11 +556,14 @@ class TestTheCardShape:
         for c in answer["cards"]:
             assert len({a["id"] for a in c["acts"]}) == len(c["acts"])
 
-    def test_an_approval_card_is_class_c_and_opens_the_queue(self, fakes):
+    def test_an_approval_card_is_class_c_and_opens_its_proposal(self, fakes):
         answer = run_feed(admin(*FULL, "approvals"))
         ask = card(answer, "approvals:pa-old")
+        # MD-3a: the card opens the one proposal, not the whole queue.
+        assert ask["href"] == "/approvals?action=pa-old"
         assert ask["acts"] == [{"id": "open-approvals", "label": "Open Approvals",
-                                "class": "C", "way": "open", "href": "/approvals"}]
+                                "class": "C", "way": "open",
+                                "href": "/approvals?action=pa-old"}]
         assert ask["why_key"] == "proposed"
         assert ask["why"].startswith("Proposed by priya")
 
@@ -686,8 +689,9 @@ class TestTheBlockTimeLink:
         soon = card(answer, "tasks:t-soon")
         assert soon["kind"] == "due_today"
         assert "block-time" not in [a["id"] for a in soon["acts"]]
+        # Every Calendar link starts with the path, with or without a query.
         assert not [a for c in answer["cards"] for a in c["acts"]
-                    if a.get("href") == "/calendar"]
+                    if a.get("href", "").split("?")[0] == "/calendar"]
 
     def test_a_member_with_the_calendar_pane_gets_it(self, fakes):
         soon = card(run_feed(member(*FULL)), "tasks:t-soon")
@@ -725,8 +729,13 @@ class TestTheCalendarKinds:
         overlap_at = (later + timedelta(minutes=30)).astimezone(ZoneInfo(fakes.zone)).strftime("%H:%M")
         assert a["why"].startswith(f"It overlaps Review the plan. They overlap from {overlap_at} ")
         assert "Both are set" not in a["why"]
+        # MD-3a: the act opens the block's day, at the block's start, in the
+        # member's zone.
+        local = later.astimezone(ZoneInfo(fakes.zone))
         assert a["acts"] == [{"id": "open-day", "label": "Open the day", "class": "A",
-                              "way": "open", "href": "/calendar"}]
+                              "way": "open",
+                              "href": f"/calendar?date={local.date().isoformat()}"
+                                      f"&at={local:%H:%M}"}]
         # One overlap, one card: the block that starts first carries it.
         assert "tasks:t-b" not in [c["signal_id"] for c in answer["cards"]]
 
@@ -760,7 +769,11 @@ class TestTheCalendarKinds:
                                                            "calendar")
         assert day["facts"]["planned_mins"] == 120 and day["facts"]["capacity_mins"] == 60
         assert day["why"] == "2 h planned in a 1 h day."
-        assert day["acts"][0]["href"] == "/calendar"
+        # MD-3a: the card and its act open the day.
+        today = fakes._today().isoformat()
+        assert day["href"] == f"/calendar?date={today}"
+        assert day["acts"] == [{"id": "fit", "label": "Fit what's left", "class": "A",
+                                "way": "open", "href": f"/calendar?date={today}"}]
 
     def test_a_day_inside_its_capacity_is_not_overbooked(self, fakes):
         answer = run_feed(member(*FULL))
@@ -775,8 +788,11 @@ class TestTheCalendarKinds:
         assert (day["kind"], day["group"]) == ("no_plan_yet", "needs_you")
         # One clock on one screen: 24-hour, as Calendar and Today draw it.
         assert day["why"] == "Your day started at 00:00, and nothing is on the calendar."
+        # MD-3a: the card and its act open the day.
+        today = fakes._today().isoformat()
+        assert day["href"] == f"/calendar?date={today}"
         assert day["acts"] == [{"id": "plan-day", "label": "Plan my day", "class": "A",
-                                "way": "open", "href": "/calendar"}]
+                                "way": "open", "href": f"/calendar?date={today}"}]
 
     def test_no_plan_yet_waits_60_minutes_after_the_day_starts(self, fakes):
         fakes.blocks[ME] = []
@@ -860,6 +876,91 @@ class TestTheCalendarKinds:
         assert start == fakes._midnight()
         assert end - start == timedelta(days=feed.WEEK_DAYS)
         assert call["include_done"] is True
+
+
+class TestTheLinks:
+    """WS-58 MD-3a (``my_day_feed.md`` §5.8 item 9). The feed's links open
+    the place: the Calendar at a day and a time, and Approvals at one
+    proposal. The needs row of the same approval keeps ``/approvals``,
+    because nothing in the bell changes (§4.4)."""
+
+    def test_day_href_is_the_date_and_the_local_clock(self):
+        day = datetime(2026, 10, 14, 14, 5, tzinfo=UTC)
+        assert feed.day_href(day.date()) == "/calendar?date=2026-10-14"
+        assert feed.day_href(day.date(), day) == "/calendar?date=2026-10-14&at=14:05"
+        nine = datetime(2026, 1, 2, 9, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+        assert feed.day_href(nine.date(), nine) == "/calendar?date=2026-01-02&at=09:00"
+
+    def test_an_overlap_opens_the_day_of_the_block_in_the_members_zone(self, fakes):
+        # The block starts at 23:30 in the member's zone on a later day. The
+        # link names that local day and clock, never the UTC ones.
+        zone = ZoneInfo(fakes.zone)
+        day = fakes._today() + timedelta(days=2)
+        start = datetime.combine(day, datetime.min.time(), tzinfo=zone) + timedelta(
+            hours=23, minutes=30)
+        fakes.blocks[ME] = [_block("t-a", "A", start, 60), _block("t-b", "B", start, 60)]
+        a = card(run_feed(member(*FULL)), "tasks:t-a")
+        assert a["acts"][0]["href"] == f"/calendar?date={day.isoformat()}&at=23:30"
+
+    def test_the_approval_card_opens_its_proposal_and_the_needs_row_the_queue(self, fakes):
+        answer = run_feed(admin(*FULL, "approvals"))
+        rows = {i["id"]: i for i in answer["needs"]["items"]}
+        for action in ("pa-old", "pa-new"):
+            sid = f"approvals:{action}"
+            assert card(answer, sid)["href"] == f"/approvals?action={action}"
+            # The bell: the needs row of the SAME proposal keeps the queue.
+            assert rows[sid]["href"] == "/approvals"
+
+    def test_the_needs_route_keeps_the_queue_link(self, fakes):
+        answer = run_needs(admin(*FULL, "approvals"))
+        hrefs = {i["href"] for i in answer["items"] if i["kind"] == "approval"}
+        assert hrefs == {"/approvals"}
+
+    def test_block_time_opens_the_members_today(self, fakes):
+        soon = card(run_feed(member(*FULL)), "tasks:t-soon")
+        block = next(a for a in soon["acts"] if a["id"] == "block-time")
+        assert block["href"] == f"/calendar?date={fakes._today().isoformat()}"
+
+    def test_a_due_today_card_with_an_overlap_today_has_one_calendar_link(self, fakes):
+        # MD-3a review, item 2. The overlap's "Open the day" names today at a
+        # time, and "Block time" names today. One place, so one link, and the
+        # main kind's act wins it.
+        start = fakes.now + timedelta(minutes=40)
+        fakes.blocks[ME] = [_block("t-soon", "Fix the hopper", start, 60),
+                            _block("t-other", "Other work", start + timedelta(minutes=30), 60)]
+        soon = card(run_feed(member(*FULL)), "tasks:t-soon")
+        assert (soon["kind"], soon["folded"]) == ("due_today", ["block_overlap"])
+        assert soon["acts"] == [
+            {"id": "done", "label": "Done", "class": "A", "way": "tap", "act": "done",
+             "act_ref": "t-soon"},
+            {"id": "block-time", "label": "Block time", "class": "A", "way": "open",
+             "href": f"/calendar?date={fakes._today().isoformat()}"},
+        ]
+
+    def test_an_overlap_on_another_day_keeps_its_own_link(self, fakes):
+        # Non-vacuity: a day later in the week is another place, so the card
+        # keeps "Open the day" beside "Block time".
+        later = fakes.now + timedelta(days=3)
+        fakes.blocks[ME] = [_block("t-soon", "Fix the hopper", later, 60),
+                            _block("t-other", "Other work", later + timedelta(minutes=30), 60)]
+        soon = card(run_feed(member(*FULL)), "tasks:t-soon")
+        local = later.astimezone(ZoneInfo(fakes.zone))
+        assert [(a["id"], a.get("href")) for a in soon["acts"]] == [
+            ("done", None),
+            ("block-time", f"/calendar?date={fakes._today().isoformat()}"),
+            ("open-day", f"/calendar?date={local.date().isoformat()}&at={local:%H:%M}"),
+        ]
+
+    def test_the_place_of_a_link_leaves_out_the_time(self):
+        assert feed._place("/calendar?date=2026-10-14&at=14:00") == "/calendar?date=2026-10-14"
+        assert feed._place("/calendar?date=2026-10-14") == "/calendar?date=2026-10-14"
+        assert feed._place("/calendar") == "/calendar"
+        assert feed._place("/projects?task=t-1") == "/projects?task=t-1"
+
+    def test_the_approval_id_is_quoted_in_the_link(self):
+        assert shell.approval_href("a b/c") == "/approvals?action=a%20b%2Fc"
+        assert shell.approval_href("7f9c2b1e-0000-4000-8000-000000000001") == (
+            "/approvals?action=7f9c2b1e-0000-4000-8000-000000000001")
 
 
 class TestAnotherMembersBlocksNeverArrive:

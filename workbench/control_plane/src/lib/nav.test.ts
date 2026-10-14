@@ -233,12 +233,13 @@ describe("an unresolved viewer sees nothing, never everything (LS-4 · §8.1)", 
   });
 
   it("returns no sections for a resolved member who holds nothing", () => {
-    // The ungated live panes are the floor: My Profile and Appearance. My
+    // The ungated live panes are the floor: My Profile, Appearance and,
+    // since D-EA-9 (2026-10-14), Integrations for its AI agents view. My
     // Access is a People tab since 2026-10-05, and not a pane.
     const shown = visibleSections([], false).flatMap((s) =>
       s.items.map((p) => p.href),
     );
-    expect(shown).toEqual(["/people/me", "/settings/appearance"]);
+    expect(shown).toEqual(["/people/me", "/settings/appearance", "/integrations"]);
   });
 
   it("hides the admin-only Organisation pane from a non-admin", () => {

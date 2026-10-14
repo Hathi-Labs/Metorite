@@ -14,7 +14,7 @@ import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import Icon from "@/components/Icon";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiGetDayState,
   apiSetDayState,
@@ -59,6 +59,8 @@ import { CalendarSettings } from "./components/CalendarSettings";
 import { TimeGrid } from "./components/TimeGrid";
 import { MonthGrid } from "./components/MonthGrid";
 import { UnscheduledRail } from "./components/UnscheduledRail";
+import { CalendarDeepLink } from "./components/CalendarDeepLink";
+import { scrollTopFor, type CalendarLink, type ClockTime } from "./lib/calendarLink";
 
 export function CalendarView() {
   const { isMobile } = useViewMode();
@@ -118,16 +120,38 @@ export function CalendarView() {
     setDayClosed(prefs.dayClosedOn === dayKey());
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [now]);
+  // A link to a day and a time (WS-58 MD-3a, `/calendar?date=&at=`): the
+  // reader below hands it here. It opens the day view on that day, and the
+  // grid scrolls to the link's time. A bad part of the link is already gone
+  // (`lib/calendarLink.ts`), so a bad date opens today.
+  const [jumpAt, setJumpAt] = useState<ClockTime | null>(null);
+  const openLink = useCallback((link: CalendarLink) => {
+    setAnchor(link.date ?? startOfDay(new Date()));
+    setMode("day");
+    setJumpAt(link.at);
+  }, []);
+  // A change by hand ends the link's time, so day → week → day lands on the
+  // current hour again, as it does with no link (MD-3a review). With no link
+  // `jumpAt` is already null, and the set changes nothing.
+  const pickMode = (m: Mode) => {
+    setJumpAt(null);
+    setMode(m);
+  };
+  const pickAnchor = (d: Date) => {
+    setJumpAt(null);
+    setAnchor(d);
+  };
   // The 24h grid is tall, so on open (and when switching to day/week) scroll to
   // ~1h before the current time — you land where the action is, not at midnight.
+  // A link's time wins over the current time.
   const gridScrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (mode === "month") return;
     const el = gridScrollRef.current;
     if (!el) return;
     const h = new Date().getHours();
-    el.scrollTop = Math.max(0, (h - 1) * HOUR_PX);
-  }, [mode]);
+    el.scrollTop = jumpAt ? scrollTopFor(jumpAt) : Math.max(0, (h - 1) * HOUR_PX);
+  }, [mode, jumpAt]);
   const handleToggleOneThing = (id: string) => {
     const prev = oneThingIdFor(new Date());
     toggleOneThing(new Date(), id);
@@ -373,10 +397,10 @@ export function CalendarView() {
   };
 
   const step = (dir: 1 | -1) =>
-    setAnchor((a) =>
+    pickAnchor(
       mode === "month"
-        ? addMonths(a, dir)
-        : addDays(a, dir * (mode === "week" ? 7 : 1)),
+        ? addMonths(anchor, dir)
+        : addDays(anchor, dir * (mode === "week" ? 7 : 1)),
     );
 
   const title =
@@ -402,7 +426,7 @@ export function CalendarView() {
       <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Previous" onClick={() => step(-1)} className="rounded-md">
         <Icon name="ChevronLeft" className="h-4 w-4" />
       </Button>
-      <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
+      <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => pickAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
         Today
       </Button>
       <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Next" onClick={() => step(1)} className="rounded-md">
@@ -495,7 +519,7 @@ export function CalendarView() {
           <button
             key={m}
             type="button"
-            onClick={() => setMode(m)}
+            onClick={() => pickMode(m)}
             className={[
               "tech-transition rounded-md px-2.5 py-1 font-medium capitalize",
               mode === m
@@ -519,6 +543,11 @@ export function CalendarView() {
 
   return (
     <div className="relative flex h-full min-h-0 flex-col bg-background">
+      {/* The reader of `?date=&at=` (MD-3a). `useSearchParams` needs a
+          Suspense boundary, and this one holds only the reader. */}
+      <Suspense fallback={null}>
+        <CalendarDeepLink onLink={openLink} />
+      </Suspense>
       {/* The app's title bar (owner, 2026-10-10): the name, then the day
           you are on with its arrows, then the day's tools at the right end.
           The arrows sit BEFORE the date, so a press never moves them. The
@@ -613,7 +642,7 @@ export function CalendarView() {
               anchor={anchor}
               items={items}
               onPickDay={(d) => {
-                setAnchor(d);
+                pickAnchor(d);
                 setMode("day");
               }}
               onOpen={openFocus}

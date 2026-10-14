@@ -45,6 +45,14 @@ implementer's report as a set of *claims to be checked*, not as findings.
 6. **Frontend changes**: pr-check is Python-only, so TypeScript never gets CI.
    If `workbench/control_plane` changed, build or typecheck it locally and report
    the result — nothing downstream will catch it for you.
+7. **A surface change gets a look.** If the diff changes what a page draws,
+   use the rig in `.claude/skills/visual-review/SKILL.md`. Capture light mode,
+   compact density, a changed accent and 390 px. Do the skill's capture,
+   keyboard and rank steps only. Do not fix. Delete your rig file before you
+   report, and confirm that `git status --short` shows no new file. Use the
+   skill's P0–P3 scale. A P0 or a P1 is a FAIL. If
+   you could not run the rig, write "VISUAL: not looked at" and say why. Never
+   report a surface as checked from the source alone.
 
 ## Output
 
@@ -59,6 +67,7 @@ ACCEPTANCE:
   <criterion> → met / not met — <how you personally confirmed it>
 
 DISCIPLINE: R1 / R4 / placement / scope — pass or the specific violation
+VISUAL: <contexts captured and the P0–P3 findings> | not looked at — <why> | no surface change
 UNVERIFIABLE: <criteria no command can settle, if any>
 FINDINGS: <each defect: file:line, what is wrong, what it breaks>
 ```

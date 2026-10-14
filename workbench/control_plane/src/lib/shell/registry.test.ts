@@ -320,13 +320,16 @@ describe("every app the member holds, with nothing pinned", () => {
     ]);
   });
 
-  it("a member gets no pane they lack, and no admin pane", () => {
+  it("a member gets no pane they lack, and no admin-only pane", () => {
+    // Integrations is open to every member since D-EA-9 (2026-10-14), for the
+    // AI agents view. Organisation stays admin-only.
     expect(goHrefs(["tasks", "chat"], false)).toEqual([
       "/tasks",
       "/calendar",
       "/people/me",
       "/chat",
       "/settings/appearance",
+      "/integrations",
     ]);
   });
 

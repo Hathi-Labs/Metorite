@@ -12,10 +12,17 @@
  * Every view is a component under `components/`. This file is composition and
  * the access rules: an admin reads (`admin:members:read`), and only a member
  * with `integrations:manage` sees Add, Test and Disconnect (spec §3.5).
+ *
+ * ⚠️ **The app is open to every member since 2026-10-14** (D-EA-9, WS-55
+ * EA-4b). The pane has no feature, so each view gates itself here. The four
+ * org views (Connections, API keys, Plugins and Skills) need
+ * `feature:integrations`. A member without it opens on `?view=agents` and
+ * sees only the AI agents view. The org table of that view also needs
+ * `integrations:manage`. The gateway refuses each org route anyway.
  */
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 
 import { useCachedResource } from "@/lib/useCachedResource";
 
@@ -30,7 +37,10 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { ShellJob } from "@/lib/shell/doJob";
 
+import { canUseFeature } from "@/lib/access";
+
 import AddMcpModal from "./components/AddMcpModal";
+import AgentsView from "./components/AgentsView";
 import ApiKeysView from "./components/ApiKeysView";
 import * as api from "./lib/api";
 import ConnectionsView, { CONNECTIONS_KEY, invalidateConnections } from "./components/ConnectionsView";
@@ -38,14 +48,22 @@ import IntegrationsRail from "./components/IntegrationsRail";
 import PluginsView from "./components/PluginsView";
 import SkillsView from "./components/SkillsView";
 import { READ_DENIED, consoleAccess } from "./lib/connections";
-import { INTEGRATION_VIEWS, parseView, viewHref, viewLine, type ViewId } from "./lib/views";
+import { INTEGRATION_VIEWS, parseView, viewHref, viewLine, visibleViews, type ViewId } from "./lib/views";
 
 function IntegrationsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const view = parseView(searchParams.get("view"));
   const { access, loading: accessLoading } = useAccess();
-  const { canRead, canManage } = consoleAccess(access);
+  // EA-4b: the org views need the feature. Without it, AI agents only.
+  const hasFeature = canUseFeature(access, "integrations");
+  const requested = searchParams.get("view");
+  const view = parseView(requested, accessLoading || hasFeature);
+  // No rail rows until the access resolves, so a member never sees the org
+  // views flash and go.
+  const views = accessLoading ? [] : visibleViews(hasFeature);
+  const consoleGate = consoleAccess(access);
+  const canRead = hasFeature && consoleGate.canRead;
+  const canManage = hasFeature && consoleGate.canManage;
   const { isMobile } = useViewMode();
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   const rail = useRailFold();
@@ -54,6 +72,13 @@ function IntegrationsPageInner() {
   // MCP entry points hide (defence only: the backend ships the list first).
   const list = useCachedResource(canRead ? CONNECTIONS_KEY : null, api.getConnections);
   const mcpOpen = canRead && canManage && list.data !== null;
+
+  // A member without the feature opens on `?view=agents`, so the address
+  // says what the page shows. Only after the access resolves.
+  useEffect(() => {
+    if (accessLoading || hasFeature || requested === "agents") return;
+    router.replace(viewHref("agents"), { scroll: false });
+  }, [accessLoading, hasFeature, requested, router]);
   const [addingMcp, setAddingMcp] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const addRef = useRef<HTMLDivElement | null>(null);
@@ -90,7 +115,7 @@ function IntegrationsPageInner() {
               onClick={() =>
                 openDrawer(
                   <nav aria-label="Integrations views" className="p-2">
-                    <IntegrationsRail view={view} onSelect={choose} />
+                    <IntegrationsRail view={view} onSelect={choose} views={views} />
                   </nav>,
                 )
               }
@@ -113,15 +138,18 @@ function IntegrationsPageInner() {
             aria-label="Integrations views"
             className={`w-56 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
           >
-            <IntegrationsRail view={view} onSelect={choose} />
+            <IntegrationsRail view={view} onSelect={choose} views={views} />
           </nav>
         ) : null}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {/* The read floor (`admin:members:read`) gates Connections only.
               API keys, Plugins and Skills keep the access they had: the
-              `integrations` feature, which the shell already checks. */}
-          {accessLoading ? null : view === "connections" ? (
+              `integrations` feature, which `parseView` checks here since
+              the pane lost it (EA-4b). AI agents is every member's view. */}
+          {accessLoading ? null : view === "agents" ? (
+            <AgentsView canManageOrg={canManage} />
+          ) : view === "connections" ? (
             canRead ? (
               <ConnectionsView canManage={canManage} />
             ) : (

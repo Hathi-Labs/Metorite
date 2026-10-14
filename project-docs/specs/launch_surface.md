@@ -111,7 +111,7 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Admin** | Approvals | `/approvals` | `feature:approvals` | |
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** · **Email** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
-| **Admin** | Integrations | `/integrations` | `feature:integrations` | 🆕 **Live on 2026-10-13**, by owner decision in chat ("I still don't see the integrations app on my sidebar ... turn it on"). WS-54 built the org connections (IN-0 to IN-4, IN-7, IN-8a). ⚠️ `feature:integrations` is `is_default false`, so a member without the grant still sees no pane. A personal connection is a later ticket |
+| **Admin** | Integrations | `/integrations` | none (each view gates itself) | 🆕 **Live on 2026-10-13**, by owner decision in chat ("I still don't see the integrations app on my sidebar ... turn it on"). WS-54 built the org connections (IN-0 to IN-4, IN-7, IN-8a). ⚠️ **Open to every member since 2026-10-14 (D-EA-9, WS-55 EA-4b).** The pane has no `feature`, and `/integrations` is an exact entry of `ALWAYS_ALLOWED`. Each member sees the AI agents view. The org views still need `feature:integrations`, which is `is_default false`. The pane stays in Admin |
 
 **Fourteen** entries, four sections, in that order. The set held eight until 2026-08-24,
 nine until 2026-09-20, ten until 2026-10-02, eleven until 2026-10-05, ten until
