@@ -61,6 +61,7 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
 )
 from gateway.routes.projects.filters import (
+    attach_agent_state,
     attach_assignees,
     attach_parent_context,
     attach_relation_counts,
@@ -300,6 +301,8 @@ async def get_calendar(
         await attach_assignees(db, window_rows)
         await attach_relation_counts(db, window_rows, vis)
         await attach_parent_context(db, vis, window_rows)
+        # WS-55 EA-12c — the agent pill on the Calendar (EA12-10).
+        await attach_agent_state(db, window_rows)
 
         # Counted with the SAME filters, so "12 unscheduled" means twelve of the
         # tasks you are looking at — not twelve somewhere in the workspace.
@@ -328,6 +331,7 @@ async def get_calendar(
             await attach_assignees(db, unscheduled)
             await attach_relation_counts(db, unscheduled, vis)
             await attach_parent_context(db, vis, unscheduled)
+            await attach_agent_state(db, unscheduled)
 
         return {
             "from": window_from.date().isoformat(),

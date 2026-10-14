@@ -35,13 +35,12 @@ import { Textarea } from "@/components/ui/Input";
 import { useAccess } from "@/components/AccessProvider";
 import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 
-import type { TaskRow } from "../lib/api";
+import { ProjectsApiError, type TaskRow, agentRunsApi } from "../lib/api";
 import {
   type AgentActivity,
   type AgentPromptBody,
   type AgentRun,
   type AgentState,
-  agentRunsApi,
   answerPayload,
   answerTo,
   answeredLine,
@@ -56,6 +55,7 @@ import {
   replyPayload,
   runToShow,
   stopPayload,
+  writeFailure,
 } from "../lib/agentRuns";
 import { AgentPill } from "./AgentPill";
 
@@ -221,8 +221,12 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       return true;
     } catch (err) {
       setOptimistic(null);
-      const why = err instanceof Error && err.message ? ` ${err.message}` : "";
-      setError(`${failure}${why} Try again.`);
+      const status = err instanceof ProjectsApiError ? err.status : undefined;
+      const message = err instanceof Error ? err.message : undefined;
+      const failed = writeFailure(status, message, failure);
+      setError(failed.text);
+      // A 409: the run moved under the member. Show its newest state.
+      if (failed.reload) void refresh(run.id).catch(() => undefined);
       return false;
     } finally {
       setBusy(false);

@@ -137,6 +137,18 @@ def test_the_migration_widens_the_notification_kinds() -> None:
     assert "seq               BIGINT GENERATED ALWAYS AS IDENTITY" in sql
 
 
+def test_the_migration_indexes_the_three_activity_lookups() -> None:
+    """Fix round 1, item 4. Mutation: delete one index — this fails."""
+    sql = _migration().read_text(encoding="utf-8")
+    for index, column in (
+        ("pm_agent_run_activities_in_reply_to", "(in_reply_to)"),
+        ("pm_agent_run_activities_pm_activity", "(pm_activity_id)"),
+        ("pm_agent_run_activities_task", "(task_id)"),
+    ):
+        head = f"CREATE INDEX IF NOT EXISTS {index}\n    ON pm_agent_run_activities {column}"
+        assert head in sql, index
+
+
 def test_the_bell_reads_an_agent_question_as_a_question() -> None:
     """§12.1, "For EA-12c, the bell": every notification kind has a verb, and
     ``agent_question`` stays in the asking rows."""
@@ -146,7 +158,7 @@ def test_the_bell_reads_an_agent_question_as_a_question() -> None:
     assert set(NOTIFICATION_KINDS) <= set(needs._VERB)
     assert "agent_question" in needs.ASKING_NOTIFICATIONS
     row = {"kind": "agent_question", "actor": VIA, "task_title": "Fix it", "task_number": 4}
-    assert needs._sentence(row) == "claude.ai asked you about #4 Fix it"
+    assert needs._sentence(row) == "Claude.ai asked you about #4 Fix it"
 
 
 # ── R8: the helpers ─────────────────────────────────────────────────────────
@@ -482,8 +494,10 @@ class TestAgentRunsOnARealDatabase:
             for body in ({"type": "thought", "body": "x"}, {"type": "error", "body": "x"},
                          {"type": "response", "body": "x"}):
                 assert (await _act(call, w.agent_a, rid, **body)).status_code == 409, body
-            assert (await call(w.agent_a, "POST", f"/projects/agent-runs/{rid}/finish", {})
-                    ).status_code == 409
+            # A finish with no summary on a finished run writes nothing and
+            # returns the run (fix round 1, item 6). It is not a 409.
+            replay = await call(w.agent_a, "POST", f"/projects/agent-runs/{rid}/finish", {})
+            assert replay.status_code == 200 and replay.json()["run"]["status"] == "stopped"
             # A prompt on created, a finish on created, a stop on completed.
             run2 = await _start(w, call, user=w.a, connection_id=w.conn_a, body="Go")
             assert (await _act(call, w.a, run2["id"], type="prompt", body="also")).status_code == 409
@@ -836,3 +850,176 @@ class TestAgentRunsOnARealDatabase:
         answer = await _call(w.p, w.agent_a, "POST", f"/projects/tasks/{w.task_a}/agent-runs",
                              {"external_link": "javascript:alert(1)"})
         assert answer.status_code == 422
+
+    # ── Fix round 1 (the verifier and the reviewer, 2026-10-14) ─────────
+
+    async def test_fix2_a_task_write_returns_the_pill(self, w):
+        """Item 2. The client merges a PATCH answer over its row, so a null
+        would erase the pill. Mutation: drop ``attach_agent_state`` from
+        ``patch_task`` — the PATCH answer reads null."""
+        async with _session(w.p) as call:
+            await _start(w, call)
+            patched = await call(w.a, "PATCH", f"/projects/tasks/{w.task_a}",
+                                 {"description": "Edited in fix round 1"})
+            assert patched.status_code == 200, patched.text
+            assert patched.json()["agent_state"] == "working"
+            assert patched.json()["agent_client_via"] == VIA
+            assert patched.json()["agent_member_email"] == w.a_email
+            same = await call(w.a, "POST", f"/projects/tasks/{w.task_a}/unarchive")
+            assert same.status_code == 200, same.text
+            assert same.json()["agent_state"] == "working"
+
+    async def test_fix3_the_calendar_rows_carry_the_pill(self, w):
+        """Item 3. Mutation: drop ``attach_agent_state`` from the window rows
+        of ``calendar.py`` — the dated row reads null."""
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET due_at = now() WHERE id = CAST(:t AS uuid)"),
+                      {"t": w.task_a})
+        try:
+            async with _session(w.p) as call:
+                await _start(w, call)
+                hidden = await _start(w, call, task=w.task_private)
+                await _act(call, w.agent_a, hidden["id"], **_select())
+                today = time.strftime("%Y-%m-%d", time.gmtime())
+                later = time.strftime("%Y-%m-%d", time.gmtime(time.time() + 3 * 86400))
+                got = await call(w.a, "GET", f"/projects/calendar?from={today}&to={later}"
+                                             "&include_undated=true")
+            assert got.status_code == 200, got.text
+            rows = {r["id"]: r for r in got.json()["rows"]}
+            undated = {r["id"]: r for r in got.json()["unscheduled"]}
+            assert rows[w.task_a]["agent_state"] == "working"
+            assert rows[w.task_a]["agent_client_via"] == VIA
+            assert undated[w.task_private]["agent_state"] == "awaiting"
+        finally:
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_tasks SET due_at = NULL WHERE id = CAST(:t AS uuid)"),
+                          {"t": w.task_a})
+
+    async def test_fix4_the_three_activity_indexes_exist(self, w):
+        names = {r[0] for r in _rows(
+            w.p, "SELECT indexname FROM pg_indexes WHERE tablename = 'pm_agent_run_activities'")}
+        assert {"pm_agent_run_activities_in_reply_to", "pm_agent_run_activities_pm_activity",
+                "pm_agent_run_activities_task"} <= names
+
+    async def test_fix5_a_member_start_on_an_open_run_is_a_prompt_or_a_409(self, w):
+        """Item 5. Mutation: return the open run with no write — the second
+        start gives 200 and the instruction is lost."""
+        async with _session(w.p) as call:
+            run = await _start(w, call, user=w.a, connection_id=w.conn_a, body="Fix it")
+            rid = run["id"]
+            # A queued run takes no member prompt (the table of §12.1): 409.
+            queued = await call(w.a, "POST", f"/projects/tasks/{w.task_a}/agent-runs",
+                                {"connection_id": w.conn_a, "body": "And this"})
+            assert queued.status_code == 409, queued.text
+            await _act(call, w.agent_a, rid, type="thought", body="On it")
+            again = await call(w.a, "POST", f"/projects/tasks/{w.task_a}/agent-runs",
+                               {"connection_id": w.conn_a, "body": "Also add a test"})
+            assert again.status_code == 200, again.text
+            assert again.json()["created"] is False and again.json()["run"]["id"] == rid
+            assert again.json()["run"]["state"] == "answered"
+        bodies = [r[0] for r in _rows(
+            w.p, "SELECT content->>'body' FROM pm_agent_run_activities "
+                 "WHERE run_id = CAST(:r AS uuid) AND type = 'prompt' ORDER BY seq", r=rid)]
+        assert bodies == ["Fix it", "Also add a test"]
+
+    async def test_fix6_a_second_finish_with_no_summary_returns_the_run(self, w):
+        """Item 6. Mutation: drop the ``_FINISHED`` return — the retry is 409."""
+        async with _session(w.p) as call:
+            run = await _start(w, call)
+            path = f"/projects/agent-runs/{run['id']}/finish"
+            first = await call(w.agent_a, "POST", path, {})
+            again = await call(w.agent_a, "POST", path, {})
+            assert first.status_code == again.status_code == 200, again.text
+            assert again.json()["run"]["status"] == "completed"
+            assert again.json()["activity"] is None
+            stopped = await _start(w, call)
+            await _act(call, w.a, stopped["id"], type="prompt", signal="stop")
+            path = f"/projects/agent-runs/{stopped['id']}/finish"
+            assert (await call(w.agent_a, "POST", path, {})).json()["run"]["status"] == "stopped"
+            twice = await call(w.agent_a, "POST", path, {})
+            assert twice.status_code == 200 and twice.json()["run"]["status"] == "stopped"
+            # A failed run stays a 409: a finish never moves it.
+            failed = await _start(w, call)
+            await _act(call, w.agent_a, failed["id"], type="error", body="no")
+            assert (await call(w.agent_a, "POST", f"/projects/agent-runs/{failed['id']}/finish",
+                               {})).status_code == 409
+
+    async def test_fix7_status_stale_filters_on_the_derived_state(self, w):
+        """Item 7. Mutation: drop the ``stale`` branch — the list is empty."""
+        async with _session(w.p) as call:
+            idle = await _start(w, call)
+            live = await _start(w, call, task=w.task_private)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE pm_agent_runs SET last_activity_at = now() - interval '6 minutes', "
+                    "last_agent_activity_at = now() - interval '6 minutes' "
+                    "WHERE id = CAST(:r AS uuid)"), {"r": idle["id"]})
+            stale = await call(w.agent_a, "GET", "/projects/agent-runs?status=stale")
+            stored = await call(w.agent_a, "GET", "/projects/agent-runs?status=in_progress")
+        assert stale.status_code == 200, stale.text
+        assert [r["id"] for r in stale.json()["rows"]] == [idle["id"]]
+        assert {r["id"] for r in stored.json()["rows"]} == {idle["id"], live["id"]}
+
+    async def test_fix8_the_pill_prefers_a_question_over_a_newer_run(self, w):
+        """Item 8. Mutation: order the pill by ``created_at`` alone — the
+        newer working run of member C hides member A's question."""
+        agent_c = _principal(w.c_email, w.p.org_a, agent_connection=w.conn_a)
+        async with _session(w.p) as call:
+            asking = await _start(w, call)
+            await _act(call, w.agent_a, asking["id"], **_select())
+            newer = await _start(w, call, user=agent_c)
+            assert newer["id"] != asking["id"] and newer["state"] == "working"
+            task = await call(w.c, "GET", f"/projects/tasks/{w.task_a}")
+            listed = await call(w.c, "GET", "/projects/tasks?q=extruder")
+            run_panel = await call(w.c, "GET", f"/projects/tasks/{w.task_a}/agent-runs")
+        assert task.json()["agent_state"] == "awaiting"
+        assert task.json()["agent_member_email"] == w.a_email
+        states = {r["id"]: r.get("agent_state") for r in listed.json()["rows"]}
+        assert states[w.task_a] == "awaiting"
+        # The routes list newest first, and the UI applies the same rule.
+        assert [r["id"] for r in run_panel.json()["rows"]][:2] == [newer["id"], asking["id"]]
+
+    async def test_fix9_a_second_answer_to_one_question_is_409(self, w):
+        """Item 9. Mutation: drop the ``_has_answered_select`` branch — 422."""
+        async with _session(w.p) as call:
+            run = await _start(w, call)
+            await _act(call, w.agent_a, run["id"], **_select())
+            first = await _act(call, w.c, run["id"], type="prompt", selected=["pg"])
+            second = await _act(call, w.a, run["id"], type="prompt", selected=["my"])
+            assert first.status_code == 201, first.text
+            assert second.status_code == 409, second.text
+            assert second.json()["detail"] == "This question already has an answer."
+            # A free question with no options still refuses `selected` with 422.
+            await _act(call, w.agent_a, run["id"], type="elicitation", body="Free?")
+            assert (await _act(call, w.a, run["id"], type="prompt", selected=["pg"])
+                    ).status_code == 422
+
+    async def test_fix10_the_comment_event_carries_the_real_task_id(self, w, monkeypatch):
+        """Item 10. Each write emits ``pm.task.comment_added`` with the shape
+        that ``add_comment`` emits: ``{"task_id": <the task's uuid>}``.
+        Mutation: emit ``{"task_id": ""}`` — this fails."""
+        from gateway.routes.projects import activities
+
+        seen: list[tuple[str, str, dict]] = []
+
+        async def _spy(where: str, event: str, payload: dict) -> None:
+            seen.append((where, event, dict(payload)))
+
+        monkeypatch.setattr(agent_runs, "emit", lambda e, p: _spy("runs", e, p))
+        monkeypatch.setattr(activities, "emit", lambda e, p: _spy("comments", e, p))
+        async with _session(w.p) as call:
+            run = await _start(w, call, user=w.a, connection_id=w.conn_a, body="Fix it")
+            await _act(call, w.agent_a, run["id"], type="response", body="Done a part")
+            await call(w.agent_a, "POST", f"/projects/agent-runs/{run['id']}/finish",
+                       {"summary": "All done", "idempotency_key": _key()})
+            said = await call(w.a, "POST", f"/projects/tasks/{w.task_a}/comments",
+                              {"body": "A person's comment"})
+            assert said.status_code == 201, said.text
+        runs = [p for where, e, p in seen if where == "runs" and e == "pm.task.comment_added"]
+        comments = [p for where, e, p in seen
+                    if where == "comments" and e == "pm.task.comment_added"]
+        assert len(runs) == 3 and len(comments) == 1
+        for payload in runs:
+            assert payload == {"task_id": w.task_a}
+            assert set(payload) == set(comments[0])
+            assert str(uuid.UUID(payload["task_id"])) == w.task_a

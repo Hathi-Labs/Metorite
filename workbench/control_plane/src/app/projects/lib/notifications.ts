@@ -74,7 +74,7 @@ const VERB: Record<string, string> = {
   mention: "mentioned you on",
   comment: "commented on",
   // WS-55 EA-12c — an outside agent asks the member on a task (§12.1).
-  agent_question: "asks you a question on",
+  agent_question: "asked you about",
 };
 
 /**

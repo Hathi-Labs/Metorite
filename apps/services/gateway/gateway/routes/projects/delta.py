@@ -97,6 +97,7 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
 )
 from gateway.routes.projects.filters import (
+    attach_agent_state,
     attach_assignees,
     attach_parent_context,
     attach_relation_counts,
@@ -392,6 +393,8 @@ async def delta_tasks(
             # carry the same `parent` the list gives, or a synced card would
             # lose its "↳ Parent" line.
             await attach_parent_context(db, vis, page_rows)
+            # WS-55 EA-12c — a synced row carries the agent pill too.
+            await attach_agent_state(db, page_rows)
             kept = {str(r["id"]) for r in page_rows}
             removed.extend(ident for ident in row_ids if ident not in kept)
 

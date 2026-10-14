@@ -44,6 +44,7 @@ import {
   type ThroughputReport,
   type FinishedReport,
   type ViewRow,
+  agentRunsApi,
   projectsApi,
   projectsKey,
   projectWatchersApi,
@@ -83,7 +84,7 @@ import { TimelineView } from "./components/TimelineView";
 import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
 import { TaskList } from "./components/TaskList";
-import { agentRunsApi, isWaitingOnMe } from "./lib/agentRuns";
+import { isWaitingOnMe } from "./lib/agentRuns";
 import { TaskPanel } from "./components/TaskPanel";
 import type { TaskWhere } from "@/components/TaskPanelHeader";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";

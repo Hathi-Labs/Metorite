@@ -997,3 +997,37 @@ class TestTheRouteIsMounted:
         paths = {getattr(c, "path", None) for c in iter_route_contexts(app.routes)}
         assert "/shell/needs" in paths
         assert "/shell/search" in paths  # non-vacuity: the walk sees the router
+
+
+class TestAnAgentQuestionReadsAsTheProjectsBellReadsIt:
+    """WS-55 EA-12c fix round 1: the shell bell names an outside agent's
+    client as the Projects UI does ("Claude Code"), with the same verb."""
+
+    def test_the_sentence_names_the_client(self):
+        row = {"kind": "agent_question", "actor": "mcp:claude-code",
+               "task_title": "Fix the extruder", "task_number": 12}
+        assert shell._sentence(row) == "Claude Code asked you about #12 Fix the extruder"
+
+    def test_the_name_table_is_the_one_of_agent_runs_ts(self):
+        import re
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parents[2] / "workbench" / "control_plane" / "src"
+               / "app" / "projects" / "lib" / "agentRuns.ts").read_text(encoding="utf-8")
+        block = src[src.index("const CLIENT_NAMES"):]
+        block = block[: block.index("};")]
+        ts = dict(re.findall(r'^\s*"?([\w-]+)"?\s*:\s*"([^"]+)"', block, re.M))
+        assert ts and ts == shell.CLIENT_NAMES
+        for slug, name in ts.items():
+            assert shell.client_name(f"mcp:{slug}") == name
+        assert shell.client_name("mcp:cursor") == "Cursor"
+        assert shell.client_name("") == "Agent"
+
+    def test_the_verb_is_the_one_of_notifications_ts(self):
+        import re
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parents[2] / "workbench" / "control_plane" / "src"
+               / "app" / "projects" / "lib" / "notifications.ts").read_text(encoding="utf-8")
+        verb = re.search(r'agent_question:\s*"([^"]+)"', src)
+        assert verb is not None and verb.group(1) == shell._VERB["agent_question"]

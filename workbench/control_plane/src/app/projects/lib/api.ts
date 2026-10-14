@@ -2,7 +2,14 @@ import { describeFailure, detailText, readJsonBody } from "@/lib/apiError";
 import { cacheKey, invalidate } from "@/lib/dataCache";
 import type { ParentFact } from "@/lib/taskCard";
 
-import type { AgentState } from "./agentRuns";
+import {
+  type AgentPromptBody,
+  type AgentRun,
+  type AgentRunDetail,
+  type AgentState,
+  agentRunRows,
+  normalizeRunDetail,
+} from "./agentRuns";
 import type { Rule as RecurrenceRule } from "./recurrence";
 
 /**
@@ -2452,9 +2459,58 @@ export const refsApi = {
     call<{ deleted: string }>(`tasks/${taskId}/refs/${refId}`, { method: "DELETE" }),
 };
 
+/**
+ * WS-55 EA-12c — agent runs on a task (`external_agent_access.md` §12.1).
+ * The wire types and the pure rules are in `agentRuns.ts`.
+ */
+export const agentRunsApi = {
+  /**
+   * The runs of a task, newest first. `null` means the routes are OFF: the
+   * flag `agent_runs_enabled` makes every route answer 404, and then the
+   * task detail draws nothing at all.
+   */
+  list: async (taskId: string): Promise<AgentRun[] | null> => {
+    try {
+      const raw = await call<unknown>(`tasks/${encodeURIComponent(taskId)}/agent-runs`);
+      return agentRunRows<AgentRun>(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  /** One run, with the activities after the cursor `after` (a `seq`). */
+  get: async (runId: string, after?: number): Promise<AgentRunDetail> => {
+    const query = after !== undefined ? `?after=${after}` : "";
+    const raw = await call<unknown>(`agent-runs/${encodeURIComponent(runId)}${query}`);
+    return normalizeRunDetail(raw);
+  },
+
+  /** A member writes one `prompt`: an answer, a reply or a Stop. */
+  post: (runId: string, body: AgentPromptBody) =>
+    call<unknown>(`agent-runs/${encodeURIComponent(runId)}/activities`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Are the routes on? One read of the caller's own runs. A 404 means the
+   * flag is off. The "Waiting on me" filter shows only while this is true.
+   */
+  enabled: async (): Promise<boolean> => {
+    try {
+      await call<unknown>("agent-runs?status=awaiting");
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
+
 export interface NotificationRow {
   id: string;
-  kind: "assigned" | "mention" | "comment";
+  /** `agent_question`: an outside agent asks on a task (WS-55 EA-12c). */
+  kind: "assigned" | "mention" | "comment" | "agent_question";
   task_id: string;
   actor: string;
   excerpt?: string | null;

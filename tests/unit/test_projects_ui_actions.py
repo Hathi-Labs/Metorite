@@ -472,6 +472,8 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "notificationsApi",
         # WS-57 TR-2: a task's URL references.
         "refsApi",
+        # WS-55 EA-12c: agent runs on a task.
+        "agentRunsApi",
         "watchersApi",
         "projectWatchersApi",
         "intakeApi",
@@ -493,6 +495,8 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "importApi.upload": [("POST", "/projects/import/runs")],
         "importApi.saveMapping": [("PUT", "/projects/import/runs/{}/mapping")],
         "export.exportPath": [("GET", "/projects/export/tasks.csv")],
+        "agentRunsApi.get": [("GET", "/projects/agent-runs/{}")],
+        "agentRunsApi.enabled": [("GET", "/projects/agent-runs")],
     }
     for name, calls in shapes.items():
         assert methods[name].calls == calls, f"{name}: read {methods[name].calls}"

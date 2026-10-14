@@ -492,10 +492,36 @@ def _who(actor: Any) -> str:
         return "Somebody"
     if raw.startswith("agent:"):
         return raw[len("agent:"):] or raw
-    # An outside agent's client stamp, `mcp:<slug>` (EA-12a): the slug.
+    # An outside agent's client stamp, `mcp:<slug>` (EA-12a): the client's
+    # name, as the Projects UI draws it ("Claude Code").
     if raw.startswith("mcp:"):
-        return raw[len("mcp:"):] or raw
+        return client_name(raw)
     return raw.split("@")[0] or raw
+
+
+#: Names that title case gets wrong. The same table as ``CLIENT_NAMES`` in
+#: ``app/projects/lib/agentRuns.ts``, and ``tests/unit/test_shell_needs.py``
+#: fails when the two differ.
+CLIENT_NAMES: dict[str, str] = {
+    "chatgpt": "ChatGPT",
+    "claude-ai": "Claude",
+    "vscode": "VS Code",
+    "vs-code": "VS Code",
+    "github-copilot": "GitHub Copilot",
+    "openai": "OpenAI",
+}
+
+
+def client_name(via: Any) -> str:
+    """``mcp:claude-code`` → "Claude Code", as ``clientName`` in
+    ``agentRuns.ts`` reads it. An empty value reads "Agent"."""
+    raw = str(via or "").strip()
+    slug = (raw[len("mcp:"):] if raw.startswith("mcp:") else raw).lower()
+    if not slug:
+        return "Agent"
+    if slug in CLIENT_NAMES:
+        return CLIENT_NAMES[slug]
+    return " ".join(w[:1].upper() + w[1:] for w in re.split(r"[-_\s]+", slug) if w)
 
 
 def closed_by(actor: Any, member: str) -> dict[str, str | None]:

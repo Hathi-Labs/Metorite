@@ -199,6 +199,13 @@ suite("describe", () => {
     expect(describe(row({ kind: "mention" }))).toContain("mentioned you on");
     expect(describe(row({ kind: "comment" }))).toContain("commented on");
   });
+
+  it("names an agent's client and asks as the shell bell does", () => {
+    // WS-55 EA-12c: the same words as `routes/shell/needs.py` `_sentence`.
+    expect(describe(row({ kind: "agent_question", actor: "mcp:claude-code" }))).toBe(
+      "Claude Code asked you about #12 Fix the extruder",
+    );
+  });
 });
 
 suite("taskLabel", () => {

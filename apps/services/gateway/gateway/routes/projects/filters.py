@@ -940,9 +940,16 @@ AGENT_RUN_STATE_SQL = (
 
 _OPEN_LIST = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
 
-#: The pill of each task: the newest OPEN run, or else a `failed` run that is
-#: the newest run of its task (EA12-12: the pill stays until a newer run
-#: exists). One query for the page, as `_ASSIGNEES_SQL` does.
+#: The pill of each task, from its OPEN runs (§12.1, "The task pill"):
+#:
+#: 1. an `awaiting` run, because a person must act, and a newer run of
+#:    another member must not hide the question;
+#: 2. else an `answered` run, so the answer stays in view;
+#: 3. else the newest open run.
+#:
+#: A task with no open run shows a `failed` run that is the newest run of its
+#: task (EA12-12: the pill stays until a newer run exists). One query for the
+#: page, as `_ASSIGNEES_SQL` does.
 _AGENT_STATE_SQL = f"""
 SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
        r.client_via, r.member_email
@@ -953,7 +960,10 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
             AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
                              WHERE n.task_id = r.task_id
                                AND (n.created_at, n.id) > (r.created_at, r.id))))
- ORDER BY r.task_id, (r.status IN ({_OPEN_LIST})) DESC, r.created_at DESC, r.id DESC
+ ORDER BY r.task_id, (r.status IN ({_OPEN_LIST})) DESC,
+          CASE {AGENT_RUN_STATE_SQL} WHEN 'awaiting' THEN 0 WHEN 'answered' THEN 1
+               ELSE 2 END,
+          r.created_at DESC, r.id DESC
 """
 
 

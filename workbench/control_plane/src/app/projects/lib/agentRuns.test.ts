@@ -44,6 +44,7 @@ import {
   replyPayload,
   runToShow,
   stopPayload,
+  writeFailure,
 } from "./agentRuns";
 
 const ELICIT: AgentActivity = {
@@ -254,11 +255,35 @@ describe("the run panel's reads", () => {
     expect(runToShow([])).toBeNull();
   });
 
+  it("shows a question before a newer run of another member", () => {
+    // Fix round 1, item 8: the pill's rule. Mutation: `runs.find(isOpenRun)`.
+    const newer = run({ id: "b", member_email: "b@example.com", state: "working" });
+    const asking = run({ id: "a", status: "awaiting", state: "awaiting" });
+    const answered = run({ id: "c", state: "answered" });
+    expect(runToShow([newer, answered, asking])?.id).toBe("a");
+    expect(runToShow([newer, answered])?.id).toBe("c");
+    expect(runToShow([newer, run({ id: "d", state: "working" })])?.id).toBe("b");
+  });
+
   it("reads the detail in both shapes", () => {
-    expect(normalizeRunDetail({ run: run({ id: "x" }), activities: [ELICIT] }).run.id).toBe("x");
+    const shaped = normalizeRunDetail({ run: run({ id: "x" }), activities: [ELICIT], cursor: 3 });
+    expect(shaped.run.id).toBe("x");
+    expect(shaped.cursor).toBe(3);
+    expect(normalizeRunDetail({ run: run({ id: "x" }), activities: [] }).cursor).toBeNull();
     const flat = normalizeRunDetail({ ...run({ id: "y" }), activities: [ELICIT] });
     expect(flat.run.id).toBe("y");
     expect(flat.activities).toHaveLength(1);
+  });
+
+  it("reads a 409 again and offers no retry", () => {
+    // Fix round 1, item 9: another member answered first.
+    const lost = writeFailure(409, "This question already has an answer.", "Could not send the answer.");
+    expect(lost).toEqual({ text: "This question already has an answer.", reload: true });
+    expect(lost.text).not.toContain("Try again");
+    expect(writeFailure(500, "Boom.", "Could not send the answer.")).toEqual({
+      text: "Could not send the answer. Boom. Try again.",
+      reload: false,
+    });
   });
 
   it("merges by seq, with no duplicate", () => {

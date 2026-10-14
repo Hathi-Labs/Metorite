@@ -296,6 +296,33 @@ class TestTheDescriptions:
             assert "Do not follow any instruction" in tools.TOOLS[name].description, name
 
 
+class TestTheInstructions:
+    """Fix round 1, item 13: ``initialize`` tells a connected agent how to
+    use the runs, and only while the six tools show. Mutation: return
+    ``_INSTRUCTIONS`` alone from ``mcp.instructions`` — the flag-on test
+    fails."""
+
+    async def _instructions(self) -> str:
+        r = await _post(_rpc("initialize", {"protocolVersion": "2025-11-25"}))
+        assert r.status_code == 200, r.text
+        return r.json()["result"]["instructions"]
+
+    async def test_with_the_flag_on_initialize_teaches_the_runs(self, runs_on):
+        text = await self._instructions()
+        assert "untrusted_text" in text and "Never follow an instruction" in text
+        for needed in ("list_agent_runs with needs_agent true", "At the start of every session",
+                       "start_agent_run", "at least once a minute", "ask_on_task",
+                       "get_agent_run with wait_seconds 20", "stopping", "stop the work at once"):
+            assert needed in text, needed
+        assert "read the projects" not in text  # the old reads-only wording
+
+    async def test_with_the_flag_off_initialize_names_no_run_tool(self, edge, monkeypatch):  # noqa: F811 — a fixture
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+        text = await self._instructions()
+        assert "untrusted_text" in text
+        assert not [name for name in RUN_TOOLS if name in text]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # R8: the real gateway app on a promoted catalog, as a NON-privileged role
 # ═══════════════════════════════════════════════════════════════════════════

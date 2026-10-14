@@ -143,6 +143,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS pm_agent_run_activities_idempotency_key
 CREATE INDEX IF NOT EXISTS pm_agent_run_activities_run_seq
     ON pm_agent_run_activities (run_id, seq);
 
+-- The answer of a question. The open-question reads look up `in_reply_to`
+-- for each elicitation, and the self foreign key needs it on a delete.
+CREATE INDEX IF NOT EXISTS pm_agent_run_activities_in_reply_to
+    ON pm_agent_run_activities (in_reply_to)
+    WHERE in_reply_to IS NOT NULL;
+
+-- A delete of a timeline row sets this column to NULL. Without an index,
+-- each such delete reads the whole table.
+CREATE INDEX IF NOT EXISTS pm_agent_run_activities_pm_activity
+    ON pm_agent_run_activities (pm_activity_id)
+    WHERE pm_activity_id IS NOT NULL;
+
+-- A delete of a task cascades here through `task_id`.
+CREATE INDEX IF NOT EXISTS pm_agent_run_activities_task
+    ON pm_agent_run_activities (task_id);
+
 DO $rls$
 BEGIN
     IF NOT EXISTS (

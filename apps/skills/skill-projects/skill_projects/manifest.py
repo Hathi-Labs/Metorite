@@ -1265,6 +1265,12 @@ UI_ACTIONS: dict[str, str] = {
     "refsApi.list": "task_detail",
     "refsApi.add": "add_task_ref",
     "refsApi.remove": "remove_task_ref",
+    # ── agentRunsApi (WS-55 EA-12c): agent runs on a task ────────────────
+    # The tools are PLANNED for EA-12e, the in-product chat (EA12-9).
+    "agentRunsApi.list": "agent_runs",
+    "agentRunsApi.get": "agent_runs",
+    "agentRunsApi.post": "post_agent_activity",
+    "agentRunsApi.enabled": "agent_runs",
     # ── notificationsApi ─────────────────────────────────────────────────
     "notificationsApi.list": "notifications",
     "notificationsApi.markRead": "mark_notifications_read",

@@ -5,7 +5,8 @@
  * An outside agent works on a task inside a RUN. The run holds typed
  * ACTIVITIES. An `elicitation` asks the member a question, and the run waits
  * for a `prompt` that answers it. This file holds the wire types, the pure
- * rules the pill and the answer card read, and the three calls.
+ * rules the pill and the answer card read. The calls are `agentRunsApi` in
+ * `api.ts`, so the F3 fence (`test_projects_ui_actions.py`) reads them.
  *
  * ⚠️ **The wire types are in THIS file only, on purpose.** EA-12c was built
  * before the EA-12a routes merged, against the shapes in the spec. One file
@@ -13,17 +14,16 @@
  * "ASSUMED" below, and `normalizeRunDetail` reads both of the forms that
  * the detail route can plausibly take.
  *
- * The calls go through `projectsCall`, the one request seam for
- * `/api/projects/*`. The BFF proxy relays any path under it, so the routes
- * need no proxy change. A POST through it drops the cached Projects reads,
- * so the board re-reads the task and its pill.
+ * The calls go through the one request seam for `/api/projects/*`. The BFF
+ * proxy relays any path under it, so the routes need no proxy change. A POST
+ * through it drops the cached Projects reads, so the board re-reads the task
+ * and its pill.
  *
  * Fence: `agentRuns.test.ts`.
  */
 
 import type { ElicitationAnswers, ElicitationQuestion } from "@/lib/elicitationAnswer";
 
-import { ProjectsApiError, projectsCall } from "./api";
 
 /* ── The wire types ──────────────────────────────────────────────────────── */
 
@@ -46,6 +46,13 @@ export const AGENT_STATE_VALUES: readonly AgentState[] = [
   "stale",
   "failed",
 ];
+
+/**
+ * The `state` of one run on the runs routes. An open run reads as its
+ * pill state. A closed run reads as its status, so `completed` and
+ * `stopped` occur here and never on a task row.
+ */
+export type AgentRunState = AgentState | "completed" | "stopped";
 
 /** The eight run statuses, as Plane names them. */
 export type AgentRunStatus =
@@ -119,8 +126,8 @@ export interface AgentRun {
   /** `mcp:<slug>`. */
   client_via: string;
   status: AgentRunStatus;
-  /** The derived state. Null on a closed run. */
-  state?: AgentState | null;
+  /** The derived state (`AGENT_RUN_STATE_SQL`). A closed run reads its status. */
+  state?: AgentRunState | null;
   started_at?: string | null;
   ended_at?: string | null;
   external_link?: string | null;
@@ -137,6 +144,8 @@ export interface AgentRun {
 export interface AgentRunDetail {
   run: AgentRun;
   activities: AgentActivity[];
+  /** The `seq` to send as `after` next, or null when the run has none. */
+  cursor: number | null;
 }
 
 /** The body of `POST /projects/agent-runs/{run_id}/activities` from a member. */
@@ -148,7 +157,7 @@ export interface AgentPromptBody {
   idempotency_key: string;
 }
 
-/* ── The calls ───────────────────────────────────────────────────────────── */
+/* ── The wire readers ────────────────────────────────────────────────────── */
 
 /**
  * Read the detail route in either shape. ASSUMED: the spec says "the run
@@ -161,64 +170,16 @@ export function normalizeRunDetail(raw: unknown): AgentRunDetail {
     ? (body.activities as AgentActivity[])
     : [];
   const run = (body.run && typeof body.run === "object" ? body.run : body) as AgentRun;
-  return { run, activities };
+  const cursor = typeof body.cursor === "number" ? body.cursor : null;
+  return { run, activities, cursor };
 }
 
 /** The runs list, in either `{rows}` or bare-array form. */
-function rowsOf<T>(raw: unknown): T[] {
+export function agentRunRows<T>(raw: unknown): T[] {
   if (Array.isArray(raw)) return raw as T[];
   const rows = (raw as { rows?: unknown } | null)?.rows;
   return Array.isArray(rows) ? (rows as T[]) : [];
 }
-
-export const agentRunsApi = {
-  /**
-   * The runs of a task, newest first. `null` means the routes are OFF: the
-   * flag `agent_runs_enabled` makes every route answer 404, and then the
-   * task detail draws nothing at all.
-   */
-  async list(taskId: string): Promise<AgentRun[] | null> {
-    try {
-      const raw = await projectsCall<unknown>(
-        `tasks/${encodeURIComponent(taskId)}/agent-runs`,
-      );
-      return rowsOf<AgentRun>(raw);
-    } catch (err) {
-      if (err instanceof ProjectsApiError && err.status === 404) return null;
-      throw err;
-    }
-  },
-
-  /** One run, with the activities after the cursor `after` (a `seq`). */
-  async get(runId: string, after?: number): Promise<AgentRunDetail> {
-    const query = after !== undefined ? `?after=${after}` : "";
-    const raw = await projectsCall<unknown>(
-      `agent-runs/${encodeURIComponent(runId)}${query}`,
-    );
-    return normalizeRunDetail(raw);
-  },
-
-  /** A member writes one `prompt`: an answer, a reply or a Stop. */
-  post(runId: string, body: AgentPromptBody): Promise<unknown> {
-    return projectsCall<unknown>(
-      `agent-runs/${encodeURIComponent(runId)}/activities`,
-      { method: "POST", body: JSON.stringify(body) },
-    );
-  },
-
-  /**
-   * Are the routes on? One read of the caller's own runs. A 404 means the
-   * flag is off. The "Waiting on me" filter shows only while this is true.
-   */
-  async enabled(): Promise<boolean> {
-    try {
-      await projectsCall<unknown>("agent-runs?status=awaiting");
-      return true;
-    } catch {
-      return false;
-    }
-  },
-};
 
 /** A fresh idempotency key for one write. */
 export function newIdempotencyKey(): string {
@@ -363,11 +324,18 @@ export function isOpenRun(run: AgentRun): boolean {
 }
 
 /**
- * The run the task detail shows: the newest open run, else a newest run
- * that failed. A failed run shows until a newer run exists (EA12-12).
+ * The run the task detail shows, by the pill's rule (§12.1, "The task
+ * pill"): an open `awaiting` run, else an open `answered` run, else the
+ * newest open run. A newer run of another member must not hide a question.
+ * With no open run, a newest run that failed shows until a newer run
+ * exists (EA12-12). `runs` comes newest first.
  */
 export function runToShow(runs: readonly AgentRun[]): AgentRun | null {
-  const open = runs.find(isOpenRun);
+  const openRuns = runs.filter(isOpenRun);
+  const open =
+    openRuns.find((r) => r.state === "awaiting") ??
+    openRuns.find((r) => r.state === "answered") ??
+    openRuns[0];
   if (open) return open;
   const newest = runs[0];
   return newest && newest.status === "failed" ? newest : null;
@@ -516,6 +484,24 @@ export function panelState(run: AgentRun, optimistic?: AgentState | null): Agent
   if (state) return state;
   if (run.status === "failed") return "failed";
   return null;
+}
+
+/**
+ * The words after a member's write fails, and whether the panel reads the
+ * run again. A 409 means the run moved under the member: another member
+ * answered first, or the agent stopped. A retry cannot help, so the panel
+ * reads the run and shows the server's reason with no "Try again".
+ */
+export function writeFailure(
+  status: number | undefined,
+  message: string | undefined,
+  failure: string,
+): { text: string; reload: boolean } {
+  const why = message?.trim() ?? "";
+  if (status === 409) {
+    return { text: why || "This run changed. It now shows the newest state.", reload: true };
+  }
+  return { text: `${failure}${why ? ` ${why}` : ""} Try again.`, reload: false };
 }
 
 /* ── The timeline ────────────────────────────────────────────────────────── */

@@ -552,6 +552,23 @@ async def _newest_open_question(db: Any, run_id: str) -> Any | None:
     )).fetchone()
 
 
+async def _has_answered_select(db: Any, run_id: str) -> bool:
+    """Whether the newest elicitation of the run is a ``select`` that a
+    prompt already answers."""
+    newest = (await db.execute(
+        text(
+            "SELECT a.signal, EXISTS (SELECT 1 FROM pm_agent_run_activities p "
+            "                          WHERE p.run_id = a.run_id AND p.in_reply_to = a.id) "
+            "       AS answered "
+            "  FROM pm_agent_run_activities a "
+            " WHERE a.run_id = CAST(:rid AS uuid) AND a.type = 'elicitation' "
+            " ORDER BY a.seq DESC LIMIT 1"
+        ),
+        {"rid": run_id},
+    )).fetchone()
+    return newest is not None and newest.signal == "select" and bool(newest.answered)
+
+
 async def _answer(
     db: Any, run_id: str, content: dict[str, Any], selected: list[str] | None,
 ) -> tuple[str | None, dict[str, Any] | None]:
@@ -566,6 +583,10 @@ async def _answer(
     reply = str(question.id) if question is not None else None
     if selected is None:
         return reply, None
+    if question is None and await _has_answered_select(db, run_id):
+        # Two members answered at once, and the other one won. A retry
+        # cannot help, so this is a conflict and not a bad request.
+        raise HTTPException(status_code=409, detail="This question already has an answer.")
     meta = from_jsonb(question.signal_metadata) if question is not None else None
     if question is None or question.signal != "select" or not meta:
         raise HTTPException(
@@ -805,6 +826,17 @@ async def list_task_agent_runs(
         return {"rows": await _runs_out(db, list(rows))}
 
 
+_INSERT_RUN_SQL = (
+    "INSERT INTO pm_agent_runs "
+    "(task_id, member_email, connection_id, client_via, status, started_by, "
+    " started_at, external_link, last_activity_at, last_agent_activity_at, "
+    " idempotency_key) "
+    "VALUES (CAST(:tid AS uuid), :me, CAST(:cid AS uuid), :via, :status, :by, "
+    "        :started, :link, :ts, :agent_ts, :key) "
+    "ON CONFLICT DO NOTHING RETURNING id"
+)
+
+
 @router.post("/tasks/{task_id}/agent-runs", status_code=201, dependencies=_ENABLED)
 async def start_agent_run(
     task_id: str, payload: StartIn, response: Response,
@@ -877,48 +909,47 @@ async def start_agent_run(
         open_args = {"tid": task_id, "me": me, "via": client_via,
                      "open": list(AGENT_RUN_OPEN_STATUSES)}
         existing = (await db.execute(text(open_sql), open_args)).fetchone()
-        if existing is not None:
-            response.status_code = 200
-            return {"run": (await _runs_out(db, [existing]))[0], "created": False}
-
-        ts = await _clock(db)
-        made = (await db.execute(
-            text(
-                "INSERT INTO pm_agent_runs "
-                "(task_id, member_email, connection_id, client_via, status, started_by, "
-                " started_at, external_link, last_activity_at, last_agent_activity_at, "
-                " idempotency_key) "
-                "VALUES (CAST(:tid AS uuid), :me, CAST(:cid AS uuid), :via, :status, :by, "
-                "        :started, :link, :ts, :agent_ts, :key) "
-                "ON CONFLICT DO NOTHING RETURNING id"
-            ),
-            {
+        if existing is None:
+            ts = await _clock(db)
+            made = (await db.execute(text(_INSERT_RUN_SQL), {
                 "tid": task_id, "me": me, "cid": connection_id, "via": client_via,
                 "status": "in_progress" if via is not None else "created",
                 "by": via if via is not None else me,
                 "started": ts if via is not None else None,
                 "link": link, "ts": ts, "agent_ts": ts if via is not None else None,
                 "key": payload.idempotency_key,
-            },
-        )).fetchone()
-        if made is None:  # a concurrent start won the open-run or the key index
-            existing = (await db.execute(text(open_sql), open_args)).fetchone()
-            if existing is None:
-                raise HTTPException(status_code=409, detail="Start the run again.")
+            })).fetchone()
+            if made is None:  # a concurrent start won the open-run or the key index
+                existing = (await db.execute(text(open_sql), open_args)).fetchone()
+                if existing is None:
+                    raise HTTPException(status_code=409, detail="Start the run again.")
+        if existing is not None:
+            # The open run is the answer (EA12-6). A member's instruction is
+            # not dropped: it is a prompt on that run, and the status machine
+            # decides. A refusal is a 409 that names the run's status.
+            if via is None:
+                locked = await _lock_run(db, str(existing.id))
+                written = await _write_activity(
+                    db, locked, user, kind="prompt", key=payload.idempotency_key, body=body,
+                )
+                existing = await _load_run(db, str(existing.id))
             response.status_code = 200
-            return {"run": (await _runs_out(db, [existing]))[0], "created": False}
-        run = await _load_run(db, str(made.id))
-        if via is None:
-            # The member's instruction is the first prompt. It is the act of
-            # creation, so it moves no status: the run stays `created`.
-            written = await _write_activity(
-                db, run, user, kind="prompt", key=None, body=body, event="member_start",
-            )
-        run = await _load_run(db, str(made.id))
-        out = (await _runs_out(db, [run]))[0]
+            out = (await _runs_out(db, [existing]))[0]
+            created = False
+        else:
+            run = await _load_run(db, str(made.id))
+            if via is None:
+                # The member's instruction is the first prompt. It is the act
+                # of creation, so it moves no status: the run stays `created`.
+                written = await _write_activity(
+                    db, run, user, kind="prompt", key=None, body=body, event="member_start",
+                )
+            run = await _load_run(db, str(made.id))
+            out = (await _runs_out(db, [run]))[0]
+            created = True
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": task_id})
-    return {"run": out, "created": True}
+    return {"run": out, "created": created}
 
 
 #: ``needs_agent=true``: a run the agent must act on. A ``created`` run, a
@@ -964,7 +995,10 @@ async def list_my_agent_runs(
             f" AND {task_visibility_clause(vis)})",
         ]
         params: dict[str, Any] = {**vis.params, "me": _member(user)}
-        if status is not None:
+        if status == "stale":
+            # `stale` is never stored (§12.1). It is the derived state.
+            clauses.append(f"({AGENT_RUN_STATE_SQL}) = 'stale'")
+        elif status is not None:
             clauses.append("r.status = :status")
             params["status"] = status
         if needs_agent:
@@ -1058,6 +1092,11 @@ async def post_agent_activity(
     return {"activity": out_activity, "run": out_run, "created": written.created}
 
 
+#: The statuses that a finish leaves: ``completed``, or ``stopped`` when a
+#: Stop waited (EA12-5). A second finish with no summary returns the run.
+_FINISHED: frozenset[str] = frozenset({"completed", "stopped"})
+
+
 @router.post("/agent-runs/{run_id}/finish", dependencies=_ENABLED)
 async def finish_agent_run(
     run_id: str, payload: FinishIn, user: UserContext = Depends(get_current_user),
@@ -1080,6 +1119,11 @@ async def finish_agent_run(
             return {"run": out_run, "activity": _activity_out(replay)}
         if run.member_email != _member(user):
             raise HTTPException(status_code=403, detail="This agent run belongs to another member.")
+        if not summary and run.status in _FINISHED:
+            # A retry of a finish with no summary. That finish wrote no
+            # activity, so no key finds it. The run is the result, as the
+            # edge's `finish_agent_run` reads it.
+            return {"run": (await _runs_out(db, [run]))[0], "activity": None}
         if summary:
             # The response and the finish are ONE move: the response is
             # written under the event `agent_finish`, so it sets `completed`
