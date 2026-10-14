@@ -45,9 +45,11 @@ import {
   INITIAL_SIZE,
   bodySize,
   dragResize,
+  expandedScrollTop,
   keyResize,
   manualMaxPx,
   minBodyPx,
+  paneInnerHeight,
   readComposerHeight,
   sizeReducer,
   writeComposerHeight,
@@ -63,7 +65,10 @@ const COMPOSER = "[data-email-composer]";
 export interface ComposerSize {
   state: SizeState;
   dispatch: (action: SizeAction) => void;
-  /** The visible height of the reading pane, in px. 0 before the first read. */
+  /**
+   * The visible height of the reading pane inside its padding, in px. 0
+   * before the first read.
+   */
   paneHeight: number;
   /** A narrow window: no grip, and no kept height. */
   narrow: boolean;
@@ -71,7 +76,7 @@ export interface ComposerSize {
   persist: (px: number | null) => void;
   /** The extra classes of the composer root. */
   rootClass: string;
-  /** The style of the composer root. Expanded, it is one pane tall. */
+  /** The style of the composer root. Expanded, it is as tall as the pane. */
   rootStyle: CSSProperties | undefined;
 }
 
@@ -87,10 +92,12 @@ export function useComposerSize(
   open: boolean,
   narrow: boolean,
 ): ComposerSize {
-  // The kept height of the member, read once. No server render draws a
+  // The kept height of the member, read at mount. No server render draws a
   // composer, and the height is set on the element, so no markup differs.
+  const [mountScope] = useState(() => boundChatScope());
+  const loadedScope = useRef<string | null>(mountScope);
   const [state, dispatch] = useReducer(sizeReducer, INITIAL_SIZE, (init) =>
-    sizeReducer(init, { type: "load", px: readComposerHeight(boundChatScope()) }));
+    sizeReducer(init, { type: "load", px: readComposerHeight(mountScope) }));
   const [paneHeight, setPaneHeight] = useState(0);
 
   useEffect(() => {
@@ -98,8 +105,23 @@ export function useComposerSize(
       dispatch({ type: "close" });
       return;
     }
+    // The member scope can bind after the mount. An open then reads the
+    // kept height of that member, with no reload.
+    const scope = boundChatScope();
+    if (scope && scope !== loadedScope.current) {
+      loadedScope.current = scope;
+      dispatch({ type: "load", px: readComposerHeight(scope) });
+    }
     const pane = rootRef.current?.closest<HTMLElement>(THREAD) ?? null;
-    const read = () => setPaneHeight(pane ? pane.clientHeight : window.innerHeight);
+    const read = () => {
+      if (!pane) {
+        setPaneHeight(window.innerHeight);
+        return;
+      }
+      // Inside the padding, so an expanded composer shows its bottom border.
+      const cs = getComputedStyle(pane);
+      setPaneHeight(paneInnerHeight(pane.clientHeight, px(cs.paddingTop), px(cs.paddingBottom)));
+    };
     read();
     if (pane && typeof ResizeObserver !== "undefined") {
       const ro = new ResizeObserver(read);
@@ -110,15 +132,24 @@ export function useComposerSize(
     return () => window.removeEventListener("resize", read);
   }, [open, rootRef]);
 
-  // Expand shows the whole composer, and Collapse keeps it in view. Only the
-  // thread scrolls.
-  // It compares with the value before, so a mount never scrolls the thread.
+  // Expand puts the top of the composer at the top of the pane's padding, so
+  // the whole composer shows. Collapse keeps it in view. Only the thread
+  // scrolls. It compares with the value before, so a mount scrolls nothing.
   const wasExpanded = useRef(state.expanded);
   useEffect(() => {
     if (wasExpanded.current === state.expanded) return;
     wasExpanded.current = state.expanded;
     const root = rootRef.current;
-    revealWithin(root?.closest<HTMLElement>(THREAD), root);
+    const pane = root?.closest<HTMLElement>(THREAD);
+    if (!root || !pane) return;
+    if (!state.expanded) {
+      revealWithin(pane, root);
+      return;
+    }
+    const portTop = pane.getBoundingClientRect().top + pane.clientTop;
+    const top = expandedScrollTop(
+      pane.scrollTop, root.getBoundingClientRect().top, portTop, px(getComputedStyle(pane).paddingTop));
+    if (top !== pane.scrollTop) pane.scrollTo({ top });
   }, [state.expanded, rootRef]);
 
   const expanded = state.expanded && paneHeight > 0;
@@ -129,7 +160,8 @@ export function useComposerSize(
     narrow,
     persist: (px) => writeComposerHeight(boundChatScope(), px),
     // Scroll inside only when the header, the AI panel and the footer need
-    // more than the pane. Then the footer stays reachable.
+    // more than the pane. Then the body keeps its minimum, and the footer
+    // stays reachable.
     rootClass: expanded ? "flex flex-col overflow-y-auto" : "",
     rootStyle: expanded ? { height: paneHeight } : undefined,
   };
@@ -222,14 +254,25 @@ export function ComposerBody({
   const [heightPx, setHeightPx] = useState(0);
   const [limits, setLimits] = useState({ min: 0, max: 0 });
   const [width, setWidth] = useState(0);
+  // The composer around the body: the header, the recipients, the AI panel
+  // and the footer. It caps a dragged height, so Send stays in the pane.
+  const [chromePx, setChromePx] = useState(0);
   const { state, paneHeight, narrow } = size;
 
-  // A change of width wraps the text again.
+  // A change of width wraps the text again. A change of the composer (the AI
+  // panel opens, Cc shows) changes the room that is left for the body.
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => setWidth(wrap.clientWidth));
+    const root = wrap.closest<HTMLElement>(COMPOSER);
+    const read = () => {
+      setWidth(wrap.clientWidth);
+      const ta = wrap.querySelector("textarea");
+      if (root && ta) setChromePx(Math.max(0, Math.round(root.offsetHeight - ta.offsetHeight)));
+    };
+    const ro = new ResizeObserver(read);
     ro.observe(wrap);
+    if (root) ro.observe(root);
     return () => ro.disconnect();
   }, []);
 
@@ -258,23 +301,26 @@ export function ComposerBody({
     const mirror = mirrorOf(mirrorRef, ta);
     mirror.value = value;
     const contentPx = mirror.scrollHeight + px(cs.borderTopWidth) + px(cs.borderBottomWidth);
-    const next = bodySize(state, { contentPx, minPx, paneHeight: pane, narrow });
+    const next = bodySize(state, { contentPx, minPx, paneHeight: pane, narrow, chromePx });
     const before = ta.offsetHeight;
     ta.style.flex = "";
     ta.style.minHeight = "";
     ta.style.height = `${next.heightPx}px`;
     ta.style.overflowY = next.scrolls ? "auto" : "hidden";
     setHeightPx(next.heightPx);
-    setLimits({ min: minPx, max: manualMaxPx(pane, minPx) });
+    setLimits({ min: minPx, max: manualMaxPx(pane, minPx, chromePx) });
     if (Math.abs(next.heightPx - before) >= 1) keepFocusInView(ta, mirror, value);
-  }, [value, state, paneHeight, narrow, width]);
+  }, [value, state, paneHeight, narrow, width, chromePx]);
 
   const showGrip = !narrow && !state.expanded;
   return (
     <div
       ref={wrapRef}
       data-composer-body=""
-      className={`relative ${state.expanded ? "flex min-h-0 flex-1 flex-col" : ""} ${className}`}
+      // No `min-h-0` here. The body keeps the minimum of its textarea, so a
+      // tall AI panel makes the composer scroll, and the body never paints
+      // over the AI panel (review round 1, P1).
+      className={`relative ${state.expanded ? "flex flex-1 flex-col" : ""} ${className}`}
     >
       {children}
       {showGrip && (

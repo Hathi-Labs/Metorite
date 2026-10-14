@@ -15,9 +15,11 @@ import {
   bodySize,
   composerHeightKey,
   dragResize,
+  expandedScrollTop,
   keyResize,
   manualMaxPx,
   minBodyPx,
+  paneInnerHeight,
   readComposerHeight,
   sizeReducer,
   writeComposerHeight,
@@ -81,6 +83,17 @@ describe("composer-size: manual height", () => {
 
   it("does not apply on a narrow window, where there is no grip", () => {
     expect(bodySize(manual(600), measure(300, true))).toEqual({ heightPx: 300, scrolls: false });
+  });
+
+  it("leaves room for the rest of the composer, so Send stays in the pane", () => {
+    // A height dragged on a big screen, read back on a laptop: a 517 px pane
+    // with 300 px of header, recipients, AI panel and footer.
+    expect(manualMaxPx(517, MIN, 300)).toBe(217);
+    expect(bodySize(manual(700), { ...measure(100), paneHeight: 517, chromePx: 300 }).heightPx).toBe(217);
+    // The chrome never pushes the body below its minimum.
+    expect(manualMaxPx(517, MIN, 450)).toBe(MIN);
+    // With little chrome, MANUAL_CAP still holds.
+    expect(manualMaxPx(PANE, MIN, 40)).toBe(720);
   });
 
   it("drags between the limits", () => {
@@ -214,5 +227,23 @@ describe("composer-size: the kept height, per member", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("composer-size: the expanded composer fits inside the pane's padding", () => {
+  it("measures the pane inside its padding", () => {
+    // The thread is `py-5`: 20 px at each end.
+    expect(paneInnerHeight(760, 20, 20)).toBe(720);
+    expect(paneInnerHeight(30, 20, 20)).toBe(0);
+  });
+
+  it("scrolls so the composer's top sits at the top padding", () => {
+    // The composer top is 300 px below the port top, and the pane holds 20 px
+    // of padding: the pane scrolls 280 px further.
+    expect(expandedScrollTop(100, 400, 100, 20)).toBe(380);
+    // A composer above the port scrolls back up.
+    expect(expandedScrollTop(500, 50, 100, 20)).toBe(430);
+    // Never below 0.
+    expect(expandedScrollTop(0, 110, 100, 20)).toBe(0);
   });
 });

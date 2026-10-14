@@ -9,11 +9,17 @@
  *   `AUTO_CAP` of the visible height of the reading pane. Over the cap it
  *   scrolls inside. Under the cap it shows no scrollbar.
  * - **manual**: the member dragged the grip. The height stays between the
- *   minimum and `MANUAL_CAP` of the pane, and the body scrolls inside when
- *   the text is taller. The height is kept per member in `localStorage`.
- * - **expanded**: the composer fills the visible pane, and the body takes the
- *   room that the header, the AI panel and the footer leave. Collapse goes
- *   back to auto or manual, whichever was on before.
+ *   minimum and `MANUAL_CAP` of the pane. It also leaves room for the rest of
+ *   the composer (`chromePx`), so Send stays in the pane when the top of the
+ *   composer is at the top of the pane. The body scrolls inside when the text
+ *   is taller. The height is kept per member in `localStorage`.
+ * - **expanded**: the composer fills the inner height of the pane (its
+ *   height less its padding), and the body takes the room that the header,
+ *   the AI panel and the footer leave. When those need more than the pane,
+ *   the composer scrolls and the body keeps its minimum. Collapse goes back
+ *   to auto or manual, whichever was on before.
+ *
+ * "The pane" is always the inner height: `paneInnerHeight`.
  *
  * On a narrow window there is no grip, so a kept manual height does not
  * apply there. Expand still works.
@@ -21,6 +27,8 @@
  * Everything here is pure, because vitest runs in node with no DOM.
  * Fence: `composerSize.test.ts`.
  */
+
+import { clearAccountKeys } from "@/lib/shell/shellCache";
 
 /** The fewest lines that a body shows. */
 export const MIN_LINES = 8;
@@ -91,9 +99,32 @@ export function autoCapPx(paneHeight: number, minPx: number): number {
   return Math.max(minPx, Math.round(paneHeight * AUTO_CAP));
 }
 
-/** The tallest dragged body. Never below the minimum. */
-export function manualMaxPx(paneHeight: number, minPx: number): number {
-  return Math.max(minPx, Math.round(paneHeight * MANUAL_CAP));
+/**
+ * The tallest dragged body. It is `MANUAL_CAP` of the pane, and never more
+ * than the pane less the rest of the composer (`chromePx`: the header, the
+ * recipients, the AI panel and the footer). Never below the minimum.
+ */
+export function manualMaxPx(paneHeight: number, minPx: number, chromePx: number = 0): number {
+  const cap = Math.min(Math.round(paneHeight * MANUAL_CAP), Math.round(paneHeight - chromePx));
+  return Math.max(minPx, cap);
+}
+
+/** The height of the pane inside its padding. Never below 0. */
+export function paneInnerHeight(clientHeight: number, padTop: number, padBottom: number): number {
+  return Math.max(0, Math.round(clientHeight - padTop - padBottom));
+}
+
+/**
+ * The `scrollTop` of the pane that puts the top of an expanded composer at
+ * the top of the pane's padding. So the whole composer shows, its bottom
+ * border too.
+ *
+ * @param rootTop the viewport top of the composer
+ * @param portTop the viewport top of the pane, inside its border
+ * @param padTop  the top padding of the pane
+ */
+export function expandedScrollTop(scrollTop: number, rootTop: number, portTop: number, padTop: number): number {
+  return Math.max(0, Math.round(scrollTop + (rootTop - portTop) - padTop));
 }
 
 export interface BodyMeasure {
@@ -105,6 +136,8 @@ export interface BodyMeasure {
   paneHeight: number;
   /** A narrow window: no grip, so no manual height. */
   narrow: boolean;
+  /** The rest of the composer around the body, in px. 0 when not known. */
+  chromePx?: number;
 }
 
 export interface BodySize {
@@ -120,7 +153,7 @@ export interface BodySize {
  */
 export function bodySize(state: SizeState, m: BodyMeasure): BodySize {
   if (state.mode === "manual" && state.manualPx !== null && !m.narrow) {
-    const heightPx = clamp(state.manualPx, m.minPx, manualMaxPx(m.paneHeight, m.minPx));
+    const heightPx = clamp(state.manualPx, m.minPx, manualMaxPx(m.paneHeight, m.minPx, m.chromePx ?? 0));
     return { heightPx, scrolls: m.contentPx > heightPx };
   }
   const cap = autoCapPx(m.paneHeight, m.minPx);
@@ -158,6 +191,10 @@ export function dragResize(startPx: number, dy: number, minPx: number, maxPx: nu
 }
 
 // ── The kept height, per member ─────────────────────────────────────────────
+//
+// A sign-out clears it with the other per-account keys (owner rule,
+// 2026-10-11): `clearSignedOutAccount` and `clearAccountNamespaces` in
+// `src/lib/sessions.ts` call `clearComposerHeights`.
 
 /** The prefix of the key. The rest is the member scope, `<email>|<orgId>`. */
 export const COMPOSER_HEIGHT_PREFIX = "cc-email-composer-height:";
@@ -209,4 +246,9 @@ export function writeComposerHeight(
   } catch {
     /* storage full or off: the height lasts for this page only */
   }
+}
+
+/** Remove the kept heights of these emails, in every organization. Never throws. */
+export function clearComposerHeights(emails: readonly string[]): void {
+  clearAccountKeys(COMPOSER_HEIGHT_PREFIX, emails);
 }

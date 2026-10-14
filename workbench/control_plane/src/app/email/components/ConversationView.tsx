@@ -736,7 +736,7 @@ export function DraftCard({
           onToggle={() => size.dispatch({ type: "toggleExpand" })}
         />
       </div>
-      <div className={`space-y-2 ${expanded ? "flex min-h-0 flex-1 flex-col" : ""}`}>
+      <div className={`space-y-2 ${expanded ? "flex flex-1 flex-col" : ""}`}>
         <div className="flex items-center gap-2">
           <RecipientInput
             value={to}
