@@ -97,14 +97,22 @@ export function DismissableCard({
   if (useContext(InStepContext)) return <>{children}</>;
   return (
     <div className="relative group/dismiss">
-      <button
-        onClick={onDismiss}
-        title="Dismiss"
-        aria-label="Dismiss"
-        className="absolute top-1.5 right-1.5 z-10 p-0.5 rounded text-muted-foreground bg-card/80 opacity-60 hover:opacity-100 hover:text-foreground hover:bg-secondary transition-opacity"
-      >
-        <Icon name="X" size={12} />
-      </button>
+      {/* The shared Button, as the shell's own X: the dismiss of a card that
+          brings its own chrome was the one hand-made control left on it.
+          ⚠️ The box places it, not the Button: `.cc-control` sets
+          `position: relative`, which beats an `absolute` class on it. */}
+      <div className="absolute top-1.5 right-1.5 z-10">
+        <Button
+          variant="ghost"
+          size="none"
+          onClick={onDismiss}
+          title="Dismiss"
+          aria-label="Dismiss"
+          className="p-0.5 bg-card/80 opacity-60 hover:opacity-100"
+        >
+          <Icon name="X" size={12} />
+        </Button>
+      </div>
       {children}
     </div>
   );

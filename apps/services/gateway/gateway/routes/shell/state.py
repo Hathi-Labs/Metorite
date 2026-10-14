@@ -50,7 +50,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -138,11 +138,20 @@ class Day:
         return after + timedelta(days=1)  # a schedule with no working day
 
 
-def _zone(name: Any) -> ZoneInfo:
+def zone_of(name: Any) -> ZoneInfo:
+    """The zone of a stored name. The one reader of a member's zone name in
+    the shell: ``feed.py`` and ``needs.py`` call it too. No name, a bad name
+    and a name that no zone has each read as UTC."""
     try:
         return ZoneInfo(str(name or "UTC"))
-    except (ValueError, OSError):
+    except (ValueError, OSError, ZoneInfoNotFoundError):
+        # ZoneInfoNotFoundError is a KeyError: a stored name that no longer
+        # exists must cost the member their zone, not their feed.
         return ZoneInfo("UTC")
+
+
+#: The old private name. ``test_my_day_loop.py`` still reads it.
+_zone = zone_of
 
 
 def _hour(value: Any, default: int, high: int) -> int:
@@ -610,13 +619,13 @@ async def _hours(user: UserContext, db: Any | None) -> Day:
         from gateway.routes.tasks.settings import get_user_settings
 
         settings = await get_user_settings(user=user)
-        return Day(_zone(getattr(settings, "timezone", None)),
+        return Day(zone_of(getattr(settings, "timezone", None)),
                    _hour(getattr(settings, "day_start_hour", None), DEFAULT_DAY_START, 23),
                    _hour(getattr(settings, "day_end_hour", None), DEFAULT_DAY_END, 24))
     from gateway.routes.projects.personal import stored_zone
 
     zone = await stored_zone(db, user.email) if db is not None else None
-    return Day(_zone(zone))
+    return Day(zone_of(zone))
 
 
 async def _working_days(db: Any, user: UserContext) -> frozenset[int]:
