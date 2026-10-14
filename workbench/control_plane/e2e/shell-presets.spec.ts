@@ -45,8 +45,13 @@ const MEMBER = {
 
 const EMPTY = { preset: null, answered: null, pins: null, known: null, cardOrder: null, newOrder: null };
 
-/** Every app MEMBER may star, in nav.ts order: the `known` of each save. */
-const KNOWN = ["/tasks", "/calendar", "/email", "/projects", "/people", "/chat", "/approvals"];
+/**
+ * Every app MEMBER may star, in nav.ts order: the `known` of each save.
+ * Integrations is held by every member since D-EA-9 (2026-10-14), for its AI
+ * agents view. No answer stars it (`answerStars`), so it shows only when the
+ * member keeps every held app, or stars it.
+ */
+const KNOWN = ["/tasks", "/calendar", "/email", "/projects", "/people", "/chat", "/approvals", "/integrations"];
 
 /** A stored Engineer layout: Personal Center, and the preset's apps. */
 const ENGINEER_STARS = ["/tasks", "/calendar", "/email", "/projects", "/chat"];
@@ -250,7 +255,7 @@ test("Skip for now is stored, a reload does not ask again, and every app shows",
     ["personal", ["My Tasks", "Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
-    ["admin", ["Approvals"]],
+    ["admin", ["Approvals", "Integrations"]],
   ]);
   await expect(question(page)).toHaveCount(0);
   expect(store.puts).toHaveLength(1);
@@ -778,7 +783,7 @@ test("a production NS-7 row with Chat pinned: Chat sits under AI Studio, and eve
     ["personal", ["My Tasks", "Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
     ["studio", ["Chat"]],
-    ["admin", ["Approvals"]],
+    ["admin", ["Approvals", "Integrations"]],
   ]);
   await expect(sidebar(page).getByText(/my apps/i)).toHaveCount(0);
 
@@ -787,14 +792,14 @@ test("a production NS-7 row with Chat pinned: Chat sits under AI Studio, and eve
   const launcher = page.getByRole("dialog", { name: "All apps" });
   await launcher.getByRole("button", { name: "Hide Chat from sidebar" }).click();
   expect(store.puts.at(-1)).toMatchObject({
-    pins: ["/tasks", "/calendar", "/email", "/projects", "/people", "/approvals"],
+    pins: ["/tasks", "/calendar", "/email", "/projects", "/people", "/approvals", "/integrations"],
     known: KNOWN,
   });
   await page.keyboard.press("Escape");
   await expect.poll(() => shape(page)).toEqual([
     ["personal", ["My Tasks", "Calendar", "My Email"]],
     ["across", ["Projects", "People"]],
-    ["admin", ["Approvals"]],
+    ["admin", ["Approvals", "Integrations"]],
   ]);
   // Show it again: back under AI Studio.
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
@@ -809,7 +814,7 @@ test("every category's apps can be hidden: Personal Center, AI Studio and Admin 
   await page.goto("/settings/appearance");
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
   const launcher = page.getByRole("dialog", { name: "All apps" });
-  for (const name of ["My Tasks", "Calendar", "My Email", "Chat", "Approvals"]) {
+  for (const name of ["My Tasks", "Calendar", "My Email", "Chat", "Approvals", "Integrations"]) {
     await launcher.getByRole("button", { name: `Hide ${name} from sidebar` }).click();
   }
   await page.keyboard.press("Escape");
