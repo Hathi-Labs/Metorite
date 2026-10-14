@@ -440,12 +440,15 @@ async def _read_day(org: str, user: Any) -> Any:
         return await state._hours(user, db)
 
 
-#: The ``judge`` outcomes that judged nothing. A morning pass that ends so
-#: gives its guard back, and the member is held for :data:`HOLD_S`.
-NOT_JUDGED = frozenset({"cooldown", "cap", "failed"})
+#: The ``judge`` outcomes that judged nothing and may judge later today. A
+#: morning pass that ends so gives its guard back, and the member is held for
+#: :data:`HOLD_S`. ``cap`` is not here: the cap holds until the member's next
+#: local day, so a retry can only meet it again. A capped pass keeps its
+#: guards and moves the versions on, as a judged pass does.
+NOT_JUDGED = frozenset({"cooldown", "failed"})
 #: The results that hold a member back for :data:`HOLD_S`, so a starved
 #: database does not get the slow path again at each tick (P2-2).
-HELD_AFTER = frozenset({"identity_failed", "timeout", "failed",
+HELD_AFTER = frozenset({"identity_failed", "timeout", "failed", "judged:cap",
                         *(f"judged:{r}" for r in NOT_JUDGED)})
 
 

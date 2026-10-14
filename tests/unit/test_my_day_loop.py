@@ -1157,7 +1157,25 @@ class TestTheFailureThrottle:
         assert world.log == []
         assert self.HOLD not in redis_fake.strings
 
-    @pytest.mark.parametrize("reason", ["cooldown", "cap", "failed"])
+    def test_a_capped_member_is_not_retried_today(self, world, redis_fake,
+                                                  monkeypatch) -> None:
+        """Review P2: the cap holds until the next local day, so a capped
+        pass keeps the morning and moves the versions on."""
+        async def _judge(user: UserContext, now: datetime | None = None) -> Any:
+            world.judged.append((user, now))
+            return feed_decide.Judged("cap")
+
+        monkeypatch.setattr(feed_decide, "judge", _judge)
+        _seed_active(redis_fake, ME)
+        guard = f"{KEY_ROOT}:{ORG_A}:my_day:morning:{ME.lower()}:2026-10-14"
+        assert _run([ME], EARLY + timedelta(minutes=15)) == ["judged:cap"]
+        assert guard in redis_fake.strings, "the capped morning is kept"
+        del redis_fake.strings[self.HOLD]
+        del redis_fake.strings[f"{KEY_ROOT}:{ORG_A}:my_day:dirty:{ME.lower()}"]
+        assert _run([ME], EARLY + timedelta(minutes=18)) == ["not_due"]
+        assert len(world.judged) == 1
+
+    @pytest.mark.parametrize("reason", ["cooldown", "failed"])
     def test_a_morning_that_judged_nothing_is_not_lost(self, world, redis_fake,
                                                        monkeypatch, reason) -> None:
         outcomes = [reason, "asked"]
