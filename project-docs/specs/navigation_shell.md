@@ -636,6 +636,18 @@ sidebar's foot (`MetoriteFoot.tsx`). This change deletes both.
    cannot take it down. `useDismiss` ignores Escape and an outside press
    while the cover is up. Escape closes the menu and gives the focus back to
    the foot.
+   - **The menu stays in the window** (review of 2026-10-14). `footBox`
+     caps its height by the room above the foot, less 8px, and a resize
+     measures again. The menu scrolls inside itself. The header is not
+     sticky, because in a short window it would take the room that the rows
+     need. The menu opens at its top, so the header shows first.
+   - **A member with no organization keeps the account acts** (review of
+     2026-10-14). The sidebar does not mount for that member, so the
+     org-less card in `AccessGate.tsx` draws `OrglessAccounts`. It holds the
+     current account, the other accounts, "Add another account" and
+     sign-out, with no You and no Settings, because those pages need an
+     organization. The same rules of sign-out and the cover hold there. The
+     card is the same on the desktop and on the phone.
 5. **No build version shows.** The browser can reach no version that a
    member can read. `/api/health` carries the Next build id, a random name,
    and the gateway's `/version` has no proxy. A version line waits on a
