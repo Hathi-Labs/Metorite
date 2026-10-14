@@ -393,3 +393,25 @@ def test_the_sweep_deletes_old_judgments_of_the_bound_org_only(
         with p.admin_engine.begin() as c:
             c.execute(text("DELETE FROM my_day_judgments WHERE member_email = :m"),
                       {"m": JM})
+
+
+def test_the_org_predicate_holds_without_rls(promoted, redis_fake) -> None:  # noqa: F811
+    """As the database owner, which production uses today, RLS does not
+    filter. The statement's own org predicate keeps org A whole."""
+    p = promoted
+    _seed_judgments(p, p.org_a)
+    _seed_judgments(p, p.org_b)
+
+    async def go() -> int | None:
+        async with tenant_engine_scope(_dsn(p.admin_engine.url)):
+            return await my_day_loop.sweep(p.org_b, "2026-10-21")
+
+    try:
+        asyncio.run(go())
+        kept = {sid for sid, (_age, keep) in JROWS.items() if keep}
+        assert _judgment_ids(p, p.org_b) == kept
+        assert _judgment_ids(p, p.org_a) == set(JROWS)
+    finally:
+        with p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM my_day_judgments WHERE member_email = :m"),
+                      {"m": JM})
