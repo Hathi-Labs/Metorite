@@ -92,8 +92,10 @@ BOX_B = "0b0b0b0b-0000-4000-8000-00000000000b"
 # inboxes, as each row of migration 229 is until the member changes it.
 TWO = [
     {"id": BOX_A, "email_address": "dana@fracktal.in", "label": "Outlook",
+     "provider": "microsoft",
      "display_label": "Fracktal", "unread_count": 2, "in_all_inboxes": True},
     {"id": BOX_B, "email_address": "dana@outlook.com", "label": "Outlook",
+     "provider": "microsoft",
      "display_label": "Personal", "unread_count": 1, "in_all_inboxes": True},
 ]
 A_TEXT = "Fracktal · dana@fracktal.in"
@@ -102,6 +104,7 @@ B_TEXT = "Personal · dana@outlook.com"
 # EM-T8g-1: a third mailbox that the member keeps separate (D-EM-28).
 BOX_C = "0c0c0c0c-0000-4000-8000-00000000000c"
 NDA = {"id": BOX_C, "email_address": "dana@client-nda.test", "label": "Outlook",
+       "provider": "microsoft",
        "display_label": "Client NDA", "unread_count": 4, "in_all_inboxes": False}
 C_TEXT = "Client NDA · dana@client-nda.test"
 
@@ -187,6 +190,10 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
     g = Gateway()
 
     async def _post(path: str, body: Any) -> Any:
+        if path == "/email/messages/summaries":
+            # A read that uses POST (EM-G11c1): the bulk card lists each
+            # message. It writes nothing, so it is not in ``writes``.
+            return {"summaries": []}
         return await g.write("POST", path, body)
 
     async def _patch(path: str, body: Any) -> Any:
@@ -204,6 +211,10 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
     monkeypatch.setattr(agents, "_delete", _delete)
     monkeypatch.setattr(agents, "_patch_settings", _put_settings)
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", g.confirm)
+    # A live chat: a "no" on the card is a refusal, not a run with no card
+    # channel (EM-G11c1 answers that one with the Chat-app text).
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open",
+                        lambda: True)
     return g
 
 

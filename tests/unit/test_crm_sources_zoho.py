@@ -982,9 +982,11 @@ def test_the_credential_is_provider_neutral() -> None:
     """Zoho's data-centre words live in ``provider_meta``, not in the shape."""
     names = {f.name for f in fields(SourceCredential)}
     # ``client_secret`` (WS-54 IN-8a) is the sealed secret of a DCR client.
-    # It names no provider either, and it is empty for Zoho.
+    # It names no provider either, and it is empty for Zoho. ``issued_at``
+    # (WS-54 IN-8b) is when the token was issued: no provider word, and None
+    # for Zoho.
     assert names == {"access_token", "refresh_token", "expires_at", "scopes",
-                     "provider_meta", "client_secret"}
+                     "provider_meta", "client_secret", "issued_at"}
     params = inspect.signature(CrmSource.finish_consent).parameters
     assert set(params) == {"self", "params", "scopes"}
 

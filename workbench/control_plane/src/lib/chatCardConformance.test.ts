@@ -18,11 +18,16 @@
  *    `CollapsibleCardHeader` inside a chat card) or `ToolCardShell`. A file
  *    with no title row is exempt, with its reason.
  *    ⚠️ ADVISORY beyond the file: a file that uses a seam once can still hold
- *    a second card with its own row. `EmailToolCards.tsx` does, and the
- *    inventory of PR "chat cards: one look" names those cards.
+ *    a second card with its own row. So the Email file, which holds sixteen
+ *    cards, is read card by card (rule 2b), and the cards of the other
+ *    files are named in the PR inventories.
  * 3. **No raw Tailwind palette class.** The tree-wide rule 5 of
  *    `theme/conformance.test.ts` lets a baselined file keep its debt. A chat
  *    card file has no budget at all.
+ * 4. **No hand-rolled control** (follow-up of #945). A chat card's control
+ *    is the shared `Button`, `Input`, `Textarea` or `Select`, never a bare
+ *    `<button>`, `<input>`, `<textarea>` or `<select>`. `CONTROL_DEBT` holds
+ *    the files that still draw one, and each number may only go down.
  *
  * Plus the wiring: every template that draws `TemplateHead` is in
  * `OWN_HEAD_TEMPLATES`, so `MessageBubble` hands it the header and its title
@@ -32,7 +37,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { OWN_HEAD_TEMPLATES } from "@/components/genUITemplates";
+import { OWN_HEAD_TEMPLATES, TEMPLATE_REGISTRY } from "@/components/genUITemplates";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 /** Source as LF. A Windows checkout holds CRLF, and a fence must not care. */
@@ -81,8 +86,8 @@ const GLYPH = /[▸▾▴▲▼►◄✓✔✕✗★☆]/gu;
  */
 const GLYPH_DEBT: Record<string, { count: number; why: string }> = {
   "components/genUITemplates.tsx": {
-    count: 3,
-    why: "the weather card's ❄, 💧 and 🌬 are depictions, like WEATHER_INK, not chrome",
+    count: 1,
+    why: "the weather card's ❄ is a depiction inside its sky picture, like WEATHER_INK, not chrome. The 💧 and 🌬 are icons now",
   },
   "components/tasks/TaskToolCards.tsx": {
     count: 1,
@@ -143,6 +148,107 @@ describe("rule 3: a chat card holds no raw palette class", () => {
   }
 });
 
+/**
+ * The cards of the Email file, each by its function, and how it draws its
+ * title row. `CardHead` is the file's one title row: `RollupHeader` with the
+ * card's controls beside it. A card that hands its whole draw to another
+ * card names that card.
+ */
+const EMAIL_CARDS: Record<string, "CardHead" | "ToolCardShell" | { delegates: string }> = {
+  ReadGroupCard: "ToolCardShell",
+  ThreadCard: "ToolCardShell",
+  DraftResultCard: "CardHead",
+  RuleResultCard: "CardHead",
+  SettingsUpdatedCard: "CardHead",
+  EmailListCard: "CardHead",
+  EmailGroupsCard: "CardHead",
+  EmailPreviewCard: "CardHead",
+  LabelUpdateCard: "CardHead",
+  ManageInboxCard: "CardHead",
+  PatternListCard: "ToolCardShell",
+  RulesOverviewCard: "ToolCardShell",
+  LabelsCard: "ToolCardShell",
+  InfoResultCard: "ToolCardShell",
+  ActionResultCard: "CardHead",
+  NoActionCard: "CardHead",
+};
+
+/** The source of one top-level function of a file, to the next one. */
+function fnBody(src: string, name: string): string {
+  const start = src.search(new RegExp(`\\nfunction ${name}\\(|\\nexport function ${name}\\(`));
+  if (start < 0) return "";
+  const next = src.slice(start + 10).search(/\n(?:export )?function /);
+  return src.slice(start, next < 0 ? undefined : start + 10 + next);
+}
+
+describe("rule 2b: each Email card draws the shared header (follow-up of #945)", () => {
+  const src = code(read("components/email/EmailToolCards.tsx"));
+
+  it("names every card of the file", () => {
+    const cards = [...src.matchAll(/\nfunction ([A-Z]\w*Card)\(/g)].map((m) => m[1]).sort();
+    expect(cards).toEqual(Object.keys(EMAIL_CARDS).sort());
+  });
+
+  for (const [card, how] of Object.entries(EMAIL_CARDS)) {
+    it(card, () => {
+      const body = fnBody(src, card);
+      expect(body, `${card} moved: point this scan at it`).not.toBe("");
+      if (how === "ToolCardShell") {
+        expect(body).toContain("<ToolCardShell");
+        return;
+      }
+      if (typeof how === "object") {
+        expect(body).toContain(`<${how.delegates}`);
+        return;
+      }
+      // A flow card: one RollupCard with the card's own header, and the
+      // title row through CardHead, never a hand-made row.
+      expect(body).toMatch(/<RollupCard[^>]*header="own"/);
+      expect(body).toContain("<CardHead");
+      expect(body).not.toMatch(/text-\[11px\] font-medium text-foreground/);
+    });
+  }
+
+  it("CardHead is RollupHeader, with the controls beside it", () => {
+    const head = fnBody(src, "CardHead");
+    expect(head).toContain("<RollupHeader");
+    // The controls are a sibling of the header's box, never its child.
+    expect(head.indexOf("{children ?")).toBeGreaterThan(head.indexOf("<RollupHeader"));
+  });
+
+  it("the draft card waits until it is saved or sent, so it never folds", () => {
+    expect(fnBody(src, "DraftResultCard")).toMatch(/<RollupCard[^>]*\bpending=\{!done\}/);
+  });
+});
+
+/**
+ * Raw controls a chat card file may still draw, and why. A number that goes
+ * down must be lowered here in the same change.
+ */
+const CONTROL_DEBT: Record<string, { count: number; why: string }> = {
+  "components/genUITemplates.tsx": {
+    count: 8,
+    why: "the form card's fields and toggle, and the plan card's inline editors. Their own pass",
+  },
+  "components/projects/ProjectToolCards.tsx": { count: 1, why: "the task row's open button" },
+  "components/tasks/TaskToolCards.tsx": { count: 3, why: "the row, Apply plan and Open in My Tasks. The Tasks pass" },
+  "components/ArtifactCard.tsx": { count: 1, why: "the file card's open row" },
+  "components/TodoPanel.tsx": { count: 1, why: "the plan's fold" },
+};
+
+const RAW_CONTROL = /<(?:button|input|textarea|select)\b/g;
+
+describe("rule 4: a chat card draws no hand-rolled control (follow-up of #945)", () => {
+  for (const file of Object.keys(CHAT_CARDS)) {
+    it(file, () => {
+      const found = code(read(file)).match(RAW_CONTROL) ?? [];
+      const allowed = CONTROL_DEBT[file]?.count ?? 0;
+      expect(found.length, "Use Button, Input, Textarea or Select from components/ui").toBeLessThanOrEqual(allowed);
+      expect(found.length, "Improved: lower CONTROL_DEBT to this").toBe(allowed);
+    });
+  }
+});
+
 describe("a template with its own head draws it as the card's one header", () => {
   const templates = code(read("components/genUITemplates.tsx"));
   const NAMES: Record<string, string> = {
@@ -152,10 +258,28 @@ describe("a template with its own head draws it as the card's one header", () =>
     reportCard: "ReportCard",
     planCard: "PlanCard",
     optionPicker: "OptionPicker",
+    // The follow-up of #945: the rest of the catalog.
+    weatherCard: "WeatherCard",
+    statDashboard: "StatDashboard",
+    sparkTrend: "SparkTrend",
+    comparison: "Comparison",
+    progressTracker: "ProgressTracker",
+    recipeCard: "RecipeCard",
+    flightStatus: "FlightStatus",
+    trainStatus: "TrainStatus",
+    formCard: "FormCard",
+    barChart: "ChartCard",
+    chart: "ChartCard",
   };
 
-  it("names the six chat templates", () => {
+  it("names every chat template", () => {
     expect([...OWN_HEAD_TEMPLATES].sort()).toEqual(Object.keys(NAMES).sort());
+  });
+
+  it("every template in the registry draws its own head, so no title draws twice", () => {
+    // A new template that draws a title of its own, and is not in
+    // OWN_HEAD_TEMPLATES, draws it under the fold's header: twice.
+    expect(Object.keys(TEMPLATE_REGISTRY).filter((n) => !OWN_HEAD_TEMPLATES.has(n))).toEqual([]);
   });
 
   for (const [name, fn] of Object.entries(NAMES)) {

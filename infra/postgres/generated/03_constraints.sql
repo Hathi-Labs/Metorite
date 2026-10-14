@@ -807,6 +807,18 @@ ALTER TABLE email_learned_patterns ADD CONSTRAINT email_learned_patterns_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS email_learned_patterns_org_idx ON email_learned_patterns (organization_id);
 
+-- email_mailbox_purges
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM email_mailbox_purges WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: email_mailbox_purges still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE email_mailbox_purges ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE email_mailbox_purges ADD CONSTRAINT email_mailbox_purges_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS email_mailbox_purges_org_idx ON email_mailbox_purges (organization_id);
+
 -- email_messages
 DO $$
 BEGIN

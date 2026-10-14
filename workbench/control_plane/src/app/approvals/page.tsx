@@ -13,33 +13,74 @@
  *
  * When enforcement is off (the default) this queue is empty — every outward
  * write auto-applies through the broker (chokepointed + audited, no hold).
+ *
+ * `/approvals?action=<id>` (WS-58 MD-3a, `my_day_feed.md` §5.8 item 9) is the
+ * My Day card's link to one proposal. The page scrolls to that row and marks
+ * it. When the row is not in the queue, a line above the queue says so.
+ * `lib/approvalLink.ts` reads the link. A bare `/approvals` opens as before.
  */
 
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import type { PendingAction } from "@/app/api/actions/pending/route";
 
+import {
+  actionIdFromSearch,
+  afterLoad,
+  approvalRowDomId,
+  markedRow,
+  type LoadResult,
+  type QueueState,
+} from "./lib/approvalLink";
+
+/**
+ * The reader of `?action=<id>`. `useSearchParams` needs a Suspense boundary,
+ * and this one holds only the reader, so the page still renders on the
+ * server. The email app's `EmailDeepLink.tsx` is the same shape.
+ */
+function ActionParam({ onAction }: { onAction: (id: string | null) => void }) {
+  const id = actionIdFromSearch(useSearchParams());
+  useEffect(() => {
+    onAction(id);
+  }, [id, onAction]);
+  return null;
+}
+
 export default function ApprovalsPage() {
-  const [rows, setRows] = useState<PendingAction[]>([]);
+  // The queue and how its last load ended. A failed load keeps the rows the
+  // member sees (`afterLoad`), and never reads as an empty queue.
+  const [queue, setQueue] = useState<QueueState<PendingAction>>({ rows: [], load: "pending" });
+  const rows = queue.rows;
   const [loading, setLoading] = useState(true);
-  const [fetched, setFetched] = useState(false);
   const [busy, setBusy] = useState<Record<string, "approve" | "reject">>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // The proposal a link names (MD-3a), and the row it marks.
+  const [actionId, setActionId] = useState<string | null>(null);
+  const { marked, gone } = markedRow(rows, actionId, queue.load);
+  // Scroll to the marked row once, when it first shows. The queue reloads
+  // every 15 seconds, and a reload must not pull the page back to the row.
+  const scrolledTo = useRef<string | null>(null);
+  useEffect(() => {
+    if (!marked || scrolledTo.current === marked) return;
+    scrolledTo.current = marked;
+    document.getElementById(approvalRowDomId(marked))?.scrollIntoView({ block: "center" });
+  }, [marked]);
 
   const load = useCallback(async () => {
     setLoading(true);
+    let result: LoadResult<PendingAction> = { ok: false };
     try {
       const res = await fetch("/api/actions/pending");
-      const all: PendingAction[] = res.ok ? await res.json() : [];
-      setRows(all);
+      const body: unknown = res.ok ? await res.json() : null;
+      if (Array.isArray(body)) result = { ok: true, rows: body as PendingAction[] };
     } catch {
-      setRows([]);
-    } finally {
-      setLoading(false);
-      setFetched(true);
+      // The request did not arrive. `result` stays a failed load.
     }
+    setQueue((q) => afterLoad(q, result));
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -62,7 +103,7 @@ export default function ApprovalsPage() {
       );
       const body = await res.json().catch(() => ({}));
       if (res.ok && body.ok !== false) {
-        setRows((rs) => rs.filter((r) => r.id !== id));
+        setQueue((q) => ({ ...q, rows: q.rows.filter((r) => r.id !== id) }));
       } else {
         setErrors((e) => ({
           ...e,
@@ -82,6 +123,9 @@ export default function ApprovalsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <Suspense fallback={null}>
+        <ActionParam onAction={setActionId} />
+      </Suspense>
       {/* The app's title bar (owner, 2026-10-10): the name, how many wait,
           and Refresh at the right end. */}
       <AppTopBar
@@ -110,8 +154,23 @@ export default function ApprovalsPage() {
         is on.
       </p>
 
+      {/* One live region, always mounted, so a screen reader announces the
+          line when it arrives. It is empty when there is nothing to say. */}
+      <div role="status">
+        {queue.load === "failed" && (
+          <p className="mt-4 text-xs text-destructive">
+            Could not load the queue. Refresh to try again.
+          </p>
+        )}
+        {gone && (
+          <p className="mt-4 rounded-lg border border-border bg-card/50 px-3 py-2 text-xs text-muted-foreground">
+            That request is no longer waiting for you.
+          </p>
+        )}
+      </div>
+
       <div className="mt-4 flex flex-col gap-2">
-        {fetched && rows.length === 0 && (
+        {queue.load === "ok" && rows.length === 0 && (
           <div className="rounded-lg border border-border bg-card/50 px-4 py-8 text-center">
             <p className="text-sm text-muted-foreground">
               Nothing awaiting approval.
@@ -127,10 +186,18 @@ export default function ApprovalsPage() {
         {rows.map((r) => {
           const args =
             (r.payload?.args as Record<string, unknown> | undefined) ?? {};
+          // The row a link names wears the house selected look, the cursor
+          // look of `InboxCard.tsx`. No look of this page's own (MD-3a).
+          const isMarked = r.id === marked;
           return (
             <div
               key={r.id}
-              className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs"
+              id={approvalRowDomId(r.id)}
+              aria-current={isMarked ? "true" : undefined}
+              className={[
+                "rounded-lg border bg-primary/5 p-3 text-xs",
+                isMarked ? "border-primary ring-1 ring-primary/40" : "border-primary/20",
+              ].join(" ")}
             >
               <div className="flex items-start gap-2">
                 <span className="shrink-0 rounded border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">

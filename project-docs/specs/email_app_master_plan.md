@@ -9013,7 +9013,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G4a-f1** | 🟢 AGENT-SAFE | 🔨 Built, not merged (2026-10-12, branch `gmail-pra-fill-bulk`). Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B, which merged as #915 | S | §12.3.12.4 |
 | **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | ✅ PR-C1a MERGED #919 (`421eeb8f4`, 2026-10-12). ✅ PR-C1b MERGED #925 (`144dc0d1f`, 2026-10-12). Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
 | **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | ✅ MERGED #916 (`c0d776667`, 2026-10-12). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
-| **EM-G11** | 🟢 AGENT-SAFE builds · 🔴 OWNER-GATE (Google console, KMS billing, CASA) · 🔴 `enforcement-flip` (two dark flags) | 📝 Specified 2026-10-14. 🔨 PR-G2 (EM-G11b) built 2026-10-14, not merged. Google verification readiness: the disclosure, one scope set, a card for each AI write, UMCC, the teardown, envelope keys, and the owner runbooks. Ten PRs, PR-G1 to PR-G10 | PR-G1 and PR-G2 first | 10 × M | §12.3.13 |
+| **EM-G11** | 🟢 AGENT-SAFE builds · 🔴 OWNER-GATE (Google console, KMS billing, CASA) · 🔴 `enforcement-flip` (two dark flags) | 📝 Specified 2026-10-14. ✅ PR-G2 (EM-G11b) merged #1001. ✅ PR-G7 (EM-G11f1) merged #1006. ✅ PR-G3 (EM-G11c1) merged #1019. 🔨 PR-G8 (EM-G11f2) built 2026-10-14, not merged. Google verification readiness: the disclosure, one scope set, a card for each AI write, UMCC, the teardown, envelope keys, and the owner runbooks. Ten PRs, PR-G1 to PR-G10 | PR-G1 and PR-G2 first | 10 × M | §12.3.13 |
 | **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #910 (`67b61aa11`, 2026-10-12). Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -13584,8 +13584,12 @@ cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 #### 12.3.13 EM-G11 — Google verification readiness of the Gmail app (2026-10-14)
 
 **Status.** 📝 Specified (2026-10-14). Each PR below needs a spec-auditor pass before an agent
-builds it. 🔨 **PR-G2 (EM-G11b) is built** (2026-10-14, branch `gmail-one-scope-set`, not merged).
-The auditor cleared it GO-NARROWED. The other nine PRs are not built and not audited.
+builds it. ✅ **PR-G2 (EM-G11b) is merged** (#1001, 2026-10-14). ✅ **PR-G7 (EM-G11f1) is
+merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. ✅ **PR-G3 (EM-G11c1)
+is merged** (#1019, 2026-10-14), and §12.3.13.6 records what it covers. The owner answered
+Q-GM-14 on 2026-10-14, and PR-G3b adds cards to the email chat pane. 🔨 **PR-G8 (EM-G11f2) is
+built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264). The other
+PRs are not built.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
 Owner instruction, 2026-10-14. Google verifies an app that asks for a restricted scope only when the
@@ -13738,7 +13742,8 @@ can show it (`packages/acb_skills/acb_skills/ask_tools.py:626-649`).
 
 ⚠️ **The email chat pane shows no card.** `/email/ai/chat` runs with `shows_cards=False`
 (`GW/email/automation/chat.py:232`), so each card there answers "no". After EM-G11c1, a write tool in
-that pane refuses. The Chat app shows cards. Q-GM-14 asks the owner about this.
+that pane writes nothing, and it tells the member to use the Chat app, which shows cards. The owner
+answered Q-GM-14 on 2026-10-14: add cards to the pane. PR-G3b is that ticket.
 
 **Item 4, prompt injection.** Half a control exists, and nothing names it.
 
@@ -13853,13 +13858,14 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR | Slice | Items | Gate | Size | Section |
 |---|---|---|---|---|---|
 | PR-G1 | **EM-G11a** — the disclosure step and the Google button | 1, 8 | 🟢 AGENT-SAFE · security review · visual review. 🔴 The owner approves the disclosure text (Q-GM-7) | M, about 550 | §12.3.13.4 |
-| PR-G2 | **EM-G11b** — one set of Gmail scopes. 🔨 Built 2026-10-14, branch `gmail-one-scope-set`, not merged | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
-| PR-G3 | **EM-G11c1** — a card for each chat write | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
+| PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
+| PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
+| PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 📝 Not specified | 3 | 🟢 AGENT-SAFE · security review | M | §12.3.13.6 |
 | PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
-| PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
-| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
+| PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
+| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. 🔨 Built NARROWED 2026-10-14, branch `gmail-purge-durable`, migration 264, not merged | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
 | — | **EM-G11r** — the reviewer path, the video, the publish order and the scope text | 7, 9, 10, 11 | 🔴 OWNER-GATE (Google account, money, third party). Parts are agent acts, named in each step | Runbook | §12.3.13.11 to §12.3.13.14 |
@@ -14142,12 +14148,24 @@ no case skips.
    preview (`POST /email/rules/generate/preview`).
 4. **One card for one call.** A bulk call over many messages asks once, and names the count. A
    refusal writes nothing and returns "Cancelled".
-5. **`update_assistant_settings`** asks a card only when the change turns on a write: `auto_run`,
-   `cold_email_blocker` other than `OFF`, `draft_replies` or `follow_up_auto_draft`. A change that
-   turns a write off needs no card.
+5. **`update_assistant_settings`** asks a card when a change turns on a write, widens an act, or
+   replaces text that the assistant acts on (fix round 1, 2026-10-14). These changes ask:
+   - `auto_run`, `draft_replies`, `follow_up_auto_draft` or `multi_rule_execution` from off to on.
+   - `cold_email_blocker` to a mode other than `OFF` that is not the mode of now.
+   - `about`, `signature`, `personal_instructions` or `writing_style` to text that is not empty
+     and not the text of now.
+   - `sensitive_data_protection` from on to off.
+   - Any change of `draft_confidence`.
+   - `follow_up_awaiting_days` or `follow_up_needs_reply_days` from 0 to more than 0.
+   - The digest mail: a `digest_frequency` other than `OFF` while `digest_send_to_email` is on, or
+     `digest_send_to_email` turned on while the frequency is not `OFF`. That switch defaults to on.
+
+   A change that turns a write off, empties a text, or changes nothing asks no card. The digest
+   day, time and categories ask none, because they change when a digest that is on goes out.
 6. **Headless callers.** A card fails closed with no channel (`ask_tools.py:626-649`). So each
-   registry tool refuses in the email chat pane (`shows_cards=False`) and in a scheduled agent run.
-   This is the intended result (Q-GM-14).
+   registry tool writes nothing in the email chat pane (`shows_cards=False`) and in a scheduled
+   agent run. The owner answered Q-GM-14 on 2026-10-14: the pane gets cards in PR-G3b. Until then,
+   the tool answers one fixed text that sends the member to the Chat app (audit edit).
 
 **Non-goals.** No new card UI. No change to the routes that a member's click calls. No change to the
 tools that ask a card today.
@@ -14157,7 +14175,10 @@ tools that ask a card today.
 - In the Chat app, "archive the three newest mails from X" shows one card. "No" changes nothing in
   Gmail. "Yes" archives the three.
 - A model-made rule with ARCHIVE shows a card before it saves.
-- In the email chat pane, each registry tool answers "Cancelled", and nothing changes in the mailbox.
+- In the email chat pane, each registry tool writes nothing. It answers the fixed text of
+  `_USE_CHAT_APP`, and never "Cancelled", because the member refused nothing (audit edit,
+  2026-10-14). The text is "Nothing changed. This needs your approval on a card, and this chat
+  cannot show one. Ask for it in the Chat app."
 - Outlook acceptance item: the same cards show for an Outlook mailbox.
 
 **Fences (R7).** A new file, `tests/unit/test_email_agent_write_cards.py`.
@@ -14177,13 +14198,89 @@ registry. M3: `update_assistant_settings` turns on `auto_run` with no card.
 **Verify with.**
 
 ```bash
-uv run pytest tests/unit/test_email_agent_write_cards.py tests/unit/test_email_agent_tool_scope.py \
-  tests/unit/test_ask_tools.py -v -rs
+uv run pytest tests/unit/test_email_agent_write_cards.py tests/unit/test_own_tool_scope.py \
+  tests/unit/test_email_rule_confirm.py tests/unit/test_email_send_cards.py \
+  tests/unit/test_confirmation_rows.py -v -rs
 uv run ruff check apps/agents/agent-email-assistant/agents.py
 ```
 
-Read the test names again at dispatch. `test_email_agent_tool_scope.py` and `test_ask_tools.py` are
-the expected names of the EM-T12 and card suites, not measured names.
+The audit of 2026-10-14 measured the suite names. `test_email_agent_tool_scope.py` and
+`test_ask_tools.py` do not exist.
+
+**The nine tools that the audit sorted (2026-10-14).** The fence found nine more tools that call a
+gateway write. The rule: a tool that changes the mail, the rules, the settings, or what the
+assistant knows or does later asks a card. A read or a dry run asks none.
+
+| Tool | Result | Reason |
+|---|---|---|
+| `save_knowledge` | Card | The assistant drafts from the knowledge, also replies to people outside |
+| `delete_knowledge` | Card | It removes what the assistant knows |
+| `generate_writing_style` | Card | It replaces the saved style that each later draft follows |
+| `forget_pattern` | Card | It removes a learned pattern of a draft or a rule, and nothing brings it back |
+| `set_cold_sender` | Card, through `set_sender_status` | The cold-email blocker then acts on the mail of the sender. It is not a registered tool |
+| `sync_account` without a purge | No card on that branch | It pulls a copy from the provider, and it changes no mail, no rule and no setting. The purge branch asks a card |
+| `present_email_groups` | Exempt, `GATEWAY_READ_POSTS` | `POST /email/messages/summaries` is a read. It writes no row and changes no read state |
+| `test_rule_match` | Exempt, `GATEWAY_READ_POSTS` | `POST /email/rules/test` is a dry run |
+| `categorize_senders` | Exempt, `GATEWAY_READ_POSTS` | It rebuilds `email_senders.category`, a derived cache of sender categories, from the labels that the member's rules applied. It never overwrites a category that the member set, and the sync loop runs the same job by itself (`scheduler_hooks.py:182`). It changes no mail, no rule and no setting. Fix round 1 corrected the reason |
+
+**EM-G11c1 as built (2026-10-14).** 🔨 Built, not merged, on branch `gmail-write-cards`. The audit
+returned GO-NARROWED.
+
+- `_card_refusal` in `AG` is the one gate of the new cards. It calls `_confirm_destructive`. A
+  "no" in a live chat answers "Cancelled". A run with no card channel answers `_USE_CHAT_APP`.
+- `MAILBOX_WRITE_TOOLS` holds 27 tools, and `GATEWAY_READ_POSTS` holds three, each with a reason.
+- The tools that asked a card before now answer `_USE_CHAT_APP` with no channel too. The card of
+  each one is as on main.
+- `manage_inbox` asks one card for each act, not only for Trash. The card lists the sender and the
+  subject of each message, through the read `POST /email/messages/summaries`.
+- A rule that sends nothing out asks a plain card. A rule that sends mail out keeps the card of
+  EM-T13a, so one call shows one card. A pause of a rule asks none.
+- `auto_categorize_inbox` with `apply=true` runs the preview first, so the card names the count.
+- Fences: `tests/unit/test_email_agent_write_cards.py`. M1, M2 and M3 each turn it red.
+
+**Fix round 1 (2026-10-14).** The verifier failed round 0 and the reviewer asked for changes. Each
+item below has a fence in the same file, and each P1 has a mutation that turns it red.
+
+- **P1-a, drafting in the pane.** With no card channel, `draft_reply(save=true)` saves nothing. It
+  returns the draft, and its first line says "Drafts is unchanged" and points to the composer. A
+  live chat still asks a card before it saves. `find_follow_ups` keeps its card and its Chat-app
+  text in the pane, because its route has no read-only mode: the label is the act.
+- **P1-b, rule cards.** Each rule card lists each rule of the call and each action of each rule,
+  also on the outward card. FORWARD with TRASH, a mixed batch and an `update_rule` that adds TRASH
+  each show the TRASH.
+- **P1-c, the default rules.** The card lists each preset that the route installs, for the
+  provider of the mailbox, with the draft of Needs Reply when `draft_replies` is on. `_PRESETS` in `AG` is
+  a mirror of `_PRESET_RULES`, and a fence fails when the two give other actions.
+- **P1-d, settings.** Scope 5 above holds the new list. A fence calls the tool once for each
+  parameter, so a new setting needs a card or a written reason.
+- **P2-a.** The auto-categorize route takes no ids, so the write runs the sweep again over the same
+  500 newest emails. The card says "about N" and "chosen again when it runs". No route gives a
+  cheap count before a rule run, so the `run_rules` card names the scope, the server caps (50 new,
+  1000 past) and each rule that is on.
+- **P2-b, P2-c.** The cards of `mark_thread_done`, `resolve_execution` and `forget_pattern` read
+  the row first and name it. Done also says that it closes the open tasks of the thread. An
+  approve names a webhook host. The knowledge card shows the content with no hidden character.
+- **P3-a, P3-b, P3-c.** The `categorize_senders` reason is now true. The reads before a card in
+  `draft_reply`, `send_email` and `forward_email` pass `mark_read=false`. `instructions.md` and the
+  docstring of `create_rules_from_prompt` no longer ask for a text confirmation before a card.
+- **The fence gap.** `test_each_branch_asks_before_its_first_write` calls each registry tool with
+  each bool both ways and each fixed choice. A refused card must leave no write, except the
+  branches in `NO_CARD_BRANCHES`, each with its reason.
+
+**Round 2 (2026-10-14).** The verifier passed fix round 1, and the reviewer asked for eight small
+items.
+
+- The `run_rules` card lists each rule that sends email out first, and never cuts one. When those
+  alone do not fit, the tool runs nothing. The other rules follow, and a last line counts the rest.
+- A batch that is too long says "too many rules", not "too many targets".
+- `install_default_rules` installs nothing when it cannot read the provider of the mailbox.
+- A fence reads `_PRESET_LEGACY` against the `legacy` dict of `_seed_preset_rules`.
+- The note of an unsaved pane draft is "Drafts is unchanged", so it shares no text with "saved to
+  Drafts".
+- The docstrings of the reset, the digest send and the purge ask for no text confirmation.
+- The branch sweep also calls each `bool | None` parameter, and each rule action type.
+- The contract of `confirmation_channel_open` says that a tool may read it before a card, but only
+  to choose an act that writes less.
 
 ##### 12.3.13.7 EM-G11c2 — no background write without a member choice (PR-G4)
 
@@ -14380,6 +14477,110 @@ uv run pytest tests/unit/test_email_mailbox_teardown.py tests/unit/test_email_ma
   tests/unit/test_email_disconnect_order.py tests/unit/test_email_disconnect_memory_purge.py \
   tests/unit/test_admin_member_purge.py -v -rs
 ```
+
+**EM-G11f1 as built (2026-10-14).** ✅ Built NARROWED and merged as #1006 (2026-10-14).
+The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown into
+`DELETE /email/accounts/{id}` only.
+
+- **What f1 covers.** `GW/email/teardown.py` holds the new legs, and `delete_account` is the one
+  caller. Step 1.1 (the stop) and step 1.3 (the delete) stay in `transport/accounts.py`.
+  1. Step 1.2: the ownership read of a Gmail row reads the filter ids in the same block, under
+     FORCE RLS, because the cascade of step 1.3 deletes them. The route keeps the ids, and
+     `remove_metorite_filters` deletes each filter at Gmail AFTER the `DELETE` commits and before
+     the revoke, with no block open. The whole step has a bound of 10 s. So a 404, a 409 or a
+     failed `DELETE` removes no filter. No await sits between the stop and the `try` that starts
+     the loop again (review round 1).
+  2. Step 1.4: after the filters, `revoke_grant` POSTs the refresh token to
+     `https://oauth2.googleapis.com/revoke` in the form body. The access token is the fallback. The
+     call has a bound of 5 s. A failure logs `email.revoke_failed` with the provider and a fixed
+     reason, and the route answers 204.
+  3. **The shared-grant rule** (review round 1). Google keeps one grant for each Google account and
+     the app. So a revoke ends the grant of each Metorite row of that Gmail account, in any
+     organization. Two members can share `support@`, and one person can connect one Gmail in two
+     organizations. Before the revoke, the route asks migration 263's
+     `email_gmail_grant_shared(email, exclude_account_id)`. The revoke runs only when the answer is
+     `false`. A `true` logs `email.revoke_skipped` with `reason=shared_grant`. A `NULL` logs
+     `reason=owner_blind` at WARNING, and a failed check logs `reason=check_failed` at WARNING
+     (review round 2). So the rule fails safe toward the other mailbox.
+  4. Steps 1.5 and 1.6 run as on main. The Mem0 purge task starts BEFORE the filters and the
+     revoke, so a cancel of those awaits cannot skip the purge. This order differs from the list
+     above on purpose.
+  5. Step 1.7: `drop_mailbox_cache` runs for each provider, Outlook and IMAP too. It deletes the
+     keys of three namespaces that carry the mailbox id. They are `email-brief` (`digest.py`),
+     `email-status-backoff` (`automation/replyzero.py`) and `email-llm`
+     (`email_ingestion/llm_cap.py`). The keys that step 1.7 names above carry a message row id, and
+     they end within one hour. Then it bumps the My Day version of the owner.
+- **Migration 263** (`infra/postgres/263_email_gmail_grant_shared.sql`), expand only. One function
+  with SECURITY DEFINER and `search_path = pg_catalog, pg_temp`. It returns one boolean and never a
+  row. It compares the address with no case. When its owner cannot see through RLS, it raises a
+  WARNING, as 230 and 236 do, and returns `NULL`. The file revokes EXECUTE from PUBLIC and from the Supabase roles, and grants it to
+  `acb_app` only. Check the number again at merge (R1). On 2026-10-14 the open PRs #1002 and #1003
+  held 261 and 262.
+- **Narrowed acceptance.** These pass in `tests/unit/test_email_mailbox_teardown.py`:
+  `test_filters_go_after_the_commit` (it replaces `test_filters_go_before_the_row`),
+  `test_gmail_revokes_the_refresh_token`, `test_a_failed_revoke_still_answers_204` and
+  `test_outlook_revokes_nothing`. `test_a_refused_delete_removes_no_filter_and_revokes_nothing` and
+  `test_a_shared_or_unknown_grant_is_not_revoked` pass too. `test_email_disconnect_order.py` and
+  `test_email_disconnect_memory_purge.py` stay green. The R8 cases in
+  `TestTheDisconnectUnderForceRLS` run as the role with no RLS bypass.
+  `test_the_filter_ids_are_read_under_force_rls_before_the_delete` keeps a sender row of another
+  organization out of the read. `test_a_shared_gmail_grant_is_not_revoked` runs a second row of
+  the address in the same organization and in another one.
+  `test_the_shared_grant_function_answers_one_bit_to_the_app_role_only` reads the function shape
+  and its grants, and shows that the app role reads no row of the other organization.
+- **Open point, the Outlook filters.** Step 1.2 names each provider, but the Outlook acceptance
+  item says "as on main". f1 removes the Metorite filters of Gmail only. An Outlook row keeps its
+  rules, as on main. A spec edit must decide the Outlook leg.
+- **Not in f1.** The admin member purge (`GW/admin/members.py`) and the org purge (`offboard.py`,
+  `operator.py`) wait for a spec edit. So does `test_three_paths_call_one_teardown`. The help line
+  of item 3 is not in f1. The check of Google's "third-party apps" page needs a real Gmail account,
+  and it is the owner's.
+
+**EM-G11f2 as built (2026-10-14).** 🔨 Built NARROWED, not merged, on branch
+`gmail-purge-durable`. The audit returned GO-NARROWED. The scope is items 1 to 3, for
+`DELETE /email/accounts/{id}` only.
+
+- **Item 1, the durable purge.** Migration 264 (`infra/postgres/264_email_mailbox_purges.sql`) adds
+  `email_mailbox_purges`, with `organization_id` and FORCE RLS. `account_id` has NO foreign key, so
+  the cascade cannot delete the row. `delete_account` writes the row inside the block of its
+  `DELETE`, so one commit holds both. The route's task closes the row after two good passes.
+- **The sweeper has its own loop** (fix round 1). The `main.py` lifespan starts
+  `memory_purge.start_purge_loop` and stops it with `stop_purge_loop`, as each other domain does.
+  Each 15 minutes the loop reads the RLS-EXEMPT `organization` table once, then sweeps each
+  organization in its own `tenant_session`. It adds no process and no unit.
+- **The sweep.** A new row waits 10 minutes first, so the sweeper does not race the route's task.
+  The sweeper claims ONE row at a time with `FOR UPDATE SKIP LOCKED`, just before its own pass.
+  So the lease of 15 minutes covers one pass, which has a bound of 2 minutes. A tick also stops
+  after 10 minutes. A failed pass keeps the row open with a back-off from 5 minutes to 6 hours.
+  Only the second good pass closes the row.
+- **Mem0 off (agent decision).** A tick reads no row, and the task runs no pass. The rows stay
+  open, and they close only after a real purge. The reason: Mem0 keeps its memories in the
+  `mem0_memories` table of the same Postgres. That table outlives the flag, so a row that closed
+  while Mem0 was off would claim a purge that never ran. The probe builds the client in a thread,
+  and a failed build waits 15 minutes before the next try.
+- **Item 2, no write to `"default"` (agent decision: refuse).** Each email writer of Mem0 takes its
+  key from `memory_purge.writable_memory_scope`. With no owner or no mailbox id, it logs
+  `email.memory_write_refused` and skips. Three writers use it: the draft precedent, the learning
+  job and the writing style of `automation/assistant.py`. The Mem0 writers outside `routes/email`
+  key on a member, an agent or a room, and none of them builds a mailbox key.
+- **Item 3, the child fence.** It reads each foreign key to `email_accounts` or `email_messages`
+  from `information_schema`. It fills one row in each child from the catalog and disconnects. Then
+  it finds no row of the mailbox, by the mailbox key or by the row's own primary key. A second test
+  walks each foreign key under a mailbox, to any depth. Each one must be `ON DELETE CASCADE`, or be
+  named with a reason in `_NOT_CASCADE`. That map holds three edges today, and each of their tables
+  also cascades on `account_id`.
+- **Fences.** `tests/unit/test_email_mailbox_purge_durable.py`. These mutations each fail it:
+  - a purge row outside the `DELETE` transaction (and the R8 trigger test of atomicity),
+  - a sweeper that deletes the row first, or that claims 20 rows at once,
+  - a write to `"default"` in the drafter or in `assistant.py`,
+  - a lifespan that does not start the loop,
+  - a new child table with `ON DELETE SET NULL`.
+- **Not built: the reconcile of old orphans.** Mem0 keys a memory on `<owner>#acct:<id>` and stores
+  no organization. So a read under one tenant cannot tell an orphan from a live mailbox of another
+  tenant. A safe reconcile needs a check across tenants and a read of Mem0's own table. Each one is
+  a decision that the spec does not record.
+- **Not in f2.** The admin member purge, the org purge and `test_three_paths_call_one_teardown`
+  wait for a spec edit.
 
 ##### 12.3.13.10 EM-G11g1 and EM-G11g2 — envelope encryption and rotation (PR-G9, PR-G10)
 
@@ -14628,8 +14829,9 @@ settings, vacation replies or any other setting.
 
 ##### 12.3.13.15 Recorded risks and board findings
 
-- **Risk: the chat pane loses its writes.** After PR-G3, each write tool refuses in the email chat
-  pane, because that pane shows no card (Q-GM-14).
+- **Risk: the chat pane loses its writes.** After PR-G3, each write tool writes nothing in the
+  email chat pane, because that pane shows no card. The tool sends the member to the Chat app.
+  PR-G3b closes the risk (Q-GM-14, owner answer 2026-10-14).
 - **Risk: Gmail is live for each member while the app is in Testing.** A member who is not a test
   user reads `consent_declined`. After step 3 of R-3, each connect counts against the cap of 100.
 - **Risk: the detector is a new sub-processor.** Model Armor reads mail text. The privacy page and
@@ -14897,6 +15099,9 @@ The questions of EM-G11 (§12.3.13, 2026-10-14):
   until Google verifies the app? If the reviewer needs a seat past the trial, approve a comp seat.
 - **Q-GM-14. The email chat pane shows no card.** After PR-G3, each write tool refuses there. Add
   cards to that pane (a later ticket), or send the member to the Chat app for writes?
+  ✅ **Answered by the owner, 2026-10-14: "Add cards to Email chat".** PR-G3b adds cards to the
+  pane. Until it merges, a write tool in the pane answers the fixed text of `_USE_CHAT_APP`, which
+  sends the member to the Chat app (§12.3.13.6).
 
 ---
 

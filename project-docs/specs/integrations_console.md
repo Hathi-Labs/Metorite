@@ -77,6 +77,61 @@ A delete revokes. A register keeps the tokens. The Test sends the bearer.
 token has ended. A value above ten years becomes ten years, and a negative
 value answers `exchange_failed`.
 
+> **IN-8b BUILT (2026-10-14, PR #1011), dark.** The refresh hop is
+> `mcp_oauth.refresh`. The run path is `_oauth_header` and
+> `mark_unauthorized` in `connections/mcp.py`, and rule 9 of
+> `orchestrator/_maf_mcp.py`. Rows O7, O8 and O14 pass, and each was red
+> first. The fences are `test_mcp_oauth_refresh.py` and
+> `test_mcp_oauth_refresh_r8.py`. No migration.
+
+**Five facts of IN-8b that the design did not state:**
+
+1. **The header stays `static_headers`.** §3.6.7 asked for a
+   `header_provider` that returns a cached value. A fixed header does the
+   same thing, and MAF does not serialize the tool calls of a fixed header
+   (the `static_headers` docstring, `_mcp.py:3834-3840`, MAF 1.19).
+2. **Two time caps.** One token fetch gets 8 s (`REFRESH_FETCH_S`). A run
+   waits 20 s for the step of one server (`REFRESH_BUDGET_S`). A fetch past
+   its cap is not final. The run keeps the stored token while it lives past
+   60 s.
+3. **The 401 mark compares the token.** `mark_unauthorized` changes the row
+   only when the row still holds the token that the run sent. A new consent
+   between the refresh and the 401 stays connected.
+4. **A token with no refresh token** gets `needs_reconnect`
+   (`no_refresh_token`) when it ends. Only a new consent repairs it.
+5. **The console shows `needs_reconnect`** on an MCP row, with its safe
+   code. Before IN-8b, such a row showed as `disconnected`.
+
+**The review of #1011 added three rules.**
+
+- **A run that refreshes nothing takes no lock.** An unlocked read finds the
+  rows that are due. Only a due row opens a second session and takes the row
+  lock. `REFRESH_SLOTS` lets one process run two refresh steps at one time,
+  so a slow provider cannot take the pool of every org.
+- **A run refreshes only what it can use.** `servers_for_org` takes
+  `oauth_wanted`. The injection passes its scope, transport and grant
+  filter, and a Copilot agent wants no OAuth row.
+- **A Stop never loses a rotated token.** The step runs in its own task, and
+  the run waits on it through `asyncio.shield`. A cap or a Stop ends the
+  wait, and the step still commits. Only a process restart can lose it.
+
+**Review 2 of #1011 added four rules.**
+
+- **One org holds one slot.** `REFRESH_SLOTS_PER_ORG` is 1, inside the two
+  slots of the process. An org takes its own slot first.
+- **A failed refresh waits.** A refresh that fails for a reason that is not
+  final is not tried again by that process for 60 s (`REFRESH_BACKOFF_S`).
+  A run in the gap uses the stored token while it lives.
+- **A 401 with no refresh ends the token** (§3.6.7). The next run refreshes.
+- **A short token is due at half its life.** The blob holds the issue time
+  (`SourceCredential.issued_at`). A blob with no issue time keeps the margin of
+  900 seconds. `fresh_credential` takes an `accept` check, so a row that is
+  registered again with headers is never marked `undecryptable`.
+
+The refresh does not revoke the old refresh token. A provider that rotates
+ends it itself, and none of the six providers of §3.6.2 asks for a revoke.
+The Test button still sends the stored token with no refresh (IN-8a, P2 3).
+
 ---
 
 ## 0. The answer in one paragraph
@@ -243,6 +298,10 @@ integration resolvers. IN-5 removes the old writes.
 | Connect or disconnect your own member connection | The member, in the owning app |
 | Disconnect another member's connection | `integrations:manage`, and the member is told |
 | See a stored value | Nobody |
+| Open the app | Every member (D-EA-9, 2026-10-14). The pane is ungated, and each view gates itself |
+| Use Connections, API keys, Plugins and Skills | `feature:integrations`, as before. A member without it sees only the AI agents view |
+| See and revoke your own outside agents (AI agents view) | The member. WS-55 owns the routes (`external_agent_access.md` §15 EA-4b) |
+| See and revoke every agent connection of the organization | `feature:integrations` and `integrations:manage`. WS-55 owns the routes |
 
 ### 3.6 MCP OAuth for an org connection (IN-8)
 
@@ -469,7 +528,8 @@ Every discovery, registration, token and revoke request goes through
   MAF 1.19). So the hook cannot refresh a token.
 - Before `connect()`, the injection calls `fresh_credential`. When the token
   expires within `TOKEN_MARGIN_S`, the call refreshes it first.
-  `TOKEN_MARGIN_S` is a new constant of 900 s.
+  `TOKEN_MARGIN_S` is a new constant of 900 seconds. A token with a shorter
+  life is due at half its life, and never later than 60 seconds before its end.
 - The tool gets a `header_provider` that returns the cached `Authorization`
   value and nothing else. A changed header makes MAF connect the session again
   (the `header_provider` docstring, `_mcp.py:3841-3851`). So the value never
@@ -477,10 +537,16 @@ Every discovery, registration, token and revoke request goes through
 - **A 401 on connect** drops the server from the run, and the run goes on. The
   log line `mcp.oauth_unauthorized` names the server only.
 - If the injection refreshed the token in this run, that 401 also sets
-  `needs_reconnect`. Else the next run refreshes, and an `invalid_grant` then
-  sets `needs_reconnect`. So one expired token never asks an admin to connect
-  again. ⚠️ The request for this section said "a 401 marks needs_reconnect".
-  This spec narrows that, for the reason above.
+  `needs_reconnect`. Else the 401 ends the stored token under the row lock,
+  so the next run refreshes, and an `invalid_grant` then sets
+  `needs_reconnect`. A token with no refresh token gets `needs_reconnect` at
+  once. So one expired token never asks an admin to connect again.
+  ⚠️ The request for this section said "a 401 marks needs_reconnect". This
+  spec narrows that, for the reason above.
+- ⚠️ The review of #1011 corrected the item above on 2026-10-14. It said
+  that the next run refreshes. That was false. A token answer with no
+  `expires_in` is stored for ten years. So the next run saw a live token and
+  sent no refresh, and the server stayed dead for ever.
 - A run that outlives the margin can get a 401 on a call. The server drops
   out of that run.
 - `needs_reconnect` shows in the console, and in the "needs you" item of §5.
@@ -614,11 +680,11 @@ No R8 suite may skip.
 |---|---|
 | `href` | `/integrations` |
 | `label` | Integrations |
-| `feature` | `integrations` |
-| `launch` | `preview` until IN-2 is done and the owner promotes it |
+| `feature` | none (each view gates itself), since D-EA-9 on 2026-10-14. `HREF_FEATURES` keeps `/integrations`, and `ALWAYS_ALLOWED` lists the exact path |
+| `launch` | `live` since 2026-10-13, by owner decision |
 | `team` | `admin` |
 | `blurb` | "Every tool your company has connected" |
-| `jobs` | `integrations.add_mcp`, `integrations.review` (a link to the list) |
+| `jobs` | `integrations.add_mcp`, `integrations.review` (a link to the list), and `connect-agent` of WS-55. The first two need `feature:integrations` |
 | `needs` | `integrations`. A connection in `needs_reconnect` or `error`, for admins |
 | `agent` | none |
 
@@ -663,7 +729,7 @@ IN-0 comes first and alone, because it closes live holes.
 | **IN-7** ✅ merged 2026-10-11 (#891) | **GitHub per org.** The device flow writes a member or org connection, not the deployment token. connect-cli goes. `GET /github/account` shows the org's own connection, never the operator's account (IN-D18). **Built as (2026-10-11):** The device poll saves an org connection (`github`, `integrations`) through `connections/store.py`. The login and the scopes sit in the row. `connections/github.py` is the one reader, `token_for_org(org)`. The agent config fetch reads it, and with no connection it sends no token. `GET /github/account` and `GET /test` read the org row only and run no `gh`. `DELETE /integrations/github` deletes the blob. GitHub cannot revoke a device-flow token without the client secret, so the answer says `revoked_at_github: false`. An old `provider_keys` `github:token` row moves into the store on the next read. That fallback read stays for one release. The slice adds no migration. The operator plane keeps `GITHUB_TOKEN`: the model list, the runtime check, the self-mutation PR, the LiteLLM route, the Copilot SDK runtime and the agent-repo clone in `loader.py`. A clone of a private customer repo waits for IN-3. A token that a member saves through configure or `PUT /keys` still lands in `provider_keys`, and the reader moves it. IN-5 retires that path. Fence: `tests/unit/test_github_per_org_r8.py`. | 🟢 AGENT-SAFE | Two orgs hold two tokens. The server's own `gh` token is never imported |
 | **IN-8** 📝 PLAN 2026-10-12 (D98) | **MCP OAuth for an org connection.** An admin connects an MCP server that needs an OAuth consent. The connection acts as that admin at the provider, and the console and each card say so. Dark behind `MCP_OAUTH_ENABLED`, default off. The design, the provider table and the acceptance are in §3.6. It needs IN-4 merged. A member connection over OAuth is out of scope (§1.3) | See IN-8a to IN-8d | Rows O1 to O14 of §3.6.11 pass, each red first. No R8 suite skips |
 | **IN-8a** 🔨 BUILT 2026-10-13, PR #931 | Discovery, CIMD and DCR, PKCE, the signed state, the callback and the store (§3.6.3 to §3.6.6), dark | 🟢 AGENT-SAFE | O1 to O6, O9 and O11 to O13 |
-| **IN-8b** | Refresh at run time, the 401 on connect, and `needs_reconnect` (§3.6.7) | 🟢 AGENT-SAFE | O7, O8 and O14 |
+| **IN-8b** 🔨 BUILT 2026-10-14 | Refresh at run time, the 401 on connect, and `needs_reconnect` (§3.6.7), dark | 🟢 AGENT-SAFE | O7, O8 and O14 |
 | **IN-8c** | The console Connect button, the BFF route for `POST /integrations/mcp/{name}/oauth/start`, the dialog text, the acts-as label and the card line (§3.6.9) | 🟢 AGENT-SAFE | O10. Visual review passes |
 | **IN-8d** | Pre-registered providers: GitHub, Slack and HubSpot (§3.6.2) | 🔴 OWNER-GATE. The owner creates each OAuth app, and its secret goes in the operator plane (D56) | The owner's consent with each provider stores an org connection in Fracktal |
 

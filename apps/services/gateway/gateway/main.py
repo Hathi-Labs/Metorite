@@ -418,6 +418,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.my_day_loop_skipped", error=str(exc))
 
+    # Start the mailbox purge loop (routes/email/memory_purge.py; spec
+    # email_app_master_plan.md §12.3.13.9, WS-17 EM-G11f2). It finishes each
+    # Mem0 purge that a disconnect owes. No flag: with Mem0 off a tick ends
+    # before any database read. Fence: test_email_mailbox_purge_durable.py.
+    try:
+        from gateway.routes.email.memory_purge import start_purge_loop
+        await start_purge_loop()
+    except Exception as exc:
+        _log.warning("gateway.email_purge_loop_skipped", error=str(exc))
+
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
     # as dead. The loop also sweeps: each run a dead process left is closed,
@@ -499,6 +509,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.my_day_loop import stop_my_day_loop
         await stop_my_day_loop()
+    except Exception:
+        pass
+
+    # Stop the mailbox purge loop and wait for a tick in progress.
+    try:
+        from gateway.routes.email.memory_purge import stop_purge_loop
+        await stop_purge_loop()
     except Exception:
         pass
 
@@ -1379,6 +1396,17 @@ try:
     from gateway.routes.integrations_mcp_oauth import router as _mcp_oauth_router
 
     app.include_router(_mcp_oauth_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-55 EA-4b — every agent connection of the org, for an admin of the
+    # Integrations app (external_agent_access.md §5.4). Gated on
+    # feature:integrations AND integrations:manage at the router. With
+    # `agent_access_enabled` off, each route answers 404.
+    from gateway.routes.integrations_agents import router as _integrations_agents_router
+
+    app.include_router(_integrations_agents_router)
 except Exception:  # pragma: no cover
     pass
 

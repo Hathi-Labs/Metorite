@@ -50,6 +50,7 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
+from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from gateway.routes.email.signature import (
     append_signature_text,
@@ -662,14 +663,19 @@ async def _learn_from_sent(account_id: str, thread_id: str, sent_text: str) -> N
                     urow = (await db.execute(text(
                         "SELECT user_id FROM email_accounts WHERE id = :aid"
                     ), {"aid": account_id})).fetchone()
-                uid = (urow.user_id if urow else None) or "default"
-                from acb_memory import add_memories_background  # noqa: PLC0415
-                await add_memories_background(
-                    email_memory_scope(uid, account_id),
-                    [{"role": "assistant",
-                      "content": f"Email reply preference: {stored[0]}"}],
-                    agent_id="email",
-                )
+                # EM-G11f2 item 2: no owner means the mailbox is gone, and a
+                # "default" key is one that no purge finds. So skip the write.
+                scope = writable_memory_scope(
+                    (urow.user_id if urow else None) or "", account_id,
+                    "reply_preference")
+                if scope is not None:
+                    from acb_memory import add_memories_background  # noqa: PLC0415
+                    await add_memories_background(
+                        scope,
+                        [{"role": "assistant",
+                          "content": f"Email reply preference: {stored[0]}"}],
+                        agent_id="email",
+                    )
             except Exception:  # noqa: BLE001
                 pass
             # Regenerate the learned writing style once enough new evidence
@@ -1652,12 +1658,17 @@ async def _orchestrate_draft(
     # Scoped to this inbox (mem_scope) so it reads back under the same key.
     # Skip when the drafter declined or failed: storing "I replied: NO_DRAFT"
     # (or a boilerplate fallback) as precedent poisons future retrievals.
-    if not _is_no_draft(draft):
+    # EM-G11f2 item 2: the write goes only to a key that a mailbox purge
+    # finds. With no mailbox, the old code wrote "default" or the bare member
+    # key, and no disconnect could ever delete that memory.
+    write_scope = (writable_memory_scope(user_email, account_id, "draft_precedent")
+                   if not _is_no_draft(draft) else None)
+    if write_scope is not None:
         try:
             from acb_memory import add_memories_background  # noqa: PLC0415
             _spawn_background(
                 add_memories_background(
-                    mem_scope or "default",
+                    write_scope,
                     [
                         {"role": "user",
                          "content": (

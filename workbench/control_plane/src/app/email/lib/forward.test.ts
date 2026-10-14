@@ -210,7 +210,7 @@ describe("the pane sends the forward through the route", () => {
   it("a sent forward drains its saves, then deletes each draft", () => {
     const finish = pane.slice(pane.indexOf("const finishForward = async"), pane.indexOf("const handleInlineSend"));
     expect(finish).toMatch(
-      /const drained = autosave\.drain\(session\);\s*resetReplySession\(\);\s*await drained;\s*const ids = draftsToDiscard\(/,
+      /const drained = autosave\.drain\(session\);\s*const live = replySessionRef\.current === session;\s*if \(live\) resetReplySession\(\);\s*await drained;\s*const ids = draftsToDiscard\(/,
     );
     // Verifier F1: each draft of the session goes, after the list is known.
     expect(finish).toMatch(

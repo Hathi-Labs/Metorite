@@ -52,7 +52,12 @@ export function buildChart(spec: Spec, width: number, mode: "dark" | "light", fo
   }
 }
 
-export default function LiveChart({ spec }: { spec: Spec }) {
+/**
+ * `bare`: no frame of its own. The chart sits in a chat card's frame, under
+ * the card's header (`ChartCard` in `genUITemplates.tsx`), and a second
+ * border there drew a card in a card.
+ */
+export default function LiveChart({ spec, bare = false }: { spec: Spec; bare?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const mode = useMode();
   const [width, setWidth] = useState(0);
@@ -94,7 +99,11 @@ export default function LiveChart({ spec }: { spec: Spec }) {
   return (
     <div
       ref={box}
-      style={{ width: "100%", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", background: "var(--card)" }}
+      style={
+        bare
+          ? { width: "100%", overflow: "hidden" }
+          : { width: "100%", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", background: "var(--card)" }
+      }
     >
       {built && "error" in built ? (
         <div role="note" style={{ padding: 14, fontSize: TYPE.sm, color: "var(--muted-foreground)" }}>

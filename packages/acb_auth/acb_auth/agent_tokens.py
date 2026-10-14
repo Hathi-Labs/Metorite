@@ -14,7 +14,10 @@ row of ``agent_connection``. The authorization server (EA-2a, the edge's
 cache, :func:`get_client` and :func:`cache_cimd_client`. EA-3a added
 :func:`read_live_connection` for branch 0 of the gateway, and
 :func:`lookup_token` now returns the scopes, the pins, the personal opt-in and
-the origin of the connection it read.
+the origin of the connection it read. EA-4b added :func:`list_connections`
+and :func:`revoke_connection_scoped` for the AI agents view of the
+Integrations app. Both take the organization from the bound request, and the
+revoke matches the member too when the caller is not an admin.
 
 **Why it is in ``acb_auth``.** A token is an identity artifact, and this
 package owns authentication. It follows ``acb_auth.email_otp``, the other
@@ -598,6 +601,161 @@ async def revoke_connection(organization_id: str, connection_id: str) -> None:
     async with _tenant_session(organization_id) as db:
         await _revoke_in(db, organization_id, connection_id)
     _log.warning("agent_tokens.connection_revoked", connection_id=connection_id)
+
+
+# ── The list and the scoped revoke of the Integrations app (EA-4b) ──────────
+
+
+@dataclass(frozen=True)
+class ConnectionRow:
+    """One live connection, as the AI agents view shows it (EA-4b, spec §5.4).
+
+    It holds no token, no hash and no client id. ``last_used_at`` is the last
+    token issue or refresh (rule 6), not the last call, so the view labels it
+    "Last token refresh".
+    """
+
+    id: str
+    member_email: str
+    client_name: str
+    client_origin: str
+    scopes: tuple[str, ...]
+    pinned_projects: tuple[str, ...]
+    include_personal: bool
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime
+
+
+#: The live connections of one organization, or of one member in it. Runs
+#: bound to the tenant. The organization is in the WHERE as well as in the
+#: GUC, for the reason of :data:`_CONNECTION_LIVE_SQL`. The partial index
+#: ``idx_agent_connection_member_live`` of migration 248 serves both reads.
+_LIST_CONNECTIONS_SQL = """
+SELECT CAST(id AS TEXT) AS id, member_email, client_name, client_origin,
+       scopes, CAST(pinned_projects AS TEXT[]) AS pinned_projects,
+       include_personal, created_at, last_used_at, expires_at
+  FROM agent_connection
+ WHERE organization_id = CAST(:org AS UUID)
+   AND revoked_at IS NULL
+   AND expires_at > now()
+   AND (CAST(:member AS TEXT) IS NULL OR member_email = CAST(:member AS TEXT))
+ ORDER BY created_at DESC, id
+"""
+
+#: Revoke ONE connection, only when the caller may: the organization always,
+#: and the member too for a member's own revoke. ``RETURNING`` tells the
+#: caller whether a row matched, so an id of another member or of another
+#: organization changes nothing and the route answers 404.
+#:
+#: ⚠️ The lock order of rule 3 holds. This ``UPDATE`` takes the row lock of
+#: the connection (``FOR NO KEY UPDATE``, because it changes no key), as
+#: :data:`_REVOKE_CONNECTION_SQL` does. The tokens come after it.
+_REVOKE_CONNECTION_SCOPED_SQL = """
+UPDATE agent_connection
+   SET revoked_at = now()
+ WHERE id = CAST(:connection_id AS UUID)
+   AND organization_id = CAST(:org AS UUID)
+   AND revoked_at IS NULL
+   AND (CAST(:member AS TEXT) IS NULL OR member_email = CAST(:member AS TEXT))
+RETURNING id
+"""
+
+
+def _member_filter(member_email: str | None) -> str | None:
+    """The member of a member's read or revoke, normalised as the row is.
+
+    ``None`` means no member filter, which is the admin's act. An empty
+    string is a caller bug: it would match no row, so it raises.
+    """
+    if member_email is None:
+        return None
+    member = member_email.strip().lower()
+    if not member:
+        raise ValueError("a member filter needs the member's email")
+    return member
+
+
+async def list_connections(
+    organization_id: str, *, member_email: str | None = None
+) -> list[ConnectionRow]:
+    """The live connections of *organization_id*, newest first (EA-4b).
+
+    With *member_email*, only that member's rows. Without it, every row of the
+    organization, which is the admin's list. The caller passes the bound
+    tenant and the session's member, never request input (R11). A revoked
+    connection and one past ``expires_at`` are not live, so they do not show.
+    """
+    from sqlalchemy import text
+
+    member = _member_filter(member_email)
+    org = _canonical_uuid(str(organization_id))
+    if org is None:
+        return []
+    async with _tenant_session(org) as db:
+        rows = (
+            await db.execute(
+                text(_LIST_CONNECTIONS_SQL), {"org": org, "member": member}
+            )
+        ).all()
+    return [
+        ConnectionRow(
+            id=row.id,
+            member_email=row.member_email,
+            client_name=row.client_name or "",
+            client_origin=row.client_origin or "",
+            scopes=tuple(row.scopes or ()),
+            pinned_projects=tuple(str(p) for p in row.pinned_projects or ()),
+            include_personal=bool(row.include_personal),
+            created_at=row.created_at,
+            last_used_at=row.last_used_at,
+            expires_at=row.expires_at,
+        )
+        for row in rows
+    ]
+
+
+async def revoke_connection_scoped(
+    organization_id: str,
+    connection_id: str,
+    *,
+    member_email: str | None = None,
+) -> bool:
+    """Revoke *connection_id* when the caller may, and say whether it did (EA-4b).
+
+    The row must be of *organization_id*, and of *member_email* when the
+    caller names one. Then the store revokes the connection and every token
+    of it, in one transaction, in the lock order of rule 3. ``False`` means
+    that no row matched: an unknown id, a revoked one, or one of another
+    member or organization. Nothing changes then, and the tokens stay as
+    they are.
+
+    :func:`revoke_connection` stays as it is. It serves the edge and the
+    approve path, which know the connection from a token row.
+    """
+    from sqlalchemy import text
+
+    member = _member_filter(member_email)
+    org = _canonical_uuid(str(organization_id))
+    connection = _canonical_uuid(str(connection_id).lower())
+    if org is None or connection is None:
+        return False
+    params = {"connection_id": connection, "org": org}
+    async with _tenant_session(org) as db:
+        row = (
+            await db.execute(
+                text(_REVOKE_CONNECTION_SCOPED_SQL), {**params, "member": member}
+            )
+        ).one_or_none()
+        if row is None:
+            return False
+        await db.execute(text(_REVOKE_TOKENS_SQL), params)
+    _log.warning(
+        "agent_tokens.connection_revoked",
+        connection_id=connection,
+        reason="admin" if member is None else "member",
+    )
+    return True
 
 
 # ── Authorization codes ─────────────────────────────────────────────────────
