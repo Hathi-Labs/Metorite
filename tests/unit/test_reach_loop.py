@@ -16,6 +16,7 @@ real SQL.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -110,6 +111,9 @@ def world(monkeypatch):
                  "brief_planned"):
         monkeypatch.setattr(outbox, name, getattr(fake, name))
     monkeypatch.setattr(channel, "deliver", sent)
+    # A fresh stop event: a gateway lifespan in an earlier test stops the
+    # loop, and run_tick returns at once while the event is set (CI order).
+    monkeypatch.setattr(loop, "_stopping", asyncio.Event())
     s = get_settings()
     monkeypatch.setattr(s, "reach_enabled", True)
     monkeypatch.setattr(s, "reach_orgs", ORG)
