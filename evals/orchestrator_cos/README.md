@@ -3,8 +3,9 @@
 This folder holds the eval set of the orchestrator's chief-of-staff role. The
 owning spec is `project-docs/specs/agent_writing_voice.md`, §11.
 
-**Status.** Built on 2026-10-13. The scripted run passes. Nobody has recorded
-the live arms yet, because the build machine had no Router.
+**Status.** Built on 2026-10-13. The scripted run passes. The owner recorded
+the live arms `before` and `role_v1` on 2026-10-14. The `after` arm of the
+brevity rules (spec §11.8) is not run yet.
 
 ## What it measures
 
@@ -38,7 +39,9 @@ counts for a request for detail, and never for the cap.
 | `scripted_answers.json` | A good answer for each case, and a bad answer that fails named checks |
 | `run.py` | The runner |
 | `prompt_before.txt` | The prompt of the orchestrator before the role, for the `before` arm |
-| `results.json` | The live arms, after somebody runs them |
+| `prompt_role_v1.txt` | The prompt of the first role, built from `016703c4d` before spec §11.8, for a control arm |
+| `results.json` | The live arms. It holds `before` and `role_v1`, and the next run adds `after` |
+| `results_2026-10-14.json` | The run of 2026-10-14 as it came out, with the arms `before` and `after` |
 
 An agent wrote each case and each answer. Every name is made up, and every
 address ends in `.example`.
@@ -54,18 +57,29 @@ address ends in `.example`.
 2. Record the live arms by hand, through the Router. Put the key that the
    Router accepts in `LITELLM_API_KEY`. `prompt_before.txt` is the prompt of
    the orchestrator before the role, built on 2026-10-14 from `52172693e`.
-   The `after` arm builds the current prompt itself:
+   The `after` arm builds the current prompt itself. `results.json` already
+   holds `before` and `role_v1`, so the next run needs the `after` arm only:
 
    ```bash
    export LITELLM_BASE_URL=http://127.0.0.1:8080
-   uv run python -m evals.orchestrator_cos.run --live --arm before --prompt-file evals/orchestrator_cos/prompt_before.txt --judge-model tier-balanced
-   uv run python -m evals.orchestrator_cos.run --live --arm after --judge-model tier-balanced
+   uv run python -m evals.orchestrator_cos.run --live --arm after --judge-model tier-powerful
    uv run python -m evals.orchestrator_cos.run --report
+   ```
+
+   The model can drift from one day to the next. To compare on the same day,
+   also run the first role again as a control arm:
+
+   ```bash
+   uv run python -m evals.orchestrator_cos.run --live --arm role_v1_rerun --prompt-file evals/orchestrator_cos/prompt_role_v1.txt --judge-model tier-powerful
    ```
 
    One arm makes about 24 model calls and 12 judge calls. Commit
    `results.json`. When you can, give `--judge-model` a model that is not
    the model under test, because a model grades its own text too kindly.
+
+3. The harness gives `reasoning_content` to each tool turn that it replays. DeepSeek's thinking
+   tier answers 400 without it (spec §11.8). If a vendor refuses the key,
+   add `--no-reasoning-replay`.
 
 ## Exit codes
 

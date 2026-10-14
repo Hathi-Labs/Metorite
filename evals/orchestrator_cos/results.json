@@ -1,0 +1,1020 @@
+{
+  "arms": {
+    "before": {
+      "date": "2026-10-14",
+      "model": "tier-balanced",
+      "prompt_chars": 9218,
+      "summary": {
+        "cases_passed": 7,
+        "cases": 15,
+        "checks": {
+          "bluf": "11/15",
+          "length": "9/14",
+          "no_dump": "15/15",
+          "no_relay": "11/12",
+          "recommendation": "1/2",
+          "mentions": "15/15",
+          "keeps_deliverable": "1/1",
+          "voice": "14/15",
+          "no_tool_name": "15/15",
+          "no_guillemets": "15/15",
+          "one_ask": "0/1"
+        },
+        "routine_words_mean": 112.5,
+        "routine_words_max": 244,
+        "judge_mean": {
+          "bottom_line": 4.6,
+          "distilled": 4.5,
+          "proactive": 4.9,
+          "decision_support": 4.8,
+          "length_fit": 4.9
+        }
+      },
+      "cases": [
+        {
+          "id": "C01",
+          "kind": "status",
+          "text": "Here's where things stand this week across projects, sales, and the inbox.\n\n**Projects**\n- Kestrel printer refresh: on track for 30 Oct release, 14/22 tasks done, no blockers.\n- Vega design review: Thursday 15 Oct at 11:00, 6/9 tasks done. One task stuck on a CAD licence renewal.\n- Lyra launch: on track for 6 Nov, 31/40 tasks done.\n- Orion plant setup: 9/25 tasks done, 4 overdue (oldest 11 days, task #388 electrical sign-off). Owner Divya Nair hasn't commented since 2 Oct.\n- Internal wiki: paused since September.\n\n**Sales**\n- 18 open deals worth Rs 2.4 crore.\n- Three deals moved to Negotiation: Helios Labs (Rs 38 lakh), Tarang Foods (Rs 12 lakh), Nimbus Schools (Rs 9 lakh).\n- One lost: Corvid Tools (Rs 6 lakh) on price, 9 Oct.\n- Acme Robotics renewal (Rs 22 lakh) expires Friday 16 Oct and is not signed yet.\n- Win rate: 31 percent this quarter, down from 36 percent.\n\n**Inbox**\n- 214 new emails, 9 need a reply.\n- Priya Shah (Lyra Components) wrote 11 Oct: motor driver boards for the Lyra launch ship two weeks late, 27 Oct instead of 13 Oct.\n- Kiran at Acme Robotics wants the signed renewal by Thursday.\n\n**Watch items**\n- Acme renewal is the most time-sensitive: expires Friday and is unsigned.\n- Orion has 4 overdue tasks with a silent owner. Worth a nudge.\n- The Lyra board delay lands close to the 6 Nov launch, so timing is tight.\n\nWant me to draft the Acme follow-up, chase Divya on Orion, or both?",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3170,
+            "completion_tokens": 409
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 244,
+          "checks": {
+            "bluf": false,
+            "length": false,
+            "no_dump": true,
+            "no_relay": false,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {}
+        },
+        {
+          "id": "C02",
+          "kind": "attention",
+          "text": "**Today (13 Oct):**\n- #412 Review Q3 board deck\n- #415 Sign off travel policy\n\n**Overdue:**\n- #390 Approve Vega CAD licence renewal, Rs 1.8 lakh (2 days late, Meera Pillai blocked)\n- #377 Reply to auditor questions (6 days late)\n- #366 Update LinkedIn bio (20 days late)\n\n**Deals:**\n- Acme Robotics renewal, Rs 22 lakh, expires Friday. Contract has been with you since 8 Oct; Kiran wants it back by Thursday 15 Oct.\n- Helios Labs next call is 20 Oct (in negotiation).\n\n**Calendar:** 5 meetings, 10:00 to 17:30, with a 45-minute gap at 13:15.\n\nThe two things with a hard deadline are the Acme contract (Thursday) and the Vega CAD approval, which is blocking Meera.",
+          "card": "",
+          "extra_calls": [
+            "call_agent"
+          ],
+          "usage": {
+            "prompt_tokens": 6103,
+            "completion_tokens": 537
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 114,
+          "checks": {
+            "bluf": false,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {}
+        },
+        {
+          "id": "C03",
+          "kind": "decision",
+          "text": "**Hold the price at 8% off. Don't take 12%.**\n\nThe numbers don't support conceding:\n\n- 12% off drops gross margin to 25%, below our volume ceiling of 8% off (28% margin). Going to 12% needs founder approval.\n- Tarang's own claim doesn't hold up. Leela Krishnan says a competitor quoted 10% below list (Rs 10.8 lakh), yet they're asking for 12% off (Rs 10.56 lakh). They want more than their alleged competing offer.\n- No stock pressure forcing a discount. We have 52 K2 units in the warehouse against 34 committed for Oct to Nov, with 60 units a month of capacity.\n\nWhat argues for staying engaged rather than digging in:\n\n- Tarang paid on time on their 2025 order (6 printers at 5% off).\n- They have 3 more plants that may order in 2027, which makes this order a foot in the door, not a one-off.\n\nSo the move is to hold at 8% and use the future volume as the reason, not a concession. Offer 8% off now and a better tier if they convert those 3 plants in 2027. That keeps margin at 28%, answers the competitor angle on value, and gives Leela a path to a better price without us breaking our own ceiling.\n\nI can draft the counter for Leela if you want.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3035,
+            "completion_tokens": 657
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 214,
+          "checks": {
+            "bluf": true,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": true,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C04",
+          "kind": "relay",
+          "text": "Kestrel printer refresh is on track for the 30 Oct 2026 release. Owner: Anil Rao.\n\n- **Progress:** 14 of 22 tasks done (64%). Firmware freeze milestone on 16 Oct.\n- **Done this week:** hot end thermal test (passed, 300°C for 8h), bed levelling firmware, supplier quote for enclosure panels (Sahyadri Plastics).\n- **In progress:** firmware OTA test (60%), packaging artwork (waiting on product photos), user manual, CE certification paperwork (lab slot booked 19 Oct).\n- **Not started:** launch webinar, sales training, price list update, spare parts SKUs.\n- **Budget:** Rs 18.2 lakh of Rs 24 lakh spent (76%).\n- **Risks:** the 19 Oct CE lab slot is the only one before release. A failed test pushes release to mid-November. Neha Joshi holds two tasks due within 4 days of each other.\n\nWant me to update any of these tasks or draw a Gantt chart of the remaining work?",
+          "card": "template progressTracker Kestrel printer refresh Tasks done Budget Rs lakh",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 6539,
+            "completion_tokens": 472
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 143,
+          "checks": {
+            "bluf": true,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C05",
+          "kind": "fact",
+          "text": "The Vega design review is on **Thursday 15 Oct 2026, 11:00–12:30 IST** in Board room 2. It's confirmed, with 7 attendees.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 2799,
+            "completion_tokens": 41
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 24,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C06",
+          "kind": "detail",
+          "text": "All 9 open vendor invoices, every field:\n\nEvery open invoice is above. Key numbers:\n\n- **Total open:** Rs 11,38,500\n- **Overdue:** Rs 1,84,000 (1 invoice: INV-2207, Kaveri Steel, 11 days overdue)\n- **Largest single:** INV-2214, Sahyadri Plastics, Rs 3,10,000\n- **Vendors with multiple open:** Kaveri Steel (2), Deccan Electricals (2), Nilgiri Freight (2)\n\nThe only action item is INV-2207, which is already past its 2 Oct due date.",
+          "card": "component table invoice Invoice vendor Vendor amount Amount issued Issued due Due status Status INV-2207 Kaveri Steel Rs 1,84,000 2 Sep 2 Oct Overdue 11 days INV-2211 Nilgiri Freight Rs 42,500 20 Sep 20 Oct Open INV-2214 Sahyadri Plastics Rs 3,10,000 22 Sep 22 Oct Open INV-2216 Deccan Electricals Rs 58,200 25 Sep 25 Oct Open INV-2219 Kaveri Steel Rs 96,400 28 Sep 28 Oct Open INV-2220 Malabar Logistics Rs 21,000 29 Sep 29 Oct Open INV-2223 Nilgiri Freight Rs 39,800 1 Oct 31 Oct Open INV-2225 Western Ghats Packaging Rs 1,12,000 3 Oct 2 Nov Open INV-2226 Deccan Electricals Rs 74,600 5 Oct 4 Nov Open",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 6524,
+            "completion_tokens": 729
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 64,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": null,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {}
+        },
+        {
+          "id": "C07",
+          "kind": "relay_conflict",
+          "text": "Not fully. The project is flagged on track (31 of 40 tasks done, launch 6 Nov, owner Sanjay Iyer), but there's a supplier slip that isn't reflected in the project status.\n\n- Motor driver boards were due to ship from Lyra Components on 13 Oct. Priya Shah wrote on 11 Oct that they'll now ship **27 Oct** after a reflow oven failure.\n- Final assembly of the first 50 units (task #452, due 30 Oct) depends on those boards. A 27 Oct ship date puts that date under pressure, and it's the critical path into QA (task #455, due 2 Nov).\n- Priya offered to air-freight 20 boards on 20 Oct at Rs 46,000 cost to you. Sanjay hasn't replied.\n\nThe honest read: the schedule still works on paper, but only if the boards land quickly and assembly/QA absorb the delay. The air-freight option is the lever that keeps 30 Oct realistic. No risk is logged on the project yet, so the \"on track\" flag is optimistic.\n\nWant me to draft a reply to Priya, or flag this on the project as a risk?",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 2913,
+            "completion_tokens": 379
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 181,
+          "checks": {
+            "bluf": false,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": false,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 4
+          }
+        },
+        {
+          "id": "C08",
+          "kind": "fact",
+          "text": "Rohan Kulkarni owns the Helios deal ([entity:a41f]).\n\n- Deal: Helios Labs, 12 x K2 Pro\n- Stage: Negotiation\n- Value: Rs 38,00,000\n- Probability: 60%\n- Next step: pricing call on 2026-10-20",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 2750,
+            "completion_tokens": 68
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 28,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {}
+        },
+        {
+          "id": "C09",
+          "kind": "decision",
+          "text": "**Tomas Pereira** is the better fit, and it comes down to two things the brief names directly: CE certification and the 1 Dec start date.\n\n**CE ownership**\n- Tomas has direct CE experience from consumer electronics, plus hardware test rigs, which matches owning CE certification for Kestrel and Lyra.\n- Asha's expertise is ISO 13485 (medical devices), not CE. She's the stronger generalist on paper, but not on the one qualification the role hinges on.\n\n**Start date**\n- Tomas: 30-day notice. He can start by 1 Dec 2026.\n- Asha: 90-day notice. She cannot make the 1 Dec start even if you pick her today.\n\n**The rest**\n- Asha: 9 years total, 4 as lead, interview 4.4/5, one positive reference.\n- Tomas: 6 years total, 2 as lead, interview 4.1/5, no reference call yet.\n\nAsha is more experienced and scores slightly higher, but she's the wrong profile for the job as defined. If you want to keep her as a fallback, that's the only caveat worth flagging.\n\nBefore you sign Tomas, run the reference call. It's the one gap left in his file.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 2871,
+            "completion_tokens": 486
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 177,
+          "checks": {
+            "bluf": true,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": false,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C10",
+          "kind": "attention_quiet",
+          "text": "Nimbus Schools account snapshot:\n\n- **Customer since** 2024, 14 printers installed, all under warranty until 2027.\n- **Open deal**: \"Nimbus 6 more printers\", Rs 9 lakh, in Negotiation. Next call 22 Oct 2026, owner Rohan Kulkarni.\n- **Support**: last ticket closed 30 Sep (filament jam, solved in 1 day). No open issues.\n- **Billing**: all invoices paid on time.\n- **Health**: NPS 9/10 (reply 5 Oct).\n\nThe one thing to watch is the 22 Oct call with Rohan on the six-printer deal.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 2800,
+            "completion_tokens": 181
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 77,
+          "checks": {
+            "bluf": false,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {
+            "bottom_line": 2,
+            "distilled": 3,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C11",
+          "kind": "deliverable",
+          "text": "Here's the draft:\n\n**Subject: Re: Motor driver boards, revised shipping**\n\nHi Priya,\n\nThanks for the early warning. Please go ahead with the split: send the 20 boards by air on 20 Oct, and we will cover the Rs 46,000 freight. Ship the remaining boards on 27 Oct as planned.\n\nCan you confirm the air waybill number once the first batch leaves?\n\nBest,\nSanjay",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 2820,
+            "completion_tokens": 157
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 63,
+          "checks": {
+            "bluf": true,
+            "length": null,
+            "no_dump": true,
+            "no_relay": null,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": true,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {}
+        },
+        {
+          "id": "C12",
+          "kind": "expand",
+          "text": "Eight tasks are still open on Kestrel:\n\n- **#312** Firmware OTA test, Joel Dsouza, due 16 Oct, 60% done.\n- **#314** Packaging artwork, Neha Joshi, due 19 Oct, waiting on final product photos.\n- **#316** User manual, Neha Joshi, due 23 Oct.\n- **#318** CE certification paperwork, Anil Rao, due 21 Oct, lab slot booked 19 Oct.\n- **#320** Launch webinar, unassigned, due 28 Oct.\n- **#321** Sales training, Ravi Menon, due 27 Oct.\n- **#322** Price list update, Divya Nair, due 26 Oct.\n- **#323** Spare parts SKUs, unassigned, due 26 Oct.\n\nBudget is Rs 18.2 lakh of Rs 24 lakh spent. Two tasks have no owner yet: #320 and #323.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 2949,
+            "completion_tokens": 207
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 104,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": null,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 2,
+            "proactive": 4,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C13",
+          "kind": "no_tool_names",
+          "text": "The number comes from the CRM mirror of Zoho, refreshed at 06:00 today.\n\n- **18 deals**: every deal not in Won or Lost.\n- **Rs 2.4 crore**: the sum of those deals' amounts.\n- Two deals have no amount, so they count in the 18 but add nothing to the value.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 2796,
+            "completion_tokens": 102
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 49,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C14",
+          "kind": "no_guillemets",
+          "text": "Priya Raman finished 3 tasks this week:\n\n- #5 Notification engine for projects (12 Oct)\n- #18 Billing page copy (9 Oct)\n- #22 Fix CSV export in Safari (8 Oct)",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 2745,
+            "completion_tokens": 45
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 28,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C15",
+          "kind": "one_ask",
+          "text": "Two 2-hour slots work for all five of you in the next two weeks:\n\n- Tuesday 20 Oct, 15:00–17:00\n- Thursday 22 Oct, 10:00–12:00\n\nThe last review ran in Board room 2. Two things are still open:\n\n- The agenda isn't set.\n- No deck owner is assigned.\n\nWant me to lock in one of those slots and send the invite? And who should own the deck this quarter?",
+          "card": "",
+          "extra_calls": [
+            "call_agent"
+          ],
+          "usage": {
+            "prompt_tokens": 5660,
+            "completion_tokens": 409
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 71,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": false
+          },
+          "pass": false,
+          "judge": {
+            "bottom_line": 4,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 3,
+            "length_fit": 5
+          }
+        }
+      ]
+    },
+    "role_v1": {
+      "date": "2026-10-14",
+      "model": "tier-balanced",
+      "prompt_chars": 11093,
+      "summary": {
+        "cases_passed": 7,
+        "cases": 15,
+        "checks": {
+          "bluf": "12/15",
+          "length": "7/14",
+          "no_dump": "15/15",
+          "no_relay": "12/12",
+          "recommendation": "2/2",
+          "mentions": "15/15",
+          "keeps_deliverable": "1/1",
+          "voice": "13/15",
+          "no_tool_name": "15/15",
+          "no_guillemets": "15/15",
+          "one_ask": "1/1"
+        },
+        "routine_words_mean": 112.7,
+        "routine_words_max": 232,
+        "judge_mean": {
+          "bottom_line": 5.0,
+          "distilled": 5.0,
+          "proactive": 5.0,
+          "decision_support": 5.0,
+          "length_fit": 5.0
+        }
+      },
+      "cases": [
+        {
+          "id": "C01",
+          "kind": "status",
+          "text": "**Bottom line:** most things are moving, but three items need your attention this week: a supplier delay on Lyra, an unsigned renewal that expires Friday, and a stalled plant project.\n\n- **Lyra launch (6 Nov)** is at risk. Priya Shah at Lyra Components emailed 11 Oct that the motor driver boards ship 27 Oct instead of 13 Oct, two weeks late.\n- **Acme Robotics renewal** (Rs 22 lakh) expires Friday 16 Oct and is still unsigned. Kiran asked for it by Thursday.\n- **Orion plant setup** is slipping. 9 of 25 tasks done, 4 overdue (oldest is electrical sign-off, task #388, 11 days late). Divya Nair hasn't commented since 2 Oct.\n- **Kestrel printer refresh** is healthy: 14 of 22 tasks done, on track for 30 Oct, no blockers.\n- **Pipeline** holds 18 open deals worth Rs 2.4 crore. Three moved to Negotiation (Helios Labs Rs 38 lakh, Tarang Foods Rs 12 lakh, Nimbus Schools Rs 9 lakh). One loss: Corvid Tools, Rs 6 lakh, on price. Win rate dipped to 31 percent from 36.\n\nAlso on the board: Vega design review is booked Thursday 15 Oct at 11:00, but its CAD export task waits on a licence renewal; the internal wiki has been paused since September; and 9 emails need replies.\n\nWhat do you want to tackle first: the Acme renewal, the Lyra board delay, or the Orion overdue tasks?",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3624,
+            "completion_tokens": 393
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 227,
+          "checks": {
+            "bluf": true,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {}
+        },
+        {
+          "id": "C02",
+          "kind": "attention",
+          "text": "Here's what's on your plate today, most urgent first.\n\n**Needs you now**\n- Acme Robotics renewal (Rs 22 lakh) expires Friday. The contract has been sitting with you since 8 Oct and Kiran wants it back by Thursday 15 Oct.\n- Approve the Vega CAD licence renewal, Rs 1.8 lakh. It's 2 days overdue and Meera Pillai is blocked on it.\n- Reply to the auditor's questions. Overdue 6 days.\n\n**Due today**\n- Review the Q3 board deck.\n- Sign off the travel policy.\n\n**Low priority but stale**\n- Update your LinkedIn bio. Overdue 20 days, so either do it in 10 minutes today or close the task.\n\nYour calendar is full from 10:00 to 17:30, with one 45-minute gap at 13:15. That gap is the practical window for the Acme signature and the CAD approval.\n\nWant me to draft the Acme contract follow-up to Kiran, or start with the auditor reply?",
+          "card": "",
+          "extra_calls": [
+            "call_agent"
+          ],
+          "usage": {
+            "prompt_tokens": 7010,
+            "completion_tokens": 473
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 149,
+          "checks": {
+            "bluf": false,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {}
+        },
+        {
+          "id": "C03",
+          "kind": "decision",
+          "text": "Counter at 8 percent. Don't give 12.\n\nThe numbers: 12 percent off drops you to Rs 10.56 lakh at 25 percent margin; 8 percent off is Rs 11.04 lakh at 28 percent. Leela's competitor quote is 10 percent below list, so she's asking you to beat it by 2 percent for no reason.\n\n- Your ceiling without founder sign-off is 8 percent, and it still beats the repeat-buyer case: Tarang paid on time last year.\n- Capacity is not the excuse it might look like. You hold 52 K2 units and make 60 a month against 34 committed for Oct-Nov [entity:7c1e] [entity:91aa], so you can absorb 40 units easily and want the volume.\n- The real asset is 2027: three more plants could order. That's the lever to protect margin now.\n\nOptions:\n\n- Hold list: Rs 12 lakh, 34 percent margin. You likely lose to the 10-percent competitor.\n- Counter at 8 percent (recommended): Rs 11.04 lakh, 28 percent, no approval needed. Offer a written 2027 three-plant commitment as the reason.\n- Match at 10 percent: Rs 10.8 lakh, about 26.5 percent, needs your approval. Only if Leela won't move off the competitor and you want to lock the relationship.\n- Give 12: Rs 10.56 lakh, 25 percent, needs your approval. Leaves 2 percent on the table versus the competitor quote.\n\nIf you want, I'll draft the counter to Leela at 8 percent with the 2027 hook.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3489,
+            "completion_tokens": 1293
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 232,
+          "checks": {
+            "bluf": true,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": true,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {}
+        },
+        {
+          "id": "C04",
+          "kind": "relay",
+          "text": "**Kestrel printer refresh** is on track for the 30 Oct release: 14 of 22 tasks done, owner Anil Rao.\n\n- The CE test lab slot on 19 Oct is the only one before release. If it fails, release slips to mid-November.\n- Firmware OTA test (Joel) is 60% done, due 16 Oct; firmware freeze is the next milestone on 16 Oct.\n- Neha holds two tasks due within 4 days: packaging artwork (19 Oct, waiting on product photos) and the user manual (23 Oct).\n- Four launch tasks are not started yet: webinar, sales training, price list, spare parts SKUs.\n- Budget at Rs 18.2 lakh of Rs 24 lakh (76%).\n\nBiggest risk is the CE lab slot on 19 Oct. Want me to flag the not-started launch tasks to their owners?",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3558,
+            "completion_tokens": 188
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 127,
+          "checks": {
+            "bluf": true,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C05",
+          "kind": "fact",
+          "text": "The Vega design review is **Thursday 15 October, 11:00–12:30**, in Board room 2. It's confirmed, with 7 attendees, and Meera Pillai is the organizer.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3253,
+            "completion_tokens": 45
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 27,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C06",
+          "kind": "detail",
+          "text": "Here are all 9 open vendor invoices as of 13 Oct 2026.\n\n| Invoice | Vendor | Amount | Issued | Due | Status |\n|---|---|---|---|---|---|\n| INV-2207 | Kaveri Steel | Rs 1,84,000 | 2 Sep | 2 Oct | Overdue 11 days |\n| INV-2211 | Nilgiri Freight | Rs 42,500 | 20 Sep | 20 Oct | Open |\n| INV-2214 | Sahyadri Plastics | Rs 3,10,000 | 22 Sep | 22 Oct | Open |\n| INV-2216 | Deccan Electricals | Rs 58,200 | 25 Sep | 25 Oct | Open |\n| INV-2219 | Kaveri Steel | Rs 96,400 | 28 Sep | 28 Oct | Open |\n| INV-2220 | Malabar Logistics | Rs 21,000 | 29 Sep | 29 Oct | Open |\n| INV-2223 | Nilgiri Freight | Rs 39,800 | 1 Oct | 31 Oct | Open |\n| INV-2225 | Western Ghats Packaging | Rs 1,12,000 | 3 Oct | 2 Nov | Open |\n| INV-2226 | Deccan Electricals | Rs 74,600 | 5 Oct | 4 Nov | Open |\n\nTotal open: **Rs 11,38,500**\n\nOne thing to flag: INV-2207 (Kaveri Steel, Rs 1,84,000) is 11 days overdue. That's the only overdue invoice in the set.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3463,
+            "completion_tokens": 858
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 136,
+          "checks": {
+            "bluf": false,
+            "length": true,
+            "no_dump": true,
+            "no_relay": null,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {}
+        },
+        {
+          "id": "C07",
+          "kind": "relay_conflict",
+          "text": "Not fully. The project is marked on track (31 of 40 tasks done, launch 6 Nov), but there's a supplier slip that isn't logged as a risk.\n\n**The problem:** Lyra Components' motor driver boards were due 13 Oct, but after a reflow oven failure they now ship 27 Oct. Final assembly of the first 50 units (task #452, due 30 Oct) depends on those boards, so it's now squeezed against the launch date.\n\n**What Priya offered:** a split order — 20 boards by air on 20 Oct at your cost (Rs 46,000). Sanjay hasn't replied yet.\n\n**Decision for you:** pay for the air shipment to get 20 boards early, or wait for the full order on 27 Oct and risk pushing the 30 Oct assembly deadline. The air option is Rs 46,000 to protect the schedule.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3367,
+            "completion_tokens": 274
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 135,
+          "checks": {
+            "bluf": false,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": false,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {}
+        },
+        {
+          "id": "C08",
+          "kind": "fact",
+          "text": "Rohan Kulkarni owns the Helios deal ([entity:a41f]). It's in Negotiation, worth Rs 38,00,000, with a pricing call set for 20 Oct.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3204,
+            "completion_tokens": 42
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 22,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C09",
+          "kind": "decision",
+          "text": "Hire Tomas Pereira.\n\nThe brief has two hard gates, and Tomas clears both. Asha fails one.\n\n- **Start date**: you need someone by 1 Dec 2026. Tomas has a 30-day notice and can start mid-November. Asha needs 90 days, so she lands mid-January, six weeks late for a Q1 2027 CE deadline.\n- **The core job is CE certification** for Kestrel and Lyra. Tomas has done CE work directly. Asha's strength is ISO 13485 and medical device QA, which is adjacent but not the certification you need.\n- **Experience gap is real but manageable**: Asha has 9 years (4 as lead) vs Tomas's 6 (2 as lead), and scores higher (4.4 vs 4.1). That matters less than the two gates above.\n- **Cost favours Tomas**: Rs 26 lakh vs Rs 32 lakh.\n\nOne open item before you sign: run Tomas's reference call. He has none done yet, while Asha has one positive. If the reference comes back weak, revisit before the offer.\n\nWhat happens next: you confirm the hire, and I'll flag that the reference call goes out this week.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3325,
+            "completion_tokens": 583
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 176,
+          "checks": {
+            "bluf": true,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": true,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C10",
+          "kind": "attention_quiet",
+          "text": "Healthy account, nothing urgent. One open deal worth watching.\n\n- **Open deal: \"Nimbus 6 more printers\"** — Rs 9 lakh, in negotiation, next call 22 Oct, owned by Rohan Kulkarni.\n- **Installed base:** 14 printers, all on warranty until 2027.\n- **Support:** last ticket (filament jam) closed 30 Sep in one day. No open issues.\n- **Billing:** all invoices paid on time.\n- **Sentiment:** NPS 9/10 on 5 Oct.\n\nThe one thing on your calendar is that 22 Oct call. Want me to prep a note on where the negotiation stands?",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3254,
+            "completion_tokens": 309
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 85,
+          "checks": {
+            "bluf": true,
+            "length": false,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": false,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": false,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C11",
+          "kind": "deliverable",
+          "text": "Subject: Re: Motor driver boards, revised shipping\n\nHi Priya,\n\nThanks for the early warning. Please go ahead with the split: send the 20 boards by air on 20 Oct, and we will cover the Rs 46,000 freight. Ship the remaining boards on 27 Oct as planned.\n\nCan you confirm the air waybill number once the first batch leaves?\n\nBest,\nSanjay",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3274,
+            "completion_tokens": 108
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 60,
+          "checks": {
+            "bluf": true,
+            "length": null,
+            "no_dump": true,
+            "no_relay": null,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": true,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {}
+        },
+        {
+          "id": "C12",
+          "kind": "expand",
+          "text": "Eight tasks are still open on Kestrel. Here is everything left:\n\n- #312 Firmware OTA test, Joel Dsouza, due 16 Oct, 60% done.\n- #314 Packaging artwork, Neha Joshi, due 19 Oct, blocked on final product photos.\n- #316 User manual, Neha Joshi, due 23 Oct.\n- #318 Certification paperwork (CE), Anil Rao, due 21 Oct, lab slot booked 19 Oct.\n- #320 Launch webinar, unassigned, due 28 Oct.\n- #321 Sales training, Ravi Menon, due 27 Oct.\n- #322 Price list update, Divya Nair, due 26 Oct.\n- #323 Spare parts SKUs, unassigned, due 26 Oct.\n\nBudget: Rs 18.2 lakh of Rs 24 lakh spent.\n\nTwo things to watch. The CE test on 19 Oct is the only lab slot before the 30 Oct release, so any failure moves launch to mid-November. And two tasks have no owner yet: the launch webinar (#320) and spare parts SKUs (#323). Want me to assign either?",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3403,
+            "completion_tokens": 253
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 146,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": null,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {}
+        },
+        {
+          "id": "C13",
+          "kind": "no_tool_names",
+          "text": "It comes from the CRM mirror of Zoho, refreshed at 06:00 today. It counts every deal not marked Won or Lost: 18 deals. The Rs 2.4 crore is the sum of the deal amounts. Two deals have no amount, so they count in the 18 but add nothing to the value.",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3250,
+            "completion_tokens": 91
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 52,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C14",
+          "kind": "no_guillemets",
+          "text": "Priya finished 3 tasks this week:\n\n- #5 Notification engine for projects, done 12 Oct\n- #18 Billing page copy, done 9 Oct\n- #22 Fix CSV export in Safari, done 8 Oct",
+          "card": "",
+          "extra_calls": [],
+          "usage": {
+            "prompt_tokens": 3199,
+            "completion_tokens": 49
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 30,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": null
+          },
+          "pass": true,
+          "judge": {
+            "bottom_line": 5,
+            "distilled": 5,
+            "proactive": 5,
+            "decision_support": 5,
+            "length_fit": 5
+          }
+        },
+        {
+          "id": "C15",
+          "kind": "one_ask",
+          "text": "The two-hour board review fits two slots where everyone is free: **Tue 20 Oct, 15:00 to 17:00** or **Thu 22 Oct, 10:00 to 12:00**. The agenda and deck owner are still open, and the last review ran in Board room 2.\n\nPick the slot and I'll book it.\n\nBooked: **Q4 board review, Tue 20 Oct, 15:00 to 17:00, Board room 2**, with the founder and the four board members.\n\nThe agenda and deck owner are still open. Want me to draft the agenda next?",
+          "card": "formCard Q4 board review slot select Pick a slot Tue 20 Oct, 15:00 to 17:00 Thu 22 Oct, 10:00 to 12:00 room select Room Board room 2 Board room 1 Video",
+          "extra_calls": [
+            "call_agent"
+          ],
+          "usage": {
+            "prompt_tokens": 10261,
+            "completion_tokens": 489
+          },
+          "served_model": "deepseek-v4-pro",
+          "words": 90,
+          "checks": {
+            "bluf": true,
+            "length": true,
+            "no_dump": true,
+            "no_relay": true,
+            "recommendation": null,
+            "mentions": true,
+            "keeps_deliverable": null,
+            "voice": true,
+            "no_tool_name": true,
+            "no_guillemets": true,
+            "one_ask": true
+          },
+          "pass": true,
+          "judge": {}
+        }
+      ]
+    }
+  }
+}
