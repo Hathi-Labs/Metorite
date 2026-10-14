@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from acb_common import get_logger, get_settings
+from acb_common.paging import bounds, page_line, paged, prefix_limit, prefix_page
 
 # H-236: every tool states ``open_world``, and a tool that omits it counts as
 # a send (``acb_skills.egress`` fails closed). ``True`` marks a tool that can
@@ -776,9 +777,10 @@ async def read_email_attachment(email_id: str, attachment: str) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def read_thread(email_id: str = "", thread_id: str = "") -> str:
+async def read_thread(email_id: str = "", thread_id: str = "",
+                      offset: int = 0) -> str:
     """Read an ENTIRE email conversation in ONE call — every message's sender,
-    date and body, oldest first.
+    date and body, oldest first, 25 messages a page (offset reads the next).
 
     PREFER THIS over calling read_email repeatedly to gather a thread's context:
     one call returns the whole chain. Pass the open email's id (its thread is
@@ -798,13 +800,16 @@ async def read_thread(email_id: str = "", thread_id: str = "") -> str:
             return await read_email(email_id)  # standalone message, no thread
     elif not tid:
         return "Provide an email_id or a thread_id to read a thread."
-    params: dict[str, Any] = {"thread_id": tid, "page_size": "50"}
+    start, size = _page_start(offset, _THREAD_PAGE)
+    params: dict[str, Any] = {"thread_id": tid, "page_size": str(size),
+                              "page": str(start // size + 1)}
     if acct:
         params["account_id"] = acct
     data = await _get("/email/messages", params)
     msgs = data.get("emails", [])
+    total = int(data.get("total") or len(msgs))
     if not msgs:
-        return "No messages found in that thread."
+        return page_line(total, start, 0) or "No messages found in that thread."
     boxes = sorted({str(m.get("account_id")) for m in msgs if m.get("account_id")})
     if len(boxes) > 1:
         # A conversation never spans two mailboxes (D-EM-22, MB-12).
@@ -817,8 +822,8 @@ async def read_thread(email_id: str = "", thread_id: str = "") -> str:
         )
     subject = next(
         (m.get("subject") for m in msgs if m.get("subject")), "(no subject)")
-    out = [f"Thread: {subject} — {len(msgs)} message(s), oldest first:"]
-    for i, e in enumerate(msgs[:25], 1):
+    out = [f"Thread: {subject} — {total} message(s), oldest first:"]
+    for i, e in enumerate(msgs, start + 1):
         frm = e.get("from_address", {}) or {}
         you = " (you sent)" if (e.get("folder") or "").lower() == "sent" else ""
         body = (e.get("body_text") or e.get("snippet") or "").strip()
@@ -827,60 +832,83 @@ async def read_thread(email_id: str = "", thread_id: str = "") -> str:
             f"Date: {e.get('received_at', '')}\n"
             f"    {body[:1500]}"
         )
-    if len(msgs) > 25:
-        out.append(f"… and {len(msgs) - 25} earlier message(s) omitted.")
+    if line := page_line(total, start, len(msgs)):
+        # Oldest first, so the rows past this page are the NEWER ones.
+        out.append(line)
     return "\n\n".join(out)
 
 
+#: Messages a page in read_thread, and urgent mails a page in find_urgent.
+_THREAD_PAGE = 25
+_URGENT_PAGE = 10
+
+
+def _page_start(offset: Any, size: int) -> tuple[int, int]:
+    """A page of ``size`` on a page-numbered route. The offset rounds down
+    to a page boundary, so the start that the hint names is the real one."""
+    start, size = bounds(offset, size, default=size)
+    return start // size * size, size
+
+
 @_annotate_risk(open_world=False)
-async def find_urgent(account_id: str | None = None) -> str:
+async def find_urgent(account_id: str | None = None, offset: int = 0) -> str:
     """Find emails that look urgent / need attention soon."""
+    start, size = _page_start(offset, _URGENT_PAGE)
     params: dict[str, Any] = {
         "query": "urgent OR deadline OR ASAP OR action required OR by EOD",
-        "page_size": "20",
+        "page_size": str(size), "page": str(start // size + 1),
     }
     if account_id:
         params["account_id"] = account_id
     data = await _get("/email/messages", params)
     emails = data.get("emails", [])
+    total = int(data.get("total") or len(emails))
     if not emails:
-        return "No urgent emails found."
+        return page_line(total, start, 0) or "No urgent emails found."
     # Tag each result with its account when the query spans multiple accounts
     # (no account_id given) so cross-account results aren't ambiguous.
     labels = {} if account_id else await _account_labels()
     multi = len(labels) > 1
     lines = ["Urgent / needs attention:"]
-    for e in emails[:10]:
+    for e in emails:
         frm = e.get("from_address", {}) or {}
         acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
         lines.append(
             f"• id={e.get('id')}{acct}{_link_field(e.get('id'), e.get('subject'))} | "
             f"{frm.get('name') or frm.get('email')}: {e.get('subject', '(no subject)')}"
         )
+    if line := page_line(total, start, len(emails)):
+        lines.append(line)
     return "\n".join(lines)
 
 
 @_annotate_risk(open_world=False)
-async def find_needs_reply(account_id: str) -> str:
+async def find_needs_reply(account_id: str, offset: int = 0) -> str:
     """List threads whose latest message is inbound and awaiting your reply."""
+    # `/email/reply-zero` has a LIMIT (at most 200) and no OFFSET.
+    start, size, ask = prefix_limit(offset, 15, default=15, cap=200)
     data = await _get(
         "/email/reply-zero",
-        {"account_id": account_id, "type": "needs_reply", "limit": "30"},
+        {"account_id": account_id, "type": "needs_reply", "limit": str(ask)},
     )
-    threads = data.get("threads", [])
-    if not threads:
-        return "Nothing needs a reply — inbox zero!"
+    page = prefix_page(data.get("threads", []), start, size, cap=200, asked=ask,
+                       noun="threads")
+    if not page.items:
+        return page.line or "Nothing needs a reply — inbox zero!"
     lines = ["Needs reply:"]
-    for t in threads[:15]:
+    for t in page.items:
         lines.append(
             f"• id={t.get('message_id')}{_link_field(t.get('message_id'), t.get('subject'))} | "
             f"{t.get('from')}: {t.get('subject')}"
         )
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
 @_annotate_risk(open_world=False)
-async def find_priority(account_id: str, kind: str = "needs_reply") -> str:
+async def find_priority(account_id: str, kind: str = "needs_reply",
+                        offset: int = 0) -> str:
     """Surface the emails that most need attention, by ``kind``:
 
       • ``needs_reply`` (default) — threads whose latest message is inbound and
@@ -892,14 +920,15 @@ async def find_priority(account_id: str, kind: str = "needs_reply") -> str:
 
     Results render as an interactive card. For a categorized breakdown across
     departments/projects, gather ids here and pass them to present_email_groups.
+    offset reads the next page.
     """
     k = (kind or "needs_reply").strip().lower()
     if k in ("important", "priority", "check"):
-        return await get_important_emails(account_id)
+        return await get_important_emails(account_id, offset=offset)
     if k in ("urgent", "time_sensitive", "urgent_or_important"):
-        return await find_urgent(account_id)
+        return await find_urgent(account_id, offset=offset)
     # Default and any unknown value → needs-reply (the most common ask).
-    return await find_needs_reply(account_id)
+    return await find_needs_reply(account_id, offset=offset)
 
 
 @_annotate_risk(open_world=False)
@@ -943,6 +972,7 @@ async def query_inbox(
     importance: str | None = None,
     sort: str = "newest",
     limit: int = 25,
+    offset: int = 0,
 ) -> str:
     """Search and filter the inbox to answer questions spanning MANY emails.
 
@@ -956,11 +986,13 @@ async def query_inbox(
       from_email: substring of the sender's address
       unread_only / starred_only / has_attachments / importance (high|normal|low)
       sort: newest | oldest | importance
+      limit / offset: a page of results (limit at most 100)
     Returns matching emails with ids; call read_email for an id's full content.
     """
+    start, size = _page_start(offset, max(1, min(int(limit or 25), 100)))
     params: dict[str, Any] = {
         "folder": folder, "account_id": account_id, "sort": sort,
-        "page_size": str(max(1, min(limit, 100))),
+        "page_size": str(size), "page": str(start // size + 1),
     }
     if query:
         params["query"] = query
@@ -985,8 +1017,8 @@ async def query_inbox(
     emails = data.get("emails", [])
     total = data.get("total", 0)
     if not emails:
-        return "No emails matched those filters."
-    shown = emails[:limit]
+        return page_line(total, start, 0) or "No emails matched those filters."
+    shown = emails
     lines = [f"Found {total} emails ({query or 'filtered'}); showing {len(shown)}:"]
     for e in shown:
         frm = e.get("from_address", {}) or {}
@@ -1005,8 +1037,8 @@ async def query_inbox(
             f"{e.get('subject', '(no subject)')}{flag} — "
             f"{(e.get('snippet') or '')[:80]}"
         )
-    if total > len(shown):
-        lines.append(f"… and {total - len(shown)} more (refine filters or raise limit)")
+    if line := page_line(total, start, len(shown)):
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -1196,27 +1228,33 @@ async def query_insights(
 
 
 @_annotate_risk(open_world=False)
-async def get_important_emails(account_id: str, days: int = 30) -> str:
+async def get_important_emails(account_id: str, days: int = 30,
+                               offset: int = 0) -> str:
     """The emails that most need attention — answers "what are the most important
     emails I need to check?".
 
     Ranks recent inbox threads by needs-reply status, unread, high importance,
     starred, and personal/support senders; excludes newsletters, marketing,
     notifications and cold email so the list stays high-signal."""
+    # `/email/priority` ranks with a LIMIT (at most 100) and no OFFSET.
+    start, size, ask = prefix_limit(offset, 20, default=20, cap=100)
     data = await _get(
         "/email/priority",
-        {"account_id": account_id, "days": days, "limit": 20},
+        {"account_id": account_id, "days": days, "limit": ask},
     )
-    emails = data.get("emails", [])
-    if not emails:
-        return "Nothing pressing — no high-priority emails to check right now."
+    page = prefix_page(data.get("emails", []), start, size, cap=100, asked=ask,
+                       noun="emails")
+    if not page.items:
+        return page.line or "Nothing pressing — no high-priority emails to check right now."
     lines = ["Most important emails to check:"]
-    for e in emails:
+    for e in page.items:
         lines.append(
             f"• id={e.get('message_id')}{_link_field(e.get('message_id'), e.get('subject'))} | "
             f"{e.get('from')}: "
             f"{e.get('subject')} — ({e.get('reason')})"
         )
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
@@ -2301,7 +2339,7 @@ async def find_follow_ups(account_id: str) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def suggest_unsubscribes(account_id: str | None = None) -> str:
+async def suggest_unsubscribes(account_id: str | None = None, offset: int = 0) -> str:
     """Surface likely newsletters/subscriptions to consider unsubscribing from."""
     params: dict[str, Any] = {"folder": "inbox", "limit": "200"}
     if account_id:
@@ -2313,12 +2351,21 @@ async def suggest_unsubscribes(account_id: str | None = None) -> str:
     ]
     if not senders:
         return "No obvious newsletters to unsubscribe from."
+    page = paged(senders, offset, 10, default=10, noun="candidates")
+    if not page.items:
+        return page.line
     lines = ["Unsubscribe candidates (low read-rate / has unsubscribe link):"]
-    for s in senders[:10]:
+    for s in page.items:
         lines.append(
             f"• {s.get('name') or s.get('email')} — {s.get('count')} emails, "
             f"{round(s.get('read_rate', 0) * 100)}% read"
         )
+    if page.line:
+        lines.append(page.line)
+    if int(data.get("total") or 0) > 200:
+        # The scan reads the 200 biggest senders. Say so, so a smaller sender
+        # is not read as "not a candidate".
+        lines.append(f"Checked the 200 biggest of {data['total']} senders.")
     return "\n".join(lines)
 
 
@@ -2826,7 +2873,7 @@ async def forward_email(
 # ── Attachments / artifacts ──────────────────────────────────────────────────
 
 @_annotate_risk(open_world=False)
-async def list_artifacts(agent_name: str = "email-assistant") -> str:
+async def list_artifacts(agent_name: str = "email-assistant", offset: int = 0) -> str:
     """List the files you can attach to emails: the files in your own
     email-assistant workspace. Attach a file by passing its path in
     ``attachments``. Create new files with write_artifact. You cannot attach a
@@ -2837,12 +2884,17 @@ async def list_artifacts(agent_name: str = "email-assistant") -> str:
     if not arts:
         return f"No files in {agent_name}'s workspace yet."
     own = agent_name == "email-assistant"
-    lines = [f"Files in {agent_name}'s workspace:"]
-    for a in arts[:30]:
+    page = paged(arts, offset, 30, default=30, noun="files")
+    if not page.items:
+        return page.line
+    lines = [f"Files in {agent_name}'s workspace ({len(arts)}):"]
+    for a in page.items:
         p = a.get("path")
         spec = p if own else f"{agent_name}:{p}"
         size = a.get("size", 0)
         lines.append(f"• {spec}  ({size} bytes, {a.get('mime_type', '')})")
+    if page.line:
+        lines.append(page.line)
     lines.append("Attach any of these by passing its path in `attachments`.")
     return "\n".join(lines)
 
@@ -3155,15 +3207,22 @@ async def keep_newsletter(account_id: str, email: str) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def list_cold_senders(account_id: str) -> str:
+async def list_cold_senders(account_id: str, offset: int = 0) -> str:
     """List senders flagged by the cold-email blocker."""
     data = await _get("/email/cold-senders", {"account_id": account_id})
     senders = data.get("cold_senders", [])
     if not senders:
         return "No cold senders flagged."
+    # The route returns the newest 500 (`LIMIT 500`), with no OFFSET.
+    start, size = bounds(offset, 20, default=20)
+    page = prefix_page(senders, start, size, cap=500, noun="senders")
+    if not page.items:
+        return page.line
     lines = ["Cold senders:"]
-    for s in senders[:20]:
+    for s in page.items:
         lines.append(f"• {s.get('from_email')} [{s.get('status')}]")
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
@@ -3225,22 +3284,28 @@ async def reclassify_reply_zero(account_id: str) -> str:
 # ── Rules history (approve / reject / undo) ──────────────────────────────────
 
 @_annotate_risk(open_world=False)
-async def list_rule_history(account_id: str, limit: int = 15) -> str:
+async def list_rule_history(account_id: str, limit: int = 15, offset: int = 0) -> str:
     """List recent rule executions (what rules did to which mail), including
-    PENDING items awaiting approval and APPLIED items you can undo."""
+    PENDING items awaiting approval and APPLIED items you can undo. offset
+    reads the next page."""
+    # `/email/rules/history` has a LIMIT (at most 500) and no OFFSET.
+    start, size, ask = prefix_limit(offset, limit, default=15, cap=500)
     data = await _get(
-        "/email/rules/history", {"account_id": account_id, "limit": limit}
+        "/email/rules/history", {"account_id": account_id, "limit": ask}
     )
-    history = data.get("history", [])
-    if not history:
-        return "No rule history yet."
+    page = prefix_page(data.get("history", []), start, size, cap=500, asked=ask,
+                       noun="executions")
+    if not page.items:
+        return page.line or "No rule history yet."
     lines = ["Recent rule activity:"]
-    for h in history[:limit]:
+    for h in page.items:
         acts = ", ".join(h.get("actions", []))
         lines.append(
             f"• id={h.get('id')} [{h.get('status')}] {h.get('rule_name')}: "
             f"{(h.get('subject') or '')[:50]} → {acts}"
         )
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
@@ -3365,7 +3430,7 @@ async def sync_account(
 # ── Learned draft patterns ───────────────────────────────────────────────────
 
 @_annotate_risk(open_world=False)
-async def list_patterns(account_id: str, kind: str = "draft") -> str:
+async def list_patterns(account_id: str, kind: str = "draft", offset: int = 0) -> str:
     """List the assistant's LEARNED patterns, by ``kind``:
 
       • ``draft`` (default) — writing preferences learned from how you edit its
@@ -3373,30 +3438,41 @@ async def list_patterns(account_id: str, kind: str = "draft") -> str:
       • ``rule``  — sender/subject pins learned for RULES from your Fix
         corrections ("mail from X should / shouldn't match rule Z").
 
-    Forget any pattern with forget_pattern(pattern_id, kind)."""
+    Forget any pattern with forget_pattern(pattern_id, kind). offset reads
+    the next page."""
     k = (kind or "draft").strip().lower()
     if k in ("rule", "rules", "classification"):
         data = await _get("/email/rules/patterns", {"account_id": account_id})
         patterns = data.get("patterns", [])
         if not patterns:
             return "No learned rule patterns yet."
+        page = paged(patterns, offset, 30, default=30, noun="patterns")
+        if not page.items:
+            return page.line
         lines = ["Learned rule patterns (from your Fix corrections):"]
-        for p in patterns[:30]:
+        for p in page.items:
             verb = "never match" if p.get("exclude") else "always match"
             rule = p.get("rule_name") or p.get("rule_id") or "a rule"
             lines.append(
                 f"• id={p.get('id')} [{p.get('pattern_type')}={p.get('value')}] "
                 f"{verb} '{rule}'"
             )
+        if page.line:
+            lines.append(page.line)
         return "\n".join(lines)
     data = await _get("/email/learned-patterns", {"account_id": account_id})
     patterns = data.get("patterns", [])
     if not patterns:
         return "No learned draft patterns yet."
+    page = paged(patterns, offset, 20, default=20, noun="patterns")
+    if not page.items:
+        return page.line
     lines = ["Learned draft preferences:"]
-    for p in patterns[:20]:
+    for p in page.items:
         scope = p.get("scope_value") or p.get("scope_type") or "global"
         lines.append(f"• id={p.get('id')} [{scope}] {p.get('pattern')}")
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
@@ -3419,6 +3495,7 @@ async def list_senders(
     view: str = "top",
     folder: str = "inbox",
     limit: int = 25,
+    offset: int = 0,
 ) -> str:
     """Look at who emails you, by ``view``:
 
@@ -3432,26 +3509,28 @@ async def list_senders(
       • ``cold`` — senders flagged by the cold-email blocker.
 
     Act on a sender with set_sender_status (cold / not cold / keep) or
-    unsubscribe_sender.
+    unsubscribe_sender. offset reads the next page.
     """
     v = (view or "top").strip().lower()
     if v in ("categories", "category"):
         return await get_sender_categories(account_id or "")
     if v in ("unsubscribe", "unsubscribes", "newsletters"):
-        return await suggest_unsubscribes(account_id)
+        return await suggest_unsubscribes(account_id, offset=offset)
     if v in ("cold", "cold_senders"):
-        return await list_cold_senders(account_id or "")
+        return await list_cold_senders(account_id or "", offset=offset)
+    start, size = bounds(offset, limit, default=25)
     params: dict[str, Any] = {
-        "folder": folder, "limit": str(max(1, min(limit, 200))),
+        "folder": folder, "limit": str(size), "offset": str(start),
     }
     if account_id:
         params["account_id"] = account_id
     data = await _get("/email/senders", params)
     senders = data.get("senders", []) if isinstance(data, dict) else (data or [])
+    total = int(data.get("total") or 0) if isinstance(data, dict) else 0
     if not senders:
-        return "No senders found."
+        return page_line(total, start, 0) or "No senders found."
     lines = ["Top senders by volume:"]
-    for s in senders[:limit]:
+    for s in senders:
         rr = s.get("read_rate")
         rr_str = f", {round((rr or 0) * 100)}% read" if rr is not None else ""
         unsub = " [has unsubscribe]" if s.get("unsubscribe_link") else ""
@@ -3460,6 +3539,8 @@ async def list_senders(
             f"{s.get('count', 0)} emails, {s.get('unread', 0)} unread"
             f"{rr_str}{unsub}"
         )
+    if line := page_line(total or start + len(senders), start, len(senders)):
+        lines.append(line)
     return "\n".join(lines)
 
 

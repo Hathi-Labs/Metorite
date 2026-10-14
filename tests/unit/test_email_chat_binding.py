@@ -447,7 +447,8 @@ async def test_a_thread_is_read_in_the_mailbox_of_the_mail(gw: Gateway) -> None:
 async def test_the_mail_wins_over_a_thread_id_from_the_model(gw: Gateway) -> None:
     await agents.read_thread(email_id="m1", thread_id="t3")
     [params] = [p for path, p in gw.gets if path == "/email/messages"]
-    assert params == {"thread_id": "t1", "page_size": "50", "account_id": BOX_A}
+    # 25 a page from 2026-10-14 (test_read_tool_paging.py): offset pages on.
+    assert params == {"thread_id": "t1", "page_size": "25", "page": "1", "account_id": BOX_A}
 
 
 async def test_a_thread_id_in_two_mailboxes_is_not_merged(gw: Gateway) -> None:

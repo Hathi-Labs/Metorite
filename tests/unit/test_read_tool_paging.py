@@ -55,7 +55,7 @@ def test_page_two_holds_items_31_to_35_and_says_it_is_the_last() -> None:
 def test_an_offset_past_the_end_is_an_empty_page_with_a_clear_line() -> None:
     page = paged(list(range(35)), 40, 0, default=30)
     assert page.items == []
-    assert page.line == "Nothing at offset=40. There are 35 items, so use a offset below 35."
+    assert page.line == "Nothing at offset=40. There are 35 items, so start below offset=35."
 
 
 def test_a_page_that_holds_everything_says_nothing() -> None:
@@ -173,26 +173,6 @@ ALLOWED: dict[str, str] = {
         'The web, not company data. max_results asks for more.',
     'apps/agents/agent-email-assistant/agents.py::search_emails::emails[:10]':
         "Not a tool: it is not in _TOOLS, so no model calls it. It prints '… and N more'.",
-    'apps/agents/agent-email-assistant/agents.py::find_needs_reply::threads[:15]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-email-assistant/agents.py::find_urgent::emails[:10]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-email-assistant/agents.py::list_artifacts::arts[:30]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-email-assistant/agents.py::list_cold_senders::senders[:20]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-email-assistant/agents.py::list_patterns::patterns[:20]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-email-assistant/agents.py::list_patterns::patterns[:30]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-email-assistant/agents.py::list_rule_history::history[:limit]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-email-assistant/agents.py::list_senders::senders[:limit]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-email-assistant/agents.py::query_inbox::emails[:limit]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'apps/agents/agent-email-assistant/agents.py::suggest_unsubscribes::senders[:10]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
     'apps/agents/agent-whatsapp-assistant/agents.py::list_whatsapp_chats::chats[:20]':
         'Silent cut. The second PR of the agent-read-paging change fixes it.',
     'apps/agents/agent-whatsapp-assistant/agents.py::search_whatsapp::msgs[:15]':
@@ -235,8 +215,6 @@ ALLOWED: dict[str, str] = {
         'Text, not rows: the cut shortens one string.',
     'packages/acb_skills/acb_skills/sandbox_tools.py::_format::saved[:20]':
         "A run receipt. It prints the count and '…', and the files are in outputs/.",
-    'apps/agents/agent-email-assistant/agents.py::read_thread::msgs[:25]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
     "packages/acb_skills/acb_skills/crm_tools.py::crm_get_module_record::_custom_lines(row.get('fields'), defs)[:MAX_ROWS]":
         'Silent cut. The second PR of the agent-read-paging change fixes it.',
     'packages/acb_skills/acb_skills/crm_tools.py::crm_list_fields::options[:20]':
@@ -246,7 +224,7 @@ ALLOWED: dict[str, str] = {
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
-ALLOWED_CEILING = 72
+ALLOWED_CEILING = 61
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -656,3 +634,163 @@ def test_the_load_route_pages_its_people(monkeypatch) -> None:
     assert first["people_listed"] == 25
     rest = asyncio.run(analytics.load(people_offset=20, user=object()))
     assert [p["assignee"] for p in rest["people"]] == [f"p{k}" for k in range(20, 25)]
+
+
+# ── 5. The prefix helper (a backend with a LIMIT and no OFFSET) ─────────────
+
+def test_a_prefix_page_asks_for_one_more_row_than_it_shows() -> None:
+    from acb_common.paging import prefix_limit, prefix_page
+
+    assert prefix_limit(0, 15, default=15, cap=200) == (0, 15, 16)
+    assert prefix_limit(190, 15, default=15, cap=200) == (190, 15, 200)
+    page = prefix_page(list(range(16)), 0, 15, cap=200, asked=16)
+    assert page.items == list(range(15))
+    assert page.line == "Showing 1-15. More items exist. Call again with offset=15 for the rest."
+    # Fewer rows than asked for: the backend sent them all, so the total is known.
+    last = prefix_page(list(range(20)), 15, 15, cap=200, asked=31)
+    assert last.items == [15, 16, 17, 18, 19]
+    assert last.line == "Showing 16-20 of 20. This is the last page."
+    assert "There are 20 items" in prefix_page(list(range(20)), 40, 15, cap=200, asked=56).line
+
+
+def test_a_prefix_page_at_the_backend_cap_says_so() -> None:
+    from acb_common.paging import prefix_page
+
+    page = prefix_page(list(range(200)), 190, 15, cap=200)
+    assert page.items == list(range(190, 200))
+    assert "The source returns at most 200 items. Narrow the filter" in page.line
+
+
+# ── 6. Email ────────────────────────────────────────────────────────────────
+
+def _email_agent():
+    import importlib.util
+
+    path = REPO / "apps" / "agents" / "agent-email-assistant" / "agents.py"
+    spec = importlib.util.spec_from_file_location("ea_paging", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def ea():
+    return _email_agent()
+
+
+def _gw(monkeypatch, mod, answer) -> list[tuple[str, dict[str, Any]]]:
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_get(path, params=None):
+        seen.append((path, dict(params or {})))
+        return answer(path, dict(params or {}))
+
+    monkeypatch.setattr(mod, "_get", fake_get)
+    return seen
+
+
+def _messages(n: int) -> list[dict[str, Any]]:
+    return [{"id": f"m{k}", "subject": f"s{k}", "thread_id": "t1", "account_id": "a1",
+             "from_address": {"email": f"x{k}@y.io"}, "received_at": "2026-10-01"}
+            for k in range(1, n + 1)]
+
+
+def _paged_messages(rows):
+    def answer(path, params):
+        size = int(params.get("page_size") or 50)
+        page = int(params.get("page") or 1)
+        return {"emails": rows[(page - 1) * size: page * size], "total": len(rows)}
+    return answer
+
+
+def test_query_inbox_page_two_holds_items_31_to_35(monkeypatch, ea) -> None:
+    seen = _gw(monkeypatch, ea, _paged_messages(_messages(35)))
+    out = asyncio.run(ea.query_inbox("a1", limit=30, offset=30))
+    assert seen[-1][1]["page"] == "2"
+    assert "id=m31 " in out and "id=m35 " in out and "id=m30 " not in out
+    assert "Showing 31-35 of 35. This is the last page." in out
+    first = asyncio.run(ea.query_inbox("a1", limit=30))
+    assert "Showing 1-30 of 35. Call again with offset=30 for the rest." in first
+
+
+def test_read_thread_pages_the_newest_messages_in(monkeypatch, ea) -> None:
+    """The thread is oldest first. The old read showed the oldest 25 of at
+    most 50, and called the dropped NEWEST ones 'earlier'."""
+    _gw(monkeypatch, ea, _paged_messages(_messages(60)))
+    first = asyncio.run(ea.read_thread(thread_id="t1"))
+    assert "60 message(s)" in first
+    assert "Showing 1-25 of 60. Call again with offset=25 for the rest." in first
+    last = asyncio.run(ea.read_thread(thread_id="t1", offset=50))
+    assert "[51]" in last and "[60]" in last and "x60@y.io" in last
+    assert "This is the last page." in last
+
+
+def test_find_urgent_names_the_total(monkeypatch, ea) -> None:
+    _gw(monkeypatch, ea, _paged_messages(_messages(14)))
+    out = asyncio.run(ea.find_urgent("a1"))
+    assert "Showing 1-10 of 14. Call again with offset=10 for the rest." in out
+    assert "id=m14 " in asyncio.run(ea.find_urgent("a1", offset=10))
+
+
+def test_find_needs_reply_pages_past_fifteen(monkeypatch, ea) -> None:
+    rows = [{"message_id": f"m{k}", "from": "x", "subject": f"s{k}"} for k in range(1, 36)]
+    seen = _gw(monkeypatch, ea, lambda p, q: {"threads": rows[: int(q["limit"])]})
+    first = asyncio.run(ea.find_priority("a1"))
+    assert "Call again with offset=15 for the rest." in first
+    last = asyncio.run(ea.find_priority("a1", offset=30))
+    assert seen[-1][1]["limit"] == "46"
+    assert "id=m31 " in last and "id=m35 " in last and "This is the last page." in last
+
+
+def test_important_emails_page(monkeypatch, ea) -> None:
+    rows = [{"message_id": f"m{k}", "from": "x", "subject": "s", "reason": "r"}
+            for k in range(1, 26)]
+    _gw(monkeypatch, ea, lambda p, q: {"emails": rows[: int(q["limit"])]})
+    first = asyncio.run(ea.find_priority("a1", kind="important"))
+    assert "Call again with offset=20 for the rest." in first
+    assert "id=m25 " in asyncio.run(ea.find_priority("a1", kind="important", offset=20))
+
+
+def test_list_senders_pages_through_the_route(monkeypatch, ea) -> None:
+    rows = [{"email": f"s{k}@x.io", "count": 1} for k in range(1, 36)]
+    seen = _gw(monkeypatch, ea, lambda p, q: {
+        "senders": rows[int(q.get("offset") or 0): int(q.get("offset") or 0) + int(q["limit"])],
+        "total": 35})
+    first = asyncio.run(ea.list_senders("a1", limit=30))
+    assert "Showing 1-30 of 35. Call again with offset=30 for the rest." in first
+    rest = asyncio.run(ea.list_senders("a1", limit=30, offset=30))
+    assert seen[-1][1]["offset"] == "30"
+    assert "s35@x.io" in rest and "s30@x.io" not in rest
+
+
+def test_cold_senders_rule_history_patterns_and_files_page(monkeypatch, ea) -> None:
+    cold = [{"from_email": f"c{k}@x.io", "status": "COLD"} for k in range(1, 36)]
+    hist = [{"id": f"h{k}", "status": "APPLIED", "rule_name": "r", "actions": []}
+            for k in range(1, 36)]
+    pats = [{"id": f"p{k}", "pattern": "x"} for k in range(1, 36)]
+    arts = [{"path": f"f{k}.pdf", "size": 1} for k in range(1, 36)]
+
+    def answer(path, q):
+        return {"/email/cold-senders": {"cold_senders": cold},
+                "/email/rules/history": {"history": hist[: int(q.get("limit") or 100)]},
+                "/email/learned-patterns": {"patterns": pats},
+                "/email/rules/patterns": {"patterns": pats},
+                "/agent/artifacts": {"artifacts": arts}}[path]
+
+    _gw(monkeypatch, ea, answer)
+    assert "c35@x.io" in asyncio.run(ea.list_senders("a1", view="cold", offset=30))
+    assert "Showing 1-20 of 35" in asyncio.run(ea.list_senders("a1", view="cold"))
+    assert "id=h35 " in asyncio.run(ea.list_rule_history("a1", offset=30))
+    assert "id=p35 " in asyncio.run(ea.list_patterns("a1", offset=30))
+    assert "id=p35 " in asyncio.run(ea.list_patterns("a1", kind="rule", offset=30))
+    assert "f35.pdf" in asyncio.run(ea.list_artifacts(offset=30))
+    assert "There are 35 files" in asyncio.run(ea.list_artifacts(offset=40))
+
+
+def test_unsubscribe_candidates_page(monkeypatch, ea) -> None:
+    rows = [{"email": f"n{k}@x.io", "count": 3, "read_rate": 0.1} for k in range(1, 16)]
+    _gw(monkeypatch, ea, lambda p, q: {"senders": rows, "total": 15})
+    first = asyncio.run(ea.list_senders("a1", view="unsubscribe"))
+    assert "Showing 1-10 of 15. Call again with offset=10 for the rest." in first
+    assert "n15@x.io" in asyncio.run(ea.list_senders("a1", view="unsubscribe", offset=10))

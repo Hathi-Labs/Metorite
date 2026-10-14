@@ -90,7 +90,7 @@ def page_line(total: int | None, offset: int, shown: int, *,
                     f"{total} {noun}, so the last page is {last}.")
         if total > 0 and offset >= total:
             return (f"Nothing at {param}={offset}. There are {total} {noun}, "
-                    f"so use a {param} below {total}.")
+                    f"so start below {param}={total}.")
         if end >= total:
             return (f"Showing {offset + 1}-{end} of {total}. This is the last page."
                     if offset > 0 and shown else "")
@@ -116,3 +116,39 @@ def paged(items: Sequence[Any], offset: Any = 0, limit: Any = 0, *,
     chunk = rows[start:start + size]
     return Page(chunk, len(rows), start,
                 page_line(len(rows), start, len(chunk), noun=noun, param=param))
+
+
+def prefix_limit(offset: Any, limit: Any, *, default: int, cap: int,
+                 maximum: int = PAGE_MAX) -> tuple[int, int, int]:
+    """``(start, size, ask)`` for a backend that has a LIMIT and no OFFSET.
+
+    The tool asks for ``ask`` rows (one more than the page needs, so it can
+    tell that more exist), and :func:`prefix_page` cuts the page from them.
+    ``cap`` is the backend's own largest LIMIT.
+    """
+    start, size = bounds(offset, limit, default=default, maximum=maximum)
+    return start, size, max(1, min(start + size + 1, cap))
+
+
+def prefix_page(rows: Sequence[Any], start: int, size: int, *, cap: int,
+                asked: int = 0, noun: str = "items") -> Page:
+    """One page from the first rows of a LIMIT-only backend (:func:`prefix_limit`).
+
+    ``asked`` is the LIMIT the tool sent, and ``cap`` by default. Fewer rows
+    than that means the backend sent every row, so the line has the exact
+    total. A full answer means that more exist. Past ``cap`` the backend
+    returns nothing, so the line says that only a narrower filter reaches
+    the rest. That is the one cut this module cannot page through, and it is
+    never silent.
+    """
+    got = list(rows)
+    chunk = got[start:start + size]
+    limit = asked or cap
+    if len(got) < limit:
+        return Page(chunk, len(got), start, page_line(len(got), start, len(chunk), noun=noun))
+    more = len(got) > start + size
+    line = page_line(None, start, len(chunk), more=more, noun=noun)
+    if not more and limit >= cap:
+        line = (line + " " if line else "") + (
+            f"The source returns at most {cap} {noun}. Narrow the filter to reach others.")
+    return Page(chunk, len(got), start, line)
