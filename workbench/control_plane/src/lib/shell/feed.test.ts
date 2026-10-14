@@ -214,6 +214,7 @@ describe("1. the answer of §14.1a", () => {
       handled_ok: false,
       needs: null,
       sources: {},
+      source_apps: {},
       capped: [],
       fetchedAt: 0,
     });

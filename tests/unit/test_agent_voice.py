@@ -57,9 +57,13 @@ AGENTS: tuple[tuple[str, str, str], ...] = (
 #: uses (chars/4 plus the message envelope). Measured 2026-10-10 after review
 #: round 1: the core 327, the sub-agent block 333, the agent block 577. In
 #: tiktoken ``o200k_base``: 303, 310 and 538.
-CORE_TOKEN_CEILING = 340
-SUB_AGENT_BLOCK_TOKEN_CEILING = 345
-AGENT_BLOCK_TOKEN_CEILING = 600
+#: 2026-10-14: rule 10 gained the paging sentence (owner report: a read showed
+#: 30 of 35 inbox items, and nobody asked for the other 5). It goes in the
+#: core because the sub-agent that does the read gets the core alone.
+#: Measured 359, 364 and 608, so each ceiling rose by the same 35 or 25.
+CORE_TOKEN_CEILING = 375
+SUB_AGENT_BLOCK_TOKEN_CEILING = 380
+AGENT_BLOCK_TOKEN_CEILING = 625
 
 
 @pytest.fixture(autouse=True)

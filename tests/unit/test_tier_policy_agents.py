@@ -92,6 +92,25 @@ _DECIDE_ARGS = json.dumps({
 })
 
 
+@pytest.fixture(autouse=True)
+def _patient(monkeypatch):
+    """A turn-kind wait that only a hang can pass.
+
+    The product waits 1.5 s for the turn question, and a timeout reads as
+    ``chat``. That wait includes the synchronous build of the System-1
+    client, so a stalled runner can spend it before the question reaches
+    the wire. Deploy run 38610388640 (main, ed3620076) measured
+    ``latency_ms=2683 source=timeout``. Then ``wire.bodies[0]`` was the
+    ``decide`` call, and a code turn stayed on tier-balanced.
+
+    No test in this file tests the wait. ``test_tier_policy.py`` fences
+    the 1.5 s and the timeout path. So every test here gets 30 s, and a
+    stall cannot change which tier a run takes. The same fix is
+    ``_patient`` in ``test_tier_policy_effort_from_text.py``.
+    """
+    monkeypatch.setattr(tier_policy, "TURN_KIND_TIMEOUT_S", 30.0)
+
+
 def test_the_named_agents_are_the_registry_s() -> None:
     """The lists above name every chat agent of §1.1 but projects-assistant,
     with the runtime the registry declares. A drift fails here, not on a box."""

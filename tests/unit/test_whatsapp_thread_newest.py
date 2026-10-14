@@ -158,8 +158,13 @@ async def test_the_tool_reads_the_newest_twenty(chat_of, monkeypatch) -> None:
 
     monkeypatch.setattr(agents, "_get", real_route)
     out = await agents.read_whatsapp_chat(ids["chat"])
-    assert seen == [{"limit": 20}], seen
-    assert out.splitlines() == [f"Sunil: message {n}" for n in range(11, 31)]
+    # One more than the page, so the tool can tell that older messages exist,
+    # and name the next page (test_read_tool_paging.py, 2026-10-14).
+    assert seen == [{"limit": 21}], seen
+    assert out.splitlines() == [
+        *(f"Sunil: message {n}" for n in range(11, 31)),
+        "Showing 1-20. More messages exist. Call again with offset=20 for the rest.",
+    ]
 
 
 async def test_the_route_gives_the_newest_limit_in_reading_order(chat_of) -> None:

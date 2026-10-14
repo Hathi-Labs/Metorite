@@ -41,6 +41,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from acb_common.paging import page_line, paged, prefix_page
 
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
@@ -262,6 +263,10 @@ def _report_kind(kind: str) -> str:
     return key
 
 
+#: The most owners ``GET /crm/owners`` returns (its ``LIMIT 500``).
+OWNERS_MAX = 500
+
+
 def _page(page: int | None) -> int:
     return max(1, int(page or 1))
 
@@ -271,9 +276,18 @@ def _page_size(page_size: int | None, default: int = 25) -> int:
 
 
 def _more(total: int, page: int, page_size: int) -> str:
-    if total > page * page_size:
-        return f"\nMore: call again with page={page + 1}."
-    return ""
+    """The shared hint line (``acb_common.paging``), for a page-number tool."""
+    start = (page - 1) * page_size
+    shown = max(0, min(page_size, total - start))
+    line = page_line(total, start, shown, page_size=page_size)
+    return f"\n{line}" if line else ""
+
+
+def _page_of(rows: list[Any], page: int | None, noun: str = "items") -> Any:
+    """Page ``page`` of ``MAX_ROWS`` from a list the route sent whole."""
+    number = _page(page)
+    return paged(rows, (number - 1) * MAX_ROWS, MAX_ROWS, default=MAX_ROWS,
+                 maximum=MAX_ROWS, noun=noun, page_size=MAX_ROWS)
 
 
 # ── Formatting ──────────────────────────────────────────────────────────────
@@ -457,7 +471,7 @@ async def crm_get_record(entity: str, record_id: str) -> str:
 
 
 @_read_tool
-async def crm_list_fields(entity: str) -> str:
+async def crm_list_fields(entity: str, page: int = 1) -> str:
     """The fields of one record type: each label, its key (for the custom
     filter of crm_list_records), its type and its picklist options. A retired
     field is marked: records keep its values, and no filter takes its key."""
@@ -472,8 +486,11 @@ async def crm_list_fields(entity: str) -> str:
     ]
     if not defs:
         return f"{ENTITY_LABELS[slug]}s have no custom fields."
+    shown = _page_of(defs, page, "fields")
+    if not shown.items:
+        return shown.line
     lines = [f"{ENTITY_LABELS[slug]} fields ({len(defs)}):"]
-    for d in defs[:MAX_ROWS]:
+    for d in shown.items:
         options = [
             str(o.get("label")) for o in d.get("options") or []
             if isinstance(o, dict) and o.get("label") and not o.get("retired")
@@ -481,10 +498,12 @@ async def crm_list_fields(entity: str) -> str:
         lines.append(
             f"- {d.get('label')} (key {d.get('key')}, {d.get('type')})"
             + (" - retired" if d.get("retired") else "")
-            + (f": {', '.join(options[:20])}" if options else "")
+            # Every option: a filter needs the exact label, and the old cut
+            # at 20 hid the rest with no notice.
+            + (f": {', '.join(options)}" if options else "")
         )
-    if len(defs) > MAX_ROWS:
-        lines.append(f"({len(defs) - MAX_ROWS} more fields are not shown.)")
+    if shown.line:
+        lines.append(shown.line)
     return "\n".join(lines)
 
 
@@ -512,7 +531,7 @@ async def crm_list_pipelines() -> str:
 
 
 @_read_tool
-async def crm_deal_contacts(deal_id: str) -> str:
+async def crm_deal_contacts(deal_id: str, page: int = 1) -> str:
     """The contacts on one deal (a deal id from crm_list_records), primary
     first, each with its role on the deal."""
     record = _record_uuid(deal_id)
@@ -520,8 +539,11 @@ async def crm_deal_contacts(deal_id: str) -> str:
     rows = (data or {}).get("rows") or []
     if not rows:
         return "This deal has no contacts."
+    shown = _page_of(rows, page, "contacts")
+    if not shown.items:
+        return shown.line
     lines = [f"Deal contacts ({len(rows)}):"]
-    for r in rows[:MAX_ROWS]:
+    for r in shown.items:
         c = r.get("contact") or {}
         bits = [_title("contacts", c)]
         if r.get("role"):
@@ -532,6 +554,8 @@ async def crm_deal_contacts(deal_id: str) -> str:
             if c.get(key):
                 bits.append(str(c[key]))
         lines.append(f"- {' · '.join(bits)} (id={c.get('id')})")
+    if shown.line:
+        lines.append(shown.line)
     return "\n".join(lines)
 
 
@@ -543,18 +567,23 @@ async def crm_list_owners(page: int = 1) -> str:
     owners = (await _get("/crm/owners") or {}).get("owners") or []
     if not owners:
         return "The CRM has no owners yet."
-    start = (number - 1) * MAX_ROWS
+    # The route returns at most OWNERS_MAX owners and no count, so the page
+    # says when that cap is hit.
+    shown = prefix_page(owners, (number - 1) * MAX_ROWS, MAX_ROWS, cap=OWNERS_MAX,
+                        noun="owners", page_size=MAX_ROWS)
     lines = [f"Owners: {len(owners)}, page {number}."]
-    for o in owners[start:start + MAX_ROWS]:
+    for o in shown.items:
         lines.append(
             f"- {o.get('name') or o.get('email')} · {o.get('email')}"
             + ("" if o.get("member") else " · not a member")
         )
-    return "\n".join(lines) + _more(len(owners), number, MAX_ROWS)
+    if shown.line:
+        lines.append(shown.line)
+    return "\n".join(lines)
 
 
 @_read_tool
-async def crm_report(kind: str) -> str:
+async def crm_report(kind: str, page: int = 1) -> str:
     """A CRM report: kind 'pipeline' (forecast by open stage), 'funnel'
     (entered, conversion and median dwell by stage), 'win-loss' (the last 90
     days) or 'owners' (each owner's open deals, weighted and won)."""
@@ -594,7 +623,12 @@ async def crm_report(kind: str) -> str:
             f"weighted INR {o['weighted']:,.0f} · won INR {o['won_amount']:,.0f}"
             for o in data.get("owners") or []
         ]
-    return f"CRM report {report}:\n" + "\n".join(lines[:MAX_ROWS + 2])
+    shown = _page_of(lines, page, "lines")
+    tail = [shown.line] if shown.line else []
+    if report == "owners" and int(data.get("omitted") or 0):
+        # The route keeps the biggest owners and counts the rest.
+        tail.append(f"{int(data['omitted'])} more owners are not in the report.")
+    return f"CRM report {report}:\n" + "\n".join([*shown.items, *tail])
 
 
 @_read_tool
@@ -613,6 +647,7 @@ async def crm_aggregate(
     close_from: str | None = None,
     close_to: str | None = None,
     custom: dict[str, str] | None = None,
+    page: int = 1,
 ) -> str:
     """Count or sum CRM records by one group. measure is 'count',
     'sum_amount' (deals) or 'weighted' (deals: amount times the effective
@@ -636,12 +671,16 @@ async def crm_aggregate(
     def fmt(value: float) -> str:
         return f"INR {value:,.0f}" if money else f"{value:,.0f}"
 
+    shown = _page_of(groups, page, "groups")
     lines = [f"{ENTITY_LABELS[slug]}s, {measure} by {group_by}:"]
-    lines.extend(f"- {g['label']}: {fmt(float(g['value']))}" for g in groups[:MAX_ROWS])
+    lines.extend(f"- {g['label']}: {fmt(float(g['value']))}" for g in shown.items)
     lines.append(f"Total: {fmt(float(data.get('total') or 0))}.")
-    hidden = len(groups[MAX_ROWS:]) + int(data.get("omitted") or 0)
-    if hidden:
-        lines.append(f"({hidden} smaller groups are not shown; the total counts them.)")
+    if shown.line:
+        lines.append(shown.line)
+    if int(data.get("omitted") or 0):
+        # Past the route's MAX_GROUPS. Only a narrower filter reaches them.
+        lines.append(f"({int(data['omitted'])} smaller groups are past the route's "
+                     "limit. The total counts them. Narrow the filter to see them.)")
     return "\n".join(lines)
 
 
@@ -679,16 +718,19 @@ async def crm_stage_dwell(days: int | None = None, page: int = 1) -> str:
 
 
 @_read_tool
-async def crm_list_modules() -> str:
+async def crm_list_modules(page: int = 1) -> str:
     """The other Zoho modules this CRM mirrors (Products, Quotes, custom
     modules), with a record count. A Native CRM has none."""
     modules = await _get("/crm/modules")
     if not modules:
         return "This CRM mirrors no other module."
+    shown = _page_of(list(modules), page, "modules")
+    if not shown.items:
+        return shown.line
     return "Modules:\n" + "\n".join(
         f"- {m.get('label')} (api_name {m.get('api_name')}): {m.get('count', 0)} records"
-        for m in modules[:MAX_ROWS]
-    )
+        for m in shown.items
+    ) + (f"\n{shown.line}" if shown.line else "")
 
 
 @_read_tool
@@ -717,7 +759,7 @@ async def crm_list_module_records(
 
 
 @_read_tool
-async def crm_get_module_record(module: str, record_id: str) -> str:
+async def crm_get_module_record(module: str, record_id: str, page: int = 1) -> str:
     """One record of a mirrored module (a module from crm_list_modules and an
     id from crm_list_module_records), each field under its label."""
     mod = _module_name(module)
@@ -728,7 +770,10 @@ async def crm_get_module_record(module: str, record_id: str) -> str:
     lines = [f"{mod}: {row.get('name') or '(unnamed)'} (id={row.get('id')})"]
     if row.get("owner_email"):
         lines.append(f"- Owner: {row['owner_email']}")
-    lines.extend(_custom_lines(row.get("fields"), defs)[:MAX_ROWS])
+    shown = _page_of(_custom_lines(row.get("fields"), defs), page, "fields")
+    lines.extend(shown.items)
+    if shown.line:
+        lines.append(shown.line)
     return "\n".join(lines)
 
 

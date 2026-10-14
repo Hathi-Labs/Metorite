@@ -280,7 +280,8 @@ async def rules_history(
                 LEFT JOIN email_ai_drafts d
                   ON d.account_id = er.account_id AND d.thread_id = em.thread_id
                 WHERE {scope}
-                ORDER BY COALESCE(em.received_at, er.created_at) DESC LIMIT :limit"""
+                ORDER BY COALESCE(em.received_at, er.created_at) DESC, er.id DESC
+                LIMIT :limit"""
         ), params)).fetchall()
 
         # Fetch each matched rule's action specs once so the hover popover can

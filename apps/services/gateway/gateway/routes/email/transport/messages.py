@@ -334,17 +334,20 @@ async def list_messages(
         # Ordering: conversation view is chronological; otherwise honour ``sort``.
         # The collapsed path orders the OUTER query over the per-thread picks, so
         # its expression uses the bare column names the subquery exposes.
+        # Every order ends on the id, so two mails at one instant keep one
+        # order across pages. Without it OFFSET may repeat or skip one
+        # (review of #1014: the chat pages this route).
         if thread_id or sort == "oldest":
-            order_sql, order_plain = "em.received_at ASC", "received_at ASC"
+            order_sql, order_plain = "em.received_at ASC, em.id ASC", "received_at ASC, id ASC"
         elif sort == "importance":
             # Most-important first: high → normal → low, then unread, then recent.
             imp = ("CASE LOWER(COALESCE({p}importance, 'normal')) "
                    "WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, "
-                   "{p}is_read ASC, {p}received_at DESC")
+                   "{p}is_read ASC, {p}received_at DESC, {p}id DESC")
             order_sql = imp.format(p="em.")
             order_plain = imp.format(p="")
         else:
-            order_sql, order_plain = "em.received_at DESC", "received_at DESC"
+            order_sql, order_plain = "em.received_at DESC, em.id DESC", "received_at DESC, id DESC"
 
         # Count total — conversations when collapsing, else messages.
         count_sql = (

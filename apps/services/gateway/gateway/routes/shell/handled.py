@@ -21,9 +21,10 @@ org admin who holds ``feature:approvals`` gets approval rows.
 
 **The budget** is the state join's: ``state.STATE_TIMEOUT_S``, 1.5 seconds.
 The feed runs this at the same time as the join, so the feed's worst case
-stays at 7.5 seconds. The day read counts inside it. A read that is not done
-when the budget ends counts as failed, and so does each read that did not
-start.
+is 7.9 seconds: 4.0 for the needs run, 2.3 and a cancel wait of 0.1 for the
+feed-only run (MD-3b), and 1.5 for this. That is under the 8 seconds of the BFF route. The day read
+counts inside it. A read that is not done when the budget ends counts as
+failed, and so does each read that did not start.
 
 **One read at a time.** The reads run as one chain, beside the join, so a
 feed read holds two pool connections at most (fix round 1).
@@ -146,6 +147,10 @@ async def handled_run(user: UserContext, now: datetime, *, budget_s: float) -> H
             continue
         try:
             closed = await asyncio.wait_for(provider.handled(user, since), left)  # type: ignore[misc]
+        except needs.SourceAbsent:
+            # A refusal, not a failure (MD-3b, §5.8 item 4): `handled_ok` holds.
+            run.sources[source] = "absent"
+            continue
         except TimeoutError:
             logger.info("shell.feed handled read timed out", extra={"provider": source})
             run.sources[source] = "failed"
