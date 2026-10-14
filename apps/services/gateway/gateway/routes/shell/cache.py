@@ -51,6 +51,10 @@ no tenant is bound. The tenant never comes from request input (R5, R11).
 off. With it off, :func:`serve` runs the providers on every read, and the sink
 and the bumps send nothing.
 
+**The loop reads the versions too** (MD-6a-2, §10.9 item 7). :func:`versions`
+is the public read of the two versions. The ``my_day`` loop compares them with
+the versions it judged, to find a dirty member.
+
 Fences: ``tests/unit/test_my_day_cache.py`` (a fake under the real
 ``TenantRedis``) and ``tests/unit/test_my_day_cache_r8.py`` (a real Postgres:
 the statement counts of done-when 2 and 4).
@@ -323,6 +327,24 @@ async def _look(member: str, size: int, fhash: str) -> _Seen:
             stored = None
     return _Seen(stored if isinstance(stored, dict) else None,
                  _version(org_ver), _version(member_ver))
+
+
+async def versions(member: Any) -> tuple[str, str]:
+    """The org version and the member version, as the read takes them
+    (WS-58 MD-6a-2, ``my_day_feed.md`` §10.9 item 7).
+
+    The ``my_day`` loop compares them with the versions it judged, to find a
+    dirty member. The caller binds the org with ``organization_scope``. A
+    missing version reads as ``"0"``, as it does for the read. A Redis
+    failure raises, and the caller decides.
+
+    ⚠️ The bumps write only while ``MY_DAY_CACHE`` is on (:func:`enabled`).
+    With it off, both versions stay where they are, so a dirty test means
+    nothing. The loop then runs only the morning pass."""
+    m = _member(member)
+    org_ver, member_ver = await asyncio.wait_for(
+        _redis().mget([_org_version_key(), _member_version_key(m)]), READ_TIMEOUT_S)
+    return _version(org_ver), _version(member_ver)
 
 
 def _valid(seen: _Seen, now: datetime) -> bool:
