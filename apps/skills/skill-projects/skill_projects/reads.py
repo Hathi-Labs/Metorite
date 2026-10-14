@@ -19,9 +19,12 @@ Output conventions the cards read (``ProjectToolCards.tsx``):
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import UTC, date, datetime
 from typing import Any
+
+from acb_common.paging import page_line
 
 from skill_projects.client import GatewayRefusal, data, get, uuid_of
 from skill_projects.priority import change_view, level_detail, level_fact
@@ -70,6 +73,13 @@ MIN_QUERY = 3
 SNIPPET_MAX = 160
 #: How many timeline rows a detail read carries.
 TIMELINE_ROWS = 12
+#: The most people ``/projects/assignees`` returns for one query
+#: (``assignees.MAX_PEOPLE``). A copy: the skill cannot import gateway code.
+PEOPLE_FOR_MAX = 8
+#: People per page in ``analytics_load``. The route's ``MAX_PEOPLE``.
+LOAD_PEOPLE_PAGE = 20
+#: The most saved reports ``/projects/reports`` returns (its ``LIMIT 200``).
+REPORT_LIST_MAX = 200
 
 
 # ── Small formatters ─────────────────────────────────────────────────────────
@@ -144,18 +154,26 @@ def _project_line(node: dict[str, Any], level: str = "") -> list[str]:
 
 
 async def _status_names(root_ids: set[str]) -> dict[str, str]:
-    """``status_id → name`` for up to five roots. A list read carries ids
-    only, and a member asks for names."""
-    names: dict[str, str] = {}
-    for root in sorted(root_ids)[:5]:
+    """``status_id → name`` for every root on the page. A list read carries
+    ids only, and a member asks for names.
+
+    Every root, not the first five (2026-10-14). A page of 50 rows can span
+    more roots than that, and a row from a sixth root printed with no status.
+    The page bounds the set, and the reads run together."""
+
+    async def _one(root: str) -> list[dict[str, Any]]:
         try:
             # Server-supplied, and still canonicalised: every id that reaches
             # a path goes through `uuid_of`, so the AST fence has one rule.
             rid = uuid_of(root, "root_project_id")
             payload = await get(f"/projects/nodes/{rid}/statuses")
         except Exception:
-            continue
-        for row in (payload or {}).get("rows") or []:
+            return []
+        return list((payload or {}).get("rows") or [])
+
+    names: dict[str, str] = {}
+    for rows in await asyncio.gather(*(_one(r) for r in sorted(root_ids))):
+        for row in rows:
             names[str(row.get("id"))] = str(row.get("name") or "")
     return names
 
@@ -307,7 +325,10 @@ async def find_tasks(query: str, limit: int = 10) -> str:
         if row.get("snippet"):
             out.append(f"  description match: {data(str(row['snippet'])[:SNIPPET_MAX])}")
     if payload.get("truncated"):
-        out.append("(more matches exist — narrow the words)")
+        # The search route stops at 50 hits and has no offset. list_tasks
+        # runs the same word rule and pages, so every match stays in reach.
+        out.append("(more matches exist. list_tasks with the same query pages "
+                   "through all of them)")
     return "\n".join(out)
 
 
@@ -377,8 +398,11 @@ async def list_tasks(
     out = [legend(), f"Tasks ({total} total, showing {len(rows)}, page {params['page']}):"]
     for row in rows:
         out.extend(_task_line(row, names.get(str(row.get("status_id")), "")))
-    if total > len(rows) * params["page"]:
-        out.append(f"(page {params['page'] + 1} has more)")
+    # The rows BEFORE this page are (page - 1) pages, not (page - 1) rows. The
+    # old test multiplied the row count, so a short last page claimed a next.
+    size = params["page_size"]
+    if line := page_line(total, (params["page"] - 1) * size, len(rows), page_size=size):
+        out.append(line)
     return "\n".join(out)
 
 
@@ -793,6 +817,11 @@ async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     if people:
         out.append(f"People ({len(people)}):")
         out.extend(_person_line(p) for p in people)
+        if len(people) >= PEOPLE_FOR_MAX:
+            # The route returns the best few matches and no count. A longer
+            # query reaches the rest.
+            out.append(f"At most {PEOPLE_FOR_MAX} people match one query. "
+                       "Use a longer name to find somebody else.")
     if agents:
         out.append(f"Agents ({len(agents)}):")
         for a in agents:
@@ -908,12 +937,14 @@ async def analytics_stuck(project_id: str = "") -> str:
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
-async def analytics_load(project_id: str = "") -> str:
+async def analytics_load(project_id: str = "", offset: int = 0) -> str:
     """Who is overloaded: open tasks per assignee split into overdue, due in
     the next 7 days, and later. Unassigned is a row of its own, and it is
     often the real finding. Effort is estimated minutes with its coverage,
-    never logged time."""
-    payload = await get("/projects/analytics/load", _scope_params(project_id))
+    never logged time. 20 people a page: offset reads the next."""
+    start = max(0, int(offset or 0))
+    params = {**_scope_params(project_id), "people_offset": start}
+    payload = await get("/projects/analytics/load", params)
     out = [
         legend(),
         f"Load in {_scope_title(payload)}: {payload.get('total_tasks', 0)} open tasks",
@@ -928,6 +959,10 @@ async def analytics_load(project_id: str = "") -> str:
             f"- {who} · open {p.get('open_tasks', 0)} · overdue {p.get('overdue', 0)}"
             f" · next 7 days {p.get('due_next_7d', p.get('due_soon', 0))} · later {p.get('later', 0)}"
         )
+    listed = payload.get("people_listed")
+    if isinstance(listed, int) and (line := page_line(
+            listed, start, len(payload.get("people") or []), noun="people")):
+        out.append(f"  {line}")
     effort = payload.get("effort") or {}
     if effort:
         out.append(
@@ -1617,6 +1652,10 @@ async def report_list() -> str:
         scope = r.get("project_id") or "portfolio"
         out.append(f"- {data(r.get('name'))} · scope {scope} · created {_day(r.get('created_at'))}")
         out.append(f"  full_id: {r.get('id')}")
+    if len(rows) >= REPORT_LIST_MAX:
+        # The route returns the newest 200 and no count. Say so, and do not
+        # read the list as every report.
+        out.append(f"These are the newest {REPORT_LIST_MAX} reports. Older ones exist.")
     return "\n".join(out)
 
 
@@ -1651,7 +1690,9 @@ async def report_render(report_id: str) -> str:
 _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "finished": ("projects", "name", ("total_completed", "total_cancelled", "median_hours")),
     "throughput": ("series", "week_start", ("completed", "cancelled", "median_hours", "measured")),
-    "load": ("people", "assignee", ("total_tasks",)),
+    # `people_total`: the route cuts the rows to 20, so the count says how
+    # many people the section left out (2026-10-14).
+    "load": ("people", "assignee", ("total_tasks", "people_total")),
     # S7a. The row label is the directory name; the unassigned row has none
     # and prints as "unassigned". Nested HR blocks are skipped per row.
     "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
@@ -1706,6 +1747,7 @@ _REPORT_LABELS: dict[str, str] = {
     "hygiene:by_kind.stale_in_progress": "stale in progress",
     "hygiene:stale_days": "stale after days",
     "pulse:people_total": "people",
+    "load:people_total": "people with open work",
     "pulse:hidden_people": "hidden people",
 }
 

@@ -18,6 +18,8 @@ import json
 from datetime import date, timedelta
 from typing import Any
 
+from acb_common.paging import bounds, page_line
+
 from skill_projects.client import GatewayRefusal, data, get, patch, post, uuid_of
 from skill_projects.priority import (
     Removed,
@@ -251,31 +253,44 @@ def _intake_facts(row: dict[str, Any]) -> str:
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
-async def intake_queue(project_id: str = "") -> str:
+async def intake_queue(project_id: str = "", offset: int = 0) -> str:
     """The intake queue: captured tasks waiting for a decision (accept,
     decline, duplicate, snooze). project_id narrows it. triage_intake
-    decides one."""
-    params: dict[str, Any] = {"page": 1, "page_size": MAX_BATCH}
+    decides one. 50 a page: offset reads the next."""
+    start, size = _page(offset)
+    params: dict[str, Any] = {"page": start // size + 1, "page_size": size}
     if project_id.strip():
         params["project_id"] = uuid_of(project_id, "project_id")
     payload = await get("/projects/intake", params)
     rows = (payload or {}).get("rows") or []
-    out = [legend(), f"Intake ({(payload or {}).get('total', len(rows))} waiting):"]
+    total = int((payload or {}).get("total") or len(rows))
+    out = [legend(), f"Intake ({total} waiting):"]
     for row in rows:
         lines = _task_line(row)
         lines[0] += " · " + _intake_facts(row)
         out.extend(lines)
+    if line := page_line(total, start, len(rows)):
+        out.append(line)
     return "\n".join(out)
 
 
+def _page(offset: Any) -> tuple[int, int]:
+    """A page of ``MAX_BATCH`` on a page-numbered route. The offset rounds
+    down to a page boundary, so the start the hint names is the real one."""
+    start, size = bounds(offset, MAX_BATCH, default=MAX_BATCH)
+    return start // size * size, size
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
-async def notifications(unread_only: bool = True) -> str:
+async def notifications(unread_only: bool = True, offset: int = 0) -> str:
     """The member's notifications, newest first: mentions, assignments,
     comments on watched tasks. The bell counts are the server's.
-    mark_notifications_read clears them."""
+    mark_notifications_read clears them. 50 a page: offset reads the next."""
+    start, size = _page(offset)
     payload = await get(
         "/projects/notifications",
-        {"unread_only": bool(unread_only), "page": 1, "page_size": MAX_BATCH},
+        {"unread_only": bool(unread_only), "page": start // size + 1,
+         "page_size": size},
     )
     rows = (payload or {}).get("rows") or []
     unread = (payload or {}).get("unread") or {}
@@ -294,6 +309,10 @@ async def notifications(unread_only: bool = True) -> str:
             + f" · notification id {row.get('id')}"
         )
         out.append(f"  full_id: {row.get('task_id')}")
+    # The route counts the unread rows only, so a full page is the one sign
+    # that another exists. A wrong guess costs one empty page, never a row.
+    if line := page_line(None, start, len(rows), more=len(rows) >= size):
+        out.append(line)
     return "\n".join(out)
 
 
