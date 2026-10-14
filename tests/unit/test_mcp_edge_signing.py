@@ -178,8 +178,10 @@ def _app() -> FastAPI:
     async def _comments(task_id: str, user: UserContext = Depends(get_current_user)) -> dict:
         return _who(user)
 
-    @app.post("/projects/tasks")
-    async def _create(user: UserContext = Depends(get_current_user)) -> dict:
+    # A write route that no pair of MCP_WRITE_ROUTES names. It was
+    # `POST /projects/tasks` until EA-6d made that a write pair.
+    @app.post("/projects/tasks/{task_id}/comments")
+    async def _comment(task_id: str, user: UserContext = Depends(get_current_user)) -> dict:
         return _who(user)
 
     @app.get("/healthz")
@@ -390,19 +392,27 @@ async def test_a_member_with_no_organization_refuses(world):
     assert (await _get(TASK)).status_code == 401
 
 
+#: A write route that no pair of ``MCP_WRITE_ROUTES`` names. EA-6d made
+#: ``POST /projects/tasks`` a write pair, so these two tests moved to the
+#: comment route, which EA-6c has not built yet.
+_UNLISTED_WRITE = TASK + "/comments"
+_UNLISTED_WRITE_TEMPLATE = "/projects/tasks/{task_id}/comments"
+
+
 async def test_a_method_other_than_get_refuses(world):
-    headers = _signed("/projects/tasks", method="POST")
-    assert (await _call("POST", "/projects/tasks", headers)).status_code == 401
+    headers = _signed(_UNLISTED_WRITE, method="POST")
+    assert (await _call("POST", _UNLISTED_WRITE, headers)).status_code == 401
 
 
 async def test_a_non_get_pair_in_the_allowlist_still_refuses(world, monkeypatch):
     """A method other than GET needs a pair of ``MCP_WRITE_ROUTES`` and the
     writes flag (EA-6a, EA3-29). A pair that a change puts into ``MCP_ROUTES``
     alone stays refused (§10.1, replay)."""
-    widened = agent_oauth.MCP_ROUTES | {("POST", "/projects/tasks")}
+    assert ("POST", _UNLISTED_WRITE_TEMPLATE) not in agent_oauth.MCP_WRITE_ROUTES
+    widened = agent_oauth.MCP_ROUTES | {("POST", _UNLISTED_WRITE_TEMPLATE)}
     monkeypatch.setattr(agent_oauth, "MCP_ROUTES", widened)
-    headers = _signed("/projects/tasks", method="POST")
-    assert (await _call("POST", "/projects/tasks", headers)).status_code == 401
+    headers = _signed(_UNLISTED_WRITE, method="POST")
+    assert (await _call("POST", _UNLISTED_WRITE, headers)).status_code == 401
 
 
 async def test_a_route_outside_the_allowlist_refuses(world):

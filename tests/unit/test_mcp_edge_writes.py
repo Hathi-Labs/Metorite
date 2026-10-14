@@ -106,6 +106,11 @@ def _uuid(n: int) -> str:
     return f"00000000-0000-4000-8000-{n:012d}"
 
 
+#: Every write tool, in the order of ``tools/list``: the two of EA-6a, then
+#: the two of EA-6d (``test_mcp_edge_task_writes.py``).
+WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # W8 and EA3-28: the signed string
 # ═══════════════════════════════════════════════════════════════════════════
@@ -341,11 +346,12 @@ class TestTheWriteToolsAtTheEdge:
     async def test_tools_list_shows_the_writes_only_with_projects_write(self, edge):
         r = await _post(_rpc("tools/list"))
         names = [t["name"] for t in r.json()["result"]["tools"]]
-        assert names[-2:] == ["set_task_status", "add_task_reference"]
+        # EA-6d appends its two tools after the two of EA-6a.
+        assert names[-4:] == list(WRITE_TOOL_NAMES)
         edge.tokens[GOOD] = _lookup(scope="projects:read", scopes=("projects:read",))
         r = await _post(_rpc("tools/list"))
         names = [t["name"] for t in r.json()["result"]["tools"]]
-        assert "set_task_status" not in names and "add_task_reference" not in names
+        assert not set(WRITE_TOOL_NAMES) & set(names)
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read", WRITE_SCOPES),            # the token lacks it
@@ -493,10 +499,10 @@ class TestTheWriteToolsAtTheEdge:
     async def test_with_the_writes_flag_off_tools_list_leaves_out_the_writes(
             self, edge, monkeypatch):
         on = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
-        assert {"set_task_status", "add_task_reference"} <= set(on)
+        assert set(WRITE_TOOL_NAMES) <= set(on)
         monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
         off = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
-        assert off == [n for n in on if n not in {"set_task_status", "add_task_reference"}]
+        assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
         assert len(off) == 7
 
     @pytest.mark.parametrize("scope,scopes", [

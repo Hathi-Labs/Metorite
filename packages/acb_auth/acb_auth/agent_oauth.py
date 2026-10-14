@@ -520,10 +520,13 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: :data:`MCP_ROUTES`, and no pair here is a GET. Branch 0 admits a method
 #: other than GET only for one of these pairs, and only with the writes flag,
 #: ``projects:write`` on the connection, a fresh nonce and room under the cap.
+#: EA-6d adds the task create, the route of ``create_task``. The PATCH serves
+#: ``set_task_status`` and ``update_task``.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PATCH", "/projects/tasks/{task_id}"),
     ("POST", "/projects/tasks/{task_id}/refs"),
+    ("POST", "/projects/tasks"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
