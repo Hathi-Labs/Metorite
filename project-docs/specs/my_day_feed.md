@@ -15,9 +15,12 @@ Each is dark behind `NEXT_PUBLIC_MY_DAY_FEED`, or by the absence of a caller.
 group and the honest summary, dark behind `NEXT_PUBLIC_MY_DAY_FEED`. So MD-2
 is complete.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3 to
-MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12. Each
-ships dark.
+**MD-5b is BUILT, 2026-10-14** (the `my_day` loop, no migration, dark
+behind `MY_DAY_LOOP_ENABLED`).
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3,
+MD-4, MD-5a, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -2329,6 +2332,15 @@ Done when:
 5. The sweep follows §8.4 item 23. `tests/unit/test_my_day_loop_r8.py`, with
    `_DB_GATE`, shows that it deletes only the bound org's rows, and that a
    `dismissed` row survives.
+
+**BUILT, 2026-10-14.** The loop is `gateway/my_day_loop.py`, and it ships
+dark behind `MY_DAY_LOOP_ENABLED`. Two choices differ from the file list:
+
+- The sweep statement lives in `routes/shell/state.py`, as
+  `sweep_old_rows`. That module stays the one writer of
+  `my_day_card_state`, as migration 258 says. The loop calls it.
+- The active-set write waits 0.25 seconds at most. A slow Redis cannot hold
+  the feed read.
 
 ### MD-6a · The `decide` pass, in shadow — AGENT-SAFE (build), OWNER-GATE (turn on)
 

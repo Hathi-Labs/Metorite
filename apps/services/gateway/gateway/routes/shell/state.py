@@ -546,6 +546,27 @@ _CLAIM_SQL = (
     "ON CONFLICT (organization_id, member_email, signal_id) DO NOTHING "
     "RETURNING signal_id"
 )
+#: The daily sweep of the ``my_day`` loop (MD-5b, §8.4 items 14 and 23). It
+#: deletes a row older than :data:`SWEEP_AFTER_DAYS` days only when the row
+#: hides nothing: ``seen``, ``later``, or a time snooze that ended. It keeps
+#: ``dismissed``, ``acted`` and a snooze until a change, because a deleted one
+#: brings its card back as new (§6.3 rule 2, §6.4).
+SWEEP_AFTER_DAYS = 30
+_SWEEP_SQL = (
+    f"DELETE FROM my_day_card_state WHERE organization_id = {_BOUND_ORG} "
+    f"AND updated_at < now() - interval '{SWEEP_AFTER_DAYS} days' "
+    "AND (state IN ('seen', 'later') "
+    "OR (state = 'snoozed' AND snooze_on_change = false AND snoozed_until < now()))"
+)
+
+
+async def sweep_old_rows(db: Any) -> int:
+    """Run the sweep in *db*, a session bound to one organization. Answers
+    the count of rows it deleted. The ``my_day`` loop is the one caller."""
+    from sqlalchemy import text
+
+    result = await db.execute(text(_SWEEP_SQL))
+    return int(result.rowcount or 0)
 
 
 async def _read_rows(db: Any, member: str, ids: list[str], *,

@@ -519,6 +519,10 @@ async def shell_feed(
     if not user.email:
         raise HTTPException(status_code=401, detail="Authentication required")
     size = max(1, min(int(limit), MAX_FEED_LIMIT))
+    # MD-5b: the session member joins the org's active set (§8.4 item 22).
+    # Gated by MY_DAY_LOOP_ENABLED inside the call, and it never raises.
+    from gateway.my_day_loop import note_active
+    await note_active(user)
 
     # The needs providers first, in today's order and on today's budget.
     run = await needs.needs_run(user)
