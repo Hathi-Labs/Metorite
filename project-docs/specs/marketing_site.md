@@ -142,7 +142,7 @@ or a feature that is planned, does not appear.
 
 The zero-surface rules of §1 and `site/AGENTS.md` still bind: no `<script>`, no
 cookies, no analytics, and no origin other than `https://app.metorite.com`.
-Each HTML page stays under 100 KB.
+§6.6 holds the one exception. Each HTML page stays under 100 KB.
 
 ### 6.5 The fence (R7)
 
@@ -152,3 +152,20 @@ Each HTML page stays under 100 KB.
 - every `<img>` has a non-empty `alt`
 - every file in `site/img/` is WebP, PNG, SVG or JPEG, and is under 300 KB
 - all of `site/img/` together stays under 3 MB
+
+### 6.6 Google verification: two outbound links and the help page (2026-10-14)
+
+The owner approved the work for the Google review of the Gmail scopes on
+2026-10-14. `email_app_master_plan.md` §12.4 owns that work.
+
+- **Two outbound links.** The privacy page links the Google API Services User
+  Data Policy, and the help page links the Google page that removes an app's
+  access. Google's review asks for both links.
+- **Why the rule of zero surface still holds.** An `<a href>` loads nothing. It
+  runs no script, sets no cookie and fetches no asset.
+- **The fence.** `OUTBOUND_LINKS` in `tests/unit/test_marketing_site.py` holds
+  the two exact URLs. A URL from that set passes only as the `href` of an `<a>`
+  tag. As a `src` or in a `<link>`, it fails. A look-alike fails too.
+- **A new entry.** Add one only with a reason in this section.
+- **The help page.** `site/help.html` tells a member how to connect a mailbox,
+  disconnect it, remove the access at the provider and ask for deletion.

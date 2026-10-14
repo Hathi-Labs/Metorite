@@ -25,6 +25,14 @@ spec is the single authority for this surface; do not describe it elsewhere.
 - **Only origin referenced is `https://app.metorite.com`.** The "Sign up" CTA is
   exactly `https://app.metorite.com/signup`; the "Sign in" link is exactly
   `https://app.metorite.com`. Relative anchors (`#features`) are fine.
+- **One exception, two exact links (2026-10-14).** A page may link
+  `https://developers.google.com/terms/api-services-user-data-policy` and
+  `https://myaccount.google.com/permissions`, and only from an `<a href>`.
+  Google's review of the Gmail scopes asks for both. An `<a href>` loads
+  nothing, so the zero-surface rule holds. `OUTBOUND_LINKS` in the fence holds
+  the list. Add an entry only with a reason in `marketing_site.md` §6.6.
+- **`help.html` is the public help for connected accounts and data deletion.**
+  Google's review asks for it. Keep it in step with `privacy.html` §3.
 - **Each HTML page < 100 KB.**
 - The workbench DESIGN_SYSTEM (eight rules) does **not** attach — this is not a
   product surface. Look-and-feel is advisory taste (marketing_site.md §3 note).

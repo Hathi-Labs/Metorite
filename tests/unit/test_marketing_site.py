@@ -11,7 +11,9 @@ The four rules this fence enforces, from the spec's acceptance row:
   * no ``<script`` tag anywhere;
   * every ``href=``/``src=`` that names an origin points at
     ``https://app.metorite.com`` and nowhere else (no fetched assets, no
-    third-party origins, no cookies-by-beacon);
+    third-party origins, no cookies-by-beacon). The one exception, since
+    2026-10-14, is ``OUTBOUND_LINKS``: two exact Google URLs, and only as the
+    ``href`` of an ``<a>`` tag, which loads nothing;
   * both exact call-to-action hrefs are present — the ``/signup`` CTA and the
     bare sign-in link;
   * the whole page stays under 100 KB.
@@ -56,6 +58,21 @@ SIGNUP_HREF = "https://app.metorite.com/signup"
 
 # Every attribute value that could name an origin. Matches both quote styles.
 _URL_ATTR = re.compile(r"""(?:href|src)\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+
+# The ONLY foreign URLs a page may name, and only as the href of an <a> tag.
+# Google's restricted-scope review asks the privacy page to LINK the Limited
+# Use policy, and the help page to link the place where a member removes an
+# app's access (owner approval 2026-10-14, email_app_master_plan.md §12.4).
+# A plain <a href> to another site loads nothing: no script, no cookie, no
+# fetch. So the zero-surface promise holds. Each entry is an EXACT string, so
+# a look-alike, a query or a second path on the same host is still refused.
+# A <link>, <img> or any src that names one of these is still an offender.
+OUTBOUND_LINKS = frozenset({
+    "https://developers.google.com/terms/api-services-user-data-policy",
+    "https://myaccount.google.com/permissions",
+})
+_ANCHOR_HREF = re.compile(
+    r"""<a\b[^>]*?\bhref\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
 
 
 def _read_html() -> str:
@@ -107,14 +124,60 @@ def test_no_foreign_origin_referenced() -> None:
     # are all rejected. Values that reference no host — anchors (#top), relative
     # paths, and self-contained data: URIs (site/AGENTS.md permits inline SVG /
     # data: imagery) — name no origin and are allowed.
-    offenders: list[str] = []
-    pairs = [
-        (page.name, value)
+    #
+    # The one exception is OUTBOUND_LINKS. A value from that set passes only
+    # when EVERY place the page names it is the href of an <a> tag. One use as
+    # a src, or in a <link>, fails the page.
+    offenders = [
+        bad
         for page in site_pages()
-        for value in _URL_ATTR.findall(page.read_text(encoding="utf-8"))
+        for bad in _page_offenders(page.name, page.read_text(encoding="utf-8"))
     ]
-    for page_name, value in pairs:
-        v = value.strip()
+    assert not offenders, (
+        "every page under site/ may only reference the exact origin "
+        f"{ALLOWED_ORIGIN}, or link one of {sorted(OUTBOUND_LINKS)} from an "
+        f"<a> tag. Foreign or malformed origins found: {offenders}"
+    )
+
+
+def test_outbound_links_are_exact_and_few() -> None:
+    # The exception above must stay narrow. Two exact Google URLs, both https,
+    # and no other host. A new entry is a decision for marketing_site.md first.
+    assert len(OUTBOUND_LINKS) == 2
+    for url in OUTBOUND_LINKS:
+        parts = urlsplit(url)
+        assert parts.scheme == "https", url
+        assert parts.hostname in {"developers.google.com", "myaccount.google.com"}, url
+        assert not parts.query and not parts.fragment, url
+
+
+@pytest.mark.parametrize("html", [
+    '<img alt="x" src="{url}">',
+    '<link rel="stylesheet" href="{url}">',
+    '<a href="{url}">ok</a><img alt="x" src="{url}">',
+    '<a href="{url}x">look-alike</a>',
+    '<a href="https://evil.example/">evil</a>',
+])
+def test_outbound_exception_stays_narrow(html: str) -> None:
+    # The negative cases: an outbound URL as a src or a <link>, a look-alike,
+    # and a foreign host must each still fail.
+    probe = html.format(url=sorted(OUTBOUND_LINKS)[0])
+    assert _page_offenders("probe.html", probe), probe
+
+
+def test_outbound_link_in_an_anchor_passes() -> None:
+    for url in OUTBOUND_LINKS:
+        assert not _page_offenders("probe.html", f'<a href="{url}">policy</a>')
+
+
+def _page_offenders(page_name: str, html: str) -> list[str]:
+    """Every href/src value on one page that names a host it may not name."""
+    values = [v.strip() for v in _URL_ATTR.findall(html)]
+    anchors = [v.strip() for v in _ANCHOR_HREF.findall(html)]
+    offenders: list[str] = []
+    for v in values:
+        if v in OUTBOUND_LINKS and values.count(v) == anchors.count(v):
+            continue
         try:
             parts = urlsplit(v)
             references_host = parts.hostname is not None or v.startswith("//")
@@ -131,10 +194,7 @@ def test_no_foreign_origin_referenced() -> None:
             references_host, allowed = True, False
         if references_host and not allowed:
             offenders.append(f"{page_name}: {v}")
-    assert not offenders, (
-        "every page under site/ may only reference the exact origin "
-        f"{ALLOWED_ORIGIN}. Foreign or malformed origins found: {offenders}"
-    )
+    return offenders
 
 
 def test_no_cookie_use() -> None:

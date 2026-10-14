@@ -25,6 +25,7 @@
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
 > 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
+> 🔨 **§12.4 steps 11 to 13 are BUILT, not merged (2026-10-14, branch `site-google-verification`).** The owner approved the Google user data text of `site/privacy.html` on 2026-10-14. The agent answered Q-GM-5 from the code (§12.4.1). §12.4.2 lists the gaps before the Google review.
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
@@ -13662,18 +13663,41 @@ the process loaded at start.
     (`site/privacy.html:107`, `:158`, read at `3d73313a4`). 🔴 A merge publishes the page, because
     Caddy serves `/opt/acb/app/site`. So the owner approves the text before an agent edits the file.
     The draft after step 15 is the text to approve.
+    🔨 **Built 2026-10-14, not merged** (branch `site-google-verification`). The owner approved the
+    text on 2026-10-14, and the merge publishes it.
 12. The privacy text says how Metorite reads, uses, stores and shares Gmail data. It states that
     Metorite meets the Limited Use rules of the Google API Services User Data Policy.
 13. The privacy text names the AI sub-processors of D-EM-9 (TypeSafe, AI/ML API). It states that
     no Gmail data trains a general AI model. Q-GM-5 asks the owner to confirm this.
+    🔨 **Built 2026-10-14.** The page names TypeSafe, AI/ML API, DeepSeek and Gemini. §12.4.1 holds
+    the answer to Q-GM-5 from the code, and §12.4.2 holds the gaps.
 14. Pass the CASA security assessment with a lab that Google authorizes, once each year. It costs
     a fee and takes weeks. 🔴 Money and a third party: an owner act only (CLAUDE.md §3a rule 3).
 15. Publish the app (**Audience → Publish app**) only when verification passes. An app that Google
     did not verify shows the warning, and Google caps it at 100 new users.
 
-**Draft for owner approval — not published.** 🔴 OWNER-GATE to publish. An agent wrote this draft
-on 2026-10-12 for steps 11 to 13. Do NOT copy it into `site/privacy.html` before the owner approves
-it. A merge publishes the page, because Caddy serves `/opt/acb/app/site`. The legal pages have one
+**Published, owner approval 2026-10-14.** The owner approved the privacy and terms text on
+2026-10-14. The owner asked for each change to the website and the privacy policy that makes a
+Google approval most probable. The text of
+record is now `site/privacy.html` §3, "Google user data (Gmail)". `site/help.html` and one terms
+line go with it. The branch is `site-google-verification`. A merge publishes the pages, because
+Caddy serves `/opt/acb/app/site`. The draft below is history. Do not copy it again.
+
+**What the page adds to the draft.** A coordinator brief on Google's rejection reasons added these.
+
+- The draft banners of `privacy.html` and `terms.html` are gone.
+- Each page names the operator as Hathi Labs Private Limited. The contact is `info@hathilabs.com`.
+- The page quotes the Limited Use sentence and Google's AI sentence word for word.
+- A merger moves Google user data only after the member's explicit prior consent.
+- A new use of Gmail data needs a policy update and a fresh consent first.
+- The supplier table names each AI sub-processor that gets message content.
+- `site/help.html` gives the steps to connect, disconnect, revoke and ask for deletion.
+- Two exact Google links are now legal on `site/`, and only in an `<a href>`
+  (`marketing_site.md` §6.6). The fence is `tests/unit/test_marketing_site.py`.
+
+
+**The draft, as history (2026-10-12).** ~~Draft for owner approval — not published. 🔴 OWNER-GATE
+to publish.~~ An agent wrote this draft on 2026-10-12 for steps 11 to 13. The legal pages have one
 owner (`work_plan.md` §4, the legal pages row).
 
 **The assumptions of the draft.** Each one hangs on an owner answer. The owner confirms or corrects
@@ -13770,6 +13794,70 @@ approves that line with this draft.
 mailbox that connects in Testing must reconnect once after the app moves to Production. Its
 refresh token from Testing still ends after 7 days.
 
+#### 12.4.1 The answer to Q-GM-5, from the code (2026-10-14)
+
+**Yes, Gmail content leaves the box, and it goes to more suppliers than D-EM-9 names.** The agent
+read the code at `7929aa9f8` and the names in the box `.env`. It read no value. Each row below
+is a place where the text of a message can leave the box.
+
+| Supplier | What it gets | Why | Evidence |
+|---|---|---|---|
+| TypeSafe (Jev) | The parts of a message that a decision needs | The rule match and the thread status (D-EM-7) | `decide.py:57`, `handlers.py:88`, box `DECIDE_ENABLED` true, H-166 |
+| AI/ML API | The same parts, as a reseller to TypeSafe | `tier-decide` is bound to `aimlapi/typesafe/jev` (H-166, owner report) | `handlers.py:101` |
+| DeepSeek | The text of the mail that a feature works on | Drafts, the email chat, the thread status ask, the digest brief and Insights stage 2 | `assistant.py:160-166`, `replyzero.py:397`, `digest.py:544`, `002_seed_catalog.sql:88-92`, `tier_overrides.yaml:1-13`, box `DEEPSEEK_API_KEY` set |
+| Google (Gemini API) | The same text, if a tier binds a Gemini model | The Settings UI offers Gemini models for a tier | `routes/settings.py:381`, box `GEMINI_API_KEY` set |
+| Supabase, on AWS | The stored copy of the mailbox | The database | `DATABASE_URL` |
+| Hostinger | The sync, the features, Redis and the backups | The VPS | `backup_db.sh:234` keeps 14 nights |
+
+**Two paths pick the model.** `acompletion_with_fallback` sends a call to the Console Router
+when `routing_is_on()` (`context.py:338`), and the Router reads `tier_binding`. The stream path
+resolves the tier on the box and calls litellm direct (`context.py:555`, H-287). So the box's
+own tier map and the Console's `tier_binding` both decide where mail goes.
+
+**What does NOT leave the box today.**
+
+- Embeddings. `email_semantic_search_enabled` is false by default (`settings.py:1046`), and the
+  box sets no `EMAIL_SEMANTIC_SEARCH_ENABLED`.
+- Mem0. `mem0_enabled` is false by default (`settings.py:1032`), and `MEM0_ENABLED` is not true.
+- Langfuse. No code sets a litellm callback, and both Langfuse keys are empty on the box.
+- STT. No email path calls `tier-stt`. `DEEPGRAM_API_KEY` and `GROQ_API_KEY` are empty.
+- The CRM auto lead. `CRM_AUTO_LEAD` is absent on the box (`auto_lead.py:241`).
+- The webhook rule action. It posts only the message id (`actions.py:679`).
+- The digest. It goes from the member's mailbox to the member (`digest.py:907`).
+- No analytics, Sentry or OpenTelemetry name exists in the box `.env`.
+
+**The read the agent could not make.** The live rows of `tier_binding` and
+`provider_credential` live in the Console database. The permission system refused that read on
+2026-10-14. So the page names DeepSeek AND Gemini, because the box holds a key for each. The
+owner confirms the live binding and removes a supplier from the page if no tier binds it.
+
+#### 12.4.2 Gaps between the page and the code (2026-10-14)
+
+The page promises nothing that these gaps make false. Each gap is a risk for the review, and
+each needs an owner decision or a slice.
+
+1. **Training at a sub-processor is not proved.** The page says that Metorite sends no Google
+   user data to train a model. It does not say what each vendor does. The owner checks the API
+   terms of DeepSeek, Gemini, TypeSafe and AI/ML API for training and for retention. A free-tier
+   Gemini key lets Google use the content. AI/ML API is a reseller, so the terms of TypeSafe bind
+   too. Until the owner checks, the review can fail on this point.
+2. **DeepSeek processes data outside India.** The page says "outside India" in general. The
+   owner decides whether a mail sub-processor in that country passes the review and the CASA lab.
+3. **A disconnect does not revoke the grant at Google.** No code calls Google's revoke endpoint.
+   The page tells the member to remove the access at Google too.
+4. **A revoke at Google deletes nothing.** The mailbox shows "reconnect", and the copy stays until
+   a disconnect or a request. The page says so. A slice can delete the copy after a set time.
+5. **Copies outlive a disconnect.** A task, a chat message or a note made from an email stays.
+   The backups keep a copy for up to 14 nights on the box, and Supabase keeps its own. The page
+   says "up to 30 days". The owner confirms the Supabase backup window.
+6. **Logs hold addresses.** Some log lines carry a sender address, for example
+   `email.block_filter`. No line found carries a body.
+7. **Two pages still read as drafts.** `refunds.html` keeps its banner, and `contact.html` keeps
+   "To be completed by the operator" for the address and the phone. The owner supplies both.
+8. **Insights has no switch in the UI yet.** The opt-in is `insights_enabled`, false by default
+   (`231_email_insights.sql:162`). No workbench file sets it. The page says "if you turn on
+   insights", and that stays true. The help page does not name a switch for it.
+
 ### 12.5 Owner questions
 
 - **Q-GM-1. Which Google account or organization owns the Google Cloud project of the mail app?**
@@ -13788,6 +13876,12 @@ refresh token from Testing still ends after 7 days.
   yes, on the same terms as Outlook, with the text of §12.4 steps 12 and 13. This is a legal and
   third-party call, so the agent does not make it. The draft after §12.4 step 15 assumes yes, and
   marks each place that hangs on this answer.
+
+  **Q-GM-5 (answered from the code, 2026-10-14).** Yes, and wider than D-EM-9. Gmail content goes
+  to TypeSafe and AI/ML API for the decisions, and to DeepSeek, or to Gemini if a tier binds it,
+  for the drafts, the chat, the status ask, the brief and Insights. The owner approved publishing
+  on 2026-10-14. §12.4.1 holds the evidence. The training terms of each vendor stay open (§12.4.2
+  gap 1), and the owner decides any change of vendor.
 - **Q-GM-6. Whose Google client does the box hold today?** The box `.env` holds
   `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` (measured by name, 2026-10-05). Nobody in
   this plan set them. Name its Google Cloud project, its redirect URIs and the scopes it allows. If
