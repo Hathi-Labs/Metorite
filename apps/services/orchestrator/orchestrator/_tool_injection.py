@@ -2279,11 +2279,26 @@ async def _inject_mcp_servers(
             await _maf_mcp.attach_mcp_tools(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
+                on_unauthorized=_mark_unauthorized_for(str(org)),
             )
         return
 
     for srv in servers:
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
+
+
+def _mark_unauthorized_for(org: str) -> Any:
+    """WS-54 IN-8b: the callback for a 401 on the connect of an OAuth server
+    whose token the registry refreshed in this run. It sets
+    ``needs_reconnect`` on the row of *org*, the run binding, never request
+    input (``integrations_console.md`` §3.6.7)."""
+
+    async def _mark(server: Any) -> None:
+        from gateway.connections import mcp as mcp_registry
+
+        await mcp_registry.mark_unauthorized(org, str(server.name), dict(server.headers))
+
+    return _mark
 
 
 def _run_org_or_none() -> str | None:
@@ -2324,6 +2339,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
             # H-300: the admin's "always confirm" switch. A row with no key
             # reads as false, so the server keeps its H-299 behaviour.
             always_confirm=getattr(srv, "always_confirm", False) is True,
+            # IN-8b: an OAuth row, and whether this read refreshed its token.
+            oauth=getattr(srv, "oauth", False) is True,
+            oauth_refreshed=getattr(srv, "refreshed", False) is True,
         ))
     return out
 

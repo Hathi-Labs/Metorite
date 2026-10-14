@@ -579,6 +579,75 @@ async def exchange_code(
     )
 
 
+#: The codes of :func:`refresh` that only a new consent repairs. The runtime
+#: sets ``needs_reconnect`` for each (``shared_token._STOP_CODES`` holds the
+#: provider codes, and these two are this module's own).
+NO_REFRESH_TOKEN = "no_refresh_token"
+NO_TOKEN_ENDPOINT = "no_token_endpoint"
+
+
+async def refresh(
+    credential: SourceCredential, *, now: datetime | None = None,
+) -> SourceCredential:
+    """A new access token from the refresh token (RFC 6749 §6, WS-54 IN-8b).
+
+    Spec: ``integrations_console.md`` §3.6.6 and §3.6.7. The hop goes through
+    :func:`_fetch`, so through ``request_https``, like every other hop
+    (§3.6.5). :class:`OAuthFailed` carries the provider's code, for example
+    ``invalid_grant``, and holds no token.
+
+    * **Rotation.** An answer with a new refresh token replaces the old one.
+      The store seals it (``store.update_tokens``). An answer with none keeps
+      the old one (RFC 6749 §6).
+    * **No revoke of the old refresh token.** A provider that rotates ends
+      the old token itself, and none of the six providers of §3.6.2 asks a
+      client to revoke it. A reconnect and a delete still revoke (§3.6.4).
+    * ``provider_meta`` and ``client_secret`` carry over unchanged. The meta
+      holds public facts only, because the store copies it to a plain column.
+    """
+    meta: Mapping[str, str] = credential.provider_meta
+    if not credential.refresh_token:
+        raise OAuthFailed(NO_REFRESH_TOKEN)
+    endpoint = meta.get("token_endpoint")
+    if not endpoint:
+        raise OAuthFailed(NO_TOKEN_ENDPOINT)
+    form = {"grant_type": "refresh_token", "refresh_token": credential.refresh_token}
+    if meta.get("resource"):
+        form["resource"] = meta["resource"]  # RFC 8707: the same audience
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        **_client_auth(meta.get("token_auth", AUTH_NONE), meta.get("client_id", ""),
+                       credential.client_secret, form),
+    }
+    answer = await _fetch(
+        "POST", _https_443(endpoint), headers=headers,
+        content=urlencode(form).encode("ascii"))
+    data = _json(answer)
+    if not answer.is_success or data is None or "error" in data:
+        code_out = safe_code((data or {}).get("error"), "refresh_failed")
+        _log.warning("mcp.oauth_refresh_refused", host=_host(endpoint),
+                     status=answer.status_code, code=code_out)
+        raise OAuthFailed(code_out)
+    try:
+        token = OAuthToken.model_validate(data)
+        life = _lifetime(token.expires_in)
+    except (ValidationError, OAuthFailed):
+        raise OAuthFailed("refresh_failed") from None
+    if not token.access_token:
+        raise OAuthFailed("refresh_failed")
+    issued = now or datetime.now(UTC)
+    scopes = tuple(token.scope.split()) if token.scope is not None else credential.scopes
+    return SourceCredential(
+        access_token=token.access_token,
+        refresh_token=token.refresh_token or credential.refresh_token,
+        expires_at=issued + life,
+        scopes=scopes,
+        provider_meta=dict(meta),
+        client_secret=credential.client_secret,
+    )
+
+
 async def revoke(credential: SourceCredential) -> str:
     """Revoke the refresh token, best effort. Returns an outcome word only.
 
@@ -621,6 +690,7 @@ __all__ = [
     "oauth_enabled",
     "public_meta",
     "redirect_uri",
+    "refresh",
     "register",
     "revoke",
     "safe_code",

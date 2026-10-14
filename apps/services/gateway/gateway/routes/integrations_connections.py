@@ -242,6 +242,15 @@ def _is_mcp(conn: store.Connection) -> bool:
     )
 
 
+def _mcp_status(srv: Any) -> str:
+    """The console status of one MCP server. IN-8b: an OAuth row whose
+    refresh token died shows ``needs_reconnect``, not ``disconnected``, so an
+    admin sees that a new consent repairs it (§3.6.7, O8)."""
+    if getattr(srv, "status", None) == store.STATUS_NEEDS_RECONNECT:
+        return store.STATUS_NEEDS_RECONNECT
+    return "connected" if srv.enabled else "disconnected"
+
+
 async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
     """The MCP servers of *org*, from the registry (IN-4). Never a header."""
     from gateway.connections import mcp as mcp_registry
@@ -266,7 +275,11 @@ async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
             owning_app="integrations",
             scope="org",
             owner=None,
-            status="connected" if srv.enabled else "disconnected",
+            status=_mcp_status(srv),
+            # IN-8b: the safe code of a row that needs an admin, never a token.
+            last_error=(store.safe_error_code(srv.last_error)
+                        if srv.status == store.STATUS_NEEDS_RECONNECT and srv.last_error
+                        else None),
             setup_href=_SETUP_HREF["integrations"],
             can_disconnect=_can_manage(user),
             detail=detail,

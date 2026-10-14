@@ -55,11 +55,22 @@ The rules:
    loaders carry ``egress.MCP_LOADER_KEY``, so they are egress, and the gate
    lets them pass with no card. A loaded tool is an MCP function, and its
    card rule holds. A run attaches :data:`MAX_SERVERS` servers or fewer.
+9. **The 401 of an OAuth server** (WS-54 IN-8b,
+   ``integrations_console.md`` §3.6.7). The registry refreshed the token
+   BEFORE the connect, so the header is fixed for the run
+   (``static_headers``). A 401 on the connect leaves the server out, logs
+   ``mcp.oauth_unauthorized`` with the name only, and the run goes on. Only
+   when the registry refreshed the token in THIS run does the 401 also call
+   ``on_unauthorized``, which sets ``needs_reconnect``. A 401 with no refresh
+   changes nothing: the next run refreshes, and an ``invalid_grant`` then
+   sets it. So one expired token never asks an admin to connect again.
 
 Fences: ``tests/unit/test_maf_mcp_injection.py``,
 ``tests/unit/test_maf_mcp_org_scope_r8.py``,
-``tests/unit/test_maf_mcp_confirm.py`` (H-299) and
-``tests/unit/test_maf_mcp_budget.py`` (items 22 to 30).
+``tests/unit/test_maf_mcp_confirm.py`` (H-299),
+``tests/unit/test_maf_mcp_budget.py`` (items 22 to 30),
+``tests/unit/test_mcp_oauth_refresh.py`` and
+``tests/unit/test_mcp_oauth_refresh_r8.py`` (rule 9).
 """
 from __future__ import annotations
 
@@ -71,7 +82,7 @@ import json
 import re
 import unicodedata
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -121,6 +132,9 @@ _REASON_CHARS = 80
 HINT_NAMES = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
 #: The longest server description that a card carries.
 _DESCRIPTION_CHARS = 1000
+#: Seconds for ``on_unauthorized`` to mark ONE row (rule 9). The run waits
+#: on it, so it is capped. A mark past it is dropped, and the run goes on.
+UNAUTHORIZED_MARK_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -134,6 +148,11 @@ class McpServer:
     headers: dict[str, str] = field(default_factory=dict, repr=False)
     #: H-300: every tool of this server needs the card. False keeps H-299.
     always_confirm: bool = False
+    #: IN-8b: the header is the bearer token of an OAuth consent.
+    oauth: bool = False
+    #: IN-8b: the registry refreshed that token in THIS run, before the
+    #: connect. Only then does a 401 set ``needs_reconnect`` (rule 9).
+    oauth_refreshed: bool = False
 
 
 #: An open server: the tool and the client that the run must close.
@@ -672,9 +691,46 @@ def _fit_run_budget(tools: list[Any]) -> None:
         _log.warning("mcp.schema_over_budget", total=total, budget=RUN_SCHEMA_TOKENS)
 
 
+def _watch_status(client: Any) -> list[int]:
+    """The status code of each answer that *client* gets, in order (rule 9).
+
+    A response hook of ``httpx``, so the codes are read before MAF wraps a
+    failure. MAF wraps a 401 in a ``ToolException`` whose chain holds a
+    cancel and not the HTTP error, and whose message holds the URL. A client
+    with no hooks (a test double) gives an empty list."""
+    codes: list[int] = []
+    hooks = getattr(client, "event_hooks", None)
+    if not isinstance(hooks, dict):
+        return codes
+
+    async def _record(response: Any) -> None:
+        codes.append(int(getattr(response, "status_code", 0) or 0))
+
+    try:
+        client.event_hooks = {**hooks, "response": [*hooks.get("response", []), _record]}
+    except Exception:  # a client that refuses hooks: no 401 is seen
+        return codes
+    return codes
+
+
+async def _report_unauthorized(
+    on_unauthorized: Callable[[McpServer], Awaitable[Any]], server: McpServer,
+) -> None:
+    """Call *on_unauthorized* for *server* within :data:`UNAUTHORIZED_MARK_S`.
+
+    Raises nothing but a cancel: a failed mark never fails the run. The log
+    line names the server and the class of the fault only."""
+    try:
+        async with asyncio.timeout(UNAUTHORIZED_MARK_S):
+            await on_unauthorized(server)
+    except Exception as exc:  # a timeout or a store fault: the run goes on
+        _log.warning("mcp.oauth_mark_failed", name=server.name, error=type(exc).__name__)
+
+
 async def attach_mcp_tools(
     agent: Any, servers: list[McpServer], opened: Opened,
     *, member_present: bool = False,
+    on_unauthorized: Callable[[McpServer], Awaitable[Any]] | None = None,
 ) -> list[str]:
     """Connect each server and add its tool to ``agent.mcp_tools``.
 
@@ -698,7 +754,11 @@ async def attach_mcp_tools(
     tool is built with progressive disclosure on, and
     :func:`_choose_disclosure` and :func:`_fit_run_budget` keep the schemas
     within the budget. The clash check reads every tool of the server, also
-    the tools that the loaders hide."""
+    the tools that the loaders hide.
+
+    *on_unauthorized* (WS-54 IN-8b, rule 9) is called for an OAuth server
+    whose token the registry refreshed in this run, when its connect gets a
+    401. The caller sets ``needs_reconnect`` there."""
     try:
         tool_cls = _run_scoped_tool_class()
         from agent_framework._feature_stage import ExperimentalWarning
@@ -727,6 +787,8 @@ async def attach_mcp_tools(
         except Exception as exc:  # a lookup fault is a refusal too
             _log.warning("mcp.refused", name=server.name, host=host, reason=_reason(exc))
             continue
+        # IN-8b, rule 9: the answers of an OAuth server, so a 401 is seen.
+        codes = _watch_status(client) if server.oauth else []
         tool = None
         try:
             # WS-8c item 30: progressive disclosure is experimental in MAF, and
@@ -753,6 +815,13 @@ async def attach_mcp_tools(
             await _close_one(tool, client, client_first=True)
             raise
         except Exception as exc:
+            if server.oauth and 401 in codes:
+                # Rule 9. The name only: no host, no reason, no header.
+                _log.warning("mcp.oauth_unauthorized", name=server.name)
+                await _close_one(tool, client, client_first=True)
+                if server.oauth_refreshed and on_unauthorized is not None:
+                    await _report_unauthorized(on_unauthorized, server)
+                continue
             _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
             await _close_one(tool, client, client_first=True)
             continue
