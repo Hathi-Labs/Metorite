@@ -727,6 +727,9 @@ def audit_revoke(actor_email: str, org: str, connection_id: str, *, admin: bool)
 
     ``admin`` says whether an admin revoked a connection through the org
     list. It never blocks the revoke: an audit backend that is down only logs.
+    The organization rides on the event itself, not in the payload: this
+    module names no identity input as a string (rule 1, and the structural
+    fence of ``test_agent_oauth_server.py``).
     """
     try:
         from acb_audit import AuditEvent, record
@@ -735,7 +738,7 @@ def audit_revoke(actor_email: str, org: str, connection_id: str, *, admin: bool)
             actor=f"user:{actor_email}",
             action=REVOKE_ACTION,
             target=f"agent_connection:{connection_id}",
-            payload={"organization_id": org, "admin": admin},
+            payload={"admin": admin},
             organization_id=org,
         ))
     except Exception as exc:  # an audit backend that is down must not block this

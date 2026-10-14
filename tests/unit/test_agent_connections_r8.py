@@ -504,7 +504,7 @@ class TestTheRevokeEndsTheAgent:
         assert event.actor == f"user:{MEMBER}"
         assert event.target == f"agent_connection:{cid}"
         assert event.organization_id == live.org_a
-        assert event.payload == {"organization_id": live.org_a, "admin": False}
+        assert event.payload == {"admin": False}
 
         second = await _as(live, MEMBER, "DELETE", f"{MEMBER_LIST}/{cid}")
         assert second.status_code == 404, "a revoked row is gone"

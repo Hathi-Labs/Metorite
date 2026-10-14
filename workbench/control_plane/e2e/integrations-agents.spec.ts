@@ -70,8 +70,12 @@ const ORG = [
   connection("22222222-0000-4000-8000-000000000003", "ravi@acme.example", "https://claude.ai", "Claude Code"),
 ];
 
-/** Stub the shell and the four agent routes. A DELETE drops the row from both lists. */
-async function setup(page: Page, me: typeof MEMBER) {
+/**
+ * Stub the shell and the four agent routes. A DELETE drops the row from both
+ * lists. With `sticky`, the lists keep it, as a read that lags the revoke
+ * would: then only the view itself can hide the row.
+ */
+async function setup(page: Page, me: typeof MEMBER, { sticky = false } = {}) {
   const mine = [...MINE];
   const org = [...ORG];
   const asked: Request[] = [];
@@ -82,7 +86,7 @@ async function setup(page: Page, me: typeof MEMBER) {
     asked.push(r.request());
     if (r.request().method() === "DELETE") {
       const id = r.request().url().split("/").pop()!;
-      for (const rows of [mine, org]) {
+      for (const rows of sticky ? [] : [mine, org]) {
         const at = rows.findIndex((c) => c.id === id);
         if (at >= 0) rows.splice(at, 1);
       }
@@ -94,7 +98,7 @@ async function setup(page: Page, me: typeof MEMBER) {
     asked.push(r.request());
     if (r.request().method() === "DELETE") {
       const id = r.request().url().split("/").pop()!;
-      for (const rows of [mine, org]) {
+      for (const rows of sticky ? [] : [mine, org]) {
         const at = rows.findIndex((c) => c.id === id);
         if (at >= 0) rows.splice(at, 1);
       }
@@ -148,7 +152,7 @@ test.describe("the AI agents view of Integrations (EA-4b)", () => {
   });
 
   test("Revoke asks first, then removes the row", async ({ page }) => {
-    const asked = await setup(page, MEMBER);
+    const asked = await setup(page, MEMBER, { sticky: true });
     await page.goto("/integrations?view=agents");
     const mine = page.getByTestId("agents-mine");
     await expect(mine.getByTestId("agent-row")).toHaveCount(2);
