@@ -42,7 +42,8 @@ The rules of this module:
    :func:`stop_purge_loop`. Each ``TICK_SECONDS`` it lists the organizations
    (one read of the RLS-EXEMPT ``organization`` table) and runs
    :func:`sweep_mailbox_purges`. The sweep CLAIMS ONE ROW AT A TIME, just
-   before its pass, so the lease of each row covers one pass. That pass has
+   before its pass, so the lease of each row covers one pass. The
+   organizations take turns, one row each, so no backlog starves another. That pass has
    the bound ``SWEEP_PASS_BOUND_S``, well inside ``SWEEP_LEASE_S``. A tick
    also stops at ``SWEEP_BUDGET_S``. A row is ``done`` only after its second
    good pass. A failed pass sets ``next_try_at`` with a back-off, and the row
@@ -128,6 +129,8 @@ _PURGES: set[asyncio.Task[int | None]] = set()
 _loop_task: asyncio.Task[None] | None = None
 _stopping: asyncio.Event | None = None
 _mem0_failed_at: float | None = None
+_build_lock: asyncio.Lock | None = None
+_build_lock_loop: asyncio.AbstractEventLoop | None = None
 
 #: Rule 1. The row of the purge, in the transaction of the ``DELETE``. The
 #: organization is the column default, the tenant that the session binds.
@@ -219,6 +222,19 @@ def writable_memory_scope(owner: str | None, account_id: Any, writer: str) -> st
         return None
 
 
+def _mem0_build_lock() -> asyncio.Lock:
+    """The module lock around the Mem0 build, one for each event loop.
+
+    An ``asyncio.Lock`` binds to the loop that first waits on it, so a new
+    loop (a test run, a restart of the lifespan) gets a new lock.
+    """
+    global _build_lock, _build_lock_loop
+    loop = asyncio.get_running_loop()
+    if _build_lock is None or _build_lock_loop is not loop:
+        _build_lock, _build_lock_loop = asyncio.Lock(), loop
+    return _build_lock
+
+
 def _mem0_flag() -> bool:
     """The ``MEM0_ENABLED`` setting, the one reader in this module."""
     return bool(getattr(get_settings(), "mem0_enabled", False))
@@ -241,10 +257,16 @@ async def mem0_on() -> bool:
             return True
         if not _mem0_flag():
             return False
-        if (_mem0_failed_at is not None
-                and time.monotonic() - _mem0_failed_at < MEM0_RETRY_S):
-            return False
-        built = await asyncio.to_thread(client._get_client)
+        # One build at a time (fix round 2). Two callers that both saw no
+        # client would each run Memory.from_config and leak a pool. The second
+        # one waits here, and then sees the client or the failure of the first.
+        async with _mem0_build_lock():
+            if getattr(client, "_client", None) is not None:
+                return True
+            if (_mem0_failed_at is not None
+                    and time.monotonic() - _mem0_failed_at < MEM0_RETRY_S):
+                return False
+            built = await asyncio.to_thread(client._get_client)
     except Exception as exc:
         _log.warning("email.purge.mem0_probe_failed", error=type(exc).__name__)
         built = None
@@ -400,24 +422,24 @@ async def _claim_one(org: str, open_session: Callable[..., Any]) -> Any | None:
             "org": org, "lease": SWEEP_LEASE_S})).fetchone()
 
 
-async def _sweep_org(org: str, open_session: Callable[..., Any],
-                     deadline: float) -> int:
-    """Claim and pass the due rows of one organization, one row at a time,
-    until none is due, ``SWEEP_BATCH`` rows ran, or the deadline passes."""
-    done = 0
-    for _ in range(SWEEP_BATCH):
-        if time.monotonic() >= deadline:
-            break
+async def _turn(org: str, open_session: Callable[..., Any]) -> tuple[bool, int]:
+    """One turn of one organization: claim ONE due row and pass it. Answers
+    whether the organization had a row, and 1 when that row closed ``done``.
+    A failed claim counts as no row, so that organization leaves the tick."""
+    try:
         row = await _claim_one(org, open_session)
-        if row is None:
-            break
-        try:
-            done += int(await _sweep_row(org, row, open_session))
-        except Exception as exc:
-            # The lease frees the row, and a later tick takes it again.
-            _log.warning("email.purge_sweep.row_failed",
-                         account_id=str(row.account_id), error=type(exc).__name__)
-    return done
+    except Exception as exc:
+        _log.warning("email.purge_sweep.org_failed", org=org, error=type(exc).__name__)
+        return False, 0
+    if row is None:
+        return False, 0
+    try:
+        return True, int(await _sweep_row(org, row, open_session))
+    except Exception as exc:
+        # The lease frees the row, and a later tick takes it again.
+        _log.warning("email.purge_sweep.row_failed",
+                     account_id=str(row.account_id), error=type(exc).__name__)
+        return True, 0
 
 
 async def sweep_mailbox_purges(
@@ -428,6 +450,11 @@ async def sweep_mailbox_purges(
     """Run one pass for each due purge row of each organization. Answers the
     count of rows that closed ``done``.
 
+    The organizations take TURNS: each turn claims one row of one
+    organization, so a large backlog in one organization never starves the
+    next one (fix round 2). An organization leaves the tick when it has no
+    due row or after ``SWEEP_BATCH`` rows. The tick stops at the budget.
+
     With Mem0 off it returns 0 before any database read (rule 7). Each
     organization runs in its own ``tenant_session(org)`` blocks, and a failure
     in one organization does not stop the others. It never raises.
@@ -435,16 +462,18 @@ async def sweep_mailbox_purges(
     if not await mem0_on():
         return 0
     deadline = time.monotonic() + budget_s
+    taken = {str(org): 0 for org in org_ids}
     done = 0
-    for org in org_ids:
-        if time.monotonic() >= deadline:
-            _log.info("email.purge_sweep.budget_spent")
-            break
-        try:
-            done += await _sweep_org(str(org), open_session, deadline)
-        except Exception as exc:
-            _log.warning("email.purge_sweep.org_failed", org=str(org),
-                         error=type(exc).__name__)
+    while taken:
+        for org in list(taken):
+            if time.monotonic() >= deadline:
+                _log.info("email.purge_sweep.budget_spent")
+                return done
+            had_row, closed = await _turn(org, open_session)
+            done += closed
+            taken[org] += 1
+            if not had_row or taken[org] >= SWEEP_BATCH:
+                del taken[org]
     return done
 
 

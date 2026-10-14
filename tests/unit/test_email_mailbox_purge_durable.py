@@ -41,6 +41,7 @@ import contextlib
 import json
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -251,9 +252,12 @@ class _ClaimLedger:
     """A session double for the sweeper. It hands out ``rows`` one claim at a
     time and records the order of the claims, the passes and the records."""
 
-    def __init__(self, rows: list[Any]) -> None:
-        self.rows = list(rows)
+    def __init__(self, rows: list[Any] | dict[str, list[Any]]) -> None:
+        self.by_org = {k: list(v) for k, v in rows.items()} if isinstance(
+            rows, dict) else {"org": list(rows)}
         self.events: list[str] = []
+        #: The organization of each row that a claim handed out, in order.
+        self.taken: list[str] = []
 
     def session(self, org: str) -> Any:
         ledger = self
@@ -264,7 +268,10 @@ class _ClaimLedger:
                 if sql.startswith("UPDATE email_mailbox_purges p SET tries"):
                     assert "LIMIT 1" in sql, "a claim takes more than one row"
                     ledger.events.append("claim")
-                    row = ledger.rows.pop(0) if ledger.rows else None
+                    rows = ledger.by_org.get(org, [])
+                    row = rows.pop(0) if rows else None
+                    if row is not None:
+                        ledger.taken.append(org)
                     return SimpleNamespace(fetchone=lambda: row)
                 ledger.events.append("record")
                 return SimpleNamespace(fetchone=lambda: None)
@@ -304,6 +311,68 @@ class TestTheLeaseCoversOnePass:
 
     def test_one_pass_fits_inside_the_lease(self):
         assert memory_purge.SWEEP_PASS_BOUND_S * 2 < memory_purge.SWEEP_LEASE_S
+
+    async def test_a_backlog_in_one_org_does_not_starve_the_next(self, monkeypatch):
+        """Fix round 2. Org A holds 50 due rows and org B one. Each pass takes
+        100 s of a 350 s budget, so the tick runs about four passes. Org B's
+        row is among them."""
+        ledger = _ClaimLedger({"org-a": [_due_row() for _ in range(50)],
+                               "org-b": [_due_row()]})
+        clock = [0.0]
+
+        async def _slow_pass(_scope: str, _shown: str, _phase: str) -> int:
+            clock[0] += 100.0
+            return 0
+
+        monkeypatch.setattr(memory_purge, "mem0_on", _mem0_on)
+        monkeypatch.setattr(memory_purge, "_one_pass", _slow_pass)
+        monkeypatch.setattr(memory_purge, "time",
+                            SimpleNamespace(monotonic=lambda: clock[0]))
+        await memory_purge.sweep_mailbox_purges(
+            ["org-a", "org-b"], open_session=ledger.session, budget_s=350.0)
+        assert len(ledger.taken) == 4, ledger.taken
+        assert "org-b" in ledger.taken, "the backlog of org A starved org B"
+        assert ledger.taken[:2] == ["org-a", "org-b"], "the orgs did not take turns"
+
+
+class TestOneMem0BuildAtATime:
+
+    async def test_two_callers_at_once_build_one_client(self, monkeypatch):
+        """Fix round 2. Two callers that both see no client must not each run
+        ``Memory.from_config``. The second one waits for the first build."""
+        client = mem0_client.MemoryClient()
+        builds: list[int] = []
+
+        def _build() -> object:
+            builds.append(1)
+            time.sleep(0.2)
+            client._client = object()
+            return client._client
+
+        monkeypatch.setattr(mem0_client, "get_memory_client", lambda: client)
+        monkeypatch.setattr(memory_purge, "_mem0_flag", lambda: True)
+        monkeypatch.setattr(client, "_get_client", _build)
+        monkeypatch.setattr(memory_purge, "_mem0_failed_at", None)
+        answers = await asyncio.gather(memory_purge.mem0_on(), memory_purge.mem0_on())
+        assert answers == [True, True]
+        assert builds == [1], f"{len(builds)} builds ran at once"
+
+    async def test_a_failed_build_is_not_repeated_by_the_waiter(self, monkeypatch):
+        client = mem0_client.MemoryClient()
+        builds: list[int] = []
+
+        def _build() -> None:
+            builds.append(1)
+            time.sleep(0.2)
+            return None
+
+        monkeypatch.setattr(mem0_client, "get_memory_client", lambda: client)
+        monkeypatch.setattr(memory_purge, "_mem0_flag", lambda: True)
+        monkeypatch.setattr(client, "_get_client", _build)
+        monkeypatch.setattr(memory_purge, "_mem0_failed_at", None)
+        answers = await asyncio.gather(memory_purge.mem0_on(), memory_purge.mem0_on())
+        assert answers == [False, False]
+        assert builds == [1], "the waiter built again inside the back-off"
 
 
 # ── the loop starts from the lifespan (hermetic) ────────────────────────────
