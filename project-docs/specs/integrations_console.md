@@ -156,8 +156,9 @@ ends it itself, and none of the six providers of §3.6.2 asks for a revoke.
 4. **The Test follows the rule of a run.** `oauth_test_header` sends a due
    token through `_oauth_header`, the refresh step of a run. A Test after a
    401 then refreshes the token. A Test of a row in `needs_reconnect` sends
-   nothing. A Test that gets a 401 does not mark the row. Only a run marks
-   it.
+   nothing. No run uses a disabled row, so its Test gets no refresh and
+   sends the stored token while it lives. A Test that gets a 401 does not
+   mark the row. Only a run marks it.
 5. **The card line sits after the hint line, on the same line.** The card
    draws the detail as one line. So the detail reads: the hint line, then
    "Acts as <admin> at <host>.", then the server and the tool.

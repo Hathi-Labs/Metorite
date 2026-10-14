@@ -681,10 +681,11 @@ async def oauth_test_header(org: str, name: str) -> tuple[str, dict[str, str]]:
     answers ``invalid_grant`` sets ``needs_reconnect``.
 
     With the flag off, :data:`TEST_BEARER_OFF` and no header. A row in
-    ``needs_reconnect`` or ``disconnected`` sends nothing, as a run sends
-    nothing, and is :data:`TEST_BEARER_EXPIRED`. So is a token that the
-    refresh could not renew and that ends within :data:`_OAUTH_SKEW_S`. The
-    token goes to the caller only.
+    ``needs_reconnect`` sends nothing, as a run sends nothing, and is
+    :data:`TEST_BEARER_EXPIRED`. So is a token that the refresh could not
+    renew and that ends within :data:`_OAUTH_SKEW_S`. A disabled row gets no
+    refresh, because no run uses it: it sends the stored token while that
+    token lives, as before IN-8c. The token goes to the caller only.
     """
     from gateway.connections import mcp_oauth
 
@@ -697,13 +698,14 @@ async def oauth_test_header(org: str, name: str) -> tuple[str, dict[str, str]]:
         conn = next((c for c in conns if c.provider == provider), None)
         if conn is None or not _is_oauth(conn):
             return TEST_BEARER_UNREADABLE, {}
-        if conn.status != store.STATUS_CONNECTED:
+        if conn.status == store.STATUS_NEEDS_RECONNECT:
             return TEST_BEARER_EXPIRED, {}
         credential = await store.load_credential(db, org, provider, OWNING_APP)
     if credential is None or not credential.access_token:
         return TEST_BEARER_UNREADABLE, {}
     now = _utcnow()
-    if _needs_refresh(credential, now) and not _backed_off(org, provider):
+    if (conn.status == store.STATUS_CONNECTED and _needs_refresh(credential, now)
+            and not _backed_off(org, provider)):
         # The read session is closed: the step opens its own, under the lock.
         got = await _oauth_header(org, conn, credential)
         if got is None:
