@@ -1029,6 +1029,68 @@ async def test_a_restore_keeps_the_visibility_the_field_had(studio) -> None:
         assert (back.json()["retired"], back.json()["visible"]) == (False, before)
 
 
+async def test_a_required_field_that_no_member_can_fill_gives_422(studio) -> None:
+    """CRM-C4c review, P1. A required field that is hidden with no default, or a
+    required picklist with no active option, would refuse every member create.
+    The studio refuses each one with 422 ``required_unfillable``, at create and
+    at a PATCH, and writes nothing."""
+    p = studio
+
+    async def refused(method: str, path: str, body: Any) -> None:
+        got = await _as_admin(p.org_a, method, path, body)
+        assert got.status_code == 422, got.text
+        assert got.json()["detail"]["code"] == "required_unfillable", got.text
+
+    before = len(_defs(p, p.org_a))
+    await refused("POST", "/crm/fields/deals", {
+        "label": "Secret", "type": "text", "required": True, "visible": False})
+    await refused("POST", "/crm/fields/deals", {
+        "label": "Tier", "type": "select", "required": True, "options": []})
+    await refused("POST", "/crm/fields/deals", {
+        "label": "Tags", "type": "multiselect", "required": True})
+    assert len(_defs(p, p.org_a)) == before, "a refused create writes nothing"
+
+    # A hidden required field with a default is fillable: the default fills it.
+    filled = await _field(p.org_a, "deals", {
+        "label": "Source", "type": "text", "required": True, "visible": False,
+        "default_value": "web"})
+    deal = await _record(p.org_a, "deals", {"name": "D"})
+    assert _custom(p, "deals", deal["id"])[filled["key"]] == "web"
+    # Clearing its default while it stays hidden is refused.
+    await refused("PATCH", f"/crm/fields/deals/{filled['key']}", {"default_value": None})
+
+    # Hiding a required field with no default is refused.
+    need = await _field(p.org_a, "deals", {"label": "PO", "type": "text", "required": True})
+    await refused("PATCH", f"/crm/fields/deals/{need['key']}", {"visible": False})
+    assert _def(p, p.org_a, need["key"]).visible is True
+    # Making a hidden field with no default required is refused too.
+    quiet = await _field(p.org_a, "deals", {"label": "Quiet", "type": "text",
+                                            "visible": False})
+    await refused("PATCH", f"/crm/fields/deals/{quiet['key']}", {"required": True})
+    assert _def(p, p.org_a, quiet["key"]).required is False
+
+    # Retiring the last active option of a required picklist is refused.
+    tier = await _field(p.org_a, "deals", {
+        "label": "Level", "type": "select", "required": True,
+        "options": [{"label": "Gold"}, {"label": "Silver"}]})
+    key = tier["key"]
+    ok = await _as_admin(p.org_a, "PATCH", f"/crm/fields/deals/{key}", {"options": [
+        {"label": "Gold", "value": "gold", "retired": True},
+        {"label": "Silver", "value": "silver"}]})
+    assert ok.status_code == 200, "one active option is enough"
+    await refused("PATCH", f"/crm/fields/deals/{key}", {"options": [
+        {"label": "Gold", "value": "gold", "retired": True},
+        {"label": "Silver", "value": "silver", "retired": True}]})
+    assert [o.get("retired", False) for o in _def(p, p.org_a, key).options] == [True, False]
+    # Without "required", the same retire passes.
+    assert (await _as_admin(p.org_a, "PATCH", f"/crm/fields/deals/{key}",
+                            {"required": False})).status_code == 200
+    gone = await _as_admin(p.org_a, "PATCH", f"/crm/fields/deals/{key}", {"options": [
+        {"label": "Gold", "value": "gold", "retired": True},
+        {"label": "Silver", "value": "silver", "retired": True}]})
+    assert gone.status_code == 200, gone.text
+
+
 async def test_the_auto_lead_writer_fills_defaults_and_skips_required(studio) -> None:
     """Owner decision (review round 1): "required" binds member writes. A
     system writer applies the defaults and skips "required"."""

@@ -802,6 +802,34 @@ async def _check_default(db: Any, field: CustomField, value: Any) -> Any:
     return await check_value(db, field, value, allow_lookup=False)
 
 
+def check_fillable(
+    *, label: str, kind: str, required: bool, visible: bool, default: Any,
+    options: Any,
+) -> None:
+    """422 ``required_unfillable`` for a required field that no member can fill.
+
+    A member create of the entity then always gives 422 ``field_required``
+    (CRM-C4c review, P1). Two shapes do this: a hidden field with no default,
+    because no form shows it, and a picklist or a multi-select with no active
+    option, because no picker offers a value. ``fieldStudio.ts::checkDraft``
+    refuses the same two before the save.
+    """
+    if not required:
+        return
+    if not visible and default is None:
+        raise _unprocessable(
+            "required_unfillable",
+            f"{label} is required and hidden with no default, so no member can "
+            "fill it. Give it a default, show it, or make it optional.",
+        )
+    if kind in ("select", "multiselect") and not _active_values(options):
+        raise _unprocessable(
+            "required_unfillable",
+            f"{label} is required and has no active option, so no member can "
+            "fill it. Add an option, or make it optional.",
+        )
+
+
 _FIELD_ROW_SQL = (
     f"SELECT id, {DEF_COLUMNS} FROM crm_field_defs "
     "WHERE entity = :entity AND key = :key"
@@ -871,6 +899,10 @@ async def create_field(
                 lookup_target=target, retired=False,
             )
             default = await _check_default(db, probe, payload.default_value)
+            check_fillable(
+                label=label, kind=payload.type, required=payload.required,
+                visible=payload.visible, default=default, options=options,
+            )
             await db.execute(text(
                 "INSERT INTO crm_field_defs (entity, key, label, type, options, "
                 "source, position, visible, section_id, required, help_text, "
@@ -975,8 +1007,13 @@ async def _write_system_row(
 
 async def _custom_changes(
     db: Any, entity: str, key: str, current: CustomField, payload: FieldPatch,
+    visible: bool = True,
 ) -> tuple[dict[str, Any], str]:
-    """The column changes of a PATCH of a custom field, and its new type."""
+    """The column changes of a PATCH of a custom field, and its new type.
+
+    *visible* is the stored ``visible`` of the field. The field after the
+    change must stay one that a member can fill (:func:`check_fillable`).
+    """
     sent = payload.model_fields_set
     kind = current.type
     changes: dict[str, Any] = {}
@@ -1026,8 +1063,12 @@ async def _custom_changes(
         retired=False,
     )
     if "default_value" in sent or "type" in changes or "options" in changes:
-        checked = await _check_default(db, probe, default)
-        changes["default_value"] = json.dumps(checked) if checked is not None else None
+        default = await _check_default(db, probe, default)
+        changes["default_value"] = json.dumps(default) if default is not None else None
+    check_fillable(
+        label=label, kind=kind, required=changes.get("required", current.required),
+        visible=changes.get("visible", visible), default=default, options=options,
+    )
     return changes, kind
 
 
@@ -1053,7 +1094,9 @@ async def patch_field(
                 "field_retired", f"{row.label} is retired. Restore it to change it.",
             )
         current = CustomField.from_row(row)
-        changes, kind = await _custom_changes(db, entity, key, current, payload)
+        changes, kind = await _custom_changes(
+            db, entity, key, current, payload, visible=bool(row.visible),
+        )
         if not changes:
             return _wire(entity, row)
         if current.type == "select" and kind == "multiselect":
@@ -1319,6 +1362,7 @@ __all__ = [
     "TYPE_CHANGES",
     "CustomField",
     "apply_options",
+    "check_fillable",
     "check_value",
     "custom_for_create",
     "custom_for_patch",
