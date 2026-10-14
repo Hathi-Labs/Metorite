@@ -246,11 +246,11 @@ def test_the_email_assistant_holds_no_network_tool(
     list that H-236 also reads."""
     from acb_skills.sandbox_tools import HOST_NETWORK_TOOLS
 
-    assert HOST_NETWORK_TOOLS == {"web_search", "fetch_page"}, "the list moved"
+    assert {"web_search", "fetch_page"} == HOST_NETWORK_TOOLS, "the list moved"
     names = _names(_built("agent-email-assistant", "email-assistant", monkeypatch))
     assert not names & HOST_NETWORK_TOOLS, sorted(names & HOST_NETWORK_TOOLS)
-    assert HOST_NETWORK_TOOLS <= ti._floor_opt_out(
-        "email-assistant", _config("agent-email-assistant"))
+    assert ti._floor_opt_out(
+        "email-assistant", _config("agent-email-assistant")) >= HOST_NETWORK_TOOLS
 
 
 # ── The registry block ─────────────────────────────────────────────────────
