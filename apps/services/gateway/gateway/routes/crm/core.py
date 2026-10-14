@@ -2531,6 +2531,8 @@ RESET_TABLES: tuple[str, ...] = (
     # CRM-C4a: the studio sections. ``crm_field_defs`` above holds the
     # ``source = 'metorite'`` fields too, so the start over takes both.
     "crm_field_sections",
+    # CRM-C6a: the lead-conversion mapping names the fields above.
+    "crm_convert_mappings",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved

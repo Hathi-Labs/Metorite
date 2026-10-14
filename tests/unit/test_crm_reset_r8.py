@@ -76,6 +76,8 @@ EMPTIED = (
     "crm_field_rules",
     # CRM-C4a: the studio sections go with the fields they group.
     "crm_field_sections",
+    # CRM-C6a: the conversion mapping names the fields of the old setup.
+    "crm_convert_mappings",
 )
 #: What the start over keeps. The same set as ``core.RESET_KEEPS``.
 KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors")
@@ -279,6 +281,11 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "INSERT INTO crm_field_defs (organization_id, entity, key, label, "
             "source, section_id) VALUES (CAST(:o AS uuid), 'deal', 'studio', "
             "'Studio', 'metorite', CAST(:s AS uuid))"), {**o, "s": str(section)})
+        # CRM-C6a: a conversion mapping row. The start over takes it.
+        c.execute(text(
+            "INSERT INTO crm_convert_mappings (organization_id, source_key, "
+            "target_entity, skip) VALUES (CAST(:o AS uuid), 'studio', 'deal', "
+            "true)"), o)
         c.execute(text(
             "INSERT INTO crm_sync_cursors (organization_id, module, "
             "initial_done_at) VALUES (CAST(:o AS uuid), 'zoho:deal', now())"), o)
