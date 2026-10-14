@@ -488,6 +488,13 @@ CREATE POLICY email_learned_patterns_tenant_isolation ON email_learned_patterns
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE email_mailbox_purges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_mailbox_purges FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_mailbox_purges_tenant_isolation ON email_mailbox_purges;
+CREATE POLICY email_mailbox_purges_tenant_isolation ON email_mailbox_purges
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE email_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_messages FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS email_messages_tenant_isolation ON email_messages;
