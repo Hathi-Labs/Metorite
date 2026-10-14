@@ -392,6 +392,21 @@ def _routed(monkeypatch):
     get_settings.cache_clear()
 
 
+@pytest.fixture
+def _patient(monkeypatch):
+    """A turn-kind wait that only a hang can pass, for a test that needs an answer.
+
+    The 1.5 s wait includes the synchronous build of the System-1 client. A
+    stalled runner can spend it before the question reaches the wire, and
+    the turn then reads as ``chat`` (deploy run 38610388640 measured
+    ``latency_ms=2683 source=timeout``). Only the tests that need System 1
+    to ANSWER take this fixture. ``_routed`` stays unchanged, so
+    ``test_the_wait_is_one_and_a_half_seconds`` and the timeout tests still
+    read the real wait.
+    """
+    monkeypatch.setattr(tier_policy, "TURN_KIND_TIMEOUT_S", 30.0)
+
+
 def _kind(message: str, effort: str = "auto", tools: tuple[str, ...] = ("vocabulary",)):
     return asyncio.run(tier_policy.turn_kind(message, tools, effort))
 
@@ -400,6 +415,7 @@ def _kind(message: str, effort: str = "auto", tools: tuple[str, ...] = ("vocabul
 class TestTurnKind:
     """§4.3: one ``tier-fast`` question at the start of a turn, or none."""
 
+    @pytest.mark.usefixtures("_patient")
     def test_a_code_message_is_one_fast_request(self, monkeypatch) -> None:
         wire = _wire(monkeypatch, _turn_reply("code"))
         turn = _kind(SECRET, tools=("run_command", "vocabulary"))
@@ -418,6 +434,7 @@ class TestTurnKind:
         assert "run_command, vocabulary" in payload["context"]
         assert payload["items"][0]["options"] == ["chat", "code", "plan", "analysis"]
 
+    @pytest.mark.usefixtures("_patient")
     def test_a_message_under_12_words_sends_no_request(self, monkeypatch) -> None:
         wire = _wire(monkeypatch, _turn_reply("code"))
         eleven = "one two three four five six seven eight nine ten eleven"
@@ -428,6 +445,7 @@ class TestTurnKind:
         assert _kind(eleven + " twelve").kind == "code"
         assert len(wire.requests) == 1
 
+    @pytest.mark.usefixtures("_patient")
     def test_a_low_confidence_reads_as_chat(self, monkeypatch) -> None:
         """Q7: 0.75 passes Auto (0.70) and fails Thinking (0.80)."""
         _wire(monkeypatch, _turn_reply("plan", confidence=0.75))
@@ -553,6 +571,7 @@ class TestARealProjectsRun:
         assert [b["model"] for b in model.bodies] == ["tier-balanced", "tier-balanced"]
         assert [r["tier"] for r in _routes(events)] == ["tier-balanced", "tier-balanced"]
 
+    @pytest.mark.usefixtures("_patient")
     def test_a_code_turn_sends_every_main_request_to_powerful(self, monkeypatch) -> None:
         """Done-when 3. One ``ai_route.chosen`` line and one ``ai.route`` event
         for each main request."""
@@ -713,7 +732,7 @@ class _CopilotShaped:
         return False
 
 
-@pytest.mark.usefixtures("_routed", "_a_tenant")
+@pytest.mark.usefixtures("_routed", "_a_tenant", "_patient")
 @pytest.mark.filterwarnings("ignore:coroutine .*run.* was never awaited:RuntimeWarning")
 def test_a_copilot_agent_gets_the_turn_tier_for_the_whole_run(monkeypatch, tmp_path) -> None:
     """Done-when 9. task-manager cannot switch per request (§4.5). A code
@@ -783,6 +802,7 @@ class TestReviewRoundOne:
     """P1: a Tier 1 fault still falls back. P2: a sub-agent inherits the
     default, never the turn's tier."""
 
+    @pytest.mark.usefixtures("_patient")
     def test_a_sub_agent_inherits_the_default_not_the_turn_tier(self, monkeypatch) -> None:
         """A code turn puts the parent's requests on ``tier-powerful``. The run
         publishes the agent's default through ``_active_run_model``, so a
