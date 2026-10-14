@@ -36,7 +36,7 @@ import GenerativeUINode from "@/components/GenerativeUINode";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import RollupCard, { RollupContext } from "@/components/RollupCard";
 import { OWN_HEAD_TEMPLATES } from "@/components/genUITemplates";
-import { RollupRegistry } from "@/lib/cardRollup";
+import { RollupRegistry, resetManualStates, setManualState } from "@/lib/cardRollup";
 import { plainTitle } from "@/lib/fencedText";
 
 const UUID = "00000000-0000-4000-8000-000000000023";
@@ -76,6 +76,16 @@ function folded(spec: unknown): string {
   return renderToStaticMarkup(createElement(RollupContext.Provider, { value: { registry, waiting: new Set<string>() } }, card));
 }
 
+/** The same card, opened by hand: the toggle then draws its aside. */
+function openCard(name: string): string {
+  setManualState("genui:m-1:0", "open");
+  try {
+    return folded({ type: "template", props: { name, data: DATA[name] } });
+  } finally {
+    resetManualStates();
+  }
+}
+
 /** The toggle's markup, from its tag to its close. */
 const toggleOf = (html: string) => /<button[^>]*data-rollup-toggle[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? "";
 
@@ -104,11 +114,24 @@ describe("a fold toggle holds no link and no control", () => {
     expect(toggleOf(html)).not.toContain("data-template-open");
   });
 
-  it("a status mark draws beside the toggle, not in it", () => {
+  it("a status mark draws beside the toggle, not in it, open or shut", () => {
     for (const name of ["flightStatus", "trainStatus"]) {
-      const html = folded({ type: "template", props: { name, data: DATA[name] } });
-      expect(html, name).toContain("data-template-end");
-      expect(toggleOf(html), name).not.toContain("data-template-end");
+      for (const state of ["shut", "open"] as const) {
+        const html = state === "open" ? openCard(name) : folded({ type: "template", props: { name, data: DATA[name] } });
+        expect(html, `${name} ${state}`).toContain("data-template-end");
+        expect(toggleOf(html), `${name} ${state}`).not.toContain("data-template-end");
+        // The badge's words: a shut toggle hides its aside, so an open one is
+        // where a badge put in the toggle shows.
+        expect(toggleOf(html), `${name} ${state}`).not.toMatch(/in-air|delayed/);
+      }
+    }
+  });
+
+  it("an open toggle holds no link and no control either", () => {
+    for (const name of OWN_HEAD_TEMPLATES) {
+      const toggle = toggleOf(openCard(name));
+      expect(toggle, `${name} drew no toggle`).not.toBe("");
+      expect(toggle, name).not.toMatch(/<a[\s>]|<input|<select|<textarea|<button[^>]*>[\s\S]*<button/);
     }
   });
 
@@ -152,9 +175,34 @@ function cards(html: string): Record<string, string> {
 
 const CONTROL = /<a[\s>]|<input|<select|<textarea|<button[^>]*>[\s\S]*<button/;
 
+/** The turn's cards, shut (older and long) or opened by hand. A shut
+ *  toggle hides its aside, so a control put there shows only when open. */
+function flowCards(state: "shut" | "open"): Record<string, string> {
+  if (state === "open") for (const e of FLOW) setManualState(`tool:${e.id}`, "open");
+  try {
+    return cards(inTranscript(createElement(EmailToolCards, { toolEvents: FLOW })));
+  } finally {
+    resetManualStates();
+  }
+}
+
+describe("an Email card's open toggle holds no link and no control", () => {
+  for (const e of FLOW.filter((x) => x.id !== "t-draft")) {
+    it(e.name, () => {
+      const card = flowCards("open")[`tool:${e.id}`];
+      expect(card, e.name).toContain('data-rollup="open"');
+      const toggle = toggleOf(card);
+      expect(toggle, `${e.name} drew no toggle`).not.toBe("");
+      expect(toggle).not.toMatch(CONTROL);
+      for (const label of ["Disable", "Delete", "Open", "Read all"]) {
+        expect(toggle, label).not.toMatch(new RegExp(String.raw`>\s*${label}\s*<`));
+      }
+    });
+  }
+});
+
 describe("an Email card's fold toggle holds no link and no control", () => {
-  const html = inTranscript(createElement(EmailToolCards, { toolEvents: FLOW }));
-  const byId = cards(html);
+  const byId = flowCards("shut");
 
   it("draws every flow card through the roll-up", () => {
     expect(Object.keys(byId).sort()).toEqual(FLOW.map((e) => `tool:${e.id}`).sort());

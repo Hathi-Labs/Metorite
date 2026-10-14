@@ -194,11 +194,13 @@ test.describe("the Email chat cards send the same payload", () => {
   test("Save to Drafts saves the edited text in the mailbox of the draft", async ({ page }) => {
     await startTurn(page, DRAFT);
     const box = await draftBox(page);
-    await box.fill("Edited body");
+    // The text goes as typed: its outer blank lines too, so a trim shows.
+    const typed = "  Edited body\n\n";
+    await box.fill(typed);
     await page.getByRole("button", { name: "Save to Drafts" }).click();
     await expect(page.getByText("Saved to Drafts")).toBeVisible();
     expect(await calls(page)).toEqual([
-      { method: "POST", path: "/api/email/drafts/save", body: { account_id: "acct-1", message_id: "msg-1", body: "Edited body" } },
+      { method: "POST", path: "/api/email/drafts/save", body: { account_id: "acct-1", message_id: "msg-1", body: typed } },
     ]);
   });
 
