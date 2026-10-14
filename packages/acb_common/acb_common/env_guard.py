@@ -233,6 +233,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # the D-3 run cap CHAT_MAX_RUNS_PER_MEMBER). A tenant that set the cap
     # could lift it for every member of every org on the box.
     "CHAT_",
+    # WS-59 RE-1a: Reach. It sends WhatsApp messages to real members, so only
+    # the operator writes its switch, its allowlists and its cap.
+    "REACH_",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",
