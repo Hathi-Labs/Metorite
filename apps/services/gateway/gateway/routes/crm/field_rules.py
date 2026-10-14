@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -477,7 +478,9 @@ SUGGEST_FEATURE = "crm.field_map"
 #: The tier of the call. Not ``tier-decide``, because its residency is open (D75).
 SUGGEST_MODEL = "tier-fast"
 #: The bound on one model call, in seconds. Past it the press gives a 502.
-SUGGEST_TIMEOUT_S = 60.0
+#: It stays under the 30 s limit of the ``/api/crm`` proxy, so the admin sees
+#: the gateway's message and not a cut connection.
+SUGGEST_TIMEOUT_S = 25.0
 #: The output bound of one call. The model lists only the fields that fit.
 SUGGEST_MAX_TOKENS = 4000
 #: The picklist option labels of one field in the input, and the length of each.
@@ -574,7 +577,7 @@ def build_field_map_prompt(
     🔴 These are the only arguments, so the input holds metadata only and
     never a record value. Fence: ``test_crm_field_map_ai.py``.
     """
-    from gateway.crm_sources.zoho import mapping
+    mapping = mapping_for(PROVIDER)
 
     columns = list(targets)
     payload = {
@@ -622,7 +625,7 @@ def _confidence(value: Any) -> float | None:
         number = float(value)
     except ValueError:
         return None
-    if number != number:  # NaN
+    if math.isnan(number):
         return None
     return min(max(number, 0.0), 1.0)
 
@@ -650,7 +653,7 @@ def keep_proposals(
     item for each field. Each kept item becomes a ``proposed`` row, never an
     ``approved`` one, whatever the item says.
     """
-    from gateway.crm_sources.zoho import mapping
+    mapping = mapping_for(PROVIDER)
 
     kept: list[Proposal] = []
     seen: set[str] = set()
