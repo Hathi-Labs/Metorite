@@ -383,6 +383,32 @@ describe("/ with the My Day feed flag", () => {
     expect(html).not.toContain("The rest is handled");
   });
 
+  it("drops the claim over a stale answer whose refresh failed, and keeps the count (MD-2c fix round 1)", async () => {
+    // `applyError` keeps the last answer, so the column says "Could not
+    // refresh your day." The claim of that answer may be yesterday's.
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY_FEED", "1");
+    access.features = ["projects", "email"];
+    vi.doMock("@/lib/useCachedResource", async (importOriginal) => {
+      const real = await importOriginal<typeof import("@/lib/useCachedResource")>();
+      return {
+        ...real,
+        useCachedResource: ((key, fetcher, opts) => {
+          const res = real.useCachedResource(key, fetcher, opts);
+          return key?.includes("shell/feed") ? { ...res, error: "Your feed could not load." } : res;
+        }) as typeof real.useCachedResource,
+      };
+    });
+    try {
+      const html = await renderWithFeed(handledAnswer(OK), BELL);
+      expect(html).toContain("Could not refresh your day.");
+      expect(html).toMatch(/data-testid="my-day-summary">2 things need you\.</);
+      expect(html).not.toContain("The rest is handled");
+    } finally {
+      vi.doUnmock("@/lib/useCachedResource");
+    }
+  });
+
   it("keeps the summary of NS-3 with the feed flag off: the bell's count, and no claim (MD-2c)", async () => {
     vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
     vi.stubEnv("NEXT_PUBLIC_MY_DAY_FEED", "");

@@ -15,7 +15,11 @@
  *   5. With the feed on, "N things need you" counts the open cards of Now and
  *      Needs you in the feed answer, after the client's own hides.
  *   6. "The rest is handled." shows only when Handled is not empty, the
- *      server says `handled_ok`, and no source failed (the rule of NS-3).
+ *      server says `handled_ok`, no source failed (the rule of NS-3), and no
+ *      source is capped (fix round 1: a capped count is a floor).
+ *   7. Only an in-app path is a link (fix round 1). A Handled entry with any
+ *      other link is dropped. A card keeps its title and loses its link. An
+ *      `open` act with any other link is dropped.
  *
  * The summary with the feed flag off is `myDay.test.ts`, unchanged.
  */
@@ -37,7 +41,7 @@ import {
   handledMeta,
   readFeedAnswer,
 } from "./feed";
-import { type Feed, FeedColumn, HandledRow } from "./FeedCard";
+import { type Feed, FeedCard, FeedColumn, HandledRow } from "./FeedCard";
 import { summaryLine } from "./myDay";
 
 /** A card of §14.1a in a group, with its own id and a Done. */
@@ -74,6 +78,20 @@ const HANDLED = [
 
 const answerOf = (raw: Record<string, unknown>): FeedAnswer => readFeedAnswer(raw);
 
+/**
+ * Each link that leaves the app. The first four pass a test of the prefix
+ * alone, and `new URL(h, origin)` reads each one as `https://evil.com/`.
+ */
+const OFF_SITE = [
+  "/\\evil.com",
+  "/\\/evil.com",
+  "/\t/evil.com",
+  "/\n/evil.com",
+  "javascript:alert(1)",
+  "https://evil.com/",
+  "//evil.com",
+];
+
 describe("1. the reader", () => {
   it("reads the entries and the claim flag", () => {
     const answer = answerOf({ cards: [], handled: HANDLED, handled_ok: true });
@@ -109,6 +127,8 @@ describe("1. the reader", () => {
         { ...good, href: "https://evil.example/x" },
         { ...good, href: "//evil.example/x" },
         { ...good, href: "javascript:alert(1)" },
+        // A URL parser reads each of these as another site (fix round 1).
+        ...OFF_SITE.map((href) => ({ ...good, href })),
         { ...good, by: undefined },
         { ...good, by: { kind: "robot", name: "R2" } },
         { ...good, app: 3 },
@@ -299,6 +319,8 @@ describe("6. the claim", () => {
     expect(handledClaim(answerOf({ ...base, handled: [], handled_ok: true }))).toBe(false);
     expect(handledClaim(answerOf({ ...base, handled: HANDLED, handled_ok: false }))).toBe(false);
     expect(handledClaim(answerOf({ ...base, handled: HANDLED }))).toBe(false);
+    // A capped source: its count is a floor, so more may wait (fix round 1).
+    expect(handledClaim(answerOf({ ...base, handled: HANDLED, handled_ok: true, capped: ["tasks"] }))).toBe(false);
     // A failed source silences the claim (the rule of NS-3), Calendar too.
     for (const failed of ["tasks", "email", "projects", "approvals", "calendar"]) {
       const sources = { ...base.sources, [failed]: "failed" };
@@ -316,5 +338,41 @@ describe("6. the claim", () => {
     expect(summaryLine(0, 0, false, true)).toBe("Nothing needs you right now, and your calendar is clear.");
     // With no claim, the line of NS-3, word for word.
     expect(summaryLine(3, null, false, false)).toBe(summaryLine(3, null));
+  });
+});
+
+describe("7. only an in-app path is a link (fix round 1)", () => {
+  it("drops a Handled entry for each link that leaves the app", () => {
+    for (const href of OFF_SITE) {
+      expect(answerOf({ handled: [entry("T", { kind: "you", name: null }, { href })] }).handled, href).toEqual([]);
+    }
+    expect(answerOf({ handled: [entry("T", { kind: "you", name: null })] }).handled).toHaveLength(1);
+  });
+
+  it("keeps a card with such a link, and draws its title with no link", () => {
+    for (const href of OFF_SITE) {
+      const [c] = answerOf({ cards: [card("a", "needs_you", { href })] }).cards;
+      expect(c, href).toBeDefined();
+      expect(c.href, href).toBe("");
+      const html = renderToStaticMarkup(createElement(FeedCard, { card: c, nowMs: null, onAct: () => {} }));
+      expect(html, href).toContain("Card a");
+      expect(html, href).not.toMatch(/<a\b[^>]*href="(?!\/projects)/);
+      expect(html, href).not.toContain("evil");
+    }
+    const [ok] = answerOf({ cards: [card("a", "needs_you")] }).cards;
+    expect(ok.href).toBe("/projects?task=a");
+  });
+
+  it("drops an open act with such a link, and keeps the card's other acts", () => {
+    for (const href of OFF_SITE) {
+      const acts = [
+        { id: "done", label: "Done", class: "A", way: "tap", act: "done", act_ref: "a" },
+        { id: "open", label: "Open the day", class: "A", way: "open", href },
+      ];
+      const [c] = answerOf({ cards: [card("a", "needs_you", { acts })] }).cards;
+      expect(c.acts.map((a) => a.id), href).toEqual(["done"]);
+    }
+    const acts = [{ id: "open", label: "Open the day", class: "A", way: "open", href: "/calendar" }];
+    expect(answerOf({ cards: [card("a", "needs_you", { acts })] }).cards[0].acts.map((a) => a.href)).toEqual(["/calendar"]);
   });
 });

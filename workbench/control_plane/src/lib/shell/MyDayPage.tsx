@@ -131,7 +131,9 @@ export default function MyDay() {
               feedNeedsCount(feedAnswer, feed.marked, feed.hidden),
               todayCount,
               feedFailedLines(feedAnswer.sources).length > 0,
-              handledClaim(feedAnswer),
+              // A stale answer under a failed refresh keeps its count, and
+              // loses its claim: the claim may be yesterday's (fix round 1).
+              handledClaim(feedAnswer) && !feed.error,
             )
           : summaryLine(needs.count ?? 0, todayCount, failedLines(needs.sources).length > 0);
 

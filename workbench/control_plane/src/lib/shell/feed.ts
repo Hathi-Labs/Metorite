@@ -35,6 +35,7 @@
 import { PROJECTS_CACHE } from "@/app/projects/lib/api";
 import { fmtClock } from "@/app/tasks/lib/utils";
 import { cacheKey, guardedPut, onClear } from "@/lib/dataCache";
+import { isInAppPath } from "@/lib/inAppLink";
 import { NAV_SECTIONS } from "@/lib/nav";
 
 import { APP_NAMES, appIcon, failedLines } from "./myDay";
@@ -99,6 +100,7 @@ export interface FeedCard {
   title: string;
   why: string | null;
   at: string | null;
+  /** The door to the entity: a path of this app, or "" for none (MD-2c fix round 1). */
   href: string;
   acts: FeedAct[];
   // The state fields of MD-2a (`my_day_feed.md` §14.1a, §6.8). Optional: an
@@ -182,10 +184,19 @@ const isGroup = (v: unknown): v is FeedGroupId =>
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
+/** The link, only when it is a path of this app (`isInAppPath`), else null (MD-2c fix round 1). */
+const inApp = (v: unknown): string | null => (typeof v === "string" && isInAppPath(v) ? v : null);
+
+/**
+ * One act, or null. An `open` act whose link is not a path of this app is
+ * dropped, so a card never opens another site or runs a script.
+ */
 function readAct(raw: unknown): FeedAct | null {
   const a = raw as Partial<FeedAct> | null;
   if (!a || typeof a !== "object" || typeof a.label !== "string") return null;
   if (a.way !== "tap" && a.way !== "expand" && a.way !== "open") return null;
+  const href = inApp(a.href);
+  if (a.way === "open" && href === null) return null;
   return {
     id: typeof a.id === "string" ? a.id : a.label,
     label: a.label,
@@ -194,7 +205,7 @@ function readAct(raw: unknown): FeedAct | null {
     act: str(a.act),
     act_ref: str(a.act_ref),
     act_refs: Array.isArray(a.act_refs) ? a.act_refs.filter((r): r is string => typeof r === "string" && !!r) : null,
-    href: str(a.href),
+    href,
   };
 }
 
@@ -246,7 +257,8 @@ function readCard(raw: unknown): FeedCard | null {
     title: c.title,
     why: str(c.why),
     at: str(c.at),
-    href: c.href,
+    // A link that is not a path of this app draws the title with no link.
+    href: inApp(c.href) ?? "",
     acts: Array.isArray(c.acts) ? c.acts.map(readAct).filter((a): a is FeedAct => a !== null) : [],
     ...readState(c),
   };
@@ -264,13 +276,14 @@ function readHandled(raw: unknown): HandledEntry | null {
   const e = raw as Record<string, unknown> | null;
   if (!e || typeof e !== "object") return null;
   if (typeof e.app !== "string" || typeof e.title !== "string" || !e.title.trim()) return null;
-  if (typeof e.href !== "string" || !e.href.startsWith("/") || e.href.startsWith("//")) return null;
+  const href = inApp(e.href);
+  if (href === null) return null;
   const by = e.by as Record<string, unknown> | null;
   if (!by || typeof by !== "object" || typeof by.kind !== "string" || !BY_KINDS.has(by.kind)) return null;
   return {
     app: e.app,
     title: e.title,
-    href: e.href,
+    href,
     by: { kind: by.kind as HandledByKind, name: typeof by.name === "string" && by.name ? by.name : null },
     at: str(e.at),
   };
@@ -890,9 +903,16 @@ export function feedNeedsCount(
 /**
  * Whether the summary may say "The rest is handled." (§6.7). Only when
  * Handled is not empty, the server says no Handled read failed
- * (`handled_ok`), and no source of the feed failed. A failed source silences
- * the claim, as NS-3 does, because a card of that source may be missing.
+ * (`handled_ok`), no source of the feed failed, and no source is capped. A
+ * failed source silences the claim, as NS-3 does, because a card of that
+ * source may be missing. A capped source does the same (fix round 1): its
+ * count is a floor, and more cards wait behind it.
  */
-export function handledClaim(answer: Pick<FeedAnswer, "handled" | "handled_ok" | "sources">): boolean {
-  return answer.handled.length > 0 && answer.handled_ok && feedFailedLines(answer.sources).length === 0;
+export function handledClaim(answer: Pick<FeedAnswer, "handled" | "handled_ok" | "sources" | "capped">): boolean {
+  return (
+    answer.handled.length > 0 &&
+    answer.handled_ok &&
+    feedFailedLines(answer.sources).length === 0 &&
+    answer.capped.length === 0
+  );
 }

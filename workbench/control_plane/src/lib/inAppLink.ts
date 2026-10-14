@@ -61,3 +61,35 @@ export function externalHost(href: string | undefined, origin?: string): string 
   if (url.origin === new URL(base).origin) return null;
   return url.hostname || null;
 }
+
+/** A backslash, or a control mark such as a tab, CR or LF. */
+const OFF_PATH_MARKS = /[\\\u0000-\u001f\u007f]/;
+
+/**
+ * True for a path inside this app: `/projects?task=…`. Never `//host`, which
+ * a browser reads as another site, and never `/api/…`, which is a file or a
+ * JSON answer and not a page. The chat, the entity pill and the My Day feed
+ * share this one rule (moved here from `EntityPill.tsx` in MD-2c fix round 1).
+ *
+ * The prefix test alone is not enough (S9 fix round 1). A URL parser strips a
+ * tab or a newline and reads `\` as `/`, so `/\evil.com` and `/<tab>/evil.com`
+ * both open another site. So the path must also resolve, against a fixed base,
+ * to that same base: the check the browser itself will make, run here first.
+ *
+ * A backslash and each control mark are refused outright too (MD-2c fix
+ * round 1). No page of this app has one, and each parser reads them in its
+ * own way. Fences: `EntityPill.test.ts`, `inAppLink.test.ts` and
+ * `feedHandled.test.ts`.
+ */
+export function isInAppPath(href: string | undefined): boolean {
+  if (!href || !href.startsWith("/") || href.startsWith("//")) return false;
+  if (OFF_PATH_MARKS.test(href)) return false;
+  let url: URL;
+  try {
+    url = new URL(href, SERVER_ORIGIN);
+  } catch {
+    return false;
+  }
+  if (url.origin !== SERVER_ORIGIN) return false;
+  return !url.pathname.startsWith("/api/") && url.pathname !== "/api";
+}

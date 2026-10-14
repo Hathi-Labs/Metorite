@@ -893,7 +893,7 @@ export function FeedCard({
   return (
     <HomeCard
       title={card.title}
-      titleHref={card.href}
+      titleHref={card.href || undefined}
       eyebrow={eyebrow}
       testId={`feed-card-${safeId(card.signal_id)}`}
     >

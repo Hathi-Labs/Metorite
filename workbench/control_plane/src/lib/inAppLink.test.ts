@@ -15,7 +15,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { isInAppPath } from "@/components/ui/EntityPill";
-import { IN_APP_LINK_EVENT, externalHost } from "./inAppLink";
+import { IN_APP_LINK_EVENT, externalHost, isInAppPath as isInAppPathOfLinks } from "./inAppLink";
 
 const md = (content: string) => renderToStaticMarkup(createElement(MarkdownBody, { content }));
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf-8");
@@ -59,6 +59,15 @@ describe("a scheme-less link that leaves the app is external (review round 2, P2
       expect(isInAppPath(href)).toBe(false);
     }
     expect(isInAppPath("/email?email=x")).toBe(true);
+  });
+
+  it("isInAppPath refuses a backslash and each control mark, even one that stays on the app (MD-2c fix round 1)", () => {
+    // These resolve to the app's own origin, and the rule still refuses them.
+    for (const href of ["/projects\\x", "/projects\tx", "/projects\rx", "/projects\nx", "/projects\u0000x"]) {
+      expect(isInAppPath(href), JSON.stringify(href)).toBe(false);
+    }
+    // The one rule, in one place: the pill passes on this module's function.
+    expect(isInAppPath).toBe(isInAppPathOfLinks);
   });
 
   it("the chat draws //host with its external mark", () => {
