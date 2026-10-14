@@ -43,7 +43,12 @@ binds the admin, while the auth dependency keeps the organization bound. The
 Router meters it (H-171). The answer becomes ``proposed`` rows only. The
 server drops an item whose field was not in the input, whose target is not
 legal now, or whose types disagree. A second press for the same profile
-version returns the proposals and calls no model. Fence:
+version returns the open proposals and calls no model. The fields go in
+batches of 40, one call for each, and each answer is read on its own. One
+press for each organization and entity in 60 seconds reaches the model,
+through a ``SET NX`` key in tenant Redis, and a second one gets 429. An
+approve or a reject changes a rule only while its status and target are
+the ones the route read, else 409. Fence:
 ``tests/unit/test_crm_field_map_ai.py``.
 """
 
@@ -61,6 +66,7 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger
+from acb_common.tenant_redis import OUTAGE_ERRORS, get_tenant_redis, key, organization_scope
 from fastapi import Depends, HTTPException, Query
 from gateway.crm_sources.registry import mapping_for
 from gateway.routes.crm.access import ADMIN_PERMISSION, read_settings
@@ -130,6 +136,10 @@ _DECIDE_SQL = (
     "UPDATE crm_field_rules SET status = :status, decided_by = :by, "
     "decided_at = now(), updated_at = now(), field_type = :type, "
     "profile_version = :version WHERE id = CAST(:id AS uuid) "
+    # The row must still be the one the route read and checked. A new
+    # proposal can change its target between the read and this update.
+    "AND status = :old_status "
+    "AND target_column IS NOT DISTINCT FROM CAST(:old_column AS text) "
     f"RETURNING {_COLUMNS}"
 )
 
@@ -462,7 +472,13 @@ async def decide_field_rule(
                 "status": payload.status, "by": actor(user).lower(), "id": wanted,
                 "type": field_type,
                 "version": int(version if version is not None else current.profile_version),
+                "old_status": current.status, "old_column": current.target_column,
             })).first()
+            if row is None:
+                raise HTTPException(status_code=409, detail={
+                    "code": "rule_changed",
+                    "message": "This proposal changed. Reload to see it.",
+                })
     except DBAPIError as exc:
         if _unique_violation(exc):
             raise _taken() from exc
@@ -483,6 +499,14 @@ SUGGEST_MODEL = "tier-fast"
 SUGGEST_TIMEOUT_S = 25.0
 #: The output bound of one call. The model lists only the fields that fit.
 SUGGEST_MAX_TOKENS = 4000
+#: The fields of one call. An answer of 40 items stays well inside
+#: :data:`SUGGEST_MAX_TOKENS`, so a long entity is never cut short. The
+#: batches of one press run at the same time.
+SUGGEST_BATCH_FIELDS = 40
+#: One press for each organization and entity in this many seconds.
+SUGGEST_COOLDOWN_S = 60
+#: The tenant Redis namespace of that bound.
+COOLDOWN_NAMESPACE = "crm-field-map"
 #: The picklist option labels of one field in the input, and the length of each.
 MAX_PROMPT_OPTIONS = 20
 MAX_OPTION_CHARS = 60
@@ -536,6 +560,8 @@ class FieldSuggestModel(BaseModel):
     profile_version: int | None = None
     asked: bool
     dropped: int = 0
+    #: The fields of the batches whose call failed or whose answer was bad.
+    unread: int = 0
     proposals: list[FieldRuleModel]
 
 
@@ -691,6 +717,34 @@ def _suggest_failed(code: str, message: str) -> HTTPException:
     return HTTPException(status_code=502, detail={"code": code, "message": message})
 
 
+async def _start_cooldown(org: str, entity: str) -> None:
+    """Allow one press for each organization and entity in each
+    :data:`SUGGEST_COOLDOWN_S`, or raise 429.
+
+    ``SET NX`` with a TTL in tenant Redis, through the prefix wrapper (R5). The
+    key goes in before the model call, so a press that fails still counts.
+    ``llm_slot`` gives no bound here, because a member's press opens no
+    mailbox scope. A Redis outage is a 503: the bound fails closed, because
+    it guards money.
+    """
+    try:
+        with organization_scope(org):
+            started = await get_tenant_redis().set(
+                key(COOLDOWN_NAMESPACE, entity), "1", nx=True, ex=SUGGEST_COOLDOWN_S,
+            )
+    except OUTAGE_ERRORS as exc:
+        _log.warning("crm.field_map_cooldown_unavailable", error=type(exc).__name__)
+        raise HTTPException(status_code=503, headers={"Retry-After": "30"}, detail={
+            "code": "suggest_unavailable",
+            "message": "The assistant is not available now. Try again later.",
+        }) from exc
+    if not started:
+        raise HTTPException(
+            status_code=429, headers={"Retry-After": str(SUGGEST_COOLDOWN_S)},
+            detail={"code": "suggest_cooldown", "message": "Wait a minute before you ask again."},
+        )
+
+
 async def _ask_model(user: UserContext, messages: list[dict[str, str]]) -> str:
     """One metered model call, and the text of its answer.
 
@@ -748,7 +802,12 @@ async def suggest_field_rules(
             text(_RULES_SQL), {"entity": word, "src": PROVIDER},
         )).fetchall()
     stamp = int(version or 0)
-    earlier = [r for r in rules if r.proposed_by == "ai" and int(r.profile_version) == stamp]
+    # Only an open proposal counts. An approve or a reject stamps its row with
+    # the version of today, and a decided row must not stop a new field.
+    earlier = [
+        r for r in rules
+        if r.status == "proposed" and r.proposed_by == "ai" and int(r.profile_version) == stamp
+    ]
     if earlier:
         return FieldSuggestModel(
             entity=word, profile_version=version, asked=False,
@@ -778,11 +837,36 @@ async def suggest_field_rules(
     if not candidates:
         return FieldSuggestModel(entity=word, profile_version=version, asked=False, proposals=[])
 
-    content = await _ask_model(user, build_field_map_prompt(candidates, targets))
-    items = parse_proposals(content)
-    if items is None:
-        _log.warning("crm.field_map_suggest_bad_answer", entity=word)
-        raise _suggest_failed(
+    batches = [
+        candidates[i:i + SUGGEST_BATCH_FIELDS]
+        for i in range(0, len(candidates), SUGGEST_BATCH_FIELDS)
+    ]
+    # One press is one start of the cool-down, whatever the count of batches.
+    await _start_cooldown(org, word)
+    answers = await asyncio.gather(
+        *(_ask_model(user, build_field_map_prompt(batch, targets)) for batch in batches),
+        return_exceptions=True,
+    )
+    items: list[dict[str, Any]] = []
+    read = 0
+    unread = 0
+    failure: HTTPException | None = None
+    for batch, answer in zip(batches, answers, strict=True):
+        if isinstance(answer, HTTPException):
+            failure = failure or answer
+            unread += len(batch)
+            continue
+        if isinstance(answer, BaseException):
+            raise answer
+        parsed = parse_proposals(answer)
+        if parsed is None:
+            _log.warning("crm.field_map_suggest_bad_answer", entity=word)
+            unread += len(batch)
+            continue
+        read += 1
+        items.extend(parsed)
+    if read == 0:
+        raise failure or _suggest_failed(
             "suggest_bad_answer",
             "The assistant gave an answer that could not be read. Try again.",
         )
@@ -804,6 +888,6 @@ async def suggest_field_rules(
                 written.append(row)
     return FieldSuggestModel(
         entity=word, profile_version=version, asked=True,
-        dropped=dropped + len(kept) - len(written),
+        dropped=dropped + len(kept) - len(written), unread=unread,
         proposals=[_wire(r) for r in written],
     )

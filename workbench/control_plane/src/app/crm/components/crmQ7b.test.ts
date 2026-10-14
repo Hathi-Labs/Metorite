@@ -60,6 +60,7 @@ const result = (over: Partial<FieldSuggestion> = {}): FieldSuggestion => ({
   profile_version: 3,
   asked: true,
   dropped: 0,
+  unread: 0,
   proposals: [],
   ...over,
 });

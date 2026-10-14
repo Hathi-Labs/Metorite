@@ -66,6 +66,8 @@ export type FieldSuggestion = {
   profile_version: number | null;
   asked: boolean;
   dropped: number;
+  /** The fields of the batches whose call failed or whose answer was bad. */
+  unread: number;
   proposals: FieldRule[];
 };
 
