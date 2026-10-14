@@ -80,9 +80,13 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
 
   // The browser comes back from the consent with one of two params. Show
   // the outcome once, then clear the address so a reload shows nothing.
+  // Review of #1023: anybody can craft the link, so wait for the list. The
+  // toast shows only while the gateway serves MCP OAuth, and a success names
+  // a row of the list (`consentReturn`).
+  const loadedRows = res.data;
   useEffect(() => {
-    if (returned.current) return;
-    const outcome = consentReturn(searchParams);
+    if (returned.current || loadedRows === undefined) return;
+    const outcome = consentReturn(searchParams, loadedRows);
     if (!outcome) return;
     returned.current = true;
     toast.show({
@@ -92,7 +96,7 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     });
     invalidateConnections();
     router.replace(viewHref("connections"), { scroll: false });
-  }, [searchParams, router, toast]);
+  }, [searchParams, router, toast, loadedRows]);
 
   const all = res.data ?? [];
   const rows = useMemo(() => filterConnections(all, app, status), [all, app, status]);

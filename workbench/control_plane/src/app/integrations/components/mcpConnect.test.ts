@@ -200,19 +200,61 @@ describe("the words around the consent", () => {
     expect(startErrorMessage(undefined)).toBe("Metorite cannot start the sign-in.");
   });
 
-  it("reads the two return shapes of the callback, and nothing else", () => {
+  it("reads the two return shapes of the callback, and names a listed server", () => {
     const p = (q: string) => new URLSearchParams(q);
-    expect(consentReturn(p("mcp_connected=notion"))).toEqual({ ok: true, title: "notion is connected." });
-    expect(consentReturn(p("mcp_connect_error=access_denied"))).toEqual({
+    const rows = [mcp(), row()];
+    expect(consentReturn(p("mcp_connected=notion"), rows)).toEqual({
+      ok: true,
+      title: "Notion is connected.",
+    });
+    expect(consentReturn(p("mcp_connect_error=access_denied"), rows)).toEqual({
       ok: false,
       title: "The sign-in was cancelled at the provider.",
     });
-    expect(consentReturn(p("mcp_connect_error=x"))?.ok).toBe(false);
+    expect(consentReturn(p("mcp_connect_error=x"), rows)?.ok).toBe(false);
     // A name that breaks the name rule is never echoed back.
-    const odd = consentReturn(p("mcp_connected=%3Cscript%3E"));
+    const odd = consentReturn(p("mcp_connected=%3Cscript%3E"), rows);
     expect(odd?.ok).toBe(false);
     expect(odd?.title).not.toContain("script");
-    expect(consentReturn(p("view=keys"))).toBeNull();
+    expect(consentReturn(p("view=keys"), rows)).toBeNull();
+  });
+
+  // Review of #1023: anybody can send a link with these params.
+  const PROTO_KEYS = ["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"];
+  const START_FALLBACK = "Metorite cannot start the sign-in.";
+  const RETURN_FALLBACK = "The sign-in did not finish. Nothing was saved.";
+
+  it("gives the generic text for a prototype key, never an object or a function", () => {
+    for (const key of PROTO_KEYS) {
+      expect(startErrorMessage(key), key).toBe(START_FALLBACK);
+      const out = consentReturn(new URLSearchParams({ mcp_connect_error: key }), [mcp()]);
+      expect(out, key).toEqual({ ok: false, title: RETURN_FALLBACK });
+      expect(typeof out?.title, key).toBe("string");
+    }
+  });
+
+  it("shows no connected toast for a name the list does not hold", () => {
+    const out = consentReturn(new URLSearchParams("mcp_connected=evil-server"), [mcp()]);
+    expect(out).toEqual({ ok: false, title: RETURN_FALLBACK });
+    expect(out?.title).not.toContain("evil");
+    // A row of another kind with a matching id is not a server.
+    expect(consentReturn(new URLSearchParams("mcp_connected=c1"), [mcp(), row()])?.ok).toBe(false);
+  });
+
+  it("shows nothing at all while the gateway serves no MCP OAuth (the flag is off)", () => {
+    for (const q of ["mcp_connected=notion", "mcp_connect_error=access_denied", "mcp_connect_error=__proto__"]) {
+      const params = new URLSearchParams(q);
+      expect(consentReturn(params, [dark()]), q).toBeNull();
+      expect(consentReturn(params, [row()]), q).toBeNull();
+      expect(consentReturn(params, []), q).toBeNull();
+      expect(consentReturn(params, null), q).toBeNull();
+    }
+  });
+
+  it("waits for the list before it reads the return", () => {
+    const view = readFileSync(join(__dirname, "ConnectionsView.tsx"), { encoding: "utf-8" });
+    expect(view).toMatch(/loadedRows === undefined\) return;/);
+    expect(view).toContain("consentReturn(searchParams, loadedRows)");
   });
 });
 

@@ -328,9 +328,23 @@ const START_ERROR_TEXT: Record<string, string> = {
   not_available: "MCP sign-in is not on for your organization.",
 };
 
+/**
+ * The text of `code` in `table`, from an OWN key only, else null.
+ *
+ * ⚠️ `table[code]` reads the object prototype. A code from a URL or a server
+ * such as `__proto__` gives `Object.prototype`, and React throws on an
+ * object child, so one crafted link crashed the page (review of #1023).
+ * `constructor` and `toString` gave a function and a blank toast.
+ */
+function ownText(table: Record<string, string>, code: string | null | undefined): string | null {
+  if (typeof code !== "string" || !Object.prototype.hasOwnProperty.call(table, code)) return null;
+  const text = table[code];
+  return typeof text === "string" ? text : null;
+}
+
 /** A line for a refused start. An unknown code still gets a sentence. */
 export function startErrorMessage(code: string | null | undefined): string {
-  return START_ERROR_TEXT[code ?? ""] ?? "Metorite cannot start the sign-in.";
+  return ownText(START_ERROR_TEXT, code) ?? "Metorite cannot start the sign-in.";
 }
 
 const RETURN_ERROR_TEXT: Record<string, string> = {
@@ -344,26 +358,41 @@ const RETURN_ERROR_TEXT: Record<string, string> = {
 /** The gateway's MCP server name rule (`connections/mcp.py` NAME_RE). */
 const MCP_NAME = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
 
+/** True when the gateway serves MCP OAuth: a row carries its keys. */
+export function mcpOAuthOn(rows: readonly Connection[] | null | undefined): boolean {
+  return (rows ?? []).some(
+    (r) => r.kind === "mcp" && (r.can_connect === true || Boolean((r.acts_as ?? "").trim())),
+  );
+}
+
 /**
  * The toast after the consent: the gateway callback sends the browser to
  * `/integrations?mcp_connected=<name>` or `?mcp_connect_error=<code>` (the
  * BFF callback allows only these two shapes). `null` when neither is here.
+ *
+ * Review of #1023: anybody can send a link with these params. So the toast
+ * shows only while the gateway serves MCP OAuth (`mcpOAuthOn`, which reads
+ * the loaded rows). A success names a server of the loaded list by its row
+ * label, and never echoes the name from the URL. An unknown name is the
+ * generic failure. The caller waits until the list has loaded.
  */
 export function consentReturn(
   params: { get(name: string): string | null },
+  rows: readonly Connection[] | null | undefined,
 ): { ok: boolean; title: string } | null {
   const name = params.get("mcp_connected");
-  if (name !== null && MCP_NAME.test(name)) {
-    return { ok: true, title: `${name} is connected.` };
-  }
   const code = params.get("mcp_connect_error");
-  if (code !== null || name !== null) {
-    return {
-      ok: false,
-      title: RETURN_ERROR_TEXT[code ?? ""] ?? "The sign-in did not finish. Nothing was saved.",
-    };
-  }
-  return null;
+  if (name === null && code === null) return null;
+  if (!mcpOAuthOn(rows)) return null;
+  const row =
+    name !== null && MCP_NAME.test(name)
+      ? (rows ?? []).find((r) => r.kind === "mcp" && mcpName(r) === name)
+      : undefined;
+  if (row) return { ok: true, title: `${rowLabel(row)} is connected.` };
+  return {
+    ok: false,
+    title: ownText(RETURN_ERROR_TEXT, code) ?? "The sign-in did not finish. Nothing was saved.",
+  };
 }
 
 /** The `detail` fields as label and value pairs. Keys read as words. */
