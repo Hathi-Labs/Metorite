@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import inspect
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -398,6 +399,8 @@ NO_CARD_BRANCHES: dict[tuple[str, str, Any], str] = {
     ("sync_account", "purge", False): (
         "it pulls a copy from the provider, and changes no mail, rule or "
         "setting"),
+    ("update_rule", "enabled", False): (
+        "a pause of a rule turns a write off"),
 }
 #: The values of each choice that a registry tool reads as text.
 CHOICES: dict[tuple[str, str], list[Any]] = {
@@ -408,6 +411,10 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
     ("digest", "period"): ["day", "week"],
+    # Round 2: each rule action type, the engine set and one outside it.
+    ("create_rule", "action_type"): [*sorted(agents._RULE_ENGINE_TYPES), "SEND"],
+    ("create_rule", "second_action_type"): sorted(agents._RULE_ENGINE_TYPES),
+    ("update_rule", "add_action_type"): [*sorted(agents._RULE_ENGINE_TYPES), "SEND"],
 }
 _EXTRA = {
     ("manage_inbox", "move"): {"folder": "Archive"},
@@ -415,18 +422,33 @@ _EXTRA = {
 }
 
 
+def _is_optional_bool(param: inspect.Parameter) -> bool:
+    """A ``bool | None`` parameter. The module uses postponed annotations,
+    so the annotation is a string."""
+    return str(param.annotation).replace(" ", "") in ("bool|None", "None|bool")
+
+
 def _branch_cases() -> list[tuple[str, str, Any, dict[str, Any]]]:
     """Each registry tool, called with each bool flipped both ways and each
-    choice of ``CHOICES``. ``update_assistant_settings`` has its own sweep."""
+    choice of ``CHOICES``. ``update_assistant_settings`` has its own sweep.
+
+    Round 2: a ``bool | None`` parameter is swept too. Its call holds only the
+    required arguments, so no other argument asks the card for it."""
     cases: list[tuple[str, str, Any, dict[str, Any]]] = []
     for tool in REGISTRY:
         if tool == "update_assistant_settings":
             continue
         base = WRITE_CASES[tool]
-        for name, param in inspect.signature(getattr(agents, tool)).parameters.items():
+        params = inspect.signature(getattr(agents, tool)).parameters
+        required = {k: v for k, v in base.items()
+                    if params[k].default is inspect.Parameter.empty}
+        for name, param in params.items():
             if isinstance(param.default, bool):
                 for value in (True, False):
                     cases.append((tool, name, value, {**base, name: value}))
+            if _is_optional_bool(param):
+                for value in (True, False):
+                    cases.append((tool, name, value, {**required, name: value}))
             for value in CHOICES.get((tool, name), []):
                 extra = _EXTRA.get((tool, value), {})
                 cases.append((tool, name, value, {**base, name: value, **extra}))
@@ -853,3 +875,97 @@ async def test_a_read_for_a_card_marks_nothing_read(
     reads = [params for path, params in gw.gets
              if path.startswith("/email/messages/")]
     assert reads and all(p.get("mark_read") == "false" for p in reads), reads
+
+
+def test_the_sweep_holds_each_optional_bool() -> None:
+    """Round 2: ``update_rule.enabled`` is ``bool | None``, and the sweep calls
+    it both ways with no other argument that asks a card."""
+    names = {(t, n, v) for t, n, v, _ in BRANCH_CASES}
+    assert {("update_rule", "enabled", True), ("update_rule", "enabled", False)} <= names
+    [kwargs] = [k for t, n, v, k in BRANCH_CASES
+                if (t, n, v) == ("update_rule", "enabled", True)]
+    assert kwargs == {"account_id": BOX, "rule_id": "r1", "enabled": True}
+
+
+# ── Round 2: the run card lists each rule that sends out (item 1) ────────────
+
+def _rules(n_inward: int, n_outward: int) -> list[dict[str, Any]]:
+    inward = [{"name": f"Label {i} " + "x" * 60, "enabled": True,
+               "instructions": "y" * 100,
+               "actions": [{"type": "LABEL", "label": f"L{i}"}]}
+              for i in range(n_inward)]
+    outward = [{"name": f"Fwd {i}", "enabled": True,
+                "actions": [{"type": "FORWARD", "to_address": f"o{i}@evil.test"}]}
+               for i in range(n_outward)]
+    return inward + outward  # the outward rules come LAST in the store
+
+
+def _with_rules(gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+                rules: list[dict[str, Any]]) -> None:
+    real = gw._answer_get
+    monkeypatch.setattr(gw, "_answer_get", lambda path: (
+        {"rules": rules} if path == "/email/rules" else real(path)))
+
+
+async def test_a_long_run_card_lists_each_forward_first_and_counts_the_rest(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_rules(gw, monkeypatch, _rules(60, 2))
+    await agents.run_rules(BOX, dry_run=False)
+    [card] = gw.cards
+    lines = card["context"].splitlines()
+    assert lines[0].startswith('- rule "Fwd 0": forwards')
+    assert lines[1].startswith('- rule "Fwd 1": forwards')
+    shown = sum(1 for x in lines if x.startswith('- rule "Label'))
+    assert 0 < shown < 60
+    assert lines[-1] == f"+{60 - shown} more rules that send no email out"
+    assert len(card["context"]) <= agents._CARD_CONTEXT_LIMIT
+
+
+def test_too_many_forward_rules_refuse_and_cut_none() -> None:
+    assert agents._run_rules_listing(_rules(0, 200)) is None
+
+
+async def test_a_run_with_too_many_forward_rules_asks_nothing(
+    gw: Gateway, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_rules(gw, monkeypatch, _rules(0, 200))
+    out = await agents.run_rules(BOX, dry_run=False)
+    assert out.startswith("Nothing changed.")
+    assert gw.cards == [] and gw.writes == []
+
+
+async def test_a_batch_that_is_too_long_says_too_many_rules(gw: Gateway) -> None:
+    gw.specs = [{"name": "Copy", "actions": [
+        {"type": "FORWARD", "to_address": "out@evil.test"}]}] + [
+        {"name": f"Rule {i}", "instructions": "z" * 110,
+         "actions": [{"type": "LABEL", "label": "x"}]} for i in range(40)]
+    out = await agents.create_rules_from_prompt(BOX, prompt="many")
+    assert "too many rules" in out and "targets" not in out
+    assert gw.cards == [] and gw.writes == []
+
+
+# ── Round 2: an unknown provider installs nothing (item 3) ───────────────────
+
+@pytest.mark.parametrize("reset", [False, True])
+async def test_an_unknown_provider_installs_no_default_rule(
+    gw: Gateway, reset: bool,
+) -> None:
+    gw.provider = ""
+    out = await agents.install_default_rules(BOX, reset=reset)
+    assert out.startswith("Nothing changed.")
+    assert gw.cards == [] and gw.writes == []
+
+
+# ── Round 2: the old preset names (item 4) ───────────────────────────────────
+
+def test_the_legacy_names_match_the_route() -> None:
+    """``_PRESET_LEGACY`` mirrors the ``legacy`` dict of
+    ``rules._seed_preset_rules``. It is a local of that function, so the test
+    reads it from the source."""
+    from gateway.routes.email.automation import rules
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(rules._seed_preset_rules)))
+    [node] = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+              and any(isinstance(t, ast.Name) and t.id == "legacy" for t in n.targets)]
+    assert ast.literal_eval(node.value) == agents._PRESET_LEGACY
