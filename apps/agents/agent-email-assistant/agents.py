@@ -61,6 +61,38 @@ async def _confirm_destructive(title: str, detail: str, context: str = "") -> bo
     return await request_confirmation(title=title, detail=detail, context=context)
 
 
+#: EM-G11c1 (§12.3.13.6): the answer of each tool of ``MAILBOX_WRITE_TOOLS``
+#: when no card can show. The email chat pane shows no card
+#: (``shows_cards=False``) and a scheduled run has no member, so the card
+#: answers "no" at once. The member refused nothing, so the answer is never
+#: "Cancelled": it sends the member to the Chat app, which shows the card.
+#: It starts "Nothing changed.", which ``noActionOf`` in
+#: ``EmailToolCards.tsx`` draws as an act that did not happen.
+_USE_CHAT_APP = (
+    "Nothing changed. This needs your approval on a card, and this chat "
+    "cannot show one. Ask for it in the Chat app."
+)
+
+
+def _card_channel_open() -> bool:
+    """True when a "no" on the card came from a member in a live chat."""
+    from acb_skills.ask_tools import confirmation_channel_open  # noqa: PLC0415
+    return confirmation_channel_open()
+
+
+async def _card_refusal(
+    title: str, detail: str, cancelled: str, context: str = "",
+) -> str | None:
+    """None when the member approves the card. Else the answer of the tool.
+
+    The one gate of EM-G11c1. A "no" in a live chat answers *cancelled*. A run
+    with no card channel answers ``_USE_CHAT_APP``. ``request_confirmation``
+    fails closed in both, so the tool writes nothing."""
+    if await _confirm_destructive(title=title, detail=detail, context=context):
+        return None
+    return cancelled if _card_channel_open() else _USE_CHAT_APP
+
+
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
 _INSTRUCTIONS_TEXT = (
     _INSTRUCTIONS_FILE.read_text(encoding="utf-8")
@@ -1321,6 +1353,95 @@ async def present_email_groups(groups_json: str) -> str:
 
 # ── Inbox action tools ───────────────────────────────────────────────────────
 
+#: The verb of each ``manage_inbox`` act on its card (EM-G11c1).
+_INBOX_VERBS = {
+    "archive": "Archive", "read": "Mark as read", "unread": "Mark as unread",
+    "star": "Star", "unstar": "Unstar",
+}
+#: The most messages that the card of a bulk act lists, one line each.
+_CARD_MESSAGE_LINES = 20
+
+
+async def _inbox_card_parts(message_ids: list[str]) -> tuple[str, str, str]:
+    """``(mailbox, where, context)`` of the card of a bulk act (EM-G11c1).
+
+    ``mailbox`` is "label · address" when the member has one mailbox, else
+    empty. ``where`` is the sentence of the card that names the mailbox. Each
+    message acts in its own mailbox, and ``POST /email/messages/summaries``
+    names no mailbox, so a member with two or more reads the list of them.
+    ``context`` holds the sender and the subject of each message, from that
+    read, which writes nothing. A failed read leaves the card with the count.
+    """
+    try:
+        boxes = [_mailbox_text(a) for a in await _accounts()]
+    except Exception:  # noqa: BLE001 — the card still names the count
+        boxes = []
+    if len(boxes) == 1:
+        mailbox, where = boxes[0], f"Mailbox: {boxes[0]}."
+    elif boxes:
+        mailbox = ""
+        where = ("Each message acts in its own mailbox. Your mailboxes: "
+                 + ", ".join(boxes) + ".")
+    else:
+        mailbox, where = "", "Each message acts in its own mailbox."
+    try:
+        res = await _post("/email/messages/summaries", {"ids": list(message_ids)})
+        rows = [s for s in (res.get("summaries") or []) if isinstance(s, dict)]
+    except Exception:  # noqa: BLE001
+        rows = []
+    if not rows:
+        return mailbox, where, ""
+    lines = ["Each message:"]
+    lines += [
+        f"- {_card_text(s.get('from') or '(unknown sender)', 80)}: "
+        f"{_card_text(s.get('subject') or '(no subject)', 120)}"
+        for s in rows[:_CARD_MESSAGE_LINES]
+    ]
+    if len(rows) > _CARD_MESSAGE_LINES:
+        lines.append(f"+{len(rows) - _CARD_MESSAGE_LINES} more")
+    unknown = len(set(message_ids)) - len(rows)
+    if unknown > 0:
+        lines.append(f"- {unknown} id(s) that name no message of yours")
+    return mailbox, where, "\n".join(lines)
+
+
+async def _inbox_card(
+    action: str,
+    message_ids: list[str],
+    folder: str | None,
+    add_labels: list[str] | None,
+    remove_labels: list[str] | None,
+) -> str | None:
+    """None when the member approves the act. Else the answer of the tool.
+
+    One card for the whole call, also over many messages (EM-G11c1)."""
+    n = len(message_ids)
+    noun = "message" if n == 1 else "messages"
+    mailbox, where, context = await _inbox_card_parts(message_ids)
+    in_box = f" in {mailbox}" if mailbox else ""
+    cancelled = "Cancelled — nothing changed in the mailbox."
+    if action == "trash":
+        # The trash card of before EM-G11c1, with the mailbox and the list.
+        title = f"Move {n} {noun} to Trash?"
+        detail = f"They leave the inbox and go to the Trash folder. {where}"
+        cancelled = "Cancelled — nothing was moved to Trash."
+    elif action == "move":
+        title = f"Move {n} {noun}{in_box} to the folder '{_card_name(folder)}'?"
+        detail = f"They leave the folder they are in now. {where}"
+    elif action == "label":
+        bits = [f'add "{_card_name(x)}"' for x in add_labels or []]
+        bits += [f'remove "{_card_name(x)}"' for x in remove_labels or []]
+        title = f"Change the labels of {n} {noun}{in_box}?"
+        detail = f"Labels: {', '.join(bits)}. {where}"
+    elif action in _INBOX_VERBS:
+        title = f"{_INBOX_VERBS[action]} {n} {noun}{in_box}?"
+        detail = where
+    else:
+        title = f"Apply '{_card_name(action)}' to {n} {noun}{in_box}?"
+        detail = where
+    return await _card_refusal(title, detail, cancelled, context)
+
+
 @_annotate_risk(destructive=True, open_world=True)
 async def manage_inbox(
     action: str,
@@ -1343,9 +1464,18 @@ async def manage_inbox(
         add_labels / remove_labels: label NAMES to add/remove for
             ``action="label"`` (syncs to the provider).
     """
+    if action == "move" and not folder:
+        return "Nothing changed. Provide a `folder` to move messages to."
+    if action == "label" and not add_labels and not remove_labels:
+        return "Nothing changed. Provide add_labels and/or remove_labels for action='label'."
+    if not message_ids:
+        return "Nothing changed. Name one or more messages in `message_ids`."
+    # EM-G11c1: one card for the whole call, before the first write. It names
+    # the act, the count, the mailbox and each message.
+    refusal = await _inbox_card(action, message_ids, folder, add_labels, remove_labels)
+    if refusal:
+        return refusal
     if action == "move":
-        if not folder:
-            return "Nothing changed. Provide a `folder` to move messages to."
         results = await asyncio.gather(
             *(_patch(f"/email/messages/{mid}", {"folder": folder})
               for mid in message_ids),
@@ -1356,8 +1486,6 @@ async def manage_inbox(
         note = f" ({failed} failed)" if failed else ""
         return f"Moved {n} message(s) to '{folder}'{note}."
     if action == "label":
-        if not add_labels and not remove_labels:
-            return "Nothing changed. Provide add_labels and/or remove_labels for action='label'."
         patch: dict[str, Any] = {}
         if add_labels:
             patch["add_labels"] = add_labels
@@ -1377,15 +1505,6 @@ async def manage_inbox(
         failed = len(message_ids) - n
         note = f" ({failed} failed)" if failed else ""
         return f"Updated labels on {n} message(s){note}: {' '.join(bits)}."
-    # Trashing is the one destructive branch here (archive/read/star are
-    # reversible in a click). Confirm it, fail-closed.
-    if action == "trash":
-        n = len(message_ids)
-        if not await _confirm_destructive(
-            title=f"Move {n} message{'s' if n != 1 else ''} to Trash?",
-            detail="They leave the inbox and go to the Trash folder.",
-        ):
-            return "Cancelled — nothing was moved to Trash."
     # No account_id: the bulk route scopes the ids by owner, and reconciles
     # each mailbox apart. An id from the model would change 0 rows silently.
     body: dict[str, Any] = {"action": action, "message_ids": message_ids}
@@ -1405,6 +1524,24 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
     own = str((orig or {}).get("account_id") or "")
     if own:
         account_id = own
+    if save:
+        # EM-G11c1: a saved draft is one click from a send, so it asks first.
+        # A draft that only shows in the chat (save=false) asks nothing.
+        box = await _named(account_id)
+        frm = ((orig or {}).get("from_address") or {})
+        refusal = await _card_refusal(
+            f"Save a reply draft in {box}?",
+            "The assistant writes a reply to this email and saves it in the "
+            f"Drafts folder of {box}. Nothing is sent.",
+            "Cancelled — no draft was saved.",
+            "\n".join([
+                "The email:",
+                f"- from: {_card_text(frm.get('email') or '(unknown)', 120)}",
+                f"- subject: {_card_text((orig or {}).get('subject') or '(none)', 200)}",
+            ]),
+        )
+        if refusal:
+            return refusal
     res = await _post(
         "/email/draft-reply",
         {"account_id": account_id, "message_id": email_id, "create_draft": save},
@@ -1448,17 +1585,36 @@ async def auto_categorize_inbox(account_id: str, apply: bool = False) -> str:
     own, so anything it cannot justify is reported as needing a rules run.
 
     Call with apply=False first to preview; only apply=True writes labels.
+    apply=True shows the user a card with the count first.
     """
+    # The preview (``dry_run``) writes nothing. EM-G11c1: apply=True runs it
+    # too, so the card can name the count, and then asks before it writes.
     data = await _post(
         "/email/cleanup/auto-categorize",
-        {"account_id": account_id, "limit": 500, "dry_run": not apply},
+        {"account_id": account_id, "limit": 500, "dry_run": True},
     )
-    if apply:
+    n = data.get("categorized", 0)
+    by_cat = ", ".join(
+        f"{v} {k}" for k, v in (data.get("by_category") or {}).items()
+    )
+    if apply and n:
+        box = await _named(account_id)
+        refusal = await _card_refusal(
+            f"Label {n} uncategorized email(s) in {box}?",
+            f"Labels them from the patterns already learned ({by_cat}). "
+            f"Mailbox: {box}.",
+            "Cancelled — no label was applied.",
+        )
+        if refusal:
+            return refusal
+        await _post(
+            "/email/cleanup/auto-categorize",
+            {"account_id": account_id, "limit": 500, "dry_run": False},
+        )
         return (
             "Auto-categorize started in the background. Check the email cleaner "
             "or the assistant history in a moment for what was applied."
         )
-    n = data.get("categorized", 0)
     if not n:
         return (
             f"Nothing to auto-categorize: scanned {data.get('scanned', 0)} "
@@ -1466,9 +1622,6 @@ async def auto_categorize_inbox(account_id: str, apply: bool = False) -> str:
             f"sender/domain with a consistent label history. These need the "
             f"rules to actually run over them."
         )
-    by_cat = ", ".join(
-        f"{v} {k}" for k, v in (data.get("by_category") or {}).items()
-    )
     left = data.get("no_evidence", 0)
     return (
         f"{n} uncategorized email(s) can be categorized from existing "
@@ -1541,9 +1694,9 @@ _CARD_KINDS = {"FORWARD": "forward", "CALL_WEBHOOK": "webhook",
                "DRAFT_EMAIL": "draft email"}
 _CARD_DETAIL_LIMIT = 500
 _CARD_CONTEXT_LIMIT = 4000
-_NO_CARD_CHANNEL = (
-    "This needs the member's approval in a live chat, so nothing was saved."
-)
+# EM-G11c1: one headless answer for each rule tool, the inward card and the
+# outward card alike.
+_NO_CARD_CHANNEL = _USE_CHAT_APP
 
 
 def _is_hidden_char(ch: str) -> bool:
@@ -1743,6 +1896,54 @@ async def _outward_rule_refusal(
     return cancelled if confirmation_channel_open() else _NO_CARD_CHANNEL
 
 
+# EM-G11c1 (§12.3.13.6): a rule that sends nothing out also asks a card
+# before it saves, because it acts on the mail of the member each time it
+# matches. The outward card above covers a rule that sends mail out, so one
+# call shows one card.
+_RULE_ACT_WORDS = {
+    "ARCHIVE": "archives", "LABEL": "labels", "MARK_READ": "marks read",
+    "STAR": "stars", "MARK_SPAM": "marks spam", "TRASH": "moves to Trash",
+    "MOVE_FOLDER": "moves to the folder", "REPLY": "drafts a reply",
+    "DRAFT_EMAIL": "drafts an email", "FORWARD": "forwards",
+    "CALL_WEBHOOK": "calls a webhook",
+}
+_RULE_CONDITION_FIELDS = (
+    ("instructions", "when"), ("from_pattern", "from"), ("to_pattern", "to"),
+    ("subject_pattern", "subject"), ("body_pattern", "body"),
+)
+
+
+def _rule_acts(actions: Any) -> str:
+    """What a rule does, as the card says it: "labels "Finance" and archives"."""
+    words = []
+    for a in actions or []:
+        if not isinstance(a, dict):
+            continue
+        a_type = a.get("type")
+        word = _RULE_ACT_WORDS.get(a_type) or f"does {_card_name(a_type)}"
+        if a.get("label") and a_type in ("LABEL", "MOVE_FOLDER"):
+            word += f' "{_card_name(a.get("label"))}"'
+        words.append(word)
+    return " and ".join(words) or "does nothing"
+
+
+def _rule_lines(rules: list[dict[str, Any]]) -> str:
+    """The ``context`` of an inward rule card: each rule, what it matches and
+    what it does, one line each."""
+    lines: list[str] = []
+    for rule in rules:
+        conds = [
+            f"{word}: {_card_text(rule.get(field), 120)}"
+            for field, word in _RULE_CONDITION_FIELDS if rule.get(field)
+        ]
+        lines.append(
+            f'- rule "{_card_name(rule.get("name") or "?")}": '
+            f"{_rule_acts(rule.get('actions'))}"
+            + (f" ({'; '.join(conds)})" if conds else "")
+        )
+    return "\n".join(lines)
+
+
 @_annotate_risk(open_world=False)
 async def get_rules_and_settings(account_id: str) -> str:
     """List the account's automation rules and assistant settings."""
@@ -1852,20 +2053,44 @@ async def create_rule(
         "body_pattern": body_pattern,
         "actions": actions,
     }
+    cancelled = f"Cancelled — the rule '{name}' was not created."
     refusal = await _outward_rule_refusal(
-        "Create a rule that sends mail out of the mailbox?", [rule],
-        f"Cancelled — the rule '{name}' was not created.",
+        "Create a rule that sends mail out of the mailbox?", [rule], cancelled,
     )
     if refusal:
         return refusal
+    if not _has_outward_action(actions):
+        box = await _named(account_id)
+        refusal = await _card_refusal(
+            f'Save the rule "{_card_name(name)}" that {_rule_acts(actions)}?',
+            f"Mailbox: {box}. The rule acts on each new email that matches.",
+            cancelled, _rule_lines([rule]),
+        )
+        if refusal:
+            return refusal
     res = await _post("/email/rules", rule)
     return f"Created rule '{name}' (id={res.get('id')}) in {await _named(account_id)}."
 
 
 @_annotate_risk(open_world=False)
 async def delete_rule(account_id: str, rule_id: str) -> str:
-    """Delete an automation rule permanently. Confirm with the user first —
-    disabling (update_rule_state) is reversible; deleting is not."""
+    """Delete an automation rule permanently. It shows the user a card first.
+    Disabling (update_rule with enabled=false) is reversible; deleting is not."""
+    try:
+        rules = (await _get("/email/rules", {"account_id": account_id})).get("rules", [])
+    except Exception:  # noqa: BLE001 — the card then names the id
+        rules = []
+    rule = next((r for r in rules if isinstance(r, dict) and r.get("id") == rule_id), None)
+    shown = _card_name(rule.get("name")) if rule else rule_id
+    refusal = await _card_refusal(
+        f'Delete the rule "{shown}"?',
+        f"Mailbox: {await _named(account_id)}. A delete cannot be undone. To "
+        "stop the rule for a time, turn it off instead.",
+        "Cancelled — the rule was not deleted.",
+        _rule_lines([rule]) if rule else "",
+    )
+    if refusal:
+        return refusal
     await _delete(f"/email/rules/{rule_id}")
     return f"Deleted rule {rule_id}."
 
@@ -1896,7 +2121,22 @@ async def run_rules(
     account_id, ask = await _one_mailbox(account_id, "run_rules")
     if ask:
         return ask
-    if (scope or "new").strip().lower() == "past":
+    past = (scope or "new").strip().lower() == "past"
+    if past or not dry_run:
+        # EM-G11c1: a run that applies the actions asks first. A preview
+        # (scope "new" with dry_run=true) changes nothing and asks nothing.
+        box = await _named(account_id)
+        what = (f"past email of the last {max(1, days)} day(s)" if past
+                else f"up to {limit} new email(s)")
+        refusal = await _card_refusal(
+            f"Apply the rules to {what} in {box}?",
+            "Each rule that matches acts now: it labels, moves, drafts, and "
+            "sends what the rule says to send. Mailbox: " + box + ".",
+            "Cancelled — no rule ran.",
+        )
+        if refusal:
+            return refusal
+    if past:
         start = (date.today() - timedelta(days=max(1, days))).isoformat()
         res = await _post("/email/rules/process-past", {
             "account_id": account_id, "start_date": start,
@@ -1978,13 +2218,30 @@ async def update_rule(
             action["label"] = add_action_label
         added_outward = _is_outward_action(action)
         rule.setdefault("actions", []).append(action)
+    # EM-G11c1: each change asks a card, except a pause of the rule, which
+    # turns a write off. One call shows one card.
+    pause_only = enabled is False and not widens
+    cancelled = f"Cancelled — the rule '{rule.get('name')}' was not changed."
+    carded = False
     if added_outward or (was_outward and widens):
         refusal = await _outward_rule_refusal(
-            "Change a rule that sends mail out of the mailbox?", [rule],
-            f"Cancelled — the rule '{rule.get('name')}' was not changed.",
+            "Change a rule that sends mail out of the mailbox?", [rule], cancelled,
         )
         if refusal:
             return refusal
+        carded = True
+    elif not pause_only:
+        refusal = await _card_refusal(
+            f'Change the rule "{_card_name(rule.get("name") or rule_id)}"?',
+            f"Mailbox: {await _named(account_id)}. After the change the rule "
+            f"{_rule_acts(rule.get('actions'))}"
+            + (", and it is on." if rule.get("enabled") else ", and it is off."),
+            cancelled, _rule_lines([rule]),
+        )
+        if refusal:
+            return refusal
+        carded = True
+    if carded:
         # Review round 1: the card can wait up to an hour, and the PATCH
         # replaces each field and each action. So read the rule again, and
         # save nothing when the member changed it in the Rules UI meanwhile.
@@ -2035,16 +2292,74 @@ async def learn_rule_pattern(
         "expected": "none" if exclude else rule_id,
         "matched_rule_ids": [rule_id] if exclude else [],
     }
-    await _post("/email/rules/feedback", body)
     signal = " / ".join(
         s for s in [sender and f"from {sender}",
                     subject_keyword and f'about "{subject_keyword}"'] if s
     ) or "matching"
     verb = "no longer match" if exclude else "always match"
+    # EM-G11c1: a learned pattern changes what each later match does.
+    try:
+        rules = (await _get("/email/rules", {"account_id": account_id})).get("rules", [])
+    except Exception:  # noqa: BLE001 — the card then names the id
+        rules = []
+    rule = next((r for r in rules if isinstance(r, dict) and r.get("id") == rule_id), None)
+    shown = _card_name(rule.get("name")) if rule else rule_id
+    box = await _named(account_id)
+    refusal = await _card_refusal(
+        f'Teach the rule "{shown}" a pattern in {box}?',
+        f"Emails {_card_text(signal, 200)} will {verb} the rule \"{shown}\". "
+        "The matcher uses the pattern from now on, with no AI.",
+        "Cancelled — no pattern was learned.",
+    )
+    if refusal:
+        return refusal
+    await _post("/email/rules/feedback", body)
     return (
         f"Learned in {await _named(account_id)}: emails {signal} will {verb} "
         "that rule."
     )
+
+
+#: EM-G11c1 scope 5: the settings that turn on a write with no member in the
+#: loop, as ``key: (name, card line)``. ``cold_email_blocker`` is a mode and
+#: not a switch, so ``_settings_turned_on`` reads it apart.
+_WRITE_SWITCHES = {
+    "auto_run": ("Auto-run",
+                 "Auto-run: the rules act on each new email with no ask."),
+    "draft_replies": ("Draft replies",
+                      "Draft replies: the assistant saves a reply draft for "
+                      "each email that needs one."),
+    "follow_up_auto_draft": ("Follow-up drafts",
+                             "Follow-up drafts: each follow-up scan also saves "
+                             "a nudge draft."),
+}
+_COLD_MODES = {
+    "LABEL": "it labels each cold email",
+    "ARCHIVE": "it labels and archives each cold email",
+}
+
+
+def _settings_turned_on(
+    cur: dict[str, Any], wanted: dict[str, Any],
+) -> list[tuple[str, str]]:
+    """``(name, card line)`` for each write that *wanted* turns on.
+
+    A switch counts when it goes from off to on. The blocker counts when it
+    goes to a mode other than ``OFF`` that is not the mode of now. A change
+    to off, or no change, counts for nothing."""
+    cur = cur if isinstance(cur, dict) else {}
+    out: list[tuple[str, str]] = []
+    for key, (name, line) in _WRITE_SWITCHES.items():
+        if wanted.get(key) is True and cur.get(key) is not True:
+            out.append((name, line))
+    mode = wanted.get("cold_email_blocker")
+    if mode is not None:
+        new = str(mode).strip().upper()
+        now = str(cur.get("cold_email_blocker") or "OFF").strip().upper()
+        if new != "OFF" and new != now:
+            does = _COLD_MODES.get(new, f"it acts on each cold email ({_card_name(new)})")
+            out.append(("the cold-email blocker", f"Cold-email blocker: {does}."))
+    return out
 
 
 @_annotate_risk(open_world=True)
@@ -2108,6 +2423,25 @@ async def update_assistant_settings(
     # Start from the current settings so a PUT preserves EVERY field this tool
     # doesn't explicitly change.
     cur = await _get("/email/assistant/settings", {"account_id": account_id})
+    # EM-G11c1 scope 5: a change that turns ON a background write asks a card.
+    # A change that turns one off, or any other setting, asks nothing.
+    turned_on = _settings_turned_on(cur, {
+        "auto_run": auto_run, "cold_email_blocker": cold_email_blocker,
+        "draft_replies": draft_replies, "follow_up_auto_draft": follow_up_auto_draft,
+    })
+    if turned_on:
+        box = await _named(account_id)
+        names = [name for name, _line in turned_on]
+        refusal = await _card_refusal(
+            f"Turn on {' and '.join(names)} in {box}?",
+            " ".join(line for _name, line in turned_on) + f" Mailbox: {box}.",
+            "Cancelled — the settings were not changed.",
+        )
+        if refusal:
+            return refusal
+        # The card can wait. Read again, so the PUT keeps each change that the
+        # member made in the settings screen meanwhile.
+        cur = await _get("/email/assistant/settings", {"account_id": account_id})
     body: dict[str, Any] = dict(cur)
     body["account_id"] = account_id
 
@@ -2171,6 +2505,7 @@ async def save_knowledge(
     account_id, ask = await _one_mailbox(account_id, "save_knowledge")
     if ask:
         return ask
+    entry: dict[str, Any] | None = None
     if knowledge_id:
         entries = (await _get(
             "/email/knowledge", {"account_id": account_id}
@@ -2178,6 +2513,20 @@ async def save_knowledge(
         entry = next((e for e in entries if e.get("id") == knowledge_id), None)
         if not entry:
             return f"Knowledge entry {knowledge_id} not found."
+    # EM-G11c1: the assistant drafts from the knowledge, also replies to
+    # people outside, so a save asks first.
+    box = await _named(account_id)
+    verb = "Change" if entry else "Save"
+    refusal = await _card_refusal(
+        f'{verb} the knowledge entry "{_card_name(title)}" in {box}?',
+        "The assistant uses it when it drafts replies, also replies to people "
+        f"outside. Mailbox: {box}.",
+        "Cancelled — the knowledge was not saved.",
+        str(content)[:3000],
+    )
+    if refusal:
+        return refusal
+    if entry:
         body = dict(entry)
         body["account_id"] = account_id
         body["title"] = title
