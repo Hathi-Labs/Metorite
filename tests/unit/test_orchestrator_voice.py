@@ -19,7 +19,12 @@ Mutations this file catches (R7):
   recommendation, the cap, expand on request);
 * the role grows past its ceiling, or breaks the voice it sits in;
 * "relay its full response" comes back to the orchestrator's instructions;
-* the spec copy and the code drift apart.
+* the spec copy and the code drift apart;
+* a brevity rule of spec 11.8 goes, or the cap goes soft again ("about");
+* the cap of the prompt climbs to the cap that the eval measures;
+* the two example replies go, grow past the cap, or break the voice;
+* the core or the plain agent block changes, which changes every agent;
+* the examples reach another agent.
 """
 from __future__ import annotations
 
@@ -34,6 +39,7 @@ from acb_llm.voice import (
     AGENT,
     AGENT_ROLES,
     CHIEF_OF_STAFF_HEADING,
+    CHIEF_OF_STAFF_WORD_CAP,
     CORE,
     ROLES,
     VOICE_HEADING,
@@ -61,6 +67,8 @@ AGENTS: tuple[tuple[str, str], ...] = (
 
 #: Measured 2026-10-13 in the run-context tokenizer: the role 278, the
 #: orchestrator's voice block 847. In tiktoken ``o200k_base``: 256 and 794.
+#: Measured 2026-10-14, after the brevity rules of spec 11.8: the role 296,
+#: the block 866. In ``o200k_base``: 276 and 814. Neither ceiling moved.
 ROLE_TOKEN_CEILING = 300
 ORCHESTRATOR_BLOCK_TOKEN_CEILING = 900
 
@@ -127,12 +135,36 @@ def test_the_role_holds_each_rule_of_the_contract() -> None:
         "text the member asked for",           # ...but a draft stays whole
         "one folded card",                     # detail one click away
         "did not ask about only when it is real",  # proactive, never padding
-        "your recommendation and its",         # decision support
+        "then your recommendation",            # decision support
         "who owns it",                         # next step and owner
-        "under about 120 words",               # the soft cap
         "give all of it",                      # expand on request
     ):
         assert marker in ROLE, marker
+
+
+def test_the_role_holds_the_brevity_rules() -> None:
+    """Spec 11.8. Each marker answers an overrun of the 2026-10-14 live run."""
+    for marker in (
+        f"at most {CHIEF_OF_STAFF_WORD_CAP} words",  # a hard cap, not "about"
+        "one line each, most important",       # C09: two or three sentences a point
+        "all that is on track in one clause",  # C01, C10: a line per healthy item
+        "No second list of reasons",           # C03: the reasons, then the options again
+        "no headings or labels",               # C02: "Needs you now", "Due today"
+        "no summary",                          # C04: the top risk again at the end
+        "no menu of choices",                  # C01, C02: "A, B, or C?"
+        "one short offer at most",             # nearly every case closed on an offer
+    ):
+        assert marker in ROLE, marker
+    assert "about 120" not in ROLE
+
+
+def test_the_prompt_cap_sits_under_the_cap_the_eval_measures() -> None:
+    """A model reads a soft cap as a target, so the prompt asks for less than
+    the eval allows (spec 11.8)."""
+    from evals.orchestrator_cos import run
+
+    assert run.ROUTINE_CAP == 120
+    assert 60 <= CHIEF_OF_STAFF_WORD_CAP < run.ROUTINE_CAP
 
 
 def test_the_role_obeys_the_voice_it_sits_in() -> None:
@@ -252,3 +284,71 @@ def test_the_orchestrator_merges_replies_and_never_relays_them() -> None:
     assert "Never give the replies one agent after another" in text
     assert "When two replies\n  disagree, say so" in text
     assert "Keep a deliverable whole" in text
+
+
+# ── The example replies (spec 11.8) ────────────────────────────────────────
+
+#: The heading of the two example replies in the orchestrator's instructions.
+SHAPE_HEADING = "THE SHAPE OF A ROUTINE REPLY."
+
+
+def _examples() -> dict[str, str]:
+    """Each example reply of the instructions, by its label, dedented."""
+    import textwrap
+
+    text = _live_instructions()
+    assert text.count(SHAPE_HEADING) == 1
+    body = text.split(SHAPE_HEADING, 1)[1]
+    out: dict[str, str] = {}
+    for label in ("A status:", "A decision:"):
+        assert body.count("\n" + label + "\n") == 1, label
+        chunk = body.split("\n" + label + "\n", 1)[1].split("\n\n", 1)[0]
+        out[label] = textwrap.dedent(chunk).strip()
+    return out
+
+
+def test_the_instructions_show_two_example_replies_in_the_target_shape() -> None:
+    from evals.orchestrator_cos import run
+
+    examples = _examples()
+    assert set(examples) == {"A status:", "A decision:"}
+    for label, reply in examples.items():
+        assert 25 <= run.words(reply) <= CHIEF_OF_STAFF_WORD_CAP, label
+        assert voice_lint(reply) == [], label
+        assert "**" not in reply and "#" not in reply, label   # no headings, no labels
+        assert reply.count("?") == 0, label                      # no menu
+        assert not run._PREAMBLE.match(reply), label             # bottom line first
+        assert not run._TOOL_NAME.search(reply), label
+        lines = [ln for ln in reply.splitlines() if ln.startswith("- ")]
+        assert 2 <= len(lines) <= 5, label
+    # The decision example recommends, by the eval's own test of it.
+    assert any(run._RECOMMEND.search(s) for s in run._sentences(examples["A decision:"]))
+    # The facts are made up, and the instructions say so.
+    assert "Their facts are made up, so never repeat them." in _live_instructions()
+
+
+def test_the_examples_reach_the_orchestrator_and_no_other_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompt = _built_prompt("agent-orchestrator", "orchestrator", monkeypatch)
+    assert prompt.count(SHAPE_HEADING) == 1
+    for agent_dir, agent_name in AGENTS:
+        if agent_name != "orchestrator":
+            assert SHAPE_HEADING not in _built_prompt(agent_dir, agent_name, monkeypatch), agent_name
+
+
+#: SHA-256 of the plain agent block and of the sub-agent block, taken on
+#: 2026-10-14 before and after the brevity change: the two match. A change of
+#: either one changes every agent. Spec 11.8 says the brevity rules stay out of
+#: the core. Change these only in a PR that changes the core on purpose.
+PLAIN_AGENT_BLOCK_SHA256 = "b49783fa31cc955047b194c21e514c0e019e4f24c555964c81ed983167a42c6d"
+SUB_AGENT_BLOCK_SHA256 = "d36190c37ac645a614e0f2cc463efd9876a6a949c41a66c1c83749b0ebb776e4"
+
+
+def test_the_voice_of_every_other_agent_is_byte_for_byte_the_same() -> None:
+    import hashlib
+
+    assert hashlib.sha256(voice_prompt(AGENT).encode("utf-8")).hexdigest() == PLAIN_AGENT_BLOCK_SHA256
+    assert hashlib.sha256(core_prompt().encode("utf-8")).hexdigest() == SUB_AGENT_BLOCK_SHA256
+    for marker in ("at most", "no menu of choices", "no headings or labels"):
+        assert marker not in CORE, marker
