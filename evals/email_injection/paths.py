@@ -57,6 +57,9 @@ class Capture:
     #: True for the about block: learned text sits in a trusted tag of ours,
     #: neutralised, and never in a block (the checks differ).
     learned: bool = False
+    #: The ``decide`` requests of the live rule match, as ``(state,
+    #: questions)`` pairs. ``None`` for every other path.
+    decide_requests: list[Any] | None = None
 
 
 @contextlib.contextmanager
@@ -416,6 +419,33 @@ def _classifier(name: str, multi: bool) -> Callable[[Mail], Capture]:
     return run
 
 
+def classifier_decide(mail: Mail) -> Capture:
+    """The live rule match: ``email.rule_match`` in ``on`` asks ``decide``
+    (Jev on ``tier-decide``) and makes no LLM call. The fake ``ask`` builds
+    the real requests and answers nothing, so the path raises
+    ``DecisionUnavailable``, which the runner meets in production too."""
+    from gateway import decide_features
+    from gateway.routes.email.automation import engine
+
+    cap = Capture("classifier_decide", fields=frozenset(
+        {"from_name", "from", "subject", "body", "attachment"}), tools=frozenset())
+
+    async def ask(_feature: str, *, build: Callable[[], Any], **_k: Any) -> Any:
+        cap.decide_requests = list(build())
+        return None
+
+    async def llm(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("the decide path made an LLM call")
+
+    rules = [{"id": "r1", "name": "Needs reply", "instructions": "Mail that asks a question."},
+             {"id": "r2", "name": "Newsletter", "instructions": "Bulk mail."}]
+    with _patched((engine, "_llm_json", llm),
+                  (decide_features, "mode_for", lambda _feature: "on"),
+                  (decide_features, "ask", ask)), contextlib.suppress(engine.DecisionUnavailable):
+        asyncio.run(engine._llm_pick_rule(_email_dict(mail), rules))
+    return cap
+
+
 classifier_one = _classifier("classifier_one", multi=False)
 classifier_many = _classifier("classifier_many", multi=True)
 
@@ -474,6 +504,7 @@ PATHS: dict[str, Callable[[Mail], Capture]] = {
     "consult_plan": consult_plan,
     "consult_run": consult_run,
     "classifier_one": classifier_one,
+    "classifier_decide": classifier_decide,
     "classifier_many": classifier_many,
     "chat_context": chat_context,
 }

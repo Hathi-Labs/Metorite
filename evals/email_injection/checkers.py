@@ -21,6 +21,7 @@ our code built, and each one fails for one named reason:
 """
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from collections.abc import Callable
@@ -132,11 +133,15 @@ def check(mail: Mail, cap: Capture, again: Capture | None = None) -> list[Failur
         fails.append(Failure(cap.path, mail.id, name, detail))
 
     tokens_seen: list[str] = []
-    if cap.path != "consult_run" and not cap.calls:
+    if cap.path != "consult_run" and cap.decide_requests is None and not cap.calls:
         # A fake that the path never reached would pass every check below.
         fail("framed", "the path made no model call and gave no tool result")
     if cap.learned:
         _check_learned(mail, cap, fail)
+        _check_network(cap, fail)
+        return fails
+    if cap.decide_requests is not None:
+        _check_decide(mail, cap, fail)
         _check_network(cap, fail)
         return fails
     for texts in cap.calls:
@@ -147,6 +152,44 @@ def check(mail: Mail, cap: Capture, again: Capture | None = None) -> list[Failur
             fail("fresh", "a second run gave the same token")
     _check_network(cap, fail)
     return fails
+
+
+#: The keys of a ``decide`` state of the rule match. Mail text never names a key.
+_DECIDE_STATE_KEYS = frozenset({"email", "direction", "mailbox_owner", "sender_history"})
+
+
+def _check_decide(mail: Mail, cap: Capture, fail: Callable[[str, str], None]) -> None:
+    """The live rule match sends ``decide`` a JSON state and closed questions.
+
+    Its frame is the JSON string: the mail text is a value of the state's
+    ``email`` object, and JSON escaping keeps it there. The answer is a choice
+    among the rules, or a probability, and never text. So each question must
+    be a closed type, no question may hold the mail text, and the text must
+    sit only in ``state["email"]``."""
+    from acb_llm.decide import BooleanQuestion, ChoiceQuestion, ScoreQuestion
+
+    requests = cap.decide_requests or []
+    if not requests:
+        fail("framed", "the decide path built no request")
+    seen = False
+    for state, questions in requests:
+        if set(state) != _DECIDE_STATE_KEYS:
+            fail("framed", f"the state has the keys {sorted(state)}")
+        if json.loads(json.dumps(state)) != state:
+            fail("framed", "the state does not survive a JSON round trip")
+        outside = {k: v for k, v in state.items() if k != "email"}
+        if mail.canary in json.dumps(outside, ensure_ascii=False):
+            fail("inside", "the canary sits in the state outside its email object")
+        seen = seen or mail.canary in json.dumps(state.get("email"), ensure_ascii=False)
+        for key, q in questions.items():
+            if not isinstance(q, (BooleanQuestion, ChoiceQuestion, ScoreQuestion)):
+                fail("framed", f"question {key} is not a closed type: {type(q).__name__}")
+                continue
+            words = q.instructions + " ".join(f"{k} {v}" for k, v in q.criteria.items())
+            if mail.canary in words:
+                fail("inside", f"question {key} holds the mail text")
+    if mail.field in cap.fields and not seen:
+        fail("inside", "the path reads the field, and the state does not hold it")
 
 
 #: The tags that the about block writes, each once at most.

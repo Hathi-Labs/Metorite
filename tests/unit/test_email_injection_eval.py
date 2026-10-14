@@ -141,3 +141,28 @@ def test_no_network_fails_when_call_agent_or_mcp_can_reach_out() -> None:
     held = _capture(body, tools=frozenset({"call_agent"}))
     held.delegate_no_egress, held.mcp_reads = True, 0
     assert "no_network" not in _checks(held)
+
+
+def test_the_decide_check_fails_on_an_open_question_or_a_leaked_text() -> None:
+    """Round 1 (P2): the live rule match sends ``decide`` a JSON state. The
+    check fails when a question is not closed, when a question holds the mail
+    text, or when the text leaves ``state["email"]``."""
+    from acb_llm.decide import BooleanQuestion
+
+    def cap(state: dict, questions: dict) -> Capture:
+        return Capture("classifier_decide", tools=frozenset(), fields=frozenset({"body"}),
+                       decide_requests=[(state, questions)])
+
+    mail = by_id("inj-01")
+    good_state = {"email": {"body": mail.text}, "direction": "received",
+                  "mailbox_owner": {}, "sender_history": []}
+    yes = BooleanQuestion(instructions="Does rule 1 apply?")
+    assert _checks(cap(good_state, {"r0": yes})) == set()
+    assert "framed" in _checks(cap(good_state, {"r0": "free text answer"}))
+    leaked = BooleanQuestion(instructions=f"Does this apply? {mail.text}")
+    assert "inside" in _checks(cap(good_state, {"r0": leaked}))
+    outside = dict(good_state, direction=mail.text)
+    assert "inside" in _checks(cap(outside, {"r0": yes}))
+    assert "framed" in _checks(cap(dict(good_state, extra=1), {"r0": yes}))
+    assert "framed" in _checks(Capture("classifier_decide", tools=frozenset(),
+                                       decide_requests=[]))
