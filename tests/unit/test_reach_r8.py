@@ -216,3 +216,33 @@ class TestTheChannelReads:
         async with _as_member(p, p.org_b):
             assert await channel.linked_phone(p.org_b, A) is None
             assert not await channel.window_open(p.org_b, PHONE)
+
+    async def test_only_an_inbound_message_opens_the_window(self, promoted):  # noqa: F811
+        # Reach records its own sends as 'out' rows. Were they counted, each
+        # send would hold the window open for ever (verifier, M10).
+        p = promoted
+        phone = "92" + str(uuid.uuid4().int)[:10]
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO whatsapp_bot_messages (organization_id, member_email, wa_id, "
+                "wamid, direction, state) VALUES (CAST(:o AS uuid), :m, :wa, :w, 'out', "
+                "'replied')"), {"o": p.org_a, "m": A, "wa": phone, "w": f"wamid.out.{TAG}"})
+        async with _as_member(p, p.org_a):
+            assert not await channel.window_open(p.org_a, phone)
+
+    @pytest.mark.parametrize(("status", "current"), [("revoked", False), ("active", False)])
+    async def test_only_an_active_current_link_is_used(self, promoted, status, current):  # noqa: F811
+        # Spec §8.1: a revoked link, or a phone now current in another org,
+        # gets nothing (verifier, M2). The table's own CHECK
+        # `whatsapp_member_links_current_is_active` makes a current link that
+        # is not active impossible, so M3 is an equivalent mutant.
+        p = promoted
+        member = f"{status}-{int(current)}-{TAG}@reach.test"
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO whatsapp_member_links (organization_id, member_email, wa_id, "
+                "status, is_current, linked_at) VALUES (CAST(:o AS uuid), :m, :wa, :s, :cur, "
+                "now())"), {"o": p.org_a, "m": member, "wa": "93" + str(uuid.uuid4().int)[:10],
+                            "s": status, "cur": current})
+        async with _as_member(p, p.org_a):
+            assert await channel.linked_phone(p.org_a, member) is None

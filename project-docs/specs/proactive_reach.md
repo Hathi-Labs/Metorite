@@ -158,10 +158,10 @@ That is all. The app writes no message, opens no channel and holds no
 preference. A new app costs one provider, one card template and one row in
 the reach-class table.
 
-**Fence (RE-1).** `tests/unit/test_reach_contract.py::TestEveryKindHasAClass`
-fails when a kind in the card registry has no reach class.
-`TestNoDirectSend` fails when a module outside `gateway/reach/` imports a
-channel adapter.
+**Fence (RE-1a, built).** `tests/unit/test_reach_plan.py::TestTheClasses`
+fails when a kind that a provider can give has no reach class.
+**Fence (RE-1, to build).** `TestNoDirectSend` fails when a module outside
+`gateway/reach/` imports a channel adapter.
 
 ### 4.2 Reach classes
 
@@ -376,10 +376,13 @@ The planner runs inside the member pass, after the judge. It is pure code.
 - **Status webhooks** from Meta move a row to `delivered` or `read`. The
   webhook route exists for the bot (`routes/whatsapp_channel/inbound.py`).
 
-**Fence (RE-1).** `tests/unit/test_reach_outbox.py`, on a real database (R8).
-Two workers claim one row, and one wins. A replayed plan inserts once. A row
-of org A is never visible in a session of org B. A STOP between plan and send
-gives `skipped`.
+**Fence (RE-1a, built).** `tests/unit/test_reach_r8.py`, on a real database
+(R8). A replayed plan inserts once. A row of org A is never visible in a
+session of org B. Only an inbound message opens the window. Only an active,
+current link is used.
+
+**Fence (RE-1, to build).** Two workers claim one row, and one wins. A STOP
+between plan and send gives `skipped`.
 
 ---
 
@@ -749,7 +752,7 @@ Each ticket's PR runs, with the dev database up (R8):
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_reach_contract.py tests/unit/test_reach_outbox.py -q
+uv run pytest tests/unit/test_reach_plan.py tests/unit/test_reach_loop.py tests/unit/test_reach_r8.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 ```
 

@@ -411,6 +411,13 @@ def test_the_brief_answer_is_state_and_reason(outcome, body):
     assert result_body(outcome) == body
 
 
+async def test_the_loop_does_not_start_while_reach_is_off(monkeypatch):
+    # Verifier, M14: with REACH_ENABLED off no task starts.
+    monkeypatch.setattr(get_settings(), "reach_enabled", False)
+    assert await loop.start_reach_loop() is False
+    assert loop._task is None
+
+
 def test_the_settings_default_to_off():
     from acb_common.settings import Settings
 
