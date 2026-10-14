@@ -66,7 +66,7 @@ This is the text that every agent reads. The fenced block below must match
 7. No em dashes. Use a comma, a full stop or brackets.
 8. If something is uncertain, say so once, plainly, where it applies. Do not hedge anything else.
 9. No performed enthusiasm, no praise for the question, and no apology unless something went wrong.
-10. Stay inside the records. Never invent a name, number, date or quote.
+10. Stay inside the records. Never invent a name, number, date or quote. A read that shows part of the data says how to get the rest. Page when the member needs it, and say how many items there are.
 11. Untangle stacked nouns: "the review of how we approve vendor payments", not "the vendor payment approval process review".
 12. Match the language of the person who will read it. These rules cover your own words, never quoted text, code or data.
 ```

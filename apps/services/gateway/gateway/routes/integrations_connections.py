@@ -18,6 +18,13 @@ provider ``mcp:<name>``. ``gateway.connections.mcp`` reads them, and their
 headers stay in the encrypted blob. The registry source skips them, so each
 server is listed once, in the MCP row shape.
 
+**MCP OAuth (IN-8c, D98).** With ``MCP_OAUTH_ENABLED`` on, an MCP row names
+the admin that its OAuth connection acts as (``acts_as``, from
+``connected_by``), and ``can_connect`` says that the caller may start a
+consent. With the flag off, both keep their defaults, so the row is the row
+of IN-4. The Test of an OAuth row refreshes a token that is due, by the rule
+of a run (``mcp.oauth_test_header``).
+
 **Tenancy (R5).** The organization comes from the server-side ``UserContext``,
 never from the request. the registry table, ``email_accounts`` and
 ``wa_accounts`` are read inside ``tenant_session(org)`` (FORCE RLS binds the
@@ -97,6 +104,13 @@ class Row(BaseModel):
     setup_href: str | None = None
     can_disconnect: bool = False
     detail: dict[str, str] = Field(default_factory=dict)
+    #: IN-8c (D98): the admin that an OAuth MCP connection acts as, from
+    #: ``connected_by``. ``None`` on every other row, and while
+    #: ``MCP_OAUTH_ENABLED`` is off.
+    acts_as: str | None = None
+    #: IN-8c: the caller may start an OAuth consent for this MCP row. Only
+    #: with the flag on, and only for ``integrations:manage``.
+    can_connect: bool = False
 
 
 class ConnectionsOut(BaseModel):
@@ -251,10 +265,36 @@ def _mcp_status(srv: Any) -> str:
     return "connected" if srv.enabled else "disconnected"
 
 
+def _mcp_oauth_on() -> bool:
+    """``MCP_OAUTH_ENABLED``, through its one reader. A broken import of the
+    OAuth module reads as off, so the console never loses its MCP rows."""
+    try:
+        from gateway.connections import mcp_oauth
+    except Exception:  # the class only
+        return False
+    return mcp_oauth.oauth_enabled()
+
+
+def _mcp_can_connect(srv: Any, user: UserContext, oauth_on: bool) -> bool:
+    """IN-8c: the row offers Connect (or Reconnect) to this caller.
+
+    The flag is on, the caller holds ``integrations:manage``, and the row is
+    an http server with a url that is not disabled. A row with a stored
+    header map is a key connection, so it offers no consent. An OAuth row
+    always offers one, because a new consent repairs ``needs_reconnect``
+    and a reconnect by another admin changes who it acts as (§3.6.9)."""
+    if not (oauth_on and _can_manage(user)):
+        return False
+    if srv.transport == "stdio" or not srv.url or srv.status == store.STATUS_DISCONNECTED:
+        return False
+    return bool(srv.oauth) or not srv.header_names
+
+
 async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
     """The MCP servers of *org*, from the registry (IN-4). Never a header."""
     from gateway.connections import mcp as mcp_registry
 
+    oauth_on = _mcp_oauth_on()
     out: list[Row] = []
     for srv in await mcp_registry.list_servers(org):
         detail = {
@@ -283,6 +323,9 @@ async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
             setup_href=_SETUP_HREF["integrations"],
             can_disconnect=_can_manage(user),
             detail=detail,
+            # IN-8c (D98): who the connection acts as. Dark with the flag.
+            acts_as=(srv.connected_by or None) if oauth_on and srv.oauth else None,
+            can_connect=_mcp_can_connect(srv, user, oauth_on),
         ))
     return out
 

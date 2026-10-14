@@ -58,6 +58,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from acb_common.paging import page_line, paged
 from acb_common.priority import (
     CELL_FLAGS,
     IMPORTANT_AT,
@@ -225,6 +226,12 @@ _MY_STEPS = "/projects/my/tasks/{id}/subtasks"
 
 #: `MAX_PAGE_SIZE` in `routes/projects/core.py`. A larger ask is a 422.
 _PAGE_SIZE = 100
+
+#: Comments a page in ``my_tasks_detail``, and blocks in the day digest. The
+#: rest stays in reach: the detail pages by ``comments_offset``, and the digest
+#: names ``my_tasks_list_schedule``.
+_COMMENTS_PAGE = 5
+_DIGEST_BLOCKS = 8
 
 #: `MAX_BATCH` in `routes/projects/personal.py`. A larger batch is a 422.
 _BATCH_SIZE = 100
@@ -679,14 +686,16 @@ def _query_words(query: str) -> list[str]:
 
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_list(view: str = "inbox", query: str = "",
-                   context: str = "") -> str:
-    """List tasks for a view.
+                   context: str = "", offset: int = 0, limit: int = 30) -> str:
+    """List tasks for a view, one page at a time.
 
     Args:
         view: inbox | next | waiting | someday | reference | calendar | done | all.
         query: Optional search within the view. Each word must be in the
             title or the description, in any order.
         context: Optional @context filter (e.g. "@calls") for the next view.
+        offset: Where the page starts. 0 is the first item.
+        limit: Items per page, 30 by default and 100 at most.
     """
     flags = _VIEW_QUERY.get(view)
     if flags is None:
@@ -712,30 +721,53 @@ async def my_tasks_list(view: str = "inbox", query: str = "",
                         for w in words)]
     if not items:
         return f"No items in {view}."
-    shown = _ordered(items)[:30]
+    # Ranked BEFORE the page is cut, or "the first 30" is 30 arbitrary rows.
+    page = paged(_ordered(items), offset, limit, default=30)
+    if not page.items:
+        return page.line
     mine = await _my_project_ids()
-    return _guard(shown, mine) + f"{len(items)} item(s) in {view}:\n" + "\n".join(
-        _fmt_item(i, mine) for i in shown)
+    return (_guard(page.items, mine) + f"{len(items)} item(s) in {view}:\n"
+            + "\n".join(_fmt_item(i, mine) for i in page.items)
+            + (f"\n{page.line}" if page.line else ""))
 
 
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
-async def my_tasks_list_projects() -> str:
+async def my_tasks_list_projects(offset: int = 0, limit: int = 100) -> str:
     """List where a task can live: the member's own AREAS (private categories
     under their personal project) and the COMPANY's projects (shared with the
     team). Use an Area id to file private work, a project id to delegate or
-    promote work the team must see."""
+    promote work the team must see.
+
+    Args:
+        offset: Where the page starts, over the areas and then the projects.
+        limit: Rows per page, 100 by default and at most.
+    """
     areas = _rows(await _request("GET", _MY_AREAS))
     nodes = [n for n in _rows(await _request("GET", _NODES))
              if not n.get("archived_at")]
     if not areas and not nodes:
         return "No areas or projects yet."
-    out = [f"{len(areas)} area(s) — mine, private:"]
-    out += [f"  [AREA] {_data(a.get('name'))} · {a.get('open_tasks', 0)} open"
-            f" · id={a.get('id')}" for a in areas[:50]]
-    out.append(f"{len(nodes)} company project(s) — shared with the team:")
-    for n in nodes[:50]:
-        kind = "FOLDER" if n.get("kind") == "folder" else "PROJECT"
-        out.append(f"  [{kind}] {_data(n.get('name'))} · id={n.get('id')}")
+    # Both routes answer with every row, so ONE page runs over the two lists
+    # in order: the areas first, then the company's projects.
+    page = paged([("area", a) for a in areas] + [("node", n) for n in nodes],
+                 offset, limit, default=100)
+    if not page.items:
+        return page.line
+    out: list[str] = []
+    headed: set[str] = set()
+    for kind, row in page.items:
+        if kind not in headed:
+            headed.add(kind)
+            out.append(f"{len(areas)} area(s) — mine, private:" if kind == "area"
+                       else f"{len(nodes)} company project(s) — shared with the team:")
+        if kind == "area":
+            out.append(f"  [AREA] {_data(row.get('name'))} · "
+                       f"{row.get('open_tasks', 0)} open · id={row.get('id')}")
+        else:
+            label = "FOLDER" if row.get("kind") == "folder" else "PROJECT"
+            out.append(f"  [{label}] {_data(row.get('name'))} · id={row.get('id')}")
+    if page.line:
+        out.append(page.line)
     return "\n".join(out)
 
 
@@ -771,21 +803,27 @@ async def my_tasks_inbox_insights() -> str:
 
 
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
-async def my_tasks_people(query: str = "") -> str:
+async def my_tasks_people(query: str = "", offset: int = 0,
+                          limit: int = 25) -> str:
     """Search the company's people — roles, skills, capacity, availability
     (the org-knowledge layer). Use to pick WHO should own a delegated task.
 
     Args:
         query: Optional filter across name/role/department/skill
             (e.g. "firmware", "design", "sales").
+        offset: Where the page starts. 0 is the first person.
+        limit: People per page, 25 by default and 100 at most.
     """
     params = {"q": query} if query else None
     people = await _request("GET", "/tasks/people", params=params)
     if not people:
         return ("No org people found" + (f" for {query!r}" if query else "")
                 + ". (Import HR data via scripts/import_hr_people.py.)")
+    page = paged(people, offset, limit, default=25, noun="people")
+    if not page.items:
+        return page.line
     out = []
-    for p in people[:25]:
+    for p in page.items:
         skills = ", ".join((p.get("skills") or [])[:6])
         avail = p.get("available_hours_per_week")
         domain = (p.get("domain") or "").strip()
@@ -805,7 +843,8 @@ async def my_tasks_people(query: str = "") -> str:
             + (f"\n  {_data(depth)}" if depth else "")
             + (f"\n  skills: {_data(skills)}" if skills else "")
             + (f"\n  résumé: {_data(summary[:160])}" if summary else ""))
-    return f"{_DATA_LEGEND}\n{len(people)} people:\n" + "\n".join(out)
+    return (f"{_DATA_LEGEND}\n{len(people)} people:\n" + "\n".join(out)
+            + (f"\n{page.line}" if page.line else ""))
 
 
 # ── Clarify / organize ───────────────────────────────────────────────────────
@@ -1174,7 +1213,7 @@ def _status_line(item: dict[str, Any], lanes: list[dict[str, Any]]) -> str:
 
 
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
-async def my_tasks_detail(item_id: str) -> str:
+async def my_tasks_detail(item_id: str, comments_offset: int = 0) -> str:
     """Full detail for one task: every field (context, energy, estimate,
     priority flags, deep-work, status, assignees, schedule), the latest
     comments, the attachment count, and every status the task can be in,
@@ -1223,13 +1262,24 @@ async def my_tasks_detail(item_id: str) -> str:
     # and the file registry, each its own route.
     comments: list[dict[str, Any]] = []
     try:
+        # The route pages, newest first, and counts the thread. Five a page:
+        # the page number is the offset's, so the next page starts at the
+        # offset the hint names.
+        start = max(0, int(comments_offset or 0)) // _COMMENTS_PAGE * _COMMENTS_PAGE
         timeline = await _request(
             "GET", f"{_TASKS}/{item_id}/timeline",
-            params={"kind": "comments", "page_size": _PAGE_SIZE})
-        comments = _rows(timeline)[:5]
+            params={"kind": "comments", "page_size": _COMMENTS_PAGE,
+                    "page": start // _COMMENTS_PAGE + 1})
+        comments = _rows(timeline)
         for c in comments:
             who = c.get("created_by") or "?"
             lines.append(f"  comment ({who}): {_data(str(c.get('body', ''))[:160])}")
+        total = int((timeline or {}).get("total") or len(comments)) \
+            if isinstance(timeline, dict) else len(comments)
+        more = page_line(total, start, len(comments), noun="comments",
+                         param="comments_offset")
+        if more:
+            lines.append(f"  comments: {more}")
         attachments = _rows(await _request("GET", f"{_TASKS}/{item_id}/attachments"))
         if attachments:
             lines.append(f"  attachments: {len(attachments)}")
@@ -1342,25 +1392,31 @@ async def my_tasks_delegate(
 
 
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
-async def my_tasks_subtasks(item_id: str) -> str:
+async def my_tasks_subtasks(item_id: str, offset: int = 0,
+                            limit: int = 100) -> str:
     """List a task's subtasks (checklist steps), in order.
 
     Args:
         item_id: The parent item's full UUID.
+        offset: Where the page starts. 0 is the first step.
+        limit: Steps per page, 100 by default and at most.
     """
-    subs = _rows(await _request(
-        "GET", _TASKS,
-        params={"parent_task_id": item_id, "sort": "created_at",
-                "direction": "asc", "page_size": _PAGE_SIZE}))
+    subs = await _fetch_all(
+        _TASKS, {"parent_task_id": item_id, "sort": "created_at",
+                 "direction": "asc"})
     if not subs:
         return "No subtasks."
+    page = paged(subs, offset, limit, default=100, noun="subtasks")
+    if not page.items:
+        return page.line
     lines = []
-    for s in subs:
+    for s in page.items:
         # Project-shaped rows carry no overlay; DONE is read off `completed_at`,
         # the one fact the shared row does hold (`lens.ts::mapSubtask`).
         mark = "✓" if s.get("completed_at") else "•"
         lines.append(f"{mark} {_data(s.get('title', '?'))} (id: {s.get('id')})")
-    return f"{len(subs)} subtask(s):\n" + "\n".join(lines)
+    return (f"{len(subs)} subtask(s):\n" + "\n".join(lines)
+            + (f"\n{page.line}" if page.line else ""))
 
 
 @_annotate_risk(idempotent=False, open_world=False)
@@ -1658,11 +1714,17 @@ async def my_tasks_day_digest() -> str:
     done = [b for b in sched if b.get("done")]
     if active:
         lines.append(f"{len(active)} block(s) still to do today:")
-        for b in active[:8]:
+        page = paged(active, 0, _DIGEST_BLOCKS, default=_DIGEST_BLOCKS,
+                     noun="blocks")
+        for b in page.items:
             s = (b.get("start") or "")[11:16]
             e = (b.get("end") or "")[11:16]
             mark = " 🔒" if b.get("fixed") else ""
             lines.append(f"• {s}-{e}{mark} {_data(b.get('title', '?'))}")
+        if page.line:
+            # A snapshot has no offset. The calendar read lists every block.
+            lines.append(f"{len(active) - len(page.items)} more block(s): "
+                         "my_tasks_list_schedule lists them all.")
     else:
         lines.append("Nothing left scheduled today.")
     if done:

@@ -313,7 +313,7 @@ SELECT n.*, t.title AS task_title, t.task_number AS task_number,
  WHERE n.recipient = :me
    AND {visible}
    {unread}
- ORDER BY n.created_at DESC
+ ORDER BY n.created_at DESC, n.id DESC
  LIMIT :limit OFFSET :offset
 """
 

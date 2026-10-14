@@ -615,6 +615,7 @@ def load_params(vis: Any, project_id: str | None) -> dict[str, Any]:
 async def load(
     project_id: str | None = None,
     include_subtree: bool = True,
+    people_offset: int = 0,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Who is overloaded, under one node — §9.12.7(b).
@@ -651,7 +652,12 @@ async def load(
         # the report's `load` section runs too (§7.1 rule 3).
         allowed = await reportable_people(db, user, vis)
         people, hidden = filter_person_rows(body["people"], allowed)
-        body["people"] = people[:MAX_PEOPLE]
+        # 2026-10-14: a page of MAX_PEOPLE from `people_offset`, and the
+        # count it pages over, so the chat can reach person 21 and beyond.
+        # The panel sends no offset and reads the same first page as before.
+        start = max(0, int(people_offset or 0))
+        body["people"] = people[start:start + MAX_PEOPLE]
+        body["people_listed"] = len(people)
         if allowed is not None:
             body["hidden_people"] = hidden
         return body
