@@ -57,6 +57,35 @@ A delete revokes. A register keeps the tokens. The Test sends the bearer.
 token has ended. A value above ten years becomes ten years, and a negative
 value answers `exchange_failed`.
 
+> **IN-8b BUILT (2026-10-14), dark.** The refresh hop is
+> `mcp_oauth.refresh`. The run path is `_oauth_header` and
+> `mark_unauthorized` in `connections/mcp.py`, and rule 9 of
+> `orchestrator/_maf_mcp.py`. Rows O7, O8 and O14 pass, and each was red
+> first. The fences are `test_mcp_oauth_refresh.py` and
+> `test_mcp_oauth_refresh_r8.py`. No migration.
+
+**Five facts of IN-8b that the design did not state:**
+
+1. **The header stays `static_headers`.** §3.6.7 asked for a
+   `header_provider` that returns a cached value. A fixed header does the
+   same thing, and MAF does not serialize the tool calls of a fixed header
+   (the `static_headers` docstring, `_mcp.py:3834-3840`, MAF 1.19).
+2. **Two time caps.** One token fetch gets 8 s (`REFRESH_FETCH_S`). The
+   whole step of one server gets 20 s (`REFRESH_BUDGET_S`), which covers a
+   wait on the row lock. A fetch past its cap is not final. The run keeps
+   the stored token while it lives past 60 s.
+3. **The 401 mark compares the token.** `mark_unauthorized` sets
+   `needs_reconnect` only when the row still holds the token that the run
+   sent. A new consent between the refresh and the 401 stays connected.
+4. **A token with no refresh token** gets `needs_reconnect`
+   (`no_refresh_token`) when it ends. Only a new consent repairs it.
+5. **The console shows `needs_reconnect`** on an MCP row, with its safe
+   code. Before IN-8b, such a row showed as `disconnected`.
+
+The refresh does not revoke the old refresh token. A provider that rotates
+ends it itself, and none of the six providers of §3.6.2 asks for a revoke.
+The Test button still sends the stored token with no refresh (IN-8a, P2 3).
+
 ---
 
 ## 0. The answer in one paragraph
@@ -643,7 +672,7 @@ IN-0 comes first and alone, because it closes live holes.
 | **IN-7** ✅ merged 2026-10-11 (#891) | **GitHub per org.** The device flow writes a member or org connection, not the deployment token. connect-cli goes. `GET /github/account` shows the org's own connection, never the operator's account (IN-D18). **Built as (2026-10-11):** The device poll saves an org connection (`github`, `integrations`) through `connections/store.py`. The login and the scopes sit in the row. `connections/github.py` is the one reader, `token_for_org(org)`. The agent config fetch reads it, and with no connection it sends no token. `GET /github/account` and `GET /test` read the org row only and run no `gh`. `DELETE /integrations/github` deletes the blob. GitHub cannot revoke a device-flow token without the client secret, so the answer says `revoked_at_github: false`. An old `provider_keys` `github:token` row moves into the store on the next read. That fallback read stays for one release. The slice adds no migration. The operator plane keeps `GITHUB_TOKEN`: the model list, the runtime check, the self-mutation PR, the LiteLLM route, the Copilot SDK runtime and the agent-repo clone in `loader.py`. A clone of a private customer repo waits for IN-3. A token that a member saves through configure or `PUT /keys` still lands in `provider_keys`, and the reader moves it. IN-5 retires that path. Fence: `tests/unit/test_github_per_org_r8.py`. | 🟢 AGENT-SAFE | Two orgs hold two tokens. The server's own `gh` token is never imported |
 | **IN-8** 📝 PLAN 2026-10-12 (D98) | **MCP OAuth for an org connection.** An admin connects an MCP server that needs an OAuth consent. The connection acts as that admin at the provider, and the console and each card say so. Dark behind `MCP_OAUTH_ENABLED`, default off. The design, the provider table and the acceptance are in §3.6. It needs IN-4 merged. A member connection over OAuth is out of scope (§1.3) | See IN-8a to IN-8d | Rows O1 to O14 of §3.6.11 pass, each red first. No R8 suite skips |
 | **IN-8a** 🔨 BUILT 2026-10-13, PR #931 | Discovery, CIMD and DCR, PKCE, the signed state, the callback and the store (§3.6.3 to §3.6.6), dark | 🟢 AGENT-SAFE | O1 to O6, O9 and O11 to O13 |
-| **IN-8b** | Refresh at run time, the 401 on connect, and `needs_reconnect` (§3.6.7) | 🟢 AGENT-SAFE | O7, O8 and O14 |
+| **IN-8b** 🔨 BUILT 2026-10-14 | Refresh at run time, the 401 on connect, and `needs_reconnect` (§3.6.7), dark | 🟢 AGENT-SAFE | O7, O8 and O14 |
 | **IN-8c** | The console Connect button, the BFF route for `POST /integrations/mcp/{name}/oauth/start`, the dialog text, the acts-as label and the card line (§3.6.9) | 🟢 AGENT-SAFE | O10. Visual review passes |
 | **IN-8d** | Pre-registered providers: GitHub, Slack and HubSpot (§3.6.2) | 🔴 OWNER-GATE. The owner creates each OAuth app, and its secret goes in the operator plane (D56) | The owner's consent with each provider stores an org connection in Fracktal |
 
