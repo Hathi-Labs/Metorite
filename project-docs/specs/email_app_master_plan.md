@@ -13588,8 +13588,10 @@ builds it. ✅ **PR-G2 (EM-G11b) is merged** (#1001, 2026-10-14). ✅ **PR-G7 (E
 merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. ✅ **PR-G3 (EM-G11c1)
 is merged** (#1019, 2026-10-14), and §12.3.13.6 records what it covers. The owner answered
 Q-GM-14 on 2026-10-14, and PR-G3b adds cards to the email chat pane. 🔨 **PR-G8 (EM-G11f2) is
-built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264). The other
-PRs are not built.
+built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264).
+
+🔨 **PR-G5 (EM-G11d) is built NARROWED, not merged** (2026-10-15, branch `gmail-umcc`).
+§12.3.13.8 records what it covers. The other PRs are not built.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
 Owner instruction, 2026-10-14. Google verifies an app that asks for a restricted scope only when the
@@ -13862,7 +13864,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
 | PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 📝 Not specified | 3 | 🟢 AGENT-SAFE · security review | M | §12.3.13.6 |
 | PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
-| PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
+| PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set. 🔨 Built NARROWED 2026-10-15, branch `gmail-umcc`, not merged | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
 | PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. 🔨 Built NARROWED 2026-10-14, branch `gmail-purge-durable`, migration 264, not merged | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
@@ -14410,6 +14412,40 @@ uv run python -m evals.email_injection --scripted
 ```
 
 The eval module name follows the pattern of `evals/email_insights/`. Read it again at dispatch.
+
+**EM-G11d as built (2026-10-15).** 🔨 Built NARROWED, not merged, on branch `gmail-umcc`. The
+audit of 2026-10-14 returned GO-NARROWED. Its narrowing replaces scope items 1, 4 and 5 above.
+
+- **One helper.** `acb_skills/untrusted.py` holds `UntrustedFrame` and `frame_untrusted`. One
+  token from `secrets.token_hex(8)` serves each model call. The frame removes each copy of the
+  token. It breaks each run of three angle brackets, a trusted tag, a chat-role token and a
+  heading line. It cuts no text. The attachment frame and the two Insights frames use it now.
+  `agent_edge/tools.py` keeps its own `{"untrusted_text"}` shape, because it is not a marker
+  framer.
+- **The six paths.** `read_email` and `read_thread` frame their text. A sender writes the
+  subject, so the first line of `read_thread` now holds only the count. The drafter frames the
+  head of the mail, the thread, the body, the past mail and the gathered context. The consult
+  planner, both classifier calls and the chat context frame the mail too.
+- **The forged tag.** The drafter follows `<personal_instructions>` only in the User context,
+  outside every block. A forged tag in a mail loses its brackets.
+- **Contain.** `config.json: floor_opt_out` of the email assistant names `web_search` and
+  `fetch_page`. The consult runs inside `_consult_no_egress`. That block binds the H-236
+  `no_egress` key in the artifact context, and `run_agent` reads the key as the parent of the
+  run. No new seam exists.
+- **Prove.** `evals/email_injection/` holds 18 attack mails and 9 paths, and the bar is
+  STRUCTURAL. Each attack must sit only inside one fresh frame. The token must not be in the
+  mail. The run must hold no network tool. `tests/unit/test_email_injection_eval.py` runs it in
+  CI.
+- **Fences.** `tests/unit/test_untrusted_frame.py`, `tests/unit/test_email_injection_eval.py`
+  and `tests/unit/test_floor_opt_out.py`. Each of these mutations turns them red. The first
+  unframes the chat context. The next two let text close the frame, with no break of a run or
+  with the token kept. The fourth gives back `fetch_page`, and the fifth drops `no_egress` from
+  the consult.
+- **Deferred until a spec edit.** A behavioural eval against a live model. The rule "read tools
+  only" for the consult, beyond `no_egress`. The composer's "Draft with AI" path
+  (`_llm_compose_assist`), which tells the model to apply the instructions of the mail that it
+  answers. The list tools, which
+  still print subjects outside a frame.
 
 ##### 12.3.13.9 EM-G11f1 and EM-G11f2 — deletion (PR-G7, PR-G8)
 

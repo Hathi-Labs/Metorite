@@ -329,6 +329,17 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    never offers a row with `is_system`, and it marks a retired field
    (WS-53 CRM-C4a). Fences:
    `tests/unit/test_crm_agent.py` and `tests/unit/test_skills_registry.py`.
+5m. untrusted.py -- the ONE frame for text that a stranger wrote (WS-17
+   EM-G11d, UMCC, spec `email_app_master_plan.md` §12.3.13.8). Make one
+   `UntrustedFrame` for each model call. `wrap(label, text)` puts the text
+   between two marker lines that hold a random token, and `note(what)` is the
+   data note. The frame removes each copy of the token, and it breaks each
+   marker shape, trusted tag, chat-role token and heading line. It cuts no
+   text. The email paths, the attachment frame and the Insights frames use
+   it. Do not build a `<<<` marker anywhere else. `agent_edge/tools.py`
+   keeps its own `{"untrusted_text"}` shape for WS-55. Fences:
+   `tests/unit/test_untrusted_frame.py` (the scan for a second framer) and
+   `evals/email_injection/`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The
