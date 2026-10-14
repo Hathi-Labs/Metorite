@@ -141,6 +141,7 @@ import {
   invalidateCrmMode,
   useCrmMode,
   useFieldDefs,
+  useFieldLayout,
   useOwners,
   usePipelines,
   useSyncStatus,
@@ -604,7 +605,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // read failed: then the caller is a guess, and an admin's link would be
   // lost (`sectionRedirect`).
   const { loading: accessLoading, stale: accessStale } = useAccess();
-  const sectionCtx = useMemo(() => ({ isAdmin: ctx.isAdmin, mode: ctx.mode }), [ctx.isAdmin, ctx.mode]);
+  // CRM-C6a: the Native `field-mapping` section needs `studio_admin` of the
+  // layout. The read is shared with the Fields card, which reads leads first.
+  const studioProbe = useFieldLayout(ctx.isAdmin && ctx.mode !== "mirror" ? "leads" : null);
+  const studioAdmin = studioProbe.layout?.studio_admin === true;
+  const sectionCtx = useMemo(
+    () => ({ isAdmin: ctx.isAdmin, mode: ctx.mode, studioAdmin }),
+    [ctx.isAdmin, ctx.mode, studioAdmin],
+  );
   const settingsSection = shownSection(view.section, sectionCtx);
   const sectionTrusted = !accessLoading && !accessStale && !ctx.modeReadFailed;
   useEffect(() => {
@@ -1002,6 +1010,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               lostReasons={store.lostReasons}
               saving={store.saving}
               readOnly={ctx.mode === "mirror"}
+              studioAdmin={studioAdmin}
               onSaveStatus={store.saveStatus}
               onRemoveStatus={store.removeStatus}
               onReorderStatuses={store.reorderStatuses}
