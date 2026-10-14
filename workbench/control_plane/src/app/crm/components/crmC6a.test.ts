@@ -14,6 +14,9 @@ import {
   SKIP,
   choiceOf,
   choiceOptions,
+  convertSkippedNote,
+  offersSetToAuto,
+  problemText,
   rowsWith,
   tableRows,
   type ConversionMapping,
@@ -147,9 +150,67 @@ describe("the tables", () => {
         },
       ],
     };
-    const out = html(broken, "Old is retired. Restore it to map a field to it.");
+    const out = html(broken, "A refusal of the gateway.");
     expect(out).toContain('role="alert"');
-    expect(out).toContain("The target field is retired, so it takes no value.");
+    expect(out).toContain("Old is retired. Set this cell to Auto or Skip, or restore the field.");
+    // Review P1: one click puts the broken cell back to Auto.
+    expect(out).toContain(">Set to Auto<");
+    expect(html(SERVED)).not.toContain("Set to Auto");
+  });
+});
+
+describe("a broken cell (review round 1, P1)", () => {
+  const retired = cell({ reason: "explicit", target_key: "old", problem: "target_retired" });
+
+  it("names the target and the way out", () => {
+    expect(problemText(retired, SERVED.targets.deal)).toBe(
+      "Old is retired. Set this cell to Auto or Skip, or restore the field.",
+    );
+    expect(problemText(cell({ reason: "explicit", target_key: "x", problem: "type_mismatch" }), [])).toBe(
+      "x has a type that cannot take this value now. Set this cell to Auto or Skip.",
+    );
+    expect(problemText(cell(), [])).toBeNull();
+    expect(problemText(cell({ problem: "type_mismatch" }), [])).toMatch(/Auto copies nothing here/);
+  });
+
+  it("offers Set to Auto on an explicit broken cell only", () => {
+    expect(offersSetToAuto(retired)).toBe(true);
+    expect(offersSetToAuto(cell({ problem: "type_mismatch" }))).toBe(false);
+    expect(offersSetToAuto(cell({ reason: "explicit", target_key: "amount_x" }))).toBe(false);
+  });
+
+  it("keeps the broken row in a save of another cell, because the gateway accepts it unchanged", () => {
+    const broken: ConversionMapping = {
+      ...SERVED,
+      fields: [{ ...SERVED.fields[1], mapping: { ...SERVED.fields[1].mapping, deal: retired } }],
+    };
+    expect(rowsWith(broken, { source: "budget", entity: "contact", choice: SKIP })).toEqual([
+      { source_key: "budget", target_entity: "contact", skip: true },
+      { source_key: "budget", target_entity: "deal", target_key: "old" },
+    ]);
+    expect(rowsWith(broken, { source: "budget", entity: "deal", choice: AUTO })).toEqual([]);
+  });
+});
+
+describe("the note after a conversion", () => {
+  it("counts and names each value that was not copied", () => {
+    expect(convertSkippedNote(undefined)).toBeNull();
+    expect(convertSkippedNote([])).toBeNull();
+    expect(
+      convertSkippedNote([
+        { entity: "deal", source_key: "grade", target_key: "grade", reason: "option_inactive", message: "" },
+      ]),
+    ).toBe("1 field was not copied: grade to deal (no active option).");
+    expect(
+      convertSkippedNote([
+        { entity: "deal", source_key: "a", target_key: "a", reason: "type_mismatch", message: "" },
+        { entity: "contact", source_key: "b", target_key: "b", reason: "record_has_value", message: "" },
+      ]),
+    ).toBe("2 fields were not copied: a to deal (wrong type), b to contact (the record kept its value).");
+  });
+
+  it("is a toast of the page after the convert", () => {
+    expect(read("../page.tsx")).toMatch(/convertSkippedNote\(result\?\.skipped\)/);
   });
 });
 

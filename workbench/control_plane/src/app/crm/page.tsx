@@ -156,6 +156,7 @@ import {
   withShownSection,
   type SettingsSectionId,
 } from "./lib/settingsSections";
+import { convertSkippedNote } from "./lib/convertMapping";
 import { viewLabel } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
@@ -588,8 +589,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   async function convert(body: Record<string, unknown>) {
     if (!converting) return;
-    const dealId = await store.convertLead(converting.id, body);
+    const result = await store.convertLead(converting.id, body);
+    const dealId = result?.deal.id ?? null;
     setConverting(null);
+    // CRM-C6a: say which lead values the conversion mapping did not copy.
+    const note = convertSkippedNote(result?.skipped);
+    if (note) {
+      toast.show({ key: "crm-convert-skipped", variant: "success", title: "Lead converted", description: note });
+    }
     if (dealId) {
       // Land on the deal that was just made: the conversion's whole point is
       // that the work continues there.

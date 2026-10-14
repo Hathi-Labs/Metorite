@@ -39,7 +39,12 @@ export type LeadFieldMapping = {
   mapping: Record<MapEntity, MappingCell>;
 };
 
-export type TargetField = { key: string; label: string; type: string; retired: boolean };
+export type TargetField = {
+  key: string;
+  label: string;
+  type: string;
+  retired: boolean;
+};
 
 /** `GET /crm/conversion-mapping`. */
 export type ConversionMapping = {
@@ -72,17 +77,81 @@ export const CONVERT_MAPPING_NOTE =
   "Auto fills the field with the same key. The fixed fields keep their own mapping.";
 
 /** What the card says when the org has no custom lead field. */
-export const NO_LEAD_FIELDS = "Add a custom lead field in Fields, then map it here.";
+export const NO_LEAD_FIELDS =
+  "Add a custom lead field in Fields, then map it here.";
 
 /** The words of a failed read. */
 export const MAPPING_READ_FAILED = "The conversion mapping could not be read.";
 
-/** The words of each `problem` of an explicit target. */
-export const PROBLEM_TEXT: Record<string, string> = {
-  target_missing: "The target field does not exist.",
-  target_retired: "The target field is retired, so it takes no value.",
-  type_mismatch: "The target field type cannot take this value now.",
+/**
+ * What the screen says about the problem of a cell (C6a review, P1).
+ *
+ * An explicit cell names its target and the way out. The gateway keeps a
+ * broken stored row on a save, so the admin can leave it or fix it. An auto
+ * cell with `type_mismatch` is one that a broken explicit row blocks.
+ */
+export function problemText(
+  cell: MappingCell,
+  targets: readonly TargetField[],
+): string | null {
+  if (!cell.problem) return null;
+  if (cell.reason === "auto") {
+    return "Another lead field maps to the field with the same key, and its type cannot fill it. Auto copies nothing here.";
+  }
+  const name = cell.target_key
+    ? targetLabel(targets, cell.target_key)
+    : "The target field";
+  if (cell.problem === "target_retired") {
+    return `${name} is retired. Set this cell to Auto or Skip, or restore the field.`;
+  }
+  if (cell.problem === "target_missing") {
+    return `${name} does not exist. Set this cell to Auto or Skip.`;
+  }
+  if (cell.problem === "type_mismatch") {
+    return `${name} has a type that cannot take this value now. Set this cell to Auto or Skip.`;
+  }
+  return cell.problem;
+}
+
+/** True when the cell offers "Set to Auto": an explicit target with a problem. */
+export function offersSetToAuto(cell: MappingCell): boolean {
+  return cell.reason === "explicit" && cell.problem !== null;
+}
+
+/** A lead value that a conversion did not copy (`skipped` of the convert response). */
+export type SkippedValue = {
+  entity: MapEntity;
+  source_key: string;
+  target_key: string | null;
+  reason: string;
+  message: string;
 };
+
+/** The words of each reason in `skipped`. */
+const SKIP_REASON: Record<string, string> = {
+  option_inactive: "no active option",
+  target_retired: "target retired",
+  target_missing: "target missing",
+  type_mismatch: "wrong type",
+  invalid_value: "value refused",
+  record_has_value: "the record kept its value",
+};
+
+/**
+ * The note after a conversion, or null when the map copied each value.
+ * "2 fields were not copied: budget to deal (wrong type), …".
+ */
+export function convertSkippedNote(
+  skipped: readonly SkippedValue[] | undefined,
+): string | null {
+  if (!skipped || skipped.length === 0) return null;
+  const n = skipped.length;
+  const parts = skipped.map(
+    (s) =>
+      `${s.source_key} to ${s.entity} (${SKIP_REASON[s.reason] ?? s.reason})`,
+  );
+  return `${n} ${n === 1 ? "field was" : "fields were"} not copied: ${parts.join(", ")}.`;
+}
 
 /** The short word of each `problem`, for the disabled option. */
 const PROBLEM_HINT: Record<string, string> = {
@@ -103,7 +172,12 @@ function targetLabel(targets: readonly TargetField[], key: string): string {
   return targets.find((t) => t.key === key)?.label ?? key;
 }
 
-export type ChoiceOption = { value: string; label: string; hint?: string; disabled?: boolean };
+export type ChoiceOption = {
+  value: string;
+  label: string;
+  hint?: string;
+  disabled?: boolean;
+};
 
 /**
  * The options of one cell: Auto, Skip, then each compatible target field.
@@ -112,21 +186,37 @@ export type ChoiceOption = { value: string; label: string; hint?: string; disabl
  * target that is no longer a choice (retired, gone, or of another type) stays
  * in the list, disabled, so the button still names it.
  */
-export function choiceOptions(cell: MappingCell, targets: readonly TargetField[]): ChoiceOption[] {
+export function choiceOptions(
+  cell: MappingCell,
+  targets: readonly TargetField[],
+): ChoiceOption[] {
   const auto =
     cell.reason === "auto" && cell.target_key
       ? `Auto: ${targetLabel(targets, cell.target_key)}`
       : "Auto";
   const out: ChoiceOption[] = [
-    { value: AUTO, label: auto, hint: cell.reason === "auto" && !cell.target_key ? "no match" : undefined },
+    {
+      value: AUTO,
+      label: auto,
+      hint: cell.reason === "auto" && !cell.target_key ? "no match" : undefined,
+    },
     { value: SKIP, label: "Skip" },
-    ...cell.choices.map((key) => ({ value: key, label: targetLabel(targets, key) })),
+    ...cell.choices.map((key) => ({
+      value: key,
+      label: targetLabel(targets, key),
+    })),
   ];
-  if (cell.reason === "explicit" && cell.target_key && !cell.choices.includes(cell.target_key)) {
+  if (
+    cell.reason === "explicit" &&
+    cell.target_key &&
+    !cell.choices.includes(cell.target_key)
+  ) {
     out.push({
       value: cell.target_key,
       label: targetLabel(targets, cell.target_key),
-      hint: cell.problem ? (PROBLEM_HINT[cell.problem] ?? cell.problem) : undefined,
+      hint: cell.problem
+        ? (PROBLEM_HINT[cell.problem] ?? cell.problem)
+        : undefined,
       disabled: true,
     });
   }
@@ -134,9 +224,14 @@ export function choiceOptions(cell: MappingCell, targets: readonly TargetField[]
 }
 
 /** The row of one cell, or null for "auto", which needs no row. */
-function rowOf(source: string, entity: MapEntity, choice: string): MappingRow | null {
+function rowOf(
+  source: string,
+  entity: MapEntity,
+  choice: string,
+): MappingRow | null {
   if (choice === AUTO) return null;
-  if (choice === SKIP) return { source_key: source, target_entity: entity, skip: true };
+  if (choice === SKIP)
+    return { source_key: source, target_entity: entity, skip: true };
   return { source_key: source, target_entity: entity, target_key: choice };
 }
 
@@ -180,7 +275,9 @@ export function getConversionMapping(): Promise<ConversionMapping> {
   return call<ConversionMapping>("/conversion-mapping");
 }
 
-export function putConversionMapping(rows: MappingRow[]): Promise<ConversionMapping> {
+export function putConversionMapping(
+  rows: MappingRow[],
+): Promise<ConversionMapping> {
   return call<ConversionMapping>("/conversion-mapping", {
     method: "PUT",
     body: JSON.stringify({ rows }),

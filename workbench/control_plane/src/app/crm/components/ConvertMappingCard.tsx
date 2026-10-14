@@ -29,7 +29,9 @@ import {
   MAP_ENTITIES,
   MAPPING_READ_FAILED,
   NO_LEAD_FIELDS,
-  PROBLEM_TEXT,
+  offersSetToAuto,
+  problemText,
+  AUTO,
   choiceOf,
   choiceOptions,
   getConversionMapping,
@@ -57,17 +59,24 @@ export function ConvertMappingView({
   return (
     <Card title={FIELD_MAP_TITLE} note={CONVERT_MAPPING_NOTE}>
       {error && (
-        <p role="alert" className="border-b border-border px-4 py-2 text-xs text-destructive">
+        <p
+          role="alert"
+          className="border-b border-border px-4 py-2 text-xs text-destructive"
+        >
           {error}
         </p>
       )}
       {mapping.fields.length === 0 ? (
-        <p className="px-4 py-3 text-xs text-muted-foreground">{NO_LEAD_FIELDS}</p>
+        <p className="px-4 py-3 text-xs text-muted-foreground">
+          {NO_LEAD_FIELDS}
+        </p>
       ) : (
         <div className="divide-y divide-border">
           {MAP_ENTITIES.map(({ entity, label }) => (
             <div key={entity} className="px-4 py-3">
-              <h3 className="mb-2 text-xs font-semibold text-foreground">Lead to {label}</h3>
+              <h3 className="mb-2 text-xs font-semibold text-foreground">
+                Lead to {label}
+              </h3>
               <ul className="space-y-1.5" aria-label={`Lead to ${label}`}>
                 {tableRows(mapping, entity).map(({ field, cell }) => (
                   <li
@@ -76,21 +85,37 @@ export function ConvertMappingView({
                   >
                     <span className="min-w-0 text-xs text-foreground">
                       <span className="truncate">{field.label}</span>
-                      <span className="ml-1.5 text-[10px] text-muted-foreground">{field.type}</span>
+                      <span className="ml-1.5 text-[10px] text-muted-foreground">
+                        {field.type}
+                      </span>
                       {cell.problem && (
                         <span className="block text-[10px] text-warning">
-                          {PROBLEM_TEXT[cell.problem] ?? cell.problem}
+                          {problemText(cell, mapping.targets[entity])}
                         </span>
                       )}
                     </span>
-                    <SelectButton
-                      label={`${field.label} to ${label}`}
-                      value={choiceOf(cell)}
-                      options={choiceOptions(cell, mapping.targets[entity])}
-                      onChange={(choice) => onChange(field.key, entity, choice)}
-                      disabled={saving}
-                      widthClass="w-full sm:w-56"
-                    />
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      {offersSetToAuto(cell) && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={saving}
+                          onClick={() => onChange(field.key, entity, AUTO)}
+                        >
+                          Set to Auto
+                        </Button>
+                      )}
+                      <SelectButton
+                        label={`${field.label} to ${label}`}
+                        value={choiceOf(cell)}
+                        options={choiceOptions(cell, mapping.targets[entity])}
+                        onChange={(choice) =>
+                          onChange(field.key, entity, choice)
+                        }
+                        disabled={saving}
+                        widthClass="w-full sm:w-56"
+                      />
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -104,16 +129,25 @@ export function ConvertMappingView({
 
 /** The card with its own read and its writes. */
 export default function ConvertMappingCard() {
-  const res = useCachedResource<ConversionMapping>(CONVERT_MAPPING_KEY, getConversionMapping);
+  const res = useCachedResource<ConversionMapping>(
+    CONVERT_MAPPING_KEY,
+    getConversionMapping,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function change(source: string, entity: MapEntity, choice: string): Promise<void> {
+  async function change(
+    source: string,
+    entity: MapEntity,
+    choice: string,
+  ): Promise<void> {
     if (!res.data || saving) return;
     setSaving(true);
     setError(null);
     try {
-      await putConversionMapping(rowsWith(res.data, { source, entity, choice }));
+      await putConversionMapping(
+        rowsWith(res.data, { source, entity, choice }),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -133,11 +167,19 @@ export default function ConvertMappingCard() {
   if (res.data === undefined) {
     return (
       <Card title={FIELD_MAP_TITLE}>
-        <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs text-muted-foreground">
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs text-muted-foreground"
+        >
           <span>
             {MAPPING_READ_FAILED} {res.error}
           </span>
-          <Button variant="secondary" size="sm" icon="RefreshCw" onClick={res.refresh}>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="RefreshCw"
+            onClick={res.refresh}
+          >
             Retry
           </Button>
         </div>
