@@ -13,7 +13,6 @@ from uuid import uuid4
 _KB_WORD_RE = re.compile(r"[a-z0-9]{2,}")
 
 from acb_auth import UserContext, get_current_user
-from acb_skills.untrusted import neutralise
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.core import (
     _assert_account_owner,
@@ -154,6 +153,8 @@ def _learned_text(value: Any) -> str:
     marker and a heading (``acb_skills.untrusted.neutralise``) and can never
     close ``<learned_patterns>`` or open ``<personal_instructions>``. A
     pattern also stays on one line, as its bullet."""
+    from acb_skills.untrusted import neutralise
+
     return neutralise(str(value or "").strip(), "")
 
 
