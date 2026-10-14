@@ -45,6 +45,12 @@ removals ARE reported for the two expressible shapes, and that a revoked grant
 produces silence — so the day somebody "fixes" it, the documentation and the
 test move together.
 
+✅ **One visibility loss IS expressible: a D63 seal** (H-304's follow-up). The
+seal bumps every task in the tree, and stream A2 below finds the tasks the
+reader could reach before the seal and cannot reach now. Each one becomes a
+bare id in ``removed[]``. A grant revocation is still silence.
+``test_sealed_tree_delta_r8.py`` is the fence.
+
 **2. The cursor is a KEYSET, not a timestamp.**
 ``updated_at > :since`` with a client-supplied second loses every row that
 shares the boundary second with a delivered one — and re-sending them instead
@@ -87,6 +93,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     row_to_dict,
+    sealed_loss_clause,
     task_visibility_clause,
     triage_exclusion_clause,
 )
@@ -264,6 +271,34 @@ async def delta_tasks(
             {**params, "limit": limit},
         )).fetchall()
 
+        # ── Stream A2: tasks a D63 seal took out of the reader's sight ─────
+        #
+        # Stream A cannot see these, because it reads through the visibility
+        # clause and a sealed task has left it. `seal_personal_tree` bumps
+        # every task in the tree, so the seal itself is a change inside the
+        # keyset. `sealed_loss_clause` keeps only tasks the reader could reach
+        # before the seal, which is what keeps a never-visible tree silent.
+        #
+        # Only ids and stamps are read here. The pass below decides: a task
+        # the visibility clause still keeps (the D63 hand-over) is a row, and
+        # every other id is a bare removal. No title and no content can reach
+        # the response through this stream.
+        #
+        # A snapshot skips it: a client that replaces its store needs no
+        # removals, and a snapshot must not list a sealed tree's ids.
+        sealed_lost: list[Any] = []
+        if cursor is not None:
+            sealed_lost = (await db.execute(
+                text(
+                    "SELECT t.id, t.updated_at FROM pm_tasks t"
+                    f" WHERE {sealed_loss_clause(vis)}"
+                    " AND t.updated_at <= :horizon"
+                    + keyset % ("t.updated_at", "t.id")
+                    + " ORDER BY t.updated_at ASC, t.id ASC LIMIT :limit"
+                ),
+                {**params, "limit": limit},
+            )).fetchall()
+
         # ── Stream B: tombstones ───────────────────────────────────────────
         #
         # Scoped by the SAME project-visibility closure the tasks are, joined
@@ -311,12 +346,18 @@ async def delta_tasks(
         # union — the standard k-way merge argument, and the reason this is not
         # one `UNION ALL` statement: two simple statements the fake can read
         # beat one clever one it cannot.
+        #
+        # A set, because a sealed task the reader still sees as its assignee
+        # comes back from stream A AND stream A2 with the same stamp. Both are
+        # "row" candidates, so one copy is enough.
         entries = sorted(
-            [
+            {
                 *((_aware(r.updated_at), str(r.id), "row") for r in changed),
+                *((_aware(r.updated_at), str(r.id), "row")
+                  for r in sealed_lost),
                 *((_aware(r.deleted_at), str(r.task_id), "gone") for r in gone),
-            ],
-            key=lambda e: (e[0], e[1]),
+            },
+            key=lambda e: (e[0], e[1], e[2]),
         )
         # ⚠️ `len(entries) > limit` ALONE IS WRONG, and wrong in the direction
         # that loses data: a stream that came back holding exactly `limit` rows
@@ -327,6 +368,7 @@ async def delta_tasks(
         has_more = (
             len(entries) > limit
             or len(changed) >= limit
+            or len(sealed_lost) >= limit
             or len(gone) >= limit
         )
         entries = entries[:limit]

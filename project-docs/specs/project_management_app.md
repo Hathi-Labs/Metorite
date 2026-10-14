@@ -6951,6 +6951,12 @@ with a full pull (`reconcile_after`, on every response). `test_losing_VISIBILITY
 and_that_is_documented` pins the SILENCE, so the day somebody closes the gap the docs and
 the behaviour move together instead of the docs going quietly stale.
 
+✅ **One visibility loss is expressible: a D63 seal** (2026-10-14). The seal bumps every
+task in the tree. Stream A2 (`core.sealed_loss_clause`) finds each task that the reader
+could reach before the seal, and the feed sends it as a bare id in `removed[]`. The
+hand-over stays a row. A member who never saw the tree gets nothing. An unseal bumps the
+tasks again, so they come back as rows. `test_sealed_tree_delta_r8.py` is the fence.
+
 **The boundary: a keyset, plus a horizon.** The cursor is the `(updated_at, id)` of the
 last row actually **delivered**, compared with SQL's row comparison — so a page of rows
 sharing one instant is delivered exactly once each, which `updated_at > :since` cannot do

@@ -3637,6 +3637,9 @@ by D15/D16) — read their banners before citing either.
   `tests/live/live_member_seal.sql` carries 14 checks on real Postgres.
   ✅ **H-304 (2026-10-13):** the `data:org:read` task clause now hides a sealed
   tree too, and `tests/unit/test_sealed_tree_visibility_r8.py` proves it.
+  ✅ **The delta feed (2026-10-14):** a seal now sends each reader who loses
+  the tree a bare-id removal, and an unseal sends the rows back, as
+  `tests/unit/test_sealed_tree_delta_r8.py` proves.
   ✅ **H-305 (owner, 2026-10-13: "Stop counting them."):** a sealed tree no
   longer counts in its owner's load, and a handed-over task still counts for
   its new assignee.

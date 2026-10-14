@@ -37,6 +37,14 @@ ownership is rewritten, and there is no half-finished state to recover from.
 :func:`seal_counts` exists to say this out loud in the dialog, which is D63's
 last requirement — the split must be stated in numbers *before* the click.
 
+## ⚠️ Both doors bump every task in the tree
+
+The delta feed (``delta.py``) orders by ``pm_tasks.updated_at``. A seal and an
+unseal write ``pm_projects`` only, so without a bump the feed sees no change.
+A client then keeps a sealed task on screen, or never gets an unsealed one
+back. :func:`_bump_tree_tasks` goes through ``core.touch_task``, the one bump
+there is. ``test_sealed_tree_delta_r8.py`` is the fence.
+
 ## What is deliberately left alone
 
 ``pm_task_personal`` rows on TEAM tasks. The task belongs to the team and needs
@@ -49,6 +57,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from gateway.routes.projects.core import touch_task
 from sqlalchemy import text
 
 #: Every project in one member's personal tree: the root that names them, plus
@@ -153,7 +162,11 @@ async def seal_personal_tree(db: Any, email: str, org_id: str) -> int:
         ),
         {"who": email.strip().lower(), "org": org_id},
     )
-    return int(getattr(result, "rowcount", 0) or 0)
+    stamped = int(getattr(result, "rowcount", 0) or 0)
+    if stamped:
+        # The delta feed's removal, for every reader who loses the tree.
+        await _bump_tree_tasks(db, email, org_id)
+    return stamped
 
 
 async def unseal_personal_tree(db: Any, email: str, org_id: str) -> int:
@@ -179,4 +192,32 @@ async def unseal_personal_tree(db: Any, email: str, org_id: str) -> int:
         ),
         {"who": email.strip().lower(), "org": org_id},
     )
-    return int(getattr(result, "rowcount", 0) or 0)
+    cleared = int(getattr(result, "rowcount", 0) or 0)
+    if cleared:
+        # The rows come back in the delta feed, for each reader who sees them.
+        await _bump_tree_tasks(db, email, org_id)
+    return cleared
+
+
+async def _bump_tree_tasks(db: Any, email: str, org_id: str) -> None:
+    """Bump ``updated_at`` on every task in the tree, so the delta feed sees it.
+
+    After a seal, ``delta.py`` stream A2 turns each bumped task into a bare id
+    in ``removed[]`` for a reader who could reach it before. The hand-over
+    assignee still sees the task, so it stays a row. After an unseal, stream A
+    delivers each bumped task again to the readers who can see it.
+
+    ⚠️ Called only when the project write changed a row. A retried seal keeps
+    the first timestamp, so it does not bump the tasks a second time either.
+    """
+    rows = (await db.execute(
+        text(
+            f"""
+            WITH tree AS ({_TREE_SQL})
+            SELECT t.id FROM pm_tasks t
+            JOIN tree ON tree.id = t.project_id
+            """
+        ),
+        {"who": email.strip().lower(), "org": org_id},
+    )).fetchall()
+    await touch_task(db, *(row.id for row in rows))

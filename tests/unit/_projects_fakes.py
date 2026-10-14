@@ -773,6 +773,20 @@ class FakeProjectsDB:
         args = dict(params or {})
         self.statements.append(statement)
         self.calls.append((statement, args))
+        # D63 — the delta feed's seal-removal scan (`core.sealed_loss_clause`,
+        # `delta.py` stream A2). This mirror does NOT model it. With no sealed
+        # project the answer is empty, and that is the truth. With one, it
+        # refuses, because the generic reader would read the pre-seal reach
+        # as the live one and agree with any SQL. R8 owns that case:
+        # `test_sealed_tree_delta_r8.py`.
+        if "p_sealed.sealed_at IS NOT NULL" in statement:
+            if any(p.get("sealed_at") is not None
+                   for p in self.rows("pm_projects")):
+                raise AssertionError(
+                    "the seal-removal scan is not mirrored here; test it in "
+                    "tests/unit/test_sealed_tree_delta_r8.py (R8)"
+                )
+            return _Result([])
         # WS-27aa's tenant source for the scheduled lifecycle sweep:
         # `workflows.owner_email` → `app_user.organization_id`
         # (`routes/workflows/service._workflow_organization`). Taught

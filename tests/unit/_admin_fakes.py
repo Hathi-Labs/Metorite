@@ -232,6 +232,8 @@ class _FakeDB:
             "projects": 3, "tasks": 14, "handed_over": 3, "sealed": 11,
         }
         self.seal_previews: list[str] = []
+        #: D63 — whose tree's tasks the seal read so it could bump them.
+        self.seal_bumps: list[str] = []
         #: Audit calls, in order, as ``(action, target)``. Ordered because the
         #: purge must record BEFORE it commits, and a set cannot show that.
         self.audit: list[tuple[str, str]] = []
@@ -755,6 +757,17 @@ class _FakeDB:
                 "action": "unseal" if "sealed_at = NULL" in s else "seal",
             })
             return _Rows([], rowcount=1)
+
+        # ── D63: the tree's tasks, read so the seal can bump them ─────────
+        #
+        # Same honesty as above. This fake has no `pm_tasks`, so the tree has
+        # no tasks here and `touch_task` issues no statement. It is matched
+        # BEFORE the preview branch, which also starts `WITH tree AS`. The
+        # bump, and the delta removal it feeds, are settled on real Postgres
+        # by `test_sealed_tree_delta_r8.py` (R8).
+        if hits(s, "WITH tree AS") and "SELECT t.id FROM pm_tasks t" in s:
+            self.seal_bumps.append(str(p.get("who") or "").lower())
+            return _Rows([])
 
         # ── D63 / H-49 slice 2: what sealing WOULD do, in numbers ──────────
         #

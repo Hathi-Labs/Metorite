@@ -35,6 +35,7 @@ correct in the UI and silently empties the timeline — the CRM learned this in
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -1170,15 +1171,20 @@ _AGENT_PINS_SQL = """
   )"""
 
 
-def _narrow_for_agent(clause: str, column: str, agent: AgentScope | None) -> str:
+def _narrow_for_agent(clause: str, column: str, agent: AgentScope | None,
+                      *, pre_seal: bool = False) -> str:
     """*clause*, ANDed with the agent's project set when *agent* is set.
 
     ⚠️ With ``agent`` None this returns *clause* itself, so every string is
     byte-identical to the human path (fence: ``test_mcp_edge_authority.py``).
+
+    ``pre_seal`` takes the agent's set as it was before a seal. Only
+    :func:`sealed_loss_clause` passes it, so an agent learns that a sealed
+    task left its reach.
     """
     if agent is None:
         return clause
-    projects = _AGENT_PROJECTS_SQL
+    projects = _AGENT_PROJECTS_PRE_SEAL_SQL if pre_seal else _AGENT_PROJECTS_SQL
     if not agent.include_personal:
         projects += _AGENT_NOT_PERSONAL_SQL
     if agent.pinned_projects:
@@ -1690,6 +1696,59 @@ def task_visibility_clause(vis: Visibility, alias: str = "t") -> str:
     # field raises AttributeError, so a future duck-typed scope cannot drop
     # the agent narrowing by leaving the field out (fails closed).
     return _narrow_for_agent(clause, f"{alias}.project_id", vis.agent)
+
+
+def _without_seal(sql: str) -> str:
+    """*sql* with its ``sealed_at IS NULL`` lines removed.
+
+    Derived from the live constant, never written out a second time, so the
+    pre-seal reach below cannot drift from the closure it mirrors. The assert
+    fails at import if a seal line changes shape and the strip misses it.
+    """
+    out = re.sub(r"\n\s*AND (?:\w+\.)?sealed_at IS NULL", "", sql)
+    assert "sealed_at" not in out, "a seal filter changed shape"
+    return out
+
+
+#: The three project sets as they were BEFORE any seal. Read only by
+#: :func:`sealed_loss_clause`, which needs the reach a reader HAD.
+_TENANT_PROJECTS_PRE_SEAL_SQL = _without_seal(_TENANT_PROJECTS_SQL)
+_VISIBLE_PROJECTS_PRE_SEAL_SQL = _without_seal(_VISIBLE_PROJECTS_SQL)
+_AGENT_PROJECTS_PRE_SEAL_SQL = _without_seal(_AGENT_PROJECTS_SQL)
+
+
+def sealed_loss_clause(vis: Visibility, alias: str = "t") -> str:
+    """Tasks this reader COULD see, until a D63 seal closed their tree.
+
+    The delta feed's removal arm for a seal. A task matches when its project
+    is sealed, and when the reader's grant reach WITHOUT the seal filters
+    holds the project. The feed then drops every match that
+    :func:`task_visibility_clause` still keeps, so the D63 hand-over (the
+    assignee arm) stays a row and never becomes a removal.
+
+    ⚠️ **This is what tells "changed and now invisible" from "never visible".**
+    A member who never had a grant on the tree gets no removal for it, so a
+    seal does not tell the whole tenant that the tree exists.
+
+    Only the grant arm is mirrored. The assignee arm never reads the seal, so
+    a task the reader saw as its assignee is still visible after the seal.
+    """
+    tenant = f"{alias}.organization_id = CAST(:vis_org AS uuid)"
+    projects = (
+        _TENANT_PROJECTS_PRE_SEAL_SQL if vis.unrestricted
+        else _VISIBLE_PROJECTS_PRE_SEAL_SQL
+    )
+    clause = (
+        f"({tenant}"
+        f" AND {alias}.project_id IN ("
+        f"     SELECT p_sealed.id FROM pm_projects p_sealed"
+        f"     WHERE p_sealed.organization_id = CAST(:vis_org AS uuid)"
+        f"       AND p_sealed.sealed_at IS NOT NULL)"
+        f" AND {alias}.project_id IN ({projects}))"
+    )
+    return _narrow_for_agent(
+        clause, f"{alias}.project_id", vis.agent, pre_seal=True,
+    )
 
 
 def triage_exclusion_clause(alias: str = "t") -> str:
