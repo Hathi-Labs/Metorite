@@ -431,7 +431,7 @@ def check_rows(read: _Read, rows: list[MappingIn]) -> None:
                  "target_key": row.target_key}
         if (row.source_key, row.target_entity, row.target_key) not in kept:
             _check_target(source, target, row.target_entity, row.target_key, where)
-        other =taken.get((row.target_entity, row.target_key))
+        other = taken.get((row.target_entity, row.target_key))
         if other is not None:
             name = target.label if target is not None else row.target_key
             raise _unprocessable(
@@ -581,8 +581,12 @@ async def fill_existing(
         return row, []
     # C6a review, P2: read `custom` again under a row lock, so a write that
     # lands between the match and this fill is seen and never replaced.
+    # FOR NO KEY UPDATE, not FOR UPDATE: the deal and link inserts take FOR KEY
+    # SHARE on this row through their foreign keys. FOR UPDATE conflicts with
+    # that, so two conversions that reuse one contact and one company could
+    # deadlock. FOR NO KEY UPDATE is the lock that update_row takes anyway.
     locked = (await db.execute(
-        text(f"SELECT custom FROM {table} WHERE id = CAST(:id AS uuid) FOR UPDATE"),
+        text(f"SELECT custom FROM {table} WHERE id = CAST(:id AS uuid) FOR NO KEY UPDATE"),
         {"id": str(row.id)},
     )).first()
     held = from_jsonb(getattr(locked, "custom", None)) if locked is not None else None
