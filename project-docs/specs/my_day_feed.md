@@ -47,7 +47,13 @@ parameter opens as before.
 before, byte for byte, except for one new field, `source_apps`. The list
 gates no provider yet, and MD-3b adds no kind.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3c
+**MD-3c is BUILT, 2026-10-15** (the task kinds, no migration). The source
+`tasks_followups` is gated, and `MY_DAY_PROVIDERS` is empty in production.
+So the answer is the same as before, byte for byte. MD-3c also adds the
+shared rows of all eleven MD-3 kinds, so MD-3d to MD-3f add only their
+providers and reads.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3d
 to MD-3f, MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
@@ -351,6 +357,20 @@ sets the group. A ticket that adds a kind adds its row in the same PR.
 | `block_overlap` | Now when the overlap is today, else Needs you |
 | `day_overbooked` | Needs you when the day is today, else For your information |
 | `no_plan_yet` | Needs you |
+| `unblocked` | Ready for you |
+| `waiting_quiet` | Needs you |
+| `stale_next` | For your information |
+| `absent_on_due` | Needs you |
+| `promise_due` | Now when the due time is 0 to 2 hours away, else Needs you |
+| `no_answer` | Needs you |
+| `crm_followup_due` | Now when the due time is 0 to 2 hours away, else Needs you |
+| `deal_quiet` | For your information |
+| `deal_close_passed` | Needs you |
+| `colleague_out` | For your information |
+| `agent_asks` | Needs you |
+
+MD-3c added the last eleven rows (§5.9 item 3). Fence:
+`test_feed_rank.py::TestTheGroupTable`.
 
 ### 4.4 One registry, and the needs view stays five kinds
 
@@ -477,11 +497,11 @@ catalogue in the PR that promotes Notes (H-21). Its link is
 | `overdue` | Today's provider | Template: "Due Monday. 2 days late." | Done (A), Snooze (A), "Move to tomorrow" (A\*) | None | MD-1 |
 | `due_today` | Today's provider | Template | Done (A), "Block time" (A\*) | None | MD-1 |
 | `notification` | Today's provider: assigned, mention, comment, nudge. `assigned` is "a colleague gave me a task" | Template from the actor and the excerpt, for example "Ravi gave you this task today." | Mark read (A), Open | None | MD-1 |
-| `unblocked` | A task I own was blocked, and its blocker closed | Template: "Ravi closed the API task you waited on." | Open | None | MD-3 |
-| `waiting_quiet` | A Waiting task with no activity for 5 working days | Template: "You have waited 6 days on Ravi." | "Nudge Ravi" (B), Snooze | None | MD-3 |
-| `stale_next` | A Next task with no change for 14 days | Template | "Move to Someday" (A\*), Open | None | MD-3 |
+| `unblocked` | A task I own was blocked, and its last blocker closed since my day start | Template: "Ravi closed the API task you waited on." | Open | None | MD-3c, built |
+| `waiting_quiet` | A Waiting task whose `delegated_at` is more than 5 calendar days ago (§5.9 item 10.2). A nudge does not reset it | Template: "You have waited 6 days on Ravi." | "Nudge Ravi" (B), Snooze | None | MD-3c, built |
+| `stale_next` | A Next task with no change for more than 14 days | Template | "Move to Someday" (A\*), Open | None | MD-3c, built |
 | `due_at_risk` | The outlook read says a deadline will slip at the current load | Template from the outlook facts | Open, "Ask to move the date" (B) | None | MD-3 |
-| `absent_on_due` | A due date of my task falls on a day **I** am absent | Template: "Due Friday. You are on leave that day." | "Move to <day>" (A\*) | None | MD-3. It reads **my own** absences, `GET /people/me/absences` (`routes/people/selfservice.py:272`), never the HR conflicts read |
+| `absent_on_due` | A due date of my task falls on a day **I** am absent | Template: "Due Friday. You are on leave that day." | "Move to <day>" (A\*) | None | MD-3c, built. It reads **my own** absences, `GET /people/me/absences` (`routes/people/selfservice.py:272`), never the HR conflicts read |
 
 ### 5.3 Email
 
@@ -922,6 +942,30 @@ The cache:
 - The time thresholds wait for the edge, or 600 seconds at most.
 
 The carry: MD-3c builds item 1 of this section.
+
+**The facts of each template** (MD-3c, 2026-10-15). MD-3c writes the why
+template of each of the eleven kinds (`feed.py`, `_md3_why`). So a later
+slice gives these facts and no others:
+
+| Kind | Facts that its template reads |
+|---|---|
+| `waiting_quiet` | `waited_days`, `who`. Also `delegated_at` |
+| `stale_next` | `stale_days`. Also `changed_at` |
+| `unblocked` | `blocker`, `who` and `blocker_ids`, only for a blocker that I can read. Also `unblocked_at` |
+| `absent_on_due` | `absence_day`, the local date |
+| `promise_due` | `due_at` |
+| `no_answer` | `waiting_since`, `who` |
+| `crm_followup_due` | `due_at`, `subject` |
+| `deal_quiet` | `stage`, `stage_days`, `stage_limit` |
+| `deal_close_passed` | `due_at` |
+| `colleague_out` | `out`, a list of names, and `task`, a title |
+| `agent_asks` | `waiting_since` |
+
+⚠️ **No task kind of MD-3c carries a state fact, also not `due_at`.** A
+notification card has no `due_at`. A task kind that carried one would change
+the state fingerprint of that card when it folds in (done-when 11). So
+`absent_on_due` names its day in `absence_day`, and the other three kinds
+name no due time. This narrows the table of item 4, which allows `due_at`.
 
 #### 12. MD-3d, the mail kinds
 
@@ -2265,6 +2309,11 @@ and is off by default (`packages/acb_memory`).
   `calendar`, `crm`, `people` and `chat`. MD-3b added the last three. The
   `sources` key of the Calendar provider is `calendar`. A `sources` key is
   the id of a source, and an MD-3 source has an id of its own (§5.8 item 6).
+- **MD-3c adds the card field `source`** (§5.9 item 1). It is the source id
+  of the card's main signal. The gateway sends it only when it differs from
+  `app`, so a card of an MD-1 source has no such field. The carry of §6.1
+  keys a card on `source`, or else on `app`. So a failed `tasks_followups`
+  carries only its own cards, and never a card of the `tasks` source.
 - **MD-3b adds `source_apps`**, `{source id: app id}`, with one entry for
   each key of `sources`. The client maps a failed source to its app for the
   failed line, and a capped source to its app for "Show all in <app>". A
@@ -3110,6 +3159,43 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell/f
 node .claude/hooks/ste-lint.mjs project-docs/specs/my_day_feed.md
 ```
 
+**BUILT, 2026-10-15.** No migration, and no flag changed. The source
+`tasks_followups` is gated, so it runs only when `MY_DAY_PROVIDERS` lists
+it. These are the parts:
+
+- `feed.py`: the provider `_tasks_followups` and its four kinds. It also
+  holds the why templates of all eleven MD-3 kinds (`_md3_why`), the folded
+  clauses, `STABLE_FACTS`, and the card field `source`. The feed tags each
+  signal with its source after the provider runs.
+- `feed_rank.py`: `BASE` and `group` for all eleven kinds (§5.9 items 2 and
+  3). `BASE` is also the vocabulary of `prefs.feed_kinds`, so a member may
+  mute an MD-3 kind before its provider is listed. 20 kinds, which is
+  `prefs.MAX_KINDS`, so the cap did not change.
+- `needs.py`: each provider run logs `elapsed_ms`. A run that ends well
+  writes the line `provider answered`, with its `outcome`.
+- `personal.py`: `my_quiet_tasks`, `my_unblocked_since` and `my_due_ahead`.
+  `my_quiet_tasks` also gives the stored `day_start_hour`, so the provider
+  learns the member's day start with no fifth session.
+- `selfservice.py`: the self absence `POST` and `DELETE` call `bump_org`
+  after the commit.
+- `feed.ts`: the field `source`, `noteOk` on `(c.source ?? c.app)`, `CLOSES`
+  and the eleven labels.
+
+**What the build found, for the slices after it.**
+
+- The day start of `unblocked` comes from the stored `day_start_hour`. A
+  member with no settings row reads 7, the column default. The state join
+  of a member with the Calendar pane reads `get_user_settings`, which can
+  seed another hour from People for such a member (D-PC-16). The two agree
+  for each member with a row.
+- `unblocked` reads an "open task" as an actionable one
+  (`ACTIONABLE_CLAUSE`). So a Someday task never gets the card.
+- An act link of a folded kind is often to the task. `_merge_acts` keeps one
+  link for each place, so the "Nudge" link of a folded `waiting_quiet` does
+  not show on an overdue card. MD-8 makes these acts taps.
+- The measure (§5.9 item 7) needs the line `provider answered`. Before
+  MD-3c, a run that ended well wrote no line.
+
 ### MD-3d · The mail kinds — AGENT-SAFE, after MD-3c merges (the A1 `source` field)
 
 `promise_due` and `no_answer`, from the source `email_followups`. §5.9 items
@@ -3742,6 +3828,9 @@ uv run ruff check apps/services/gateway/gateway/decide_features.py apps/services
 uv run pytest tests/unit/test_feed_measure.py tests/unit/test_feed_measure_r8.py tests/unit/test_org_access_enforcement.py -q  # MD-6a-3
 uv run pytest tests/unit/test_shell_feed.py tests/unit/test_my_day_cache.py tests/unit/test_integrations_env_hardening.py -q  # MD-3b
 npx vitest run src/lib/shell/feedApps.test.ts  # MD-3b
+uv run pytest tests/unit/test_feed_task_kinds.py tests/unit/test_feed_task_kinds_r8.py tests/unit/test_shell_feed.py tests/unit/test_shell_feed_r8.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_shell_needs_r8.py tests/unit/test_projects_relations.py tests/unit/test_people_absences.py tests/unit/test_my_day_prefs.py tests/unit/test_my_day_state.py tests/unit/test_feed_decide.py tests/unit/test_no_new_clock_flakes.py -q  # MD-3c
+uv run ruff check apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/routes/projects/personal.py apps/services/gateway/gateway/routes/people/selfservice.py  # MD-3c
+npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts  # MD-3c
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 uv run pytest tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_my_day_cache.py -q -rs  # MD-3a

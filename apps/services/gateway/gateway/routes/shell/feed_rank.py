@@ -60,11 +60,25 @@ BASE: dict[str, int] = {
     "due_today": 52,
     "notification": 48,
     "needs_reply": 44,
-    # The Calendar kinds of MD-1 (§5.1), below every needs kind.
+    # The Calendar kinds of MD-1 (§5.1) and the MD-3 kinds (§5.9 item 2),
+    # each below every needs kind. MD-3c adds the rows of all eleven MD-3
+    # kinds at once, so MD-3d to MD-3f add only their providers. This table
+    # is also the vocabulary of kinds that the prefs accept (``prefs.py``).
+    "agent_asks": 43,
+    "promise_due": 42,
+    "crm_followup_due": 41,
     "block_overlap": 40,
+    "absent_on_due": 39,
+    "unblocked": 38,
+    "waiting_quiet": 37,
     "block_soon": 36,
+    "no_answer": 35,
+    "deal_close_passed": 34,
+    "deal_quiet": 33,
     "day_overbooked": 32,
+    "stale_next": 30,
     "no_plan_yet": 28,
+    "colleague_out": 26,
 }
 
 #: The urgency terms (§7).
@@ -147,11 +161,26 @@ def _is_day(value: Any, today: date) -> bool:
     return str(value or "") == today.isoformat()
 
 
+def _due_within_soon(facts: dict[str, Any], now: datetime) -> bool:
+    """The due time is 0 to 2 hours away: not passed, and not later."""
+    due = _instant(facts.get("due_at"))
+    return due is not None and timedelta(0) <= due - now <= SOON
+
+
 def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
-    """The old-path group of an MD-1 kind (§4.3). ``today`` is the member's
-    own date. An unknown kind raises, as ``base`` does."""
-    if kind in ("overdue", "approval", "needs_reply", "no_plan_yet"):
+    """The old-path group of a kind (§4.3, and §5.9 item 3 for MD-3).
+    ``today`` is the member's own date. An unknown kind raises, as ``base``
+    does."""
+    if kind in ("overdue", "approval", "needs_reply", "no_plan_yet",
+                "waiting_quiet", "absent_on_due", "no_answer", "deal_close_passed",
+                "agent_asks"):
         return "needs_you"
+    if kind == "unblocked":
+        return "ready"
+    if kind in ("stale_next", "deal_quiet", "colleague_out"):
+        return "fyi"
+    if kind in ("promise_due", "crm_followup_due"):
+        return "now" if _due_within_soon(facts, now) else "needs_you"
     if kind == "due_today":
         due = _instant(facts.get("due_at"))
         return "now" if due is not None and due - now <= SOON else "needs_you"

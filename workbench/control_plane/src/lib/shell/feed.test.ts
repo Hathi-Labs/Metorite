@@ -1213,6 +1213,57 @@ describe("9. the life of a card (MD-2b)", () => {
     ]);
   });
 
+  it("(d1) carries a failed tasks_followups by the card's source, never a card of the tasks source (MD-3c)", () => {
+    // Both sources give cards of the `tasks` app (§5.9 item 1).
+    const due = card("tasks:due", "needs_you", { kind: "overdue" });
+    const quiet = card("tasks:quiet", "needs_you", { kind: "waiting_quiet", source: "tasks_followups" });
+    const ok = noteOk(
+      new Map(),
+      answerOf([due, quiet], { tasks: "ok", tasks_followups: "ok" } as FeedAnswer["sources"]),
+      0,
+    );
+    expect(ok.get("tasks")?.cards.map((c) => c.signal_id)).toEqual(["tasks:due"]);
+    expect(ok.get("tasks_followups")?.cards.map((c) => c.signal_id)).toEqual(["tasks:quiet"]);
+    // tasks_followups fails, and tasks answers with no card: only the quiet card carries.
+    const failed = { tasks: "ok", tasks_followups: "failed" } as FeedAnswer["sources"];
+    const next = carryCards(ok, { ...answerOf([], failed), fetchedAt: CARRY_MS });
+    expect(next.cards.map((c) => c.signal_id)).toEqual(["tasks:quiet"]);
+    // The carry ends 5 minutes after the last ok answer.
+    expect(carryCards(ok, { ...answerOf([], failed), fetchedAt: CARRY_MS + 1 }).cards).toEqual([]);
+    // tasks fails while tasks_followups answers: the quiet card does not carry for tasks.
+    const other = { tasks: "failed", tasks_followups: "ok" } as FeedAnswer["sources"];
+    expect(carryCards(ok, answerOf([], other)).cards.map((c) => c.signal_id)).toEqual(["tasks:due"]);
+  });
+
+  it("(d1b) reads the card's source, and an answer with none reads as its app", () => {
+    const body = {
+      cards: [
+        { ...CARD, signal_id: "tasks:q", kind: "waiting_quiet", source: "tasks_followups" },
+        { ...CARD, signal_id: "tasks:o", source: 7 },
+        CARD,
+      ],
+      groups: [],
+      sources: { tasks: "ok" },
+    };
+    const cards = readFeedAnswer(body).cards;
+    expect(cards.map((c) => c.source)).toEqual(["tasks_followups", undefined, undefined]);
+    expect("source" in cards[1]).toBe(false);
+    expect("source" in cards[2]).toBe(false);
+  });
+
+  it("(d1c) a done closes the task kinds of MD-3 and promise_due, and names each new kind (§5.9 items 5, 6)", () => {
+    for (const kind of ["waiting_quiet", "stale_next", "unblocked", "absent_on_due", "promise_due"]) {
+      expect(actLeavesCard({ kind, folded: [] }, { act: "done" })).toBe(true);
+      expect(actLeavesCard({ kind: "overdue", folded: [kind] }, { act: "done" })).toBe(true);
+      expect(actLeavesCard({ kind, folded: [] }, { act: "read" })).toBe(false);
+    }
+    // A kind with no tap act has no entry, so a done keeps its card.
+    expect(actLeavesCard({ kind: "overdue", folded: ["colleague_out"] }, { act: "done" })).toBe(false);
+    expect(sourceLine({ app: "tasks", kind: "waiting_quiet" })).toBe("My Tasks · Waiting too long");
+    expect(sourceLine({ app: "tasks", kind: "absent_on_due" })).toBe("My Tasks · Due while you are away");
+    expect(sourceLine({ app: "chat", kind: "agent_asks" })).toBe("Chat · Waiting for your answer");
+  });
+
   it("(d2) keeps a failed source's cards across a Projects write, which drops the cache entry", async () => {
     const replies = [
       { ...ANSWER, cards: [{ ...CARD, ...STATE }], sources: { tasks: "ok", calendar: "ok" } },

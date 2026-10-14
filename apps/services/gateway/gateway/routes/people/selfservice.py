@@ -292,8 +292,22 @@ async def add_my_absence(
         row = await _my_row(db, user)
         authorize_write(["working_hours"], is_admin=can_manage_people(user),
                         is_self=True)
-        return await create_absence(db, str(row.id), body,
-                                    getattr(user, "email", None) or "anonymous")
+        created = await create_absence(db, str(row.id), body,
+                                       getattr(user, "email", None) or "anonymous")
+    await _bump_my_day(user)
+    return created
+
+
+async def _bump_my_day(user: Any) -> None:
+    """Move the org's My Day version after an absence write commits (WS-58
+    MD-3c, ``my_day_feed.md`` §5.9 item 11). The member's own cards change,
+    and so does the ``colleague_out`` card of each colleague, so the ORG
+    version moves. The org is the session's, never a request value. It does
+    nothing with ``MY_DAY_CACHE`` off, and it never raises. The import is
+    local, as ``personal.bump_my_day`` does it."""
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_org(getattr(user, "organization_id", None))
 
 
 @router.delete("/me/absences/{absence_id}")
@@ -312,6 +326,7 @@ async def remove_my_absence(
                         is_self=True)
         if not await delete_absence(db, str(row.id), absence_id):
             raise HTTPException(status_code=404, detail="No such absence")
+    await _bump_my_day(user)
     return {"deleted": absence_id}
 
 
