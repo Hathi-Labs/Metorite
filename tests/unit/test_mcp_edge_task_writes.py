@@ -702,7 +702,24 @@ def world():
 
 
 @pytest.fixture
-def live(monkeypatch, world, redis_fake):
+async def live(live_app):
+    """:func:`live_app`, after one warm-up request to the gateway app.
+
+    The first request of a run imports and builds a great deal, and on a busy
+    machine it can pass the edge's 10 second limit of one gateway request
+    (EA3-17). Then the first tool call reads "busy" for a reason that has
+    nothing to do with the code under test. The warm-up is a direct signed
+    GET, which has no such limit, once for each catalog.
+    """
+    if not getattr(live_app, "warmed", False):
+        r = await _send(live_app, "GET", "/projects/tree")
+        assert r.status_code == 200, r.text
+        live_app.warmed = True
+    return live_app
+
+
+@pytest.fixture
+def live_app(monkeypatch, world, redis_fake):
     """The real gateway app at ``agent_edge_gateway_url`` (EA3-20), writes on."""
     from gateway.main import app as gateway_app
 
@@ -1013,28 +1030,28 @@ class TestTheMigration:
 
     pytestmark = _DB_GATE
 
-    def test_the_check_accepts_exactly_the_task_sources(self, live):
+    def test_the_check_accepts_exactly_the_task_sources(self, world):
         from gateway.routes.projects.core import TASK_SOURCES
 
-        with live.admin.begin() as c:
+        with world.admin.begin() as c:
             definition = c.execute(text(
                 "SELECT pg_get_constraintdef(oid) FROM pg_constraint"
                 " WHERE conname = 'pm_tasks_source_check'")).scalar()
         assert set(re.findall(r"'([a-z_]+)'", definition)) == set(TASK_SOURCES)
 
-    def test_the_check_still_refuses_an_unknown_source(self, live):
-        task = live.task(live.team, live.s.todo, "check")
-        with pytest.raises(Exception, match="pm_tasks_source_check"), live.admin.begin() as c:
+    def test_the_check_still_refuses_an_unknown_source(self, world):
+        task = world.task(world.team, world.s.todo, "check")
+        with pytest.raises(Exception, match="pm_tasks_source_check"), world.admin.begin() as c:
             c.execute(text("UPDATE pm_tasks SET source = 'bogus'"
                            " WHERE id = CAST(:t AS uuid)"), {"t": task})
 
-    def test_the_migration_replays_as_a_no_op(self, live):
+    def test_the_migration_replays_as_a_no_op(self, world):
         path = next(p for p in Path(w._LADDER_DIR).glob("*.sql")
                     if "pm_tasks_source_check" in p.read_text(encoding="utf-8")
                     and "'mcp'" in p.read_text(encoding="utf-8"))
-        with live.admin.begin() as c:
+        with world.admin.begin() as c:
             w._exec_sql_file(c, path.read_text(encoding="utf-8"))
-        self.test_the_check_accepts_exactly_the_task_sources(live)
+        self.test_the_check_accepts_exactly_the_task_sources(world)
 
 
 def test_only_the_slot_module_reaches_redis():
