@@ -318,6 +318,14 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "gets 422 (`test_my_day_state.py::TestTheBodyContract`, "
             "`test_my_day_state_r8.py::TestTheTenancyBoundary`)."
         ),
+        "/shell/feed/decide-measure": (
+            "WS-58 MD-6a-3. It needs `ADMIN_PERMISSION` through "
+            "`require_permission`, and a member without it gets 403 "
+            "(`test_feed_measure.py::TestTheAdminGate`). It reads no app data, "
+            "only counts from `my_day_judgments` and `my_day_card_state` of the "
+            "bound org, and it takes no org and no member from the request "
+            "(`test_feed_measure_r8.py::TestTheTenancyBoundary`)."
+        ),
     },
 }
 
