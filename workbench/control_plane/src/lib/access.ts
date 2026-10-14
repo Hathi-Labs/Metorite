@@ -184,6 +184,11 @@ const ALWAYS_ALLOWED = [
   // their own record (WS-28g-2 / D-PC-15). The gateway serves it from a router
   // with no feature dependency; this is the same answer on the client side.
   "/people/me",
+  // The Integrations app (D-EA-9, WS-55 EA-4b, 2026-10-14). Every member
+  // opens it for the AI agents view, and the page gates each other view on
+  // `feature:integrations`. EXACT on purpose: `HREF_FEATURES` keeps
+  // `/integrations`, so a later sub-route stays gated unless it is listed.
+  "/integrations",
 ];
 
 export function isAlwaysAllowed(pathname: string): boolean {

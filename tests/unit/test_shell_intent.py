@@ -310,13 +310,31 @@ class TestOneJobList:
             assert py[job_id] == href, job_id
             assert labels[job_id] == label, f"{job_id}: the bar says {label!r}, the coordinator {labels[job_id]!r}"
 
+    def _ts_job_features(self) -> dict[str, str]:
+        """The jobs of `registry.ts` that name a `feature` of their own (EA-4b)."""
+        src = REGISTRY_TS.read_text(encoding="utf-8")
+        block = src[src.index("export const JOBS"):src.index("];", src.index("export const JOBS"))]
+        out: dict[str, str] = {}
+        for chunk in re.split(r"\n  \{", block)[1:]:
+            job_id = re.search(r'id: "([^"]+)"', chunk)
+            feature = re.search(r'\bfeature: "([^"]+)"', chunk)
+            if job_id and feature:
+                out[job_id.group(1)] = feature.group(1)
+        return out
+
     def test_each_job_is_gated_on_its_apps_own_feature(self):
+        """A job's feature is its own `feature` in `registry.ts` when it names
+        one, else its pane's. The Integrations pane is open to every member
+        since D-EA-9, and its two org jobs still need `integrations`."""
         ts, nav = self._ts_jobs(), self._nav_gates()
+        own = self._ts_job_features()
+        assert own == {"add-mcp": "integrations", "review-integrations": "integrations"}
         for job in intent.JOBS:
             app = ts[job.id][0]
             assert app in nav, f"{job.id}: app {app} is not a nav pane"
-            feature, admin_only = nav[app]
-            assert job.feature == feature, f"{job.id}: {job.feature} vs the pane's {feature}"
+            pane_feature, admin_only = nav[app]
+            feature = own.get(job.id, pane_feature)
+            assert job.feature == feature, f"{job.id}: {job.feature} vs the bar's {feature}"
             # An `adminOnly` pane has no feature, so the feature gate alone
             # offered its job to EVERY member (§6.4 rule 1).
             assert job.admin == admin_only, f"{job.id}: admin {job.admin} vs the pane's adminOnly {admin_only}"

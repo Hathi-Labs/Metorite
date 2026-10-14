@@ -2,24 +2,28 @@
 
 /**
  * The rail of views for /integrations. One `RailRow` per view, as the CRM
- * draws its rail (AGENTS.md rule 12). The page owns where the rail goes.
+ * draws its rail (AGENTS.md rule 12). The page owns where the rail goes, and
+ * which views it holds: a member without `feature:integrations` gets the AI
+ * agents view only (`visibleViews`, WS-55 EA-4b).
  */
 
 import Icon from "@/components/Icon";
 import RailRow from "@/components/ui/RailRow";
 
-import { INTEGRATION_VIEWS, type ViewId } from "../lib/views";
+import { INTEGRATION_VIEWS, type RailView, type ViewId } from "../lib/views";
 
 export default function IntegrationsRail({
   view,
   onSelect,
+  views = INTEGRATION_VIEWS,
 }: {
   view: ViewId;
   onSelect: (view: ViewId) => void;
+  views?: RailView[];
 }) {
   return (
     <div className="flex flex-col gap-0.5">
-      {INTEGRATION_VIEWS.map((v) => (
+      {views.map((v) => (
         <RailRow
           key={v.id}
           label={v.label}

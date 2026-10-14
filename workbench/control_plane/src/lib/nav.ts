@@ -521,7 +521,11 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Integrations",
         icon: "Plug",
         note: "Connections · API keys · MCP servers",
-        feature: "integrations",
+        // ⚠️ NO `feature` since 2026-10-14 (D-EA-9, WS-55 EA-4b). Every member
+        // opens the app for the AI agents view, and each view gates itself:
+        // the org views still need `feature:integrations` (`page.tsx`).
+        // `access.ts` lists the exact path in ALWAYS_ALLOWED and keeps
+        // `/integrations` in HREF_FEATURES for any sub-route.
         // Live on 2026-10-13, by owner decision in chat ("I still don't see
         // the integrations app ... turn it on"). launch_surface.md §2.
         launch: "live",

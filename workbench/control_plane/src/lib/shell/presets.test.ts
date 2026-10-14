@@ -379,7 +379,8 @@ describe("the star model: only starred apps show, under their own category", () 
     const few = visibleSections(["tasks"], false);
     const saved = starsToSave(["/tasks"], few, { pins: ["/projects"], known: ["/projects"] });
     expect(saved.pins).toEqual(["/tasks", "/projects"]);
-    expect(saved.known).toEqual(["/tasks", "/calendar"]);
+    // Integrations is held by every member since D-EA-9 (2026-10-14).
+    expect(saved.known).toEqual(["/tasks", "/calendar", "/integrations"]);
   });
 });
 

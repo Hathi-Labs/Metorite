@@ -48,14 +48,17 @@ describe("the sidebar holds places to work, by team", () => {
     expect(hrefs).toContain("/approvals");
   });
 
-  it("for a member with tasks and email only: one group, and no empty heading", () => {
+  it("for a member with tasks and email only: no empty heading", () => {
+    // Integrations is open to every member since D-EA-9 (2026-10-14), for
+    // the AI agents view, so Admin holds it and nothing else.
     expect(shape(shellSidebar(visibleSections(["tasks", "email"], false)))).toEqual([
       ["personal", ["/tasks", "/calendar", "/email"]],
+      ["admin", ["/integrations"]],
     ]);
   });
 
-  it("for a member who holds nothing: no group at all", () => {
-    expect(shellSidebar(visibleSections([], false))).toEqual([]);
+  it("for a member who holds nothing: Integrations only (D-EA-9)", () => {
+    expect(shape(shellSidebar(visibleSections([], false)))).toEqual([["admin", ["/integrations"]]]);
   });
 
   it("for an unresolved viewer: nothing, never everything (§8.1)", () => {
@@ -186,8 +189,9 @@ describe("All apps lists every app the member holds, never a preference", () => 
     ]);
   });
 
-  it("for a member who holds nothing: nothing", () => {
-    expect(launcherGroups(visibleSections([], false))).toEqual([]);
+  it("for a member who holds nothing: Integrations only (D-EA-9)", () => {
+    const groups = launcherGroups(visibleSections([], false));
+    expect(groups.flatMap((g) => g.items.map((p) => p.href))).toEqual(["/integrations"]);
   });
 
   it("gives every app it shows a purpose to print", () => {

@@ -64,6 +64,14 @@ export interface ShellJob {
   /** Where it opens. `?do=` names the job for the app (`doJob.ts`). */
   href: string;
   icon: string;
+  /**
+   * A feature the job needs beyond its pane (WS-55 EA-4b). The Integrations
+   * pane is open to every member since D-EA-9, and its org jobs still need
+   * `feature:integrations`. `buildItems` leaves the job out unless the
+   * member's features hold it. The coordinator's `intent.JOBS` names the same
+   * feature, and `test_shell_intent.py` holds the two equal.
+   */
+  feature?: string;
 }
 
 /**
@@ -165,17 +173,20 @@ export const JOBS: readonly ShellJob[] = [
   },
   {
     // IN-2. Opens the "MCP server" form of the Integrations console. It saves
-    // nothing. ⚠️ The registry gates a job by PANE only, not by capability. A
-    // member with the pane and no `integrations:manage` can still follow the
-    // link. The page then opens no form (it mounts the job only for a manager
-    // and only when the list exists), so the link is dead and harmless. The
-    // gateway refuses the write anyway.
+    // nothing. ⚠️ The pane is open to every member since D-EA-9 (2026-10-14),
+    // so this job carries `feature: "integrations"` of its own: a member
+    // without the grant is not offered it. A holder without
+    // `integrations:manage` can still follow the link. The page then opens no
+    // form (it mounts the job only for a manager and only when the list
+    // exists), so the link is dead and harmless. The gateway refuses the
+    // write anyway.
     id: "add-mcp",
     label: "Add an MCP server",
     words: ["mcp", "server", "tool", "tools", "connect", "integration", "integrations"],
     app: "/integrations",
     href: "/integrations?do=add-mcp",
     icon: "Server",
+    feature: "integrations",
   },
   {
     // IN-2. A link job: the list of connections is where the work waits.
@@ -185,6 +196,17 @@ export const JOBS: readonly ShellJob[] = [
     app: "/integrations",
     href: "/integrations",
     icon: "Plug",
+    feature: "integrations",
+  },
+  {
+    // WS-55 EA-4b (D-EA-9). A link job to the AI agents view: the connect
+    // card and the member's own agents. Every member holds it.
+    id: "connect-agent",
+    label: "Connect an AI agent",
+    words: ["agent", "agents", "claude", "mcp", "connect", "cursor", "ai", "revoke"],
+    app: "/integrations",
+    href: "/integrations?view=agents",
+    icon: "Bot",
   },
   {
     id: "find-person",
@@ -285,9 +307,19 @@ export function buildItems(
    * organization at once (verifier and review of NS-2, 2026-10-09).
    */
   purpose: boolean = shellNavOn(),
+  /**
+   * The member's features (`access.features`). A job with its own `feature`
+   * shows only when this list holds it. Absent, such a job does not show:
+   * fail closed, because a member who cannot open the view must not be
+   * offered it (EA-4b).
+   */
+  features: readonly string[] = [],
 ): BarItem[] {
   const held = new Map(panes.map((p) => [p.href, p]));
-  const jobs: BarItem[] = JOBS.filter((j) => held.has(j.app)).map((j) => ({
+  const granted = new Set(features);
+  const jobs: BarItem[] = JOBS.filter(
+    (j) => held.has(j.app) && (!j.feature || granted.has(j.feature)),
+  ).map((j) => ({
     key: `do:${j.id}`,
     group: "do",
     label: j.label,
