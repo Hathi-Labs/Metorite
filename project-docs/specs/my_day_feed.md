@@ -2005,6 +2005,11 @@ It is dark behind `NEXT_PUBLIC_MY_DAY_FEED`. The parts:
   shows no Handled group and makes no claim. The reader drops an entry with
   no title, a `by` kind it does not know, or a link that is not a path of
   this app. It also drops a card in the group `handled`.
+- **Only an in-app path is a link** (fix round 1). `isInAppPath` in
+  `src/lib/inAppLink.ts` is the one rule, and the chat and the entity pill
+  use it too. It refuses `//`, a backslash, a control mark, and a path that
+  resolves to another origin. A card with another link keeps its title and
+  draws no link. The reader drops an `open` act with another link.
 - **The group.** `FeedColumn` draws Handled folded after Later, as "Handled
   today" and its count. Each row is the app's icon, the title as a link, and
   who closed it with the time, for example "You · 09:30". `handledBy` writes
@@ -2013,8 +2018,9 @@ It is dark behind `NEXT_PUBLIC_MY_DAY_FEED`. The parts:
 - **The summary.** With the flag on, `feedNeedsCount` counts the open cards
   of Now and Needs you, after the column's own hides. `handledClaim` holds
   the claim. With the flag off, the summary is the line of NS-3.
-- **The fences.** `feedHandled.test.ts` (18 tests), three tests in
-  `myDayPage.test.ts`, and two checks in `e2e/my-day-feed.spec.ts`.
+- **The fences.** `feedHandled.test.ts` (21 tests), four tests in
+  `myDayPage.test.ts`, one test in `inAppLink.test.ts`, and two checks in
+  `e2e/my-day-feed.spec.ts`.
 
 The build made these choices, which this file did not fix:
 
@@ -2023,6 +2029,12 @@ The build made these choices, which this file did not fix:
   then has nothing to follow.
 - **A failed Calendar silences the claim too.** A calendar card can sit in
   Now, so the page cannot back "The rest is handled." without it.
+- **A capped source silences the claim too** (fix round 1). Its count is a
+  floor. With 20 overdue tasks the feed holds 15, and 5 more wait.
+- **A stale answer silences the claim too** (fix round 1). When a refresh
+  fails, the column keeps the last answer and says "Could not refresh your
+  day." The summary keeps the count and drops the claim, because the claim
+  can be from the day before.
 - **A name the server left out** reads "Somebody" for a person, as the bell
   writes it, and "An agent" for an agent.
 - **The words do not say how an approval ended.** The `by` word names who

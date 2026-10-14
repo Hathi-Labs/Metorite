@@ -186,6 +186,10 @@ Seven rules on top of the three above. Each one exists because it was broken:
    - `src/lib/inAppLink.ts` holds the two rules of a chat link. Each in-app
      click sends `IN_APP_LINK_EVENT`, and a link to another site shows its
      host. Fence: `inAppLink.test.ts`.
+   - `isInAppPath` in the same file is the one rule of an in-app path. The
+     chat, the entity pill and the My Day feed use it. It refuses `//`, a
+     backslash, a control mark and a path to another origin. Do not write a
+     second check. Fences: `inAppLink.test.ts` and `feedHandled.test.ts`.
    **A send during a run steers it, through one seam,** `src/lib/chatSteer.ts`
    (owner, 2026-10-12). The composer has ONE main control, Send or Stop,
    and no send mode and no queue. Do not add a second send path. Fences:
