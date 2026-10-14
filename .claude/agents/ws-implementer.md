@@ -54,6 +54,12 @@ From `work_plan.md`:
   `src/lib/shell/seams.test.ts` fails if you do. Never add a key to its
   `SEAM_DEBT`, and never raise a number. Stop and report. A move inside one
   app keeps the same key, so it needs no change there.
+- **UI-1 — a surface starts with a read, and ends with a look.** This rule is
+  local to this agent, and `work_plan.md` does not number it. If the slice
+  changes what a page draws, follow `workbench/control_plane/DESIGN_SYSTEM.md`
+  §9 and §10. Write the one-line read in your report. Capture an existing
+  surface before you change it. Open each state it can be in. Do not change a
+  colour, a typeface or a control style to make an option differ.
 
 ## Branch discipline
 

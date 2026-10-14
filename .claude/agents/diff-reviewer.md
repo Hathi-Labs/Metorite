@@ -40,8 +40,17 @@ than no review.
    The test cannot see a top bar, so you must.
 6. **Durable state in the wrong place.** Deploy git-resets the tree, so tracked
    runtime files are wiped. Runtime state belongs in Postgres, not in files.
-7. **Migrations.** Number genuinely free at build time; forward-only; safe to run
-   against a live DB, since deploy auto-applies before the gateway restarts.
+7. **Migrations.** The number is free at build time. The migration is
+   forward-only and safe on a live DB, because deploy applies it before the
+   gateway restarts.
+8. **States and words on a surface.** For a new control or surface, find each
+   state that can occur: loading, empty, error, disabled and long content. A
+   state with no branch in the code is a P1 when a real response produces it.
+   An error that gives no next step, and a destructive act with no confirm or
+   undo, are P1 too. `DESIGN_SYSTEM.md` §9 and §10 hold the rules.
+   `motion.test.ts` cannot see two kinds of motion, so check them by hand. One
+   is an `@keyframes` in a component `<style>` string. The other is a new
+   `animate-pulse` or `animate-ping` with no `motion-safe:` prefix.
 
 ## Method
 
