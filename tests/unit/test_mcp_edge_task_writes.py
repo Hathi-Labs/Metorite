@@ -53,9 +53,9 @@ name. ``E`` is ``apps/services/agent_edge/agent_edge``, ``G`` is
 * M19. ``G/intake.py`` reads ``TASK_SOURCES``. ``test_every_route_checks_a_request_source_against_the_client_tuple``.
 * M20. The edge does not check the type. ``test_a_type_outside_the_project_is_refused_before_the_write``.
 * M21. The gateway does not check the type. ``test_a_create_with_a_type_outside_the_project_is_422``.
-* M22. Create returns the POST version. ``test_it_posts_the_named_keys_only_and_maps_the_task`` and ``test_the_returned_version_survives_the_links_of_the_text``.
-* M23. Update returns the PATCH version. ``test_it_patches_the_named_fields_only_with_if_match`` and ``test_the_returned_version_survives_the_links_of_the_text``.
-* M24. A failed re-read raises. ``test_a_failed_re_read_still_reports_the_task`` and ``test_a_failed_re_read_gives_the_patch_answer``.
+* M22. ``_created``: ``current = row`` (no re-read). ``test_it_posts_the_named_keys_only_and_maps_the_task`` and ``test_the_returned_version_survives_the_links_of_the_text``.
+* M23. ``_update_task``: ``current = written`` (no re-read). ``test_it_patches_the_named_fields_only_with_if_match`` and ``test_the_returned_version_survives_the_links_of_the_text``.
+* M24. Superseded by M35 in fix round 2: ``_after_write`` now holds the fallback, and the ``except`` of ``_reread`` is a second guard only.
 * M25. The fingerprint before the state. ``test_an_unknown_or_unreadable_slot_always_gives_the_unknown_text``.
 * M26. A connect error keeps the key. ``test_a_post_that_never_left_the_edge_frees_the_key``.
 * M27. ``E/gateway_client.py`` raises ``GatewayUnreachable`` for a connect error. The same test.
@@ -66,6 +66,7 @@ name. ``E`` is ``apps/services/agent_edge/agent_edge``, ``G`` is
 * M32. An unbounded re-read after an update. ``test_a_slow_re_read_after_an_update_gives_the_patch_answer``.
 * M33. No grace after a landed write (``_landed`` does nothing). ``test_a_landed_write_moves_the_tool_limit_out``.
 * M34. ``G/tasks.py``: the type check reads root-local types only. ``test_a_create_with_an_org_wide_type_lands``.
+* M35. ``_after_write`` lets a ``ToolError`` or a ``TimeoutError`` through. ``test_a_slow_re_read_after_a_create_gives_the_post_answer`` and ``test_a_failed_name_read_after_the_write_still_reports_it``.
 """
 from __future__ import annotations
 
