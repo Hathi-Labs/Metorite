@@ -9013,7 +9013,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G4a-f1** | 🟢 AGENT-SAFE | 🔨 Built, not merged (2026-10-12, branch `gmail-pra-fill-bulk`). Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B, which merged as #915 | S | §12.3.12.4 |
 | **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | ✅ PR-C1a MERGED #919 (`421eeb8f4`, 2026-10-12). ✅ PR-C1b MERGED #925 (`144dc0d1f`, 2026-10-12). Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
 | **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | ✅ MERGED #916 (`c0d776667`, 2026-10-12). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
-| **EM-G11** | 🟢 AGENT-SAFE builds · 🔴 OWNER-GATE (Google console, KMS billing, CASA) · 🔴 `enforcement-flip` (two dark flags) | 📝 Specified 2026-10-14. ✅ PR-G2 (EM-G11b) merged #1001. ✅ PR-G7 (EM-G11f1) merged #1006. 🔨 PR-G3 (EM-G11c1) built 2026-10-14, not merged. Google verification readiness: the disclosure, one scope set, a card for each AI write, UMCC, the teardown, envelope keys, and the owner runbooks. Ten PRs, PR-G1 to PR-G10 | PR-G1 and PR-G2 first | 10 × M | §12.3.13 |
+| **EM-G11** | 🟢 AGENT-SAFE builds · 🔴 OWNER-GATE (Google console, KMS billing, CASA) · 🔴 `enforcement-flip` (two dark flags) | 📝 Specified 2026-10-14. ✅ PR-G2 (EM-G11b) merged #1001. ✅ PR-G7 (EM-G11f1) merged #1006. ✅ PR-G3 (EM-G11c1) merged #1019. 🔨 PR-G8 (EM-G11f2) built 2026-10-14, not merged. Google verification readiness: the disclosure, one scope set, a card for each AI write, UMCC, the teardown, envelope keys, and the owner runbooks. Ten PRs, PR-G1 to PR-G10 | PR-G1 and PR-G2 first | 10 × M | §12.3.13 |
 | **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #910 (`67b61aa11`, 2026-10-12). Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -13585,10 +13585,11 @@ cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 
 **Status.** 📝 Specified (2026-10-14). Each PR below needs a spec-auditor pass before an agent
 builds it. ✅ **PR-G2 (EM-G11b) is merged** (#1001, 2026-10-14). ✅ **PR-G7 (EM-G11f1) is
-merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. 🔨 **PR-G3 (EM-G11c1)
-is built, not merged** (2026-10-14, branch `gmail-write-cards`). The audit returned GO-NARROWED,
-and §12.3.13.6 records what it covers. The owner answered Q-GM-14 on 2026-10-14, and PR-G3b adds
-cards to the email chat pane. The other PRs are not built.
+merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. ✅ **PR-G3 (EM-G11c1)
+is merged** (#1019, 2026-10-14), and §12.3.13.6 records what it covers. The owner answered
+Q-GM-14 on 2026-10-14, and PR-G3b adds cards to the email chat pane. 🔨 **PR-G8 (EM-G11f2) is
+built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264). The other
+PRs are not built.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
 Owner instruction, 2026-10-14. Google verifies an app that asks for a restricted scope only when the
@@ -13858,13 +13859,13 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 |---|---|---|---|---|---|
 | PR-G1 | **EM-G11a** — the disclosure step and the Google button | 1, 8 | 🟢 AGENT-SAFE · security review · visual review. 🔴 The owner approves the disclosure text (Q-GM-7) | M, about 550 | §12.3.13.4 |
 | PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
-| PR-G3 | **EM-G11c1** — a card for each chat write. 🔨 Built 2026-10-14, branch `gmail-write-cards`, not merged | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
+| PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
 | PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 📝 Not specified | 3 | 🟢 AGENT-SAFE · security review | M | §12.3.13.6 |
 | PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
-| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
+| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. 🔨 Built NARROWED 2026-10-14, branch `gmail-purge-durable`, migration 264, not merged | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
 | — | **EM-G11r** — the reviewer path, the video, the publish order and the scope text | 7, 9, 10, 11 | 🔴 OWNER-GATE (Google account, money, third party). Parts are agent acts, named in each step | Runbook | §12.3.13.11 to §12.3.13.14 |
@@ -14534,6 +14535,52 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
   `operator.py`) wait for a spec edit. So does `test_three_paths_call_one_teardown`. The help line
   of item 3 is not in f1. The check of Google's "third-party apps" page needs a real Gmail account,
   and it is the owner's.
+
+**EM-G11f2 as built (2026-10-14).** 🔨 Built NARROWED, not merged, on branch
+`gmail-purge-durable`. The audit returned GO-NARROWED. The scope is items 1 to 3, for
+`DELETE /email/accounts/{id}` only.
+
+- **Item 1, the durable purge.** Migration 264 (`infra/postgres/264_email_mailbox_purges.sql`) adds
+  `email_mailbox_purges`, with `organization_id` and FORCE RLS. `account_id` has NO foreign key, so
+  the cascade cannot delete the row. `delete_account` writes the row inside the block of its
+  `DELETE`, so one commit holds both. The route's task closes the row after two good passes.
+- **The sweeper has its own loop** (fix round 1). The `main.py` lifespan starts
+  `memory_purge.start_purge_loop` and stops it with `stop_purge_loop`, as each other domain does.
+  Each 15 minutes the loop reads the RLS-EXEMPT `organization` table once, then sweeps each
+  organization in its own `tenant_session`. It adds no process and no unit.
+- **The sweep.** A new row waits 10 minutes first, so the sweeper does not race the route's task.
+  The sweeper claims ONE row at a time with `FOR UPDATE SKIP LOCKED`, just before its own pass.
+  So the lease of 15 minutes covers one pass, which has a bound of 2 minutes. A tick also stops
+  after 10 minutes. A failed pass keeps the row open with a back-off from 5 minutes to 6 hours.
+  Only the second good pass closes the row.
+- **Mem0 off (agent decision).** A tick reads no row, and the task runs no pass. The rows stay
+  open, and they close only after a real purge. The reason: Mem0 keeps its memories in the
+  `mem0_memories` table of the same Postgres. That table outlives the flag, so a row that closed
+  while Mem0 was off would claim a purge that never ran. The probe builds the client in a thread,
+  and a failed build waits 15 minutes before the next try.
+- **Item 2, no write to `"default"` (agent decision: refuse).** Each email writer of Mem0 takes its
+  key from `memory_purge.writable_memory_scope`. With no owner or no mailbox id, it logs
+  `email.memory_write_refused` and skips. Three writers use it: the draft precedent, the learning
+  job and the writing style of `automation/assistant.py`. The Mem0 writers outside `routes/email`
+  key on a member, an agent or a room, and none of them builds a mailbox key.
+- **Item 3, the child fence.** It reads each foreign key to `email_accounts` or `email_messages`
+  from `information_schema`. It fills one row in each child from the catalog and disconnects. Then
+  it finds no row of the mailbox, by the mailbox key or by the row's own primary key. A second test
+  walks each foreign key under a mailbox, to any depth. Each one must be `ON DELETE CASCADE`, or be
+  named with a reason in `_NOT_CASCADE`. That map holds three edges today, and each of their tables
+  also cascades on `account_id`.
+- **Fences.** `tests/unit/test_email_mailbox_purge_durable.py`. These mutations each fail it:
+  - a purge row outside the `DELETE` transaction (and the R8 trigger test of atomicity),
+  - a sweeper that deletes the row first, or that claims 20 rows at once,
+  - a write to `"default"` in the drafter or in `assistant.py`,
+  - a lifespan that does not start the loop,
+  - a new child table with `ON DELETE SET NULL`.
+- **Not built: the reconcile of old orphans.** Mem0 keys a memory on `<owner>#acct:<id>` and stores
+  no organization. So a read under one tenant cannot tell an orphan from a live mailbox of another
+  tenant. A safe reconcile needs a check across tenants and a read of Mem0's own table. Each one is
+  a decision that the spec does not record.
+- **Not in f2.** The admin member purge, the org purge and `test_three_paths_call_one_teardown`
+  wait for a spec edit.
 
 ##### 12.3.13.10 EM-G11g1 and EM-G11g2 — envelope encryption and rotation (PR-G9, PR-G10)
 

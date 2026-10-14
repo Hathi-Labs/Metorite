@@ -307,7 +307,7 @@ class TestADisconnectPurgesTheMemoryOfTheMailbox:
     ):
         ledger = wired({ACC: _row()})
 
-        def _record(owner: str, account_id: str) -> None:
+        def _record(owner: str, account_id: str, **_kw: Any) -> None:
             ledger.events.append(("purge", ledger.open, owner, account_id))
 
         monkeypatch.setattr(accounts, "schedule_mailbox_memory_purge", _record)

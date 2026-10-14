@@ -5277,6 +5277,43 @@ line — never reclaim a number by deleting the other entry.
   §11.27 · PR #1010 and its review
 - **Added:** 2026-10-14 · closed PR #1010
 
+### H-307 · Delete the orphan Mem0 memories of mailboxes that no longer exist · [OWNER]
+- **Check:** `git grep -n "def reconcile_orphan" -- apps/services/gateway/gateway/routes/email`.
+  No hit means no reconcile exists, and this entry stays.
+- **Why.** Two kinds of Mem0 key outlive every purge of WS-17 EM-G11f2. The
+  first is `default#acct:<uuid>`, which the learning job wrote before PR-G8.
+  The second is `<owner>#acct:<uuid>` of a mailbox whose disconnect task
+  stopped before migration 264. Mem0 stores no organization, so a read under
+  one tenant cannot tell an orphan from a live mailbox of another tenant.
+- **The safe design** (the PR-G8 reviewer):
+  1. Bind each organization in turn with `tenant_session`, and collect its
+     live `email_accounts` ids. Take the union. Account ids are uuid4, so
+     they are unique across tenants.
+  2. Delete a `#acct:<uuid>` key or a `default#acct:` key only when no live
+     account holds that uuid.
+  3. Delete a key only when its newest memory is older than the start of the
+     reconcile. A mailbox connected during the run keeps its memories.
+  4. Run a dry run first. It prints counts only, never a key or a memory.
+- **Why OWNER.** The delete is one-way, and it spans each tenant. The owner
+  reads the dry-run output and signs off before the real run.
+- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9, the EM-G11f2
+  as-built block · PR-G8 fix round 1
+- **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
+
+### H-308 · Purge the email chat turns that Graphiti stores, or stop storing mail there · [AGENT]
+- **Check:** `git grep -n "add_episode" -- apps/services/gateway/gateway/routes/email`.
+  A hit in `automation/chat.py` means the write still exists, and this entry stays.
+- **Why.** `routes/email/automation/chat.py` (about line 332) writes each email
+  chat turn to Graphiti with `add_episode`. Its `group_id` is the member key,
+  not a mailbox key. So no mailbox purge reaches it, and a disconnect leaves
+  mail text in the graph. Google Limited Use and the deletion promise of
+  §12.3.13.9 both need that text to go.
+- **Do this:** choose one of the two paths, and write the choice in §12.3.13.9.
+  1. Key the episode on the mailbox, and add a Graphiti purge to the teardown.
+  2. Stop storing mail content in Graphiti from the email chat.
+- **Authority:** `specs/email_app_master_plan.md` §12.3.13.9 · PR-G8 review
+- **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

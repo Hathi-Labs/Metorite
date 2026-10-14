@@ -94,11 +94,13 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 _EMAIL = (Path(__file__).resolve().parents[2]
           / "apps/services/gateway/gateway/routes/email")
 
-#: The one unbound read that stays in ``routes/email``: the tenant-discovery
-#: read of ``mailbox_owner`` (``test_db_engine_seam.H2_TENANT_DISCOVERY_SITES``).
-#: Keyed by (file, function), with the count of its sites.
+#: The unbound reads that stay in ``routes/email``, each a tenant-discovery
+#: read of ``test_db_engine_seam.H2_TENANT_DISCOVERY_SITES``: ``mailbox_owner``,
+#: and the org list of the purge loop (WS-17 EM-G11f2), which reads only the
+#: RLS-EXEMPT ``organization`` table. Keyed by (file, function), with the count.
 ALLOWED_UNBOUND: dict[tuple[str, str], int] = {
     ("scheduler_hooks.py", "mailbox_owner"): 1,
+    ("memory_purge.py", "_organization_ids"): 1,
 }
 
 #: The ten jobs of EM-T4a-0, keyed by file. They held twelve sites:

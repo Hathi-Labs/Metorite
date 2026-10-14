@@ -202,6 +202,15 @@ class _FakeDB:
         if sql.startswith("UPDATE email_accounts SET is_default = true"):
             self.ledger.events.append(("reelect", self.ledger.open))
             return _Result(None)
+        if sql.startswith("INSERT INTO email_mailbox_purges"):
+            # EM-G11f2: the purge row, in the block of the DELETE.
+            self.ledger.events.append(
+                ("purge_row", self.ledger.open, p["owner"], p["aid"]))
+            return _Result(None)
+        if sql.startswith("UPDATE email_mailbox_purges"):
+            # EM-G11f2: the purge task closes its row.
+            self.ledger.events.append(("purge_done", self.ledger.open, p["aid"]))
+            return _Result(None)
         raise AssertionError(f"unexpected SQL: {sql[:80]}")
 
 

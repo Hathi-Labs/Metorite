@@ -18,9 +18,9 @@ from gateway.routes.email.core import (
     _assert_account_owner,
     _tenant_session,
     _log,
-    email_memory_scope,
     router,
 )
+from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -687,14 +687,19 @@ async def generate_writing_style(
         # Index the derived style into Mem0 — keyed PER ACCOUNT so a user's other
         # mailboxes don't inherit this inbox's writing voice (see
         # email_memory_scope). The drafter reads it back under the same scope.
+        # WS-17 EM-G11f2 item 2: only a key that a disconnect purges. A missing
+        # owner is "anonymous", the owner that the disconnect route keys on.
+        scope = writable_memory_scope(user.email or "anonymous", account_id,
+                                      "writing_style")
         try:
-            from acb_memory import add_memories_background  # noqa: PLC0415
-            await add_memories_background(
-                email_memory_scope(user.email or "default", account_id),
-                [{"role": "assistant",
-                  "content": f"My email writing style: {style}"}],
-                agent_id="email",
-            )
+            if scope is not None:
+                from acb_memory import add_memories_background  # noqa: PLC0415
+                await add_memories_background(
+                    scope,
+                    [{"role": "assistant",
+                      "content": f"My email writing style: {style}"}],
+                    agent_id="email",
+                )
         except Exception:  # noqa: BLE001
             pass
         return {"writing_style": style}

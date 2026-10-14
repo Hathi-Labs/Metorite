@@ -216,6 +216,9 @@ UPDATE email_knowledge SET organization_id = (SELECT id FROM organization WHERE 
 UPDATE email_learned_patterns SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE email_mailbox_purges SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE email_messages SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
