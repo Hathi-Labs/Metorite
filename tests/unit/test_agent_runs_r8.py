@@ -137,6 +137,18 @@ def test_the_migration_widens_the_notification_kinds() -> None:
     assert "seq               BIGINT GENERATED ALWAYS AS IDENTITY" in sql
 
 
+def test_the_bell_reads_an_agent_question_as_a_question() -> None:
+    """§12.1, "For EA-12c, the bell": every notification kind has a verb, and
+    ``agent_question`` stays in the asking rows."""
+    from gateway.routes.projects.notifications import NOTIFICATION_KINDS
+    from gateway.routes.shell import needs
+
+    assert set(NOTIFICATION_KINDS) <= set(needs._VERB)
+    assert "agent_question" in needs.ASKING_NOTIFICATIONS
+    row = {"kind": "agent_question", "actor": VIA, "task_title": "Fix it", "task_number": 4}
+    assert needs._sentence(row) == "claude.ai asked you about #4 Fix it"
+
+
 # ── R8: the helpers ─────────────────────────────────────────────────────────
 
 
@@ -548,6 +560,8 @@ class TestAgentRunsOnARealDatabase:
             assert [r["id"] for r in needs.json()["rows"]] == [rid]
             task = await call(w.a, "GET", f"/projects/tasks/{w.task_a}")
             assert task.json()["agent_state"] == "answered"
+            assert task.json()["agent_client_via"] == VIA
+            assert task.json()["agent_member_email"] == w.a_email
             # `answered` comes before `stale`: six minutes later it is still answered.
             with w.p.admin_engine.begin() as c:
                 c.execute(text(
@@ -795,6 +809,8 @@ class TestAgentRunsOnARealDatabase:
                 assert answer.status_code == 404, (method, path, answer.text)
             task = await call(w.a, "GET", f"/projects/tasks/{w.task_a}")
             assert task.status_code == 200 and task.json()["agent_state"] is None
+            assert task.json()["agent_client_via"] is None
+            assert task.json()["agent_member_email"] is None
 
     # ── The shapes the UI and the edge read ─────────────────────────────
 
@@ -803,6 +819,11 @@ class TestAgentRunsOnARealDatabase:
             run = await _start(w, call, external_link="https://claude.ai/code/session/1")
             await _act(call, w.agent_a, run["id"], type="thought", body="Thinking")
             await _act(call, w.agent_a, run["id"], **_select())
+            # A Stop with a body, as the answer card sends it (EA-12c).
+            stop_run = await _start(w, call, task=w.task_private)
+            stop = await _act(call, w.a, stop_run["id"], type="prompt", signal="stop",
+                              body="Stop requested.")
+            assert stop.status_code == 201 and stop.json()["run"]["status"] == "stopping"
             listed = await call(w.c, "GET", f"/projects/tasks/{w.task_a}/agent-runs")
         row = listed.json()["rows"][0]
         assert row["state"] == "awaiting" and row["member_email"] == w.a_email

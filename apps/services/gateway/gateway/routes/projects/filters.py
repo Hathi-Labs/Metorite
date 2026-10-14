@@ -944,7 +944,8 @@ _OPEN_LIST = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
 #: the newest run of its task (EA12-12: the pill stays until a newer run
 #: exists). One query for the page, as `_ASSIGNEES_SQL` does.
 _AGENT_STATE_SQL = f"""
-SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state
+SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
+       r.client_via, r.member_email
   FROM pm_agent_runs r
  WHERE r.task_id = ANY(CAST(:ids AS uuid[]))
    AND (r.status IN ({_OPEN_LIST})
@@ -964,7 +965,8 @@ def agent_runs_enabled() -> bool:
 
 
 async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Fill each row's ``agent_state``, mutating and returning the list.
+    """Fill each row's ``agent_state``, ``agent_client_via`` and
+    ``agent_member_email``, mutating and returning the list.
 
     ``queued``, ``working``, ``awaiting``, ``answered``, ``stopping``,
     ``stale`` or ``failed``. ``None`` for a task with no open run. While the
@@ -972,12 +974,15 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     reads cost nothing until the owner turns the feature on.
     """
     for row in rows:
-        row["agent_state"] = None
+        row.update(agent_state=None, agent_client_via=None, agent_member_email=None)
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if not ids or not agent_runs_enabled():
         return rows
     found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
-    by_task = {str(r.task_id): r.state for r in found}
+    by_task = {str(r.task_id): r for r in found}
     for row in rows:
-        row["agent_state"] = by_task.get(str(row["id"]))
+        hit = by_task.get(str(row["id"]))
+        if hit is not None:
+            row.update(agent_state=hit.state, agent_client_via=hit.client_via,
+                       agent_member_email=hit.member_email)
     return rows

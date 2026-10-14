@@ -720,6 +720,10 @@ class TaskModel(BaseModel):
     #: ``filters.attach_agent_state`` fills it on the list rows and on
     #: ``GET /projects/tasks/{id}``. Every other read leaves it ``None``.
     agent_state: str | None = None
+    #: The same run's client stamp (``mcp:<slug>``) and member, for the pill
+    #: text ("Waiting for <member>", "<client> working"). ``None`` with no run.
+    agent_client_via: str | None = None
+    agent_member_email: str | None = None
 
     @field_validator("leveraged", mode="before")
     @classmethod

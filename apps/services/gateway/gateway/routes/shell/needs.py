@@ -477,8 +477,12 @@ async def _tasks_handled(user: UserContext, since: datetime) -> list[Closed]:
 # ── Projects: unread notifications, through the bell's read ─────────────────
 
 #: The bell's verbs (`app/projects/lib/notifications.ts` `VERB`).
+#: `agent_question` is the question an outside agent asks (WS-55 EA-12a,
+#: external_agent_access.md §12.1). Fence: every kind of
+#: `NOTIFICATION_KINDS` has a verb (`tests/unit/test_agent_runs_r8.py`).
 _VERB = {"assigned": "assigned you", "mention": "mentioned you on",
-         "comment": "commented on", "nudge": "nudged you about"}
+         "comment": "commented on", "nudge": "nudged you about",
+         "agent_question": "asked you about"}
 
 
 def _who(actor: Any) -> str:
@@ -488,6 +492,9 @@ def _who(actor: Any) -> str:
         return "Somebody"
     if raw.startswith("agent:"):
         return raw[len("agent:"):] or raw
+    # An outside agent's client stamp, `mcp:<slug>` (EA-12a): the slug.
+    if raw.startswith("mcp:"):
+        return raw[len("mcp:"):] or raw
     return raw.split("@")[0] or raw
 
 
@@ -577,7 +584,8 @@ async def _projects(user: UserContext) -> Found:
 
 #: The notification kinds that ask the member for something. One of them
 #: sets the card's reason over a ``comment`` (§4.3, §14.1a).
-ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge"})
+#: `agent_question` asks the member to answer an agent (EA-12a, §12.1).
+ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge", "agent_question"})
 
 
 def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
