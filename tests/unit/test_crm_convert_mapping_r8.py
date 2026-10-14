@@ -310,7 +310,11 @@ async def test_a_lead_with_no_company_makes_no_company(mapped) -> None:
     await _field(p.org_a, "organizations", {"label": "Band", "type": "text"})
     await _put(p.org_a, [
         {"source_key": "tier", "target_entity": "company", "target_key": "band"}])
-    before = _q(p, "SELECT count(*) FROM crm_companies WHERE organization_id = "
+    # A retired target would put the value in `skipped`, but only for a
+    # record that the conversion has. With no company, nothing shows.
+    assert (await _as_admin(p.org_a, "DELETE", "/crm/fields/organizations/band")
+            ).status_code == 200
+    before =_q(p, "SELECT count(*) FROM crm_companies WHERE organization_id = "
                    "CAST(:o AS uuid)", o=p.org_a)[0][0]
     lead = await _record(p.org_a, "leads", {"first_name": "Solo", "custom": {"tier": "A"}})
     body = await _convert(p.org_a, lead["id"])
