@@ -173,10 +173,6 @@ ALLOWED: dict[str, str] = {
         'The web, not company data. max_results asks for more.',
     'apps/agents/agent-email-assistant/agents.py::search_emails::emails[:10]':
         "Not a tool: it is not in _TOOLS, so no model calls it. It prints '… and N more'.",
-    'packages/acb_skills/acb_skills/agent_tools.py::call_agents_parallel::task_list[:5]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    "packages/acb_skills/acb_skills/attachment_tools.py::_listing::[n for n, kind in entries if kind == 'file' and (not n.startswith('.'))][:50]":
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
     'apps/services/orchestrator/orchestrator/agents.py::spawn_copilot_agent::run_id[:8]':
         'Text, not rows: the cut shortens one string.',
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::my_tasks_people::summary[:160]':
@@ -202,7 +198,7 @@ ALLOWED: dict[str, str] = {
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
-ALLOWED_CEILING = 50
+ALLOWED_CEILING = 48
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -922,3 +918,49 @@ def test_crm_timeline_pages_back_in_time(monkeypatch, crm_agent) -> None:
     assert "Call again with offset=20 for the rest." in first
     last = asyncio.run(crm_agent.get_timeline("deal", rid, offset=30))
     assert "s35" in last and "Showing 31-35 of 35. This is the last page." in last
+
+
+# ── 9. The shared tools: the parallel join and the attachment listing ──────
+
+def test_call_agents_parallel_names_the_tasks_it_did_not_run(monkeypatch) -> None:
+    """Five run in one call. Tasks 6 and 7 used to vanish from the join."""
+    import json
+
+    executor = pytest.importorskip("orchestrator.executor")
+    from acb_skills import agent_tools
+
+    async def fake_run(agent_name, message, run_id, queue, model=None):
+        return f"done: {message}"
+
+    monkeypatch.setattr(executor, "_run_sub_agent_streaming", fake_run)
+    tasks = [{"agent": f"agent-{k}", "message": f"task {k}"} for k in range(1, 8)]
+    out = asyncio.run(agent_tools.call_agents_parallel(json.dumps(tasks)))
+    assert "done: task 5" in out and "done: task 6" not in out
+    assert "Ran 5 of 7 tasks" in out
+    assert "agent-6" in out and "agent-7" in out
+
+
+def test_call_agents_parallel_names_a_task_it_could_not_read(monkeypatch) -> None:
+    import json
+
+    executor = pytest.importorskip("orchestrator.executor")
+    from acb_skills import agent_tools
+
+    async def fake_run(agent_name, message, run_id, queue, model=None):
+        return "ok"
+
+    monkeypatch.setattr(executor, "_run_sub_agent_streaming", fake_run)
+    tasks = [{"agent": "a", "message": "m"}, {"agent": "b"}]
+    out = asyncio.run(agent_tools.call_agents_parallel(json.dumps(tasks)))
+    assert "1 task had no agent or no message, so it did not run." in out
+
+
+def test_the_attachment_listing_names_every_file(tmp_path) -> None:
+    from acb_skills import attachment_tools
+
+    folder = tmp_path / "thread"
+    folder.mkdir()
+    for k in range(60):
+        (folder / f"f{k:02d}.pdf").write_bytes(b"x")
+    names = attachment_tools._listing(str(tmp_path), "thread")
+    assert len(names) == 60
