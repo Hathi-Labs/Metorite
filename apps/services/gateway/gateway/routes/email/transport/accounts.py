@@ -33,6 +33,12 @@ from gateway.routes.email.mailbox_identity import (
     work_domain,
 )
 from gateway.routes.email.memory_purge import schedule_mailbox_memory_purge
+from gateway.routes.email.teardown import (
+    drop_mailbox_cache,
+    read_filter_ids,
+    remove_metorite_filters,
+    revoke_grant,
+)
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 from sqlalchemy import text
 
@@ -661,24 +667,39 @@ async def delete_account(
     a failed ``DELETE`` raises first, so it starts no purge. The route does
     not wait for the task. The fence is
     ``tests/unit/test_email_disconnect_memory_purge.py``.
+
+    EM-G11f1 (``email_app_master_plan.md`` §12.3.13.9) adds the legs of
+    ``routes/email/teardown.py``. The ownership read of a Gmail row also reads
+    the filter ids that Metorite made. After the stop and before the
+    ``DELETE``, those filters go at Gmail. After the commit, the Google grant
+    is revoked, and the Redis keys of the mailbox go. No leg blocks the 204.
+    The fence is ``tests/unit/test_email_mailbox_teardown.py``.
     """
     owner = user.email or "anonymous"
 
-    # ── 1. the ownership read ───────────────────────────────────────────────
+    # ── 1. the ownership read, and the Gmail filter ids ─────────────────────
     async with _tenant_session() as db:
         found = (await db.execute(
             text(
-                """SELECT organization_id FROM email_accounts
+                """SELECT organization_id, provider, credentials_encrypted
+                   FROM email_accounts
                    WHERE id = :id AND user_id = :uid"""
             ),
             {"id": account_id, "uid": owner},
         )).fetchone()
         if found is None:
             raise HTTPException(status_code=404, detail="Account not found")
+        # The cascade of step 3 deletes these ids, so read them first.
+        filter_ids = (await read_filter_ids(db, account_id, owner)
+                      if found.provider == "gmail" else [])
     org = str(found.organization_id) if found.organization_id else None
 
     # ── 2. stop the sync loop, with no session open ─────────────────────────
     had_loop = await _stop_sync(account_id)
+
+    # ── 2a. the filters that Metorite made, before the row goes (EM-G11f1) ──
+    await remove_metorite_filters(
+        account_id, found.provider, found.credentials_encrypted, filter_ids)
 
     # ── 3. the delete and the default re-election, with a lock bound ────────
     try:
@@ -733,8 +754,15 @@ async def delete_account(
     # ``owner``. The writers key the memory on that member (EM-T8f-1).
     schedule_mailbox_memory_purge(owner, account_id)
 
+    # ── 4a. the Google grant, best effort, with no session open (EM-G11f1) ──
+    # After the purge task starts, so a cancel of this await cannot skip it.
+    await revoke_grant(account_id, deleted)
+
     # ── 5. the Graph subscription, best effort, with no session open ────────
     await _drop_graph_subscription(account_id, deleted)
+
+    # ── 6. the Redis keys of the mailbox and the owner's My Day (EM-G11f1) ──
+    await drop_mailbox_cache(org, owner, account_id)
 
 
 async def _stop_sync(account_id: str) -> bool:

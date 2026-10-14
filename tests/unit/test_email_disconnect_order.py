@@ -63,6 +63,7 @@ from acb_auth.roles import UserContext, UserRole
 from acb_common.db import bind_tenant, release_tenant
 from email_ingestion.providers.outlook import GRAPH_API_BASE, OutlookProvider
 from fastapi import HTTPException
+from gateway.routes.email import teardown
 from gateway.routes.email.transport import accounts
 from sqlalchemy import exc as sa_exc
 from sqlalchemy import text
@@ -112,11 +113,15 @@ class _Ledger:
 
 
 class _Result:
-    def __init__(self, row: Any) -> None:
+    def __init__(self, row: Any, rows: list[Any] | None = None) -> None:
         self._row = row
+        self._rows = rows or []
 
     def fetchone(self) -> Any:
         return self._row
+
+    def fetchall(self) -> list[Any]:
+        return self._rows
 
 
 class _DriverError(Exception):
@@ -149,11 +154,19 @@ class _FakeDB:
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None):
         sql = " ".join(str(stmt).split())
         p = params or {}
-        if sql.startswith("SELECT organization_id FROM email_accounts"):
+        if sql.startswith("SELECT organization_id, provider, credentials_encrypted"):
             self.ledger.events.append(("read", self.ledger.open))
             row = self.rows.get(p["id"])
             owned = row is not None and row["user_id"] == p["uid"]
-            return _Result(SimpleNamespace(organization_id=row["org"]) if owned else None)
+            return _Result(SimpleNamespace(
+                organization_id=row["org"], provider=row["provider"],
+                credentials_encrypted=row["creds"]) if owned else None)
+        if sql.startswith("SELECT n.auto_archive_filter_id"):
+            # EM-G11f1: the Gmail filter ids, in the block of the ownership read.
+            self.ledger.events.append(("filter_read", self.ledger.open))
+            row = self.rows.get(p["id"])
+            ids = row.get("filters", []) if row and row["user_id"] == p["uid"] else []
+            return _Result(None, [SimpleNamespace(fid=f) for f in ids])
         if sql.startswith("SET LOCAL lock_timeout"):
             self.ledger.events.append(("lock_timeout", self.ledger.open, sql))
             return _Result(None)
@@ -223,9 +236,39 @@ class _RecordingLog:
 
 
 def _row(*, user_id: str = OWNER, provider: str = "microsoft",
-         sub: str | None = "sub-em-t4f-1", is_default: bool = True) -> dict[str, Any]:
+         sub: str | None = "sub-em-t4f-1", is_default: bool = True,
+         filters: tuple[str, ...] = ()) -> dict[str, Any]:
     return {"user_id": user_id, "provider": provider, "sub": sub,
-            "is_default": is_default, "creds": "blob-em-t4f", "org": ROW_ORG}
+            "is_default": is_default, "creds": "blob-em-t4f", "org": ROW_ORG,
+            "filters": list(filters)}
+
+
+class _NoKeys:
+    """A tenant Redis double with no key. EM-G11f1 deletes the mailbox keys
+    after the Graph call, and a hermetic test reaches no real Redis."""
+
+    def __init__(self) -> None:
+        self.deleted: list[Any] = []
+
+    async def scan_iter(self, pattern: Any, *, count: int = 200):
+        for _ in ():
+            yield _
+
+    async def delete(self, *keys: Any) -> int:
+        self.deleted.extend(keys)
+        return len(keys)
+
+
+def _stub_teardown_network(monkeypatch, record) -> None:
+    """EM-G11f1: no hermetic test reaches Google or Redis. ``record`` gets
+    the token of each revoke POST."""
+
+    async def _post(token: str) -> int:
+        record(token)
+        return 200
+
+    monkeypatch.setattr(teardown, "_post_revoke", _post)
+    monkeypatch.setattr(teardown, "_redis", _NoKeys)
 
 
 @pytest.fixture()
@@ -277,6 +320,9 @@ def wired(monkeypatch):
             return provider
 
         monkeypatch.setattr(accounts, "_instantiate_provider", _build)
+        monkeypatch.setattr(teardown, "_instantiate_provider", _build)
+        _stub_teardown_network(monkeypatch, lambda token: ledger.events.append(
+            ("revoke", ledger.open)))
         return ledger
 
     return _setup
@@ -497,7 +543,11 @@ class TestNoGraphCallWithoutASubscription:
         ledger = wired(rows)
         await accounts.delete_account("acc-1", user=_user())
         assert "acc-1" not in rows
-        for kind in ("decrypt", "build", "graph_delete"):
+        # EM-G11f1: a Gmail row decrypts its grant for the revoke. It still
+        # builds no provider, because it has no filter and no subscription.
+        kinds = (("build", "graph_delete") if provider == "gmail"
+                 else ("decrypt", "build", "graph_delete"))
+        for kind in kinds:
             assert kind not in ledger.kinds(), f"{kind} ran for {provider}"
 
 
@@ -636,17 +686,31 @@ def _assert_non_priv(app_eng) -> None:
 
 
 def _seed_account(admin, *, org: str, owner: str, default: bool,
-                  sub: str | None) -> str:
+                  sub: str | None, provider: str = "microsoft") -> str:
     with admin.begin() as c:
         return str(c.execute(text(
             "INSERT INTO email_accounts (user_id, provider, email_address, "
             "credentials_encrypted, is_default, webhook_subscription_id, "
             "created_at, organization_id) "
-            "VALUES (:u, 'microsoft', :m, 'blob-r8', :d, :s, "
+            "VALUES (:u, :p, :m, 'blob-r8', :d, :s, "
             "now() - CAST(:age AS interval), CAST(:o AS uuid)) RETURNING id"),
-            {"u": owner, "m": f"box-{uuid.uuid4().hex[:8]}@em-t4f.test",
+            {"u": owner, "p": provider,
+             "m": f"box-{uuid.uuid4().hex[:8]}@em-t4f.test",
              "d": default, "s": sub, "age": "1 hour" if default else "1 minute",
              "o": org}).scalar_one())
+
+
+def _seed_newsletter(admin, *, org: str, account_id: str,
+                     filter_id: str | None) -> None:
+    """One sender row of a mailbox. ``filter_id`` is the Gmail filter that
+    Metorite made for it (``senders.py::_create_block_filter``)."""
+    with admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_newsletters (account_id, email, status, "
+            "auto_archive_filter_id, organization_id) VALUES (CAST(:a AS uuid), "
+            ":e, 'AUTO_ARCHIVED', :f, CAST(:o AS uuid))"),
+            {"a": account_id, "e": f"news-{uuid.uuid4().hex[:8]}@sender.test",
+             "f": filter_id, "o": org})
 
 
 def _seed_message(admin, *, org: str, account_id: str) -> None:
@@ -684,6 +748,8 @@ def r8_doubles(monkeypatch):
         decrypt=lambda blob: json.dumps({"access_token": TOKEN})))
     monkeypatch.setattr(accounts, "_instantiate_provider",
                         lambda name, creds: _Graph())
+    seen["revoke"] = []
+    _stub_teardown_network(monkeypatch, seen["revoke"].append)
     return seen
 
 
@@ -722,6 +788,63 @@ class TestTheDisconnectUnderForceRLS:
                 "SELECT is_default FROM email_accounts WHERE id = CAST(:a AS uuid)",
                 a=kept)
             assert is_default is True, "the default did not move to the other mailbox"
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
+                          {"u": owner})
+
+    async def test_the_filter_ids_are_read_under_force_rls_before_the_delete(
+        self, promoted, app_engine, r8_doubles, monkeypatch,  # noqa: F811
+    ):
+        """EM-G11f1 (§12.3.13.9, gap D2). The ownership read of a Gmail row
+        reads its filter ids as the non-privileged role, under FORCE RLS. A
+        sender row of the mailbox that carries ANOTHER organization stays out
+        of the read. Each filter goes at Gmail while the row still exists,
+        and the revoke runs after the DELETE."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            default=True, sub=None, provider="gmail")
+        _seed_newsletter(p.admin_engine, org=p.org_b, account_id=acc,
+                         filter_id="flt-r8-one")
+        _seed_newsletter(p.admin_engine, org=p.org_b, account_id=acc,
+                         filter_id="flt-r8-two")
+        _seed_newsletter(p.admin_engine, org=p.org_b, account_id=acc,
+                         filter_id=None)
+        # A row that names the mailbox but carries org A: RLS must hide it.
+        _seed_newsletter(p.admin_engine, org=p.org_a, account_id=acc,
+                         filter_id="flt-r8-other-org")
+        removed: list[tuple[str, bool]] = []
+
+        class _Gmail:
+            async def delete_filter(self, filter_id: str) -> None:
+                still_there = _admin_read(
+                    p.admin_engine,
+                    "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                    a=acc) != []
+                removed.append((filter_id, still_there))
+
+        monkeypatch.setattr(teardown, "_instantiate_provider",
+                            lambda name, creds: _Gmail())
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                           organization_id=p.org_b)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(app_dsn):
+                assert await accounts.delete_account(acc, user=user) is None
+            assert sorted(removed) == [("flt-r8-one", True), ("flt-r8-two", True)], (
+                "the filters were not read under RLS, or went after the DELETE")
+            assert r8_doubles["revoke"] == [TOKEN], "the Gmail grant was not revoked"
+            assert r8_doubles["graph"] == [], "a Gmail row reached Graph"
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                               a=acc) == []
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_newsletters "
+                               "WHERE account_id = CAST(:a AS uuid)", a=acc) == []
         finally:
             release_tenant(token)
             with p.admin_engine.begin() as c:
