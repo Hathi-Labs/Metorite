@@ -5225,34 +5225,6 @@ line — never reclaim a number by deleting the other entry.
   `navigation_shell.md` §5.2
 - **Added:** 2026-10-12 · shell follow-ups of #918
 
-### H-303 · Put the MCP edge signing key on both units, and strip identity headers at Caddy · [OWNER]
-- **Check:** two parts. This entry is done only when both pass.
-  1. `grep -cE "header_up -X-(User-Email|User-Role|Actor-Via)" deploy/hostinger/caddy/Caddyfile`
-     → a count below 3 means the strip is open.
-  2. `ssh metorite "grep -c '^AGENT_EDGE_SIGNING_KEY=.' /opt/acb/app/.env"` → 0 means the
-     gateway has no key. The command prints no value.
-- **Why.** WS-55 EA-3 makes the MCP edge sign each call to the gateway with an HMAC (spec
-  §10.1). Until both units hold the key, the gateway refuses every agent call, and the feature
-  stays inert. The Caddy block of `api.metorite.com` sends `X-User-Email`, `X-User-Role` and
-  `X-Actor-Via` from the internet to the gateway. No entry carried that strip before.
-- **Do this (owner, EA-10):**
-  1. Make one random key of at least 32 bytes. It must differ from `GATEWAY_INTERNAL_TOKEN`
-     and from `LITELLM_MASTER_KEY`.
-  2. Set it as `AGENT_EDGE_SIGNING_KEY` in the env of `acb-gateway` and of the edge unit.
-     Restart both units.
-  3. Confirm that no internal caller reaches the gateway through `api.metorite.com`. The strip
-     would break such a caller.
-  4. Add one `header_up -<name>` line for each of the three headers to the `reverse_proxy`
-     of `api.metorite.com`.
-  5. Decide in EA-10 if Caddy strips `X-Agent-*` too. The edge calls the gateway on loopback,
-     so it never passes Caddy.
-- **Gate.** The key is an `env-write` act, and the Caddyfile is under `deploy/`. D97 makes
-  both of them owner gates. Do them after EA-3a merges and before the flag turns on.
-- **Authority:** `specs/external_agent_access.md` §10.1 and §15 EA-10 · `work_plan.md` WS-55 ·
-  D97
-- **Added:** 2026-10-12 · branch `feat/ws55-ea3-mcp-read-tools`. Renumbered from H-301 to H-302, then to H-303, on 2026-10-13, because
-  `origin/main` took H-301 and then H-302. H-303 was free on `origin/main` and in each open pull request.
-
 ### H-304 · A full run of `gen_tenant_migration.py` renames 12 tables' keys and policies · [AGENT]
 - **Check:** run `uv run python scripts/gen_tenant_migration.py`, then
   `git diff --stat infra/postgres/generated`. A diff means this is open. Put
