@@ -620,20 +620,26 @@ async def _in_scope(world, work) -> Any:
         return await asyncio.create_task(work())
 
 
-async def _mcp(world, name: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+async def _mcp_unscoped(world, name: str, tool: str,
+                        arguments: dict[str, Any]) -> dict[str, Any]:
+    """One ``tools/call``. The caller holds the engine scope."""
     from agent_edge import app as edge_app_module
 
-    async def go() -> httpx.Response:
-        async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=edge_app_module.create_app()),
-                base_url=w.ISSUER) as client:
-            return await client.post("/mcp", content=json.dumps(_call(tool, arguments)),
-                                     headers={"authorization": f"Bearer {world.tok[name]}",
-                                              "content-type": "application/json",
-                                              "mcp-protocol-version": "2025-11-25"})
-    r = await _in_scope(world, go)
+    async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=edge_app_module.create_app()),
+            base_url=w.ISSUER) as client:
+        r = await client.post("/mcp", content=json.dumps(_call(tool, arguments)),
+                              headers={"authorization": f"Bearer {world.tok[name]}",
+                                       "content-type": "application/json",
+                                       "mcp-protocol-version": "2025-11-25"})
     assert r.status_code == 200, r.text
     return r.json()["result"]
+
+
+async def _mcp(world, name: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def go() -> dict[str, Any]:
+        return await _mcp_unscoped(world, name, tool, arguments)
+    return await _in_scope(world, go)
 
 
 async def _send(world, method: str, path: str, *, body: dict[str, Any] | None = None,
@@ -716,8 +722,14 @@ class TestTheSourceAndTheToolsOnARealDatabase:
 
     async def test_two_calls_at_once_with_one_key_make_one_row(self, live):
         args = {"project_id": live.team, "title": "raced", "idempotency_key": "r8-race-01"}
-        results = await asyncio.gather(*(_mcp(live, "write", "create_task", args)
-                                         for _ in range(2)))
+
+        async def both() -> list[dict[str, Any]]:
+            # ONE engine scope for both calls: a scope resets the process
+            # engine, so two scopes at once would close each other's pool.
+            return list(await asyncio.gather(*(
+                _mcp_unscoped(live, "write", "create_task", args) for _ in range(2))))
+
+        results = await _in_scope(live, both)
         assert _count(live, "raced") == 1
         assert sorted(r["isError"] for r in results) == [False, True]
         loser = next(r for r in results if r["isError"])
