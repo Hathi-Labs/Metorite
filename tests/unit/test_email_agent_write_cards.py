@@ -67,10 +67,8 @@ def _is_write(method: str, path: str, body: Any) -> bool:
         return False
     if method == "POST" and path in READ_POSTS:
         return False
-    if (method == "POST" and path in DRY_RUN_POSTS and isinstance(body, dict)
-            and body.get("dry_run") is True):
-        return False
-    return True
+    dry_run = isinstance(body, dict) and body.get("dry_run") is True
+    return not (method == "POST" and path in DRY_RUN_POSTS and dry_run)
 
 
 class _Resp:
