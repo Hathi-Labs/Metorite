@@ -227,9 +227,12 @@ async def test_compose_assist_renders_reply_to_body_and_apply_rule() -> None:
     user_msg = captured["messages"][1]["content"]
     sys_prompt = captured["messages"][0]["content"].lower()
     # The replied-to email (with its template) reaches the model, and the system
-    # prompt tells it to APPLY that email's contents.
+    # prompt tells it to fill that form. WS-17 EM-G11d round 1: the email is a
+    # framed block, and only the owner's instruction line steers the model.
     assert "TEMPLATE_MARKER" in user_msg
-    assert "apply" in sys_prompt
+    assert "<<<REPLIED EMAIL " in user_msg
+    assert "fill that form in its field order" in sys_prompt
+    assert "apply any template" not in sys_prompt
 
 
 async def test_compose_assist_reply_empty_body_uses_shared_reply_drafter() -> None:

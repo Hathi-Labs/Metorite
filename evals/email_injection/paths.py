@@ -254,6 +254,34 @@ def drafter(mail: Mail) -> Capture:
     return cap
 
 
+def compose_assist(mail: Mail) -> Capture:
+    """``drafting._llm_compose_assist``: "Draft with AI" in the composer, in
+    reply mode. The recipient and the subject come from the mail."""
+    from gateway.routes.email.automation import drafting
+
+    cap = Capture("compose_assist", fields=frozenset(
+        {"from_name", "from", "subject", "body", "thread"}))
+    tools: list[Any] = []
+
+    async def fake(*, model: str, messages: list[dict[str, Any]], **kw: Any) -> Any:
+        cap.calls.append(_texts(messages))
+        tools.append(kw.get("tools"))
+        reply = SimpleNamespace(message=SimpleNamespace(content="Hello Priya,\n\nThanks."))
+        return SimpleNamespace(choices=[reply]), model
+
+    import acb_llm.context as llm_context
+
+    with _patched((llm_context, "acompletion_with_fallback", fake)):
+        asyncio.run(drafting._llm_compose_assist(
+            about="", signature="", current_body="", instruction="Say yes politely.",
+            mode="reply",
+            recipient=f"{mail.value('from_name')} <{mail.value('from')}>",
+            subject=f"Re: {mail.value('subject')}", thread=mail.value("thread"),
+            reply_to_body=mail.value("body"), sender="owner@company.example"))
+    cap.tools = frozenset() if not any(tools) else frozenset({"<tools>"})
+    return cap
+
+
 def consult_plan(mail: Mail) -> Capture:
     """``drafting._draft_consult_plan``, the consult planner."""
     from gateway.routes.email.automation import drafting
@@ -386,6 +414,7 @@ PATHS: dict[str, Callable[[Mail], Capture]] = {
     "read_email_full": read_email_full,
     "read_thread": read_thread,
     "drafter": drafter,
+    "compose_assist": compose_assist,
     "consult_plan": consult_plan,
     "consult_run": consult_run,
     "classifier_one": classifier_one,
