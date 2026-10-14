@@ -56,7 +56,6 @@ Run::
 from __future__ import annotations
 
 import asyncio
-import time
 import uuid
 from typing import Any
 
@@ -307,10 +306,12 @@ async def test_a_stalled_token_endpoint_does_not_stall_the_run(
     await _connected(world, ns.org_a, ADMIN_A, name, TOKEN_A, expires_in=NEAR)
     monkeypatch.setattr(mcp, "REFRESH_FETCH_S", 0.3)
     world.token_delay_s = 5.0
-    started = time.monotonic()
-    servers = _by_name(await mcp.servers_for_org(ns.org_a))
-    elapsed = time.monotonic() - started
-    assert elapsed < 3.0, f"the run waited {elapsed:.1f} s on the token endpoint"
+    # An order, not a wall-clock budget (test_no_new_clock_flakes.py): the
+    # endpoint answers after 5 s, and records the refresh only then. So a run
+    # that returns with no recorded refresh did not wait for the answer. The
+    # 30 s guard only catches a hang.
+    servers = _by_name(await asyncio.wait_for(mcp.servers_for_org(ns.org_a), 30))
+    assert world.refreshes == [], "the run waited for the token endpoint"
     # Not final: the run keeps the stored token while it lives, and the row
     # stays as it was.
     assert servers[name].headers == {"Authorization": f"Bearer {TOKEN_A}"}
