@@ -2532,7 +2532,25 @@ member, and MD-6a-2 calls it. The build made these choices:
   gives the goals, the projects, the 7-day deadlines or today's blocks to
   the module yet, so those fields stay empty.
 - **The cool-down.** It is per org and shared with email, because both
-  spend the same credits.
+  spend the same credits. A My Day call starts it on a 402 only. A 403 can
+  refuse My Day alone, so it must not pause email's `on`.
+- **One shadow for each request** (fix round 1). The helper gives no answer
+  for a call with one failed request. So the pass runs one `shadow` for each
+  packed request, at once, and a failed request costs only itself.
+- **The member** is the session's address, exactly as `my_day_card_state`
+  writes it, so the measure read of MD-6a-3 joins on equal text.
+- **The org bucket** keys on the UTC date. The member bucket keeps the
+  member's local date (§9.1 rule 8).
+
+Known limits, for the next tickets:
+
+- `configured_on()` reads `FEATURES` only. MD-6b must widen it before a
+  `my_day.*` feature can run `on`.
+- The pass writes the rows before it caches the answers. A row write that
+  keeps failing asks again on each pass, until the member cap.
+- The context is thin. The goals, the projects the member leads, the
+  deadlines of the next 7 days and today's blocks have no reader yet. This
+  is open for MD-6b, because a gate set from thin shadow data is weak.
 
 ### MD-6a-2 · The member pass — AGENT-SAFE
 
