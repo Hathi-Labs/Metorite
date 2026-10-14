@@ -3196,6 +3196,20 @@ it. These are the parts:
 - The measure (§5.9 item 7) needs the line `provider answered`. Before
   MD-3c, a run that ended well wrote no line.
 
+**Mutations, run by hand on 2026-10-15.** Each one failed a fence:
+
+1. The gated flag removed.
+2. `waiting_quiet` at 5 days or more, not more than 5.
+3. `unblocked` names a blocker that the member cannot read.
+4. A due day that is not my day away counts, as a colleague's day would.
+5. A `partial` absence counts.
+6. The 404 of the absence read raises `SourceAbsent`.
+7. The card sends `source` also when it is its app.
+8. The `POST` bump dropped, and then the `DELETE` bump dropped.
+9. A task kind carries `due_at`.
+10. `elapsed_ms` dropped from the line `provider answered`.
+11. The carry filter of `noteOk` uses the app, not the source.
+
 ### MD-3d · The mail kinds — AGENT-SAFE, after MD-3c merges (the A1 `source` field)
 
 `promise_due` and `no_answer`, from the source `email_followups`. §5.9 items

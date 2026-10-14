@@ -26,8 +26,8 @@ does with the rows, and the shared rows of all eleven MD-3 kinds:
   a why template, a label in ``feed.ts`` and, for a task kind, a ``CLOSES``
   entry. Each kind that a provider gives is in ``BASE``.
 
-Mutations, run by hand (2026-10-15), each killed: see the MD-3c report in
-``my_day_feed.md`` §16.
+Mutations, run by hand (2026-10-15), each killed: the list is in the MD-3c
+ticket of ``my_day_feed.md`` §16.
 """
 
 from __future__ import annotations
