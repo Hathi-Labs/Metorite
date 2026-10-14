@@ -5,11 +5,12 @@
  * model: every account this browser is signed in to, one tap apart.
  *
  * Three places:
- *   • `BarAccount` — the shell bar's right end, on the desktop with the shell
- *     bar on (owner, 2026-10-12). An avatar and the email open a menu that
- *     holds only account acts: the current account, the others, "Add another
- *     account" and sign-out. The member's own pages moved to the Metorite
- *     menu at the sidebar's foot (`MetoriteFoot.tsx`).
+ *   • `AccountFoot` — the desktop sidebar's foot with the shell bar on
+ *     (owner, 2026-10-14). The avatar, the name and the email open ONE menu:
+ *     the current account, the others, "Add another account", You, Settings
+ *     and sign-out (`accountMenu` in `lib/shell/shellNav.ts`). It replaced
+ *     the 2026-10-12 shape, an account in the bar and a Metorite logo in the
+ *     foot.
  *   • `SidebarAccountFooter` — the desktop sidebar's foot, in the classic
  *     frame only (shell bar off). Expanded, a button with the name and email.
  *     Folded, an avatar at the foot of the rail.
@@ -22,12 +23,12 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
-import ThemeToggle from "@/components/ThemeToggle";
+import ThemeToggle, { ThemeToggleMenuItem } from "@/components/ThemeToggle";
 import { useAccess } from "@/components/AccessProvider";
 import { BrandMark, useOrgBranding } from "@/components/OrgBrandLockup";
 import { categoricalAccent } from "@/lib/categorical";
@@ -43,7 +44,8 @@ import {
   type Accounts,
   type OtherAccount,
 } from "@/lib/accountSwitch";
-import type { AccountLink } from "@/lib/shell/shellNav";
+import type { NavSection } from "@/lib/nav";
+import { accountMenu, type AccountLink, type AccountMenuItem } from "@/lib/shell/shellNav";
 import { CHANGE_LAYOUT } from "@/lib/shell/shellPrefs";
 
 /**
@@ -421,25 +423,63 @@ export function SidebarAccountFooter({
   );
 }
 
+/** Where the foot's menu sits, from the trigger's box and the window's height. */
+export type FootBox = { left: number; bottom: number; maxHeight: number };
+
 /**
- * The account widget at the shell bar's right end (owner, 2026-10-12): "place
- * the account selector in the top-right corner … Show the email ID and avatar
- * tastefully, similar to other popular apps."
- *
- * The trigger is quiet, as Google's and GitHub's are: the avatar, then the
- * email in muted text. No border and no fill at rest. It has the height of the
- * bar's other controls and the bar's focus ring (`Button`).
- *
- * ⚠️ **The email shows from 1400px up.** The bar's right group keeps the
- * width of its content (`ShellBarRow`), so a wide trigger moves the command
- * bar off centre. Below 1400px the email took too much of it, so the avatar
- * shows alone (measured 2026-10-12). A long email truncates at `max-w-56`.
- * Fence: `e2e/shell-account.spec.ts` "never crowds the bell".
- *
- * The menu holds account acts only. The member's own pages and settings are
- * in the Metorite menu at the sidebar's foot (`MetoriteFoot.tsx`).
+ * The menu's BOTTOM edge sits 6px above the trigger, and its left edge on the
+ * trigger's. Its height is capped by the room ABOVE the trigger, less 8px, so
+ * its top never leaves the window (review of 2026-10-14, P1). A cap of the
+ * whole window height ignored `bottom`: with three accounts at 1280x600 the
+ * menu's top sat at y=-36, and the header could not scroll back into view.
+ * The menu scrolls inside itself. Fence: `shellAccount.test.ts` and
+ * `e2e/shell-account.spec.ts` "a short window".
  */
-export function BarAccount() {
+export function footBox(rect: { left: number; top: number }, innerHeight: number): FootBox {
+  const bottom = innerHeight - rect.top + 6;
+  return { left: Math.max(8, rect.left), bottom, maxHeight: Math.max(0, innerHeight - bottom - 8) };
+}
+
+/**
+ * The sidebar's foot with the shell bar on (owner, 2026-10-14). The owner
+ * said: "move the account selection and the UI element that shows the
+ * current account back to the bottom left where it was before. Combine it
+ * with the pop-up settings … Remove the Metorite logo."
+ *
+ * - **Open rail.** The avatar, then the member's name, and the email in
+ *   muted text under it. Both truncate. The tip holds the full name, the
+ *   email and the organization.
+ * - **Folded rail.** The avatar alone, in the geometry of a folded nav row
+ *   (`p-2` block, centred), so it sits on the rail's icon column.
+ *   `e2e/shell-account.spec.ts` measures that within 1px.
+ * - **Focus.** `cc-link` gives it the house focus ring, as All apps wears it.
+ * - **The menu** opens upward from the foot. Its rows come from ONE list,
+ *   `accountMenu` in `lib/shell/shellNav.ts`, so a new option is one line
+ *   there. `AccountFootMenu` draws each kind.
+ *
+ * ⚠️ **The cover lives HERE, not in the menu** (review of 2026-10-12), so
+ * closing the menu can never take it down. While it is up, the menu ignores
+ * Escape and an outside press (`useDismiss`). Escape gives the focus back to
+ * the trigger. Fences: `shellAccount.test.ts` and `e2e/shell-account.spec.ts`.
+ *
+ * The classic frame (shell bar off) keeps `SidebarAccountFooter`. The phone
+ * has no sidebar, so this never shows there.
+ */
+export function AccountFoot({
+  collapsed,
+  sections,
+  layout,
+}: {
+  collapsed: boolean;
+  /**
+   * The member's `visibleSections`, the input of the You and Settings rows.
+   * The sidebar passes none with the shell nav off, because its own list
+   * then holds My Profile and Appearance already.
+   */
+  sections: readonly NavSection[];
+  /** "Change my layout" shows only while the shell nav is on (NS-7). */
+  layout: boolean;
+}) {
   const { accounts: switcher, reload } = useAccounts();
   const { data: session } = useSession();
   const { access } = useAccess();
@@ -449,6 +489,11 @@ export function BarAccount() {
   const accounts = withSessionFallback(switcher, fallback);
   const orgName = access.organization?.display_name?.trim() || access.organization?.slug?.trim() || "";
   const [open, setOpen] = useState(false);
+  // Where the menu sits: its BOTTOM edge just above the button, its left
+  // edge on the button's. ⚠️ Not AnchoredPanel, which places a flipped panel
+  // by its top edge from its MAXIMUM height. A short menu then floated about
+  // 200px above the button it belongs to.
+  const [box, setBox] = useState<FootBox | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   // Plain functions, so `useDismiss` binds its two listeners again on each
   // render while the menu is open, which costs nothing here. A `useCallback`
@@ -464,75 +509,151 @@ export function BarAccount() {
   // Escape and an outside press.
   const [cover, setCover] = useState<Cover | null>(null);
   useDismiss(open && !cover, close, rootRef, escape);
+  // A resize while the menu is open moves the room above the trigger, so
+  // the place and the cap are measured again.
+  useEffect(() => {
+    if (!open) return;
+    const onResize = () => {
+      const r = rootRef.current?.getBoundingClientRect();
+      if (r) setBox(footBox(r, window.innerHeight));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [open]);
   const active = accounts.active;
-  // The avatar's place, held while nobody is known yet, so nothing moves.
-  if (!active) return <span aria-hidden data-shell-account="" className="h-7 w-7 shrink-0" />;
+  const block = `border-t border-sidebar-border ${collapsed ? "flex flex-col p-2" : "px-2 py-2"}`;
+  // The row's place, held while nobody is known yet, so nothing moves.
+  if (!active) {
+    return (
+      <div data-account-foot="" className={block}>
+        <span aria-hidden className={collapsed ? "mx-auto block h-10 w-10" : "block h-10"} />
+      </div>
+    );
+  }
 
   const name = active.name?.trim() || null;
   const tip = [name, active.email, orgName].filter(Boolean).join("\n");
   const toggle = () => {
-    if (!open) void reload(true);
+    if (!open) {
+      void reload(true);
+      const r = rootRef.current?.getBoundingClientRect();
+      if (r) setBox(footBox(r, window.innerHeight));
+    }
     setOpen((o) => !o);
   };
 
   return (
-    <div ref={rootRef} data-shell-account="" className="relative flex shrink-0 items-center">
-      <Button
-        variant="ghost"
-        size="none"
-        radius="keep"
-        layout="flex items-center"
-        data-account-trigger=""
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-label={`Account: ${active.email}`}
-        title={tip}
-        onClick={toggle}
-        className="h-7 gap-2 rounded-full p-0.5 min-[1400px]:pr-2.5"
-      >
-        <Avatar email={active.email} name={active.name} size="xs" />
-        <span data-account-email="" className="hidden max-w-56 truncate text-xs min-[1400px]:block">
-          {active.email}
-        </span>
-      </Button>
-      {open && (
-        <div
-          role="dialog"
-          aria-label="Account"
-          className="absolute right-0 top-full z-[60] mt-2 max-h-[calc(100vh-4rem)] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-md border border-border bg-card shadow-md"
+    <div data-account-foot="" className={block}>
+      <div ref={rootRef} className={collapsed ? "flex flex-col" : ""}>
+        <button
+          type="button"
+          data-account-trigger=""
+          onClick={toggle}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-label={`Account and settings: ${active.email}`}
+          title={tip}
+          className={`cc-link group flex items-center rounded-lg text-left hover:bg-sidebar-accent tech-transition ${
+            collapsed ? "justify-center p-1.5" : "w-full gap-2.5 px-2 py-1.5"
+          }`}
         >
-          <BarAccountMenu accounts={accounts} orgName={orgName} onChanged={() => void reload(true)} onCover={setCover} />
-        </div>
-      )}
-      {cover && <SwitchingCover email={cover.email} message={cover.message} />}
+          <Avatar email={active.email} name={active.name} size="sm" />
+          {!collapsed && (
+            <>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-medium text-sidebar-foreground/90">
+                  {name ?? active.email}
+                </span>
+                {name && (
+                  // On hover, the muted grey on `sidebar-accent` drops to 4.23:1 in
+                  // light mode (measured 2026-10-14), so the email lifts to 70%
+                  // foreground there. At rest it is 4.56:1, and 7.06:1 in dark.
+                  <span data-account-email="" className="block truncate text-[11px] text-muted-foreground group-hover:text-foreground/70">
+                    {active.email}
+                  </span>
+                )}
+              </span>
+              <Icon name="ChevronsUpDown" size={13} className="shrink-0 text-muted-foreground" />
+            </>
+          )}
+        </button>
+        {/* `position: fixed` inside the rail, so the rail's overflow does not
+            clip it, and a click inside it is inside `rootRef`. */}
+        {open && box && (
+          <div
+            role="dialog"
+            aria-label="Account and settings"
+            // The cap is the room above the trigger (`footBox`), never the
+            // window. The header is not sticky: in a short window it would
+            // take the room the rows need. The menu opens at its top, so the
+            // header shows first, and the sign-out rows are a scroll away.
+            style={{ left: box.left, bottom: box.bottom, maxHeight: box.maxHeight }}
+            className="fixed z-[60] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto overscroll-contain rounded-md border border-border bg-card shadow-md"
+          >
+            <AccountFootMenu
+              accounts={accounts}
+              orgName={orgName}
+              sections={sections}
+              layout={layout}
+              onChanged={() => void reload(true)}
+              onCover={setCover}
+              onDone={close}
+            />
+          </div>
+        )}
+        {cover && <SwitchingCover email={cover.email} message={cover.message} />}
+      </div>
     </div>
   );
 }
 
+/** What each `action` item sends. One line per action id. */
+const ACTIONS: Record<Extract<AccountMenuItem, { kind: "action" }>["id"], () => void> = {
+  "change-layout": () => window.dispatchEvent(new CustomEvent(CHANGE_LAYOUT)),
+};
+
+/** One rhythm for every row of the menu, a link or a button. */
+const ROW = "w-full gap-3 px-3 py-2 text-[13px]";
+
+function rowKey(item: AccountMenuItem): string {
+  return item.kind === "link" ? item.href : item.kind === "action" ? item.id : item.kind;
+}
+
 /**
- * The top-right menu's body: the current account, marked, then the other
- * accounts, then "Add another account", then sign-out.
+ * The foot menu's body, in the groups of `accountMenu`: the current account,
+ * marked, then the other accounts and "Add another account", then You, then
+ * Settings, then sign-out.
  *
  * Sign-out follows the count. One account signs out with "Sign out". With
  * more, "Sign out" leaves this account and lands on the next one
  * (`signOutThis`), and "Sign out of all accounts" ends them all. With the
- * switcher flag off, the menu shows the current account and "Sign out".
- * Exported for `shellAccount.test.ts`. Only `BarAccount` mounts it.
+ * switcher flag off, the menu shows the current account, You, Settings and
+ * "Sign out". Exported for `shellAccount.test.ts`. Only `AccountFoot` mounts it.
  */
-export function BarAccountMenu({
+export function AccountFootMenu({
   accounts,
   orgName,
+  sections,
+  layout,
   onChanged,
   onCover,
+  onDone,
+  pages = true,
 }: {
   accounts: Accounts;
   orgName: string;
+  sections: readonly NavSection[];
+  layout: boolean;
+  /** False drops You and Settings, for a member with no organization. */
+  pages?: boolean;
   onChanged: () => void;
   /**
-   * Raises and lowers the cover, which `BarAccount` holds, outside this menu.
+   * Raises and lowers the cover, which `AccountFoot` holds, outside this menu.
    * Absent (a test render), the menu holds its own.
    */
   onCover?: (cover: Cover | null) => void;
+  /** Closes the menu after a link or an action. */
+  onDone?: () => void;
 }) {
   const [ownCover, setOwnCover] = useState<Cover | null>(null);
   const setCover = onCover ?? setOwnCover;
@@ -541,7 +662,7 @@ export function BarAccountMenu({
   const active = accounts.active;
   if (!active) return null;
   const others = accounts.enabled ? accounts.others.filter((o) => o.email.toLowerCase() !== active.email.toLowerCase()) : [];
-  const row = "w-full gap-3 px-3 py-2 text-[13px]";
+  const done = () => onDone?.();
 
   // The cover stays up while the page leaves, so this tab cannot act as
   // either account in between. Each good path ends in a navigation, so the
@@ -559,88 +680,192 @@ export function BarAccountMenu({
     }
   };
 
-  return (
-    <div className="text-sm">
-      {/* The account that is loaded now. The check and `aria-current` say
-          so, for the eye and for a screen reader. */}
-      <div data-current-account="" aria-current="true" className="flex items-center gap-3 px-4 pb-3 pt-4">
-        <Avatar email={active.email} name={active.name} size="lg" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-medium text-foreground">{active.name ?? active.email}</div>
-          {active.name && <div className="truncate text-xs text-muted-foreground">{active.email}</div>}
-          {orgName && (
-            <div className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground">
-              <Icon name="Building2" size={11} className="shrink-0" />
-              {orgName}
+  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages });
+
+  const row = (item: AccountMenuItem) => {
+    switch (item.kind) {
+      case "current":
+        // The account that is loaded now. The check and `aria-current` say
+        // so, for the eye and for a screen reader.
+        return (
+          <div data-current-account="" aria-current="true" className="flex items-center gap-3 px-4 pb-3 pt-4">
+            <Avatar email={active.email} name={active.name} size="lg" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-medium text-foreground">{active.name ?? active.email}</div>
+              {active.name && <div className="truncate text-xs text-muted-foreground">{active.email}</div>}
+              {orgName && (
+                <div className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground">
+                  <Icon name="Building2" size={11} className="shrink-0" />
+                  {orgName}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-primary">
-          <Icon name="Check" size={13} />
-          Signed in
-        </span>
-      </div>
-
-      {others.length > 0 && (
-        <div className="border-t border-border py-1">
-          <div className="px-4 pb-1 pt-1.5 text-[11px] text-muted-foreground">Switch account</div>
-          <div role="list" aria-label="Other accounts">
-            {others.map((o) => (
-              <div key={o.slot} role="listitem" className="flex items-center gap-1 px-1">
-                <button
-                  type="button"
-                  onClick={() => void pick(o)}
-                  className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-secondary tech-transition"
-                >
-                  <Avatar email={o.email} name={o.name} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] text-foreground">{o.name ?? o.email}</span>
-                    {(o.organization || o.name) && (
-                      <span className="block truncate text-[11px] text-muted-foreground">
-                        {[o.organization, o.name ? o.email : null].filter(Boolean).join(" · ")}
-                      </span>
-                    )}
-                  </span>
-                </button>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  icon="X"
-                  aria-label={`Remove ${o.email} from this browser`}
-                  title="Remove from this browser"
-                  onClick={async () => {
-                    await removeAccount(o.slot);
-                    onChanged();
-                  }}
-                  className="mr-1 text-muted-foreground"
-                />
-              </div>
-            ))}
+            <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-primary">
+              <Icon name="Check" size={13} />
+              Signed in
+            </span>
           </div>
-        </div>
-      )}
-
-      {error && <p className="px-4 pb-2 text-xs text-destructive">{error}</p>}
-
-      <div className="border-t border-border p-1">
-        {/* Only with the switcher on: off, there is no second slot to add. */}
-        {accounts.enabled && (
-          <Button variant="ghost" size="none" layout="flex items-center" icon="UserPlus" onClick={() => void addAccount()} className={row}>
+        );
+      case "others":
+        return (
+          <>
+            <div aria-hidden className="px-3 pb-1 pt-1.5 text-[11px] text-muted-foreground">
+              Switch account
+            </div>
+            <div role="list" aria-label="Other accounts">
+              {others.map((o) => (
+                <div key={o.slot} role="listitem" className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => void pick(o)}
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-secondary tech-transition"
+                  >
+                    <Avatar email={o.email} name={o.name} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] text-foreground">{o.name ?? o.email}</span>
+                      {(o.organization || o.name) && (
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {[o.organization, o.name ? o.email : null].filter(Boolean).join(" · ")}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    icon="X"
+                    aria-label={`Remove ${o.email} from this browser`}
+                    title="Remove from this browser"
+                    onClick={async () => {
+                      await removeAccount(o.slot);
+                      onChanged();
+                    }}
+                    // Always shown. A hover-only control never appears on
+                    // touch (`revealOnHover.test.ts`).
+                    className="mr-1 text-muted-foreground"
+                  />
+                </div>
+              ))}
+            </div>
+          </>
+        );
+      case "add-account":
+        return (
+          <Button variant="ghost" size="none" layout="flex items-center" icon="UserPlus" onClick={() => void addAccount()} className={ROW}>
             Add another account
           </Button>
-        )}
-        <Button variant="ghost" size="none" layout="flex items-center" icon="LogOut" loading={leaving} onClick={() => void signOut()} className={row}>
-          Sign out
-        </Button>
-        {others.length > 0 && (
-          <Button variant="ghost" size="none" layout="flex items-center" icon="LogOut" onClick={() => void signOutAll()} className={row}>
+        );
+      case "link":
+        return (
+          <Link
+            href={item.href}
+            onClick={done}
+            className={`flex items-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition ${ROW}`}
+          >
+            <Icon name={item.icon} size={16} className="shrink-0" />
+            {item.label}
+          </Link>
+        );
+      case "colour-mode":
+        // It keeps the menu open, so the change shows.
+        return <ThemeToggleMenuItem className={ROW} />;
+      case "action":
+        return (
+          <Button
+            variant="ghost"
+            size="none"
+            layout="flex items-center"
+            onClick={() => {
+              done();
+              ACTIONS[item.id]();
+            }}
+            className={ROW}
+          >
+            <Icon name={item.icon} size={16} className="shrink-0" />
+            {item.label}
+          </Button>
+        );
+      case "sign-out":
+        return (
+          <Button variant="ghost" size="none" layout="flex items-center" icon="LogOut" loading={leaving} onClick={() => void signOut()} className={ROW}>
+            Sign out
+          </Button>
+        );
+      case "sign-out-all":
+        return (
+          <Button variant="ghost" size="none" layout="flex items-center" icon="LogOut" onClick={() => void signOutAll()} className={ROW}>
             Sign out of all accounts
           </Button>
-        )}
-      </div>
-      {/* Only a test render, with no `BarAccount` above, draws it here. */}
+        );
+    }
+  };
+
+  return (
+    <div className="text-sm">
+      {groups.map((g, i) => (
+        <div
+          key={g.id}
+          data-account-group={g.id}
+          role={g.label ? "group" : undefined}
+          aria-label={g.label ?? undefined}
+          className={`${i > 0 ? "border-t border-border" : ""} ${g.id === "current" ? "" : "p-1"}`}
+        >
+          {g.label && (
+            <div aria-hidden className="px-3 pb-1 pt-1.5 text-[11px] text-muted-foreground">
+              {g.label}
+            </div>
+          )}
+          {g.items.map((item) => (
+            <Fragment key={rowKey(item)}>{row(item)}</Fragment>
+          ))}
+          {/* A switch that failed says so under the accounts. */}
+          {g.id === "accounts" && error && <p className="px-3 pb-2 pt-1 text-xs text-destructive">{error}</p>}
+        </div>
+      ))}
+      {/* Only a test render, with no `AccountFoot` above, draws it here. */}
       {!onCover && ownCover && <SwitchingCover email={ownCover.email} message={ownCover.message} />}
     </div>
+  );
+}
+
+/**
+ * The account acts for a member with NO organization (review of 2026-10-14,
+ * P1). `AccessGate` shows them in its org-less card, on every frame.
+ *
+ * The sidebar does not mount for an org-less member (`Sidebar.tsx`, the
+ * `canPoll` gate), so the foot cannot carry them. Before 2026-10-14 the bar's
+ * account widget did. Without this block, an address with no organization,
+ * reached by "Add another account" for one, had no way back to a held
+ * account and no sign-out.
+ *
+ * It draws `AccountFootMenu` in place, with `pages: false`: the current
+ * account, the other accounts, "Add another account" and sign-out. Every
+ * rule of the foot holds. Sign-out fails closed, and the cover lives HERE,
+ * outside the menu. Nothing dismisses an in-place menu, so it needs no
+ * `useDismiss`. Fences: `shellAccount.test.ts` and `e2e/shell-account.spec.ts`
+ * "no organization".
+ */
+export function OrglessAccounts() {
+  const { accounts: switcher, reload } = useAccounts(true);
+  const { data: session } = useSession();
+  const { access } = useAccess();
+  const fallback = session?.user?.email ? session : access.email ? { user: { email: access.email } } : null;
+  const accounts = withSessionFallback(switcher, fallback);
+  const [cover, setCover] = useState<Cover | null>(null);
+  if (!accounts.active) return null;
+  return (
+    <section data-orgless-accounts="" aria-label="Your accounts" className="mt-6 overflow-hidden rounded-lg border border-border bg-card text-left">
+      <AccountFootMenu
+        accounts={accounts}
+        orgName=""
+        sections={[]}
+        layout={false}
+        pages={false}
+        onChanged={() => void reload(true)}
+        onCover={setCover}
+      />
+      {cover && <SwitchingCover email={cover.email} message={cover.message} />}
+    </section>
   );
 }
 

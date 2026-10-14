@@ -343,7 +343,7 @@ test("Change my layout asks again: the same answer keeps the stars, a new one gi
 
   const openMenu = async () => {
     // From the keyboard: in the dev build, Next's own badge sits over the foot.
-    const foot = page.getByRole("button", { name: "Metorite settings" });
+    const foot = page.getByRole("button", { name: /^Account and settings: / });
     await foot.focus();
     await page.keyboard.press("Enter");
     await page.getByRole("button", { name: "Change my layout" }).click();
@@ -728,7 +728,7 @@ test("asked again, Escape on step 2 changes nothing and writes nothing", async (
   const store = await stub(page, STARS);
   await page.goto("/settings/appearance");
   await expect.poll(() => shape(page)).toEqual([["across", ["Projects"]]]);
-  const foot = page.getByRole("button", { name: "Metorite settings" });
+  const foot = page.getByRole("button", { name: /^Account and settings: / });
   await foot.focus();
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Change my layout" }).click();

@@ -7,10 +7,12 @@ import { describe, expect, it } from "vitest";
 
 import { PANES, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import {
+  CHANGE_LAYOUT_ITEM,
   MY_ACCESS,
   TEAM_GROUPS,
   HOME_PANE,
   accountLinks,
+  accountMenu,
   desktopFrame,
   homePane,
   isActive,
@@ -102,6 +104,75 @@ describe("the account menu holds pages about the member", () => {
       MY_ACCESS.href,
       "/settings/appearance",
     ]);
+  });
+});
+
+/**
+ * The sidebar foot's one menu (owner, 2026-10-14): the accounts, then You,
+ * then Settings, then sign-out, from ONE list. These fail on the wrong builds
+ * that look right: Settings missing, the order changed, an account act shown
+ * with the switcher off, or "Sign out of all accounts" with one account.
+ */
+describe("accountMenu: the account, You, Settings and sign-out, from one list", () => {
+  const rows = (g: ReturnType<typeof accountMenu>) =>
+    g.map((x) => [x.id, x.items.map((i) => (i.kind === "link" ? i.href : i.kind === "action" ? i.id : i.kind))]);
+  const member = visibleSections(ALL, false);
+
+  it("with three accounts: the current one, the others and Add, You, Settings, then both sign-outs", () => {
+    expect(rows(accountMenu(member, { layout: true, switcher: true, others: 2 }))).toEqual([
+      ["current", ["current"]],
+      ["accounts", ["others", "add-account"]],
+      ["you", ["/people/me", "/people/access"]],
+      ["settings", ["/settings/appearance", "colour-mode", "change-layout"]],
+      ["sign-out", ["sign-out", "sign-out-all"]],
+    ]);
+  });
+
+  it("with one account: Add, and one Sign out", () => {
+    const g = accountMenu(member, { layout: true, switcher: true, others: 0 });
+    expect(rows(g).find(([id]) => id === "accounts")).toEqual(["accounts", ["add-account"]]);
+    expect(rows(g).at(-1)).toEqual(["sign-out", ["sign-out"]]);
+  });
+
+  it("with the switcher flag off: the header, You, Settings and one Sign out, whatever the count", () => {
+    expect(rows(accountMenu(member, { layout: true, switcher: false, others: 3 }))).toEqual([
+      ["current", ["current"]],
+      ["you", ["/people/me", "/people/access"]],
+      ["settings", ["/settings/appearance", "colour-mode", "change-layout"]],
+      ["sign-out", ["sign-out"]],
+    ]);
+  });
+
+  it("drops Change my layout with the shell nav off", () => {
+    const g = accountMenu(member, { layout: false, switcher: true, others: 0 });
+    expect(g.flatMap((x) => x.items)).not.toContainEqual(CHANGE_LAYOUT_ITEM);
+  });
+
+  it("with no sections (the shell nav off, or an unresolved viewer): no You, and Settings is the colour mode", () => {
+    expect(rows(accountMenu([], { layout: false, switcher: true, others: 1 }))).toEqual([
+      ["current", ["current"]],
+      ["accounts", ["others", "add-account"]],
+      ["settings", ["colour-mode"]],
+      ["sign-out", ["sign-out", "sign-out-all"]],
+    ]);
+    expect(rows(accountMenu(visibleSections(null, false), { layout: false, switcher: false, others: 0 }))).toEqual([
+      ["current", ["current"]],
+      ["settings", ["colour-mode"]],
+      ["sign-out", ["sign-out"]],
+    ]);
+  });
+
+  it("pages: false (no organization) keeps the account acts and drops You and Settings", () => {
+    expect(rows(accountMenu(member, { layout: true, switcher: true, others: 2, pages: false }))).toEqual([
+      ["current", ["current"]],
+      ["accounts", ["others", "add-account"]],
+      ["sign-out", ["sign-out", "sign-out-all"]],
+    ]);
+  });
+
+  it("captions You and Settings, and no other group", () => {
+    const g = accountMenu(member, { layout: true, switcher: true, others: 2 });
+    expect(g.map((x) => x.label)).toEqual([null, null, "You", "Settings", null]);
   });
 });
 

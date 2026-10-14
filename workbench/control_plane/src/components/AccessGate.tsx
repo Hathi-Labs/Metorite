@@ -18,6 +18,7 @@ import Link from "next/link";
 import { useAccess } from "@/components/AccessProvider";
 import { canSeePath, isOrgless } from "@/lib/access";
 import OrgLinkGate from "@/components/OrgLinkGate";
+import { OrglessAccounts } from "@/components/AccountSwitcher";
 
 /**
  * An org-aware link (`?org=`) is settled FIRST, before the org-less arm and
@@ -114,6 +115,10 @@ function RouteGate({ children }: { children: React.ReactNode }) {
               </Link>
             </div>
           </div>
+          {/* The account acts: switch back to a held account, add one, or
+              sign out (review of 2026-10-14). No sidebar mounts here, so
+              this card is the one place for them. */}
+          <OrglessAccounts />
         </div>
       </div>
     );

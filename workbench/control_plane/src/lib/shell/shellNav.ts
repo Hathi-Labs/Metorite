@@ -16,10 +16,11 @@
  *
  * 1. The account menu lives at the sidebar's FOOT, where the account switcher
  *    already is, not in a new avatar at the top. One place for "you".
- *    ⚠️ Superseded on 2026-10-12 by the owner, with the shell bar on: the
- *    account acts are an avatar at the bar's right end (`BarAccount`), and
- *    the foot is the Metorite menu (`metoriteMenu` below). The classic frame
- *    keeps the foot as it was.
+ *    With the shell bar on, the foot is the account row, and it opens ONE
+ *    menu of the account, the member's pages and the settings (owner,
+ *    2026-10-14, `accountMenu` below). The 2026-10-12 shape, an account in
+ *    the bar and a Metorite logo in the foot, is superseded. The classic
+ *    frame keeps the foot as it was.
  * 2. Chat and Approvals keep a sidebar door until NS-6 builds the dock and
  *    the bell that would replace them. Before that, moving them away would
  *    hide the assistant and an approver's queue. With the chat bar on (D99,
@@ -204,26 +205,38 @@ export function accountLinks(sections: readonly NavSection[]): AccountLink[] {
 }
 
 /**
- * One row of the Metorite menu at the sidebar's foot (owner, 2026-10-12). A
- * `link` opens a page. `colour-mode` is the light and dark toggle. An
- * `action` sends a shell event, and `MetoriteFoot.tsx` maps each id to it.
+ * One row of the account menu at the sidebar's foot (owner, 2026-10-14). The
+ * `AccountFoot` component in `components/AccountSwitcher.tsx` draws each kind.
+ *
+ * - `current` is the header: the account that is loaded, marked.
+ * - `others` is the list of the other accounts, each a switch.
+ * - `add-account` adds one more account to this browser.
+ * - `link` opens a page. `colour-mode` is the light and dark toggle.
+ * - `action` sends a shell event, and the component maps each id to it.
+ * - `sign-out` leaves this account. `sign-out-all` leaves every account.
  */
-export type MetoriteItem =
+export type AccountMenuItem =
+  | { kind: "current" }
+  | { kind: "others" }
+  | { kind: "add-account" }
   | ({ kind: "link" } & AccountLink)
   | { kind: "colour-mode" }
-  | { kind: "action"; id: "change-layout"; label: string; icon: string };
+  | { kind: "action"; id: "change-layout"; label: string; icon: string }
+  | { kind: "sign-out" }
+  | { kind: "sign-out-all" };
 
-export interface MetoriteGroup {
-  id: string;
-  label: string;
-  items: MetoriteItem[];
+export interface AccountMenuGroup {
+  id: "current" | "accounts" | "you" | "settings" | "sign-out";
+  /** The caption over the group. Null draws no caption. */
+  label: string | null;
+  items: AccountMenuItem[];
 }
 
 /** The account pages that are settings, not facts about the member. */
 const SETTINGS_PAGES: ReadonlySet<string> = new Set(["/settings/appearance"]);
 
 /** NS-7: ask the first sign-in question again (§8.4 rule 3). */
-export const CHANGE_LAYOUT_ITEM: MetoriteItem = {
+export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
   kind: "action",
   id: "change-layout",
   label: "Change my layout",
@@ -231,23 +244,42 @@ export const CHANGE_LAYOUT_ITEM: MetoriteItem = {
 };
 
 /**
- * The Metorite menu, in its groups (owner, 2026-10-12: "Clicking the
- * Metorite logo opens information and settings for configuring Metorite …
- * The user's profile and access controls also appear alongside").
+ * The account menu, in its groups (owner, 2026-10-14: "Combine it with the
+ * pop-up settings that show up for profile, access, appearance, light mode,
+ * layout change").
  *
- * - **You**: the member's own pages, My Profile and My access.
- * - **Settings**: Appearance, the colour mode, and "Change my layout" while
- *   the shell nav is on (NS-7 asks the question only then).
+ * 1. **The current account**, marked "Signed in".
+ * 2. **The other accounts**, each a switch, then "Add another account". Both
+ *    need the switcher flag, so `switcher: false` drops the group.
+ * 3. **You**: My Profile and My access.
+ * 4. **Settings**: Appearance, the colour mode, and "Change my layout" while
+ *    the shell nav is on (NS-7 asks the question only then).
+ * 5. **Sign out**, then "Sign out of all accounts" with another account held.
  *
  * It reads `accountLinks`, so a page is listed once, in one place. ⚠️ A new
  * option is ONE line here, in the group it belongs to. Do not add a row in
- * the component. The menu holds no account act: those are in the shell bar's
- * account menu (`BarAccount`). Fence: `shellAccount.test.ts`.
+ * the component. Fences: `shellNav.test.ts` and `shellAccount.test.ts`.
+ *
+ * `pages: false` drops You and Settings, for a member with no organization
+ * (`OrglessAccounts`). Those pages need an org, and the account acts do not.
  */
-export function metoriteMenu(sections: readonly NavSection[], opts: { layout: boolean }): MetoriteGroup[] {
+export function accountMenu(
+  sections: readonly NavSection[],
+  opts: { layout: boolean; switcher: boolean; others: number; pages?: boolean },
+): AccountMenuGroup[] {
   const links = accountLinks(sections);
-  const link = (l: AccountLink): MetoriteItem => ({ kind: "link", ...l });
-  const groups: MetoriteGroup[] = [
+  const link = (l: AccountLink): AccountMenuItem => ({ kind: "link", ...l });
+  const others = opts.switcher ? opts.others : 0;
+  const groups: AccountMenuGroup[] = [
+    { id: "current", label: null, items: [{ kind: "current" }] },
+    {
+      id: "accounts",
+      label: null,
+      items: [
+        ...(others > 0 ? [{ kind: "others" } as const] : []),
+        ...(opts.switcher ? [{ kind: "add-account" } as const] : []),
+      ],
+    },
     { id: "you", label: "You", items: links.filter((l) => !SETTINGS_PAGES.has(l.href)).map(link) },
     {
       id: "settings",
@@ -258,8 +290,14 @@ export function metoriteMenu(sections: readonly NavSection[], opts: { layout: bo
         ...(opts.layout ? [CHANGE_LAYOUT_ITEM] : []),
       ],
     },
+    {
+      id: "sign-out",
+      label: null,
+      items: [{ kind: "sign-out" }, ...(others > 0 ? [{ kind: "sign-out-all" } as const] : [])],
+    },
   ];
-  return groups.filter((g) => g.items.length > 0);
+  const pages = opts.pages ?? true;
+  return groups.filter((g) => g.items.length > 0 && (pages || (g.id !== "you" && g.id !== "settings")));
 }
 
 /** All apps: every held pane that is an app, by team. */
