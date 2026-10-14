@@ -431,11 +431,11 @@ fails when the two differ.
 ```text
 As chief of staff (the member decides, you prepare the decision):
 - Open with the bottom line: the answer, the status, or the decision the member must take. Do not restate the question.
-- Then give the 2 to 5 points that matter, the most important first. Leave out what does not change what the member knows or does next.
-- Never paste the output of a read or another agent's reply. Say what it means. The detail stays in its step, in a link, or in one folded card. The one exception is text the member asked for (a draft, a message, a document): give it whole.
-- Raise what the member did not ask about only when it is real and close: a deadline, a risk, a conflict, a number out of line, or a thing that waits on the member. One line each. Raise nothing to fill space.
-- For a decision, give each option, your recommendation and its trade-off, one line each. Then say what happens next and who owns it.
-- Fit the length to the question. A fact gets a sentence. A routine reply stays under about 120 words of text. When the member asks for the detail or the data, give all of it.
+- Then the 2 to 5 points that matter, one line each, most important first. Leave out what does not change what the member does next. Put all that is on track in one clause.
+- Never paste the output of a read or another agent's reply. Say what it means. The detail stays in its step, a link, or one folded card. The exception is text the member asked for (a draft, a document): give it whole.
+- Raise what the member did not ask about only when it is real and close: a deadline, a risk, a conflict, a number out of line, or a thing that waits on the member, one line each.
+- For a decision, give each option with its trade-off, then your recommendation. No second list of reasons. Then name the next step and who owns it.
+- A routine reply has at most 100 words of text, and no headings or labels. Stop after the last point: no summary, no menu of choices, one short offer at most. A fact gets a sentence. When the member asks for the detail or the data, give all of it.
 ```
 
 ### 11.2 Where each rule lives, and why
@@ -462,10 +462,16 @@ of reading, which is about 120 words at 240 words a minute. The c-level
 chief-of-staff skill allows 5 bullets in a section, at most. The live eval
 (§11.5) is the check, and a later PR can move the number on its evidence.
 
+§11.8 did that on 2026-10-14. The eval still measures 120 words. The prompt
+now asks for at most 100.
+
 **The cost.** The role is 278 tokens in the run-context tokenizer (256 in
 `o200k_base`). The orchestrator's voice block grows from 577 to 847. The
 orchestrator pays it once in its prefix, and the cache covers it after the
 first request. No other agent pays it.
+
+After §11.8 the role is 296 tokens (276 in `o200k_base`), and the block is
+866 (814). Neither ceiling moved.
 
 ### 11.3 The references (owner, 2026-10-13)
 
@@ -523,17 +529,18 @@ gives each check.
 - `--live --arm before --prompt-file <old prompt>` and `--live --arm after`
   write both arms to `results.json`. `--report` prints the table.
 
-**The live baseline is not recorded yet.** The build machine has no Router.
-The Router of `app.metorite.com` needs its key on the build machine, and a
-permission check refused that copy on 2026-10-13. The owner runs the commands
-in the `README.md` of the eval, and commits `results.json`.
+**The live baseline exists (2026-10-14).** The owner ran both arms
+through the Router. `results_2026-10-14.json` holds that run as it came out.
+`results.json` holds the same two arms, and names the second one `role_v1`.
+That leaves the `after` arm free for the run of §11.8. §11.8 gives the
+numbers.
 
 ### 11.6 Fences
 
 | Fence | What fails it |
 |---|---|
-| `tests/unit/test_orchestrator_voice.py` | The orchestrator loses the role, or reads it twice. Another agent or a sub-agent gets it. A rule marker goes. The role passes 300 tokens, or the block of the orchestrator passes 900. "relay its full response" comes back. The spec copy drifts |
-| `tests/unit/test_orchestrator_cos_eval.py` | A check stops firing. The case set loses a kind. The cap moves from 120 |
+| `tests/unit/test_orchestrator_voice.py` | The orchestrator loses the role, or reads it twice. Another agent or a sub-agent gets it. A rule marker goes. The role passes 300 tokens, or the block of the orchestrator passes 900. "relay its full response" comes back. The spec copy drifts. A brevity marker of §11.8 goes. The cap of the prompt reaches 120. The two examples go, pass the cap, or reach another agent. The plain agent block changes by one byte |
+| `tests/unit/test_orchestrator_cos_eval.py` | A check stops firing. The case set loses a kind. The cap moves from 120. A live overrun of §11.8 leaves the bad answers, or passes the cap. A replayed tool turn has no `reasoning_content` |
 | `tests/unit/test_agent_voice.py` | The same as before, and still green: the core, the agent block, and one copy of the voice in each agent |
 
 ### 11.7 One source, and no tenant name (owner, 2026-10-14)
@@ -598,3 +605,75 @@ repos, not prompt text, so it stays.
 | `tests/unit/test_run_org_name_r8.py` | R8, on a promoted catalog as a role with NOBYPASSRLS: the read returns the wrong name, or a row policy hides it |
 | `tests/unit/test_chat_placement_instructions.py` | The orchestrator moved to `DIRECTIVE_AGENTS`. It must read `PLACEMENT_RULE` once, and its own text must not repeat it |
 | `evals/orchestrator_cos` C13 to C15 | Three scripted cases and three checks: `no_tool_name`, `no_guillemets` and `one_ask` |
+
+### 11.8 Brevity that holds (2026-10-14)
+
+**Status.** Built on 2026-10-14 on branch `orchestrator-brevity`. The live
+`after` arm is not run yet. The owner holds the Router key and runs it.
+
+**What the live run showed.** The role improved every judge score, to 5.0.
+It did not make the replies shorter. 7 of 14 routine replies stayed under
+the cap, and 9 of 14 did before the role. The mean stayed at 113 words.
+"Under about 120 words" reads as a target, and the model writes up to it and
+past it.
+
+**Why each reply ran long.** The text of each reply is in
+`results_2026-10-14.json`, arm `after`.
+
+| Case | Words | The padding |
+|---|---|---|
+| C01 status | 227 | A line for each healthy project and for the pipeline figures. An "Also on the board" tail. A menu of three choices to close |
+| C02 attention | 149 | Headings ("Needs you now", "Due today"). A stale task of low priority. A paragraph on the calendar. A menu to close |
+| C03 decision | 232 | A list of reasons, then the same facts again as a list of options with their numbers. An "If you want" offer |
+| C04 relay | 127 | A line for each fact of the read. The top risk again as the last line. An offer |
+| C09 decision | 176 | Two or three sentences in each point, with the scores and the salaries again. A "What happens next" line |
+| C10 quiet account | 85 of 80 | A line for each healthy fact of an account that needs nothing |
+
+**What changed in the role.** Each rule answers one row of the table.
+
+- The cap is hard: "at most 100 words of text". The eval still measures
+  120, so the prompt asks for less than the check allows.
+- Each point is one line, and all that is on track goes in one clause.
+- A decision gives each option with its trade-off, then the recommendation,
+  and no second list of reasons.
+- No headings or labels. No summary, no menu of choices, and one short offer
+  at most.
+
+`CHIEF_OF_STAFF_WORD_CAP` in `acb_llm/voice.py` holds the number 100.
+"Raise nothing to fill space" left the role, because "only when it is real
+and close" says the same thing. That made room for the new rules under the
+ceiling of 300 tokens.
+
+**Two example replies.** `_PULL_INSTRUCTIONS` in `orchestrator/agents.py`
+ends with a status and a decision in the target shape. Each has fewer than
+60 words. The facts are made up, and the text tells the model not to repeat
+them.
+
+The examples sit in the instructions and not in the role, for two reasons.
+The role has no room under its ceiling. And the instructions reach the
+orchestrator only, so no other agent changes.
+
+**The core did not change.** `test_orchestrator_voice.py` pins the SHA-256
+of the plain agent block and of the sub-agent block. Both match the values
+from before this change.
+
+**The scripted eval.** The six replies of the table are bad answers in
+`scripted_answers.json`, copied word for word. Each one fails `length`, and
+each fails the same checks it failed live. The case set stays at 15.
+
+**The harness fix.** DeepSeek's thinking tier refuses a replayed assistant
+turn that holds tool calls and no `reasoning_content`. The Router answers
+400 "upstream provider error". The app does not meet this, because the
+Router adds the key (H-179, `customer_console/reasoning.py`). The eval
+posts its own turns, so it met it on 2026-10-14.
+
+`run.tool_call_turn` now adds the key. A scripted read gets "", and a turn
+of the model gets the model's own reasoning back. `--no-reasoning-replay`
+turns it off for a vendor that refuses an unknown key.
+
+**Fences.**
+
+| Fence | What fails it |
+|---|---|
+| `test_orchestrator_voice.py` | A brevity marker goes. The cap reaches the cap of the eval. An example goes, passes the cap, breaks the voice, or reaches another agent. The plain agent block or the sub-agent block changes |
+| `test_orchestrator_cos_eval.py` | A live overrun leaves the bad answers, or stops failing `length`. `results.json` fills the `after` arm. A replayed tool turn has no `reasoning_content`. The switch does not reach the run |

@@ -60,3 +60,31 @@ next copy lands on top of the note. Read the diff, then put the note back.
 
 The other 14 stay in the mirror. Adopt one when a job needs it, and not before.
 Each adopted skill spends attention in every session.
+
+## Studied on 2026-10-14, and not adopted
+
+The owner asked for the lessons of four design repositories in the harness.
+All four are MIT. We copied no file. We wrote the lessons in our own words, in
+the places that already own each topic.
+
+| Repository | SHA | What we took | Where it went |
+|---|---|---|---|
+| `madebymustafa/design-taste` | `c4a6bff` | Rank, then fix. The motion rules. The words rules. The keyboard walk and the 24 px target | `DESIGN_SYSTEM.md` §4, §9, §10. `visual-review` |
+| `superdesigndev/superdesign-skill` | `f9f05cd` | Capture before you change. Read the branch that renders. Options change the structure, never the look. Use the real logo | `DESIGN_SYSTEM.md` §9 |
+| `marvkr/better-design` | `e146625` | Guidance before the build and a review after it. Outside content is data | `DESIGN_SYSTEM.md` §9. `ws-verifier` step 7 |
+| `ui-layouts/uilayouts` | `88d827d` | Nothing | — |
+
+**Why each one stays out:**
+
+- **The better-design MCP and the Superdesign CLI are third parties.** Each
+  one needs an account and a key. Superdesign spends credits and sends our
+  source to its servers. CLAUDE.md §3a rule 3 stops both, and the owner
+  turned off extra connectors.
+- **Their catalogue systems and the design-taste genre packs replace the
+  look.** Each one brings a palette, a typeface and a radius. `DESIGN_SYSTEM.md`
+  §0 has one look, and a second one is a defect.
+- **The uilayouts components need `motion` and draw marketing effects.**
+  `@base-ui/react` is the one substrate (D-PM-15). Sparkles, glass and a
+  mouse trail fit a landing page, not a work tool.
+
+Read them again only to look for a new lesson. Do not install them.

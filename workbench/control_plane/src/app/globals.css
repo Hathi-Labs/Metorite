@@ -1221,6 +1221,9 @@ html.panel-swap::view-transition-new(assistant-panel) {
    step arriving, a spinner turning) is still carried by the content itself.
    Spinners keep turning but slow down — a frozen spinner reads as a hang. */
 @media (prefers-reduced-motion: reduce) {
+  /* The shimmer stops, and the text keeps its still gradient. The words and
+     the status dot still say the agent is working. */
+  .chat-shimmer-text,
   .chat-fade-in,
   .animate-fade-in,
   .animate-bounce-subtle,

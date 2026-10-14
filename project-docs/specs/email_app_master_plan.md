@@ -13584,8 +13584,9 @@ cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 #### 12.3.13 EM-G11 — Google verification readiness of the Gmail app (2026-10-14)
 
 **Status.** 📝 Specified (2026-10-14). Each PR below needs a spec-auditor pass before an agent
-builds it. 🔨 **PR-G2 (EM-G11b) is built** (2026-10-14, branch `gmail-one-scope-set`, not merged).
-The auditor cleared it GO-NARROWED. The other nine PRs are not built and not audited.
+builds it. ✅ **PR-G2 (EM-G11b) is merged** (#1001, 2026-10-14). 🔨 **PR-G7 (EM-G11f1) is built
+NARROWED, not merged** (2026-10-14, branch `gmail-teardown`). The audit returned GO-NARROWED, and
+§12.3.13.9 records what f1 covers. The other eight PRs are not built.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
 Owner instruction, 2026-10-14. Google verifies an app that asks for a restricted scope only when the
@@ -14380,6 +14381,64 @@ uv run pytest tests/unit/test_email_mailbox_teardown.py tests/unit/test_email_ma
   tests/unit/test_email_disconnect_order.py tests/unit/test_email_disconnect_memory_purge.py \
   tests/unit/test_admin_member_purge.py -v -rs
 ```
+
+**EM-G11f1 as built (2026-10-14).** 🔨 Built NARROWED, not merged, on branch `gmail-teardown`.
+The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown into
+`DELETE /email/accounts/{id}` only.
+
+- **What f1 covers.** `GW/email/teardown.py` holds the new legs, and `delete_account` is the one
+  caller. Step 1.1 (the stop) and step 1.3 (the delete) stay in `transport/accounts.py`.
+  1. Step 1.2: the ownership read of a Gmail row reads the filter ids in the same block, under
+     FORCE RLS, because the cascade of step 1.3 deletes them. The route keeps the ids, and
+     `remove_metorite_filters` deletes each filter at Gmail AFTER the `DELETE` commits and before
+     the revoke, with no block open. The whole step has a bound of 10 s. So a 404, a 409 or a
+     failed `DELETE` removes no filter. No await sits between the stop and the `try` that starts
+     the loop again (review round 1).
+  2. Step 1.4: after the filters, `revoke_grant` POSTs the refresh token to
+     `https://oauth2.googleapis.com/revoke` in the form body. The access token is the fallback. The
+     call has a bound of 5 s. A failure logs `email.revoke_failed` with the provider and a fixed
+     reason, and the route answers 204.
+  3. **The shared-grant rule** (review round 1). Google keeps one grant for each Google account and
+     the app. So a revoke ends the grant of each Metorite row of that Gmail account, in any
+     organization. Two members can share `support@`, and one person can connect one Gmail in two
+     organizations. Before the revoke, the route asks migration 263's
+     `email_gmail_grant_shared(email, exclude_account_id)`. The revoke runs only when the answer is
+     `false`. A `true` logs `email.revoke_skipped` with `reason=shared_grant`. A `NULL` logs
+     `reason=owner_blind` at WARNING, and a failed check logs `reason=check_failed` at WARNING
+     (review round 2). So the rule fails safe toward the other mailbox.
+  4. Steps 1.5 and 1.6 run as on main. The Mem0 purge task starts BEFORE the filters and the
+     revoke, so a cancel of those awaits cannot skip the purge. This order differs from the list
+     above on purpose.
+  5. Step 1.7: `drop_mailbox_cache` runs for each provider, Outlook and IMAP too. It deletes the
+     keys of three namespaces that carry the mailbox id. They are `email-brief` (`digest.py`),
+     `email-status-backoff` (`automation/replyzero.py`) and `email-llm`
+     (`email_ingestion/llm_cap.py`). The keys that step 1.7 names above carry a message row id, and
+     they end within one hour. Then it bumps the My Day version of the owner.
+- **Migration 263** (`infra/postgres/263_email_gmail_grant_shared.sql`), expand only. One function
+  with SECURITY DEFINER and `search_path = pg_catalog, pg_temp`. It returns one boolean and never a
+  row. It compares the address with no case. When its owner cannot see through RLS, it raises a
+  WARNING, as 230 and 236 do, and returns `NULL`. The file revokes EXECUTE from PUBLIC and from the Supabase roles, and grants it to
+  `acb_app` only. Check the number again at merge (R1). On 2026-10-14 the open PRs #1002 and #1003
+  held 261 and 262.
+- **Narrowed acceptance.** These pass in `tests/unit/test_email_mailbox_teardown.py`:
+  `test_filters_go_after_the_commit` (it replaces `test_filters_go_before_the_row`),
+  `test_gmail_revokes_the_refresh_token`, `test_a_failed_revoke_still_answers_204` and
+  `test_outlook_revokes_nothing`. `test_a_refused_delete_removes_no_filter_and_revokes_nothing` and
+  `test_a_shared_or_unknown_grant_is_not_revoked` pass too. `test_email_disconnect_order.py` and
+  `test_email_disconnect_memory_purge.py` stay green. The R8 cases in
+  `TestTheDisconnectUnderForceRLS` run as the role with no RLS bypass.
+  `test_the_filter_ids_are_read_under_force_rls_before_the_delete` keeps a sender row of another
+  organization out of the read. `test_a_shared_gmail_grant_is_not_revoked` runs a second row of
+  the address in the same organization and in another one.
+  `test_the_shared_grant_function_answers_one_bit_to_the_app_role_only` reads the function shape
+  and its grants, and shows that the app role reads no row of the other organization.
+- **Open point, the Outlook filters.** Step 1.2 names each provider, but the Outlook acceptance
+  item says "as on main". f1 removes the Metorite filters of Gmail only. An Outlook row keeps its
+  rules, as on main. A spec edit must decide the Outlook leg.
+- **Not in f1.** The admin member purge (`GW/admin/members.py`) and the org purge (`offboard.py`,
+  `operator.py`) wait for a spec edit. So does `test_three_paths_call_one_teardown`. The help line
+  of item 3 is not in f1. The check of Google's "third-party apps" page needs a real Gmail account,
+  and it is the owner's.
 
 ##### 12.3.13.10 EM-G11g1 and EM-G11g2 — envelope encryption and rotation (PR-G9, PR-G10)
 

@@ -21,7 +21,9 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *      twice, signs out of every account and says so. The cover survives
  *      Escape, Tab and a click.
  *   5. No Metorite logo in the sidebar or the bar, except the badge of a
- *      workspace with no logo, at the top left.
+ *      workspace with no logo, at the top left. The open menu signs its last
+ *      row with our comet and "Metorite" (owner, 2026-10-14). That row is no
+ *      control and no Tab stop, and the org-less card has none.
  *   6. The classic frame keeps its account foot, and the phone is unchanged.
  *   7. In a short window the menu's top stays in the window, and the menu
  *      scrolls to its last row (review of 2026-10-14).
@@ -336,7 +338,7 @@ test.describe("the foot's one menu", () => {
     await page.goto("/settings/appearance");
     await trigger(page).click();
     await expect(menu(page)).toBeVisible();
-    expect(await groupsOf(page)).toEqual(["current", "accounts", "you", "settings", "sign-out"]);
+    expect(await groupsOf(page)).toEqual(["current", "accounts", "you", "settings", "sign-out", "brand"]);
     const current = menu(page).locator("[data-current-account]");
     await expect(current).toHaveAttribute("aria-current", "true");
     await expect(current).toContainText("Vijay Varada");
@@ -380,7 +382,7 @@ test.describe("the foot's one menu", () => {
     await page.goto("/settings/appearance");
     await trigger(page).click();
     await expect(menu(page).getByRole("list", { name: "Other accounts" })).toHaveCount(0);
-    expect(await groupsOf(page)).toEqual(["current", "accounts", "you", "settings", "sign-out"]);
+    expect(await groupsOf(page)).toEqual(["current", "accounts", "you", "settings", "sign-out", "brand"]);
     await expect(menu(page).getByRole("button", { name: "Add another account" })).toBeVisible();
     await expect(menu(page).getByRole("button", { name: /^Sign out/ })).toHaveCount(1);
   });
@@ -391,7 +393,7 @@ test.describe("the foot's one menu", () => {
     await page.goto("/settings/appearance");
     await trigger(page).click();
     await expect(menu(page).locator("[data-current-account]")).toContainText("vjvarada@hathilabs.com");
-    expect(await groupsOf(page)).toEqual(["current", "you", "settings", "sign-out"]);
+    expect(await groupsOf(page)).toEqual(["current", "you", "settings", "sign-out", "brand"]);
     await expect(menu(page).getByRole("button", { name: "Add another account" })).toHaveCount(0);
     await expect(menu(page).getByRole("button", { name: /^Sign out/ })).toHaveCount(1);
     await expect(menu(page).getByRole("link", { name: "My Profile" })).toBeVisible();
@@ -587,6 +589,43 @@ test.describe("the foot's one menu", () => {
     await page.locator("main").click({ position: { x: 400, y: 300 } });
     await expect(menu(page)).toHaveCount(0);
   });
+
+  // Owner, 2026-10-14: our comet and "Metorite" sign the foot of the menu.
+  for (const [what, accounts, lastRow] of [
+    ["one account", ONE, "Sign out"],
+    ["three accounts", THREE, "Sign out of all accounts"],
+  ] as const) {
+    test(`with ${what}: the last row is our comet and "Metorite", and Tab does not stop on it`, async ({ page }) => {
+      await flags(page);
+      await stub(page, accounts);
+      await page.goto("/settings/appearance");
+      await trigger(page).click();
+      await expect(menu(page)).toBeVisible();
+      const brand = menu(page).locator('[data-account-group="brand"]');
+      // The last group, and the last row the eye meets.
+      expect(await groupsOf(page).then((g) => g.at(-1))).toBe("brand");
+      await expect(brand.locator("svg[data-metorite-mark]")).toBeVisible();
+      await expect(brand).toHaveText("Metorite");
+      const comet = await box(brand.locator("svg[data-metorite-mark]"));
+      expect(comet.width).toBeGreaterThanOrEqual(13);
+      expect(comet.width).toBeLessThanOrEqual(17);
+      const rows = await menu(page).locator("[data-account-group] > *").evaluateAll((els) =>
+        els.map((e) => e.getBoundingClientRect().bottom),
+      );
+      expect((await box(brand)).y + (await box(brand)).height).toBeGreaterThanOrEqual(Math.max(...rows) - 0.5);
+      // One comet in the menu, and no control in its row.
+      await expect(menu(page).locator("svg[data-metorite-mark]")).toHaveCount(1);
+      expect(
+        await brand.evaluate((el) => el.querySelectorAll("a, button, input, [tabindex], [role='button'], [role='menuitem']").length),
+      ).toBe(0);
+      // Tab from the last sign-out row leaves the row behind.
+      const last = menu(page).getByRole("button", { name: lastRow, exact: true });
+      await last.focus();
+      await page.keyboard.press("Tab");
+      expect(await brand.evaluate((el) => el.contains(document.activeElement))).toBe(false);
+      expect(await page.evaluate(() => document.activeElement?.closest("[data-account-group='brand']") ?? null)).toBeNull();
+    });
+  }
 });
 
 // Review of 2026-10-14, P1: the cap was the whole window, and the menu is
@@ -629,6 +668,24 @@ test.describe("a short window", () => {
         expect(l.y).toBeGreaterThanOrEqual(after.y - 0.5);
         expect(l.y + l.height).toBeLessThanOrEqual(after.y + after.height + 0.5);
         expect(l.y + l.height).toBeLessThanOrEqual(height);
+        // Our signature is the end of the scroll content, and it is not
+        // sticky: at the top of the scroll, a 600px window hides it.
+        const brand = menu(page).locator('[data-account-group="brand"]');
+        expect(await brand.evaluate((el) => [getComputedStyle(el).position, getComputedStyle(el.firstElementChild!).position])).toEqual([
+          "static",
+          "static",
+        ]);
+        expect(await brand.evaluate((el) => el.parentElement!.lastElementChild === el)).toBe(true);
+        if (height === 600) {
+          await menu(page).evaluate((el) => (el.scrollTop = 0));
+          expect((await box(brand)).y).toBeGreaterThan((await box(menu(page))).y + (await box(menu(page))).height);
+        }
+        await menu(page).evaluate((el) => (el.scrollTop = el.scrollHeight));
+        const b = await box(brand);
+        const end = await box(menu(page));
+        expect(b.y).toBeGreaterThanOrEqual(end.y - 0.5);
+        expect(b.y + b.height).toBeLessThanOrEqual(end.y + end.height + 0.5);
+        await expect(brand).toContainText("Metorite");
       });
     }
   }
@@ -656,6 +713,9 @@ test.describe("no organization", () => {
     await expect(card(page).getByRole("button", { name: "Sign out of all accounts" })).toBeVisible();
     // No page that needs an organization.
     await expect(card(page).getByRole("link")).toHaveCount(0);
+    // The card is not the app's menu, so it carries no signature.
+    await expect(card(page).locator('[data-account-group="brand"], svg[data-metorite-mark]')).toHaveCount(0);
+    await expect(card(page)).not.toContainText("Metorite");
   });
 
   test("a pick switches ITS slot, then loads /", async ({ page }) => {
@@ -726,14 +786,18 @@ test.describe("no Metorite logo in the shell", () => {
     });
   }
 
-  test("with a logo, no comet at all, and the menu draws none", async ({ page }) => {
+  test("with a logo, the bar and the sidebar draw no comet, and the open menu draws one, in its last row", async ({ page }) => {
     await flags(page);
     await stub(page, THREE, [], {}, WITH_LOGO);
     await page.goto("/settings/appearance");
     await expect(bar(page).locator("[data-shell-brand] img").first()).toBeAttached();
+    await expect(trigger(page)).toBeVisible();
+    await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(0);
     await trigger(page).click();
     await expect(menu(page)).toBeVisible();
-    await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(0);
+    await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(1);
+    await expect(menu(page).locator('[data-account-group="brand"] svg[data-metorite-mark]')).toBeVisible();
+    await expect(bar(page).locator("svg[data-metorite-mark]")).toHaveCount(0);
   });
 });
 
@@ -762,7 +826,7 @@ test.describe("the other frames", () => {
     // neither, and keeps the colour mode.
     await expect(aside(page).getByRole("link", { name: "My Profile" })).toBeVisible();
     await trigger(page).click();
-    expect(await groupsOf(page)).toEqual(["current", "accounts", "settings", "sign-out"]);
+    expect(await groupsOf(page)).toEqual(["current", "accounts", "settings", "sign-out", "brand"]);
     await expect(menu(page).getByRole("button", { name: "Change my layout" })).toHaveCount(0);
     await expect(menu(page).getByRole("link")).toHaveCount(0);
     await expect(menu(page).getByRole("button", { name: /^(Light|Dark) mode$/ })).toBeVisible();

@@ -51,9 +51,45 @@ field. None of them were visible in the code.
    "No tests found", which reads as a broken rig file.
 3. **Read the captures.** Open the PNGs. Look at them. The point of the rig is
    that a person or a model sees the surface.
-4. **Turn what you find into an assertion**, where you can. A screenshot proves
+4. **Walk it with the keyboard.** Press Tab through the surface, and capture
+   each stop. Each stop must show the focus ring, and the order must follow the
+   page. Escape must close what opened. Clicks cannot show you this.
+5. **Rank every finding before you fix one.** A fix made in the middle of the
+   review changes what the rest of the review sees. Use the scale below.
+6. **Fix in rank order, and capture again.** Check that the fix did not break
+   the context beside it.
+7. **Turn what you find into an assertion**, where you can. A screenshot proves
    a defect once. A test keeps it fixed.
-5. **Delete your rig file.** The captures are the deliverable.
+8. **Delete your rig file.** The captures are the deliverable.
+
+## How to rank and report
+
+The scale matches the `diff-reviewer` agent, with one more step for taste.
+
+| Rank | What it is | Fix it |
+|---|---|---|
+| **P0** | Broken. A blank pane, a crash, a control Tab cannot reach, text you cannot read | Now |
+| **P1** | Wrong. A status on the accent, a native control, an error with no next step, a row that wraps at 1440 | In this change |
+| **P2** | Polish. A spacing step off the scale, a weak empty state, a label that differs between pages | When it is cheap |
+| **P3** | Preference. Report it, and do not fix it in the same change as a P1 | No |
+
+Write the report in this shape:
+
+```
+## Visual review: <surface> (<contexts captured>)
+P0: <capture> <finding>. Fix: <one sentence>.
+P1: ...
+P2: ...
+P3: ...
+Not opened: <states and contexts you did not capture>
+Verdict: <the ONE change that improves this surface most>
+```
+
+**The verdict names one change.** If you cannot name one, the review did not
+find the real problem. Look again.
+
+**Never call source inspection a visual review.** If you did not capture the
+surface, say "not looked at". A reader trusts the word "verified".
 
 ## What the harness gives you
 

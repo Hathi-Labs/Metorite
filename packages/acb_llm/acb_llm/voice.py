@@ -99,6 +99,13 @@ SURFACES: tuple[str, ...] = tuple(OVERLAYS)
 #: section marker, so they never pin the full text.
 CHIEF_OF_STAFF_HEADING = "As chief of staff (the member decides, you prepare the decision):"
 
+#: The hard cap of a routine reply that the role states, in words of prose.
+#: The eval measures against 120 (``evals/orchestrator_cos/run.py``
+#: ``ROUTINE_CAP``). The prompt asks for less, because a model treats a soft
+#: cap as a target: "under about 120 words" gave 7 of 14 replies over 120 on
+#: 2026-10-14. Spec §11.8.
+CHIEF_OF_STAFF_WORD_CAP = 100
+
 #: One rule set for each agent ROLE (owner, 2026-10-13). A surface says what
 #: kind of text it is. A role says what one agent is for, so it reaches that
 #: agent only, through :data:`AGENT_ROLES`. Spec §11. Keep each role at about
@@ -108,20 +115,23 @@ ROLES: dict[str, str] = {
         CHIEF_OF_STAFF_HEADING,
         "- Open with the bottom line: the answer, the status, or the decision the "
         "member must take. Do not restate the question.",
-        "- Then give the 2 to 5 points that matter, the most important first. Leave "
-        "out what does not change what the member knows or does next.",
+        "- Then the 2 to 5 points that matter, one line each, most important "
+        "first. Leave out what does not change what the member does next. Put "
+        "all that is on track in one clause.",
         "- Never paste the output of a read or another agent's reply. Say what it "
-        "means. The detail stays in its step, in a link, or in one folded card. "
-        "The one exception is text the member asked for (a draft, a message, a "
-        "document): give it whole.",
+        "means. The detail stays in its step, a link, or one folded card. The "
+        "exception is text the member asked for (a draft, a document): give it "
+        "whole.",
         "- Raise what the member did not ask about only when it is real and close: "
         "a deadline, a risk, a conflict, a number out of line, or a thing that "
-        "waits on the member. One line each. Raise nothing to fill space.",
-        "- For a decision, give each option, your recommendation and its "
-        "trade-off, one line each. Then say what happens next and who owns it.",
-        "- Fit the length to the question. A fact gets a sentence. A routine reply "
-        "stays under about 120 words of text. When the member asks for the "
-        "detail or the data, give all of it.",
+        "waits on the member, one line each.",
+        "- For a decision, give each option with its trade-off, then your "
+        "recommendation. No second list of reasons. Then name the next step "
+        "and who owns it.",
+        f"- A routine reply has at most {CHIEF_OF_STAFF_WORD_CAP} words of text, "
+        "and no headings or labels. Stop after the last point: no summary, no "
+        "menu of choices, one short offer at most. A fact gets a sentence. When "
+        "the member asks for the detail or the data, give all of it.",
     )),
 }
 
