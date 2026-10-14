@@ -77,7 +77,7 @@ A delete revokes. A register keeps the tokens. The Test sends the bearer.
 token has ended. A value above ten years becomes ten years, and a negative
 value answers `exchange_failed`.
 
-> **IN-8b BUILT (2026-10-14), dark.** The refresh hop is
+> **IN-8b BUILT (2026-10-14, PR #1011), dark.** The refresh hop is
 > `mcp_oauth.refresh`. The run path is `_oauth_header` and
 > `mark_unauthorized` in `connections/mcp.py`, and rule 9 of
 > `orchestrator/_maf_mcp.py`. Rows O7, O8 and O14 pass, and each was red
@@ -90,10 +90,10 @@ value answers `exchange_failed`.
    `header_provider` that returns a cached value. A fixed header does the
    same thing, and MAF does not serialize the tool calls of a fixed header
    (the `static_headers` docstring, `_mcp.py:3834-3840`, MAF 1.19).
-2. **Two time caps.** One token fetch gets 8 s (`REFRESH_FETCH_S`). The
-   whole step of one server gets 20 s (`REFRESH_BUDGET_S`), which covers a
-   wait on the row lock. A fetch past its cap is not final. The run keeps
-   the stored token while it lives past 60 s.
+2. **Two time caps.** One token fetch gets 8 s (`REFRESH_FETCH_S`). A run
+   waits 20 s for the step of one server (`REFRESH_BUDGET_S`). A fetch past
+   its cap is not final. The run keeps the stored token while it lives past
+   60 s.
 3. **The 401 mark compares the token.** `mark_unauthorized` sets
    `needs_reconnect` only when the row still holds the token that the run
    sent. A new consent between the refresh and the 401 stays connected.
@@ -101,6 +101,21 @@ value answers `exchange_failed`.
    (`no_refresh_token`) when it ends. Only a new consent repairs it.
 5. **The console shows `needs_reconnect`** on an MCP row, with its safe
    code. Before IN-8b, such a row showed as `disconnected`.
+
+**The review of #1011 added three rules.**
+
+- **A run that refreshes nothing takes no lock.** An unlocked read finds the
+  rows that are due. Only a due row opens a second session and takes the row
+  lock. `REFRESH_SLOTS` lets one process run two refresh steps at one time,
+  so a slow provider cannot take the pool of every org.
+- **A run refreshes only what it can use.** `servers_for_org` takes
+  `oauth_wanted`. The injection passes its scope, transport and grant
+  filter, and a Copilot agent wants no OAuth row.
+- **A Stop never loses a rotated token.** The step runs in its own task, and
+  the run waits on it through `asyncio.shield`. A cap or a Stop ends the
+  wait, and the step still commits. Only a process restart can lose it.
+
+A provider whose tokens live 900 s or less gets a refresh on every run.
 
 The refresh does not revoke the old refresh token. A provider that rotates
 ends it itself, and none of the six providers of §3.6.2 asks for a revoke.
