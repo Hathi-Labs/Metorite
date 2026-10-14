@@ -42,6 +42,14 @@
   --elevation: 0 4px 16px hsl(0 0% 0% / 0.25);
   --motion-duration: 0.2s;
   --motion-easing: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  /* The one motion of a side panel (`lib/panelMotion.ts`). The left sidebar's
+     fold and the assistant's open and close read the same two values, so the
+     two panels cannot drift. `panelMotion.test.ts` holds the mirror. */
+  --panel-duration: 320ms;
+  --panel-easing: cubic-bezier(0.22, 1, 0.36, 1);
+  --panel-expand-duration: 260ms;
+  --sheet-duration: 150ms;
+  --sheet-easing: ease-out;
   /* Control personality — consumed by the primitives in components/ui/. */
   --button-radius: var(--radius);
   --control-filled-border: 0px;
@@ -809,7 +817,7 @@ select optgroup {
   to   { opacity: 1; transform: translateY(0); }
 }
 .chat-fade-in {
-  animation: chat-fade-in 0.15s ease-out;
+  animation: chat-fade-in var(--sheet-duration) var(--sheet-easing);
 }
 
 /* ── Message animations ───────────────────────────────────────────────── */
@@ -829,7 +837,7 @@ select optgroup {
    button pulses three times in the accent, so the member sees where the
    sidebar went. Tokens only: every colour is `--primary`, mixed down. */
 .sidebar-rail {
-  transition: width 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: width var(--panel-duration) var(--panel-easing);
 }
 
 @keyframes sidebar-swap {
@@ -868,6 +876,95 @@ select optgroup {
 }
 .sidebar-tip {
   animation: sidebar-tip 200ms ease-out 300ms both;
+}
+
+/* ── The assistant's open, close and full view (`lib/shell/AssistantDock.tsx`) ── */
+/* The mirror of the sidebar fold, from the right (owner, 2026-10-14). The
+   spacer eases its width on the sidebar's tokens, so the page reflows as it
+   does for a fold. The panel rides the spacer's edge with a transform on the
+   same tokens, so the chat inside never reflows while it moves. A floating
+   panel (a narrow desktop) has no spacer, and slides over the page. The full
+   view fades. A phone sheet moves as the shell drawer does. The motion runs
+   only while the panel moves (`data-moving`), so a drag of its edge never
+   lags. Closed, the panel stays mounted, hidden and inert. */
+.assistant-spacer[data-moving] {
+  transition: width var(--panel-duration) var(--panel-easing);
+}
+.assistant-panel[data-panel-form="dock"] {
+  transform: translateX(100%);
+}
+.assistant-panel[data-panel-form="full"] {
+  opacity: 0;
+}
+.assistant-panel[data-panel-form="sheet"] {
+  opacity: 0;
+  transform: translateY(-2px);
+}
+.assistant-panel[data-shown] {
+  opacity: 1;
+  transform: none;
+}
+.assistant-panel[data-moving][data-panel-form="dock"] {
+  transition: transform var(--panel-duration) var(--panel-easing);
+}
+.assistant-panel[data-moving][data-panel-form="full"] {
+  transition: opacity var(--panel-expand-duration) var(--panel-easing);
+}
+.assistant-panel[data-moving][data-panel-form="sheet"] {
+  transition:
+    opacity var(--sheet-duration) var(--sheet-easing),
+    transform var(--sheet-duration) var(--sheet-easing);
+}
+.assistant-panel[data-panel-phase="closed"] {
+  visibility: hidden;
+}
+
+/* The side panel to the full view, and back (`swapPanelForm`). A view
+   transition keeps a picture of each form. The panel's box glides between
+   the two rects on the panel tokens, and each picture keeps its own size,
+   pinned to the right edge, while they cross-fade. So nothing stretches, and
+   the page beside the panel does not move. `.panel-swap` scopes it to this
+   one transition. */
+html.panel-swap::view-transition-old(root),
+html.panel-swap::view-transition-new(root) {
+  animation: none;
+}
+/* ⚠️ The box is solid, and the pictures FADE THROUGH it (measured on the
+   first frames, 2026-10-14). A plain cross-fade let the page show through
+   the growing box, and drew both forms' text on top of each other. Now the
+   old form leaves in the first half, and the new one arrives from the first
+   quarter on. The overlap is short, so the box is never empty for a frame,
+   and never shows two clear texts. A line marks the moving edge. */
+html.panel-swap::view-transition-group(assistant-panel) {
+  animation-duration: var(--panel-expand-duration);
+  animation-timing-function: var(--panel-easing);
+  background: var(--background);
+  box-shadow: inset 1px 0 0 var(--border);
+}
+html.panel-swap::view-transition-image-pair(assistant-panel) {
+  overflow: clip;
+}
+html.panel-swap::view-transition-old(assistant-panel),
+html.panel-swap::view-transition-new(assistant-panel) {
+  inset: 0 0 auto auto;
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  object-position: right top;
+  mix-blend-mode: normal;
+}
+@keyframes panel-swap-out {
+  to { opacity: 0; }
+}
+@keyframes panel-swap-in {
+  from { opacity: 0; }
+}
+html.panel-swap::view-transition-old(assistant-panel) {
+  animation: panel-swap-out calc(var(--panel-expand-duration) * 0.5) var(--panel-easing) both;
+}
+html.panel-swap::view-transition-new(assistant-panel) {
+  animation: panel-swap-in calc(var(--panel-expand-duration) * 0.75) var(--panel-easing)
+    calc(var(--panel-expand-duration) * 0.25) both;
 }
 
 /* Subtle bounce for the scroll-to-bottom button */
@@ -1136,6 +1233,12 @@ select optgroup {
   /* The fold still happens, at once. A still tint on the expand button
      replaces the pulse, so the member still sees where the sidebar went. */
   .sidebar-rail {
+    transition: none;
+  }
+  /* The assistant opens, closes and changes form at once, as the fold does.
+     `usePanelPhase` and `swapPanelForm` skip the moving phases too. */
+  .assistant-spacer[data-moving],
+  .assistant-panel[data-moving] {
     transition: none;
   }
   .sidebar-beacon {

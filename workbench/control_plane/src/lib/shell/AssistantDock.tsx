@@ -11,6 +11,13 @@
  * place in the tree, so `AgentChat` never remounts on a switch: a running
  * reply, the draft and the scroll stay. On a phone it is a full-screen sheet.
  *
+ * **The motion** (owner, 2026-10-14). The panel opens and closes as the left
+ * sidebar folds: the same tokens, from the right, and the page reflows
+ * beside it (`lib/panelMotion.ts`). The switch to the full view and back is a
+ * view transition: the panel's edge glides, and the two forms cross-fade. A
+ * closed panel stays mounted, so a close never cuts a live run. Focus goes to
+ * the composer on an open, and back to the opener or the toggle on a close.
+ *
  * **Sessions, as Claude Code keeps them** (owner, 2026-10-12). One list:
  * start a new chat, reopen one, rename it, archive it. The side panel and
  * the phone open the list on demand. The full view shows it as a column.
@@ -49,6 +56,15 @@ import { useChatMemories } from "@/hooks/useChatMemories";
 import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
 import { useAgentEvents } from "@/lib/agentEvents";
 import { visibleSections } from "@/lib/nav";
+import {
+  formDurationMs,
+  isMoving,
+  isShown,
+  pickFocusReturn,
+  swapPanelForm,
+  usePanelPhase,
+  type PanelForm,
+} from "@/lib/panelMotion";
 import { SidePanelFitContext } from "@/lib/sidePanelFit";
 import {
   NO_PICK,
@@ -101,6 +117,8 @@ import { SessionPicker } from "./SessionPicker";
 
 /** How long a first visit waits for the server's list before it starts a chat. */
 const MERGE_WAIT_MS = 3_000;
+/** How many times, 50 ms apart, an open tries to put the cursor in the composer. */
+const COMPOSER_FOCUS_TRIES = 40;
 
 // ── The chat to show ─────────────────────────────────────────────────────────
 
@@ -382,6 +400,11 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const [viewerEntry, setViewerEntry] = useState<FileEntry | null>(null);
   const [fileUpdates, setFileUpdates] = useState<FileEntry[]>([]);
   const rootRef = useRef<HTMLElement>(null);
+  // The motion form: a phone draws the sheet, whatever the mode says.
+  const motionForm: PanelForm = phone ? "sheet" : form;
+  const { phase, settle } = usePanelPhase(st.open, formDurationMs(motionForm));
+  const shown = isShown(phase);
+  const moving = isMoving(phase);
 
   const active = chat.active;
   const agent = active?.agentName ?? ASSISTANT_AGENT;
@@ -395,13 +418,52 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   }, [chat.activeId]);
 
   // The cursor goes to the composer each time the assistant is asked to open.
+  // It waits for the panel to be on screen: a closed panel is inert. ⚠️
+  // `preventScroll`: the panel moves in from the edge, and a plain focus
+  // would scroll the page to the composer mid-way.
+  // The first open loads the chat, so the composer can come late, or come
+  // disabled. So the effect tries again for a short while. It stops once
+  // the composer has focus, or once the member puts focus elsewhere in the
+  // panel.
   useEffect(() => {
-    if (!st.open) return;
-    const t = setTimeout(() => {
-      rootRef.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    if (!st.open || !shown) return;
+    let tries = 0;
+    const t = setInterval(() => {
+      const root = rootRef.current;
+      const box = root?.querySelector<HTMLTextAreaElement>("textarea") ?? null;
+      const at = document.activeElement;
+      const elsewhere = Boolean(root && at && at !== box && root.contains(at));
+      if (box && !box.disabled && !elsewhere) box.focus({ preventScroll: true });
+      if (!root || elsewhere || document.activeElement === box || ++tries >= COMPOSER_FOCUS_TRIES) clearInterval(t);
     }, 50);
-    return () => clearTimeout(t);
-  }, [st.open, st.focusSeq, chat.activeId]);
+    return () => clearInterval(t);
+  }, [st.open, shown, st.focusSeq, chat.activeId]);
+
+  // ── Focus back on a close ───────────────────────────────────────────────
+  // The opener is what had focus outside the panel when it opened: the
+  // toggle, a page's button. A close that leaves focus inside the panel, or
+  // nowhere, sends it back there, else to the toggle. The panel is hidden
+  // once it closes, and focus left in it would fall to the page's top.
+  const openerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const root = rootRef.current;
+    const at = document.activeElement;
+    if (st.open) {
+      openerRef.current = at instanceof HTMLElement && at !== document.body && !root?.contains(at) ? at : null;
+      return;
+    }
+    const lost = !at || at === document.body || Boolean(root?.contains(at));
+    if (!lost) return;
+    const target = pickFocusReturn<HTMLElement>(
+      [
+        openerRef.current,
+        document.querySelector<HTMLElement>("[data-assistant-toggle]"),
+        document.querySelector<HTMLElement>("[data-ask-tab]"),
+      ],
+      (el) => Boolean(root?.contains(el)),
+    );
+    target?.focus({ preventScroll: true });
+  }, [st.open]);
 
   // ── A page opened under the full view ───────────────────────────────────
   // The full view covers the page column, so an app the member opens from
@@ -458,16 +520,25 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     setFileUpdates((prev) => mergeFileEntry(prev, entry, new Date().toISOString()));
   };
 
-  const shape = !st.open
-    ? "hidden"
-    : phone
-      ? "fixed inset-0 z-50 flex flex-col bg-background pt-safe pb-safe"
-      : form === "full"
-        ? "absolute inset-0 z-20 flex flex-col bg-background"
-        : floats
-          ? // A narrow desktop: the same panel, over the right of the page.
-            "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl"
-          : "relative flex h-full shrink-0 flex-col border-l border-border bg-card";
+  // The shape of each form. The motion lives in `globals.css`
+  // (`.assistant-panel`), keyed on the data attributes below: the panel
+  // rides in from the right in the side form, fades in the full form, and
+  // rises as the shell's drawer does on a phone.
+  const shape = phone
+    ? "fixed inset-0 z-50 flex flex-col bg-background pt-safe pb-safe"
+    : form === "full"
+      ? "absolute inset-0 z-20 flex flex-col bg-background"
+      : floats
+        ? // A narrow desktop: the same panel, over the right of the page.
+          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl"
+        : // A wide desktop: the panel sits over the spacer, beside the page.
+          "absolute inset-y-0 right-0 z-20 flex flex-col border-l border-border bg-card";
+
+  // ⚠️ The spacer is what the page reflows around, as it does for the
+  // sidebar's fold. It keeps the side panel's width under the full view too,
+  // so the page behind does not reflow on a switch, and the view transition
+  // has one page to show on either side.
+  const spaced = !phone && !floats;
 
   // The full view on a desktop shows the chats as a column, as ChatGPT and
   // Claude do. The side panel and the phone open the same list on demand,
@@ -488,12 +559,39 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   };
 
   return (
+    <>
+    {spaced ? (
+      <div
+        aria-hidden
+        data-assistant-spacer=""
+        data-moving={moving ? "" : undefined}
+        className="assistant-spacer h-full shrink-0"
+        style={{ width: shown ? st.width : 0 }}
+        // The page grows or shrinks with no window `resize`, as for the fold
+        // (`Sidebar.tsx`). Tell the layouts that measure on it.
+        onTransitionEnd={(e) => {
+          if (e.target === e.currentTarget && e.propertyName === "width") {
+            window.dispatchEvent(new Event("resize"));
+          }
+        }}
+      />
+    ) : null}
     <section
       ref={rootRef}
       data-assistant={st.open ? form : "closed"}
+      data-panel-form={motionForm}
+      data-panel-phase={phase}
+      data-shown={shown ? "" : undefined}
+      data-moving={moving ? "" : undefined}
       aria-label={`${ASSISTANT_NAME} assistant`}
-      className={shape}
-      style={st.open && form === "dock" && !phone ? { width: st.width } : undefined}
+      inert={phase === "closed"}
+      className={`assistant-panel ${shape}`}
+      style={form === "dock" && !phone ? { width: st.width } : undefined}
+      onTransitionEnd={(e) => {
+        if (e.target === e.currentTarget && (e.propertyName === "transform" || e.propertyName === "opacity")) {
+          settle();
+        }
+      }}
     >
       {st.open && form === "dock" && !phone ? <ResizeEdge width={st.width} /> : null}
 
@@ -557,7 +655,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
             title={form === "full" ? "Side panel" : "Full screen"}
             onClick={() => {
               setPickerOpen(false);
-              setAssistantMode(form === "full" ? "dock" : "full");
+              const next = form === "full" ? "dock" : "full";
+              // The same element changes its classes inside a view
+              // transition, so the chat is never remounted.
+              swapPanelForm(rootRef.current, () => setAssistantMode(next));
               focusAssistant();
             }}
           />
@@ -667,5 +768,6 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         />
       ) : null}
     </section>
+    </>
   );
 }
