@@ -92,8 +92,10 @@ BOX_B = "0b0b0b0b-0000-4000-8000-00000000000b"
 # inboxes, as each row of migration 229 is until the member changes it.
 TWO = [
     {"id": BOX_A, "email_address": "dana@fracktal.in", "label": "Outlook",
+     "provider": "microsoft",
      "display_label": "Fracktal", "unread_count": 2, "in_all_inboxes": True},
     {"id": BOX_B, "email_address": "dana@outlook.com", "label": "Outlook",
+     "provider": "microsoft",
      "display_label": "Personal", "unread_count": 1, "in_all_inboxes": True},
 ]
 A_TEXT = "Fracktal · dana@fracktal.in"
@@ -102,6 +104,7 @@ B_TEXT = "Personal · dana@outlook.com"
 # EM-T8g-1: a third mailbox that the member keeps separate (D-EM-28).
 BOX_C = "0c0c0c0c-0000-4000-8000-00000000000c"
 NDA = {"id": BOX_C, "email_address": "dana@client-nda.test", "label": "Outlook",
+       "provider": "microsoft",
        "display_label": "Client NDA", "unread_count": 4, "in_all_inboxes": False}
 C_TEXT = "Client NDA · dana@client-nda.test"
 

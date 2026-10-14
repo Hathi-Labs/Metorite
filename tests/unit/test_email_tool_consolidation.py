@@ -39,7 +39,8 @@ def calls(monkeypatch):
         rec["get"].append((path, params or {}))
         # EM-G11c1 fix round 1: a card reads the row it names first.
         if path == "/email/accounts":
-            return [{"id": "acc", "email_address": "me@x.com"}]
+            return [{"id": "acc", "email_address": "me@x.com",
+                     "provider": "gmail"}]
         if path == "/email/rules/history":
             return {"history": [{"id": "e1", "rule_name": "Bank",
                                  "subject": "Hi", "actions": ["ARCHIVE"]}]}
