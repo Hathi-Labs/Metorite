@@ -1392,7 +1392,9 @@ makes no facade call and writes no row. A test fences it. That keeps
 **10. The measure read.** `GET /shell/feed/decide-measure` needs
 `ADMIN_PERMISSION`, and reads the bound org only. For each feature it answers
 the count of rows and the rate of agreement. It also answers the acted rate
-of the top five cards of each path. The judged top five is `feed_rank.order`,
+of the top five cards of each path.
+
+The judged top five is `feed_rank.order`,
 with the judged group and the judged level times six. The pass stores each
 place in `old_rank` and `judged_rank` (§13.2).
 
