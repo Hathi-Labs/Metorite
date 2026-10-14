@@ -750,14 +750,20 @@ class TestAgentRunsOnARealDatabase:
 
     # ── R9 and R11 ──────────────────────────────────────────────────────
 
-    async def test_r9_the_long_poll_returns_at_once_when_an_activity_exists(self, w):
+    async def test_r9_the_long_poll_returns_at_once_when_an_activity_exists(self, w, monkeypatch):
+        # "At once" is an order, not a clock (#947): the route never sleeps.
+        slept: list[float] = []
+
+        async def counted(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr(agent_runs, "_sleep", counted)
         async with _session(w.p) as call:
             run = await _start(w, call)
             first = await _act(call, w.agent_a, run["id"], type="thought", body="one")
             seq = first.json()["activity"]["seq"]
-            started = time.monotonic()
             got = await call(w.a, "GET", f"/projects/agent-runs/{run['id']}?after={seq - 1}&wait_s=10")
-            assert time.monotonic() - started < 1.5
+            assert slept == []
             assert [a["seq"] for a in got.json()["activities"]] == [seq]
             assert got.json()["cursor"] == seq
 
@@ -776,9 +782,12 @@ class TestAgentRunsOnARealDatabase:
 
         real_sleep = asyncio.sleep
 
+        first_sleep = asyncio.Event()
+
         async def watched(seconds: float) -> None:
             assert opened.now == 0, "the long poll slept with a session open"
             opened.sleeps += 1
+            first_sleep.set()
             await real_sleep(seconds)
 
         monkeypatch.setattr(agent_runs, "_tenant_session", counted)
@@ -786,20 +795,19 @@ class TestAgentRunsOnARealDatabase:
         async with _session(w.p) as call:
             run = await _start(w, call)
             # No activity arrives: the answer comes after the wait, empty.
-            started = time.monotonic()
             got = await call(w.a, "GET", f"/projects/agent-runs/{run['id']}?after=0&wait_s=3")
-            elapsed = time.monotonic() - started
             assert got.status_code == 200 and got.json()["activities"] == []
-            assert 2.9 <= elapsed < 6, elapsed
-            assert opened.sleeps >= 2
-            # An activity arrives during the wait: the answer comes early.
+            assert opened.sleeps >= 2  # 3 s in ticks of 2 s: it waited, and read again
+            # An activity arrives during the wait: the answer comes at the
+            # next tick, long before the 8 ticks of a full 15 s wait.
+            opened.sleeps = 0
+            first_sleep.clear()
             poll = asyncio.create_task(
                 call(w.a, "GET", f"/projects/agent-runs/{run['id']}?after=0&wait_s=15"))
-            await real_sleep(1.0)
+            await asyncio.wait_for(first_sleep.wait(), timeout=30)  # a hang guard
             await _act(call, w.agent_a, run["id"], type="thought", body="now")
-            started = time.monotonic()
-            got = await poll
-            assert time.monotonic() - started < 4
+            got = await asyncio.wait_for(poll, timeout=30)  # a hang guard
+            assert opened.sleeps <= 3, opened.sleeps
             assert [a["content"]["body"] for a in got.json()["activities"]] == ["now"]
 
     # ── R10 ─────────────────────────────────────────────────────────────
