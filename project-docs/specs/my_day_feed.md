@@ -547,8 +547,12 @@ of source ids, empty by default. It is read in one place and is in
 The kinds stay registered, so the prefs and the state POST accept them.
 
 With the list empty, the answer is the same as today, byte for byte, except
-for the new `source_apps` field of item 6. The list is part of
-`features_hash`, so a change takes effect at once.
+for the new `source_apps` field of item 6.
+
+The gateway caches its Settings for the life of the process. So a change of
+the list takes effect when the gateway restarts, and the restart is the act
+of the flip. The list is part of `features_hash`, so the cache serves no
+answer from before the restart after it.
 
 **2. The cache.** These rows join §8.4:
 
@@ -563,15 +567,31 @@ for the new `source_apps` field of item 6. The list is part of
 
 **3. The budget.** The feed-only providers run two at a time at most, under
 a semaphore (`FEED_CONCURRENCY = 2`). So each read of the feed holds two
-connections of the pool at most for them. Each provider has its own budget of 2
-seconds, and the budget starts when the provider gets its slot. A slow
-provider then fails alone, and does not fail the next one.
+connections of the pool at most for them. Each provider has its own budget
+of 2 seconds, and the budget starts when the provider gets its slot. A slow
+provider then fails alone.
 
-One ceiling bounds the whole run: `FEED_TOTAL_S = 4.0`, from the start. At
+For the My Day pass of the loop, only one provider runs at a time
+(`FEED_PASS_CONCURRENCY = 1`). The loop runs the pass for three members at
+once, so two slots for each would hold six of the nine connections of the
+pool.
+
+One ceiling bounds the whole run: `FEED_TOTAL_S = 2.4`, from the start. At
 the ceiling, each provider that still waits for a slot or still runs reads
 `failed`. The cache keeps no answer with a failed source, so the next poll
-tries again. (Decided 2026-10-14 in the MD-3b review. Pool exhaustion caused
-EMAXCONNSESSION on 2026-09-20.)
+tries again.
+
+A cancel of the whole read cancels each provider. Then it waits 0.5 seconds
+at most, so that each provider closes its session before the read ends.
+
+The worst case of a read is 4.0 + 2.4 + 1.5 = 7.9 seconds: the needs run,
+this run and the state join. That is under the 8 seconds of the BFF route,
+so a slow database gives a partial answer and not an error. 2.5 seconds
+would make 8.0, with no margin. Fence:
+`test_shell_feed.py::TestTheBudgetSum`.
+
+The MD-3b review decided these rules on 2026-10-14. Pool exhaustion caused
+EMAXCONNSESSION on 2026-09-20.
 
 **4. Absent, not failed.** A refusal is not a failure. These each read as
 `absent`: CRM off, CRM access refused, and no People row. A provider raises a
@@ -2349,7 +2369,8 @@ The client writes the words, for example "You", "Ravi", "Email rules",
 
 **The budget.** The handled reads run at the same time as the state join,
 after the providers, inside the same 1.5 seconds. So the feed's worst case
-stays at 7.5 seconds, under the 8 seconds of the BFF route. A read past its
+is 7.9 seconds since MD-3b (4.0 + 2.4 + 1.5, §5.8 item 3), under the 8
+seconds of the BFF route. A read past its
 limit counts as failed.
 
 **The render.** `cards` and `groups` never hold `handled`. The list does not
@@ -2585,9 +2606,13 @@ parts:
   keeps a provider with `gated=True` only when the list holds its source
   id. The register refuses a gated needs provider.
 - `needs.run_providers(..., slots=, ceiling_s=)` runs the feed-only
-  providers two at a time at most (`FEED_CONCURRENCY`). Each limit of 2
-  seconds starts when the provider gets its slot. At `FEED_TOTAL_S`, the
-  rest read `failed`. The needs providers still run one after another.
+  providers two at a time at most for a read (`FEED_CONCURRENCY`), and one
+  at a time for the loop's pass (`FEED_PASS_CONCURRENCY`). Each limit of 2
+  seconds starts when the provider gets its slot. At `FEED_TOTAL_S`, 2.4
+  seconds, the rest read `failed`. The needs providers still run one after
+  another.
+- The register refuses a gated provider that carries a Handled read, until
+  a slice filters `handled.handled_providers()` by the list.
 - `needs.SourceAbsent` makes a source read `absent`, in the provider run and
   in the Handled read (`handled.py`). `Provider.permission` is part of
   `held_by`, so it gates the Handled read too.
@@ -2600,15 +2625,19 @@ parts:
   so the keys of the live cache stay valid.
 - `feed.ts` names the three apps, and takes each icon from its pane in
   `nav.ts`.
+- The anchors, at the fix round of 2026-10-14: `_run_bounded` is at
+  `needs.py:1112`. `FEED_CONCURRENCY`, `FEED_PASS_CONCURRENCY` and
+  `FEED_TOTAL_S` are at `feed.py:115`, `:118` and `:125`. The answer builds
+  `source_apps` at `feed.py:675`.
 
 **What the build found, for the slices after it.**
 
 - `ADMIN_PERMISSION` (`routes/shell/intent.py`) is `admin:members:read`. So
   the hash covered that grant before MD-3b. Done-when 4 adds a test. The
   general rule stands: the hash covers each `Provider.permission`.
-- `handled.handled_providers()` reads the whole `REGISTRY`. The first slice
-  that gives a gated provider a Handled read must filter that read by the
-  list.
+- `handled.handled_providers()` reads the whole `REGISTRY`. So the register
+  refuses a gated provider with a Handled read. The first slice that needs
+  one must filter that read by the list, and then lift the refusal.
 - The carry of §6.1 (`noteOk` and `carries` in `feed.ts`) keys on the
   source id and filters cards by `card.app`. A source whose id is not its
   app id carries no cards when it fails. The slice that adds such a source

@@ -133,9 +133,10 @@ def features_hash(user: Any) -> str:
     ``admin:members:read``, so a member who loses that grant loses the HR
     cards at once. Each other ``Provider.permission`` of the registry that
     the member holds joins the hash too. Then the list of gated sources joins
-    it, through ``needs.listed_sources``, so a change of the list misses at
-    once. With no such permission and an empty list, the hash is the hash of
-    before MD-3b."""
+    it, through ``needs.listed_sources``. A change of the list takes effect
+    at the gateway restart that it needs, and no stored answer from before
+    the restart is served after it. With no such permission and an empty
+    list, the hash is the hash of before MD-3b."""
     from acb_auth.permissions import FEATURES
     from gateway.routes.shell import needs
     from gateway.routes.shell.intent import ADMIN_PERMISSION

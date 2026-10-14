@@ -945,6 +945,13 @@ def register(provider: Provider) -> Provider:
     if provider.needs and provider.gated:
         # MD-3b: the list gates the feed only. The bell never changes.
         raise ValueError(f"the needs provider {provider.source!r} is gated")
+    if provider.gated and provider.handled is not None:
+        # MD-3b review: `handled.handled_providers` reads the whole registry,
+        # so an unlisted gated provider would still run its Handled read.
+        # The slice that needs both must first filter that read by the list.
+        raise ValueError(
+            f"the gated provider {provider.source!r} carries a Handled read, and "
+            "handled.handled_providers does not filter by MY_DAY_PROVIDERS yet")
     REGISTRY[provider.source] = provider
     return provider
 
@@ -970,8 +977,11 @@ def listed_sources() -> frozenset[str]:
     """The ONE reader of ``MY_DAY_PROVIDERS`` (``my_day_feed.md`` §5.8 item
     1): the source ids of the gated providers that may run. Ids are trimmed
     and in lower case, with a comma between them. Empty by default. It is
-    read on each call, so a change takes effect at the next read. The read
-    cache's ``features_hash`` covers it through this function."""
+    read on each call, but ``get_settings`` caches the Settings for the life
+    of the process. So a change of the list takes effect only when the
+    gateway restarts, and the restart is the act of the flip. The read
+    cache's ``features_hash`` covers the list through this function, so no
+    stored answer from before the restart is served after it."""
     from acb_common.settings import get_settings
 
     raw = str(get_settings().my_day_providers or "")
@@ -1093,6 +1103,12 @@ def _record(run: Run, key: str, outcome: Found | str) -> None:
         run.capped.append(key)
 
 
+#: Seconds that a cancelled run waits for its cancelled providers, so each
+#: one closes its session before the read unwinds. It is short, so a stuck
+#: release cannot hang the cancel.
+CANCEL_WAIT_S = 0.5
+
+
 async def _run_bounded(user: UserContext, providers: list[Provider], *, limit: float,
                        slots: int, ceiling_s: float | None, event: str) -> Run:
     """The feed-only providers (MD-3b, §5.8 item 3): ``slots`` run at once at
@@ -1110,23 +1126,23 @@ async def _run_bounded(user: UserContext, providers: list[Provider], *, limit: f
             return await _attempt(provider, user, limit, event)
 
     tasks = {p.source: asyncio.ensure_future(_slot(p)) for p in held}
-    late: list[asyncio.Future[Found | str]] = []
     if tasks:
         try:
             await asyncio.wait(tasks.values(), timeout=ceiling_s)
         finally:
-            # Past the ceiling, or a cancel of the whole read: stop the rest.
+            # Past the ceiling, or a cancel of the whole read: stop the rest,
+            # and wait briefly so each one closes its session first.
             late = [t for t in tasks.values() if not t.done()]
             for task in late:
                 task.cancel()
-        if late:
-            await asyncio.gather(*late, return_exceptions=True)
+            if late:
+                await asyncio.wait(late, timeout=CANCEL_WAIT_S)
     for provider in providers:
         task = tasks.get(provider.source)
         outcome: Found | str
         if task is None:
             outcome = "absent"
-        elif task.cancelled() or task.exception() is not None:
+        elif not task.done() or task.cancelled() or task.exception() is not None:
             logger.info(f"{event} provider passed the ceiling",
                         extra={"provider": provider.source})
             outcome = "failed"

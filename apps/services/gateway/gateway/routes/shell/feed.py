@@ -109,12 +109,20 @@ MAX_FEED_LIMIT = 80
 FEED_BUDGET_S = 2.0
 #: Seconds one feed-only provider may take.
 FEED_PROVIDER_TIMEOUT_S = 2.0
-#: The feed-only providers that run at the same time, at most. Each holds a
-#: pool connection, and the pool is small (MD-2c, EMAXCONNSESSION 2026-09-20).
+#: The feed-only providers that run at the same time, at most, for a read.
+#: Each holds a pool connection, and the pool is small (MD-2c,
+#: EMAXCONNSESSION 2026-09-20).
 FEED_CONCURRENCY = 2
+#: The same for the My Day pass of the loop (``read=False``). The loop runs
+#: three members at once, so it holds three of these connections at most.
+FEED_PASS_CONCURRENCY = 1
 #: Seconds for all the feed-only providers, from the start of their run. A
-#: provider still queued or running then reads ``failed`` (MD-3b).
-FEED_TOTAL_S = 4.0
+#: provider still queued or running then reads ``failed`` (MD-3b). The read's
+#: worst case is ``needs.TOTAL_BUDGET_S`` + this + ``state.STATE_TIMEOUT_S``:
+#: 4.0 + 2.4 + 1.5 = 7.9 seconds, under the 8 seconds of the BFF route
+#: (``app/api/shell/feed/route.ts`` ``TIMEOUT_MS``). 2.5 would make 8.0, which
+#: is no margin. Fence: ``test_shell_feed.py::TestTheBudgetSum``.
+FEED_TOTAL_S = 2.4
 #: The days of blocks that ``block_overlap`` reads, today first.
 WEEK_DAYS = 7
 #: A block that starts within this time is ``block_soon``.
@@ -607,10 +615,12 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
     # Then the feed-only providers, on a budget of their own: two at a time,
     # each with its own limit from its start, under one ceiling (MD-3b).
     # MY_DAY_PROVIDERS picks the gated ones (`needs.feed_only_providers`).
+    # The loop's pass takes one slot, so the loop alone cannot fill the pool.
     extra = await needs.run_providers(
         user, needs.feed_only_providers(), budget_s=FEED_BUDGET_S,
         timeout_s=FEED_PROVIDER_TIMEOUT_S, event="shell.feed",
-        slots=FEED_CONCURRENCY, ceiling_s=FEED_TOTAL_S)
+        slots=FEED_CONCURRENCY if read else FEED_PASS_CONCURRENCY,
+        ceiling_s=FEED_TOTAL_S)
 
     sources = {**run.sources, **extra.sources}
     capped = [*run.capped, *extra.capped]

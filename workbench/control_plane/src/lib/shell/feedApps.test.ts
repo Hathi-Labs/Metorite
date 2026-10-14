@@ -9,7 +9,8 @@
  * Mutations, run by hand (2026-10-14):
  *   - drop `crm` from `FEED_ONLY_APP_HREF`: the icon case fails;
  *   - drop `people: "People"` from `FEED_APP_NAMES`: tsc and the name case fail;
- *   - make `sourceApp` ignore `source_apps`: the three source map cases fail.
+ *   - make `sourceApp` ignore `source_apps`: the three source map cases fail;
+ *   - make `feedFailedLines` skip the needs apps of the map: the email_followups case fails.
  */
 import { describe, expect, it } from "vitest";
 
@@ -92,6 +93,23 @@ describe("the source map of MD-3b (source_apps, §14.1a)", () => {
     };
     expect(handledClaim(answer)).toBe(false);
     expect(handledClaim({ ...answer, sources: { crm_followups: "ok" } as never })).toBe(true);
+  });
+
+  it("maps an MD-3 source to a needs app: a failed email_followups draws the Email line", () => {
+    const map = { email_followups: "email" };
+    expect(feedFailedLines({ email_followups: "failed" } as never, map)).toEqual([
+      "Email did not answer, so its replies may be missing.",
+    ]);
+    // One line for the app, also when its own source failed too.
+    expect(feedFailedLines({ email: "failed", email_followups: "failed" } as never, map)).toHaveLength(1);
+    const answer = {
+      handled: [{ app: "tasks", title: "x", href: "/projects", by: { kind: "you" as const, name: null }, at: null }],
+      handled_ok: true,
+      sources: { email_followups: "failed" } as never,
+      source_apps: map,
+      capped: [],
+    };
+    expect(handledClaim(answer)).toBe(false);
   });
 
   it("treats a source the map does not name as its own app, as before", () => {

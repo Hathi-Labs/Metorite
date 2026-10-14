@@ -1287,7 +1287,9 @@ class TestTheProviderList:
         assert ran == ["crm_test"] and answer["sources"]["crm_test"] == "ok"
         assert [p.source for p in shell.feed_only_providers()] == ["calendar", "crm_test"]
 
-    def test_the_list_takes_effect_at_the_next_read(self, monkeypatch):
+    def test_the_list_is_read_at_each_call(self, monkeypatch):
+        # The Settings object is cached for the life of the process, so on a
+        # box a change needs a restart. Here the test changes the object.
         _list(monkeypatch, "crm_deals")
         assert shell.listed_sources() == frozenset({"crm_deals"})
         _list(monkeypatch, "")
@@ -1297,6 +1299,22 @@ class TestTheProviderList:
         _list(monkeypatch, "")
         assert shell.REGISTRY["calendar"].gated is False
         assert run_feed(member(*FULL))["sources"]["calendar"] == "ok"
+
+    def test_a_gated_provider_with_a_handled_read_is_refused(self, monkeypatch):
+        # MD-3b review: `handled.handled_providers` does not filter by the
+        # list yet, so an unlisted gated provider would run its Handled read.
+        monkeypatch.setattr(shell, "REGISTRY", dict(shell.REGISTRY))
+
+        async def _closed(user, since):
+            return []
+
+        with pytest.raises(ValueError, match="carries a Handled read"):
+            shell.register(_feed_only("crm_test", feed._calendar, gated=True,
+                                      handled=_closed))
+        assert "crm_test" not in shell.REGISTRY
+        # Each half alone still registers.
+        shell.register(_feed_only("gated_only", feed._calendar, gated=True))
+        shell.register(_feed_only("handled_only", feed._calendar, handled=_closed))
 
     def test_a_needs_provider_is_never_gated(self, monkeypatch):
         monkeypatch.setattr(shell, "REGISTRY", {})
@@ -1353,12 +1371,13 @@ class TestThePoolBound:
         assert live["most"] == feed.FEED_CONCURRENCY == 2
 
     def test_a_queued_provider_gets_its_full_limit_after_it_starts(self, fakes, monkeypatch):
-        # The third waits 0.25 s for a slot, then runs 0.25 s. From the start
-        # of the run it ends at 0.5 s, past a 0.3 s limit taken at that start.
-        monkeypatch.setattr(feed, "FEED_BUDGET_S", 0.3)
-        monkeypatch.setattr(feed, "FEED_PROVIDER_TIMEOUT_S", 0.3)
+        # The third waits 0.5 s for a slot, then runs 0.5 s. From the start
+        # of the run it ends at 1.0 s, past a 0.8 s limit taken at that start.
+        # Each run has 0.3 s of margin inside its own limit, for a slow CI.
+        monkeypatch.setattr(feed, "FEED_BUDGET_S", 0.8)
+        monkeypatch.setattr(feed, "FEED_PROVIDER_TIMEOUT_S", 0.8)
         ran: list[str] = []
-        _with(monkeypatch, *(_feed_only(f"q{n}", _recorder(ran, f"q{n}", sleep=0.25))
+        _with(monkeypatch, *(_feed_only(f"q{n}", _recorder(ran, f"q{n}", sleep=0.5))
                              for n in range(3)))
         answer = run_feed(member(*NO_CALENDAR))
         assert {answer["sources"][f"q{n}"] for n in range(3)} == {"ok"}
@@ -1388,10 +1407,77 @@ class TestThePoolBound:
 
         assert not cache.storable(answer)
 
+    def test_the_loop_pass_takes_one_slot_and_a_read_takes_two(self, fakes, monkeypatch):
+        # The loop runs three members at once. With two slots each, it alone
+        # could hold six of the pool's nine connections (MD-3b review).
+        seen: list[int | None] = []
+        real = shell.run_providers
+
+        async def _spy(user, providers, **kw):
+            if kw.get("event") == "shell.feed":
+                seen.append(kw.get("slots"))
+            return await real(user, providers, **kw)
+
+        monkeypatch.setattr(shell, "run_providers", _spy)
+        _bound(lambda: feed.feed_cards(member(*FULL), read=False))
+        _bound(lambda: feed.feed_cards(member(*FULL), read=True))
+        assert seen == [feed.FEED_PASS_CONCURRENCY, feed.FEED_CONCURRENCY] == [1, 2]
+
+    def test_a_cancel_of_the_read_cancels_each_provider_first(self):
+        # A cancelled read (the client went away) must stop its providers,
+        # and give each a moment to close its session, before it unwinds.
+        closed: list[str] = []
+
+        def _stuck(source: str, started: asyncio.Event):
+            async def _run(user):
+                started.set()
+                try:
+                    await asyncio.sleep(10)
+                finally:
+                    closed.append(source)
+            return _run
+
+        async def scenario():
+            started = asyncio.Event()
+            providers = [_feed_only("s1", _stuck("s1", started)),
+                         _feed_only("s2", _stuck("s2", started))]
+            outer = asyncio.ensure_future(shell.run_providers(
+                member(*FULL), providers, budget_s=5, timeout_s=5, event="t",
+                slots=2, ceiling_s=5))
+            await started.wait()
+            await asyncio.sleep(0.01)
+            outer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await outer
+            return sorted(closed)
+
+        assert asyncio.run(scenario()) == ["s1", "s2"]
+
     def test_the_needs_route_runs_no_slot(self, fakes):
         # Non-vacuity of the sequential path: the needs view is as before.
         user = admin(*FULL, "approvals")
         assert run_feed(user)["needs"] == run_needs(user)
+
+
+class TestTheBudgetSum:
+    """The MD-3b review, P1: the read's worst case must end before the BFF
+    route gives up, or the member sees "could not load" where the answer
+    should only be partial."""
+
+    def test_the_worst_case_is_under_the_route_limit(self):
+        import re
+
+        from gateway.routes.shell import state
+
+        route = REPO / "workbench/control_plane/src/app/api/shell/feed/route.ts"
+        found = re.search(r"const TIMEOUT_MS = ([0-9_]+);", route.read_text(encoding="utf-8"))
+        assert found, "route.ts names no TIMEOUT_MS"
+        limit_s = int(found.group(1).replace("_", "")) / 1000
+        worst = shell.TOTAL_BUDGET_S + feed.FEED_TOTAL_S + state.STATE_TIMEOUT_S
+        assert worst < limit_s, (worst, limit_s)
+        # The numbers that §5.8 item 3 and handled.py state.
+        assert (shell.TOTAL_BUDGET_S, feed.FEED_TOTAL_S, state.STATE_TIMEOUT_S, limit_s) \
+            == (4.0, 2.4, 1.5, 8.0)
 
 
 class TestTheFeedOnlyGather:
