@@ -316,6 +316,18 @@ def _valid(seen: _Seen, now: datetime) -> bool:
         and isinstance(stored.get("etag"), str)
 
 
+def _hit(seen: _Seen | None, now: datetime) -> tuple[str, Any] | None:
+    """The stored tag and body when the stored answer is valid now, else
+    None. A value that does not parse reads as a miss, never as an error."""
+    if seen is None or not _valid(seen, now):
+        return None
+    stored = seen.stored or {}
+    try:
+        return str(stored["etag"]), json.loads(stored["body"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 async def _store(member: str, size: int, fhash: str, seen: _Seen, text: str, tag: str,
                  now: datetime, ttl: int) -> None:
     value = json.dumps({"body": text, "etag": tag, "org_ver": seen.org_ver,
@@ -358,14 +370,14 @@ async def serve(user: Any, size: int, compute: Callable[[], Awaitable[Computed]]
             seen = None
 
     now = needs._now()
-    if seen is not None and _valid(seen, now):
-        stored = seen.stored or {}
-        tag = str(stored["etag"])
+    hit = _hit(seen, now)
+    if hit is not None:
+        tag, hit_body = hit
         if matches(if_none_match, tag):
             return _not_modified(tag)
         if response is not None:
             response.headers["ETag"] = tag
-        return json.loads(stored["body"])
+        return hit_body
 
     computed = await compute()
     body = jsonable_encoder(computed.body)

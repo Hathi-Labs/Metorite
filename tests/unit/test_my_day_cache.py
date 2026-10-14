@@ -525,6 +525,17 @@ class TestAnOutage:
         read(user)
         assert app_calls(fakes) > again
 
+    def test_a_stored_value_that_does_not_parse_is_a_miss(self, fakes, redis, on):  # noqa: F811
+        user = member(*FULL)
+        first, _ = read(user)
+        [key] = answer_keys(redis)
+        value, expires = redis.store[key]
+        redis.store[key] = (json.dumps({**json.loads(value), "body": "{not json"}), expires)
+        before = app_calls(fakes)
+        again, _ = read(user)
+        assert app_calls(fakes) > before
+        assert again == first
+
     def test_a_slow_redis_is_an_outage(self, fakes, redis, on):  # noqa: F811
         redis.slow = 2.0
         began = _time.monotonic()
