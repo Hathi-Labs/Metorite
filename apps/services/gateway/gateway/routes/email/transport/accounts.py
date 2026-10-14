@@ -32,7 +32,11 @@ from gateway.routes.email.mailbox_identity import (
     valid_slot,
     work_domain,
 )
-from gateway.routes.email.memory_purge import schedule_mailbox_memory_purge
+from gateway.routes.email.memory_purge import (
+    RECORD_PURGE_SQL,
+    TASK_LEASE_S,
+    schedule_mailbox_memory_purge,
+)
 from gateway.routes.email.teardown import (
     drop_mailbox_cache,
     read_filter_ids,
@@ -668,6 +672,12 @@ async def delete_account(
     not wait for the task. The fence is
     ``tests/unit/test_email_disconnect_memory_purge.py``.
 
+    EM-G11f2 (§12.3.13.9): the block of step 3 also writes one
+    ``email_mailbox_purges`` row (migration 264), so the purge commits with
+    the delete. The task closes that row after its two passes. When the
+    process stops first, the sweeper of ``memory_purge.py`` finishes it. The
+    fence is ``tests/unit/test_email_mailbox_purge_durable.py``.
+
     EM-G11f1 (``email_app_master_plan.md`` §12.3.13.9) adds the legs of
     ``routes/email/teardown.py``. The ownership read of a Gmail row also reads
     the filter ids that Metorite made, because the cascade deletes them. Each
@@ -718,6 +728,11 @@ async def delete_account(
             deleted = result.fetchone()
             if deleted is None:
                 raise HTTPException(status_code=404, detail="Account not found")
+            # EM-G11f2: the purge that this delete owes, in the SAME
+            # transaction. A stop after the commit leaves the row, and the
+            # sweeper of memory_purge.py runs the purge.
+            await db.execute(text(RECORD_PURGE_SQL), {
+                "owner": owner, "aid": account_id, "lease": TASK_LEASE_S})
             # If the deleted account was the default, re-elect the
             # earliest-created remaining account so the user always has a
             # default to land on.
@@ -753,7 +768,8 @@ async def delete_account(
     # ── 4. the Mem0 memory of the mailbox, in a task, after the commit ──────
     # The owner predicate of the DELETE matched, so the row's user_id is
     # ``owner``. The writers key the memory on that member (EM-T8f-1).
-    schedule_mailbox_memory_purge(owner, account_id)
+    # The task closes the purge row of step 3 with the same session seam.
+    schedule_mailbox_memory_purge(owner, account_id, open_session=_tenant_session)
 
     # ── 4a. the Gmail filters, then the Google grant (EM-G11f1) ────────────
     # After the purge task starts, so a cancel of these awaits cannot skip it.
