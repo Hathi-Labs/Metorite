@@ -906,3 +906,78 @@ async def attach_assignees(db: Any, rows: list[dict[str, Any]]) -> list[dict[str
     for row in rows:
         row["assignees"] = by_task.get(str(row["id"]), [])
     return rows
+
+
+# ── WS-55 EA-12a: the agent pill (external_agent_access.md §12.1, EA12-10) ──
+
+#: The runs that are OPEN (EA12-6). The partial unique index of the
+#: `pm_agent_runs` migration lists the same four values.
+AGENT_RUN_OPEN_STATUSES: tuple[str, ...] = ("created", "in_progress", "awaiting", "stopping")
+
+#: Seconds with no activity before an `in_progress` run reads `stale`.
+AGENT_RUN_STALE_AFTER_S = 300
+
+#: The derived state of one run, in SQL, over the alias ``r``. ONE copy:
+#: ``agent_runs.py`` reads it for each run, and :func:`attach_agent_state`
+#: reads it for the pill. The database ``now()`` decides ``stale`` (EA12-10).
+#:
+#: * ``answered`` comes BEFORE ``stale`` (EA12-5): the newest activity is a
+#:   member's prompt when ``last_activity_at`` is later than the agent's.
+#: * Only ``in_progress`` goes ``stale``. ``created`` reads ``queued``, and an
+#:   ``awaiting`` run waits for a person, not for the agent.
+#: * Every other status reads as itself.
+AGENT_RUN_STATE_SQL = (
+    "CASE r.status"
+    " WHEN 'created' THEN 'queued'"
+    " WHEN 'in_progress' THEN CASE"
+    "   WHEN r.last_agent_activity_at IS NULL"
+    "     OR r.last_activity_at > r.last_agent_activity_at THEN 'answered'"
+    f"   WHEN r.last_activity_at < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
+    "     THEN 'stale'"
+    "   ELSE 'working' END"
+    " ELSE r.status END"
+)
+
+_OPEN_LIST = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
+
+#: The pill of each task: the newest OPEN run, or else a `failed` run that is
+#: the newest run of its task (EA12-12: the pill stays until a newer run
+#: exists). One query for the page, as `_ASSIGNEES_SQL` does.
+_AGENT_STATE_SQL = f"""
+SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state
+  FROM pm_agent_runs r
+ WHERE r.task_id = ANY(CAST(:ids AS uuid[]))
+   AND (r.status IN ({_OPEN_LIST})
+        OR (r.status = 'failed'
+            AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
+                             WHERE n.task_id = r.task_id
+                               AND (n.created_at, n.id) > (r.created_at, r.id))))
+ ORDER BY r.task_id, (r.status IN ({_OPEN_LIST})) DESC, r.created_at DESC, r.id DESC
+"""
+
+
+def agent_runs_enabled() -> bool:
+    """The flag ``agent_runs_enabled`` (default OFF). The one reader."""
+    from acb_common import get_settings
+
+    return bool(get_settings().agent_runs_enabled)
+
+
+async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill each row's ``agent_state``, mutating and returning the list.
+
+    ``queued``, ``working``, ``awaiting``, ``answered``, ``stopping``,
+    ``stale`` or ``failed``. ``None`` for a task with no open run. While the
+    flag is off, every row gets ``None`` and no statement runs, so the task
+    reads cost nothing until the owner turns the feature on.
+    """
+    for row in rows:
+        row["agent_state"] = None
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids or not agent_runs_enabled():
+        return rows
+    found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
+    by_task = {str(r.task_id): r.state for r in found}
+    for row in rows:
+        row["agent_state"] = by_task.get(str(row["id"]))
+    return rows

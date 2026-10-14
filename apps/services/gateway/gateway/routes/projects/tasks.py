@@ -86,6 +86,7 @@ from gateway.routes.projects.custom_fields import (
     load_definitions,
 )
 from gateway.routes.projects.filters import (
+    attach_agent_state,
     attach_assignees,
     attach_parent_context,
     attach_relation_counts,
@@ -328,6 +329,8 @@ async def list_tasks(
         # card is N+1 across an imported workspace of hundreds.
         page_rows = [row_to_dict(r, TaskModel) for r in rows]
         await attach_assignees(db, page_rows)
+        # WS-55 EA-12a — the agent pill, in one query for the page.
+        await attach_agent_state(db, page_rows)
         await attach_relation_counts(db, page_rows, vis)
         # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
         await attach_parent_context(db, vis, page_rows)
@@ -351,6 +354,8 @@ async def get_task(
         )).fetchall()
         result["assignees"] = [r.assignee for r in assignees]
         result["time_spent_mins"] = await time_spent_mins(db, task_id)
+        # WS-55 EA-12a — the agent pill on the task detail (EA12-10).
+        await attach_agent_state(db, [result])
         return result
 
 

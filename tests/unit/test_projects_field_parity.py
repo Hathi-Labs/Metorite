@@ -666,7 +666,8 @@ def _built_slices() -> set[str]:
 
 def test_the_spec_tables_parse() -> None:
     """A spec edit that breaks the parse would pass every check below."""
-    assert len(_spec_gaps()) == 22
+    # 23 since WS-55 EA-12a added G23, the agent-run routes (EA12-9).
+    assert len(_spec_gaps()) == 23
     assert {"P1", "P2", "P3"} <= _built_slices()
 
 

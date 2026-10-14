@@ -520,10 +520,15 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: :data:`MCP_ROUTES`, and no pair here is a GET. Branch 0 admits a method
 #: other than GET only for one of these pairs, and only with the writes flag,
 #: ``projects:write`` on the connection, a fresh nonce and room under the cap.
+#: EA-12a adds the three POST pairs of the agent runs (spec §12.1). They
+#: share the cap of EA3-30 (EA12-13).
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PATCH", "/projects/tasks/{task_id}"),
     ("POST", "/projects/tasks/{task_id}/refs"),
+    ("POST", "/projects/tasks/{task_id}/agent-runs"),
+    ("POST", "/projects/agent-runs/{run_id}/activities"),
+    ("POST", "/projects/agent-runs/{run_id}/finish"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -531,7 +536,8 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
 #: every other pair, and the edge client reads this set before it sends a
 #: request. EA-3 listed the GET routes of the seven read tools (§9.1). EA-6a
 #: adds the references read and the two write pairs of
-#: :data:`MCP_WRITE_ROUTES` (§9.2). Fence: ``tests/unit/test_mcp_edge_coverage.py``.
+#: :data:`MCP_WRITE_ROUTES` (§9.2). EA-12a adds the three GET pairs of the
+#: agent runs (§12.1). Fence: ``tests/unit/test_mcp_edge_coverage.py``.
 MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/auth/me"),
     ("GET", "/projects/tree"),
@@ -546,6 +552,9 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks/{task_id}/timeline"),
     ("GET", "/projects/tasks/{task_id}/refs"),
     ("GET", "/projects/search"),
+    ("GET", "/projects/tasks/{task_id}/agent-runs"),
+    ("GET", "/projects/agent-runs"),
+    ("GET", "/projects/agent-runs/{run_id}"),
     *MCP_WRITE_ROUTES,
 })
 

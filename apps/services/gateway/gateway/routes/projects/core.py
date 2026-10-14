@@ -713,6 +713,13 @@ class TaskModel(BaseModel):
     #: ⚠️ `row_to_dict` FILTERS through this model, so a column added to the
     #: SELECT and not to the model is dropped without a word.
     view_position: float | None = None
+    #: WS-55 EA-12a (external_agent_access.md §12.1, EA12-10). The derived
+    #: state of the task's newest open agent run: ``queued``, ``working``,
+    #: ``awaiting``, ``answered``, ``stopping``, ``stale`` or ``failed``.
+    #: ``None`` with no open run. A JOIN PRODUCT, like ``view_position``:
+    #: ``filters.attach_agent_state`` fills it on the list rows and on
+    #: ``GET /projects/tasks/{id}``. Every other read leaves it ``None``.
+    agent_state: str | None = None
 
     @field_validator("leveraged", mode="before")
     @classmethod

@@ -62,7 +62,14 @@ from sqlalchemy import text
 #: `nudge` is the in-app half of the follow-up (§9.12.9, WS-27bk wave 6): I am
 #: waiting on you, and I am telling you so, once, on purpose. An OUTWARD nudge —
 #: mail or WhatsApp — is Action-Broker work and owner-gated, and is not this.
-NOTIFICATION_KINDS: tuple[str, ...] = ("assigned", "mention", "comment", "nudge")
+#:
+#: `agent_question` (WS-55 EA-12a, the `pm_agent_runs` migration) is the
+#: question an outside agent asks on a task (`agent_runs.py`, spec
+#: external_agent_access.md §12.1). The actor is the run's `mcp:<slug>`, so
+#: the run's member hears it too.
+NOTIFICATION_KINDS: tuple[str, ...] = (
+    "assigned", "mention", "comment", "nudge", "agent_question",
+)
 
 #: How much of a comment a notification quotes. Long enough to know whether it
 #: needs you, short enough that the bell is a list rather than a reading task.
