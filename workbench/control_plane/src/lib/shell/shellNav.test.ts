@@ -162,6 +162,14 @@ describe("accountMenu: the account, You, Settings and sign-out, from one list", 
     ]);
   });
 
+  it("pages: false (no organization) keeps the account acts and drops You and Settings", () => {
+    expect(rows(accountMenu(member, { layout: true, switcher: true, others: 2, pages: false }))).toEqual([
+      ["current", ["current"]],
+      ["accounts", ["others", "add-account"]],
+      ["sign-out", ["sign-out", "sign-out-all"]],
+    ]);
+  });
+
   it("captions You and Settings, and no other group", () => {
     const g = accountMenu(member, { layout: true, switcher: true, others: 2 });
     expect(g.map((x) => x.label)).toEqual([null, null, "You", "Settings", null]);

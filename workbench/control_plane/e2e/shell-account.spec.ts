@@ -23,6 +23,11 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   5. No Metorite logo in the sidebar or the bar, except the badge of a
  *      workspace with no logo, at the top left.
  *   6. The classic frame keeps its account foot, and the phone is unchanged.
+ *   7. In a short window the menu's top stays in the window, and the menu
+ *      scrolls to its last row (review of 2026-10-14).
+ *   8. A member with no organization keeps the account acts in the org-less
+ *      card: switch, add and a sign-out that fails closed (review of
+ *      2026-10-14).
  * The markup rules are `src/lib/shell/shellAccount.test.ts`.
  */
 
@@ -67,13 +72,14 @@ async function stub(
   calls: string[] = [],
   refuse: Record<string, number> = {},
   branding: unknown = NO_LOGO,
+  me: unknown = MEMBER,
 ) {
   await page.route("**/api/**", async (route: Route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
     const json = (body: unknown) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
-    if (path === "/api/auth/me") return json(MEMBER);
+    if (path === "/api/auth/me") return json(me);
     if (path === "/api/auth/session") return json(SESSION);
     if (path === "/api/health") return json({ gateway: "up" });
     if (path === "/api/accounts") return json(accounts);
@@ -580,6 +586,127 @@ test.describe("the foot's one menu", () => {
     await expect(menu(page)).toBeVisible();
     await page.locator("main").click({ position: { x: 400, y: 300 } });
     await expect(menu(page)).toHaveCount(0);
+  });
+});
+
+// Review of 2026-10-14, P1: the cap was the whole window, and the menu is
+// placed by its bottom edge, so at 1280x600 its top sat at y=-36.
+test.describe("a short window", () => {
+  for (const height of [600, 720]) {
+    for (const folded of [false, true]) {
+      test(`1280x${height}, ${folded ? "folded" : "open"}: the top stays in the window, and the last row is reachable`, async ({ page }) => {
+        await page.setViewportSize({ width: 1280, height });
+        await flags(page, { extra: folded ? { "cc-sidebar-collapsed": "1" } : {} });
+        await stub(page, THREE);
+        await page.goto("/settings/appearance");
+        // From the keyboard: in the dev build, Next's own badge sits over the
+        // folded foot.
+        await trigger(page).focus();
+        await page.keyboard.press("Enter");
+        await expect(menu(page)).toBeVisible();
+        const m = await box(menu(page));
+        expect(m.y, `the menu's top at ${m.y}`).toBeGreaterThanOrEqual(0);
+        expect(m.y + m.height).toBeLessThanOrEqual((await box(trigger(page))).y);
+        // The header shows first.
+        const head = await box(menu(page).locator("[data-current-account]"));
+        expect(head.y).toBeGreaterThanOrEqual(m.y - 0.5);
+        // Taller than its room, it scrolls inside itself.
+        const fit = await menu(page).evaluate((el) => ({
+          over: el.scrollHeight > el.clientHeight + 1,
+          overflow: getComputedStyle(el).overflowY,
+        }));
+        expect(fit.overflow).toBe("auto");
+        if (height === 600) expect(fit.over).toBe(true);
+        // Tab reaches the last row, and the row is in view once it has the focus.
+        const last = menu(page).getByRole("button", { name: "Sign out of all accounts" });
+        await menu(page).locator("button, a").first().focus();
+        for (let i = 0; i < 20 && !(await last.evaluate((el) => el === document.activeElement)); i++) {
+          await page.keyboard.press("Tab");
+        }
+        await expect(last).toBeFocused();
+        const l = await box(last);
+        const after = await box(menu(page));
+        expect(l.y).toBeGreaterThanOrEqual(after.y - 0.5);
+        expect(l.y + l.height).toBeLessThanOrEqual(after.y + after.height + 0.5);
+        expect(l.y + l.height).toBeLessThanOrEqual(height);
+      });
+    }
+  }
+});
+
+// Review of 2026-10-14, P1: no sidebar mounts for a member with no
+// organization, so before this card held them, that member could not switch
+// back to a held account or sign out.
+test.describe("no organization", () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+  const ORGLESS = { ...MEMBER, features: [], organization: {} };
+  const TWO = { ...THREE, others: [THREE.others[0]] };
+  const card = (page: Page) => page.locator("[data-orgless-accounts]");
+
+  test("the org-less card shows the account, the other account, Add and Sign out", async ({ page }) => {
+    await flags(page);
+    await stub(page, TWO, [], {}, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await expect(page.getByRole("heading", { name: "No organization is linked to this email" })).toBeVisible();
+    await expect(aside(page)).toHaveCount(0);
+    await expect(card(page).locator("[data-current-account]")).toContainText("vjvarada@hathilabs.com");
+    await expect(card(page).getByRole("list", { name: "Other accounts" }).getByRole("listitem")).toHaveCount(1);
+    await expect(card(page).getByRole("button", { name: "Add another account" })).toBeVisible();
+    await expect(card(page).getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+    await expect(card(page).getByRole("button", { name: "Sign out of all accounts" })).toBeVisible();
+    // No page that needs an organization.
+    await expect(card(page).getByRole("link")).toHaveCount(0);
+  });
+
+  test("a pick switches ITS slot, then loads /", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, TWO, calls, {}, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await card(page).getByRole("button", { name: /Vijay Raghav Varada/ }).click();
+    await page.waitForURL((u) => u.pathname === "/");
+    expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
+  });
+
+  test("Sign out leaves this account: a switch to the next, then a remove of that slot", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, TWO, calls, {}, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await card(page).getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.waitForURL((u) => u.pathname === "/");
+    expect(calls).toEqual(['/api/accounts/switch {"slot":2}', '/api/accounts/remove {"slot":2}']);
+  });
+
+  test("Sign out fails closed: a remove that fails twice signs out of every account, and says so", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, TWO, calls, { remove: 500 }, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await card(page).getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.waitForURL((u) => u.pathname === "/signin");
+    expect(calls).toEqual([
+      '/api/accounts/switch {"slot":2}',
+      '/api/accounts/remove {"slot":2}',
+      '/api/accounts/remove {"slot":2}',
+      "/api/accounts/signout-all ",
+    ]);
+    await expect(
+      page.locator("h2[data-type='error']", {
+        hasText: "Couldn't sign out of that account alone, so we signed out of all accounts on this browser.",
+      }),
+    ).toBeVisible();
+  });
+
+  test("with one account: Sign out signs out of all of them", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, ONE, calls, {}, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await expect(card(page).getByRole("button", { name: /^Sign out/ })).toHaveCount(1);
+    await card(page).getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.waitForURL((u) => u.pathname === "/signin");
+    expect(calls).toEqual(["/api/accounts/signout-all "]);
   });
 });
 

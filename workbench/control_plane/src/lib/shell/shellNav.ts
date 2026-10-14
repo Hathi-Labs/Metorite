@@ -259,10 +259,13 @@ export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
  * It reads `accountLinks`, so a page is listed once, in one place. ⚠️ A new
  * option is ONE line here, in the group it belongs to. Do not add a row in
  * the component. Fences: `shellNav.test.ts` and `shellAccount.test.ts`.
+ *
+ * `pages: false` drops You and Settings, for a member with no organization
+ * (`OrglessAccounts`). Those pages need an org, and the account acts do not.
  */
 export function accountMenu(
   sections: readonly NavSection[],
-  opts: { layout: boolean; switcher: boolean; others: number },
+  opts: { layout: boolean; switcher: boolean; others: number; pages?: boolean },
 ): AccountMenuGroup[] {
   const links = accountLinks(sections);
   const link = (l: AccountLink): AccountMenuItem => ({ kind: "link", ...l });
@@ -293,7 +296,8 @@ export function accountMenu(
       items: [{ kind: "sign-out" }, ...(others > 0 ? [{ kind: "sign-out-all" } as const] : [])],
     },
   ];
-  return groups.filter((g) => g.items.length > 0);
+  const pages = opts.pages ?? true;
+  return groups.filter((g) => g.items.length > 0 && (pages || (g.id !== "you" && g.id !== "settings")));
 }
 
 /** All apps: every held pane that is an app, by team. */

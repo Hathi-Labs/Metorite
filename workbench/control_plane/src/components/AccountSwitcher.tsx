@@ -423,6 +423,23 @@ export function SidebarAccountFooter({
   );
 }
 
+/** Where the foot's menu sits, from the trigger's box and the window's height. */
+export type FootBox = { left: number; bottom: number; maxHeight: number };
+
+/**
+ * The menu's BOTTOM edge sits 6px above the trigger, and its left edge on the
+ * trigger's. Its height is capped by the room ABOVE the trigger, less 8px, so
+ * its top never leaves the window (review of 2026-10-14, P1). A cap of the
+ * whole window height ignored `bottom`: with three accounts at 1280x600 the
+ * menu's top sat at y=-36, and the header could not scroll back into view.
+ * The menu scrolls inside itself. Fence: `shellAccount.test.ts` and
+ * `e2e/shell-account.spec.ts` "a short window".
+ */
+export function footBox(rect: { left: number; top: number }, innerHeight: number): FootBox {
+  const bottom = innerHeight - rect.top + 6;
+  return { left: Math.max(8, rect.left), bottom, maxHeight: Math.max(0, innerHeight - bottom - 8) };
+}
+
 /**
  * The sidebar's foot with the shell bar on (owner, 2026-10-14). The owner
  * said: "move the account selection and the UI element that shows the
@@ -476,7 +493,7 @@ export function AccountFoot({
   // edge on the button's. ⚠️ Not AnchoredPanel, which places a flipped panel
   // by its top edge from its MAXIMUM height. A short menu then floated about
   // 200px above the button it belongs to.
-  const [box, setBox] = useState<{ left: number; bottom: number } | null>(null);
+  const [box, setBox] = useState<FootBox | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   // Plain functions, so `useDismiss` binds its two listeners again on each
   // render while the menu is open, which costs nothing here. A `useCallback`
@@ -492,6 +509,17 @@ export function AccountFoot({
   // Escape and an outside press.
   const [cover, setCover] = useState<Cover | null>(null);
   useDismiss(open && !cover, close, rootRef, escape);
+  // A resize while the menu is open moves the room above the trigger, so
+  // the place and the cap are measured again.
+  useEffect(() => {
+    if (!open) return;
+    const onResize = () => {
+      const r = rootRef.current?.getBoundingClientRect();
+      if (r) setBox(footBox(r, window.innerHeight));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [open]);
   const active = accounts.active;
   const block = `border-t border-sidebar-border ${collapsed ? "flex flex-col p-2" : "px-2 py-2"}`;
   // The row's place, held while nobody is known yet, so nothing moves.
@@ -509,7 +537,7 @@ export function AccountFoot({
     if (!open) {
       void reload(true);
       const r = rootRef.current?.getBoundingClientRect();
-      if (r) setBox({ left: Math.max(8, r.left), bottom: window.innerHeight - r.top + 6 });
+      if (r) setBox(footBox(r, window.innerHeight));
     }
     setOpen((o) => !o);
   };
@@ -552,8 +580,12 @@ export function AccountFoot({
           <div
             role="dialog"
             aria-label="Account and settings"
-            style={{ left: box.left, bottom: box.bottom }}
-            className="fixed z-[60] max-h-[calc(100vh-1rem)] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-md border border-border bg-card shadow-md"
+            // The cap is the room above the trigger (`footBox`), never the
+            // window. The header is not sticky: in a short window it would
+            // take the room the rows need. The menu opens at its top, so the
+            // header shows first, and the sign-out rows are a scroll away.
+            style={{ left: box.left, bottom: box.bottom, maxHeight: box.maxHeight }}
+            className="fixed z-[60] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto overscroll-contain rounded-md border border-border bg-card shadow-md"
           >
             <AccountFootMenu
               accounts={accounts}
@@ -603,11 +635,14 @@ export function AccountFootMenu({
   onChanged,
   onCover,
   onDone,
+  pages = true,
 }: {
   accounts: Accounts;
   orgName: string;
   sections: readonly NavSection[];
   layout: boolean;
+  /** False drops You and Settings, for a member with no organization. */
+  pages?: boolean;
   onChanged: () => void;
   /**
    * Raises and lowers the cover, which `AccountFoot` holds, outside this menu.
@@ -642,7 +677,7 @@ export function AccountFootMenu({
     }
   };
 
-  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length });
+  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages });
 
   const row = (item: AccountMenuItem) => {
     switch (item.kind) {
@@ -787,6 +822,47 @@ export function AccountFootMenu({
       {/* Only a test render, with no `AccountFoot` above, draws it here. */}
       {!onCover && ownCover && <SwitchingCover email={ownCover.email} message={ownCover.message} />}
     </div>
+  );
+}
+
+/**
+ * The account acts for a member with NO organization (review of 2026-10-14,
+ * P1). `AccessGate` shows them in its org-less card, on every frame.
+ *
+ * The sidebar does not mount for an org-less member (`Sidebar.tsx`, the
+ * `canPoll` gate), so the foot cannot carry them. Before 2026-10-14 the bar's
+ * account widget did. Without this block, an address with no organization,
+ * reached by "Add another account" for one, had no way back to a held
+ * account and no sign-out.
+ *
+ * It draws `AccountFootMenu` in place, with `pages: false`: the current
+ * account, the other accounts, "Add another account" and sign-out. Every
+ * rule of the foot holds. Sign-out fails closed, and the cover lives HERE,
+ * outside the menu. Nothing dismisses an in-place menu, so it needs no
+ * `useDismiss`. Fences: `shellAccount.test.ts` and `e2e/shell-account.spec.ts`
+ * "no organization".
+ */
+export function OrglessAccounts() {
+  const { accounts: switcher, reload } = useAccounts(true);
+  const { data: session } = useSession();
+  const { access } = useAccess();
+  const fallback = session?.user?.email ? session : access.email ? { user: { email: access.email } } : null;
+  const accounts = withSessionFallback(switcher, fallback);
+  const [cover, setCover] = useState<Cover | null>(null);
+  if (!accounts.active) return null;
+  return (
+    <section data-orgless-accounts="" aria-label="Your accounts" className="mt-6 overflow-hidden rounded-lg border border-border bg-card text-left">
+      <AccountFootMenu
+        accounts={accounts}
+        orgName=""
+        sections={[]}
+        layout={false}
+        pages={false}
+        onChanged={() => void reload(true)}
+        onCover={setCover}
+      />
+      {cover && <SwitchingCover email={cover.email} message={cover.message} />}
+    </section>
   );
 }
 

@@ -46,7 +46,7 @@ vi.mock("next-auth/react", () => ({
   signOut: vi.fn(async () => undefined),
 }));
 
-import { AccountFoot, AccountFootMenu } from "@/components/AccountSwitcher";
+import { AccountFoot, AccountFootMenu, OrglessAccounts, footBox } from "@/components/AccountSwitcher";
 import { PANES, visibleSections } from "@/lib/nav";
 import type { Accounts } from "@/lib/accountSwitch";
 import { ShellBarRow } from "./ShellBar";
@@ -192,7 +192,7 @@ describe("the foot's menu: the accounts, You, Settings, then sign-out", () => {
 
   it("draws its rows from accountMenu alone", () => {
     const foot = footSource();
-    expect(foot).toMatch(/accountMenu\(sections, \{ layout, switcher: accounts\.enabled, others: others\.length \}\)/);
+    expect(foot).toMatch(/accountMenu\(sections, \{ layout, switcher: accounts\.enabled, others: others\.length, pages \}\)/);
     expect(foot).not.toMatch(/accountLinks|MY_ACCESS|"\/people\/me"|"\/settings\/appearance"|Change my layout/);
   });
 
@@ -232,6 +232,70 @@ describe("the foot's menu: the accounts, You, Settings, then sign-out", () => {
     const dismiss = code(read("hooks/useDismiss.ts"));
     expect(dismiss).toMatch(/if \(coverUp\(\)\) return;/);
     expect(dismiss).toMatch(/e\.key === "Escape" && !coverUp\(\)/);
+  });
+});
+
+// Review of 2026-10-14, P1: a cap of the whole window ignored `bottom`, and
+// with three accounts at 1280x600 the menu's top sat at y=-36.
+describe("the menu never leaves the top of the window", () => {
+  it("caps its height by the room above the trigger, less 8px", () => {
+    const b = footBox({ left: 4, top: 540 }, 600);
+    expect(b).toEqual({ left: 8, bottom: 66, maxHeight: 526 });
+    // Its top is 8px below the window's top.
+    expect(600 - b.bottom - b.maxHeight).toBe(8);
+    expect(footBox({ left: 20, top: 2 }, 600).maxHeight).toBe(0);
+  });
+
+  it("the foot puts the cap in the style, scrolls inside, and measures again on resize", () => {
+    const foot = footSource();
+    expect(foot).toMatch(/style=\{\{ left: box\.left, bottom: box\.bottom, maxHeight: box\.maxHeight \}\}/);
+    expect(foot).toMatch(/className="fixed z-\[60\] [^"]*\boverflow-y-auto\b/);
+    expect(foot).not.toContain("max-h-[calc(100vh");
+    expect(foot).toMatch(/window\.addEventListener\("resize", onResize\)/);
+    expect(foot.match(/setBox\(footBox\(r, window\.innerHeight\)\)/g) ?? []).toHaveLength(2);
+  });
+});
+
+// Review of 2026-10-14, P1: no sidebar mounts for a member with no
+// organization, so the foot cannot carry the account acts there.
+describe("a member with no organization keeps the account acts", () => {
+  it("the org-less card draws OrglessAccounts", () => {
+    const gate = code(read("components/AccessGate.tsx"));
+    const arm = gate.slice(gate.indexOf("if (isOrgless(access))"), gate.indexOf("if (canSeePath(access, pathname))"));
+    expect(arm).toMatch(/<OrglessAccounts \/>/);
+  });
+
+  it("draws the account and Sign out, and no page that needs an org", () => {
+    const html = renderToStaticMarkup(createElement(OrglessAccounts));
+    expect(text(html)).toBe("A Asha Rao asha@example.com Signed in Sign out");
+    expect(html).not.toContain("<a ");
+  });
+
+  it("with three accounts: the current one, the others, Add and both sign-outs, and no You or Settings", () => {
+    const html = renderToStaticMarkup(
+      createElement(AccountFootMenu, {
+        accounts: {
+          enabled: true,
+          active: { email: "asha@example.com", name: "Asha Rao" },
+          others: [{ slot: 2, email: "asha@fracktal.in", name: "Asha R", organization: "Fracktal Works" }],
+        },
+        orgName: "",
+        sections: SECTIONS,
+        layout: true,
+        pages: false,
+        onChanged: () => {},
+      }),
+    );
+    expect([...html.matchAll(/data-account-group="([^"]+)"/g)].map((m) => m[1])).toEqual(["current", "accounts", "sign-out"]);
+    expect(text(html)).toMatch(/Add another account Sign out Sign out of all accounts$/);
+  });
+
+  it("holds the cover outside the menu, as the foot does", () => {
+    const src = SWITCHER();
+    const block = src.slice(src.indexOf("export function OrglessAccounts"), src.indexOf("export function DrawerAccountHeader"));
+    expect(block).toMatch(/onCover=\{setCover\}/);
+    expect(block).toMatch(/pages=\{false\}/);
+    expect(block).toMatch(/\/>\s*\{cover && <SwitchingCover email=\{cover\.email\} message=\{cover\.message\} \/>\}\s*<\/section>/);
   });
 });
 
