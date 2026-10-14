@@ -15,9 +15,12 @@ Each is dark behind `NEXT_PUBLIC_MY_DAY_FEED`, or by the absence of a caller.
 group and the honest summary, dark behind `NEXT_PUBLIC_MY_DAY_FEED`. So MD-2
 is complete.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3 to
-MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12. Each
-ships dark.
+**MD-5b is BUILT, 2026-10-14** (the `my_day` loop, no migration, dark
+behind `MY_DAY_LOOP_ENABLED`).
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3,
+MD-4, MD-5a, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -205,8 +208,8 @@ owner's list. §15 adds eight ideas that are not cards.
 | The `decide` mode registry | `off`, `shadow`, `on` for each feature. `on` only for a feature in `ON_FEATURES`. `shadow` logs one comparison for each call | `apps/services/gateway/gateway/decide_features.py:105`, `:122`, `:716-801` |
 | Background loops | `asyncio` loops in the gateway lifespan. Each loop holds its own kill switch | `gateway/main.py:40-48` |
 | The best loop to copy | CRM mirror sync: a 60 s tick, `is_due`, three at once, a run lock in a table | `gateway/crm_sync/scheduler.py:49`, `:71`, `:104` |
-| A member's access outside a request | `member_context(email)` resolves the same context a signed-in request gets. The WhatsApp channel calls it, and refuses a context in another org | `packages/acb_auth/acb_auth/deps.py:388` · `routes/whatsapp_channel/views.py:142-155` |
-| Change events | An in-process bus. Projects emits `pm.*` and awaits it inline, and two sinks listen | `apps/services/ingestion/ingestion/event_hooks.py:32`, `:43` · `gateway/main.py:1612-1621` |
+| A member's access outside a request | `member_context(email)` resolves the same context a signed-in request gets. The WhatsApp channel calls it, and refuses a context in another org | `packages/acb_auth/acb_auth/deps.py:405` · `routes/whatsapp_channel/views.py:142-155` |
+| Change events | An in-process bus. Projects emits `pm.*` and awaits it inline, and two sinks listen | `apps/services/ingestion/ingestion/event_hooks.py:32`, `:43` · `gateway/main.py:1623`, `:1630` |
 | A job that calls a model as a member | `as_mailbox_owner` binds the member, so the Router bills the right one | `routes/email/scheduler_hooks.py:53` |
 | Out-of-app delivery | WhatsApp templates are spec only (WAC-7). Web push is spec only (D-2) | `whatsapp_assistant_channel.md` §5.8 · `chat_run_continuity.md` |
 | Deep links | Task, project, report, email and CRM have one. **Calendar has none.** Approvals opens the queue only | §12 |
@@ -822,7 +825,7 @@ one provider run makes the time-derived cards appear on time.
 ### 8.2 The change sink
 
 The gateway registers a third sink on the in-process bus, beside the two at
-`gateway/main.py:1612-1621`.
+`gateway/main.py:1623` and `:1630`.
 
 - **It reads the members from the event's payload only**, for example the
   assignee and the actor of a `pm.*` event. It bumps their feed version with
@@ -856,7 +859,7 @@ model call.
    from the RLS-exempt table, a tenant-discovery site registered in
    `tests/unit/test_db_engine_seam.py`.
 2. Builds the member's context with `acb_auth.deps.member_context(email)`
-   (`deps.py:388`). That is the request path's own resolve, so the features,
+   (`deps.py:405`). That is the request path's own resolve, so the features,
    the admin test and the visibility match a web request.
 3. Refuses a context whose organization is not the bound one, the check of
    `routes/whatsapp_channel/views.py:142-155`. A member who left the
@@ -876,6 +879,168 @@ from the session's identity.
 - 15 minutes before `day_start_hour`: **the morning pass**. So the first visit
   of the day already has the judged order, and the order does not jump under
   the member's eyes.
+
+---
+
+### 8.4 How MD-5 runs these parts (decided 2026-10-14)
+
+The MD-5 audit found fifteen gaps in §8.1 to §8.3. These answers close them.
+Where this section and an earlier one differ, this section wins.
+
+**1. Two versions, not members from the payload.** Of the `pm.*`
+events, only `pm.task.assigned` names its members. So the sink cannot find the
+members of an edit. There are two versions instead:
+
+- An org version, `key("my_day", "ver")`. The sink bumps it on each `pm.*`
+  event. It takes the org from `acb_common.db.current_tenant()`, or else from
+  `payload["organization_id"]`. One edit then refreshes each member of the
+  org once. That is the cost, and it is bounded by the poll.
+- A member version, `key("my_day", "ver", <member>)`. These bump it: the
+  member's own `POST /shell/feed/state` and `PUT /shell/feed/prefs`, and the
+  post-sync hook of each mailbox the member owns.
+
+**2. The edges.** The next time edge is the earliest of these:
+
+- each block start minus 30 minutes, for the member's blocks of today, also
+  outside the 30-minute window. The Calendar provider hands it back in a new
+  field, `Found.next_edge`.
+- each `urgent_at`, each `expires_at`, and each due time minus 2 hours
+- each `snoozed_until` of the member's state rows
+- the day start, the day start plus 60 minutes (the grace of `no_plan_yet`),
+  and the day end minus 60 minutes
+
+**3. Countdowns.** A card can count down in its why line, as "Starts in 20
+min" does. While the answer holds one, it is valid for 60 seconds at most.
+The why keys that count down are `starts_in` and `due_soon`.
+
+**4. The keys,** all through `tenant_redis.key()`. The member is lower-case.
+
+- `key("my_day", "answer", <member>, <limit>, <features hash>)`: one JSON
+  value that holds the answer, its edge and the two versions. The TTL is the
+  edge minus now, and 600 seconds at most. The features hash is of the
+  member's effective feature set, so a revoked app stops its cards at once.
+- `key("my_day", "active")`: a sorted set of members, scored by the time of
+  their last feed read.
+
+**5. The ETag.** The gateway sends an ETag, and item 16 says what it holds.
+The BFF route passes `If-None-Match` on, and passes a 304 back as a 304.
+`fetchFeed` keeps the tag. On a 304 it keeps its cached answer, stamps
+`fetchedAt` again, and writes the needs view again.
+
+A write that changes the answer always bumps a version. So a 304 can never
+stand for an answer from before a write. The new stamp also fixes the
+5-second carried needs.
+
+**6. Redis fails open.** With Redis down, the read runs the providers as
+today. The sink and the active-set write log the failure and go on. The sink
+waits 50 ms at most, because Projects awaits `emit` inline in each write.
+
+**7. Dark by a server flag.** `MY_DAY_CACHE`, default false, is a field in
+`packages/acb_common/acb_common/settings.py`. It gates the cache,
+the sink and the bumps. It is read in one place, and a test fences it. With
+it off, every read runs the providers, as today.
+
+**8. What waits.** These change the answer, and bump no version. Each waits
+for the edge, or 600 seconds at most:
+
+- an approval
+- a mailbox the member reads but does not own
+- a Calendar change that is not a task edit
+- a Handled entry of another member
+
+**9. Paging is not in MD-5.** The column keeps `limit=40`. The cache keys on
+`limit`, so a later ticket can page with no change to the cache.
+
+**10. The loop's switch.** `MY_DAY_LOOP_ENABLED`, default false. It differs
+from the default-on rule of `gateway/main.py:36-50`, which was written for
+loops that already ran. `CRM_MIRROR` is the default-off precedent.
+
+**11. What the loop does before MD-6a.** It trims the active set, and it runs
+the sweep. MD-5 builds no member pass. MD-6a builds it with its first judge,
+and items 12 and 24 bind it. The morning pass and the "dirty" rule move to
+MD-6a too.
+
+**12. The member pass, when it runs.** Each member runs in a task of its own,
+because `member_context` binds a tenant and never releases it. Before
+`member_context`, the loop checks the member by item 24. A member who left is removed from the active set and
+skipped. So `member_context` never files a sign-in request for a departed
+address.
+
+**13. Orgs and members.** The loop reads `organization`, as a new entry in
+`H2_TENANT_DISCOVERY_SITES` modelled on the CRM loop. For each org, inside
+`organization_scope(org)`, it trims the active set to the last 3 days and
+reads it. Three members run at once at most.
+
+**14. The sweep.** One statement for each org each day, inside
+`tenant_session(org)`:
+`DELETE FROM my_day_card_state WHERE updated_at < now() - interval '30 days'`.
+It needs no migration. MD-6a adds the same sweep of `my_day_judgments`.
+
+**15. `TenantRedis` gains sorted sets.** `zadd`, `zrangebyscore`, `zrem` and
+`zremrangebyscore`, each with a typed key first.
+
+**16. The ETag names the body.** When the gateway stores an answer, it hashes
+the body. The hash is SHA-256 of the JSON with sorted keys, cut to 16 hex
+characters. The ETag is `W/"<hash>"`.
+
+A hit answers 304 only when
+`If-None-Match` equals the stored tag. A recompute answers 304 only when its
+own body has the same hash. So a 304 never stands for a different body.
+
+**17. Read the versions first.** The read takes the two versions before it
+runs the providers, and stores those values with the answer. A write during
+the compute then bumps past the stored values, so the next read misses.
+
+**18. A failed source is not cached.** An answer with a source of `failed`,
+or with `handled_ok` false, is served and not stored. The next poll runs the
+providers again.
+
+**19. The email bump.** The `on_new_mail` hook bumps the member version of
+the mailbox owner. A change from `classify_threads` waits for the edge, or
+600 seconds at most. So does a change from a path that skips `on_new_mail`.
+
+**20. The Redis binding.** `tenant_redis` binds its own tenant, apart from
+`acb_common.db`. So the read does its Redis work inside
+`organization_scope(user.organization_id)`. The sink does its work inside
+`organization_scope(current_tenant())`. The precedent is
+`routes/shell/intent.py:285`.
+
+An emit with no bound tenant bumps nothing, unless its payload names
+`organization_id`. Only `pm.task.assigned` does. Such a change waits for the
+edge, or 600 seconds at most. The sink gets its own `try` in `main.py`, apart
+from the workflows block, so a failed workflows import does not drop it.
+
+**21. The hash and the snooze edge.** The features hash covers each grant
+that gates a provider: the member's `feature:*` grants, and
+`ADMIN_PERMISSION` (`needs.py:845-847`), sorted. `state.apply_state` also returns the earliest
+`snoozed_until` of the rows it hides, for item 2.
+
+**22. The active-set write.** The feed read writes the active set only while
+`MY_DAY_LOOP_ENABLED` is on. A Redis failure logs, and the read serves the
+answer.
+
+**23. The sweep, exactly.** It runs once a day for each org. The guard is
+`SET key("my_day", "swept", <date>) NX EX 90000`. It deletes rows older than
+30 days in these states:
+
+- `seen` and `later`
+- a time snooze that ended: `snoozed`, with `snooze_on_change` false and
+  `snoozed_until` in the past
+
+It keeps `dismissed`, `acted` and the snoozes until a change. To delete one
+of those brings its card back as new, against §6.3 rule 2 and §6.4.
+
+**24. Departed, for MD-6a.** The member pass treats a member as departed when
+one of these holds:
+
+- `resolve_identity` gives no org, and `identity_read_failed()` is false.
+- `resolve_identity` gives an org that is not the loop's org.
+- `app_user.status` is not `active`.
+
+With `IDENTITY_CUTOVER` off, `resolve_identity` reads `app_user` with no
+status filter. That is why the third check exists. A departed member leaves
+the active set. A failed identity read skips the member, and keeps it in the
+set.
 
 ---
 
@@ -1619,7 +1784,7 @@ Done when:
 
 **Not in MD-1b, and where each part went.** The honest counts of §6.7 and the
 card menu go to MD-2, because each needs its state table. `stale_next` is
-MD-3. Server paging with a cursor goes to MD-5. The keys of §14.3 go to
+MD-3. Server paging is dropped by MD-5 (§8.4 item 9). The keys of §14.3 go to
 MD-9.
 
 **Flag-on follow-ups of MD-1b.** Each one waits on a later ticket. None of
@@ -2093,21 +2258,89 @@ negative test, as NS-3 done-when 3 has. Two more:
 `navigation_shell.md` §5.1. Done when each body renders in the `visual-review`
 contexts, and `conformance.test.ts` passes with no new budget.
 
-### MD-5 · The loop, the change sink and the read cache — AGENT-SAFE
+### MD-5 · The cache and the loop — AGENT-SAFE, in two slices
 
-The `my_day` loop with its kill switch, the active set, and the member's
-context of §8.3. The third event sink, the feed version, the next time edge
-and the 304 path.
+The MD-5 audit of 2026-10-14 gave NO-GO, and split the ticket in two. §8.4
+holds the answers. MD-5a and MD-5b may build at the same time. MD-5b adds one
+call to `feed.py`, and MD-5a owns the rest of that file.
+
+### MD-5a · The read cache — AGENT-SAFE
+
+Files:
+
+- `routes/shell/feed.py`, and a new `routes/shell/cache.py`
+- `needs.py`, for `Found.next_edge`
+- `state.py` and `prefs.py`, for the member bumps
+- the sink in `gateway/main.py`
+- `routes/email/scheduler_hooks.py`, for the `on_new_mail` bump
+- the BFF route `src/app/api/shell/feed/route.ts`
+- `fetchFeed` in `src/lib/shell/feed.ts`
 
 Done when:
 
-1. `test_my_day_loop.py` (§8.3) passes.
-2. A measured run shows no provider query from a quiet member's poll
-   before its next time edge. The run is in the PR.
-3. A test shows that a `block_soon` card appears 30 minutes before its block
-   with no event in between.
-4. The sink makes no database query. A test counts the queries of one task
-   edit with the sink on and off.
+1. A hit runs no provider, no `state.apply_state` and no
+   `handled.handled_run`. A test patches each one and asserts no call.
+2. On a hit, the route body runs 0 SQL statements. The identity resolve of
+   each request is counted apart.
+3. A `block_soon` card appears 30 minutes before its block, with no event in
+   between.
+4. A task edit bumps the org version, and the sink runs no SQL. A test counts
+   the statements of one edit with the sink on and off.
+5. A state POST and a prefs PUT bump the member version.
+6. A 304 keeps the client's answer and writes the needs view again.
+7. A Redis outage serves the uncached answer.
+8. With `MY_DAY_CACHE` off, every read runs the providers, and the sink and
+   the bumps do nothing.
+9. A revoked feature stops its cards at the next read, through the hash. A
+   revoked admin permission stops the approval cards the same way.
+10. A recompute whose body differs never answers 304 (§8.4 item 16).
+11. A write during a compute makes the next read miss (item 17).
+12. An answer with a failed source, or with `handled_ok` false, is not
+    stored (item 18).
+
+Fences: `tests/unit/test_my_day_cache.py`, and
+`tests/unit/test_my_day_cache_r8.py` for the statement count. The Redis
+tests run a fake under the real `TenantRedis`, as
+`tests/unit/test_mcp_edge_writes.py` does. CI has no Redis, so a test that
+needs a real one skips, and that skip is not a pass.
+
+### MD-5b · The loop — AGENT-SAFE
+
+Files:
+
+- a new `gateway/my_day_loop.py`
+- `gateway/main.py`, to start and stop it beside the CRM mirror
+- `packages/acb_common/acb_common/settings.py`, for `MY_DAY_LOOP_ENABLED`,
+  beside `crm_mirror` at line 261
+- `packages/acb_common/acb_common/tenant_redis.py`, for the sorted sets
+- the active-set write in `routes/shell/feed.py`
+- `tests/unit/test_db_engine_seam.py`, for the discovery site
+
+Done when:
+
+1. `TenantRedis` has `zadd`, `zrangebyscore`, `zrem` and
+   `zremrangebyscore`, each with a typed key first.
+   `tests/unit/test_tenant_redis.py` fences them.
+2. `tests/unit/test_my_day_loop.py` shows that the loop reads members only
+   from the active set. The test seeds a fake under the real `TenantRedis`.
+   It also shows that the read writes the set only from the session's
+   identity.
+3. With `MY_DAY_LOOP_ENABLED` off, the loop starts no task, and the read
+   writes no active set.
+4. The loop runs no member pass. MD-6a builds the pass, with the two other
+   fences of §8.3 and with §8.4 item 24.
+5. The sweep follows §8.4 item 23. `tests/unit/test_my_day_loop_r8.py`, with
+   `_DB_GATE`, shows that it deletes only the bound org's rows, and that a
+   `dismissed` row survives.
+
+**BUILT, 2026-10-14.** The loop is `gateway/my_day_loop.py`, and it ships
+dark behind `MY_DAY_LOOP_ENABLED`. Two choices differ from the file list:
+
+- The sweep statement lives in `routes/shell/state.py`, as
+  `sweep_old_rows`. That module stays the one writer of
+  `my_day_card_state`, as migration 258 says. The loop calls it.
+- The active-set write waits 0.25 seconds at most. A slow Redis cannot hold
+  the feed read.
 
 ### MD-6a · The `decide` pass, in shadow — AGENT-SAFE (build), OWNER-GATE (turn on)
 
@@ -2248,7 +2481,9 @@ uv run ruff check apps/services/gateway/gateway/routes/shell
 uv run pytest tests/unit/test_my_day_state.py tests/unit/test_my_day_state_r8.py -q
 uv run pytest tests/unit/test_my_day_prefs.py tests/unit/test_my_day_prefs_r8.py -q
 uv run pytest tests/unit/test_feed_handled.py tests/unit/test_feed_handled_r8.py -q  # MD-2c
-# MD-5 adds tests/unit/test_my_day_loop.py, and MD-6a adds tests/unit/test_feed_decide.py
+uv run pytest tests/unit/test_my_day_cache.py tests/unit/test_my_day_cache_r8.py tests/unit/test_my_day_loop.py tests/unit/test_my_day_loop_r8.py tests/unit/test_tenant_redis.py tests/unit/test_db_engine_seam.py -q  # MD-5
+uv run ruff check apps/services/gateway/gateway/my_day_loop.py apps/services/gateway/gateway/main.py apps/services/gateway/gateway/routes/email/scheduler_hooks.py packages/acb_common/acb_common/tenant_redis.py  # MD-5
+# MD-6a adds tests/unit/test_feed_decide.py
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 

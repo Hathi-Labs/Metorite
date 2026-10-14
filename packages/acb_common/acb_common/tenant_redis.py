@@ -572,6 +572,34 @@ class TenantRedis:
     async def hincrbyfloat(self, k: TenantKey, name: str, amount: float = 1.0) -> Any:
         return await self._client.hincrbyfloat(self._raw(k), name, amount)
 
+    # -- sorted sets (the My Day active set, WS-58 MD-5b) -------------------
+    #
+    # A member is a value INSIDE the set, never a key, so it needs no tenant
+    # check of its own: the key that holds it carries the tenant.
+
+    async def zadd(self, k: TenantKey, mapping: Mapping[str, float], **kwargs: Any) -> Any:
+        """``ZADD``: set the score of each member of *mapping*."""
+        return await self._client.zadd(self._raw(k), dict(mapping), **kwargs)
+
+    async def zrangebyscore(
+        self, k: TenantKey, min_score: float | str, max_score: float | str, **kwargs: Any,
+    ) -> Any:
+        """``ZRANGEBYSCORE``: the members with a score in the closed range."""
+        return await self._client.zrangebyscore(self._raw(k), min_score, max_score, **kwargs)
+
+    async def zrem(self, k: TenantKey, *members: str) -> Any:
+        """``ZREM``: remove the named members. No member sends nothing."""
+        raw = self._raw(k)
+        if not members:
+            return 0
+        return await self._client.zrem(raw, *members)
+
+    async def zremrangebyscore(
+        self, k: TenantKey, min_score: float | str, max_score: float | str,
+    ) -> Any:
+        """``ZREMRANGEBYSCORE``: remove the members with a score in the range."""
+        return await self._client.zremrangebyscore(self._raw(k), min_score, max_score)
+
     # -- streams ------------------------------------------------------------
 
     async def xadd(self, k: TenantKey, fields: Mapping[str, Any], **kwargs: Any) -> Any:
