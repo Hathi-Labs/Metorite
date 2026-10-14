@@ -33,6 +33,18 @@
 > CIMD document. Rows O1 to O6, O9 and O11 to O13 pass, and each was red
 > first. No migration.
 
+> **The Zoho CRM tile (BUILT 2026-10-14).** The APIs view showed Zoho CRM as
+> "Not set up" while the CRM held a live Zoho connection. The gateway read
+> the operator's `ZOHO_*` keys, and the client counted key rows only. No
+> migration.
+>
+> `APP_OWNED_SERVICES` in `routes/integrations.py` now maps the tile to the
+> CRM's row (`zoho`, `crm`). The status reads that row in the tenant session
+> and offers no key form. The test reads the CRM's own credential.
+> `APP_OWNED_TILES` in `lib/connections.ts` is the client mirror, and the
+> panel links to CRM settings. The fences are `test_integrations_zoho_tile.py`,
+> `test_integrations_zoho_tile_r8.py` and `appOwnedTile.test.ts`.
+
 **Five facts of IN-8a that the design did not state:**
 
 1. **The runtime of IN-8a.** With the flag on, a run sends the stored access

@@ -38,7 +38,10 @@ export interface IntegrationStatus {
   missing_keys: string[];
   /** Which credential keys are stored in the encrypted Postgres DB (e.g. ["client_id", "client_secret"]). */
   db_keys?: string[];
-  /** Storage source: "encrypted-db" | "env-file" | "none". */
+  /**
+   * Storage source: "encrypted-db" | "env-file" | "app" | "none". "app" is a
+   * tile whose connection an app owns, such as Zoho CRM (`APP_OWNED_TILES`).
+   */
   storage?: string;
   /** Category for tile grid filtering (e.g. "crm", "email", "core"). */
   category?: string;
