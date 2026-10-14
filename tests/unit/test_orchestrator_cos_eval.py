@@ -111,10 +111,17 @@ def test_the_live_overruns_are_recorded_and_fail_the_cap() -> None:
         assert run.check(cases[cid], bad["text"], bad.get("card", ""))["length"] is False, cid
 
 
-def test_the_baseline_keeps_the_after_slot_free_for_the_next_run() -> None:
+def test_the_live_arms_of_2026_10_14_are_recorded() -> None:
+    """The owner's live run of 2026-10-14 filled the ``after`` slot.
+
+    The brevity role took ``length`` from 7/14 to 11/14. The same-day rerun
+    of the first role stayed at 7/14, so the gain is the prompt, not the day.
+    """
     arms = json.loads((run.HERE / "results.json").read_text(encoding="utf-8"))["arms"]
-    assert set(arms) == {"before", "role_v1"}
+    assert {"before", "role_v1", "after", "role_v1_rerun"} <= set(arms)
     assert arms["role_v1"]["summary"]["checks"]["length"] == "7/14"
+    assert arms["after"]["summary"]["checks"]["length"] == "11/14"
+    assert arms["role_v1_rerun"]["summary"]["checks"]["length"] == "7/14"
 
 
 # ── The harness: a replayed tool turn carries reasoning_content ────────────
