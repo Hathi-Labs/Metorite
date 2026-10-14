@@ -766,7 +766,7 @@ async def _judge(user: UserContext, now: datetime | None) -> Judged:
         return olds
 
     # One shadow for each request, all at once (fix round 1). A request that
-    # fails costs only itself: `_ask_all` gives no answer for a call with one
+    # fails costs only itself: the helper gives no answer for a call with one
     # failed request, so one call for the whole pass would throw away each
     # billed answer of the other requests.
     made: list[df.Comparison] = []

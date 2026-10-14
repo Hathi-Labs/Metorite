@@ -114,10 +114,14 @@ class FakeRedis:
 
 class FakeDecide:
     """Records each call, and answers each question. ``choice`` maps a short
-    feature name to the key it answers. ``raises`` raises instead."""
+    feature name to the key it answers. ``raises`` raises instead.
+    ``fail_if`` raises ``raises`` only for a request whose question ids it
+    names. ``rid_by_qid`` names each request by its first question id, so a
+    test can tell which request answered which question."""
 
     def __init__(self, *, choice: dict[str, str] | None = None, level: str | None = "high",
-                 score: Any = 3, p: float = 0.9, raises: BaseException | None = None) -> None:
+                 score: Any = 3, p: float = 0.9, raises: BaseException | None = None,
+                 fail_if: Any = None, rid_by_qid: bool = False) -> None:
         self.calls: list[dict[str, Any]] = []
         self.choice = choice or {}
         self.level = level
@@ -125,10 +129,12 @@ class FakeDecide:
         self.p = p
         self.raises = raises
         self.rid = 0
+        self.fail_if = fail_if
+        self.rid_by_qid = rid_by_qid
 
     async def __call__(self, state, questions, **kwargs):
         self.calls.append({"state": state, "questions": dict(questions), **kwargs})
-        if self.raises is not None:
+        if self.raises is not None and (self.fail_if is None or self.fail_if(questions)):
             raise self.raises
         answers: dict[str, Any] = {}
         for qid, q in questions.items():
@@ -146,7 +152,8 @@ class FakeDecide:
                     probabilities=MappingProxyType({k: 0.1 for k in keys}),
                     confidence=0.73)
         self.rid += 1
-        return acb_llm.Decision(answers=MappingProxyType(answers), request_id=f"req-{self.rid}")
+        rid = f"req-{next(iter(questions))}" if self.rid_by_qid else f"req-{self.rid}"
+        return acb_llm.Decision(answers=MappingProxyType(answers), request_id=rid)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -312,7 +319,8 @@ class TestTheRegistry:
         assert "decide_feature_modes" not in source
         assert "my_day_decide_orgs" not in source
         assert "df.shadow(" in source and "df.mode_for(" in source
-        assert "asyncio.gather" not in source and "acb_llm import decide" not in source
+        # It never calls the facade or the private gather of the helper.
+        assert "acb_llm import decide" not in source and "_ask_all" not in source
 
 
 # ── Done-when 2: the org list ───────────────────────────────────────────────
@@ -370,7 +378,8 @@ class TestShadow:
             ("tasks:2", "my_day.weight"), ("tasks:2", "my_day.next_act"),
             ("tasks:2", "my_day.resurface")])
         assert {r["mode"] for r in got} == {"shadow"} and {r["used"] for r in got} == {False}
-        assert rows[0][0] == ME.lower()
+        # Exactly as my_day_card_state writes it: the session's address.
+        assert rows[0][0] == ME
         one = {r["feature"]: r for r in got if r["signal_id"] == "tasks:1"}
         assert one["my_day.triage"]["old_value"] == "needs_you"
         assert one["my_day.triage"]["judged_value"] == "later"
@@ -546,12 +555,14 @@ class TestRuleTwo:
 
 def _many(n: int) -> list[dict[str, Any]]:
     # 8 cards fill one request (8 cards, 16 questions: triage and weight).
-    return [_card(f"tasks:{i}", score=50 - i, acts=ACTS[:1], fp=f"fp{i:06d}") for i in range(n)]
+    # Two apps, so the feed's cap of 15 cards for each app keeps all of them.
+    return [_card(f"tasks:{i}", score=50 - i, acts=ACTS[:1], fp=f"fp{i:06d}",
+                  app=("tasks", "email")[i % 2]) for i in range(n)]
 
 
 class TestCaps:
     def _member_key(self) -> str:
-        return f"cc:{ORG}:my_day:calls:{ME.lower()}:2026-10-14"
+        return f"cc:{ORG}:my_day:calls:{ME}:2026-10-14"
 
     def _org_key(self) -> str:
         return f"cc:{ORG}:my_day:calls:org:2026-10-14"
@@ -615,6 +626,40 @@ class TestCaps:
         _cards(monkeypatch, _many(2))
         out = await feed_decide.judge(_user(), NOW)
         assert out.reason == "failed" and fake.calls == [] and rows == []
+
+    async def test_two_zones_of_one_org_share_one_utc_org_bucket(
+            self, tenant, monkeypatch, redis, rows):
+        """Fix round 1: the org counter keys on the UTC date. At 20:00 UTC
+        a member in IST is on the 15th and a member in US Pacific on the
+        14th. With a ceiling of 1, the second member gets no call."""
+        _modes(monkeypatch)
+        monkeypatch.setenv("MY_DAY_DECIDE_ORG_DAILY_CALLS", "1")
+        _clear()
+        fake = _fake(monkeypatch)
+        _cards(monkeypatch, _many(2))
+        late = datetime(2026, 10, 14, 20, 0, tzinfo=UTC)
+        ist, pac = "ist.member@md6a.example", "pac.member@md6a.example"
+        dates = {ist: "2026-10-15", pac: "2026-10-14"}
+
+        async def _ctx(user, now, day):
+            return feed_decide.MemberContext(local_date=dates[user.email], role="employee")
+
+        monkeypatch.setattr(feed_decide, "read_context", _ctx)
+
+        def _member_user(email: str) -> UserContext:
+            return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=ORG,
+                               access=EffectiveAccess(role_granted=frozenset()))
+
+        first = await feed_decide.judge(_member_user(ist), late)
+        second = await feed_decide.judge(_member_user(pac), late)
+        assert (first.reason, second.reason) == ("asked", "cap")
+        assert len(fake.calls) == 1
+        org_keys = [k for k in redis.store if ":my_day:calls:org:" in k]
+        assert org_keys == [f"cc:{ORG}:my_day:calls:org:2026-10-14"]
+        assert redis.store[org_keys[0]] == "1"
+        # The member counters keep each member's local date.
+        assert redis.store[f"cc:{ORG}:my_day:calls:{ist}:2026-10-15"] == "1"
+        assert redis.store[f"cc:{ORG}:my_day:calls:{pac}:2026-10-14"] == "0"
 
     def test_a_request_holds_8_cards_and_16_questions_at_most(self):
         ctx = feed_decide.MemberContext(local_date="2026-10-14")
@@ -722,6 +767,28 @@ class TestTheCooldown:
         assert out.reason == "cooldown" and len(fake.calls) == 1
         assert cards == before
 
+    async def test_a_my_day_403_starts_no_cooldown(self, tenant, monkeypatch, redis,
+                                                   ctx_box, rows):
+        _modes(monkeypatch)
+        fake = _fake(monkeypatch, raises=acb_llm.DecideUnavailable("forbidden", status=403))
+        _cards(monkeypatch, _many(2))
+        await feed_decide.judge(_user(), NOW)
+        assert len(fake.calls) == 1 and not df.cooling()
+        assert df._cooldown_until == {}
+
+    async def test_an_email_403_still_starts_it(self, tenant, monkeypatch):
+        _modes(monkeypatch, "email.cold_check=shadow", email_orgs=ORG)
+        _fake(monkeypatch, raises=acb_llm.DecideUnavailable("forbidden", status=403))
+
+        async def _old():
+            return "old"
+
+        q = acb_llm.BooleanQuestion(instructions="x")
+        out = await df.shadow("email.cold_check", _old, account_id="a",
+                              build=lambda: ({}, {"cold": q}),
+                              compare=df.compare_boolean(lambda r: True, qid="cold"))
+        assert out == "old" and df.cooling()
+
     async def test_shadow_itself_honours_the_cooldown(self, tenant, monkeypatch):
         _modes(monkeypatch, "email.cold_check=shadow", email_orgs=ORG)
         fake = _fake(monkeypatch)
@@ -738,6 +805,35 @@ class TestTheCooldown:
         assert out == "old" and fake.calls == []
         skipped = [c for c in caps if c.get("event") == "decide.shadow_skipped"]
         assert skipped and skipped[0]["reason"] == "cooldown"
+
+
+# ── Fix round 1: a failed request costs only itself ─────────────────────────
+
+
+class TestPartialFailure:
+    async def test_the_middle_request_fails_and_the_other_two_record(
+            self, tenant, monkeypatch, redis, ctx_box, rows):
+        _modes(monkeypatch)
+        # 24 cards with two questions each: three requests of 8 cards. The
+        # second request holds c8 to c15, and it fails with a 503.
+        fake = _fake(monkeypatch, raises=acb_llm.DecideUnavailable("HTTP 503", status=503),
+                     fail_if=lambda questions: "c8.triage" in questions)
+        _cards(monkeypatch, _many(24))
+        out = await feed_decide.judge(_user(), NOW)
+        assert out.reason == "asked" and out.requests == 3 and len(fake.calls) == 3
+        got = _all_rows(rows)
+        judged = {r["signal_id"] for r in got}
+        assert judged == {f"tasks:{i}" for i in (*range(8), *range(16, 24))}
+        assert len(got) == 32
+        # The two good requests keep their own request ids.
+        assert {r["request_id"] for r in got if r["signal_id"] == "tasks:0"} != {
+            r["request_id"] for r in got if r["signal_id"] == "tasks:16"}
+        # Their answers are cached: the next pass asks the failed request only.
+        fake.fail_if = lambda questions: False
+        fake.raises = None
+        again = await feed_decide.judge(_user(), NOW)
+        assert again.requests == 1 and len(fake.calls) == 4
+        assert {r["signal_id"] for r in rows[-1][1]} == {f"tasks:{i}" for i in range(8, 16)}
 
 
 # ── §10.9 item 9: every mode off ────────────────────────────────────────────
@@ -824,7 +920,7 @@ class TestTheHelpers:
     async def test_one_log_line_and_one_request_id_for_each_comparison(self, tenant,
                                                                       monkeypatch):
         _modes(monkeypatch, "my_day.triage=shadow")
-        _fake(monkeypatch)
+        _fake(monkeypatch, rid_by_qid=True)
         got: list[df.Comparison] = []
 
         async def _old():
@@ -848,8 +944,10 @@ class TestTheHelpers:
         lines = [c for c in caps if c.get("event") == "decide.shadow"]
         assert [(ln["decide_feature"], ln["decide_item"]) for ln in lines] == [
             ("my_day.resurface", "tasks:c0.r"), ("my_day.resurface", "tasks:c1.r")]
-        assert sorted(c.request_id for c in got) == ["req-1", "req-2"]
-        assert sorted(ln["request_id"] for ln in lines) == ["req-1", "req-2"]
+        # Each item gets the id of the request that ASKED it, not a neighbour's.
+        assert {c.qid: c.request_id for c in got} == {"c0.r": "req-c0.r", "c1.r": "req-c1.r"}
+        assert {ln["decide_item"]: ln["request_id"] for ln in lines} == {
+            "tasks:c0.r": "req-c0.r", "tasks:c1.r": "req-c1.r"}
 
     async def test_a_failed_record_never_reaches_the_caller(self, tenant, monkeypatch):
         _modes(monkeypatch, "my_day.triage=shadow")
@@ -869,6 +967,24 @@ class TestTheHelpers:
                 features=("my_day.triage",), record=_record)
         assert out == "old"
         assert any(c.get("event") == "decide.shadow_record_failed" for c in caps)
+
+    async def test_no_record_means_no_record_call(self, tenant, monkeypatch):
+        _modes(monkeypatch, "my_day.triage=shadow")
+        _fake(monkeypatch)
+
+        async def _old():
+            return "old"
+
+        q = acb_llm.BooleanQuestion(instructions="x")
+        with structlog.testing.capture_logs() as caps:
+            out = await df.shadow(
+                "my_day.automation", _old, build=lambda: ({}, {"c0.r": q}),
+                compare=df.compare_boolean(lambda r: False, qid="c0.r"),
+                features=("my_day.triage",))
+        assert out == "old"
+        events = [c.get("event") for c in caps]
+        assert "decide.shadow" in events
+        assert "decide.shadow_record_failed" not in events
 
     def test_compare_score(self):
         cmp = df.compare_score(lambda r: "some", qid="w", levels=feed_decide.WEIGHT_LEVELS)
