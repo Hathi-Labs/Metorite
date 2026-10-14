@@ -1417,6 +1417,20 @@ place in `old_rank` and `judged_rank` (§13.2).
 A card counts as acted when its `my_day_card_state` row has an `acted_at` at
 or after the judgment's `created_at`, on the same day for the member.
 
+Decided at the MD-6a-3 review, 2026-10-14:
+
+- **The mode.** The read splits every number by `mode`. In `on` the member
+  sees the judged order, so the judged path wins its acted rate by
+  construction. A gate reads the `shadow` numbers only.
+- **The day** is the local calendar date in `user_settings.timezone`, and
+  not `state.Day.feed_day`. The morning pass runs 15 minutes before
+  `day_start_hour`, so `feed_day` puts its rows on the day before. An act
+  after midnight by a member who works at night does not count. That lowers
+  both paths alike.
+- **Resurface.** Its old value is always `false`, so its `agree_rate` is
+  only the share of `false` answers. The read also gives the count of each
+  pair of old and judged values, and a gate for resurface reads the pairs.
+
 ---
 
 ## 11. Acts — in the card, or in the app (D101)
@@ -2672,18 +2686,28 @@ MD-6b needs this read, so MD-6b does not start before it.
 module, `routes/shell/feed_measure.py`, because `feed_decide.py` holds 806
 lines. The build made these choices:
 
-- **The answer.** It is `{days, since, features, top_five}`. `features`
-  maps each `my_day.*` feature with rows to `{rows, agree_rate}`.
-  `top_five` maps `old` and `judged` to `{cards, acted, acted_rate}`. A
-  rate with no rows is `null`.
+- **The answer.** It is `{days, since, acts, features, top_five}`.
+  `features` maps each `my_day.*` feature, and each mode with rows, to
+  `{rows, agree_rate, pairs}`. `pairs` is a list of `{old, judged, rows}`.
+  `top_five` maps `shadow` and `on`, and in each `old` and `judged`, to
+  `{cards, acted, acted_rate}`. A rate with no rows is `null`.
+- **No act at all.** `acts` counts the org's `my_day_card_state` rows with
+  an `acted_at` in the span. At 0, each `acted_rate` is `null`. With
+  `NEXT_PUBLIC_MY_DAY_FEED` off, no member can act, and MD-6b must not read
+  0.0 against 0.0 as a tie.
 - **Agreement.** A row agrees when `judged_value` equals `old_value`. A row
   with no judged value counts as a row, and never as an agreement.
 - **The unit.** One `my_day.triage` row is one card in one pass. A card
   that two passes judge counts two times.
-- **The day.** The acted window uses the local calendar date in
-  `user_settings.timezone`, and not `state.Day.feed_day`. The morning pass
-  runs 15 minutes before `day_start_hour`, so `feed_day` puts its rows on
-  the day before. A missing or bad zone is UTC.
+- **The day.** See §10.9 item 10. The SQL reads the zone through
+  `pg_timezone_names`, with the rule of `state.zone_of`: no zone and an
+  unknown zone are UTC.
+- **The cost.** The database does the counting, so the read returns a few
+  rows for any span. Each statement runs under a limit of 5 seconds
+  (`statement_timeout`, local to the read). A read past it answers 503.
+- **One zone reader.** `state.zone_of` is now public. `feed.py` and
+  `needs.py` call it, and their copies are gone. A fence fails on a new
+  copy.
 - **The span.** `days` is 7 by default, from 1 to 30. The loop keeps 30
   days of rows (§13.2).
 - **The gate.** `require_permission(ADMIN_PERMISSION)`, the value of
@@ -2697,6 +2721,8 @@ Known limits, for MD-6b:
   act moves it, so an earlier act that was in the window can drop out.
 - The read gives no agreement for each confidence band. A gate on
   confidence (§10.6 item 5) needs that split, so MD-6b must add it.
+- A gate reads `shadow`, the `pairs` for resurface, and a `null` acted rate
+  as "no data".
 
 Fences: `tests/unit/test_feed_measure.py`, and
 `tests/unit/test_feed_measure_r8.py` with `_DB_GATE`. The R8 file also runs

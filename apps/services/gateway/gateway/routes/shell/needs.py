@@ -138,7 +138,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import quote, urlencode
-from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from acb_common.priority import task_cell
@@ -368,10 +367,10 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
     reports. ``priority`` is the D78 level, from the one server matrix
     (``acb_common.priority.task_cell``), and the old-path weight reads it.
     """
-    try:
-        tz = ZoneInfo(str(zone or "UTC"))
-    except (ValueError, OSError):
-        tz = ZoneInfo("UTC")  # an unknown zone reads as UTC, as the lens does
+    # ``state`` imports this module, so the import waits for the call.
+    from gateway.routes.shell.state import zone_of
+
+    tz = zone_of(zone)  # an unknown zone reads as UTC, as the lens does
     try:
         local_today = date.fromisoformat(str(today))
     except ValueError:

@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from gateway.routes.shell import feed, feed_rank, state
+from gateway.routes.shell import feed, feed_rank, needs, state
 from gateway.routes.shell.needs import Signal, link, tap
 from pydantic import ValidationError
 
@@ -911,7 +911,31 @@ class TestAStoredZoneThatDoesNotExist:
     @pytest.mark.parametrize("name", ["Mars/Olympus_Mons", "Asia/Bombay2", "", None,
                                       "../etc/passwd"])
     def test_it_reads_as_utc(self, name) -> None:
-        assert state._zone(name) == ZoneInfo("UTC")
+        assert state.zone_of(name) == ZoneInfo("UTC")
 
     def test_a_real_zone_is_kept(self) -> None:
-        assert state._zone("Asia/Kolkata") == ZoneInfo("Asia/Kolkata")
+        assert state.zone_of("Asia/Kolkata") == ZoneInfo("Asia/Kolkata")
+
+
+class TestOneZoneReader:
+    """``state.zone_of`` is the one reader of a stored zone name in the shell
+    (MD-6a-3 fix round). ``feed.py`` and ``needs.py`` each held a copy that
+    let ``ZoneInfoNotFoundError`` through."""
+
+    def test_the_old_private_name_is_the_same_function(self) -> None:
+        assert state._zone is state.zone_of
+
+    def test_no_other_shell_module_builds_a_zone_from_a_stored_name(self) -> None:
+        from pathlib import Path
+
+        shell = Path(state.__file__).parent
+        copies = [f.name for f in shell.glob("*.py")
+                  if f.name != "state.py"
+                  and "ZoneInfo(str(" in f.read_text(encoding="utf-8")]
+        assert copies == []
+
+    def test_a_task_signal_with_a_zone_that_does_not_exist_reads_as_utc(self) -> None:
+        task = {"id": "t1", "title": "x", "due_at": "2026-10-10T23:30:00+00:00"}
+        out = needs._task_signals([("overdue", task)], "Mars/Olympus_Mons",
+                                  "2026-10-14", calendar=False)
+        assert out[0].facts["days_late"] == 4
