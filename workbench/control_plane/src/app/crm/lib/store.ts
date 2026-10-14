@@ -57,6 +57,7 @@ import type {
   StatusKind,
   TimelineEntry,
 } from "./types";
+import type { ConvertResult } from "./types";
 
 type Rows = Record<string, unknown>[];
 
@@ -186,10 +187,11 @@ type CrmState = {
     entity: EntitySlug,
     id: string
   ) => Promise<void>;
+  /** The conversion, or null on a refusal. CRM-C6a reads its `skipped`. */
   convertLead: (
     leadId: string,
     body: Record<string, unknown>
-  ) => Promise<string | null>;
+  ) => Promise<ConvertResult | null>;
   setPrimaryContact: (dealId: string, contactId: string) => Promise<void>;
   detachContact: (dealId: string, contactId: string) => Promise<void>;
 
@@ -665,8 +667,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   async convertLead(leadId, body) {
     set({ saving: true, error: null });
     try {
-      const result = await api.convertLead(leadId, body);
-      return result.deal.id;
+      return await api.convertLead(leadId, body);
     } catch (err) {
       set({ error: message(err) });
       return null;
