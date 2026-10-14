@@ -116,13 +116,14 @@ def world(monkeypatch):
     monkeypatch.setattr(s, "reach_members", ME)
     monkeypatch.setattr(s, "reach_daily_cap", 3)
     monkeypatch.setattr(s, "reach_brief_template", "")
-    w = SimpleNamespace(outbox=fake, sent=sent, cards=[], now=NOW, working=True)
+    w = SimpleNamespace(outbox=fake, sent=sent, cards=[], now=NOW, working=True,
+                        complete=True)
 
     async def resolve(org, member):
         return SimpleNamespace(email=member, organization_id=org)
 
     async def snapshot(org, user, now=None):
-        return loop.Snapshot(list(w.cards), now or w.now, DAY, w.working)
+        return loop.Snapshot(list(w.cards), now or w.now, DAY, w.working, w.complete)
 
     monkeypatch.setattr(loop, "resolve", resolve)
     monkeypatch.setattr(loop, "snapshot", snapshot)
@@ -154,7 +155,7 @@ class TestTheInterrupt:
         assert len(world.sent.calls) == 1
         body = world.sent.calls[0]["body"]
         assert body.startswith("*Needs you now*") and "Approve: Refund" in body
-        assert world.outbox.log_rows[(ORG, ME, "email:a:t1", "fp000001")] == "sent"
+        assert world.outbox.log_rows[(ORG, ME, *plan.pair(card("email:a:t1")))] == "sent"
         # The same cards never interrupt twice.
         assert await loop.member_pass(ORG, ME) == "nothing"
         assert len(world.sent.calls) == 1
@@ -172,7 +173,7 @@ class TestTheInterrupt:
                                                  (world.now - timedelta(minutes=5)).isoformat()})]
         assert await loop.member_pass(ORG, ME) == "quiet"
         assert world.sent.calls == []
-        assert world.outbox.log_rows[(ORG, ME, "email:a:t1", "fp000001")] == "quiet"
+        assert world.outbox.log_rows[(ORG, ME, *plan.pair(card("email:a:t1")))] == "quiet"
 
     async def test_a_day_off_is_quiet(self, world):
         await loop.member_pass(ORG, ME)
@@ -189,14 +190,14 @@ class TestTheInterrupt:
         world.cards = [card("email:a:t1"), card("email:a:t2")]
         assert await loop.member_pass(ORG, ME) == "capped"
         assert len(world.sent.calls) == 1
-        assert world.outbox.log_rows[(ORG, ME, "email:a:t2", "fp000001")] == "capped"
+        assert world.outbox.log_rows[(ORG, ME, *plan.pair(card("email:a:t2")))] == "capped"
 
     async def test_a_skipped_send_is_logged_and_not_retried(self, world):
         world.sent.state, world.sent.reason = "skipped", "window_closed"
         await loop.member_pass(ORG, ME)
         world.cards = [card("email:a:t1")]
         assert await loop.member_pass(ORG, ME) == "interrupt:skipped:window_closed"
-        assert world.outbox.log_rows[(ORG, ME, "email:a:t1", "fp000001")] == "skipped"
+        assert world.outbox.log_rows[(ORG, ME, *plan.pair(card("email:a:t1")))] == "skipped"
         assert await loop.member_pass(ORG, ME) == "nothing"
 
 
@@ -210,7 +211,7 @@ class TestTheBrief:
         assert await loop.member_pass(ORG, ME) == "brief:sent"
         assert len(world.sent.calls) == 1
         assert world.sent.calls[0]["body"].startswith("*Your day, Thu 15 Oct*")
-        assert world.outbox.log_rows[(ORG, ME, "email:a:t1", "fp000001")] == "deferred"
+        assert world.outbox.log_rows[(ORG, ME, *plan.pair(card("email:a:t1")))] == "deferred"
         assert await loop.member_pass(ORG, ME) == "nothing"
         assert len(world.sent.calls) == 1
 
@@ -371,9 +372,43 @@ class TestTheRoutes:
     def test_the_brief_now_sends_through_the_channel(self, world):
         world.cards = [card("tasks:1", "overdue")]
         got = self._client(ME, ORG).post("/reach/brief")
-        assert got.json() == {"result": "sent"}
+        assert got.json() == {"state": "sent", "reason": None}
         assert world.sent.calls[0]["kind"] == "brief"
         assert world.sent.calls[0]["member"] == ME
+
+
+class TestAnIncompleteRead:
+    """Review of RE-1a, P2: a read with a failed provider or a failed state
+    join neither plans nor logs, and the first run writes no baseline."""
+
+    async def test_no_baseline_from_an_incomplete_read(self, world):
+        world.cards = [card("email:a:t1")]
+        world.complete = False
+        assert await loop.member_pass(ORG, ME) == "incomplete"
+        assert world.outbox.log_rows == {} and world.sent.calls == []
+        # The next complete read takes the baseline, so nothing old goes out.
+        world.complete = True
+        assert await loop.member_pass(ORG, ME) == "baseline"
+        assert world.sent.calls == []
+
+    def test_the_brief_now_refuses_an_incomplete_read(self, world):
+        world.complete = False
+        got = TestTheRoutes._client(None, ME, ORG).post("/reach/brief")
+        assert got.json() == {"state": "skipped", "reason": "read_incomplete"}
+        assert world.sent.calls == []
+
+
+@pytest.mark.parametrize(("outcome", "body"), [
+    ("sent", {"state": "sent", "reason": None}),
+    ("empty", {"state": "skipped", "reason": "nothing_to_say"}),
+    ("duplicate", {"state": "skipped", "reason": "already_sent"}),
+    ("skipped:window_closed", {"state": "skipped", "reason": "window_closed"}),
+    ("failed:send_failed", {"state": "failed", "reason": "send_failed"}),
+])
+def test_the_brief_answer_is_state_and_reason(outcome, body):
+    # The client reads exactly these keys (people/lib/reach.ts, sendResult).
+    from gateway.reach.routes import result_body
+    assert result_body(outcome) == body
 
 
 def test_the_settings_default_to_off():

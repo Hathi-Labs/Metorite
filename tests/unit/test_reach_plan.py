@@ -79,9 +79,27 @@ class TestTheCandidates:
         c = card("email:a:t1")
         assert plan.interrupt_candidates([c], {plan.pair(c)}, NOW) == []
 
-    def test_a_changed_fingerprint_is_new_again(self):
-        c = card("email:a:t1", fp="fp000002")
-        assert plan.interrupt_candidates([c], {("email:a:t1", "fp000001")}, NOW) == [c]
+    def test_a_new_message_in_the_thread_is_new_again(self):
+        facts = {"who": "X", "waiting_since": NOW.isoformat(), "message_id": "m1"}
+        first = card("email:a:t1", facts=dict(facts))
+        second = card("email:a:t1", facts={**facts, "message_id": "m2"})
+        assert plan.interrupt_candidates([second], {plan.pair(first)}, NOW) == [second]
+
+    def test_a_comment_on_a_mentioned_task_does_not_interrupt_again(self):
+        # Review of RE-1a, P2: a comment adds a note id and moves the feed's
+        # fingerprint, but the asking note is the same, so Reach is silent.
+        asked = {"notification": "mention", "who": "Asha", "at": "2026-10-15T05:00:00+00:00"}
+        before = card("tasks:9", "notification", facts={**asked, "note_ids": ["n1"]})
+        after = card("tasks:9", "notification", fp="fp000777",
+                     facts={**asked, "note_ids": ["n2", "n1"]})
+        assert plan.interrupt_candidates([after], {plan.pair(before)}, NOW) == []
+
+    def test_a_mention_folded_under_an_overdue_task_interrupts(self):
+        # Review of RE-1a, P3: the strongest kind on the card decides.
+        c = card("tasks:9", "overdue", facts={"notification": "mention", "who": "Asha"})
+        c["folded"] = ["notification"]
+        assert plan.interrupt_candidates([c], set(), NOW) == [c]
+        assert "Asha mentioned you on" in plan.compose_interrupt([c], APP, now=NOW)
 
     def test_a_stale_thread_does_not_interrupt(self):
         old = card("email:a:t1", facts={"who": "X",
@@ -170,9 +188,10 @@ class TestTheDedupeKey:
         a = [card("email:a:t1"), card("approvals:1", "approval", facts={})]
         assert plan.interrupt_key("M@x.test", a) == plan.interrupt_key("m@x.test", a[::-1])
 
-    def test_a_new_fingerprint_gives_a_new_key(self):
-        assert (plan.interrupt_key("m@x.test", [card("email:a:t1")])
-                != plan.interrupt_key("m@x.test", [card("email:a:t1", fp="fp000009")]))
+    def test_a_new_message_gives_a_new_key(self):
+        f = {"who": "X", "waiting_since": NOW.isoformat()}
+        assert (plan.interrupt_key("m@x.test", [card("email:a:t1", facts={**f, "message_id": "a"})])
+                != plan.interrupt_key("m@x.test", [card("email:a:t1", facts={**f, "message_id": "b"})]))
 
     def test_the_brief_key_is_one_a_day_and_holds_no_text(self):
         k1 = plan.brief_key("m@x.test", date(2026, 10, 15))

@@ -42,6 +42,14 @@ describe("sendResult", () => {
     const r = sendResult({ status: 200, body: { state: "skipped", reason: "nothing_to_say" } });
     expect(r.ok).toBe(true);
   });
+  it("reads a double click as already sent", () => {
+    const r = sendResult({ status: 200, body: { state: "skipped", reason: "already_sent" } });
+    expect(r.ok).toBe(true);
+  });
+  it("names an unread My Day in words", () => {
+    const r = sendResult({ status: 200, body: { state: "skipped", reason: "read_incomplete" } });
+    expect(r).toEqual({ ok: false, message: "Not sent: read incomplete." });
+  });
   it("reads a closed window as not sent", () => {
     const r = sendResult({ status: 200, body: { state: "skipped", reason: "window_closed" } });
     expect(r.ok).toBe(false);

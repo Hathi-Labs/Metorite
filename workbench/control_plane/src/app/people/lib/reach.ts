@@ -51,7 +51,10 @@ export function reachView(
   };
 }
 
-/** The words of the result of a send, from the gateway's answer. */
+/**
+ * The words of the result of a send. The gateway answers `{state, reason}`
+ * (`gateway/reach/routes.py` `result_body`), and this reads those two keys.
+ */
 export function sendResult(res: { status: number; body: unknown }): {
   ok: boolean;
   message: string;
@@ -62,6 +65,9 @@ export function sendResult(res: { status: number; body: unknown }): {
   }
   if (res.status === 200 && body.reason === "nothing_to_say") {
     return { ok: true, message: "Nothing needs you right now, so nothing was sent." };
+  }
+  if (res.status === 200 && body.reason === "already_sent") {
+    return { ok: true, message: "Already sent this minute. Check WhatsApp." };
   }
   if (res.status === 200 && body.reason === "window_closed") {
     return {

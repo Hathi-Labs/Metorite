@@ -43,12 +43,26 @@ INTERRUPTING_NOTIFICATIONS = frozenset({"assigned", "mention"})
 REACHING = frozenset({"interrupt", "urgent"})
 
 
-def reach_class(card: dict[str, Any]) -> str:
-    """The class of one card, from its main kind and its facts."""
-    kind = str(card.get("kind") or "")
-    cls = REACH_CLASS.get(kind, "none")
+#: The order of the classes, weakest first.
+RANK = ("none", "brief", "interrupt", "urgent")
+
+
+def _kind_class(kind: str, facts: dict[str, Any]) -> str:
     if kind == "notification":
-        facts = card.get("facts") or {}
         if str(facts.get("notification") or "") in INTERRUPTING_NOTIFICATIONS:
             return "interrupt"
-    return cls
+    return REACH_CLASS.get(kind, "none")
+
+
+def reach_kind(card: dict[str, Any]) -> str:
+    """The kind on the card that reaches furthest: the main kind, or a kind
+    folded into it. A mention folded under an overdue task still interrupts.
+    A tie keeps the main kind."""
+    facts = card.get("facts") or {}
+    kinds = [str(card.get("kind") or ""), *(str(k) for k in card.get("folded") or ())]
+    return max(kinds, key=lambda k: RANK.index(_kind_class(k, facts)))
+
+
+def reach_class(card: dict[str, Any]) -> str:
+    """The class of one card: the strongest of its main and folded kinds."""
+    return _kind_class(reach_kind(card), card.get("facts") or {})

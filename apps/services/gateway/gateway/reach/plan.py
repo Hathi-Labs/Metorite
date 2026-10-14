@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from gateway.reach.classes import REACHING, reach_class
+from gateway.reach.classes import REACHING, reach_class, reach_kind
 from gateway.routes.shell import feed_rank
 from gateway.routes.shell.needs import _instant
 
@@ -46,9 +46,28 @@ Pair = tuple[str, str]
 # ── Which cards reach ───────────────────────────────────────────────────────
 
 
+def reach_print(card: dict[str, Any]) -> str:
+    """What makes this card a NEW reason to reach the member.
+
+    Not the feed's fingerprint: that one moves on a fold or a later comment,
+    so the same mention would interrupt again (review of RE-1a, P2). Only a
+    new ask moves this one: a new asking note, a new message in the thread,
+    a new block time.
+    """
+    kind = reach_kind(card)
+    facts = card.get("facts") or {}
+    if kind == "notification":
+        parts = [kind, str(facts.get("notification") or ""), str(facts.get("at") or "")]
+    elif kind == "needs_reply":
+        parts = [kind, str(facts.get("message_id") or card.get("at") or "")]
+    else:
+        parts = [kind, str(card.get("at") or card.get("urgent_at") or "")]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
 def pair(card: dict[str, Any]) -> Pair:
-    """The identity of one card at one fingerprint."""
-    return str(card["signal_id"]), str(card.get("fingerprint") or "")
+    """The identity of one card at one reason to reach (:func:`reach_print`)."""
+    return str(card["signal_id"]), reach_print(card)
 
 
 def is_open(card: dict[str, Any]) -> bool:
@@ -138,9 +157,10 @@ _NOTE_VERBS = {"assigned": "gave you", "mention": "mentioned you on",
                "nudge": "nudged you on"}
 
 
-def line(card: dict[str, Any], now: datetime) -> str:
-    """One line for one card: what the member must do, and one short fact."""
-    kind = str(card.get("kind") or "")
+def line(card: dict[str, Any], now: datetime, *, kind: str | None = None) -> str:
+    """One line for one card: what the member must do, and one short fact.
+    *kind* names the kind to speak of, when it is not the main one."""
+    kind = kind or str(card.get("kind") or "")
     facts = card.get("facts") or {}
     title = _clean(card.get("title"))
     if kind == "needs_reply":
@@ -188,7 +208,7 @@ def compose_interrupt(cards: list[dict[str, Any]], app_url: str, *,
                       now: datetime) -> str:
     """One batched interrupt for *cards*, which must not be empty."""
     tail = f"Reply here to act on any of these, or open My Day: {app_url.rstrip('/')}/"
-    return _fit("*Needs you now*", [line(c, now) for c in cards], tail)
+    return _fit("*Needs you now*", [line(c, now, kind=reach_kind(c)) for c in cards], tail)
 
 
 def _date_words(day: date) -> str:

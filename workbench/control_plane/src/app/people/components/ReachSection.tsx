@@ -52,8 +52,8 @@ export function ReachSection() {
         Messages Metorite starts
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">
-        Metorite sends you a brief at the start of your working day, and at
-        most 3 short messages a day when something needs you now. Nothing is
+        Metorite sends you a brief at the start of your working day, and a
+        few short messages a day when something needs you now. Nothing is
         sent outside your working hours.
       </p>
 

@@ -47,6 +47,8 @@ async def reach_preview(user: UserContext = Depends(get_current_user)) -> dict[s
     """The brief and the interrupt Reach would send now. Sends nothing."""
     org, email = _scope(user)
     snap = await loop.snapshot(org, user)
+    if not snap.complete:
+        raise HTTPException(status_code=503, detail="My Day could not be read in full")
     logged = await outbox.logged_pairs(org, email)
     candidates = plan.interrupt_candidates(snap.cards, logged, snap.now)
     wa_id = await channel.linked_phone(org, email)
@@ -65,5 +67,20 @@ async def reach_brief_now(user: UserContext = Depends(get_current_user)) -> dict
     """Send the signed-in member's brief now."""
     org, email = _scope(user)
     snap = await loop.snapshot(org, user)
-    key = plan.dedupe_key("brief-now", email, [datetime.now(UTC).isoformat()])
-    return {"result": await loop.send_brief(org, email, snap, key=key)}
+    if not snap.complete:
+        return {"state": "skipped", "reason": "read_incomplete"}
+    # One brief for each minute at most: a double click sends once.
+    minute = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")
+    key = plan.dedupe_key("brief-now", email, [minute])
+    return result_body(await loop.send_brief(org, email, snap, key=key))
+
+
+def result_body(outcome: str) -> dict[str, Any]:
+    """The answer of ``POST /reach/brief``: ``{state, reason}``. The client
+    (``people/lib/reach.ts`` ``sendResult``) reads exactly these two keys."""
+    if outcome == "empty":
+        return {"state": "skipped", "reason": "nothing_to_say"}
+    if outcome == "duplicate":
+        return {"state": "skipped", "reason": "already_sent"}
+    state, _, reason = outcome.partition(":")
+    return {"state": state, "reason": reason or None}

@@ -121,7 +121,10 @@ async def deliver(org: str, member: str, *, kind: str, body: str, outbox_id: str
                      **meta_error_fields(exc))
         return Delivery("failed", reason="send_failed")
     out = str(out_id)[:200] if out_id else None
-    await _record(org, member, wa_id, out, body, outbox_id)
+    # A template carries none of the brief, so the thread records what the
+    # member saw, not the brief (review of RE-1a, P3).
+    seen = body if regime == "free_text" else f"(Sent the WhatsApp template {template}.)"
+    await _record(org, member, wa_id, out, seen, outbox_id)
     _log.info("reach.whatsapp.sent", kind=kind, regime=regime, phone_hint=wa_id[-4:])
     return Delivery("sent", regime=regime, provider_message_id=out)
 

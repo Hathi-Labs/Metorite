@@ -68,6 +68,10 @@ class Snapshot:
     now: datetime
     day: Any
     working_day: bool
+    #: False when a provider failed or the state join failed. Then a dismissed
+    #: card reads as new and a missing card reads as gone, so nothing may be
+    #: planned or logged from this read (review of RE-1a, P2).
+    complete: bool = True
 
     @property
     def local_date(self) -> date:
@@ -82,7 +86,9 @@ async def snapshot(org: str, user: Any, now: datetime | None = None) -> Snapshot
     run = await feed.feed_cards(user, now)
     day = run.joined.day or await _read_day(org, user)
     working = await feed._working_day(user, day.feed_day(run.now))
-    return Snapshot(list(run.cards), run.now, day, working)
+    complete = bool(run.joined.ok) and not any(
+        v not in ("ok", "absent") for v in run.sources.values())
+    return Snapshot(list(run.cards), run.now, day, working, complete)
 
 
 async def resolve(org: str, member: str) -> Any | str:
@@ -109,7 +115,16 @@ async def resolve(org: str, member: str) -> Any | str:
 
 async def _send(org: str, member: str, *, kind: str, cards: list[dict[str, Any]],
                 key: str, body: str, local_date: date | None) -> str:
-    """Plan one message, send it, and close its row. Answers the outcome."""
+    """Plan one message, send it, and close its row. Answers the outcome.
+
+    Shielded: the member timeout must not cut between the send and the log,
+    or the row stays planned and the items go out again in a later batch."""
+    return await asyncio.shield(_send_now(org, member, kind=kind, cards=cards, key=key,
+                                          body=body, local_date=local_date))
+
+
+async def _send_now(org: str, member: str, *, kind: str, cards: list[dict[str, Any]],
+                    key: str, body: str, local_date: date | None) -> str:
     outbox_id = await outbox.plan(org, member, kind=kind,
                                   signal_ids=[c["signal_id"] for c in cards],
                                   key=key, body=body, local_date=local_date)
@@ -144,6 +159,11 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
     if isinstance(user, str):
         return user
     snap = await snapshot(org, user, now)
+    if not snap.complete:
+        # The next tick reads again. A baseline from a partial read would let
+        # every old card interrupt on the tick after it.
+        _log.info("reach.read_incomplete")
+        return "incomplete"
 
     if not await outbox.has_log(org, member):
         pairs = [plan.pair(c) for c in snap.cards] or [BASELINE_MARK]
