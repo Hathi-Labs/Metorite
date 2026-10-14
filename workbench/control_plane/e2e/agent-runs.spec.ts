@@ -13,6 +13,8 @@ import { openAllRows } from "./railOpen";
  * 2. An answer sends the option id, collapses the card to "Answered by …",
  *    and the pill reads "Answered".
  * 3. Stop asks first, then sends a `prompt` with the signal `stop`.
+ * 4. A 409 (another member answered first) reads the run again, with no
+ *    "Try again" (fix round 1).
  *
  * Run it by name:
  *
@@ -108,9 +110,16 @@ const EMPTY = { rows: [], items: [], total: 0, links: [], subtasks: [], children
  * Answers every call. `start` is the run's first status. The test reads
  * `posts` for what the panel wrote.
  */
-async function stub(page: Page, start: "awaiting" | "working" | "off") {
+async function stub(
+  page: Page,
+  start: "awaiting" | "working" | "off",
+  opts: { loseTheRace?: boolean } = {},
+) {
   const posts: Record<string, unknown>[] = [];
   let answered = false;
+  // Fix round 1, item 9: another member answers first, so the member's POST
+  // gets 409 and the run now holds the other member's answer.
+  let answeredBy = ME;
 
   const current = () => {
     if (answered) {
@@ -126,7 +135,7 @@ async function stub(page: Page, start: "awaiting" | "working" | "off") {
             content: { selected: ["pg"] },
             signal: "continue",
             signal_metadata: null,
-            actor: ME,
+            actor: answeredBy,
             actor_via: null,
             in_reply_to: "a1",
             created_at: "2026-10-14T10:01:00Z",
@@ -152,6 +161,14 @@ async function stub(page: Page, start: "awaiting" | "working" | "off") {
     if (request.method() === "POST" && path === "projects/agent-runs/r1/activities") {
       const body = request.postDataJSON() as Record<string, unknown>;
       posts.push(body);
+      if (Array.isArray(body.selected) && opts.loseTheRace) {
+        answered = true;
+        answeredBy = "priya@example.com";
+        return route.fulfill({
+          status: 409,
+          json: { detail: "This question already has an answer." },
+        });
+      }
       if (Array.isArray(body.selected)) answered = true;
       return route.fulfill({ json: { id: "a9", status: "in_progress" } });
     }
@@ -227,6 +244,27 @@ test("an answer collapses the card, and the pill reads Answered", async ({ page 
   expect(posts).toHaveLength(1);
   expect(posts[0]).toMatchObject({ type: "prompt", selected: ["pg"] });
   expect(typeof posts[0].idempotency_key).toBe("string");
+});
+
+test("a lost race reads the run again and offers no retry", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { posts } = await stub(page, "awaiting", { loseTheRace: true });
+  await openTask(page);
+  const panel = page.locator("[data-agent-run-panel]");
+
+  await panel.locator("[data-elicitation-option]").filter({ hasText: "Postgres" }).click();
+  await panel.locator("[data-elicitation-submit]").click();
+
+  await expect(panel.getByText("This question already has an answer.")).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(panel.getByText(/Try again/)).toHaveCount(0);
+  // The re-read shows the other member's answer, and the card closes.
+  await expect(panel.locator("[data-agent-answered]")).toHaveText(/Answered by priya: Postgres/i, {
+    timeout: 10_000,
+  });
+  await expect(panel.locator("[data-elicitation-card]")).toHaveCount(0);
+  expect(posts).toHaveLength(1);
 });
 
 test("Stop asks first, then sends the stop signal", async ({ page }) => {
