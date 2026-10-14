@@ -1558,7 +1558,7 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
         "/email/draft-reply",
         {"account_id": account_id, "message_id": email_id, "create_draft": save},
     )
-    note = " (saved to Drafts)" if res.get("created") else unsaved
+    note = unsaved or (" (saved to Drafts)" if res.get("created") else "")
     # The first line names the mailbox. The chat card reads "(mailbox <id>)"
     # from it, so its Save and Send use the mailbox of the mail (EM-T8a).
     sender = await _mailbox_name(account_id) or str(account_id)
@@ -2416,7 +2416,8 @@ def _settings_needing_card(
     for key, (name, why) in _TEXT_SETTINGS.items():
         value = wanted.get(key)
         if value and str(value) != str(cur.get(key) or ""):
-            out.append((name, f"New {name}: {_card_text(value, _CARD_SETTING_TEXT)}. {why}"))
+            text = _card_text(value, _CARD_SETTING_TEXT)
+            out.append((name, f"{name[0].upper()}{name[1:]} becomes: {text}. {why}"))
     if (wanted.get("sensitive_data_protection") is False
             and cur.get("sensitive_data_protection") is not False):
         out.append(("drafts for sensitive email",
