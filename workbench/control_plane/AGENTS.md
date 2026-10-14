@@ -74,7 +74,7 @@ the thing that used to EXPOSE a breach for free: one theme switch and every
 hardcoded value announced itself. The breach is still a breach. Nothing shows
 it to you now.
 
-Seven rules on top of the three above. Each one exists because it was broken:
+Ten rules on top of the three above. Each one exists because it was broken:
 
 4. **One vocabulary per concept, in `src/lib/` or `src/components/`, consumed by
    every app.** Status and lane colour is `src/lib/statusAccent.ts` — the single
@@ -475,8 +475,10 @@ Seven rules on top of the three above. Each one exists because it was broken:
 
    **Fence.** `src/lib/theme/motion.test.ts` fails when an `@keyframes` in
    `globals.css` has no reduced-motion answer. Put an exception in its
-   `MOTION_EXEMPT`, with the reason. A `<style>` string in a component is
-   outside the test, so that part is review. `DESIGN_SYSTEM.md` §4 holds the
+   `MOTION_EXEMPT`, with the reason. Two kinds of motion are outside the
+   test, so they are review: a `<style>` string in a component, and
+   Tailwind's `animate-pulse` and `animate-ping`. Write a new one with the
+   `motion-safe:` prefix. `DESIGN_SYSTEM.md` §4 holds the
    rules, and §9 and §10 hold the advisory rules for states and words.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in

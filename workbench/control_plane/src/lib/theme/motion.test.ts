@@ -19,7 +19,8 @@ import { describe, expect, it } from "vitest";
 const GLOBALS = readFileSync(
   fileURLToPath(new URL("../../app/globals.css", import.meta.url)),
   "utf8",
-).replace(/\/\*[\s\S]*?\*\//g, "");
+  // A comment goes, and a string stays: `@source "../**/*.tsx"` holds a `/*`.
+).replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\/\*[\s\S]*?\*\//g, (_m, str) => str ?? "");
 
 /** Motion that stays under reduced motion, and why. Each entry is a decision. */
 const MOTION_EXEMPT: Record<string, string> = {
@@ -72,9 +73,18 @@ const KEYFRAMES = ALL.flatMap((b) => {
   return m ? [m[1]] : [];
 });
 
-/** The selectors the `reduce` block stops. */
+/**
+ * The selectors the `reduce` block stops. Only a rule that sets the animation
+ * to `none` counts. The same selector in a rule that sets a colour stops
+ * nothing (`.sidebar-beacon` has both, and the review of 2026-10-14 proved it).
+ */
 const STOPPED = new Set(
-  ALL.filter((b) => !b.prelude.startsWith("@") && b.parents.some(isReduce)).flatMap((b) => selectors(b.prelude)),
+  ALL.filter(
+    (b) =>
+      !b.prelude.startsWith("@") &&
+      b.parents.some(isReduce) &&
+      /(?<![\w-])animation(?:-name)?\s*:\s*none\b/.test(b.body),
+  ).flatMap((b) => selectors(b.prelude)),
 );
 
 /** The rules that run `name`, outside the `reduce` block. */
@@ -87,7 +97,9 @@ function runners(name: string): Block[] {
 
 function unanswered(name: string): string[] {
   return runners(name)
-    .filter((b) => !b.parents.some(isNoPreference) && !selectors(b.prelude).some((s) => STOPPED.has(s)))
+    // Each selector in the list needs its own answer. One stopped selector
+    // does not excuse the others.
+    .filter((b) => !b.parents.some(isNoPreference) && !selectors(b.prelude).every((s) => STOPPED.has(s)))
     .map((b) => b.prelude);
 }
 

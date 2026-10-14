@@ -47,9 +47,10 @@ than no review.
    state that can occur: loading, empty, error, disabled and long content. A
    state with no branch in the code is a P1 when a real response produces it.
    An error that gives no next step, and a destructive act with no confirm or
-   undo, are P1 too. `DESIGN_SYSTEM.md` §9 and §10 hold the rules. A new
-   `@keyframes` in a component `<style>` string is outside `motion.test.ts`, so
-   check its reduced-motion answer by hand.
+   undo, are P1 too. `DESIGN_SYSTEM.md` §9 and §10 hold the rules.
+   `motion.test.ts` cannot see two kinds of motion, so check them by hand. One
+   is an `@keyframes` in a component `<style>` string. The other is a new
+   `animate-pulse` or `animate-ping` with no `motion-safe:` prefix.
 
 ## Method
 

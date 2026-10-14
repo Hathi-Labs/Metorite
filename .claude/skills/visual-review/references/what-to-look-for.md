@@ -110,8 +110,9 @@ The tell in code is `outline-none` with no `focus-visible:` partner, or a
 ## 13. A target too small to hit
 
 **Context: compact.** Density shrinks `rem` sizes, and an `icon-xs` button
-shrinks with them. WCAG 2.2 asks for 24 px, or 24 px of clear space round a
-smaller target. On a phone, ask for 40 px, as `RailRow` does.
+shrinks with them. WCAG 2.2 asks for a 24 px target. A smaller target passes
+only when its centre is 24 px or more from the centre of its neighbour. On a
+phone, ask for 40 px, as `RailRow` does.
 
 Measure the target in the compact capture, not in the default one.
 

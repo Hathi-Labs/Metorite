@@ -319,6 +319,12 @@ The rules for NEW motion:
 - **Use a token.** Do not write a new duration or a new curve.
 - **Move `transform` and `opacity`.** Do not animate `width`, `height`,
   `top` or `margin`. Each frame of those lays out the page again.
+  ⚠️ The side panels are the one exception. The sidebar fold and the
+  assistant's spacer animate `width` on purpose, so that the page beside them
+  moves with them. Do not copy that to a surface that does not push the page.
+- **`tech-transition` moves every property.** Use it for a change of colour
+  or opacity. For a new movement, name the property, as in
+  `transition-transform`.
 - **A close is shorter than its open.** The reader asked the surface to go,
   so do not make them wait for it.
 - **A popup grows from its anchor.** Start at a scale of 0.96 or more, with
@@ -333,8 +339,12 @@ The rules for NEW motion:
 **Fence.** `src/lib/theme/motion.test.ts` fails when an `@keyframes` in
 `globals.css` has no answer for reduced motion. The answer is the
 `no-preference` gate or a selector in the `reduce` block. An exception goes
-in `MOTION_EXEMPT`, with its reason. ⚠️ The test reads `globals.css` only. A
-`<style>` string inside a component is review.
+in `MOTION_EXEMPT`, with its reason.
+
+⚠️ The test reads `globals.css` only. Two kinds of motion are outside it, so
+they are review. One is a `<style>` string inside a component. The other is
+Tailwind's own `animate-pulse` and `animate-ping`, which have no keyframes in
+`globals.css`. Write a new one as `motion-safe:animate-pulse`.
 
 The other motion rules above are advisory.
 
@@ -760,8 +770,9 @@ this file.
 
 **Open each state that can occur.** A new control or surface has a rest
 state, hover, keyboard focus, pressed, disabled, loading, empty, error and
-long content. Open each one that can occur. A control smaller than 24 px
-needs 24 px of clear space round it, at compact density too.
+long content. Open each one that can occur. A target smaller than 24 px
+passes WCAG 2.2 only when the centres of two neighbours are 24 px apart or
+more. Measure it at compact density too.
 
 ---
 
