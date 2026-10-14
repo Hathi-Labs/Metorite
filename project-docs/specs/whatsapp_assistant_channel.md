@@ -597,6 +597,9 @@ transcription. Delete the audio file after transcription.
   waits on the member.
 - **The member stops them** by sending "STOP", or from Settings. "START"
   resumes.
+- **Owner: `proactive_reach.md` (WS-59), since 2026-10-14.** That spec
+  plans and sends each message that Metorite starts, through its outbox. Its
+  RE-2 builds the template sends, the window check, opt-in, STOP and START.
 
 ### 5.9 Security and tenancy
 

@@ -2955,6 +2955,10 @@ Step 4 of §6.5, on WhatsApp templates (WAC-7) or web push (D-2). Opt-in for
 each member. It sends a message to a real person through a third party, so
 CLAUDE.md §3a rule 3 binds.
 
+**Owner: `proactive_reach.md` (WS-59), since 2026-10-14.** That spec builds
+step 4 as RE-1 to RE-4, with the outbox, the budget and the channels. This
+spec keeps the signals, the cards and the `my_day.nudge` question.
+
 ### MD-11 · Meeting overlaps — BLOCKED on calendar sync
 
 Card A in full. It waits on external calendar sync, which
