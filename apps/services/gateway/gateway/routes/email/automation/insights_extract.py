@@ -40,7 +40,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple
 
 from acb_skills.attachment_text import SUPPORTED_SUFFIXES
-from acb_skills.untrusted import UntrustedFrame
+from acb_skills.untrusted import UntrustedFrame, neutralise
 from gateway.routes.email.automation.insights_store import (
     CAPS,
     DIRECTIONS,
@@ -615,6 +615,7 @@ def _count_field_drops(item: dict[str, Any], fields: frozenset[str], drops: Coun
 
 def _check_fact(
     item: Any, source: Source, folded: str, domains: tuple[str, ...], drops: Counter[str],
+    framed: str = "",
 ) -> Fact | None:
     if not isinstance(item, dict):
         drops["bad_fact"] += 1
@@ -630,7 +631,10 @@ def _check_fact(
     if quote is None:
         drops["bad_quote"] += 1
         return None
-    hits = _occurrences(folded, quote)
+    # EM-G11d round 1: the model read the framed copy, so a quote that spans
+    # an escaped "#" line or a tag holds the neutralised form. It counts when
+    # the folded framed copy holds it (*framed*). The source is the same text.
+    hits = _occurrences(folded, quote) or (_occurrences(framed, quote) if framed else 0)
     if not hits:
         drops["quote_not_in_source"] += 1
         return None
@@ -673,8 +677,12 @@ def check_answer(
     if len(raw) > MAX_FACTS:
         result.drops["over_cap"] += len(raw) - MAX_FACTS
     folded = fold(source.text)
+    # The text that the model read: the frame neutralises the source
+    # (``acb_skills.untrusted``), with no token to remove here.
+    framed = fold(neutralise(source.text, ""))
     for item in raw[:MAX_FACTS]:
-        fact = _check_fact(item, source, folded, domains, result.drops)
+        fact = _check_fact(item, source, folded, domains, result.drops,
+                           framed if framed != folded else "")
         if fact is not None:
             result.facts.append(fact)
     return result
