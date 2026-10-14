@@ -43,6 +43,9 @@
 > `CRM_FIELD_STUDIO_ORGS` (2026-10-13, migration 260, §20.7). CRM-C4p, the
 > shared client of the field studio: the layout read, `FieldInput` and the
 > client check (2026-10-14, §20.7). It draws no surface and adds no flag.
+> CRM-C4b, the record UI of the field studio: the create form, the Fields
+> tab, the Columns control and the filter bar read the layout when `studio`
+> is on (2026-10-14, §20.7). No migration and no flag.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -4400,6 +4403,36 @@ binding fixes, and the items below record each one.
   operator. The number filter matches a JSON number that the client wrote.
   A Zoho value such as `1500.0` gives other text, so it does not match
   `1500`.
+
+**Review round 1 (2026-10-14).** The coordinator decided each item.
+
+1. **The one deliberate flag-off change is the 422 rule.** A refused create
+   keeps the form open also with `studio` off, because a form that closes
+   loses what the member typed. Each other flag-off surface draws as the
+   parent did. Fence: "the one deliberate flag-off change" in
+   `crmC4b.test.ts`.
+2. **The currency (P1).** A system `currency` field reads in
+   `record.currency`, in the edit view and under the Mirror lock
+   (`layoutValue`). A deal with no probability of its own shows "40% (from
+   Proposal)", as the Overview does.
+3. **An unset boolean.** A save of No or Yes on a record that holds no
+   boolean sends the value. When nobody edits it, the field still reads "—".
+4. **The keyboard.** The inline edit takes the focus. Enter saves, except in
+   a long text and on a button, and Escape cancels (`editKey`). After a save
+   or a cancel, the focus goes back to the Pencil button.
+5. **Golden files.** `__fixtures__/c4b-flag-off/` holds the markup of the
+   create form, the Fields tab, the list with the Columns chooser open and
+   the filter bar. The parent commit `33b16848d` made each one.
+   `crmC4bGolden.test.ts` draws the new code with `studio` false and with no
+   layout, and compares. The mutation `layout ? layout : null` in
+   `RecordList.tsx` turns it red.
+6. **Two more fences.** The create form calls `onClose` only from Cancel and
+   the Modal. A Mirror create draws each custom field locked and sends none.
+7. **Notes.** Each section of the Columns control is a `role="group"` with
+   its label. A multi-select value that no option has shows in the editor as
+   a chip with "not an option" and a remove button.
+
+The fences now hold 58 cases, and seven more mutations turned them red.
 
 #### CRM-C4c: the studio UI
 
