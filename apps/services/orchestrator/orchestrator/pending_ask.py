@@ -36,6 +36,11 @@ under FORCE row level security. The org of a write is the run's own,
 server-side org: the tenant bound for the run (``acb_common.db``), else the
 run's record in this process (``run_liveness``). Never an event field.
 
+**My Day** (WS-58 MD-3f). The insert of a row and its settle each bump the
+My Day version of the member it asks (``_bump_my_day``), so the feed card
+``agent_asks`` changes at once. The bump does nothing with ``MY_DAY_CACHE``
+off. It never raises and it is bounded in time, so it never breaks an ask.
+
 Fences (R7): ``tests/unit/test_pending_ask_store.py`` (R8: the SQL and the
 row level security, as the NOBYPASSRLS app role) and
 ``tests/unit/test_pending_ask_flow.py`` (the flow).
@@ -387,7 +392,33 @@ async def _record(thread_id: str, ask: CardAsk) -> str | None:
         return None
     _log.info("pending_ask.recorded", request_id=ask.request_id[:12],
               thread_id=thread_id[:12], kind=ask.kind)
+    await _bump_my_day(org, actor)
     return org
+
+
+#: Seconds that the My Day bump of a question may take, at most. The cache
+#: bounds its own Redis call, and this bounds the whole bump, so a slow bump
+#: cannot hold the run that waits on the card.
+MY_DAY_BUMP_TIMEOUT_S = 0.5
+
+
+async def _bump_my_day(org: str | None, actor: str | None) -> None:
+    """Move the My Day version of the member a question asks, after its row
+    changed (WS-58 MD-3f, ``my_day_feed.md`` §5.9 item 14). So the card
+    ``agent_asks`` comes and goes at once, not at the 600-second bound.
+
+    The org and the member are the run's own, server-side, never an event
+    field. It does nothing with ``MY_DAY_CACHE`` off (``cache.bump_member``).
+    It never raises, and it is bounded in time: a bump must never break an
+    ask. The import is local, as the other gateway imports here are."""
+    if not org or not actor:
+        return
+    try:
+        from gateway.routes.shell import cache as feed_cache
+
+        await asyncio.wait_for(feed_cache.bump_member(org, actor), MY_DAY_BUMP_TIMEOUT_S)
+    except Exception as exc:  # a bump never fails the write that made it
+        _log.warning("pending_ask.my_day_bump_failed", error=type(exc).__name__)
 
 
 def note_event(thread_id: str, event: Any) -> None:
@@ -442,11 +473,15 @@ async def settle(request_id: str, *, answer: str | None) -> None:
         return
     to = "answered" if answer is not None else "closed"
     try:
-        await asyncio.to_thread(
+        row = await asyncio.to_thread(
             move_ask, org, request_id, to=to, from_states=("open",), answer=answer,
         )
     except Exception:
         _log.warning("pending_ask.settle_failed", request_id=request_id[:12], exc_info=True)
+        return
+    if row:
+        # The question no longer waits, so it leaves My Day at once.
+        await _bump_my_day(org, str(row.get("actor_email") or ""))
 
 
 async def end_of_run(thread_id: str) -> None:

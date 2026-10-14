@@ -23,10 +23,12 @@ every capacity figure that reads it quietly wrong.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_logger
 from fastapi import Depends, HTTPException
 from gateway.routes.people.core import (
     _tenant_session,
@@ -38,6 +40,8 @@ from gateway.routes.people.core import (
 from gateway.routes.people.fields import authorize_write
 from pydantic import BaseModel
 from sqlalchemy import text
+
+_log = get_logger("gateway.people.absences")
 
 #: The three words, mirrored from migration 174's CHECK. ONE tuple, the same
 #: shape `PEOPLE_STATUSES` takes for 148's — a fourth kind accepted here and
@@ -223,8 +227,10 @@ async def add_absence(
 ) -> dict:
     async with _tenant_session() as db:
         await _authorized(db, person_id, user, write=True)
-        return await create_absence(
+        created = await create_absence(
             db, person_id, body, getattr(user, "email", None) or "anonymous")
+    await _bump_my_day(user)
+    return created
 
 
 @router.delete("/{person_id}/absences/{absence_id}")
@@ -236,7 +242,80 @@ async def remove_absence(
         await _authorized(db, person_id, user, write=True)
         if not await delete_absence(db, person_id, absence_id):
             raise HTTPException(status_code=404, detail="No such absence")
+    await _bump_my_day(user)
     return {"deleted": absence_id}
+
+
+#: Seconds that the My Day bump of an absence write may take, at most. The
+#: cache bounds its own Redis call, and this bounds the whole bump, so a slow
+#: bump cannot hold the answer of a write that already committed.
+MY_DAY_BUMP_TIMEOUT_S = 0.5
+
+
+async def _bump_my_day(user: Any) -> None:
+    """Move the org's My Day version after an admin absence write commits
+    (WS-58 MD-3f, ``my_day_feed.md`` §5.9 item 14). The ``colleague_out``
+    card of each member who shares a task with the person changes, so the
+    ORG version moves. The org is the session's, never a request value.
+
+    It does nothing with ``MY_DAY_CACHE`` off (``cache.bump_org``). It never
+    raises, and it is bounded in time, because the write already committed.
+    The import is local, as ``selfservice._bump_my_day`` does it."""
+    try:
+        from gateway.routes.shell import cache as feed_cache
+
+        await asyncio.wait_for(
+            feed_cache.bump_org(getattr(user, "organization_id", None)),
+            MY_DAY_BUMP_TIMEOUT_S)
+    except Exception as exc:  # a bump never fails the write that made it
+        _log.warning("people.absences.my_day_bump_failed", error=type(exc).__name__)
+
+
+#: Who of these addresses is away all day on ``:day``: an active People row
+#: with an ``away`` or ``holiday`` absence that covers the day. A ``partial``
+#: absence does not count. ⚠️ Both tables name the bound tenant in the SQL,
+#: beside RLS, because the production role owns the tables and RLS does not
+#: hold it. ``NULLIF(..., '')`` fails closed: an unbound session matches no row.
+_AWAY_ON_SQL = (
+    "SELECT DISTINCT ON (lower(p.email)) lower(p.email) AS email, p.name, a.kind "
+    "  FROM people p "
+    "  JOIN people_absences a ON a.person_id = p.id "
+    "   AND a.organization_id = p.organization_id "
+    " WHERE p.organization_id = CAST(NULLIF("
+    "         current_setting('app.tenant_id', true), '') AS uuid) "
+    "   AND p.status = 'active' "
+    "   AND lower(p.email) = ANY(CAST(:emails AS text[])) "
+    "   AND a.kind IN ('away', 'holiday') "
+    "   AND a.starts_on <= :day AND a.ends_on >= :day "
+    " ORDER BY lower(p.email), p.name"
+)
+
+
+async def away_on(user: Any, emails: list[str], day: date) -> dict[str, dict[str, Any]]:
+    """Who of ``emails`` is away all day on ``day``, by lower-case address,
+    as ``{"name": ..., "kind": "away" | "holiday"}`` (WS-58 MD-3f,
+    ``my_day_feed.md`` §5.9 item 14).
+
+    ⚠️ HR tier: it raises 403 unless the caller passes
+    :func:`can_read_hr_fields`, the rule of the absence read of the person
+    page.
+
+    ``day`` is the date of the CALLER, the local today of the member in My
+    Day. It is not the ``CURRENT_DATE`` of the database, which
+    :func:`away_today` reads, and which gives the wrong day near midnight for
+    a member in India. One statement for all the addresses, and no address
+    opens no session."""
+    if not can_read_hr_fields(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Seeing when somebody is away needs admin:members:read.")
+    wanted = sorted({str(e).strip().lower() for e in emails if e and "@" in str(e)})
+    if not wanted:
+        return {}
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(_AWAY_ON_SQL),
+                                 {"emails": wanted, "day": day})).fetchall()
+    return {str(r.email): {"name": r.name, "kind": r.kind} for r in rows}
 
 
 async def away_today(db: Any, person_ids: list[str]) -> dict[str, dict[str, Any]]:
