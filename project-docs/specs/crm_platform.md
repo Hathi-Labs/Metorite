@@ -49,6 +49,8 @@
 > CRM-C4c, the studio UI in the `fields` settings section, for an admin of a
 > Native org with the flag on (2026-10-14, §20.7). It adds no migration and no
 > flag.
+> CRM-C6a, the Native lead-conversion mapping in the `field-mapping` section,
+> dark behind `CRM_FIELD_STUDIO_ORGS` (2026-10-14, migration 261, §20.9).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -4917,6 +4919,39 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 `convert_mapping`, and the card shows it read only. C6b also holds the lookup
 targets of Mirror mode and the `module:<ApiName>` words. C6b waits for a real
 Zoho read of a Leads field.
+
+**Built as (2026-10-14, branch `crm-c6a`).** 🔨 BUILT, not merged. Migration
+261 holds `crm_convert_mappings`. The slice adds no flag: the routes and the
+conversion read `CRM_FIELD_STUDIO_ORGS`, which ships empty.
+
+- **The routes.** `routes/crm/convert_mapping.py`. `GET` gives `fields` and
+  `targets`. `fields` lists each live custom lead field in layout order. Each
+  field has a cell for each entity with `target_key`, `reason`, `problem` and
+  `choices`. `targets` lists the custom fields of each entity, also the
+  retired ones, so the screen can name a retired explicit target.
+- **The PUT body.** `{"rows": [...]}`. The route stores each row as the body
+  sends it, also a row that means "auto". The screen sends no row for "auto".
+- **The 422 codes.** `mapping_source`, `mapping_twice`, `mapping_skip_target`,
+  `mapping_target`, `mapping_target_retired`, `mapping_type` and
+  `mapping_target_twice`. Two writes at the same time can give 409
+  `mapping_changed`.
+- **Four details that the contract left open.** The builder decided them.
+  1. A retired explicit target, or one of a changed type, stays in the map.
+     The read names it in `problem`, and the conversion skips it.
+  2. The conversion skips a multi-select value whole when one of its options
+     is not active. It does not cut the list.
+  3. The conversion reuses a record that the caller names in the convert
+     body, as it reuses a matched record. The map fills only its empty values.
+  4. `skipped` also gives `record_has_value` for a value that a reused record
+     keeps, and `invalid_value` for a value that the target check refuses.
+- **In Mirror mode** each route gives 409 `mirror_mode_settings` with "The
+  conversion mapping comes from Zoho. Change it in Zoho." The conversion
+  reads no map in Mirror mode.
+- **The screen.** `ConvertMappingCard.tsx` reads the map through
+  `useCachedResource`, so a change in the Fields section wakes it. A choice
+  sends the whole map and reads it again. A refusal shows at the top of the
+  card.
+- **Not in this slice.** C6b. The convert dialog does not show `skipped` yet.
 
 ### 20.10 CRM-C7: AI reach
 
