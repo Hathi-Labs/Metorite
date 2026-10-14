@@ -1038,7 +1038,10 @@ class TestTheAgentTool:
     async def test_full_reads_the_whole_body(self, gw) -> None:
         out = await agents.read_email("m1", full=True)
         assert gw.rec[-1] == ("/email/messages/m1/full-body", {})
-        assert out.endswith(gw.whole[:12000])
+        # WS-17 EM-G11d: the whole body is the last text of the EMAIL frame.
+        lines = out.split("\n")
+        assert lines[-1].startswith("<<<END EMAIL ") and lines[-1].endswith(">>>")
+        assert "\n".join(lines[:-1]).endswith(gw.whole[:12000])
         assert "removed" not in out
 
 
