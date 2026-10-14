@@ -4,14 +4,14 @@
 
 import Button from "@/components/ui/Button";
 import Icon, { themedIcon } from "@/components/Icon";
-import { useRouter } from "next/navigation";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import GitHubAccountBadge from "@/components/GitHubAccountBadge";
 import FilterPills from "@/components/FilterPills";
 import { Input } from "@/components/ui/Input";
-import { orgKeyConfigured, type Connection } from "../lib/connections";
+import { appConnection, orgKeyConfigured, rowsForTile, type Connection } from "../lib/connections";
+import ZohoInCrm, { ZOHO_SERVICE } from "@/components/ZohoInCrm";
 import OperatorEnvVars from "../OperatorEnvVars";
 
 // ===========================================================================
@@ -22,6 +22,8 @@ type ApiEntry = IntegrationStatus & {
   category: string;
   is_custom?: boolean;
   domain?: string;
+  /** The app's registry row of an app-owned tile (`APP_OWNED_TILES`), or null. */
+  appConnection?: Connection | null;
 };
 
 interface DiscoveredDef {
@@ -166,21 +168,6 @@ function ApiTile({ api, selected, onClick }: { api: ApiEntry; selected: boolean;
         {api.configured ? "● Connected" : "○ Not set up"}
       </div>
     </button>
-  );
-}
-
-const ZOHO_SERVICE = "zoho-crm";
-
-/** Zoho has no key form here. The CRM app owns the one-click connect. */
-function ZohoInCrm() {
-  const router = useRouter();
-  return (
-    <div className="space-y-3">
-      <p className="text-sm text-muted-foreground">Zoho connects in the CRM app.</p>
-      <Button variant="primary" size="sm" icon="ExternalLink" onClick={() => router.push("/crm")}>
-        Open CRM
-      </Button>
-    </div>
   );
 }
 
@@ -469,7 +456,7 @@ function ApiSidePanel({ api, agents, onClose, onRefresh }: {
           <GitHubAccountBadge integration={api} onRefresh={onRefresh} />
         ) : api.service === ZOHO_SERVICE ? (
           // Zoho connects inside the CRM app (D96). No customer OAuth app.
-          <ZohoInCrm />
+          <ZohoInCrm connected={api.configured} connection={api.appConnection ?? null} />
         ) : api.service === "whatsapp" ? (
           // WhatsApp is multi-account too (wa_accounts); connecting is a guided
           // wizard in the app, so the panel just lists + disconnects numbers.
@@ -819,16 +806,25 @@ export default function ApiKeysView() {
       // The card reads the org's own key rows. Only a 404 (the read model is
       // not built yet) falls back to the deployment-wide status.
       let orgRows: Connection[] | null = null;
+      let unavailable: string[] = [];
       if (cRes && cRes.ok) {
         const body = await cRes.json().catch(() => ({}));
         orgRows = Array.isArray(body?.connections) ? body.connections : [];
+        unavailable = Array.isArray(body?.unavailable) ? body.unavailable : [];
       }
       setApis(
         (Array.isArray(sData) ? sData : []).map((a: ApiEntry) => {
           const base = { ...a, category: a.category ?? "custom" };
           if (a.service === "whatsapp")
             return { ...base, configured: whatsappCount > 0 };
-          return { ...base, configured: orgKeyConfigured(orgRows, a.service, a.configured) };
+          // An app-owned tile (Zoho CRM) counts the app's registry row. When
+          // the registry source failed, the server's value stands.
+          const rows = rowsForTile(orgRows, unavailable, a.service);
+          return {
+            ...base,
+            configured: orgKeyConfigured(rows, a.service, a.configured),
+            appConnection: appConnection(rows, a.service),
+          };
         }),
       );
       setAgents(Array.isArray(aData) ? aData : []);
