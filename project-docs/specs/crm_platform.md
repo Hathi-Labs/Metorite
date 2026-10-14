@@ -4804,8 +4804,8 @@ records each resolution.
 `target_entity`, `target_key` (or NULL) and `skip`. `source_key` is the key of a
 custom lead field. `target_entity` is `contact`, `company` or `deal`. The row is
 unique for each `(organization_id, source_key, target_entity)`. The table has
-FORCE RLS and one policy with USING and WITH CHECK. The migration only expands
-(R6).
+FORCE RLS and one policy with USING and WITH CHECK, and the migration only
+expands (R6).
 
 **What a row means (blocker 2).**
 
@@ -4817,9 +4817,9 @@ FORCE RLS and one policy with USING and WITH CHECK. The migration only expands
    field. A skip row has no `target_key`.
 4. A row with a `target_key` is "explicit". The key names a custom field of
    the target entity.
-5. A pair is compatible when the types are equal, or when C4 item 9 (the type
-   change matrix) allows the change. A lookup pairs only with a lookup that
-   has the same target entity.
+5. A pair is compatible when the types are equal. It is also compatible when
+   C4 item 9, the type change matrix, allows the change. A lookup pairs only
+   with a lookup that has the same target entity.
 6. A target field takes one lead field at most. `PUT` refuses two explicit rows
    on one target. An explicit row wins over "auto" for its target.
 7. A lead field that is retired, or that is a system field, is not in the map.
@@ -4891,8 +4891,8 @@ them.
    that it lacks.
 5. A mapped value wins over a default. An inactive option is in `skipped`
    with its reason. A hidden target is filled. A retired target is skipped.
-6. Each route gives 403 for a member, 404 for an org that the flag does not
-   allow, and 409 in Mirror mode.
+6. Each route gives 403 for a member and 409 in Mirror mode. It gives 404
+   for an org that the flag does not allow.
 7. A static fence reads the migration. It requires ENABLE, FORCE and one
    policy with USING and WITH CHECK.
 8. `crmC1.test.ts` shows `field-mapping` to a Native admin with
