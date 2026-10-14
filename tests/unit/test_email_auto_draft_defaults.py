@@ -320,6 +320,8 @@ async def test_the_agent_saving_another_field_keeps_drafting_off(monkeypatch) ->
     sent: list[dict] = []
 
     async def fake_get(path, params=None):
+        if path == "/email/accounts":
+            return []  # the card names the mailbox (EM-G11c1)
         assert path == "/email/assistant/settings"
         return dict(get_body)
 
@@ -327,8 +329,13 @@ async def test_the_agent_saving_another_field_keeps_drafting_off(monkeypatch) ->
         sent.append(body)
         return body
 
+    async def yes(**kw):
+        return True
+
     monkeypatch.setattr(agents, "_get", fake_get)
     monkeypatch.setattr(agents, "_patch_settings", fake_patch_settings)
+    # EM-G11c1 fix round 1: a new signature asks a card. The member says yes.
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", yes)
     await agents.update_assistant_settings("acc-1", signature="— Me")
     assert len(sent) == 1
     assert sent[0]["signature"] == "— Me"
