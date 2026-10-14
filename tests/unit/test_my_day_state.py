@@ -902,3 +902,16 @@ class TestTheNewCardSortsFirst:
                  {"signal_id": "new", "group": "needs_you", "score": 10, "app": "tasks",
                   "kind": "overdue", "at": None, "state": "new"}]
         assert [c["signal_id"] for c in feed_rank.order(cards, 10)] == ["new", "seen"]
+
+
+class TestAStoredZoneThatDoesNotExist:
+    """A zone name the tz database does not know raises ZoneInfoNotFoundError,
+    a KeyError. It must fall back to UTC and never fail the feed read."""
+
+    @pytest.mark.parametrize("name", ["Mars/Olympus_Mons", "Asia/Bombay2", "", None,
+                                      "../etc/passwd"])
+    def test_it_reads_as_utc(self, name) -> None:
+        assert state._zone(name) == ZoneInfo("UTC")
+
+    def test_a_real_zone_is_kept(self) -> None:
+        assert state._zone("Asia/Kolkata") == ZoneInfo("Asia/Kolkata")

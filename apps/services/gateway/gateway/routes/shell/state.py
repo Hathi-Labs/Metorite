@@ -50,7 +50,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -141,7 +141,9 @@ class Day:
 def _zone(name: Any) -> ZoneInfo:
     try:
         return ZoneInfo(str(name or "UTC"))
-    except (ValueError, OSError):
+    except (ValueError, OSError, ZoneInfoNotFoundError):
+        # ZoneInfoNotFoundError is a KeyError: a stored name that no longer
+        # exists must cost the member their zone, not their feed.
         return ZoneInfo("UTC")
 
 
