@@ -33,6 +33,7 @@
     "call_agent_background",
     "call_agents_parallel",
     "code_task",
+    "fetch_page",
     "get_errors",
     "get_workflow_run",
     "list_integrations",
@@ -42,7 +43,8 @@
     "manage_todo_list",
     "run_diagnostics",
     "run_script",
-    "run_workflow"
+    "run_workflow",
+    "web_search"
   ],
   "own_tool_scope": [
     "list_accounts",

@@ -956,7 +956,11 @@ def test_an_uncovered_parent_delegates_exactly_as_before(sandbox, monkeypatch) -
     _harness(monkeypatch, sandbox, {PA: _parent_calls(EMAIL), EMAIL: email})
     _run_parent(ORG_B)
     delegated = email.bodies[0]
-    assert {"send_email", "web_search", "create_rule", "manage_inbox"} <= _offered(delegated)
+    # WS-17 EM-G11d: the email assistant opts out of web_search and
+    # fetch_page in every run, so its own open-world writes stand for the
+    # egress tools here.
+    assert {"send_email", "forward_email", "create_rule", "manage_inbox"} <= _offered(delegated)
+    assert not {"web_search", "fetch_page"} & _offered(delegated)
 
     alone = _Model([_say("ok")])
     _harness(monkeypatch, sandbox, {EMAIL: alone})

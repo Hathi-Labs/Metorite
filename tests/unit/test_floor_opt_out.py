@@ -19,7 +19,10 @@ Mutations this file catches (R7):
 * ``_registry_block_for`` returns the whole block: the agent reads itself;
 * ``_registry_line`` keeps the whole paragraph of a description;
 * the Projects or the email config drops a name, or opts out of a tool
-  that the agent uses.
+  that the agent uses;
+* the email config gives back ``web_search`` or ``fetch_page`` (WS-17
+  EM-G11d, UMCC, ``email_app_master_plan.md`` 12.3.13.8 scope 3). The email
+  assistant reads mail that a stranger wrote, so it holds no network tool.
 """
 from __future__ import annotations
 
@@ -41,11 +44,14 @@ PROJECTS_OPTED_OUT = frozenset({
     "load_artifact_kit", "load_design_system", "manage_todo_list",
     "recall_notes", "run_diagnostics", "run_workflow",
 })
+#: EM-G11d (2026-10-15) added ``web_search`` and ``fetch_page``: a mail could
+#: tell the model to fetch a URL that carries mailbox data.
 EMAIL_OPTED_OUT = frozenset({
     "call_agent_background", "call_agents_parallel", "code_task",
     "get_errors", "get_workflow_run", "list_integrations", "list_workflows",
     "load_artifact_kit", "load_design_system", "manage_todo_list",
     "run_diagnostics", "run_script", "run_workflow",
+    "web_search", "fetch_page",
 })
 
 #: The platform tools each agent keeps, because it calls them.
@@ -56,7 +62,7 @@ PROJECTS_KEEPS = frozenset({
 })
 EMAIL_KEEPS = frozenset({
     "ask_questions", "call_agent", "emit_generative_ui", "write_artifact",
-    "remember", "save_memory", "recall_timeline", "web_search", "fetch_page",
+    "remember", "save_memory", "recall_timeline",
     "share_artifact", "save_note", "recall_notes",
 })
 
@@ -227,8 +233,24 @@ def test_each_agent_opts_out_of_what_it_never_calls(
     assert not names & opted_out, sorted(names & opted_out)
     missing = keeps - names
     # web_search and fetch_page reach outside: a no_egress run drops them, a
-    # plain run keeps them.
+    # plain run of the Projects agent keeps them. The email agent never holds
+    # them (EM-G11d).
     assert not missing, sorted(missing)
+
+
+def test_the_email_assistant_holds_no_network_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EM-G11d (UMCC): the built email agent, on a plain run, holds neither
+    host network tool. ``sandbox_tools.HOST_NETWORK_TOOLS`` names them, the
+    list that H-236 also reads."""
+    from acb_skills.sandbox_tools import HOST_NETWORK_TOOLS
+
+    assert HOST_NETWORK_TOOLS == {"web_search", "fetch_page"}, "the list moved"
+    names = _names(_built("agent-email-assistant", "email-assistant", monkeypatch))
+    assert not names & HOST_NETWORK_TOOLS, sorted(names & HOST_NETWORK_TOOLS)
+    assert HOST_NETWORK_TOOLS <= ti._floor_opt_out(
+        "email-assistant", _config("agent-email-assistant"))
 
 
 # ── The registry block ─────────────────────────────────────────────────────
