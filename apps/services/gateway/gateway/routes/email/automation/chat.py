@@ -13,6 +13,7 @@ import os
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_skills.untrusted import UntrustedFrame
 from fastapi import BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from gateway.routes.email.core import (
@@ -35,6 +36,35 @@ class QuickActionRequest(BaseModel):
     action: str  # 'summarize' | 'find_urgent' | 'draft_reply' | 'unsubscribe'
     account_id: str | None = None
     email_id: str | None = None
+
+
+#: Where the text of the open email comes from, for the data note of
+#: ``acb_skills.untrusted`` (WS-17 EM-G11d, UMCC).
+_OPEN_EMAIL_WHAT = (
+    "The member has this email open. Its sender wrote the name, the address, "
+    "the subject and the body."
+)
+
+
+def _open_email_part(email_context_id: str, frm: dict[str, Any], row: Any) -> str:
+    """The context part of the email open in the reader.
+
+    EM-G11d (UMCC): the part reaches the agent's instructions, under a ``##``
+    heading. Before EM-G11d a body could forge a ``##`` section of its own
+    (``email_app_master_plan.md`` 12.3.13.2, item 4). Now the sender's text
+    sits in one block of a new frame, with the data note before it."""
+    frame = UntrustedFrame.new()
+    sent = (
+        f"From: {frm.get('name') or ''} <{frm.get('email') or ''}>\n"
+        f"Subject: {row.subject or ''}\n"
+        f"Date: {row.received_at}\n\n"
+        f"{(row.body_text or '')[:5000]}"
+    )
+    return (
+        f"## Email open in the reader (id={email_context_id})\n"
+        f"{frame.note(_OPEN_EMAIL_WHAT)}\n"
+        f"{frame.wrap('OPEN EMAIL', sent)}"
+    )
 
 
 async def _build_chat_context(
@@ -129,12 +159,7 @@ async def _build_chat_context(
                 if row:
                     frm = row.from_address if isinstance(row.from_address, dict) \
                         else json.loads(row.from_address or "{}")
-                    parts.append(
-                        f"## Email open in the reader (id={email_context_id})\n"
-                        f"From: {frm.get('name') or ''} <{frm.get('email') or ''}>\n"
-                        f"Subject: {row.subject or ''}\n"
-                        f"Date: {row.received_at}\n\n"
-                        f"{(row.body_text or '')[:5000]}")
+                    parts.append(_open_email_part(email_context_id, frm, row))
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.chat_context_failed", error=str(exc)[:160])
     return resolved, parts
