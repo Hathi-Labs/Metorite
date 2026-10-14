@@ -158,6 +158,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-58 MD-5a: My Day's read cache. It changes what every member's feed
     # serves, so only the operator writes it (my_day_feed.md §8.4 item 7).
     "MY_DAY_CACHE",
+    # WS-58 MD-3b: the gated sources of My Day. It changes what every
+    # member's feed serves, so only the operator writes it (my_day_feed.md
+    # §5.8 item 1).
+    "MY_DAY_PROVIDERS",
     # WS-58 MD-6a-1: the orgs that may ask `decide` for My Day, and their
     # daily ceiling. Each moves what an org pays, so only the operator writes
     # them (my_day_feed.md §10.9 items 5 and 6).

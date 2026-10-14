@@ -535,6 +535,15 @@ class TestTheClaimFlag:
         assert "email" not in {e["app"] for e in answer["handled"]}
         assert {"tasks", "approvals"} <= {e["app"] for e in answer["handled"]}
 
+    def test_a_refused_read_is_absent_and_keeps_the_claim(self, seeded):
+        # MD-3b: a Handled read that raises SourceAbsent reads absent, as a
+        # source the member does not hold. It is a refusal, not a failure.
+        seeded.fail["applied_rules_since"] = shell.SourceAbsent()
+        answer = run_feed(admin(*FULL, "approvals"))
+        assert answer["handled_ok"] is True
+        assert "email" not in {e["app"] for e in answer["handled"]}
+        assert {"tasks", "approvals"} <= {e["app"] for e in answer["handled"]}
+
     def test_an_absent_source_is_not_a_failure(self, seeded):
         # No Email and no Approvals: both read absent, and the claim holds.
         answer = run_feed(member("projects", "tasks"))

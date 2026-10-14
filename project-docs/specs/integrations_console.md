@@ -130,7 +130,43 @@ value answers `exchange_failed`.
 
 The refresh does not revoke the old refresh token. A provider that rotates
 ends it itself, and none of the six providers of §3.6.2 asks for a revoke.
-The Test button still sends the stored token with no refresh (IN-8a, P2 3).
+~~The Test button still sends the stored token with no refresh (IN-8a, P2
+3).~~ IN-8c changed this. See its fact 4 below.
+
+> **IN-8c BUILT (2026-10-15), dark.** The console half is in
+> `src/app/integrations/`, and the BFF route is
+> `api/integrations/mcp/[name]/oauth/start`. The card line is rule 10 of
+> `orchestrator/_maf_mcp.py`. Row O10 passes, and each fence was red first.
+> The fences are `components/mcpConnect.test.ts`, the `route.test.ts` of the
+> start, and the IN-8c cases of `test_maf_mcp_confirm.py`. No migration.
+
+**Five facts of IN-8c that the design did not state:**
+
+1. **Two new keys on the console row.** `acts_as` is the `connected_by` of
+   an OAuth MCP row. `can_connect` is true for a member with
+   `integrations:manage`. Both keep their defaults while
+   `MCP_OAUTH_ENABLED` is off, so the console then draws nothing new.
+2. **Which row offers a consent.** An OAuth row offers Reconnect. A row with
+   no stored header offers Connect. A row with a header map, a disabled row
+   and every row that is not MCP offer none.
+3. **The provider in the label is the host.** The label reads "Acts as
+   <admin> at <host>", and the host comes from the URL of the server. The
+   token goes to that host, so the host names the place. A label is only a
+   name that an admin typed.
+4. **The Test follows the rule of a run.** `oauth_test_header` sends a due
+   token through `_oauth_header`, the refresh step of a run. A Test after a
+   401 then refreshes the token. A Test of a row in `needs_reconnect` sends
+   nothing. No run uses a disabled row, so its Test gets no refresh and
+   sends the stored token while it lives. A Test that gets a 401 does not
+   mark the row. Only a run marks it.
+5. **The card line sits after the hint line, on the same line.** The card
+   draws the detail as one line. So the detail reads: the hint line, then
+   "Acts as <admin> at <host>.", then the server and the tool.
+
+**The BFF start.** It sends no body upstream, and it refuses a request that
+another site sends. It passes on the URL of the gateway only when that URL
+is an absolute `https` URL with no user part. Any other answer is a 502, so
+the route cannot send a browser to a target that the request chose.
 
 ---
 
@@ -730,7 +766,7 @@ IN-0 comes first and alone, because it closes live holes.
 | **IN-8** 📝 PLAN 2026-10-12 (D98) | **MCP OAuth for an org connection.** An admin connects an MCP server that needs an OAuth consent. The connection acts as that admin at the provider, and the console and each card say so. Dark behind `MCP_OAUTH_ENABLED`, default off. The design, the provider table and the acceptance are in §3.6. It needs IN-4 merged. A member connection over OAuth is out of scope (§1.3) | See IN-8a to IN-8d | Rows O1 to O14 of §3.6.11 pass, each red first. No R8 suite skips |
 | **IN-8a** 🔨 BUILT 2026-10-13, PR #931 | Discovery, CIMD and DCR, PKCE, the signed state, the callback and the store (§3.6.3 to §3.6.6), dark | 🟢 AGENT-SAFE | O1 to O6, O9 and O11 to O13 |
 | **IN-8b** 🔨 BUILT 2026-10-14 | Refresh at run time, the 401 on connect, and `needs_reconnect` (§3.6.7), dark | 🟢 AGENT-SAFE | O7, O8 and O14 |
-| **IN-8c** | The console Connect button, the BFF route for `POST /integrations/mcp/{name}/oauth/start`, the dialog text, the acts-as label and the card line (§3.6.9) | 🟢 AGENT-SAFE | O10. Visual review passes |
+| **IN-8c** 🔨 BUILT 2026-10-15 | The console Connect button, the BFF route for `POST /integrations/mcp/{name}/oauth/start`, the dialog text, the acts-as label and the card line (§3.6.9), dark | 🟢 AGENT-SAFE | O10. Visual review passes |
 | **IN-8d** | Pre-registered providers: GitHub, Slack and HubSpot (§3.6.2) | 🔴 OWNER-GATE. The owner creates each OAuth app, and its secret goes in the operator plane (D56) | The owner's consent with each provider stores an org connection in Fracktal |
 
 ### 7.3 IN-4 acceptance

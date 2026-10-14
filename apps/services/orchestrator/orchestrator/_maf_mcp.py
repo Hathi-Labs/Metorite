@@ -67,6 +67,12 @@ The rules:
    A token that cannot refresh gets ``needs_reconnect`` at once. So one
    expired token never asks an admin to connect again, and a token that
    never says when it ends cannot stay dead for ever (review of #1011).
+10. **The acts-as line** (WS-54 IN-8c, D98, ``integrations_console.md``
+    §3.6.9). The card of a tool of an OAuth server says "Acts as <admin
+    email> at <host>." right after the hint line. The admin is the
+    ``connected_by`` of the row, and the attach keeps it on the tool
+    (:func:`server_acts_as`). The card escapes both values as it escapes
+    the names (item 19). A header server gets no line.
 
 Fences: ``tests/unit/test_maf_mcp_injection.py``,
 ``tests/unit/test_maf_mcp_org_scope_r8.py``,
@@ -156,6 +162,9 @@ class McpServer:
     #: IN-8b: the registry refreshed that token in THIS run, before the
     #: connect. The registry reads it on a 401 (rule 9).
     oauth_refreshed: bool = False
+    #: IN-8c (D98): the admin that an OAuth connection acts as, from the
+    #: ``connected_by`` of its row. Empty for a header server.
+    acts_as: str = ""
 
 
 #: An open server: the tool and the client that the run must close.
@@ -456,6 +465,21 @@ def _record_tool_list(meta: dict[str, ToolMeta], result: Any, server: str = "") 
 
 #: The key on a tool's ``__dict__`` that holds its server's H-300 flag.
 _ALWAYS_CONFIRM_KEY = "_ws8c_always_confirm"
+#: IN-8c: the key that holds ``(admin email, host)`` of an OAuth server.
+_ACTS_AS_KEY = "_in8c_acts_as"
+
+
+def server_acts_as(tool: Any) -> tuple[str, str] | None:
+    """The admin email and the host that the server of *tool* acts as at
+    (D98, IN-8c), or None for a server that is not an OAuth connection.
+
+    The attach writes it from the registry row. A tool with no key, or with
+    a value of another shape, reads as None, so the card shows no line."""
+    value = getattr(tool, "__dict__", {}).get(_ACTS_AS_KEY)
+    if (isinstance(value, tuple) and len(value) == 2
+            and all(isinstance(v, str) and v for v in value)):
+        return value[0], value[1]
+    return None
 
 
 def server_always_confirms(tool: Any) -> bool:
@@ -811,6 +835,9 @@ async def attach_mcp_tools(
                 )
             # H-300: the gate reads the server's flag from the tool.
             tool.__dict__[_ALWAYS_CONFIRM_KEY] = server.always_confirm is True
+            # IN-8c (D98): the card names the admin that an OAuth row acts as.
+            if server.oauth and server.acts_as and host:
+                tool.__dict__[_ACTS_AS_KEY] = (str(server.acts_as), host)
             async with asyncio.timeout(CONNECT_BUDGET_S):
                 await tool.connect()
         except asyncio.CancelledError:
@@ -1165,9 +1192,22 @@ def _hint_line(hints: dict[str, bool] | None, always_confirm: bool = False) -> s
     return "The server does not mark this tool as read-only."
 
 
+def acts_as_line(acts_as: tuple[str, str] | None) -> str:
+    """The card line of an OAuth server (D98, IN-8c), or an empty string.
+
+    "Acts as <admin email> at <host>." The email is member data and the host
+    comes from a URL that an admin typed, so each goes through
+    :func:`_shown_name`, as the server and tool names do (item 19)."""
+    if not acts_as:
+        return ""
+    email, host = acts_as
+    return f"Acts as {_shown_name(email)} at {_shown_name(host)}."
+
+
 def card_text(server: str, tool: str, arguments: dict[str, Any],
               meta: ToolMeta | None, fallback_description: str = "",
-              local: str = "", always_confirm: bool = False) -> tuple[str, str, str]:
+              local: str = "", always_confirm: bool = False,
+              acts_as: tuple[str, str] | None = None) -> tuple[str, str, str]:
     """The title, detail and body of the card for one MCP call.
 
     The title names the LOCAL tool name of MAF (*local*), in
@@ -1179,7 +1219,12 @@ def card_text(server: str, tool: str, arguments: dict[str, Any],
     :data:`DESCRIPTION_LABEL`. Only the description is cut to fit.
     Arguments that do not fit raise :class:`CardTooLong`, because a member
     must see the whole call that Approve runs. With *always_confirm* (H-300)
-    the detail first says that the server is set to always confirm."""
+    the detail first says that the server is set to always confirm.
+
+    *acts_as* (IN-8c, D98) is ``(admin email, host)`` for an OAuth server.
+    Its line (:func:`acts_as_line`) comes right after the hint line, and
+    before the server and tool names. The detail stays one line, because
+    the card draws it as one."""
     hidden: list[str] = []
     partly: list[str] = []
     shown = json.dumps(redact_arguments(arguments, hidden, partly), indent=2,
@@ -1194,8 +1239,10 @@ def card_text(server: str, tool: str, arguments: dict[str, Any],
         description = description[: max(0, room - 1)] + "…"
     shown_server, shown_tool = _shown_name(server), _shown_name(tool)
     title = f"Run the MCP tool {_local_name(local or tool)}?"
+    acts = acts_as_line(acts_as)
     detail = (f"{_hint_line(meta.hints if meta else None, always_confirm)} "
-              f"Server: {shown_server} · Tool: {shown_tool}")
+              + (f"{acts} " if acts else "")
+              + f"Server: {shown_server} · Tool: {shown_tool}")
     return title, detail, head + description
 
 
@@ -1360,7 +1407,8 @@ def _make_gate_class() -> type:
             try:
                 card = card_text(server, remote, arguments, meta,
                                  str(getattr(function, "description", "") or ""),
-                                 local=name, always_confirm=always)
+                                 local=name, always_confirm=always,
+                                 acts_as=server_acts_as(_owner_tool(self.tools, function)))
             except Exception:  # CardTooLong, or a fault: no whole card, no call
                 _log.info("mcp.confirm", server=server, tool=name, outcome="card_too_long")
                 context.result = CARD_TOO_LONG_TEXT.format(tool=name)
@@ -1406,6 +1454,7 @@ __all__ = [
     "McpPermissionGate",
     "McpServer",
     "ToolMeta",
+    "acts_as_line",
     "attach_mcp_tools",
     "card_text",
     "close_mcp_tools",
@@ -1417,6 +1466,7 @@ __all__ = [
     "mcp_service",
     "redact_arguments",
     "schema_tokens",
+    "server_acts_as",
     "server_always_confirms",
     "tool_hints",
     "tool_meta",

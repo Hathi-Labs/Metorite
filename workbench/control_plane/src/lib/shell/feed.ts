@@ -54,8 +54,21 @@ import { ACT_HOLD_MS } from "./needsActs";
 
 // ── The shape (§14.1a) ──────────────────────────────────────────────────────
 
-/** The app ids of the feed. `calendar` is a feed source only, never a needs app. */
-export type FeedApp = NeedsApp | "calendar";
+/**
+ * The app ids of the feed apps that are never a needs app, and the pane each
+ * one opens. `calendar` came with MD-1. `crm`, `people` and `chat` come with
+ * MD-3b (§5.8 item 6), before any of their kinds. A card's icon is the icon
+ * of this pane in the manifest (`feedAppIcon`).
+ */
+const FEED_ONLY_APP_HREF = {
+  calendar: "/calendar",
+  crm: "/crm",
+  people: "/people",
+  chat: "/chat",
+} as const;
+
+/** The app ids of the feed: the needs apps, and the feed-only apps above. */
+export type FeedApp = NeedsApp | keyof typeof FEED_ONLY_APP_HREF;
 
 /** The group ids, in their one order. MD-1 emits the first four. */
 export const GROUP_ORDER = ["now", "needs_you", "ready", "fyi", "later", "handled"] as const;
@@ -153,6 +166,13 @@ export interface FeedAnswer {
   /** The needs view of the same run, or null from a gateway that sent none. */
   needs: NeedsFeed | null;
   sources: Partial<Record<FeedApp, SourceState>>;
+  /**
+   * The app of each source, by source id (MD-3b, §14.1a). An MD-3 source has
+   * an id of its own, such as `crm_followups`, so the client maps a failed or
+   * capped source to its app through this. A source with no entry is its own
+   * app, so an answer from an older gateway reads as before.
+   */
+  source_apps?: Readonly<Record<string, string>>;
   capped: FeedApp[];
   /**
    * When `fetchFeed` sent the request, in ms. The overlay of the feed's own
@@ -289,6 +309,24 @@ function readHandled(raw: unknown): HandledEntry | null {
   };
 }
 
+/** The `source_apps` map, with each entry that is not text dropped. */
+function readSourceApps(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [source, app] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof app === "string" && app) out[source] = app;
+  }
+  return out;
+}
+
+/**
+ * The app of a source (MD-3b, §14.1a). A source that the map does not name
+ * is its own app, as every source was before MD-3b.
+ */
+export function sourceApp(sourceApps: Readonly<Record<string, string>> | undefined, source: string): string {
+  return sourceApps && Object.hasOwn(sourceApps, source) ? sourceApps[source] : source;
+}
+
 /**
  * Read an answer defensively. A field the server left out reads as empty, and
  * a card with no id, title, link or known group is dropped, so the column
@@ -313,6 +351,7 @@ export function readFeedAnswer(raw: unknown): FeedAnswer {
     handled_ok: Array.isArray(body.handled) && body.handled_ok === true,
     needs: body.needs && typeof body.needs === "object" ? readFeed(body.needs) : null,
     sources: body.sources && typeof body.sources === "object" ? (body.sources as FeedAnswer["sources"]) : {},
+    source_apps: readSourceApps(body.source_apps),
     capped: Array.isArray(body.capped) ? (body.capped as FeedApp[]) : [],
     fetchedAt: 0,
   };
@@ -597,7 +636,7 @@ export function feedGroups(
 }
 
 /** Where "Show all in <app>" goes, for each feed app. */
-const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = { ...NEEDS_APP_HREF, calendar: "/calendar" };
+const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = { ...NEEDS_APP_HREF, ...FEED_ONLY_APP_HREF };
 
 /**
  * The "Show all in <app>" links at the end of a group (§6.1, MD-2b): one for
@@ -607,11 +646,14 @@ const FEED_APP_HREF: Readonly<Record<FeedApp, string>> = { ...NEEDS_APP_HREF, ca
 export function cappedLinks(
   group: Pick<ShownGroup, "cards">,
   capped: readonly string[],
+  sourceApps?: Readonly<Record<string, string>>,
 ): { app: FeedApp; label: string; href: string }[] {
+  // `capped` names sources, and a card names its app (MD-3b).
+  const cappedApps = capped.map((source) => sourceApp(sourceApps, source));
   const apps: FeedApp[] = [];
   for (const c of group.cards) {
     const app = c.app as FeedApp;
-    if (capped.includes(app) && app in FEED_APP_HREF && !apps.includes(app)) apps.push(app);
+    if (cappedApps.includes(app) && Object.hasOwn(FEED_APP_HREF, app) && !apps.includes(app)) apps.push(app);
   }
   return apps.map((app) => ({ app, label: `Show all in ${FEED_APP_NAMES[app]}`, href: FEED_APP_HREF[app] }));
 }
@@ -808,13 +850,23 @@ export function coversNeeds(answer: Pick<FeedAnswer, "needs"> | undefined, error
 
 // ── The words ───────────────────────────────────────────────────────────────
 
-/** The member-facing name of each feed app. Calendar is the feed's own. */
-export const FEED_APP_NAMES: Readonly<Record<FeedApp, string>> = { ...APP_NAMES, calendar: "Calendar" };
+/**
+ * The member-facing name of each feed app. The needs apps keep their needs
+ * names. Each feed-only app takes the label of its pane in the manifest.
+ */
+export const FEED_APP_NAMES: Readonly<Record<FeedApp, string>> = {
+  ...APP_NAMES,
+  calendar: "Calendar",
+  crm: "CRM",
+  people: "People",
+  chat: "Chat",
+};
 
 /** A card's icon: its app's own icon from the manifest, never a second list. */
 export function feedAppIcon(app: FeedApp | string): string {
-  if (app === "calendar") {
-    return NAV_SECTIONS.flatMap((s) => s.items).find((p) => p.href === "/calendar")?.icon ?? "Circle";
+  if (Object.hasOwn(FEED_ONLY_APP_HREF, app)) {
+    const href = FEED_ONLY_APP_HREF[app as keyof typeof FEED_ONLY_APP_HREF];
+    return NAV_SECTIONS.flatMap((s) => s.items).find((p) => p.href === href)?.icon ?? "Circle";
   }
   return app in APP_NAMES ? appIcon(app as NeedsApp) : "Circle";
 }
@@ -873,11 +925,37 @@ export function cardTime(card: Pick<FeedCard, "kind" | "at">, nowMs: number): st
   return at.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
-/** One muted line per source that failed, Calendar included. */
-export function feedFailedLines(sources: FeedAnswer["sources"]): string[] {
-  const { calendar, ...needs } = sources;
-  const lines = failedLines(needs);
-  if (calendar === "failed") lines.push("Calendar did not answer, so its time blocks may be missing.");
+/** What the silence of a feed-only app can hide, in the member's words. */
+const FEED_ONLY_MISSING: Readonly<Record<keyof typeof FEED_ONLY_APP_HREF, string>> = {
+  calendar: "time blocks",
+  crm: "follow-ups and deals",
+  people: "news about colleagues",
+  chat: "questions from the assistant",
+};
+
+/**
+ * One muted line per APP that has a failed source, Calendar included. A
+ * source maps to its app through `source_apps` (MD-3b), so two failed CRM
+ * sources give one CRM line. An app the client does not know gives none.
+ */
+export function feedFailedLines(
+  sources: FeedAnswer["sources"],
+  sourceApps?: Readonly<Record<string, string>>,
+): string[] {
+  const needsFailed: Partial<Record<NeedsApp, SourceState>> = {};
+  const others = new Set<string>();
+  for (const [source, state] of Object.entries(sources)) {
+    if (state !== "failed") continue;
+    const app = sourceApp(sourceApps, source);
+    if (Object.hasOwn(APP_NAMES, app)) needsFailed[app as NeedsApp] = "failed";
+    else others.add(app);
+  }
+  const lines = failedLines(needsFailed);
+  for (const app of Object.keys(FEED_ONLY_MISSING) as (keyof typeof FEED_ONLY_MISSING)[]) {
+    if (others.has(app)) {
+      lines.push(`${FEED_APP_NAMES[app]} did not answer, so its ${FEED_ONLY_MISSING[app]} may be missing.`);
+    }
+  }
   return lines;
 }
 
@@ -938,11 +1016,13 @@ export function feedNeedsCount(
  * source may be missing. A capped source does the same (fix round 1): its
  * count is a floor, and more cards wait behind it.
  */
-export function handledClaim(answer: Pick<FeedAnswer, "handled" | "handled_ok" | "sources" | "capped">): boolean {
+export function handledClaim(
+  answer: Pick<FeedAnswer, "handled" | "handled_ok" | "sources" | "capped" | "source_apps">,
+): boolean {
   return (
     answer.handled.length > 0 &&
     answer.handled_ok &&
-    feedFailedLines(answer.sources).length === 0 &&
+    feedFailedLines(answer.sources, answer.source_apps).length === 0 &&
     answer.capped.length === 0
   );
 }

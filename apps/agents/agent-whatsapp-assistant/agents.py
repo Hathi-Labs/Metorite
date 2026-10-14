@@ -28,6 +28,7 @@ from typing import Any
 
 import httpx
 from acb_common import get_logger, get_settings
+from acb_common.paging import prefix_limit, prefix_page
 
 # H-236: every tool states ``open_world``. Each one is a read or a draft over
 # the gateway's own ``/whatsapp/*`` routes, and none sends (the DOCTRINE
@@ -269,26 +270,33 @@ async def whatsapp_brief(account_id: str | None = None) -> str:
 
 @_annotate_risk(open_world=False)
 async def list_whatsapp_chats(
-    stream: str = "needs_reply", account_id: str | None = None,
+    stream: str = "needs_reply", account_id: str | None = None, offset: int = 0,
 ) -> str:
     """List chats in a triage stream: 'needs_reply', 'waiting', 'groups', or
-    'all'. Returns each chat's name, last snippet, and chat_id."""
-    params: dict[str, Any] = {"stream": stream}
+    'all'. Returns each chat's name, last snippet, and chat_id. 20 a page:
+    offset reads the next."""
+    # `/whatsapp/chats` has a LIMIT (at most 200) and no OFFSET. The tool sent
+    # no limit before, so the route's default of 50 read as "every chat".
+    start, size, ask = prefix_limit(offset, 20, default=20, cap=200)
+    params: dict[str, Any] = {"stream": stream, "limit": ask}
     if account_id:
         params["account_id"] = account_id
     chats = await _get("/whatsapp/chats", params)
     if not chats:
         return f"No chats in the '{stream}' stream."
-    lines = [f"Chats in '{stream}' ({len(chats)}):"]
-    for c in chats[:20]:
+    page = prefix_page(chats, start, size, cap=200, asked=ask, noun="chats")
+    if not page.items:
+        return page.line
+    lines = [f"Chats in '{stream}':"]
+    for c in page.items:
         status = f" [{c['status']}]" if c.get("status") else ""
         win = "" if c.get("window_open", True) else " · window closed"
         lines.append(
             f"• {c.get('name') or c.get('wa_chat_id')}{status}{win}: "
             f"{(c.get('last_snippet') or '')[:80]} (chat_id={c.get('id')})"
         )
-    if len(chats) > 20:
-        lines.append(f"… and {len(chats) - 20} more")
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
@@ -303,38 +311,56 @@ def _fmt_message(m: dict[str, Any]) -> str:
 
 
 @_annotate_risk(open_world=False)
-async def read_whatsapp_chat(chat_id: str, limit: int = 20) -> str:
+async def read_whatsapp_chat(chat_id: str, limit: int = 20, offset: int = 0) -> str:
     """Read the newest `limit` messages of a chat (shown oldest→newest), including voice-note
     transcripts. Use before drafting a reply or answering a question about a
-    conversation."""
-    msgs = await _get(f"/whatsapp/chats/{chat_id}/messages", {"limit": limit})
+    conversation. offset counts back from the newest: offset=20 reads the 20
+    before them."""
+    # The route gives the newest LIMIT rows (at most 500), oldest first, and
+    # has no OFFSET. So the page is cut from the newest end.
+    start, size, ask = prefix_limit(offset, limit, default=20, cap=500)
+    msgs = await _get(f"/whatsapp/chats/{chat_id}/messages", {"limit": ask})
     if not msgs:
         return "No messages in this chat."
-    return "\n".join(_fmt_message(m) for m in msgs)
+    page = prefix_page(list(reversed(msgs)), start, size, cap=500, asked=ask,
+                       noun="messages")
+    if not page.items:
+        return page.line
+    lines = [_fmt_message(m) for m in reversed(page.items)]
+    if page.line:
+        lines.append(page.line)
+    return "\n".join(lines)
 
 
 @_annotate_risk(open_world=False)
-async def search_whatsapp(query: str, account_id: str | None = None) -> str:
+async def search_whatsapp(query: str, account_id: str | None = None,
+                          offset: int = 0) -> str:
     """Search the founder's WhatsApp history by meaning AND keyword (message
     bodies AND voice-note transcripts). Returns matches with chat_id + message_id.
     Semantic re-ranking applies when it's enabled; otherwise this is pure
     keyword search (recall is identical either way)."""
     # hybrid re-ranks by semantic closeness when enabled, and falls back to pure
     # lexical otherwise — so passing it is always safe.
-    params: dict[str, Any] = {"q": query, "hybrid": "true"}
+    # `/whatsapp/search` has a LIMIT (at most 201) and no OFFSET.
+    start, size, ask = prefix_limit(offset, 15, default=15, cap=200)
+    params: dict[str, Any] = {"q": query, "hybrid": "true", "limit": ask}
     if account_id:
         params["account_id"] = account_id
     msgs = await _get("/whatsapp/search", params)
     if not msgs:
         return f"No messages match '{query}'."
-    lines = [f"Matches for '{query}' ({len(msgs)}):"]
-    for m in msgs[:15]:
+    page = prefix_page(msgs, start, size, cap=200, asked=ask, noun="matches",
+                       rest="Other matches", narrow="Use more exact words to reach them.")
+    if not page.items:
+        return page.line
+    lines = [f"Matches for '{query}':"]
+    for m in page.items:
         lines.append(
             f"• {_fmt_message(m)} (chat_id={m.get('chat_id')}, "
             f"message_id={m.get('id')})"
         )
-    if len(msgs) > 15:
-        lines.append(f"… and {len(msgs) - 15} more")
+    if page.line:
+        lines.append(page.line)
     return "\n".join(lines)
 
 
@@ -382,6 +408,12 @@ async def whatsapp_my_commitments(account_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+#: The most loops and promises ``/whatsapp/chats/{id}/context`` returns
+#: (``limit=10`` and ``LIMIT 5`` in ``transport/context.py``).
+_CONTEXT_LOOPS_MAX = 10
+_CONTEXT_WAITING_MAX = 5
+
+
 @_annotate_risk(open_world=False)
 async def whatsapp_chat_context(chat_id: str) -> str:
     """The company standing behind a chat: who the contact is, their CRM/ERP
@@ -400,15 +432,23 @@ async def whatsapp_chat_context(chat_id: str) -> str:
     if entity:
         lines.append(
             f"• Linked: {entity.get('system')} {entity.get('kind')} #{entity.get('id')}")
+    # The route already caps each list (10 loops, 5 promises). Print all it
+    # sent: the tool cut the loops to 5 on top, with no notice.
     loops = ctx.get("open_loops", []) or []
     if loops:
         lines.append("• Open loops: " + "; ".join(
-            lp.get("title", "") for lp in loops[:5]))
+            lp.get("title", "") for lp in loops))
+        if len(loops) >= _CONTEXT_LOOPS_MAX:
+            lines.append(f"• That is the first {len(loops)} open loops. "
+                         "More may exist.")
     waiting = ctx.get("waiting_on", []) or []
     if waiting:
         lines.append("• They owe you: " + "; ".join(
             f"{w.get('text', '')[:60]} (commitment_id={w.get('id')})"
-            for w in waiting[:5]))
+            for w in waiting))
+        if len(waiting) >= _CONTEXT_WAITING_MAX:
+            lines.append(f"• That is the first {len(waiting)}. "
+                         "whatsapp_waiting_on lists every open promise.")
     stats = ctx.get("stats", {}) or {}
     lines.append(f"• History: {stats.get('message_count', 0)} messages")
     return "\n".join(lines)
