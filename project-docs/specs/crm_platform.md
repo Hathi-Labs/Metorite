@@ -1245,7 +1245,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 - `GET /crm/fields/{entity}` serves leads, contacts, organizations and deals. It maps them to the `crm_field_defs.entity` values `lead`, `contact`, `company` and `deal`. Any member that the CRM access rule admits may read it. An unknown entity gives 422. It returns `key`, `label`, `type`, `options`, `position`, `visible`, `source` and `api_name`, in the order of `position`. It adds no write route and no migration. Fences: `tests/unit/test_crm_fields.py` and `tests/unit/test_crm_fields_r8.py`.
 - The record page draws each custom field from its definition: the label, the order, and only visible fields. The rules for each type are in `src/app/crm/lib/fields.ts`. A key with no definition keeps its humanised key. In Mirror mode the fields stay read only.
 - A URL becomes a link only for an http or https address, with `rel="noopener noreferrer"`. Any other value stays text.
-- The Fields card on CRM settings lists the fields of each entity. It says "Fields come from Zoho." in Mirror mode and "Field editing comes later." in Native mode. It has no editor. CRM-C4 (§20.7) builds the editor. It supersedes CRM-S6.
+- The Fields card on CRM settings lists the fields of each entity. It says "Fields come from Zoho. Edit fields in Zoho." in Mirror mode and "Field editing comes later." in Native mode. CRM-C4 (§20.7) builds the editor. CRM-C4c draws the studio in its place for an admin of a Native org with the flag on. It supersedes CRM-S6.
 - Each list has a Columns control. A member picks up to 5 custom fields. The browser keeps the choice for each entity in local storage. While a saved view is active, the view holds the choice (CRM-Q8).
 
 **CRM-Q3 built as (2026-10-12).**
@@ -4451,8 +4451,8 @@ anchors above now carry the measured lines.
   `FieldStudioSectionDialog.tsx` draw the forms. `FieldsCard.tsx` switches to
   the studio.
 - **Who sees it.** `fieldsCardShape` gives the studio only when the layout
-  says `studio_admin`. A failed read gives the card of today, and a first read
-  gives a skeleton. Mirror mode reads no layout. Its note now ends "Edit
+  says `studio_admin`. A failed read gives an error with Retry, and a first
+  read gives a skeleton. Mirror mode reads no layout. Its note now ends "Edit
   fields in Zoho." (owner brief, 2026-10-14).
 - **The layout on screen.** One tab for each record type. The fields in no
   section come first, then each section, then the retired fields.
@@ -4480,10 +4480,38 @@ anchors above now carry the measured lines.
   accent and at 390 px. A real HTML5 drag of a field and of a section sent one
   `PUT` each. At 390 px the header note was too narrow, and the fix is in. The
   implementer deleted the page.
-- **Not in this slice.** Drag needs a mouse. A phone moves a custom field to
-  another section through its form, and it cannot change an order. A
-  keyboard order is a follow-up. The `visual-review` skill did not run, and
-  the Playwright check stood in for it.
+- **Not in this slice.** The `visual-review` skill did not run, and the
+  Playwright check stood in for it.
+
+**Review round 1 (2026-10-14).** The coordinator decided each item.
+
+1. **A required field that no member can fill (P1).** The gateway gives 422
+   `required_unfillable` for a required field that is hidden with no default.
+   It gives the same 422 for a required picklist or multi-select with no
+   active option. `check_fillable` in `field_studio.py` runs at a create and
+   at a PATCH. So it also refuses a hide, a cleared default, a new "required"
+   and a retire of the last active option. `checkDraft` refuses the same
+   shapes before the save. It also refuses text in "New option" that the
+   admin did not add: "Add or clear the new option." R8 case:
+   `test_a_required_field_that_no_member_can_fill_gives_422`.
+2. **A failed drop after a tab switch.** The tabs are off while a write runs.
+   `revertedOrder` goes back to the served layout only on the tab of the drop.
+3. **A close during a save.** Each dialog ignores Escape and the scrim while
+   its save runs (`guardClose`). A refusal that comes after the form is gone
+   shows in the notice of the studio.
+4. **Move up and Move down.** Each field, section and option has the two
+   buttons, so a keyboard and a phone can change the order. A move sends the
+   same full order as a drag (`stepField`, `stepSection`, `moveOption`).
+5. **The options of a PATCH.** The save reads the options again
+   (`mergeOptions`). It applies only the changes of this dialog. Those are a
+   rename and a retire by `value`, each new option, and the order. An option that another admin also
+   changed gives "Someone else changed the options. Reopen to see them."
+6. **A failed layout read** shows "The fields could not be read." and Retry.
+   It never says "Field editing comes later."
+7. **The notes.** `typeChoices` of a system field has a test. A section
+   delete counts its retired fields too (`sectionFieldCount`).
+   `src/components/ui/` has no shared Card, so the studio keeps the frame of
+   the settings cards.
 
 ### 20.8 CRM-C5: Field studio and stage order written to Zoho (Mirror)
 
