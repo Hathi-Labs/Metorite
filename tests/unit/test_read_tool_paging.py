@@ -623,3 +623,36 @@ def test_report_list_says_when_it_holds_only_the_newest(monkeypatch) -> None:
         if c["path"] == "/projects/reports" else empty_list(c)))
     out = asyncio.run(skill_projects.report_list())
     assert "These are the newest 200 reports. Older ones exist." in out
+
+
+def test_the_load_route_pages_its_people(monkeypatch) -> None:
+    """``people_offset`` moves the window of MAX_PEOPLE, and ``people_listed``
+    counts what it pages over. No offset is the first page, as the panel
+    reads it."""
+    import contextlib
+
+    analytics = pytest.importorskip("gateway.routes.projects.analytics")
+
+    @contextlib.asynccontextmanager
+    async def session():
+        yield object()
+
+    async def visibility(_db, _user):
+        return object()
+
+    async def body(*_a, **_kw):
+        return {"people": [{"assignee": f"p{k}"} for k in range(25)],
+                "people_total": 25, "total_tasks": 25}
+
+    async def everyone(*_a):
+        return None
+
+    monkeypatch.setattr(analytics, "_tenant_session", session)
+    monkeypatch.setattr(analytics, "resolve_visibility", visibility)
+    monkeypatch.setattr(analytics, "load_body", body)
+    monkeypatch.setattr(analytics, "reportable_people", everyone)
+    first = asyncio.run(analytics.load(user=object()))
+    assert [p["assignee"] for p in first["people"]] == [f"p{k}" for k in range(20)]
+    assert first["people_listed"] == 25
+    rest = asyncio.run(analytics.load(people_offset=20, user=object()))
+    assert [p["assignee"] for p in rest["people"]] == [f"p{k}" for k in range(20, 25)]
