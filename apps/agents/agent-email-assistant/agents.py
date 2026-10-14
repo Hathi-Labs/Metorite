@@ -1885,7 +1885,12 @@ async def _outward_rule_refusal(
     if bad:
         return bad
     detail, context = _outward_card(rows)
-    if not context:
+    # EM-G11c1 fix round 1 (P1-b): the card also lists EACH rule of the call
+    # and EACH action of it, so a TRASH beside a FORWARD, or an inward rule in
+    # the same batch, is on the card that saves it.
+    if context:
+        context += "\n\nEach rule, with each action:\n" + _rule_lines(rules)
+    if not context or len(context) > _CARD_CONTEXT_LIMIT:
         return (
             "Not saved. These rules name too many targets to show on one "
             "card. Ask the user for fewer rules or fewer targets at a time."
@@ -2320,9 +2325,8 @@ async def learn_rule_pattern(
     )
 
 
-#: EM-G11c1 scope 5: the settings that turn on a write with no member in the
-#: loop, as ``key: (name, card line)``. ``cold_email_blocker`` is a mode and
-#: not a switch, so ``_settings_turned_on`` reads it apart.
+#: EM-G11c1 scope 5: the switches that turn on a write or a wider act, as
+#: ``key: (name, card line)``. Each counts when it goes from off to on.
 _WRITE_SWITCHES = {
     "auto_run": ("Auto-run",
                  "Auto-run: the rules act on each new email with no ask."),
@@ -2332,21 +2336,40 @@ _WRITE_SWITCHES = {
     "follow_up_auto_draft": ("Follow-up drafts",
                              "Follow-up drafts: each follow-up scan also saves "
                              "a nudge draft."),
+    "multi_rule_execution": ("more than one rule for each email",
+                             "Multi-rule: each rule that matches an email acts, "
+                             "not only the first."),
+}
+#: Scope 5, fix round 1: text that the assistant acts on or puts in mail.
+#: Each counts when the new text is not empty and is not the text of now. A
+#: change to empty text removes it, and asks nothing.
+_TEXT_SETTINGS = {
+    "about": ("the text about you", "The drafter uses it in each reply."),
+    "signature": ("the signature", "It goes at the end of each drafted reply."),
+    "personal_instructions": ("the personal instructions",
+                              "The assistant follows them in each reply and act."),
+    "writing_style": ("the writing style", "Each later draft follows it."),
 }
 _COLD_MODES = {
     "LABEL": "it labels each cold email",
     "ARCHIVE": "it labels and archives each cold email",
 }
+_CARD_SETTING_TEXT = 600
 
 
-def _settings_turned_on(
+def _setting_off(value: Any) -> bool:
+    return str(value or "OFF").strip().upper() == "OFF"
+
+
+def _settings_needing_card(
     cur: dict[str, Any], wanted: dict[str, Any],
 ) -> list[tuple[str, str]]:
-    """``(name, card line)`` for each write that *wanted* turns on.
+    """``(name, card line)`` for each change of *wanted* that asks a card.
 
-    A switch counts when it goes from off to on. The blocker counts when it
-    goes to a mode other than ``OFF`` that is not the mode of now. A change
-    to off, or no change, counts for nothing."""
+    A change asks when it turns a write on, widens an act, or replaces text
+    that the assistant acts on. A change to off, a change to empty text, or no
+    change asks nothing. ``tests/unit/test_email_agent_write_cards.py`` calls
+    the tool once for each parameter, so a new setting needs a decision."""
     cur = cur if isinstance(cur, dict) else {}
     out: list[tuple[str, str]] = []
     for key, (name, line) in _WRITE_SWITCHES.items():
@@ -2359,6 +2382,41 @@ def _settings_turned_on(
         if new != "OFF" and new != now:
             does = _COLD_MODES.get(new, f"it acts on each cold email ({_card_name(new)})")
             out.append(("the cold-email blocker", f"Cold-email blocker: {does}."))
+    for key, (name, why) in _TEXT_SETTINGS.items():
+        value = wanted.get(key)
+        if value and str(value) != str(cur.get(key) or ""):
+            out.append((name, f"New {name}: {_card_text(value, _CARD_SETTING_TEXT)}. {why}"))
+    if (wanted.get("sensitive_data_protection") is False
+            and cur.get("sensitive_data_protection") is not False):
+        out.append(("drafts for sensitive email",
+                    "Sensitive-data protection off: the assistant also drafts "
+                    "replies to email that looks sensitive."))
+    for key, who in (("follow_up_awaiting_days", "they have not replied"),
+                     ("follow_up_needs_reply_days", "you have not replied")):
+        days = wanted.get(key)
+        if days is not None and int(days) > 0 and int(cur.get(key) or 0) <= 0:
+            out.append(("follow-up labels",
+                        f"Follow-up: the sync labels each thread where {who} "
+                        f"after {int(days)} day(s) \"Follow-up\"."))
+    confidence = wanted.get("draft_confidence")
+    if confidence is not None and str(confidence) != str(cur.get("draft_confidence") or ""):
+        out.append(("a new draft confidence",
+                    f"Draft confidence: {_card_name(confidence)}. It changes "
+                    "which emails get a reply draft."))
+    # The digest is mail sent to the account address. It sends when the
+    # frequency is not OFF and sending is on. Sending defaults to on
+    # (``29_inbox_zero_parity_settings.sql``), so a missing value counts as on.
+    freq_now = cur.get("digest_frequency")
+    send_now = cur.get("digest_send_to_email") is not False
+    freq_new = wanted.get("digest_frequency") or freq_now
+    send_new = (wanted["digest_send_to_email"]
+                if wanted.get("digest_send_to_email") is not None else send_now)
+    sends_now = send_now and not _setting_off(freq_now)
+    sends_new = send_new is not False and not _setting_off(freq_new)
+    if sends_new and (not sends_now or str(freq_new).upper() != str(freq_now).upper()):
+        out.append(("the email digest",
+                    f"Digest: an email to the account address, "
+                    f"{_card_name(freq_new).lower()}."))
     return out
 
 
@@ -2425,17 +2483,26 @@ async def update_assistant_settings(
     cur = await _get("/email/assistant/settings", {"account_id": account_id})
     # EM-G11c1 scope 5: a change that turns ON a background write asks a card.
     # A change that turns one off, or any other setting, asks nothing.
-    turned_on = _settings_turned_on(cur, {
+    turned_on = _settings_needing_card(cur, {
         "auto_run": auto_run, "cold_email_blocker": cold_email_blocker,
         "draft_replies": draft_replies, "follow_up_auto_draft": follow_up_auto_draft,
+        "multi_rule_execution": multi_rule_execution, "about": about,
+        "signature": signature, "personal_instructions": personal_instructions,
+        "writing_style": writing_style,
+        "sensitive_data_protection": sensitive_data_protection,
+        "draft_confidence": draft_confidence, "digest_frequency": digest_frequency,
+        "digest_send_to_email": digest_send_to_email,
+        "follow_up_awaiting_days": follow_up_awaiting_days,
+        "follow_up_needs_reply_days": follow_up_needs_reply_days,
     })
     if turned_on:
         box = await _named(account_id)
         names = [name for name, _line in turned_on]
         refusal = await _card_refusal(
-            f"Turn on {' and '.join(names)} in {box}?",
-            " ".join(line for _name, line in turned_on) + f" Mailbox: {box}.",
+            f"Change {' and '.join(names)} in {box}?",
+            f"Mailbox: {box}. Each change is in the list below.",
             "Cancelled — the settings were not changed.",
+            "\n".join(f"- {line}" for _name, line in turned_on),
         )
         if refusal:
             return refusal
@@ -2575,12 +2642,70 @@ async def generate_writing_style(account_id: str | None = None) -> str:
     )
 
 
+#: The default rules of ``POST /email/rules/install-presets``, as the card
+#: shows them (EM-G11c1 fix round 1, P1-c). A mirror of ``_PRESET_RULES`` in
+#: ``gateway/routes/email/automation/rules.py``, because an agent does not
+#: import the gateway. ``test_email_agent_write_cards.py`` fails when the two
+#: give other actions for any provider. Each row is ``(name, instructions,
+#: action, Outlook action, drafts replies)``.
+_PRESETS: tuple[tuple[str, str, str, str | None, bool], ...] = (
+    ("Needs Reply", "Emails I need to respond to.", "label", None, True),
+    ("Awaiting Reply", "Threads where I've already replied and am now waiting "
+     "to hear back from the other person.", "label", None, False),
+    ("Done", "Emails I've already handled or replied to that need no further "
+     "action from me.", "label", None, False),
+    ("FYI", "Important emails I should know about, but don't need to reply to.",
+     "label", None, False),
+    ("Newsletter", "Newsletters: regular content from publications, blogs, or "
+     "services I've subscribed to.", "label", "move_folder", False),
+    ("Marketing", "Marketing: promotional emails about products, services, "
+     "sales, or offers.", "label_archive", "move_folder", False),
+    ("Calendar", "Calendar: any email related to scheduling, meeting invites, "
+     "or calendar notifications.", "label", None, False),
+    ("Receipt", "Receipts: purchase confirmations, payment receipts, "
+     "transaction records or invoices.", "label", "move_folder", False),
+    ("Notification", "Notifications: alerts, status updates, or system "
+     "messages.", "label", "move_folder", False),
+    ("Cold Email", "Cold emails: unsolicited sales pitches and outreach from "
+     "people or companies I have no prior relationship with.",
+     "label_archive", "move_folder", False),
+)
+#: The old names that ``_seed_preset_rules`` reads as the same preset.
+_PRESET_LEGACY = {"needs reply": {"reply", "to reply"}, "done": {"actioned"}}
+
+
+def _preset_rules(provider: str, *, draft_replies: bool) -> list[dict[str, Any]]:
+    """Each default rule as ``{name, instructions, actions}`` for *provider*,
+    with the same actions as ``rules._actions_for_preset``."""
+    out: list[dict[str, Any]] = []
+    for name, instructions, action, ms_action, drafts in _PRESETS:
+        if provider == "microsoft" and ms_action:
+            action = ms_action
+        if action == "move_folder":
+            actions = [{"type": "LABEL", "label": name},
+                       {"type": "MOVE_FOLDER", "label": name}]
+        elif action == "label_archive":
+            actions = [{"type": "LABEL", "label": name}, {"type": "ARCHIVE"}]
+        else:
+            actions = [{"type": "LABEL", "label": name}]
+        if draft_replies and drafts:
+            actions.append({"type": "DRAFT_EMAIL"})
+        out.append({"name": name, "instructions": instructions, "actions": actions})
+    return out
+
+
+def _preset_present(name: str, have: set[str]) -> bool:
+    key = name.lower()
+    return key in have or bool(have & _PRESET_LEGACY.get(key, set()))
+
+
 @_annotate_risk(destructive=True, open_world=True)
 async def install_default_rules(
     account_id: str | None = None, reset: bool = False,
 ) -> str:
-    """Install the recommended default rule set: To Reply, FYI, Newsletter,
-    Marketing, Calendar, Receipt, Notification, Cold Email.
+    """Install the recommended default rule set: Needs Reply, Awaiting Reply,
+    Done, FYI, Newsletter, Marketing, Calendar, Receipt, Notification and Cold
+    Email. A card lists each rule and each action first.
 
     ``reset=false`` (default) adds the defaults, skipping any the user already
     has. ``reset=true`` first DELETES all existing rules and reinstalls the
@@ -2592,6 +2717,21 @@ async def install_default_rules(
     account_id, ask = await _one_mailbox(account_id, "install_default_rules")
     if ask:
         return ask
+    # EM-G11c1 fix round 1 (P1-c): the card lists each preset that the route
+    # installs, with its actions for the provider of this mailbox, and the
+    # draft of Needs Reply when the member turned drafting on.
+    try:
+        accounts = await _accounts()
+    except Exception:  # the card then lists the presets of Gmail
+        accounts = []
+    box = next((a for a in accounts if str(a.get("id")) == str(account_id)), {})
+    try:
+        cur = await _get("/email/assistant/settings", {"account_id": account_id})
+    except Exception:
+        cur = {}
+    presets = _preset_rules(
+        str(box.get("provider") or ""),
+        draft_replies=isinstance(cur, dict) and cur.get("draft_replies") is True)
     if reset:
         # The card names the mailbox that loses its rules (EM-T8g-1 review
         # round 1). An id that names no mailbox of the member stops here.
@@ -2604,9 +2744,10 @@ async def install_default_rules(
         refusal = await _card_refusal(
             f"Delete all rules of {where} and reinstall the defaults?",
             f"Mailbox: {where}. Every existing rule of this mailbox "
-            "(including ones you customised) is deleted first, then the "
-            "default set is installed fresh.",
+            "(including ones you customised) is deleted first, then these "
+            f"{len(presets)} default rules are installed fresh.",
             "Cancelled — your rules were left unchanged.",
+            _rule_lines(presets),
         )
         if refusal:
             return refusal
@@ -2616,14 +2757,23 @@ async def install_default_rules(
             f"Reset rules in {where}: reinstalled {len(installed)} default "
             f"rule(s) ({', '.join(installed)})."
         )
-    # EM-G11c1: the add path saves eight rules that act on new mail.
+    # The add path skips each preset whose name the mailbox has, as
+    # ``_seed_preset_rules`` does, so the card lists only the new ones.
     where = await _named(account_id)
+    try:
+        have = {str(r.get("name") or "").lower() for r in (await _get(
+            "/email/rules", {"account_id": account_id})).get("rules", [])}
+    except Exception:  # the card then lists each preset
+        have = set()
+    adds = [p for p in presets if not _preset_present(p["name"], have)]
+    if not adds:
+        return f"The default rules are already installed in {where}."
     refusal = await _card_refusal(
-        f"Install the default rules in {where}?",
-        "Adds To Reply, FYI, Newsletter, Marketing, Calendar, Receipt, "
-        "Notification and Cold Email, and skips each one that you have. The "
-        f"rules label new email. Mailbox: {where}.",
+        f"Install {len(adds)} default rule(s) in {where}?",
+        f"Mailbox: {where}. Each rule acts on each new email that matches. "
+        "Each rule and each action is in the list below.",
         "Cancelled — no rule was installed.",
+        _rule_lines(adds),
     )
     if refusal:
         return refusal
