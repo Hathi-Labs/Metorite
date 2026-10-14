@@ -1294,8 +1294,8 @@ The feed follows the adoption rule of D75 item 7 and `customer_console.md`
 
 1. **Register.** MD-6a adds the eight `my_day.*` features to the one
    registry in `gateway/decide_features.py`, as `MY_DAY_FEATURES`. They are
-   not in the tuple `FEATURES`, because the email suites pin that tuple as
-   the email set (MD-6a-1 done-when 7). Every default is `off`. MD-6b adds them to
+   not in the tuple `FEATURES`. The email suites pin that tuple as the
+   email set (MD-6a-1 done-when 7). Every default is `off`. MD-6b adds them to
    `ON_FEATURES`, or `on` resolves to `off` and logs `decide.mode_refused`
    (`decide_features.py:312-324`). No second registry, and no second helper.
 2. **Widen the helpers, do not copy them.** Four changes, in MD-6a:
