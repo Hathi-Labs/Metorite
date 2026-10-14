@@ -7,9 +7,12 @@ Spec: ``project-docs/specs/integrations_console.md`` §3.6.5 and §3.6.11.
   3xx answer. The hops are the probe of the MCP URL, the protected-resource
   metadata, the auth-server metadata, a metadata document that names a
   private address, registration, token and revoke. "No socket" is read from
-  the fake transport: a refused request never reaches it.
+  the fake transport: a refused request never reaches it. IN-8b adds the
+  refresh hop (``mcp_oauth.refresh``).
 * **O2.** No OAuth module calls ``outbound_guard.request``,
-  ``outbound_guard.mcp_client`` or ``httpx`` itself (an AST fence).
+  ``outbound_guard.mcp_client`` or ``httpx`` itself (an AST fence). IN-8b
+  adds the two modules of the run-time refresh: the registry reader and the
+  shared token helper.
 
 Mutations M1 and M2 of ``test_mcp_oauth_flow.py`` fail here.
 """
@@ -31,6 +34,9 @@ GATEWAY = ROOT / "apps" / "services" / "gateway" / "gateway"
 OAUTH_MODULES = (
     GATEWAY / "connections" / "mcp_oauth.py",
     GATEWAY / "routes" / "integrations_mcp_oauth.py",
+    # IN-8b: the run-time refresh path.
+    GATEWAY / "connections" / "mcp.py",
+    GATEWAY / "connections" / "shared_token.py",
 )
 
 BAD_PATH = "/bad-hop"
@@ -112,6 +118,8 @@ async def _hop(hop: str, world: f.World, bad: str) -> str:
             outcome = await mcp_oauth.revoke(_credential(revocation_endpoint=bad))
             assert outcome.startswith("failed:"), outcome
             return outcome.removeprefix("failed:")
+        elif hop == "refresh":  # IN-8b
+            await mcp_oauth.refresh(_credential(token_endpoint=bad))
         else:  # pragma: no cover - a typo in the table
             raise AssertionError(hop)
     except mcp_oauth.OAuthFailed as exc:
@@ -119,7 +127,8 @@ async def _hop(hop: str, world: f.World, bad: str) -> str:
     raise AssertionError(f"the {hop} hop did not refuse {bad}")
 
 
-HOPS = ("probe", "prm", "as", "registration", "metadata-names-it", "token", "revoke")
+HOPS = ("probe", "prm", "as", "registration", "metadata-names-it", "token", "revoke",
+        "refresh")
 
 
 @pytest.mark.parametrize("bad", sorted(BAD_URLS))
@@ -140,6 +149,7 @@ _REDIRECT_AT = {
     "registration": (f.AUTH_HOST, "/register"),
     "token": (f.AUTH_HOST, "/token"),
     "revoke": (f.AUTH_HOST, "/revoke"),
+    "refresh": (f.AUTH_HOST, "/token"),  # IN-8b
 }
 
 
@@ -155,6 +165,10 @@ async def test_each_hop_refuses_a_redirect(world: f.World, hop: str) -> None:
         code = err.value.code
     elif hop == "revoke":
         code = (await mcp_oauth.revoke(_credential())).removeprefix("failed:")
+    elif hop == "refresh":
+        with pytest.raises(mcp_oauth.OAuthFailed) as err:
+            await mcp_oauth.refresh(_credential(token_endpoint=f"{f.ISSUER}/token"))
+        code = err.value.code
     else:
         with pytest.raises(mcp_oauth.OAuthFailed) as err:
             plan = await mcp_oauth.discover(f.MCP_URL)

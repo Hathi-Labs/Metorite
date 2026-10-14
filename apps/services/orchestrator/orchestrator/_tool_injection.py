@@ -2267,7 +2267,10 @@ async def _inject_mcp_servers(
         # orchestrator runs inside the gateway process.
         from gateway.connections import mcp as mcp_registry
 
-        stored = await mcp_registry.servers_for_org(str(org))
+        # IN-8b: an OAuth row that this run cannot use is never refreshed.
+        stored = await mcp_registry.servers_for_org(
+            str(org), oauth_wanted=_oauth_wanted(agent_name, native, is_authorized),
+        )
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("mcp.registry_unavailable", error=type(exc).__name__)
         return
@@ -2279,11 +2282,47 @@ async def _inject_mcp_servers(
             await _maf_mcp.attach_mcp_tools(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
+                on_unauthorized=_mark_unauthorized_for(str(org)),
             )
         return
 
     for srv in servers:
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
+
+
+def _oauth_wanted(agent_name: str, native: bool, is_authorized: Any) -> Any:
+    """WS-54 IN-8b: the filter that ``servers_for_org`` applies to an OAuth
+    row BEFORE its refresh. It is the filter that this module applies after
+    the read (the scope, the transport and the grant), and a Copilot agent
+    wants no OAuth row, because only MAF connects one. It logs nothing: the
+    log lines stay with the filters after the read (review of #1011, P2 1)."""
+    from orchestrator import _maf_mcp
+
+    def _want(srv: Any) -> bool:
+        if not native or not _in_scope(list(srv.agent_scope), agent_name):
+            return False
+        if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+            return False
+        return is_authorized is None or bool(is_authorized(_maf_mcp.mcp_service(str(srv.name))))
+
+    return _want
+
+
+def _mark_unauthorized_for(org: str) -> Any:
+    """WS-54 IN-8b: the callback for a 401 on the connect of an OAuth server.
+    It marks the row of *org*, the run binding, never request input, and it
+    says whether the registry refreshed the token in this run
+    (``integrations_console.md`` §3.6.7)."""
+
+    async def _mark(server: Any) -> None:
+        from gateway.connections import mcp as mcp_registry
+
+        await mcp_registry.mark_unauthorized(
+            org, str(server.name), dict(server.headers),
+            refreshed=getattr(server, "oauth_refreshed", False) is True,
+        )
+
+    return _mark
 
 
 def _run_org_or_none() -> str | None:
@@ -2324,6 +2363,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
             # H-300: the admin's "always confirm" switch. A row with no key
             # reads as false, so the server keeps its H-299 behaviour.
             always_confirm=getattr(srv, "always_confirm", False) is True,
+            # IN-8b: an OAuth row, and whether this read refreshed its token.
+            oauth=getattr(srv, "oauth", False) is True,
+            oauth_refreshed=getattr(srv, "refreshed", False) is True,
         ))
     return out
 

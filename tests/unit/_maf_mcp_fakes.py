@@ -64,7 +64,7 @@ class RegistrySpy:
         monkeypatch.setattr(mcp, READ, self._servers_for_org)
         return self
 
-    async def _servers_for_org(self, org: str) -> list[Any]:
+    async def _servers_for_org(self, org: str, **_kw: Any) -> list[Any]:
         from gateway.connections.mcp import StoredServer
 
         self.statements.append((READ, {"org": org}))
