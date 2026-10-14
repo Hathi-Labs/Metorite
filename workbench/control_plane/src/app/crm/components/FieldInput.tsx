@@ -23,6 +23,7 @@
 import { useEffect, useId, useState } from "react";
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import { SelectButton, type SelectOption } from "@/components/ui/SelectButton";
@@ -281,9 +282,21 @@ export function toggleOption(chosen: readonly string[], option: string, on: bool
   return next.length > 0 ? next : null;
 }
 
+/** The note on a held value that no option of the field has (CRM-C4b review). */
+export const NOT_AN_OPTION = "not an option";
+
+/** The chosen values that no option of the field has, such as an old Zoho value. */
+export function strayValues(def: FieldDef, chosen: readonly string[]): string[] {
+  const known = new Set(fieldOptions(def).map((o) => o.value));
+  return chosen.filter((v) => !known.has(v));
+}
+
 function MultiControl({ def, value, onChange, kept, id, invalid, describedBy: described }: ControlProps) {
   const chosen = Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
   const ids = fieldIds(id);
+  // A held value that no option has stays a removable chip, so the member
+  // sees it and can drop it (CRM-C4b review).
+  const strays = strayValues(def, chosen);
   return (
     <div
       id={id}
@@ -305,6 +318,22 @@ function MultiControl({ def, value, onChange, kept, id, invalid, describedBy: de
           />
           {o.label}
         </label>
+      ))}
+      {strays.map((v) => (
+        <span
+          key={`stray:${v}`}
+          className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-[10px] text-foreground"
+        >
+          {v}
+          <span className="text-muted-foreground">({NOT_AN_OPTION})</span>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="X"
+            aria-label={`Remove ${v}`}
+            onClick={() => onChange(toggleOption(chosen, v, false))}
+          />
+        </span>
       ))}
     </div>
   );

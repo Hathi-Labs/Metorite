@@ -43,6 +43,9 @@
 > `CRM_FIELD_STUDIO_ORGS` (2026-10-13, migration 260, §20.7). CRM-C4p, the
 > shared client of the field studio: the layout read, `FieldInput` and the
 > client check (2026-10-14, §20.7). It draws no surface and adds no flag.
+> CRM-C4b, the record UI of the field studio: the create form, the Fields
+> tab, the Columns control and the filter bar read the layout when `studio`
+> is on (2026-10-14, §20.7). No migration and no flag.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -4272,9 +4275,13 @@ rule (Scope item 4) is the one exception, and it holds in every case.
    | Type | The filter | The query |
    |---|---|---|
    | `select`, `multiselect` | Any of the active options, as today | `custom.<key>.in` |
-   | `boolean` | Yes or No | `custom.<key>=true` or `=false` |
-   | `number`, `decimal`, `currency` | Equal to one number | `custom.<key>=` and `String(Number(text))` |
-   | `date` | Equal to one day | `custom.<key>=YYYY-MM-DD` |
+   | `boolean` | Yes or No | `custom.<key>.in=true` or `.in=false` |
+   | `number`, `decimal`, `currency` | Equal to one number | `custom.<key>.in=` and `String(Number(text))` |
+   | `date` | Equal to one day | `custom.<key>.in=YYYY-MM-DD` |
+
+   The re-audit (2026-10-14, fix B) chose `custom.<key>.in` with one value
+   for each row. The existing `extraQuery` (`lib/filters.ts`) sends it, and
+   the gateway matches one value of `.in` as it matches `=`.
 
    - The number query matches the text that Postgres gives for a JSON
      number that the client wrote.
@@ -4308,8 +4315,8 @@ rule (Scope item 4) is the one exception, and it holds in every case.
 **Done when.**
 
 1. With `studio` true, the create form shows each visible custom field of
-   the layout through `FieldInput`, in section order. A required field
-   blocks the save, and a default fills its input.
+   the layout through `FieldInput`, in section order. A required field with
+   no value blocks the save, except a boolean. A default fills its input.
 2. An edit sends `custom` as a partial map that holds only the changed key.
    A cleared value sends a JSON `null`.
 3. The lookup input searches the `lookup_target` entity only, through
@@ -4320,7 +4327,7 @@ rule (Scope item 4) is the one exception, and it holds in every case.
    a visible field with no value as "—", and a member can edit it there. A
    Mirror record shows each field locked.
 6. **Already true, so keep it true.** `pickable` leaves out a retired field
-   and a system row (`fields.ts:372` on `crm-c4a`). `picklistDefs` reads
+   and a system row (`pickable` in `lib/fields.ts`). `picklistDefs` reads
    `pickable` (`filterBar.ts:151`). So the Columns control and the filter
    bar offer no retired field today. A C4b test proves that each new filter
    type keeps this rule.
@@ -4333,6 +4340,8 @@ rule (Scope item 4) is the one exception, and it holds in every case.
 10. The `visual-review` skill shows the form, the Fields tab and the filter
     bar. Check light mode, dark mode, compact density, a changed accent and
     phone width.
+11. A record holds a lookup with `"missing": true`. An edit of another key
+    sends no lookup key (re-audit, 2026-10-14).
 
 **Fences.** `app/crm/components/crmC4b.test.ts` (new),
 `app/crm/components/crmC4p.test.ts`, `app/crm/components/crmX4.test.ts` and
@@ -4345,6 +4354,85 @@ change.
 uv run pytest tests/unit/test_crm_export.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
+
+**Built as (2026-10-14, branch `crm-c4b`).** 🔨 BUILT, not merged. No
+migration, no flag and no new route. The re-audit of 2026-10-14 gave four
+binding fixes, and the items below record each one.
+
+- **The files.** `lib/recordForm.ts` is new. It holds the rules of the two
+  forms, because the spec named no home for them and `lib/` holds each pure
+  rule of the CRM. `fields.ts` adds `layoutGroups`, `columnGroups` and
+  `undefinedRows`. `filterBar.ts` adds `customFilters` and the filter
+  values. The store keeps `refusal`, the message and the field of a refused
+  create or edit. `api.ts` and `useCrmMode.ts` needed no change.
+- **The sections.** The fields of no section come first, with no heading.
+  Each section follows in the order of `position`. A `section_id` that the
+  layout does not list counts as no section. A section with no field to show
+  is left out.
+- **The create form.** The fixed fields of today stay first, and the custom
+  fields follow through `FieldInput`. A required field with no value keeps
+  the Create button disabled. A boolean never blocks, because `formValue`
+  gives it `false` (fix 3). A default that the member clears goes as `null`,
+  because the gateway fills only an absent key.
+- **The Fields tab.** Each field has an inline edit, as the Overview has. A
+  save sends only its own key (fix 4). A system field that names another
+  row reads only: the stage, the pipeline, the company, the lead and the
+  lost reason. The tab shows the name of the stage and the company. It
+  leaves out the other three, because an id means nothing to a member. A
+  custom key with no definition follows the sections, read only.
+- **The filters.** Each filter sends `custom.<key>.in` with one value through
+  `extraQuery` (fix 2), and `lib/filters.ts` did not change. A number filter
+  reads its text through `toWire`, so `1,20,000` gives `120000`. The "No"
+  choice has the hint "A record with no value is not found." `optionsOf` now
+  reads `fieldOptions` and leaves out a retired option (the C4p follow-up).
+- **The 422 rule.** `page.tsx` closes the create modal only when the save
+  returns an id. A refusal shows beside the field that it names, or at the
+  top of the form. A form shows a refusal only after it sent a save.
+- **The fences.** `crmC4b.test.ts` has 42 cases. Seven mutations turned it
+  red: a boolean with no `formValue`, a lookup compared whole, a close
+  before the guard in `page.tsx`, a retired option in `optionsOf`, a filter
+  list without `pickable`, a filter bar that ignores `studio`, and a store
+  that drops the field. One mutation stayed green. It removed the boolean
+  clause of `missingRequired`, which no case reached, so the slice removed
+  that clause.
+- **The visual review.** A temporary page under `src/app` drew the Fields
+  tab, the create form with each of the 15 types, and a list with three
+  custom columns. Playwright took each one in dark mode, light mode, compact
+  density, a changed accent and at 390 px. The builder then deleted the page.
+- **Not in this slice.** A range on a number or a date needs a new gateway
+  operator. The number filter matches a JSON number that the client wrote.
+  A Zoho value such as `1500.0` gives other text, so it does not match
+  `1500`.
+
+**Review round 1 (2026-10-14).** The coordinator decided each item.
+
+1. **The one deliberate flag-off change is the 422 rule.** A refused create
+   keeps the form open also with `studio` off, because a form that closes
+   loses what the member typed. Each other flag-off surface draws as the
+   parent did. Fence: "the one deliberate flag-off change" in
+   `crmC4b.test.ts`.
+2. **The currency (P1).** A system `currency` field reads in
+   `record.currency`, in the edit view and under the Mirror lock
+   (`layoutValue`). A deal with no probability of its own shows "40% (from
+   Proposal)", as the Overview does.
+3. **An unset boolean.** A save of No or Yes on a record that holds no
+   boolean sends the value. When nobody edits it, the field still reads "—".
+4. **The keyboard.** The inline edit takes the focus. Enter saves, except in
+   a long text and on a button, and Escape cancels (`editKey`). After a save
+   or a cancel, the focus goes back to the Pencil button.
+5. **Golden files.** `__fixtures__/c4b-flag-off/` holds the markup of the
+   create form, the Fields tab, the list with the Columns chooser open and
+   the filter bar. The parent commit `33b16848d` made each one.
+   `crmC4bGolden.test.ts` draws the new code with `studio` false and with no
+   layout, and compares. The mutation `layout ? layout : null` in
+   `RecordList.tsx` turns it red.
+6. **Two more fences.** The create form calls `onClose` only from Cancel and
+   the Modal. A Mirror create draws each custom field locked and sends none.
+7. **Notes.** Each section of the Columns control is a `role="group"` with
+   its label. A multi-select value that no option has shows in the editor as
+   a chip with "not an option" and a remove button.
+
+The fences now hold 58 cases, and seven more mutations turned them red.
 
 #### CRM-C4c: the studio UI
 

@@ -1178,12 +1178,16 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         <QuickCreateModal
           entity={creating}
           saving={store.saving}
+          refusal={store.refusal}
           onClose={() => setCreating(null)}
           onCreate={async (body) => {
             const entity = creating;
             const id = await store.createRecord(entity, body);
+            // The 422 rule (CRM-C4b): a refused save keeps the form open, with
+            // the typed values and the message beside its field.
+            if (!id) return;
             setCreating(null);
-            if (id) openAlone(openRecord(view, PARAM_FOR[entity], id));
+            openAlone(openRecord(view, PARAM_FOR[entity], id));
           }}
         />
       )}
