@@ -29,8 +29,11 @@ empty, so nothing asks `decide`.
 migration). The loop now calls the pass. With each `my_day.*` mode `off`,
 the pass stops before it reads Redis, an identity or a row.
 
+**MD-6a-3 is BUILT, 2026-10-14** (the measure read, no migration). It is an
+admin read, and nothing calls it until MD-6b.
+
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-3,
-MD-4, MD-6a-3, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -2665,6 +2668,40 @@ Done when:
 
 MD-6b needs this read, so MD-6b does not start before it.
 
+**BUILT, 2026-10-14, on branch `my-day-feed-md6a3`.** The route is in a new
+module, `routes/shell/feed_measure.py`, because `feed_decide.py` holds 806
+lines. The build made these choices:
+
+- **The answer.** It is `{days, since, features, top_five}`. `features`
+  maps each `my_day.*` feature with rows to `{rows, agree_rate}`.
+  `top_five` maps `old` and `judged` to `{cards, acted, acted_rate}`. A
+  rate with no rows is `null`.
+- **Agreement.** A row agrees when `judged_value` equals `old_value`. A row
+  with no judged value counts as a row, and never as an agreement.
+- **The unit.** One `my_day.triage` row is one card in one pass. A card
+  that two passes judge counts two times.
+- **The day.** The acted window uses the local calendar date in
+  `user_settings.timezone`, and not `state.Day.feed_day`. The morning pass
+  runs 15 minutes before `day_start_hour`, so `feed_day` puts its rows on
+  the day before. A missing or bad zone is UTC.
+- **The span.** `days` is 7 by default, from 1 to 30. The loop keeps 30
+  days of rows (§13.2).
+- **The gate.** `require_permission(ADMIN_PERMISSION)`, the value of
+  `intent.py`. The SQL names the bound org, and RLS also binds it.
+- **No BFF route.** MD-6b builds the UI, and adds the route beside
+  `src/app/api/shell/feed/`.
+
+Known limits, for MD-6b:
+
+- `my_day_card_state` holds only the last `acted_at` of a card. A second
+  act moves it, so an earlier act that was in the window can drop out.
+- The read gives no agreement for each confidence band. A gate on
+  confidence (§10.6 item 5) needs that split, so MD-6b must add it.
+
+Fences: `tests/unit/test_feed_measure.py`, and
+`tests/unit/test_feed_measure_r8.py` with `_DB_GATE`. The R8 file also runs
+the read on a session that bypasses RLS.
+
 ### MD-6b · `decide` on, with gates — AGENT-SAFE (build), OWNER-GATE (turn on)
 
 The `my_day.*` features join `ON_FEATURES`. `on` for each feature at the gate
@@ -2783,6 +2820,7 @@ uv run ruff check apps/services/gateway/gateway/my_day_loop.py apps/services/gat
 uv run pytest tests/unit/test_feed_decide.py tests/unit/test_feed_decide_r8.py tests/unit/test_feed_rank.py tests/unit/test_my_day_loop.py tests/unit/test_my_day_loop_r8.py -q  # MD-6a
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_email_llm_cap.py tests/unit/test_background_ai_member.py -q  # MD-6a, email regression
 uv run ruff check apps/services/gateway/gateway/decide_features.py apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/my_day_loop.py  # MD-6a
+uv run pytest tests/unit/test_feed_measure.py tests/unit/test_feed_measure_r8.py tests/unit/test_org_access_enforcement.py -q  # MD-6a-3
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 
