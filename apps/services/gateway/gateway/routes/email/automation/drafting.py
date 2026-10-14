@@ -1990,7 +1990,7 @@ async def draft_reply_smart(
                                     to_email=email["from"],
                                     subject=re_subject, body=draft,
                                 )
-                        except Exception as exc:  # noqa: BLE001
+                        except Exception as exc:
                             _log.warning("email.draft_reply_mirror_failed",
                                          error=str(exc)[:160])
                 # The wrapper's exit commit lands the mirrored local draft.
