@@ -75,7 +75,7 @@ const ORG = [
  * lists. With `sticky`, the lists keep it, as a read that lags the revoke
  * would: then only the view itself can hide the row.
  */
-async function setup(page: Page, me: typeof MEMBER, { sticky = false } = {}) {
+async function setup(page: Page, me: Record<string, unknown>, { sticky = false } = {}) {
   const mine = [...MINE];
   const org = [...ORG];
   const asked: Request[] = [];
