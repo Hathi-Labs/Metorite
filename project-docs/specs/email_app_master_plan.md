@@ -14448,29 +14448,43 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
   `email_mailbox_purges`, with `organization_id` and FORCE RLS. `account_id` has NO foreign key, so
   the cascade cannot delete the row. `delete_account` writes the row inside the block of its
   `DELETE`, so one commit holds both. The route's task closes the row after two good passes.
-- **The sweeper host is the calendar auto-rollover loop** (`routes/tasks/calendar.py`). It runs on
-  each box with no flag, and it lists each organization already. It starts
-  `memory_purge.start_purge_sweep` in a task of its own, so a slow Mem0 never delays a rollover. It
-  adds no process, no unit and no connection site.
+- **The sweeper has its own loop** (fix round 1). The `main.py` lifespan starts
+  `memory_purge.start_purge_loop` and stops it with `stop_purge_loop`, as each other domain does.
+  Each 15 minutes the loop reads the RLS-EXEMPT `organization` table once, then sweeps each
+  organization in its own `tenant_session`. It adds no process and no unit.
 - **The sweep.** A new row waits 10 minutes first, so the sweeper does not race the route's task.
-  The sweeper takes each due row with `FOR UPDATE SKIP LOCKED` and runs ONE pass. A failed pass
-  keeps the row open with a back-off from 5 minutes to 6 hours. Only the second good pass closes it.
-- **Mem0 off (agent decision).** The sweeper reads no row, and the task runs no pass. The rows stay
+  The sweeper claims ONE row at a time with `FOR UPDATE SKIP LOCKED`, just before its own pass.
+  So the lease of 15 minutes covers one pass, which has a bound of 2 minutes. A tick also stops
+  after 10 minutes. A failed pass keeps the row open with a back-off from 5 minutes to 6 hours.
+  Only the second good pass closes the row.
+- **Mem0 off (agent decision).** A tick reads no row, and the task runs no pass. The rows stay
   open, and they close only after a real purge. The reason: Mem0 keeps its memories in the
   `mem0_memories` table of the same Postgres. That table outlives the flag, so a row that closed
-  while Mem0 was off would claim a purge that never ran.
-- **Item 2, no write to `"default"` (agent decision: refuse).** The drafter writes Mem0 only under
-  the key that `memory_purge.mailbox_memory_scope` builds. With no owner or no mailbox id, it logs
-  `email.memory_write_refused` and skips. The fix covers the draft precedent and the learning job,
-  which wrote `"default#acct:<id>"` when the mailbox row was gone.
-- **Item 3, the child fence.** `test_each_child_is_empty_after_a_disconnect` reads each foreign
-  key to `email_accounts` or `email_messages` from `information_schema`. It fills one row in each
-  child from the catalog, disconnects, and finds no row of the mailbox.
-- **Fences.** `tests/unit/test_email_mailbox_purge_durable.py` holds the four named tests and
-  their companions. Three mutations each fail it. They are a purge row outside the `DELETE`
-  transaction, a sweeper that deletes the row first, and a write to `"default"`.
+  while Mem0 was off would claim a purge that never ran. The probe builds the client in a thread,
+  and a failed build waits 15 minutes before the next try.
+- **Item 2, no write to `"default"` (agent decision: refuse).** Each email writer of Mem0 takes its
+  key from `memory_purge.writable_memory_scope`. With no owner or no mailbox id, it logs
+  `email.memory_write_refused` and skips. Three writers use it: the draft precedent, the learning
+  job and the writing style of `automation/assistant.py`. The Mem0 writers outside `routes/email`
+  key on a member, an agent or a room, and none of them builds a mailbox key.
+- **Item 3, the child fence.** It reads each foreign key to `email_accounts` or `email_messages`
+  from `information_schema`. It fills one row in each child from the catalog and disconnects. Then
+  it finds no row of the mailbox, by the mailbox key or by the row's own primary key. A second test
+  walks each foreign key under a mailbox, to any depth. Each one must be `ON DELETE CASCADE`, or be
+  named with a reason in `_NOT_CASCADE`. That map holds three edges today, and each of their tables
+  also cascades on `account_id`.
+- **Fences.** `tests/unit/test_email_mailbox_purge_durable.py`. These mutations each fail it:
+  - a purge row outside the `DELETE` transaction (and the R8 trigger test of atomicity),
+  - a sweeper that deletes the row first, or that claims 20 rows at once,
+  - a write to `"default"` in the drafter or in `assistant.py`,
+  - a lifespan that does not start the loop,
+  - a new child table with `ON DELETE SET NULL`.
+- **Not built: the reconcile of old orphans.** Mem0 keys a memory on `<owner>#acct:<id>` and stores
+  no organization. So a read under one tenant cannot tell an orphan from a live mailbox of another
+  tenant. A safe reconcile needs a check across tenants and a read of Mem0's own table. Each one is
+  a decision that the spec does not record.
 - **Not in f2.** The admin member purge, the org purge and `test_three_paths_call_one_teardown`
-  wait for a spec edit. `automation/assistant.py` still writes under `user.email or "default"`.
+  wait for a spec edit.
 
 ##### 12.3.13.10 EM-G11g1 and EM-G11g2 — envelope encryption and rotation (PR-G9, PR-G10)
 
