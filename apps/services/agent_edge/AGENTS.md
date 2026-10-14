@@ -18,6 +18,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 - `gateway_client.py` is the only client of the gateway. It sends the four signed headers of `acb_auth.agent_signing` and no other header that it sets.
 - `cursor.py` signs and reads the page cursor of a list tool. The cursor binds the tool name, so a cursor of one tool never pages another.
 - `tools.py` holds the tool records and is the ONE module that maps a gateway response to a tool result (EA3-9). It holds the seven read tools of spec §9.1: `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline` and `search_tasks`. EA-6a adds the two write tools of spec §9.2, `set_task_status` and `add_task_reference`. Each needs `projects:write`, and branch 0 of the gateway checks the nonce, the scope, the writes flag and the cap.
+- EA-6d adds two more write tools to `tools.py`, `create_task` and `update_task`. `idempotency.py` holds the slot of the `idempotency_key` of `create_task`, and it is the only edge module that reaches Redis.
 
 ## Local contract
 
@@ -37,7 +38,9 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 13. **Only check 8 sends `insufficient_scope`.** A gateway 403 is a tool error with a fixed text. Never send a gateway error text to an agent.
 14. **Free text is untrusted.** Each free-text value goes out as `{"untrusted_text": ...}`. A tool returns only the keys that spec §9.1 names. A value that a member writes and the gateway does not shape-check leaves as a plain string only in its shape (spec §9.1, mark (S)). Today these are `task_prefix`, `timezone` and each assignee.
 15. **One mapping module (EA3-9).** Only `tools.py` may hold an identity literal such as `"email"`, and only as a `.get()` argument, a subscript index or a dict-display key. `tools.py` reads no request header, query, form, cookie or path parameter, and imports nothing from `fastapi` or `starlette`. Every other edge module holds no identity literal at all. ⚠️ The AST tests of this rule are a heuristic that catches the common shapes. They miss a literal that reaches a read through a variable, such as a value from a dict key, and an attribute name that the code computes without `getattr`. The real guards are that `tools.py` receives no `Request` object and that coverage rule 4 holds.
-16. **An edge input needs a spec amendment.** An input that the edge applies itself, because the route takes no such parameter, goes in the tool record's `edge_inputs`. Spec §9.5 rule 4 names the four that exist, all of `list_projects`.
+16. **An edge input needs a spec amendment.** An input that the edge applies itself, because the route takes no such parameter, goes in the tool record's `edge_inputs`. Spec §9.5 rule 4 names the five that exist: four of `list_projects`, and the `idempotency_key` of `create_task` (EA-6d).
+17. **Redis through the tenant wrapper only (EA-6d, R5).** Only `idempotency.py` reaches Redis. It uses `acb_common.tenant_redis` and binds the organization of the token row, never a request input. A slot key holds the SHA-256 of the agent's key, and no log line holds the raw key. A store outage at the claim gives the busy text and no write. A call with no key touches no store.
+18. **A write body holds only the named keys (EA-6d).** Each write tool builds its body from a fixed tuple of names (`CREATE_BODY_KEYS`, `UPDATE_BODY_KEYS`), never from the whole input. The gateway refuses any other key of a signed agent write too (`routes/projects/tasks.py`).
 
 ## Deploy
 
@@ -47,7 +50,7 @@ The deploy starts the edge only after the owner enables the unit. Caddy serves i
 
 ## Fence
 
-`tests/unit/test_agent_oauth_server.py` holds the behaviour of the OAuth routes, and it holds the structural fences of rules 2, 4 and 15. `tests/unit/test_mcp_edge_protocol.py` holds rules 10 to 14 and the wire contract of `/mcp`. `tests/unit/test_mcp_edge_coverage.py` holds the tool records against `MCP_ROUTES` and the gateway routes, and rule 16. `tests/unit/test_mcp_edge_writes.py` holds the write tools of EA-6a, with R8 classes through the real gateway app.
+`tests/unit/test_agent_oauth_server.py` holds the behaviour of the OAuth routes, and it holds the structural fences of rules 2, 4 and 15. `tests/unit/test_mcp_edge_protocol.py` holds rules 10 to 14 and the wire contract of `/mcp`. `tests/unit/test_mcp_edge_coverage.py` holds the tool records against `MCP_ROUTES` and the gateway routes, and rule 16. `tests/unit/test_mcp_edge_writes.py` holds the write tools of EA-6a, with R8 classes through the real gateway app. `tests/unit/test_mcp_edge_task_writes.py` holds the tools of EA-6d and rules 17 and 18, with R8 classes and a real Redis class.
 
 ## Child DOX Index
 

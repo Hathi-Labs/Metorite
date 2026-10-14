@@ -869,6 +869,19 @@ class TestTheMigration:
         self.test_the_check_accepts_exactly_the_task_sources(live)
 
 
+def test_only_the_slot_module_reaches_redis():
+    """Edge rule 17 (``apps/services/agent_edge/AGENTS.md``). One edge module
+    reaches Redis, through the tenant wrapper, and no edge module imports a
+    Redis client of its own."""
+    edge = Path(__file__).resolve().parents[2] / "apps/services/agent_edge/agent_edge"
+    reach = sorted(p.name for p in edge.glob("*.py")
+                   if re.search(r"\btenant_redis\b|\bimport redis\b|\bfrom redis\b",
+                                p.read_text(encoding="utf-8")))
+    assert reach == ["idempotency.py"], reach
+    source = (edge / "idempotency.py").read_text(encoding="utf-8")
+    assert "import redis" not in source and "from redis" not in source
+
+
 def test_every_route_checks_a_request_source_against_the_client_tuple():
     """§9.2. A route that reads a task source from a request checks it
     against ``CLIENT_TASK_SOURCES``. ``TASK_SOURCES`` itself is the mirror of
