@@ -109,13 +109,14 @@ def page_line(total: int | None, offset: int, shown: int, *,
 
 def paged(items: Sequence[Any], offset: Any = 0, limit: Any = 0, *,
           default: int, maximum: int = PAGE_MAX, noun: str = "items",
-          param: str = "offset") -> Page:
+          param: str = "offset", page_size: int = 0) -> Page:
     """Slice ``items`` to one page, and write the line that says what is left."""
     start, size = bounds(offset, limit, default=default, maximum=maximum)
     rows = list(items)
     chunk = rows[start:start + size]
     return Page(chunk, len(rows), start,
-                page_line(len(rows), start, len(chunk), noun=noun, param=param))
+                page_line(len(rows), start, len(chunk), noun=noun, param=param,
+                          page_size=page_size))
 
 
 def prefix_limit(offset: Any, limit: Any, *, default: int, cap: int,
@@ -131,7 +132,7 @@ def prefix_limit(offset: Any, limit: Any, *, default: int, cap: int,
 
 
 def prefix_page(rows: Sequence[Any], start: int, size: int, *, cap: int,
-                asked: int = 0, noun: str = "items") -> Page:
+                asked: int = 0, noun: str = "items", page_size: int = 0) -> Page:
     """One page from the first rows of a LIMIT-only backend (:func:`prefix_limit`).
 
     ``asked`` is the LIMIT the tool sent, and ``cap`` by default. Fewer rows
@@ -145,9 +146,10 @@ def prefix_page(rows: Sequence[Any], start: int, size: int, *, cap: int,
     chunk = got[start:start + size]
     limit = asked or cap
     if len(got) < limit:
-        return Page(chunk, len(got), start, page_line(len(got), start, len(chunk), noun=noun))
+        return Page(chunk, len(got), start, page_line(
+            len(got), start, len(chunk), noun=noun, page_size=page_size))
     more = len(got) > start + size
-    line = page_line(None, start, len(chunk), more=more, noun=noun)
+    line = page_line(None, start, len(chunk), more=more, noun=noun, page_size=page_size)
     if not more and limit >= cap:
         line = (line + " " if line else "") + (
             f"The source returns at most {cap} {noun}. Narrow the filter to reach others.")

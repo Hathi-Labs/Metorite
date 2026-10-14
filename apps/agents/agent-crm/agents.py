@@ -55,6 +55,7 @@ from uuid import UUID
 
 import httpx
 from acb_common import get_logger, get_settings
+from acb_common.paging import prefix_limit, prefix_page
 
 # WS-53 CRM-C7: the twelve CRM read tools have ONE implementation, in
 # ``acb_skills.crm_tools``. Every other agent gets the same functions as the
@@ -542,7 +543,8 @@ def _email_line(thread: dict[str, Any]) -> str:
 
 
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
-async def get_timeline(entity: str, record_id: str, limit: int = 20) -> str:
+async def get_timeline(entity: str, record_id: str, limit: int = 20,
+                       offset: int = 0) -> str:
     """What has happened to a CRM record, newest first: logged notes, calls,
     meetings and tasks, every status change with how long it sat in the
     previous stage, and email threads with this record's people. A deal also
@@ -554,14 +556,17 @@ async def get_timeline(entity: str, record_id: str, limit: int = 20) -> str:
     different threads and somebody with no mailbox connected sees none. Never
     report "there has been no email" as a fact about the record. Each thread is
     given as sender, subject and status only, never its contents (D-CRM-12) —
-    do not speculate about what an email said."""
+    do not speculate about what an email said. offset reads further back."""
     slug = _entity_slug(entity)
     record = _record_uuid(record_id)
-    capped = max(1, min(int(limit or 20), 100))
-    data = await _get(f"/crm/{slug}/{record}/timeline", {"limit": capped})
-    entries = (data or {}).get("entries") or []
+    # The route has a LIMIT (at most 500) and no OFFSET, newest first.
+    start, size, ask = prefix_limit(offset, limit, default=20, cap=500)
+    data = await _get(f"/crm/{slug}/{record}/timeline", {"limit": ask})
+    page = prefix_page((data or {}).get("entries") or [], start, size, cap=500,
+                       asked=ask, noun="entries")
+    entries = page.items
     if not entries:
-        return f"No activity recorded on this {ENTITY_LABELS[slug].lower()} yet."
+        return page.line or f"No activity recorded on this {ENTITY_LABELS[slug].lower()} yet."
     out = [f"{ENTITY_LABELS[slug]} timeline ({len(entries)} entries, newest first):"]
     for entry in entries:
         inherited = " [from its lead]" if entry.get("origin") == "lead" else ""
@@ -601,6 +606,8 @@ async def get_timeline(entity: str, record_id: str, limit: int = 20) -> str:
             + (f" — {body[:160]}" if body else "")
             + (f" (by {act['created_by']})" if act.get("created_by") else "")
         )
+    if page.line:
+        out.append(page.line)
     return "\n".join(out)
 
 

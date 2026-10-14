@@ -177,14 +177,6 @@ ALLOWED: dict[str, str] = {
         'Silent cut. The second PR of the agent-read-paging change fixes it.',
     "packages/acb_skills/acb_skills/attachment_tools.py::_listing::[n for n, kind in entries if kind == 'file' and (not n.startswith('.'))][:50]":
         'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'packages/acb_skills/acb_skills/crm_tools.py::crm_aggregate::groups[:MAX_ROWS]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'packages/acb_skills/acb_skills/crm_tools.py::crm_deal_contacts::rows[:MAX_ROWS]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'packages/acb_skills/acb_skills/crm_tools.py::crm_list_fields::defs[:MAX_ROWS]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'packages/acb_skills/acb_skills/crm_tools.py::crm_list_modules::modules[:MAX_ROWS]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
     'apps/services/orchestrator/orchestrator/agents.py::spawn_copilot_agent::run_id[:8]':
         'Text, not rows: the cut shortens one string.',
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::my_tasks_people::summary[:160]':
@@ -207,16 +199,10 @@ ALLOWED: dict[str, str] = {
         'Text, not rows: the cut shortens one string.',
     'packages/acb_skills/acb_skills/sandbox_tools.py::_format::saved[:20]':
         "A run receipt. It prints the count and '…', and the files are in outputs/.",
-    "packages/acb_skills/acb_skills/crm_tools.py::crm_get_module_record::_custom_lines(row.get('fields'), defs)[:MAX_ROWS]":
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'packages/acb_skills/acb_skills/crm_tools.py::crm_list_fields::options[:20]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
-    'packages/acb_skills/acb_skills/crm_tools.py::crm_report::lines[:MAX_ROWS + 2]':
-        'Silent cut. The second PR of the agent-read-paging change fixes it.',
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
-ALLOWED_CEILING = 57
+ALLOWED_CEILING = 50
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -849,3 +835,90 @@ def test_whatsapp_context_prints_what_the_route_sent(monkeypatch, wa) -> None:
     assert "loop 9" in out and "owes 4" in out
     assert "That is the first 10 open loops" in out
     assert "whatsapp_waiting_on lists every open promise" in out
+
+
+# ── 8. CRM ──────────────────────────────────────────────────────────────────
+
+crm_tools = pytest.importorskip("acb_skills.crm_tools")
+
+
+def test_crm_list_modules_pages_past_fifty(monkeypatch) -> None:
+    mods = [{"label": f"M{k}", "api_name": f"m{k}", "count": 1} for k in range(1, 61)]
+    _gw(monkeypatch, crm_tools, lambda p, q: mods)
+    first = asyncio.run(crm_tools.crm_list_modules())
+    assert "Showing 1-50 of 60. Call again with page=2 for the rest." in first
+    last = asyncio.run(crm_tools.crm_list_modules(page=2))
+    assert "api_name m60" in last and "api_name m50)" not in last
+    assert "This is the last page." in last
+
+
+def test_crm_report_pages_its_lines_and_names_the_omitted_owners(monkeypatch) -> None:
+    owners = [{"owner_email": f"o{k}@x.io", "open_deals": 1, "weighted": 1.0,
+               "won_amount": 1.0} for k in range(1, 61)]
+    _gw(monkeypatch, crm_tools, lambda p, q: {"owners": owners, "omitted": 4})
+    first = asyncio.run(crm_tools.crm_report("owners"))
+    assert "Call again with page=2 for the rest." in first
+    assert "4 more owners are not in the report." in first
+    assert "o60@x.io" in asyncio.run(crm_tools.crm_report("owners", page=2))
+
+
+def test_crm_fields_print_every_option_and_page_the_fields(monkeypatch) -> None:
+    defs = [{"label": f"F{k}", "key": f"cf_{k}", "type": "select",
+             "options": [{"label": f"opt{j}"} for j in range(25)]} for k in range(1, 61)]
+    _gw(monkeypatch, crm_tools, lambda p, q: defs)
+    first = asyncio.run(crm_tools.crm_list_fields("deal"))
+    assert "opt24" in first
+    assert "Showing 1-50 of 60. Call again with page=2 for the rest." in first
+    assert "(key cf_60," in asyncio.run(crm_tools.crm_list_fields("deal", page=2))
+
+
+def test_crm_deal_contacts_page(monkeypatch) -> None:
+    rows = [{"contact": {"id": f"c{k}", "first_name": f"N{k}"}} for k in range(1, 61)]
+    _gw(monkeypatch, crm_tools, lambda p, q: {"rows": rows})
+    deal = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    assert "Call again with page=2" in asyncio.run(crm_tools.crm_deal_contacts(deal))
+    assert "(id=c60)" in asyncio.run(crm_tools.crm_deal_contacts(deal, page=2))
+
+
+def test_crm_module_record_pages_its_fields(monkeypatch) -> None:
+    rid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    defs = [{"key": f"f{k}", "label": f"Field {k}", "type": "text"} for k in range(1, 61)]
+    record = {"record": {"id": rid, "name": "R", "fields": {f"f{k}": f"v{k}" for k in range(1, 61)}},
+              "field_defs": defs}
+    _gw(monkeypatch, crm_tools, lambda p, q: record)
+    first = asyncio.run(crm_tools.crm_get_module_record("Products", rid))
+    assert "Call again with page=2 for the rest." in first
+    assert "Field 60: v60" in asyncio.run(crm_tools.crm_get_module_record("Products", rid, page=2))
+
+
+def test_crm_owners_say_when_the_route_cap_is_hit(monkeypatch) -> None:
+    owners = [{"email": f"o{k}@x.io", "member": True} for k in range(500)]
+    _gw(monkeypatch, crm_tools, lambda p, q: {"owners": owners})
+    last = asyncio.run(crm_tools.crm_list_owners(page=10))
+    assert "The source returns at most 500 owners." in last
+
+
+def test_crm_more_line_is_the_shared_hint(monkeypatch) -> None:
+    rows = [{"id": f"r{k}", "name": f"Deal {k}"} for k in range(50)]
+    _gw(monkeypatch, crm_tools, lambda p, q: {"rows": rows, "total": 120})
+    out = asyncio.run(crm_tools.crm_list_records("deals", page_size=50))
+    assert out.rstrip().endswith("Showing 1-50 of 120. Call again with page=2 for the rest.")
+
+
+@pytest.fixture(scope="module")
+def crm_agent():
+    from tests.unit._crm_agent_fakes import load_agent_module
+
+    return load_agent_module()
+
+
+def test_crm_timeline_pages_back_in_time(monkeypatch, crm_agent) -> None:
+    entries = [{"kind": "activity", "at": f"t{k}", "activity": {"type": "note", "subject": f"s{k}"}}
+               for k in range(1, 36)]
+    seen = _gw(monkeypatch, crm_agent, lambda p, q: {"entries": entries[: int(q["limit"])]})
+    rid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    first = asyncio.run(crm_agent.get_timeline("deal", rid))
+    assert seen[-1][1]["limit"] == 21
+    assert "Call again with offset=20 for the rest." in first
+    last = asyncio.run(crm_agent.get_timeline("deal", rid, offset=30))
+    assert "s35" in last and "Showing 31-35 of 35. This is the last page." in last

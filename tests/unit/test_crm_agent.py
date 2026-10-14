@@ -502,7 +502,9 @@ async def test_get_timeline_hits_the_timeline_route(monkeypatch) -> None:
     calls = _fake_gateway(monkeypatch, lambda _c: entries)
     out = await _M.get_timeline("deals", _ID, limit=5)
     assert [c["path"] for c in calls] == [f"/crm/deals/{_ID}/timeline"]
-    assert calls[0]["params"]["limit"] == 5
+    # One row more than the page, so the tool can tell that more exist
+    # (test_read_tool_paging.py, 2026-10-14).
+    assert calls[0]["params"]["limit"] == 6
     assert "New → Qualified" in out
     assert "2.0d in the previous stage" in out
     # An inherited entry is labelled, never passed off as the deal's own (§5.3).
@@ -979,9 +981,10 @@ async def test_a_long_list_holds_fifty_rows_and_says_more(monkeypatch) -> None:
     out = await _T.crm_list_records("deals", page_size=500)
     assert calls[0]["params"]["page_size"] == 50
     assert out.count("\n- ") == 50
-    assert out.rstrip().endswith("More: call again with page=2.")
+    # The shared hint line (acb_common.paging), 2026-10-14.
+    assert out.rstrip().endswith("Showing 1-50 of 120. Call again with page=2 for the rest.")
     last = await _T.crm_list_records("deals", page=3, page_size=50)
-    assert "More:" not in last
+    assert "Call again" not in last
 
 
 async def test_a_status_name_becomes_the_status_id(monkeypatch) -> None:
