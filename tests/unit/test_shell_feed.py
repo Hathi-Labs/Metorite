@@ -1170,8 +1170,10 @@ class TestTheRouteIsMounted:
 
 # ── MD-3b done-when 1: the answer with MY_DAY_PROVIDERS empty ──────────────
 
-#: The answers of the feed for a fixed seed, written by the code BEFORE MD-3b
-#: (15e418c11). With ``MY_DAY_PROVIDERS`` empty, the answer must not change by
+#: The answers of the feed for a fixed seed, written by the code BEFORE MD-3b:
+#: origin/main at 323f233a0, after MD-3a, from a separate checkout of main.
+#: (The first capture, at 15e418c11, differed from this one only in the hrefs
+#: that MD-3a changed.) With ``MY_DAY_PROVIDERS`` empty, the answer must not change by
 #: one byte, because the feed is live (``my_day_feed.md`` §5.8 item 1). The
 #: one exception is the field that MD-3b adds, ``source_apps``. The file stays
 #: as the old code wrote it, and the test adds that one field to it.

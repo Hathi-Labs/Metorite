@@ -27,11 +27,6 @@ is complete.
 **MD-5b is BUILT, 2026-10-14** (the `my_day` loop, no migration, dark
 behind `MY_DAY_LOOP_ENABLED`).
 
-**MD-3b is BUILT, 2026-10-14** (the seam of the new sources, no migration).
-`MY_DAY_PROVIDERS` is empty by default, so the feed answer is the same as
-before, byte for byte, except for one new field, `source_apps`. No provider
-is gated yet, and no kind is added.
-
 **MD-6a-1 is BUILT, 2026-10-14** (the features, the helpers and the table,
 migration 262). Each `my_day.*` mode is `off` and `MY_DAY_DECIDE_ORGS` is
 empty, so nothing asks `decide`.
@@ -47,7 +42,12 @@ admin read, and nothing calls it until MD-6b.
 is live when it deploys, because the feed is live. A URL with no new
 parameter opens as before.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3b
+**MD-3b is BUILT, 2026-10-14** (the seam of the new sources, no migration).
+`MY_DAY_PROVIDERS` is empty by default, so the feed answer is the same as
+before, byte for byte, except for one new field, `source_apps`. The list
+gates no provider yet, and MD-3b adds no kind.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3c
 to MD-3f, MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
