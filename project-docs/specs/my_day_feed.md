@@ -23,11 +23,15 @@ behind `MY_DAY_LOOP_ENABLED`).
 
 **MD-6a-1 is BUILT, 2026-10-14** (the features, the helpers and the table,
 migration 262). Each `my_day.*` mode is `off` and `MY_DAY_DECIDE_ORGS` is
-empty, so nothing asks `decide` and nothing calls the pass yet.
+empty, so nothing asks `decide`.
+
+**MD-6a-2 is BUILT, 2026-10-14** (the member pass of the loop, no
+migration). The loop now calls the pass. With each `my_day.*` mode `off`,
+the pass stops before it reads Redis, an identity or a row.
 
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-3,
-MD-4, MD-6a-2, MD-6a-3, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and
-MD-12. Each ships dark.
+MD-4, MD-6a-3, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -2576,6 +2580,46 @@ Done when:
 
 Fences: `tests/unit/test_my_day_loop.py`, and
 `tests/unit/test_my_day_loop_r8.py` for the departed checks.
+
+**BUILT, 2026-10-14, on branch `my-day-feed-md6a2`.** The loop runs the
+member pass after `run_org`, and it adds no migration and no flag. Each
+`my_day.*` mode is `off` in production, so the pass stops at its first
+line. The build made these choices:
+
+- **The cheap gate.** `judging_on(org)` binds the org, asks
+  `feed_decide.active_features`, and releases the org. It reads settings
+  only. With it false, the pass reads no Redis, makes no identity read,
+  sends no SQL and calls no `member_context`.
+- **The sweep file.** `feed_decide.py` holds the judgments DELETE, beside
+  `write_rows`, so one module writes the table. The loop calls it in its
+  own `tenant_session(org)`. A failed judgments sweep keeps the card-state
+  sweep.
+- **The status read.** `_STATUS_SQL` reads `app_user.status` inside
+  `tenant_session(org)`, with the org predicate beside RLS. No row counts
+  as departed. A failed status read keeps the member, as a failed identity
+  read does.
+- **The judged key** holds the versions and the member's zone and day
+  hours. So the loop finds that a member is not due from Redis alone. A
+  pass reads the day again through `state._hours`.
+- **The morning window** opens 15 minutes before the day start and closes
+  at the day end. A loop that was down at the opening runs the pass later
+  that day. The guard keys on the local date, so the pass runs once.
+- **The dirty guard** is `SET key("my_day", "dirty", <member>) NX EX 120`.
+  A guard in Redis also holds across two gateway processes.
+- **Three members at once** across the tick, not for each org. The member
+  pass runs outside the org's slot.
+
+Known limits, for the next tickets:
+
+- The active set holds the lower-case address (§8.4 item 4). `judge`
+  writes and reads with that address, and `my_day_card_state` holds the
+  session's address exactly. For a member whose session address has a
+  capital letter, the pass does not see their card states, and MD-6a-3
+  cannot join the two tables.
+- The R8 status case with the cutover off runs as the database owner. As
+  the app role, the unbound `resolve_identity` read sees no `app_user` row,
+  so every member reads as departed. That is the brick of H6, and the
+  cutover is its fix.
 
 ### MD-6a-3 · The measure read — AGENT-SAFE
 
