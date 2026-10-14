@@ -94,9 +94,9 @@ value answers `exchange_failed`.
    waits 20 s for the step of one server (`REFRESH_BUDGET_S`). A fetch past
    its cap is not final. The run keeps the stored token while it lives past
    60 s.
-3. **The 401 mark compares the token.** `mark_unauthorized` sets
-   `needs_reconnect` only when the row still holds the token that the run
-   sent. A new consent between the refresh and the 401 stays connected.
+3. **The 401 mark compares the token.** `mark_unauthorized` changes the row
+   only when the row still holds the token that the run sent. A new consent
+   between the refresh and the 401 stays connected.
 4. **A token with no refresh token** gets `needs_reconnect`
    (`no_refresh_token`) when it ends. Only a new consent repairs it.
 5. **The console shows `needs_reconnect`** on an MCP row, with its safe
@@ -115,7 +115,18 @@ value answers `exchange_failed`.
   the run waits on it through `asyncio.shield`. A cap or a Stop ends the
   wait, and the step still commits. Only a process restart can lose it.
 
-A provider whose tokens live 900 s or less gets a refresh on every run.
+**Review 2 of #1011 added four rules.**
+
+- **One org holds one slot.** `REFRESH_SLOTS_PER_ORG` is 1, inside the two
+  slots of the process. An org takes its own slot first.
+- **A failed refresh waits.** A refresh that fails for a reason that is not
+  final is not tried again by that process for 60 s (`REFRESH_BACKOFF_S`).
+  A run in the gap uses the stored token while it lives.
+- **A 401 with no refresh ends the token** (§3.6.7). The next run refreshes.
+- **A short token is due at half its life.** The blob holds the issue time
+  (`SourceCredential.issued_at`). A blob with no issue time keeps the margin of
+  900 seconds. `fresh_credential` takes an `accept` check, so a row that is
+  registered again with headers is never marked `undecryptable`.
 
 The refresh does not revoke the old refresh token. A provider that rotates
 ends it itself, and none of the six providers of §3.6.2 asks for a revoke.
@@ -513,7 +524,8 @@ Every discovery, registration, token and revoke request goes through
   MAF 1.19). So the hook cannot refresh a token.
 - Before `connect()`, the injection calls `fresh_credential`. When the token
   expires within `TOKEN_MARGIN_S`, the call refreshes it first.
-  `TOKEN_MARGIN_S` is a new constant of 900 s.
+  `TOKEN_MARGIN_S` is a new constant of 900 seconds. A token with a shorter
+  life is due at half its life, and never later than 60 seconds before its end.
 - The tool gets a `header_provider` that returns the cached `Authorization`
   value and nothing else. A changed header makes MAF connect the session again
   (the `header_provider` docstring, `_mcp.py:3841-3851`). So the value never
@@ -521,10 +533,16 @@ Every discovery, registration, token and revoke request goes through
 - **A 401 on connect** drops the server from the run, and the run goes on. The
   log line `mcp.oauth_unauthorized` names the server only.
 - If the injection refreshed the token in this run, that 401 also sets
-  `needs_reconnect`. Else the next run refreshes, and an `invalid_grant` then
-  sets `needs_reconnect`. So one expired token never asks an admin to connect
-  again. ⚠️ The request for this section said "a 401 marks needs_reconnect".
-  This spec narrows that, for the reason above.
+  `needs_reconnect`. Else the 401 ends the stored token under the row lock,
+  so the next run refreshes, and an `invalid_grant` then sets
+  `needs_reconnect`. A token with no refresh token gets `needs_reconnect` at
+  once. So one expired token never asks an admin to connect again.
+  ⚠️ The request for this section said "a 401 marks needs_reconnect". This
+  spec narrows that, for the reason above.
+- ⚠️ The review of #1011 corrected the item above on 2026-10-14. It said
+  that the next run refreshes. That was false. A token answer with no
+  `expires_in` is stored for ten years. So the next run saw a live token and
+  sent no refresh, and the server stayed dead for ever.
 - A run that outlives the margin can get a 401 on a call. The server drops
   out of that run.
 - `needs_reconnect` shows in the console, and in the "needs you" item of §5.
