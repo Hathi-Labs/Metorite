@@ -420,6 +420,24 @@ class Settings(BaseSettings):
     decide_feature_modes: str = ""
     decide_feature_orgs: str = ""
 
+    # ── My Day's `decide` org list and ceiling (WS-58 MD-6a-1) ──────────────
+    #
+    # `my_day_decide_orgs` lists the organization ids that may run a
+    # `my_day.*` feature in a mode other than `off`, in the grammar of
+    # `decide_feature_orgs`. For a `my_day.` feature, `mode_for` reads it and
+    # NOT `decide_feature_orgs`, so email keeps its `*` (`my_day_feed.md`
+    # §10.9 item 5). Default empty: no organization.
+    # `my_day_decide_org_daily_calls` is the ceiling of `decide` calls for one
+    # organization in one day. 0 sets no ceiling, and the member cap of 60
+    # still binds (§9.1 rule 8, §10.9 item 6). The readers are
+    # `gateway/decide_features.py` (the list) and
+    # `gateway/routes/shell/feed_decide.py` (the ceiling).
+    #
+    # 🔴 OWNER-GATE on a box: a value in the list starts real Router calls,
+    # billed to the org. Fence: tests/unit/test_feed_decide.py.
+    my_day_decide_orgs: str = ""
+    my_day_decide_org_daily_calls: int = 0
+
     # ── AI tier routing (WS-45, D90) ────────────────────────────────────────
     #
     # The agents that the platform's tier policy covers. A comma list of agent

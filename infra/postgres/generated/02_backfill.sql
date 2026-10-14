@@ -503,3 +503,6 @@ UPDATE workflows SET organization_id = (SELECT id FROM organization WHERE slug =
 
 UPDATE my_day_card_state SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE my_day_judgments SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;

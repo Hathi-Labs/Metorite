@@ -1159,3 +1159,10 @@ DROP POLICY IF EXISTS my_day_card_state_tenant_isolation ON my_day_card_state;
 CREATE POLICY my_day_card_state_tenant_isolation ON my_day_card_state
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE my_day_judgments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE my_day_judgments FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS my_day_judgments_tenant_isolation ON my_day_judgments;
+CREATE POLICY my_day_judgments_tenant_isolation ON my_day_judgments
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
