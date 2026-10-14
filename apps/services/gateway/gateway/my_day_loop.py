@@ -69,6 +69,9 @@ CONCURRENCY = 3
 ACTIVE_WRITE_TIMEOUT_S = 0.25
 #: Time to wait for a tick in progress when the gateway stops.
 STOP_GRACE_SECONDS = 30.0
+# One organization's trim, read and sweep. A Redis that accepts and never
+# answers must not hold the three slots of the tick for ever.
+PER_ORG_TIMEOUT_S = 20.0
 
 _task: asyncio.Task[None] | None = None
 _stopping = asyncio.Event()
@@ -106,6 +109,23 @@ async def note_active(user: Any) -> None:
                 ACTIVE_WRITE_TIMEOUT_S)
     except Exception as exc:
         _log.warning("my_day.active_write_failed class=%s", type(exc).__name__)
+
+
+# The writes in flight, held so the event loop does not collect them early.
+_writes: set[asyncio.Task[None]] = set()
+
+
+def mark_active(user: Any) -> None:
+    """Start :func:`note_active` beside the read, and do not wait for it.
+
+    ``GET /shell/feed`` calls this, so a slow Redis never adds to the poll.
+    With the switch off it starts nothing.
+    """
+    if not loop_enabled():
+        return
+    task = asyncio.get_running_loop().create_task(note_active(user))
+    _writes.add(task)
+    task.add_done_callback(_writes.discard)
 
 
 # ── One organization ────────────────────────────────────────────────────────
@@ -175,7 +195,7 @@ async def _run_one(org: str, gate: asyncio.Semaphore) -> int:
         if _stopping.is_set():
             return 0
         try:
-            await run_org(org)
+            await asyncio.wait_for(run_org(org), PER_ORG_TIMEOUT_S)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # one org must not hide the others

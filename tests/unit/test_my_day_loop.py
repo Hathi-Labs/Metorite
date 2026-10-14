@@ -282,12 +282,16 @@ class TestTheReadWritesTheSessionMember:
         monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_: _Slow())
         started = time.monotonic()
         asyncio.run(my_day_loop.note_active(_user()))
-        assert time.monotonic() - started < 2
+        assert time.monotonic() - started < 0.5
 
-    def test_shell_feed_hands_note_active_its_session_user(self, monkeypatch) -> None:
-        """The route's only inputs are ``limit`` and the session user, and it
-        passes that user object to the one writer of the set."""
-        assert set(inspect.signature(feed.shell_feed).parameters) == {"limit", "user"}
+    def test_shell_feed_hands_note_active_its_session_user(self, switch, monkeypatch) -> None:
+        """The route's one identity input is the session user, and it passes
+        that user object to the one writer of the set. ``request`` and
+        ``response`` are the framework's objects (MD-5a's ETag), not input."""
+        params = set(inspect.signature(feed.shell_feed).parameters)
+        assert "user" in params
+        assert params <= {"limit", "user", "request", "response"}, params
+        switch(True)
         seen: list[Any] = []
 
         async def _record(user: Any) -> None:
@@ -297,6 +301,7 @@ class TestTheReadWritesTheSessionMember:
             pass
 
         async def _stop(*_: Any, **__: Any) -> Any:
+            await asyncio.sleep(0)  # let the write that runs beside the read start
             raise _Stop
 
         monkeypatch.setattr(my_day_loop, "note_active", _record)
@@ -383,6 +388,39 @@ class TestTheLoopReadsTheActiveSetOnly:
         monkeypatch.setattr(my_day_loop, "_organization_ids", _orgs)
         assert asyncio.run(my_day_loop.run_tick()) == 7
         assert live["peak"] == 3
+
+    def test_a_hung_org_does_not_hold_the_tick(self, monkeypatch) -> None:
+        """A Redis that never answers costs one org its tick, not the loop."""
+        async def _org(org: str) -> list[str]:
+            if org == "hung":
+                await asyncio.sleep(60)
+            return []
+
+        async def _orgs() -> list[str]:
+            return ["hung", "ok-1", "ok-2"]
+
+        monkeypatch.setattr(my_day_loop, "PER_ORG_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(my_day_loop, "run_org", _org)
+        monkeypatch.setattr(my_day_loop, "_organization_ids", _orgs)
+        started = time.monotonic()
+        assert asyncio.run(my_day_loop.run_tick()) == 2
+        assert time.monotonic() - started < 2
+
+    def test_off_the_read_starts_no_write(self, switch, monkeypatch) -> None:
+        """With the switch off, ``mark_active`` starts no task at all."""
+        started: list[Any] = []
+
+        async def _note(user: Any) -> None:
+            started.append(user)
+
+        async def _go() -> None:
+            my_day_loop.mark_active(_user())
+            await asyncio.sleep(0)
+            assert not my_day_loop._writes
+
+        monkeypatch.setattr(my_day_loop, "note_active", _note)
+        asyncio.run(_go())
+        assert started == []
 
 
 # ── The sweep guard ─────────────────────────────────────────────────────────
