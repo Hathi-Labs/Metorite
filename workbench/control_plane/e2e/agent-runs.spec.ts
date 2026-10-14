@@ -196,6 +196,9 @@ async function stub(
     return route.fulfill({ json: EMPTY });
   });
 
+  // The lost race pauses the page clock later, so the poll cannot do the
+  // re-read that the 409 must do. Time flows normally until then.
+  if (opts.loseTheRace) await page.clock.install();
   await page.goto("/projects");
   await page.waitForLoadState("domcontentloaded");
   await page.waitForTimeout(4000);
@@ -251,6 +254,9 @@ test("a lost race reads the run again and offers no retry", async ({ page }) => 
   const { posts } = await stub(page, "awaiting", { loseTheRace: true });
   await openTask(page);
   const panel = page.locator("[data-agent-run-panel]");
+  // No timer fires from here on, so only the 409's own re-read can show
+  // the other member's answer. The poll every 5 s cannot.
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
 
   await panel.locator("[data-elicitation-option]").filter({ hasText: "Postgres" }).click();
   await panel.locator("[data-elicitation-submit]").click();
