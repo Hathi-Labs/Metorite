@@ -338,8 +338,7 @@ const START_ERROR_TEXT: Record<string, string> = {
  */
 function ownText(table: Record<string, string>, code: string | null | undefined): string | null {
   if (typeof code !== "string" || !Object.prototype.hasOwnProperty.call(table, code)) return null;
-  const text = table[code];
-  return typeof text === "string" ? text : null;
+  return table[code];
 }
 
 /** A line for a refused start. An unknown code still gets a sentence. */
