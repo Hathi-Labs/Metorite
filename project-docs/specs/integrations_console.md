@@ -37,7 +37,7 @@
 > "Not set up" while the CRM held a live Zoho connection. The gateway read
 > the operator's `ZOHO_*` keys, and the client counted key rows only. No
 > migration.
->
+
 > `APP_OWNED_SERVICES` in `routes/integrations.py` now maps the tile to the
 > CRM's row (`zoho`, `crm`). The status reads that row in the tenant session
 > and offers no key form. The test reads the CRM's own credential.
