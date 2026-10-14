@@ -6,7 +6,10 @@ The page frame, the bell and the needs contract stay ``navigation_shell.md``'s.
 **One provider run.** The feed runs the needs providers of ``needs.REGISTRY``
 first, in today's order and on today's budget (``needs.needs_run``). Then it
 runs the feed-only providers, on a budget of their own. So a slow feed-only
-provider can never turn a needs source to ``failed``.
+provider can never turn a needs source to ``failed``. The feed-only providers
+run two at a time at most, each with its own limit from its start, under one
+ceiling. So a slow one fails alone (MD-3b). A gated one runs only when
+``MY_DAY_PROVIDERS`` lists it. ``source_apps`` names the app of each source.
 
 **The answer carries the needs view.** ``needs`` is exactly the answer of
 ``GET /shell/needs?limit=30``, from the same run, before the fold. The
@@ -101,10 +104,26 @@ logger = logging.getLogger(__name__)
 #: The feed's default length, and its ceiling (§14.1a).
 DEFAULT_FEED_LIMIT = 40
 MAX_FEED_LIMIT = 80
-#: Seconds for the feed-only providers, all together, AFTER the needs run.
+#: Seconds for EACH feed-only provider, AFTER the needs run, from the moment
+#: it takes its slot (MD-3b, §5.8 item 3). So a slow one fails alone.
 FEED_BUDGET_S = 2.0
 #: Seconds one feed-only provider may take.
 FEED_PROVIDER_TIMEOUT_S = 2.0
+#: The feed-only providers that run at the same time, at most, for a read.
+#: Each holds a pool connection, and the pool is small (MD-2c,
+#: EMAXCONNSESSION 2026-09-20).
+FEED_CONCURRENCY = 2
+#: The same for the My Day pass of the loop (``read=False``). The loop runs
+#: three members at once, so it holds three of these connections at most.
+FEED_PASS_CONCURRENCY = 1
+#: Seconds for all the feed-only providers, from the start of their run. A
+#: provider still queued or running then reads ``failed`` (MD-3b). The read's
+#: worst case is ``needs.TOTAL_BUDGET_S`` + this + ``needs.CANCEL_WAIT_S`` +
+#: ``state.STATE_TIMEOUT_S``: 4.0 + 2.3 + 0.1 + 1.5 = 7.9 seconds, under the
+#: 8 seconds of the BFF route (``app/api/shell/feed/route.ts``
+#: ``TIMEOUT_MS``). The cancel wait counts, because it also runs when the
+#: ceiling fires. Fence: ``test_shell_feed.py::TestTheBudgetSum``.
+FEED_TOTAL_S = 2.3
 #: The days of blocks that ``block_overlap`` reads, today first.
 WEEK_DAYS = 7
 #: A block that starts within this time is ``block_soon``.
@@ -594,10 +613,15 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
     # The needs view, at the needs route's own default limit, whatever the
     # feed's limit: the client keeps it under the key of ?limit=30.
     needs_view = needs.needs_answer(run, needs.DEFAULT_LIMIT) if read else None
-    # Then the feed-only providers, on a budget of their own.
+    # Then the feed-only providers, on a budget of their own: two at a time,
+    # each with its own limit from its start, under one ceiling (MD-3b).
+    # MY_DAY_PROVIDERS picks the gated ones (`needs.feed_only_providers`).
+    # The loop's pass takes one slot, so the loop alone cannot fill the pool.
     extra = await needs.run_providers(
         user, needs.feed_only_providers(), budget_s=FEED_BUDGET_S,
-        timeout_s=FEED_PROVIDER_TIMEOUT_S, event="shell.feed")
+        timeout_s=FEED_PROVIDER_TIMEOUT_S, event="shell.feed",
+        slots=FEED_CONCURRENCY if read else FEED_PASS_CONCURRENCY,
+        ceiling_s=FEED_TOTAL_S)
 
     sources = {**run.sources, **extra.sources}
     capped = [*run.capped, *extra.capped]
@@ -647,6 +671,9 @@ async def feed_answer(user: UserContext, size: int) -> cache.Computed:
         "groups": [{"id": g, "count": n} for g, n in counts.items() if n],
         "needs": fr.needs_view,
         "sources": fr.sources,
+        # The app of each source (MD-3b, §14.1a): a source id such as
+        # `crm_followups` is not an app id.
+        "source_apps": {s: needs.source_app(s) for s in fr.sources},
         "capped": fr.capped,
         # Never a card and never a group, and not counted in `limit` (MD-2c).
         "handled": closed.entries,
