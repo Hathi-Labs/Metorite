@@ -62,9 +62,14 @@ widens the helpers for My Day, and copies none of them:
   each item logs its own ``decide.shadow`` line. ``record`` gets the list.
 - :func:`shadow` honours the cool-down, as :func:`ask` does.
 - :func:`compare_score` compares a score answer with the old-path level.
+- A ``my_day.`` call starts the shared cool-down on a 402 only. A 403 from
+  My Day names My Day's grant, so it must not pause email for the org.
 
 With none of the new arguments, each helper behaves as before, byte for
-byte. The email suites are the fence for that.
+byte, with ONE intended exception: :func:`shadow` now asks nothing while
+the organization is in its cool-down (``my_day_feed.md`` §10.9 item 4).
+Before, an email feature in ``shadow`` went on calling after a 402. The
+email suites are the fence for the rest.
 
 Fences: ``tests/unit/test_email_decide_shadow.py``,
 ``tests/unit/test_email_decide_questions.py`` and
@@ -208,6 +213,12 @@ REFUSAL_COOLDOWN_S: float = 15 * 60
 
 #: The verdicts that start a cool-down.
 _COOLDOWN_STATUSES = frozenset({402, 403})
+
+#: The verdicts that start the cool-down from a ``my_day.`` call (WS-58
+#: MD-6a-1 fix round 1). Only a 402: the org has no credit, and every app
+#: must wait. A 403 can refuse My Day alone, and the cool-down is the whole
+#: org's, so it must not pause email's ``on``.
+_MY_DAY_COOLDOWN_STATUSES = frozenset({402})
 
 #: Organization id → the monotonic time at which its cool-down ends.
 _cooldown_until: dict[str, float] = {}
@@ -711,7 +722,9 @@ async def _ask_all(
         elif unavailable is not None:
             _no_answer(ids, on=on, shadow_event="decide.fallback",
                        reason=unavailable.reason)
-            if getattr(unavailable, "status", None) in _COOLDOWN_STATUSES:
+            starts = (_MY_DAY_COOLDOWN_STATUSES if feature.startswith(MY_DAY_PREFIX)
+                      else _COOLDOWN_STATUSES)
+            if getattr(unavailable, "status", None) in starts:
                 _start_cooldown(ids, unavailable.status)
         else:
             # The type name only. A message can quote the request.

@@ -30,11 +30,12 @@ goes to Later at worst.
 - A change of the context hash judges the cards again, at most once each
   hour. The hash names only the fields of §10.4, so the clock, the blocks,
   the deadlines and the habit counts never void an answer.
-- One request carries 8 cards and 16 questions at most.
+- One request carries 8 cards and 16 questions at most. Each request runs
+  as its own shadow, so a failed request costs only itself.
 - 60 calls for each member each day, and the org ceiling
   ``my_day_decide_org_daily_calls`` (0 is no ceiling). The counters are
   ``key("my_day", "calls", <member>, <local date>)`` and
-  ``key("my_day", "calls", "org", <local date>)``, with a TTL of 26 hours.
+  ``key("my_day", "calls", "org", <UTC date>)``, with a TTL of 26 hours.
   A pass reserves its calls before it asks. Past a cap it asks fewer, or
   none, and the cards keep their old values.
 - After a 402 or a 403, the cool-down of ``decide_features`` stops the pass
@@ -57,17 +58,18 @@ Fences: ``tests/unit/test_feed_decide.py`` and
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext
 from gateway import decide_features as df
-from gateway.routes.shell import feed_rank, needs
+from gateway.routes.shell import feed, feed_rank, needs
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +136,7 @@ REJUDGE_S = 3600
 CARDS_PER_REQUEST = 8
 QUESTIONS_PER_REQUEST = df.QUESTION_LIMIT
 #: The cards one pass looks at: the feed's own default length.
-JUDGE_LIMIT = 40
+JUDGE_LIMIT = feed.DEFAULT_FEED_LIMIT
 #: Each fact of the state is clipped to this many characters.
 FACT_CLIP = 200
 #: The question version. Change it with the text of a question, so each
@@ -423,9 +425,15 @@ def pack(ctx: MemberContext, wanted: Sequence[tuple[Mapping[str, Any], Sequence[
 
 
 def comparisons(asked: Sequence[Asked], cards: Mapping[str, Mapping[str, Any]]):
-    """The ``compare`` of the pass: one comparison for each question, through
-    the shared helpers of ``decide_features``. A question whose answer
-    cannot be read gives no comparison and no row."""
+    """The ``compare`` of the pass: one comparison for each question.
+
+    ``new`` is what :func:`read_answer` makes of the answer, so the reader
+    that ``TestKeysOnly`` fences is the one that writes each row and each
+    cached answer. A key that is not ours is None. ``old`` is the old-path
+    value of :func:`old_values`, and ``agree`` compares the two. The shared
+    ``compare_*`` helpers of ``decide_features`` give the confidence, the
+    probability and the margin. A question whose answer cannot be read
+    gives no comparison and no row."""
 
     def _compare(olds: Mapping[str, Mapping[str, Any]], decision: Any) -> list[df.Comparison]:
         out: list[df.Comparison] = []
@@ -442,11 +450,14 @@ def comparisons(asked: Sequence[Asked], cards: Mapping[str, Mapping[str, Any]]):
                                        qid=a.qid, options=len(keys), keys=keys)
             try:
                 cmp = fn(olds, decision)
+                judged = read_answer(a.feature, decision[a.qid], keys)
             except Exception as exc:  # one unreadable answer costs one row
                 logger.warning("my_day.decide compare failed",
                                extra={"feature": a.feature, "error": type(exc).__name__})
                 continue
-            out.append(replace(cmp, feature=a.feature, item=a.signal_id, qid=a.qid))
+            old = olds[a.signal_id][a.feature]
+            out.append(replace(cmp, old=old, new=judged, agree=old == judged,
+                               feature=a.feature, item=a.signal_id, qid=a.qid))
         return out
 
     return _compare
@@ -462,15 +473,14 @@ def to_rows(made: Sequence[df.Comparison], cards: Mapping[str, Mapping[str, Any]
             old_places: Mapping[str, int], new_places: Mapping[str, int]
             ) -> list[dict[str, Any]]:
     """One ``my_day_judgments`` row for each comparison (§13.2). Keys, levels
-    and numbers only. ``unknown`` (a key that is not ours) is stored as no
-    value. The ranks go on the ``my_day.triage`` row only."""
+    and numbers only. ``judged_value`` is the reader's value
+    (:func:`comparisons`), so a key that is not ours is stored as no value.
+    The ranks go on the ``my_day.triage`` row only."""
     rows: list[dict[str, Any]] = []
     for cmp in made:
         sid = str(cmp.item)
         card = cards[sid]
         judged = _text(cmp.new)
-        if judged not in options_of(str(cmp.feature), card):
-            judged = None
         confidence = cmp.probability if cmp.feature == RESURFACE else cmp.confidence
         triage = cmp.feature == TRIAGE
         rows.append({
@@ -520,7 +530,7 @@ async def read_context(user: UserContext, now: datetime, day: Any) -> MemberCont
     local = now.astimezone(tz)
     role = getattr(getattr(user, "role", None), "value", None) or str(getattr(user, "role", "") or "")
     hours = (f"{day.start_hour:02d}-{day.end_hour:02d}" if day is not None else "")
-    member = str(user.email or "").strip()
+    member = member_of(user)
     one_thing: str | None = None
     corrections: tuple[str, ...] = ()
     habits: dict[str, dict[str, int]] = {}
@@ -565,8 +575,12 @@ async def _habits(db: Any, member: str) -> dict[str, dict[str, int]]:
 # ── Redis: the answers, the context and the caps (§9.1) ─────────────────────
 
 
-def _member(email: Any) -> str:
-    return str(email or "").strip().lower()
+def member_of(user: Any) -> str:
+    """The member as ``my_day_card_state`` writes it: the session's address,
+    exactly (``state.apply_state``, ``state.write_state``). Every row, read
+    and key of this module uses it, so the measure read of MD-6a-3 joins the
+    two tables on equal text."""
+    return getattr(user, "email", None) or ""
 
 
 def _key(*parts: str) -> Any:
@@ -585,8 +599,10 @@ def member_calls_key(member: str, local_date: str) -> Any:
     return _key("calls", member, local_date)
 
 
-def org_calls_key(local_date: str) -> Any:
-    return _key("calls", "org", local_date)
+def org_calls_key(utc_date: str) -> Any:
+    """The org's counter. It keys on the UTC date, so every member of the
+    org shares one bucket for each day, whatever their zone."""
+    return _key("calls", "org", utc_date)
 
 
 def _redis() -> Any:
@@ -616,9 +632,11 @@ async def effective_hash(member: str, chash: str, now: datetime) -> str:
     return chash
 
 
-async def reserve(member: str, local_date: str, wanted: int) -> int:
+async def reserve(member: str, local_date: str, utc_date: str, wanted: int) -> int:
     """Reserve up to ``wanted`` calls against the member cap and the org
-    ceiling, and return how many the pass may make (§9.1 rule 8)."""
+    ceiling, and return how many the pass may make (§9.1 rule 8). The member
+    counter keys on the member's local date, and the org counter on the UTC
+    date."""
     from acb_common.settings import get_settings
 
     if wanted <= 0:
@@ -633,7 +651,7 @@ async def reserve(member: str, local_date: str, wanted: int) -> int:
     if allowed == 0:
         return 0
     ceiling = int(get_settings().my_day_decide_org_daily_calls or 0)
-    ok = org_calls_key(local_date)
+    ok = org_calls_key(utc_date)
     used_org = int(await redis.incr(ok, allowed))
     await redis.expire(ok, COUNTER_TTL_S)
     if ceiling > 0:
@@ -700,13 +718,12 @@ async def _judge(user: UserContext, now: datetime | None) -> Judged:
     from acb_common._log import job_member_scope
     from acb_common.db import current_tenant
     from acb_common.tenant_redis import organization_scope
-    from gateway.routes.shell import feed
 
     features = active_features()
     if not features:
         return Judged("off")  # §10.9 item 9: no compute, no call, no row
     org = str(getattr(user, "organization_id", None) or "")
-    member = _member(user.email)
+    member = member_of(user)
     if not org or "@" not in member or str(current_tenant() or "") != org:
         return Judged("tenant")
     if df.cooling():
@@ -735,7 +752,8 @@ async def _judge(user: UserContext, now: datetime | None) -> Judged:
             return Judged("cached", cards=len(ordered))
 
         requests, asked = pack(ctx, wanted)
-        allowed = await reserve(member, ctx.local_date, len(requests))
+        utc_date = when.astimezone(UTC).date().isoformat()
+        allowed = await reserve(member, ctx.local_date, utc_date, len(requests))
         if allowed == 0:
             return Judged("cap", cards=len(ordered))
         requests = requests[:allowed]
@@ -743,33 +761,46 @@ async def _judge(user: UserContext, now: datetime | None) -> Judged:
         asked = [a for a in asked if a.qid in sent_qids]
 
     olds = {sid: old_values(card) for sid, card in by_id.items()}
-    written = 0
-
-    async def _record(made: list[df.Comparison]) -> None:
-        nonlocal written
-        answers: dict[str, dict[str, Any]] = {
-            str(c["signal_id"]): dict(h) for c, h in zip(ordered, cached, strict=True)}
-        for cmp in made:
-            value = _text(cmp.new)
-            if value not in options_of(str(cmp.feature), by_id[str(cmp.item)]):
-                value = None
-            confidence = cmp.probability if cmp.feature == RESURFACE else cmp.confidence
-            answers.setdefault(str(cmp.item), {})[str(cmp.feature)] = {
-                "v": value, "c": confidence}
-        rows = to_rows(made, by_id, old_places, judged_rank(ordered, answers))
-        written = await write_rows(member, rows)
-        judged_ids = {str(cmp.item) for cmp in made}
-        with organization_scope(org):
-            await store_answers([
-                (keys[i], answers[str(c["signal_id"])])
-                for i, c in enumerate(ordered) if str(c["signal_id"]) in judged_ids])
 
     async def _old() -> dict[str, dict[str, str | None]]:
         return olds
 
-    with job_member_scope(member, app=MODULE_SLUG):
+    # One shadow for each request, all at once (fix round 1). A request that
+    # fails costs only itself: `_ask_all` gives no answer for a call with one
+    # failed request, so one call for the whole pass would throw away each
+    # billed answer of the other requests.
+    made: list[df.Comparison] = []
+
+    async def _one(request: tuple[dict[str, Any], dict[str, Any]]) -> None:
+        mine = [a for a in asked if a.qid in request[1]]
+
+        async def _keep(got: list[df.Comparison]) -> None:
+            made.extend(got)
+
         await df.shadow(
-            CALL_NAME, _old, build=lambda: requests,
-            compare=comparisons(asked, by_id), ids={"decide_cards": len(by_id)},
-            module_slug=MODULE_SLUG, features=features, record=_record)
+            CALL_NAME, _old, build=lambda: request,
+            compare=comparisons(mine, by_id), ids={"decide_cards": len(request[0]["cards"])},
+            module_slug=MODULE_SLUG, features=features, record=_keep)
+
+    with job_member_scope(member, app=MODULE_SLUG):
+        await asyncio.gather(*(_one(r) for r in requests))
+    if not made:
+        return Judged("no_answer", cards=len(ordered), requests=len(requests))
+
+    answers: dict[str, dict[str, Any]] = {
+        str(c["signal_id"]): dict(h) for c, h in zip(ordered, cached, strict=True)}
+    for cmp in made:
+        # `cmp.new` is the reader's value (`comparisons`): a key of ours, or None.
+        confidence = cmp.probability if cmp.feature == RESURFACE else cmp.confidence
+        answers.setdefault(str(cmp.item), {})[str(cmp.feature)] = {
+            "v": _text(cmp.new), "c": confidence}
+    rows = to_rows(made, by_id, old_places, judged_rank(ordered, answers))
+    # The rows first, then the cache. A write that fails keeps no answer, so
+    # the next pass asks again, until the member cap.
+    written = await write_rows(member, rows)
+    judged_ids = {str(cmp.item) for cmp in made}
+    with organization_scope(org):
+        await store_answers([
+            (keys[i], answers[str(c["signal_id"])])
+            for i, c in enumerate(ordered) if str(c["signal_id"]) in judged_ids])
     return Judged("asked", cards=len(ordered), requests=len(requests), rows=written)
