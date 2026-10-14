@@ -496,6 +496,31 @@ class TestTheSettleTime:
         assert cache.settled(f"{5 * 10**18 - 3 * 10**9}-abcd1234") is True
 
 
+class TestAHitStillMarksTheMemberActive:
+    """MD-5b's ``mark_active`` runs before the cache, so a hit marks the
+    member active too. If it ran inside ``feed_answer``, a member whose every
+    poll hits would leave the active set, and the loop would skip them."""
+
+    def test_a_hit_runs_mark_active(self, fakes, redis, on, monkeypatch):  # noqa: F811
+        from gateway import my_day_loop
+
+        monkeypatch.setattr(get_settings(), "my_day_loop_enabled", True)
+        marked: list[str | None] = []
+        real = my_day_loop.mark_active
+
+        def spy(user):
+            marked.append(user.email)
+            return real(user)
+
+        monkeypatch.setattr(my_day_loop, "mark_active", spy)
+        user = member(*FULL)
+        read(user)
+        before = app_calls(fakes)
+        read(user)
+        assert app_calls(fakes) == before, "the second read was not a hit"
+        assert marked == [ME, ME]
+
+
 class TestAnAgentBypassesTheCache:
     def test_an_outside_agent_reads_and_stores_nothing(self, fakes, redis, on):  # noqa: F811
         from dataclasses import replace
