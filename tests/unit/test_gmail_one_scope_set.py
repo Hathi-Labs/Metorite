@@ -15,8 +15,9 @@ both:
 The fences:
 
 * ``test_gmail_scopes_are_exactly_the_two`` pins the list.
-* ``test_the_tree_names_only_the_two_gmail_scopes`` walks the shipped code.
-  The only hits it allows are the two lines of ``GMAIL_SCOPES``.
+* ``test_the_tree_names_only_the_two_gmail_scopes`` reads each file that git
+  knows, except ``tests/``, ``project-docs/`` and ``docs/``. The only hits it
+  allows are the two lines of ``GMAIL_SCOPES``.
 * ``test_the_retired_oauth_route_has_no_google_entry`` pins the route table.
 * ``test_no_gmail_service_account_setting_or_integration`` and its siblings
   pin each removed part, and that an old env file still loads.
@@ -46,20 +47,35 @@ D_EM_31_SCOPES = [
 #: ``https://mail.google.com/``.
 SCOPE_MARKS = ("googleapis.com/auth/", "https://mail.google.com/")
 
-#: The roots that ship code (§12.3.13.5, the fence list).
-WALK_ROOTS = (
-    "apps",
-    "packages",
-    "scripts",
-    "workbench/control_plane/src",
-    "workbench/operator_console/src",
-)
+#: The walk reads every file that git knows: each tracked file, and each
+#: untracked file that `.gitignore` does not exclude. So a new file is read
+#: before its first commit. No folder name is skipped. Fix round 1: a
+#: folder-name skip list dropped `workbench/control_plane/src/app/build/`.
+#:
+#: Only these top-level folders are not read, each for a reason:
+EXCLUDED_ROOTS = {
+    # The fences name the scopes, as the expected value of a test.
+    "tests": "the tests name the scopes to check them",
+    # The plan and the specs quote the scopes to say what the app asks for.
+    "project-docs": "the specs quote the scopes",
+    # Engineering notes, not code that runs.
+    "docs": "engineering notes quote the scopes",
+}
 
-#: Directories that hold no code of ours: installs, caches and build output.
-SKIP_DIRS = frozenset({
-    "node_modules", ".next", "__pycache__", ".venv", "venv", ".turbo",
-    "dist", "build", "coverage", ".pytest_cache", ".ruff_cache", ".git",
-})
+
+def _git_files() -> list[str]:
+    """Each file that git knows, as a path relative to the repo."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            cwd=REPO, capture_output=True, check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        # Never a skip: a fence that cannot read the tree has proved nothing.
+        raise AssertionError(f"the fence needs git to list the tree: {exc}") from exc
+    return [p for p in out.decode("utf-8").split("\0") if p]
 
 #: The settings of the two removed paths. None may come back.
 REMOVED_SETTINGS = (
@@ -93,15 +109,16 @@ def _scope_lines() -> tuple[Path, range]:
 
 def _walk() -> list[Path]:
     files: list[Path] = []
-    for root in WALK_ROOTS:
-        base = REPO / root
-        assert base.is_dir(), f"the walk root {root} is missing"
-        for path in base.rglob("*"):
-            if not path.is_file():
-                continue
-            if any(part in SKIP_DIRS for part in path.relative_to(REPO).parts):
-                continue
+    for rel in _git_files():
+        if rel.split("/", 1)[0] in EXCLUDED_ROOTS:
+            continue
+        path = REPO / rel
+        # A path that git lists and the disk does not hold is a deletion
+        # that is not committed yet.
+        if path.is_file():
             files.append(path)
+    # The companion: a walk that reads almost nothing proves nothing.
+    assert len(files) > 1000, f"the walk read only {len(files)} files"
     return files
 
 
@@ -190,6 +207,20 @@ def test_no_gmail_service_account_setting_or_integration() -> None:
     # The parse helpers stay (test_gmail_normaliser.py).
     for name in ("GmailMessageRaw", "_decode_b64url", "_extract_body", "_header"):
         assert hasattr(client, name), name
+
+
+def test_the_agent_catalog_declares_no_retired_gmail_id() -> None:
+    import json
+
+    catalog = json.loads((REPO / "agent_registry.json").read_text(encoding="utf-8"))
+    declared = {
+        (entry.get("name"), service)
+        for entry in catalog
+        for key in ("integrations", "optional_integrations")
+        for service in entry.get(key) or []
+        if service in RETIRED_IDS
+    }
+    assert declared == set()
 
 
 def test_the_integrations_status_lists_no_service_account_gmail() -> None:

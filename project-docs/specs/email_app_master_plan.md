@@ -14051,9 +14051,17 @@ it GO-NARROWED. Items 1 to 4 are built as written, with the additions below.
   `:1525-1553`, and `test_org_access_credentials.py:32`.
 - **The check before the removal.** On 2026-10-14, six env names of the box each counted 0:
   `GMAIL_SA_JSON_PATH`, `GMAIL_DEFAULT_USER`, `GMAIL_WORKSPACE_DOMAIN`, `GOOGLE_CLIENT_ID`,
-  `GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN`. ⚠️ **The `provider_keys` count is open.** The permission layer of the
-  builder refused the production query. Run it before the merge. A row under `gmail:` or
-  `gmail-send:` stays in the table, and startup does not load it.
+  `GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN`.
+- **The `provider_keys` count is not a merge condition** (reviewer finding, 2026-10-14). Before
+  this change, layer B of `env_guard` already refused an old `gmail:` or `gmail-send:` row at
+  startup: `GMAIL_SA_JSON_PATH` by the `_PATH` suffix, and `GMAIL_DEFAULT_USER` by name. `DELETE
+  /integrations/keys` refused the same rows with 403. So such a row was an orphan before, and it is
+  an orphan after. Nobody queried production for this slice.
+- **The agent catalog** (fix round 1). `agent_registry.json` no longer declares `gmail` (`triage`)
+  or `gmail-send` (`sales`). `test_the_agent_catalog_declares_no_retired_gmail_id` holds it.
+- **The walk of the fence** (fix round 1). The fence reads each file that `git ls-files` lists,
+  tracked or untracked and not ignored. It skips only `tests/`, `project-docs/` and `docs/`, each
+  with a reason in the test. It skips no folder by name.
 
 **Scope.**
 
