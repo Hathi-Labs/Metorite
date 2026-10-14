@@ -4933,8 +4933,7 @@ conversion read `CRM_FIELD_STUDIO_ORGS`, which ships empty.
   sends it, also a row that means "auto". The screen sends no row for "auto".
 - **The 422 codes.** `mapping_source`, `mapping_twice`, `mapping_skip_target`,
   `mapping_target`, `mapping_target_retired`, `mapping_type` and
-  `mapping_target_twice`. Two writes at the same time can give 409
-  `mapping_changed`.
+  `mapping_target_twice`. A unique violation gives 409 `mapping_changed`.
 - **Four details that the contract left open.** The builder decided them.
   1. A retired explicit target, or one of a changed type, stays in the map.
      The read names it in `problem`, and the conversion skips it.
@@ -4951,7 +4950,35 @@ conversion read `CRM_FIELD_STUDIO_ORGS`, which ships empty.
   `useCachedResource`, so a change in the Fields section wakes it. A choice
   sends the whole map and reads it again. A refusal shows at the top of the
   card.
-- **Not in this slice.** C6b. The convert dialog does not show `skipped` yet.
+- **Not in this slice.** C6b.
+
+**Review round 1 (2026-10-14).** The verifier and the reviewer found one P1.
+The coordinator decided each item.
+
+1. **A broken row never blocks a save (P1).** The screen sends the whole map.
+   `check_rows` now passes an explicit row that equals its stored row, also
+   when its target retired or changed type. It checks only a new or a changed
+   row. A new row on a retired target gives 422 with "<target> is retired.
+   Set this cell to Auto or Skip, or restore the field." The cell shows its
+   problem and a "Set to Auto" button.
+2. **Two writes at once (P2).** The `PUT` takes `pg_advisory_xact_lock` on a
+   key of the org before it reads and writes. Migration 261 adds the partial
+   unique index `crm_convert_mappings_one_target` on `(organization_id,
+   target_entity, target_key)` for each explicit row. 261 is not deployed, so
+   the file changed in place, and it stays idempotent.
+3. **The fill of a reused record (P2).** `fill_existing` reads `custom` again
+   `FOR UPDATE` before it fills. A value that lands after the match stays.
+4. **A blocked auto copy.** An explicit row with a `type_mismatch` target
+   still claims it. The same-key auto cell that it blocks now has the problem
+   `type_mismatch`, and the conversion lists the value in `skipped`.
+5. **The note after a convert.** The page shows a toast "N fields were not
+   copied", with each field, its entity and its reason.
+
+The new R8 fences cover the broken row, two `PUT` writes at once and the
+index. They also cover the 409 path, the stale fill, the blocked auto copy
+and a conversion in the second org. The hermetic suite holds the unchanged row and
+the index. The vitest file holds the broken cell and the note. A mutation
+proved each fence.
 
 ### 20.10 CRM-C7: AI reach
 
