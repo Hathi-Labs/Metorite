@@ -119,6 +119,17 @@ def writes_enabled() -> bool:
     return bool(get_settings().agent_access_writes_enabled)
 
 
+def runs_enabled() -> bool:
+    """True when ``agent_runs_enabled`` is on (EA-12a and EA-12b, spec §12.1).
+
+    The ONE reader of the agent-runs flag, for both units. The gateway
+    answers 404 on each agent-runs route while it is false. The edge leaves
+    the six agent-run tools out of ``tools/list`` and makes no request for
+    ``agent_runs`` in ``get_task``. So both units need the same value.
+    """
+    return bool(get_settings().agent_runs_enabled)
+
+
 #: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
 #: writes flag is off (EA-6a fix round 1). The edge maps it to a tool error,
 #: never to the MCP 401, so a client keeps its token and its reads.
@@ -640,6 +651,7 @@ __all__ = [
     "redirect_uri_matches",
     "resource",
     "revocation_endpoint",
+    "runs_enabled",
     "s256",
     "scope_string",
     "token_endpoint",

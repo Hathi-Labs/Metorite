@@ -235,6 +235,15 @@ def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
         if served is None:
             wrong.append(f"{tool.name}: {tool.method} {tool.route} is not a gateway route")
             continue
+        # EA-12b: an input may fill a parameter of a write that the tool sends
+        # before its own (``prior_writes``). Only ``ask_on_task`` has one.
+        served = set(served)
+        for prior in tool.prior_writes:
+            more = params.get((tool.method, prior))
+            if more is None:
+                wrong.append(f"{tool.name}: {tool.method} {prior} is not a gateway route")
+                continue
+            served |= more
         for name, parameter in sorted(tool.params.items()):
             if parameter not in served:
                 wrong.append(f"{tool.name}: {name} maps to {parameter!r}, which "
@@ -268,3 +277,15 @@ def test_rule_4_each_route_a_tool_reads_is_in_the_allowlist():
         assert not missing, f"{tool.name} reaches pairs outside MCP_ROUTES: {missing}"
         if tool.method != "GET":
             assert (tool.method, tool.route) in MCP_WRITE_ROUTES, tool.name
+        for prior in tool.prior_writes:
+            assert (tool.method, prior) in MCP_WRITE_ROUTES, (tool.name, prior)
+        if tool.method == "GET":
+            assert not tool.prior_writes, f"{tool.name} is a read and sends a write"
+
+
+def test_rule_4_only_ask_on_task_sends_a_prior_write():
+    """EA-12b. A prior write widens rule 4 for its tool, so the spec names
+    each one (§12.1): ``ask_on_task`` starts the run, then writes the
+    question."""
+    declared = {(tool.name, prior) for tool in _tools() for prior in tool.prior_writes}
+    assert declared == {("ask_on_task", "/projects/tasks/{task_id}/agent-runs")}

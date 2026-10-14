@@ -958,10 +958,12 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
 
 
 def agent_runs_enabled() -> bool:
-    """The flag ``agent_runs_enabled`` (default OFF). The one reader."""
-    from acb_common import get_settings
+    """The flag ``agent_runs_enabled`` (default OFF). The gateway side of the
+    one reader, ``acb_auth.agent_oauth.runs_enabled``, which the edge reads
+    too (EA-12b)."""
+    from acb_auth import agent_oauth
 
-    return bool(get_settings().agent_runs_enabled)
+    return agent_oauth.runs_enabled()
 
 
 async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
