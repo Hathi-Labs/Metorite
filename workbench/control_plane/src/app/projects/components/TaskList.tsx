@@ -43,6 +43,7 @@ import {
   ParentCrumb,
   TaskMeta,
 } from "@/components/TaskMeta";
+import { AgentPill } from "./AgentPill";
 import { useMemo, useState } from "react";
 
 import { accentForGroup, accentForStatus } from "../lib/accent";
@@ -480,9 +481,18 @@ export function TaskList({
                     </td>
                   ) : null}
                   <td className="px-3 py-2 text-muted-foreground">
-                    <TaskMeta
-                      chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)}
-                    />
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      {/* WS-55 EA-12c — the agent run's state, first. */}
+                      <AgentPill
+                        state={task.agent_state}
+                        clientVia={task.agent_client_via}
+                        memberEmail={task.agent_member_email}
+                        labels={personLabels}
+                      />
+                      <TaskMeta
+                        chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)}
+                      />
+                    </span>
                   </td>
                 </tr>
               );

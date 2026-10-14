@@ -60,6 +60,7 @@ import { useEffect, useState } from "react";
 import { lensMyOverlay } from "@/app/tasks/lib/lens";
 import { filedByMe, focusPatch, lensPatchItem, overlayOf } from "@/app/tasks/lib/lens";
 import { MyFocusRow } from "./MyFocusRow";
+import { AgentPill } from "./AgentPill";
 import {
   type FieldRow,
   type StatusRow,
@@ -266,6 +267,14 @@ export function TaskPanel({
           {currentStatus ? (
             <StatusChip accent={statusTone} label={currentStatus.name} />
           ) : null}
+          {/* WS-55 EA-12c — the agent run's state. Nothing without a run. */}
+          <AgentPill
+            state={task.agent_state}
+            size="sm"
+            clientVia={task.agent_client_via}
+            memberEmail={task.agent_member_email}
+            labels={personLabels}
+          />
           {task.completed_at ? (
             <Badge tone="success" icon="Check">
               Completed

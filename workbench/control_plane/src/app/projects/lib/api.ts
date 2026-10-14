@@ -2,6 +2,7 @@ import { describeFailure, detailText, readJsonBody } from "@/lib/apiError";
 import { cacheKey, invalidate } from "@/lib/dataCache";
 import type { ParentFact } from "@/lib/taskCard";
 
+import type { AgentState } from "./agentRuns";
 import type { Rule as RecurrenceRule } from "./recurrence";
 
 /**
@@ -1234,6 +1235,15 @@ export interface TaskRow {
    * the list endpoint does not, so a board row reads `undefined`.
    */
   time_spent_mins?: number;
+  /**
+   * WS-55 EA-12c — the derived state of the newest open agent run, or null
+   * when the task has none (`external_agent_access.md` §12.1, EA12-10).
+   * The run types live in `agentRuns.ts`, with the two optional run facts
+   * below, which are an assumption of this slice (see `AgentRowFacts`).
+   */
+  agent_state?: AgentState | null;
+  agent_client_via?: string | null;
+  agent_member_email?: string | null;
 }
 
 export interface StatusRow {
