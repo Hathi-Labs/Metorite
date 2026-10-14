@@ -117,6 +117,20 @@ class World:
     issued: set[str] = field(default_factory=set)
     refresh_token: str = SENTINEL_REFRESH
 
+    # ── IN-8b: the refresh grant (RFC 6749 §6) ──────────────────────────────
+    #: Each refresh request that reached the token endpoint.
+    refreshes: list[dict[str, str]] = field(default_factory=list)
+    #: The refresh tokens that the endpoint still accepts. The code exchange
+    #: adds the one it issues. A rotation removes the old one, as a provider
+    #: that rotates does, so a second use of it is ``invalid_grant``.
+    live_refresh: set[str] = field(default_factory=set)
+    #: True: each refresh issues a new refresh token and ends the old one.
+    rotate: bool = True
+    #: An error code that every refresh answers, for example ``invalid_grant``.
+    refresh_error: str | None = None
+    #: Seconds that the token endpoint waits before it answers a refresh.
+    token_delay_s: float = 0.0
+
     # ── the resolver ────────────────────────────────────────────────────────
 
     def resolve(self, host: str, port: int) -> list[str]:
@@ -132,6 +146,15 @@ class World:
         return [PUBLIC_IP]
 
     # ── the transport ───────────────────────────────────────────────────────
+
+    async def ahandle(self, request: httpx.Request) -> httpx.Response:
+        """:meth:`handle`, after :attr:`token_delay_s` for a refresh (IN-8b)."""
+        if self.token_delay_s and request.url.path == "/token" and (
+                b"grant_type=refresh_token" in request.content):
+            import asyncio
+
+            await asyncio.sleep(self.token_delay_s)
+        return self.handle(request)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         """The answer as a raw stream: the guard reads it with ``aiter_raw``."""
@@ -206,6 +229,8 @@ class World:
 
     def _token(self, request: httpx.Request) -> httpx.Response:
         form = self._form(request)
+        if form.get("grant_type") == "refresh_token":
+            return self._refresh(request, form)
         grant = self.grants.pop(form.get("code", ""), None)
         if (grant is None or form.get("grant_type") != "authorization_code"
                 or form.get("redirect_uri") != grant.redirect_uri
@@ -220,6 +245,29 @@ class World:
         if self.expires_in is not None:
             answer["expires_in"] = self.expires_in
         self.issued.add(self.access_token)
+        self.live_refresh.add(self.refresh_token)
+        return httpx.Response(200, json=answer)
+
+    def _refresh(self, request: httpx.Request, form: dict[str, str]) -> httpx.Response:
+        """The refresh grant. A refresh token that this world never issued,
+        or that a rotation ended, is ``invalid_grant``."""
+        self.refreshes.append(dict(form))
+        if self.refresh_error:
+            return httpx.Response(400, json={"error": self.refresh_error})
+        old = form.get("refresh_token", "")
+        if old not in self.live_refresh or not self._client_ok(request, form):
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        n = len(self.refreshes)
+        access = f"{SENTINEL_ACCESS}-refreshed-{n}"
+        answer: dict[str, Any] = {"access_token": access, "token_type": "bearer"}
+        if self.expires_in is not None:
+            answer["expires_in"] = self.expires_in
+        if self.rotate:
+            new = f"{SENTINEL_REFRESH}-rotated-{n}"
+            self.live_refresh.discard(old)
+            self.live_refresh.add(new)
+            answer["refresh_token"] = new
+        self.issued.add(access)
         return httpx.Response(200, json=answer)
 
     def _revoke(self, request: httpx.Request) -> httpx.Response:
@@ -251,7 +299,30 @@ def install(monkeypatch: Any, world: World) -> World:
 
     def _client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
         kwargs.pop("transport", None)
-        return REAL_CLIENT(*args, transport=httpx.MockTransport(world.handle), **kwargs)
+        return REAL_CLIENT(*args, transport=httpx.MockTransport(world.ahandle), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _client)
+    return world
+
+
+def install_session(monkeypatch: Any, world: World) -> World:
+    """IN-8b: *world* under the guard, and ALSO under the MCP session.
+
+    :func:`install` drops the transport of each client, so a client of
+    ``outbound_guard.mcp_client`` would skip its pinned transport. This one
+    keeps a transport that a caller passes, and replaces only the socket under
+    the pin (``outbound_guard._mcp_inner_transport``). So a real MAF connect
+    goes through the real pin, and reaches :meth:`World._mcp` by ``Host``."""
+    from gateway import outbound_guard as g
+
+    monkeypatch.setattr(g, "_resolve", world.resolve)
+    monkeypatch.setattr(g, "_is_local_address", lambda _a: False)
+    monkeypatch.setattr(g, "_mcp_inner_transport",
+                        lambda: httpx.MockTransport(world.ahandle))
+
+    def _client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs.setdefault("transport", httpx.MockTransport(world.ahandle))
+        return REAL_CLIENT(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", _client)
     return world

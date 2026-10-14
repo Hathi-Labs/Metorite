@@ -351,16 +351,22 @@ def _conn(name: str, *, oauth: bool) -> Any:
 
 @pytest.fixture
 def runtime(monkeypatch) -> dict[str, Any]:
-    """The runtime reader over two rows: a header server and an OAuth server."""
+    """The runtime reader over two rows: a header server and an OAuth server.
+
+    IN-8b: the OAuth row goes through ``shared_token.fresh_credential``, so
+    the fixture fakes its store calls too. The R8 suite runs the real ones
+    (``test_mcp_oauth_refresh_r8.py``)."""
     from contextlib import asynccontextmanager
 
-    from gateway.connections import mcp, store
+    from gateway.connections import mcp, shared_token, store
     from gateway.crm_sources.base import SourceCredential
 
     f.configure(monkeypatch)
     state: dict[str, Any] = {
         "conns": [_conn("plain", oauth=False), _conn("notion", oauth=True)],
         "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        "refresh_token": "r",
+        "marked": [],
     }
 
     @asynccontextmanager
@@ -373,19 +379,29 @@ def runtime(monkeypatch) -> dict[str, Any]:
     async def _headers(db, org, prefix, app, **kw):
         return {"mcp:plain": {"X-Key": "header-value"}}
 
-    async def _cred(db, org, provider, app, **kw):
+    async def _get(db, org, provider, app, **kw):
         assert provider == "mcp:notion"
-        return SourceCredential(access_token=f.SENTINEL_ACCESS, refresh_token="r",
+        return next(c for c in state["conns"] if c.provider == provider)
+
+    async def _cred(db, org, connection_id):
+        return SourceCredential(access_token=f.SENTINEL_ACCESS,
+                                refresh_token=state["refresh_token"],
                                 expires_at=state["expires_at"])
+
+    async def _mark(db, org, connection_id, code):
+        state["marked"].append(code)
 
     async def _no_legacy(db, org):
         return 0
 
     monkeypatch.setattr(mcp, "tenant_session", _session)
+    monkeypatch.setattr(shared_token, "tenant_session", _session)
     monkeypatch.setattr(mcp, "migrate_legacy", _no_legacy)
     monkeypatch.setattr(store, "list_by_prefix", _list)
     monkeypatch.setattr(store, "load_headers_by_prefix", _headers)
-    monkeypatch.setattr(store, "load_credential", _cred)
+    monkeypatch.setattr(store, "get", _get)
+    monkeypatch.setattr(store, "load_credential_locked", _cred)
+    monkeypatch.setattr(store, "mark_needs_reconnect", _mark)
     return state
 
 
@@ -414,14 +430,19 @@ async def test_flag_on_a_run_sends_the_bearer_token(runtime) -> None:
     assert f.SENTINEL_ACCESS not in repr(servers["notion"])
 
 
-async def test_an_expired_token_is_left_out_until_in8b_refreshes_it(runtime) -> None:
+async def test_an_ended_token_with_no_refresh_token_needs_reconnect(runtime) -> None:
+    """IN-8b replaced the IN-8a placeholder ("left out until IN-8b refreshes
+    it"). A token that has ended, with no refresh token, can never work
+    again: the row needs an admin, and the run leaves it out."""
     from gateway.connections import mcp
 
     runtime["expires_at"] = datetime.now(UTC) + timedelta(seconds=30)
+    runtime["refresh_token"] = ""
     with structlog.testing.capture_logs() as logs:
         servers = await mcp.servers_for_org(ORG_A)
     assert [s.name for s in servers] == ["plain"]
-    assert any(e.get("event") == "mcp.oauth_expired" for e in logs)
+    assert runtime["marked"] == ["no_refresh_token"]
+    assert any(e.get("event") == "mcp.oauth_needs_reconnect" for e in logs)
 
 
 # ── Review of #931: expires_in (P2 4) ───────────────────────────────────────
