@@ -14371,8 +14371,9 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
      organization. Two members can share `support@`, and one person can connect one Gmail in two
      organizations. Before the revoke, the route asks migration 263's
      `email_gmail_grant_shared(email, exclude_account_id)`. The revoke runs only when the answer is
-     `false`. A `true` logs `email.revoke_skipped` with `reason=shared_grant`. A `NULL` or a failed
-     check logs `reason=check_failed`, so the rule fails safe toward the other mailbox.
+     `false`. A `true` logs `email.revoke_skipped` with `reason=shared_grant`. A `NULL` logs
+     `reason=owner_blind` at WARNING, and a failed check logs `reason=check_failed` at WARNING
+     (review round 2). So the rule fails safe toward the other mailbox.
   4. Steps 1.5 and 1.6 run as on main. The Mem0 purge task starts BEFORE the filters and the
      revoke, so a cancel of those awaits cannot skip the purge. This order differs from the list
      above on purpose.
@@ -14383,8 +14384,8 @@ The spec-auditor returned GO-NARROWED. The narrowed scope wires the teardown int
      they end within one hour. Then it bumps the My Day version of the owner.
 - **Migration 263** (`infra/postgres/263_email_gmail_grant_shared.sql`), expand only. One function
   with SECURITY DEFINER and `search_path = pg_catalog, pg_temp`. It returns one boolean and never a
-  row. It compares the address with no case. When its owner cannot see through RLS, it returns
-  `NULL`. The file revokes EXECUTE from PUBLIC and from the Supabase roles, and grants it to
+  row. It compares the address with no case. When its owner cannot see through RLS, it raises a
+  WARNING, as 230 and 236 do, and returns `NULL`. The file revokes EXECUTE from PUBLIC and from the Supabase roles, and grants it to
   `acb_app` only. Check the number again at merge (R1). On 2026-10-14 the open PRs #1002 and #1003
   held 261 and 262.
 - **Narrowed acceptance.** These pass in `tests/unit/test_email_mailbox_teardown.py`:

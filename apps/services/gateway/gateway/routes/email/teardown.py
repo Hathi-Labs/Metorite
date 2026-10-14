@@ -37,7 +37,9 @@ The rules of this module:
   revoke ends the grant of EVERY Metorite row of that Gmail account, in any
   organization. Migration 263's ``email_gmail_grant_shared`` answers whether
   another such row exists, and the revoke runs only on a clear ``false``. A
-  ``true``, a ``NULL`` or a failed check skips it (review round 1, P1).
+  ``true``, a ``NULL`` or a failed check skips it (review round 1, P1). A
+  ``NULL`` logs ``owner_blind`` and a failed check logs ``check_failed``, each
+  at WARNING (review round 2).
 * An Outlook mailbox keeps the behaviour of ``main``. Its filters stay, and
   Microsoft has no revoke for one delegated grant. The spec records the open
   point about the Outlook filters (§12.3.13.9).
@@ -191,20 +193,38 @@ def _grant_token(creds: Any) -> str | None:
     return None
 
 
+#: The verdicts of :func:`grant_shared_elsewhere`. Only ``GRANT_FREE`` lets
+#: the revoke run. Each other verdict is the reason of ``email.revoke_skipped``.
+GRANT_FREE = "free"
+GRANT_SHARED = "shared_grant"
+GRANT_OWNER_BLIND = "owner_blind"
+GRANT_CHECK_FAILED = "check_failed"
+GRANT_NO_ADDRESS = "no_address"
+
+
 async def grant_shared_elsewhere(
     open_session: Callable[[], Any], email: Any, account_id: str,
-) -> bool | None:
-    """True when another Metorite Gmail row of ``email`` exists, in any tenant.
+) -> str:
+    """The verdict on another Metorite Gmail row of ``email``, in any tenant.
 
     One short block of ``open_session``, which is the ``_tenant_session`` of
     the caller. Migration 263's function answers one bit across tenants and
-    never a row. ``None`` means "cannot tell": an empty address, a function
-    that cannot see through RLS, or a check that failed. The caller skips
-    the revoke unless the answer is ``False``. It never raises.
+    never a row. The verdicts:
+
+    * ``GRANT_FREE``: the function answered ``false``. No other row exists.
+    * ``GRANT_SHARED``: the function answered ``true``.
+    * ``GRANT_OWNER_BLIND``: the function answered ``NULL``, because its
+      owner cannot see through RLS. That is a deploy fault, so the caller
+      logs it at WARNING.
+    * ``GRANT_CHECK_FAILED``: the call raised. This logs the error class.
+    * ``GRANT_NO_ADDRESS``: the row holds no address to ask about.
+
+    The caller skips the revoke unless the verdict is ``GRANT_FREE``. It
+    never raises.
     """
     address = str(email or "").strip()
     if not address:
-        return None
+        return GRANT_NO_ADDRESS
     try:
         exclude: str | None = str(UUID(str(account_id).strip()))
     except (TypeError, ValueError, AttributeError):
@@ -219,8 +239,12 @@ async def grant_shared_elsewhere(
         _log.warning("email.disconnect.grant_check_failed",
                      account_id=exclude or str(account_id)[:64],
                      error=type(exc).__name__)
-        return None
-    return answer if isinstance(answer, bool) else None
+        return GRANT_CHECK_FAILED
+    if answer is True:
+        return GRANT_SHARED
+    if answer is False:
+        return GRANT_FREE
+    return GRANT_OWNER_BLIND
 
 
 async def revoke_grant(
@@ -234,9 +258,10 @@ async def revoke_grant(
     row revokes nothing. An IMAP row has no grant.
 
     Google keeps one grant for each Google account and OAuth client. So when
-    :func:`grant_shared_elsewhere` does not answer ``False``, the revoke is
-    skipped, and ``email.revoke_skipped`` logs ``shared_grant`` or
-    ``check_failed``. A wrong revoke breaks a live mailbox of another member.
+    :func:`grant_shared_elsewhere` does not answer ``GRANT_FREE``, the revoke
+    is skipped, and ``email.revoke_skipped`` logs the verdict as its reason.
+    ``shared_grant`` is an INFO line. ``owner_blind``, ``check_failed`` and
+    ``no_address`` are WARNING lines, because each one is a fault. A wrong revoke breaks a live mailbox of another member.
     A skipped one leaves a grant that the member can remove at Google.
 
     Google answers 200 when the grant ends. Any other outcome logs
@@ -246,12 +271,12 @@ async def revoke_grant(
     """
     if row.provider != "gmail":
         return
-    shared = await grant_shared_elsewhere(
+    verdict = await grant_shared_elsewhere(
         open_session, getattr(row, "email_address", None), account_id)
-    if shared is not False:
-        _log.info("email.revoke_skipped", account_id=account_id,
-                  provider="gmail",
-                  reason="shared_grant" if shared else "check_failed")
+    if verdict != GRANT_FREE:
+        emit = _log.info if verdict == GRANT_SHARED else _log.warning
+        emit("email.revoke_skipped", account_id=account_id, provider="gmail",
+             reason=verdict)
         return
     reason = await _revoke_reason(row.credentials_encrypted)
     if reason is None:

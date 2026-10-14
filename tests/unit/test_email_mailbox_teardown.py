@@ -347,19 +347,21 @@ async def test_the_grant_check_asks_with_the_deleted_address(gmail):
     assert kinds.index("delete") < kinds.index("grant_check") < kinds.index("google")
 
 
-@pytest.mark.parametrize("shared,reason", [
-    (True, "shared_grant"),
-    (None, "check_failed"),
-    ("raise", "check_failed"),
+@pytest.mark.parametrize("shared,level,reason", [
+    (True, "info", "shared_grant"),
+    (None, "warning", "owner_blind"),
+    ("raise", "warning", "check_failed"),
 ], ids=["another-row", "cannot-tell", "check-raises"])
-async def test_a_shared_or_unknown_grant_is_not_revoked(gmail, shared, reason):
+async def test_a_shared_or_unknown_grant_is_not_revoked(gmail, shared, level, reason):
     rows = {ACC: _row(provider="gmail", sub=None, filters=("flt-1",))}
     g = gmail(rows, shared=shared)
     assert await accounts.delete_account(ACC, user=_user()) is None
     assert ACC not in rows, "the mailbox was not deleted"
     assert g.requests == [], "a shared grant was revoked at Google"
-    assert ("info", "email.revoke_skipped",
+    assert (level, "email.revoke_skipped",
             {"account_id": ACC, "provider": "gmail", "reason": reason}) in g.log.lines
+    # A NULL answer is not an error, so it writes no check-failed line.
+    assert ("email.disconnect.grant_check_failed" in g.log.names()) is (shared == "raise")
     # The filters belong to this mailbox, so they still go.
     assert [e[2] for e in g.ledger.events if e[0] == "filter_delete"] == ["flt-1"]
     if shared == "raise":

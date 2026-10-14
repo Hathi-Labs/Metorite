@@ -740,6 +740,19 @@ def _seed_message(admin, *, org: str, account_id: str) -> None:
              "t": json.dumps([{"email": "to@em-t4f.test"}]), "o": org})
 
 
+class _TeardownLog:
+    """Records the log lines of ``teardown.py``."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, str, dict[str, Any]]] = []
+
+    def info(self, event: str, **kw: Any) -> None:
+        self.lines.append(("info", event, kw))
+
+    def warning(self, event: str, **kw: Any) -> None:
+        self.lines.append(("warning", event, kw))
+
+
 def _grant_check_to_app_role(admin) -> None:
     """Migration 263 grants its function to ``acb_app`` only. The rehearsal
     role has a suite-private name, so it gets the same grant here."""
@@ -968,11 +981,14 @@ class TestTheDisconnectUnderForceRLS:
                           {"u": owner})
 
     async def test_a_function_that_cannot_see_through_rls_skips_the_revoke(
-        self, promoted, app_engine, r8_doubles,  # noqa: F811
+        self, promoted, app_engine, r8_doubles, monkeypatch,  # noqa: F811
     ):
         """Owned by a role that cannot bypass RLS, the function answers NULL.
         NULL is "cannot tell", so the revoke is skipped. It fails safe toward
-        a mailbox of another member."""
+        a mailbox of another member. Review round 2: the test reads the NULL
+        straight from the function as the app role, and the route logs
+        ``owner_blind`` with no ``grant_check_failed`` line, so an error
+        cannot pass for a blind owner."""
         _assert_non_priv(app_engine)
         p = promoted
         _grant_check_to_app_role(p.admin_engine)
@@ -992,11 +1008,26 @@ class TestTheDisconnectUnderForceRLS:
             c.execute(text(
                 "ALTER FUNCTION public.email_gmail_grant_shared(text, uuid) "
                 f"OWNER TO {_APP_ROLE}"))
+        log = _TeardownLog()
+        monkeypatch.setattr(teardown, "_log", log)
         token = bind_tenant(p.org_b)
         try:
+            with app_engine.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": p.org_b})
+                assert c.execute(text(
+                    "SELECT public.email_gmail_grant_shared(:e, NULL)"),
+                    {"e": "any@em-g11f1.test"}).scalar() is None, (
+                    "a blind owner must answer NULL, not raise and not guess")
             async with tenant_engine_scope(app_dsn):
                 assert await accounts.delete_account(acc, user=user) is None
             assert r8_doubles["revoke"] == [], "a check that cannot tell still revoked"
+            assert ("warning", "email.revoke_skipped",
+                    {"account_id": acc, "provider": "gmail",
+                     "reason": "owner_blind"}) in log.lines
+            assert "email.disconnect.grant_check_failed" not in [
+                name for _lvl, name, _kw in log.lines], (
+                "the check raised, so the skip came from an error, not a blind owner")
             assert _admin_read(p.admin_engine,
                                "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
                                a=acc) == []

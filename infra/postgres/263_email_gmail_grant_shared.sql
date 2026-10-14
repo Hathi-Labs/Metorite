@@ -33,8 +33,9 @@
 --   * `SET search_path = pg_catalog, pg_temp`, and every name is qualified
 --     with `public.`. So a caller cannot plant an `email_accounts` of its own.
 --   * FORCE RLS binds the OWNER too, unless it is a superuser or BYPASSRLS.
---     When the owner cannot see every row, the function returns NULL. The
---     gateway reads NULL as "cannot tell" and skips the revoke. That fails
+--     When the owner cannot see every row, the function raises a WARNING,
+--     as 230 and 236 do, and returns NULL. The gateway reads NULL as "cannot
+--     tell", logs `owner_blind` and skips the revoke. That fails
 --     safe toward the other mailbox: a missed revoke leaves a grant that the
 --     member can remove at Google, and a wrong revoke breaks a live mailbox.
 --   * EXECUTE goes to the app role only. The file revokes it from PUBLIC and
@@ -73,6 +74,10 @@ BEGIN
        AND c.oid = 'public.email_accounts'::pg_catalog.regclass;
 
     IF NOT COALESCE(sees_all, false) THEN
+        RAISE WARNING
+            'email_gmail_grant_shared: the owner % cannot see through '
+            'row level security on email_accounts, so no revoke runs',
+            current_user;
         RETURN NULL;   -- cannot tell; the caller skips the revoke
     END IF;
 
