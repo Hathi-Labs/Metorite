@@ -15,12 +15,15 @@ Each is dark behind `NEXT_PUBLIC_MY_DAY_FEED`, or by the absence of a caller.
 group and the honest summary, dark behind `NEXT_PUBLIC_MY_DAY_FEED`. So MD-2
 is complete.
 
+**MD-5a is BUILT, 2026-10-14** (the read cache, no migration, dark behind
+`MY_DAY_CACHE`, default off).
+
 **MD-5b is BUILT, 2026-10-14** (the `my_day` loop, no migration, dark
 behind `MY_DAY_LOOP_ENABLED`).
 
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-3,
-MD-4, MD-5a, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
-Each ships dark.
+MD-4, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12. Each ships
+dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -2265,6 +2268,13 @@ holds the answers. MD-5a and MD-5b may build at the same time. MD-5b adds one
 call to `feed.py`, and MD-5a owns the rest of that file.
 
 ### MD-5a · The read cache — AGENT-SAFE
+
+**BUILT, 2026-10-14.** The rules live in `routes/shell/cache.py`, and
+`MY_DAY_CACHE` keeps them dark. The build adds three edges to item 2: the due
+time itself, the urgent time minus 2 hours, and the next local midnight. A
+folded `block_soon` counts as a countdown. An answer whose state read failed
+is not stored. Fences: the two suites below and the vitest of `feed.test.ts`
+and `route.test.ts`.
 
 Files:
 
