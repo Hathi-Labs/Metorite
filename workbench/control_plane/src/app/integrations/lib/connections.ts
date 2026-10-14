@@ -38,6 +38,14 @@ export interface Connection {
   setup_href: string | null;
   can_disconnect: boolean;
   detail: Record<string, string>;
+  /**
+   * WS-54 IN-8c (D98): the admin that an OAuth MCP connection acts as. The
+   * gateway sends it only while `MCP_OAUTH_ENABLED` is on. It is member data,
+   * so it is drawn as text and never as markup.
+   */
+  acts_as?: string | null;
+  /** IN-8c: this member may start an OAuth consent for the row. */
+  can_connect?: boolean;
 }
 
 // ── Words ─────────────────────────────────────────────────────────────────
@@ -184,6 +192,14 @@ export interface PanelPlan {
    * a reader, `null` on a row that is not an MCP server.
    */
   alwaysConfirm: "edit" | "view" | null;
+  /**
+   * IN-8c: the OAuth consent of an MCP server. `"connect"` for a server
+   * with no consent yet, `"reconnect"` for one that has one or needs one,
+   * `null` when the row offers none.
+   */
+  connect: "connect" | "reconnect" | null;
+  /** IN-8c: "Acts as <admin> at <host>", or null. */
+  actsAs: string | null;
   /** For a member row: who manages it, and where. */
   memberNote: string | null;
 }
@@ -201,17 +217,153 @@ export function reconnectHref(row: Connection): string | null {
 
 export function panelPlan(row: Connection, canManage: boolean): PanelPlan {
   const app = APP_LABEL[row.owning_app];
+  const connect = mcpConnect(row, canManage);
   return {
     openLabel: row.setup_href && row.owning_app !== "integrations" ? `Open in ${app}` : null,
     href: row.setup_href,
-    reconnect: Boolean(row.setup_href) && row.status === "needs_reconnect",
+    // An MCP consent replaces the link: it would only open this page again.
+    reconnect: Boolean(row.setup_href) && row.status === "needs_reconnect" && connect === null,
     reconnectHref: reconnectHref(row),
     disconnect: canManage && row.can_disconnect,
     test: canManage && row.kind === "mcp" && mcpName(row) !== null,
     alwaysConfirm: row.kind === "mcp" && mcpName(row) !== null ? (canManage ? "edit" : "view") : null,
     memberNote:
       row.scope === "member" ? `${row.owner || "The owner"} manages this connection in ${app}.` : null,
+    connect,
+    actsAs: actsAsLine(row),
   };
+}
+
+// ── MCP OAuth: Connect, Reconnect and the acts-as label (IN-8c, D98) ──────
+//
+// Spec: integrations_console.md §3.6.9. An admin connects an MCP server that
+// asks for an OAuth consent. The connection then acts as that admin at the
+// provider, for the agents of every member. The gateway decides who may
+// connect (`can_connect`) and names the admin (`acts_as`). Both are absent
+// while `MCP_OAUTH_ENABLED` is off, so nothing here draws then.
+
+/** Where the consent acts: the host of the server, else its label. */
+function actsAtHost(row: Pick<Connection, "detail" | "label">): string {
+  return row.detail?.host || row.label;
+}
+
+/** "Acts as <admin> at <host>" for an OAuth MCP row, or null. */
+export function actsAsLine(
+  row: Pick<Connection, "kind" | "acts_as" | "detail" | "label">,
+): string | null {
+  const admin = (row.acts_as ?? "").trim();
+  if (row.kind !== "mcp" || !admin) return null;
+  return `Acts as ${admin} at ${actsAtHost(row)}`;
+}
+
+/**
+ * The consent this row offers to this member. Both the gateway flag and the
+ * console's own `integrations:manage` test must say yes, so a reader never
+ * sees the button. An OAuth row and a row that needs a new consent read
+ * "Reconnect".
+ */
+export function mcpConnect(row: Connection, canManage: boolean): "connect" | "reconnect" | null {
+  if (!canManage || row.kind !== "mcp" || row.can_connect !== true || mcpName(row) === null) {
+    return null;
+  }
+  return row.acts_as || row.status === "needs_reconnect" ? "reconnect" : "connect";
+}
+
+/** The button words of each offer. */
+export const CONNECT_LABEL: Record<"connect" | "reconnect", string> = {
+  connect: "Connect",
+  reconnect: "Reconnect",
+};
+
+/**
+ * The words of the Connect dialog, before the consent (§3.6.9). They say
+ * that every member's agents use the connection as this admin, and that a
+ * read-only tool runs with no card. `admin` is the member who clicks, who is
+ * the admin the connection will act as.
+ */
+export function connectDialogCopy(
+  row: Pick<Connection, "acts_as" | "detail" | "label">,
+  admin: string,
+  mode: "connect" | "reconnect",
+): ConfirmCopy & { note: string } {
+  const host = actsAtHost(row);
+  const who = admin.trim() || "you";
+  const before = (row.acts_as ?? "").trim();
+  const change =
+    mode === "reconnect" && before && before.toLowerCase() !== who.toLowerCase()
+      ? ` It acts as ${before} now. After your sign-in, it acts as you.`
+      : "";
+  const alwaysConfirm = row.detail?.always_confirm === "true";
+  return {
+    title: `${CONNECT_LABEL[mode]} ${row.label}?`,
+    body:
+      // The provider's sign-in can sit on another host (GitHub, Slack), so
+      // the words do not name a host for it.
+      `Metorite opens the provider's sign-in page for ${host}. Sign in there with your own account.\n\n` +
+      `Then this connection acts as ${who} at ${host}. ` +
+      `The agents of every member in your organization use it as ${who}.${change}`,
+    note: alwaysConfirm
+      ? "This server is set to always confirm, so each tool waits for a member to approve it. " +
+        "If you turn that switch off, a tool that the server marks as read-only runs with no approval."
+      : "A tool that the server marks as read-only runs with no approval. So every member can " +
+        `read, through an agent, what ${who} can read at ${host}.`,
+    confirmLabel: "Open the sign-in",
+  };
+}
+
+const START_ERROR_TEXT: Record<string, string> = {
+  no_registration: "This server does not let Metorite register as a client.",
+  pkce_unsupported: "This server does not support a safe sign-in (PKCE S256).",
+  discovery_failed: "Metorite cannot find the sign-in of this server.",
+  no_auth_server: "This server names no sign-in server.",
+  issuer_mismatch: "The sign-in server of this server does not give its own name.",
+  resource_mismatch: "The sign-in data of this server names another server.",
+  registration_failed: "This server refused the registration of Metorite.",
+  refused: "Metorite cannot reach this address. Use a public https URL.",
+  insecure_endpoint: "The sign-in of this server is not on https.",
+  unreachable: "The server did not answer.",
+  no_server: "This server is gone. Refresh the list.",
+  signing_unavailable: "Metorite cannot start a sign-in now. Try again later.",
+  pending_unavailable: "Metorite cannot start a sign-in now. Try again later.",
+  not_available: "MCP sign-in is not on for your organization.",
+};
+
+/** A line for a refused start. An unknown code still gets a sentence. */
+export function startErrorMessage(code: string | null | undefined): string {
+  return START_ERROR_TEXT[code ?? ""] ?? "Metorite cannot start the sign-in.";
+}
+
+const RETURN_ERROR_TEXT: Record<string, string> = {
+  access_denied: "The sign-in was cancelled at the provider.",
+  invalid_state: "The sign-in expired or came from another session. Try again.",
+  invalid_issuer: "The sign-in came back from the wrong server, so Metorite refused it.",
+  server_gone: "The server changed during the sign-in. Nothing was saved.",
+  exchange_failed: "The provider refused the sign-in code.",
+};
+
+/** The gateway's MCP server name rule (`connections/mcp.py` NAME_RE). */
+const MCP_NAME = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
+
+/**
+ * The toast after the consent: the gateway callback sends the browser to
+ * `/integrations?mcp_connected=<name>` or `?mcp_connect_error=<code>` (the
+ * BFF callback allows only these two shapes). `null` when neither is here.
+ */
+export function consentReturn(
+  params: { get(name: string): string | null },
+): { ok: boolean; title: string } | null {
+  const name = params.get("mcp_connected");
+  if (name !== null && MCP_NAME.test(name)) {
+    return { ok: true, title: `${name} is connected.` };
+  }
+  const code = params.get("mcp_connect_error");
+  if (code !== null || name !== null) {
+    return {
+      ok: false,
+      title: RETURN_ERROR_TEXT[code ?? ""] ?? "The sign-in did not finish. Nothing was saved.",
+    };
+  }
+  return null;
 }
 
 /** The `detail` fields as label and value pairs. Keys read as words. */

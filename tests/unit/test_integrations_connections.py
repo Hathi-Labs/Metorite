@@ -155,8 +155,12 @@ def test_the_row_model_has_no_field_that_can_hold_a_secret() -> None:
     assert set(mod.Row.model_fields) == {
         "id", "kind", "provider", "label", "owning_app", "scope", "owner", "status",
         "last_sync_at", "last_error", "setup_href", "can_disconnect", "detail",
+        # IN-8c (D98): an admin email and a flag. Neither can hold a secret.
+        "acts_as", "can_connect",
     }
     assert mod.Row.model_fields["detail"].annotation == dict[str, str]
+    assert mod.Row.model_fields["acts_as"].annotation == str | None
+    assert mod.Row.model_fields["can_connect"].annotation is bool
     assert set(mod.McpTestOut.model_fields) == {"ok", "tools", "error"}
 
 
@@ -172,3 +176,75 @@ def test_the_module_writes_no_environment_and_opens_no_connection() -> None:
     attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     assert "environ" not in attrs and "putenv" not in attrs
     assert not ({"create_engine", "create_async_engine", "psycopg", "Redis"} & (names | attrs))
+
+
+# ── IN-8c (D98): the acts-as label and the Connect offer of an MCP row ──────
+
+
+def _stored(name: str, **kw: Any) -> Any:
+    from gateway.connections.mcp import StoredServer
+
+    base: dict[str, Any] = dict(
+        name=name, label=name.title(), description="", transport="http-sse",
+        url=f"https://{name}.example.com/mcp", agent_scope=("*",), enabled=True,
+        header_names=(),
+    )
+    base.update(kw)
+    return StoredServer(**base)
+
+
+_ROWS = [
+    _stored("notion", oauth=True, connected_by="dana@fracktal.test"),
+    _stored("linear", oauth=True, connected_by="dana@fracktal.test",
+            status="needs_reconnect", last_error="invalid_grant", enabled=False),
+    _stored("fresh"),
+    _stored("keyed", header_names=("Authorization",), connected_by="dana@fracktal.test"),
+    _stored("off", enabled=False, status="disconnected"),
+]
+
+
+def _user(*permissions: str) -> UserContext:
+    return UserContext(
+        email="admin@example.test", role=UserRole.EMPLOYEE,
+        access=build_access(list(permissions)),
+        organization_id="00000000-0000-0000-0000-000000000001",
+    )
+
+
+async def _rows(monkeypatch, *, flag: bool, user: UserContext) -> dict[str, Any]:
+    from acb_common import get_settings
+    from gateway.connections import mcp as mcp_registry
+
+    async def _list(_org: str) -> list[Any]:
+        return list(_ROWS)
+
+    monkeypatch.setattr(mcp_registry, "list_servers", _list)
+    monkeypatch.setattr(get_settings(), "mcp_oauth_enabled", flag, raising=False)
+    return {r.detail["name"]: r for r in await mod._mcp_rows("org", user)}
+
+
+async def test_with_the_flag_on_an_oauth_row_names_its_admin_and_offers_a_consent(
+        monkeypatch) -> None:
+    rows = await _rows(monkeypatch, flag=True, user=_user("integrations:manage"))
+    assert rows["notion"].acts_as == "dana@fracktal.test"
+    assert rows["linear"].acts_as == "dana@fracktal.test"
+    assert rows["linear"].status == "needs_reconnect"
+    assert rows["linear"].last_error == "invalid_grant"
+    # A key row acts as nobody, whoever saved it.
+    assert rows["keyed"].acts_as is None and rows["fresh"].acts_as is None
+    offered = {name for name, r in rows.items() if r.can_connect}
+    assert offered == {"notion", "linear", "fresh"}, (
+        "Connect is for an OAuth row, or a row with no header. Never a key row "
+        "or a disabled row")
+
+
+async def test_with_the_flag_off_the_row_is_the_row_of_in4(monkeypatch) -> None:
+    rows = await _rows(monkeypatch, flag=False, user=_user("integrations:manage"))
+    assert all(r.acts_as is None and r.can_connect is False for r in rows.values())
+
+
+async def test_a_reader_without_manage_is_never_offered_a_consent(monkeypatch) -> None:
+    rows = await _rows(monkeypatch, flag=True, user=_user("admin:members:read"))
+    assert not any(r.can_connect for r in rows.values())
+    # The label is a fact about the connection, so a reader sees it too.
+    assert rows["notion"].acts_as == "dana@fracktal.test"

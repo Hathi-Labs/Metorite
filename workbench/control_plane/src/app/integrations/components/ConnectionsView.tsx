@@ -11,11 +11,19 @@
  *
  * A 404 from the list route means the read model is not deployed yet. The
  * view then shows a line and the API keys view, so the page is never blank.
+ *
+ * WS-54 IN-8c (D98): Connect and Reconnect of an OAuth MCP server open a
+ * dialog first. It says that the connection acts as this admin for the
+ * agents of every member. Its confirm asks the BFF for the consent URL, and
+ * the browser goes there. The gateway sends the browser back to
+ * `?mcp_connected=` or `?mcp_connect_error=`, and this view shows a toast and
+ * clears the query.
  */
 
-import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useAccess } from "@/components/AccessProvider";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import FilterPills from "@/components/FilterPills";
 import { useToast } from "@/components/ui/Toast";
@@ -26,9 +34,12 @@ import * as api from "../lib/api";
 import {
   APP_LABEL,
   appPills,
+  connectDialogCopy,
+  consentReturn,
   disconnectCopy,
   disconnectFailure,
   filterConnections,
+  mcpConnect,
   mcpName,
   rowLabel,
   statusPills,
@@ -39,6 +50,7 @@ import {
 import ApiKeysView from "./ApiKeysView";
 import ConnectionList from "./ConnectionList";
 import ConnectionSheet from "./ConnectionSheet";
+import { viewHref } from "../lib/views";
 
 export const CONNECTIONS_KEY = "integrations:connections";
 
@@ -58,6 +70,29 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [savingConfirm, setSavingConfirm] = useState(false);
+  // IN-8c: the dialog of a consent, and the start that it runs.
+  const [askingConnect, setAskingConnect] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const { access } = useAccess();
+  const searchParams = useSearchParams();
+  const returned = useRef(false);
+
+  // The browser comes back from the consent with one of two params. Show
+  // the outcome once, then clear the address so a reload shows nothing.
+  useEffect(() => {
+    if (returned.current) return;
+    const outcome = consentReturn(searchParams);
+    if (!outcome) return;
+    returned.current = true;
+    toast.show({
+      key: "integrations-mcp-connect",
+      variant: outcome.ok ? "success" : "error",
+      title: outcome.title,
+    });
+    invalidateConnections();
+    router.replace(viewHref("connections"), { scroll: false });
+  }, [searchParams, router, toast]);
 
   const all = res.data ?? [];
   const rows = useMemo(() => filterConnections(all, app, status), [all, app, status]);
@@ -113,6 +148,9 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
         variant: r.ok ? "success" : "error",
         title: testMessage(r),
       });
+      // IN-8c: the Test of an OAuth server refreshes as a run does, and a
+      // dead token turns the row to `needs_reconnect`. Read the list again.
+      if (r.error === "token_expired") invalidateConnections();
     } catch (err) {
       toast.show({
         key: "integrations-test",
@@ -151,7 +189,25 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     }
   }
 
+  async function startConnect() {
+    const name = open ? mcpName(open) : null;
+    if (!open || !name) return;
+    setConnecting(true);
+    setConnectError(null);
+    try {
+      const url = await api.startMcpOAuth(name);
+      // The URL is the gateway's, checked by the BFF: https, no user info.
+      window.location.assign(url);
+    } catch (err) {
+      setConnectError(err instanceof Error ? err.message : "Metorite cannot start the sign-in.");
+      setConnecting(false);
+    }
+  }
+
   const copy = open ? disconnectCopy(open) : null;
+  const connectMode = open ? mcpConnect(open, canManage) : null;
+  const connectCopy =
+    open && connectMode ? connectDialogCopy(open, access.email, connectMode) : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -195,7 +251,7 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
           busy={busy}
           testing={testing}
           onClose={() => {
-            if (confirming) return;
+            if (confirming || askingConnect) return;
             setOpenId(null);
           }}
           onNavigate={(href) => router.push(href)}
@@ -203,7 +259,36 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
           onTest={test}
           onAlwaysConfirm={setAlwaysConfirm}
           savingAlwaysConfirm={savingConfirm}
+          onConnect={() => {
+            setConnectError(null);
+            setAskingConnect(true);
+          }}
+          connecting={connecting}
         />
+      )}
+      {open && connectCopy && (
+        <ConfirmDialog
+          open={askingConnect}
+          title={connectCopy.title}
+          body={connectCopy.body}
+          note={connectCopy.note}
+          confirmLabel={connectCopy.confirmLabel}
+          confirmVariant="primary"
+          icon="LogIn"
+          busy={connecting}
+          onConfirm={startConnect}
+          onCancel={() => {
+            if (connecting) return;
+            setAskingConnect(false);
+            setConnectError(null);
+          }}
+        >
+          {connectError ? (
+            <p role="alert" className="text-xs text-destructive">
+              {connectError}
+            </p>
+          ) : null}
+        </ConfirmDialog>
       )}
       {open && copy && (
         <ConfirmDialog

@@ -674,23 +674,44 @@ TEST_BEARER_UNREADABLE = "unreadable"
 async def oauth_test_header(org: str, name: str) -> tuple[str, dict[str, str]]:
     """The header that the Test button sends for an OAuth server (#931, P2 3).
 
-    It is the header that a run sends (:func:`_oauth_plan`), by
-    the same rule. With the flag off, :data:`TEST_BEARER_OFF` and no header.
-    A token that has ended, or ends within :data:`_OAUTH_SKEW_S`, is
-    :data:`TEST_BEARER_EXPIRED`. The token goes to the caller only.
+    It is the header that a run sends, by the same rule (IN-8c). A token
+    that is due goes through :func:`_oauth_header`, the refresh step of a
+    run: the row lock, the slots, the budget and the backoff. So a Test after
+    a 401 that ended the stored token refreshes it, and a refresh that
+    answers ``invalid_grant`` sets ``needs_reconnect``.
+
+    With the flag off, :data:`TEST_BEARER_OFF` and no header. A row in
+    ``needs_reconnect`` or ``disconnected`` sends nothing, as a run sends
+    nothing, and is :data:`TEST_BEARER_EXPIRED`. So is a token that the
+    refresh could not renew and that ends within :data:`_OAUTH_SKEW_S`. The
+    token goes to the caller only.
     """
     from gateway.connections import mcp_oauth
 
     if not mcp_oauth.oauth_enabled():
         return TEST_BEARER_OFF, {}
     org = _org(org)
+    provider = provider_for(name)
     async with tenant_session(org) as db:
-        credential = await store.load_credential(db, org, provider_for(name), OWNING_APP)
+        conns = await store.list_by_prefix(db, org, PREFIX, OWNING_APP)
+        conn = next((c for c in conns if c.provider == provider), None)
+        if conn is None or not _is_oauth(conn):
+            return TEST_BEARER_UNREADABLE, {}
+        if conn.status != store.STATUS_CONNECTED:
+            return TEST_BEARER_EXPIRED, {}
+        credential = await store.load_credential(db, org, provider, OWNING_APP)
     if credential is None or not credential.access_token:
         return TEST_BEARER_UNREADABLE, {}
-    if credential.expires_at <= datetime.now(UTC) + timedelta(seconds=_OAUTH_SKEW_S):
+    now = _utcnow()
+    if _needs_refresh(credential, now) and not _backed_off(org, provider):
+        # The read session is closed: the step opens its own, under the lock.
+        got = await _oauth_header(org, conn, credential)
+        if got is None:
+            return TEST_BEARER_EXPIRED, {}
+        return TEST_BEARER_OK, got[0]
+    if credential.expires_at <= now + timedelta(seconds=_OAUTH_SKEW_S):
         return TEST_BEARER_EXPIRED, {}
-    return TEST_BEARER_OK, {"Authorization": f"Bearer {credential.access_token}"}
+    return TEST_BEARER_OK, _bearer(credential)
 
 
 async def _read(
