@@ -30,6 +30,7 @@ import { useDraftSession } from "../lib/useDraftSession";
 import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import { DraftAssistant } from "./DraftAssistant";
+import { ComposerBody, ComposerExpandButton, useComposerSize } from "./ComposerSize";
 import { MessageContent } from "./MessageContent";
 import { remoteHtmlId } from "../lib/htmlPrefetch";
 import { AttachmentList } from "./AttachmentList";
@@ -171,6 +172,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const composerRef = useRef<HTMLDivElement>(null);
   // The thread scroller. The composer reveal scrolls this box and no other.
   const threadRef = useRef<HTMLDivElement>(null);
+  // The size of the reply body: auto-grow, a dragged height, or the whole
+  // pane (owner request, 2026-10-14, `ComposerSize.tsx`).
+  const composerSize = useComposerSize(composerRef, replyMode !== null, isMobile);
   const replyDirty = useRef(false);
   // The AI drafting session for this reply: live backend steps + the revision
   // history of each refine round.
@@ -1586,7 +1590,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
         {replyMode && (
           <div
             ref={composerRef}
-            className="mt-8 border border-primary/30 rounded-lg overflow-hidden bg-secondary/30"
+            data-email-composer=""
+            style={composerSize.rootStyle}
+            className={`mt-8 border border-primary/30 rounded-lg bg-secondary/30 ${composerSize.rootClass || "overflow-hidden"}`}
           >
             <div className="px-4 py-2 bg-secondary text-xs text-muted-foreground border-b border-border flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -1622,19 +1628,27 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   </div>
                 )}
               </div>
-              <button
-                className="text-muted-foreground hover:text-foreground transition-colors"
-                onClick={() => {
-                  // The X keeps the draft, so the pending save runs at once
-                  // (EM-G3c-2 item 11).
-                  autosave.flush();
-                  setReplyMode(null);
-                  // The reply closes, so its AI round ends (EM-T17).
-                  ai.reset();
-                }}
-              >
-                <AppIcon name="X" size={14} />
-              </button>
+              <div className="flex items-center gap-1">
+                {/* Expand fills the pane. Esc does not collapse it: Esc
+                    already closes the AI panel and the recipient list. */}
+                <ComposerExpandButton
+                  expanded={composerSize.state.expanded}
+                  onToggle={() => composerSize.dispatch({ type: "toggleExpand" })}
+                />
+                <button
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => {
+                    // The X keeps the draft, so the pending save runs at once
+                    // (EM-G3c-2 item 11).
+                    autosave.flush();
+                    setReplyMode(null);
+                    // The reply closes, so its AI round ends (EM-T17).
+                    ai.reset();
+                  }}
+                >
+                  <AppIcon name="X" size={14} />
+                </button>
+              </div>
             </div>
             {/* From — two or more mailboxes (EM-T8c, D-EM-20) */}
             {accounts.length > 1 && fromId && (
@@ -1704,6 +1718,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 </div>
               </>
             )}
+            <ComposerBody size={composerSize} value={replyBody}>
             <textarea
               value={replyBody}
               readOnly={forwarding}
@@ -1722,6 +1737,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
               // reaches the AI bar and Send. The thread holds the wheel.
               className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none resize-none"
             />
+            </ComposerBody>
             {replyMode === "forward" && (
               <ForwardFileChips
                 files={forwardFiles}

@@ -11,6 +11,8 @@ import { splitQuotedText } from "../lib/quoting";
 import { useEmailStore, withPatch } from "../lib/emailStore";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import { DraftAssistant } from "./DraftAssistant";
+import { ComposerBody, ComposerExpandButton, useComposerSize } from "./ComposerSize";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { MessageContent } from "./MessageContent";
 import { remoteHtmlId } from "../lib/htmlPrefetch";
 import { AttachmentList } from "./AttachmentList";
@@ -466,6 +468,12 @@ export function DraftCard({
       setBody(next);
     },
   });
+  // The size of the body: auto-grow, a dragged height, or the whole pane
+  // (owner request, 2026-10-14). The inline reply shares the same hook.
+  const cardRef = useRef<HTMLDivElement>(null);
+  const { isMobile } = useViewMode();
+  const size = useComposerSize(cardRef, true, isMobile);
+  const expanded = size.state.expanded;
 
   /** The full outgoing body: the editable text plus the quoted trailing chain. */
   const combinedBody = () =>
@@ -687,7 +695,12 @@ export function DraftCard({
     ) || htmlLost || textOnlyConfirmed;
 
   return (
-    <div className="border border-primary/40 rounded-lg bg-primary/5 px-3 py-3">
+    <div
+      ref={cardRef}
+      data-email-composer=""
+      style={size.rootStyle}
+      className={`border border-primary/40 rounded-lg bg-primary/5 px-3 py-3 ${size.rootClass}`}
+    >
       <div className="flex items-center gap-1.5 mb-2">
         <AppIcon name="PenLine" size={12} className="text-primary" />
         <span className="text-xs font-medium text-primary">Draft</span>
@@ -718,8 +731,12 @@ export function DraftCard({
         <span className="text-[10px] text-muted-foreground ml-auto truncate max-w-[45%]">
           {draft.subject}
         </span>
+        <ComposerExpandButton
+          expanded={expanded}
+          onToggle={() => size.dispatch({ type: "toggleExpand" })}
+        />
       </div>
-      <div className="space-y-2">
+      <div className={`space-y-2 ${expanded ? "flex min-h-0 flex-1 flex-col" : ""}`}>
         <div className="flex items-center gap-2">
           <RecipientInput
             value={to}
@@ -766,13 +783,15 @@ export function DraftCard({
             <span>{noticeWords(sendStopped)}</span>
           </p>
         )}
+        <ComposerBody size={size} value={body}>
         <textarea
           value={body}
           onChange={(e) => { dirty.current = true; setSendStopped(false); setBody(e.target.value); }}
           rows={7}
           placeholder="Write your reply…"
-          className={`${INPUT} resize-y leading-relaxed`}
+          className={`${INPUT} resize-none leading-relaxed`}
         />
+        </ComposerBody>
         {/* The signature is IN the stored draft body (signed at draft-write
             time) — no separate preview card. */}
         {/* Quoted trailing email — collapsed, read-only (reattached on send) */}
