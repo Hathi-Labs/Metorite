@@ -63,13 +63,20 @@ const things = (n: number) => (n === 1 ? "1 thing" : `${n} things`);
  * caveat ONCE, in the card, beside the gap ("Email did not answer, so its
  * replies may be missing."). So the summary makes no claim about needs at
  * all, and says only what the calendar holds.
+ *
+ * `handled` is the claim of the live feed (`handledClaim` in `feed.ts`,
+ * `my_day_feed.md` §6.7, MD-2c). It adds "The rest is handled." after a
+ * count of needs. A source that failed (`partial`) silences it, and so does
+ * a count of none, because "Nothing needs you" already says it all. With
+ * the feed off, the page passes no claim, and the line is the line of NS-3.
  */
-export function summaryLine(needs: number, today: number | null, partial = false): string | null {
+export function summaryLine(needs: number, today: number | null, partial = false, handled = false): string | null {
   const calCount = today === null || today === 0 ? null : `${things(today)} ${today === 1 ? "is" : "are"} on your calendar today.`;
   if (needs > 0) {
     const head = `${things(needs)} ${needs === 1 ? "needs" : "need"} you`;
-    if (today === null || today === 0) return `${head}.`;
-    return `${head}, and ${today === 1 ? "1 is" : `${today} are`} on your calendar today.`;
+    const claim = handled && !partial ? " The rest is handled." : "";
+    if (today === null || today === 0) return `${head}.${claim}`;
+    return `${head}, and ${today === 1 ? "1 is" : `${today} are`} on your calendar today.${claim}`;
   }
   if (partial) {
     if (today === null) return null;
