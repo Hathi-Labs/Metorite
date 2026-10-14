@@ -1,11 +1,14 @@
 # My Day as a live feed — the chief of staff
 
-**Status: ACTIVE, 2026-10-14. MD-1a is BUILT (gateway half, merged as
-#964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
-dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
-migration 259, dark by the absence of a caller). MD-2a is BUILT (the card
-state on the server, migration 258). MD-2b is BUILT (the card menu and the
-seen observer, dark behind `NEXT_PUBLIC_MY_DAY_FEED`).**
+**Status: ACTIVE, 2026-10-14.** These tickets are BUILT and merged:
+
+- MD-1a, the gateway half (#964)
+- MD-1b, the frontend half (#967)
+- MD-2a, the card state on the server, migration 258 (#983)
+- MD-2b, the card menu and the seen observer (#988)
+- MD-2d, the feed preferences, migration 259 (#980)
+
+Each is dark behind `NEXT_PUBLIC_MY_DAY_FEED`, or by the absence of a caller.
 
 **MD-2c is BUILT, 2026-10-14.** The server half puts Handled in
 `GET /shell/feed`, with no migration. The client half draws the Handled
@@ -2003,8 +2006,8 @@ It is dark behind `NEXT_PUBLIC_MY_DAY_FEED`. The parts:
 - **The reader.** `readFeedAnswer` in `src/lib/shell/feed.ts` reads
   `handled` and `handled_ok`. An older gateway sends neither, so the page
   shows no Handled group and makes no claim. The reader drops an entry with
-  no title, a `by` kind it does not know, or a link that is not a path of
-  this app. It also drops a card in the group `handled`.
+  no title, or with a `by` kind it does not know. It also drops an entry whose
+  link is not a path of this app, and a card in the group `handled`.
 - **Only an in-app path is a link** (fix round 1). `isInAppPath` in
   `src/lib/inAppLink.ts` is the one rule, and the chat and the entity pill
   use it too. It refuses `//`, a backslash, a control mark, and a path that
