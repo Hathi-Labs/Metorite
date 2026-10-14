@@ -772,7 +772,11 @@ class TestCallsLeaveAtTheFinish:
 
 class _CountedPattern:
     """A compiled regex of ``dsml`` that adds to ``count.chars`` the characters
-    each call may read: from ``pos`` to the end, or to the end of a match."""
+    each call may read: from ``pos`` to the end, or to the end of a match.
+
+    It also adds to ``count.handed`` the length of the WHOLE string that the
+    call gets. A parser that grows one string and hands it over on each delta
+    has copied that string on each delta, and ``handed`` sees that cost."""
 
     def __init__(self, real: re.Pattern[str], count: _ScanCount) -> None:
         self._real = real
@@ -781,7 +785,15 @@ class _CountedPattern:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
+    def _hand(self, string: str) -> None:
+        self._count.handed += len(string)
+        if self._count.handed > self._count.limit:
+            # Stop a quadratic run early, so that it fails in a second.
+            raise AssertionError(
+                f"the parser handed its regexes more than {self._count.limit} characters")
+
     def _scan(self, name: str, string: str, pos: int = 0, *a: Any, **kw: Any) -> Any:
+        self._hand(string)
         self._count.chars += max(0, len(string) - pos)
         return getattr(self._real, name)(string, pos, *a, **kw)
 
@@ -798,11 +810,13 @@ class _CountedPattern:
         return self._scan("findall", string, pos, *a)
 
     def match(self, string: str, pos: int = 0, *a: Any) -> Any:
+        self._hand(string)
         found = self._real.match(string, pos, *a)
         self._count.chars += (found.end() if found else len(string)) - pos
         return found
 
     def sub(self, repl: Any, string: str, count: int = 0) -> Any:
+        self._hand(string)
         self._count.chars += len(string)
         return self._real.sub(repl, string, count)
 
@@ -812,6 +826,9 @@ class _ScanCount:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.chars = 0
+        self.handed = 0
+        #: Past this many handed characters the spy raises. No limit by default.
+        self.limit: float = float("inf")
         for name, value in list(vars(dsml_mod).items()):
             if isinstance(value, re.Pattern):
                 monkeypatch.setattr(dsml_mod, name, _CountedPattern(value, self))
@@ -848,7 +865,8 @@ class TestABareMarkerIsText:
         (``_ScanCount``), and compares equal work (``assert_linear_count``).
         It reads no clock. The ratio of two timings failed on CI at 2.1 and
         2.2 against 2, because the clock also measured a copy of the region
-        on each character. That copy is no rescan."""
+        on each character. That copy is no rescan, and the two tests below
+        fence it."""
         count = _ScanCount(monkeypatch)
 
         def _scanned(size: int) -> int:
@@ -861,6 +879,40 @@ class TestABareMarkerIsText:
             return count.chars
 
         assert_linear_count(_scanned, 40_000)
+
+    def test_a_200_KB_reply_in_ONE_CHARACTER_deltas_hands_linear_text(self, monkeypatch):
+        """🔴 The region was one string that grew with ``+=`` on each delta,
+        and each delta handed the whole region to the regexes again. So a
+        long call cost O(n²). A 200 KB reply took 2.4 s on a dev box.
+
+        ``count.handed`` adds the length of each string a regex gets. Each
+        delta may hand a bounded lookback plus its own text, so the total
+        stays under 64 characters for each character of the reply. The spy
+        reads no clock. On the old parser it raises after about 5000 deltas."""
+        count = _ScanCount(monkeypatch)
+        big = "On it. " + block(invoke("create_task", param("title", "y" * 200_000))) + "\n"
+        count.limit = 64 * len(big)
+        st = DsmlStream(TASK_TOOLS)
+        shown = "".join(st.feed(0, ch) for ch in big)
+        tail, calls = st.finish(0)
+        assert shown + tail == "On it. \n"
+        assert [args_of(c)["title"] for c in calls] == ["y" * 200_000]
+        assert count.handed <= count.limit
+
+    def test_the_text_HANDED_to_the_regexes_grows_linearly(self, monkeypatch):
+        """The same fence as a ratio of equal work (``assert_linear_count``)."""
+        count = _ScanCount(monkeypatch)
+
+        def _handed(size: int) -> int:
+            big = block(invoke("create_task", param("title", "y" * size)))
+            st = DsmlStream(TASK_TOOLS)
+            count.handed = 0
+            for ch in big:
+                st.feed(0, ch)
+            assert len(st.finish(0)[1]) == 1
+            return count.handed
+
+        assert_linear_count(_handed, 40_000)
 
 
 # ── The chunking never changes the answer ───────────────────────────────────

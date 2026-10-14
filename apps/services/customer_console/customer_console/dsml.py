@@ -108,6 +108,12 @@ _TAG_START_RE = re.compile(r"[A-Za-z_]")
 #: A region whose first tag has not closed within this many characters is
 #: released as text. A real first tag is far shorter.
 MAX_FIRST_TAG = 96
+#: The characters at the start of a region that decide its first tag. One
+#: more than :data:`MAX_FIRST_TAG`, so a tag that closes too late is seen.
+_HEAD = MAX_FIRST_TAG + 1
+#: The search for a closing tag starts this far before each new delta, so it
+#: finds a closing tag that began in an earlier delta.
+_CLOSE_LOOKBACK = 32
 #: The start of a tag that has not reached its ``>`` yet.
 _TAG_HEAD_RE = re.compile(
     rf'</?{TAG_CORE}[A-Za-z_]+(?:\s+[A-Za-z_][\w-]*(?:\s*=\s*(?:"[^"]*"?)?)?)*\s*'
@@ -349,17 +355,21 @@ def _calls_from_region(raw: str, policy: DsmlPolicy) -> list[dict[str, Any]]:
 # ── The state machine ───────────────────────────────────────────────────────
 
 
-def _not_a_tag(region: str) -> bool:
+def _not_a_tag(head: str, length: int) -> bool:
     """True when the text after a marker can no longer become a DSML tag.
 
     A first tag that closes within :data:`MAX_FIRST_TAG` characters is a tag.
     Text that has no ``>`` yet is still a candidate only while it reads like
     the head of one: a name, then ``attr="value"`` pairs.
+
+    ``head`` is the first :data:`_HEAD` characters of a region of ``length``
+    characters. The first ``<`` or ``>`` after the tag name ends the first
+    tag, so the head decides the answer, and a long region costs no more.
     """
-    first = _FIRST_TAG_RE.match(region)
+    first = _FIRST_TAG_RE.match(head)
     if first is not None:
         return first.end() > MAX_FIRST_TAG
-    return len(region) > MAX_FIRST_TAG or _TAG_HEAD_RE.fullmatch(region) is None
+    return length > MAX_FIRST_TAG or _TAG_HEAD_RE.fullmatch(head) is None
 
 
 def _tail_that_may_grow(text: str) -> int:
@@ -409,10 +419,56 @@ class _Fence:
         return self.open is not None
 
 
+class _Region:
+    """The text of one open region, held so that a long region costs O(n).
+
+    🔴 **The region was one string, grown with ``+=`` on each delta.** Each
+    delta then copied the whole region and handed it to the regexes again,
+    so a long call streamed in small deltas cost O(n²). A 200 KB argument in
+    one-character deltas took 2.4 s on a dev box.
+
+    Now each delta goes into a list, and the region keeps only two short
+    strings beside it: the head that decides the first tag, and the tail in
+    which a closing tag may have begun. A delta costs its own length plus a
+    bounded constant. The text is joined once, when the region ends.
+    """
+
+    __slots__ = ("first", "head", "length", "parts", "tail")
+
+    def __init__(self) -> None:
+        self.parts: list[str] = []
+        self.length = 0
+        #: The first :data:`_HEAD` characters.
+        self.head = ""
+        #: The last :data:`_CLOSE_LOOKBACK` characters.
+        self.tail = ""
+        #: The first tag, once it closed in time. More text cannot change it.
+        self.first: re.Match[str] | None = None
+
+    def add(self, data: str) -> tuple[int, str]:
+        """Take one delta. Returns ``start`` and the region text from ``start`` on.
+
+        ``start`` is :data:`_CLOSE_LOOKBACK` characters before the delta, so
+        the text from it is the old tail plus the delta.
+        """
+        start = max(0, self.length - _CLOSE_LOOKBACK)
+        recent = self.tail + data
+        self.parts.append(data)
+        self.length += len(data)
+        if len(self.head) < _HEAD:
+            self.head += data[: _HEAD - len(self.head)]
+        self.tail = recent[-_CLOSE_LOOKBACK:]
+        return start, recent
+
+    def text(self) -> str:
+        """The whole region. Called once, when the region ends."""
+        return "".join(self.parts)
+
+
 @dataclass
 class _Choice:
     held: str = ""
-    region: str | None = None
+    region: _Region | None = None
     #: Calls from the trailing group, held until the choice finishes.
     pending: list[dict[str, Any]] = field(default_factory=list)
     native_next: int = 0
@@ -476,23 +532,25 @@ class DsmlStream:
             if st.region is None:
                 data = self._outside(st, data, out)
                 continue
-            start = max(0, len(st.region) - 32)
-            st.region += data
+            region = st.region
+            start, recent = region.add(data)
             data = ""
-            if _not_a_tag(st.region):
+            # A first tag that closed in time stays a tag, so test only before.
+            if region.first is None and _not_a_tag(region.head, region.length):
                 # No tag formed: the marker was text after all. Show the
                 # marker and scan the rest again, so a later real block in
                 # the same text is still found.
-                data, st.region = st.region, None
+                data, st.region = region.text(), None
                 lead = _MARK_RE.match(data)
                 cut = lead.end() if lead else 1
                 self._show(st, data[:cut], out)
                 data = data[cut:]
                 continue
-            end = self._region_end(st.region, start)
+            end = self._region_end(region, start, recent)
             if end is None:
                 break
-            raw, data = st.region[:end], st.region[end:]
+            whole = region.text()
+            raw, data = whole[:end], whole[end:]
             st.region = None
             st.pending.extend(_calls_from_region(raw, self._policy))
         return "".join(out)
@@ -520,21 +578,25 @@ class DsmlStream:
                 _drop("fenced")
             self._show(st, mark.group(0), out)
             return after
-        st.region = ""
+        st.region = _Region()
         st.saw_markup = True
         return data[mark.start() :]
 
     @staticmethod
-    def _region_end(region: str, start: int) -> int | None:
+    def _region_end(region: _Region, start: int, recent: str) -> int | None:
         """Where the region that starts at a marker ends, or None.
 
         A block tag waits for its closing block tag, and an invoke tag for its
         closing invoke tag. Any other tag is a region of its own, so a stray
         tag can never swallow the rest of the answer.
+
+        ``recent`` is the region text from ``start`` on. The search reads it
+        and never the whole region, which is what keeps a stream linear.
         """
-        first = _FIRST_TAG_RE.match(region)
+        first = region.first or _FIRST_TAG_RE.match(region.head)
         if first is None:
             return None
+        region.first = first
         if first.group("slash"):
             return first.end()
         name = first.group("name")
@@ -544,8 +606,10 @@ class DsmlStream:
             closer = _INVOKE_CLOSE_RE
         else:
             return first.end()
-        close = closer.search(region, max(start, first.end()))
-        return close.end() if close is not None else None
+        # The closer has no anchor and no lookbehind, so a search of
+        # ``recent`` finds what a search of the region from ``start`` finds.
+        close = closer.search(recent, max(start, first.end()) - start)
+        return start + close.end() if close is not None else None
 
     def finish(self, index: int) -> tuple[str, list[dict[str, Any]]]:
         """End one choice. Returns the last text and the calls that may run."""
@@ -555,7 +619,7 @@ class DsmlStream:
             held, st.held = st.held, ""
             self._show(st, held, out)
         if st.region is not None:
-            _drop("unterminated_block", dsml_chars=len(st.region))
+            _drop("unterminated_block", dsml_chars=st.region.length)
             st.region = None
         calls, st.pending = st.pending, []
         if self._policy.single_call:
