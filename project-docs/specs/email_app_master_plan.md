@@ -14147,9 +14147,20 @@ no case skips.
    preview (`POST /email/rules/generate/preview`).
 4. **One card for one call.** A bulk call over many messages asks once, and names the count. A
    refusal writes nothing and returns "Cancelled".
-5. **`update_assistant_settings`** asks a card only when the change turns on a write: `auto_run`,
-   `cold_email_blocker` other than `OFF`, `draft_replies` or `follow_up_auto_draft`. A change that
-   turns a write off needs no card.
+5. **`update_assistant_settings`** asks a card when a change turns on a write, widens an act, or
+   replaces text that the assistant acts on (fix round 1, 2026-10-14). These changes ask:
+   - `auto_run`, `draft_replies`, `follow_up_auto_draft` or `multi_rule_execution` from off to on.
+   - `cold_email_blocker` to a mode other than `OFF` that is not the mode of now.
+   - `about`, `signature`, `personal_instructions` or `writing_style` to text that is not empty
+     and not the text of now.
+   - `sensitive_data_protection` from on to off.
+   - Any change of `draft_confidence`.
+   - `follow_up_awaiting_days` or `follow_up_needs_reply_days` from 0 to more than 0.
+   - The digest mail: a `digest_frequency` other than `OFF` while `digest_send_to_email` is on, or
+     `digest_send_to_email` turned on while the frequency is not `OFF`. That switch defaults to on.
+
+   A change that turns a write off, empties a text, or changes nothing asks no card. The digest
+   day, time and categories ask none, because they change when a digest that is on goes out.
 6. **Headless callers.** A card fails closed with no channel (`ask_tools.py:626-649`). So each
    registry tool writes nothing in the email chat pane (`shows_cards=False`) and in a scheduled
    agent run. The owner answered Q-GM-14 on 2026-10-14: the pane gets cards in PR-G3b. Until then,
@@ -14209,7 +14220,7 @@ assistant knows or does later asks a card. A read or a dry run asks none.
 | `sync_account` without a purge | No card on that branch | It pulls a copy from the provider, and it changes no mail, no rule and no setting. The purge branch asks a card |
 | `present_email_groups` | Exempt, `GATEWAY_READ_POSTS` | `POST /email/messages/summaries` is a read. It writes no row and changes no read state |
 | `test_rule_match` | Exempt, `GATEWAY_READ_POSTS` | `POST /email/rules/test` is a dry run |
-| `categorize_senders` | Exempt, `GATEWAY_READ_POSTS` | It counts the labels that the member's own rules applied. A second run gives the same rows |
+| `categorize_senders` | Exempt, `GATEWAY_READ_POSTS` | It rebuilds `email_senders.category`, a derived cache of sender categories, from the labels that the member's rules applied. It never overwrites a category that the member set, and the sync loop runs the same job by itself (`scheduler_hooks.py:182`). It changes no mail, no rule and no setting. Fix round 1 corrected the reason |
 
 **EM-G11c1 as built (2026-10-14).** 🔨 Built, not merged, on branch `gmail-write-cards`. The audit
 returned GO-NARROWED.
@@ -14225,6 +14236,35 @@ returned GO-NARROWED.
   EM-T13a, so one call shows one card. A pause of a rule asks none.
 - `auto_categorize_inbox` with `apply=true` runs the preview first, so the card names the count.
 - Fences: `tests/unit/test_email_agent_write_cards.py`. M1, M2 and M3 each turn it red.
+
+**Fix round 1 (2026-10-14).** The verifier failed round 0 and the reviewer asked for changes. Each
+item below has a fence in the same file, and each P1 has a mutation that turns it red.
+
+- **P1-a, drafting in the pane.** With no card channel, `draft_reply(save=true)` saves nothing. It
+  returns the draft, and its first line says "not saved to Drafts" and points to the composer. A
+  live chat still asks a card before it saves. `find_follow_ups` keeps its card and its Chat-app
+  text in the pane, because its route has no read-only mode: the label is the act.
+- **P1-b, rule cards.** Each rule card lists each rule of the call and each action of each rule,
+  also on the outward card. FORWARD with TRASH, a mixed batch and an `update_rule` that adds TRASH
+  each show the TRASH.
+- **P1-c, the default rules.** The card lists each preset that the route installs, for the
+  provider of the mailbox, with the draft of Needs Reply when `draft_replies` is on. `_PRESETS` in `AG` is
+  a mirror of `_PRESET_RULES`, and a fence fails when the two give other actions.
+- **P1-d, settings.** Scope 5 above holds the new list. A fence calls the tool once for each
+  parameter, so a new setting needs a card or a written reason.
+- **P2-a.** The auto-categorize route takes no ids, so the write runs the sweep again over the same
+  500 newest emails. The card says "about N" and "chosen again when it runs". No route gives a
+  cheap count before a rule run, so the `run_rules` card names the scope, the server caps (50 new,
+  1000 past) and each rule that is on.
+- **P2-b, P2-c.** The cards of `mark_thread_done`, `resolve_execution` and `forget_pattern` read
+  the row first and name it. Done also says that it closes the open tasks of the thread. An
+  approve names a webhook host. The knowledge card shows the content with no hidden character.
+- **P3-a, P3-b, P3-c.** The `categorize_senders` reason is now true. The reads before a card in
+  `draft_reply`, `send_email` and `forward_email` pass `mark_read=false`. `instructions.md` and the
+  docstring of `create_rules_from_prompt` no longer ask for a text confirmation before a card.
+- **The fence gap.** `test_each_branch_asks_before_its_first_write` calls each registry tool with
+  each bool both ways and each fixed choice. A refused card must leave no write, except the
+  branches in `NO_CARD_BRANCHES`, each with its reason.
 
 ##### 12.3.13.7 EM-G11c2 — no background write without a member choice (PR-G4)
 
