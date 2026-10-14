@@ -2228,12 +2228,14 @@ export function isThreadRead(raw: string | null | undefined): boolean {
  *  and whether the tool saved the draft. The mailbox is absent from a result
  *  of an agent before EM-T8a. `saved` is true only when the first line says
  *  "(saved to Drafts)", which the tool writes after a yes on its card
- *  (EM-G11c1b). The note of an unsaved draft says "Drafts is unchanged". */
+ *  (EM-G11c1b). The note of an unsaved draft says "Drafts is unchanged".
+ *  The note must END the head, right after the mailbox id: a mailbox label
+ *  that holds the same words does not count (review round 1). */
 export function draftReplyHead(
   raw: string,
 ): { from: string | null; mailboxId: string | null; saved: boolean } {
   const first = (raw || "").split("\n", 1)[0];
-  const saved = first.includes("(saved to Drafts)");
+  const saved = /\(mailbox [^)\s]+\) \(saved to Drafts\):\r?$/.test(first);
   const m = /^Draft from (.+?) \(mailbox ([^)\s]+)\)/.exec(first);
   return m ? { from: m[1], mailboxId: m[2], saved } : { from: null, mailboxId: null, saved };
 }

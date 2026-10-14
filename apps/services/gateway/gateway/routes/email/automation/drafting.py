@@ -1972,17 +1972,27 @@ async def draft_reply_smart(
                             reply_to_message_id=sess.provider_message_id,
                             thread_id=email["thread_id"] or None,
                         )
+                        # The provider holds the draft now. A failed mirror
+                        # below must not hide that, or the chat card offers
+                        # Save again and makes a second provider draft
+                        # (EM-G11c1b review round 1).
+                        created = True
                         # Mirror locally so it shows in Drafts + in-thread at once.
                         # The From is the sending mailbox, never the sign-in
-                        # address of the member (MB-14, EM-T8e-1).
-                        await _upsert_local_draft(
-                            db, sess.account_id, provider_id,
-                            thread_id=email["thread_id"] or None,
-                            owner_email=email.get("self") or "",
-                            to_email=email["from"],
-                            subject=re_subject, body=draft,
-                        )
-                        created = True
+                        # address of the member (MB-14, EM-T8e-1). The
+                        # savepoint keeps the rest of the transaction alive.
+                        try:
+                            async with _savepoint(db):
+                                await _upsert_local_draft(
+                                    db, sess.account_id, provider_id,
+                                    thread_id=email["thread_id"] or None,
+                                    owner_email=email.get("self") or "",
+                                    to_email=email["from"],
+                                    subject=re_subject, body=draft,
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            _log.warning("email.draft_reply_mirror_failed",
+                                         error=str(exc)[:160])
                 # The wrapper's exit commit lands the mirrored local draft.
             except Exception as exc:  # noqa: BLE001
                 _log.warning("email.draft_reply_create_failed", error=str(exc)[:160])

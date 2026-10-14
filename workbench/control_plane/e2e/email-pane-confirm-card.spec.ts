@@ -149,7 +149,10 @@ async function installRun(page: Page, turn: Turn) {
             };
             send({ type: "message_start", messageId: "m-1" });
             send({ type: "delta", messageId: "m-1", content: "I need your approval first." });
-            send({ type: "tool_start", id: "t-1", name: turn.tool, args: turn.args });
+            // As the BFF sends them (`route.ts`): the start carries no
+            // arguments, and `tool_args` brings them once they are whole.
+            send({ type: "tool_start", id: "t-1", name: turn.tool, args: {} });
+            send({ type: "tool_args", id: "t-1", args: turn.args });
             send({ type: "custom", name: "confirmation_requested", value: { ...turn.card, request_id: RID } });
             // The run waits on the card, as `request_confirmation` does.
             const said = (await answered) === "APPROVE" ? "APPROVE" : "REJECT";

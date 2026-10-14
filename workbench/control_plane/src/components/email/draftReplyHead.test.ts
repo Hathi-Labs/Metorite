@@ -51,6 +51,19 @@ describe("a draft that the tool saved starts as saved", () => {
     expect(draftReplyHead("Draft from X (mailbox a):\n\nI wrote (saved to Drafts) here").saved).toBe(false);
   });
 
+  it("does not read saved from a mailbox label that holds the words (review round 1)", () => {
+    // A member may name a mailbox anything. Its label sits in the head too.
+    const label = "Draft from Ops (saved to Drafts) · ops@acme.test (mailbox acc-2)";
+    expect(draftReplyHead(`${label}:\n\nHi`).saved).toBe(false);
+    expect(draftCardStart(`${label}:\n\nHi`)).toBe("idle");
+    expect(draftReplyHead(
+      `${label} (Drafts is unchanged, because a card cannot show here. ` +
+        "Save or send this draft in the Email app):\n\nHi",
+    ).saved).toBe(false);
+    // The same label on a draft that the tool did save.
+    expect(draftCardStart(`${label} (saved to Drafts):\n\nHi`)).toBe("saved");
+  });
+
   it("starts the card saved or idle", () => {
     expect(draftCardStart(SAVED)).toBe("saved");
     expect(draftCardStart(UNSAVED)).toBe("idle");
