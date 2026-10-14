@@ -219,14 +219,17 @@ ALLOWED: dict[str, str] = {
         'Text, not rows: the cut shortens one string.',
     'packages/acb_skills/acb_skills/web_tools.py::fetch_page::text[:max_chars]':
         "Text: one web page, cut and marked '[... truncated'. max_chars asks for more.",
+    'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
+        "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
 #: 48 until the 2026-10-14 review widened the fence to every head slice in a
 #: function: 15 entries joined (listed last, each with its reason). Three
 #: left, because the scan now reads a slice inside an f-string, and a
-#: `" ".join(...)` result, as text. 48 - 3 + 15 = 60.
-ALLOWED_CEILING = 60
+#: `" ".join(...)` result, as text. 48 - 3 + 15 = 60. #1019 on main added one
+#: confirm-card line (61).
+ALLOWED_CEILING = 61
 
 
 def _stringy(node: ast.AST) -> bool:
