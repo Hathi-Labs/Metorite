@@ -349,7 +349,8 @@ async def search_whatsapp(query: str, account_id: str | None = None,
     msgs = await _get("/whatsapp/search", params)
     if not msgs:
         return f"No messages match '{query}'."
-    page = prefix_page(msgs, start, size, cap=200, asked=ask, noun="matches")
+    page = prefix_page(msgs, start, size, cap=200, asked=ask, noun="matches",
+                       rest="Other matches", narrow="Use more exact words to reach them.")
     if not page.items:
         return page.line
     lines = [f"Matches for '{query}':"]

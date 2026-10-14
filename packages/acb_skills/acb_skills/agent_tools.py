@@ -324,8 +324,27 @@ async def call_agents_parallel(tasks: str) -> str:
     runnable = [t for t in task_list
                 if isinstance(t, dict) and t.get("agent") and t.get("message")]
     coros = [_run_one(str(t["agent"]), str(t["message"])) for t in runnable]
+
+    def _not_run() -> list[str]:
+        """The lines that name every task this call did not run."""
+        notes: list[str] = []
+        unread = len(task_list) - len(runnable)
+        if unread:
+            notes.append(f"{unread} task{' had' if unread == 1 else 's had'} no agent "
+                         f"or no message, so {'it' if unread == 1 else 'they'} did not run.")
+        if left_out:
+            names = ", ".join(str(t.get("agent") or "?") if isinstance(t, dict) else "?"
+                              for t in left_out)
+            # Count what RAN, not the cap: a bad task among the first five
+            # ran nothing (review of #1014).
+            notes.append(f"Ran {len(runnable)} of {batch.total} tasks: at most "
+                         f"{_PARALLEL_MAX} run in one call. These did not run: {names}. "
+                         "Call again with them.")
+        return notes
+
     if not coros:
-        return "Error: each task must have 'agent' and 'message' fields"
+        return "\n\n".join(
+            ["Error: each task must have 'agent' and 'message' fields", *_not_run()])
 
     # create_task per branch → each gets its own context copy, so one
     # branch's chain extension never leaks into a sibling.
@@ -336,16 +355,7 @@ async def call_agents_parallel(tasks: str) -> str:
     parts = []
     for agent_name, response in results:
         parts.append(f"[{agent_name}]\n{response}")
-    unread = len(task_list) - len(runnable)
-    if unread:
-        parts.append(f"{unread} task{' had' if unread == 1 else 's had'} no agent "
-                     f"or no message, so {'it' if unread == 1 else 'they'} did not run.")
-    if left_out:
-        names = ", ".join(str(t.get("agent") or "?") if isinstance(t, dict) else "?"
-                          for t in left_out)
-        parts.append(f"Ran {_PARALLEL_MAX} of {batch.total} tasks: at most "
-                     f"{_PARALLEL_MAX} run in one call. These did not run: {names}. "
-                     "Call again with them.")
+    parts.extend(_not_run())
     return "\n\n".join(parts)
 
 

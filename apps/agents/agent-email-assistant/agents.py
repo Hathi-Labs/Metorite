@@ -2362,10 +2362,14 @@ async def suggest_unsubscribes(account_id: str | None = None, offset: int = 0) -
         )
     if page.line:
         lines.append(page.line)
-    if int(data.get("total") or 0) > 200:
-        # The scan reads the 200 biggest senders. Say so, so a smaller sender
-        # is not read as "not a candidate".
-        lines.append(f"Checked the 200 biggest of {data['total']} senders.")
+    # The scan reads the 200 biggest senders. Say so, so a smaller sender is
+    # not read as "not a candidate". A route that sends no total still sent
+    # a full 200, which is the sign the scan stopped there.
+    total = int(data.get("total") or 0)
+    if total > 200:
+        lines.append(f"Checked only the 200 biggest of {total} senders.")
+    elif not total and len(data.get("senders") or []) >= 200:
+        lines.append("Checked only the 200 biggest senders.")
     return "\n".join(lines)
 
 

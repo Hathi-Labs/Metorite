@@ -28,6 +28,7 @@ compete with.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -100,15 +101,68 @@ class TimelineEntry(BaseModel):
 
 class TimelineResponse(BaseModel):
     entries: list[TimelineEntry]
+    #: Set only when the caller pages (``offset``): whether an older entry
+    #: exists past this page. The unpaged read leaves it out.
+    has_more: bool | None = None
+
+
+#: The deepest ``offset`` a timeline page may start at. Each source reads
+#: ``offset + limit + 1`` rows, so this bounds one request's work.
+MAX_TIMELINE_OFFSET = 5000
+
+#: The tie-break between two sources at the same instant. Any fixed order
+#: works. It only has to be the same on every page.
+_KIND_RANK = {"activity": 0, "status_change": 1, "email_thread": 2}
+
+
+def _entry_key(entry: TimelineEntry) -> tuple[bool, datetime | str, int, str]:
+    """The ONE total order of a paged timeline, newest first under reverse.
+
+    The instant, then the source, then the row's own id. Every source query
+    in paged mode orders by the same instant and id (``strict``), so the
+    first ``n`` merged rows always come from the first ``n`` rows of each
+    source. ``at`` is None last.
+    """
+    payload = entry.activity or entry.status_change or entry.email_thread or {}
+    row_id = str(payload.get("message_id") or payload.get("id") or "")
+    if not entry.at:
+        return (False, "", _KIND_RANK.get(entry.kind, 9), row_id)
+    return (True, datetime.fromisoformat(entry.at), _KIND_RANK.get(entry.kind, 9), row_id)
+
+
+def merge_page(
+    entries: list[TimelineEntry], offset: int, limit: int,
+) -> tuple[list[TimelineEntry], bool]:
+    """One page of the merged timeline, and whether another one exists.
+
+    ⚠️ Paged mode has NO email budget. The budget (:func:`_email_budget`)
+    reserves half of the unpaged read for the record's own history, and it
+    makes each page a different mix: the rows of a larger read do not begin
+    with the rows of a smaller one, so a page 2 cut from a bigger read
+    repeats notes and skips mail. A page here is a plain slice of one order.
+    """
+    ordered = sorted(entries, key=_entry_key, reverse=True)
+    return ordered[offset:offset + limit], len(ordered) > offset + limit
 
 
 # ── Shared behaviour ────────────────────────────────────────────────────────
 
 async def _timeline(
     entity: Entity, record_id: str, limit: int, user: UserContext,
+    offset: int | None = None,
 ) -> TimelineResponse:
     """The merged timeline. ``user`` is required because one of the three
-    sources — email — is scoped to the CALLER's mailboxes, not to the record."""
+    sources — email — is scoped to the CALLER's mailboxes, not to the record.
+
+    With ``offset`` the read is a PAGE of one total order (:func:`merge_page`),
+    and each source reads ``offset + limit + 1`` rows. Without it the read is
+    the unpaged one the CRM panel draws, with the email budget."""
+    # A direct call (the hermetic suites) passes no offset, and the default is
+    # then FastAPI's `Query` object, not None.
+    if not isinstance(offset, int) or isinstance(offset, bool):
+        offset = None
+    strict = offset is not None
+    want = (offset or 0) + limit + 1 if strict else limit
     async with _tenant_session() as db:
         record = await require_row(db, entity.table, record_id, entity.label)
         sources: list[tuple[Entity, str, str]] = [(entity, record_id, "own")]
@@ -119,12 +173,10 @@ async def _timeline(
 
         entries: list[TimelineEntry] = []
         for source_entity, source_id, origin in sources:
-            entries.extend(
-                await _activity_entries(db, source_entity, source_id, origin, limit)
-            )
-            entries.extend(
-                await _status_entries(db, source_entity, source_id, origin, limit)
-            )
+            entries.extend(await _activity_entries(
+                db, source_entity, source_id, origin, want, strict=strict))
+            entries.extend(await _status_entries(
+                db, source_entity, source_id, origin, want, strict=strict))
         # Email is resolved ONCE for the whole record rather than per source:
         # a deal's addresses already include its originating lead's, so running
         # it per source would return every inherited thread twice.
@@ -132,8 +184,12 @@ async def _timeline(
             db,
             await _record_addresses(db, entity, record_id, record),
             user,
-            _email_budget(limit),
+            want if strict else _email_budget(limit),
+            strict=strict,
         ))
+        if strict:
+            page, more = merge_page(entries, offset or 0, limit)
+            return TimelineResponse(entries=page, has_more=more)
         # Newest first. `at` is None only for a row with no timestamp at all,
         # which sorts last rather than crashing the comparison.
         entries.sort(key=lambda e: (e.at or ""), reverse=True)
@@ -142,12 +198,18 @@ async def _timeline(
 
 async def _activity_entries(
     db: Any, entity: Entity, record_id: str, origin: str, limit: int,
+    *, strict: bool = False,
 ) -> list[TimelineEntry]:
+    # Paged mode orders by the instant the entry SHOWS (`occurred_at`, else
+    # `created_at`) and the id, the order `merge_page` merges by. The unpaged
+    # read keeps its `created_at` order.
+    order = ("COALESCE(occurred_at, created_at) DESC, id DESC" if strict
+             else "created_at DESC")
     rows = (await db.execute(
         text(
             "SELECT * FROM crm_activities "
             f"WHERE {entity.activity_column} = CAST(:record_id AS uuid) "
-            "ORDER BY created_at DESC LIMIT :limit"
+            f"ORDER BY {order} LIMIT :limit"
         ),
         {"record_id": record_id, "limit": limit},
     )).fetchall()
@@ -164,6 +226,7 @@ async def _activity_entries(
 
 async def _status_entries(
     db: Any, entity: Entity, record_id: str, origin: str, limit: int,
+    *, strict: bool = False,
 ) -> list[TimelineEntry]:
     """Status changes are merged in from their own log, not re-read from the
     activity that mirrors them: the log carries ``dwell_seconds``, which is the
@@ -178,7 +241,8 @@ async def _status_entries(
             "SELECT * FROM crm_status_changes "
             "WHERE entity_type = :entity_type "
             "AND entity_id = CAST(:record_id AS uuid) "
-            "ORDER BY changed_at DESC LIMIT :limit"
+            + ("ORDER BY changed_at DESC NULLS LAST, id DESC LIMIT :limit" if strict
+               else "ORDER BY changed_at DESC LIMIT :limit")
         ),
         {"entity_type": entity_type, "record_id": record_id, "limit": limit},
     )).fetchall()
@@ -300,6 +364,7 @@ async def _record_addresses(
 
 async def _email_entries(
     db: Any, origins: dict[str, str], user: UserContext, limit: int,
+    *, strict: bool = False,
 ) -> list[TimelineEntry]:
     """Email threads from these addresses, in the CALLER's own mailboxes.
 
@@ -355,7 +420,8 @@ async def _email_entries(
             f" AND LOWER(em.from_address->>'email') IN ({', '.join(placeholders)})"
             " ORDER BY em.account_id, COALESCE(em.thread_id, em.id::text),"
             " em.received_at DESC"
-            ") t ORDER BY received_at DESC LIMIT :limit"
+            + (") t ORDER BY received_at DESC NULLS LAST, message_id DESC LIMIT :limit"
+               if strict else ") t ORDER BY received_at DESC LIMIT :limit")
         ),
         params,
     )).fetchall()
@@ -420,8 +486,9 @@ async def lead_timeline(
     record_id: str,
     limit: int = Query(100, ge=1, le=500),
     user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
 ) -> TimelineResponse:
-    return await _timeline(LEADS, record_id, limit, user)
+    return await _timeline(LEADS, record_id, limit, user, offset)
 
 
 @router.get("/deals/{record_id}/timeline", response_model=TimelineResponse)
@@ -429,9 +496,10 @@ async def deal_timeline(
     record_id: str,
     limit: int = Query(100, ge=1, le=500),
     user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
 ) -> TimelineResponse:
     """A deal's own history, unioned with its originating lead's (§5.3)."""
-    return await _timeline(DEALS, record_id, limit, user)
+    return await _timeline(DEALS, record_id, limit, user, offset)
 
 
 @router.get("/contacts/{record_id}/timeline", response_model=TimelineResponse)
@@ -439,8 +507,9 @@ async def contact_timeline(
     record_id: str,
     limit: int = Query(100, ge=1, le=500),
     user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
 ) -> TimelineResponse:
-    return await _timeline(CONTACTS, record_id, limit, user)
+    return await _timeline(CONTACTS, record_id, limit, user, offset)
 
 
 @router.get("/organizations/{record_id}/timeline", response_model=TimelineResponse)
@@ -448,8 +517,9 @@ async def organization_timeline(
     record_id: str,
     limit: int = Query(100, ge=1, le=500),
     user: UserContext = Depends(get_current_user),
+    offset: int | None = Query(None, ge=0, le=MAX_TIMELINE_OFFSET),
 ) -> TimelineResponse:
-    return await _timeline(ORGANIZATIONS, record_id, limit, user)
+    return await _timeline(ORGANIZATIONS, record_id, limit, user, offset)
 
 
 # ── Logging ─────────────────────────────────────────────────────────────────

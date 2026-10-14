@@ -24,7 +24,7 @@ import re
 from datetime import UTC, date, datetime
 from typing import Any
 
-from acb_common.paging import page_line
+from acb_common.paging import bounds, page_line
 
 from skill_projects.client import GatewayRefusal, data, get, uuid_of
 from skill_projects.priority import change_view, level_detail, level_fact
@@ -942,7 +942,7 @@ async def analytics_load(project_id: str = "", offset: int = 0) -> str:
     the next 7 days, and later. Unassigned is a row of its own, and it is
     often the real finding. Effort is estimated minutes with its coverage,
     never logged time. 20 people a page: offset reads the next."""
-    start = max(0, int(offset or 0))
+    start, _ = bounds(offset, LOAD_PEOPLE_PAGE, default=LOAD_PEOPLE_PAGE)
     params = {**_scope_params(project_id), "people_offset": start}
     payload = await get("/projects/analytics/load", params)
     out = [

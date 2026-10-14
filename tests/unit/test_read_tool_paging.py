@@ -101,10 +101,6 @@ TOOL_MODULES: tuple[str, ...] = (
 ALLOWED: dict[str, str] = {
     'apps/agents/agent-email-assistant/agents.py::_card_detail::detail[:limit]':
         'Text, not rows: the cut shortens one string.',
-    "apps/agents/agent-email-assistant/agents.py::_card_text::' '.join(kept.split())[:limit]":
-        'Text, not rows: the cut shortens one string.',
-    "apps/agents/agent-email-assistant/agents.py::_one_line::' '.join(str(value or '').split())[:limit]":
-        'Text, not rows: the cut shortens one string.',
     "apps/skills/skill-projects/skill_projects/forms.py::_plan_row::_clean(item.get('due'))[:10]":
         'Text: a date string cut to YYYY-MM-DD.',
     "apps/skills/skill-projects/skill_projects/forms.py::_plan_row::_clean(item.get('start'))[:10]":
@@ -175,8 +171,6 @@ ALLOWED: dict[str, str] = {
         "Not a tool: it is not in _TOOLS, so no model calls it. It prints '… and N more'.",
     'apps/services/orchestrator/orchestrator/agents.py::spawn_copilot_agent::run_id[:8]':
         'Text, not rows: the cut shortens one string.',
-    'apps/skills/skill-my-tasks/skill_my_tasks/core.py::my_tasks_people::summary[:160]':
-        'Text, not rows: the cut shortens one string.',
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py::my_tasks_people::(p.get('skills') or [])[:6]":
         "Six skills of one person, inside that person's line. Not rows.",
     'apps/skills/skill-projects/skill_projects/reads.py::_fenced::flat[:DATASET_CELL]':
@@ -195,10 +189,44 @@ ALLOWED: dict[str, str] = {
         'Text, not rows: the cut shortens one string.',
     'packages/acb_skills/acb_skills/sandbox_tools.py::_format::saved[:20]':
         "A run receipt. It prints the count and '…', and the files are in outputs/.",
+    'apps/agents/agent-email-assistant/agents.py::_instructions::text[:start]':
+        "Text: the agent's own instructions, split at a marker. Not rows.",
+    'apps/agents/agent-whatsapp-assistant/agents.py::_instructions::text[:start]':
+        "Text: the agent's own instructions, split at a marker. Not rows.",
+    'apps/services/orchestrator/orchestrator/agents.py::_build_memory_block::user_query[:80]':
+        'Text, not rows: the cut shortens one string.',
+    'apps/services/orchestrator/orchestrator/agents.py::enrich_instructions_with_memory::user_query[:80]':
+        'Text, not rows: the cut shortens one string.',
+    'apps/skills/skill-projects/skill_projects/client.py::safe_detail::text[:DETAIL_MAX - 1]':
+        'Text, not rows: the cut shortens one string.',
+    "apps/skills/skill-projects/skill_projects/forms.py::propose_plan::[r.strip() for r in str(risks or '').splitlines() if r.strip()][:5]":
+        'The risk lines the MODEL wrote into its own plan card. Not company data, and the card shows five.',
+    'apps/skills/skill-projects/skill_projects/guarded.py::_short_ref::title[:TITLE_CLIP - 1]':
+        'Text, not rows: the cut shortens one string.',
+    'apps/skills/skill-projects/skill_projects/reads.py::_day::raw[:10]':
+        'Text: a date string cut to YYYY-MM-DD.',
+    'apps/skills/skill-projects/skill_projects/reads.py::pulse_status_words::text[:1]':
+        'Text: the first letter, to capitalise it.',
+    'apps/skills/skill-projects/skill_projects/views.py::_human::text[:1]':
+        'Text: the first letter, to capitalise it.',
+    'apps/skills/skill-projects/skill_projects/views.py::_draw_report::stats[:8]':
+        'The stat tiles of a report CARD. The report text the model reads (report_render) prints every section.',
+    'packages/acb_skills/acb_skills/code_tools.py::_cap::text[:half]':
+        'Text: the head of a long command output. The cut is marked.',
+    'packages/acb_skills/acb_skills/history_tools.py::query_history::val[:_CONTENT_CAP]':
+        "Text: one message body, cut and marked '...'.",
+    'packages/acb_skills/acb_skills/todo_tools.py::manage_todo_list::title[:120]':
+        'Text, not rows: the cut shortens one string.',
+    'packages/acb_skills/acb_skills/web_tools.py::fetch_page::text[:max_chars]':
+        "Text: one web page, cut and marked '[... truncated'. max_chars asks for more.",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
-ALLOWED_CEILING = 48
+#: 48 until the 2026-10-14 review widened the fence to every head slice in a
+#: function: 15 entries joined (listed last, each with its reason). Three
+#: left, because the scan now reads a slice inside an f-string, and a
+#: `" ".join(...)` result, as text. 48 - 3 + 15 = 60.
+ALLOWED_CEILING = 60
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -215,20 +243,34 @@ def _stringy(node: ast.AST) -> bool:
         if node.func.attr in ("strip", "lower", "upper", "replace", "dumps",
                               "isoformat", "decode", "read_text"):
             return True
+        if node.func.attr == "join" and _stringy(node.func.value):
+            return True  # `" ".join(...)` is a string
         return node.func.attr == "get" and len(node.args) == 2 and _stringy(node.args[1])
     return False
 
 
 def _head_cut(node: ast.AST) -> bool:
-    """``x[:N]`` on something that is not plainly text. ``x[:-1]`` drops the
-    last item by construction ("a, b and c"), so it is never a page cut."""
+    """``x[:N]`` or ``x[0:N]`` on something that is not plainly text.
+
+    ``x[:-1]`` drops the last item by construction ("a, b and c"), so it is
+    never a page cut."""
     if not (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice)):
         return False
-    upper = node.slice.upper
+    lower, upper = node.slice.lower, node.slice.upper
     if isinstance(upper, ast.UnaryOp) and isinstance(upper.op, ast.USub):
         return False
-    return (node.slice.lower is None and upper is not None
+    from_start = lower is None or (isinstance(lower, ast.Constant) and lower.value == 0)
+    return (from_start and upper is not None
             and node.slice.step is None and not _stringy(node.value))
+
+
+def _islice(node: ast.AST) -> bool:
+    """``itertools.islice(rows, 30)`` or ``islice(rows, 0, 30)``: a head cut too."""
+    if not isinstance(node, ast.Call):
+        return False
+    fn = node.func
+    name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+    return name == "islice"
 
 
 def _cuts(path: Path) -> set[str]:
@@ -236,26 +278,31 @@ def _cuts(path: Path) -> set[str]:
     return {f"{rel}::{hit}" for hit in _cuts_in_source(path.read_text(encoding="utf-8-sig"))}
 
 
+def _in_fstrings(fn: ast.AST) -> set[int]:
+    """The ids of the nodes inside an f-string. A slice there formats text."""
+    inside: set[int] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.JoinedStr):
+            inside |= {id(n) for n in ast.walk(node)}
+    return inside
+
+
 def _cuts_in_source(source: str) -> set[str]:
-    """``"<function>::<slice source>"`` for each head slice that a loop, a
-    comprehension, an assignment, a return or a call takes."""
+    """``"<function>::<slice source>"`` for EVERY head slice and every islice
+    in a function: in a loop, a literal, an ``+=``, a concatenation, a tuple
+    assign or a call. The one exemption is a slice inside an f-string, which
+    formats text."""
     tree = ast.parse(source)
     found: set[str] = set()
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
+        text_nodes = _in_fstrings(fn)
         for node in ast.walk(fn):
-            if isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
-                sources = [node.iter]
-            elif isinstance(node, ast.Assign | ast.AnnAssign | ast.Return):
-                sources = [node.value] if node.value is not None else []
-            elif isinstance(node, ast.Call):
-                # `Page(rows[:30], ...)` or `", ".join(lines[:52])`: a cut
-                # handed straight to a call is the same cut.
-                sources = [*node.args, *(k.value for k in node.keywords)]
-            else:
+            if id(node) in text_nodes:
                 continue
-            found |= {f"{fn.name}::{ast.unparse(s)}" for s in sources if _head_cut(s)}
+            if _head_cut(node) or _islice(node):
+                found.add(f"{fn.name}::{ast.unparse(node)}")
     return found
 
 
@@ -288,23 +335,30 @@ def test_the_allowlist_only_shrinks() -> None:
     assert all(reason.strip() for reason in ALLOWED.values())
 
 
-def test_the_fence_catches_the_shape_that_hid_items_31_to_35(tmp_path: Path) -> None:
+def test_the_fence_catches_the_shape_that_hid_items_31_to_35() -> None:
     """The fence is live: the 2026-10-14 line, written fresh, is a hit."""
-    src = tmp_path / "probe.py"
-    src.write_text("async def tool(items):\n    shown = _ordered(items)[:30]\n"
-                   "    for s in senders[:20]:\n        pass\n"
-                   "    return str(x)[:10]\n", encoding="utf-8")
-    tree = ast.parse(src.read_text(encoding="utf-8"))
-    hits = [ast.unparse(n.value) for n in ast.walk(tree)
-            if isinstance(n, ast.Assign) and _head_cut(n.value)]
-    hits += [ast.unparse(n.iter) for n in ast.walk(tree)
-             if isinstance(n, ast.For) and _head_cut(n.iter)]
-    hits += [ast.unparse(n.value) for n in ast.walk(tree)
-             if isinstance(n, ast.Return) and _head_cut(n.value)]
-    assert hits == ["_ordered(items)[:30]", "senders[:20]"]
+    src = ("async def tool(items):\n    shown = _ordered(items)[:30]\n"
+           "    for s in senders[:20]:\n        pass\n"
+           "    return str(x)[:10]\n")
+    assert _cuts_in_source(src) == {"tool::_ordered(items)[:30]", "tool::senders[:20]"}
     assert _cuts_in_source("def t(rows):\n    return Page(rows[:30], 1, 0, '')\n") == {
         "t::rows[:30]"}
     assert _cuts_in_source("def t(n):\n    return ', '.join(n[:-1])\n") == set()
+    assert _cuts_in_source("def t(r):\n    return f'{r[:9]}'\n") == set()
+
+
+@pytest.mark.parametrize(("shape", "hit"), [
+    ("return json.dumps({'rows': rows[:30]})", "rows[:30]"),
+    ("return rows[0:30]", "rows[0:30]"),
+    ("out += rows[:30]", "rows[:30]"),
+    ("return ['h'] + rows[:30]", "rows[:30]"),
+    ("a, b = rows[:30], 1", "rows[:30]"),
+    ("return list(itertools.islice(rows, 30))", "itertools.islice(rows, 30)"),
+])
+def test_the_fence_catches_the_six_shapes_the_review_named(shape: str, hit: str) -> None:
+    """Review of #1014: a slice in a literal, a 0 lower bound, an ``+=``, a
+    concatenation, a tuple assign, and islice all cut a list too."""
+    assert _cuts_in_source(f"def t(rows, out):\n    {shape}\n") == {f"t::{hit}"}
 
 
 # ── 3. My Tasks ─────────────────────────────────────────────────────────────
@@ -531,6 +585,17 @@ def test_analytics_load_pages_past_twenty_people(monkeypatch) -> None:
     assert "Showing 21-25 of 25. This is the last page." in out
 
 
+def test_analytics_load_takes_a_bad_offset_as_zero(monkeypatch) -> None:
+    """Review of #1014: ``bounds()``, never a bare ``int(offset)``."""
+    calls = fake_gateway(monkeypatch, lambda c: (
+        {"people": [], "people_listed": 0, "total_tasks": 0}
+        if c["path"] == "/projects/analytics/load" else empty_list(c)))
+    asyncio.run(skill_projects.analytics_load(offset="soon"))
+    assert calls[-1]["params"]["people_offset"] == 0
+    asyncio.run(skill_projects.analytics_load(offset=-4))
+    assert calls[-1]["params"]["people_offset"] == 0
+
+
 def test_intake_queue_pages_and_names_the_next_offset(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, lambda c: (
         {"rows": _task_rows(0, 50), "total": 70} if c["path"] == "/projects/intake"
@@ -632,7 +697,12 @@ def test_a_prefix_page_at_the_backend_cap_says_so() -> None:
 
     page = prefix_page(list(range(200)), 190, 15, cap=200)
     assert page.items == list(range(190, 200))
-    assert "The source returns at most 200 items. Narrow the filter" in page.line
+    # Review of #1014: never "the last page" beside "the source stops here",
+    # and no "narrow the filter" from a tool that has no filter.
+    assert page.line == "Showing 191-200. Older items are past the source's limit of 200."
+    narrow = prefix_page(list(range(200)), 190, 15, cap=200,
+                         narrow="Use more exact words to reach them.")
+    assert narrow.line.endswith("limit of 200. Use more exact words to reach them.")
 
 
 # ── 6. Email ────────────────────────────────────────────────────────────────
@@ -760,6 +830,18 @@ def test_cold_senders_rule_history_patterns_and_files_page(monkeypatch, ea) -> N
     assert "id=p35 " in asyncio.run(ea.list_patterns("a1", kind="rule", offset=30))
     assert "f35.pdf" in asyncio.run(ea.list_artifacts(offset=30))
     assert "There are 35 files" in asyncio.run(ea.list_artifacts(offset=40))
+
+
+def test_unsubscribe_candidates_say_the_scan_stopped_at_200(monkeypatch, ea) -> None:
+    """The scan reads the 200 biggest senders. A route that sends no total
+    still gets the line, because 200 rows back means the scan was full."""
+    rows = [{"email": f"n{k}@x.io", "count": 3, "read_rate": 0.1} for k in range(200)]
+    _gw(monkeypatch, ea, lambda p, q: {"senders": rows})
+    out = asyncio.run(ea.list_senders("a1", view="unsubscribe"))
+    assert "Checked only the 200 biggest senders." in out
+    _gw(monkeypatch, ea, lambda p, q: {"senders": rows, "total": 900})
+    assert "Checked only the 200 biggest of 900 senders." in asyncio.run(
+        ea.list_senders("a1", view="unsubscribe"))
 
 
 def test_unsubscribe_candidates_page(monkeypatch, ea) -> None:
@@ -891,7 +973,8 @@ def test_crm_owners_say_when_the_route_cap_is_hit(monkeypatch) -> None:
     owners = [{"email": f"o{k}@x.io", "member": True} for k in range(500)]
     _gw(monkeypatch, crm_tools, lambda p, q: {"owners": owners})
     last = asyncio.run(crm_tools.crm_list_owners(page=10))
-    assert "The source returns at most 500 owners." in last
+    assert "Older owners are past the source's limit of 500." in last
+    assert "last page" not in last
 
 
 def test_crm_more_line_is_the_shared_hint(monkeypatch) -> None:
@@ -908,16 +991,61 @@ def crm_agent():
     return load_agent_module()
 
 
-def test_crm_timeline_pages_back_in_time(monkeypatch, crm_agent) -> None:
-    entries = [{"kind": "activity", "at": f"t{k}", "activity": {"type": "note", "subject": f"s{k}"}}
-               for k in range(1, 36)]
-    seen = _gw(monkeypatch, crm_agent, lambda p, q: {"entries": entries[: int(q["limit"])]})
+def _timeline_route(emails: int, notes: int):
+    """A fake of ``/crm/{entity}/{id}/timeline`` that keeps the REAL rules.
+
+    The emails are the newest rows, the notes older. Unpaged, the route gives
+    email half the page (``_email_budget``), merges and cuts. Paged
+    (``offset``), each source reads ``offset + limit + 1`` rows in its own
+    order and the real ``merge_page`` cuts one total order. A fake that
+    answered ``entries[:limit]`` hid the review's P1: page 2 of a budgeted
+    read repeated notes and skipped mail."""
+    from datetime import UTC, datetime, timedelta
+
+    from gateway.routes.crm import activities
+
+    base = datetime(2026, 10, 1, tzinfo=UTC)
+    mail = [activities.TimelineEntry(
+        kind="email_thread", at=(base + timedelta(days=60 - k)).isoformat(),
+        email_thread={"message_id": f"e{k:02d}", "subject": f"mail {k}"})
+        for k in range(emails)]
+    note = [activities.TimelineEntry(
+        kind="activity", at=(base + timedelta(days=-k)).isoformat(),
+        activity={"id": f"n{k:02d}", "type": "note", "subject": f"note {k}"})
+        for k in range(notes)]
+
+    def first(rows, n):
+        return sorted(rows, key=activities._entry_key, reverse=True)[:n]
+
+    def answer(path, q):
+        limit = int(q["limit"])
+        if q.get("offset") is None:
+            merged = first(note, limit) + first(mail, activities._email_budget(limit))
+            merged.sort(key=lambda e: e.at or "", reverse=True)
+            return {"entries": [e.model_dump() for e in merged[:limit]]}
+        offset = int(q["offset"])
+        want = offset + limit + 1
+        page, more = activities.merge_page(first(note, want) + first(mail, want),
+                                           offset, limit)
+        return {"entries": [e.model_dump() for e in page], "has_more": more}
+
+    return answer
+
+
+def test_crm_timeline_pages_with_no_repeat_and_no_gap(monkeypatch, crm_agent) -> None:
+    """30 newer emails and 30 notes, 20 a page: 3 pages hold all 60 once."""
+    pytest.importorskip("gateway.routes.crm.activities")
+    seen = _gw(monkeypatch, crm_agent, _timeline_route(30, 30))
     rid = "0f8fad5b-d9cb-469f-a165-70867728950e"
-    first = asyncio.run(crm_agent.get_timeline("deal", rid))
-    assert seen[-1][1]["limit"] == 21
-    assert "Call again with offset=20 for the rest." in first
-    last = asyncio.run(crm_agent.get_timeline("deal", rid, offset=30))
-    assert "s35" in last and "Showing 31-35 of 35. This is the last page." in last
+    pages = [asyncio.run(crm_agent.get_timeline("deal", rid, offset=k)) for k in (0, 20, 40)]
+    assert [q.get("offset") for _, q in seen] == [0, 20, 40]
+    subjects = [ln.split(": ", 1)[1] for page in pages for ln in page.splitlines()
+                if ln.startswith("• ") and ": " in ln]
+    want = [f"mail {k}" for k in range(30)] + [f"note {k}" for k in range(30)]
+    assert len(subjects) == 60 and len(set(subjects)) == 60
+    assert [x.split(" — ")[0].split(" (")[0] for x in subjects] == want
+    assert "Call again with offset=20 for the rest." in pages[0]
+    assert "This is the last page." in pages[2]
 
 
 # ── 9. The shared tools: the parallel join and the attachment listing ──────
@@ -938,6 +1066,27 @@ def test_call_agents_parallel_names_the_tasks_it_did_not_run(monkeypatch) -> Non
     assert "done: task 5" in out and "done: task 6" not in out
     assert "Ran 5 of 7 tasks" in out
     assert "agent-6" in out and "agent-7" in out
+
+
+def test_call_agents_parallel_counts_only_the_tasks_that_ran(monkeypatch) -> None:
+    """Review of #1014: 'Ran 5 of 7' was printed even when some of the five
+    were unreadable. Tasks 6 and up are named even when all five are bad."""
+    import json
+
+    executor = pytest.importorskip("orchestrator.executor")
+    from acb_skills import agent_tools
+
+    async def fake_run(agent_name, message, run_id, queue, model=None):
+        return "ok"
+
+    monkeypatch.setattr(executor, "_run_sub_agent_streaming", fake_run)
+    tasks = [{"agent": "a", "message": "m"}, {"agent": "b"}, *(
+        {"agent": f"x{k}", "message": "m"} for k in range(3, 8))]
+    out = asyncio.run(agent_tools.call_agents_parallel(json.dumps(tasks)))
+    assert "Ran 4 of 7 tasks" in out and "x6, x7" in out
+    bad = [{"agent": f"b{k}"} for k in range(5)] + [{"agent": "late", "message": "m"}]
+    out = asyncio.run(agent_tools.call_agents_parallel(json.dumps(bad)))
+    assert "late" in out and "did not run" in out
 
 
 def test_call_agents_parallel_names_a_task_it_could_not_read(monkeypatch) -> None:

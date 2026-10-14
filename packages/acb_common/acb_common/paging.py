@@ -132,15 +132,21 @@ def prefix_limit(offset: Any, limit: Any, *, default: int, cap: int,
 
 
 def prefix_page(rows: Sequence[Any], start: int, size: int, *, cap: int,
-                asked: int = 0, noun: str = "items", page_size: int = 0) -> Page:
+                asked: int = 0, noun: str = "items", page_size: int = 0,
+                narrow: str = "", rest: str = "") -> Page:
     """One page from the first rows of a LIMIT-only backend (:func:`prefix_limit`).
 
     ``asked`` is the LIMIT the tool sent, and ``cap`` by default. Fewer rows
     than that means the backend sent every row, so the line has the exact
-    total. A full answer means that more exist. Past ``cap`` the backend
-    returns nothing, so the line says that only a narrower filter reaches
-    the rest. That is the one cut this module cannot page through, and it is
-    never silent.
+    total. A full answer means that more exist.
+
+    Past ``cap`` the backend returns nothing. That is the one cut this module
+    cannot page through, so the line says so instead of "the last page", and
+    is never silent. ``narrow`` is what to add when the tool HAS a filter that
+    reaches past the cap (for example "Use more exact words to reach them.").
+    A tool with no filter passes nothing. ``rest`` names what lies past the
+    cap, "Older <noun>" by default. A search ranked by relevance passes
+    "Other matches".
     """
     got = list(rows)
     chunk = got[start:start + size]
@@ -149,8 +155,10 @@ def prefix_page(rows: Sequence[Any], start: int, size: int, *, cap: int,
         return Page(chunk, len(got), start, page_line(
             len(got), start, len(chunk), noun=noun, page_size=page_size))
     more = len(got) > start + size
-    line = page_line(None, start, len(chunk), more=more, noun=noun, page_size=page_size)
-    if not more and limit >= cap:
-        line = (line + " " if line else "") + (
-            f"The source returns at most {cap} {noun}. Narrow the filter to reach others.")
-    return Page(chunk, len(got), start, line)
+    if more or limit < cap:
+        return Page(chunk, len(got), start, page_line(
+            None, start, len(chunk), more=more, noun=noun, page_size=page_size))
+    end = start + len(chunk)
+    shown = f"Showing {start + 1}-{end}. " if chunk else f"Nothing past {cap} {noun}. "
+    line = f"{shown}{rest or 'Older ' + noun} are past the source's limit of {cap}."
+    return Page(chunk, len(got), start, f"{line} {narrow}".strip())

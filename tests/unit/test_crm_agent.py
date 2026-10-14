@@ -502,9 +502,10 @@ async def test_get_timeline_hits_the_timeline_route(monkeypatch) -> None:
     calls = _fake_gateway(monkeypatch, lambda _c: entries)
     out = await _M.get_timeline("deals", _ID, limit=5)
     assert [c["path"] for c in calls] == [f"/crm/deals/{_ID}/timeline"]
-    # One row more than the page, so the tool can tell that more exist
-    # (test_read_tool_paging.py, 2026-10-14).
-    assert calls[0]["params"]["limit"] == 6
+    # A page of one total order: the route takes `offset` and says
+    # `has_more` (test_read_tool_paging.py, review of #1014).
+    assert calls[0]["params"]["limit"] == 5
+    assert calls[0]["params"]["offset"] == 0
     assert "New → Qualified" in out
     assert "2.0d in the previous stage" in out
     # An inherited entry is labelled, never passed off as the deal's own (§5.3).
