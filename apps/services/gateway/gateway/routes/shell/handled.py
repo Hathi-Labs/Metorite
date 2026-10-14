@@ -146,6 +146,10 @@ async def handled_run(user: UserContext, now: datetime, *, budget_s: float) -> H
             continue
         try:
             closed = await asyncio.wait_for(provider.handled(user, since), left)  # type: ignore[misc]
+        except needs.SourceAbsent:
+            # A refusal, not a failure (MD-3b, §5.8 item 4): `handled_ok` holds.
+            run.sources[source] = "absent"
+            continue
         except TimeoutError:
             logger.info("shell.feed handled read timed out", extra={"provider": source})
             run.sources[source] = "failed"

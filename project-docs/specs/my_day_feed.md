@@ -29,7 +29,8 @@ behind `MY_DAY_LOOP_ENABLED`).
 
 **MD-3b is BUILT, 2026-10-14** (the seam of the new sources, no migration).
 `MY_DAY_PROVIDERS` is empty by default, so the feed answer is the same as
-before, byte for byte. No provider is gated yet, and no kind is added.
+before, byte for byte, except for one new field, `source_apps`. No provider
+is gated yet, and no kind is added.
 
 **MD-6a-1 is BUILT, 2026-10-14** (the features, the helpers and the table,
 migration 262). Each `my_day.*` mode is `off` and `MY_DAY_DECIDE_ORGS` is
@@ -545,8 +546,9 @@ of source ids, empty by default. It is read in one place and is in
 
 The kinds stay registered, so the prefs and the state POST accept them.
 
-With the list empty, the answer is the same as today, byte for byte. The
-list is part of `features_hash`, so a change takes effect at once.
+With the list empty, the answer is the same as today, byte for byte, except
+for the new `source_apps` field of item 6. The list is part of
+`features_hash`, so a change takes effect at once.
 
 **2. The cache.** These rows join §8.4:
 
@@ -559,9 +561,17 @@ list is part of `features_hash`, so a change takes effect at once.
 - These wait for the edge, or 600 seconds at most: CRM data, the Zoho
   mirror sync, the AWAITING status, and the quiet thresholds.
 
-**3. The budget.** The feed-only providers run at the same time, with
-`asyncio.gather`. Each has its own budget of 2 seconds. A slow provider then
-fails alone, and does not fail the next one.
+**3. The budget.** The feed-only providers run two at a time at most, under
+a semaphore (`FEED_CONCURRENCY = 2`). So each read of the feed holds two
+connections of the pool at most for them. Each provider has its own budget of 2
+seconds, and the budget starts when the provider gets its slot. A slow
+provider then fails alone, and does not fail the next one.
+
+One ceiling bounds the whole run: `FEED_TOTAL_S = 4.0`, from the start. At
+the ceiling, each provider that still waits for a slot or still runs reads
+`failed`. The cache keeps no answer with a failed source, so the next poll
+tries again. (Decided 2026-10-14 in the MD-3b review. Pool exhaustion caused
+EMAXCONNSESSION on 2026-09-20.)
 
 **4. Absent, not failed.** A refusal is not a failure. These each read as
 `absent`: CRM off, CRM access refused, and no People row. A provider raises a
@@ -584,7 +594,9 @@ The ids:
 `STATE_FACTS` does not grow in MD-3.
 
 **6. The app ids.** §14.1a gains `crm`, `people` and `chat`. Each source has
-an id of its own, for example `email_followups`. A needs provider cannot
+an id of its own, for example `email_followups`. So the answer gains
+`source_apps`, the app of each source, and the client maps a failed or
+capped source to its app through it. A needs provider cannot
 give a new kind (`needs.py:868`).
 
 **7. The sources, defined:**
@@ -1829,6 +1841,11 @@ and is off by default (`packages/acb_memory`).
   `calendar`, `crm`, `people` and `chat`. MD-3b added the last three. The
   `sources` key of the Calendar provider is `calendar`. A `sources` key is
   the id of a source, and an MD-3 source has an id of its own (§5.8 item 6).
+- **MD-3b adds `source_apps`**, `{source id: app id}`, with one entry for
+  each key of `sources`. The client maps a failed source to its app for the
+  failed line, and a capped source to its app for "Show all in <app>". A
+  source that the map does not name is its own app, so an older answer reads
+  as before. Two failed sources of one app give one line.
 - `groups` lists only the groups that hold a card, in the order above.
 - `folded` names the kinds that §4.5 folded into the card.
 - An act with `way: "tap"` names its `act` and `act_ref`, as the needs items
@@ -2567,26 +2584,35 @@ parts:
   `needs.listed_sources` is its one reader. `needs.feed_only_providers`
   keeps a provider with `gated=True` only when the list holds its source
   id. The register refuses a gated needs provider.
-- `needs.run_providers(..., concurrent=True)` runs the feed-only providers
-  with `asyncio.gather`. Each has its own limit of 2 seconds. The needs
-  providers still run one after another.
-- `needs.SourceAbsent` makes a source read `absent`. `Provider.permission`
-  is part of `held_by`, so it gates the Handled read too.
+- `needs.run_providers(..., slots=, ceiling_s=)` runs the feed-only
+  providers two at a time at most (`FEED_CONCURRENCY`). Each limit of 2
+  seconds starts when the provider gets its slot. At `FEED_TOTAL_S`, the
+  rest read `failed`. The needs providers still run one after another.
+- `needs.SourceAbsent` makes a source read `absent`, in the provider run and
+  in the Handled read (`handled.py`). `Provider.permission` is part of
+  `held_by`, so it gates the Handled read too.
+- The answer gains `source_apps` (`needs.source_app`, and `Provider.app`
+  for a source whose id is not its app id). `feedFailedLines`,
+  `cappedLinks` and `handledClaim` read it. The body changes once at the
+  deploy, so each stored answer misses once on its ETag.
 - `cache.features_hash` also covers each `Provider.permission` that the
   member holds, and the list. With an empty list, the hash does not change,
   so the keys of the live cache stay valid.
 - `feed.ts` names the three apps, and takes each icon from its pane in
   `nav.ts`.
 
-**Two facts the spec did not record.**
+**What the build found, for the slices after it.**
 
 - `ADMIN_PERMISSION` (`routes/shell/intent.py`) is `admin:members:read`. So
-  the hash covered that grant before MD-3b. Done-when 4 adds a test, and it
-  adds no new term for the grant.
-- A feed read held one pool connection for its feed-only providers. With
-  the gather, it holds one for each feed-only provider that the member
-  holds. The MD-2c note on the pool still binds. MD-3c to MD-3f must keep
-  the count of their sources small, or share one session.
+  the hash covered that grant before MD-3b. Done-when 4 adds a test. The
+  general rule stands: the hash covers each `Provider.permission`.
+- `handled.handled_providers()` reads the whole `REGISTRY`. The first slice
+  that gives a gated provider a Handled read must filter that read by the
+  list.
+- The carry of §6.1 (`noteOk` and `carries` in `feed.ts`) keys on the
+  source id and filters cards by `card.app`. A source whose id is not its
+  app id carries no cards when it fails. The slice that adds such a source
+  must give the card its source, or accept that its cards do not carry.
 
 ### MD-3c · The task kinds — AGENT-SAFE, after MD-3b
 

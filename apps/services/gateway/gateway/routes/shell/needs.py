@@ -136,9 +136,13 @@ Only the feed calls it (``handled.py``). ``closed_by`` is the ``by`` table.
   :func:`feed_only_providers` applies it. A source that is not listed has no
   entry in ``sources``. So with the list empty, the feed answer is the same
   as before MD-3b. The Calendar provider is not gated.
-* The feed-only providers run at the same time (``run_providers`` with
-  ``concurrent=True``), each with its own time limit. A slow one fails alone.
-  The needs providers still run one after another, on today's budget.
+* The feed-only providers run two at a time at most (``run_providers`` with
+  ``slots``), so a feed read holds two pool connections at most for them.
+  Each one's time limit starts when it takes its slot, so a slow one fails
+  alone. A ceiling from the start fails each provider that is still queued
+  or running. The needs providers still run one after another.
+* ``source_app`` names the app of each source, for ``source_apps`` in the
+  feed answer. The client maps a failed or capped source to its app.
 * A provider raises :class:`SourceAbsent` for a refusal that is not a
   failure: CRM off, CRM access refused, no People row. Its source reads
   ``absent``. The read cache keeps such an answer, and keeps no answer with a
@@ -907,6 +911,9 @@ class Provider:
     handled: Callable[[UserContext, datetime], Awaitable[list[Closed]]] | None = None
     permission: str | None = None
     gated: bool = False
+    #: The app of the cards, when the source id is not the app id (MD-3b,
+    #: §5.8 item 6). ``source_app`` reads it.
+    app: str | None = None
 
     def held_by(self, user: UserContext) -> bool:
         """The gate the app's router would have applied (the module note),
@@ -969,6 +976,15 @@ def listed_sources() -> frozenset[str]:
 
     raw = str(get_settings().my_day_providers or "")
     return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def source_app(source: str) -> str:
+    """The app id of a source, for the ``source_apps`` map of the feed answer
+    (MD-3b, §14.1a). A source with no ``app`` is its own app."""
+    provider = REGISTRY.get(source)
+    if provider is None:
+        return source
+    return provider.app or provider.source
 
 
 def feed_only_providers() -> list[Provider]:
@@ -1077,27 +1093,66 @@ def _record(run: Run, key: str, outcome: Found | str) -> None:
         run.capped.append(key)
 
 
+async def _run_bounded(user: UserContext, providers: list[Provider], *, limit: float,
+                       slots: int, ceiling_s: float | None, event: str) -> Run:
+    """The feed-only providers (MD-3b, §5.8 item 3): ``slots`` run at once at
+    most, so a feed read holds ``slots`` pool connections at most for them.
+    Each provider's ``limit`` starts when it takes a slot, not when the run
+    starts. At ``ceiling_s`` from the start, a provider that still waits for
+    a slot or still runs is cancelled, and reads ``failed``."""
+    run = Run()
+    held = [p for p in providers if p.held_by(user)]
+    gate = asyncio.Semaphore(max(1, slots))
+
+    async def _slot(provider: Provider) -> Found | str:
+        async with gate:
+            # The limit starts here, when the provider holds its slot.
+            return await _attempt(provider, user, limit, event)
+
+    tasks = {p.source: asyncio.ensure_future(_slot(p)) for p in held}
+    late: list[asyncio.Future[Found | str]] = []
+    if tasks:
+        try:
+            await asyncio.wait(tasks.values(), timeout=ceiling_s)
+        finally:
+            # Past the ceiling, or a cancel of the whole read: stop the rest.
+            late = [t for t in tasks.values() if not t.done()]
+            for task in late:
+                task.cancel()
+        if late:
+            await asyncio.gather(*late, return_exceptions=True)
+    for provider in providers:
+        task = tasks.get(provider.source)
+        outcome: Found | str
+        if task is None:
+            outcome = "absent"
+        elif task.cancelled() or task.exception() is not None:
+            logger.info(f"{event} provider passed the ceiling",
+                        extra={"provider": provider.source})
+            outcome = "failed"
+        else:
+            outcome = task.result()
+        _record(run, provider.source, outcome)
+    return run
+
+
 async def run_providers(user: UserContext, providers: list[Provider], *,
                         budget_s: float, timeout_s: float, event: str,
-                        concurrent: bool = False) -> Run:
+                        slots: int | None = None, ceiling_s: float | None = None) -> Run:
     """Run ``providers`` one after another, each inside what is left of
     ``budget_s``. A provider the member does not hold reads ``absent``, and
     so does one that raises :class:`SourceAbsent`. One that fails, refuses
     or runs out of time reads ``failed``, and never fails the run.
 
-    ``concurrent=True`` (the feed-only providers, MD-3b, §5.8 item 3) starts
-    each held provider at once, with ``asyncio.gather``. Each gets its own
-    limit, ``min(timeout_s, budget_s)``, so a slow one fails alone. The
-    outcomes go into ``run`` in the order of ``providers``, as before."""
+    With ``slots`` set (the feed-only providers, MD-3b, §5.8 item 3), up to
+    ``slots`` providers run at the same time. Each gets its own limit,
+    ``min(timeout_s, budget_s)``, from the moment it starts, so a slow one
+    fails alone. ``ceiling_s`` bounds the whole run (:func:`_run_bounded`).
+    The outcomes go into ``run`` in the order of ``providers``, as before."""
+    if slots is not None:
+        return await _run_bounded(user, providers, limit=min(timeout_s, budget_s),
+                                  slots=slots, ceiling_s=ceiling_s, event=event)
     run = Run()
-    if concurrent:
-        held = [p for p in providers if p.held_by(user)]
-        limit = min(timeout_s, budget_s)
-        outcomes = await asyncio.gather(*(_attempt(p, user, limit, event) for p in held))
-        by_source = {p.source: o for p, o in zip(held, outcomes, strict=True)}
-        for provider in providers:
-            _record(run, provider.source, by_source.get(provider.source, "absent"))
-        return run
     loop = asyncio.get_running_loop()
     deadline = loop.time() + budget_s
     for provider in providers:

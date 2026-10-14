@@ -585,7 +585,7 @@ export function FeedColumn({
   const later = allGroups.find((g) => g.id === "later");
   const sentinel = useRevealOnScroll(reveal, hidden > 0);
   const nowMs = now?.getTime() ?? null;
-  const failed = feed.answer ? feedFailedLines(feed.answer.sources) : [];
+  const failed = feed.answer ? feedFailedLines(feed.answer.sources, feed.answer.source_apps) : [];
   const capped = feed.answer?.capped ?? [];
   const handled = feed.answer?.handled ?? [];
   const columnRef = useSeenObserver(feed, feed.answer !== undefined);
@@ -642,7 +642,7 @@ export function FeedColumn({
               {group.label}
             </div>
             <div className="flex flex-col gap-3">{group.cards.map(drawCard)}</div>
-            {cappedLinks(group, capped).map((link) => (
+            {cappedLinks(group, capped, feed.answer?.source_apps).map((link) => (
               <div key={link.app} className="flex justify-center pt-1">
                 <Button
                   href={link.href}

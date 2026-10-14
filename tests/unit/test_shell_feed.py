@@ -21,13 +21,16 @@ and each case is written so a wrong build fails it:
   feed-only provider never turns a needs source to ``failed``.
 * **The seam of MD-3b** (§5.8). With ``MY_DAY_PROVIDERS`` empty, the answer
   is byte-equal to the golden that the code before MD-3b wrote
-  (``fixtures/my_day_feed_golden.json``). A gated provider runs only when the
-  list names it. The feed-only providers run at the same time, so a slow one
+  (``fixtures/my_day_feed_golden.json``), plus the one new field
+  ``source_apps``. A gated provider runs only when the list names it. The
+  feed-only providers run two at a time at most, each limit starts at its
+  slot, and one ceiling fails the rest (``TestThePoolBound``). A slow one
   fails alone. ``SourceAbsent`` reads ``absent``. ``Provider.permission``
   keeps the read from a member who lacks the grant.
 
 Mutations, run by hand (2026-10-14), each killed: the gated filter removed,
-the gather made sequential, ``SourceAbsent`` read as ``failed``.
+the run made sequential, ``SourceAbsent`` read as ``failed``, the semaphore
+removed, the limit started at the start of the run, the ceiling removed.
 """
 
 from __future__ import annotations
@@ -68,6 +71,8 @@ CARD_KEYS = {"signal_id", "app", "kind", "folded", "group", "score", "entity", "
              # The state fields of MD-2a (§14.1a).
              "state", "updated", "still_open", "visits", "state_fp"}
 ANSWER_KEYS = {"cards", "groups", "needs", "sources", "capped",
+               # The app of each source (MD-3b, §14.1a).
+               "source_apps",
                # The Handled group and its claim flag (MD-2c, §14.1a).
                "handled", "handled_ok"}
 NEEDS_KINDS = set(shell.KIND_ORDER)
@@ -1167,8 +1172,23 @@ class TestTheRouteIsMounted:
 
 #: The answers of the feed for a fixed seed, written by the code BEFORE MD-3b
 #: (15e418c11). With ``MY_DAY_PROVIDERS`` empty, the answer must not change by
-#: one byte, because the feed is live (``my_day_feed.md`` §5.8 item 1).
+#: one byte, because the feed is live (``my_day_feed.md`` §5.8 item 1). The
+#: one exception is the field that MD-3b adds, ``source_apps``. The file stays
+#: as the old code wrote it, and the test adds that one field to it.
 GOLDEN = Path(__file__).resolve().parent / "fixtures" / "my_day_feed_golden.json"
+
+
+def with_source_apps(old_text: str) -> str:
+    """The old answer with ``source_apps`` after ``sources``: each source of
+    today is its own app. Every other byte stays the old one."""
+    old = json.loads(old_text)
+    assert json.dumps(old, default=str) == old_text, "the golden does not round-trip"
+    out: dict = {}
+    for key, value in old.items():
+        out[key] = value
+        if key == "sources":
+            out["source_apps"] = {source: source for source in value}
+    return json.dumps(out, default=str)
 
 
 def golden_answers(fakes: FeedFakes, monkeypatch) -> dict[str, str]:
@@ -1198,7 +1218,17 @@ class TestTheAnswerBeforeMD3b:
         got = golden_answers(fakes, monkeypatch)
         assert list(got) == list(expected)
         for name, text in got.items():
-            assert text == expected[name], name
+            assert "source_apps" not in expected[name], name
+            assert text == with_source_apps(expected[name]), name
+
+    def test_source_apps_names_each_source_once(self, fakes, monkeypatch):
+        answer = run_feed(admin(*FULL, "approvals"))
+        assert list(answer["source_apps"]) == list(answer["sources"])
+        _with(monkeypatch, _feed_only("crm_followups", _recorder([], "crm_followups"),
+                                      app="crm"))
+        answer = run_feed(member(*FULL))
+        assert answer["source_apps"]["crm_followups"] == "crm"
+        assert answer["source_apps"]["calendar"] == "calendar"
 
 
 # ── MD-3b done-whens 2 and 3: the seam of the new sources (§5.8) ────────────
@@ -1287,6 +1317,79 @@ class TestTheProviderList:
             "apps/services/gateway/gateway/routes/shell/needs.py",
             "packages/acb_common/acb_common/settings.py",
         ]
+
+
+def _counted(live: dict, source: str, sleep: float):
+    """A provider that counts how many of its kind run at once."""
+    async def _run(user):
+        live["now"] += 1
+        live["most"] = max(live["most"], live["now"])
+        try:
+            await asyncio.sleep(sleep)
+        finally:
+            live["now"] -= 1
+        return shell.Found(rows=[], total=0, capped=False)
+    return _run
+
+
+#: A member who does not hold the Calendar pane, so only the test providers
+#: take a slot.
+NO_CALENDAR = ("projects", "email")
+
+
+class TestThePoolBound:
+    """Decision 1 of the MD-3b review: two slots, a limit from the slot, and
+    one ceiling."""
+
+    def test_at_most_two_run_at_once(self, fakes, monkeypatch):
+        live = {"now": 0, "most": 0}
+        _with(monkeypatch, *(_feed_only(f"p{n}", _counted(live, f"p{n}", 0.1))
+                             for n in range(4)))
+        answer = run_feed(member(*NO_CALENDAR))
+        assert answer["sources"]["calendar"] == "absent"
+        assert {answer["sources"][f"p{n}"] for n in range(4)} == {"ok"}
+        assert live["most"] == feed.FEED_CONCURRENCY == 2
+
+    def test_a_queued_provider_gets_its_full_limit_after_it_starts(self, fakes, monkeypatch):
+        # The third waits 0.25 s for a slot, then runs 0.25 s. From the start
+        # of the run it ends at 0.5 s, past a 0.3 s limit taken at that start.
+        monkeypatch.setattr(feed, "FEED_BUDGET_S", 0.3)
+        monkeypatch.setattr(feed, "FEED_PROVIDER_TIMEOUT_S", 0.3)
+        ran: list[str] = []
+        _with(monkeypatch, *(_feed_only(f"q{n}", _recorder(ran, f"q{n}", sleep=0.25))
+                             for n in range(3)))
+        answer = run_feed(member(*NO_CALENDAR))
+        assert {answer["sources"][f"q{n}"] for n in range(3)} == {"ok"}
+        assert ran == ["q0", "q1", "q2"]
+
+    def test_the_ceiling_fails_the_rest(self, fakes, monkeypatch):
+        import time
+
+        monkeypatch.setattr(feed, "FEED_TOTAL_S", 0.5)
+        ran: list[str] = []
+        _with(monkeypatch,
+              _feed_only("quick", _recorder(ran, "quick")),
+              _feed_only("stuck_a", _recorder(ran, "stuck_a", sleep=5.0)),
+              _feed_only("stuck_b", _recorder(ran, "stuck_b", sleep=5.0)),
+              _feed_only("queued", _recorder(ran, "queued")))
+        began = time.monotonic()
+        answer = run_feed(member(*NO_CALENDAR))
+        took = time.monotonic() - began
+        assert answer["sources"]["quick"] == "ok"
+        assert answer["sources"]["stuck_a"] == "failed"
+        assert answer["sources"]["stuck_b"] == "failed"
+        # It never got a slot before the ceiling, and it reads failed.
+        assert answer["sources"]["queued"] == "failed"
+        assert "queued" not in ran
+        assert took < 1.8, took
+        from gateway.routes.shell import cache
+
+        assert not cache.storable(answer)
+
+    def test_the_needs_route_runs_no_slot(self, fakes):
+        # Non-vacuity of the sequential path: the needs view is as before.
+        user = admin(*FULL, "approvals")
+        assert run_feed(user)["needs"] == run_needs(user)
 
 
 class TestTheFeedOnlyGather:
