@@ -3603,6 +3603,28 @@ the parts:
 - The people provider checks the absence kind again after `away_on`. So a
   change of that read can only narrow the card.
 
+**Mutations, run by hand on 2026-10-15.** Each one failed a fence:
+
+1. The HR permission of `people` removed.
+2. A `partial` absence counted, in the SQL of `away_on` and then in the
+   provider.
+3. My own absence counted.
+4. `can_send` ignored.
+5. The bump of a question raises into the write.
+6. The org predicate removed from `away_on` (R8, the owner role).
+7. The check of `actor_email` removed from the chat provider.
+8. The bump of the admin absence `POST` removed.
+9. `away_on` reads `CURRENT_DATE`, not the day that it gets.
+10. The bump of `settle` removed.
+11. The time bound of the absence bump removed.
+12. The HR check of `away_on` removed.
+13. `CHAT_DURABLE_ASKS` ignored.
+
+**The measure** (§5.9 item 7). Each provider ran 40 times on the R8 seed,
+on a local Postgres. `people` gave p50 50 ms and p95 81 ms. `chat` gave p50
+153 ms and p95 271 ms, with a new connection for each session. Measure
+again on the box before the flip.
+
 Each slice adds its pytest and vitest lines to §18 in the same PR.
 
 **The flip of a source.** To list a source id in `MY_DAY_PROVIDERS` is an

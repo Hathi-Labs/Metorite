@@ -72,6 +72,11 @@ and ``tests/unit/test_shell_feed_r8.py``.
 app, so the client's carry keeps a failed source's own cards (§5.9 item 1).
 This file holds the why templates of all eleven MD-3 kinds. Fence:
 ``tests/unit/test_feed_task_kinds.py`` and ``test_feed_task_kinds_r8.py``.
+
+**People and chat** (MD-3f, §5.9 item 14) come from two gated sources, each
+its own app. ``people`` gives ``colleague_out`` and needs the HR grant.
+``chat`` gives ``agent_asks``, with no question text. Fence:
+``tests/unit/test_feed_people_chat_kinds.py`` and its ``_r8`` twin.
 """
 
 from __future__ import annotations
