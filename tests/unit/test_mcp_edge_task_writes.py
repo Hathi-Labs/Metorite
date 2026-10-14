@@ -66,6 +66,7 @@ name. ``E`` is ``apps/services/agent_edge/agent_edge``, ``G`` is
 * M32. An unbounded re-read after an update. ``test_a_slow_re_read_after_an_update_gives_the_patch_answer``.
 * M33. No grace after a landed write (``_landed`` does nothing). ``test_a_landed_write_moves_the_tool_limit_out``.
 * M34. ``G/tasks.py``: the type check reads root-local types only. ``test_a_create_with_an_org_wide_type_lands``.
+* M36. ``_post_write_budget`` returns ``POST_WRITE_READ_CAP_S`` and ignores the time left. ``test_two_hung_reads_after_an_update_stay_inside_the_grace``.
 * M35. ``_after_write`` lets a ``ToolError`` or a ``TimeoutError`` through. ``test_a_slow_re_read_after_a_create_gives_the_post_answer`` and ``test_a_failed_name_read_after_the_write_still_reports_it``.
 """
 from __future__ import annotations
@@ -713,6 +714,18 @@ class TestALandedWriteIsNeverBusy:
         assert result["isError"] is False, result
         assert result["structuredContent"]["task"]["version"] == V2
         assert len(edge.gateway.writes()) == 1
+
+    async def test_two_hung_reads_after_an_update_stay_inside_the_grace(
+            self, edge, monkeypatch):
+        """Verifier F3. BOTH reads after the PATCH hang. With the default cap
+        each read may take 4 s, and two of them pass the 8 s grace, unless the
+        second read gets only the time that is left (`_post_write_budget`)."""
+        monkeypatch.setattr(tools, "POST_WRITE_READ_CAP_S", 4.0)
+        edge.gateway.slow[f"/projects/tasks/{TASK}"] = 20.0
+        edge.gateway.slow[f"/projects/nodes/{PROJECT}/statuses"] = 20.0
+        result = await _tool("update_task", _update_args(title="x"))
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["task"]["version"] == V2
 
     async def test_the_default_caps_hold_the_verifiers_case(self, edge, monkeypatch):
         """The case of the re-verify: a 1 second limit, a 5 second GET, and
