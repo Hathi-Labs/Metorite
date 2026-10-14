@@ -14266,6 +14266,21 @@ item below has a fence in the same file, and each P1 has a mutation that turns i
   each bool both ways and each fixed choice. A refused card must leave no write, except the
   branches in `NO_CARD_BRANCHES`, each with its reason.
 
+**Round 2 (2026-10-14).** The verifier passed fix round 1, and the reviewer asked for eight small
+items.
+
+- The `run_rules` card lists each rule that sends email out first, and never cuts one. When those
+  alone do not fit, the tool runs nothing. The other rules follow, and a last line counts the rest.
+- A batch that is too long says "too many rules", not "too many targets".
+- `install_default_rules` installs nothing when it cannot read the provider of the mailbox.
+- A fence reads `_PRESET_LEGACY` against the `legacy` dict of `_seed_preset_rules`.
+- The note of an unsaved pane draft is "Drafts is unchanged", so it shares no text with "saved to
+  Drafts".
+- The docstrings of the reset, the digest send and the purge ask for no text confirmation.
+- The branch sweep also calls each `bool | None` parameter, and each rule action type.
+- The contract of `confirmation_channel_open` says that a tool may read it before a card, but only
+  to choose an act that writes less.
+
 ##### 12.3.13.7 EM-G11c2 — no background write without a member choice (PR-G4)
 
 **Scope.**
