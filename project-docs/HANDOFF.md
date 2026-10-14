@@ -5244,6 +5244,39 @@ line — never reclaim a number by deleting the other entry.
   `tests/unit/test_tenant_coverage.py` · `specs/my_day_feed.md` MD-2a
 - **Added:** 2026-10-14 · WS-58 MD-2a
 
+### H-306 · Seal removals in the delta feed wait for a caller that reads `removed[]` · [AGENT]
+- **Check:** `git grep -n "delta/tasks" -- workbench apps packages`. Look for a
+  hit outside `routes/projects/` and outside the `X` row of
+  `skill_projects/manifest.py`. Also look for `delta` in `MCP_ROUTES` in
+  `packages/acb_auth/acb_auth/agent_oauth.py`. No new hit means the trigger
+  has not come, and this entry stays.
+- **The trigger.** The first caller of `/projects/delta/tasks` that reads
+  `removed[]`. Today no caller exists. The web client does not call the feed.
+  The manifest classes it `X` ("A chat holds no cache"). The MCP edge does not
+  route it.
+- **What waits.** A D63 seal sends no removal through the feed. So a cached
+  client keeps a sealed tree on screen until its next full pull. PR #1010
+  built seal removals, and the coordinator closed it without merge. Its code
+  is on branch `sealed-tree-tombstones`, which stays.
+- **Fix these before you revive #1010:**
+  1. **Bound stream A2 to recent seals** with
+     `sealed_at > now() - RECONCILE_AFTER` (24 h). `sealed_loss_clause` reads
+     the reader's reach NOW, without the seal. A reader who gets reach after a
+     seal, and then polls with `since=1970`, gets every sealed task id. That
+     is a P2 id leak.
+  2. **Fence the member arm** of the pre-seal reach, and fence `_without_seal`.
+     The R8 suite proves the member arm only for a member with no grant.
+  3. **Remove the agent branch, or state why it stays.** The MCP edge does not
+     route the feed, so no agent can reach `pre_seal=True`.
+  4. **Fix the shadowing in `_admin_fakes.py:768`.** The new tree-task branch
+     matches `WITH tree AS`, and the seal-preview branch below it matches the
+     same text.
+  5. **Weigh the bump.** The bump of `updated_at` on every task in the tree
+     gives a 412 to each pending If-Match edit, and it resets the stale bands.
+- **Authority:** D63 (`work_plan.md` §3) · `specs/project_management_app.md`
+  §11.27 · PR #1010 and its review
+- **Added:** 2026-10-14 · closed PR #1010
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
