@@ -20,10 +20,28 @@
  * email-assistant tools take `account_id`, `email_id`, `rule_id`), falling back
  * to the optional `accountId` / `emailId` props the email app passes from its
  * current selection — so they work in the chat app too.
+ *
+ * ## One look with the other chat cards (follow-up of #945)
+ *
+ * Each card draws through `RollupCard` with `header="own"`. Its title row is
+ * the shared header (`RollupHeader`, through {@link CardHead}), with an icon
+ * of the set. A control of the card (Disable, Open, Read all) sits BESIDE the
+ * header, never inside it: the header is the fold's button. Every control is
+ * the shared `Button`. The draft card waits on the member, so it never folds
+ * until the draft is saved or sent. A read card in the trail draws through
+ * `ToolCardShell`. Each act sends the same request as before the move.
+ * Fences: `src/lib/chatCardConformance.test.ts`,
+ * `src/lib/cardHeaderTrigger.test.ts`, `src/components/email/emailCards.test.ts`
+ * and `e2e/email-chat-cards.spec.ts`.
  */
 
 import Button from "@/components/ui/Button";
+import Badge from "@/components/ui/Badge";
+import { Textarea } from "@/components/ui/Input";
+import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import AppIcon from "@/components/Icon";
+import { clipWords } from "@/lib/fencedText";
 import Readout from "@/components/Readout";
 import { withoutIds } from "@/lib/readout";
 import { useState, useEffect } from "react";
@@ -553,6 +571,70 @@ function useOpenEmail() {
   };
 }
 
+// ── The shared parts of a card ────────────────────────────────────────────────
+
+/** The frame of a receipt, and the tone of its icon. The same classes as the
+ *  Tasks receipts (`TaskToolCards`), so the two apps draw one receipt. */
+export function receiptTone(failed: boolean, danger = false): { frame: string; icon: string } {
+  if (failed) return { frame: "rounded-lg border px-2.5 py-2 border-destructive/40 bg-destructive/5", icon: "text-destructive" };
+  if (danger) return { frame: "rounded-lg border px-2.5 py-2 border-warning/40 bg-warning/5", icon: "text-warning" };
+  return { frame: "rounded-lg border px-2.5 py-2 border-sidebar-border bg-secondary/40", icon: "text-success" };
+}
+
+/** A small control in a dense card row. The shared `Button`, at the card's
+ *  type size. */
+const DENSE = "gap-0.5 px-1.5 py-0.5 text-[10px]";
+
+/**
+ * A card's title row: the shared header (the fold's one toggle), and the
+ * card's own controls BESIDE it, never inside it. The right padding leaves
+ * room for the dismiss control of `DismissableCard`.
+ */
+function CardHead({
+  tone = "",
+  aside,
+  children,
+}: {
+  tone?: string;
+  aside?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 pr-5">
+      <div className="min-w-0 flex-1">
+        <RollupHeader className={`text-[11px] ${tone}`.trim()} aside={aside} />
+      </div>
+      {children ? <div className="flex shrink-0 items-center gap-1">{children}</div> : null}
+    </div>
+  );
+}
+
+// ── The acts of a card ────────────────────────────────────────────────────────
+//
+// Each act sends the request it sent before the cards moved onto the shared
+// header. Two of them take more than one request, so they are named here,
+// and `emailCards.test.ts` holds each request by value. The browser twin is
+// `e2e/email-chat-cards.spec.ts`, which ran green on `main` first.
+
+/** Send a draft reply: save the text as the draft, then send that draft.
+ *  "saved" when the save named no draft id, so the draft stays in Drafts. */
+export async function sendDraftReply(accountId: string, messageId: string, body: string): Promise<"sent" | "saved"> {
+  const res = await saveDraftText(accountId, messageId, body);
+  if (!res?.id) return "saved";
+  await sendDraft(accountId, res.id);
+  return "sent";
+}
+
+/** Turn a rule on or off: read the account's rules, and write the whole
+ *  rule back with `enabled` changed. False when the rule is not there. */
+export async function setRuleEnabled(accountId: string, ruleId: string, enabled: boolean): Promise<boolean> {
+  const rules = await listRules(accountId);
+  const rule = rules.find((r) => r.id === ruleId);
+  if (!rule) return false;
+  await updateRule(ruleId, { ...rule, enabled });
+  return true;
+}
+
 // ── Draft card ────────────────────────────────────────────────────────────────
 
 /** Editable draft — Save to Drafts or Send. */
@@ -596,58 +678,50 @@ function DraftResultCard({
     if (!canAct || !confirm(head.from ? `Send this reply from ${head.from}?` : "Send this reply now?")) return;
     setState("sending");
     try {
-      const res = await saveDraftText(acctId, targetId, body);
-      if (res?.id) {
-        await sendDraft(acctId, res.id);
-        setState("sent");
-      } else {
-        // Couldn't resolve a draft id to send — left it in Drafts.
-        setState("saved");
-      }
+      // "saved": the save named no draft id to send, so it stays in Drafts.
+      setState(await sendDraftReply(acctId, targetId, body));
     } catch {
       setState("error");
     }
   };
 
   const done = state === "saved" || state === "sent";
+  const acting = state === "saving" || state === "sending";
 
+  // The draft waits on the member until it is saved or sent, so it never
+  // folds (`lib/cardRollup.ts` rule 1). Then it is a receipt, and may fold.
   return (
-    <div className="rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-2">
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <AppIcon name="PenLine" size={12} className="text-primary" />
-        <span className="text-[11px] font-medium text-foreground">Draft reply</span>
-        {head.from ? (
-          <span className="truncate text-[10px] text-muted-foreground">from {head.from}</span>
-        ) : null}
-      </div>
-      <textarea
+    <RollupCard id={`tool:${e.id}`} title="Draft reply" icon="PenLine" header="own" pending={!done}>
+    <div data-email-card="draft" className={CARD_FRAME_CLASS}>
+      <CardHead tone="text-primary" aside={head.from ? `from ${head.from}` : undefined} />
+      <RollupBody className="pt-1.5">
+      <Textarea
+        inputSize="sm"
+        aria-label="Draft reply"
         value={body}
         onChange={(ev) => setBody(ev.target.value)}
         rows={5}
         disabled={done}
-        className="w-full bg-background border border-border rounded-md px-2 py-1.5 text-[11px] text-foreground outline-none focus:border-primary resize-y leading-relaxed disabled:opacity-70"
+        className="leading-relaxed"
       />
-      <div className="flex items-center gap-2 mt-1.5">
+      <div className="flex flex-wrap items-center gap-2 mt-1.5">
         {state === "sent" ? (
-          <span className="flex items-center gap-1 text-[10px] text-success">
-            <AppIcon name="Send" size={11} /> Sent
-          </span>
+          <Badge tone="success" icon="Send">Sent</Badge>
         ) : state === "saved" ? (
-          <span className="flex items-center gap-1 text-[10px] text-success">
-            <AppIcon name="CheckCircle2" size={11} /> Saved to Drafts
-          </span>
+          <Badge tone="success" icon="CheckCircle2">Saved to Drafts</Badge>
         ) : (
           <>
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="PenLine"
+              loading={state === "saving"}
               onClick={save}
-              disabled={!canAct || state === "saving" || state === "sending"}
-              className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-border text-foreground hover:bg-secondary disabled:opacity-50"
+              disabled={!canAct || acting}
             >
-              {state === "saving" ? <AppIcon name="Loader2" size={11} className="animate-spin" /> : <AppIcon name="PenLine" size={11} />}
               Save to Drafts
-            </button>
-            <Button size="none" radius="keep" layout="flex items-center" onClick={send} disabled={!canAct || state === "saving" || state === "sending"} className="gap-1 text-[10px] px-2 py-1 rounded-md">
-              {state === "sending" ? <AppIcon name="Loader2" size={11} className="animate-spin" /> : <AppIcon name="Send" size={11} />}
+            </Button>
+            <Button size="sm" icon="Send" loading={state === "sending"} onClick={send} disabled={!canAct || acting}>
               Send
             </Button>
           </>
@@ -659,7 +733,9 @@ function DraftResultCard({
           <span className="text-[10px] text-muted-foreground">Open the email to enable saving.</span>
         )}
       </div>
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -667,8 +743,9 @@ function DraftResultCard({
 
 const RULE_ID_RE = /id=([0-9a-fA-F-]{8,})/;
 
-/** Condition rows ("When") from a create/update_rule tool call's args. */
-function ruleConditions(a: Record<string, unknown>): { label: string; value: string }[] {
+/** Condition rows ("When") from a create/update_rule tool call's args.
+ *  Exported for its test. */
+export function ruleConditions(a: Record<string, unknown>): { label: string; value: string }[] {
   const out: { label: string; value: string }[] = [];
   const push = (label: string, v: unknown) => {
     if (v != null && String(v).trim()) out.push({ label, value: String(v).trim() });
@@ -681,8 +758,9 @@ function ruleConditions(a: Record<string, unknown>): { label: string; value: str
   return out;
 }
 
-/** Action badges ("Then") from a create/update_rule tool call's args. */
-function ruleActions(a: Record<string, unknown>): string[] {
+/** Action badges ("Then") from a create/update_rule tool call's args.
+ *  Exported for its test. */
+export function ruleActions(a: Record<string, unknown>): string[] {
   const out: string[] = [];
   const norm = (t: unknown) => String(t).replace(/_/g, " ");
   if (a.action_type) {
@@ -733,61 +811,55 @@ function RuleResultCard({
     if (!ruleId || !acctId) return;
     setState("busy");
     try {
-      const rules = await listRules(acctId);
-      const r = rules.find((x) => x.id === ruleId);
-      if (r) await updateRule(ruleId, { ...r, enabled: false });
+      await setRuleEnabled(acctId, ruleId, false);
       setState("disabled");
     } catch {
       setState("idle");
     }
   };
 
+  const title = `${created ? "Created rule" : "Updated rule"}: ${name}`;
+  const tone = receiptTone(false);
   return (
-    <div className="rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-2">
-      <div className="flex items-center gap-2 pr-5">
-        <AppIcon name="Sparkles" size={13} className="text-primary flex-shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">
-            {created ? "Created rule" : "Updated rule"}: {name}
-          </div>
-          {state === "deleted" && <div className="text-[10px] text-destructive">Deleted.</div>}
-          {state === "disabled" && <div className="text-[10px] text-muted-foreground">Disabled.</div>}
-        </div>
+    <RollupCard id={`tool:${e.id}`} title={title} icon="Sparkles" header="own">
+    <div data-email-card="rule" className={tone.frame}>
+      <CardHead
+        tone={tone.icon}
+        aside={
+          state === "deleted" ? <span className="text-destructive">Deleted.</span>
+            : state === "disabled" ? "Disabled."
+              : undefined
+        }
+      >
         {state === "idle" && ruleId && (
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <>
             {acctId && (
-              <button
-                onClick={disable}
-                className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-              >
+              <Button variant="secondary" size="none" className={DENSE} onClick={disable}>
                 Disable
-              </button>
+              </Button>
             )}
-            <button
-              onClick={del}
-              className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-            >
+            <Button variant="secondary" size="none" className={DENSE} onClick={del}>
               Delete
-            </button>
-          </div>
+            </Button>
+          </>
         )}
         {state === "busy" && <AppIcon name="Loader2" size={12} className="animate-spin text-muted-foreground" />}
-      </div>
+      </CardHead>
 
       {/* When → Then summary (from the tool-call args). For update_rule these
-          are just the changed fields; for create_rule, the whole rule. */}
+          are just the changed fields; for create_rule, the whole rule. The
+          whole value shows: a cut at a fixed length ended inside a word. */}
+      <RollupBody>
       {state !== "deleted" && (conds.length > 0 || actions.length > 0) && (
-        <div className="mt-1.5 pl-[21px] space-y-1">
+        <div className="mt-1.5 space-y-1">
           {conds.length > 0 && (
-            <div className="text-[10px] leading-relaxed">
+            <div className="text-[10px] leading-relaxed break-words">
               <span className="text-muted-foreground">When </span>
               {conds.map((c, i) => (
                 <span key={i}>
                   {i > 0 && <span className="text-muted-foreground/70"> {op} </span>}
                   <span className="text-muted-foreground">{c.label}:</span>{" "}
-                  <span className="text-foreground">
-                    {c.value.length > 60 ? c.value.slice(0, 60) + "…" : c.value}
-                  </span>
+                  <span className="text-foreground">{c.value}</span>
                 </span>
               ))}
             </div>
@@ -796,12 +868,7 @@ function RuleResultCard({
             <div className="flex flex-wrap items-center gap-1 text-[10px]">
               <span className="text-muted-foreground">Then</span>
               {actions.map((act, i) => (
-                <span
-                  key={i}
-                  className="px-1.5 py-0.5 rounded bg-secondary/70 text-foreground"
-                >
-                  {act}
-                </span>
+                <Badge key={i}>{act}</Badge>
               ))}
             </div>
           )}
@@ -812,7 +879,9 @@ function RuleResultCard({
           )}
         </div>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -840,47 +909,49 @@ const SETTING_LABELS: Record<string, string> = {
   sensitive_data_protection: "Sensitive-data protection",
 };
 
-function fmtVal(v: unknown): string {
+/** A setting's value as one short phrase. A long text is cut at a word, with
+ *  an ellipsis, as the server cuts (`clip_words`). Exported for its test. */
+export function fmtVal(v: unknown): string {
   if (typeof v === "boolean") return v ? "on" : "off";
   if (Array.isArray(v)) return v.length ? v.join(", ") : "all";
-  const s = String(v);
-  return s.length > 40 ? s.slice(0, 40) + "…" : s;
+  return clipWords(String(v), 40);
+}
+
+/** The settings a call changed, as `[label, value]`, in the order of the
+ *  call's args. Exported for its test. */
+export function changedSettings(args: Record<string, unknown> | undefined): [string, string][] {
+  return Object.entries(args ?? {})
+    .filter(([k, v]) => k !== "account_id" && v !== null && v !== undefined && k in SETTING_LABELS)
+    .map(([k, v]) => [SETTING_LABELS[k], fmtVal(v)]);
 }
 
 /** Shows which settings the assistant changed, with a shortcut to the settings UI. */
 function SettingsUpdatedCard({ event: e }: { event: ToolEvent }) {
   const router = useRouter();
-  const args = e.args as Record<string, unknown> | undefined;
-  const changed = Object.entries(args ?? {}).filter(
-    ([k, v]) => k !== "account_id" && v !== null && v !== undefined && k in SETTING_LABELS,
-  );
+  const changed = changedSettings(e.args as Record<string, unknown> | undefined);
+  const tone = receiptTone(false);
 
   return (
-    <div className="rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-2">
-      <div className="flex items-center gap-2 pr-5">
-        <AppIcon name="Settings2" size={13} className="text-primary flex-shrink-0" />
-        <span className="text-[11px] font-medium text-foreground flex-1">Settings updated</span>
-        <button
-          onClick={() => router.push("/email")}
-          className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-        >
+    <RollupCard id={`tool:${e.id}`} title="Settings updated" icon="Settings2" header="own">
+    <div data-email-card="settings" className={tone.frame}>
+      <CardHead tone={tone.icon}>
+        <Button variant="secondary" size="none" className={DENSE} onClick={() => router.push("/email")}>
           <AppIcon name="ExternalLink" size={10} /> Open
-        </button>
-      </div>
+        </Button>
+      </CardHead>
+      <RollupBody>
       {changed.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1">
-          {changed.map(([k, v]) => (
-            <span
-              key={k}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-secondary/70 text-muted-foreground"
-              title={`${SETTING_LABELS[k]}: ${fmtVal(v)}`}
-            >
-              {SETTING_LABELS[k]}: <span className="text-foreground">{fmtVal(v)}</span>
-            </span>
+          {changed.map(([label, value]) => (
+            <Badge key={label} title={`${label}: ${value}`}>
+              {label}: <span className="text-foreground">{value}</span>
+            </Badge>
           ))}
         </div>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -1068,31 +1139,17 @@ function EmailListCard({ events }: { events: ToolEvent[] }) {
   );
 
   return (
-    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
-      {/* pr-5 leaves room for the dismiss (X) overlay at the card's corner. */}
-      <div className="flex items-center gap-1.5 mb-1.5 pr-5">
-        <AppIcon name={iconName} size={12} className="text-primary" />
-        <span className="text-[11px] font-medium text-foreground">{meta.label}</span>
-        <span className="text-[10px] text-muted-foreground">({rows.length})</span>
+    <RollupCard id={`tool:${events[0].id}`} title={meta.label} icon={iconName} rows={rows.length} header="own">
+    <div data-email-card="list" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+      <CardHead tone="text-primary">
         {actionable.length > 1 && (
-          <div className="ml-auto flex items-center gap-1">
-            <button
-              onClick={() => actionable.forEach((r) => markRead(r.id))}
-              title="Mark all as read"
-              className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            >
-              <AppIcon name="MailOpen" size={10} /> Read all
-            </button>
-            <button
-              onClick={() => actionable.forEach((r) => archive(r.id))}
-              title="Archive all"
-              className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            >
-              <AppIcon name="Archive" size={10} /> Archive all
-            </button>
-          </div>
+          <BulkButtons
+            onRead={() => actionable.forEach((r) => markRead(r.id))}
+            onArchive={() => actionable.forEach((r) => archive(r.id))}
+          />
         )}
-      </div>
+      </CardHead>
+      <RollupBody className="pt-1.5">
       <div className="space-y-1">
         {shown.map((r) => (
           <EmailRow
@@ -1106,14 +1163,36 @@ function EmailListCard({ events }: { events: ToolEvent[] }) {
         ))}
       </div>
       {rows.length > 5 && (
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="mt-1 text-[10px] text-primary hover:opacity-80"
-        >
+        <Button variant="text" size="none" className="mt-1 text-[10px]" onClick={() => setExpanded((v) => !v)}>
           {expanded ? "Show less" : `Show ${rows.length - 5} more`}
-        </button>
+        </Button>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
+  );
+}
+
+/** "Read all" and "Archive all" of a list or a group, as shared buttons. */
+function BulkButtons({
+  onRead,
+  onArchive,
+  scope = "",
+}: {
+  onRead: () => void;
+  onArchive: () => void;
+  /** Words after "all" in the tooltip: " in this group". */
+  scope?: string;
+}) {
+  return (
+    <>
+      <Button variant="secondary" size="none" className={DENSE} onClick={onRead} title={`Mark all${scope} as read`}>
+        <AppIcon name="MailOpen" size={10} /> Read all
+      </Button>
+      <Button variant="secondary" size="none" className={DENSE} onClick={onArchive} title={`Archive all${scope}`}>
+        <AppIcon name="Archive" size={10} /> Archive all
+      </Button>
+    </>
   );
 }
 
@@ -1193,16 +1272,17 @@ function EmailGroupsCard({ event: e }: { event: ToolEvent }) {
   };
 
   return (
-    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden">
-      <div className="flex items-center gap-1.5 mb-2 pr-5">
-        <AppIcon name="Layers" size={12} className="text-primary" />
-        <span className="text-[11px] font-medium text-foreground">
-          Categorized emails
-        </span>
-        <span className="text-[10px] text-muted-foreground">
-          ({total} in {groups.length} group{groups.length > 1 ? "s" : ""})
-        </span>
-      </div>
+    <RollupCard
+      id={`tool:${e.id}`}
+      title="Categorized emails"
+      icon="Layers"
+      rows={total}
+      header="own"
+      summary={groups.map((g) => g.title).join(", ")}
+    >
+    <div data-email-card="groups" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2 min-w-0 overflow-hidden">
+      <CardHead tone="text-primary" aside={`in ${groups.length} group${groups.length > 1 ? "s" : ""}`} />
+      <RollupBody className="pt-2">
       <div className="space-y-1.5">
         {groups.map((g, i) => (
           <GroupSection
@@ -1214,7 +1294,9 @@ function EmailGroupsCard({ event: e }: { event: ToolEvent }) {
           />
         ))}
       </div>
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -1239,10 +1321,13 @@ function GroupSection({
   return (
     <div className="rounded-md border border-border/70 bg-background/40">
       <div className="flex items-center gap-1.5 px-2 py-1.5">
-        <button
+        <Button
+          variant="text"
+          size="none"
+          layout="flex items-center"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+          className="gap-1.5 flex-1 min-w-0 text-left"
         >
           <AppIcon name="ChevronDown"
             size={11}
@@ -1259,23 +1344,14 @@ function GroupSection({
               — {group.note}
             </span>
           )}
-        </button>
+        </Button>
         {open && actionable.length > 1 && (
           <div className="flex items-center gap-1 flex-shrink-0">
-            <button
-              onClick={() => actionable.forEach((r) => onMarkRead(r.id))}
-              title="Mark all in this group as read"
-              className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            >
-              <AppIcon name="MailOpen" size={10} /> Read all
-            </button>
-            <button
-              onClick={() => actionable.forEach((r) => onArchive(r.id))}
-              title="Archive all in this group"
-              className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            >
-              <AppIcon name="Archive" size={10} /> Archive all
-            </button>
+            <BulkButtons
+              scope=" in this group"
+              onRead={() => actionable.forEach((r) => onMarkRead(r.id))}
+              onArchive={() => actionable.forEach((r) => onArchive(r.id))}
+            />
           </div>
         )}
       </div>
@@ -1388,10 +1464,14 @@ function EmailRow({
       } ${archived ? "opacity-60" : ""}`}
     >
       <div className="flex items-center gap-1">
-        <button
+        <Button
+          variant="text"
+          size="none"
+          radius="keep"
+          layout="flex items-center"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex items-center gap-1.5 flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
+          className="gap-1.5 flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
         >
           <AppIcon name="ChevronDown"
             size={11}
@@ -1428,7 +1508,7 @@ function EmailRow({
               )}
             </span>
           </span>
-        </button>
+        </Button>
         <div className="flex items-center flex-shrink-0 mr-0.5">
           {done ? (
             <span className="flex items-center gap-0.5 text-[9px] text-success px-1">
@@ -1438,21 +1518,23 @@ function EmailRow({
             <AppIcon name="Loader2" size={12} className="animate-spin text-muted-foreground mx-1" />
           ) : (
             <>
-              <button
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                radius="keep"
+                layout=""
                 onClick={() => setCatOpen((v) => !v)}
                 title="Categorize"
                 aria-label="Categorize"
                 aria-expanded={catOpen}
-                className={`p-1 rounded hover:text-foreground hover:bg-secondary ${
-                  catOpen ? "text-primary" : "text-muted-foreground"
-                }`}
+                className="rounded"
               >
                 {catBusy ? (
                   <AppIcon name="Loader2" size={11} className="animate-spin" />
                 ) : (
                   <AppIcon name="Tag" size={11} />
                 )}
-              </button>
+              </Button>
               <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={markRead} title="Mark as read" aria-label="Mark as read" className="rounded">
                 <AppIcon name="MailOpen" size={11} />
               </Button>
@@ -1470,13 +1552,16 @@ function EmailRow({
         <div className="px-2 pb-2 pt-1 flex flex-wrap items-center gap-1 border-t border-border/50">
           <span className="text-[10px] text-muted-foreground mr-0.5">Label as:</span>
           {QUICK_CATEGORIES.map((c) => (
-            <button
+            <Button
               key={c}
+              variant="secondary"
+              size="none"
+              radius="keep"
               onClick={() => categorize(c)}
-              className="px-1.5 py-0.5 rounded-full border border-border text-[10px] text-foreground hover:bg-secondary"
+              className="px-1.5 py-0.5 rounded-full text-[10px]"
             >
               {c}
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -1489,9 +1574,9 @@ function EmailRow({
           ) : error ? (
             <div className="text-[10px] text-muted-foreground py-1">
               Couldn&apos;t load this email.{" "}
-              <button onClick={() => openEmail(row.id)} className="text-primary underline">
+              <Button variant="text" size="none" layout="inline" onClick={() => openEmail(row.id)} className="underline">
                 Open in inbox
-              </button>
+              </Button>
             </div>
           ) : body ? (
             <>
@@ -1525,15 +1610,11 @@ function EmailPreviewCard({ event: e }: { event: ToolEvent }) {
   // Without an id we can't fetch/open — fall back to a static header.
   if (!id) {
     return (
-      <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
-        <div className="flex items-center gap-2">
-          <AppIcon name="Mail" size={13} className="text-primary flex-shrink-0" />
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-medium text-foreground truncate">{subject}</div>
-            {from && <div className="text-[10px] text-muted-foreground truncate">{from}</div>}
-          </div>
-        </div>
+      <RollupCard id={`tool:${e.id}`} title={subject} icon="Mail" header="own">
+      <div data-email-card="preview" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+        <CardHead tone="text-primary" aside={from || undefined} />
       </div>
+      </RollupCard>
     );
   }
 
@@ -1564,24 +1645,19 @@ function LabelUpdateCard({ event: e }: { event: ToolEvent }) {
   // Nothing structured to show → fall back to the generic confirmation.
   if (add.length === 0 && remove.length === 0) return <ActionResultCard event={e} />;
   const failed = e.status === "error";
+  const tone = receiptTone(failed);
+  // The count reads after the title, on the title row ("Labels updated · 2
+  // emails"), as before.
+  const title = failed ? "Couldn't update labels" : "Labels updated";
 
   return (
-    <div
-      className={`rounded-lg border px-2.5 py-2 ${
-        failed ? "border-destructive/40 bg-destructive/5" : "border-sidebar-border bg-secondary/40"
-      }`}
-    >
-      <div className="flex items-center gap-1.5">
-        <AppIcon name="Tag" size={12} className={failed ? "text-destructive" : "text-primary"} />
-        <span className="text-[11px] font-medium text-foreground">
-          {failed ? "Couldn't update labels" : "Labels updated"}
-          {count > 0 && (
-            <span className="text-muted-foreground font-normal">
-              {" "}· {count} email{count > 1 ? "s" : ""}
-            </span>
-          )}
-        </span>
-      </div>
+    <RollupCard id={`tool:${e.id}`} title={title} icon="Tag" header="own">
+    <div data-email-card="label" className={tone.frame}>
+      <CardHead
+        tone={failed ? tone.icon : "text-primary"}
+        aside={count > 0 ? `· ${count} email${count > 1 ? "s" : ""}` : undefined}
+      />
+      <RollupBody>
       {add.length > 0 && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
           <span className="text-[10px] text-muted-foreground">Added</span>
@@ -1594,16 +1670,13 @@ function LabelUpdateCard({ event: e }: { event: ToolEvent }) {
         <div className="mt-1 flex flex-wrap items-center gap-1">
           <span className="text-[10px] text-muted-foreground">Removed</span>
           {remove.map((l) => (
-            <span
-              key={l}
-              className="text-[10px] px-2 py-0.5 rounded-full bg-secondary text-muted-foreground line-through"
-            >
-              {l}
-            </span>
+            <Badge key={l} className="line-through">{l}</Badge>
           ))}
         </div>
       )}
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -1635,34 +1708,18 @@ function ManageInboxCard({ event: e }: { event: ToolEvent }) {
   if (!meta || count === 0) return <ActionResultCard event={e} />;
   const failed = e.status === "error";
   const iconName = failed ? "X" : meta.icon;
+  const tone = receiptTone(failed, meta.danger);
+  const title =
+    `${failed ? `Couldn't ${meta.verb.toLowerCase()}` : meta.verb} ${count} email${count > 1 ? "s" : ""}` +
+    (action === "move" && args?.folder ? ` → ${String(args.folder)}` : "");
 
+  // One row, and no body: nothing folds, so it draws no toggle.
   return (
-    <div
-      className={`rounded-lg border px-2.5 py-2 ${
-        failed
-          ? "border-destructive/40 bg-destructive/5"
-          : meta.danger
-            ? "border-warning/40 bg-warning/5"
-            : "border-sidebar-border bg-secondary/40"
-      }`}
-    >
-      <div className="flex items-center gap-2">
-        <span
-          className={
-            failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success"
-          }
-        >
-          <AppIcon name={iconName} size={13} />
-        </span>
-        <span className="text-[11px] font-medium text-foreground">
-          {failed ? `Couldn't ${meta.verb.toLowerCase()}` : meta.verb}{" "}
-          {count} email{count > 1 ? "s" : ""}
-          {action === "move" && args?.folder
-            ? ` → ${String(args.folder)}`
-            : ""}
-        </span>
-      </div>
+    <RollupCard id={`tool:${e.id}`} title={title} icon={iconName} header="own">
+    <div data-email-card="manage" className={tone.frame}>
+      <CardHead tone={tone.icon} />
     </div>
+    </RollupCard>
   );
 }
 
@@ -1760,19 +1817,21 @@ function PatternListCard({
             <span className="text-[11px] text-foreground/90 flex-1 min-w-0 break-words leading-relaxed">
               {r.text}
             </span>
-            <button
+            <Button
+              variant="ghost"
+              size="icon-xs"
               onClick={() => forget(r.id)}
               disabled={busy === r.id}
               title="Forget this pattern"
               aria-label="Forget this pattern"
-              className="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex-shrink-0 disabled:opacity-50"
+              className="flex-shrink-0"
             >
               {busy === r.id ? (
                 <AppIcon name="Loader2" size={11} className="animate-spin" />
               ) : (
                 <AppIcon name="Trash2" size={11} />
               )}
-            </button>
+            </Button>
           </div>
         ))}
       </div>
@@ -1879,10 +1938,7 @@ function RulesOverviewCard({
     setBusy(row.id);
     setError(false);
     try {
-      const all = await listRules(acctId);
-      const full = all.find((r) => r.id === row.id);
-      if (!full) throw new Error("rule not found");
-      await updateRule(row.id, { ...full, enabled: !row.enabled });
+      if (!(await setRuleEnabled(acctId, row.id, !row.enabled))) throw new Error("rule not found");
       setRules((rs) =>
         rs.map((r) => (r.id === row.id ? { ...r, enabled: !row.enabled } : r)),
       );
@@ -1938,9 +1994,12 @@ function RulesOverviewCard({
                 />
               ) : (
                 <>
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="none"
                     onClick={() => toggle(r)}
                     disabled={!acctId}
+                    selected={r.enabled}
                     title={
                       acctId
                         ? r.enabled
@@ -1948,22 +2007,20 @@ function RulesOverviewCard({
                           : "Turn this rule on"
                         : undefined
                     }
-                    className={`text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0 transition-colors ${
-                      r.enabled
-                        ? "bg-success/15 text-success hover:bg-success/25"
-                        : "bg-secondary text-muted-foreground hover:text-foreground"
-                    } ${acctId ? "" : "cursor-default"}`}
+                    className={`${DENSE} flex-shrink-0`}
                   >
                     {r.enabled ? "On" : "Off"}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
                     onClick={() => del(r)}
                     title="Delete this rule"
                     aria-label="Delete this rule"
-                    className="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex-shrink-0"
+                    className="flex-shrink-0"
                   >
                     <AppIcon name="Trash2" size={11} />
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -2074,26 +2131,19 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const iconName = failed ? "X" : meta.icon;
   const detail = (e.result || "").trim();
 
+  const tone = receiptTone(failed, meta.danger);
+
   return (
-    <div
-      className={`rounded-lg border px-2.5 py-2 ${
-        failed
-          ? "border-destructive/40 bg-destructive/5"
-          : meta.danger
-            ? "border-warning/40 bg-warning/5"
-            : "border-sidebar-border bg-secondary/40"
-      }`}
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={meta.label}
+      icon={iconName}
+      summary={withoutIds(detail.split(/\r?\n/)[0] ?? "")}
+      header="own"
     >
-      <div className="flex items-start gap-2">
-        <span
-          className={`mt-0.5 flex-shrink-0 ${
-            failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success"
-          }`}
-        >
-          <AppIcon name={iconName} size={13} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">{meta.label}</div>
+    <div data-email-card="action" className={tone.frame}>
+      <CardHead tone={tone.icon} />
+      <RollupBody>
           {/* Compact, and through `Readout`, so an id never shows. The
               box holds about three lines, and a longer result scrolls. */}
           {detail && (
@@ -2101,9 +2151,9 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
               <Readout result={detail} />
             </div>
           )}
-        </div>
-      </div>
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 
@@ -2134,23 +2184,21 @@ const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
 function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {
   const meta = NO_ACTION_META[kind];
   const result = (e.result || "").trim();
+  // A question back to the member waits on the member: it never folds.
   return (
-    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 flex-shrink-0 text-muted-foreground">
-          <AppIcon name={meta.icon} size={13} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">{meta.label}</div>
+    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={meta.icon} header="own" pending={kind === "question"}>
+    <div data-email-card="no-action" className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+      <CardHead tone="text-muted-foreground" />
+      <RollupBody>
           {/* No clamp: a question lists each mailbox, and each one matters. */}
           {result && (
             <div className="mt-0.5">
               <Readout result={result} />
             </div>
           )}
-        </div>
-      </div>
+      </RollupBody>
     </div>
+    </RollupCard>
   );
 }
 

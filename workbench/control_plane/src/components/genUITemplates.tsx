@@ -53,6 +53,7 @@ import { pickedFromAnswer } from "@/lib/askAnswers";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import { plainTitle } from "@/lib/fencedText";
+import { templateTitle } from "@/lib/chatPlacement";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
 import {
   CollapsibleCardBody,
@@ -340,7 +341,9 @@ function WeatherGlyph({ condition, size = 48 }: { condition: string; size?: numb
 // ── Templates ────────────────────────────────────────────────────────────────
 
 function WeatherCard({ data }: { data: Data }) {
-  const location = str(data.location, "Weather");
+  const location = templateTitle("weatherCard", data);
+  // In a chat card the place is the header, so the body does not say it again.
+  const fold = useCardFold();
   const temp = data.tempF != null ? num(data.tempF) : num(data.tempC);
   const unit = data.tempF != null ? "°F" : "°C";
   const condition = str(data.condition, "clear");
@@ -351,10 +354,12 @@ function WeatherCard({ data }: { data: Data }) {
       borderRadius: 14, padding: 16, border: "1px solid var(--border)",
       background: "linear-gradient(135deg, color-mix(in srgb, var(--primary) 12%, var(--card)), var(--card))",
     }}>
+      <TemplateHead icon="cloud-sun" title={location} foldOnly />
+      <TemplateBody>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <WeatherGlyph condition={condition} />
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}>{location}</div>
+          {!fold && <div style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}>{location}</div>}
           <div style={{ fontSize: TYPE["4xl"], fontWeight: 600, color: "var(--foreground)", lineHeight: 1.1 }}>
             {Math.round(animated)}{unit}
           </div>
@@ -365,8 +370,8 @@ function WeatherCard({ data }: { data: Data }) {
         <div style={{ textAlign: "right", fontSize: TYPE.caption, color: "var(--muted-foreground)", lineHeight: 1.6 }}>
           {data.highC != null && <div>H {num(data.highC)}°</div>}
           {data.lowC != null && <div>L {num(data.lowC)}°</div>}
-          {data.humidity != null && <div>💧 {num(data.humidity)}%</div>}
-          {data.wind != null && <div>🌬 {str(data.wind)}</div>}
+          {data.humidity != null && <div style={INLINE_ICON}><TIcon name="droplets" size={11} /> {num(data.humidity)}%</div>}
+          {data.wind != null && <div style={INLINE_ICON}><TIcon name="wind" size={11} /> {str(data.wind)}</div>}
         </div>
       </div>
       {forecast.length > 0 && (
@@ -388,10 +393,14 @@ function WeatherCard({ data }: { data: Data }) {
           })}
         </div>
       )}
+      </TemplateBody>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
 }
+
+/** A small icon in a line of text, on the text's baseline. */
+const INLINE_ICON: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 3 };
 
 /**
  * The delta a stat tile may draw, or null (WS-27bm S9).
@@ -438,16 +447,17 @@ function StatTile({ s }: { s: Data }) {
 
 function StatDashboard({ data }: { data: Data }) {
   const stats = arr(data.stats);
+  // The tiles have no frame of their own. In a chat card the card's frame
+  // holds the header and the tiles, as the other chat templates draw.
+  const fold = useCardFold();
   return (
-    <div>
-      {data.title != null && (
-        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", marginBottom: 8 }}>
-          {str(data.title)}
-        </div>
-      )}
+    <div style={fold ? CARD_BOX : undefined}>
+      <TemplateHead icon="layout-dashboard" title={data.title != null ? str(data.title) : null} />
+      <TemplateBody>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {stats.map((s, i) => <StatTile key={i} s={(s ?? {}) as Data} />)}
       </div>
+      </TemplateBody>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
@@ -480,11 +490,16 @@ function SparkTrend({ data }: { data: Data }) {
     const y = h - ((v - min) / range) * h;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
+  // In a chat card the label is the header, so the tile does not say it again.
+  const fold = useCardFold();
+  const label = templateTitle("sparkTrend", data);
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 14, padding: 14, borderRadius: 12,
-      border: "1px solid var(--border)", background: "var(--card)" }}>
+    <div style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
+    <TemplateHead icon="trending-up" title={label || null} foldOnly />
+    <TemplateBody>
+    <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{str(data.label)}</div>
+        {!fold && <div style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{label}</div>}
         <div style={{ fontSize: TYPE["2xl"], fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
           {Math.round(animated).toLocaleString()}
           {data.unit != null && <span style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}> {str(data.unit)}</span>}
@@ -498,6 +513,8 @@ function SparkTrend({ data }: { data: Data }) {
       </svg>
       <style>{`@keyframes ccDraw{to{stroke-dashoffset:0}}`}</style>
     </div>
+    </TemplateBody>
+    </div>
   );
 }
 
@@ -506,12 +523,17 @@ function Comparison({ data }: { data: Data }) {
   const rowLabels = Array.from(new Set(
     options.flatMap((o) => arr(o.rows).map((r) => str((r as Data).label))),
   ));
+  // The title strip is the card's header in a chat card. It draws while the
+  // card folds even with no title, so the toggle has its place.
+  const fold = useCardFold();
   return (
     <div style={{ borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
-      {data.title != null && (
-        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", padding: "10px 12px",
-          borderBottom: "1px solid var(--border)", background: "var(--card)" }}>{str(data.title)}</div>
+      {(data.title != null || fold?.toggle) && (
+        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", background: "var(--card)" }}>
+          <TemplateHead icon="scale" title={data.title != null ? str(data.title) : null} gap={0} />
+        </div>
       )}
+      <TemplateBody>
       <div style={{ display: "grid", gridTemplateColumns: `140px repeat(${options.length}, 1fr)` }}>
         <div style={{ background: "var(--card)" }} />
         {options.map((o, i) => (
@@ -547,6 +569,7 @@ function Comparison({ data }: { data: Data }) {
           </div>
         ))}
       </div>
+      </TemplateBody>
     </div>
   );
 }
@@ -557,9 +580,8 @@ function ProgressTracker({ data }: { data: Data }) {
   const pct = steps.length ? (done / steps.length) * 100 : 0;
   return (
     <div style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
-      {data.title != null && (
-        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", marginBottom: 10 }}>{str(data.title)}</div>
-      )}
+      <TemplateHead icon="gauge" title={data.title != null ? str(data.title) : null} gap={10} />
+      <TemplateBody>
       <div style={{ height: 6, borderRadius: 3, background: "var(--secondary)", overflow: "hidden", marginBottom: 12 }}>
         <div style={{ height: "100%", width: `${pct}%`, background: "var(--success)",
           animation: "ccGrow .7s cubic-bezier(.22,1,.36,1) both" }} />
@@ -586,6 +608,7 @@ function ProgressTracker({ data }: { data: Data }) {
           );
         })}
       </div>
+      </TemplateBody>
       <style>{`@keyframes ccGrow{from{width:0}}@keyframes ccPulse{0%,100%{opacity:1}50%{opacity:.55}}`}</style>
     </div>
   );
@@ -600,16 +623,11 @@ function RecipeCard({ data }: { data: Data }) {
   if (data.prepMinutes != null) meta.push(["timer", `Prep ${num(data.prepMinutes)} min`]);
   if (data.cookMinutes != null) meta.push(["chef-hat", `Cook ${num(data.cookMinutes)} min`]);
   if (data.calories != null) meta.push(["flame", `${num(data.calories)} kcal`]);
-  return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", overflow: "hidden" }}>
-      <div style={{
-        padding: "14px 16px", borderBottom: "1px solid var(--border)",
-        background: "linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--card)), var(--card))",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <TIcon name="utensils" size={16} color="var(--accent)" />
-          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Recipe")}</span>
-        </div>
+  // In a chat card the strip holds only the header, and the description and
+  // the facts move into the body, so they fold with it.
+  const fold = useCardFold();
+  const intro = (
+    <>
         {data.description != null && (
           <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", marginTop: 4 }}><GenUiText text={str(data.description)} /></div>
         )}
@@ -623,7 +641,20 @@ function RecipeCard({ data }: { data: Data }) {
             ))}
           </div>
         )}
+    </>
+  );
+  const hasIntro = data.description != null || meta.length > 0;
+  return (
+    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", overflow: "hidden" }}>
+      <div style={{
+        padding: "14px 16px", borderBottom: "1px solid var(--border)",
+        background: "linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--card)), var(--card))",
+      }}>
+        <TemplateHead icon="utensils" title={str(data.title, "Recipe")} gap={0} />
+        {!fold && intro}
       </div>
+      <TemplateBody>
+      {fold && hasIntro && <div style={{ padding: "10px 16px 0" }}>{intro}</div>}
       <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
         {ingredients.length > 0 && (
           <div>
@@ -675,6 +706,7 @@ function RecipeCard({ data }: { data: Data }) {
           </div>
         )}
       </div>
+      </TemplateBody>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
@@ -726,16 +758,9 @@ function FlightStatus({ data }: { data: Data }) {
     status === "landed" ? 100 : status === "in-air" ? 50 : 0)));
   return (
     <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <TIcon name="plane" size={16} color="var(--primary)" />
-          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
-            {data.airline != null ? `${str(data.airline)} ` : ""}{str(data.flightNo)}
-          </span>
-          {data.date != null && <span style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{str(data.date)}</span>}
-        </div>
-        <StatusBadge status={status} />
-      </div>
+      <TemplateHead icon="plane" title={templateTitle("flightStatus", data)} gap={12}
+        aside={data.date != null ? str(data.date) : undefined} end={<StatusBadge status={status} />} />
+      <TemplateBody>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <EndpointBlock e={from} align="left" />
         <div style={{ flex: 1, position: "relative", height: 24 }}>
@@ -757,6 +782,7 @@ function FlightStatus({ data }: { data: Data }) {
           <span>{data.note != null ? str(data.note) : ""}</span>
         </div>
       )}
+      </TemplateBody>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
@@ -770,13 +796,7 @@ function TrainStatus({ data }: { data: Data }) {
   const delay = num(data.delayMin);
   return (
     <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <TIcon name="train-front" size={16} color="var(--primary)" />
-          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
-            {[str(data.operator), str(data.trainNo), data.line != null ? `· ${str(data.line)}` : ""].filter(Boolean).join(" ")}
-          </span>
-        </div>
+      <TemplateHead icon="train-front" title={templateTitle("trainStatus", data)} gap={12} end={
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           {delay > 0 && (
             <span style={{ fontSize: TYPE.caption, fontWeight: 600, color: "var(--warning)",
@@ -785,7 +805,8 @@ function TrainStatus({ data }: { data: Data }) {
           )}
           <StatusBadge status={status} />
         </div>
-      </div>
+      } />
+      <TemplateBody>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: stops.length ? 12 : 0 }}>
         <EndpointBlock e={from} align="left" />
         <div style={{ flex: 1, borderTop: "2px dashed var(--border)", marginTop: 12 }} />
@@ -816,6 +837,7 @@ function TrainStatus({ data }: { data: Data }) {
       {data.note != null && (
         <div style={{ marginTop: 8, fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{str(data.note)}</div>
       )}
+      </TemplateBody>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
@@ -853,12 +875,8 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   };
   return (
     <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
-      {data.title != null && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-          <TIcon name="clipboard-list" size={15} color="var(--primary)" />
-          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}><GenUiText text={str(data.title)} /></span>
-        </div>
-      )}
+      <TemplateHead icon="clipboard-list" rich gap={4} title={data.title != null ? str(data.title) : null} />
+      <TemplateBody>
       {data.description != null && (
         <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
       )}
@@ -948,6 +966,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           {str(data.submitLabel, "Submit")}
         </Button>
       )}
+      </TemplateBody>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
@@ -1087,6 +1106,9 @@ const CARD_BOX: React.CSSProperties = {
  */
 export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
   "timeline", "taskBoard", "dataGrid", "reportCard", "planCard", "optionPicker",
+  // The follow-up of #945: every other template that drew a title of its own.
+  "weatherCard", "statDashboard", "sparkTrend", "comparison", "progressTracker",
+  "recipeCard", "flightStatus", "trainStatus", "formCard", "barChart", "chart",
 ]);
 
 /**
@@ -1096,7 +1118,7 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
  * the row the template always drew. With no title, a chat card still gets
  * the toggle while it folds, and draws nothing while it is open.
  */
-function TemplateHead({ icon, title, href = null, rich = false, aside, gap = 8 }: {
+function TemplateHead({ icon, title, href = null, rich = false, aside, end, foldOnly = false, gap = 8 }: {
   icon: string;
   /** The title's words, or null for a template with no title. */
   title: string | null;
@@ -1106,6 +1128,12 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, gap = 8 }
   rich?: boolean;
   /** Plain words after the title. Never a link or a control. */
   aside?: string;
+  /** A mark at the row's end, such as a status badge. It draws BESIDE the
+   *  toggle, never inside it, and it is never a control. */
+  end?: React.ReactNode;
+  /** Draw only inside a chat card. A template whose own body names it (the
+   *  weather card's place) draws no title row anywhere else. */
+  foldOnly?: boolean;
   gap?: number;
 }) {
   const fold = useCardFold();
@@ -1126,6 +1154,7 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, gap = 8 }
             titleClassName="font-semibold text-foreground"
           />
         </div>
+        {end != null && <div data-template-end="" className="flex shrink-0 items-center">{end}</div>}
         {href && (
           <a href={href} data-template-open="" aria-label={`Open ${title === null ? "it" : plainTitle(title)}`}
             title="Open" className="cc-control flex shrink-0 rounded p-1 text-muted-foreground hover:text-foreground">
@@ -1135,7 +1164,7 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, gap = 8 }
       </div>
     );
   }
-  if (title === null) return null;
+  if (title === null || foldOnly) return null;
   const words = rich ? <GenUiText text={title} /> : title;
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: gap }}>
@@ -1145,7 +1174,12 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, gap = 8 }
           <TitleLink href={href}>{words}</TitleLink>
         </span>
       </div>
-      {aside != null && <span style={MUTED}>{aside}</span>}
+      {(aside != null || end != null) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {aside != null && <span style={MUTED}>{aside}</span>}
+          {end}
+        </div>
+      )}
     </div>
   );
 }
@@ -1705,6 +1739,28 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   );
 }
 
+/**
+ * A chart template. In a chat card its title is the card's one header, so
+ * the chart draws no title of its own: it drew it in the picture, under the
+ * fold's header, and the title read twice. Anywhere else the chart draws as
+ * before, its title in the picture (the WhatsApp bot draws the same one).
+ */
+function ChartCard({ spec }: { spec: Data }) {
+  const fold = useCardFold();
+  if (!fold) return <LiveChart spec={spec} />;
+  const title = str(spec.title).trim();
+  const subtitle = str(spec.subtitle).trim();
+  const bare: Data = { ...spec, title: undefined, subtitle: undefined };
+  return (
+    <div style={CARD_BOX}>
+      <TemplateHead icon="chart-column" title={title || null} aside={subtitle || undefined} />
+      <TemplateBody>
+        <LiveChart spec={bare} bare />
+      </TemplateBody>
+    </div>
+  );
+}
+
 // ── Registry ─────────────────────────────────────────────────────────────────
 
 /** Interaction context threaded from the transcript/panel host: `onAction`
@@ -1722,7 +1778,7 @@ export type TemplateRenderer = (data: Data, ctx?: TemplateCtx) => React.ReactEle
 export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   weatherCard: (data) => <WeatherCard data={data} />,
   statDashboard: (data) => <StatDashboard data={data} />,
-  barChart: (data) => <LiveChart spec={barChartSpec(data)} />,
+  barChart: (data) => <ChartCard spec={barChartSpec(data)} />,
   sparkTrend: (data) => <SparkTrend data={data} />,
   comparison: (data) => <Comparison data={data} />,
   progressTracker: (data) => <ProgressTracker data={data} />,
@@ -1736,7 +1792,7 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   dataGrid: (data) => <DataGrid data={data} />,
   reportCard: (data) => <ReportCard data={data} />,
   planCard: (data, ctx) => <PlanCard data={data} ctx={ctx} />,
-  chart: (data) => <LiveChart spec={data} />,
+  chart: (data) => <ChartCard spec={data} />,
 };
 
 /** Render a template node, or an inert fallback if the name is unknown. */

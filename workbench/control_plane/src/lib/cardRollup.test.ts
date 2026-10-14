@@ -283,7 +283,10 @@ describe("one toggle, one place, inside the card", () => {
     // A root card, and a template that draws `TemplateHead` (2026-10-13).
     expect(genUiRootOwnsHead(TITLED_CARD)).toBe(true);
     expect(genUiRootOwnsHead({ type: "template", props: { name: "timeline", data: {} } })).toBe(true);
-    expect(genUiRootOwnsHead({ type: "template", props: { name: "weatherCard", data: {} } })).toBe(false);
+    // Since the follow-up of #945 every template of the catalog owns its
+    // head. A name the registry does not know draws the neutral fallback.
+    expect(genUiRootOwnsHead({ type: "template", props: { name: "weatherCard", data: {} } })).toBe(true);
+    expect(genUiRootOwnsHead({ type: "template", props: { name: "noSuchTemplate", data: {} } })).toBe(false);
     expect(genUiRootOwnsHead({ type: "table", props: {} })).toBe(false);
     const src = readFileSync(fileURLToPath(new URL("../components/MessageBubble.tsx", import.meta.url)), "utf8");
     expect(src).toContain('const header = genUiRootOwnsHead(spec) ? "own" : "frame";');

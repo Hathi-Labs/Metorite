@@ -260,3 +260,27 @@ test.describe("the Email chat cards send the same payload", () => {
     expect(await calls(page)).toEqual([]);
   });
 });
+
+test.describe("the Email waiting card draws the shared header, and no toggle while it waits", () => {
+  test.setTimeout(120_000);
+
+  test("the draft waits: the shared header, and no fold toggle, under newer cards", async ({ page }) => {
+    await startTurn(page, [...DRAFT, ...RULE_EVENT, ...SETTINGS, ...ARCHIVE, ...LONG]);
+    const draft = page.locator('[data-rollup-card="tool:t-draft"]');
+    // The shared header: its title box, with the card's icon, and no toggle.
+    await expect(draft.locator("[data-rollup-title]")).toHaveText("Draft reply");
+    await expect(draft.locator("[data-rollup-toggle]")).toHaveCount(0);
+    await expect(draft.getByRole("textbox", { name: "Draft reply" })).toBeVisible();
+    // A receipt that does not wait has its toggle.
+    await expect(page.locator('[data-rollup-card="tool:t-rule"] [data-rollup-toggle]')).toHaveCount(1);
+    // No toggle on the page holds a link or a control.
+    const nested = await page
+      .locator("[data-rollup-toggle]")
+      .evaluateAll((els) => els.filter((el) => el.querySelector("a,button,input,select,textarea")).length);
+    expect(nested).toBe(0);
+    // Saved, the draft waits no more, and it may fold.
+    await draft.getByRole("button", { name: "Save to Drafts" }).click();
+    await expect(draft.getByText("Saved to Drafts")).toBeVisible();
+    await expect(draft.locator("[data-rollup-toggle]")).toHaveCount(1);
+  });
+});
