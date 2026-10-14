@@ -27,6 +27,8 @@
  * Today stays as the right rail from `xl`. Needs you and Next actions leave:
  * the feed holds their rows as cards. The greeting, the summary line and the
  * store's Undo stay. With it off, the page is the page above, unchanged.
+ * With it on, the summary line counts the feed's cards and may say "The
+ * rest is handled." (MD-2c, §6.7).
  */
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -43,6 +45,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { visibleSections } from "@/lib/nav";
 
 import AppLauncher from "./AppLauncher";
+import { feedFailedLines, feedNeedsCount, handledClaim } from "./feed";
 import { FeedColumn, useFeed } from "./FeedCard";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
 import { cardOrderFor, cardsFor, dateLine, failedLines, greetingLine, seesApprovals, summaryLine } from "./myDay";
@@ -103,8 +106,18 @@ export default function MyDay() {
   // The summary waits for both reads. A feed that failed says nothing here,
   // because "Nothing needs you" would be a claim the page cannot back. A
   // calendar that failed drops its half of the sentence.
-  const needsPending = cards.needs && needs.count === undefined && needs.loading;
-  const needsFailed = cards.needs && needs.count === undefined && !needs.loading;
+  //
+  // With the live feed on (MD-2c, `my_day_feed.md` §6.7), the count is the
+  // feed's open cards of Now and Needs you, after the column's own hides,
+  // and not the bell's count: the bell still counts a snoozed card. "The
+  // rest is handled." needs `handledClaim`. With the feed off, the line of
+  // NS-3, unchanged.
+  const fromFeed = feedOn && cards.needs;
+  const feedAnswer = feed.answer;
+  const needsPending =
+    cards.needs && (fromFeed ? feedAnswer === undefined && feed.loading : needs.count === undefined && needs.loading);
+  const needsFailed =
+    cards.needs && (fromFeed ? feedAnswer === undefined && !feed.loading : needs.count === undefined && !needs.loading);
   const todayPending = cards.today && today.data === undefined && today.loading;
   const todayCount = cards.today && today.data ? today.data.length : null;
   const none = !accessLoading && !cards.needs && !cards.today && !cards.next;
@@ -113,7 +126,16 @@ export default function MyDay() {
       ? "pending"
       : needsFailed || none
         ? null
-        : summaryLine(needs.count ?? 0, todayCount, failedLines(needs.sources).length > 0);
+        : fromFeed && feedAnswer
+          ? summaryLine(
+              feedNeedsCount(feedAnswer, feed.marked, feed.hidden),
+              todayCount,
+              feedFailedLines(feedAnswer.sources).length > 0,
+              // A stale answer under a failed refresh keeps its count, and
+              // loses its claim: the claim may be yesterday's (fix round 1).
+              handledClaim(feedAnswer) && !feed.error,
+            )
+          : summaryLine(needs.count ?? 0, todayCount, failedLines(needs.sources).length > 0);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

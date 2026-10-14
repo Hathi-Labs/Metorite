@@ -24,11 +24,18 @@
  * minutes at most (`carryCards`, §6.1). The order holds during a visit
  * (`columnView`, §7 rule 4). `feedState.ts` writes the state.
  *
- * Fence: `feed.test.ts` and `feedState.test.ts`.
+ * **Handled** (WS-58 MD-2c, §6.7). The answer carries `handled`, what the
+ * apps closed for the member today, and `handled_ok`. Neither is a card, so
+ * neither enters the cut, the pill or the visit. With the feed on, the
+ * summary counts the feed's open cards of Now and Needs you
+ * (`feedNeedsCount`), and "The rest is handled." needs `handledClaim`.
+ *
+ * Fence: `feed.test.ts`, `feedState.test.ts` and `feedHandled.test.ts`.
  */
 import { PROJECTS_CACHE } from "@/app/projects/lib/api";
 import { fmtClock } from "@/app/tasks/lib/utils";
 import { cacheKey, guardedPut, onClear } from "@/lib/dataCache";
+import { isInAppPath } from "@/lib/inAppLink";
 import { NAV_SECTIONS } from "@/lib/nav";
 
 import { APP_NAMES, appIcon, failedLines } from "./myDay";
@@ -60,7 +67,7 @@ export const GROUP_LABELS: Readonly<Record<FeedGroupId, string>> = {
   ready: "Ready for you",
   fyi: "For your information",
   later: "Later",
-  handled: "Handled",
+  handled: "Handled today",
 };
 
 export type FeedWay = "tap" | "expand" | "open";
@@ -93,6 +100,7 @@ export interface FeedCard {
   title: string;
   why: string | null;
   at: string | null;
+  /** The door to the entity: a path of this app, or "" for none (MD-2c fix round 1). */
   href: string;
   acts: FeedAct[];
   // The state fields of MD-2a (`my_day_feed.md` §14.1a, §6.8). Optional: an
@@ -109,10 +117,39 @@ export interface FeedCard {
   state_fp?: string;
 }
 
+/** Who closed a Handled entry: the `by` table of the MD-2c ticket (§16). */
+export type HandledByKind = "you" | "person" | "agent" | "system" | "rules";
+
+export interface HandledBy {
+  kind: HandledByKind;
+  /** A colleague's local part or an agent's name. Null for the other kinds. */
+  name: string | null;
+}
+
+/** One thing an app closed for the member since the start of the day (§6.7, §14.1a). */
+export interface HandledEntry {
+  app: string;
+  title: string;
+  href: string;
+  by: HandledBy;
+  at: string | null;
+}
+
 export interface FeedAnswer {
   cards: FeedCard[];
   /** The groups that hold a card, in the server's order. */
   groups: { id: FeedGroupId; count: number }[];
+  /**
+   * What the apps closed for the member today, the newest first (MD-2c). It
+   * is never a card: it stays out of `cards`, the cut, the pill and the
+   * visit. An older gateway sends none, and it reads as empty.
+   */
+  handled: HandledEntry[];
+  /**
+   * True when no Handled read that ran failed. An older gateway sends none,
+   * and it reads as false, so the summary makes no claim.
+   */
+  handled_ok: boolean;
   /** The needs view of the same run, or null from a gateway that sent none. */
   needs: NeedsFeed | null;
   sources: Partial<Record<FeedApp, SourceState>>;
@@ -147,10 +184,19 @@ const isGroup = (v: unknown): v is FeedGroupId =>
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
+/** The link, only when it is a path of this app (`isInAppPath`), else null (MD-2c fix round 1). */
+const inApp = (v: unknown): string | null => (typeof v === "string" && isInAppPath(v) ? v : null);
+
+/**
+ * One act, or null. An `open` act whose link is not a path of this app is
+ * dropped, so a card never opens another site or runs a script.
+ */
 function readAct(raw: unknown): FeedAct | null {
   const a = raw as Partial<FeedAct> | null;
   if (!a || typeof a !== "object" || typeof a.label !== "string") return null;
   if (a.way !== "tap" && a.way !== "expand" && a.way !== "open") return null;
+  const href = inApp(a.href);
+  if (a.way === "open" && href === null) return null;
   return {
     id: typeof a.id === "string" ? a.id : a.label,
     label: a.label,
@@ -159,7 +205,7 @@ function readAct(raw: unknown): FeedAct | null {
     act: str(a.act),
     act_ref: str(a.act_ref),
     act_refs: Array.isArray(a.act_refs) ? a.act_refs.filter((r): r is string => typeof r === "string" && !!r) : null,
-    href: str(a.href),
+    href,
   };
 }
 
@@ -199,6 +245,8 @@ function readCard(raw: unknown): FeedCard | null {
   if (!c || typeof c !== "object") return null;
   if (typeof c.signal_id !== "string" || typeof c.title !== "string" || typeof c.href !== "string") return null;
   if (typeof c.app !== "string" || typeof c.kind !== "string" || !isGroup(c.group)) return null;
+  // Handled is never a card (MD-2c): it stays out of the cut and the pill.
+  if (c.group === "handled") return null;
   return {
     signal_id: c.signal_id,
     app: c.app as FeedApp,
@@ -209,9 +257,35 @@ function readCard(raw: unknown): FeedCard | null {
     title: c.title,
     why: str(c.why),
     at: str(c.at),
-    href: c.href,
+    // A link that is not a path of this app draws the title with no link.
+    href: inApp(c.href) ?? "",
     acts: Array.isArray(c.acts) ? c.acts.map(readAct).filter((a): a is FeedAct => a !== null) : [],
     ...readState(c),
+  };
+}
+
+const BY_KINDS: ReadonlySet<string> = new Set<HandledByKind>(["you", "person", "agent", "system", "rules"]);
+
+/**
+ * One Handled entry, or null when the column cannot draw it: no title, a
+ * `by` of a kind this client does not know, or a link that is not a path of
+ * this app. Only an in-app path is a link, so an entry never opens another
+ * site or runs a script.
+ */
+function readHandled(raw: unknown): HandledEntry | null {
+  const e = raw as Record<string, unknown> | null;
+  if (!e || typeof e !== "object") return null;
+  if (typeof e.app !== "string" || typeof e.title !== "string" || !e.title.trim()) return null;
+  const href = inApp(e.href);
+  if (href === null) return null;
+  const by = e.by as Record<string, unknown> | null;
+  if (!by || typeof by !== "object" || typeof by.kind !== "string" || !BY_KINDS.has(by.kind)) return null;
+  return {
+    app: e.app,
+    title: e.title,
+    href,
+    by: { kind: by.kind as HandledByKind, name: typeof by.name === "string" && by.name ? by.name : null },
+    at: str(e.at),
   };
 }
 
@@ -226,11 +300,17 @@ export function readFeedAnswer(raw: unknown): FeedAnswer {
   const groups = Array.isArray(body.groups)
     ? body.groups
         .filter((g): g is { id: FeedGroupId; count: unknown } => !!g && isGroup((g as { id?: unknown }).id))
+        .filter((g) => g.id !== "handled")
         .map((g) => ({ id: g.id, count: typeof g.count === "number" ? g.count : 0 }))
+    : [];
+  const handled = Array.isArray(body.handled)
+    ? body.handled.map(readHandled).filter((e): e is HandledEntry => e !== null)
     : [];
   return {
     cards,
     groups,
+    handled,
+    handled_ok: Array.isArray(body.handled) && body.handled_ok === true,
     needs: body.needs && typeof body.needs === "object" ? readFeed(body.needs) : null,
     sources: body.sources && typeof body.sources === "object" ? (body.sources as FeedAnswer["sources"]) : {},
     capped: Array.isArray(body.capped) ? (body.capped as FeedApp[]) : [],
@@ -769,4 +849,70 @@ export function feedFailedLines(sources: FeedAnswer["sources"]): string[] {
   const lines = failedLines(needs);
   if (calendar === "failed") lines.push("Calendar did not answer, so its time blocks may be missing.");
   return lines;
+}
+
+// ── Handled and the honest summary (§6.7, MD-2c) ────────────────────────────
+
+/**
+ * Who closed a Handled entry, in the member's words (the `by` table). The
+ * server sends the kind and a name, and the client writes the words. A name
+ * the server left out reads as the bell's "Somebody", never a blank.
+ */
+export function handledBy(by: HandledBy): string {
+  switch (by.kind) {
+    case "you":
+      return "You";
+    case "person":
+      return by.name ?? "Somebody";
+    case "agent":
+      return by.name ?? "An agent";
+    case "system":
+      return "Metorite";
+    case "rules":
+      return "Email rules";
+  }
+}
+
+/** "You · 09:30": who closed it, then the time in the card's own clock (`cardTime`). */
+export function handledMeta(entry: Pick<HandledEntry, "by" | "at">, nowMs: number | null): string {
+  const time = nowMs === null ? "" : cardTime({ kind: "handled", at: entry.at }, nowMs);
+  return time ? `${handledBy(entry.by)} · ${time}` : handledBy(entry.by);
+}
+
+/** The groups that count as "need you" in the summary (§6.7). */
+const NEEDS_GROUPS: ReadonlySet<FeedGroupId> = new Set(["now", "needs_you"]);
+
+/**
+ * "N things need you", from the feed (§6.7): the open cards of Now and Needs
+ * you, after the client's own hides. `marked` is the needs rows an act took
+ * off (`cardHidden`), and `hidden` is the cards a menu act hid. So a snoozed
+ * card leaves this count, while the bell still counts it (§6.3).
+ */
+export function feedNeedsCount(
+  answer: Pick<FeedAnswer, "cards">,
+  marked: ReadonlySet<string>,
+  hidden: ReadonlySet<string>,
+): number {
+  const open = new Set<string>();
+  for (const c of answer.cards) {
+    if (NEEDS_GROUPS.has(c.group) && !hidden.has(c.signal_id) && !cardHidden(c, marked)) open.add(c.signal_id);
+  }
+  return open.size;
+}
+
+/**
+ * Whether the summary may say "The rest is handled." (§6.7). Only when
+ * Handled is not empty, the server says no Handled read failed
+ * (`handled_ok`), no source of the feed failed, and no source is capped. A
+ * failed source silences the claim, as NS-3 does, because a card of that
+ * source may be missing. A capped source does the same (fix round 1): its
+ * count is a floor, and more cards wait behind it.
+ */
+export function handledClaim(answer: Pick<FeedAnswer, "handled" | "handled_ok" | "sources" | "capped">): boolean {
+  return (
+    answer.handled.length > 0 &&
+    answer.handled_ok &&
+    feedFailedLines(answer.sources).length === 0 &&
+    answer.capped.length === 0
+  );
 }

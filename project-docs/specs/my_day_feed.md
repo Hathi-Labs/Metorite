@@ -1,18 +1,23 @@
 # My Day as a live feed — the chief of staff
 
-**Status: ACTIVE, 2026-10-14. MD-1a is BUILT (gateway half, merged as
-#964, dark by the absence of a caller). MD-1b is BUILT (the frontend half,
-dark behind `NEXT_PUBLIC_MY_DAY_FEED`). MD-2d is BUILT (the feed preferences,
-migration 259, dark by the absence of a caller). MD-2a is BUILT (the card
-state on the server, migration 258). MD-2b is BUILT (the card menu and the
-seen observer, dark behind `NEXT_PUBLIC_MY_DAY_FEED`).**
+**Status: ACTIVE, 2026-10-14.** These tickets are BUILT and merged:
 
-**The server half of MD-2c is BUILT, 2026-10-14** (Handled in
-`GET /shell/feed`, no migration, dark by the absence of a caller).
+- MD-1a, the gateway half (#964)
+- MD-1b, the frontend half (#967)
+- MD-2a, the card state on the server, migration 258 (#983)
+- MD-2b, the card menu and the seen observer (#988)
+- MD-2d, the feed preferences, migration 259 (#980)
 
-The rest of this file is not built. The open AGENT-SAFE tickets are the
-client half of MD-2c, MD-3 to MD-5, MD-6a to MD-6c (the build only), MD-7,
-MD-8, MD-9 and MD-12. Each ships dark.
+Each is dark behind `NEXT_PUBLIC_MY_DAY_FEED`, or by the absence of a caller.
+
+**MD-2c is BUILT, 2026-10-14.** The server half puts Handled in
+`GET /shell/feed`, with no migration. The client half draws the Handled
+group and the honest summary, dark behind `NEXT_PUBLIC_MY_DAY_FEED`. So MD-2
+is complete.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3 to
+MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12. Each
+ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -1994,6 +1999,49 @@ fix:
   read them. The read cache of MD-5 can share them.
 - **`completed_at` has no index.** The membership join of the lens bounds
   the read, as the ticket records.
+
+**BUILT (client half), 2026-10-14, on branch `my-day-feed-md2c-client`.**
+It is dark behind `NEXT_PUBLIC_MY_DAY_FEED`. The parts:
+
+- **The reader.** `readFeedAnswer` in `src/lib/shell/feed.ts` reads
+  `handled` and `handled_ok`. An older gateway sends neither, so the page
+  shows no Handled group and makes no claim. The reader drops an entry with
+  no title, or with a `by` kind it does not know. It also drops an entry whose
+  link is not a path of this app, and a card in the group `handled`.
+- **Only an in-app path is a link** (fix round 1). `isInAppPath` in
+  `src/lib/inAppLink.ts` is the one rule, and the chat and the entity pill
+  use it too. It refuses `//`, a backslash, a control mark, and a path that
+  resolves to another origin. A card with another link keeps its title and
+  draws no link. The reader drops an `open` act with another link.
+- **The group.** `FeedColumn` draws Handled folded after Later, as "Handled
+  today" and its count. Each row is the app's icon, the title as a link, and
+  who closed it with the time, for example "You · 09:30". `handledBy` writes
+  the words of the `by` table. Handled never enters `cards`, the cut, the
+  pill or the visit.
+- **The summary.** With the flag on, `feedNeedsCount` counts the open cards
+  of Now and Needs you, after the column's own hides. `handledClaim` holds
+  the claim. With the flag off, the summary is the line of NS-3.
+- **The fences.** `feedHandled.test.ts` (21 tests), four tests in
+  `myDayPage.test.ts`, one test in `inAppLink.test.ts`, and two checks in
+  `e2e/my-day-feed.spec.ts`.
+
+The build made these choices, which this file did not fix:
+
+- **The claim follows a count of needs only.** When nothing needs the
+  member, the line stays "Nothing needs you right now.", because "The rest"
+  then has nothing to follow.
+- **A failed Calendar silences the claim too.** A calendar card can sit in
+  Now, so the page cannot back "The rest is handled." without it.
+- **A capped source silences the claim too** (fix round 1). Its count is a
+  floor. With 20 overdue tasks the feed holds 15, and 5 more wait.
+- **A stale answer silences the claim too** (fix round 1). When a refresh
+  fails, the column keeps the last answer and says "Could not refresh your
+  day." The summary keeps the count and drops the claim, because the claim
+  can be from the day before.
+- **A name the server left out** reads "Somebody" for a person, as the bell
+  writes it, and "An agent" for an agent.
+- **The words do not say how an approval ended.** The `by` word names who
+  decided, and the row opens Approvals. A later ticket can add a status.
 
 ### MD-2d · Feed preferences — AGENT-SAFE
 

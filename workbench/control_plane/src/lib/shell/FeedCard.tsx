@@ -33,7 +33,13 @@
  * not change. The order holds during a visit, and new cards wait behind the
  * "N new" pill (§7 rule 4). Later draws folded, with its count.
  *
- * Fences: `feed.test.ts`, `feedState.test.ts` and `myDayPage.test.ts`.
+ * **Handled** (WS-58 MD-2c, §6.7) draws folded after Later, as "Handled
+ * today" and its count. Each row names the entity, who closed it and the
+ * time. It is never a card: no menu, no act, no sighting, and no place in
+ * the cut or the pill.
+ *
+ * Fences: `feed.test.ts`, `feedState.test.ts`, `feedHandled.test.ts` and
+ * `myDayPage.test.ts`.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
@@ -49,11 +55,13 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
   FEED_SHOWN,
+  GROUP_LABELS,
   PENDING,
   type ActOverlay,
   type FeedAct,
   type FeedAnswer,
   type FeedCard as Card,
+  type HandledEntry,
   type Visit,
   actLeavesCard,
   actRows,
@@ -70,6 +78,7 @@ import {
   feedKey,
   fetchFeed,
   forgetCarry,
+  handledMeta,
   needsRowFor,
   overlayAdd,
   overlayDrop,
@@ -559,6 +568,7 @@ export function FeedColumn({
   const [shown, setShown] = useState(FEED_SHOWN);
   const reveal = useCallback(() => setShown((n) => n + FEED_SHOWN), []);
   const [laterOpen, setLaterOpen] = useState(false);
+  const [handledOpen, setHandledOpen] = useState(false);
 
   // The visit (§7 rule 4): it starts with the first answer this column draws,
   // and it holds each card's place until the member takes the new cards in.
@@ -577,6 +587,7 @@ export function FeedColumn({
   const nowMs = now?.getTime() ?? null;
   const failed = feed.answer ? feedFailedLines(feed.answer.sources) : [];
   const capped = feed.answer?.capped ?? [];
+  const handled = feed.answer?.handled ?? [];
   const columnRef = useSeenObserver(feed, feed.answer !== undefined);
 
   const drawCard = (card: Card) => (
@@ -679,6 +690,33 @@ export function FeedColumn({
             ) : null}
           </div>
         ) : null}
+        {handled.length > 0 ? (
+          // Handled draws folded, after Later, with its count (MD-2c). It is
+          // a list of what closed, never cards: it holds no act and no menu.
+          <div role="group" aria-labelledby="feed-group-handled" data-feed-group="handled">
+            <Button
+              variant="text"
+              size="none"
+              icon={handledOpen ? "ChevronDown" : "ChevronRight"}
+              aria-expanded={handledOpen}
+              aria-controls="feed-handled-rows"
+              onClick={() => setHandledOpen((open) => !open)}
+              className="min-h-8 gap-1 px-1 text-xs font-medium"
+            >
+              <span id="feed-group-handled">{GROUP_LABELS.handled}</span>
+              <span className="text-muted-foreground" data-feed-handled-count="">
+                {handled.length}
+              </span>
+            </Button>
+            {handledOpen ? (
+              <ul id="feed-handled-rows" className="mt-2 flex flex-col rounded-xl border border-border bg-card p-1.5">
+                {handled.map((entry, i) => (
+                  <HandledRow key={`${entry.app}:${entry.href}:${entry.at ?? ""}:${i}`} entry={entry} nowMs={nowMs} />
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
         {hidden === 0 && groups.length > 0 ? (
           <p className="px-1 text-center text-xs text-muted-foreground">You are caught up.</p>
         ) : null}
@@ -717,6 +755,37 @@ export function FeedColumn({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * One row of Handled (MD-2c): the app's icon, the entity as the door to it,
+ * and who closed it with the time ("You · 09:30"). The row draws as a row of
+ * Needs you does, with no act. The door is `Button` with `href`, as each
+ * link of this file is, so it keeps the house focus ring.
+ */
+export function HandledRow({ entry, nowMs }: { entry: HandledEntry; nowMs: number | null }) {
+  return (
+    <li>
+      <Button
+        href={entry.href}
+        variant="ghost"
+        size="none"
+        layout="flex items-center"
+        data-feed-handled-row=""
+        className="min-h-11 w-full min-w-0 gap-3 px-2 py-1.5 text-left"
+      >
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
+          <Icon name={feedAppIcon(entry.app)} size={14} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-normal text-foreground">{entry.title}</span>
+          <span className="block truncate text-xs font-normal text-muted-foreground" data-feed-handled-by="">
+            {handledMeta(entry, nowMs)}
+          </span>
+        </span>
+      </Button>
+    </li>
   );
 }
 
@@ -824,7 +893,7 @@ export function FeedCard({
   return (
     <HomeCard
       title={card.title}
-      titleHref={card.href}
+      titleHref={card.href || undefined}
       eyebrow={eyebrow}
       testId={`feed-card-${safeId(card.signal_id)}`}
     >

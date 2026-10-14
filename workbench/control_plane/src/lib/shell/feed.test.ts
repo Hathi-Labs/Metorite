@@ -210,6 +210,8 @@ describe("1. the answer of §14.1a", () => {
     expect(readFeedAnswer(undefined)).toEqual({
       cards: [],
       groups: [],
+      handled: [],
+      handled_ok: false,
       needs: null,
       sources: {},
       capped: [],
@@ -1102,6 +1104,8 @@ describe("9. the life of a card (MD-2b)", () => {
   const answerOf = (cards: Card[], sources: FeedAnswer["sources"], capped: FeedAnswer["capped"] = []): FeedAnswer => ({
     cards,
     groups: [],
+    handled: [],
+    handled_ok: false,
     needs: null,
     sources,
     capped,

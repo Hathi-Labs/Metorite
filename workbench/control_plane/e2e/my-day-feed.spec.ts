@@ -21,6 +21,10 @@ import { expect, test, type Page, type Request, type Route } from "@playwright/t
  *      The pill says "1 new", and a click takes the server's order in.
  *      Mutation, run by hand (2026-10-14): start a new visit on each answer,
  *      and this test fails.
+ *   6. Handled (MD-2c): the group draws folded after the cards, as "Handled
+ *      today" and its count, and it opens. The summary counts the feed's
+ *      cards, not the bell's count, and says "The rest is handled." A snooze
+ *      takes one off the summary and none off the bell.
  */
 
 const SESSION = {
@@ -148,6 +152,10 @@ interface Store {
   feedDelayMs: number;
   /** While true, the server's order changes and one card is new. The test turns it on. */
   reorder: boolean;
+  /** The Handled fields of the feed answer (MD-2c). Absent: an older gateway. */
+  handled?: { handled: Record<string, unknown>[]; handled_ok: boolean };
+  /** The needs view of the feed answer, which the bell reads. */
+  needs: typeof NEEDS;
 }
 
 /** The new card of the second read, in test 5. */
@@ -168,6 +176,7 @@ async function setup(page: Page, opts: { feedDelayMs?: number } = {}): Promise<S
     needsAt: [],
     feedDelayMs: opts.feedDelayMs ?? 0,
     reorder: false,
+    needs: NEEDS,
   };
   await page.addInitScript(() => {
     localStorage.setItem("cc-shell-bar", "1");
@@ -201,14 +210,15 @@ async function setup(page: Page, opts: { feedDelayMs?: number } = {}): Promise<S
       return json({
         cards,
         groups: cards.length ? [{ id: "needs_you", count: cards.length }] : [],
-        needs: NEEDS,
+        needs: store.needs,
         sources: { tasks: "ok", projects: "ok", email: "ok", approvals: "absent", calendar: "ok" },
         capped: [],
+        ...(store.handled ?? {}),
       });
     }
     if (path === "/api/shell/needs") {
       store.needsAt.push(Date.now());
-      return json(NEEDS);
+      return json(store.needs);
     }
     if (path === "/api/auth/me/shell") return json(LAYOUT);
     if (path === "/api/auth/me") return json(MEMBER);
@@ -359,5 +369,62 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
       "feed-card-tasks:t2",
       "feed-card-tasks:t1",
     ]);
+  });
+
+  test("Handled draws folded and opens, and the summary counts the feed and makes the claim (MD-2c)", async ({ page }) => {
+    const store = await setup(page);
+    // The bell's view counts 5: a snoozed card still counts there (§6.3).
+    store.needs = { ...NEEDS, count: 5, total: 5 };
+    store.handled = {
+      handled: [
+        { app: "tasks", title: "Send the invoice", href: "/tasks?task=h1", by: { kind: "you", name: null }, at: hoursAgo(1) },
+        { app: "email", title: "Receipts from the courier", href: "/email", by: { kind: "rules", name: null }, at: hoursAgo(2) },
+      ],
+      handled_ok: true,
+    };
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    const summary = page.getByTestId("my-day-summary");
+    await expect(summary).toHaveText("3 things need you. The rest is handled.");
+    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 5 items");
+
+    // Folded, after the cards, with its count.
+    const fold = feed(page).getByRole("button", { name: "Handled today 2" });
+    await expect(fold).toHaveAttribute("aria-expanded", "false");
+    await expect(feed(page).getByText("Send the invoice")).toHaveCount(0);
+    const below = await page.evaluate(() => {
+      const group = document.querySelector('[data-feed-group="handled"]');
+      const cards = document.querySelectorAll('[data-testid^="feed-card-"]');
+      const last = cards[cards.length - 1];
+      return !!group && !!last && !!(last.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    expect(below).toBe(true);
+
+    // It opens: each row names the entity as a link, and who closed it.
+    await fold.click();
+    await expect(fold).toHaveAttribute("aria-expanded", "true");
+    const rows = feed(page).locator("[data-feed-handled-row]");
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0)).toHaveAttribute("href", "/tasks?task=h1");
+    await expect(rows.nth(0)).toContainText("Send the invoice");
+    await expect(rows.nth(0).locator("[data-feed-handled-by]")).toContainText(/^You · /);
+    await expect(rows.nth(1).locator("[data-feed-handled-by]")).toContainText(/^Email rules · /);
+    // Handled is no card: no sighting mark, no menu.
+    await expect(feed(page).locator('[data-feed-group="handled"] [data-feed-seen]')).toHaveCount(0);
+
+    // A snooze takes the card off the summary, and the bell keeps its count.
+    await feedCard(page, "tasks:t1").getByRole("button", { name: "More for Send the quote" }).click();
+    await page.getByRole("menu").getByRole("menuitem", { name: "Tomorrow" }).click();
+    await expect(feedCard(page, "tasks:t1")).toHaveCount(0);
+    await expect(summary).toHaveText("2 things need you. The rest is handled.");
+    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 5 items");
+  });
+
+  test("an older gateway gives no Handled group and no claim (MD-2c)", async ({ page }) => {
+    await setup(page);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    await expect(page.getByTestId("my-day-summary")).toHaveText("3 things need you.");
+    await expect(feed(page).locator('[data-feed-group="handled"]')).toHaveCount(0);
   });
 });
