@@ -31,8 +31,10 @@ import { summaryFacts, type FieldDef } from "../lib/fields";
 import { NO_RELATED, type RelatedLists } from "../lib/related";
 import { navLabel, navStep, neighbour, RECORD_PAGE_ATTR } from "../lib/recordNav";
 import { nextOpenActivities } from "../lib/timeline";
+import type { FieldLayout } from "../lib/fieldLayout";
+import { useCrmStore, type CrmRefusal } from "../lib/store";
 import { recordTabsFor, shownRecordTab, type RecordTab } from "../lib/urlState";
-import { useFieldDefs } from "../lib/useCrmMode";
+import { useFieldDefs, useFieldLayout } from "../lib/useCrmMode";
 import FieldsPanel from "./FieldsPanel";
 import { RecordFacts, RecordModal, RecordTabBar } from "./RecordShell";
 import StatusPill from "./StatusPill";
@@ -65,7 +67,11 @@ type LogBody = {
 
 /** The verbs of the record page. The sheet and the body share them. */
 type RecordActions = {
-  onPatch: (body: Record<string, unknown>) => void;
+  /**
+   * Save an edit. `store.patchRecord` gives `false` for a refusal, and the
+   * Fields tab then keeps its edit open (CRM-C4b, the 422 rule).
+   */
+  onPatch: (body: Record<string, unknown>) => void | Promise<boolean>;
   onMoveStatus: (statusId: string) => void;
   onLog: (body: LogBody) => void;
   onToggleTask: (activityId: string, completed: boolean) => void;
@@ -118,6 +124,9 @@ export default function RecordSheet({
 } & RecordActions &
   RecordOrder) {
   const { defs } = useFieldDefs(entity);
+  // CRM-C4b: the layout draws the Fields tab when it says `studio`.
+  const { layout } = useFieldLayout(entity);
+  const refusal = useCrmStore((s) => s.refusal);
 
   // A contact row names its company by id only. The name is one read of the
   // company record, through the one read cache.
@@ -172,6 +181,8 @@ export default function RecordSheet({
           dealContacts={dealContacts}
           saving={saving}
           fieldDefs={defs}
+          layout={layout}
+          refusal={refusal}
           tab={tab}
           onTab={onTab}
           order={order}
@@ -197,6 +208,8 @@ export function RecordPage({
   dealContacts,
   saving,
   fieldDefs,
+  layout = null,
+  refusal = null,
   tab,
   onTab,
   order,
@@ -223,6 +236,10 @@ export function RecordPage({
   dealContacts: DealContact[];
   saving: boolean;
   fieldDefs: FieldDef[] | null;
+  /** The layout of the entity (CRM-C4b). `null` draws the Fields tab of today. */
+  layout?: FieldLayout | null;
+  /** The refusal of the last edit (the 422 rule). */
+  refusal?: CrmRefusal | null;
   tab: RecordTab;
   onTab: (tab: RecordTab) => void;
   /** The name of a contact's company, which the contact row does not carry. */
@@ -256,6 +273,9 @@ export function RecordPage({
     onOpenRelated,
     onRetryRelated,
     fieldDefs,
+    layout,
+    refusal,
+    companyName,
   };
 
   return (
