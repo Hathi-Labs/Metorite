@@ -816,7 +816,9 @@ def check_fillable(
     """
     if not required:
         return
-    if not visible and default is None:
+    # `is_empty`, as member create does (`custom_for_create`): an empty list or
+    # a blank text default fills nothing (CRM-C4c re-review).
+    if not visible and is_empty(default):
         raise _unprocessable(
             "required_unfillable",
             f"{label} is required and hidden with no default, so no member can "
@@ -836,9 +838,15 @@ _FIELD_ROW_SQL = (
 )
 
 
-async def _field_row(db: Any, slug: str, key: str) -> Any | None:
+async def _field_row(
+    db: Any, slug: str, key: str, *, lock: bool = False,
+) -> Any | None:
+    """One field row. ``lock`` holds it until the transaction ends, so two
+    admins who change one field at once cannot each pass `check_fillable`
+    alone and leave a field that no member can fill (CRM-C4c re-review)."""
+    sql = _FIELD_ROW_SQL + (" FOR UPDATE" if lock else "")
     return (await db.execute(
-        text(_FIELD_ROW_SQL), {"entity": ENTITY_BY_SLUG[slug], "key": key},
+        text(sql), {"entity": ENTITY_BY_SLUG[slug], "key": key},
     )).first()
 
 
@@ -1083,7 +1091,7 @@ async def patch_field(
     stored = checked_slug(entity)
     async with _tenant_session() as db:
         await assert_writable(db, current_tenant(), "crm_field_defs", None)
-        row = await _field_row(db, entity, key)
+        row = await _field_row(db, entity, key, lock=True)
         if system_field(entity, key) is not None:
             written = await _patch_system(db, entity, key, row, payload)
             return _wire(entity, written)

@@ -1048,6 +1048,14 @@ async def test_a_required_field_that_no_member_can_fill_gives_422(studio) -> Non
         "label": "Tier", "type": "select", "required": True, "options": []})
     await refused("POST", "/crm/fields/deals", {
         "label": "Tags", "type": "multiselect", "required": True})
+    # An empty default fills nothing, as member create judges it (`is_empty`).
+    # Only a direct API call can send one (CRM-C4c re-review).
+    await refused("POST", "/crm/fields/deals", {
+        "label": "Blank", "type": "text", "required": True, "visible": False,
+        "default_value": ""})
+    await refused("POST", "/crm/fields/deals", {
+        "label": "None picked", "type": "multiselect", "required": True,
+        "visible": False, "default_value": [], "options": [{"label": "A"}]})
     assert len(_defs(p, p.org_a)) == before, "a refused create writes nothing"
 
     # A hidden required field with a default is fillable: the default fills it.
