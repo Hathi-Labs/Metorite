@@ -62,10 +62,14 @@ function settings(
   mode: CrmMode,
   section?: SettingsSectionId,
   served: { deal?: Status; reason?: LostReason } = {},
+  studioAdmin = false,
 ) {
   return renderToStaticMarkup(
     createElement(PipelineSettings, {
       section,
+      // CRM-C6a: `studio_admin` of the layout. The page gives it to the
+      // sections and to the cards.
+      studioAdmin,
       // The page passes these two for an admin only. A marked card stands in.
       setup: isAdmin ? createElement("section", { "aria-label": "Setup hub" }, "hub") : undefined,
       access: isAdmin ? createElement("section", { "aria-label": "Access card" }, "access") : undefined,
@@ -102,16 +106,55 @@ describe("the sections a caller sees", () => {
       "field-mapping",
       "sync-health",
     ]);
+    // Native with no studio: the Field mapping section is hidden (CRM-C6a).
     for (const mode of ["native", null] as CrmMode[]) {
-      expect(ids(visibleSections({ isAdmin: true, mode }))).toEqual([
+      for (const studioAdmin of [undefined, false]) {
+        expect(ids(visibleSections({ isAdmin: true, mode, studioAdmin }))).toEqual([
+          "setup",
+          "access",
+          "stages",
+          "lead-statuses",
+          "lost-reasons",
+          "fields",
+        ]);
+      }
+    }
+  });
+
+  it("shows Field mapping to a Native admin only when the layout says studio_admin", () => {
+    for (const mode of ["native", null] as CrmMode[]) {
+      expect(ids(visibleSections({ isAdmin: true, mode, studioAdmin: true }))).toEqual([
         "setup",
         "access",
         "stages",
         "lead-statuses",
         "lost-reasons",
         "fields",
+        "field-mapping",
       ]);
+      // A member never opens it, whatever the flag says.
+      expect(ids(visibleSections({ isAdmin: false, mode, studioAdmin: true }))).not.toContain(
+        "field-mapping",
+      );
     }
+    // Mirror mode needs no studio: its Field map is the CRM-Q7a card.
+    expect(ids(visibleSections({ isAdmin: true, mode: "mirror", studioAdmin: false }))).toContain(
+      "field-mapping",
+    );
+  });
+
+  it("draws the conversion mapping in Native mode and the Field map in Mirror mode", () => {
+    const native = settings(true, "native", "field-mapping", {}, true);
+    expect(native).toContain(">Field mapping</h2>");
+    expect(inner(settings(true, "native", "field-mapping"))).toBe("");
+    // The Q7a Field map card stays Mirror only (PipelineSettings.tsx:301).
+    expect(read("./PipelineSettings.tsx")).toContain(
+      '{readOnly && show("field-mapping") && <FieldMapCard />}',
+    );
+    expect(read("./PipelineSettings.tsx")).toContain(
+      '{!readOnly && studioAdmin && show("field-mapping") && <ConvertMappingCard />}',
+    );
+    expect(read("../page.tsx")).toMatch(/studioAdmin=\{studioAdmin\}/);
   });
 
   it("shows a member the three lists in each mode", () => {
@@ -295,11 +338,13 @@ describe("PipelineSettings with no section", () => {
   it("draws every card, which is each section's cards in rail order", () => {
     for (const isAdmin of [true, false]) {
       for (const mode of MODES) {
-        const whole = inner(settings(isAdmin, mode));
-        const parts = visibleSections({ isAdmin, mode })
-          .map((s) => inner(settings(isAdmin, mode, s.id as SettingsSectionId)))
-          .join("");
-        expect(parts, `${isAdmin} ${mode}`).toBe(whole);
+        for (const studioAdmin of [false, true]) {
+          const whole = inner(settings(isAdmin, mode, undefined, {}, studioAdmin));
+          const parts = visibleSections({ isAdmin, mode, studioAdmin })
+            .map((s) => inner(settings(isAdmin, mode, s.id as SettingsSectionId, {}, studioAdmin)))
+            .join("");
+          expect(parts, `${isAdmin} ${mode} ${studioAdmin}`).toBe(whole);
+        }
       }
     }
   });
@@ -466,9 +511,9 @@ describe("the card headings", () => {
   it("are the labels of the rail rows", () => {
     for (const isAdmin of [true, false]) {
       for (const mode of MODES) {
-        for (const section of visibleSections({ isAdmin, mode })) {
+        for (const section of visibleSections({ isAdmin, mode, studioAdmin: true })) {
           if (section.id === "setup" || section.id === "access") continue;
-          const html = settings(isAdmin, mode, section.id as SettingsSectionId);
+          const html = settings(isAdmin, mode, section.id as SettingsSectionId, {}, true);
           expect(html, `${section.id} ${isAdmin} ${mode}`).toContain(`>${section.label}</h2>`);
         }
       }
