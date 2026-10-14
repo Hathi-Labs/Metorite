@@ -12,6 +12,7 @@
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { clearCachedLayouts } from "@/lib/shell/shellCache";
 import { clearSidebarFolds } from "@/lib/shell/sidebarFolds";
+import { clearComposerHeights } from "@/app/email/lib/composerSize";
 import { serializeReasoning, parseReasoning } from "@/lib/chatStream";
 
 export interface ChatSession {
@@ -314,6 +315,8 @@ export function clearSignedOutAccount(): void {
       // and its sidebar folds (owner, 2026-10-11).
       clearCachedLayouts([email]);
       clearSidebarFolds([email]);
+      // The kept height of the email composer (owner request, 2026-10-14).
+      clearComposerHeights([email]);
     }
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
@@ -345,6 +348,7 @@ export function clearAccountNamespaces(emails: readonly string[]): void {
     // and their sidebar folds (owner, 2026-10-11).
     clearCachedLayouts(emails);
     clearSidebarFolds(emails);
+    clearComposerHeights(emails);
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
     /* storage unavailable: nothing is stored */
