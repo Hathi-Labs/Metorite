@@ -1154,8 +1154,8 @@ class TestTheCallsStayInStep:
             source = inspect.getsource(module)
             for clock in ("datetime.now(", "datetime.utcnow(", "date.today(", "time.time("):
                 assert clock not in source, (module.__name__, clock)
-        # The Calendar provider, the read, the task kinds of MD-3c and the
-        # mail kinds of MD-3d.
+        # The Calendar provider, the read, the task kinds of MD-3c, the mail
+        # kinds of MD-3d and the CRM kinds of MD-3e.
         assert inspect.getsource(feed).count("needs._now()") == 4
 
     def test_the_calendar_provider_opens_no_session_of_its_own(self):

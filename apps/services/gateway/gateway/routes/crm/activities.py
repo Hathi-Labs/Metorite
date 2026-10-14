@@ -656,14 +656,93 @@ async def delete_activity(
         return {"deleted": activity_id}
 
 
+# ── My due follow-ups, for the My Day feed (WS-58 MD-3e) ────────────────────
+
+#: The types that no member writes as a follow-up. The pipeline writes
+#: ``status_change`` and the platform writes ``system``.
+NOT_FOLLOWUP_TYPES: tuple[str, ...] = ("status_change", "system")
+
+#: My open activities that are due before ``:before``, one row for each
+#: record, with the earliest due time of that record (``my_day_feed.md``
+#: §5.9 item 13). An activity on more than one record takes the first of
+#: deal, lead, contact and organization. ⚠️ Each statement names the tenant
+#: AND the member, because production connects as the role that owns the
+#: tables, and RLS does not hold that role. The inner filter reads through
+#: ``idx_crm_activities_due_at`` (``144_crm.sql``), a partial index on the
+#: open rows.
+_MY_DUE_SQL = (
+    "SELECT record_kind, record_id, label, due_at, subject FROM ("
+    " SELECT DISTINCT ON (record_kind, record_id)"
+    "  record_kind, record_id, label, due_at, subject, activity_id FROM ("
+    "  SELECT"
+    "   CASE WHEN a.deal_id IS NOT NULL THEN 'deal'"
+    "        WHEN a.lead_id IS NOT NULL THEN 'lead'"
+    "        WHEN a.contact_id IS NOT NULL THEN 'contact'"
+    "        ELSE 'organization' END AS record_kind,"
+    "   COALESCE(a.deal_id, a.lead_id, a.contact_id, a.company_id) AS record_id,"
+    "   CASE WHEN a.deal_id IS NOT NULL THEN d.name"
+    "        WHEN a.lead_id IS NOT NULL THEN l.lead_name"
+    "        WHEN a.contact_id IS NOT NULL THEN"
+    "             concat_ws(' ', c.first_name, c.last_name)"
+    "        ELSE co.name END AS label,"
+    "   a.due_at, a.subject, a.id AS activity_id"
+    "  FROM crm_activities a"
+    "  LEFT JOIN crm_deals d ON d.id = a.deal_id"
+    "   AND d.organization_id = a.organization_id"
+    "  LEFT JOIN crm_leads l ON l.id = a.lead_id"
+    "   AND l.organization_id = a.organization_id"
+    "  LEFT JOIN crm_contacts c ON c.id = a.contact_id"
+    "   AND c.organization_id = a.organization_id"
+    "  LEFT JOIN crm_companies co ON co.id = a.company_id"
+    "   AND co.organization_id = a.organization_id"
+    "  WHERE a.organization_id = CAST(:org AS uuid)"
+    "   AND lower(a.created_by) = :member"
+    "   AND a.completed_at IS NULL"
+    "   AND a.due_at < :before"
+    "   AND a.type <> ALL(CAST(:skip AS text[]))"
+    " ) mine"
+    " ORDER BY record_kind, record_id, due_at, activity_id"
+    ") firsts ORDER BY due_at, record_kind, record_id LIMIT :limit"
+)
+
+
+async def my_due_activities(
+    db: Any, user: UserContext, *, before: Any, limit: int,
+) -> list[dict[str, Any]]:
+    """My open follow-ups that are due before ``before``, one for each
+    record, the earliest first (WS-58 MD-3e, ``my_day_feed.md`` §5.9 item 13).
+
+    "My" is ``lower(created_by)``, and the Zoho sync writes the mapped
+    member there, so a mirrored follow-up counts too. The caller gives the
+    session, so the feed's three CRM reads share one. The tenant is the
+    bound one (``current_tenant``), never a request value. Each row is
+    ``{record_kind, record_id, label, due_at, subject}``, and ``record_kind``
+    is ``deal``, ``lead``, ``contact`` or ``organization``.
+    """
+    org = current_tenant()
+    member = (getattr(user, "email", None) or "").strip().lower()
+    if not org or not member:
+        return []
+    rows = (await db.execute(text(_MY_DUE_SQL), {
+        "org": str(org), "member": member, "before": before,
+        "skip": list(NOT_FOLLOWUP_TYPES), "limit": max(1, int(limit)),
+    })).fetchall()
+    return [{
+        "record_kind": str(r.record_kind), "record_id": str(r.record_id),
+        "label": r.label, "due_at": r.due_at, "subject": r.subject,
+    } for r in rows]
+
+
 __all__ = [
     "ACTIVITY_PARENT_COLUMNS",
     "ACTIVITY_TYPES",
     "LOGGABLE_TYPES",
     "MODULE_ACTIVITY_COLUMN",
+    "NOT_FOLLOWUP_TYPES",
     "ActivityIn",
     "ActivityPatch",
     "TimelineEntry",
     "TimelineResponse",
     "activity_entries_by",
+    "my_due_activities",
 ]

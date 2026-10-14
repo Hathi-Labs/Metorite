@@ -30,11 +30,19 @@ is the effective value of today. CRM-C3 changes the stage half.
 **Stage dwell reads ``crm_status_changes``.** A Mirror org has no such rows,
 because the sync writes none. So in Mirror mode the route answers an empty
 result with a ``reason``, and never a number that looks measured.
+
+**Two reads for My Day** (WS-58 MD-3e). ``my_overdue_deals`` and
+``my_close_passed_deals`` are not routes. The feed's ``crm`` provider calls
+them with its own session, after the kill switch and the access rule. Each
+reads only the member's own deals, and each statement names the tenant.
+Fence: ``tests/unit/test_feed_crm_kinds_r8.py``.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
@@ -339,6 +347,113 @@ _OVERDUE_SQL = (
 )
 
 _SECONDS_PER_DAY = 86_400.0
+
+
+# ── My deals, for the My Day feed (WS-58 MD-3e) ─────────────────────────────
+#
+# Two reads of the deals that I own, for `deal_quiet` and `deal_close_passed`
+# (`my_day_feed.md` §5.9 item 13). The caller gives the session, so the feed's
+# three CRM reads share one. ⚠️ Each statement names the bound tenant AND the
+# member, because production connects as the role that owns the tables, and
+# RLS does not hold that role. "I own" is `lower(owner_email)`, which reads
+# through `idx_crm_deals_owner_email`. Never `stage_dwell`: that read covers
+# the whole organization.
+
+#: The tenant and the owner, for each read below. Both sides of the join name
+#: the tenant, so no stage of another organization joins.
+_MINE = (
+    " AND d.organization_id = CAST(:org AS uuid)"
+    " AND s.organization_id = CAST(:org AS uuid)"
+    " AND lower(d.owner_email) = :member"
+)
+
+#: My open deals past the limit of their own stage. ``_OVERDUE_FROM`` with
+#: no ``:days`` override, so a stage with no limit never fires.
+_MY_OVERDUE_SQL = (
+    "SELECT d.id, d.name, s.name AS stage, d.status_changed_at, "
+    "CAST(s.max_dwell_days AS int) AS limit_days "
+    f"{_OVERDUE_FROM}{_MINE} "
+    "ORDER BY d.status_changed_at ASC, d.id LIMIT :limit"
+)
+
+#: My open deals whose expected close date is before my local today.
+_MY_CLOSE_PASSED_SQL = (
+    "SELECT d.id, d.name, s.name AS stage, d.expected_close_date "
+    "FROM crm_deals d JOIN crm_deal_statuses s ON s.id = d.status_id "
+    "WHERE s.type <> ALL(CAST(:closing AS text[])) "
+    "AND d.expected_close_date < :today"
+    f"{_MINE} "
+    "ORDER BY d.expected_close_date ASC, d.id LIMIT :limit"
+)
+
+
+def _mine(user: UserContext) -> dict[str, Any] | None:
+    """The binds of the tenant and the member, or None when one is missing."""
+    org = current_tenant()
+    member = (getattr(user, "email", None) or "").strip().lower()
+    if not org or not member:
+        return None
+    return {"org": str(org), "member": member, "closing": list(CLOSING_TYPES)}
+
+
+async def my_overdue_deals(db: Any, user: UserContext, *, limit: int) -> list[dict[str, Any]]:
+    """My open deals that passed the ``max_dwell_days`` of their own stage,
+    the longest in the stage first. Empty in Mirror mode, because the sync
+    writes no stage change, so the stage clock is not known (the reason of
+    ``stage_dwell``). Each row is ``{id, name, stage, status_changed_at,
+    limit_days}``."""
+    binds = _mine(user)
+    if binds is None or await is_mirror_mode(db, binds["org"]):
+        return []
+    rows = (await db.execute(text(_MY_OVERDUE_SQL), {
+        **binds, "days": None, "limit": max(1, int(limit)),
+    })).fetchall()
+    return [{"id": str(r.id), "name": r.name, "stage": r.stage,
+             "status_changed_at": r.status_changed_at, "limit_days": int(r.limit_days)}
+            for r in rows]
+
+
+async def my_close_passed_deals(
+    db: Any, user: UserContext, *, today: Any, limit: int,
+) -> list[dict[str, Any]]:
+    """My open deals whose ``expected_close_date`` is before ``today``, the
+    member's local date. A won or lost deal is closed, so it never returns.
+    Each row is ``{id, name, stage, expected_close_date}``."""
+    binds = _mine(user)
+    if binds is None:
+        return []
+    rows = (await db.execute(text(_MY_CLOSE_PASSED_SQL), {
+        **binds, "today": today, "limit": max(1, int(limit)),
+    })).fetchall()
+    return [{"id": str(r.id), "name": r.name, "stage": r.stage,
+             "expected_close_date": r.expected_close_date} for r in rows]
+
+
+async def my_day_rows(user: UserContext, *, now: datetime, limit: int) -> dict[str, Any]:
+    """The rows of the feed's ``crm`` source, in ONE tenant session (WS-58
+    MD-3e, ``my_day_feed.md`` §5.9 item 13): the member's zone, then my due
+    follow-ups, my quiet deals and my deals past their close date.
+
+    ``now`` is the feed's one clock. The zone comes from
+    ``personal.stored_zone``, so "today" and "the start of tomorrow" are the
+    member's own. The caller has applied the kill switch and the access rule
+    before it calls this. Each read takes ``limit`` rows at most.
+    """
+    from gateway.routes.crm import activities
+    from gateway.routes.projects.personal import stored_zone, zone_name
+
+    async with _tenant_session() as db:
+        zone = zone_name(await stored_zone(db, user.email))
+        tz = ZoneInfo(zone)
+        today = now.astimezone(tz).date()
+        tomorrow0 = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
+        return {
+            "zone": zone,
+            "today": today,
+            "due": await activities.my_due_activities(db, user, before=tomorrow0, limit=limit),
+            "quiet": await my_overdue_deals(db, user, limit=limit),
+            "passed": await my_close_passed_deals(db, user, today=today, limit=limit),
+        }
 
 
 def _days(seconds: Any) -> float | None:
