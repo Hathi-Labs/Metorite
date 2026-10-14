@@ -74,14 +74,10 @@ INTEGRATION_ENV_MAP: dict[str, dict[str, str]] = {
     "instantly": {
         "api_key": "INSTANTLY_API_KEY",
     },
-    "gmail": {
-        "sa_json_path": "GMAIL_SA_JSON_PATH",
-        "default_user": "GMAIL_DEFAULT_USER",
-    },
-    "gmail-send": {
-        "sa_json_path": "GMAIL_SA_JSON_PATH",
-        "default_user": "GMAIL_DEFAULT_USER",
-    },
+    # ⚠️ No `gmail` and no `gmail-send` entry (WS-17 EM-G11b, 2026-10-14).
+    # The service-account Gmail path is gone. A stored row under either id
+    # is not loaded at startup. `integrations.RETIRED_SERVICE_IDS` keeps both
+    # ids reserved.
     "smtp": {
         "host": "SMTP_HOST",
         "port": "SMTP_PORT",
