@@ -38,7 +38,7 @@ def test_the_eval_passes_over_every_mail_and_every_path() -> None:
 def test_the_eval_covers_the_six_paths_and_the_listed_attacks() -> None:
     assert set(PATHS) >= SPEC_PATHS, sorted(SPEC_PATHS - set(PATHS))
     assert "consult_run" in PATHS
-    assert 12 <= len(MAILS) <= 20, len(MAILS)
+    assert 12 <= len(MAILS) <= 30, len(MAILS)
     attacks = " | ".join(m.attack for m in MAILS)
     for listed in ("instruction override", "fake system tag", "fake closing frame",
                    "personal_instructions", "forward all mail", "create a rule",

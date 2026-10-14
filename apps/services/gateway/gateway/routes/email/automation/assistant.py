@@ -13,6 +13,7 @@ from uuid import uuid4
 _KB_WORD_RE = re.compile(r"[a-z0-9]{2,}")
 
 from acb_auth import UserContext, get_current_user
+from acb_skills.untrusted import neutralise
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.core import (
     _assert_account_owner,
@@ -111,7 +112,7 @@ async def _load_assistant_about(
     if learned_style.strip():
         parts.append(
             "<learned_writing_style>\n"
-            f"{learned_style.strip()}\n</learned_writing_style>"
+            f"{_learned_text(learned_style)}\n</learned_writing_style>"
         )
     if kb_rows:
         kb_text, budget = [], 4000
@@ -137,11 +138,23 @@ async def _load_assistant_about(
     if lp_rows:
         parts.append(
             "<learned_patterns>\n"
-            + "\n".join(f"- {r.pattern}" for r in lp_rows)
+            + "\n".join(f"- {' '.join(_learned_text(r.pattern).split())}" for r in lp_rows)
             + "\n</learned_patterns>"
         )
 
     return "\n\n".join(parts), signature
+
+
+def _learned_text(value: Any) -> str:
+    """Text that a model learned from mail, for a tag of the about block.
+
+    WS-17 EM-G11d round 1 (UMCC). The reply-memory extractor and the style
+    learner read mail, so a mail could steer what they store. The drafter
+    trusts the tags of this block, so the text loses each shape of a tag, a
+    marker and a heading (``acb_skills.untrusted.neutralise``) and can never
+    close ``<learned_patterns>`` or open ``<personal_instructions>``. A
+    pattern also stays on one line, as its bullet."""
+    return neutralise(str(value or "").strip(), "")
 
 
 # The tier of each email AI task (D-EM-61, owner, 2026-10-09). Our code

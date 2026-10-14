@@ -21,25 +21,33 @@ word of the text, and it cuts nothing. It only breaks the shapes that a model
 could read as structure of the prompt:
 
 1. Each copy of the token, in any case, goes.
-2. A run of three or more angle brackets, with only white space or invisible
-   format characters between them, gets U+2039/U+203A (the single angle
-   quotation marks) in place of each bracket. That covers a fake closing
-   marker, a marker split across lines, the full-width forms and a
-   zero-width character inside the run.
-3. A tag such as ``<personal_instructions>``, ``</system>`` or
-   ``<|im_start|>`` gets U+2039/U+203A for its brackets. The prompts of the
-   drafter trust a few tags that Metorite writes outside the frame, so the
-   text must not open or close one.
+2. A run of three or more angle brackets gets ``[`` or ``]`` in place of each
+   bracket. White space, an invisible format character (category Cf) or a
+   combining mark (Mn, Me) may sit between the brackets of a run. That covers
+   a fake closing marker, a marker split across lines, the full-width and
+   small forms, the look-alike brackets and a zero-width character inside the
+   run.
+3. A tag such as ``<personal_instructions>``, ``</system>``,
+   ``</ personal_instructions>`` or ``<|im_start|>``, also with a look-alike
+   bracket or an invisible character before or inside its name, gets ``[``
+   and ``]`` for its brackets. The prompts of the drafter trust a few tags
+   that Metorite writes outside the frame, so the text must not open or close
+   one.
 4. A line that starts with ``#`` gets a backslash before it, so the text
    cannot start a Markdown heading that the prompt reads as its own section.
+   A line starts after each line break of Unicode (``\\r``, ``\\n``, U+2028,
+   U+2029, U+0085 and the two page breaks), and any Unicode white space or
+   invisible character may come before the ``#``.
 
 The source of this module holds only ASCII. Each look-alike character is
 built with ``chr``, so no line of the code hides one.
 
 WARNING: the frame is advice to the model, and no test can prove that a
-model obeys it. The structural half is what the fences prove: the text sits
-in one block, the token is fresh, and no shape of a marker or a trusted tag
-survives.
+model obeys it. The fences prove the structural half for the forms that they
+name: the text sits in one block, the token is fresh, and none of the shapes
+above survives in a form of :func:`has_marker_shape` or of the test cases.
+The forms are a finite list. A model can still read a shape that is not on
+it, for example a tag written as HTML entities or in base64.
 
 ``apps/services/agent_edge/agent_edge/tools.py`` has its own shape, the
 ``{"untrusted_text": ...}`` value of WS-55's MCP protocol. It is not a marker
@@ -71,51 +79,76 @@ MARKER_LINE_RE = re.compile(r"^<<<(END )?([A-Z][A-Z ]*[A-Z]) ([0-9a-f]{16})>>>$"
 
 _LABEL_RE = re.compile(r"^[A-Z][A-Z ]{0,38}[A-Z]$")
 
-#: The characters whose NFKC form is ``<`` or ``>``: the ASCII sign, the
-#: full-width form (U+FF1C, U+FF1E) and the small form (U+FE64, U+FE65).
-_NFKC_OPEN = "<" + chr(0xFF1C) + chr(0xFE64)
-_NFKC_CLOSE = ">" + chr(0xFF1E) + chr(0xFE65)
-#: More characters that a model can read as an angle bracket: the modifier
+
+def _chars(*codes: int) -> str:
+    return "".join(chr(c) for c in codes)
+
+
+#: Each character that a model can read as an angle bracket. The first three
+#: of each side are the ASCII sign and the two forms whose NFKC form is ``<``
+#: or ``>`` (full-width U+FF1C/U+FF1E, small U+FE64/U+FE65). The rest look the
+#: same: the single angle quotation marks (U+2039/U+203A), the modifier
 #: arrowheads, two Canadian syllabics, the heavy ornaments, the CJK angle
 #: brackets, the mathematical angle brackets and the old angle brackets.
-#: U+2039, U+203A, U+00AB and U+00BB are not here. The first two are what
-#: this module writes in place of a bracket, and the last two are quotes.
-_OPENING = frozenset(_NFKC_OPEN + "".join(
-    chr(c) for c in (0x02C2, 0x1438, 0x276E, 0x3008, 0x27E8, 0x2329)))
-_CLOSING = frozenset(_NFKC_CLOSE + "".join(
-    chr(c) for c in (0x02C3, 0x1433, 0x276F, 0x3009, 0x27E9, 0x232A)))
-_SAFE_OPEN, _SAFE_CLOSE = chr(0x2039), chr(0x203A)
+#: U+00AB and U+00BB are not here, because they are quotation marks.
+_OPEN_CHARS = "<" + _chars(0xFF1C, 0xFE64, 0x2039, 0x02C2, 0x1438, 0x276E,
+                           0x3008, 0x27E8, 0x2329)
+_CLOSE_CHARS = ">" + _chars(0xFF1E, 0xFE65, 0x203A, 0x02C3, 0x1433, 0x276F,
+                            0x3009, 0x27E9, 0x232A)
+_OPENING = frozenset(_OPEN_CHARS)
+_CLOSING = frozenset(_CLOSE_CHARS)
+#: What this module writes in place of a bracket. It is no angle bracket in
+#: any form, so a neutralised text holds no marker shape and no tag shape.
+_SAFE_OPEN, _SAFE_CLOSE = "[", "]"
 
 #: The number of brackets in a run that reads as a marker.
 _RUN = 3
 
-#: The invisible characters a tag name or a heading line may hide: the soft
-#: hyphen, the zero-width and direction marks, the word joiners and the BOM.
-_INVISIBLE = "".join(
-    re.escape(chr(c)) for c in (0x00AD, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F,
-                                0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0xFEFF))
-_OPEN_CLASS = "[" + re.escape(_NFKC_OPEN) + "]"
-_CLOSE_CLASS = "[" + re.escape(_NFKC_CLOSE) + "]"
-_NOT_BRACKET = "[^" + re.escape(_NFKC_OPEN + _NFKC_CLOSE) + r"\n]"
+#: The invisible characters that a tag or a heading line may hide: the soft
+#: hyphen, the Arabic letter mark, the Mongolian vowel separator, the
+#: combining grapheme joiner, the zero-width and direction marks, the
+#: direction embeddings and overrides, the word joiners, the direction
+#: isolates and the BOM.
+_INVISIBLE_CODES = (
+    0x00AD, 0x034F, 0x061C, 0x180E,
+    *range(0x200B, 0x2010), *range(0x202A, 0x202F),
+    *range(0x2060, 0x2065), *range(0x2066, 0x206A), 0xFEFF,
+)
+_INVISIBLE = "".join(re.escape(chr(c)) for c in _INVISIBLE_CODES)
+_OPEN_CLASS = "[" + re.escape(_OPEN_CHARS) + "]"
+_CLOSE_CLASS = "[" + re.escape(_CLOSE_CHARS) + "]"
+_NOT_BRACKET = "[^" + re.escape(_OPEN_CHARS + _CLOSE_CHARS) + r"\n]"
+_NAME_PART = rf"[A-Za-z_{_INVISIBLE}][A-Za-z0-9_\-{_INVISIBLE}]*"
+#: A name, with an optional namespace such as ``ns:``. A letter must follow
+#: the ``:``, so ``https://`` and ``mailto:a@b`` are not names.
+_NAME = rf"{_NAME_PART}(?::{_NAME_PART})?"
 
-#: A tag: an opening bracket, an optional ``/``, a name, attributes, and a
-#: closing bracket. No white space may follow the opening bracket, so the text
-#: ``a < b and c > d`` is not a tag. The name holds no ``:``, ``.`` or ``@``,
-#: so ``<https://x>`` and ``<name@host>`` stay as they are. The name may hold
-#: an invisible character, because a zero-width space inside
-#: ``personal_instructions`` still reads as the tag to a model.
+#: A tag: an opening bracket, invisible characters, an optional ``/`` with
+#: white space after it, a name, attributes, and a closing bracket. The name
+#: holds no ``:``, ``.`` or ``@``, so ``<https://x>`` and ``<name@host>`` stay
+#: as they are, and no white space may follow the opening bracket, so
+#: ``a < b and c > d`` is not a tag.
 _TAG_RE = re.compile(
     _OPEN_CLASS
-    + rf"(/?[A-Za-z_][A-Za-z0-9_\-{_INVISIBLE}]*)"
-    + rf"((?:[\s/]{_NOT_BRACKET}*)?)"
+    + rf"([{_INVISIBLE}]*(?:/[\s{_INVISIBLE}]*)?{_NAME}"
+    + rf"(?:[\s/]{_NOT_BRACKET}*)?)"
     + _CLOSE_CLASS
 )
+#: A tag with white space after its opening bracket, such as
+#: ``< personal_instructions>``. It holds a name and nothing else, so text
+#: such as ``a < b and c > d`` stays as it is.
+_SPACED_TAG_RE = re.compile(
+    _OPEN_CLASS + rf"(\s+/?[\s{_INVISIBLE}]*{_NAME}\s*)" + _CLOSE_CLASS)
 #: A chat-role token of a model, such as ``<|im_start|>``.
-_ROLE_TOKEN_RE = re.compile(_OPEN_CLASS + r"\|([^|\n]{0,40})\|" + _CLOSE_CLASS)
-#: A line that starts a Markdown heading, after white space or an invisible
-#: character. U+FF03 and U+FE5F are the NFKC forms of ``#``.
+_ROLE_TOKEN_RE = re.compile(_OPEN_CLASS + r"(\|[^|\n]{0,40}\|)" + _CLOSE_CLASS)
+
+#: Each line break of Unicode, and the white space of one line.
+_BREAKS = r"\r\n\x0b\x0c\x85" + re.escape(chr(0x2028) + chr(0x2029))
+_LINE_SPACE = rf"[^\S{_BREAKS}]"
+#: ``#`` and its two NFKC forms, U+FF03 and U+FE5F.
 _HASHES = "[#" + re.escape(chr(0xFF03) + chr(0xFE5F)) + "]"
-_HEADING_RE = re.compile(rf"^([ \t{_INVISIBLE}]*)(?={_HASHES})", re.MULTILINE)
+_HEADING_RE = re.compile(
+    rf"(\A|[{_BREAKS}])((?:{_LINE_SPACE}|[{_INVISIBLE}])*)(?={_HASHES})")
 
 
 def new_token() -> str:
@@ -128,8 +161,9 @@ def _is_bracket(ch: str) -> bool:
 
 
 def _is_gap(ch: str) -> bool:
-    """White space or an invisible format character (category Cf)."""
-    return ch.isspace() or unicodedata.category(ch) == "Cf"
+    """White space, an invisible format character (Cf) or a combining mark
+    (Mn, Me). None of them breaks the look of a bracket run."""
+    return ch.isspace() or unicodedata.category(ch) in ("Cf", "Mn", "Me")
 
 
 def _break_runs(text: str) -> str:
@@ -155,18 +189,26 @@ def _break_runs(text: str) -> str:
     return "".join(chars)
 
 
+def _bracketed(m: re.Match[str]) -> str:
+    return f"{_SAFE_OPEN}{m.group(1)}{_SAFE_CLOSE}"
+
+
 def neutralise(text: str, token: str) -> str:
     """*text* with no copy of *token* and no shape of a marker, a tag or a
-    heading. It removes no word and cuts nothing. See the module docstring."""
+    heading. It removes no word and cuts nothing. See the module docstring.
+    An empty *token* removes nothing, for a text with no frame of its own."""
     out = str(text or "")
     if token:
-        out = re.sub(re.escape(token), "", out, flags=re.IGNORECASE)
+        # Again until none is left: "0123<token>4567" loses the inner copy and
+        # would rejoin into the token (round 1 of the verifier).
+        pattern = re.compile(re.escape(token), re.IGNORECASE)
+        while pattern.search(out):
+            out = pattern.sub("", out)
     out = _break_runs(out)
-    out = _ROLE_TOKEN_RE.sub(
-        lambda m: f"{_SAFE_OPEN}|{m.group(1)}|{_SAFE_CLOSE}", out)
-    out = _TAG_RE.sub(
-        lambda m: f"{_SAFE_OPEN}{m.group(1)}{m.group(2)}{_SAFE_CLOSE}", out)
-    return _HEADING_RE.sub(lambda m: m.group(1) + "\\", out)
+    out = _ROLE_TOKEN_RE.sub(_bracketed, out)
+    out = _TAG_RE.sub(_bracketed, out)
+    out = _SPACED_TAG_RE.sub(_bracketed, out)
+    return _HEADING_RE.sub(lambda m: m.group(1) + m.group(2) + "\\", out)
 
 
 def has_marker_shape(text: str) -> bool:

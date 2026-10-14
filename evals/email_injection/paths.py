@@ -26,7 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from evals.email_injection.mails import Mail
+from evals.email_injection.mails import DASH, Mail
 
 REPO = Path(__file__).resolve().parents[2]
 _AGENT_DIR = REPO / "apps" / "agents" / "agent-email-assistant"
@@ -54,6 +54,9 @@ class Capture:
     #: ``call_agent``, and the count of registry reads of the MCP injection.
     delegate_no_egress: bool | None = None
     mcp_reads: int | None = None
+    #: True for the about block: learned text sits in a trusted tag of ours,
+    #: neutralised, and never in a block (the checks differ).
+    learned: bool = False
 
 
 @contextlib.contextmanager
@@ -221,6 +224,8 @@ def _email_dict(mail: Mail) -> dict[str, str]:
         "attachments": f"Attachments: {mail.value('attachment')} (application/pdf)",
         "self": "owner@company.example", "sender_scope": "external",
         "date": "2026-10-14",
+        "reply_memories": f"- [PREFERENCE/SENDER] {mail.value('memory')}",
+        "calendar": f"- Tue Oct 14, 10:00 {DASH} {mail.value('calendar')}",
     }
 
 
@@ -233,7 +238,8 @@ def drafter(mail: Mail) -> Capture:
     from gateway.routes.email.automation import drafting
 
     cap = Capture("drafter", fields=frozenset(
-        {"from_name", "from", "subject", "body", "thread", "attachment"}))
+        {"from_name", "from", "subject", "body", "thread", "attachment",
+         "memory", "calendar"}))
     tools: list[Any] = []
 
     async def fake(*, model: str, messages: list[dict[str, Any]], **kw: Any) -> Any:
@@ -280,6 +286,54 @@ def compose_assist(mail: Mail) -> Capture:
             reply_to_body=mail.value("body"), sender="owner@company.example"))
     cap.tools = frozenset() if not any(tools) else frozenset({"<tools>"})
     return cap
+
+
+def reply_memory_extract(mail: Mail) -> Capture:
+    """``drafting._llm_extract_reply_memories``: it learns memories from how
+    the member changed a draft, with the incoming mail for context."""
+    from gateway.routes.email.automation import drafting
+
+    cap = Capture("reply_memory_extract", fields=frozenset({"body"}))
+    tools: list[Any] = []
+
+    async def fake(model: str, messages: list[dict[str, Any]], **kw: Any) -> Any:
+        cap.calls.append(_texts(messages))
+        tools.append(kw.get("tools"))
+        return {"memories": []}, "{}", model
+
+    with _patched((drafting, "_llm_json", fake)):
+        asyncio.run(drafting._llm_extract_reply_memories(
+            mail.value("body"), "Hello Priya,\n\nThanks.", "Hi Priya,\n\nThanks!"))
+    cap.tools = frozenset() if not any(tools) else frozenset({"<tools>"})
+    return cap
+
+
+def learned_about(mail: Mail) -> Capture:
+    """``assistant._load_assistant_about``: the about block of the drafter and
+    the chat agent. A learned pattern and a learned writing style hold text
+    that a model learned from mail."""
+    from gateway.routes.email.automation import assistant, voice_profile
+
+    learned = mail.value("memory")
+    settings = SimpleNamespace(about="", signature="", personal_instructions="",
+                               writing_style="", learned_writing_style=learned)
+
+    class _Db:
+        async def execute(self, statement: Any, params: dict[str, Any]) -> _Result:
+            sql = str(statement)
+            if "FROM email_assistant_settings" in sql:
+                return _Result([settings])
+            if "FROM email_learned_patterns" in sql:
+                return _Result([SimpleNamespace(pattern=learned)])
+            return _Result([])
+
+    async def no_profile(*_a: Any, **_k: Any) -> str:
+        return ""
+
+    with _patched((voice_profile, "load_voice_profile_block", no_profile)):
+        about, _signature = asyncio.run(assistant._load_assistant_about(_Db(), _ACCOUNT))
+    return Capture("learned_about", calls=[[about]], tools=frozenset(),
+                   fields=frozenset({"memory"}), learned=True)
 
 
 def consult_plan(mail: Mail) -> Capture:
@@ -415,6 +469,8 @@ PATHS: dict[str, Callable[[Mail], Capture]] = {
     "read_thread": read_thread,
     "drafter": drafter,
     "compose_assist": compose_assist,
+    "reply_memory_extract": reply_memory_extract,
+    "learned_about": learned_about,
     "consult_plan": consult_plan,
     "consult_run": consult_run,
     "classifier_one": classifier_one,
