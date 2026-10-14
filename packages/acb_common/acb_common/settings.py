@@ -273,6 +273,17 @@ class Settings(BaseSettings):
     # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_crm_field_studio_r8.py.
     crm_field_studio_orgs: str = ""
+
+    # ── The My Day loop (WS-58 MD-5b, 2026-10-14) ───────────────────────────
+    #
+    # `my_day_loop_enabled` is the switch of the `my_day` loop, default OFF
+    # (`my_day_feed.md` §8.4 item 10). `CRM_MIRROR` is the default-off
+    # precedent. With it off, the loop starts no task and the feed read writes
+    # no active set (item 22). The one reader is
+    # `gateway.my_day_loop.loop_enabled`, and main.py never reads it.
+    # A flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_my_day_loop.py.
+    my_day_loop_enabled: bool = False
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 
@@ -1224,6 +1235,17 @@ class Settings(BaseSettings):
     agent_edge_signing_key: str = ""
     agent_edge_signing_key_previous: str = ""
     agent_edge_gateway_url: str = "http://127.0.0.1:8080"
+
+    # ── My Day's read cache (WS-58 MD-5a, 2026-10-14) ───────────────────────
+    #
+    # `my_day_cache` gates the read cache of `GET /shell/feed`, the change
+    # sink of the `pm.*` events and the member version bumps
+    # (`project-docs/specs/my_day_feed.md` §8.4 item 7). Default OFF: with it
+    # off, every feed read runs the providers, as before MD-5a, and the sink
+    # and the bumps send nothing to Redis. The one reader is
+    # `gateway.routes.shell.cache.enabled`. 🔴 A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_my_day_cache.py.
+    my_day_cache: bool = False
 
     # ── Token accessors ────────────────────────────────────────────────────
 

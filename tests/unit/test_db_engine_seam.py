@@ -722,6 +722,12 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "through the SECURITY DEFINER `whatsapp_member_link_for_code`, "
         "granted to `acb_app` alone, and the redemption then writes inside "
         "`tenant_session` with the org it returns",
+    ("apps/services/gateway/gateway/my_day_loop.py",
+     "_organization_ids"):
+        "WS-58 MD-5b: which organizations the `my_day` loop looks at. It "
+        "lists the RLS-EXEMPT `organization` table, so it does not go blind. "
+        "The sweep after it binds one organization with `tenant_session`, and "
+        "the Redis work binds it with `organization_scope`",
 }
 
 

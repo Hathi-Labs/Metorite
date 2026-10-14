@@ -35,6 +35,8 @@
 >
 > **Built later:** CRM-Q7a, the rule table and the Field map (2026-10-12, migration 253). See §18.7.
 >
+> **Built later:** CRM-Q7b, the proposer of field rules (2026-10-14). It adds no migration. See §18.7.
+>
 > **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 >
 > **Built from §20:** CRM-C2, one board (2026-10-13, §20.5). CRM-C3, stages
@@ -1288,7 +1290,7 @@ section is that contract. It splits the two tickets into four slices.
 | **CRM-Q6a** ✅ built 2026-10-12 | AGENT-SAFE | The generic record store, its door, discovery of the other modules, the new scopes, and the sync. No UI and no new route | CRM-Q5 merged |
 | **CRM-Q6b** ✅ built 2026-10-12 | AGENT-SAFE | The read-only routes, the rail rows and the generic record page | CRM-Q6a merged. Start it after CRM-Q8 merges too, because both edit `CrmRail.tsx` and `page.tsx`. That is a merge order, not a contract |
 | **CRM-Q7a** ✅ built 2026-10-12 | AGENT-SAFE | The rule table, the Field map card, approve and reject, and the sync that applies approved rules. No model call | CRM-Q6a merged |
-| **CRM-Q7b** | AGENT-SAFE | The proposer: one routed model call over metadata | CRM-Q7a merged |
+| **CRM-Q7b** ✅ built 2026-10-14 | AGENT-SAFE | The proposer: one routed model call over metadata | CRM-Q7a merged |
 
 The new Zoho consent is the owner's act (§12). The build is not. Each slice
 takes the next free migration number at build time (R1).
@@ -1700,7 +1702,7 @@ decides again.
   `tests/unit/test_crm_reset_r8.py`, `tests/unit/test_crm_u5b_r8.py` and
   `src/app/crm/components/crmQ7a.test.ts`.
 
-#### CRM-Q7b: the proposer
+#### CRM-Q7b: the proposer (✅ built 2026-10-14)
 
 **When it runs.** Only when an admin presses "Suggest mappings" on the Field
 map. Nothing calls the model in the background. One entity is one call. When
@@ -1745,6 +1747,50 @@ and the target list as its only arguments.
 4. The call goes through `acompletion_with_fallback` with
    `feature="crm.field_map"`, and with the org bound.
 5. A second press for the same profile version makes no model call.
+
+**Built as (2026-10-14).**
+
+- The route is `POST /crm/field-rules/suggest {"entity"}` in
+  `routes/crm/field_rules.py`. It has the guards of CRM-Q7a: `CRM_MIRROR`,
+  `admin:access:manage` and Mirror mode. The body forbids other keys, so a
+  body that names an organization gets 422.
+- `build_field_map_prompt(fields, targets)` builds the input. Each field
+  holds its API name, label, type, option labels and `may_fill`. The targets
+  are the open columns that no approved rule fills.
+- The model gets only the fields with no decided rule, and only the fields
+  that an open column can take. A stale rule counts as decided.
+- `_ask_model` binds the admin with `run_context_scope` and
+  `bind_run_context(member_verified=True)`. It wraps the leaf call in
+  `llm_slot()`, as `actions.py` does. The spec did not name that slot. Outside
+  a mailbox job it takes no permit and counts nothing.
+- The call has a bound of 25 seconds, because the `/api/crm` proxy cuts a
+  request at 30 seconds. A failure or a bad answer gives 502 with the code
+  `suggest_failed` or `suggest_bad_answer`, and writes no row.
+- The route sends the fields in batches of 40, one call for each, and the
+  calls run at the same time. So "one entity is one call" is now one call
+  for each batch. The route reads each answer on its own and keeps what it
+  can read. `unread` counts the fields of a batch that failed.
+- One press for each organization and entity in 60 seconds reaches the
+  model. The route sets a tenant Redis key with `NX` and a TTL of 60 seconds
+  before the call, through `acb_common.tenant_redis`. A second press gets
+  429 "Wait a minute before you ask again." A Redis outage gets 503.
+- The insert writes the literal `'proposed'`. Its update replaces only an
+  older proposal of the assistant, so a decided rule keeps its row.
+- An approve or a reject updates a rule only when its status and target are
+  still the ones the route read. Else the admin gets 409 "This proposal
+  changed. Reload to see it."
+- `mapping.legal_columns` is the one list of the columns that a field may
+  fill, and the GET route calls it. The proposer uses `mapping.rule_problem`
+  and `mapping.types_agree` for the same rule.
+- The Field map card has a "Suggest mappings" button for each entity. It
+  shows a spinner while the call runs, and an error under the entity.
+- ⚠️ The second-press rule needs an open proposal of the assistant at the
+  current profile version. A decided row does not count. An answer that
+  keeps no item writes no row, so the next press after the cool-down calls
+  the model again.
+- Fences: `tests/unit/test_crm_field_map_ai.py` (R8, red first, eleven
+  mutations) and `src/app/crm/components/crmQ7b.test.ts` (red first, three
+  mutations).
 
 #### CRM-Q10: a reconnect never freezes the mirror
 

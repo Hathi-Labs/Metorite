@@ -1220,6 +1220,14 @@ async def set_assignees(
             # a payload without it rather than running unbound.
             "organization_id": task_org,
         })
+    elif removed:
+        # WS-58 MD-5a — a removal alone emits no event, and the task leaves
+        # the My Day of each member removed. So the org version moves, after
+        # the commit, with no new `pm.*` event: workflow triggers stay as
+        # they were (my_day_feed.md §8.4 item 5).
+        from gateway.routes.shell import cache as feed_cache
+
+        await feed_cache.bump_org(task_org)
     return {
         "task_id": task_id,
         "assignees": sorted(wanted),
