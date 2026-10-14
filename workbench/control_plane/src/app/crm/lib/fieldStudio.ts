@@ -185,6 +185,11 @@ export type FieldDraft = {
   visible: boolean;
   help_text: string;
   default_value: unknown;
+  /**
+   * The text in the "New option" box that the admin did not add yet. The save
+   * refuses it, so a typed option is never lost in silence (review P1).
+   */
+  new_option: string;
 };
 
 /** The draft of a new field. It starts as Text, in the section the admin chose. */
@@ -199,6 +204,7 @@ export function newDraft(section: string | null = null): FieldDraft {
     visible: true,
     help_text: "",
     default_value: null,
+    new_option: "",
   };
 }
 
@@ -230,6 +236,7 @@ export function draftOf(def: FieldDef): FieldDraft {
     visible: def.visible,
     help_text: def.help_text ?? "",
     default_value: def.default_value ?? null,
+    new_option: "",
   };
 }
 
@@ -298,6 +305,15 @@ export function sectionLabelProblem(text: string): string | null {
 
 export type DraftProblems = Partial<Record<FormPart, string>>;
 
+/** The refusal of a "New option" text that the admin did not add. */
+export const PENDING_OPTION = "Add or clear the new option.";
+/** A required field that a hidden form cannot fill. */
+export const HIDDEN_REQUIRED =
+  "A required field that is hidden needs a default value, or no member can fill it.";
+/** A required picklist with nothing to choose. */
+export const NO_ACTIVE_OPTION =
+  "A required picklist needs one active option at least, or no member can fill it.";
+
 /**
  * What the form refuses before the save, by part. The gateway checks each
  * part again. `def` is the field that exists, or null at create.
@@ -316,6 +332,19 @@ export function checkDraft(draft: FieldDraft, def: FieldDef | null): DraftProble
   if (hasOptions(draft.type)) {
     const bad = draft.options.find((o) => labelProblem(o.label, "An option", OPTION_LABEL_MAX));
     if (bad) problems.options = `An option needs 1 to ${OPTION_LABEL_MAX} characters.`;
+    else if (draft.new_option.trim()) problems.options = PENDING_OPTION;
+    else if (draft.required && !draft.options.some((o) => !o.retired)) {
+      problems.options = NO_ACTIVE_OPTION;
+    }
+  }
+  // `check_fillable` of the gateway (review P1): a hidden required field needs
+  // a default. A lookup has no default, so a hidden required lookup fails too.
+  if (
+    draft.required &&
+    !draft.visible &&
+    (draft.type === "lookup" || isEmptyValue(draft.default_value))
+  ) {
+    problems.required = HIDDEN_REQUIRED;
   }
   if (textLength(draft.help_text.trim()) > HELP_MAX) {
     problems.help = `Use at most ${HELP_MAX} characters.`;
@@ -352,6 +381,82 @@ export function moveOption(options: readonly OptionDraft[], from: number, to: nu
   const [moved] = next.splice(from, 1);
   next.splice(to, 0, moved);
   return next;
+}
+
+/** The result of `mergeOptions`. */
+export type OptionMerge = { options: OptionDraft[] } | { conflict: string };
+
+/** The refusal of a merge whose option another admin changed. */
+export const OPTIONS_CONFLICT = "Someone else changed the options. Reopen to see them.";
+
+/** The saved values of a list of options, in order. */
+function savedValues(options: readonly OptionDraft[]): string[] {
+  return options.flatMap((o) => (o.value === null ? [] : [o.value]));
+}
+
+/**
+ * The options to send, from the options that the gateway holds NOW (review
+ * P2). A PATCH sends the whole list, so a dialog that sent its own copy could
+ * undo the rename of another admin. So the save reads the options again and
+ * applies only the changes of this dialog: a rename and a retire by `value`,
+ * each new option, and the order.
+ *
+ * - `opened`: the options when the dialog opened. `mine`: the options of the
+ *   dialog. `current`: the options that the gateway holds now.
+ * - An option that this dialog changed, and that another admin also changed
+ *   since the dialog opened, gives `conflict`.
+ * - An option that another admin added stays. With a new order from this
+ *   dialog, it goes last.
+ */
+export function mergeOptions(
+  opened: readonly OptionDraft[],
+  mine: readonly OptionDraft[],
+  current: readonly OptionDraft[],
+): OptionMerge {
+  const before = new Map(opened.flatMap((o) => (o.value === null ? [] : [[o.value, o] as const])));
+  const now = new Map(current.flatMap((o) => (o.value === null ? [] : [[o.value, o] as const])));
+  const merged = new Map<string, OptionDraft>();
+  for (const [value, option] of now) merged.set(value, { ...option });
+  for (const option of mine) {
+    if (option.value === null) continue;
+    const was = before.get(option.value);
+    const there = now.get(option.value);
+    if (!was || !there) return { conflict: OPTIONS_CONFLICT };
+    const renamed = option.label.trim() !== was.label;
+    const retired = option.retired !== was.retired;
+    if (!renamed && !retired) continue;
+    if (there.label !== was.label || there.retired !== was.retired) {
+      return { conflict: OPTIONS_CONFLICT };
+    }
+    merged.set(option.value, {
+      ...there,
+      label: renamed ? option.label.trim() : there.label,
+      retired: retired ? option.retired : there.retired,
+    });
+  }
+  const added = mine.filter((o) => o.value === null);
+  const order = savedValues(mine);
+  // A new option above a saved one is a change of order too.
+  const addedAbove = mine.some(
+    (o, i) => o.value === null && mine.slice(i).some((later) => later.value !== null),
+  );
+  const reordered = order.join("\n") !== savedValues(opened).join("\n") || addedAbove;
+  if (!reordered) {
+    return { options: [...[...now.keys()].map((v) => merged.get(v)!), ...added] };
+  }
+  const known = new Set(order);
+  const others = [...now.keys()].filter((v) => !known.has(v)).map((v) => merged.get(v)!);
+  return {
+    options: [...mine.map((o) => (o.value === null ? o : merged.get(o.value)!)), ...others],
+  };
+}
+
+/** The options of one field as the gateway holds them now, for `mergeOptions`. */
+export async function readFieldOptions(entity: EntitySlug, key: string): Promise<OptionDraft[]> {
+  const layout = await call<FieldLayout>(`/fields${path(entity)}?layout=1`);
+  const found = (layout?.fields ?? []).find((f) => f.key === key);
+  if (!found) throw new CrmError("This field is gone. Reopen the studio to see the fields.", 404);
+  return draftOf(found).options;
 }
 
 /**
@@ -427,6 +532,7 @@ const CODE_PARTS: Record<string, FormPart> = {
   option_twice: "options",
   section_unknown: "section",
   field_value: "default",
+  required_unfillable: "required",
 };
 
 /**
@@ -525,6 +631,59 @@ export function moveSection(layout: StudioLayout, id: string, index: number): St
   return same(layoutBody(next), layoutBody(layout)) ? layout : next;
 }
 
+/**
+ * The layout after "Move up" (-1) or "Move down" (+1) of one field (review
+ * P2, an order by keyboard and on a phone). A field moves one place in its
+ * group. At the top of a group it goes to the end of the group before it,
+ * and at the bottom it goes to the start of the group after it. At the two
+ * ends of the list, the same layout comes back.
+ */
+export function stepField(layout: StudioLayout, key: string, dir: -1 | 1): StudioLayout {
+  const at = layout.groups.findIndex((g) => g.fields.some((f) => f.key === key));
+  if (at < 0) return layout;
+  const group = layout.groups[at];
+  const next = group.fields.findIndex((f) => f.key === key) + dir;
+  if (next >= 0 && next < group.fields.length) {
+    return moveField(layout, key, { section: group.section?.id ?? null, index: next });
+  }
+  const neighbour = layout.groups[at + dir];
+  if (!neighbour) return layout;
+  return moveField(layout, key, {
+    section: neighbour.section?.id ?? null,
+    index: dir < 0 ? neighbour.fields.length : 0,
+  });
+}
+
+/** The layout after "Move up" (-1) or "Move down" (+1) of one section. */
+export function stepSection(layout: StudioLayout, id: string, dir: -1 | 1): StudioLayout {
+  const index = layout.groups.slice(1).findIndex((g) => g.section?.id === id);
+  if (index < 0 || index + dir < 0) return layout;
+  return moveSection(layout, id, index + dir);
+}
+
+/**
+ * The fields that a section delete moves to no section: its live fields and
+ * its retired fields (review note). The gateway moves both.
+ */
+export function sectionFieldCount(layout: StudioLayout, id: string): number {
+  const live = layout.groups.find((g) => g.section?.id === id)?.fields.length ?? 0;
+  return live + layout.retired.filter((f) => f.section_id === id).length;
+}
+
+/**
+ * The order to show after a failed drop (review P2). The studio goes back to
+ * the served layout only while the admin is still on the entity of the drop.
+ * On another tab, that tab keeps its order (`undefined`).
+ */
+export function revertedOrder(
+  moved: EntitySlug,
+  now: EntitySlug,
+  served: FieldLayout | null,
+): StudioLayout | null | undefined {
+  if (moved !== now) return undefined;
+  return served ? studioLayout(served) : null;
+}
+
 export type LayoutBody = {
   sections: string[];
   fields: Array<{ key: string; section_id: string | null }>;
@@ -561,23 +720,36 @@ export const RETIRE_BODY =
 
 // ── Who sees the studio (done-when 12) ─────────────────────────────────────
 
-export type FieldsCardShape = "studio" | "read-only" | "loading";
+export type FieldsCardShape = "studio" | "read-only" | "loading" | "error";
 
 /**
  * What the `fields` section draws. The section is for an admin only, so a
  * member never gets here. The studio needs `studio_admin`: the flag allows the
  * org, the caller is an admin, and the mode is Native. Mirror mode reads only,
- * because Zoho owns the fields until CRM-C5. A failed read draws the card of
- * today.
+ * because Zoho owns the fields until CRM-C5. A failed read gives `error`, and
+ * the card offers Retry (review P2). It never tells an admin who may have the
+ * studio that editing comes later.
  */
 export function fieldsCardShape(
   readOnly: boolean,
-  state: { layout: FieldLayout | null; loading: boolean },
+  state: { layout: FieldLayout | null; loading: boolean; error?: string | null },
 ): FieldsCardShape {
   if (readOnly) return "read-only";
   if (state.layout?.studio_admin === true) return "studio";
-  if (state.loading && state.layout === null) return "loading";
+  if (state.layout === null && state.loading) return "loading";
+  if (state.layout === null && state.error) return "error";
   return "read-only";
+}
+
+/**
+ * The close of a dialog while its save runs: ignored (review P2). Escape or
+ * a click on the scrim would unmount the form, and the refusal of the save
+ * would then have no place to show.
+ */
+export function guardClose(busy: boolean, onClose: () => void): () => void {
+  return () => {
+    if (!busy) onClose();
+  };
 }
 
 // ── The studio calls ───────────────────────────────────────────────────────

@@ -15,10 +15,15 @@
  * - **The default** is `FieldInput` of CRM-C4p, so it takes the client check
  *   of its type before the save. A lookup has no default.
  * - **A refusal** shows beside the control it names (`errorPart`), and the
- *   form stays open with what the admin typed.
+ *   form stays open with what the admin typed. While a save runs, Escape and
+ *   the scrim do not close the dialog (`guardClose`). A refusal that comes
+ *   after the form is gone goes to the studio's notice (`onLateError`).
+ * - **The options** of an edit are merged into the options that the gateway
+ *   holds at the save (`mergeOptions`), so the dialog never undoes the change
+ *   of another admin.
  */
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -37,8 +42,11 @@ import {
   draftOf,
   editableParts,
   errorPart,
+  guardClose,
   hasOptions,
+  mergeOptions,
   newDraft,
+  optionsBody,
   patchBody,
   probeDef,
   retype,
@@ -48,6 +56,7 @@ import {
   type FieldDraft,
   type FormPart,
   type LookupTarget,
+  type OptionDraft,
 } from "../lib/fieldStudio";
 import FieldInput from "./FieldInput";
 import FieldStudioOptions from "./FieldStudioOptions";
@@ -114,6 +123,8 @@ export default function FieldStudioFieldDialog({
   onClose,
   onSave,
   onRetire,
+  readOptions,
+  onLateError,
 }: {
   /** null: the dialog is closed. */
   form: FieldForm | null;
@@ -126,11 +137,16 @@ export default function FieldStudioFieldDialog({
   onSave: (form: FieldForm, body: Record<string, unknown>) => Promise<void>;
   /** Asks to retire the field. The studio confirms first. */
   onRetire: (def: FieldDef) => void;
+  /** The options of a field as the gateway holds them now. */
+  readOptions: (key: string) => Promise<OptionDraft[]>;
+  /** A refusal that came after the form was gone. */
+  onLateError: (message: string) => void;
 }) {
+  const [busy, setBusy] = useState(false);
   return (
     <Modal
       open={form !== null}
-      onClose={onClose}
+      onClose={guardClose(busy, onClose)}
       title={form?.mode === "edit" ? `Edit ${form.def.label}` : "New field"}
       icon="TextCursorInput"
       size="lg"
@@ -144,6 +160,9 @@ export default function FieldStudioFieldDialog({
           onClose={onClose}
           onSave={onSave}
           onRetire={onRetire}
+          readOptions={readOptions}
+          onLateError={onLateError}
+          onBusy={setBusy}
         />
       ) : null}
     </Modal>
@@ -157,19 +176,38 @@ export function FieldFormBody({
   onClose,
   onSave,
   onRetire,
+  readOptions,
+  onLateError,
+  onBusy,
 }: {
   form: FieldForm;
   sections: readonly FieldSection[];
   onClose: () => void;
   onSave: (form: FieldForm, body: Record<string, unknown>) => Promise<void>;
   onRetire: (def: FieldDef) => void;
+  readOptions?: (key: string) => Promise<OptionDraft[]>;
+  onLateError?: (message: string) => void;
+  /** The save starts or ends. The dialog ignores a close while it runs. */
+  onBusy?: (busy: boolean) => void;
 }) {
   const def = form.mode === "edit" ? form.def : null;
   const [draft, setDraft] = useState<FieldDraft>(() =>
     def ? draftOf(def) : newDraft(form.mode === "create" ? form.section : null),
   );
   const [problems, setProblems] = useState<DraftProblems>({});
-  const [saving, setSaving] = useState(false);
+  const [saving, setSavingState] = useState(false);
+  const setSaving = (busy: boolean) => {
+    setSavingState(busy);
+    onBusy?.(busy);
+  };
+  // False after the form unmounts, so a late refusal goes to the studio.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const base = useId();
   const id = (part: FormPart) => `${base}-${part}`;
   const errId = (part: FormPart) => `${base}-${part}-error`;
@@ -193,13 +231,23 @@ export function FieldFormBody({
     }
     setSaving(true);
     try {
+      if (def && "options" in body && readOptions) {
+        const merged = mergeOptions(draftOf(def).options, draft.options, await readOptions(def.key));
+        if ("conflict" in merged) {
+          setProblems({ options: merged.conflict });
+          return;
+        }
+        body.options = optionsBody(merged.options);
+      }
       await onSave(form, body);
       onClose();
     } catch (err) {
       const { part, message } = errorPart(err);
-      setProblems({ [part]: message });
+      if (mounted.current) setProblems({ [part]: message });
+      else onLateError?.(message);
     } finally {
-      setSaving(false);
+      if (mounted.current) setSaving(false);
+      else onBusy?.(false);
     }
   }
 
@@ -222,7 +270,7 @@ export function FieldFormBody({
         {system ? (
           <p className="text-[11px] text-muted-foreground">
             A system field is a fixed part of each record. You can change its label, hide it and
-            drag it to a new place. Its type stays the same.
+            move it to a new place. Its type stays the same.
           </p>
         ) : null}
 
@@ -291,6 +339,8 @@ export function FieldFormBody({
             <FieldStudioOptions
               options={draft.options}
               onChange={(options) => set({ options })}
+              pending={draft.new_option}
+              onPending={(text) => set({ new_option: text })}
               error={!!problems.options}
               describedBy={problems.options ? errId("options") : undefined}
             />
@@ -346,6 +396,7 @@ export function FieldFormBody({
             and each record keeps its value.
           </p>
         ) : null}
+        <Problem id={errId("required")} text={problems.required} />
         <Problem id={errId("visible")} text={problems.visible} />
 
         {parts.help ? (

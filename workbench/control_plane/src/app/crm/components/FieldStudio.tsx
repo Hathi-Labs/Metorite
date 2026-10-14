@@ -16,14 +16,16 @@
  * - The fields in no section come first, then each section in order, then the
  *   retired fields. A field or a section moves by HTML5 drag, as in the stage
  *   grid (`PipelineSettings.tsx`). A drop sends the whole order in one
- *   `PUT /crm/field-layout/{entity}`.
+ *   `PUT /crm/field-layout/{entity}`. "Move up" and "Move down" on each
+ *   field, section and option send the same order, for a keyboard and a
+ *   phone (review P2).
  * - Each write goes through `lib/fieldStudio.ts`, and then the studio calls
  *   `refresh` of `useFieldLayout`. A write re-reads what is on screen, also
  *   after a refusal (`workbench/AGENTS.md`, CRM rule 2).
  * - A retire and a section delete ask first, in a `ConfirmDialog`.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
@@ -45,10 +47,15 @@ import {
   moveSection,
   patchField,
   putFieldLayout,
+  readFieldOptions,
   renameSection,
   restoreField,
   retireField,
+  revertedOrder,
   sectionDeleteBody,
+  sectionFieldCount,
+  stepField,
+  stepSection,
   studioLayout,
   typeLabel,
   type StudioLayout,
@@ -60,7 +67,7 @@ import FieldStudioSectionDialog, { type SectionForm } from "./FieldStudioSection
 
 export const STUDIO_TITLE = "Fields";
 export const STUDIO_NOTE =
-  "Add, rename, hide and order the fields of each record type. Drag a field or a section to move it.";
+  "Add, rename, hide and order the fields of each record type. Drag a field or a section, or use its arrows, to move it.";
 export const NO_SECTION_LABEL = "No section";
 export const RETIRED_LABEL = "Retired fields";
 export const EMPTY_GROUP = "Drag a field here.";
@@ -149,14 +156,20 @@ export function FieldStudioView({
         </Button>
       </header>
 
-      <div className="border-b border-border px-4 py-2">
+      {/* A write that runs belongs to the tab on screen, so the tabs wait
+          for it (review P2). The fieldset disables each tab button. */}
+      <fieldset
+        disabled={busy}
+        aria-busy={busy || undefined}
+        className="m-0 min-w-0 border-0 border-b border-border px-4 py-2"
+      >
         <Tabs
           chrome="inline"
           tabs={entities.map((e) => ({ id: e.slug, label: e.label }))}
           activeTab={entity}
           onTabChange={(id) => handlers.onEntity(id as EntitySlug)}
         />
-      </div>
+      </fieldset>
 
       {notice ? (
         <p role="alert" className="border-b border-border px-4 py-2 text-xs text-destructive">
@@ -219,6 +232,14 @@ export function FieldStudioView({
                     <span className="text-[10px] text-muted-foreground">{group.fields.length}</span>
                     {section ? (
                       <>
+                        <MoveButtons
+                          label={section.label}
+                          busy={busy}
+                          up={stepSection(layout, section.id, -1)}
+                          down={stepSection(layout, section.id, 1)}
+                          now={layout}
+                          onMove={handlers.onMove}
+                        />
                         <Button
                           size="icon-sm"
                           variant="ghost"
@@ -241,7 +262,9 @@ export function FieldStudioView({
                           icon="Trash2"
                           aria-label={`Delete ${section.label}`}
                           disabled={busy}
-                          onClick={() => handlers.onDeleteSection(section, group.fields.length)}
+                          onClick={() =>
+                            handlers.onDeleteSection(section, sectionFieldCount(layout, section.id))
+                          }
                         />
                       </>
                     ) : null}
@@ -266,6 +289,16 @@ export function FieldStudioView({
                       canDrop={drag?.kind === "field"}
                       onDrop={() => dropField(sectionId, index)}
                       onEdit={() => handlers.onEdit(def)}
+                      moves={
+                        <MoveButtons
+                          label={def.label}
+                          busy={busy}
+                          up={stepField(layout, def.key, -1)}
+                          down={stepField(layout, def.key, 1)}
+                          now={layout}
+                          onMove={handlers.onMove}
+                        />
+                      }
                     />
                   ))}
                   {group.fields.length === 0 ? (
@@ -313,7 +346,49 @@ export function FieldStudioView({
   );
 }
 
-/** One field of the list: its handle, label, type, flags and the Edit button. */
+/**
+ * "Move up" and "Move down" of a field or a section (review P2). Each one
+ * sends the same full order that a drag sends. At an end, its button is off.
+ */
+function MoveButtons({
+  label,
+  busy,
+  up,
+  down,
+  now,
+  onMove,
+}: {
+  label: string;
+  busy: boolean;
+  /** The layout after the move, or `now` when the move does nothing. */
+  up: StudioLayout;
+  down: StudioLayout;
+  now: StudioLayout;
+  onMove: (next: StudioLayout) => void;
+}) {
+  return (
+    <>
+      <Button
+        size="icon-sm"
+        variant="ghost"
+        icon="ChevronUp"
+        aria-label={`Move ${label} up`}
+        disabled={busy || up === now}
+        onClick={() => onMove(up)}
+      />
+      <Button
+        size="icon-sm"
+        variant="ghost"
+        icon="ChevronDown"
+        aria-label={`Move ${label} down`}
+        disabled={busy || down === now}
+        onClick={() => onMove(down)}
+      />
+    </>
+  );
+}
+
+/** One field of the list: its handle, label, type, flags, moves and the Edit button. */
 function FieldRow({
   def,
   busy,
@@ -322,9 +397,12 @@ function FieldRow({
   onDragEnd,
   onDrop,
   onEdit,
+  moves,
 }: {
   def: FieldDef;
   busy: boolean;
+  /** The "Move up" and "Move down" buttons. */
+  moves: React.ReactNode;
   canDrop: boolean;
   onDragStart: () => void;
   onDragEnd: () => void;
@@ -379,6 +457,7 @@ function FieldRow({
           Hidden
         </Badge>
       ) : null}
+      {moves}
       <Button
         size="icon-sm"
         variant="ghost"
@@ -417,6 +496,13 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // The tab and the served layout NOW, for the end of a write that started in
+  // an earlier render. Written in an effect, never during render.
+  const live = useRef({ entity, served });
+  useEffect(() => {
+    live.current = { entity, served };
+  });
+
   /** After each write: the layout, and the field definitions that the records read. */
   const reread = () => {
     refresh();
@@ -451,6 +537,7 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
 
   const handlers: StudioHandlers = {
     onEntity: (next) => {
+      if (busy) return;
       setNotice(null);
       setEntity(next);
     },
@@ -461,9 +548,12 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
     onRenameSection: (section) => setSectionForm({ mode: "rename", section }),
     onDeleteSection: (section, count) => setConfirm({ kind: "delete-section", section, count }),
     onMove: (next) => {
+      const moved = entity;
       setShown(next);
-      void run(() => putFieldLayout(entity, layoutBody(next))).then((ok) => {
-        if (!ok) setShown(served ? studioLayout(served) : null);
+      void run(() => putFieldLayout(moved, layoutBody(next))).then((ok) => {
+        if (ok) return;
+        const back = revertedOrder(moved, live.current.entity, live.current.served);
+        if (back !== undefined) setShown(back);
       });
     },
     onRetry: refresh,
@@ -493,6 +583,8 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
           )
         }
         onRetire={(def) => setConfirm({ kind: "retire", def })}
+        readOptions={(key) => readFieldOptions(entity, key)}
+        onLateError={setNotice}
       />
       <FieldStudioSectionDialog
         form={sectionForm}

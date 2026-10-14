@@ -15,7 +15,10 @@
  *   (422 `option_removed`). Only a new option, which has no `value` yet, can be
  *   removed before the save.
  * - The order changes by HTML5 drag, as in the stage grid
- *   (`PipelineSettings.tsx`).
+ *   (`PipelineSettings.tsx`), or by "Move up" and "Move down", which a
+ *   keyboard and a phone can use.
+ * - The text in "New option" lives in the form draft (`new_option`), so a
+ *   save refuses a text that the admin did not add (review P1).
  */
 
 import { useState } from "react";
@@ -29,27 +32,31 @@ import { OPTION_LABEL_MAX, moveOption, type OptionDraft } from "../lib/fieldStud
 export default function FieldStudioOptions({
   options,
   onChange,
+  pending,
+  onPending,
   error,
   describedBy,
 }: {
   options: OptionDraft[];
   onChange: (next: OptionDraft[]) => void;
+  /** The text in "New option". */
+  pending: string;
+  onPending: (text: string) => void;
   /** The client check or the 422 of the options. The form draws it. */
   error?: boolean;
   /** The id of the error line under the editor. */
   describedBy?: string;
 }) {
   const [dragging, setDragging] = useState<number | null>(null);
-  const [adding, setAdding] = useState("");
 
   const edit = (index: number, next: Partial<OptionDraft>) =>
     onChange(options.map((o, i) => (i === index ? { ...o, ...next } : o)));
 
   function add() {
-    const label = adding.trim();
+    const label = pending.trim();
     if (!label) return;
     onChange([...options, { value: null, label, retired: false }]);
-    setAdding("");
+    onPending("");
   }
 
   return (
@@ -97,6 +104,24 @@ export default function FieldStudioOptions({
                 className="min-w-0 flex-1"
               />
               {option.retired && <Badge size="xs">Retired</Badge>}
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                icon="ChevronUp"
+                aria-label={`Move ${option.label || "the new option"} up`}
+                disabled={index === 0}
+                onClick={() => onChange(moveOption(options, index, index - 1))}
+              />
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                icon="ChevronDown"
+                aria-label={`Move ${option.label || "the new option"} down`}
+                disabled={index === options.length - 1}
+                onClick={() => onChange(moveOption(options, index, index + 1))}
+              />
               {option.value === null ? (
                 <Button
                   type="button"
@@ -128,8 +153,8 @@ export default function FieldStudioOptions({
           aria-label="New option"
           placeholder="New option"
           maxLength={OPTION_LABEL_MAX}
-          value={adding}
-          onChange={(e) => setAdding(e.target.value)}
+          value={pending}
+          onChange={(e) => onPending(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
@@ -138,7 +163,7 @@ export default function FieldStudioOptions({
           }}
           className="min-w-0 flex-1"
         />
-        <Button type="button" size="sm" variant="secondary" icon="Plus" disabled={!adding.trim()} onClick={add}>
+        <Button type="button" size="sm" variant="secondary" icon="Plus" disabled={!pending.trim()} onClick={add}>
           Add
         </Button>
       </div>

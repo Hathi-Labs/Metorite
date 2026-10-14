@@ -14,7 +14,7 @@ import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import type { FieldSection } from "../lib/fieldLayout";
-import { LABEL_MAX, errorPart, sectionLabelProblem } from "../lib/fieldStudio";
+import { LABEL_MAX, errorPart, guardClose, sectionLabelProblem } from "../lib/fieldStudio";
 
 /** What the dialog opens on. */
 export type SectionForm = { mode: "create" } | { mode: "rename"; section: FieldSection };
@@ -29,10 +29,13 @@ export default function FieldStudioSectionDialog({
   /** Sends the write. It throws the `CrmError` of a refusal. */
   onSave: (form: SectionForm, label: string) => Promise<void>;
 }) {
+  // While a save runs, Escape and the scrim do not close the dialog, so its
+  // refusal keeps a place to show (review P2).
+  const [busy, setBusy] = useState(false);
   return (
     <Modal
       open={form !== null}
-      onClose={onClose}
+      onClose={guardClose(busy, onClose)}
       title={form?.mode === "rename" ? "Rename section" : "New section"}
       icon="FolderPlus"
       size="sm"
@@ -43,6 +46,7 @@ export default function FieldStudioSectionDialog({
           form={form}
           onClose={onClose}
           onSave={onSave}
+          onBusy={setBusy}
         />
       ) : null}
     </Modal>
@@ -53,14 +57,20 @@ function SectionFormBody({
   form,
   onClose,
   onSave,
+  onBusy,
 }: {
   form: SectionForm;
   onClose: () => void;
   onSave: (form: SectionForm, label: string) => Promise<void>;
+  onBusy: (busy: boolean) => void;
 }) {
   const [label, setLabel] = useState(form.mode === "rename" ? form.section.label : "");
   const [problem, setProblem] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [saving, setSavingState] = useState(false);
+  const setSaving = (busy: boolean) => {
+    setSavingState(busy);
+    onBusy(busy);
+  };
   const id = useId();
 
   async function save() {

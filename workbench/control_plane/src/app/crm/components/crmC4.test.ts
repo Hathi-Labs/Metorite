@@ -46,6 +46,17 @@ import {
   sectionDeleteBody,
   studioLayout,
   typeChoices,
+  guardClose,
+  mergeOptions,
+  readFieldOptions,
+  revertedOrder,
+  sectionFieldCount,
+  stepField,
+  stepSection,
+  HIDDEN_REQUIRED,
+  NO_ACTIVE_OPTION,
+  OPTIONS_CONFLICT,
+  PENDING_OPTION,
   type FieldDraft,
   type OptionDraft,
 } from "../lib/fieldStudio";
@@ -53,7 +64,13 @@ import { visibleSections } from "../lib/settingsSections";
 import { FieldStudioView, RETIRED_LABEL, type StudioHandlers } from "./FieldStudio";
 import { FieldFormBody, TARGET_OPTIONS } from "./FieldStudioFieldDialog";
 import FieldStudioOptions from "./FieldStudioOptions";
-import FieldsCard, { FIELD_ENTITIES, FIELDS_MIRROR_NOTE, FieldsCardView } from "./FieldsCard";
+import FieldsCard, {
+  FIELD_ENTITIES,
+  FIELDS_MIRROR_NOTE,
+  FIELDS_READ_FAILED,
+  FieldsCardError,
+  FieldsCardView,
+} from "./FieldsCard";
 
 const noop = () => undefined;
 const SOURCE_OF = (name: string) =>
@@ -292,7 +309,7 @@ describe("reorder by drag (done-when 3)", () => {
     expect(html.match(/draggable="true"/g)?.length).toBe(7);
     const source = SOURCE_OF("./FieldStudio.tsx");
     expect(source).toContain("onDragStart");
-    expect(source).toContain("putFieldLayout(entity, layoutBody(next))");
+    expect(source).toContain("putFieldLayout(moved, layoutBody(next))");
   });
 });
 
@@ -402,6 +419,8 @@ describe("picklist options (done-when 5)", () => {
       createElement(FieldStudioOptions, {
         options: [...stored, { value: null, label: "Platinum", retired: false }],
         onChange: noop,
+        pending: "",
+        onPending: noop,
       }),
     );
     expect(html).toContain('aria-label="Retire Gold"');
@@ -620,9 +639,22 @@ describe("who sees the studio (done-when 12)", () => {
     expect(html).toContain("Edit fields in Zoho");
   });
 
-  it("a failed read draws the card of today, and a first read draws a skeleton", () => {
-    expect(fieldsCardShape(false, { layout: null, loading: false })).toBe("read-only");
+  it("a failed read draws an error with Retry, and a first read draws a skeleton (review P2)", () => {
+    expect(fieldsCardShape(false, { layout: null, loading: false, error: "Gateway error 502" })).toBe(
+      "error",
+    );
     expect(fieldsCardShape(false, { layout: null, loading: true })).toBe("loading");
+    // Mirror mode reads no layout, so it never shows the error.
+    expect(fieldsCardShape(true, { layout: null, loading: false, error: "x" })).toBe("read-only");
+    const html = renderToStaticMarkup(
+      createElement(FieldsCardError, { error: "Gateway error 502", onRetry: noop }),
+    );
+    expect(html).toContain(FIELDS_READ_FAILED);
+    expect(html).toContain(">Retry<");
+    expect(html).not.toContain("Field editing comes later.");
+    expect(SOURCE_OF("./FieldsCard.tsx")).toMatch(
+      /if \(shape === "error"\) return <FieldsCardError error=\{probe\.error\} onRetry=\{probe\.refresh\} \/>;/,
+    );
   });
 
   it("a member never sees the fields section", () => {
@@ -687,6 +719,228 @@ describe("the studio keeps to the shared seams", () => {
         expect(isKnownIcon(name), `${file}: ${name}`).toBe(true);
       }
     }
+  });
+});
+
+// ── Review round 1 ─────────────────────────────────────────────────────────
+
+describe("P1: a required field that no member can fill", () => {
+  const text = (over: Partial<FieldDraft>): FieldDraft => ({ ...newDraft(), label: "Code", ...over });
+
+  it("refuses a required field that is hidden with no default", () => {
+    expect(checkDraft(text({ required: true, visible: false }), null).required).toBe(HIDDEN_REQUIRED);
+    expect(checkDraft(text({ required: true, visible: false, default_value: "web" }), null)).toEqual({});
+    expect(checkDraft(text({ required: false, visible: false }), null)).toEqual({});
+    const lookup = { ...retype(text({}), "lookup"), lookup_target: "contacts" as const };
+    expect(checkDraft({ ...lookup, required: true, visible: false }, null).required).toBe(
+      HIDDEN_REQUIRED,
+    );
+  });
+
+  it("refuses a hide of a required field with no default", () => {
+    const po = LAYOUT.fields[4];
+    expect(checkDraft({ ...draftOf(po), visible: false }, po).required).toBe(HIDDEN_REQUIRED);
+  });
+
+  it("refuses a required picklist with no active option", () => {
+    const select = retype(text({ required: true }), "select");
+    expect(checkDraft(select, null).options).toBe(NO_ACTIVE_OPTION);
+    const tier = LAYOUT.fields[2];
+    const allRetired = draftOf(tier).options.map((o) => ({ ...o, retired: true }));
+    expect(checkDraft({ ...draftOf(tier), required: true, options: allRetired }, tier).options).toBe(
+      NO_ACTIVE_OPTION,
+    );
+    expect(checkDraft({ ...draftOf(tier), required: true }, tier)).toEqual({});
+    expect(checkDraft({ ...draftOf(tier), options: allRetired }, tier)).toEqual({});
+  });
+
+  it("refuses a typed new option that the admin did not add", () => {
+    const tier = LAYOUT.fields[2];
+    expect(checkDraft({ ...draftOf(tier), new_option: "Platinum" }, tier).options).toBe(
+      PENDING_OPTION,
+    );
+    expect(checkDraft({ ...draftOf(tier), new_option: "   " }, tier)).toEqual({});
+    expect(SOURCE_OF("./FieldStudioFieldDialog.tsx")).toContain(
+      "onPending={(text) => set({ new_option: text })}",
+    );
+  });
+
+  it("the gateway's 422 required_unfillable shows beside Required", () => {
+    expect(errorPart(new CrmError("PO is required and hidden.", 422, "required_unfillable"))).toEqual({
+      part: "required",
+      message: "PO is required and hidden.",
+    });
+    expect(SOURCE_OF("./FieldStudioFieldDialog.tsx")).toContain(
+      '<Problem id={errId("required")} text={problems.required} />',
+    );
+  });
+});
+
+describe("P2: a failed drop after a tab switch keeps the new tab", () => {
+  it("reverts only while the admin is on the entity of the drop", () => {
+    expect(revertedOrder("deals", "leads", LAYOUT)).toBeUndefined();
+    expect(revertedOrder("deals", "deals", LAYOUT)).toEqual(studioLayout(LAYOUT));
+    expect(revertedOrder("deals", "deals", null)).toBeNull();
+  });
+
+  it("the tabs are off while a write runs", () => {
+    const html = renderToStaticMarkup(
+      createElement(FieldStudioView, {
+        entities: FIELD_ENTITIES,
+        entity: "deals",
+        layout: studioLayout(LAYOUT),
+        loading: false,
+        readError: null,
+        busy: true,
+        notice: null,
+        handlers: HANDLERS,
+      }),
+    );
+    expect(html).toMatch(/<fieldset disabled=""[^>]*>[\s\S]*role="tablist"/);
+    expect(view()).not.toMatch(/<fieldset disabled/);
+    const source = SOURCE_OF("./FieldStudio.tsx");
+    expect(source).toMatch(/onEntity: \(next\) => \{\s+if \(busy\) return;/);
+    expect(source).toContain("revertedOrder(moved, live.current.entity, live.current.served)");
+  });
+});
+
+describe("P2: a close during a save keeps the refusal", () => {
+  it("guardClose ignores a close while the save runs", () => {
+    let closed = 0;
+    const close = () => {
+      closed += 1;
+    };
+    guardClose(true, close)();
+    expect(closed).toBe(0);
+    guardClose(false, close)();
+    expect(closed).toBe(1);
+  });
+
+  it("both dialogs guard the Modal, and a late refusal goes to the studio notice", () => {
+    for (const file of ["./FieldStudioFieldDialog.tsx", "./FieldStudioSectionDialog.tsx"]) {
+      expect(SOURCE_OF(file), file).toContain("onClose={guardClose(busy, onClose)}");
+    }
+    const dialog = SOURCE_OF("./FieldStudioFieldDialog.tsx");
+    expect(dialog).toMatch(/if \(mounted\.current\) setProblems\(\{ \[part\]: message \}\);\s+else onLateError\?\.\(message\);/);
+    expect(SOURCE_OF("./FieldStudio.tsx")).toContain("onLateError={setNotice}");
+  });
+});
+
+describe("P2: Move up and Move down, for a keyboard and a phone", () => {
+  const shown = studioLayout(LAYOUT);
+  const order = (l: ReturnType<typeof studioLayout>) => l.groups.map((g) => g.fields.map((f) => f.key));
+
+  it("moves a field one place, and across a section edge", () => {
+    expect(order(stepField(shown, "budget", -1))[1]).toEqual(["budget", "tier"]);
+    expect(order(stepField(shown, "tier", -1))).toEqual([
+      ["name", "amount", "tier"],
+      ["budget"],
+      ["po_number"],
+    ]);
+    expect(order(stepField(shown, "budget", 1))).toEqual([
+      ["name", "amount"],
+      ["tier"],
+      ["budget", "po_number"],
+    ]);
+    expect(stepField(shown, "name", -1)).toBe(shown);
+    expect(stepField(shown, "po_number", 1)).toBe(shown);
+  });
+
+  it("moves a section one place", () => {
+    expect(layoutBody(stepSection(shown, SEC_B, -1)).sections).toEqual([SEC_B, SEC_A]);
+    expect(stepSection(shown, SEC_A, -1)).toBe(shown);
+    expect(stepSection(shown, SEC_B, 1)).toBe(shown);
+  });
+
+  it("each field and section draws the two buttons, off at an end", () => {
+    const html = view();
+    for (const label of ["Tier", "Budget", "Qualification", "Commercial"]) {
+      expect(html).toContain(`aria-label="Move ${label} up"`);
+      expect(html).toContain(`aria-label="Move ${label} down"`);
+    }
+    expect(html).toMatch(/aria-label="Move Deal name up" disabled=""/);
+    expect(html).toMatch(/aria-label="Move PO number down" disabled=""/);
+    expect(html).toMatch(/aria-label="Move Qualification up" disabled=""/);
+    expect(html).not.toMatch(/aria-label="Move Tier up" disabled=""/);
+    // A move sends the same full order as a drag.
+    expect(SOURCE_OF("./FieldStudio.tsx")).toMatch(/onMove=\{handlers\.onMove\}/);
+  });
+
+  it("each option draws the two buttons too", () => {
+    const html = renderToStaticMarkup(
+      createElement(FieldStudioOptions, {
+        options: draftOf(LAYOUT.fields[2]).options,
+        onChange: noop,
+        pending: "",
+        onPending: noop,
+      }),
+    );
+    expect(html).toMatch(/aria-label="Move Gold up" disabled=""/);
+    expect(html).toMatch(/aria-label="Move Bronze down" disabled=""/);
+    expect(html).toContain('aria-label="Move Silver up"');
+  });
+});
+
+describe("P2: a PATCH of options keeps the change of another admin", () => {
+  const opened: OptionDraft[] = [
+    { value: "gold", label: "Gold", retired: false },
+    { value: "silver", label: "Silver", retired: false },
+  ];
+
+  it("applies this dialog's rename over another admin's rename of another option", () => {
+    const mine = [{ ...opened[0], label: "Gold plus" }, opened[1]];
+    const current = [opened[0], { ...opened[1], label: "Silver 2" }];
+    expect(mergeOptions(opened, mine, current)).toEqual({
+      options: [
+        { value: "gold", label: "Gold plus", retired: false },
+        { value: "silver", label: "Silver 2", retired: false },
+      ],
+    });
+  });
+
+  it("refuses when another admin changed an option that this dialog changed", () => {
+    const mine = [{ ...opened[0], retired: true }, opened[1]];
+    const current = [{ ...opened[0], label: "Golden" }, opened[1]];
+    expect(mergeOptions(opened, mine, current)).toEqual({ conflict: OPTIONS_CONFLICT });
+  });
+
+  it("keeps an option that another admin added, and adds this dialog's options", () => {
+    const fresh = { value: null, label: "Bronze", retired: false };
+    const theirs = { value: "platinum", label: "Platinum", retired: false };
+    expect(mergeOptions(opened, [...opened, fresh], [...opened, theirs])).toEqual({
+      options: [...opened, theirs, fresh],
+    });
+    // With a new order from this dialog, the other admin's option goes last.
+    const swapped = [opened[1], opened[0]];
+    expect(mergeOptions(opened, swapped, [...opened, theirs])).toEqual({
+      options: [opened[1], opened[0], theirs],
+    });
+  });
+
+  it("the save reads the options again and sends the merge", async () => {
+    const sent = stub(200, LAYOUT);
+    expect(await readFieldOptions("deals", "tier")).toEqual(draftOf(LAYOUT.fields[2]).options);
+    expect(sent[0]).toMatchObject({ url: "/api/crm/fields/deals?layout=1", method: "GET" });
+    expect(SOURCE_OF("./FieldStudioFieldDialog.tsx")).toContain(
+      "mergeOptions(draftOf(def).options, draft.options, await readOptions(def.key))",
+    );
+  });
+});
+
+describe("review notes", () => {
+  it("a system field gets its own type only (verifier advisory)", () => {
+    expect(typeChoices(LAYOUT.fields[1])).toEqual(["currency"]);
+    expect(typeChoices(def("x", { type: "number", is_system: true }))).toEqual(["number"]);
+  });
+
+  it("a section delete counts its retired fields too", () => {
+    const withRetired: FieldLayout = {
+      ...LAYOUT,
+      fields: [...LAYOUT.fields, def("old_tier", { retired: true, section_id: SEC_A })],
+    };
+    expect(sectionFieldCount(studioLayout(withRetired), SEC_A)).toBe(3);
+    expect(sectionFieldCount(studioLayout(withRetired), SEC_B)).toBe(1);
+    expect(SOURCE_OF("./FieldStudio.tsx")).toContain("sectionFieldCount(layout, section.id)");
   });
 });
 

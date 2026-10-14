@@ -16,6 +16,7 @@
  * so a member never sees this card.
  */
 
+import Button from "@/components/ui/Button";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import type { FieldDef } from "../lib/fields";
@@ -146,7 +147,31 @@ export default function FieldsCard({ readOnly }: { readOnly: boolean }) {
       </Card>
     );
   }
+  if (shape === "error") return <FieldsCardError error={probe.error} onRetry={probe.refresh} />;
   return <FieldsCardRead readOnly={readOnly} />;
+}
+
+/** The words of a failed layout read (review P2). */
+export const FIELDS_READ_FAILED = "The fields could not be read.";
+
+/**
+ * A failed layout read. It does not say "Field editing comes later", because
+ * the admin may have the studio. Retry reads the layout again.
+ */
+export function FieldsCardError({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+  return (
+    <Card title="Fields">
+      <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs text-muted-foreground">
+        <span>
+          {FIELDS_READ_FAILED}
+          {error ? ` ${error}` : ""}
+        </span>
+        <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    </Card>
+  );
 }
 
 /** The list to read, with one cached read for each entity. */
