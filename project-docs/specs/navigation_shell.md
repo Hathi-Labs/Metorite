@@ -46,13 +46,19 @@ rides `NEXT_PUBLIC_SHELL_NAV`, which is on in production. So the merge is its
 release, by owner decision of 2026-10-10. §11 records this exception, and
 §8 holds the table that the owner approved.
 
-**BUILT 2026-10-12, by owner direction: the account moves to the top
-right.** With the shell bar on, the bar's right end is the account: an
-avatar, the email, and a menu to switch, add or sign out. The sidebar's
-foot is our comet and the word "Metorite", and it opens the member's pages
-and settings. This replaces the comet signature of 2026-10-11. It rides the
-shell bar flag, which is on, so the merge is its release. §3.1 and §3.3
-hold the shape.
+**BUILT 2026-10-14, by owner direction: the account returns to the
+sidebar's foot, with one menu.** With the shell bar on, the foot is the
+account row: the avatar, the name and the email. It opens ONE menu, in this
+order: the accounts, Add, You, Settings and sign-out. The bar's right end is
+the assistant, the bell and the activity control. The Metorite logo left the
+shell, and its new place is not decided (owner, "later"). It rides the shell
+bar flag, which is on, so the merge is its release. §3.1 and §3.3 hold the
+shape.
+
+~~**BUILT 2026-10-12, by owner direction: the account moves to the top
+right.**~~ **Superseded on 2026-10-14.** That shape put the account at the
+bar's right end, and our comet and the word "Metorite" at the sidebar's
+foot.
 
 **BUILT 2026-10-11, by owner direction: the star model.** The sidebar has no
 "My apps" group now. Each category lists only the apps that the member
@@ -245,24 +251,21 @@ sees whose workspace this is at all times (D51).
   2026-10-11). It has the whole 176px slot (`BAR_LOCKUP`).
 - ~~Our comet signs the bar's right end~~ (owner, 2026-10-11,
   `BarSignature`). **Superseded on 2026-10-12.** The bar draws no comet of
-  its own now. Our comet is the sidebar's foot (§3.3).
-- **The account is the bar's last item** (owner, 2026-10-12). It comes after
-  the bell and the activity control. `BarAccount` in
-  `src/components/AccountSwitcher.tsx` draws it.
-- The trigger is quiet, as Google's and GitHub's are: the avatar, then the
-  email in muted text. It has no border and no fill at rest. It has the
-  height of the bar's other controls and the bar's focus ring. Its name is
-  "Account: <email>", and its tip gives the name, the email and the
-  organization.
-- The email shows from 1400px up. At 1280px and below, the avatar shows
-  alone. The brief named the `xl` step (1280px), and it also named the avatar
-  alone at 1280px. Those two disagree at 1280px. At that width the email took
-  too much of the bar, so the step is 1400px (measured 2026-10-12).
+  its own now.
+- ~~**The account is the bar's last item**~~ (owner, 2026-10-12,
+  `BarAccount`). **Superseded by the owner on 2026-10-14.** The bar holds no
+  account. Its right end is the assistant, the bell and the activity
+  control, in that order. The account is the sidebar's foot (§3.3).
+- **The Metorite logo is not in the shell** (owner, 2026-10-14). The owner
+  said: "Remove the Metorite logo. We'll figure out some other place to
+  place it appropriately in the UI later on." Its new place is an open
+  decision.
 - The right group keeps the width of its content, with no `min-w-0`. So the
   bell never sits over the command bar. Where the room is short, the command
-  bar gives way and sits a little off centre. With `min-w-0`, the avatar put
-  the bell over the command bar at 1024px.
-- With no logo, the left end shows our comet, once.
+  bar gives way and sits a little off centre. With `min-w-0`, a wide control
+  put the bell over the command bar at 1024px.
+- With no logo, the left end shows our comet, once. That is the workspace's
+  badge (`OurMark`), not our signature, so it stays.
 - The phone has no shell row, so it shows no account widget. Its drawer keeps
   its account header and foot (§3.3). A phone drawer with no logo shows our
   comet as its workspace badge, in the drawer's head.
@@ -288,7 +291,7 @@ over the page column, as NS-1 built it. `desktopFrame` in
 | New | The shell | The jobs of the apps the member holds, in preset order (§8). Not built |
 | Bell | The shell | "Needs you", from every app (§7.2). BUILT in NS-6 slice 6a, dark behind `NEXT_PUBLIC_SHELL_DOCK`. It sits before Activity (owner, 2026-10-10, §13.3 Q7). An app's own bell never moves into this bar |
 | Assistant | The shell | The panel button, first of the right group, with `NEXT_PUBLIC_SHELL_CHAT` on. It opens the side panel and closes the assistant (owner, 2026-10-14, §7.1). From 2026-10-12 to 2026-10-14 the chat bar at the foot of the page opened it instead (D99) |
-| Account | The shell | The avatar and the email. It opens the account menu: switch, add, sign out (owner, 2026-10-12, §3.3). The last item of the bar. Until 2026-10-12, the account menu was the sidebar's foot (NS-2 slice 1) |
+| ~~Account~~ | — | Not in the bar since 2026-10-14 (owner). It is the sidebar's foot again (§3.3). From 2026-10-12 to 2026-10-14 it was the bar's last item (`BarAccount`) |
 
 **The command bar's "in <App>" chip stays.** It is the command bar's own
 scope (§6.4 rule 3), not the app's chrome. It is the one place the bar names
@@ -395,8 +398,8 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
 and Admin, each only when it has a starred item (§3.2b). "Add apps" is the
 last item of the list. Admin holds
 Approvals, and Organisation for an admin. All apps and the account menu are
-at the foot. Since 2026-10-12, with the shell bar on, the foot holds All apps
-and the Metorite menu, and the account menu is in the bar (§3.3).
+at the foot. Since 2026-10-14, with the shell bar on, the foot holds All apps
+and the account row, which opens the one account menu (§3.3).
 
 `src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
 `shellNav.test.ts` pins five shapes. Two are a full admin and a plain member.
@@ -485,7 +488,7 @@ My Day's cards and the jobs of the empty command bar.
   rail has no "···", and a right-click there opens the menu. Home has no
   menu. The phone drawer has no "···", so a phone member uses All apps.
 - **"Change my layout"** asks the question again (§8.4). It is in the
-  Metorite menu at the sidebar's foot since 2026-10-12 (§3.3).
+  Settings group of the account menu at the sidebar's foot (§3.3).
 
 **Categories fold.** A category heading toggles its list, and a folded
 heading shows its count, such as "Across teams (2)". The browser keeps the
@@ -593,40 +596,67 @@ the browser cases. The `totals` and `capped` tests are in
 
 ### 3.3 The account menu
 
-**The shape since 2026-10-12, with the shell bar on** (owner direction). The
-owner said: "place the account selector in the top-right corner." The owner
-gave its old place in the sidebar to "the Metorite logo and text".
+**The shape since 2026-10-14, with the shell bar on** (owner direction).
+The owner said: "move the account selection and the UI element that shows
+the current account back to the bottom left where it was before. Combine it
+with the pop-up settings that show up for profile, access, appearance, light
+mode, layout change … Remove the Metorite logo."
 
-1. **The account menu is the bar's top right** (`BarAccount`). It holds
-   account acts only, in this order:
+This shape supersedes ~~the shape of 2026-10-12~~. That shape put the account menu at the
+bar's top right (`BarAccount`), and a Metorite menu behind our comet at the
+sidebar's foot (`MetoriteFoot.tsx`). This change deletes both.
+
+1. **The sidebar's foot is the account row** (`AccountFoot` in
+   `src/components/AccountSwitcher.tsx`). Open, it shows the avatar, the
+   name, and the email in muted text under it. Both truncate. Folded, it
+   shows the avatar alone, on the rail's icon column. Its name is "Account
+   and settings: <email>", and its tip gives the name, the email and the
+   organization. It wears `cc-link`, the house focus ring.
+2. **The foot opens ONE menu, upward.** It holds, in this order:
    - the current account, with a larger avatar, the name, the email, the
-     organization and a "Signed in" mark
-   - the other accounts this browser holds, each with its organization.
-     A pick switches through `switchTo`.
+     organization and a "Signed in" mark (`aria-current`)
+   - the other accounts this browser holds, each with its organization and
+     its own "Remove from this browser". A pick switches through `switchTo`.
    - "Add another account"
+   - **You**: My Profile and My access
+   - **Settings**: Appearance, the colour mode and "Change my layout" while
+     the shell nav is on
    - "Sign out". With one account it signs out. With more, it leaves this
      account and lands on the next one (`signOutThis`: the `switch` action,
      then `remove` of the same slot). "Sign out of all accounts" follows.
-   With the switcher flag off, the menu shows the current account and "Sign
-   out".
-2. **The sidebar's foot is the Metorite menu** (`MetoriteFoot.tsx`). Open,
-   it is our comet at 20px and the word "Metorite". Folded, it is the comet
-   alone, on the rail's icon column. Its name is "Metorite settings".
-3. **The Metorite menu** opens upward from the foot. It has two groups:
-   - **You**: My Profile and My access.
-   - **Settings**: Appearance, the colour mode (moved from beside the old
-     foot) and "Change my layout" while the shell nav is on.
-   It holds no account act. `metoriteMenu` in `src/lib/shell/shellNav.ts` is
-   its one list, built from `accountLinks`, so a new option is one line.
-4. **No build version shows.** The browser can reach no version that a
+   With the switcher flag off, the menu shows the current account, You,
+   Settings and "Sign out". With the shell nav off, the rail itself lists My
+   Profile and Appearance, so the menu has no You group, and Settings holds
+   the colour mode only.
+3. **One list.** `accountMenu` in `src/lib/shell/shellNav.ts` builds every
+   group, and it reads `accountLinks`, so the menu lists a page once. A new
+   option is one line there.
+4. **The safety rules of 2026-10-12 move with it.** Sign-out fails closed.
+   The cover is held by the foot, outside the menu, so closing the menu
+   cannot take it down. `useDismiss` ignores Escape and an outside press
+   while the cover is up. Escape closes the menu and gives the focus back to
+   the foot.
+   - **The menu stays in the window** (review of 2026-10-14). `footBox`
+     caps its height by the room above the foot, less 8px, and a resize
+     measures again. The menu scrolls inside itself. The header is not
+     sticky, because in a short window it would take the room that the rows
+     need. The menu opens at its top, so the header shows first.
+   - **A member with no organization keeps the account acts** (review of
+     2026-10-14). The sidebar does not mount for that member, so the
+     org-less card in `AccessGate.tsx` draws `OrglessAccounts`. It holds the
+     current account, the other accounts, "Add another account" and
+     sign-out, with no You and no Settings, because those pages need an
+     organization. The same rules of sign-out and the cover hold there. The
+     card is the same on the desktop and on the phone.
+5. **No build version shows.** The browser can reach no version that a
    member can read. `/api/health` carries the Next build id, a random name,
    and the gateway's `/version` has no proxy. A version line waits on a
    decision to expose one.
-5. **The classic frame and the phone do not change.** With the shell bar
+6. **The classic frame and the phone do not change.** With the shell bar
    off, the foot below stays as it was. The phone keeps its drawer.
 
-Fences: `src/lib/shell/shellAccount.test.ts`, `src/lib/accountSwitch.test.ts`
-and `e2e/shell-account.spec.ts`. The text below is the shape of NS-2 slice
+Fences: `src/lib/shell/shellAccount.test.ts`, `src/lib/shell/shellNav.test.ts`,
+`src/lib/accountSwitch.test.ts` and `e2e/shell-account.spec.ts`. The text below is the shape of NS-2 slice
 1. It still binds the classic frame and the phone.
 
 It holds My Profile, My access, Appearance and sign-out. These pages describe
@@ -1833,7 +1863,8 @@ Done when:
   apps from `visibleSections`. `AppLauncher.tsx` is All apps.
 - The sidebar, the folded rail and the phone drawer take the shape of §3.2a.
   The account menu is the sidebar's foot (§3.3). With the shell bar on, it
-  moved to the bar's top right on 2026-10-12 (§3.3).
+  was the bar's top right from 2026-10-12, and it is the foot again since
+  2026-10-14 (§3.3).
 - Fences: `nav.test.ts` and `shellNav.test.ts`. The first fails on a live
   pane with no team or no purpose. It also fails when a page other than the
   three member and organization pages opens from the account menu. The second

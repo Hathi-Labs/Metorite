@@ -120,8 +120,8 @@ describe("with no logo, the comet", () => {
 
 /**
  * Owner decision, 2026-10-11: a customer's logo carries nothing of ours, in
- * the bar, in the sidebar's head or in the phone menu's head. Our comet signs
- * the sidebar's foot since 2026-10-12 (`MetoriteFoot.tsx`).
+ * the bar, in the sidebar's head or in the phone menu's head. Since
+ * 2026-10-14 the shell shows no Metorite logo of its own anywhere.
  */
 describe("no caption beside a customer's logo", () => {
   const all = (b: OrgBranding) =>

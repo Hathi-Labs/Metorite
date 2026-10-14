@@ -396,19 +396,23 @@ Seven rules on top of the three above. Each one exists because it was broken:
    actions, tools.** *(Owner direction, 2026-10-10.)* The owner said: "I
    don't want to have any of the individual apps' UI/UX elements be on the
    top bar." The shell bar holds the fold control, the logo, the command bar,
-   the activity control and the account, and nothing else.
+   the assistant, the bell and the activity control, and nothing else.
    ~~**Amended by the owner, 2026-10-11:** our Metorite comet signs the right
    end (`BarSignature`).~~ **Superseded by the owner, 2026-10-12.**
-   **Amended by the owner, 2026-10-12:** the account is the right end's last
-   item (`BarAccount` in `src/components/AccountSwitcher.tsx`). It is an
-   avatar, and the email from 1400px up. Its menu holds account acts only:
-   switch, add, sign out. The right group has no `min-w-0`, so it never
-   spills over the command bar. Our comet and the word "Metorite" moved to
-   the sidebar's foot (`MetoriteFoot.tsx`). The foot opens the member's
-   pages and settings, from ONE list (`metoriteMenu` in `shellNav.ts`). Add
-   a new option there, in one line. The classic frame and the phone keep
-   their account surfaces. Fences: `src/lib/shell/shellAccount.test.ts` and
-   `e2e/shell-account.spec.ts`.
+   ~~**Amended by the owner, 2026-10-12:** the account is the right end's
+   last item (`BarAccount`), and our comet is the sidebar's foot
+   (`MetoriteFoot.tsx`).~~ **Superseded by the owner, 2026-10-14.**
+   **Amended by the owner, 2026-10-14:** the account is the sidebar's foot
+   again (`AccountFoot` in `src/components/AccountSwitcher.tsx`). Open, it
+   shows the avatar, the name and the muted email. Folded, it shows the
+   avatar alone. It opens ONE menu, upward: the current account, the other
+   accounts, Add, You, Settings and sign-out. The menu comes from ONE list
+   (`accountMenu` in `shellNav.ts`). Add a new option there, in one line.
+   The Metorite logo left the shell, and its place is not decided (owner,
+   "later"). A workspace with no logo keeps the comet as its badge. The
+   right group has no `min-w-0`, so it never spills over the command bar.
+   The classic frame and the phone keep their account surfaces. Fences:
+   `src/lib/shell/shellAccount.test.ts` and `e2e/shell-account.spec.ts`.
    **Amended by the owner, 2026-10-10:** the shell's one bell and its one
    assistant toggle sit at the bar's right end. The owner said
    "they belong to the whole product, not to an app." The bell shows only while

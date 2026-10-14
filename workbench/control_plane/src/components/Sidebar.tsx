@@ -19,8 +19,7 @@ import { shellDockOn } from "@/lib/shell/dockFlag";
 import { ShellBell } from "@/lib/shell/ShellBell";
 import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
-import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
-import MetoriteFoot from "@/components/MetoriteFoot";
+import { AccountFoot, SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
   ADD_APPS_HINT,
@@ -485,7 +484,7 @@ export default function Sidebar() {
             title={collapsed ? "All apps" : undefined}
             aria-label="All apps"
             aria-haspopup="dialog"
-            // `cc-link`: the house focus ring, as the Metorite foot wears it.
+            // `cc-link`: the house focus ring, as the account foot wears it.
             className={`cc-link flex items-center gap-2.5 rounded-lg text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
               collapsed ? "justify-center p-2.5" : "w-full px-3 py-2 text-[13px] font-medium"
             }`}
@@ -505,14 +504,14 @@ export default function Sidebar() {
         />
       )}
 
-      {/* The foot. With the shell bar on, the account is the bar's right end
-          (`BarAccount`), and the foot is our comet, which opens the Metorite
-          menu (owner, 2026-10-12). The classic frame keeps its account foot. */}
+      {/* The foot. With the shell bar on, it is the account row, and its
+          one menu holds the accounts, the member's pages and the settings
+          (owner, 2026-10-14). The classic frame keeps its account foot. */}
       {barOn ? (
         // With the shell nav off, this rail already lists My Profile and
         // Appearance, so the menu gets none of the account rows (the rule the
         // old foot kept with `you`). It keeps the colour mode.
-        <MetoriteFoot collapsed={collapsed} sections={shellNav ? sections : []} layout={shellNav} />
+        <AccountFoot collapsed={collapsed} sections={shellNav ? sections : []} layout={shellNav} />
       ) : (
         <SidebarAccountFooter
           collapsed={collapsed}
@@ -567,7 +566,7 @@ export default function Sidebar() {
  * column is the same, so its icon sits in line with the app icons above it,
  * open or folded. `e2e/shell-presets.spec.ts` measures that. It is a button
  * that opens a dialog, not a place, so it has no active state. `cc-link`
- * gives both forms the house focus ring, as the Metorite foot wears it.
+ * gives both forms the house focus ring, as the account foot wears it.
  */
 function AddAppsRow({
   collapsed,

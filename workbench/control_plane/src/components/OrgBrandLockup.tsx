@@ -4,8 +4,10 @@
  * The top-left of the app: the customer's logo, and nothing of ours beside it.
  *
  * ⚠️ Owner decision, 2026-10-11: our own mark left this lockup. Since
- * 2026-10-12 it signs the sidebar's foot (`MetoriteFoot.tsx`). A customer's logo
- * carries no "powered by" caption here, in the bar or anywhere else. Fence:
+ * 2026-10-14 the shell shows no Metorite logo at all, and its place is not
+ * decided yet (owner, "later"). A workspace with no logo still shows the comet
+ * as its badge (`OurMark`). A customer's logo carries no "powered by" caption
+ * here, in the bar or anywhere else. Fence:
  * `orgBrandLockup.mode.test.ts` "no caption beside a customer's logo".
  *
  * There are two shells — the desktop sidebar and the mobile menu — and this
@@ -211,8 +213,8 @@ export function BrandMark({
   // ── A customer's logo stands alone (owner, 2026-10-11) ───────────────────
   //
   // It used to carry "powered by Metorite", beside it in the bar and under it
-  // in the sidebar's head and the phone menu. Our comet now signs the
-  // sidebar's foot instead (`MetoriteFoot.tsx`), so the logo has its whole slot.
+  // in the sidebar's head and the phone menu. The logo has its whole slot
+  // now, and nothing of ours signs the shell (owner, 2026-10-14).
   if (mark.kind === "org") {
     // ── One logo, two colour modes (owner request, 2026-10-09) ──────────────
     // The page root carries `light` or `dark` (next-themes, Providers.tsx),
