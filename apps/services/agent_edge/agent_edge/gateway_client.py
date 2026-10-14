@@ -68,6 +68,12 @@ class GatewayUnreachable(Exception):
     """No answer came in time, or the connection failed."""
 
 
+class GatewayNotSent(GatewayUnreachable):
+    """The connection failed before any byte of the request went out
+    (``httpx.ConnectError`` or ``httpx.ConnectTimeout``). So the gateway
+    cannot have acted on it (EA-6d, the idempotency slot of ``create_task``)."""
+
+
 class RouteRefused(ValueError):
     """The pair is not in ``MCP_ROUTES``, or a path parameter is not an id."""
 
@@ -214,6 +220,11 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
             else:
                 response = await client.request(method, url, headers=dict(headers),
                                                 content=body)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        # No connection, so no byte of the request went out.
+        _log.warning("agent_edge.gateway_unreachable", route=template,
+                     error=type(exc).__name__)
+        raise GatewayNotSent(template) from None
     except Exception as exc:  # a timeout, a transport error, or any other
         _log.warning("agent_edge.gateway_unreachable", route=template,
                      error=type(exc).__name__)
@@ -228,6 +239,7 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
 __all__ = [
     "REQUEST_TIMEOUT_S",
     "Answer",
+    "GatewayNotSent",
     "GatewayUnreachable",
     "RouteRefused",
     "get",

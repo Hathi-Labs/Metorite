@@ -44,8 +44,10 @@ gives the same member the same access, so the client would loop.
 (``gateway_client.REQUEST_TIMEOUT_S``). Each tool call has
 :data:`TOOL_TIMEOUT_S` for all of its requests. ``list_tasks`` makes at most
 1 + :data:`MAX_STATUS_READS` requests, ``get_task`` makes four and
-``get_project`` makes five. ``create_task`` makes two, or three with a
-parent, and ``update_task`` makes two. The other tools make one or two.
+``get_project`` makes five. ``create_task`` makes three: the statuses, the
+POST and the re-read. It makes one more for a parent and one more for a
+``type_id``. ``update_task`` makes three: the PATCH, the re-read and the
+statuses. The other tools make one or two.
 
 This module reads no request input: no header, no query and no form. The
 transport hands it the parsed arguments and the authenticated caller.
@@ -66,7 +68,12 @@ from acb_common import get_logger
 from agent_edge import cursor as cursor_mod
 from agent_edge import idempotency
 from agent_edge.bearer import Caller
-from agent_edge.gateway_client import Answer, GatewayUnreachable, RouteRefused
+from agent_edge.gateway_client import (
+    Answer,
+    GatewayNotSent,
+    GatewayUnreachable,
+    RouteRefused,
+)
 from agent_edge.gateway_client import get as gateway_get
 from agent_edge.gateway_client import write as gateway_write
 
@@ -171,6 +178,12 @@ class ToolError(Exception):
         self.text = text
 
 
+class _NotSent(ToolError):
+    """The busy text of a write that never left the edge: the connection
+    failed before any byte went out (``gateway_client.GatewayNotSent``). The
+    gateway cannot have acted, so ``create_task`` frees its key (EA-6d)."""
+
+
 class GatewayUnauthorized(Exception):
     """The gateway answered 401. The transport answers the MCP 401 (§9.6)."""
 
@@ -257,6 +270,8 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
             path_params=path_params, query=query or [], if_match=if_match)
+    except GatewayNotSent:
+        raise _NotSent(TEXT_BUSY) from None
     except GatewayUnreachable:
         raise ToolError(TEXT_BUSY) from None
     except RouteRefused:
@@ -2043,24 +2058,74 @@ async def _create(ctx: Context, args: dict[str, Any], sent: _Sent) -> dict[str, 
             raise ToolError(TEXT_BUSY)
         if str(parent.get("project_id")).lower() != project.lower():
             raise ToolError(TEXT_PARENT_OTHER_PROJECT)
+    if "type_id" in args:
+        await _check_type(ctx, project, str(args["type_id"]))
     payload = {name: args[name] for name in CREATE_BODY_KEYS if name in args}
     sent.post = True
     _, row = await _write(ctx, "POST", CREATE_ROUTE, TEXT_PROJECT_NOT_FOUND,
                           json_body=payload)
     if not isinstance(row, dict) or _id(row.get("id")) is None:
         raise ToolError(TEXT_BUSY)
+    # Fix round 1: the version after the links of the new text (`_reread`).
+    row = await _reread(ctx, row)
     return {"task": _task(row, _names(statuses)), "created": True}
+
+
+async def _check_type(ctx: Context, project: str, type_id: str) -> None:
+    """A ``type_id`` must be a type of the project (EA-6d fix round 1).
+
+    The edge reads the project's types through ``GET .../types``, the read of
+    ``get_project``. An id outside that set is the bad-request text of §9.6,
+    before the POST. Without this check a type of another project stored, and
+    a made-up id met the foreign key as a 500.
+    """
+    try:
+        body = await _get(ctx, TYPES_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          path_params={"project_id": project})
+    except ToolError as exc:
+        if exc.text in (TEXT_BUSY, TEXT_PROJECT_NOT_FOUND):
+            raise
+        raise ToolError(TEXT_WRITE_FORBIDDEN) from None
+    known = {str(r.get("id")).lower() for r in _rows_of(body)}
+    if type_id.lower() not in known:
+        raise ToolError(TEXT_BAD_REQUEST)
+
+
+async def _reread(ctx: Context, written: dict[str, Any]) -> dict[str, Any]:
+    """The task as it is now, after a write that landed (EA-6d fix round 1).
+
+    The gateway adds links from the new text AFTER the write commits
+    (``text_links.link_from_text``), and that touches the task again. So the
+    ``updated_at`` of the write's own answer can be stale, and an agent that
+    sends it back as ``expected_version`` gets 412. One GET of the task gives
+    the version that counts. When that read fails, the write's own answer is
+    the result: the write happened, and the tool must say so.
+    """
+    try:
+        row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+                         path_params={"task_id": str(written.get("id"))})
+    except (ToolError, GatewayUnauthorized):
+        return written
+    if not isinstance(row, dict) or str(row.get("id")).lower() != str(
+            written.get("id")).lower():
+        return written
+    return row
 
 
 async def _first_result(ctx: Context, earlier: idempotency.Record,
                         fingerprint: str) -> dict[str, Any]:
-    """The answer to a call whose key an earlier call holds."""
+    """The answer to a call whose key an earlier call holds.
+
+    The state comes first (fix round 1): an ``unknown`` slot, and a slot that
+    the edge cannot read, always give the unknown text, whatever the inputs.
+    """
+    if earlier.state == idempotency.UNKNOWN or (
+            earlier.state == idempotency.DONE and _id(earlier.task_id) is None):
+        raise ToolError(TEXT_KEY_UNKNOWN)
     if earlier.fingerprint != fingerprint:
         raise ToolError(TEXT_KEY_REUSED)
     if earlier.state == idempotency.PENDING:
         raise ToolError(TEXT_KEY_RUNNING)
-    if earlier.state != idempotency.DONE or _id(earlier.task_id) is None:
-        raise ToolError(TEXT_KEY_UNKNOWN)
     row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
                      path_params={"task_id": str(earlier.task_id)})
     if not isinstance(row, dict):
@@ -2094,8 +2159,10 @@ async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         result = await _create(ctx, args, sent)
     except ToolError as exc:
         # A busy text after the POST went out: the gateway may have made the
-        # task. Any other text is a clear refusal, and no row exists.
-        if sent.post and exc.text == TEXT_BUSY:
+        # task. Any other text is a clear refusal, and no row exists. A POST
+        # whose connection failed before any byte went out (`_NotSent`) made
+        # nothing either (fix round 1).
+        if sent.post and exc.text == TEXT_BUSY and not isinstance(exc, _NotSent):
             await slot.mark_unknown(fingerprint)
         else:
             await slot.release()
@@ -2136,7 +2203,7 @@ CREATE_TASK = Tool(
     params={name: name for name in CREATE_BODY_KEYS},
     not_found=TEXT_PROJECT_NOT_FOUND,
     run=_create_task,
-    routes=(STATUSES_ROUTE, TASK_ROUTE),
+    routes=(STATUSES_ROUTE, TASK_ROUTE, TYPES_ROUTE),
     method="POST",
     edge_inputs=frozenset({"idempotency_key"}),
     annotations=dict(CREATE_ANNOTATIONS),
@@ -2171,6 +2238,8 @@ async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if_match=str(args["expected_version"]))
     if not isinstance(after, dict):
         raise ToolError(TEXT_BUSY)
+    # Fix round 1: the version after the links of the new text (`_reread`).
+    after = await _reread(ctx, after)
     task = _task(after, await _names_after_write(ctx, after.get("project_id")))
     return {"task": {k: task[k] for k in UPDATED_TASK_KEYS}}
 
@@ -2197,7 +2266,7 @@ UPDATE_TASK = Tool(
             **{name: name for name in UPDATE_BODY_KEYS}},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_update_task,
-    routes=(STATUSES_ROUTE,),
+    routes=(TASK_ROUTE, STATUSES_ROUTE),
     method="PATCH",
     annotations=dict(WRITE_ANNOTATIONS),
 )

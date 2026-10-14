@@ -74,6 +74,8 @@ GOOD, KEY, ORG, CONN, VIA = w.GOOD, w.KEY, w.ORG, w.CONN, w.VIA
 TASK, PROJECT = w.TASK, w.PROJECT
 S_TODO, S_DOING, S_DONE, S_CANCELLED = w.S_TODO, w.S_DOING, w.S_DONE, w.S_CANCELLED
 V1, V2 = w.V1, w.V2
+V3 = "2026-10-14T00:00:02.000002+00:00"
+TYPE = _uuid(8001)
 NEW = _uuid(5001)
 OTHER_PROJECT = _uuid(2)
 OTHER_TASK = _uuid(1002)
@@ -122,6 +124,16 @@ class _Gateway(w._Gateway):
         #: When set, a POST of a task waits for it (the race test).
         self.hold: asyncio.Event | None = None
         self.posting = asyncio.Event()
+        #: What a read of the new task adds, as if the links of its text
+        #: touched it after the commit (fix round 1): a later version.
+        self.after_create: dict[str, Any] = {"updated_at": V3}
+        #: The task that `update_task` changes. A PATCH answers V2, and then
+        #: the links of the text touch it again, so a read gives V3.
+        self.task: dict[str, Any] = {
+            "id": TASK, "project_id": PROJECT, "status_id": S_TODO, "updated_at": V1,
+            "title": "old title", "custom_fields": {}, "tags": [],
+            "assignees": ["m@x.test"]}
+        self.types = [{"id": TYPE, "name": "Bug", "is_epic": False}]
 
     async def __call__(self, scope, receive, send) -> None:
         if (scope["method"], scope["path"]) == ("POST", "/projects/tasks"):
@@ -146,15 +158,20 @@ class _Gateway(w._Gateway):
             self.created.append(row)
             return 201, row
         if r.method == "GET" and r.path == f"/projects/tasks/{NEW}" and self.created:
-            return 200, {**self.created[0], "assignees": ["m@x.test"]}
+            return 200, {**self.created[0], "assignees": [], **self.after_create}
         if r.method == "GET" and r.path == f"/projects/tasks/{OTHER_TASK}":
             return 200, {"id": OTHER_TASK, "project_id": OTHER_PROJECT, "updated_at": V1}
+        if r.method == "GET" and r.path == f"/projects/tasks/{TASK}":
+            return 200, dict(self.task)
+        if r.method == "GET" and r.path == f"/projects/nodes/{PROJECT}/types":
+            return 200, {"rows": self.types, "total": len(self.types)}
         if r.method == "PATCH" and r.path == f"/projects/tasks/{TASK}":
             sent = json.loads(r.body)
-            return 200, {"id": TASK, "project_id": PROJECT, "status_id": S_TODO,
-                         "updated_at": V2, "title": sent.get("title", "old title"),
-                         "custom_fields": sent.get("custom_fields", {}),
-                         "tags": sent.get("tags", []), "clickup_id": "CU-1"}
+            self.task.update(sent)
+            answer = {**self.task, "updated_at": V2, "clickup_id": "CU-1"}
+            answer.pop("assignees")
+            self.task["updated_at"] = V3
+            return 200, answer
         return super()._answer(r)
 
     def posts(self) -> list[SimpleNamespace]:
@@ -271,8 +288,38 @@ class TestCreateTask:
         assert task["title"] == {"untrusted_text": "Ship the fix"}
         assert task["tags"] == [{"untrusted_text": "api"}, {"untrusted_text": "bug"}]
         assert task["status"] == {"id": S_DOING, "name": {"untrusted_text": "Doing"}}
-        assert task["version"] == V1 and task["assignees"] == []
+        # Fix round 1: the version of the re-read, after the links of the
+        # text touched the task, not the V1 of the POST answer.
+        assert task["version"] == V3 and task["assignees"] == []
         assert "clickup_id" not in json.dumps(body) and "source" not in task
+        assert [r.path for r in edge.gateway.requests if r.method == "GET"][-1] == (
+            f"/projects/tasks/{NEW}")
+
+    async def test_a_failed_re_read_still_reports_the_task(self, edge):
+        """Fix round 1. The write happened, so a failed re-read gives the
+        POST's own answer and never an error."""
+        edge.gateway.answers[("GET", f"/projects/tasks/{NEW}")] = (503, {})
+        result = await _tool("create_task", _create_args())
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["task"]["version"] == V1
+
+    @pytest.mark.parametrize("type_id", [_uuid(8999), _uuid(8002)])
+    async def test_a_type_outside_the_project_is_refused_before_the_write(
+            self, edge, type_id):
+        """Fix round 1 (P1). The edge reads the project's types first."""
+        result = await _tool("create_task", _create_args(type_id=type_id,
+                                                         idempotency_key=IDEM))
+        assert _text(result) == tools.TEXT_BAD_REQUEST
+        assert edge.gateway.writes() == []
+        assert edge.redis.slots() == {}, "a refusal before the POST frees the key"
+
+    @pytest.mark.parametrize("answer,expected", [
+        (404, "Project not found."), (403, "This member cannot change that."),
+        (503, tools.TEXT_BUSY)])
+    async def test_a_types_read_that_fails_sends_no_write(self, edge, answer, expected):
+        edge.gateway.answers[("GET", f"/projects/nodes/{PROJECT}/types")] = (answer, {})
+        assert _text(await _tool("create_task", _create_args(type_id=TYPE))) == expected
+        assert edge.gateway.writes() == []
 
     async def test_a_call_with_no_key_touches_no_store(self, edge):
         await _tool("create_task", _create_args())
@@ -349,6 +396,7 @@ class TestTheIdempotencyKey:
 
     async def test_the_same_key_twice_makes_one_task(self, edge):
         first = (await _tool("create_task", _create_args(idempotency_key=IDEM)))
+        edge.gateway.after_create["assignees"] = ["m@x.test"]
         again = (await _tool("create_task", _create_args(idempotency_key=IDEM)))
         assert first["structuredContent"]["created"] is True
         assert again["structuredContent"]["created"] is False
@@ -422,6 +470,55 @@ class TestTheIdempotencyKey:
         assert _text(again) == tools.TEXT_KEY_UNKNOWN
         assert len(edge.gateway.posts()) == 1
 
+    @pytest.mark.parametrize("value", [
+        "not json",
+        json.dumps({"state": "unknown", "fingerprint": "other", "task": None})])
+    async def test_an_unknown_or_unreadable_slot_always_gives_the_unknown_text(
+            self, edge, value):
+        """Fix round 1 (the verifier). The state is read first, so a slot the
+        edge cannot read is never "used for a different task"."""
+        with tenant_redis.organization_scope(ORG):
+            name = idempotency.Slot(w._lookup(), IDEM)._key().value
+        edge.redis.store[name] = (value, edge.redis.now + 100)
+        result = await _tool("create_task", _create_args(idempotency_key=IDEM, title="Other"))
+        assert _text(result) == tools.TEXT_KEY_UNKNOWN
+        assert edge.gateway.requests == []
+
+    async def test_a_post_that_never_left_the_edge_frees_the_key(self, edge):
+        """Fix round 1 (the reviewer). A connect error means no byte of the
+        POST went out, so the gateway made nothing and the key stays free."""
+        inner = httpx.ASGITransport(app=edge.gateway)
+
+        class _Refusing(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                if (request.method, request.url.path) == ("POST", "/projects/tasks"):
+                    raise httpx.ConnectError("refused", request=request)
+                return await inner.handle_async_request(request)
+
+        with gateway_client.use_transport(_Refusing()):
+            refused = await _tool("create_task", _create_args(idempotency_key=IDEM))
+        assert _text(refused) == tools.TEXT_BUSY
+        assert edge.redis.slots() == {}
+        again = await _tool("create_task", _create_args(idempotency_key=IDEM))
+        assert again["structuredContent"]["created"] is True
+
+    async def test_a_read_timeout_after_the_send_keeps_the_key(self, edge):
+        """The other side of the rule: a POST that went out and got no answer
+        may have made the task, so the key goes `unknown`."""
+        inner = httpx.ASGITransport(app=edge.gateway)
+
+        class _Silent(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                if (request.method, request.url.path) == ("POST", "/projects/tasks"):
+                    raise httpx.ReadTimeout("no answer", request=request)
+                return await inner.handle_async_request(request)
+
+        with gateway_client.use_transport(_Silent()):
+            assert _text(await _tool("create_task", _create_args(idempotency_key=IDEM))) == (
+                tools.TEXT_BUSY)
+        [slot] = edge.redis.slots().values()
+        assert slot["state"] == "unknown"
+
     async def test_a_store_outage_sends_no_write(self, edge):
         edge.redis.fail = RedisConnectionError("refused")
         result = await _tool("create_task", _create_args(idempotency_key=IDEM))
@@ -469,7 +566,10 @@ class TestUpdateTask:
         task = result["structuredContent"]["task"]
         assert tuple(task) == tools.UPDATED_TASK_KEYS
         assert "assignees" not in task
-        assert task["version"] == V2
+        # Fix round 1: the re-read's version (V3), not the PATCH answer's (V2).
+        assert task["version"] == V3
+        assert [r.path for r in edge.gateway.requests if r.method == "GET"][0] == (
+            f"/projects/tasks/{TASK}")
         # The fake echoes the patch. A string value is (U), and null stays null.
         assert task["custom_fields"] == {"severity": {"untrusted_text": "high"},
                                          "points": None}
@@ -508,6 +608,14 @@ class TestUpdateTask:
         result = await _tool("update_task", _update_args(title="x"))
         assert _text(result) == expected
         assert "SECRET" not in json.dumps(result)
+
+    async def test_a_failed_re_read_gives_the_patch_answer(self, edge):
+        """Fix round 1. The PATCH landed, so a failed re-read gives its own
+        answer (V2) and never an error."""
+        edge.gateway.answers[("GET", f"/projects/tasks/{TASK}")] = (503, {})
+        result = await _tool("update_task", _update_args(title="x"))
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["task"]["version"] == V2
 
     async def test_a_failed_name_read_after_the_write_still_reports_it(self, edge):
         edge.gateway.answers[("GET", f"/projects/nodes/{PROJECT}/statuses")] = (503, {})
@@ -575,8 +683,13 @@ def world():
         cancelled=a.status(team, "Dropped", "cancelled", 4),
         other=a.status(other, "To do", "todo", 0),
     )
+    types = SimpleNamespace(**{
+        name: str(a.one("INSERT INTO pm_task_types (project_id, name, organization_id)"
+                        " VALUES (CAST(:p AS uuid), :n, CAST(:o AS uuid)) RETURNING id",
+                        p=project, n="Bug", o=org))
+        for name, project in (("team", team), ("other", other))})
     world_ = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, other=other, s=s,
-                             c={}, tok={}, task=a.task)
+                             c={}, tok={}, task=a.task, types=types)
     for name, scopes in (("write", w.WRITE_SCOPES), ("read", ("projects:read",))):
         world_.c[name], world_.tok[name] = a.connection(scopes=scopes)
     world_.app_dsn = admin_url.set(
@@ -735,6 +848,38 @@ class TestTheSourceAndTheToolsOnARealDatabase:
         loser = next(r for r in results if r["isError"])
         assert loser["content"][0]["text"] == tools.TEXT_KEY_RUNNING
 
+    async def test_a_type_of_the_project_lands_and_another_is_refused(self, live):
+        """Fix round 1 (P1). The edge reads the project's types first."""
+        ok = await _mcp(live, "write", "create_task", {
+            "project_id": live.team, "title": "typed", "type_id": live.types.team})
+        assert ok["isError"] is False, ok
+        assert str(_row(live, ok["structuredContent"]["task"]["id"]).type_id) == (
+            live.types.team)
+        for type_id in (live.types.other, str(uuid.uuid4())):
+            refused = await _mcp(live, "write", "create_task", {
+                "project_id": live.team, "title": "mistyped", "type_id": type_id})
+            assert refused["content"][0]["text"] == tools.TEXT_BAD_REQUEST
+        assert _count(live, "mistyped") == 0
+
+    async def test_the_returned_version_survives_the_links_of_the_text(self, live):
+        """Fix round 1 (P2). A GitHub URL or a `#N` in the text makes the
+        gateway touch the task after the commit. The version that each tool
+        returns must still work as the next `expected_version`."""
+        made = await _mcp(live, "write", "create_task", {
+            "project_id": live.team, "title": "linked",
+            "description": "Fixes https://github.com/acme/widgets/pull/12"})
+        task = made["structuredContent"]["task"]
+        changed = await _mcp(live, "write", "update_task", {
+            "task_id": task["id"], "expected_version": task["version"],
+            "description": "Also https://github.com/acme/widgets/pull/13"})
+        assert changed["isError"] is False, changed
+        again = await _mcp(live, "write", "update_task", {
+            "task_id": task["id"],
+            "expected_version": changed["structuredContent"]["task"]["version"],
+            "title": "linked twice"})
+        assert again["isError"] is False, again
+        assert _row(live, task["id"]).title == "linked twice"
+
     async def test_update_task_changes_the_named_fields_and_not_the_status(self, live):
         task = live.task(live.team, live.s.doing, "before")
         read = await _mcp(live, "write", "get_task", {"task_id": task})
@@ -777,6 +922,17 @@ class TestTheGatewayNarrowsAnAgentWrite:
         title = f"closing {status}"
         r = await _send(live, "POST", "/projects/tasks", body={
             "project_id": live.team, "title": title, "status_id": getattr(live.s, status)})
+        assert r.status_code == 422, r.text
+        assert _count(live, title) == 0
+
+    @pytest.mark.parametrize("which", ["other", "made_up"])
+    async def test_a_create_with_a_type_outside_the_project_is_422(self, live, which):
+        """Fix round 1 (P1). A made-up id is a 422, never the 500 of the
+        foreign key."""
+        type_id = live.types.other if which == "other" else str(uuid.uuid4())
+        title = f"type {which}"
+        r = await _send(live, "POST", "/projects/tasks", body={
+            "project_id": live.team, "title": title, "type_id": type_id})
         assert r.status_code == 422, r.text
         assert _count(live, title) == 0
 

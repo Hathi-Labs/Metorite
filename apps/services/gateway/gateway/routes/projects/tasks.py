@@ -81,6 +81,7 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
     update_row,
     validate_choice,
+    vocabulary_scope,
 )
 from gateway.routes.projects.custom_fields import (
     apply_values,
@@ -176,6 +177,32 @@ def _refuse_agent_parent(user: UserContext, parent: Any, project_id: str) -> Non
         raise HTTPException(
             status_code=422,
             detail="The parent task is in another project.",
+        )
+
+
+async def _refuse_agent_type(db: Any, user: UserContext, type_id: Any,
+                             root: str) -> None:
+    """An agent's ``type_id`` is a type of the project's vocabulary (§9.2).
+
+    The vocabulary is the one ``GET /nodes/{id}/types`` reads: the root's own
+    types and the org-wide ones (``core.vocabulary_scope``). The route itself
+    does not check it for a member, and a made-up id there hits the foreign
+    key. For an agent the edge refuses first, and this is the gateway's own
+    copy of the rule.
+    """
+    if getattr(user, "agent", None) is None or not type_id:
+        return
+    found = (await db.execute(
+        text(
+            "SELECT 1 FROM pm_task_types "
+            f"WHERE id = CAST(:type_id AS uuid) AND {vocabulary_scope()}"
+        ),
+        {"type_id": str(type_id), "root": root},
+    )).first()
+    if found is None:
+        raise HTTPException(
+            status_code=422,
+            detail="That task type does not belong to this project.",
         )
 
 
@@ -510,6 +537,7 @@ async def create_task(
             await load_visible_task(db, vis, str(parent_id)) if parent_id else None
         )
         _refuse_agent_parent(user, parent, str(project_id))
+        await _refuse_agent_type(db, user, values.get("type_id"), str(root))
         await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
 
         # A stated status always wins. A new step with no stated status takes
