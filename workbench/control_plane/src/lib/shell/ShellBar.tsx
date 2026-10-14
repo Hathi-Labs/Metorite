@@ -4,7 +4,7 @@
  * The shell bar: one row across the top of every desktop page
  * (`navigation_shell.md` §3.1, NS-1, flag `NEXT_PUBLIC_SHELL_BAR`).
  *
- *   [ fold · logo ]     [ ✦ Ask Metorite, or search and open anything…  in <App>  ⌘K ]     [ panel · bell · activity · (avatar) email ]
+ *   [ fold · logo ]     [ ✦ Ask Metorite, or search and open anything…  in <App>  ⌘K ]     [ panel · bell · activity ]
  *
  * With the shell nav on too, the bar spans the whole window and opens with a
  * `lead` zone that AppShell fills: the sidebar's fold control and the
@@ -54,12 +54,13 @@
  * "They belong to the whole product, not to an app." An app's own bell or
  * tools never move into this bar.
  *
- * **The account widget is the bar's last item** (owner, 2026-10-12):
- * the avatar and the email of the account that is loaded. It opens the
- * account menu: switch, add another account, sign out (`BarAccount` in
- * `components/AccountSwitcher.tsx`). It replaced our comet signature of
- * 2026-10-11, and the comet moved to the sidebar's foot (`MetoriteFoot.tsx`).
- * Fences: `shellAccount.test.ts` and `e2e/shell-account.spec.ts`.
+ * **The bar holds no account** (owner, 2026-10-14). The account is the
+ * sidebar's foot again, with the member's pages and settings in its one menu
+ * (`AccountFoot` in `components/AccountSwitcher.tsx`). The 2026-10-12 shape,
+ * an account at this bar's right end, is superseded. The bar draws no
+ * Metorite logo of its own, and only a workspace with no logo shows the comet
+ * as its badge in the lead zone. Fences: `shellAccount.test.ts` and
+ * `e2e/shell-account.spec.ts`.
  */
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -67,7 +68,6 @@ import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
-import { BarAccount } from "@/components/AccountSwitcher";
 import { visibleSections } from "@/lib/nav";
 import { ActivityControl } from "./ActivityControl";
 import Button from "@/components/ui/Button";
@@ -214,7 +214,6 @@ export function ShellFrame({
           assistant={chatOn ? <ShellAssistantButton /> : null}
           bell={dockOn ? <ShellBell /> : null}
           activity={<ActivityControl />}
-          account={<BarAccount />}
         />
       ) : null}
       {children}
@@ -280,7 +279,6 @@ export function ShellBarRow({
   assistant,
   bell,
   activity,
-  account,
 }: {
   /** The command bar's scope chip, "in <App>". Its only use of the app. */
   here: { label: string; icon: string } | null;
@@ -295,10 +293,8 @@ export function ShellBarRow({
   assistant?: ReactNode;
   /** The shell's one bell (NS-6), before the activity control. */
   bell?: ReactNode;
-  /** The shell's own control at the right end. */
+  /** The shell's own control, the last item of the row. */
   activity?: ReactNode;
-  /** The account widget, the last item of the row (`BarAccount`). */
-  account?: ReactNode;
 }) {
   const shortcut = useShortcutLabel();
   return (
@@ -335,19 +331,19 @@ export function ShellBarRow({
       </button>
       )}
 
-      {/* The shell's own controls, the same on every page: the bell, the
-          activity control, then the account. An app's tools sit at the
-          right end of its own title bar, never here.
+      {/* The shell's own controls, the same on every page: the assistant,
+          the bell, then the activity control. No account (owner,
+          2026-10-14). An app's tools sit at the right end of its own title
+          bar, never here.
           ⚠️ No `min-w-0` (measured 2026-10-12). The group keeps the width of
           its content, so it never spills over the command bar. Where the
           room is short, the command bar gives way and sits a little off
-          centre. With `min-w-0`, the avatar put the bell over the command
-          bar at 1024px. Fence: `e2e/shell-account.spec.ts`. */}
+          centre. With `min-w-0`, a wide control put the bell over the
+          command bar at 1024px. Fence: `e2e/shell-account.spec.ts`. */}
       <div className="flex flex-1 basis-0 items-center justify-end gap-1">
         {assistant}
         {bell}
         {activity}
-        {account}
       </div>
     </header>
   );

@@ -449,7 +449,10 @@ _RAW_WRITE = re.compile(
     r"pipeline_stages|module_records|"
     # CRM-C4a: the two tables of the field studio. Zoho owns the fields in
     # Mirror mode until CRM-C5 (crm_platform.md §20.7 item 10).
-    r"field_defs|field_sections))",
+    r"field_defs|field_sections|"
+    # CRM-C6a: the lead-conversion mapping. Zoho owns it in Mirror mode
+    # (crm_platform.md §20.9).
+    r"convert_mappings))",
     re.IGNORECASE,
 )
 #: Functions that write raw SQL to a guarded table and are not guarded. Each has
@@ -551,7 +554,7 @@ def test_the_raw_write_fence_catches_a_planted_update() -> None:
     )
     assert _unguarded_raw_writes(module_write, "planted.py") == ["planted.py::sneaky"]
     # CRM-C4a: a write to a studio table with no guard is caught too.
-    for table in ("crm_field_defs", "crm_field_sections"):
+    for table in ("crm_field_defs", "crm_field_sections", "crm_convert_mappings"):
         studio_write = (
             "async def sneaky(db):" + nl
             + f"    await db.execute(text('UPDATE {table} SET label = 1'))" + nl

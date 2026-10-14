@@ -12,8 +12,8 @@ import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
  * give the focus back to its trigger. A click outside leaves the focus where
  * the member clicked.
  *
- * Callers: the account menus (`components/AccountSwitcher.tsx`) and the
- * Metorite menu (`components/MetoriteFoot.tsx`).
+ * Callers: the account menus (`components/AccountSwitcher.tsx`), which
+ * include the sidebar foot's one menu (`AccountFoot`).
  *
  * ⚠️ **While a switching cover is up, nothing dismisses** (review of
  * 2026-10-12). The cover (`SwitchingCover`, `data-switching-cover`) may be a

@@ -72,6 +72,7 @@ import hashlib
 import json
 import logging
 import math
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -547,14 +548,44 @@ async def shell_feed(
                              if_none_match=cache.if_none_match(request), response=response)
 
 
-async def feed_answer(user: UserContext, size: int) -> cache.Computed:
-    """One run of the providers: the answer, and what the read cache needs
-    to keep it (its time edges, and whether item 18 lets it be stored)."""
+@dataclass(frozen=True)
+class FeedRun:
+    """One run of the providers, folded and joined: the feed's ONE compute
+    (WS-58 MD-6a-1, ``my_day_feed.md`` §10.9 item 1).
+
+    ``cards`` are the cards after the state join and before the order.
+    ``needs_view`` and ``closed`` are set only for the read (``read=True``):
+    the My Day pass runs no Handled read and no needs view.
+    """
+
+    cards: list[dict[str, Any]]
+    joined: state.Applied
+    signals: list[Signal]
+    found: dict[str, Found]
+    sources: dict[str, str]
+    capped: list[str]
+    now: datetime
+    tz: ZoneInfo
+    needs_view: dict[str, Any] | None = None
+    closed: handled.HandledRun | None = None
+
+
+async def feed_cards(user: UserContext, now: datetime | None = None, *,
+                     read: bool = False) -> FeedRun:
+    """``needs_run``, then ``build_cards``, then ``apply_state``: the cards
+    of one member, unordered. The read (:func:`feed_answer`) and the My Day
+    pass both call it, so there is no second compute path (§10.9 item 1).
+
+    ``now`` is the pass's clock. None takes the feed's one clock after the
+    providers ran, as the read always did. ``read=True`` adds what only the
+    read needs: the needs view, taken before the feed-only providers, and
+    the Handled reads, beside the state join.
+    """
     # The needs providers first, in today's order and on today's budget.
     run = await needs.needs_run(user)
     # The needs view, at the needs route's own default limit, whatever the
     # feed's limit: the client keeps it under the key of ?limit=30.
-    needs_view = needs.needs_answer(run, needs.DEFAULT_LIMIT)
+    needs_view = needs.needs_answer(run, needs.DEFAULT_LIMIT) if read else None
     # Then the feed-only providers, on a budget of their own.
     extra = await needs.run_providers(
         user, needs.feed_only_providers(), budget_s=FEED_BUDGET_S,
@@ -575,31 +606,48 @@ async def feed_answer(user: UserContext, size: int) -> cache.Computed:
                            extra={"provider": key, "error": type(exc).__name__})
             sources[key] = "failed"
 
-    now = needs._now()  # the feed's one clock (needs._now)
+    if now is None:
+        now = needs._now()  # the feed's one clock (needs._now)
     tz = _zone(next((a.zone for a in found.values() if a.zone), None))
     today = now.astimezone(tz).date()
     # The state join: after the fold, before the order (§6.8 item 7). The
     # Handled reads run at the same time, inside the join's own budget
     # (MD-2c), so the feed's worst case does not grow.
-    joined, closed = await asyncio.gather(
-        state.apply_state(user, build_cards(signals, now, tz, today), now),
-        handled.handled_run(user, now, budget_s=state.STATE_TIMEOUT_S),
-    )
-    cards = feed_rank.order(joined.cards, size)
+    cards = build_cards(signals, now, tz, today)
+    closed: handled.HandledRun | None = None
+    if read:
+        joined, closed = await asyncio.gather(
+            state.apply_state(user, cards, now),
+            handled.handled_run(user, now, budget_s=state.STATE_TIMEOUT_S),
+        )
+    else:
+        joined = await state.apply_state(user, cards, now)
+    return FeedRun(joined.cards, joined, signals, found, sources, capped, now, tz,
+                   needs_view, closed)
+
+
+async def feed_answer(user: UserContext, size: int) -> cache.Computed:
+    """One run of the providers: the answer, and what the read cache needs
+    to keep it (its time edges, and whether item 18 lets it be stored)."""
+    fr = await feed_cards(user, read=True)
+    joined, closed, now, tz = fr.joined, fr.closed, fr.now, fr.tz
+    assert closed is not None  # read=True runs the Handled reads
+    cards = feed_rank.order(fr.cards, size)
     counts = {g: sum(1 for c in cards if c["group"] == g) for g in feed_rank.GROUPS}
     body = {
         "cards": cards,
         "groups": [{"id": g, "count": n} for g, n in counts.items() if n],
-        "needs": needs_view,
-        "sources": sources,
-        "capped": capped,
+        "needs": fr.needs_view,
+        "sources": fr.sources,
+        "capped": fr.capped,
         # Never a card and never a group, and not counted in `limit` (MD-2c).
         "handled": closed.entries,
         "handled_ok": closed.ok,
     }
     # The next time edge (§8.4 item 2): what the clock changes, and when.
-    edges = [*cache.signal_edges(signals), *cache.day_edges(joined.day, tz, now)]
-    edges += [e for e in (needs._instant(a.next_edge) for a in found.values()) if e is not None]
+    edges = [*cache.signal_edges(fr.signals), *cache.day_edges(joined.day, tz, now)]
+    edges += [e for e in (needs._instant(a.next_edge) for a in fr.found.values())
+              if e is not None]
     if joined.snooze_edge is not None:
         edges.append(joined.snooze_edge)
     return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=joined.ok))

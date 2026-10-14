@@ -30,12 +30,19 @@ export interface SettingsSection {
   audience: SectionAudience;
   /** The modes that show the section. */
   modes: readonly ("native" | "mirror")[];
+  /**
+   * The modes where the section also needs `studio_admin` of the layout
+   * (CRM-C6a): the flag `CRM_FIELD_STUDIO_ORGS` allows the org, and the
+   * caller is an admin of a Native org.
+   */
+  studioIn?: readonly ("native" | "mirror")[];
 }
 
 /**
  * The sections, in rail order (§20.4 item 2).
  *
- * `field-mapping` is Mirror only. CRM-C6 adds Native to it.
+ * `field-mapping` shows in Mirror mode, and in Native mode for a studio
+ * admin only (CRM-C6a, section 20.9).
  */
 export const SETTINGS_SECTIONS = [
   { id: "setup", label: "Setup and sync", icon: "Plug", audience: "admin", modes: ["native", "mirror"] },
@@ -44,14 +51,24 @@ export const SETTINGS_SECTIONS = [
   { id: "lead-statuses", label: "Lead statuses", icon: "ListOrdered", audience: "member", modes: ["native", "mirror"] },
   { id: "lost-reasons", label: "Lost reasons", icon: "CircleSlash", audience: "member", modes: ["native", "mirror"] },
   { id: "fields", label: "Fields", icon: "TextCursorInput", audience: "admin", modes: ["native", "mirror"] },
-  { id: "field-mapping", label: "Field mapping", icon: "ArrowLeftRight", audience: "admin", modes: ["mirror"] },
+  {
+    id: "field-mapping",
+    label: "Field mapping",
+    icon: "ArrowLeftRight",
+    audience: "admin",
+    modes: ["native", "mirror"],
+    studioIn: ["native"],
+  },
   { id: "sync-health", label: "Sync health", icon: "Activity", audience: "admin", modes: ["mirror"] },
 ] as const satisfies readonly SettingsSection[];
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
 
-/** What decides the sections a caller sees. */
-export type SectionContext = { isAdmin: boolean; mode: CrmMode };
+/**
+ * What decides the sections a caller sees. `studioAdmin` is `studio_admin`
+ * of the layout read (CRM-C6a). Absent, it is false.
+ */
+export type SectionContext = { isAdmin: boolean; mode: CrmMode; studioAdmin?: boolean };
 
 /** Is this a section id at all? An unknown `?section=` parses as `null`. */
 export function isSettingsSection(value: string | null | undefined): value is SettingsSectionId {
@@ -72,9 +89,10 @@ function modeOf(mode: CrmMode): "native" | "mirror" {
 export function visibleSections(ctx: SectionContext): SettingsSection[] {
   const mode = modeOf(ctx.mode);
   return SETTINGS_SECTIONS.filter(
-    (section) =>
+    (section: SettingsSection) =>
       (section.audience === "member" || ctx.isAdmin) &&
-      (section.modes as readonly string[]).includes(mode),
+      (section.modes as readonly string[]).includes(mode) &&
+      (!(section.studioIn ?? []).includes(mode) || ctx.studioAdmin === true),
   );
 }
 

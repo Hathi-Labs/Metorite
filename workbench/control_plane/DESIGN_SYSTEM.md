@@ -444,30 +444,40 @@ Naming both, because a third appears whenever the set is left implicit.
 > tools.**
 
 - The shell bar holds only shell things: the fold control, the logo, the
-  command bar, the activity control and the account. It draws the same
-  pixels on every page. The command bar's "in <App>" chip is the command bar's own scope, so
+  command bar, the assistant, the bell and the activity control. It holds no
+  account (owner, 2026-10-14). It draws the same pixels on every page. The command bar's "in <App>" chip is the command bar's own scope, so
   it stays.
 - **The shell's one bell sits before the activity control** (owner,
   2026-10-10: "They belong to the whole product, not to an app"). It shows
   only while `NEXT_PUBLIC_SHELL_DOCK` is on (NS-6 slice 6a). From slice 6b,
   the one assistant toggle joins it, behind the same flag. An app's own bell
   or tool never goes in the shell bar.
-- **The account is the last item at the right end** (owner, 2026-10-12,
-  `BarAccount`). The trigger is quiet: an avatar, and the email in muted
-  text from 1400px up. It has no border and no fill at rest. It has the
-  height of the bar's other controls and the bar's focus ring. Its menu holds
-  account acts only: the current account with a "Signed in" mark, the other
-  accounts, "Add another account" and sign-out.
+- ~~The account is the last item at the right end~~ (owner, 2026-10-12,
+  `BarAccount`). **Superseded by the owner on 2026-10-14.** The account is
+  the sidebar's foot again (see below).
 - The right group keeps the width of its content. It has no `min-w-0`, so it
   never spills over the command bar. Where the room is short, the command bar
   gives way.
-- ~~Our comet signs the right end~~ (2026-10-11, `BarSignature`).
-  **Superseded on 2026-10-12.** Our comet and the word "Metorite" are now the
-  sidebar's foot (`MetoriteFoot`). The foot opens the Metorite menu: You (My
-  Profile, My access) and Settings (Appearance, the colour mode, "Change my
-  layout"). `metoriteMenu` in `src/lib/shell/shellNav.ts` is its one list.
-  Folded, the comet sits alone on the rail's icon column.
-- Fences: `src/lib/shell/shellAccount.test.ts` and
+- ~~Our comet signs the right end~~ (2026-10-11, `BarSignature`), and
+  ~~our comet and the word "Metorite" are the sidebar's foot~~ (2026-10-12,
+  `MetoriteFoot`). **Both superseded.** The owner removed the Metorite logo
+  from the shell on 2026-10-14. Its new place is not decided (owner,
+  "later"). A workspace with no logo still shows the comet as its badge at
+  the top left (`OurMark`). That badge is the workspace's identity, not our
+  signature.
+- **The sidebar's foot is the account row** (owner, 2026-10-14,
+  `AccountFoot` in `src/components/AccountSwitcher.tsx`). Open, it shows the
+  avatar, the name, and the email in muted text under it. Both truncate. The
+  tip holds the full name, the email and the organization. Folded, the
+  avatar sits alone on the rail's icon column. It wears `cc-link`, the house
+  focus ring.
+- **The foot opens ONE menu, upward.** In order: the current account with a
+  "Signed in" mark, the other accounts, "Add another account", You (My
+  Profile, My access), Settings (Appearance, the colour mode, "Change my
+  layout"), "Sign out", and "Sign out of all accounts" with more than one
+  account. `accountMenu` in `src/lib/shell/shellNav.ts` is its one list. Add
+  a new option there, in one line.
+- Fences: `src/lib/shell/shellAccount.test.ts`, `shellNav.test.ts` and
   `e2e/shell-account.spec.ts`. The classic frame (shell bar off) and the
   phone keep their account surfaces.
 - The app bar sits under the shell bar, at the top of the app's content. It

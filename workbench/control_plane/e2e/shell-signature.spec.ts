@@ -4,12 +4,13 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  * Our comet in the shell bar (owner, 2026-10-11), and what is left of it
  * after 2026-10-12.
  *
- * ⚠️ **The right-end signature is retired** (owner, 2026-10-12). The bar's
- * right end is the account widget now, and our comet signs the sidebar's foot
- * as the Metorite menu (`e2e/shell-account.spec.ts`). This file keeps the
- * cases that still hold:
+ * ⚠️ **The right-end signature is retired** (owner, 2026-10-12), and the
+ * Metorite logo left the shell on 2026-10-14. The bar's right end is the
+ * assistant, the bell and the activity control, and the sidebar's foot is the
+ * account (`e2e/shell-account.spec.ts`). This file keeps the cases that
+ * still hold:
  *   1. With a logo, the bar draws no comet at all. The left end is the
- *      customer's logo alone, and the right end is the account.
+ *      customer's logo alone, and the bar holds no account.
  *   2. With no logo, the left lockup is our comet, once.
  *   3. The phone has no shell row (`ShellFrame bar={false}`) and no sidebar,
  *      so it shows no signature at 390px or at 360px. With no logo, the
@@ -41,7 +42,7 @@ async function stub(page: Page, branding: unknown) {
   await page.route("**/api/health", (r) => json(r, { gateway: "up" }));
   await page.route("**/api/auth/me", (r) => json(r, MEMBER));
   await page.route("**/api/settings/branding", (r) => json(r, branding));
-  // A signed-in session, so the sidebar's account row and the drawer's
+  // A signed-in session, so the sidebar's account foot and the drawer's
   // account block draw (`account-switcher.spec.ts` stubs it the same way).
   await page.route("**/api/auth/session", (r) =>
     json(r, { user: { email: MEMBER.email, name: "Member" }, expires: "2099-01-01T00:00:00.000Z" }),
@@ -72,9 +73,10 @@ test.describe("desktop", () => {
     await stub(page, WITH_LOGO);
     await page.goto("/settings/appearance");
     await expect(bar(page).locator("[data-shell-brand] img").first()).toBeAttached();
-    await expect(bar(page).locator("[data-shell-account]")).toBeVisible();
+    await expect(page.locator("aside [data-account-foot]")).toBeVisible();
+    await expect(bar(page).locator("[data-shell-account]")).toHaveCount(0);
     await expect(signature(page)).toHaveCount(0);
-    await expect(bar(page).locator("svg[data-metorite-mark]")).toHaveCount(0);
+    await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(0);
   });
 
   test("with no logo: the left lockup is our comet, once", async ({ page }) => {
@@ -86,6 +88,8 @@ test.describe("desktop", () => {
     await expect(brand.locator("svg[data-metorite-mark]")).toBeVisible();
     await expect(signature(page)).toHaveCount(0);
     await expect(bar(page).locator("svg[data-metorite-mark]")).toHaveCount(1);
+    // The badge is the one comet on the page: the foot draws none.
+    await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(1);
   });
 });
 

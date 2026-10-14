@@ -5,7 +5,11 @@ Spec: ``project-docs/specs/crm_app.md`` §3.6, §3.7, §3.9, §4.
     GET  /crm/pipeline               deals grouped by status: per-lane rows,
                                      count and ₹ total
     POST /crm/leads/{id}/convert     §3.7 — contact + organization + deal, with
-                                     the one dedup rule and 409 on re-convert
+                                     the one dedup rule and 409 on re-convert.
+                                     WS-53 CRM-C6a: the lead-conversion mapping
+                                     (``convert_mapping.py``) copies the custom
+                                     lead values, and ``skipped`` lists what it
+                                     could not copy
 
 :func:`apply_status_transition` lives here rather than in ``records.py`` because
 a status change is the pipeline's semantics, not a field write: it produces
@@ -21,6 +25,11 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, Request
+from gateway.routes.crm.convert_mapping import (
+    ConversionPlan,
+    conversion_plan,
+    fill_existing,
+)
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
@@ -604,11 +613,26 @@ class ConvertRequest(BaseModel):
     deal: ConvertDeal | None = None
 
 
+class SkippedValue(BaseModel):
+    """A lead value that the conversion mapping did not copy (CRM-C6a)."""
+
+    #: ``contact``, ``company`` or ``deal``.
+    entity: str
+    source_key: str
+    target_key: str | None = None
+    #: ``option_inactive``, ``target_retired``, ``target_missing``,
+    #: ``type_mismatch``, ``invalid_value`` or ``record_has_value``.
+    reason: str
+    message: str
+
+
 class ConvertResponse(BaseModel):
     lead: dict
     contact: dict | None = None
     organization: dict | None = None
     deal: dict
+    #: The lead values that the conversion mapping did not copy (CRM-C6a).
+    skipped: list[SkippedValue] = []
 
 
 @router.post("/leads/{lead_id}/convert", response_model=ConvertResponse)
@@ -638,9 +662,21 @@ async def convert_lead(
                 detail="This lead has already been converted.",
             )
 
-        contact = await _resolve_contact(db, lead, body)
-        organization = await _resolve_organization(db, lead, body)
-        deal = await _create_deal(db, lead, body, contact, organization, who)
+        # CRM-C6a: the mapped custom values. An empty plan when the flag does
+        # not allow the org, so the conversion is the conversion of before.
+        plan = await conversion_plan(db, lead, user.organization_id)
+        skipped: list[dict[str, Any]] = []
+        contact = await _resolve_contact(db, lead, body, plan, skipped)
+        organization = await _resolve_organization(db, lead, body, plan, skipped)
+        deal = await _create_deal(db, lead, body, contact, organization, who, plan)
+        # A value is skipped only for a record that the conversion has. A
+        # lead with no company makes no company, and its company mapping does
+        # nothing.
+        for entity, record in (
+            ("contact", contact), ("company", organization), ("deal", deal),
+        ):
+            if record is not None:
+                skipped.extend(plan.skipped.get(entity, []))
         lead = await _stamp_converted(db, lead, contact, organization, deal, who)
 
         return ConvertResponse(
@@ -654,17 +690,33 @@ async def convert_lead(
                 if organization is not None else None
             ),
             deal=row_to_dict(deal, DealModel),
+            skipped=[SkippedValue(**s) for s in skipped],
         )
 
 
-async def _resolve_contact(db: Any, lead: Any, body: ConvertRequest) -> Any | None:
+async def _reuse(
+    db: Any, plan: ConversionPlan, entity: str, table: str, row: Any,
+    skipped: list[dict[str, Any]],
+) -> Any:
+    """A record that the conversion reuses: the map fills only its empty values
+    (CRM-C6a). It never replaces a value that the record holds."""
+    written, kept = await fill_existing(db, plan, entity, table, row)
+    skipped.extend(kept)
+    return written
+
+
+async def _resolve_contact(
+    db: Any, lead: Any, body: ConvertRequest, plan: ConversionPlan,
+    skipped: list[dict[str, Any]],
+) -> Any | None:
     """Caller's choice → email match → create. The one dedup rule is email.
 
     Matching is on ``lower(email)`` because an address is the same person in
     any casing, and the import will bring in both spellings of it.
     """
     if body.contact_id:
-        return await require_row(db, CONTACTS.table, body.contact_id, "Contact")
+        chosen = await require_row(db, CONTACTS.table, body.contact_id, "Contact")
+        return await _reuse(db, plan, "contact", CONTACTS.table, chosen, skipped)
 
     email = (getattr(lead, "email", None) or "").strip()
     if email:
@@ -676,10 +728,10 @@ async def _resolve_contact(db: Any, lead: Any, body: ConvertRequest) -> Any | No
             {"email": email.lower()},
         )).fetchone()
         if existing is not None:
-            return existing
+            return await _reuse(db, plan, "contact", CONTACTS.table, existing, skipped)
 
     first = (getattr(lead, "first_name", None) or "").strip()
-    return await insert_row(db, CONTACTS.table, await _with_defaults(db, CONTACTS, {
+    return await insert_row(db, CONTACTS.table, await _with_defaults(db, CONTACTS, plan, {
         # `first_name` is NOT NULL; a lead with no person name still has a
         # display name, and using it beats inventing 'Unknown'.
         "first_name": first or lead.lead_name,
@@ -693,15 +745,17 @@ async def _resolve_contact(db: Any, lead: Any, body: ConvertRequest) -> Any | No
 
 
 async def _resolve_organization(
-    db: Any, lead: Any, body: ConvertRequest,
+    db: Any, lead: Any, body: ConvertRequest, plan: ConversionPlan,
+    skipped: list[dict[str, Any]],
 ) -> Any | None:
     """Caller's choice → exact-name match → create. Skipped when the lead has
     no ``organization_name``: an individual buyer is not a company, and minting
     an organization row named after a person is how a CRM fills with noise."""
     if body.company_id:
-        return await require_row(
+        chosen = await require_row(
             db, ORGANIZATIONS.table, body.company_id, "Organization",
         )
+        return await _reuse(db, plan, "company", ORGANIZATIONS.table, chosen, skipped)
 
     name = (getattr(lead, "organization_name", None) or "").strip()
     if not name:
@@ -715,9 +769,9 @@ async def _resolve_organization(
         {"name": name},
     )).fetchone()
     if existing is not None:
-        return existing
+        return await _reuse(db, plan, "company", ORGANIZATIONS.table, existing, skipped)
 
-    return await insert_row(db, ORGANIZATIONS.table, await _with_defaults(db, ORGANIZATIONS, {
+    return await insert_row(db, ORGANIZATIONS.table, await _with_defaults(db, ORGANIZATIONS, plan, {
         "name": name,
         "website": getattr(lead, "website", None),
         "industry": getattr(lead, "industry", None),
@@ -728,14 +782,22 @@ async def _resolve_organization(
     }))
 
 
-async def _with_defaults(db: Any, entity: Any, values: dict[str, Any]) -> dict[str, Any]:
-    """*values* with the custom defaults of *entity* (WS-53 CRM-C4a).
+#: The target entity of the conversion mapping for each record slug (CRM-C6a).
+_MAP_ENTITY = {"contacts": "contact", "organizations": "company", "deals": "deal"}
+
+
+async def _with_defaults(
+    db: Any, entity: Any, plan: ConversionPlan, values: dict[str, Any],
+) -> dict[str, Any]:
+    """*values* with the custom defaults and the mapped values of *entity*.
 
     A conversion is a platform write: the defaults apply and "required" does
-    not stop it (owner decision, review round 1). The field mapping of each
-    custom value from the lead is CRM-C6.
+    not stop it (WS-53 CRM-C4a, owner decision, review round 1). A mapped
+    value wins over a default (CRM-C6a). The plan holds no empty value, so the
+    default applies only where the lead had no value to map.
     """
     custom = await custom_for_create(db, entity.slug, None, system=True)
+    custom.update(plan.new_custom(_MAP_ENTITY[entity.slug]))
     if custom:
         values["custom"] = custom
     return values
@@ -743,7 +805,7 @@ async def _with_defaults(db: Any, entity: Any, values: dict[str, Any]) -> dict[s
 
 async def _create_deal(
     db: Any, lead: Any, body: ConvertRequest, contact: Any, organization: Any,
-    who: str,
+    who: str, plan: ConversionPlan,
 ) -> Any:
     """The deal the lead became — carrying its provenance and its primary contact."""
     wanted = body.deal or ConvertDeal()
@@ -754,7 +816,7 @@ async def _create_deal(
         or (getattr(lead, "organization_name", None) or "").strip()
         or lead.lead_name
     )
-    deal = await insert_row(db, DEALS.table, await _with_defaults(db, DEALS, {
+    deal = await insert_row(db, DEALS.table, await _with_defaults(db, DEALS, plan, {
         "name": name,
         "company_id": str(organization.id) if organization is not None else None,
         "pipeline_id": pipeline_id,

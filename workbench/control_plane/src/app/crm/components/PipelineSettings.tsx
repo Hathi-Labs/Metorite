@@ -7,7 +7,8 @@
  * Access, Deal stages, Lead statuses, Lost reasons, Fields, Field mapping and
  * Sync health. A card heading is the label of its rail row (CRM-C1). The page passes Setup and Access in for an admin. Fields is for an
  * admin. The Field map (CRM-Q7a) and Sync health (CRM-Q9) are for an admin in
- * Mirror mode.
+ * Mirror mode. In Native mode the Field mapping section holds the
+ * lead-conversion mapping (CRM-C6a), for a studio admin only.
  *
  * **Sections** (WS-53 CRM-C1, crm_platform.md §20.4). With a `section`, the
  * component draws the cards of that section only, and the rail opens one
@@ -71,6 +72,7 @@ import {
 } from "../lib/settings";
 import type { SettingsSectionId } from "../lib/settingsSections";
 import { useCrmStore } from "../lib/store";
+import ConvertMappingCard from "./ConvertMappingCard";
 import FieldMapCard from "./FieldMapCard";
 import FieldsCard from "./FieldsCard";
 import { Card, NameList, PipelineSections } from "./SettingsCards";
@@ -138,6 +140,7 @@ export default function PipelineSettings({
   pipelines = null,
   showAdminCards = false,
   readOnly = false,
+  studioAdmin = false,
   section,
 }: {
   /**
@@ -148,6 +151,11 @@ export default function PipelineSettings({
   section?: SettingsSectionId;
   /** Mirror mode: Zoho owns the stages, and the gateway refuses a write. */
   readOnly?: boolean;
+  /**
+   * `studio_admin` of the layout (CRM-C6a). In Native mode it draws the
+   * lead-conversion mapping. The page gives the same value to the sections.
+   */
+  studioAdmin?: boolean;
   /** The Setup hub (it holds the connection, CRM-X0) and the Access card of an admin, in this order. */
   setup?: React.ReactNode;
   access?: React.ReactNode;
@@ -299,6 +307,8 @@ export default function PipelineSettings({
           {/* The Field map and Sync health read the mirror, so Native mode
               does not draw them. */}
           {readOnly && show("field-mapping") && <FieldMapCard />}
+          {/* CRM-C6a: the lead-conversion mapping, Native mode, a studio admin. */}
+          {!readOnly && studioAdmin && show("field-mapping") && <ConvertMappingCard />}
           {readOnly && show("sync-health") && <SyncHealthCard />}
         </>
       )}

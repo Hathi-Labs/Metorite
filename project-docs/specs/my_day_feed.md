@@ -21,9 +21,13 @@ is complete.
 **MD-5b is BUILT, 2026-10-14** (the `my_day` loop, no migration, dark
 behind `MY_DAY_LOOP_ENABLED`).
 
+**MD-6a-1 is BUILT, 2026-10-14** (the features, the helpers and the table,
+migration 262). Each `my_day.*` mode is `off` and `MY_DAY_DECIDE_ORGS` is
+empty, so nothing asks `decide` and nothing calls the pass yet.
+
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-3,
-MD-4, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12. Each ships
-dark.
+MD-4, MD-6a-2, MD-6a-3, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and
+MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
@@ -1207,6 +1211,10 @@ In the first case, the card's `href`, `acts`, `act_ref` and why line must be
 byte-equal to an old-path card. In the second case, they must come from the
 chosen option.
 
+MD-6a-1 tests the reader only, because in `shadow` the caller always gets
+the old value. An off-list key reads as no answer. A valid key reads as its
+own option key. The two card cases above move to MD-6b.
+
 ### 10.3 The questions
 
 Each row is one feature in the one mode registry,
@@ -1284,8 +1292,10 @@ with no training, no rule editor and no setting screen.
 The feed follows the adoption rule of D75 item 7 and `customer_console.md`
 §6A.14, with all four of its rules.
 
-1. **Register.** MD-6a adds the eight `my_day.*` features to `FEATURES` in
-   `gateway/decide_features.py`. Every default is `off`. MD-6b adds them to
+1. **Register.** MD-6a adds the eight `my_day.*` features to the one
+   registry in `gateway/decide_features.py`, as `MY_DAY_FEATURES`. They are
+   not in the tuple `FEATURES`. The email suites pin that tuple as the
+   email set (MD-6a-1 done-when 7). Every default is `off`. MD-6b adds them to
    `ON_FEATURES`, or `on` resolves to `off` and logs `decide.mode_refused`
    (`decide_features.py:312-324`). No second registry, and no second helper.
 2. **Widen the helpers, do not copy them.** Four changes, in MD-6a:
@@ -1324,6 +1334,78 @@ clipped fact, and never as an instruction. A subject that tries to steer
 cannot add a link, a time or a recipient (§10.2). The thread gist is the one
 text composition that reads mail. It fences the thread as DATA in its prompt,
 as the day planner fences its task list (`calendar_ai_review.md` §2, item 1).
+
+### 10.9 How MD-6a runs (decided 2026-10-14)
+
+The MD-6a audit gave NO-GO, with ten gaps. These answers close them. Where
+this section and an earlier one differ, this section wins.
+
+**1. One compute.** `feed_answer` gives up a function, `feed_cards(user, now)`.
+It runs `needs_run`, then `build_cards`, then `apply_state`. The read and the
+pass both call it, so there is no second compute path. The pass does not run
+`handled_run` or the needs view.
+
+**2. The old values.** The judge compares each answer with the value that the
+feed shows today:
+
+- `triage`: the card's `group`, after the state
+- `weight`: the level of `feed_rank.LEVEL_BY_CELL`, and 0 for a card that is
+  not a task
+- `next_act`: the key of `acts[0]`
+- `resurface`: false
+
+**3. The features MD-6a asks.** It registers all eight, and asks four:
+`triage`, `weight`, `next_act` and `resurface`. `reason` waits for MD-4,
+`slot` for MD-8, `compose` for MD-6c and `nudge` for MD-10. A registered
+feature that nothing asks stays `off`.
+
+**4. Two more helper changes.** §10.6 item 2 lists four. These are the fifth
+and sixth:
+
+- `shadow` takes `record`, an async callable that gets the comparisons. A
+  `compare` may give a list. With no `record`, the helper behaves as today.
+- `shadow` honours `_cooling`, as `ask` does. Today a shadow keeps calling
+  after a 402.
+
+Email runs `on` in production, so the email decide suites are regression
+fences for both changes (§18).
+
+**5. The org list.** `MY_DAY_DECIDE_ORGS` is a settings field. `mode_for`
+reads it, and not `DECIDE_FEATURE_ORGS`, for a feature that starts with
+`my_day.`. Its default is empty, so no org is in it. The owner can then start
+`shadow` for one org, with no change to email's list of `*`.
+
+**6. The org ceiling.** `my_day_decide_org_daily_calls`, a settings field,
+default 0. A value of 0 sets no org ceiling. The member cap of 60 calls each
+day still binds (§9.1).
+
+**7. The source of "dirty".** `cache.py` gains a public `versions(member)`.
+The pass stores the versions it judged under `key("my_day", "judged",
+<member>)`, with a TTL of 26 hours. A member is dirty when the versions
+differ.
+
+The bumps write only while `MY_DAY_CACHE` is on. With it off, only
+the morning pass runs.
+
+**8. The pass bound.** The member pass runs after `run_org`, outside
+`PER_ORG_TIMEOUT_S`. Each member has a bound of 30 seconds, and three run at
+once at most (§8.4 item 13).
+
+**9. Each mode off means no spend.** With each `my_day.*` mode `off`, the pass
+makes no facade call and writes no row. A test fences it. That keeps
+`MY_DAY_LOOP_ENABLED` and `MY_DAY_CACHE` under the `enforcement-flip` grant.
+
+**10. The measure read.** `GET /shell/feed/decide-measure` needs
+`ADMIN_PERMISSION`, and reads the bound org only. For each feature it answers
+the count of rows and the rate of agreement. It also answers the acted rate
+of the top five cards of each path.
+
+The judged top five is `feed_rank.order`,
+with the judged group and the judged level times six. The pass stores each
+place in `old_rank` and `judged_rank` (§13.2).
+
+A card counts as acted when its `my_day_card_state` row has an `acted_at` at
+or after the judgment's `created_at`, on the same day for the member.
 
 ---
 
@@ -1497,7 +1579,11 @@ numbers only.
 | `confidence` | `REAL` | The probability or confidence |
 | `used` | `BOOLEAN NOT NULL` | Whether the judged value set the card |
 | `request_id` | `TEXT` | Joins the call to its `usage_event` row |
+| `old_rank`, `judged_rank` | `SMALLINT NULL` | The card's place on each path. The pass writes them on the `my_day.triage` row |
 | `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
+
+The primary key is `(organization_id, member_email, signal_id, feature,
+created_at)`. An index on `(organization_id, created_at)` serves the sweep.
 
 The loop deletes rows older than 30 days. A fence asserts that no column
 holds a title, a subject or a name: `test_feed_decide.py::TestNoTenantText`.
@@ -2384,29 +2470,126 @@ dark behind `MY_DAY_LOOP_ENABLED`. Two choices differ from the file list:
 
 ### MD-6a · The `decide` pass, in shadow — AGENT-SAFE (build), OWNER-GATE (turn on)
 
+The MD-6a audit of 2026-10-14 gave NO-GO, and split the ticket in three.
+§10.9 holds the answers. Build them in order: 6a-1, then 6a-2, then 6a-3.
+
+**Turning on any `my_day.*` mode, `shadow` included, is the owner's flip**
+(§17.1). Each shadow call is a real Router call, billed to the org. Residency
+is answered (D100).
+
+### MD-6a-1 · The features, the helpers and the table — AGENT-SAFE
+
 Files:
 
-- `gateway/decide_features.py`: the eight `my_day.*` features and the four
-  helper changes of §10.6 item 2.
-- `gateway/routes/shell/feed_decide.py`: the questions, the state builder,
-  the reader and the caps.
-- Migration `<next free>_my_day_judgments.sql`.
-- The `my_day` loop of MD-5.
+- `gateway/decide_features.py`: the eight features, the six helper
+  changes, and the `my_day.` org list
+- `packages/acb_common/acb_common/settings.py`: `my_day_decide_orgs` and
+  `my_day_decide_org_daily_calls`
+- a new `gateway/routes/shell/feed_decide.py`: the questions, the state
+  builder, the caps and the answer cache
+- `gateway/routes/shell/feed.py`: `feed_cards` out of `feed_answer`
+- migration `<next free>_my_day_judgments.sql`, 262 at audit, with the
+  rank columns of §13.2. Check the number again at merge (R1).
+
+Build it after MD-5a (#993) merges, because `feed_answer` comes from it.
 
 Done when:
 
 1. The eight features are in the one registry, `off` by default. No second
    registry and no second helper exist.
-2. In `shadow`, the feed shows the old path, and each comparison writes one
-   `my_day_judgments` row. `TestNoTenantText` passes.
-3. `TestKeysOnly` (§10.2), `TestCaps` (§9.1) and the §7 rule 2 test pass.
-4. A pass with no new card makes no call. A repeat of the same facts makes
+2. `mode_for` reads `MY_DAY_DECIDE_ORGS` for a `my_day.` feature, and the
+   email features keep `DECIDE_FEATURE_ORGS`.
+3. In `shadow`, the caller gets the old value, and each comparison writes
+   one `my_day_judgments` row. `TestNoTenantText` passes.
+4. `TestKeysOnly` (§10.2) and `TestCaps` (§9.1) pass. `TestCaps` covers the
+   member cap and the org ceiling. The §7 rule 2 test runs on a pure
+   function, `apply_triage`.
+5. A pass with no new card makes no call. A repeat of the same facts makes
    no call. A change to an unhashed field makes no call. A test counts them.
-5. A 402 starts the cool-down, and every card stays on its old path.
-6. The measure read of §10.6 item 4 exists.
+6. A 402 starts the cool-down. A `shadow` then makes no call, and every card
+   keeps its old value.
+7. The email decide suites pass with no change to their tests.
 
-**Turning on `shadow` for a real organization is the owner's flip** (§17.1),
-because it spends credits. Residency is answered (D100).
+Fences: `tests/unit/test_feed_decide.py`, and
+`tests/unit/test_feed_decide_r8.py` with `_DB_GATE` for the table.
+
+**BUILT, 2026-10-14, on branch `my-day-feed-md6a`.** Migration 262 adds
+`my_day_judgments`. `feed_decide.judge(user, now)` is the pass for one
+member, and MD-6a-2 calls it. The build made these choices:
+
+- **The registry.** The eight names are `MY_DAY_FEATURES`, beside
+  `FEATURES`, and `REGISTERED` holds both. The parser and `mode_for` are
+  the same. `FEATURES` stays the email set, because four email tests pin it
+  and done-when 7 forbids a change to them.
+- **The call name.** A pass calls `shadow` as `my_day.automation`, with
+  `features` set to the asked features. The agent name needs a dot
+  (`AUTOMATION_AGENT_RE`), so `my_day` alone binds no agent.
+- **The caps.** A pass reserves its calls before it asks. Past a cap it
+  sends fewer requests, or none. A Redis failure asks nothing.
+- **A key that is not ours** is stored as no value in `judged_value`.
+- **The state.** `read_context` reads the role, the local time, the day
+  hours, the One Thing, the corrections and the habit counts. No app read
+  gives the goals, the projects, the 7-day deadlines or today's blocks to
+  the module yet, so those fields stay empty.
+- **The cool-down.** It is per org and shared with email, because both
+  spend the same credits. A My Day call starts it on a 402 only. A 403 can
+  refuse My Day alone, so it must not pause email's `on`.
+- **One shadow for each request** (fix round 1). The helper gives no answer
+  for a call with one failed request. So the pass runs one `shadow` for each
+  packed request, at once, and a failed request costs only itself.
+- **The member** is the session's address, exactly as `my_day_card_state`
+  writes it, so the measure read of MD-6a-3 joins on equal text.
+- **The org bucket** keys on the UTC date. The member bucket keeps the
+  member's local date (§9.1 rule 8).
+
+Known limits, for the next tickets:
+
+- `configured_on()` reads `FEATURES` only. MD-6b must widen it before a
+  `my_day.*` feature can run `on`.
+- The pass writes the rows before it caches the answers. A row write that
+  keeps failing asks again on each pass, until the member cap.
+- The context is thin. The goals, the projects the member leads, the
+  deadlines of the next 7 days and today's blocks have no reader yet. This
+  is open for MD-6b, because a gate set from thin shadow data is weak.
+
+### MD-6a-2 · The member pass — AGENT-SAFE
+
+Files: `apps/services/gateway/gateway/my_day_loop.py`, and
+`apps/services/gateway/gateway/routes/shell/cache.py` for `versions(member)`.
+
+Done when:
+
+1. A member whose context resolves to another org is skipped.
+2. A member without `feature:email` gets no email signal.
+3. Each of the three checks of §8.4 item 24 removes a departed member from
+   the active set. The pass never calls `member_context` for that member.
+4. A failed identity read, or `IdentityUnavailable`, skips the member and
+   keeps it in the set.
+5. The morning pass runs once, 15 minutes before `day_start_hour`.
+6. A dirty member gets one pass in 2 minutes at most.
+7. With each `my_day.*` mode `off`, the pass makes no facade call and writes
+   no row (§10.9 item 9).
+8. A member pass that runs past 30 seconds is cancelled, and the next member
+   runs.
+9. The sweep deletes `my_day_judgments` rows older than 30 days, of the
+   bound org only.
+
+Fences: `tests/unit/test_my_day_loop.py`, and
+`tests/unit/test_my_day_loop_r8.py` for the departed checks.
+
+### MD-6a-3 · The measure read — AGENT-SAFE
+
+Files: `apps/services/gateway/gateway/routes/shell/feed_decide.py`, and
+`apps/services/gateway/gateway/routes/shell/__init__.py`.
+
+Done when:
+
+1. `GET /shell/feed/decide-measure` answers §10.9 item 10's shape, with the
+   acted window of that item.
+2. A member without `ADMIN_PERMISSION` gets 403.
+3. An R8 test with two orgs shows that the read counts the bound org only.
+
+MD-6b needs this read, so MD-6b does not start before it.
 
 ### MD-6b · `decide` on, with gates — AGENT-SAFE (build), OWNER-GATE (turn on)
 
@@ -2486,7 +2669,7 @@ late, because it costs the most and waits on H-171 and H-69.
 | Act | Why it is the owner's | Gate |
 |---|---|---|
 | Turn on `NEXT_PUBLIC_MY_DAY_FEED` in production | It changes the first page of every member in every organization at once | Owner only, as `navigation_shell.md` §13.1. The dev-phase window does not open it |
-| Turn on `MY_DAY_COMPOSE`, or set any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` | It spends customer credits | Owner only. CLAUDE.md §3a rule 3. Residency is answered (D100) |
+| Turn on `MY_DAY_COMPOSE`. Or set any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` while `MY_DAY_DECIDE_ORGS` names an org | It spends customer credits | Owner only. CLAUDE.md §3a rule 3. Residency is answered (D100) |
 | MD-10, a message outside the app | It reaches a real person through a third party | Owner only. CLAUDE.md §3a rule 3 |
 
 ⚠️ These bind by prose only. `plan-guard.mjs` names none of these flags (R7,
@@ -2523,7 +2706,9 @@ uv run pytest tests/unit/test_my_day_prefs.py tests/unit/test_my_day_prefs_r8.py
 uv run pytest tests/unit/test_feed_handled.py tests/unit/test_feed_handled_r8.py -q  # MD-2c
 uv run pytest tests/unit/test_my_day_cache.py tests/unit/test_my_day_cache_r8.py tests/unit/test_my_day_loop.py tests/unit/test_my_day_loop_r8.py tests/unit/test_tenant_redis.py tests/unit/test_db_engine_seam.py -q  # MD-5
 uv run ruff check apps/services/gateway/gateway/my_day_loop.py apps/services/gateway/gateway/main.py apps/services/gateway/gateway/routes/email/scheduler_hooks.py packages/acb_common/acb_common/tenant_redis.py  # MD-5
-# MD-6a adds tests/unit/test_feed_decide.py
+uv run pytest tests/unit/test_feed_decide.py tests/unit/test_feed_decide_r8.py tests/unit/test_feed_rank.py tests/unit/test_my_day_loop.py tests/unit/test_my_day_loop_r8.py -q  # MD-6a
+uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_email_llm_cap.py tests/unit/test_background_ai_member.py -q  # MD-6a, email regression
+uv run ruff check apps/services/gateway/gateway/decide_features.py apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/my_day_loop.py  # MD-6a
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 

@@ -51,6 +51,8 @@
 > CRM-C4c, the studio UI in the `fields` settings section, for an admin of a
 > Native org with the flag on (2026-10-14, §20.7). It adds no migration and no
 > flag.
+> CRM-C6a, the Native lead-conversion mapping in the `field-mapping` section,
+> dark behind `CRM_FIELD_STUDIO_ORGS` (2026-10-14, migration 261, §20.9).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -4783,7 +4785,8 @@ Deal field.
    in Zoho". No write API is documented (**UNVERIFIED**).
 3. **Native.** An admin picks a target for each custom lead field. The
    default target has the same key and a compatible type. A pair is
-   compatible when the types are equal, or when C4 item 6 allows the change.
+   compatible when the types are equal, or when C4 item 9 (the type change
+   matrix) allows the change.
 4. **The convert route.** `POST /crm/leads/{id}/convert` copies each mapped
    custom value onto the new contact, company and deal, in the same
    transaction. An unmapped value stays on the lead. The fixed columns keep
@@ -4829,6 +4832,199 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_crm_convert_mapping_r8.py tests/unit/test_crm_discovery.py tests/unit/test_crm_field_rules_r8.py -q
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
 ```
+
+#### CRM-C6a: the Native lead-conversion mapping
+
+**The audit (2026-10-14).** GO-NARROWED. C6a is card (a) in Native mode only.
+The coordinator resolved the five blockers of the audit, and this contract
+records each resolution.
+
+**Scope.**
+
+- A new migration at the next free number. It adds the tenant table
+  `crm_convert_mappings`. The table replaces the `convert_mapping` column of
+  item 1 of card (a).
+- `GET` and `PUT /crm/conversion-mapping`.
+- The mapping in `POST /crm/leads/{id}/convert` (`pipeline.py:614`).
+- A table for each target entity in the `field-mapping` section, Native mode.
+
+**The table.** One row holds `organization_id`, `source_key`,
+`target_entity`, `target_key` (or NULL) and `skip`. `source_key` is the key of a
+custom lead field. `target_entity` is `contact`, `company` or `deal`. The row is
+unique for each `(organization_id, source_key, target_entity)`. The table has
+FORCE RLS and one policy with USING and WITH CHECK, and the migration only
+expands (R6).
+
+**What a row means (blocker 2).**
+
+1. A row with `target_key` NULL and `skip` false means "auto". No row at all
+   also means "auto".
+2. "Auto" maps to the target field with the same key, when that field is live
+   and its type is compatible. With no such field, the value is not copied.
+3. `skip` true means "unmapped". The conversion does not copy that lead
+   field. A skip row has no `target_key`.
+4. A row with a `target_key` is "explicit". The key names a custom field of
+   the target entity.
+5. A pair is compatible when the types are equal. It is also compatible when
+   C4 item 9, the type change matrix, allows the change. A lookup pairs only
+   with a lookup that has the same target entity.
+6. A target field takes one lead field at most. `PUT` refuses two explicit rows
+   on one target. An explicit row wins over "auto" for its target.
+7. A lead field that is retired, or that is a system field, is not in the map.
+
+**The routes (blocker 5).** Each route is for an admin only (403). The flag
+`CRM_FIELD_STUDIO_ORGS` must allow the org, else 404. In Mirror mode each route
+gives 409, because `crm_convert_mappings` joins `core.MIRROR_SETTINGS_TABLES`.
+
+- `GET /crm/conversion-mapping` lists each live custom lead field. For each
+  target entity it gives the effective target, the reason (`auto`, `skip` or
+  `explicit`) and the compatible target fields.
+- `PUT /crm/conversion-mapping` writes the whole map in one transaction. It
+  checks each pair with the type rule of item 5. A target that does not exist
+  gives 422, and so does a retired target. An incompatible pair gives 422. A
+  refused body changes no row.
+
+**The conversion (blockers 3 and 4).**
+
+1. The convert route applies the map only when the flag allows the org. Else
+   it converts as before.
+2. A new contact, company or deal gets each mapped value.
+3. A mapped value wins over the default of the target field. The default
+   applies only when the mapped value is empty.
+4. The convert route reuses a contact that it matches by email
+   (`pipeline.py:666-679`). It reuses a company that it matches by name
+   (`:701-718`). It also reuses a record that the caller names. On such a
+   record, the mapping fills only the empty values. It never replaces a value
+   that the record holds.
+5. A select or multi-select value that is not an active option of the target
+   is skipped for that field.
+6. A retired target field is skipped. A hidden target field is still filled.
+7. A lead with no company makes no company, as before. Then the company
+   mapping does nothing.
+8. The conversion is a system writer. It skips "required" and fills the
+   defaults, as `_with_defaults` of C4a does.
+9. The response lists each skipped value in `skipped`, with the entity, the
+   two keys and the reason.
+10. D95 holds. In Mirror mode the convert route gives 409, as before, and the
+    mapping adds no write path.
+
+**The section (blocker 5).**
+
+- In Native mode the `field-mapping` section shows to an admin only when the
+  layout says `studio_admin`. `settingsSections.ts:47` gets that rule.
+- The CRM-Q7a Field map card stays Mirror only (`PipelineSettings.tsx:301`).
+- The section holds one table for each target entity: lead field, then target
+  field. Each row is a `SelectButton` with Auto, Skip and the compatible
+  fields. The section uses the shared primitives only, and it navigates with
+  `pushView` and `replaceView` only.
+
+**Files.** `infra/postgres/<next free>_crm_convert_mapping.sql` (new), the
+four generated tenancy files, `routes/crm/convert_mapping.py` (new),
+`pipeline.py`, `core.py`, `settings.py`, `lib/settingsSections.ts`,
+`lib/convertMapping.ts` (new), `components/ConvertMappingCard.tsx` (new),
+`PipelineSettings.tsx`, `page.tsx` and the fences below. C6a does not touch
+`field_rules.py`, `mapping.py` or `FieldMapCard.tsx`, because CRM-C6c edits
+them.
+
+**Done when.**
+
+1. An R8 test maps two custom lead fields in a Native org and converts a
+   lead. The contact and the deal hold the two values. A skipped value is not
+   copied. Org B does not change.
+2. `PUT` refuses an incompatible pair, a target that does not exist and a
+   retired target, each with 422. The stored map does not change.
+3. "Auto" copies a lead field to a target field with the same key and a
+   compatible type. A NULL row and no row give the same result.
+4. A matched contact keeps each value that it holds, and gets each value
+   that it lacks.
+5. A mapped value wins over a default. An inactive option is in `skipped`
+   with its reason. A hidden target is filled. A retired target is skipped.
+6. Each route gives 403 for a member and 409 in Mirror mode. It gives 404
+   for an org that the flag does not allow.
+7. A static fence reads the migration. It requires ENABLE, FORCE and one
+   policy with USING and WITH CHECK.
+8. `crmC1.test.ts` shows `field-mapping` to a Native admin with
+   `studio_admin`, and hides it in each other Native case. `crmC6a.test.ts`
+   shows the rows and the choices of the table.
+
+**Fences.** `tests/unit/test_crm_convert_mapping_r8.py` (new, R8,
+`_DB_GATE`), `tests/unit/test_crm_convert_mapping.py` (new: the rules with no
+database, and the RLS fence), `test_crm_field_studio_r8.py`,
+`test_crm_mirror_readonly.py`, `test_tenant_coverage.py`, `crmC1.test.ts` and
+`crmC6a.test.ts` (new).
+
+**Verification.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_crm_convert_mapping_r8.py tests/unit/test_crm_convert_mapping.py tests/unit/test_crm_field_studio_r8.py tests/unit/test_crm_mirror_readonly.py tests/unit/test_tenant_coverage.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/crm
+```
+
+**CRM-C6b (not in C6a).** Mirror mode: the sync stores the Zoho
+`convert_mapping`, and the card shows it read only. C6b also holds the lookup
+targets of Mirror mode and the `module:<ApiName>` words. C6b waits for a real
+Zoho read of a Leads field.
+
+**Built as (2026-10-14, branch `crm-c6a`).** 🔨 BUILT, not merged. Migration
+261 holds `crm_convert_mappings`. The slice adds no flag: the routes and the
+conversion read `CRM_FIELD_STUDIO_ORGS`, which ships empty.
+
+- **The routes.** `routes/crm/convert_mapping.py`. `GET` gives `fields` and
+  `targets`. `fields` lists each live custom lead field in layout order. Each
+  field has a cell for each entity with `target_key`, `reason`, `problem` and
+  `choices`. `targets` lists the custom fields of each entity, also the
+  retired ones, so the screen can name a retired explicit target.
+- **The PUT body.** `{"rows": [...]}`. The route stores each row as the body
+  sends it, also a row that means "auto". The screen sends no row for "auto".
+- **The 422 codes.** `mapping_source`, `mapping_twice`, `mapping_skip_target`,
+  `mapping_target`, `mapping_target_retired`, `mapping_type` and
+  `mapping_target_twice`. A unique violation gives 409 `mapping_changed`.
+- **Four details that the contract left open.** The builder decided them.
+  1. A retired explicit target, or one of a changed type, stays in the map.
+     The read names it in `problem`, and the conversion skips it.
+  2. The conversion skips a multi-select value whole when one of its options
+     is not active. It does not cut the list.
+  3. The conversion reuses a record that the caller names in the convert
+     body, as it reuses a matched record. The map fills only its empty values.
+  4. `skipped` also gives `record_has_value` for a value that a reused record
+     keeps, and `invalid_value` for a value that the target check refuses.
+- **In Mirror mode** each route gives 409 `mirror_mode_settings` with "The
+  conversion mapping comes from Zoho. Change it in Zoho." The conversion
+  reads no map in Mirror mode.
+- **The screen.** `ConvertMappingCard.tsx` reads the map through
+  `useCachedResource`, so a change in the Fields section wakes it. A choice
+  sends the whole map and reads it again. A refusal shows at the top of the
+  card.
+- **Not in this slice.** C6b.
+
+**Review round 1 (2026-10-14).** The verifier and the reviewer found one P1.
+The coordinator decided each item.
+
+1. **A broken row never blocks a save (P1).** The screen sends the whole map.
+   `check_rows` now passes an explicit row that equals its stored row, also
+   when its target retired or changed type. It checks only a new or a changed
+   row. A new row on a retired target gives 422 with "<target> is retired.
+   Set this cell to Auto or Skip, or restore the field." The cell shows its
+   problem and a "Set to Auto" button.
+2. **Two writes at once (P2).** The `PUT` takes `pg_advisory_xact_lock` on a
+   key of the org before it reads and writes. Migration 261 adds the partial
+   unique index `crm_convert_mappings_one_target` on `(organization_id,
+   target_entity, target_key)` for each explicit row. 261 is not deployed, so
+   the file changed in place, and it stays idempotent.
+3. **The fill of a reused record (P2).** `fill_existing` reads `custom` again
+   `FOR UPDATE` before it fills. A value that lands after the match stays.
+4. **A blocked auto copy.** An explicit row with a `type_mismatch` target
+   still claims it. The same-key auto cell that it blocks now has the problem
+   `type_mismatch`, and the conversion lists the value in `skipped`.
+5. **The note after a convert.** The page shows a toast "N fields were not
+   copied", with each field, its entity and its reason.
+
+The new R8 fences cover the broken row, two `PUT` writes at once and the
+index. They also cover the 409 path, the stale fill, the blocked auto copy
+and a conversion in the second org. The hermetic suite holds the unchanged row and
+the index. The vitest file holds the broken cell and the note. A mutation
+proved each fence.
 
 ### 20.10 CRM-C7: AI reach
 

@@ -3,8 +3,8 @@
  *
  * A customer uploads their logo in Settings → Organization and it replaces our
  * mark in the top-left of the shell. Since 2026-10-11 nothing of ours sits
- * beside it. Since 2026-10-12 our comet signs the sidebar's foot, as the
- * Metorite menu (owner decision, `MetoriteFoot.tsx`). This module owns the
+ * beside it. Since 2026-10-14 the shell shows no Metorite logo, and its
+ * place is not decided yet (owner, "later"). This module owns the
  * parts of that with a right and a wrong answer, so they can be tested
  * without a browser or a gateway.
  *
@@ -137,7 +137,7 @@ export function lockup(
     // Not "logo" alone: a screen reader reaching the top of the app should
     // hear whose product this is, and the link it sits in is the way home.
     alt: "Your organization's logo",
-    // No caption (owner, 2026-10-11). Our comet signs the sidebar's foot.
+    // No caption (owner, 2026-10-11).
   };
 }
 

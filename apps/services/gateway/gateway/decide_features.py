@@ -48,16 +48,41 @@ They hold no subject, body, sender, reason or rule name.
 H-44's feature-to-tier registry absorbs this registry when H-44 is built. It
 holds a mode and no tier, so it is not a second vocabulary.
 
-Fences: ``tests/unit/test_email_decide_shadow.py`` and
-``tests/unit/test_email_decide_questions.py``.
+WS-58 MD-6a-1 (``project-docs/specs/my_day_feed.md`` §10.6 and §10.9)
+widens the helpers for My Day, and copies none of them:
+
+- The eight ``my_day.*`` features are in this registry
+  (:data:`MY_DAY_FEATURES`), each ``off`` by default. ``on`` resolves to
+  ``off`` for them until MD-6b. For a ``my_day.`` feature, :func:`mode_for`
+  reads ``my_day_decide_orgs`` and not ``decide_feature_orgs``.
+- :func:`ask` and :func:`shadow` take one map of log ids (``ids``) and a
+  ``module_slug``. The email keywords work as before.
+- :func:`shadow` takes ``features``, the features of a packed request. It
+  asks when one of them is in ``shadow``. A ``compare`` may give a list, and
+  each item logs its own ``decide.shadow`` line. ``record`` gets the list.
+- :func:`shadow` honours the cool-down, as :func:`ask` does.
+- :func:`compare_score` compares a score answer with the old-path level.
+- A ``my_day.`` call starts the shared cool-down on a 402 only. A 403 from
+  My Day names My Day's grant, so it must not pause email for the org.
+
+With none of the new arguments, each helper behaves as before, byte for
+byte, with ONE intended exception: :func:`shadow` now asks nothing while
+the organization is in its cool-down (``my_day_feed.md`` §10.9 item 4).
+Before, an email feature in ``shadow`` went on calling after a 402. The
+email suites are the fence for the rest.
+
+Fences: ``tests/unit/test_email_decide_shadow.py``,
+``tests/unit/test_email_decide_questions.py`` and
+``tests/unit/test_feed_decide.py``.
 """
 from __future__ import annotations
 
 import asyncio
 import functools
+import math
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any
 
@@ -74,9 +99,12 @@ __all__ = [
     "DEFAULT_MODES",
     "FEATURES",
     "MODES",
+    "MY_DAY_FEATURES",
+    "MY_DAY_PREFIX",
     "ON_BOUND_S",
     "ON_FEATURES",
     "QUESTION_LIMIT",
+    "REGISTERED",
     "SHADOW_BOUND_S",
     "Comparison",
     "ask",
@@ -85,9 +113,12 @@ __all__ = [
     "clip_fact",
     "compare_boolean",
     "compare_choice",
+    "compare_score",
     "configured_on",
+    "cooling",
     "instructions",
     "mode_for",
+    "score_level",
     "shadow",
     "top_margin",
 ]
@@ -127,11 +158,39 @@ ON_FEATURES: frozenset[str] = frozenset({
     "email.insights_screen",
 })
 
+#: WS-58 MD-6a-1: the eight My Day features (``my_day_feed.md`` §10.3), in
+#: the order of that table. They are in THIS registry: the same parser, the
+#: same :func:`mode_for` and the same settings. They are not in
+#: :data:`FEATURES`, because that tuple is the email set. The startup check
+#: (:func:`configured_on`), the AI-call names and the email suites read it as
+#: such. Each is ``off`` by default. None is in :data:`ON_FEATURES`, so ``on``
+#: resolves to ``off`` and logs ``decide.mode_refused`` until MD-6b.
+MY_DAY_FEATURES: tuple[str, ...] = (
+    "my_day.triage",
+    "my_day.weight",
+    "my_day.reason",
+    "my_day.next_act",
+    "my_day.slot",
+    "my_day.resurface",
+    "my_day.compose",
+    "my_day.nudge",
+)
+
+#: A feature with this prefix takes its organization list from
+#: ``my_day_decide_orgs`` (``my_day_feed.md`` §10.9 item 5).
+MY_DAY_PREFIX = "my_day."
+
+#: Every feature of the registry, email first.
+REGISTERED: tuple[str, ...] = FEATURES + MY_DAY_FEATURES
+
 #: The value of ``decide_feature_orgs`` that allows every organization.
 ALL_ORGS = "*"
 
 #: Every feature starts ``off``.
 DEFAULT_MODES: Mapping[str, str] = MappingProxyType({f: "off" for f in FEATURES})
+
+#: The default of every registered feature, the My Day features too.
+_REGISTRY_DEFAULTS: Mapping[str, str] = MappingProxyType({f: "off" for f in REGISTERED})
 
 #: The bound on the ``decide`` requests of one shadow call, in seconds. Read
 #: at call time, so a test may make it short. The default is the spec's 5
@@ -155,6 +214,12 @@ REFUSAL_COOLDOWN_S: float = 15 * 60
 #: The verdicts that start a cool-down.
 _COOLDOWN_STATUSES = frozenset({402, 403})
 
+#: The verdicts that start the cool-down from a ``my_day.`` call (WS-58
+#: MD-6a-1 fix round 1). Only a 402: the org has no credit, and every app
+#: must wait. A 403 can refuse My Day alone, and the cool-down is the whole
+#: org's, so it must not pause email's ``on``.
+_MY_DAY_COOLDOWN_STATUSES = frozenset({402})
+
 #: Organization id → the monotonic time at which its cool-down ends.
 _cooldown_until: dict[str, float] = {}
 
@@ -166,6 +231,13 @@ def _now() -> float:
 
 def _cooling(org: Any) -> bool:
     return bool(org) and _cooldown_until.get(str(org), 0.0) > _now()
+
+
+def cooling() -> bool:
+    """Whether the bound organization is in its cool-down after a 402 or a
+    403. A caller that spends a counter before it asks reads it first
+    (``routes/shell/feed_decide.py``)."""
+    return _cooling(current_tenant())
 
 
 def _start_cooldown(ids: Mapping[str, Any], status: int | None) -> None:
@@ -290,7 +362,7 @@ def _parse_modes(raw: str) -> Mapping[str, str]:
     Cached on the raw string, so a refused pair logs once for each process
     and each value, not once for each email.
     """
-    modes = dict(DEFAULT_MODES)
+    modes = dict(_REGISTRY_DEFAULTS)
     for pair in raw.split(","):
         pair = pair.strip()
         if not pair:
@@ -341,6 +413,10 @@ def mode_for(feature: str) -> str:
     with ``*``, because every email job binds a tenant and a call without one
     is not a mailbox job. A tenant not on the list is ``off``, unless the
     list holds ``*``.
+
+    A ``my_day.`` feature reads ``my_day_decide_orgs`` instead, so My Day
+    starts for one organization with no change to email's list (WS-58
+    MD-6a-1, ``my_day_feed.md`` §10.9 item 5).
     """
     settings = get_settings()
     mode = _parse_modes(settings.decide_feature_modes or "").get(feature, "off")
@@ -349,7 +425,9 @@ def mode_for(feature: str) -> str:
     org = current_tenant()
     if not org:
         return "off"
-    orgs = _parse_orgs(settings.decide_feature_orgs or "")
+    raw_orgs = (settings.my_day_decide_orgs if feature.startswith(MY_DAY_PREFIX)
+                else settings.decide_feature_orgs)
+    orgs = _parse_orgs(raw_orgs or "")
     if ALL_ORGS not in orgs and str(org) not in orgs:
         return "off"
     return mode
@@ -382,6 +460,13 @@ class Comparison:
     ``extra`` holds feature-specific flags of the OLD answer, such as the old
     ``confident``, and each logs as ``old_<key>``. ``fields`` holds more keys
     and numbers, such as a margin or ``p_r0``, and each logs as it is named.
+
+    WS-58 MD-6a-1: a packed request gives one comparison for each item and
+    feature. ``feature`` names the feature of this one, and logs as
+    ``decide_feature``. ``item`` is a key of the item, such as a signal id,
+    and logs as ``decide_item``. ``qid`` is the question id, and
+    :func:`shadow` sets ``request_id`` from it. Each is None for email, and
+    a None field changes no log line.
     """
 
     old: Any
@@ -392,6 +477,10 @@ class Comparison:
     probability: float | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
     fields: Mapping[str, Any] = field(default_factory=dict)
+    feature: str | None = None
+    item: str | None = None
+    qid: str | None = None
+    request_id: str | None = None
 
 
 def compare_boolean(
@@ -446,6 +535,58 @@ def compare_choice(
     return _compare
 
 
+def score_level(answer: Any, levels: Sequence[str]) -> str | None:
+    """The level key of a score answer, or None when it is not one of ours.
+
+    The Console's ``level`` wins when it is one of ``levels``. A ``level``
+    that is not one of ours is no answer. With no ``level``, the 0-based
+    position ``score`` picks the level, rounded half up. A position outside
+    the scale is no answer.
+    """
+    level = getattr(answer, "level", None)
+    if isinstance(level, str):
+        return level if level in levels else None
+    score = getattr(answer, "score", None)
+    if isinstance(score, str):
+        return score if score in levels else None
+    if isinstance(score, bool) or not isinstance(score, int | float):
+        return None
+    if not math.isfinite(score):
+        return None
+    position = math.floor(score + 0.5)
+    return levels[position] if 0 <= position < len(levels) else None
+
+
+def compare_score(
+    old_level_of: Callable[[Any], str],
+    *,
+    qid: str,
+    levels: Sequence[str],
+) -> Callable[[Any, Any], Comparison]:
+    """A comparison for one score question (WS-58 MD-6a-1, §10.6 item 2).
+
+    ``old_level_of`` gives the old-path level key. An answer that is not one
+    of ``levels`` logs as ``"unknown"`` (:func:`score_level`), so the log
+    never carries a raw string from the vendor.
+    """
+    keys = tuple(levels)
+
+    def _compare(old_result: Any, decision: Any) -> Comparison:
+        answer = decision[qid]
+        old = old_level_of(old_result)
+        new = score_level(answer, keys) or "unknown"
+        return Comparison(
+            old=old,
+            new=new,
+            agree=old == new,
+            options=len(keys),
+            confidence=getattr(answer, "confidence", None),
+            fields={"margin": top_margin(getattr(answer, "probabilities", {}) or {})},
+        )
+
+    return _compare
+
+
 # ── The helper ──────────────────────────────────────────────────────────────
 
 #: One request: the state and its questions.
@@ -464,6 +605,8 @@ class _Asked:
     latency_ms: int
     questions: int
     requests: int
+    #: Each question id, and the request id of the request that asked it.
+    request_of: Mapping[str, str | None] = field(default_factory=dict)
 
 
 def _requests_of(built: Any) -> list[Request]:
@@ -579,7 +722,9 @@ async def _ask_all(
         elif unavailable is not None:
             _no_answer(ids, on=on, shadow_event="decide.fallback",
                        reason=unavailable.reason)
-            if getattr(unavailable, "status", None) in _COOLDOWN_STATUSES:
+            starts = (_MY_DAY_COOLDOWN_STATUSES if feature.startswith(MY_DAY_PREFIX)
+                      else _COOLDOWN_STATUSES)
+            if getattr(unavailable, "status", None) in starts:
                 _start_cooldown(ids, unavailable.status)
         else:
             # The type name only. A message can quote the request.
@@ -593,6 +738,11 @@ async def _ask_all(
             answers.update(decision.answers)
         request_ids = tuple(getattr(d, "request_id", None) for d in results)
         merged = Decision(answers=MappingProxyType(answers), request_id=request_ids[0])
+        request_of = {
+            qid: rid
+            for (_state, questions), rid in zip(requests, request_ids, strict=True)
+            for qid in questions
+        }
     except Exception as exc:  # a reply that is not a Decision never stops triage
         _no_answer(ids, on=on, shadow_event="decide.shadow_failed",
                    reason=type(exc).__name__, level="warning")
@@ -603,6 +753,7 @@ async def _ask_all(
         latency_ms=_ms(started),
         questions=sum(len(q) for _, q in requests),
         requests=len(requests),
+        request_of=MappingProxyType(request_of),
     )
 
 
@@ -629,15 +780,57 @@ def _named_by_feature[F: Callable[..., Awaitable[Any]]](fn: F) -> F:
     return _wrapped  # type: ignore[return-value]
 
 
+def _log_ids(
+    feature: str,
+    account_id: str | None,
+    message_id: str | None,
+    ids: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The ids of each log line of one call. Keys and numbers only.
+
+    With no ``ids``, the email shape, exactly as before: the feature, the
+    account id and the message id. With ``ids`` (WS-58 MD-6a-1), the feature
+    and the caller's own map. An email keyword that is set joins it. No
+    entry of ``ids`` can rename the feature.
+    """
+    if ids is None:
+        return {
+            "decide_feature": feature,
+            "account_id": account_id,
+            "message_id": str(message_id) if message_id is not None else None,
+        }
+    out: dict[str, Any] = {"decide_feature": feature}
+    if account_id is not None:
+        out["account_id"] = account_id
+    if message_id is not None:
+        out["message_id"] = str(message_id)
+    out.update((k, v) for k, v in ids.items() if k != "decide_feature")
+    return out
+
+
+def _attribution(module_slug: str | None) -> dict[str, Any]:
+    """The run context's attribution, with ``module_slug`` as the app when the
+    caller names one. With None it is the bare ``run_attribution()`` of
+    before, so a test that replaces it with a function of no argument still
+    works."""
+    from acb_llm.routed import run_attribution
+
+    if module_slug:
+        return dict(run_attribution(module_slug=module_slug))
+    return run_attribution()
+
+
 @_named_by_feature
 async def ask[R](
     feature: str,
     *,
-    account_id: str | None,
-    message_id: str | None,
+    account_id: str | None = None,
+    message_id: str | None = None,
     build: Build,
     read: Callable[[Any], tuple[R, Mapping[str, Any]]],
     member: str | None = None,
+    ids: Mapping[str, Any] | None = None,
+    module_slug: str | None = None,
 ) -> R | None:
     """In ``on``: ask ``decide``, and return what ``read`` makes of the answer.
 
@@ -654,6 +847,11 @@ async def ask[R](
       proven member (H-73, as ``scheduler_hooks.as_mailbox_owner`` binds it).
       A deployment Router key refuses a call that names no member. None keeps
       the member of the run context.
+    - ``ids`` (WS-58 MD-6a-1): the log ids of a caller that is not a mailbox,
+      keys and numbers only. ``account_id`` and ``message_id`` stay the email
+      keywords (:func:`_log_ids`).
+    - ``module_slug`` (WS-58 MD-6a-1): the app that the call bills, such as
+      ``my_day``. None keeps the run context's app, and then ``email``.
 
     Returns None with no Router call while the organization is in its
     cool-down (:data:`REFUSAL_COOLDOWN_S` after a 402 or 403 verdict).
@@ -663,11 +861,7 @@ async def ask[R](
     ``decide.unavailable`` with its reason. A success logs
     ``decide.decided``. Never raises.
     """
-    ids = {
-        "decide_feature": feature,
-        "account_id": account_id,
-        "message_id": str(message_id) if message_id is not None else None,
-    }
+    ids = _log_ids(feature, account_id, message_id, ids)
     if _cooling(current_tenant()):
         # A 402 or 403 came back within REFUSAL_COOLDOWN_S. No Router call.
         _no_answer(ids, on=True, shadow_event="", reason="cooldown")
@@ -682,9 +876,7 @@ async def ask[R](
         _no_answer(ids, on=True, shadow_event="", reason="no_question")
         return None
 
-    from acb_llm.routed import run_attribution
-
-    attribution = dict(run_attribution())
+    attribution = dict(_attribution(module_slug))
     if member and "@" in member:
         attribution["member"] = member
         attribution["member_proven"] = True
@@ -712,15 +904,23 @@ async def ask[R](
     return result
 
 
+#: What :func:`shadow` hands to ``record``: the comparisons of one call.
+Record = Callable[[list[Comparison]], Awaitable[Any]]
+
+
 @_named_by_feature
 async def shadow[T](
     feature: str,
     old: Callable[[], Awaitable[T]],
     *,
-    account_id: str | None,
+    account_id: str | None = None,
     build: Build,
-    compare: Callable[[T, Any], Comparison],
+    compare: Callable[[T, Any], Comparison | list[Comparison]],
     message_id: str | None = None,
+    ids: Mapping[str, Any] | None = None,
+    module_slug: str | None = None,
+    features: Collection[str] | None = None,
+    record: Record | None = None,
 ) -> T:
     """Run the old call, and in ``shadow`` mode ask ``decide`` beside it.
 
@@ -731,18 +931,36 @@ async def shadow[T](
       or None to skip ``decide`` for this call. It runs only in ``shadow``
       mode. A list runs at the same time, inside the one bound.
     - ``compare``: turns the old result and the merged ``Decision`` into a
-      :class:`Comparison` for the log line.
+      :class:`Comparison` for the log line, or a list of them, one for each
+      item and feature of a packed request. Each logs its own line.
     - ``message_id``: the email this call is about. Each log line holds it,
       so a reader can find the email without its text.
+
+    WS-58 MD-6a-1 (``my_day_feed.md`` §10.6 item 2, §10.9 item 4):
+
+    - ``ids``, ``module_slug``: as for :func:`ask`.
+    - ``features``: the features of a packed request. The call asks when ONE
+      of them is in ``shadow``, and the builder adds only the questions of
+      such a feature. Without it, ``feature`` alone decides, as before.
+    - ``record``: an async callable that gets the comparisons, after the
+      log lines. A failed ``record`` logs ``decide.shadow_record_failed``
+      and never reaches the caller.
+    - While the organization is in its cool-down, the call asks nothing and
+      logs ``decide.shadow_skipped`` with ``reason=cooldown``, as :func:`ask`
+      refuses. Before MD-6a-1 a shadow went on calling after a 402.
     """
-    if mode_for(feature) != "shadow":
+    if features is None:
+        active = mode_for(feature) == "shadow"
+    else:
+        active = any(mode_for(f) == "shadow" for f in features)
+    if not active:
         return await old()
 
-    ids = {
-        "decide_feature": feature,
-        "account_id": account_id,
-        "message_id": str(message_id) if message_id is not None else None,
-    }
+    ids = _log_ids(feature, account_id, message_id, ids)
+    if _cooling(current_tenant()):
+        # A 402 or 403 came back within REFUSAL_COOLDOWN_S. No Router call.
+        _log.info("decide.shadow_skipped", **ids, reason="cooldown")
+        return await old()
     try:
         requests = _requests_of(build())
     except Exception as exc:  # a bad question never stops triage
@@ -752,10 +970,8 @@ async def shadow[T](
         _log.info("decide.shadow_skipped", **ids)
         return await old()
 
-    from acb_llm.routed import run_attribution
-
     task = asyncio.create_task(
-        _ask_all(feature, ids, requests, run_attribution())
+        _ask_all(feature, ids, requests, _attribution(module_slug))
     )
     try:
         result = await old()
@@ -766,7 +982,13 @@ async def shadow[T](
     # at most that much to the old answer.
     asked = await task
     if asked is not None:
-        _log_comparison(ids, result, asked, compare)
+        made = _log_comparison(ids, result, asked, compare)
+        if record is not None and made:
+            try:
+                await record(made)
+            except Exception as exc:  # a lost row never breaks the old path
+                _log.warning("decide.shadow_record_failed", **ids,
+                             error_type=type(exc).__name__)
     return result
 
 
@@ -774,28 +996,45 @@ def _log_comparison(
     ids: Mapping[str, Any],
     result: Any,
     asked: _Asked,
-    compare: Callable[[Any, Any], Comparison],
-) -> None:
+    compare: Callable[[Any, Any], Comparison | list[Comparison]],
+) -> list[Comparison]:
+    """Log one ``decide.shadow`` line for each comparison, and return them.
+
+    A comparison with a ``qid`` gets the request id of the request that
+    asked it. A comparison with no ``feature``, ``item`` or ``qid`` (each
+    email site) logs exactly the line of before.
+    """
     try:
-        cmp = compare(result, asked.decision)
+        made = compare(result, asked.decision)
     except Exception as exc:  # the log line must never break triage
         _log.warning("decide.shadow_failed", **ids, error_type=type(exc).__name__)
-        return
-    record: dict[str, Any] = {f"old_{k}": v for k, v in cmp.extra.items()}
-    record.update(cmp.fields)
-    # The fixed keys win over a feature's own, so no feature can rename them.
-    record.update(
-        ids,
-        old=cmp.old,
-        new=cmp.new,
-        agree=cmp.agree,
-        confidence=cmp.confidence,
-        probability=cmp.probability,
-        latency_ms=asked.latency_ms,
-        options=cmp.options,
-        request_id=asked.request_ids[0],
-        request_ids=list(asked.request_ids),
-        questions=asked.questions,
-        requests=asked.requests,
-    )
-    _log.info("decide.shadow", **record)
+        return []
+    out: list[Comparison] = []
+    for cmp in made if isinstance(made, list) else [made]:
+        if cmp.qid is not None and cmp.request_id is None:
+            cmp = replace(cmp, request_id=asked.request_of.get(cmp.qid))
+        line: dict[str, Any] = {f"old_{k}": v for k, v in cmp.extra.items()}
+        line.update(cmp.fields)
+        # The fixed keys win over a feature's own, so no feature can rename them.
+        line.update(
+            ids,
+            old=cmp.old,
+            new=cmp.new,
+            agree=cmp.agree,
+            confidence=cmp.confidence,
+            probability=cmp.probability,
+            latency_ms=asked.latency_ms,
+            options=cmp.options,
+            request_id=(cmp.request_id if cmp.request_id is not None
+                        else asked.request_ids[0]),
+            request_ids=list(asked.request_ids),
+            questions=asked.questions,
+            requests=asked.requests,
+        )
+        if cmp.feature is not None:
+            line["decide_feature"] = cmp.feature
+        if cmp.item is not None:
+            line["decide_item"] = cmp.item
+        _log.info("decide.shadow", **line)
+        out.append(cmp)
+    return out

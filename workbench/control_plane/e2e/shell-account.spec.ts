@@ -1,25 +1,33 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 /**
- * The account at the shell bar's top right, and the Metorite menu at the
- * sidebar's foot (owner, 2026-10-12).
+ * The account at the sidebar's foot, with ONE menu (owner, 2026-10-14).
  *
- * The owner said: "place the account selector in the top-right corner …
- * Move the previous account selector from the bottom-left sidebar to the
- * Metorite logo and text." Each test fails on the obvious wrong build:
- *   1. The widget is the last item of the bar's right group. It shows the
- *      avatar and the email at 1440, and the avatar alone at 1280 and below.
- *   2. Its menu marks the current account, lists the others, and offers Add
- *      and sign-out. A pick switches ITS slot. Escape closes it and gives the
- *      focus back. With the switcher off, it is the account and Sign out.
- *   3. The bell, or the activity control, never sits over the command bar:
- *      1024, 1280 and 1440, with the bell on and off, at three densities.
- *   4. The sidebar foot is our comet and "Metorite" when open, and the comet
- *      alone when folded, on the rail's icon column within 1px.
- *   5. Its menu holds My Profile, My access, Appearance, the colour mode and
- *      Change my layout, and no account act. The folded rail has no
- *      account foot.
+ * The owner said: "move the account selection and the UI element that shows
+ * the current account back to the bottom left where it was before. Combine
+ * it with the pop-up settings … Remove the Metorite logo." Each test fails on
+ * the obvious wrong build:
+ *   1. The bar's right group holds no account control. Its controls never
+ *      sit over the command bar: 1024, 1280 and 1440, with the bell on and
+ *      off, at three densities.
+ *   2. The foot is the account row: the avatar, the name and the email when
+ *      open, and the avatar alone when folded, on the rail's icon column
+ *      within 1px at three densities.
+ *   3. Its menu holds, in order: the current account, marked, the others,
+ *      Add, You, Settings, Sign out, and "Sign out of all accounts" with more
+ *      than one account. A pick switches ITS slot. Escape closes it and
+ *      gives the focus back.
+ *   4. Sign-out fails closed: a refused switch, or a remove that fails
+ *      twice, signs out of every account and says so. The cover survives
+ *      Escape, Tab and a click.
+ *   5. No Metorite logo in the sidebar or the bar, except the badge of a
+ *      workspace with no logo, at the top left.
  *   6. The classic frame keeps its account foot, and the phone is unchanged.
+ *   7. In a short window the menu's top stays in the window, and the menu
+ *      scrolls to its last row (review of 2026-10-14).
+ *   8. A member with no organization keeps the account acts in the org-less
+ *      card: switch, add and a sign-out that fails closed (review of
+ *      2026-10-14).
  * The markup rules are `src/lib/shell/shellAccount.test.ts`.
  */
 
@@ -49,14 +57,29 @@ const THREE = {
 };
 const OFF = { enabled: false };
 
+const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+const WITH_LOGO = {
+  logo: { dataUri: `data:image/png;base64,${PIXEL}`, mime: "image/png", width: 600, height: 160, byteSize: 70 },
+  updatedBy: "",
+  updatedAt: "",
+};
+const NO_LOGO = { logo: null, updatedBy: "", updatedAt: "" };
+
 /** One router, on purpose (`org-branding.spec.ts` says why). */
-async function stub(page: Page, accounts: unknown = THREE, calls: string[] = [], refuse: Record<string, number> = {}) {
+async function stub(
+  page: Page,
+  accounts: unknown = THREE,
+  calls: string[] = [],
+  refuse: Record<string, number> = {},
+  branding: unknown = NO_LOGO,
+  me: unknown = MEMBER,
+) {
   await page.route("**/api/**", async (route: Route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
     const json = (body: unknown) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
-    if (path === "/api/auth/me") return json(MEMBER);
+    if (path === "/api/auth/me") return json(me);
     if (path === "/api/auth/session") return json(SESSION);
     if (path === "/api/health") return json({ gateway: "up" });
     if (path === "/api/accounts") return json(accounts);
@@ -70,7 +93,7 @@ async function stub(page: Page, accounts: unknown = THREE, calls: string[] = [],
     if (path === "/api/auth/me/shell") {
       return json({ preset: null, answered: "skipped", pins: null, known: null, cardOrder: null, newOrder: null });
     }
-    if (path === "/api/settings/branding") return json({ logo: null, updatedBy: "", updatedAt: "" });
+    if (path === "/api/settings/branding") return json(branding);
     if (path === "/api/shell/needs") return json({ count: 0, total: 0, items: [], sources: {} });
     return json([]);
   });
@@ -106,13 +129,10 @@ async function setScale(page: Page, scale: string) {
 }
 
 const bar = (page: Page) => page.locator("[data-shell-bar]");
-const widget = (page: Page) => bar(page).locator("[data-shell-account]");
-const trigger = (page: Page) => bar(page).getByRole("button", { name: /^Account: / });
-const menu = (page: Page) => page.getByRole("dialog", { name: "Account" });
 const aside = (page: Page) => page.locator("aside[data-collapsed]");
-const foot = (page: Page) => aside(page).locator("[data-metorite-foot]");
-const metorite = (page: Page) => aside(page).getByRole("button", { name: "Metorite settings" });
-const metoriteMenu = (page: Page) => page.getByRole("dialog", { name: "Metorite" });
+const foot = (page: Page) => aside(page).locator("[data-account-foot]");
+const trigger = (page: Page) => aside(page).getByRole("button", { name: /^Account and settings: / });
+const menu = (page: Page) => page.getByRole("dialog", { name: "Account and settings" });
 const box = async (l: ReturnType<Page["locator"]>) => (await l.boundingBox())!;
 type Loc = ReturnType<Page["locator"]>;
 
@@ -148,59 +168,175 @@ async function keyFocusOn(page: Page, l: Loc) {
   expect(await l.evaluate((el) => el.matches(":focus-visible"))).toBe(true);
 }
 
-test.describe("the top-right account widget", () => {
+/** Each group of the open menu, in DOM order. */
+const groupsOf = (page: Page) => menu(page).locator("[data-account-group]").evaluateAll((els) => els.map((e) => e.getAttribute("data-account-group")));
+
+/** The names of the menu's controls, in DOM order: each button and link. */
+const controlsOf = (page: Page) =>
+  menu(page)
+    .locator("a, button")
+    .evaluateAll((els) => els.map((e) => (e.getAttribute("aria-label") ?? e.textContent ?? "").trim()));
+
+test.describe("the bar holds no account", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("is the last item of the bar's right group, with the avatar and the email at 1440", async ({ page }) => {
+  test("its right group ends with the activity control, and holds no account control", async ({ page }) => {
     await flags(page);
     await stub(page);
     await page.goto("/settings/appearance");
-    await expect(trigger(page)).toHaveAccessibleName("Account: vjvarada@hathilabs.com");
-    const place = await widget(page).evaluate((el) => ({
-      last: el.parentElement?.lastElementChild === el,
-      groupIsLast: el.parentElement?.parentElement?.lastElementChild === el.parentElement,
-      afterActivity: el.previousElementSibling?.hasAttribute("data-activity-control") ?? false,
-    }));
-    expect(place).toEqual({ last: true, groupIsLast: true, afterActivity: true });
-    await expect(widget(page).locator("[data-account-email]")).toBeVisible();
-    await expect(widget(page).locator("[data-account-email]")).toHaveText("vjvarada@hathilabs.com");
+    await expect(trigger(page)).toBeVisible();
+    await expect(bar(page).locator("[data-shell-account]")).toHaveCount(0);
+    await expect(bar(page).getByRole("button", { name: /^Account/ })).toHaveCount(0);
+    await expect(bar(page).getByText("vjvarada@hathilabs.com")).toHaveCount(0);
+    const group = bar(page).locator(":scope > div").last();
+    expect(await group.evaluate((el) => el.lastElementChild?.hasAttribute("data-activity-control") ?? false)).toBe(true);
+  });
+});
+
+test.describe("the right group never crowds the command bar", () => {
+  for (const width of [1024, 1280, 1440]) {
+    for (const dock of [true, false]) {
+      for (const scale of ["1", "0.875", "1.125"]) {
+        test(`${width}px, bell ${dock ? "on" : "off"}, scale ${scale}`, async ({ page }) => {
+          await page.setViewportSize({ width, height: 800 });
+          await flags(page, { extra: dock ? { "cc-shell-dock": "1" } : {} });
+          await stub(page);
+          await page.goto("/settings/appearance");
+          await expect(trigger(page)).toBeVisible();
+          await expect(aside(page).locator("nav a").first()).toBeVisible();
+          await setScale(page, scale);
+          const group = bar(page).locator(":scope > div").last();
+          // The bell (with the dock on) and the activity control. No account.
+          await expect(group.locator(":scope > *")).toHaveCount(dock ? 2 : 1);
+          const first = await box(group.locator(":scope > *").first());
+          const cmd = await box(bar(page).getByRole("button", { name: /^Search or ask anything/ }));
+          expect(first.x, `the first control at ${first.x} vs the command bar's end at ${cmd.x + cmd.width}`).toBeGreaterThan(cmd.x + cmd.width);
+          // Each control clear of the next, and the last inside the window.
+          const xs = await group.locator(":scope > *").evaluateAll((els) =>
+            els.map((e) => {
+              const r = e.getBoundingClientRect();
+              return [r.left, r.right];
+            }),
+          );
+          for (let i = 1; i < xs.length; i++) expect(xs[i][0]).toBeGreaterThanOrEqual(xs[i - 1][1] - 0.5);
+          expect(xs[xs.length - 1][1]).toBeLessThanOrEqual(width);
+          // The scale held for the whole measure.
+          expect(await rootPx(page)).toBe(ROOT_PX[scale]);
+        });
+      }
+    }
+  }
+});
+
+test.describe("the sidebar foot is the account row", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("open: the avatar, the name, and the email muted under it, with the full tip", async ({ page }) => {
+    await flags(page);
+    await stub(page);
+    await page.goto("/settings/appearance");
+    await expect(trigger(page)).toHaveAccessibleName("Account and settings: vjvarada@hathilabs.com");
     await expect(trigger(page)).toHaveAttribute("title", "Vijay Varada\nvjvarada@hathilabs.com\nHathi Labs LLP");
-    // The height of the bar's other controls, and centred in the bar.
+    await expect(trigger(page)).toContainText("Vijay Varada");
+    const email = trigger(page).locator("[data-account-email]");
+    await expect(email).toHaveText("vjvarada@hathilabs.com");
+    // Muted and cut, never wrapped.
+    const look = await email.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { overflow: s.textOverflow, wrap: s.whiteSpace };
+    });
+    expect(look).toEqual({ overflow: "ellipsis", wrap: "nowrap" });
+    // Under the name.
+    const n = await box(trigger(page).getByText("Vijay Varada", { exact: true }));
+    expect((await box(email)).y).toBeGreaterThan(n.y);
+    // The foot is the rail's last block, and inside the rail.
+    expect(await foot(page).evaluate((el) => el.parentElement?.lastElementChild === el)).toBe(true);
     const t = await box(trigger(page));
-    const a = await box(bar(page).locator("[data-activity-control]"));
-    expect(Math.abs(t.height - a.height), `trigger ${t.height} vs activity ${a.height}`).toBeLessThanOrEqual(2);
-    const b = await box(bar(page));
-    expect(Math.abs(t.y + t.height / 2 - (b.y + b.height / 2))).toBeLessThanOrEqual(1);
-    expect(b.x + b.width - (t.x + t.width)).toBeLessThanOrEqual(16);
-    // The bar's focus ring, from the keyboard.
-    await trigger(page).focus();
-    await page.keyboard.press("Shift+Tab");
-    await page.keyboard.press("Tab");
-    await expect(trigger(page)).toBeFocused();
-    const ring = await trigger(page).evaluate((el) => [getComputedStyle(el).outlineStyle, parseFloat(getComputedStyle(el).outlineWidth)]);
-    expect(ring[0]).toBe("solid");
-    expect(ring[1]).toBeGreaterThan(0);
+    const a = await box(aside(page));
+    expect(t.x).toBeGreaterThanOrEqual(a.x);
+    expect(t.x + t.width).toBeLessThanOrEqual(a.x + a.width);
   });
 
-  for (const width of [1280, 1024]) {
-    test(`shows the avatar alone at ${width}`, async ({ page }) => {
-      await page.setViewportSize({ width, height: 800 });
-      await flags(page);
+  test("the foot wears the house focus ring, the same as All apps and Add apps", async ({ page }) => {
+    await flags(page);
+    await stub(page);
+    await page.goto("/settings/appearance");
+    await keyFocusOn(page, trigger(page));
+    const house = await settledRing(page, trigger(page));
+    expect(house.style).toBe("solid");
+    expect(house.offset).toBe("2px");
+    for (const l of [aside(page).getByRole("button", { name: "All apps" }), aside(page).locator("[data-nav-add-apps] button")]) {
+      await keyFocusOn(page, l);
+      expect(await settledRing(page, l)).toEqual(house);
+    }
+  });
+
+  // Owner follow-up of #918 (2026-10-12): All apps and Add apps wear the
+  // foot's ring in the phone drawer too.
+  test("All apps and Add apps wear the foot's ring in the phone drawer", async ({ page }) => {
+    await flags(page);
+    await stub(page);
+    await page.goto("/settings/appearance");
+    await keyFocusOn(page, trigger(page));
+    const house = await settledRing(page, trigger(page));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "Menu" }).click();
+    for (const l of [page.locator("button[data-nav-add-apps]"), page.locator("button[data-nav-all-apps]")]) {
+      await expect(l).toBeVisible();
+      await keyFocusOn(page, l);
+      expect(await settledRing(page, l)).toEqual(house);
+    }
+  });
+
+  for (const scale of ["1", "0.875", "1.125"]) {
+    test(`folded: the avatar alone, on the rail's icon column (scale ${scale})`, async ({ page }) => {
+      await flags(page, { extra: { "cc-sidebar-collapsed": "1" } });
       await stub(page);
       await page.goto("/settings/appearance");
+      await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
+      await expect(aside(page).locator("nav a").first()).toBeVisible();
+      await setScale(page, scale);
       await expect(trigger(page)).toBeVisible();
-      await expect(widget(page).locator("[data-account-email]")).toBeHidden();
-      const t = await box(trigger(page));
-      expect(t.width).toBeLessThanOrEqual(t.height + 1);
+      await expect(trigger(page)).not.toContainText("Vijay Varada");
+      await expect(trigger(page).locator("[data-account-email]")).toHaveCount(0);
+      await expect(trigger(page)).toHaveAttribute("title", "Vijay Varada\nvjvarada@hathilabs.com\nHathi Labs LLP");
+      const centre = (r: { x: number; width: number }) => r.x + r.width / 2;
+      const avatar = centre(await box(trigger(page).locator("span.rounded-full").first()));
+      const icons = await aside(page)
+        .locator("nav a svg, nav button svg")
+        .evaluateAll((els) =>
+          els
+            .map((e) => e.getBoundingClientRect())
+            .filter((r) => r.width > 0 && r.height > 0)
+            .map((r) => r.x + r.width / 2),
+        );
+      expect(icons.length).toBeGreaterThan(2);
+      for (const c of icons) expect(Math.abs(c - avatar), `an icon at ${c} vs the avatar at ${avatar}`).toBeLessThanOrEqual(1);
+      expect(await rootPx(page)).toBe(ROOT_PX[scale]);
+      // The folded ring is the house ring too, the same as folded All apps.
+      const allApps = aside(page).getByRole("button", { name: "All apps" });
+      await keyFocusOn(page, allApps);
+      const house = await settledRing(page, allApps);
+      await keyFocusOn(page, trigger(page));
+      expect(await settledRing(page, trigger(page))).toEqual(house);
+      // The menu opens from the folded foot.
+      await page.keyboard.press("Enter");
+      await expect(menu(page).getByRole("link", { name: "My Profile" })).toBeVisible();
+      await expect(menu(page).locator("[data-current-account]")).toContainText("vjvarada@hathilabs.com");
     });
   }
+});
 
-  test("the menu marks the current account, lists the others, then Add and sign-out", async ({ page }) => {
+test.describe("the foot's one menu", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("with three accounts: current, others, Add, You, Settings, Sign out, Sign out of all, in that order", async ({ page }) => {
     await flags(page);
     await stub(page);
     await page.goto("/settings/appearance");
     await trigger(page).click();
     await expect(menu(page)).toBeVisible();
+    expect(await groupsOf(page)).toEqual(["current", "accounts", "you", "settings", "sign-out"]);
     const current = menu(page).locator("[data-current-account]");
     await expect(current).toHaveAttribute("aria-current", "true");
     await expect(current).toContainText("Vijay Varada");
@@ -210,36 +346,76 @@ test.describe("the top-right account widget", () => {
     const list = menu(page).getByRole("list", { name: "Other accounts" });
     await expect(list.getByRole("listitem")).toHaveCount(2);
     await expect(list).toContainText("Fracktal Works · vjvarada@fracktal.in");
-    await expect(menu(page).getByRole("button", { name: "Add another account" })).toBeVisible();
-    await expect(menu(page).getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
-    await expect(menu(page).getByRole("button", { name: "Sign out of all accounts" })).toBeVisible();
-    // Account acts only.
-    await expect(menu(page).getByRole("link")).toHaveCount(0);
-    await expect(menu(page)).not.toContainText("Change my layout");
-    // Inside the window, under the trigger, at the right edge.
+    expect(await controlsOf(page)).toEqual([
+      expect.stringMatching(/Vijay Raghav Varada\s*Fracktal Works · vjvarada@fracktal\.in$/),
+      "Remove vjvarada@fracktal.in from this browser",
+      expect.stringMatching(/ops@hathilabs\.com\s*Hathi Labs LLP$/),
+      "Remove ops@hathilabs.com from this browser",
+      "Add another account",
+      "My Profile",
+      "My access",
+      "Appearance",
+      expect.stringMatching(/^(Light|Dark) mode$/),
+      "Change my layout",
+      "Sign out",
+      "Sign out of all accounts",
+    ]);
+    await expect(menu(page).getByRole("group", { name: "You" }).getByRole("link")).toHaveText(["My Profile", "My access"]);
+    await expect(menu(page).getByRole("link", { name: "My access" })).toHaveAttribute("href", "/people/access");
+    const settings = menu(page).getByRole("group", { name: "Settings" });
+    await expect(settings.getByRole("link", { name: "Appearance" })).toBeVisible();
+    await expect(settings.getByRole("button", { name: /^(Light|Dark) mode$/ })).toBeVisible();
+    await expect(settings.getByRole("button", { name: "Change my layout" })).toBeVisible();
+    // It opens upward, from the foot, inside the window.
     const m = await box(menu(page));
+    const t = await box(trigger(page));
+    expect(m.y + m.height).toBeLessThanOrEqual(t.y);
+    expect(m.y).toBeGreaterThanOrEqual(0);
     expect(m.x + m.width).toBeLessThanOrEqual(1440);
-    expect(m.y).toBeGreaterThanOrEqual((await box(trigger(page))).y);
   });
 
-  test("with one account: Add and one Sign out", async ({ page }) => {
+  test("with one account: Add, You, Settings and one Sign out", async ({ page }) => {
     await flags(page);
     await stub(page, ONE);
     await page.goto("/settings/appearance");
     await trigger(page).click();
     await expect(menu(page).getByRole("list", { name: "Other accounts" })).toHaveCount(0);
+    expect(await groupsOf(page)).toEqual(["current", "accounts", "you", "settings", "sign-out"]);
     await expect(menu(page).getByRole("button", { name: "Add another account" })).toBeVisible();
     await expect(menu(page).getByRole("button", { name: /^Sign out/ })).toHaveCount(1);
   });
 
-  test("with the switcher flag off: the account and Sign out, nothing else", async ({ page }) => {
+  test("with the switcher flag off: the account, You, Settings and one Sign out", async ({ page }) => {
     await flags(page);
     await stub(page, OFF);
     await page.goto("/settings/appearance");
     await trigger(page).click();
     await expect(menu(page).locator("[data-current-account]")).toContainText("vjvarada@hathilabs.com");
-    await expect(menu(page).getByRole("button")).toHaveCount(1);
-    await expect(menu(page).getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+    expect(await groupsOf(page)).toEqual(["current", "you", "settings", "sign-out"]);
+    await expect(menu(page).getByRole("button", { name: "Add another account" })).toHaveCount(0);
+    await expect(menu(page).getByRole("button", { name: /^Sign out/ })).toHaveCount(1);
+    await expect(menu(page).getByRole("link", { name: "My Profile" })).toBeVisible();
+  });
+
+  test("the colour mode keeps the menu open, so the change shows", async ({ page }) => {
+    await flags(page);
+    await stub(page);
+    await page.goto("/settings/appearance");
+    await trigger(page).click();
+    const before = await page.evaluate(() => document.documentElement.classList.contains("light"));
+    await menu(page).getByRole("button", { name: /^(Light|Dark) mode$/ }).click();
+    await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("light"))).toBe(!before);
+    await expect(menu(page)).toBeVisible();
+  });
+
+  test("Change my layout asks the first sign-in question again", async ({ page }) => {
+    await flags(page);
+    await stub(page);
+    await page.goto("/settings/appearance");
+    await trigger(page).click();
+    await menu(page).getByRole("button", { name: "Change my layout" }).click();
+    await expect(page.getByRole("dialog", { name: "What will you do most here?" })).toBeVisible();
+    await expect(menu(page)).toHaveCount(0);
   });
 
   test("a pick switches ITS slot, then loads /", async ({ page }) => {
@@ -250,6 +426,19 @@ test.describe("the top-right account widget", () => {
     await trigger(page).click();
     await menu(page).getByRole("button", { name: /Vijay Raghav Varada/ }).click();
     await page.waitForURL((u) => u.pathname === "/");
+    expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
+  });
+
+  test("a pick the server refuses (409) stays here, takes the cover down and says so", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, THREE, calls, { switch: 409 });
+    await page.goto("/settings/appearance");
+    await trigger(page).click();
+    await menu(page).getByRole("button", { name: /Vijay Raghav Varada/ }).click();
+    await expect(menu(page)).toContainText("vjvarada@fracktal.in is no longer signed in here. Add it again.");
+    await expect(page.locator("[data-switching-cover]")).toHaveCount(0);
+    expect(new URL(page.url()).pathname).toBe("/settings/appearance");
     expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
   });
 
@@ -297,39 +486,41 @@ test.describe("the top-right account widget", () => {
     expect(calls).toEqual(['/api/accounts/switch {"slot":2}', '/api/accounts/remove {"slot":2}']);
   });
 
-  // ⚠️ Fails CLOSED (review of 2026-10-12, P1). A remove that fails twice
-  // must not land on / with the leaving account one click away.
-  test("Sign out fails closed: a remove that fails twice signs out of every account, and says so", async ({ page }) => {
-    const calls: string[] = [];
-    await flags(page);
-    await stub(page, THREE, calls, { remove: 500 });
-    await page.goto("/settings/appearance");
-    await trigger(page).click();
-    await menu(page).getByRole("button", { name: "Sign out", exact: true }).click();
-    await page.waitForURL((u) => u.pathname === "/signin");
-    expect(calls).toEqual([
-      '/api/accounts/switch {"slot":2}',
-      '/api/accounts/remove {"slot":2}',
-      '/api/accounts/remove {"slot":2}',
-      "/api/accounts/signout-all ",
-    ]);
-    // The one Toast channel. Addressed by structure: Base UI marks the
-    // visible toast `aria-hidden`, so `getByRole` cannot see it
-    // (`components/ui/Toast.tsx`), and an announcer copies the words.
-    const notice = page.locator("h2[data-type='error']", {
-      hasText: "Couldn't sign out of that account alone, so we signed out of all accounts on this browser.",
+  // ⚠️ Fails CLOSED (review of 2026-10-12, P1). A sign-out must not land on /
+  // with the leaving account one click away.
+  const NOTICE = "Couldn't sign out of that account alone, so we signed out of all accounts on this browser.";
+  for (const [what, refuse, expected] of [
+    [
+      "a remove that fails twice",
+      { remove: 500 },
+      ['/api/accounts/switch {"slot":2}', '/api/accounts/remove {"slot":2}', '/api/accounts/remove {"slot":2}', "/api/accounts/signout-all "],
+    ],
+    ["a refused switch (409)", { switch: 409 }, ['/api/accounts/switch {"slot":2}', "/api/accounts/signout-all "]],
+  ] as const) {
+    test(`Sign out fails closed: ${what} signs out of every account, and says so`, async ({ page }) => {
+      const calls: string[] = [];
+      await flags(page);
+      await stub(page, THREE, calls, refuse);
+      await page.goto("/settings/appearance");
+      await trigger(page).click();
+      await menu(page).getByRole("button", { name: "Sign out", exact: true }).click();
+      await page.waitForURL((u) => u.pathname === "/signin");
+      expect(calls).toEqual(expected);
+      // The one Toast channel. Addressed by structure: Base UI marks the
+      // visible toast `aria-hidden`, so `getByRole` cannot see it
+      // (`components/ui/Toast.tsx`), and an announcer copies the words.
+      await expect(page.locator("h2[data-type='error']", { hasText: NOTICE })).toBeVisible();
+      // Once: after it has been on screen, a reload shows no notice.
+      await page.waitForTimeout(3_500);
+      await page.reload();
+      await expect(page.getByRole("button").first()).toBeVisible();
+      await expect(page.locator("h2[data-type='error']", { hasText: "Couldn't sign out" })).toHaveCount(0);
     });
-    await expect(notice).toBeVisible();
-    // Once: after it has been on screen, a reload shows no notice.
-    await page.waitForTimeout(3_500);
-    await page.reload();
-    await expect(page.getByRole("button").first()).toBeVisible();
-    await expect(page.locator("h2[data-type='error']", { hasText: "Couldn't sign out" })).toHaveCount(0);
-  });
+  }
 
   // Review of 2026-10-12, P2: Escape closed the menu, the cover was its
   // child, and the cover came down mid-switch. The cover is a Modal held by
-  // BarAccount now: it takes the focus, keeps it, and nothing dismisses it.
+  // AccountFoot: it takes the focus, keeps it, and nothing dismisses it.
   for (const [what, button] of [
     ["a switch", /Vijay Raghav Varada/],
     ["a sign-out", "Sign out"],
@@ -346,7 +537,10 @@ test.describe("the top-right account widget", () => {
       });
       await page.goto("/settings/appearance");
       await trigger(page).click();
-      const pick = typeof button === "string" ? menu(page).getByRole("button", { name: button, exact: true }) : menu(page).getByRole("button", { name: button });
+      const pick =
+        typeof button === "string"
+          ? menu(page).getByRole("button", { name: button, exact: true })
+          : menu(page).getByRole("button", { name: button });
       await pick.click();
       const cover = page.locator("[data-switching-cover]");
       await expect(cover).toBeVisible();
@@ -363,7 +557,7 @@ test.describe("the top-right account widget", () => {
       // The menu under it stays open, so nothing unmounted. By structure:
       // the Modal marks the page under it `aria-hidden`, so `getByRole`
       // cannot see the menu.
-      await expect(widget(page).locator("[role='dialog'][aria-label='Account']")).toBeAttached();
+      await expect(foot(page).locator("[role='dialog'][aria-label='Account and settings']")).toBeAttached();
       // Tab never reaches the page under it.
       for (let i = 0; i < 4; i++) {
         await page.keyboard.press("Tab");
@@ -383,7 +577,7 @@ test.describe("the top-right account widget", () => {
     await expect(trigger(page)).toHaveAttribute("aria-expanded", "true");
     // Into the menu first, or the focus never left the trigger, and the
     // test could not tell a focus return from no move at all.
-    await page.keyboard.press("Tab");
+    await menu(page).getByRole("link", { name: "Appearance" }).focus();
     expect(await menu(page).evaluate((el) => el.contains(document.activeElement))).toBe(true);
     await page.keyboard.press("Escape");
     await expect(menu(page)).toHaveCount(0);
@@ -395,198 +589,158 @@ test.describe("the top-right account widget", () => {
   });
 });
 
-test.describe("the widget never crowds the bell", () => {
-  for (const width of [1024, 1280, 1440]) {
-    for (const dock of [true, false]) {
-      for (const scale of ["1", "0.875", "1.125"]) {
-        test(`${width}px, bell ${dock ? "on" : "off"}, scale ${scale}`, async ({ page }) => {
-          await page.setViewportSize({ width, height: 800 });
-          await flags(page, { extra: dock ? { "cc-shell-dock": "1" } : {} });
-          await stub(page);
-          await page.goto("/settings/appearance");
-          await expect(trigger(page)).toBeVisible();
-          await expect(aside(page).locator("nav a").first()).toBeVisible();
-          await setScale(page, scale);
-          const group = bar(page).locator(":scope > div").last();
-          await expect(group.locator(":scope > *")).toHaveCount(dock ? 3 : 2);
-          const first = await box(group.locator(":scope > *").first());
-          const cmd = await box(bar(page).getByRole("button", { name: /^Search or ask anything/ }));
-          expect(first.x, `the first control at ${first.x} vs the command bar's end at ${cmd.x + cmd.width}`).toBeGreaterThan(cmd.x + cmd.width);
-          // Each control clear of the next, and the widget inside the window.
-          const xs = await group.locator(":scope > *").evaluateAll((els) =>
-            els.map((e) => {
-              const r = e.getBoundingClientRect();
-              return [r.left, r.right];
-            }),
-          );
-          for (let i = 1; i < xs.length; i++) expect(xs[i][0]).toBeGreaterThanOrEqual(xs[i - 1][1] - 0.5);
-          expect(xs[xs.length - 1][1]).toBeLessThanOrEqual(width);
-          // The scale held for the whole measure.
-          expect(await rootPx(page)).toBe(ROOT_PX[scale]);
-        });
-      }
+// Review of 2026-10-14, P1: the cap was the whole window, and the menu is
+// placed by its bottom edge, so at 1280x600 its top sat at y=-36.
+test.describe("a short window", () => {
+  for (const height of [600, 720]) {
+    for (const folded of [false, true]) {
+      test(`1280x${height}, ${folded ? "folded" : "open"}: the top stays in the window, and the last row is reachable`, async ({ page }) => {
+        await page.setViewportSize({ width: 1280, height });
+        await flags(page, { extra: folded ? { "cc-sidebar-collapsed": "1" } : {} });
+        await stub(page, THREE);
+        await page.goto("/settings/appearance");
+        // From the keyboard: in the dev build, Next's own badge sits over the
+        // folded foot.
+        await trigger(page).focus();
+        await page.keyboard.press("Enter");
+        await expect(menu(page)).toBeVisible();
+        const m = await box(menu(page));
+        expect(m.y, `the menu's top at ${m.y}`).toBeGreaterThanOrEqual(0);
+        expect(m.y + m.height).toBeLessThanOrEqual((await box(trigger(page))).y);
+        // The header shows first.
+        const head = await box(menu(page).locator("[data-current-account]"));
+        expect(head.y).toBeGreaterThanOrEqual(m.y - 0.5);
+        // Taller than its room, it scrolls inside itself.
+        const fit = await menu(page).evaluate((el) => ({
+          over: el.scrollHeight > el.clientHeight + 1,
+          overflow: getComputedStyle(el).overflowY,
+        }));
+        expect(fit.overflow).toBe("auto");
+        if (height === 600) expect(fit.over).toBe(true);
+        // Tab reaches the last row, and the row is in view once it has the focus.
+        const last = menu(page).getByRole("button", { name: "Sign out of all accounts" });
+        await menu(page).locator("button, a").first().focus();
+        for (let i = 0; i < 20 && !(await last.evaluate((el) => el === document.activeElement)); i++) {
+          await page.keyboard.press("Tab");
+        }
+        await expect(last).toBeFocused();
+        const l = await box(last);
+        const after = await box(menu(page));
+        expect(l.y).toBeGreaterThanOrEqual(after.y - 0.5);
+        expect(l.y + l.height).toBeLessThanOrEqual(after.y + after.height + 0.5);
+        expect(l.y + l.height).toBeLessThanOrEqual(height);
+      });
     }
   }
 });
 
-test.describe("the sidebar foot is the Metorite menu", () => {
+// Review of 2026-10-14, P1: no sidebar mounts for a member with no
+// organization, so before this card held them, that member could not switch
+// back to a held account or sign out.
+test.describe("no organization", () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+  const ORGLESS = { ...MEMBER, features: [], organization: {} };
+  const TWO = { ...THREE, others: [THREE.others[0]] };
+  const card = (page: Page) => page.locator("[data-orgless-accounts]");
+
+  test("the org-less card shows the account, the other account, Add and Sign out", async ({ page }) => {
+    await flags(page);
+    await stub(page, TWO, [], {}, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await expect(page.getByRole("heading", { name: "No organization is linked to this email" })).toBeVisible();
+    await expect(aside(page)).toHaveCount(0);
+    await expect(card(page).locator("[data-current-account]")).toContainText("vjvarada@hathilabs.com");
+    await expect(card(page).getByRole("list", { name: "Other accounts" }).getByRole("listitem")).toHaveCount(1);
+    await expect(card(page).getByRole("button", { name: "Add another account" })).toBeVisible();
+    await expect(card(page).getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+    await expect(card(page).getByRole("button", { name: "Sign out of all accounts" })).toBeVisible();
+    // No page that needs an organization.
+    await expect(card(page).getByRole("link")).toHaveCount(0);
+  });
+
+  test("a pick switches ITS slot, then loads /", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, TWO, calls, {}, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await card(page).getByRole("button", { name: /Vijay Raghav Varada/ }).click();
+    await page.waitForURL((u) => u.pathname === "/");
+    expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
+  });
+
+  test("Sign out leaves this account: a switch to the next, then a remove of that slot", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, TWO, calls, {}, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await card(page).getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.waitForURL((u) => u.pathname === "/");
+    expect(calls).toEqual(['/api/accounts/switch {"slot":2}', '/api/accounts/remove {"slot":2}']);
+  });
+
+  test("Sign out fails closed: a remove that fails twice signs out of every account, and says so", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, TWO, calls, { remove: 500 }, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await card(page).getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.waitForURL((u) => u.pathname === "/signin");
+    expect(calls).toEqual([
+      '/api/accounts/switch {"slot":2}',
+      '/api/accounts/remove {"slot":2}',
+      '/api/accounts/remove {"slot":2}',
+      "/api/accounts/signout-all ",
+    ]);
+    await expect(
+      page.locator("h2[data-type='error']", {
+        hasText: "Couldn't sign out of that account alone, so we signed out of all accounts on this browser.",
+      }),
+    ).toBeVisible();
+  });
+
+  test("with one account: Sign out signs out of all of them", async ({ page }) => {
+    const calls: string[] = [];
+    await flags(page);
+    await stub(page, ONE, calls, {}, NO_LOGO, ORGLESS);
+    await page.goto("/settings/appearance");
+    await expect(card(page).getByRole("button", { name: /^Sign out/ })).toHaveCount(1);
+    await card(page).getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.waitForURL((u) => u.pathname === "/signin");
+    expect(calls).toEqual(["/api/accounts/signout-all "]);
+  });
+});
+
+test.describe("no Metorite logo in the shell", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("open: the comet and the word Metorite, and no account foot", async ({ page }) => {
-    await flags(page);
-    await stub(page);
-    await page.goto("/settings/appearance");
-    await expect(metorite(page)).toBeVisible();
-    // Open, the word is in view, so there is no tip to repeat it.
-    await expect(metorite(page)).not.toHaveAttribute("title");
-    await expect(metorite(page)).toContainText("Metorite");
-    const comet = await box(metorite(page).locator("svg[data-metorite-mark]"));
-    expect(Math.round(comet.height)).toBe(20);
-    // The foot is the rail's last block.
-    expect(await foot(page).evaluate((el) => el.parentElement?.lastElementChild === el)).toBe(true);
-    await expect(aside(page).getByRole("button", { name: /^Accounts:/ })).toHaveCount(0);
-    await expect(aside(page).getByText("vjvarada@hathilabs.com")).toHaveCount(0);
-    await expect(aside(page).getByRole("button", { name: /Switch to (light|dark) mode/ })).toHaveCount(0);
-  });
-
-  test("the foot wears the house focus ring, the same as the bar's Button", async ({ page }) => {
-    await flags(page);
-    await stub(page);
-    await page.goto("/settings/appearance");
-    const settled = (l: Loc) => settledRing(page, l);
-    const keyFocus = (l: Loc) => keyFocusOn(page, l);
-    await keyFocus(trigger(page));
-    const house = await settled(trigger(page));
-    expect(house.style).toBe("solid");
-    expect(house.offset).toBe("2px");
-    await keyFocus(metorite(page));
-    expect(await settled(metorite(page))).toEqual(house);
-    // The word in the rows' type: the same size as "All apps".
-    const size = (l: ReturnType<Page["locator"]>) => l.evaluate((el) => getComputedStyle(el).fontSize);
-    expect(await size(metorite(page).getByText("Metorite"))).toBe(await size(aside(page).getByText("All apps")));
-  });
-
-  test("its menu holds You and Settings, and no account act", async ({ page }) => {
-    await flags(page);
-    await stub(page);
-    await page.goto("/settings/appearance");
-    await metorite(page).click();
-    const m = metoriteMenu(page);
-    await expect(m).toBeVisible();
-    await expect(m.getByRole("group", { name: "You" }).getByRole("link")).toHaveText(["My Profile", "My access"]);
-    const settings = m.getByRole("group", { name: "Settings" });
-    await expect(settings.getByRole("link", { name: "Appearance" })).toBeVisible();
-    await expect(settings.getByRole("button", { name: /^(Light|Dark) mode$/ })).toBeVisible();
-    await expect(settings.getByRole("button", { name: "Change my layout" })).toBeVisible();
-    await expect(m.getByRole("link", { name: "My access" })).toHaveAttribute("href", "/people/access");
-    // No account act.
-    for (const name of [/Sign out/, /Add another account/, /Switch/, /Remove/]) {
-      await expect(m.getByRole("button", { name })).toHaveCount(0);
-    }
-    await expect(m).not.toContainText("vjvarada@hathilabs.com");
-    // It opens upward, from the foot.
-    const mb = await box(m);
-    const fb = await box(metorite(page));
-    expect(mb.y + mb.height).toBeLessThanOrEqual(fb.y);
-    // The colour mode keeps the menu open, so the change shows.
-    const before = await page.evaluate(() => document.documentElement.classList.contains("light"));
-    await settings.getByRole("button", { name: /^(Light|Dark) mode$/ }).click();
-    await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("light"))).toBe(!before);
-    await expect(m).toBeVisible();
-    // Escape closes it and gives the focus back, from inside the menu.
-    await settings.getByRole("link", { name: "Appearance" }).focus();
-    await page.keyboard.press("Escape");
-    await expect(m).toHaveCount(0);
-    await expect(metorite(page)).toBeFocused();
-  });
-
-  // Owner follow-up of #918 (2026-10-12): "All apps" and "Add apps" wear
-  // the same ring as the Metorite foot, in the open rail, in the folded rail
-  // and in the phone drawer. Each button gets `cc-link`. Without it, the
-  // button shows the browser's own ring, and this fails.
-  test("All apps and Add apps wear the foot's focus ring, open and in the phone drawer", async ({ page }) => {
-    await flags(page);
-    await stub(page);
-    await page.goto("/settings/appearance");
-    await keyFocusOn(page, metorite(page));
-    const house = await settledRing(page, metorite(page));
-    expect(house.style).toBe("solid");
-    for (const l of [aside(page).getByRole("button", { name: "All apps" }), aside(page).locator("[data-nav-add-apps] button")]) {
-      await keyFocusOn(page, l);
-      expect(await settledRing(page, l)).toEqual(house);
-    }
-    // The phone drawer, at the same page: the frame follows the width.
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("button", { name: "Menu" }).click();
-    for (const l of [page.locator("button[data-nav-add-apps]"), page.locator("button[data-nav-all-apps]")]) {
-      await expect(l).toBeVisible();
-      await keyFocusOn(page, l);
-      expect(await settledRing(page, l)).toEqual(house);
-    }
-  });
-
-  test("folded: All apps and Add apps wear the foot's focus ring", async ({ page }) => {
-    await flags(page, { extra: { "cc-sidebar-collapsed": "1" } });
-    await stub(page);
-    await page.goto("/settings/appearance");
-    await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
-    await keyFocusOn(page, metorite(page));
-    const house = await settledRing(page, metorite(page));
-    for (const l of [aside(page).getByRole("button", { name: "All apps" }), aside(page).locator("[data-nav-add-apps] button")]) {
-      await keyFocusOn(page, l);
-      expect(await settledRing(page, l)).toEqual(house);
-    }
-  });
-
-  test("Change my layout asks the first sign-in question again", async ({ page }) => {
-    await flags(page);
-    await stub(page);
-    await page.goto("/settings/appearance");
-    await metorite(page).click();
-    await metoriteMenu(page).getByRole("button", { name: "Change my layout" }).click();
-    await expect(page.getByRole("dialog", { name: "What will you do most here?" })).toBeVisible();
-    await expect(metoriteMenu(page)).toHaveCount(0);
-  });
-
-  for (const scale of ["1", "0.875", "1.125"]) {
-    test(`folded: the comet alone, on the rail's icon column (scale ${scale})`, async ({ page }) => {
-      await flags(page, { extra: { "cc-sidebar-collapsed": "1" } });
-      await stub(page);
+  for (const collapsed of [false, true]) {
+    test(`with no logo, the comet is the top-left badge only${collapsed ? ", folded" : ""}`, async ({ page }) => {
+      await flags(page, { extra: collapsed ? { "cc-sidebar-collapsed": "1" } : {} });
+      await stub(page, THREE, [], {}, NO_LOGO);
       await page.goto("/settings/appearance");
-      await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
-      await expect(aside(page).locator("nav a").first()).toBeVisible();
-      await setScale(page, scale);
-      await expect(metorite(page)).toBeVisible();
-      await expect(metorite(page)).toHaveText("");
-      await expect(metorite(page)).toHaveAttribute("title", "Metorite");
-      const centre = (r: { x: number; width: number }) => r.x + r.width / 2;
-      const comet = centre(await box(metorite(page).locator("svg[data-metorite-mark]")));
-      const icons = await aside(page)
-        .locator("nav a svg, nav button svg")
-        .evaluateAll((els) =>
-          els
-            .map((e) => e.getBoundingClientRect())
-            .filter((r) => r.width > 0 && r.height > 0)
-            .map((r) => r.x + r.width / 2),
-        );
-      expect(icons.length).toBeGreaterThan(2);
-      for (const c of icons) expect(Math.abs(c - comet), `an icon at ${c} vs the comet at ${comet}`).toBeLessThanOrEqual(1);
-      expect(await rootPx(page)).toBe(ROOT_PX[scale]);
-      // No account foot in the folded rail.
-      await expect(aside(page).getByRole("button", { name: /^Accounts:/ })).toHaveCount(0);
-      await expect(aside(page).locator("[data-current-account]")).toHaveCount(0);
-      // The menu opens from the folded foot too.
-      await metorite(page).focus();
-      await page.keyboard.press("Enter");
-      await expect(metoriteMenu(page).getByRole("link", { name: "My Profile" })).toBeVisible();
+      await expect(trigger(page)).toBeVisible();
+      await expect(bar(page).locator("[data-shell-brand] svg[data-metorite-mark]")).toBeVisible();
+      await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(1);
+      await expect(aside(page).locator("svg[data-metorite-mark], [data-metorite-foot]")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Metorite settings" })).toHaveCount(0);
     });
   }
+
+  test("with a logo, no comet at all, and the menu draws none", async ({ page }) => {
+    await flags(page);
+    await stub(page, THREE, [], {}, WITH_LOGO);
+    await page.goto("/settings/appearance");
+    await expect(bar(page).locator("[data-shell-brand] img").first()).toBeAttached();
+    await trigger(page).click();
+    await expect(menu(page)).toBeVisible();
+    await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(0);
+  });
 });
 
 test.describe("the other frames", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test("classic (shell bar off): the account foot stays, and no Metorite foot", async ({ page }) => {
+  test("classic (shell bar off): the account foot stays, and no new foot", async ({ page }) => {
     await flags(page, { bar: false, nav: true });
     await stub(page);
     await page.goto("/settings/appearance");
@@ -596,38 +750,39 @@ test.describe("the other frames", () => {
     await expect(page.locator("[data-shell-account]")).toHaveCount(0);
   });
 
-  test("the shell bar alone: the widget at the bar, the Metorite foot in the rail", async ({ page }) => {
+  test("the shell bar alone: the account foot, with no You row and the colour mode only in Settings", async ({ page }) => {
     await flags(page, { bar: true, nav: false });
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(trigger(page)).toBeVisible();
-    await expect(metorite(page)).toBeVisible();
+    await expect(bar(page).locator("[data-shell-account]")).toHaveCount(0);
     await expect(aside(page).getByRole("button", { name: /^Accounts:/ })).toHaveCount(0);
     // No layout question without the shell nav, so no row for it. The rail
     // itself lists My Profile and Appearance then, so the menu repeats
     // neither, and keeps the colour mode.
     await expect(aside(page).getByRole("link", { name: "My Profile" })).toBeVisible();
-    await metorite(page).click();
-    await expect(metoriteMenu(page).getByRole("button", { name: "Change my layout" })).toHaveCount(0);
-    await expect(metoriteMenu(page).getByRole("link")).toHaveCount(0);
-    await expect(metoriteMenu(page).getByRole("button", { name: /^(Light|Dark) mode$/ })).toBeVisible();
+    await trigger(page).click();
+    expect(await groupsOf(page)).toEqual(["current", "accounts", "settings", "sign-out"]);
+    await expect(menu(page).getByRole("button", { name: "Change my layout" })).toHaveCount(0);
+    await expect(menu(page).getByRole("link")).toHaveCount(0);
+    await expect(menu(page).getByRole("button", { name: /^(Light|Dark) mode$/ })).toBeVisible();
   });
 });
 
 test.describe("phone, unchanged", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  test("no shell row and no widget; the drawer keeps its account header and foot", async ({ page }) => {
+  test("no shell row and no foot; the drawer keeps its account header and foot", async ({ page }) => {
     await flags(page);
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(page.locator("[data-shell-bar]")).toHaveCount(0);
-    await expect(page.locator("[data-shell-account], [data-metorite-foot]")).toHaveCount(0);
+    await expect(page.locator("[data-shell-account], [data-account-foot]")).toHaveCount(0);
     await page.getByRole("button", { name: "Menu" }).click();
     await expect(page.getByTestId("drawer-org").getByRole("button", { name: /^Account, signed in as vjvarada@hathilabs.com/ })).toBeVisible();
     const drawerFoot = page.getByRole("region", { name: "Account and settings" });
     await expect(drawerFoot.getByRole("link", { name: "My Profile" })).toBeVisible();
     await expect(drawerFoot.getByRole("button", { name: "Sign out of all accounts" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Metorite settings" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Account and settings: / })).toHaveCount(0);
   });
 });

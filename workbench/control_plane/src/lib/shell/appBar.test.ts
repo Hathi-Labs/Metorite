@@ -281,15 +281,14 @@ describe("(c) the shell bar holds no app", () => {
     expect(inner.endsWith('<div class="flex flex-1 basis-0 items-center justify-end gap-1"></div>')).toBe(true);
   });
 
-  it("the end zone holds the assistant's button, the bell, the activity control, the account, and nothing else", () => {
+  it("the end zone holds the assistant's button, the bell, the activity control, and nothing else", () => {
     // Owner, 2026-10-10: the bell belongs to the whole product, so it joins
     // the activity control at the right end, behind `NEXT_PUBLIC_SHELL_DOCK`
     // (NS-6). `ShellFrame` passes it only with that flag on, which
-    // `shellBell.test.ts` holds. Owner, 2026-10-12: the account widget is the
-    // row's last item (`BarAccount`, `shellAccount.test.ts`). It replaced our
-    // comet signature. Owner, 2026-10-14: the assistant's open and close
-    // button leads the group (D99). The row has no other prop an app could
-    // fill.
+    // `shellBell.test.ts` holds. Owner, 2026-10-14: the assistant's open and
+    // close button leads the group (D99), and the account left the bar for
+    // the sidebar's foot (`shellAccount.test.ts`). The row has no other prop
+    // an app could fill, and no account prop.
     const html = renderToStaticMarkup(
       createElement(ShellBarRow, {
         here: null,
@@ -297,17 +296,16 @@ describe("(c) the shell bar holds no app", () => {
         assistant: createElement("i", { "data-zone": "assistant" }),
         bell: createElement("i", { "data-zone": "bell" }),
         activity: createElement("i", { "data-zone": "activity" }),
-        account: createElement("i", { "data-zone": "account" }),
       }),
     );
     expect(html).toMatch(
-      /<div class="flex flex-1 basis-0 items-center justify-end gap-1"><i data-zone="assistant"><\/i><i data-zone="bell"><\/i><i data-zone="activity"><\/i><i data-zone="account"><\/i><\/div><\/header>$/,
+      /<div class="flex flex-1 basis-0 items-center justify-end gap-1"><i data-zone="assistant"><\/i><i data-zone="bell"><\/i><i data-zone="activity"><\/i><\/div><\/header>$/,
     );
     const props = code(read("lib/shell/ShellBar.tsx")).match(/export function ShellBarRow\(\{([^}]*)\}/)?.[1] ?? "";
     // D102: `field` is the shell's own field (`AskField`), and only
     // `ShellFrame` fills it. It carries nothing an app could fill.
     expect(props.split(",").map((p) => p.trim()).filter(Boolean).sort()).toEqual([
-      "account", "activity", "assistant", "bell", "field", "here", "lead", "onOpen",
+      "activity", "assistant", "bell", "field", "here", "lead", "onOpen",
     ]);
   });
 
@@ -317,11 +315,11 @@ describe("(c) the shell bar holds no app", () => {
         here: null,
         onOpen: () => {},
         field: createElement("i", { "data-zone": "field" }),
-        account: createElement("i", { "data-zone": "account" }),
+        activity: createElement("i", { "data-zone": "activity" }),
       }),
     );
     expect(html).not.toContain("Search or ask anything");
     expect(html).toContain('<div aria-hidden="true" class="min-w-0 flex-1 basis-0"></div><i data-zone="field"></i>');
-    expect(html).toContain('data-zone="account"');
+    expect(html).toContain('data-zone="activity"');
   });
 });
