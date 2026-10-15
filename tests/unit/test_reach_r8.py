@@ -14,6 +14,8 @@ NON-privileged role with RLS forced (``_as_member``), as
   row stamped with another org.
 * **The reads**: the log, the budget, the brief guard, the link and the
   24-hour window.
+* **RE-2a**: the full-brief guard, the reach state, and the display name of
+  the template greeting, each bound to its org.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
@@ -60,6 +62,7 @@ def _wipe(p) -> None:
                       "whatsapp_member_links"):
             c.execute(text(f"DELETE FROM {table} WHERE member_email IN (:a, :b)"),
                       {"a": A, "b": B})
+        c.execute(text("DELETE FROM app_user WHERE email IN (:a, :b)"), {"a": A, "b": B})
 
 
 @pytest.fixture(autouse=True)
@@ -136,8 +139,10 @@ class TestTheOutbox:
         async with _as_member(p, p.org_b):
             in_b = await outbox.plan(p.org_b, B, kind="brief", signal_ids=[], key="brief:same",
                                      body="b", local_date=date(2026, 10, 15))
-            assert await outbox.brief_planned(p.org_b, B, date(2026, 10, 15))
-            assert not await outbox.brief_planned(p.org_b, B, date(2026, 10, 16))
+            assert await outbox.brief_planned(p.org_b, B, date(2026, 10, 15), "brief:same")
+            assert not await outbox.brief_planned(p.org_b, B, date(2026, 10, 16), "brief:same")
+            # Another key that did not go out does not count (RE-2a, P3).
+            assert not await outbox.brief_planned(p.org_b, B, date(2026, 10, 15), "brief:x")
         assert in_a and in_b and in_a != in_b
 
     async def test_the_log_keeps_its_first_outcome(self, promoted):  # noqa: F811
@@ -212,10 +217,12 @@ class TestTheChannelReads:
                 "'replied')"), {"o": p.org_a, "m": A, "wa": PHONE, "w": f"wamid.new.{TAG}"})
         async with _as_member(p, p.org_a):
             assert await channel.window_open(p.org_a, PHONE)
+            assert await channel.reach_state(p.org_a, A) == (PHONE, True)
         # Org B sees neither the link nor the window of org A.
         async with _as_member(p, p.org_b):
             assert await channel.linked_phone(p.org_b, A) is None
             assert not await channel.window_open(p.org_b, PHONE)
+            assert await channel.reach_state(p.org_b, A) == (None, False)
 
     async def test_only_an_inbound_message_opens_the_window(self, promoted):  # noqa: F811
         # Reach records its own sends as 'out' rows. Were they counted, each
@@ -246,3 +253,74 @@ class TestTheChannelReads:
                             "s": status, "cur": current})
         async with _as_member(p, p.org_a):
             assert await channel.linked_phone(p.org_a, member) is None
+
+
+class TestCatchUpReads:
+    """RE-2a: the two new reads, on the real catalog."""
+
+    async def test_the_full_brief_is_due_once_after_a_template_brief(self, promoted):  # noqa: F811
+        p = promoted
+        day = date(2026, 10, 15)
+        full = f"brief:full-{TAG}"
+        async with _as_member(p, p.org_a):
+            assert not await outbox.full_brief_due(p.org_a, A, day, full)
+            first = await outbox.plan(p.org_a, A, kind="brief", signal_ids=[],
+                                      key=f"brief:{TAG}", body="b", local_date=day)
+            assert first is not None
+            # A brief that is not yet sent does not call for its full brief.
+            assert not await outbox.full_brief_due(p.org_a, A, day, full)
+            await outbox.finish(p.org_a, first, state="sent", regime="template")
+            assert await outbox.full_brief_due(p.org_a, A, day, full)
+            assert not await outbox.full_brief_due(p.org_a, A, date(2026, 10, 16), full)
+            assert await outbox.plan(p.org_a, A, kind="brief", signal_ids=[], key=full,
+                                     body="full", local_date=day)
+            assert not await outbox.full_brief_due(p.org_a, A, day, full)
+        async with _as_member(p, p.org_b):
+            # Org B sees no template brief of org A.
+            assert not await outbox.full_brief_due(p.org_b, A, day, f"brief:other-{TAG}")
+
+    async def test_a_free_text_brief_needs_no_full_brief(self, promoted):  # noqa: F811
+        p = promoted
+        day = date(2026, 10, 15)
+        async with _as_member(p, p.org_a):
+            row = await outbox.plan(p.org_a, A, kind="brief", signal_ids=[],
+                                    key=f"brief:ft-{TAG}", body="b", local_date=day)
+            await outbox.finish(p.org_a, str(row), state="sent", regime="free_text")
+            assert not await outbox.full_brief_due(p.org_a, A, day, f"brief:ft-{TAG}:full")
+
+    async def test_a_failed_brief_calls_for_its_full_brief(self, promoted):  # noqa: F811
+        # Review of RE-2a, P2: a template Meta refused still lets the day's
+        # brief go once the window opens.
+        p = promoted
+        day = date(2026, 10, 15)
+        async with _as_member(p, p.org_a):
+            row = await outbox.plan(p.org_a, A, kind="brief", signal_ids=[],
+                                    key=f"brief:fail-{TAG}", body="b", local_date=day)
+            await outbox.finish(p.org_a, str(row), state="failed", reason="send_failed")
+            assert await outbox.full_brief_due(p.org_a, A, day, f"brief:fail-{TAG}:full")
+
+    async def test_an_empty_brief_calls_for_no_full_brief(self, promoted):  # noqa: F811
+        p = promoted
+        day = date(2026, 10, 15)
+        async with _as_member(p, p.org_a):
+            row = await outbox.plan(p.org_a, A, kind="brief", signal_ids=[],
+                                    key=f"brief:empty-{TAG}", body="", local_date=day)
+            await outbox.finish(p.org_a, str(row), state="skipped", reason="empty")
+            assert await outbox.brief_planned(p.org_a, A, day, f"brief:empty-{TAG}")
+            assert not await outbox.full_brief_due(p.org_a, A, day, f"brief:empty-{TAG}:full")
+
+    async def test_the_display_name_is_read_in_its_org(self, promoted):  # noqa: F811
+        p = promoted
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, organization_id, status) "
+                "VALUES (:e, ' Priya Shah ', CAST(:o AS uuid), 'active')"),
+                {"e": A, "o": p.org_a})
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, organization_id, status) "
+                "VALUES (:e, '  ', CAST(:o AS uuid), 'active')"), {"e": B, "o": p.org_b})
+        async with _as_member(p, p.org_a):
+            assert await channel.display_name(p.org_a, A.upper()) == "Priya Shah"
+        async with _as_member(p, p.org_b):
+            assert await channel.display_name(p.org_b, A) is None
+            assert await channel.display_name(p.org_b, B) is None

@@ -25,7 +25,8 @@ from gateway.routes.shell.needs import _instant
 
 #: A needs-reply card interrupts only while the thread is this fresh.
 REPLY_FRESH = timedelta(hours=12)
-#: The brief goes out in the first hours of the member's day.
+#: A brief goes out as the template only in the first hours of the member's
+#: day. As free text it may go at any hour of the day (RE-2a).
 BRIEF_WINDOW_HOURS = 3
 #: Lines of the brief, before the count of the rest.
 BRIEF_LINES = 7
@@ -33,6 +34,10 @@ BRIEF_LINES = 7
 MAX_CHARS = 1000
 #: The most characters of a title inside a line.
 TITLE_CHARS = 80
+#: The most characters of one template parameter.
+PARAM_CHARS = 160
+#: A template parameter is never empty. Meta refuses an empty one.
+EMPTY_PARAM = "\u2013"  # an en dash
 
 #: The card states that may reach. The state join already drops a card that
 #: is snoozed or dismissed. ``later`` is the member's own "not now".
@@ -123,14 +128,21 @@ def in_quiet_hours(day: Any, now: datetime, working_day: bool) -> bool:
 def brief_date(day: Any, now: datetime, working_day: bool) -> date | None:
     """The local date whose brief is due now, or None.
 
-    The brief is due on a working day, from the day start for
-    :data:`BRIEF_WINDOW_HOURS` hours.
+    The brief is due on a working day, from the day start until the day end
+    (RE-2a). So a member who first writes to the bot at 14:00 gets the brief
+    then. The loop sends it once for each date.
     """
     if not working_day:
         return None
     start, end, local_day = _day_span(day, now)
-    close = min(end, start + timedelta(hours=BRIEF_WINDOW_HOURS))
-    return local_day if start <= now < close else None
+    return local_day if start <= now < end else None
+
+
+def brief_morning(day: Any, now: datetime) -> bool:
+    """True in the first :data:`BRIEF_WINDOW_HOURS` hours of the member's day.
+    Only then may a brief go as the template."""
+    start, end, _ = _day_span(day, now)
+    return start <= now < min(end, start + timedelta(hours=BRIEF_WINDOW_HOURS))
 
 
 # ── The words ───────────────────────────────────────────────────────────────
@@ -215,13 +227,18 @@ def _date_words(day: date) -> str:
     return f"{day:%a} {day.day} {day:%b}"
 
 
+def brief_items(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The open cards of Now and Needs you, in the feed's order."""
+    top = [c for c in cards if c.get("group") in BRIEF_GROUPS and is_open(c)]
+    return feed_rank.order(top, len(top)) if top else []
+
+
 def compose_brief(cards: list[dict[str, Any]], app_url: str, local_date: date, *,
                   now: datetime) -> str | None:
     """The morning brief, or None when no open card is in Now or Needs you."""
-    top = [c for c in cards if c.get("group") in BRIEF_GROUPS and is_open(c)]
-    if not top:
+    ordered = brief_items(cards)
+    if not ordered:
         return None
-    ordered = feed_rank.order(top, len(top))
     shown = ordered[:BRIEF_LINES]
     rest = len(ordered) - len(shown)
     tail = f"My Day: {app_url.rstrip('/')}/"
@@ -229,6 +246,51 @@ def compose_brief(cards: list[dict[str, Any]], app_url: str, local_date: date, *
         tail = f"+{rest} more. {tail}"
     return _fit(f"*Your day, {_date_words(local_date)}*",
                 [line(c, now) for c in shown], tail)
+
+
+# ── The template parameters (RE-2a) ─────────────────────────────────────────
+
+
+def template_param(value: Any, limit: int = PARAM_CHARS) -> str:
+    """One body parameter of a Meta template.
+
+    Meta refuses a newline, a tab, more than four spaces in a row, and an
+    empty value. So the text becomes one line with single spaces, at most
+    *limit* characters with an ellipsis, and never empty.
+    """
+    return _clean(value, limit) or EMPTY_PARAM
+
+
+def first_name(display_name: str | None, email: str) -> str:
+    """The name the templates greet: the first word of the display name, or
+    the first part of the email's local part, with a capital. Never empty."""
+    words = str(display_name or "").split()
+    if words:
+        return template_param(words[0], 40)
+    local = str(email or "").split("@", 1)[0]
+    for part in local.replace("_", ".").replace("-", ".").split("."):
+        if part.strip():
+            return template_param(part.strip().capitalize(), 40)
+    return "there"
+
+
+def needs_you_params(name: str, cards: list[dict[str, Any]], now: datetime) -> list[str]:
+    """The parameters of the needs-you template: the name, then the first
+    card's line and the count of the rest. *cards* must not be empty."""
+    rest = len(cards) - 1
+    tail = f" (and {rest} more)" if rest > 0 else ""
+    head = template_param(line(cards[0], now, kind=reach_kind(cards[0])),
+                          PARAM_CHARS - len(tail))
+    return [template_param(name, 40), head + tail]
+
+
+def brief_params(name: str, cards: list[dict[str, Any]], local_date: date,
+                 now: datetime) -> list[str]:
+    """The parameters of the brief template: the name, the date, the count of
+    brief items and the first line. *cards* must hold a brief item."""
+    items = brief_items(cards)
+    return [template_param(name, 40), _date_words(local_date), str(len(items)),
+            template_param(line(items[0], now))]
 
 
 # ── The dedupe key ──────────────────────────────────────────────────────────
@@ -250,3 +312,8 @@ def interrupt_key(member: str, cards: list[dict[str, Any]]) -> str:
 
 def brief_key(member: str, local_date: date) -> str:
     return dedupe_key("brief", member, [local_date.isoformat()])
+
+
+def full_brief_key(member: str, local_date: date) -> str:
+    """The key of the full brief that follows a template brief (RE-2a)."""
+    return brief_key(member, local_date) + ":full"

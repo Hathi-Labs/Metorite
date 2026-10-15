@@ -727,6 +727,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-10e** ✅ built 2026-10-11 | Reply and react like a person (§13.7): the first part of each answer quotes the member's message, the AI can react with an emoji, a long job says so first, and a plain thanks gets a 👍 with no AI call | AGENT-SAFE | §13.7, E1 to E7. Fence: `tests/unit/test_wac_react.py` |
 | **WAC-10f** ✅ built 2026-10-11 | One chart language (§13.8): the web app's chart engine draws WhatsApp charts on the server, in the product's look. 13 kinds, from a short spec. Falls back to the old renderer | AGENT-SAFE | §13.8, F1 to F5. Fences: `src/lib/charts/charts.test.ts`, `tests/unit/test_wac_chart_engine.py` |
 | **WAC-10g** ✅ built 2026-10-11 | The same charts live in the web chat (§13.9): a `chart` template with a tooltip and a legend, and `barChart` through the same engine | AGENT-SAFE | §13.9, G1 to G5. Fence: `src/components/LiveChart.test.ts` |
+| **WAC-12** | A PDF document from WhatsApp (§15): a deck or a report, laid out from the org's own data, sent as a file that the member can forward | AGENT-SAFE. Ships dark behind `WHATSAPP_DOCUMENTS` | §15.6, D1 to D8. Fences: `tests/unit/test_wac_documents.py`, `tests/unit/test_pdf_render.py` |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
@@ -1505,3 +1506,96 @@ prepares the first. The member asks for the next one after the Confirm.
 
 The events, meetings and reminders that are not task blocks are a separate
 proposal: `specs/calendar_events_reminders.md`.
+
+## 15. Amendment of 2026-10-15: WAC-12, a PDF document from WhatsApp
+
+**Owner directive, 2026-10-15.** The bot makes a sales deck, a pitch deck, a
+report or an analysis from the org's own data (CRM, email, projects). It sends
+the result as a PDF file on WhatsApp, and the member can forward the file to
+other people. A deck is a presentation, not a Markdown document.
+
+§5.11 planned "a report as a PDF" for WhatsApp. This section is the design of
+record for it.
+
+### 15.1 What exists (measured 2026-10-15)
+
+| Part | State |
+|---|---|
+| The PDF seam | `gateway/pdf_render.py`, the ONE document-to-PDF seam. It lays out Markdown or HTML on A4 in a child process, with a 13 s limit and a slot for each member and each org. Its sanitizer drops every image and every colour |
+| The visuals | `whatsapp_cards` (tiles, board, timeline, agenda, gantt, donut) and `whatsapp_render` (charts, table) draw SVG in the product's light look. The chart engine (WAC-10f) draws 13 chart kinds with ECharts |
+| The transport | `upload_media` takes any file type. There is no `send_document`, and `OutMessage` has no document kind |
+| The data | The orchestrator holds the CRM reads. It reaches email and projects through `call_agent` |
+| Decks | No deck kind, no slide layout, and no browser on the box |
+
+### 15.2 The design
+
+1. **One tool kind.** `whatsapp_ui` gets the kind `document`. The model
+   collects the facts first. Then it sends ONE spec: the format (`deck` or
+   `report`), a title, and the slides or the sections. Each slide or section
+   holds text, bullets and at most one visual. A visual uses the data of a
+   `whatsapp_ui` image kind: chart, stats, table, board, timeline, gantt or
+   agenda.
+2. **The visuals come from the existing renderers.** `acb_skills/documents.py`
+   checks the spec and draws each visual. A card or a table becomes SVG. A
+   chart goes through the chart engine in its light mode, or the old
+   renderer. So a deck has the look of a chart on WhatsApp and on the web.
+3. **The layout goes through the one PDF seam.** `pdf_render` gets the source
+   kind `document`: a JSON layout of text and drawn visuals. It lays out in
+   the same child process, with the same limits. A deck is 16:9 slides. A
+   report is A4 pages. The text is vector, in Geist, and a reader can select
+   and search it.
+4. **The send.** `bot_run` uploads the PDF to Meta's media store. Then it
+   sends the PDF as a document, with its file name and a caption. The member can forward it
+   like any file.
+
+### 15.3 Security
+
+- **The model gives text and numbers, never markup or bytes.** `documents.py`
+  escapes every text value before it builds HTML. A spec key that holds an
+  image, an SVG or a URL is refused.
+- **Only code draws a visual.** The layout that reaches the child holds SVG
+  from our own renderers and PNG from our own engine. A model value never
+  reaches it as markup.
+- **The renderer loads nothing.** The child gets an archive of the Geist font
+  folder only. The HTML has no `img`, no `style` attribute and no link to a
+  resource.
+- **The bounds.** At most 20 slides or 30 sections, and 12 visuals. Each text
+  value has a length limit. The source limit is `MAX_DOCUMENT_BYTES`, and a
+  PDF over 10 MB is refused.
+- **Tenancy.** The PDF holds only what the run read as the link's member, in
+  the link's org (D-WAC-3). The render waits in the member's and the org's
+  queue of `render_pdf`.
+
+### 15.4 The channel rule
+
+The channel changes delivery, never function (owner, 2026-10-10). On
+WhatsApp a document goes as a file. In the web chat the same spec goes to the
+tool `make_document` (`acb_skills.documents`, family `documents`). It lays out
+the PDF through the same `render_pdf` kind `document`, and `write_artifact`
+saves it, so the chat shows a PDF card with a download.
+
+The main assistant
+and the Projects assistant hold it by scope. WhatsApp withholds it, because
+`whatsapp_ui` kind `document` sends the same PDF as a file. Fence:
+`tests/unit/test_chat_documents.py` (owner, 2026-10-15: "live in the AI chat
+too").
+
+### 15.5 The switch
+
+`WHATSAPP_DOCUMENTS` turns WAC-12 on. It is default OFF, and it works only with
+`WHATSAPP_ASSISTANT_NATIVE_UI` on. With it off, the kind `document` answers
+that documents are off, and the scope rule does not offer documents.
+
+### 15.6 Acceptance (WAC-12)
+
+| # | Check | Fence |
+|---|---|---|
+| D1 | A deck spec of a cover, three content slides with a chart, tiles and a table, and a closing slide gives one PDF with five 16:9 pages. The text is selectable | `test_wac_documents.py` |
+| D2 | A report spec gives A4 pages, and a long report flows onto a second page | `test_wac_documents.py` |
+| D3 | The member gets one WhatsApp document part with a `.pdf` file name and the caption. The thread keeps a rendition that names the file and each slide title | `test_wac_documents.py`, a run test |
+| D4 | A model value with HTML or a script reaches the PDF as plain text, and a spec key that holds an image, an SVG or a URL is refused | `test_wac_documents.py` |
+| D5 | Too many slides, too many visuals or a text past its limit is refused with what to fix, before any render | `test_wac_documents.py` |
+| D6 | The layout runs in the `render_pdf` child, and a second render for the same member waits or is refused as before | `test_wac_documents.py` |
+| D7 | With the switch off, the kind refuses, and the scope rule does not offer documents | `test_wac_documents.py` |
+| D8 | An upload or a send that surely failed is a failed part. An unclear one is never sent again | `test_wac_documents.py` |
+
