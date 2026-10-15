@@ -161,6 +161,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -236,6 +237,11 @@ class Signal:
     at: str | None = None
     urgent_at: str | None = None
     expires_at: str | None = None
+    #: The id of the source that gave the signal (MD-3c, ``my_day_feed.md``
+    #: §5.9 item 1). The feed tags each signal after its provider ran, so a
+    #: provider leaves it None. The card copies the source of its main
+    #: signal, for the carry of a failed source.
+    source: str | None = None
 
 
 def tap(act_id: str, label: str, act: str, act_ref: str,
@@ -1102,25 +1108,62 @@ async def needs_run(user: UserContext) -> Run:
 async def _attempt(provider: Provider, user: UserContext, timeout: float,
                    event: str) -> Found | str:
     """One provider's run: what it found, or ``absent`` or ``failed``. It
-    never raises, except a cancel of the whole read."""
+    never raises, except a cancel of the whole read.
+
+    Each run writes one log line with ``elapsed_ms``, the time from the start
+    of the run to its end (MD-3c, ``my_day_feed.md`` §5.9 item 7). The rule
+    for a flip of ``MY_DAY_PROVIDERS`` takes the p95 of each provider from
+    these lines. A run that ends well writes ``provider answered``. A run
+    that the ceiling cancels writes ``provider passed the ceiling``
+    (:func:`_run_bounded`). Each field is in the TEXT of the line
+    (:func:`_log_run`)."""
     key = provider.source
+    began = time.monotonic()
+
+    def _ms() -> int:
+        return int((time.monotonic() - began) * 1000)
+
     try:
-        return await asyncio.wait_for(provider.run(user), timeout)
+        found = await asyncio.wait_for(provider.run(user), timeout)
     except SourceAbsent:
         # A refusal, not a failure (MD-3b, §5.8 item 4).
+        _log_run(_answer_level(event), event, "answered", key, _ms(), outcome="absent")
         return "absent"
     except TimeoutError:
-        logger.info(f"{event} provider timed out", extra={"provider": key})
+        _log_run(logging.INFO, event, "timed out", key, _ms())
         return "failed"
     except Exception as exc:
         # The error's TYPE only. A database error's text can carry the
         # query's parameters, which hold the member's address. An app's
         # own refusal (HTTPException) lands here too.
-        logger.warning(
-            f"{event} provider failed",
-            extra={"provider": key, "error": type(exc).__name__},
-        )
+        _log_run(logging.WARNING, event, "failed", key, _ms(), error=type(exc).__name__)
         return "failed"
+    _log_run(_answer_level(event), event, "answered", key, _ms(), outcome="ok")
+    return found
+
+
+#: The event of the feed-only providers (``feed.feed_cards``). Their run
+#: logs each answer at INFO, for the measure of §5.9 item 7.
+FEED_EVENT = "shell.feed"
+
+
+def _answer_level(event: str) -> int:
+    """INFO for a feed-only provider, DEBUG for a needs provider. The needs
+    providers run on each poll of the bell, and the measure needs only the
+    feed-only ones (MD-3c fix round 1)."""
+    return logging.INFO if event == FEED_EVENT else logging.DEBUG
+
+
+def _log_run(level: int, event: str, what: str, key: str, ms: int, **fields: str) -> None:
+    """One line of a provider run, with every field in its TEXT.
+
+    ⚠️ The stdlib handler of the gateway prints ``%(message)s`` alone
+    (``acb_common._log.configure_logging``), so a field in ``extra`` never
+    reaches the journal. The p95 of §5.9 item 7 comes from these lines, so
+    ``provider=``, ``elapsed_ms=`` and the other fields go in the text."""
+    tail = "".join(f" {name}={value}" for name, value in fields.items())
+    logger.log(level, "%s provider %s provider=%s%s elapsed_ms=%d",
+               event, what, key, tail, ms)
 
 
 def _record(run: Run, key: str, outcome: Found | str) -> None:
@@ -1155,9 +1198,14 @@ async def _run_bounded(user: UserContext, providers: list[Provider], *, limit: f
     held = [p for p in providers if p.held_by(user)]
     gate = asyncio.Semaphore(max(1, slots))
 
+    #: When each provider took its slot, for the line of a cancelled run.
+    started: dict[str, float] = {}
+    cut: float | None = None
+
     async def _slot(provider: Provider) -> Found | str:
         async with gate:
             # The limit starts here, when the provider holds its slot.
+            started[provider.source] = time.monotonic()
             return await _attempt(provider, user, limit, event)
 
     tasks = {p.source: asyncio.ensure_future(_slot(p)) for p in held}
@@ -1167,6 +1215,7 @@ async def _run_bounded(user: UserContext, providers: list[Provider], *, limit: f
         finally:
             # Past the ceiling, or a cancel of the whole read: stop the rest,
             # and wait briefly so each one closes its session first.
+            cut = time.monotonic()
             late = [t for t in tasks.values() if not t.done()]
             for task in late:
                 task.cancel()
@@ -1178,8 +1227,14 @@ async def _run_bounded(user: UserContext, providers: list[Provider], *, limit: f
         if task is None:
             outcome = "absent"
         elif not task.done() or task.cancelled() or task.exception() is not None:
-            logger.info(f"{event} provider passed the ceiling",
-                        extra={"provider": provider.source})
+            # A cancel skips the handlers of `_attempt`, so the measure of a
+            # run cut at the ceiling is here: its time from its slot to the
+            # cut. Without it the p95 would drop the slowest runs. A provider
+            # that never got a slot ran for 0 ms.
+            began = started.get(provider.source)
+            ms = 0 if began is None or cut is None else int((cut - began) * 1000)
+            _log_run(logging.INFO, event, "passed the ceiling", provider.source, ms,
+                     started="yes" if began is not None else "no")
             outcome = "failed"
         else:
             outcome = task.result()

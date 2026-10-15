@@ -35,6 +35,18 @@ REACH_CLASS: dict[str, str] = {
     "deal_quiet": "interrupt",
     "lead_replied": "interrupt",
     "deal_stage_changed": "brief",
+    "deal_close_passed": "brief",
+    # The MD-3 kinds, as the table of proactive_reach.md §4.2 gives them.
+    "no_answer": "brief",
+    "promise_due": "brief",
+    "unblocked": "brief",
+    "colleague_out": "brief",
+    "agent_asks": "interrupt",
+    # §4.2 names no class for these three. Each one is a thing to know, not a
+    # thing to act on now, so each one goes in the brief and interrupts nobody.
+    "waiting_quiet": "brief",
+    "stale_next": "brief",
+    "absent_on_due": "brief",
 }
 
 #: The notification reasons that interrupt. A comment or a change does not.

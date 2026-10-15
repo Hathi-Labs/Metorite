@@ -197,13 +197,17 @@ class TestTheLimits:
         assert _put({"key": "corrections", "value": ten}).status_code == 200
         assert _put({"key": "mutes", "value": []}).status_code == 200
 
-    def test_the_kinds_are_the_registry_s(self) -> None:
-        from gateway.routes.shell import needs
+    def test_the_kinds_are_the_base_table_s(self) -> None:
+        # MD-3c: the kinds are the rows of `feed_rank.BASE`, so a member may
+        # mute an MD-3 kind while its provider is dark or not built yet.
+        from gateway.routes.shell import feed_rank, needs
 
         every = set().union(*(p.kinds for p in needs.REGISTRY.values()))
-        assert prefs.feed_kinds() == every
+        assert every <= prefs.feed_kinds() == set(feed_rank.BASE)
         # The Calendar kinds are feed-only, and a member may mute them too.
-        assert {"block_soon", "overdue"} <= prefs.feed_kinds()
+        assert {"block_soon", "overdue", "colleague_out", "agent_asks"} <= prefs.feed_kinds()
+        # §5.9 item 10.6: after MD-3 the table holds exactly the cap.
+        assert len(prefs.feed_kinds()) == prefs.MAX_KINDS == 20
 
     def test_a_list_keeps_its_order_and_loses_its_repeats(self, fake: _FakeDB) -> None:
         res = _put({"key": "mutes", "value": ["block_soon", "overdue", "block_soon"]})

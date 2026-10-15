@@ -5358,6 +5358,23 @@ line — never reclaim a number by deleting the other entry.
   for each act, under one offer.
 - **Authority:** `specs/whatsapp_assistant_channel.md` §14.9 (known limit)
 - **Added:** 2026-10-15 · branch `wa-calendar-blocks`
+### H-312 · Five reads of a member's settings name no tenant · [AGENT]
+- **Check:** `git grep -n -A2 "WHERE user_id = :uid" -- apps/services/gateway/gateway/routes/tasks`.
+  A statement that names no `organization_id` means this entry stays.
+- **Why.** Migration 239 keys `user_settings` on `(organization_id, user_id)`.
+  Production connects as the owner role, which reads past RLS. So a read by
+  `user_id` alone can return the row of another org, for a member who belongs
+  to two orgs. The data is the same person's own, so the impact is low. MD-3c
+  fixed `stored_zone`, `tasks.settings._load` and the work-schedule seed. These
+  reads still name no tenant:
+  1. `routes/tasks/settings.py` `task_models` (about :134).
+  2. `routes/tasks/settings.py` `task_toggles` (about :156).
+  3. `routes/tasks/calendar.py` (about :571, :608 and :1171).
+- **Do this:** add `AND organization_id = {_BOUND_ORG}` to each statement, as
+  `prefs.py` and `admin/me.py` do. Add one owner-role R8 case with a member in
+  two orgs, modelled on `test_feed_task_kinds_r8.py::TestTheTenantUnderTheOwnerRole`.
+- **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3c (fix round 1)
+- **Added:** 2026-10-15 · MD-3c review
 
 ### H-312 · An operator viewer can reach the tenant org purge · [AGENT]
 - **Check:** `rg -c "operators/session" workbench/operator_console/src/app/api/operator/purge/route.ts`.
