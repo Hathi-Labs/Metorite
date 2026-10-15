@@ -347,6 +347,18 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "(`test_feed_measure_r8.py::TestTheTenancyBoundary`)."
         ),
     },
+    "gateway.retrieval.company": {
+        "/search/company": (
+            "WS-61 KR-1. The route asks each source of "
+            "`gateway.retrieval.sources.REGISTRY`, and `Source.find` checks "
+            "`user.has_permission('feature:<app>')` before it calls the app's own "
+            "search. A member without the app gets no hit and no call "
+            "(`test_company_search_sources.py::TestTheFeatureGate`). The CRM "
+            "source also applies the kill switch and the access rule. The route "
+            "takes no member and no org from the request "
+            "(`test_company_search_sources.py::TestTheRouteTakesNoTenant`)."
+        ),
+    },
 }
 
 
