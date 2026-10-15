@@ -254,11 +254,16 @@ clone cache.
    the answer of one. The key is the bound tenant and the session id of the
    run context, never a request field and never the member (a shared room
    is one session). The mark lives in tenant Redis (namespace `egress-mark`,
-   a sliding TTL of 400 days). `session_is_marked` is the async reader. It
-   reads a bounded LRU of positives, and on a miss it asks Redis. Where a
-   card can show, it FAILS CLOSED: a Redis fault reads as marked. A batch
-   session never asks Redis. `read_untrusted_answer` is the sync reader of
-   the LRU only. Then `permission_policy.decide` answers
+   a sliding TTL of 400 days). `session_mark_state` reads a bounded LRU of
+   positives, and on a miss it asks Redis. It answers marked, clear or
+   unknown. Unknown is a Redis fault in a run that can show a card. An
+   egress tool gate reads `session_is_marked`, which FAILS CLOSED on
+   unknown, so the call asks the card. A delegation (`is_delegation_tool`)
+   asks no card on unknown, and `call_agent` binds `no_egress` only on a
+   known mark (`session_is_known_marked`). So a blip never holds a send. A
+   batch session never asks Redis. `read_untrusted_answer` is the sync
+   reader of the LRU only. Tests and the routing eval use the one in-memory
+   store `tests/unit/_egress_mark_store.py`. Then `permission_policy.decide` answers
    `untrusted_answer_confirm` for each egress call: the member's card first,
    and no call with no card channel.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`

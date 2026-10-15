@@ -14794,6 +14794,20 @@ makes six small changes. Each P2 has a mutation that turns its fence red.
 - **A bound.** The process cache keeps the 16384 most recent marks. An async reader that misses
   asks Redis, so an eviction never reads as "unmarked" on that path.
 
+**A Redis blip (2026-10-16, after the CI failure of skill-eval).** CI has no Redis. Each
+orchestrator chat with a member read as marked, and the routing eval failed E1 and W1. The gate
+asked the card for the specialist tools `email_assistant` and `whatsapp_assistant`, and the eval
+shows no card. In production, a blip made `call_agent` bind `no_egress`, so a delegated send
+was withheld. Now a fault gives an UNKNOWN state, not a mark.
+
+- **An egress tool** asks the member's card in the unknown state. That is the fail-closed part.
+- **A delegation** asks no card in the unknown state. That is `call_agent` and a specialist
+  tool, which carries `__delegates_to__`. `call_agent` binds `no_egress` only for a KNOWN mark.
+- **Each egress tool of the delegated run** asks its own card, so no send runs unseen. A blip
+  costs one card for each send, and it holds no send.
+- **The evals.** `tests/unit/_egress_mark_store.py` is the one in-memory store. `tests/conftest.py`
+  and `evals/routing/harness.py` call it. The outage tests patch over it.
+
 **Residual risks of the egress mark and mode (b).** Each one is known and accepted.
 
 - **The French quotes.** Mode (b) does not change `«` or `»`. They are quotation marks, and the
