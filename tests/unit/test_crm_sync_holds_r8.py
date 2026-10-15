@@ -377,7 +377,7 @@ async def test_a_start_over_forgets_the_holds(ns, zoho) -> None:
 
 
 async def test_a_core_module_is_not_a_hold_key(mz) -> None:
-    """Review note. ``module:Accounts`` would hold nothing, so it is refused."""
+    """Review note. ``module:Deals`` would hold nothing, so it is refused."""
     p, a, _b = mz
     _seed_modules(a)
     _add_member(p, p.org_a)
@@ -387,5 +387,5 @@ async def test_a_core_module_is_not_a_hold_key(mz) -> None:
 
     ok = await _call_json(admin, "PUT", "/crm/sync/modules/module:Products", {"sync": False})
     assert ok.status_code == 200, ok.text
-    refused = await _call_json(admin, "PUT", "/crm/sync/modules/module:Accounts", {"sync": False})
+    refused = await _call_json(admin, "PUT", "/crm/sync/modules/module:Deals", {"sync": False})
     assert refused.status_code == 422
