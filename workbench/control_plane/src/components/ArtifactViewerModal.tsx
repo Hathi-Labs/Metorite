@@ -34,7 +34,6 @@ import {
   isArchive,
   isRenderable,
   pdfNameFor,
-  sizeKnown,
   workspaceFileUrl,
 } from "@/lib/artifactKind";
 import type { FileEntry } from "./ArtifactSidebar";
@@ -543,11 +542,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
           <div className="order-1 flex min-w-0 flex-1 basis-40 items-center gap-2">
             <span className="min-w-0 truncate text-sm font-semibold text-foreground" title={entry.name}>{entry.name}</span>
             <span className="text-xs text-muted-foreground truncate hidden sm:block">{entry.path}</span>
-            {/* A file a chat card opens has no known size, and "0 B" would
-                be a wrong fact. The size shows only when it is known. */}
-            {sizeKnown(entry.size) && (
-              <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">· {formatBytes(entry.size)}</span>
-            )}
+            <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">· {formatBytes(entry.size)}</span>
           </div>
           <div className="order-3 flex w-full flex-wrap items-center gap-2 sm:order-2 sm:w-auto sm:shrink-0">
             {editing ? (

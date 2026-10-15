@@ -147,15 +147,6 @@ export function workspaceFileUrl(
   return opts.pdf ? `${base}&format=pdf` : base;
 }
 
-/**
- * True when a file's size is a fact to show. A file that a chat card opens
- * carries no size, and its entry holds 0. The viewer shows no size for it,
- * never "0 B".
- */
-export function sizeKnown(size: unknown): size is number {
-  return typeof size === "number" && Number.isFinite(size) && size > 0;
-}
-
 /** `status.md` → `status.pdf`, the name the gateway also sends. */
 export function pdfNameFor(name: string): string {
   const dot = name.lastIndexOf(".");

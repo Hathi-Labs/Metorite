@@ -11,7 +11,6 @@ import {
   isRenderable,
   opensRendered,
   pdfNameFor,
-  sizeKnown,
   workspaceFileUrl,
 } from "./artifactKind";
 
@@ -107,22 +106,6 @@ describe("canDownloadPdf", () => {
     for (const k of ["react", "report", "code", "image", "pdf", "docx", "text", "binary"] as const) {
       expect(canDownloadPdf(k)).toBe(false);
     }
-  });
-});
-
-describe("sizeKnown", () => {
-  it("shows a real size, and hides an unknown one rather than 0 B", () => {
-    expect(sizeKnown(1800)).toBe(true);
-    for (const v of [0, -1, NaN, Infinity, undefined, null, "12"]) expect(sizeKnown(v), String(v)).toBe(false);
-  });
-
-  it("the viewer asks it before it prints a size", () => {
-    const modal = readFileSync(
-      fileURLToPath(new URL("../components/ArtifactViewerModal.tsx", import.meta.url)),
-      "utf8",
-    );
-    expect(modal).toMatch(/\{sizeKnown\(entry\.size\) && \(/);
-    expect(modal.match(/formatBytes\(entry\.size\)/g)).toHaveLength(1);
   });
 });
 
