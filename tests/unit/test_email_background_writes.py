@@ -323,7 +323,8 @@ def _rz_row(thread_id: str, folder: str) -> Any:
         body_text="Can you help?", snippet="", folder=folder, received_at=None)
 
 
-async def _run_backfill(monkeypatch, provider: str, stored: bool | None):
+async def _run_backfill(monkeypatch, provider: str, stored: bool | None,
+                        **kw: Any):
     """Drive ``_maybe_classify_threads`` over one sent and one inbox thread.
     Each step that asks a model is a double. The SQL is a ``_FakeDb``."""
     db = _FakeDb([
@@ -381,7 +382,7 @@ async def _run_backfill(monkeypatch, provider: str, stored: bool | None):
     monkeypatch.setattr(engine, "ask_rule_match", AsyncMock(return_value=match))
     monkeypatch.setattr(engine, "resolve_classification",
                         AsyncMock(return_value=match))
-    await replyzero._maybe_classify_threads(ACC)
+    await replyzero._maybe_classify_threads(ACC, **kw)
     return seen
 
 
@@ -408,6 +409,29 @@ async def test_reply_zero_still_writes_labels_with_auto_run_on(monkeypatch) -> N
 async def test_a_gmail_mailbox_with_no_row_gets_no_reply_zero_label(monkeypatch) -> None:
     seen = await _run_backfill(monkeypatch, "gmail", stored=None)
     assert seen["reconcile"] == [] and seen["built"] == []
+
+
+async def test_a_member_reclassify_writes_labels_with_auto_run_off(monkeypatch) -> None:
+    """Fix round 1 (P2): a reclassify that the member starts is the member's
+    choice, as a manual dispatch and a member sweep are. Only the background
+    backfill obeys Auto-run."""
+    seen = await _run_backfill(monkeypatch, "gmail", stored=False, obey_auto_run=False)
+    assert seen["mark"] == [True]
+    assert seen["built"] == ["gmail"]
+    assert seen["reconcile"] == ["t-in"]
+
+
+def test_only_the_member_reclassify_skips_the_auto_run_gate() -> None:
+    [call] = _calls(replyzero._reclassify_reply_zero_job, "_maybe_classify_threads")
+    kws = {k.arg: k.value for k in call.keywords}
+    assert isinstance(kws.get("obey_auto_run"), ast.Constant)
+    assert kws["obey_auto_run"].value is False
+    for fn in (scheduler_hooks.process_new_mail, replyzero.reply_zero):
+        for c in _calls(fn, "_maybe_classify_threads"):
+            assert "obey_auto_run" not in {k.arg for k in c.keywords}, fn.__name__
+    src = (_ROOT / "apps/services/gateway/gateway/routes/email/scheduler_hooks.py"
+           ).read_text(encoding="utf-8")
+    assert "obey_auto_run=False" not in src
 
 
 async def test_mark_thread_replied_without_labels_builds_no_provider(monkeypatch) -> None:

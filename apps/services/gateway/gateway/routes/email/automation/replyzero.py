@@ -2586,7 +2586,9 @@ async def _write_filed_fyi(account_id: str, filed_rows: list[Any]) -> None:
 # Reply Zero list starts it as a BackgroundTask on a cold mailbox, outside any
 # job scope, so the function opens the scope itself.
 @automation_job  # EM-T4b: the cap and the daily budget bind its model calls
-async def _maybe_classify_threads(account_id: str) -> None:
+async def _maybe_classify_threads(
+    account_id: str, *, obey_auto_run: bool = True,
+) -> None:
     """Reply Zero BACKFILL: fill in per-thread status for threads the live rules
     pipeline hasn't classified yet — historical mail, accounts with auto-apply
     off, or anything the runner missed.
@@ -2634,6 +2636,11 @@ async def _maybe_classify_threads(account_id: str) -> None:
     With Auto-run OFF it still writes each status row for the UI, but it
     builds no provider, moves no mail and writes no label, local or at the
     provider. Fence: ``tests/unit/test_email_background_writes.py``.
+
+    Fix round 1: ``obey_auto_run=False`` is the member-started reclassify
+    (``_reclassify_reply_zero_job``). The click is the member's choice, as
+    for a manual dispatch and a member sweep, so it writes the labels. Every
+    background caller keeps the default True.
     """
     try:
         from gateway.routes.email.automation.engine import (  # noqa: PLC0415
@@ -2648,7 +2655,7 @@ async def _maybe_classify_threads(account_id: str) -> None:
         async with _tenant_session() as db:
             # EM-G11c2: the member's Auto-run choice decides every write of
             # this job other than the status rows.
-            writes = await auto_run_on(db, account_id)
+            writes = await auto_run_on(db, account_id) or not obey_auto_run
             # Select threads that NEED WORK, not simply the newest ones.
             #
             # This used to take the 200 most recent threads from the last 30
@@ -2964,7 +2971,9 @@ async def _reclassify_reply_zero_job(
         if prev_remaining is not None and remaining >= prev_remaining:
             break
         prev_remaining = remaining
-        await _maybe_classify_threads(account_id)
+        # EM-G11c2 fix round 1: the member started this, so Auto-run does
+        # not gate it.
+        await _maybe_classify_threads(account_id, obey_auto_run=False)
     _RECLASSIFY_JOBS.finish(
         account_id, token, status="done", finished_at=_dt_now_iso())
 
