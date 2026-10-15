@@ -130,11 +130,14 @@ def channel_ready(org: str) -> bool:
 
 async def deliver(org: str, member: str, *, kind: str, body: str, outbox_id: str,
                   template: str | None = None, template_params: list[str] | None = None,
-                  reach: tuple[str | None, bool] | None = None) -> Delivery:
+                  reach: tuple[str | None, bool] | None = None,
+                  record: str | None = None) -> Delivery:
     """Send *body* to *member* on WhatsApp. Never raises.
 
     *reach* is the ``(wa_id, window_open)`` the loop already read, so the
-    loop's choice and the send agree. None reads them here."""
+    loop's choice and the send agree. None reads them here. *record* is
+    what the thread records for a free-text send, when it is not *body*:
+    the loop quotes text that a rule or a workflow wrote (RE-5, P2-4)."""
     from gateway.routes.whatsapp_channel import flags as wa_flags
 
     if not wa_flags.org_allowed(org):
@@ -175,7 +178,8 @@ async def deliver(org: str, member: str, *, kind: str, body: str, outbox_id: str
     out = str(out_id)[:200] if out_id else None
     # A template carries none of the body, so the thread records what the
     # member saw, not the body (review of RE-1a, P3).
-    seen = body if regime == "free_text" else template_marker(str(template), template_params)
+    seen = (record or body) if regime == "free_text" \
+        else template_marker(str(template), template_params)
     await _record(org, member, wa_id, out, seen, outbox_id)
     _log.info("reach.whatsapp.sent", kind=kind, regime=regime, phone_hint=wa_id[-4:])
     return Delivery("sent", regime=regime, provider_message_id=out)

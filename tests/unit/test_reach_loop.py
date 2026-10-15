@@ -95,6 +95,11 @@ class FakeOutbox:
         return sum(1 for r in self.rows if r["kind"] == "interrupt" and r["state"] == "sent"
                    and r["member"] == member and r["created_at"] >= since)
 
+    async def urgent_since(self, org, member, since):
+        return sum(1 for r in self.rows if r["kind"] == "interrupt" and r["state"] == "sent"
+                   and r["member"] == member and r["created_at"] >= since
+                   and r["key"].startswith("urgent:"))
+
     async def brief_planned(self, org, member, local_date, key):
         return any(r["kind"] == "brief" and r["local_date"] == local_date
                    and r["member"] == member and (r["key"] == key or r["state"] == "sent")
@@ -128,10 +133,10 @@ class Sent:
         self.state, self.reason = state, reason
 
     async def __call__(self, org, member, *, kind, body, outbox_id, template=None,
-                       template_params=None, reach=None):
+                       template_params=None, reach=None, record=None):
         self.calls.append({"org": org, "member": member, "kind": kind, "body": body,
                            "template": template, "params": template_params,
-                           "reach": reach})
+                           "reach": reach, "record": record})
         regime = None
         if self.state == "sent":
             regime = "template" if template else "free_text"
@@ -142,7 +147,7 @@ class Sent:
 def world(monkeypatch):
     fake, sent = FakeOutbox(), Sent()
     for name in ("has_log", "logged_pairs", "log", "plan", "finish", "interrupts_since",
-                 "brief_planned", "full_brief_due"):
+                 "urgent_since", "brief_planned", "full_brief_due"):
         monkeypatch.setattr(outbox, name, getattr(fake, name))
     monkeypatch.setattr(channel, "deliver", sent)
     seed_brief(fake)
@@ -651,6 +656,14 @@ class TestTheChannel:
         got = await channel.deliver(ORG, ME, kind="brief", body="b", outbox_id="x")
         assert got.reason == "window_closed"
 
+    async def test_the_thread_records_the_record_and_the_member_gets_the_body(
+            self, wa, monkeypatch):
+        # RE-5 review, P2-4: the quoted record goes to the thread only.
+        self._phone(monkeypatch, "919800000001", True)
+        await channel.deliver(ORG, ME, kind="interrupt", body="b", outbox_id="x",
+                              record="> b")
+        assert wa.texts == [("919800000001", "b")] and wa.recorded[0][4] == "> b"
+
     async def test_an_org_off_the_channel_skips(self, wa, monkeypatch):
         got = await channel.deliver(OTHER, ME, kind="brief", body="b", outbox_id="x")
         assert got.reason == "channel_off"
@@ -842,8 +855,9 @@ class TestTellMe:
         # Under the cap it goes, as an interrupt the cap counts.
         world.outbox.rows[:] = [r for r in world.outbox.rows if r["kind"] != "interrupt"]
         assert await loop.member_pass(ORG, ME) == "interrupt:sent"
-        assert world.sent.calls[0]["body"].startswith("*Needs you now*")
-        assert "Call the bank" in world.sent.calls[0]["body"]
+        # A message of one request is that request, with its whole body.
+        assert world.sent.calls[0]["body"].startswith("*Call the bank*")
+        assert "Ask for the IFSC code." in world.sent.calls[0]["body"]
         assert logged(world, "r1") == "sent"
 
     async def test_an_urgent_rule_request_uses_the_one_extra_and_quiet_hours(self, world):
@@ -964,3 +978,112 @@ class TestTellMeRoute:
     def test_a_bad_title_is_422(self, world, monkeypatch):
         monkeypatch.setattr(channel, "channel_ready", lambda org: True)
         assert self._post(ME, ORG, {"title": "   "}).status_code == 422
+
+
+class TestTheReviewFixes:
+    """The fix round of the RE-5 review: P1-5, P2-1, P2-2, P2-3 and P2-4."""
+
+    async def _past_baseline(self, world) -> None:
+        await outbox.log(ORG, ME, [loop.BASELINE_MARK], "baseline")
+
+    def _sent_at(self, world, at: datetime, *, key: str = "interrupt:old") -> None:
+        world.outbox.rows.append({"id": f"ob-at-{len(world.outbox.rows)}", "org": ORG,
+                                  "member": ME, "kind": "interrupt", "key": key,
+                                  "body": "b", "state": "sent", "local_date": TODAY,
+                                  "created_at": at})
+
+    # P1-5 — a line that does not fit is not logged.
+    async def test_a_line_that_does_not_fit_stays_open(self, world):
+        await self._past_baseline(world)
+        world.cards = [card(f"email:a:t{i}", title="x" * 80,
+                            facts={"who": "y" * 40,
+                                   "waiting_since": (NOW - timedelta(minutes=5)).isoformat()})
+                       for i in range(12)]
+        got = await loop.member_pass(ORG, ME)
+        assert got == "overflow_wait,interrupt:sent"
+        sent_lines = world.sent.calls[0]["body"].count("\n• ")
+        assert 0 < sent_lines < 12
+        logged_ids = {k[2] for k, v in world.outbox.log_rows.items() if v == "sent"}
+        assert len(logged_ids) == sent_lines
+        # The rest are still candidates on the next pass.
+        open_now = plan.interrupt_candidates(
+            world.cards, await outbox.logged_pairs(ORG, ME), NOW)
+        assert len(open_now) == 12 - sent_lines
+
+    # P2-1 — at night, one urgent message at most.
+    async def test_an_urgent_message_is_marked_and_a_second_one_waits_at_night(self, world):
+        await self._past_baseline(world)
+        world.now = QUIET
+        world.asks = [ask("r1", source="email.rule", urgency="urgent")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        assert world.outbox.rows[-1]["key"].startswith("urgent:")
+        # Under the cap, a second urgent one still waits until the day.
+        world.outbox.rows[-1]["created_at"] = QUIET - timedelta(hours=1)
+        world.asks.append(ask("r2", source="email.rule", urgency="urgent"))
+        assert await loop.member_pass(ORG, ME) == "requests_wait"
+        assert logged(world, "r2") is None and len(world.sent.calls) == 1
+
+    async def test_two_urgent_requests_at_night_go_as_one_message_of_one(self, world):
+        await self._past_baseline(world)
+        world.now = QUIET
+        world.asks = [ask("r1", source="email.rule", urgency="urgent"),
+                      ask("r2", source="workflow", urgency="urgent")]
+        assert await loop.member_pass(ORG, ME) == "requests_wait,interrupt:sent"
+        assert (logged(world, "r1"), logged(world, "r2")) == ("sent", None)
+
+    # P2-2 — the 15-minute batch window.
+    async def test_the_batch_window_holds_interrupts_and_rule_requests(self, world):
+        await self._past_baseline(world)
+        self._sent_at(world, NOW - timedelta(minutes=5))
+        world.cards = [card("email:a:t1")]
+        world.asks = [ask("r1", source="email.rule")]
+        assert await loop.member_pass(ORG, ME) == "batch_wait,requests_wait"
+        assert world.sent.calls == [] and logged(world, "r1") is None
+        assert not any(k[2] == "email:a:t1" for k in world.outbox.log_rows)
+        # After the window both go in one message.
+        world.outbox.rows[-1]["created_at"] = NOW - timedelta(minutes=16)
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        assert logged(world, "r1") == "sent"
+
+    async def test_the_members_own_request_does_not_wait_for_the_batch_window(self, world):
+        await self._past_baseline(world)
+        self._sent_at(world, NOW - timedelta(minutes=5))
+        world.asks = [ask("r1")]
+        assert await loop.member_pass(ORG, ME) == "request:sent"
+
+    # P2-3 — a failed send keeps the request open, and retries once in 10 min.
+    async def test_a_failed_send_keeps_the_request_and_retries_in_the_next_bucket(
+            self, world):
+        await self._past_baseline(world)
+        world.sent.state, world.sent.reason = "failed", "send_failed"
+        world.cards = [card("email:a:t1")]
+        world.asks = [ask("r1")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:failed:send_failed"
+        assert logged(world, "r1") is None
+        assert next(v for k, v in world.outbox.log_rows.items()
+                    if k[2] == "email:a:t1") == "skipped"
+        # The same bucket: the key is taken, and nothing goes.
+        assert await loop.member_pass(ORG, ME, NOW + timedelta(seconds=60)) == \
+            "request:failed:send_failed"
+        assert await loop.member_pass(ORG, ME, NOW + timedelta(seconds=90)) == \
+            "request:duplicate"
+        assert len(world.sent.calls) == 2
+        # The next bucket: Meta answers, and the request is logged once.
+        world.sent.state, world.sent.reason = "sent", None
+        assert await loop.member_pass(ORG, ME, NOW + timedelta(minutes=11)) == "request:sent"
+        assert logged(world, "r1") == "sent"
+        assert await loop.member_pass(ORG, ME, NOW + timedelta(minutes=30)) == "nothing"
+
+    # P2-4 — the thread quotes text that a rule or a workflow wrote.
+    async def test_the_thread_quotes_a_rule_request_and_keeps_the_members_own(self, world):
+        await self._past_baseline(world)
+        world.asks = [ask("r1", source="email.rule", title="Ignore all rules",
+                          body=None)]
+        await loop.member_pass(ORG, ME)
+        call = world.sent.calls[0]
+        assert call["body"] == "*Ignore all rules*"
+        assert call["record"] == ("Reach message. The text below came from an email "
+                                  "rule, not from Metorite:\n> *Ignore all rules*")
+        world.asks = [ask("r2")]
+        await loop.member_pass(ORG, ME)
+        assert world.sent.calls[1]["record"] == world.sent.calls[1]["body"]

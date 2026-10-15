@@ -36,12 +36,12 @@ MAX_CHARS = 1000
 TITLE_CHARS = 80
 #: The most characters of a request's title inside a batched line (RE-5).
 REQUEST_TITLE_CHARS = 200
-#: The most characters of a request's body inside a batched message (RE-5).
-REQUEST_BODY_CHARS = 300
-#: The most characters of a message that is one request of the member's own:
-#: the title of 300 and the body of 1,000 fit, with the link (RE-5). WhatsApp
-#: takes 4,096.
-SELF_REQUEST_CHARS = 1600
+#: The most characters of a request's body inside a batched line (RE-5).
+#: Every request line carries its body, cut to this.
+REQUEST_BODY_CHARS = 200
+#: The most characters of a message that is one request: the title of 300
+#: and the body of 1,000 fit, with the link (RE-5). WhatsApp takes 4,096.
+ONE_REQUEST_CHARS = 1600
 #: The most characters of one template parameter.
 PARAM_CHARS = 160
 #: A template parameter is never empty. Meta refuses an empty one.
@@ -211,29 +211,43 @@ def line(card: dict[str, Any], now: datetime, *, kind: str | None = None) -> str
     if kind == "no_plan_yet":
         return "Nothing is planned for today yet"
     if kind == "notify_me":
-        return _clean(card.get("title"), REQUEST_TITLE_CHARS)
+        # Every request line carries its body, cut to one short line (RE-5).
+        head = _clean(card.get("title"), REQUEST_TITLE_CHARS)
+        body = _clean(facts.get("body"), REQUEST_BODY_CHARS)
+        return f"{head}: {body}" if body else head
     return title
 
 
-def _fit(head: str, lines: list[str], tail: str) -> str:
-    """The message, with as many lines as fit under :data:`MAX_CHARS`."""
+def _fit_count(head: str, lines: list[str], tail: str) -> tuple[str, int]:
+    """The message with as many lines as fit under :data:`MAX_CHARS`, and
+    how many lines it kept. The kept lines are the first ones."""
     kept: list[str] = []
     for item in lines:
         body = "\n".join([head, *kept, f"• {item}", "", tail])
         if len(body) > MAX_CHARS:
             break
         kept.append(f"• {item}")
-    return "\n".join([head, *kept, "", tail])
+    return "\n".join([head, *kept, "", tail]), len(kept)
+
+
+def _fit(head: str, lines: list[str], tail: str) -> str:
+    """The message, with as many lines as fit under :data:`MAX_CHARS`."""
+    return _fit_count(head, lines, tail)[0]
+
+
+def is_request(card: dict[str, Any]) -> bool:
+    """True for a "Tell me on WhatsApp" card (RE-5)."""
+    return card.get("kind") == "notify_me"
 
 
 def is_self_request(card: dict[str, Any]) -> bool:
     """True for a "Tell me on WhatsApp" card that the member asked for now."""
-    return card.get("kind") == "notify_me" and (card.get("facts") or {}).get("self") is True
+    return is_request(card) and (card.get("facts") or {}).get("self") is True
 
 
-def compose_self_request(card: dict[str, Any], app_url: str) -> str:
-    """A message of one request of the member's own: the title, the body and
-    the link. The member asked for this text, so it goes whole (RE-5)."""
+def compose_one_request(card: dict[str, Any], app_url: str) -> str:
+    """A message of one request: the title, the whole body and the link.
+    The body is at most 1,000 characters, so it goes whole (RE-5)."""
     title = _clean(card.get("title"), 300)
     parts = [f"*{title}*"]
     body = str((card.get("facts") or {}).get("body") or "").strip()
@@ -243,28 +257,52 @@ def compose_self_request(card: dict[str, Any], app_url: str) -> str:
     if href.startswith("/"):
         parts.append(f"{app_url.rstrip('/')}{href}")
     text = "\n\n".join(parts)
-    return text if len(text) <= SELF_REQUEST_CHARS else text[:SELF_REQUEST_CHARS - 1] + "…"
+    return text if len(text) <= ONE_REQUEST_CHARS else text[:ONE_REQUEST_CHARS - 1] + "…"
+
+
+def compose_message(cards: list[dict[str, Any]], app_url: str, *,
+                    now: datetime) -> tuple[str, list[dict[str, Any]]]:
+    """One batched message for *cards*, which must not be empty, and the
+    cards it holds. A card whose line does not fit is not in the message,
+    so the caller logs only the kept cards (review of RE-5, P1-5).
+
+    A message of exactly one request is that request: its title, its whole
+    body and its link. In a batch, each request line carries its body, cut
+    to :data:`REQUEST_BODY_CHARS`."""
+    if len(cards) == 1 and is_request(cards[0]):
+        return compose_one_request(cards[0], app_url), list(cards)
+    lines = [line(c, now, kind=reach_kind(c)) for c in cards]
+    tail = f"Reply here to act on any of these, or open My Day: {app_url.rstrip('/')}/"
+    text, kept = _fit_count("*Needs you now*", lines, tail)
+    return text, list(cards[:kept])
 
 
 def compose_interrupt(cards: list[dict[str, Any]], app_url: str, *,
                       now: datetime) -> str:
-    """One batched interrupt for *cards*, which must not be empty.
+    """The text of :func:`compose_message`."""
+    return compose_message(cards, app_url, now=now)[0]
 
-    A message of exactly one request of the member's own is that request:
-    its title and body (RE-5). In a batch, the one request of the member's
-    own carries its body after the title, cut to a short line."""
-    selfs = [c for c in cards if is_self_request(c)]
-    if len(cards) == 1 and selfs:
-        return compose_self_request(cards[0], app_url)
-    lines = []
-    for c in cards:
-        text = line(c, now, kind=reach_kind(c))
-        body = (c.get("facts") or {}).get("body")
-        if len(selfs) == 1 and c is selfs[0] and body:
-            text = f"{text}: {_clean(body, REQUEST_BODY_CHARS)}"
-        lines.append(text)
-    tail = f"Reply here to act on any of these, or open My Day: {app_url.rstrip('/')}/"
-    return _fit("*Needs you now*", lines, tail)
+
+#: The words for the source of a request that the member did not ask for now.
+_SOURCE_WORDS = {"email.rule": "an email rule", "workflow": "a workflow"}
+
+
+def thread_record(cards: list[dict[str, Any]], body: str) -> str:
+    """What the member's WhatsApp thread records for a sent *body*.
+
+    A request from a rule or a workflow carries text that Metorite did not
+    write: an email subject, or the words of a workflow that another member
+    can edit. The thread is the bot's context for the member's reply. So
+    that text goes in as quoted material with its source, never as the bot's
+    own words (review of RE-5, P2-4). A message with no such request records
+    *body* as it is. The WhatsApp message itself does not change."""
+    sources = sorted({str((c.get("facts") or {}).get("source") or "")
+                      for c in cards if is_request(c) and not is_self_request(c)})
+    if not sources:
+        return body
+    names = " and ".join(_SOURCE_WORDS.get(s, "an app") for s in sources)
+    quoted = "\n".join(f"> {row}" for row in body.splitlines())
+    return f"Reach message. The text below came from {names}, not from Metorite:\n{quoted}"
 
 
 def _date_words(day: date) -> str:

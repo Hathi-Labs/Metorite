@@ -160,10 +160,13 @@ class TestTheCard:
         gone = _req(id="b", expires_at=now - timedelta(seconds=1))
         assert requests.split([live, gone], now) == ([live], [gone])
 
-    def test_a_batch_line_is_the_title(self):
+    def test_a_batch_line_is_the_title_and_the_body(self):
         now = datetime(2026, 10, 15, 8, 0, tzinfo=UTC)
         rule = requests.card(_req(source="workflow", title="Sync failed"), "me@org.test")
         assert plan.line(rule, now, kind="notify_me") == "Sync failed"
+        rule = requests.card(_req(source="workflow", title="Sync failed", body="Step 3\nlost"),
+                             "me@org.test")
+        assert plan.line(rule, now, kind="notify_me") == "Sync failed: Step 3 lost"
 
 
 # ── The fence: no caller imports a channel adapter (§4.1, RE-1 TestNoDirectSend) ─
