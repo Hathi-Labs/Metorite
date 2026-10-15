@@ -3,10 +3,11 @@
 ``MAILBOX_WRITE_TOOLS`` in the email agent names each tool that writes to a
 mailbox, saves an automation, turns on a background write, or changes what
 the assistant knows. Each one asks a card before its first write. A refusal
-writes nothing. A run with no card channel (the email chat pane, which runs
-with ``shows_cards=False``, or a scheduled run) writes nothing and answers
-``_USE_CHAT_APP``, which sends the member to the Chat app (Q-GM-14,
-answered 2026-10-14: cards come to the pane in PR-G3b).
+writes nothing. A run with no card channel (inside ``refuse_cards``, as a
+WhatsApp run is, or a scheduled run) writes nothing and answers
+``_NO_CARD_CHANNEL``, which sends the member to the Chat app or the Email
+app. The chat pane of the Email app runs on ``/agent/run/stream`` and shows
+each card (EM-G11c1b, §12.3.13.6b), so the text names no chat.
 
 The gateway is faked at ``_request``, the one seam under ``_get``, ``_post``,
 ``_patch``, ``_delete`` and ``_patch_settings``. So a tool that calls
@@ -48,9 +49,9 @@ MSG = "0b0b0b0b-0000-4000-8000-00000000000b"
 WRITE_METHODS = ("POST", "PATCH", "PUT", "DELETE")
 
 #: The pinned answer of a write tool with no card channel (auditor edit).
-CHAT_APP_TEXT = (
-    "Nothing changed. This needs your approval on a card, and this chat "
-    "cannot show one. Ask for it in the Chat app."
+NO_CARD_TEXT = (
+    "Nothing changed. This needs your approval on a card, and a card cannot "
+    "show here. Ask for it in the Chat app or the Email app."
 )
 
 #: Each POST that only reads, by path, with the reason. The behavioural
@@ -283,53 +284,74 @@ async def test_a_yes_lets_each_registry_tool_write(gw: Gateway, tool: str) -> No
     assert gw.writes, (tool, out)
 
 
-# ── No card channel: the email chat pane and a scheduled run ─────────────────
+# ── No card channel: a run inside refuse_cards and a scheduled run ───────────
 
-def test_the_chat_app_text_is_pinned() -> None:
-    assert agents._USE_CHAT_APP == CHAT_APP_TEXT
-    assert agents._NO_CARD_CHANNEL == CHAT_APP_TEXT
+def test_the_no_card_text_is_pinned() -> None:
+    assert agents._NO_CARD_CHANNEL == NO_CARD_TEXT
+    # One name only: the old alias is gone (EM-G11c1b).
+    assert not hasattr(agents, "_USE_CHAT_APP")
     # ``noActionOf`` in EmailToolCards.tsx draws this lead as "did not act".
-    assert CHAT_APP_TEXT.startswith("Nothing changed.")
-    assert "ancelled" not in CHAT_APP_TEXT
+    assert NO_CARD_TEXT.startswith("Nothing changed.")
+    assert "ancelled" not in NO_CARD_TEXT
 
 
-#: The tools that still work with no card channel: they write nothing and
-#: answer the result, not the Chat-app text (fix round 1, P1-a).
-PANE_FALLBACK = {
-    "draft_reply": "the draft shows in the chat, and the user saves or sends "
-                   "it from the composer",
-}
-
-
-@pytest.mark.parametrize("pane", [True, False], ids=["email-pane", "scheduled"])
-@pytest.mark.parametrize("tool", REGISTRY)
-async def test_a_headless_caller_writes_nothing(
-    monkeypatch: pytest.MonkeyPatch, gw: Gateway, tool: str, pane: bool,
+async def test_the_no_card_text_names_no_chat(
+    monkeypatch: pytest.MonkeyPatch, gw: Gateway,
 ) -> None:
-    """The REAL ``request_confirmation`` and channel probe. ``refuse_cards`` is
-    what the email chat pane binds (``shows_cards=False``). A run outside it
-    with no run queue and no relay is a scheduled run."""
+    """EM-G11c1b: the chat pane of the Email app shows each card, so no text
+    of a run with no card channel may name a chat as a place with no card.
+    The member refused nothing, so neither text says "Cancelled"."""
     from acb_skills import ask_tools
 
     monkeypatch.undo()
     monkeypatch.setattr(agents, "_request", _recording_request(gw))
-    if pane:
+    with ask_tools.refuse_cards():
+        out = await agents.draft_reply("m1", BOX, save=True)
+    note = out.partition("\n\n")[0]
+    assert "Drafts is unchanged" in note, note
+    for text in (agents._NO_CARD_CHANNEL, note):
+        assert "this chat" not in text.lower(), text
+        assert "cancelled" not in text.lower(), text
+
+
+#: The tools that still work with no card channel: they write nothing and
+#: answer the result, not the no-card text (fix round 1, P1-a).
+NO_CHANNEL_FALLBACK = {
+    "draft_reply": "the draft shows in the chat, and the user saves or sends "
+                   "it in the Email app",
+}
+
+
+@pytest.mark.parametrize("refused", [True, False], ids=["no-channel", "scheduled"])
+@pytest.mark.parametrize("tool", REGISTRY)
+async def test_a_headless_caller_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, gw: Gateway, tool: str, refused: bool,
+) -> None:
+    """The REAL ``request_confirmation`` and channel probe. ``refuse_cards`` is
+    what a run with no card channel binds (``shows_cards=False``). A run
+    outside it with no run queue and no relay is a scheduled run."""
+    from acb_skills import ask_tools
+
+    monkeypatch.undo()
+    monkeypatch.setattr(agents, "_request", _recording_request(gw))
+    if refused:
         with ask_tools.refuse_cards():
             out = await getattr(agents, tool)(**WRITE_CASES[tool])
     else:
         out = await getattr(agents, tool)(**WRITE_CASES[tool])
     assert gw.writes == [], tool
-    if tool in PANE_FALLBACK:
-        assert out != CHAT_APP_TEXT, tool
+    if tool in NO_CHANNEL_FALLBACK:
+        assert out != NO_CARD_TEXT, tool
     else:
-        assert out == CHAT_APP_TEXT, (tool, out)
+        assert out == NO_CARD_TEXT, (tool, out)
 
 
-async def test_a_draft_in_the_email_pane_shows_and_saves_nothing(
+async def test_a_draft_with_no_card_channel_saves_nothing(
     monkeypatch: pytest.MonkeyPatch, gw: Gateway,
 ) -> None:
-    """P1-a: drafting works in the pane. The draft comes back, no card shows,
-    and no provider draft is made. The first line says it is not saved."""
+    """P1-a: drafting works with no card channel. The draft comes back, no
+    card shows, and no provider draft is made. The first line says it is not
+    saved."""
     from acb_skills import ask_tools
 
     monkeypatch.undo()
@@ -338,7 +360,7 @@ async def test_a_draft_in_the_email_pane_shows_and_saves_nothing(
         out = await agents.draft_reply("m1", BOX, save=True)
     head, _, body = out.partition("\n\n")
     assert head.startswith(f"Draft from {BOX_TEXT} (mailbox {BOX})")
-    assert "Drafts is unchanged" in head and "composer" in head
+    assert "Drafts is unchanged" in head and "Email app" in head
     # Round 2: the note of an unsaved draft shares no text with the note
     # of a saved one, so no reader takes it for a save.
     assert "saved to Drafts" not in head

@@ -94,7 +94,8 @@ def refuse_cards_for_run(refused: bool) -> _contextvars.Token[bool]:
     It is a ContextVar, so it covers the callers of ``run_agent_stream`` on
     MAF, whose tools run in the run's context. A Copilot SDK tool that runs
     in a JSON-RPC thread reads a fresh context, so it is NOT covered. Only
-    the email chat passes ``shows_cards=False`` today, and it runs MAF."""
+    the unused route ``/email/ai/chat`` passes ``shows_cards=False`` today,
+    and it runs MAF. The chat pane of the Email app does not call it."""
     return _CARDS_REFUSED.set(bool(refused) or _CARDS_REFUSED.get())
 
 

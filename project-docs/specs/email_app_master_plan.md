@@ -13587,8 +13587,8 @@ cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 builds it. ✅ **PR-G2 (EM-G11b) is merged** (#1001, 2026-10-14). ✅ **PR-G7 (EM-G11f1) is
 merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. ✅ **PR-G3 (EM-G11c1)
 is merged** (#1019, 2026-10-14), and §12.3.13.6 records what it covers. The owner answered
-Q-GM-14 on 2026-10-14. 📝 **PR-G3b (EM-G11c1b) is specified** (2026-10-15, §12.3.13.6b): the
-pane shows cards on `main` already, so PR-G3b proves it and closes two gaps. 🔨 **PR-G8 (EM-G11f2) is
+Q-GM-14 on 2026-10-14. 🔨 **PR-G3b (EM-G11c1b) is built, not merged** (2026-10-15, branch
+`gmail-g3b`, §12.3.13.6b): the browser proves the pane shows cards, and the PR closes two gaps. 🔨 **PR-G8 (EM-G11f2) is
 built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264). The other
 PRs are not built.
 
@@ -13864,7 +13864,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G1 | **EM-G11a** — the disclosure step and the Google button | 1, 8 | 🟢 AGENT-SAFE · security review · visual review. 🔴 The owner approves the disclosure text (Q-GM-7) | M, about 550 | §12.3.13.4 |
 | PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
-| PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 📝 Specified 2026-10-15. The pane shows cards on `main`, so the PR gets browser evidence, starts a saved draft card as saved, and replaces the interim text | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
+| PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 🔨 Built, not merged (2026-10-15, branch `gmail-g3b`). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
 | PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
@@ -14290,8 +14290,37 @@ items.
 
 ##### 12.3.13.6b EM-G11c1b — cards in the email chat pane (PR-G3b)
 
-**Status.** 📝 Specified 2026-10-15. Verified against code at `origin/main` `caec2932f` on
-2026-10-15. Not built. A spec-auditor pass comes before an agent builds it.
+**Status.** 🔨 Built, not merged (2026-10-15, branch `gmail-g3b`). The spec-auditor cleared
+acceptance items 1 to 6 (GO-NARROWED). Item 7 needs an Outlook test mailbox, so it is evidence
+after the merge. The build added no Send on a saved draft (Q-GM-15).
+
+**What the build found (2026-10-15).**
+
+- **Item 1 holds in a browser.** `e2e/email-pane-confirm-card.spec.ts` opens the real `/email`
+  page and its "Chat" pane. It streams the card events that a run of the real executor sent for
+  `email-assistant` with `shows_cards=True`. The card shows in the pane, and Approve and Reject go
+  to `POST /api/agent/respond-input`. A closed and opened pane shows the card once.
+- ⚠️ **With the D99 flags on, the "Chat" door of the Email app opens the one assistant**
+  (`page.tsx:519-523`), not `EmailAssistantChat`. Production sets `NEXT_PUBLIC_SHELL_CHAT`. So
+  there the member talks to `orchestrator`, which calls the email assistant as a delegate.
+- **The delegated card works, and a scripted run proves it.** The verifier of round 1 ran a
+  scripted `RoutingHarness` turn: `orchestrator`, then `call_agent`, then the real email
+  assistant. APPROVE wrote. REJECT wrote nothing. A run with no card channel wrote nothing. A
+  scratch copy of the browser spec with the three flags on also showed a card in the dock. A mock
+  fed that copy, and the mock did NOT delegate. It ignored `agentName` and sent no `SUB_AGENT_*`
+  event. So the copy proves only that the dock draws a card event, not the delegated path.
+- ⚠️ **On the D99 path, no draft card shows for a delegated `draft_reply`.** The tool of a
+  delegate goes into `subAgentTools` (`CP/lib/chatStream.ts:406-428`). `MessageBubble.tsx:738`
+  gives `EmailToolCards` only the top-level `toolEvents`. So the start state "saved" of this PR
+  helps the email pane and the Chat app, where the email assistant is the agent of the chat. In
+  production the member sees the confirmation card, and then no draft card at all. The board
+  holds the follow-up: show the delegated email tool cards in the dock.
+- **Review round 1 fixed two edges of the start state.** `draftReplyHead` reads "saved" only
+  when "(saved to Drafts):" ends the head, right after the mailbox id. A mailbox label with
+  those words no longer counts. `POST /email/draft-reply` now answers `created` as soon as the
+  provider holds the draft, and its local mirror runs in a savepoint. Before, a failed mirror
+  answered `created: False`, and Save on the card made a second provider draft. Fence:
+  `tests/unit/test_email_draft_reply_created.py`.
 
 **Paths.** `AG` and `GW` are as in §12.3.13.2. `CP` is `workbench/control_plane/src/`.
 
@@ -14354,7 +14383,7 @@ card in the pane in a browser yet. Acceptance item 1 gets that evidence first.
 This PR must not add any of these:
 
 - A pass of CUSTOM events through `/email/ai/chat`, or `shows_cards=True` on it. Its
-  `event_stream` (`chat.py:254-320`) forwards no CUSTOM event, and no client reads it. A card there
+  `event_stream` (`chat.py:237`) forwards no CUSTOM event, and no client reads it. A card there
   waits an hour with no reader.
 - A card component under `CP/app/email/` or in `EmailToolCards.tsx`.
 - A second answer route, or a second answer POST.
@@ -15343,7 +15372,7 @@ The questions of EM-G11 (§12.3.13, 2026-10-14):
 - **Q-GM-15. A Send button on a draft that the tool saved.** After PR-G3b, such a draft card shows
   "Saved to Drafts" and no Send button, as after a manual save. A Send there needs
   `/email/draft-reply` to return the local draft id. Add the id and the Send, or keep the card as it
-  is? Default until an answer: keep it (§12.3.13.6b).
+  is? Default until an answer: keep the card with no Send (§12.3.13.6b).
 
 ---
 
