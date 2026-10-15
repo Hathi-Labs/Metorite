@@ -293,27 +293,27 @@ def test_no_bracket_survives_any_spacing_or_nesting() -> None:
 def test_neutralise_is_linear_on_200_kb_of_worst_case_text() -> None:
     """Round 3 (P1, availability): the frame runs in the gateway's event loop,
     so it must be linear. 200 KB of nested brackets, mixed look-alikes, nested
-    token halves and open tags each take under a second, and so does the
-    trusted mode."""
-    import time
-
+    token halves and open tags each grow linearly, and so does the trusted
+    mode. The fence compares equal work at n and 8 x n/8, with no wall-clock
+    budget (#947, ``_linear_time``)."""
     from evals.email_injection.mails import LOOK_ALIKE_CLOSE, LOOK_ALIKE_OPEN
+    from tests.unit._linear_time import assert_linear
 
-    size = 200_000
-    alike = (LOOK_ALIKE_OPEN + LOOK_ALIKE_CLOSE + " x\n" + ZWSP) * (size // 40 + 1)
+    unit = LOOK_ALIKE_OPEN + LOOK_ALIKE_CLOSE + " x\n" + ZWSP
     worst = {
-        "nested": "<" * (size // 2) + ">" * (size // 2),
-        "look_alikes": alike[:size],
-        "nested_token": TOKEN[:8] * (size // 16) + TOKEN[8:] * (size // 16),
-        "open_tags": "<personal_instructions " * (size // 23),
+        "nested": lambda n: "<" * (n // 2) + ">" * (n // 2),
+        "look_alikes": lambda n: (unit * (n // len(unit) + 1))[:n],
+        "nested_token": lambda n: TOKEN[:8] * (n // 16) + TOKEN[8:] * (n // 16),
+        "open_tags": lambda n: "<personal_instructions " * (n // 23),
     }
-    for name, text in worst.items():
-        start = time.perf_counter()
-        neutralise(text, TOKEN)
-        defang_trusted(text)
-        took = time.perf_counter() - start
-        assert took < 1.0, f"{name}: {took:.2f} s for {len(text)} characters"
-    assert TOKEN not in neutralise(worst["nested_token"], TOKEN)
+    for build in worst.values():
+
+        def setup(size: int, build=build):
+            text = build(size)
+            return lambda: (neutralise(text, TOKEN), defang_trusted(text))
+
+        assert_linear(setup, 200_000)
+    assert TOKEN not in neutralise(worst["nested_token"](200_000), TOKEN)
 
 
 def test_the_learned_text_of_the_about_block_has_no_shape() -> None:
