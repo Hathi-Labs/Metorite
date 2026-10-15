@@ -209,13 +209,8 @@ async def recall_notes(path: str, query: str = "", offset: int = 0) -> str:
         offset: The first line of the page, 0 by default.
 
     Returns:
-        The file contents (or filtered lines), or ``"(empty)"`` if the
-        file doesn't exist or has no matching lines.
-
-    Example::
-
-        all_notes = await recall_notes("NOTES.md")
-        abc_notes = await recall_notes("leads.md", "ABC Corp")
+        The file contents (or filtered lines), or a note that it is empty,
+        missing or has no matching lines.
     """
     root_s = _get_agent_dir()
     if not root_s:

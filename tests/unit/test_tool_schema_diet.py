@@ -226,11 +226,10 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
 #: The whole floor. Nudging one tool up must be paid for elsewhere.
 #: 9,000 until 2026-10-09. The floor then measured 6,438 with `decide`, after
 #: the catalog of emit_generative_ui went on demand.
-#: 6,700 until 2026-10-15. Agent reads page part 2 gave recall_notes an
-#: `offset`, so a long notes file pages and no longer floods the context. It
-#: measured 193 -> 215 (+22), and the floor 6,693 -> 6,715. The ceiling rose
-#: by the same 22. No other tool was trimmed to make room.
-CORE_SCHEMA_TOTAL_CEILING = 6_722
+#: 2026-10-15, agent reads page part 2: recall_notes gained an `offset`
+#: (193 -> 215, +22), and paid for it itself. Its worked example left the
+#: docstring, so it measured 180, and the floor 6,693 -> 6,680.
+CORE_SCHEMA_TOTAL_CEILING = 6_700
 
 
 def _tools_by_name() -> dict[str, object]:

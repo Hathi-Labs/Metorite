@@ -600,6 +600,13 @@ async def test_the_published_workflows_break_a_tie_by_id(db, monkeypatch) -> Non
                 "RETURNING id"),
                 {"n": f"Flow {TAG}", "me": ME, "o": db.org_b}).scalar_one()))
     mine = set(ids)
+    # ⚠️ This test pins the ORDER only. The real path is broken under RLS:
+    # `list_published_workflows` reads through the unbound `get_db()`, and
+    # under FORCE RLS the app role (acb_app) sees 0 rows there. Production
+    # counts 0 published workflows on that read. The patch below hands the
+    # read a tenant-bound session, so this test passes where production
+    # fails. A separate PR binds the tenant in the read. That fix will
+    # replace this patch, and this test will then call the real path.
     async with _as_member(db, db.org_b), tenant_session() as session:
         async def _get_db() -> Any:
             return _Bound(session)
