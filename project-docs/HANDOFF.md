@@ -5483,9 +5483,11 @@ line — never reclaim a number by deleting the other entry.
   `project:<uuid>`. CLAUDE.md §4 names one subject-grammar validator as a
   seam. `knowledge_base.md` §5.1 (WS-61 KB-1) must use the shared one, so
   the spelling has to be decided before KB-1 and AM-3 both write grants.
-- **Do this:** pick one spelling, put the validator in
-  `acb_auth/permissions.py`, and make Projects, Artifacts and Knowledge call
-  it. A migration that widens the artifacts CHECK is expand-only (R6).
+- **Do this:** KB-1 settled the spelling on 2026-10-15: the bare email of
+  Projects, with the validator moved to `acb_auth/permissions.py`
+  (`knowledge_base.md` §5.1). AM-3 calls that validator, or records why
+  Artifacts keeps `user:`. A migration that widens the artifacts CHECK is
+  expand-only (R6).
 - **Authority:** CLAUDE.md §4 (respect the seams), `tenancy_and_visibility.md` §3
 - **Added:** 2026-10-15 · WS-61 KB-0 audit
 
