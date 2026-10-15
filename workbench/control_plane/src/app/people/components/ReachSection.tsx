@@ -65,6 +65,12 @@ export function ReachSection() {
           empty="Nothing new is urgent."
         />
       </div>
+      {view.held && (
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          These wait until your next message to Metorite on WhatsApp, then go
+          out together.
+        </p>
+      )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button

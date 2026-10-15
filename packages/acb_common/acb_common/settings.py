@@ -294,6 +294,10 @@ class Settings(BaseSettings):
     # allows nobody. `reach_daily_cap` is the most interrupts one member gets
     # in one local day. `reach_brief_template` is an approved Meta template
     # name for a brief outside the 24-hour window. Empty sends no template.
+    # `reach_needs_you_template` (RE-2a) is an approved Meta template for an
+    # interrupt outside the window. Empty holds the interrupt until the member
+    # next writes to the bot. `reach_template_language` is the language code
+    # of both templates.
     # The one reader is `gateway.reach.flags`. A flip on a box is gate
     # `enforcement-flip`. Spec: project-docs/specs/proactive_reach.md.
     # Fence: tests/unit/test_reach_loop.py.
@@ -302,6 +306,8 @@ class Settings(BaseSettings):
     reach_members: str = ""
     reach_daily_cap: int = 3
     reach_brief_template: str = ""
+    reach_needs_you_template: str = ""
+    reach_template_language: str = "en"
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 

@@ -12,12 +12,19 @@ real SQL.
 * **The channel** skips with no link, and with the window closed.
 * **The allowlist** binds the tick and both routes. Another org's member is
   refused.
+* **Hold and catch up** (RE-2a). With the window closed and no template, an
+  interrupt and a brief are held, and the first pass with the window open
+  sends them. A template goes out with its body parameters. After a template
+  brief, the full brief follows once.
+
+The fixture marks today's brief as sent at :data:`NOW`, so a test of the
+interrupt sees no brief. A test of the brief clears it with ``no_brief_yet``.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -93,24 +100,50 @@ class FakeOutbox:
                    and r["member"] == member for r in self.rows)
 
 
+    async def full_brief_due(self, org, member, local_date, key):
+        sent_template = any(
+            r["kind"] == "brief" and r["local_date"] == local_date and r["member"] == member
+            and r["state"] == "sent" and r.get("regime") == "template" for r in self.rows)
+        return sent_template and not any(r["key"] == key for r in self.rows)
+
+
+TODAY = date(2026, 10, 15)
+
+
+def seed_brief(fake: FakeOutbox, day: date = TODAY, regime: str = "free_text") -> None:
+    fake.rows.append({"id": f"ob-seed-{day}", "org": ORG, "member": ME, "kind": "brief",
+                      "key": plan.brief_key(ME, day), "body": "b", "state": "sent",
+                      "regime": regime, "local_date": day, "created_at": NOW})
+
+
+def no_brief_yet(world) -> None:
+    world.outbox.rows[:] = [r for r in world.outbox.rows if r["kind"] != "brief"]
+
+
 class Sent:
     def __init__(self, state: str = "sent", reason: str | None = None) -> None:
         self.calls: list[dict] = []
         self.state, self.reason = state, reason
 
-    async def __call__(self, org, member, *, kind, body, outbox_id, template=None):
-        self.calls.append({"org": org, "member": member, "kind": kind, "body": body})
-        return channel.Delivery(self.state, "free_text" if self.state == "sent" else None,
-                                self.reason)
+    async def __call__(self, org, member, *, kind, body, outbox_id, template=None,
+                       template_params=None, reach=None):
+        self.calls.append({"org": org, "member": member, "kind": kind, "body": body,
+                           "template": template, "params": template_params,
+                           "reach": reach})
+        regime = None
+        if self.state == "sent":
+            regime = "template" if template else "free_text"
+        return channel.Delivery(self.state, regime, self.reason)
 
 
 @pytest.fixture
 def world(monkeypatch):
     fake, sent = FakeOutbox(), Sent()
     for name in ("has_log", "logged_pairs", "log", "plan", "finish", "interrupts_since",
-                 "brief_planned"):
+                 "brief_planned", "full_brief_due"):
         monkeypatch.setattr(outbox, name, getattr(fake, name))
     monkeypatch.setattr(channel, "deliver", sent)
+    seed_brief(fake)
     # A fresh stop event: a gateway lifespan in an earlier test stops the
     # loop, and run_tick returns at once while the event is set (CI order).
     monkeypatch.setattr(loop, "_stopping", asyncio.Event())
@@ -120,8 +153,19 @@ def world(monkeypatch):
     monkeypatch.setattr(s, "reach_members", ME)
     monkeypatch.setattr(s, "reach_daily_cap", 3)
     monkeypatch.setattr(s, "reach_brief_template", "")
+    monkeypatch.setattr(s, "reach_needs_you_template", "")
+    monkeypatch.setattr(s, "reach_template_language", "en")
     w = SimpleNamespace(outbox=fake, sent=sent, cards=[], now=NOW, working=True,
-                        complete=True)
+                        complete=True, wa_id="919800000001", open=True)
+
+    async def reach_state(org, member):
+        return w.wa_id, (w.open if w.wa_id else False)
+
+    async def display_name(org, member):
+        return "Priya Shah"
+
+    monkeypatch.setattr(channel, "reach_state", reach_state)
+    monkeypatch.setattr(channel, "display_name", display_name)
 
     async def resolve(org, member):
         return SimpleNamespace(email=member, organization_id=org)
@@ -138,7 +182,7 @@ class TestTheFirstRun:
     async def test_it_logs_a_baseline_and_sends_nothing(self, world):
         world.cards = [card("email:a:t1"), card("tasks:1", "overdue")]
         assert await loop.member_pass(ORG, ME) == "baseline"
-        assert world.sent.calls == [] and world.outbox.rows == []
+        assert world.sent.calls == [] and len(world.outbox.rows) == 1  # the seeded brief
         assert set(world.outbox.log_rows.values()) == {"baseline"}
         # The second run sees nothing new, so it sends nothing either.
         assert await loop.member_pass(ORG, ME) == "nothing"
@@ -197,16 +241,19 @@ class TestTheInterrupt:
         assert world.outbox.log_rows[(ORG, ME, *plan.pair(card("email:a:t2")))] == "capped"
 
     async def test_a_skipped_send_is_logged_and_not_retried(self, world):
-        world.sent.state, world.sent.reason = "skipped", "window_closed"
+        # RE-2a: a closed window no longer reaches the channel (the loop holds
+        # it, TestHoldAndCatchUp). A skip of the channel itself still logs.
+        world.sent.state, world.sent.reason = "skipped", "channel_off"
         await loop.member_pass(ORG, ME)
         world.cards = [card("email:a:t1")]
-        assert await loop.member_pass(ORG, ME) == "interrupt:skipped:window_closed"
+        assert await loop.member_pass(ORG, ME) == "interrupt:skipped:channel_off"
         assert world.outbox.log_rows[(ORG, ME, *plan.pair(card("email:a:t1")))] == "skipped"
         assert await loop.member_pass(ORG, ME) == "nothing"
 
 
 class TestTheBrief:
     async def test_once_a_day_in_the_morning_and_it_covers_the_interrupts(self, world):
+        no_brief_yet(world)
         await loop.member_pass(ORG, ME)
         world.now = datetime(2026, 10, 15, 4, 0, tzinfo=UTC)  # 09:30 in Kolkata
         world.cards = [card("email:a:t1", facts={"who": "P", "waiting_since":
@@ -218,6 +265,161 @@ class TestTheBrief:
         assert world.outbox.log_rows[(ORG, ME, *plan.pair(card("email:a:t1")))] == "deferred"
         assert await loop.member_pass(ORG, ME) == "nothing"
         assert len(world.sent.calls) == 1
+
+
+def kolkata(hour: int, minute: int = 0) -> datetime:
+    """An instant of 15 Oct 2026 at *hour* in Kolkata."""
+    return datetime(2026, 10, 15, hour, minute, tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(UTC)
+
+
+def approval(sid: str, title: str) -> dict:
+    return card(sid, "approval", facts={}, title=title)
+
+
+class TestHoldAndCatchUp:
+    """RE-2a. Measured on the box on 2026-10-15: a brief and an interrupt were
+    dropped with ``window_closed``. Now they wait for the window."""
+
+    async def test_a_held_interrupt_goes_as_free_text_when_the_window_opens(self, world):
+        await loop.member_pass(ORG, ME)
+        world.open = False
+        world.cards = [approval("approvals:1", "Refund"), approval("approvals:2", "Leave")]
+        assert await loop.member_pass(ORG, ME) == "held"
+        assert await loop.member_pass(ORG, ME) == "held"
+        assert world.sent.calls == []
+        # Not logged and not planned: no row may stop the catch-up.
+        assert set(world.outbox.log_rows.values()) == {"baseline"}
+        assert [r["kind"] for r in world.outbox.rows] == ["brief"]
+        world.open = True
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        assert len(world.sent.calls) == 1
+        call = world.sent.calls[0]
+        assert call["template"] is None and call["reach"] == ("919800000001", True)
+        assert "Approve: Refund" in call["body"] and "Approve: Leave" in call["body"]
+        assert world.outbox.log_rows[(ORG, ME, *plan.pair(world.cards[0]))] == "sent"
+        assert await loop.member_pass(ORG, ME) == "nothing"
+
+    async def test_a_needs_you_template_sends_now_with_its_params(self, world, monkeypatch):
+        monkeypatch.setattr(get_settings(), "reach_needs_you_template", "metorite_needs_you")
+        await loop.member_pass(ORG, ME)
+        world.open = False
+        world.cards = [approval("approvals:1", "the refund for Acme"),
+                       approval("approvals:2", "Leave")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        call = world.sent.calls[0]
+        assert call["template"] == "metorite_needs_you"
+        assert call["params"] == ["Priya", "Approve: the refund for Acme (and 1 more)"]
+        assert call["reach"] == ("919800000001", False)
+        assert {world.outbox.log_rows[(ORG, ME, *plan.pair(c))] for c in world.cards} == {"sent"}
+        assert world.outbox.rows[-1]["regime"] == "template"
+
+    async def test_with_an_open_window_the_needs_you_template_is_not_used(self, world,
+                                                                          monkeypatch):
+        monkeypatch.setattr(get_settings(), "reach_needs_you_template", "metorite_needs_you")
+        await loop.member_pass(ORG, ME)
+        world.cards = [approval("approvals:1", "Refund")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        assert world.sent.calls[0]["template"] is None
+
+    async def test_a_member_with_no_link_is_not_held(self, world):
+        world.sent.state, world.sent.reason = "skipped", "no_link"
+        world.wa_id = None
+        await loop.member_pass(ORG, ME)
+        world.cards = [approval("approvals:1", "Refund")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:skipped:no_link"
+        assert world.outbox.log_rows[(ORG, ME, *plan.pair(world.cards[0]))] == "skipped"
+        assert await loop.member_pass(ORG, ME) == "nothing"
+
+    async def test_a_catch_up_in_quiet_hours_is_logged_quiet(self, world):
+        await loop.member_pass(ORG, ME)
+        world.open, world.now = False, kolkata(17)
+        world.cards = [approval("approvals:1", "Refund")]
+        assert await loop.member_pass(ORG, ME) == "held"
+        world.open, world.now = True, kolkata(19)
+        assert await loop.member_pass(ORG, ME) == "quiet"
+        assert world.sent.calls == []
+
+    async def test_a_catch_up_over_the_cap_is_logged_capped(self, world, monkeypatch):
+        monkeypatch.setattr(get_settings(), "reach_daily_cap", 1)
+        await loop.member_pass(ORG, ME)
+        world.cards = [approval("approvals:1", "Refund")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        world.open = False
+        world.cards = [approval("approvals:1", "Refund"), approval("approvals:2", "Leave")]
+        assert await loop.member_pass(ORG, ME) == "held"
+        world.open = True
+        assert await loop.member_pass(ORG, ME) == "capped"
+        assert len(world.sent.calls) == 1
+
+    async def test_a_held_brief_goes_when_the_window_opens_later_that_day(self, world):
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.open, world.now = False, kolkata(9, 30)
+        world.cards = [card("tasks:1", "overdue")]
+        assert await loop.member_pass(ORG, ME) == "brief:held"
+        assert world.outbox.rows == []
+        world.open, world.now = True, kolkata(14)
+        assert await loop.member_pass(ORG, ME) == "brief:sent"
+        assert world.sent.calls[0]["body"].startswith("*Your day, Thu 15 Oct*")
+        assert world.sent.calls[0]["template"] is None
+        assert await loop.member_pass(ORG, ME) == "nothing"
+
+    async def test_no_brief_after_the_day_end(self, world):
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.now = kolkata(18, 30)
+        world.cards = [card("tasks:1", "overdue")]
+        assert await loop.member_pass(ORG, ME) == "nothing"
+        assert world.sent.calls == [] and world.outbox.rows == []
+
+    async def test_after_the_morning_a_closed_window_holds_even_with_a_template(
+            self, world, monkeypatch):
+        monkeypatch.setattr(get_settings(), "reach_brief_template", "daily_brief")
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.open, world.now = False, kolkata(12, 30)
+        world.cards = [card("tasks:1", "overdue")]
+        assert await loop.member_pass(ORG, ME) == "brief:held"
+        assert world.sent.calls == []
+
+    async def test_a_template_brief_then_one_full_brief_when_the_window_opens(
+            self, world, monkeypatch):
+        monkeypatch.setattr(get_settings(), "reach_brief_template", "daily_brief")
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.open, world.now = False, kolkata(9, 30)
+        world.cards = [card("tasks:1", "overdue", title="Ship it", facts={"days_late": 1}),
+                       approval("approvals:1", "Refund")]
+        assert await loop.member_pass(ORG, ME) == "brief:sent,held"
+        first = world.sent.calls[0]
+        assert first["template"] == "daily_brief"
+        assert first["params"][:3] == ["Priya", "Thu 15 Oct", "2"]
+        # A template named one item, so the approval is NOT deferred.
+        assert "deferred" not in world.outbox.log_rows.values()
+        world.open, world.now = True, kolkata(10)
+        assert await loop.member_pass(ORG, ME) == "brief_full:sent"
+        full = world.sent.calls[1]
+        assert full["template"] is None and full["body"].startswith("*Your day, Thu 15 Oct*")
+        assert world.outbox.rows[-1]["key"] == plan.full_brief_key(ME, TODAY)
+        # The full brief named the approval, so it does not interrupt too.
+        assert world.outbox.log_rows[(ORG, ME, *plan.pair(world.cards[1]))] == "deferred"
+        assert await loop.member_pass(ORG, ME) == "nothing"
+        assert len(world.sent.calls) == 2
+
+    async def test_a_free_text_brief_has_no_full_follow_up(self, world):
+        await loop.member_pass(ORG, ME)
+        world.cards = [card("tasks:1", "overdue")]
+        assert await loop.member_pass(ORG, ME) == "nothing"
+        assert world.sent.calls == []
+
+    async def test_a_template_brief_with_nothing_to_say_sends_no_full_brief(
+            self, world):
+        no_brief_yet(world)
+        seed_brief(world.outbox, regime="template")
+        await loop.member_pass(ORG, ME)
+        world.cards = [card("tasks:1", "overdue", group="fyi")]
+        assert await loop.member_pass(ORG, ME) == "nothing"
+        assert world.sent.calls == []
 
 
 class TestTheTick:
@@ -269,14 +471,15 @@ class TestTheChannel:
         monkeypatch.setattr(wa_flags, "org_allowed", lambda org: org == ORG)
         monkeypatch.setattr(wa_flags, "bot_credentials",
                             lambda: {"access_token": "t", "phone_number_id": "1"})
-        provider = SimpleNamespace(texts=[], templates=[])
+        provider = SimpleNamespace(texts=[], templates=[], components=[])
 
         async def send_text(wa_id, body):
             provider.texts.append((wa_id, body))
             return "wamid.1"
 
-        async def send_template(wa_id, name, lang):
+        async def send_template(wa_id, name, lang, *, components=None):
             provider.templates.append((wa_id, name, lang))
+            provider.components.append(components)
             return "wamid.2"
 
         provider.send_text, provider.send_template = send_text, send_template
@@ -314,11 +517,42 @@ class TestTheChannel:
         assert (got.state, got.regime) == ("sent", "free_text")
         assert wa.texts == [("919800000001", "b")] and len(wa.recorded) == 1
 
-    async def test_a_closed_window_skips_an_interrupt(self, wa, monkeypatch):
+    async def test_a_closed_window_skips_an_interrupt_with_no_template(self, wa, monkeypatch):
+        self._phone(monkeypatch, "919800000001", False)
+        got = await channel.deliver(ORG, ME, kind="interrupt", body="b", outbox_id="x")
+        assert got.reason == "window_closed" and wa.texts == [] and wa.templates == []
+
+    async def test_a_closed_window_sends_the_needs_you_template_with_its_params(
+            self, wa, monkeypatch):
+        # RE-2a changed this on purpose: RE-1a refused any template for an
+        # interrupt. The loop now names the needs-you template.
         self._phone(monkeypatch, "919800000001", False)
         got = await channel.deliver(ORG, ME, kind="interrupt", body="b", outbox_id="x",
-                                    template="daily_brief")
-        assert got.reason == "window_closed" and wa.texts == [] and wa.templates == []
+                                    template="metorite_needs_you",
+                                    template_params=["Priya", "Approve: the refund for Acme"])
+        assert (got.state, got.regime) == ("sent", "template")
+        assert wa.templates == [("919800000001", "metorite_needs_you", "en")]
+        assert wa.components == [[{"type": "body", "parameters": [
+            {"type": "text", "text": "Priya"},
+            {"type": "text", "text": "Approve: the refund for Acme"}]}]]
+        assert wa.recorded[0][4] == ("(Sent the WhatsApp template metorite_needs_you: "
+                                     "Approve: the refund for Acme.)")
+
+    async def test_the_language_comes_from_the_setting(self, wa, monkeypatch):
+        monkeypatch.setattr(get_settings(), "reach_template_language", "en_GB")
+        self._phone(monkeypatch, "919800000001", False)
+        await channel.deliver(ORG, ME, kind="brief", body="b", outbox_id="x",
+                              template="daily_brief")
+        assert wa.templates == [("919800000001", "daily_brief", "en_GB")]
+
+    async def test_a_given_reach_state_is_used_and_not_read_again(self, wa, monkeypatch):
+        async def boom(*a):
+            raise AssertionError("read again")
+
+        monkeypatch.setattr(channel, "linked_phone", boom)
+        got = await channel.deliver(ORG, ME, kind="interrupt", body="b", outbox_id="x",
+                                    reach=("919800000001", True))
+        assert got.state == "sent" and wa.texts == [("919800000001", "b")]
 
     async def test_a_closed_window_sends_a_brief_as_the_template(self, wa, monkeypatch):
         self._phone(monkeypatch, "919800000001", False)
@@ -326,6 +560,8 @@ class TestTheChannel:
                                     template="daily_brief")
         assert (got.state, got.regime) == ("sent", "template")
         assert wa.templates == [("919800000001", "daily_brief", "en")]
+        assert wa.components == [None]
+        assert wa.recorded[0][4] == "(Sent the WhatsApp template daily_brief.)"
 
     async def test_a_closed_window_with_no_template_skips_a_brief(self, wa, monkeypatch):
         self._phone(monkeypatch, "919800000001", False)
@@ -365,13 +601,28 @@ class TestTheRoutes:
             return None
 
         monkeypatch.setattr(channel, "linked_phone", linked)
+        world.wa_id = None
         world.cards = [card("email:a:t1")]
         got = self._client(ME, ORG).get("/reach/preview")
         assert got.status_code == 200
         body = got.json()
         assert body["interrupts"].startswith("*Needs you now*")
         assert body["linked"] is False and body["window_open"] is False
-        assert world.sent.calls == [] and world.outbox.rows == []
+        assert body["held"] is False
+        assert world.sent.calls == [] and [r["kind"] for r in world.outbox.rows] == ["brief"]
+
+    def test_the_preview_says_held_when_the_window_is_closed(self, world, monkeypatch):
+        world.open = False
+        world.cards = [card("email:a:t1")]
+        body = self._client(ME, ORG).get("/reach/preview").json()
+        assert (body["linked"], body["window_open"], body["held"]) == (True, False, True)
+        # With a needs-you template the interrupt goes now, so it is not held.
+        monkeypatch.setattr(get_settings(), "reach_needs_you_template", "metorite_needs_you")
+        assert self._client(ME, ORG).get("/reach/preview").json()["held"] is False
+        # No candidate: nothing is held.
+        world.cards = []
+        monkeypatch.setattr(get_settings(), "reach_needs_you_template", "")
+        assert self._client(ME, ORG).get("/reach/preview").json()["held"] is False
 
     def test_the_brief_now_sends_through_the_channel(self, world):
         world.cards = [card("tasks:1", "overdue")]
