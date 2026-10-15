@@ -5359,6 +5359,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/whatsapp_assistant_channel.md` §14.9 (known limit)
 - **Added:** 2026-10-15 · branch `wa-calendar-blocks`
 
+### H-312 · The web chat cannot make a deck as a PDF, and WhatsApp can · [AGENT]
+- **Check:** `rg -n "\"document\"" apps/services/gateway/gateway/routes/workspace.py`.
+  No hit means this is open.
+- **Why.** WAC-12 (2026-10-15) gave the WhatsApp bot a deck and a report as a PDF,
+  through `pdf_render`'s source kind `document`. The web chat still makes a
+  document as Markdown or HTML, and its "Download PDF" drops every image and
+  colour. The owner rule says a channel changes delivery, never function.
+- **Do this:** give the web chat one tool that takes the same spec as
+  `whatsapp_ui` kind `document` (`acb_skills.documents.prepare`). It writes
+  the PDF with `write_artifact`, so the web shows it as a PDF artifact with a
+  download. Reuse `render_pdf("document", ...)`, and add no second renderer.
+- **Authority:** `specs/whatsapp_assistant_channel.md` §15.4
+- **Added:** 2026-10-15 · branch `wa-pdf-documents`
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
