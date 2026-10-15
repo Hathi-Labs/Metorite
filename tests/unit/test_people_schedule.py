@@ -327,6 +327,70 @@ def test_the_seed_is_read_time_and_writes_nothing() -> None:
     assert "UPDATE" not in seed_fn.upper()
 
 
+class _SeedDB:
+    """A session that records the seed's SQL and its savepoints."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.sql: list[str] = []
+        self.nested = 0
+        self.inside: list[bool] = []
+        self._depth = 0
+        self.fail = fail
+
+    @asynccontextmanager
+    async def _nest(self):
+        self.nested += 1
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
+
+    def begin_nested(self):
+        return self._nest()
+
+    async def execute(self, stmt: Any, params: Any = None) -> Any:
+        text_ = str(stmt)
+        self.sql.append(text_)
+        self.inside.append(self._depth > 0)
+        if self.fail and "FROM people" in text_:
+            raise RuntimeError("relation people does not exist")
+        rows = ([SimpleNamespace(working_hours=None)]
+                if "FROM people" in text_ else [])
+        return SimpleNamespace(fetchone=lambda: rows[0] if rows else None,
+                               fetchall=lambda: rows, mappings=lambda: rows)
+
+
+def test_the_seed_reads_the_bound_org_inside_a_savepoint(monkeypatch) -> None:
+    """MD-3c review: one address may hold a ``people`` row in two orgs since
+    migration 209, and the owner role reads past RLS. So the seed names the
+    bound tenant, as ``find_self_row`` does. And ``member_day`` runs it on a
+    shared session, so a failed read must not abort that session."""
+    from gateway.routes.tasks import settings as task_settings
+
+    async def _policy(db: Any) -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(ws, "load_policy", _policy)
+    monkeypatch.setattr(ws, "person_schedule", lambda policy, row: {})
+    monkeypatch.setattr(ws, "calendar_seed", lambda schedule: {"day_start_hour": 8})
+    db = _SeedDB()
+    assert asyncio.run(task_settings._seed_from_work_schedule(db, "Me@X.example")) \
+        == {"day_start_hour": 8}
+    people_sql = [q for q in db.sql if "FROM people" in q]
+    assert people_sql and "organization_id" in people_sql[0]
+    assert "app.tenant_id" in people_sql[0]
+    assert db.nested == 1 and all(db.inside)
+
+
+def test_a_failed_seed_read_is_contained_in_its_savepoint() -> None:
+    from gateway.routes.tasks import settings as task_settings
+
+    db = _SeedDB(fail=True)
+    assert asyncio.run(task_settings._seed_from_work_schedule(db, "me@x.example")) == {}
+    assert db.nested == 1 and all(db.inside)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 3. The surface
 # ══════════════════════════════════════════════════════════════════════════
