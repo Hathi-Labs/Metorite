@@ -199,9 +199,11 @@ async def _send_now(org: str, member: str, *, kind: str, cards: list[dict[str, A
         # the first open window sends them as free text. Its key ends in
         # ":tpl", so that free text is a new row (review of RE-2a, P2).
         logs = cards
-        if got.state == "failed":
+        if got.state == "failed" and got.reason == "send_retry":
             # A request stays open until it expires, and its key's bucket
-            # lets a later pass try again (review of RE-5, P2-3).
+            # lets a later pass try again (review of RE-5, P2-3). Only a send
+            # that surely did not reach Meta, or a 429, is tried again. A
+            # timeout may have delivered, so it is logged and never resent.
             logs = [c for c in cards if not plan.is_request(c)]
         await outbox.log(org, member, map(plan.pair, logs), outcome, outbox_id)
     _log.info("reach.message", kind=kind, state=got.state, reason=got.reason,
@@ -461,7 +463,12 @@ async def _message_step(org: str, member: str, snap: Snapshot,
     ready = await _ready_requests(asks, quiet=quiet, budget=budget) if asks else []
     if len(ready) < len(asks):
         did.append("requests_wait")
-    body, cards = plan.compose_message(ready + go, app_url(), now=snap.now) \
+    # The member's own requests first, then the feed, then rule and workflow
+    # requests, so a long request body never pushes a feed line out of the
+    # message (review of RE-5 fix round 1, P2).
+    own = [c for c in ready if (c.get("facts") or {}).get("self")]
+    rest = [c for c in ready if not (c.get("facts") or {}).get("self")]
+    body, cards = plan.compose_message(own + go + rest, app_url(), now=snap.now) \
         if ready or go else ("", [])
     if not cards:
         return

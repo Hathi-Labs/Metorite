@@ -1085,16 +1085,16 @@ class TestTheReviewFixes:
     async def test_a_failed_send_keeps_the_request_and_retries_in_the_next_bucket(
             self, world):
         await self._past_baseline(world)
-        world.sent.state, world.sent.reason = "failed", "send_failed"
+        world.sent.state, world.sent.reason = "failed", "send_retry"
         world.cards = [card("email:a:t1")]
         world.asks = [ask("r1")]
-        assert await loop.member_pass(ORG, ME) == "interrupt:failed:send_failed"
+        assert await loop.member_pass(ORG, ME) == "interrupt:failed:send_retry"
         assert logged(world, "r1") is None
         assert next(v for k, v in world.outbox.log_rows.items()
                     if k[2] == "email:a:t1") == "skipped"
         # The same bucket: the key is taken, and nothing goes.
         assert await loop.member_pass(ORG, ME, NOW + timedelta(seconds=60)) == \
-            "request:failed:send_failed"
+            "request:failed:send_retry"
         assert await loop.member_pass(ORG, ME, NOW + timedelta(seconds=90)) == \
             "request:duplicate"
         assert len(world.sent.calls) == 2
@@ -1103,6 +1103,33 @@ class TestTheReviewFixes:
         assert await loop.member_pass(ORG, ME, NOW + timedelta(minutes=11)) == "request:sent"
         assert logged(world, "r1") == "sent"
         assert await loop.member_pass(ORG, ME, NOW + timedelta(minutes=30)) == "nothing"
+
+    async def test_long_rule_requests_never_push_a_feed_line_out(self, world):
+        # Fix round 1 review, P2: the feed goes before the requests that the
+        # member did not ask for, so it always fits.
+        await self._past_baseline(world)
+        long = "x" * 200
+        world.cards = [card("email:a:t1")]
+        world.asks = [ask("w1", source="workflow", title=long, body=long),
+                      ask("w2", source="workflow", title=long, body=long)]
+        got = await loop.member_pass(ORG, ME)
+        assert got.endswith("sent")
+        assert next(v for k, v in world.outbox.log_rows.items()
+                    if k[2] == "email:a:t1") == "sent"
+
+    @pytest.mark.parametrize("reason", ["send_unsure", "send_refused"])
+    async def test_a_send_that_may_have_gone_or_cannot_go_is_never_retried(
+            self, world, reason):
+        # Fix round 1 review, P2: a timeout may have delivered, and a 4xx
+        # fails the same way again. Neither is tried again.
+        await self._past_baseline(world)
+        world.sent.state, world.sent.reason = "failed", reason
+        world.asks = [ask("r1")]
+        assert await loop.member_pass(ORG, ME) == f"request:failed:{reason}"
+        assert logged(world, "r1") == "skipped"
+        world.sent.state, world.sent.reason = "sent", None
+        assert await loop.member_pass(ORG, ME, NOW + timedelta(minutes=11)) == "nothing"
+        assert len(world.sent.calls) == 1
 
     # P2-4 — the thread quotes text that a rule or a workflow wrote.
     async def test_the_thread_quotes_a_rule_request_and_keeps_the_members_own(self, world):

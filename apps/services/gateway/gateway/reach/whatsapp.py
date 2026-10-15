@@ -105,6 +105,27 @@ async def display_name(org: str, member: str) -> str | None:
     return str(value) if value else None
 
 
+def send_failure(exc: BaseException) -> str:
+    """Why a send failed, for the retry rule (review of RE-5 fix round 1, P2).
+
+    ``send_retry``: the request surely did not reach Meta, or Meta asked us
+    to slow down (429). A later pass may try again. ``send_refused``: Meta
+    refused it (another 4xx), and a retry would fail the same way.
+    ``send_unsure``: a timeout or a 5xx, after which Meta may have the
+    message. A retry could send it twice, so none is made."""
+    import httpx
+
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return "send_retry"
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = getattr(exc.response, "status_code", None)
+        if status == 429:
+            return "send_retry"
+        if isinstance(status, int) and 400 <= status < 500:
+            return "send_refused"
+    return "send_unsure"
+
+
 def body_components(params: list[str] | None) -> list[dict[str, Any]] | None:
     """The ``components`` of a template send: one body with text parameters."""
     if not params:
@@ -172,9 +193,10 @@ async def deliver(org: str, member: str, *, kind: str, body: str, outbox_id: str
                 wa_id, str(template), flags.template_language(),
                 components=body_components(template_params))
     except Exception as exc:
+        reason = send_failure(exc)
         _log.warning("reach.whatsapp.send_failed", kind=kind, phone_hint=wa_id[-4:],
-                     **meta_error_fields(exc))
-        return Delivery("failed", reason="send_failed")
+                     reason=reason, **meta_error_fields(exc))
+        return Delivery("failed", reason=reason)
     out = str(out_id)[:200] if out_id else None
     # A template carries none of the body, so the thread records what the
     # member saw, not the body (review of RE-1a, P3).

@@ -1972,6 +1972,7 @@ _RULE_ACT_WORDS = {
     "MOVE_FOLDER": "moves to the folder", "REPLY": "drafts a reply",
     "DRAFT_EMAIL": "drafts an email", "FORWARD": "forwards",
     "CALL_WEBHOOK": "calls a webhook",
+    "NOTIFY_ME": "tells you on WhatsApp",
 }
 _RULE_CONDITION_FIELDS = (
     ("instructions", "when"), ("from_pattern", "from"), ("to_pattern", "to"),
@@ -2069,7 +2070,9 @@ async def create_rule(
 
     Actions:
         action_type: ARCHIVE | LABEL | MARK_READ | STAR | MARK_SPAM | TRASH |
-                     MOVE_FOLDER | REPLY | FORWARD | DRAFT_EMAIL | CALL_WEBHOOK.
+                     MOVE_FOLDER | REPLY | FORWARD | DRAFT_EMAIL | CALL_WEBHOOK |
+                     NOTIFY_ME ("Tell me on WhatsApp"; label is "normal" or
+                     "urgent").
         label: label/folder name for LABEL / MOVE_FOLDER.
         forward_to: recipient for a FORWARD action.
         draft_subject / draft_content: subject + body for REPLY / DRAFT_EMAIL

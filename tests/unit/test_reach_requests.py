@@ -420,6 +420,38 @@ def test_an_approved_execution_reads_the_sender_address(stored, address):
 
 
 class TestTheWorkflowStep:
+    @pytest.mark.parametrize(("status", "reason"), [((False, False), "reach_off"),
+                                                    ((True, False), "no_link")])
+    async def test_a_member_reach_cannot_reach_gets_no_row_and_the_run_goes_on(
+            self, monkeypatch, told, status, reason):
+        # Fix round 1 review, P1: the step records nothing and never fails.
+        from gateway.routes.workflows import service
+
+        async def owner(wid):
+            return ORG, "owner@org.test"
+
+        monkeypatch.setattr(service, "_workflow_owner", owner)
+        told.status[0] = status
+        run = service.build_node_services("owner@org.test", "wf-1").run_tool
+        got = await run("notify.whatsapp", {"title": "x"}, "owner@org.test")
+        assert got == {"recorded": False, "reason": reason}
+        assert list(told) == []
+
+    async def test_a_full_backlog_never_fails_the_run(self, monkeypatch, told):
+        from gateway.routes.workflows import service
+
+        async def owner(wid):
+            return ORG, "owner@org.test"
+
+        async def refuse(org, member, **kw):
+            raise requests.RequestRefused("backlog_full", "20 requests wait")
+
+        monkeypatch.setattr(service, "_workflow_owner", owner)
+        monkeypatch.setattr(requests, "tell_me", refuse)
+        run = service.build_node_services("owner@org.test", "wf-1").run_tool
+        got = await run("notify.whatsapp", {"title": "x"}, "owner@org.test")
+        assert got == {"recorded": False, "reason": "backlog_full"}
+
     async def test_the_run_binds_the_owner_and_the_args_cannot_name_a_member(
             self, monkeypatch, told):
         from gateway.routes.workflows import service

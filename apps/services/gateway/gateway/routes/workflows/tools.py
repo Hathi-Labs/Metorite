@@ -288,12 +288,22 @@ async def notify_owner_whatsapp(org: str, owner: str, workflow_id: str,
     if problems:
         raise NodeExecutionError("; ".join(problems))
     urgency = str(args.get("urgency") or "normal").strip().lower()
+    # A member that Reach cannot reach gets no row, and the run goes on: the
+    # console says why (review of RE-5 fix round 1, P1).
+    available, linked = await reach_requests.reach_status(org, owner)
+    if not available:
+        return {"recorded": False, "reason": "reach_off"}
+    if not linked:
+        return {"recorded": False, "reason": "no_link"}
     try:
         rid = await reach_requests.tell_me(
             org, owner, source="workflow",
             title=reach_requests.clip(args.get("title"), reach_requests.TITLE_MAX),
             body=args.get("body") or None, urgency=urgency, requested_by=owner,
             entity={"type": "workflow", "id": workflow_id})
+    except reach_requests.RequestRefused as exc:
+        # A full backlog or a limit stops this request, never the run.
+        return {"recorded": False, "reason": exc.reason}
     except reach_requests.RequestInvalid as exc:
         raise NodeExecutionError(f"notify.whatsapp: {exc}") from exc
     return {"recorded": rid is not None, "request_id": rid}

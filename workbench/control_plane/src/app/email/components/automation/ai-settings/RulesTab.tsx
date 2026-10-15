@@ -1371,7 +1371,11 @@ function ActionConfig({
       {/* Tell me on WhatsApp (WS-59 RE-5): one option, kept in `label`. */}
       {action.type === "NOTIFY_ME" && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <FieldLabel>Urgency</FieldLabel>
+          {/* The SelectButton carries the name "Urgency", so the visible
+              word is hidden from a screen reader: it is said once. */}
+          <span aria-hidden="true">
+            <FieldLabel>Urgency</FieldLabel>
+          </span>
           <SelectButton
             label="Urgency"
             value={action.label === "urgent" ? "urgent" : "normal"}
@@ -1500,13 +1504,13 @@ function ActionConfig({
   );
 }
 
-/** Small field label used inside the action config card. */
 /** The one option of "Tell me on WhatsApp" (WS-59 RE-5), kept in `label`. */
 const NOTIFY_URGENCY = [
   { value: "normal", label: "Normal", description: "Inside my daily limit and my working hours." },
   { value: "urgent", label: "Urgent", description: "Also in my quiet hours. One a day past my limit." },
 ] as const;
 
+/** Small field label used inside the action config card. */
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
     <span className="text-xs font-medium text-foreground">{children}</span>
