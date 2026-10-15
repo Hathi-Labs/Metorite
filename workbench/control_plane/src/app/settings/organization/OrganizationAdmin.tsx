@@ -48,6 +48,13 @@ import { useAccess } from "@/components/AccessProvider";
 import { ShellJob } from "@/lib/shell/doJob";
 import { rowActions } from "./lib/selfGuard";
 import { purgeConfirmed } from "./lib/confirmPurge";
+import {
+  ROSTER_URL,
+  emptyLine,
+  removeCopy,
+  rowsFor,
+  splitRoster,
+} from "./lib/rosterView";
 // D63 / H-49 slice 2. The WORDING is the policy, so it lives in a pure module
 // with its own tests rather than inline in the dialog's JSX.
 import {
@@ -176,6 +183,12 @@ function when(iso: string): string {
 export default function OrganizationAdmin() {
   const { access, refresh: refreshAccess } = useAccess();
   const [members, setMembers] = useState<Member[]>([]);
+  /**
+   * The people an admin removed (owner request, 2026-10-15). They come from
+   * the same roster read, and `splitRoster` keeps them out of `members`, so
+   * the Seats tab and every count read what they read before.
+   */
+  const [removed, setRemoved] = useState<Member[]>([]);
   const [requests, setRequests] = useState<AccessRequest[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
@@ -229,7 +242,7 @@ export default function OrganizationAdmin() {
       // effect — clearing the error afterwards is equivalent and avoids a
       // cascading render.
       const [m, r, q] = await Promise.all([
-        fetch("/api/admin/members", { cache: "no-store" }),
+        fetch(ROSTER_URL, { cache: "no-store" }),
         fetch("/api/admin/roles", { cache: "no-store" }),
         fetch("/api/admin/members/requests", { cache: "no-store" }),
       ]);
@@ -238,7 +251,9 @@ export default function OrganizationAdmin() {
         const body = await m.json().catch(() => ({}));
         throw new Error(body.detail ?? `Failed to load members (${m.status})`);
       }
-      setMembers(await m.json());
+      const roster = splitRoster(await m.json());
+      setMembers(roster.members);
+      setRemoved(roster.removed);
       if (r.ok) setRoles(await r.json());
       // A deployment whose migration has not run yet still shows the roster —
       // the queue is additive and must never take the page down with it — but
@@ -277,13 +292,14 @@ export default function OrganizationAdmin() {
       active: members.filter((m) => m.status === "active").length,
       invited: members.filter((m) => m.status === "invited").length,
       suspended: members.filter((m) => m.status === "suspended").length,
+      removed: removed.length,
     }),
-    [members]
+    [members, removed]
   );
 
   const shown = useMemo(
-    () => (filter === "all" ? members : members.filter((m) => m.status === filter)),
-    [members, filter]
+    () => rowsFor(filter, members, removed),
+    [members, removed, filter]
   );
 
   const setStatus = async (email: string, status: Member["status"]) => {
@@ -535,6 +551,7 @@ export default function OrganizationAdmin() {
               { id: "active", label: "Active", count: counts.active },
               { id: "invited", label: "Invited", count: counts.invited },
               { id: "suspended", label: "Suspended", count: counts.suspended },
+              { id: "removed", label: "Removed", count: counts.removed },
             ]}
             activeId={filter}
             onChange={setFilter}
@@ -597,7 +614,7 @@ export default function OrganizationAdmin() {
             failed={Boolean(queueError)}
           />
         ) : shown.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No members here yet.</p>
+          <p className="text-xs text-muted-foreground">{emptyLine(filter)}</p>
         ) : (
           <div className="flex flex-col gap-2">
             {shown.map((m) => (
@@ -767,7 +784,7 @@ function MemberRow({
             className="flex items-center gap-1 rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10"
           >
             <Icon name="UserMinus" size={12} />
-            Remove
+            {actions.removeLabel}
           </button>
         )}
         {/* Visually distinct from Remove on purpose: Remove is an outline, this
@@ -795,6 +812,10 @@ function MemberRow({
  * and the way back is a fresh invite plus an activation, not a click on this
  * screen. Suspend is the reversible one, and the copy says so — an admin who
  * wanted the reversible act should be able to notice before, not after.
+ *
+ * For an invited person the same request revokes the invite, and the dialog
+ * says that instead (owner request, 2026-10-15). `removeCopy` holds both sets
+ * of words, and its test is the fence.
  */
 function RemoveDialog({
   member,
@@ -817,8 +838,14 @@ function RemoveDialog({
    * removing somebody mid-fetch must not claim their tree is empty.
    */
   const [seal, setSeal] = useState<SealPreview | null | undefined>(undefined);
+  // An invited person never signed in, so the copy is about the invitation
+  // and there is no workspace to seal (`rosterView.removeCopy`).
+  const copy = removeCopy(member);
 
   useEffect(() => {
+    // No seal preview for an invite: nobody signed in, so nothing is sealed,
+    // and "Checking what their personal workspace holds…" would be untrue.
+    if (!copy.showSeal) return;
     let alive = true;
     // A READ. It seals nothing, so an admin who opens this dialog and cancels
     // has changed nothing — which is what makes showing it before the click
@@ -833,10 +860,10 @@ function RemoveDialog({
     return () => {
       alive = false;
     };
-  }, [member.email]);
+  }, [member.email, copy.showSeal]);
 
-  const sealLine = describeSeal(seal ?? null);
-  const handoverLine = describeHandover(seal ?? null);
+  const sealLine = copy.showSeal ? describeSeal(seal ?? null) : null;
+  const handoverLine = copy.showSeal ? describeHandover(seal ?? null) : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -844,19 +871,13 @@ function RemoveDialog({
       <div className="relative w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-2xl">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
           <Icon name="UserMinus" size={15} className="text-destructive" />
-          Remove {member.display_name || member.email}?
+          {copy.title}
         </h2>
         <p className="mt-2 text-xs text-muted-foreground">
-          <span className="font-mono text-foreground">{member.email}</span> loses
-          access immediately and every role assignment they hold is dropped.
-          Their record is kept, because the rest of the system refers to people
-          by address.
+          <span className="font-mono text-foreground">{member.email}</span>{" "}
+          {copy.effect}
         </p>
-        <p className="mt-2 text-xs text-muted-foreground">
-          This is not a toggle — bringing them back means inviting them again
-          and activating the invitation. If you only want to pause their access,
-          use <span className="text-foreground">Suspend</span> instead.
-        </p>
+        <p className="mt-2 text-xs text-muted-foreground">{copy.after}</p>
 
         {/*
           D63, stated where the decision is taken. `soft`+`text` rather than a
@@ -864,7 +885,7 @@ function RemoveDialog({
           workspace closing, and the sentence's own job is to say that nothing
           is deleted.
         */}
-        {seal === undefined && (
+        {copy.showSeal && seal === undefined && (
           <p className="mt-3 text-xs text-muted-foreground">
             Checking what their personal workspace holds…
           </p>
@@ -899,7 +920,7 @@ function RemoveDialog({
             className="flex items-center gap-1.5 rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground tech-transition hover:opacity-90 disabled:opacity-50"
           >
             {busy && <Icon name="Loader2" size={14} className="animate-spin" />}
-            Remove
+            {copy.confirm}
           </button>
         </div>
       </div>
