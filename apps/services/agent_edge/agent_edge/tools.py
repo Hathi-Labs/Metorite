@@ -164,7 +164,15 @@ TEXT_COMMENT_KEY_UNKNOWN = (
     " it added the comment. Read the comments with get_task_timeline before you"
     " use a new key.")
 TEXT_COMMENT_BLANK = "The input 'body' holds no text."
-TEXT_COMMENT_NUL = "The input 'body' holds a character that Metorite cannot store."
+
+
+def text_nul(name: str) -> str:
+    """The fixed text of a NUL character in the input *name* (EA-6c fix
+    round 1). Postgres refuses a NUL in text, so the route would answer 500."""
+    return f"The input {name!r} holds a character that Metorite cannot store."
+
+
+TEXT_COMMENT_NUL = text_nul("body")
 TEXT_PARENT_COMMENT_NOT_FOUND = "Parent comment not found."
 TEXT_PARENT_COMMENT_OTHER_TASK = (
     "The parent comment is on another task. Reply on the task of that comment.")
@@ -597,6 +605,29 @@ def _is_utf8(value: str) -> bool:
     except UnicodeEncodeError:
         return False
     return True
+
+
+def _holds_nul(value: Any) -> bool:
+    """True when *value*, or any string inside a list or a dict of it, holds
+    a NUL character (``\\x00``). Dict keys count too."""
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, list):
+        return any(_holds_nul(item) for item in value)
+    if isinstance(value, dict):
+        return any(_holds_nul(k) or _holds_nul(v) for k, v in value.items())
+    return False
+
+
+def _refuse_nul(args: Mapping[str, Any], names: tuple[str, ...]) -> None:
+    """Refuse a NUL in each input of *names* that the call sent (EA-6c fix
+    round 1). Postgres refuses a NUL in text, so the route answers 500, the
+    edge says busy, and a keyed write marks its slot ``unknown`` although no
+    row exists. Each write tool calls this FIRST, before any claim and any
+    request."""
+    for name in names:
+        if name in args and _holds_nul(args[name]):
+            raise ToolError(text_nul(name))
 
 
 def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
@@ -2235,6 +2266,9 @@ SET_TASK_STATUS = Tool(
 #: The keys of the result of ``add_task_reference`` (§9.2).
 ADD_REF_KEYS: tuple[str, ...] = (*REF_KEYS, "created")
 
+#: The body keys of ``add_task_reference``. The NUL check reads them.
+ADD_REF_BODY_KEYS: tuple[str, ...] = ("url", "title")
+
 _ADD_REF_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -2261,6 +2295,7 @@ async def _add_task_reference(ctx: Context, args: dict[str, Any]) -> dict[str, A
     A new row answers 201 and a row that already holds the link answers 200,
     so ``created`` tells the two apart.
     """
+    _refuse_nul(args, ADD_REF_BODY_KEYS)
     payload: dict[str, Any] = {"url": str(args["url"])}
     if "title" in args:
         payload["title"] = str(args["title"])
@@ -2644,8 +2679,10 @@ async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """``create_task``: one POST, and with a key at most one task per key.
 
     With an ``idempotency_key`` the call first claims its slot
-    (:func:`_claim`). :func:`_keyed_write` holds the rules of the slot.
+    (:func:`_claim`). :func:`_keyed_write` holds the rules of the slot. A
+    NUL in a body input is refused first, before the claim (fix round 1).
     """
+    _refuse_nul(args, CREATE_BODY_KEYS)
     key = args.get("idempotency_key")
     sent = _Sent()
     if key is None:
@@ -2702,8 +2739,10 @@ async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     The body holds only the keys of :data:`UPDATE_BODY_KEYS` that the call
     sent. It never holds a status, a project, a parent, an assignee or an
-    archive key, and the PATCH has no query.
+    archive key, and the PATCH has no query. A NUL in a field, also in a
+    string value of ``custom_fields``, is refused first (EA-6c fix round 1).
     """
+    _refuse_nul(args, UPDATE_BODY_KEYS)
     payload = {name: args[name] for name in UPDATE_BODY_KEYS if name in args}
     if not payload:
         raise ToolError(TEXT_UPDATE_EMPTY)
@@ -2864,11 +2903,9 @@ async def _add_comment(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     body = str(args["body"])
     if not body.strip():
         raise ToolError(TEXT_COMMENT_BLANK)
-    if "\x00" in body:
-        # Postgres refuses a NUL in text. Without this check the route
-        # answers 500, and the slot goes `unknown` for a write that never
-        # happened.
-        raise ToolError(TEXT_COMMENT_NUL)
+    # Postgres refuses a NUL in text. Without this check the route answers
+    # 500, and the slot goes `unknown` for a write that never happened.
+    _refuse_nul(args, COMMENT_BODY_KEYS)
     task_id = str(args["task_id"])
     claim = await _claim(ctx, "add_comment", str(args["idempotency_key"]), args,
                          _COMMENT_KEY_TEXTS)
@@ -2895,7 +2932,11 @@ ADD_COMMENT = Tool(
         " notifies the watchers and the assignees of the task in Metorite. An"
         " @ followed by the address of a member who can see the task notifies"
         " that member too. These notifications go to the bell in Metorite, not"
-        " by email. Send parent_id to reply to a top-level comment. Replies go"
+        " by email. Each comment also emits the event pm.task.comment_added. A"
+        " published workflow of the organization can start on it, and that"
+        " workflow can call an integration or a web address, as it can for a"
+        " comment that the member writes. Send parent_id to reply to a top-level"
+        " comment. Replies go"
         " one level deep. Send a new idempotency_key for each comment. The same"
         " key again returns the first comment with created false, and adds no"
         " second one. Returns the comment with its id." + _UNTRUSTED_NOTE
@@ -3492,6 +3533,7 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
 
 __all__ = [
     "ADD_COMMENT",
+    "ADD_REF_BODY_KEYS",
     "ADD_REF_KEYS",
     "ADD_TASK_REFERENCE",
     "AGENT_ACTIVITY_TYPES",
@@ -3595,6 +3637,7 @@ __all__ = [
     "offered",
     "reference",
     "run_activity",
+    "text_nul",
     "timeline_meta",
     "untrusted",
 ]

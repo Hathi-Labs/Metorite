@@ -68,6 +68,10 @@ name. ``E`` is ``apps/services/agent_edge/agent_edge``, ``G`` is
 * M34. ``G/tasks.py``: the type check reads root-local types only. ``test_a_create_with_an_org_wide_type_lands``.
 * M36. ``_post_write_budget`` returns ``POST_WRITE_READ_CAP_S`` and ignores the time left. ``test_two_hung_reads_after_an_update_stay_inside_the_grace``.
 * M35. ``_after_write`` lets a ``ToolError`` or a ``TimeoutError`` through. ``test_a_slow_re_read_after_a_create_gives_the_post_answer`` and ``test_a_failed_name_read_after_the_write_still_reports_it``.
+* N1. (EA-6c fix round 1) ``_create_task`` drops ``_refuse_nul``. ``test_a_nul_is_refused_with_no_request`` (the create rows) and ``test_a_nul_leaves_the_key_of_create_task_free``.
+* N2. ``_update_task`` drops ``_refuse_nul``. ``test_a_nul_is_refused_with_no_request`` (the update rows).
+* N3. ``_add_task_reference`` drops ``_refuse_nul``. ``test_a_nul_is_refused_with_no_request`` (the reference rows).
+* N4. ``_holds_nul`` reads no list or dict. ``test_a_nul_is_refused_with_no_request`` (the ``tags`` and ``custom_fields`` rows).
 """
 from __future__ import annotations
 
@@ -671,6 +675,45 @@ class TestUpdateTask:
         result = await _tool("update_task", _update_args(title="x"))
         assert result["isError"] is False, result
         assert result["structuredContent"]["task"]["status"]["name"] is None
+
+
+class TestANulNeverReachesTheGateway:
+    """EA-6c fix round 1 (P2). Postgres refuses a NUL in text, so the route
+    answered 500 and the edge said busy. With a key, ``create_task`` then
+    marked its slot ``unknown`` although no task existed. Each write tool now
+    refuses a NUL first, before any claim and any request."""
+
+    @pytest.mark.parametrize("tool,args,name", [
+        ("create_task", _create_args(title="a\x00b"), "title"),
+        ("create_task", _create_args(description="a\x00b"), "description"),
+        ("create_task", _create_args(tags=["ok", "a\x00b"]), "tags"),
+        ("update_task", _update_args(title="a\x00b"), "title"),
+        ("update_task", _update_args(description="a\x00b"), "description"),
+        ("update_task", _update_args(tags=["a\x00b"]), "tags"),
+        ("update_task", _update_args(custom_fields={"severity": "a\x00b"}), "custom_fields"),
+        ("update_task", _update_args(custom_fields={"labels": ["x", "a\x00b"]}),
+         "custom_fields"),
+        ("add_task_reference", {"task_id": TASK, "url": "https://x.io/a\x00b"}, "url"),
+        ("add_task_reference", {"task_id": TASK, "url": "https://x.io/a",
+                                "title": "a\x00b"}, "title"),
+    ])
+    async def test_a_nul_is_refused_with_no_request(self, edge, tool, args, name):
+        result = await _tool(tool, args)
+        assert _text(result) == tools.text_nul(name)
+        assert edge.gateway.requests == []
+        assert edge.redis.calls == []
+
+    async def test_a_nul_leaves_the_key_of_create_task_free(self, edge):
+        refused = await _tool("create_task", _create_args(title="a\x00b",
+                                                          idempotency_key=IDEM))
+        assert _text(refused) == tools.text_nul("title")
+        assert edge.redis.calls == [] and edge.redis.slots() == {}
+        again = await _tool("create_task", _create_args(idempotency_key=IDEM))
+        assert again["structuredContent"]["created"] is True
+
+    def test_the_comment_text_is_the_shared_text(self):
+        shared = tools.text_nul("body")
+        assert shared == tools.TEXT_COMMENT_NUL
 
 
 class TestALandedWriteIsNeverBusy:

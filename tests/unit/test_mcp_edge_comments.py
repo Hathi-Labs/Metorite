@@ -187,7 +187,8 @@ class TestTheToolRecord:
         text_ = tools.ADD_COMMENT.description
         for needed in ("short progress notes", "add_task_reference", "post_agent_activity",
                        "a response", "notifies the watchers and the assignees",
-                       "not by email", "idempotency_key", "untrusted_text"):
+                       "not by email", "pm.task.comment_added", "published workflow",
+                       "idempotency_key", "untrusted_text"):
             assert needed in text_, needed
 
     def test_the_caps_of_the_edge_and_the_gateway_are_equal(self):
