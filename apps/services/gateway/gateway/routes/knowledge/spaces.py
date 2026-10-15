@@ -195,6 +195,13 @@ async def replace_grants(
             )
         if await core.space_level(db, user, space) != "manage":
             raise core.forbidden("Changing the grants of a space needs manage on it.")
+        # §5.2: to grant `org` on a space is an admin act with a blast radius.
+        # A `manage` grant on the space may change its groups and emails, and
+        # only `knowledge:manage` may add, change or remove the `org` subject.
+        current = await core.read_grants(db, user, str(space.id))
+        before = core.org_grant([(g["subject"], g["level"]) for g in current])
+        if core.org_grant(grants) != before and not core.is_manager(user):
+            raise core.forbidden("Granting 'org' on a space needs knowledge:manage.")
         await db.execute(
             text("DELETE FROM kb_space_grants "
                  "WHERE organization_id = CAST(:org AS uuid) "

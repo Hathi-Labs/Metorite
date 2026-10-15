@@ -9,9 +9,13 @@ Spec: ``project-docs/specs/knowledge_base.md`` §4.2, §5.3 and §5.4.
     POST /knowledge/pages/{id}/publish                publish
     POST /knowledge/pages/{id}/move                   change the space or the parent
     POST /knowledge/pages/{id}/archive                archive (manage on the space)
+    POST /knowledge/pages/{id}/restore                archived back to draft (manage)
     POST /knowledge/pages/{id}/revert                 a new version with an old body
 
-Each read goes through ``core.visible_pages_clause``. A page the caller cannot
+Each read goes through ``core.visible_pages_clause``. A write needs ``write``
+on the page's space at the time of the call, and authorship is no bypass.
+``GET`` and ``revert`` reach only the versions from the last move to another
+space on (``core.history_floor``). A page the caller cannot
 see, or a page in another organization, answers 404 and never 403. Each write
 appends one ``kb_page_versions`` row with the reason and the channel (§5.4).
 Publish and archive touch no index in KB-1: the index is KB-3.
@@ -172,8 +176,10 @@ async def get_page(
         level = await core.space_level(db, user, space) if space is not None else None
         out = core.page_dict(page)
         out["level"] = level
-        out["can_write"] = core.can_write_page(user, page, level)
-        out["versions"] = await core.read_versions(db, user, str(page.id))
+        out["can_write"] = core.can_write_page(level)
+        out["versions"] = await core.read_versions(
+            db, user, str(page.id), core.history_floor(user, page, space),
+        )
         out["links"] = await core.read_links(db, user, str(page.id))
     return out
 
@@ -249,7 +255,7 @@ async def update_page(
             raise _conflict("The page is archived.")
         space = await _space_of(db, user, page)
         level = await core.space_level(db, user, space)
-        if not core.can_write_page(user, page, level):
+        if not core.can_write_page(level):
             raise core.forbidden("Editing this page needs a write grant on its space.")
         sets: list[str] = []
         params: dict[str, Any] = {}
@@ -282,7 +288,7 @@ async def publish_page(
     page_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Publish a draft. The author or a writer of the space publishes (§4.2)."""
+    """Publish a draft. A writer of the space, at the time of the call, publishes."""
     async with core._tenant_session() as db:
         page = await core.load_page(db, user, page_id, lock=True)
         if page is None:
@@ -291,7 +297,7 @@ async def publish_page(
             raise _conflict(f"Only a draft publishes. This page is {page.state}.")
         space = await _space_of(db, user, page)
         level = await core.space_level(db, user, space)
-        if not core.can_write_page(user, page, level):
+        if not core.can_write_page(level):
             raise core.forbidden("Publishing this page needs a write grant on its space.")
         row = await _update(
             db, user, str(page.id),
@@ -373,10 +379,15 @@ async def move_page(
         if page.state == "archived":
             raise _conflict("The page is archived.")
         source = await _space_of(db, user, page)
-        if not core.can_write_page(user, page, await core.space_level(db, user, source)):
-            raise core.forbidden("Moving this page needs a write grant on its space.")
+        source_ok = core.can_write_page(await core.space_level(db, user, source))
         target = await _move_target(db, user, page, source, body)
         moved_space = str(target.id) != str(source.id)
+        # An author who lost `write` may still take the page home: a move into
+        # their own `me` space (`_move_target` refuses another member's).
+        home = moved_space and target.kind == "me" and (
+            page.author_email == core.viewer_email(user))
+        if not source_ok and not home:
+            raise core.forbidden("Moving this page needs a write grant on its space.")
         new_parent = await _move_parent(db, user, page, target, body, moved_space)
         old_parent = str(page.parent_id) if page.parent_id else None
         if not moved_space and new_parent == old_parent:
@@ -388,7 +399,17 @@ async def move_page(
             db, user, str(page.id), sets,
             {"sid": str(target.id), "parent": new_parent},
         )
-        return await _written(db, user, row, "move")
+        out = await _written(db, user, row, "move")
+        if moved_space:
+            # The history written in the old space stays there (history_floor).
+            await db.execute(
+                text("UPDATE kb_pages SET history_from = :v "
+                     "WHERE organization_id = CAST(:org AS uuid) "
+                     "AND id = CAST(:pid AS uuid)"),
+                {"v": out["version"], "org": core.org_of(user), "pid": str(page.id)},
+            )
+            out["history_from"] = out["version"]
+        return out
 
 
 @router.post("/pages/{page_id}/archive")
@@ -413,6 +434,32 @@ async def archive_page(
         return await _written(db, user, row, "archive")
 
 
+@router.post("/pages/{page_id}/restore")
+async def restore_page(
+    page_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return an archived page to ``draft``. A manager of the space restores.
+
+    The gate is the one of archive: ``manage`` on the page's space, which is
+    ``knowledge:manage``, the space owner, or a ``manage`` grant. The page
+    comes back as a draft, so a writer publishes it again.
+    """
+    async with core._tenant_session() as db:
+        page = await core.load_page(db, user, page_id, lock=True)
+        if page is None:
+            raise core.not_found()
+        if page.state != "archived":
+            raise _conflict(f"Only an archived page is restored. This page is {page.state}.")
+        space = await _space_of(db, user, page)
+        if await core.space_level(db, user, space) != "manage":
+            raise core.forbidden("Restoring a page needs manage on its space.")
+        row = await _update(
+            db, user, str(page.id), "state = 'draft', archived_at = NULL", {},
+        )
+        return await _written(db, user, row, "restore")
+
+
 @router.post("/pages/{page_id}/revert")
 async def revert_page(
     page_id: str,
@@ -428,8 +475,11 @@ async def revert_page(
             raise _conflict("The page is archived.")
         space = await _space_of(db, user, page)
         level = await core.space_level(db, user, space)
-        if not core.can_write_page(user, page, level):
+        if not core.can_write_page(level):
             raise core.forbidden("Reverting this page needs a write grant on its space.")
+        if body.version < core.history_floor(user, page, space):
+            # A version from before the last move to another space.
+            raise core.not_found()
         old = (await db.execute(
             text("SELECT title, body_md FROM kb_page_versions "
                  "WHERE organization_id = CAST(:org AS uuid) "

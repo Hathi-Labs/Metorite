@@ -479,6 +479,171 @@ async def test_a_move_refuses_a_cycle(ns, app_engine) -> None:  # noqa: F811
                         {"parent_id": top["id"]})).status_code == 422
 
 
+# ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+async def _me_space(p: Any, user: Any) -> str:
+    note = await _ok(p, user, "POST", "/knowledge/pages", {"title": "Home"}, status=201)
+    return note["space_id"]
+
+
+async def test_a_move_to_another_space_hides_the_private_history(ns, app_engine) -> None:  # noqa: F811
+    """P1-a. A page written in a ``me`` space and then shared does not share
+    its private versions: not in the version list, not through revert."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    author_email, writer_email = _address("author"), _address("writer")
+    author = _principal(author_email, ns.org_a)
+    writer = _principal(writer_email, ns.org_a)
+    eng = await _space(ns, admin, "Eng", [
+        {"subject": author_email, "level": "write"},
+        {"subject": writer_email, "level": "write"},
+    ])
+    page = await _ok(ns, author, "POST", "/knowledge/pages",
+                     {"title": "Plan", "body_md": "private salary notes"}, status=201)
+    pid = page["id"]
+    await _ok(ns, author, "PATCH", f"/knowledge/pages/{pid}", {"body_md": "the plan"})
+    moved = await _ok(ns, author, "POST", f"/knowledge/pages/{pid}/move", {"space_id": eng})
+    assert moved["version"] == 3 and moved["history_from"] == 3
+    await _ok(ns, author, "POST", f"/knowledge/pages/{pid}/publish")
+
+    for reader in (writer, author):
+        detail = await _ok(ns, reader, "GET", f"/knowledge/pages/{pid}")
+        assert [v["version"] for v in detail["versions"]] == [4, 3]
+    refused = await _call(ns, writer, "POST", f"/knowledge/pages/{pid}/revert", {"version": 1})
+    assert refused.status_code == 404
+    page_now = await _ok(ns, writer, "GET", f"/knowledge/pages/{pid}")
+    assert page_now["body_md"] == "the plan"
+    assert (await _call(ns, writer, "POST", f"/knowledge/pages/{pid}/revert",
+                        {"version": 3})).status_code == 200
+
+    # Back in the author's own `me` space, the author has the whole history.
+    home = await _me_space(ns, author)
+    await _ok(ns, author, "POST", f"/knowledge/pages/{pid}/move", {"space_id": home})
+    detail = await _ok(ns, author, "GET", f"/knowledge/pages/{pid}")
+    assert [v["version"] for v in detail["versions"]] == [6, 5, 4, 3, 2, 1]
+
+
+async def test_an_author_who_lost_write_cannot_edit_or_publish(ns, app_engine) -> None:  # noqa: F811
+    """P1-b. Authorship is no bypass. The draft stays readable to its author,
+    and the author can take it home to their own ``me`` space."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    author_email = _address("author")
+    author = _principal(author_email, ns.org_a)
+    space = await _space(ns, admin, "Ops", [{"subject": author_email, "level": "write"}])
+    draft = await _ok(ns, author, "POST", "/knowledge/pages",
+                      {"space_id": space, "title": "Runbook"}, status=201)
+    pid = draft["id"]
+    await _ok(ns, admin, "PUT", f"/knowledge/spaces/{space}/grants",
+              {"grants": [{"subject": author_email, "level": "read"}]})
+
+    assert await _status(ns, author, pid) == 200
+    for method, path, body in (
+        ("PATCH", f"/knowledge/pages/{pid}", {"body_md": "changed"}),
+        ("POST", f"/knowledge/pages/{pid}/publish", None),
+        ("POST", f"/knowledge/pages/{pid}/revert", {"version": 1}),
+        ("POST", f"/knowledge/pages/{pid}/archive", None),
+    ):
+        response = await _call(ns, author, method, path, body)
+        assert response.status_code == 403, (method, path, response.text)
+    with ns.admin_engine.connect() as c:
+        row = c.execute(text("SELECT state, body_md FROM kb_pages WHERE id = CAST(:p AS uuid)"),
+                        {"p": pid}).first()
+    assert tuple(row) == ("draft", "")
+
+    home = await _me_space(ns, author)
+    moved = await _ok(ns, author, "POST", f"/knowledge/pages/{pid}/move", {"space_id": home})
+    assert moved["space_id"] == home
+    await _ok(ns, author, "PATCH", f"/knowledge/pages/{pid}", {"body_md": "mine now"})
+
+
+async def test_a_space_manager_cannot_grant_org(ns, app_engine) -> None:  # noqa: F811
+    """P1-c. A ``manage`` grant changes groups and emails. Only
+    ``knowledge:manage`` adds, changes or removes the ``org`` subject."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    lead_email, peer_email = _address("lead"), _address("peer")
+    lead = _principal(lead_email, ns.org_a)
+    space = await _space(ns, admin, "Team", [{"subject": lead_email, "level": "manage"}])
+    path = f"/knowledge/spaces/{space}/grants"
+    lead_grant = {"subject": lead_email, "level": "manage"}
+
+    for level in ("read", "write", "manage"):
+        refused = await _call(ns, lead, "PUT", path,
+                              {"grants": [lead_grant, {"subject": "org", "level": level}]})
+        assert refused.status_code == 403, refused.text
+    await _ok(ns, lead, "PUT", path, {"grants": [
+        lead_grant, {"subject": "group:eng", "level": "write"},
+        {"subject": peer_email, "level": "read"}]})
+
+    await _ok(ns, admin, "PUT", path, {"grants": [lead_grant, {"subject": "org", "level": "read"}]})
+    # An unchanged `org` entry is fine. A changed or removed one is not.
+    await _ok(ns, lead, "PUT", path, {"grants": [
+        lead_grant, {"subject": "org", "level": "read"}, {"subject": peer_email, "level": "write"}]})
+    assert (await _call(ns, lead, "PUT", path, {"grants": [
+        lead_grant, {"subject": "org", "level": "write"}]})).status_code == 403
+    assert (await _call(ns, lead, "PUT", path, {"grants": [lead_grant]})).status_code == 403
+    with ns.admin_engine.connect() as c:
+        org_level = c.execute(text(
+            "SELECT level FROM kb_space_grants WHERE space_id = CAST(:s AS uuid) "
+            "AND subject = 'org'"), {"s": space}).scalar()
+    assert org_level == "read"
+
+
+async def test_a_manager_sees_and_restores_an_archived_page(ns, app_engine) -> None:  # noqa: F811
+    """P1-d. An archived page shows to a manager of its space in the archive
+    view (§4.2), and a manager returns it to draft."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    writer_email, lead_email, reader_email = (
+        _address("writer"), _address("lead"), _address("reader"))
+    writer = _principal(writer_email, ns.org_a)
+    lead = _principal(lead_email, ns.org_a)
+    reader = _principal(reader_email, ns.org_a)
+    space = await _space(ns, admin, "Docs", [
+        {"subject": writer_email, "level": "write"},
+        {"subject": lead_email, "level": "manage"},
+        {"subject": reader_email, "level": "read"},
+    ])
+    pid = await _published(ns, writer, space, "Old policy")
+    other_admin = _principal(_address("admin2"), ns.org_a, CAPABILITY)
+    await _ok(ns, other_admin, "POST", f"/knowledge/pages/{pid}/archive")
+
+    for manager in (other_admin, lead):
+        detail = await _ok(ns, manager, "GET", f"/knowledge/pages/{pid}")
+        assert detail["state"] == "archived"
+        archive = await _ok(ns, manager, "GET", f"/knowledge/pages?space={space}&state=archived")
+        assert [r["id"] for r in archive["pages"]] == [pid]
+    assert await _status(ns, reader, pid) == 404
+    assert await _status(ns, writer, pid) == 200  # the author, as before
+
+    assert (await _call(ns, writer, "POST", f"/knowledge/pages/{pid}/restore")).status_code == 403
+    restored = await _ok(ns, lead, "POST", f"/knowledge/pages/{pid}/restore")
+    assert restored["state"] == "draft" and restored["archived_at"] is None
+    # Back to a draft, the page follows the draft rule again: its author sees
+    # it, and a manager who is not the author does not.
+    assert await _status(ns, writer, pid) == 200
+    assert (await _call(ns, lead, "POST", f"/knowledge/pages/{pid}/restore")).status_code == 404
+    with ns.admin_engine.connect() as c:
+        reason = c.execute(text(
+            "SELECT reason FROM kb_page_versions WHERE page_id = CAST(:p AS uuid) "
+            "ORDER BY version DESC LIMIT 1"), {"p": pid}).scalar()
+    assert reason == "restore"
+
+
+async def test_an_archived_me_page_stays_its_owners(ns, app_engine) -> None:  # noqa: F811
+    """The archive arm never opens a ``me`` space, also to an admin."""
+    _assert_non_priv(app_engine)
+    owner = _principal(_address("owner"), ns.org_a)
+    note = await _ok(ns, owner, "POST", "/knowledge/pages", {"title": "Mine"}, status=201)
+    await _ok(ns, owner, "POST", f"/knowledge/pages/{note['id']}/archive")
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    assert await _status(ns, admin, note["id"]) == 404
+    await _ok(ns, owner, "POST", f"/knowledge/pages/{note['id']}/restore")
+    again = await _call(ns, owner, "POST", f"/knowledge/pages/{note['id']}/restore")
+    assert again.status_code == 409
+
+
 # ── One `me` space under concurrent first writes ────────────────────────────
 
 async def test_concurrent_first_writes_make_one_me_space(ns, app_engine) -> None:  # noqa: F811

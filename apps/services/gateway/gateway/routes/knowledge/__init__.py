@@ -1,7 +1,8 @@
 """Knowledge route package — the gateway ``/knowledge`` API (WS-61).
 
 Spec: ``project-docs/specs/knowledge_base.md`` §5.3. KB-1 builds the four
-space routes (``spaces.py``) and the eight page routes (``pages.py``).
+space routes (``spaces.py``) and the nine page routes (``pages.py``), with
+``restore``.
 
 Same layout as ``routes/crm``: ``core`` is the leaf. It holds the router, the
 one visibility rule (``visible_pages_clause``) and the data helpers. The

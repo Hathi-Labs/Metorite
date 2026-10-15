@@ -256,6 +256,11 @@ def validate_permission(raw: str) -> str:
 
 # ── Grant subjects ──────────────────────────────────────────────────────────
 
+#: An email subject: one ``@``, no whitespace, text on each side. The CHECK on
+#: ``kb_space_grants.subject`` (migration 272) refuses the same shapes, so a
+#: value this lets through cannot fail there as a 500.
+_EMAIL_SUBJECT = re.compile(r"[^@\s]+@[^@\s]+")
+
 def normalize_grant_subject(subject: str) -> str:
     """The one grant subject grammar (D12), normalised, or ``ValueError``.
 
@@ -280,6 +285,11 @@ def normalize_grant_subject(subject: str) -> str:
             raise ValueError("A group subject must name a group.")
         return f"group:{slug.lower()}"
     if "@" in value:
+        if not _EMAIL_SUBJECT.fullmatch(value):
+            raise ValueError(
+                f"'{subject}' is not an email address. An email subject has one "
+                "'@', no space, and text on each side."
+            )
         return value.lower()
     raise ValueError(
         f"Unknown grant subject '{subject}'. "

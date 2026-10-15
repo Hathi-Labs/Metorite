@@ -16,6 +16,9 @@ that does not. A member sees a page when one of these holds:
   member holds a grant on the space whose subject is ``org``, their email, or
   one of their groups. The space owner and a holder of ``knowledge:manage``
   see each published page of each space that is not a ``me`` space;
+* the page is ``archived`` in a space that is not a ``me`` space, and the
+  member manages the space: ``knowledge:manage``, the space owner, or a
+  ``manage`` grant. That is the archive view of §4.2;
 * the member wrote the page, in any state;
 * the page is a ``draft`` and names the member in ``reviewers``.
 
@@ -95,7 +98,7 @@ REVIEW_DAYS = 180
 PAGE_COLUMNS = (
     "p.id, p.space_id, p.parent_id, p.position, p.title, p.body_md, p.state, "
     "p.author_email, p.reviewers, p.review_at, p.source_ref, p.origin, "
-    "p.published_at, p.archived_at, p.updated_at, p.created_at"
+    "p.published_at, p.archived_at, p.updated_at, p.created_at, p.history_from"
 )
 
 #: The space columns that each space read returns.
@@ -210,6 +213,16 @@ def visible_pages_clause(
         f" OR kb_s.owner_email = :kb_viewer"
         f" OR EXISTS (SELECT 1 FROM kb_space_grants kb_g"
         f" WHERE kb_g.space_id = kb_s.id AND {_subject_match('kb_g')}))))"
+        f" OR ({a}.state = 'archived' AND EXISTS ("
+        f"SELECT 1 FROM kb_spaces kb_s"
+        f" WHERE kb_s.id = {a}.space_id"
+        f" AND kb_s.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_s.kind <> 'me'"
+        f" AND (CAST(:kb_manage AS boolean)"
+        f" OR kb_s.owner_email = :kb_viewer"
+        f" OR EXISTS (SELECT 1 FROM kb_space_grants kb_g"
+        f" WHERE kb_g.space_id = kb_s.id AND kb_g.level = 'manage'"
+        f" AND {_subject_match('kb_g')}))))"
         f" OR {a}.author_email = :kb_viewer"
         f" OR ({a}.state = 'draft' AND :kb_viewer = ANY({a}.reviewers))"
         f"))"
@@ -470,6 +483,7 @@ def page_dict(row: Any, *, body: bool = True) -> dict[str, Any]:
         "source_ref": row.source_ref,
         "published_at": _iso(row.published_at),
         "archived_at": _iso(row.archived_at),
+        "history_from": row.history_from,
         "updated_at": _iso(row.updated_at),
         "created_at": _iso(row.created_at),
     }
@@ -567,12 +581,32 @@ async def append_version(
     )).scalar())
 
 
-async def read_versions(db: Any, user: UserContext, page_id: str) -> list[dict[str, Any]]:
+def history_floor(user: UserContext, page: Any, space: Any) -> int:
+    """The first version the caller may read or revert to.
+
+    A move to another space sets ``kb_pages.history_from`` to the number of
+    its own ``move`` version. The versions before it were written in the old
+    space, so a reader of the new space never sees them: a page written in a
+    ``me`` space and then shared does not share its private drafts. The one
+    exception is the author in their own ``me`` space, who keeps the whole
+    history there.
+    """
+    me = viewer_email(user)
+    if space is not None and space.kind == "me" and me and space.owner_email == me:
+        return 1
+    return int(page.history_from or 1)
+
+
+async def read_versions(
+    db: Any, user: UserContext, page_id: str, floor: int,
+) -> list[dict[str, Any]]:
+    """The versions at or after *floor* (:func:`history_floor`), newest first."""
     rows = (await db.execute(
         text("SELECT version, title, author_email, reason, via, created_at "
              "FROM kb_page_versions WHERE organization_id = CAST(:org AS uuid) "
-             "AND page_id = CAST(:pid AS uuid) ORDER BY version DESC"),
-        {"org": org_of(user), "pid": page_id},
+             "AND page_id = CAST(:pid AS uuid) AND version >= :floor "
+             "ORDER BY version DESC"),
+        {"org": org_of(user), "pid": page_id, "floor": floor},
     )).fetchall()
     return [
         {"version": r.version, "title": r.title, "author_email": r.author_email,
@@ -620,8 +654,17 @@ def clean_reviewers(values: list[str] | None) -> list[str]:
     return out
 
 
-def can_write_page(user: UserContext, page: Any, level: str | None) -> bool:
-    """A writer of the space, or the author of a draft."""
-    if LEVEL_RANK.get(level or "", 0) >= LEVEL_RANK["write"]:
-        return True
-    return page.state == "draft" and page.author_email == viewer_email(user)
+def can_write_page(level: str | None) -> bool:
+    """True when the caller holds ``write`` or ``manage`` on the page's space.
+
+    The level is read at the time of the call. Authorship is no bypass: an
+    author who lost ``write`` keeps reading the draft, and can move it to
+    their own ``me`` space, but cannot edit or publish it where it is. In the
+    author's own ``me`` space the author holds ``manage`` (:func:`level_on`).
+    """
+    return LEVEL_RANK.get(level or "", 0) >= LEVEL_RANK["write"]
+
+
+def org_grant(grants: list[tuple[str, str]]) -> str | None:
+    """The level of the ``org`` subject in *grants*, or None."""
+    return next((level for subject, level in grants if subject == "org"), None)

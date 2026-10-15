@@ -38,6 +38,7 @@ CALLS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", f"/knowledge/pages/{OTHER}/publish", None),
     ("POST", f"/knowledge/pages/{OTHER}/move", {"parent_id": None}),
     ("POST", f"/knowledge/pages/{OTHER}/archive", None),
+    ("POST", f"/knowledge/pages/{OTHER}/restore", None),
     ("POST", f"/knowledge/pages/{OTHER}/revert", {"version": 1}),
 ]
 
@@ -78,7 +79,7 @@ def test_the_settings_default_is_off_and_empty() -> None:
     assert fields["knowledge_orgs"].default == ""
 
 
-def test_the_router_carries_all_twelve_routes() -> None:
+def test_the_router_carries_all_thirteen_routes() -> None:
     found = {
         (sorted(r.methods)[0], r.path) for r in kb_package.router.routes
     }

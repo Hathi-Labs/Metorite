@@ -41,6 +41,10 @@ def test_the_grammar_normalises(raw: str, stored: str) -> None:
         ("user:ravi@example.com", None),
         ("project:1234", "Unknown grant subject 'project:1234'. One of: 'org', 'group:<slug>', or an email address."),
         ("everyone", "Unknown grant subject 'everyone'. One of: 'org', 'group:<slug>', or an email address."),
+        ("a@b@c", "'a@b@c' is not an email address. An email subject has one '@', no space, and text on each side."),
+        ("a b@c", "'a b@c' is not an email address. An email subject has one '@', no space, and text on each side."),
+        ("@x", "'@x' is not an email address. An email subject has one '@', no space, and text on each side."),
+        ("x@", "'x@' is not an email address. An email subject has one '@', no space, and text on each side."),
     ],
 )
 def test_the_grammar_refuses_with_value_error(raw: str, message: str | None) -> None:
@@ -54,7 +58,7 @@ def test_the_grammar_refuses_with_value_error(raw: str, message: str | None) -> 
     assert str(exc.value) == message
 
 
-@pytest.mark.parametrize("raw", ["", "group:", "everyone"])
+@pytest.mark.parametrize("raw", ["", "group:", "everyone", "a@b@c", "a b@c", "@x"])
 def test_the_wrapper_answers_422_with_the_same_words(raw: str) -> None:
     with pytest.raises(ValueError) as pure:
         normalize_grant_subject(raw)

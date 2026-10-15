@@ -127,6 +127,11 @@ CREATE TABLE IF NOT EXISTS kb_pages (
     origin           JSONB NULL,
     published_at     TIMESTAMPTZ NULL,
     archived_at      TIMESTAMPTZ NULL,
+    -- The first version a reader of the current space may see or revert to.
+    -- A move to another space sets it to the number of its `move` version,
+    -- so the history written in the old space (a `me` draft, say) does not
+    -- travel to the new readers. The code holds the rule (history_floor).
+    history_from     INTEGER NOT NULL DEFAULT 1 CHECK (history_from >= 1),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (parent_id IS NULL OR parent_id <> id)
@@ -149,13 +154,13 @@ CREATE TABLE IF NOT EXISTS kb_page_versions (
     body_md          TEXT NOT NULL,
     title            TEXT NOT NULL,
     author_email     TEXT NOT NULL,
-    -- §4.2 names six reasons. KB-1 adds `create`, `move` and `archive`,
-    -- because each write appends a version and those three writes are not
-    -- an edit.
+    -- §4.2 names six reasons. KB-1 adds `create`, `move`, `archive` and
+    -- `restore`, because each write appends a version and those four writes
+    -- are not an edit.
     reason           TEXT NOT NULL
                      CHECK (reason IN ('create', 'edit', 'publish', 'move',
-                                       'archive', 'revert', 'agent_proposal',
-                                       'accept', 'import')),
+                                       'archive', 'restore', 'revert',
+                                       'agent_proposal', 'accept', 'import')),
     -- §5.4: through what the write came.
     via              TEXT NOT NULL DEFAULT 'web'
                      CHECK (via IN ('web', 'chat', 'mcp', 'sync', 'artifact')),
