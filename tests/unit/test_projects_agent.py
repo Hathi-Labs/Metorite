@@ -1176,27 +1176,92 @@ async def test_status_report_flags_a_leaf_project_from_its_own_work(monkeypatch)
     assert stats["Blocked"] == 1 and stats["On track"] == 0
 
 
-async def test_status_report_hands_make_report_a_spec_that_code_built(monkeypatch) -> None:
-    """projects_ai_chat.md §14.9: W2 steers into make_report, never a .md
-    file. Code builds the spec from the same reads, so each number in it is
-    the routes' number, and make_report's checks and builders accept it."""
-    from acb_skills.reports import check_report, layout_of
+@pytest.fixture
+def report_chat(monkeypatch, tmp_path):
+    """A chat run on a real working dir, for status_report(make_report=True).
+    The blob mirror and the file card are faked, and each card is recorded."""
+    import importlib
 
+    wa = importlib.import_module("acb_skills.write_artifact")
+
+    async def _quiet(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(wa, "_notify", _quiet)
+    monkeypatch.setattr(wa, "mirror_to_blob_store", _quiet)
+    specs = drawn(monkeypatch)
+    with wa.artifact_context_scope():
+        wa.bind_artifact_context(workspace_root=str(tmp_path), session_id="s1",
+                                 agent_name="projects-assistant")
+        yield tmp_path, specs
+
+
+def _report_file(root, card: dict) -> dict:
+    return json.loads((root / card["props"]["data"]["path"]).read_text(encoding="utf-8"))
+
+
+async def test_status_report_makes_the_report_by_code(monkeypatch, report_chat) -> None:
+    """projects_ai_chat.md §14.9 (owner, 2026-10-16): with make_report=true,
+    status_report makes the report itself from its own reads. The model copies
+    no number, so the card and the file hold the routes' numbers."""
+    root, specs = report_chat
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID, make_report=True)
+    assert "REPORT_SPEC" not in text and "make_report: " in text
+    (card,) = specs  # the report card only: no second dashboard card
+    assert card["props"]["name"] == "report"
+    for data in (card["props"]["data"], _report_file(root, card)):
+        kpis = {k["label"]: k["value"] for k in data["kpis"]}
+        assert kpis["Open tasks"] == 3 and kpis["Overdue tasks"] == 1
+        assert kpis["Blocked by open work"] == 1
+        assert kpis["Blocked projects"] == 1 and kpis["On track projects"] == 0
+        table = next(s for s in data["sections"] if s.get("heading") == "Projects")
+        assert table["visual"]["rows"] == [["Ops", "blocked", 3, 1]]
+        load = next(s for s in data["sections"] if s.get("heading") == "Load")
+        assert load["visual"]["rows"] == [["a@x.io", 4, 1]]
+
+
+async def test_status_report_hands_the_model_no_spec_to_copy(monkeypatch) -> None:
+    """Review P1: a spec in the text is a spec the model can change. Without
+    make_report=true the tool says how to ask for the report, and gives none."""
     drawn(monkeypatch)
     fake_gateway(monkeypatch, _detail_responder)
     text = await skill_projects.status_report(UUID)
-    assert "Markdown artifact with write_artifact" not in text
-    assert "Never save a report as a .md file" in text
-    spec = json.loads(text.split("REPORT_SPEC: ", 1)[1])
-    kpis = {k["label"]: k["value"] for k in spec["kpis"]}
-    assert kpis["Open tasks"] == 3 and kpis["Overdue tasks"] == 1
-    assert kpis["Blocked projects"] == 1 and kpis["On track projects"] == 0
-    table = next(s for s in spec["sections"] if s.get("heading") == "Projects")
-    assert table["visual"]["rows"] == [["Ops", "blocked", 3, 1]]
-    health = next(s for s in spec["sections"] if s.get("heading") == "Project health")
-    assert health["visual"]["labels"] == ["Blocked"] and health["visual"]["values"] == [1]
-    layout = layout_of(check_report(spec))  # draws every visual, or raises
-    assert layout["sections"][0]["heading"] == "Summary"
+    assert "REPORT_SPEC" not in text and "Markdown artifact with write_artifact" not in text
+    assert "make_report=true" in text and "Never save a report as a .md file" in text
+
+
+async def test_status_report_puts_member_text_in_cells_so_no_check_refuses_it(
+    monkeypatch, report_chat,
+) -> None:
+    """Review P1: a task title with a URL or a tag, or such a name, failed the
+    markdown-lite check of make_report. Member text now goes into TABLE
+    cells, which both renderers draw as text."""
+    root, specs = report_chat
+
+    def hostile(call: dict) -> Any:
+        if call["path"].startswith("/projects/analytics/stuck"):
+            return {"stale": [], "blocked_total": 2, "overdue": [], "blocked": [
+                {"id": UUID, "title": "Review https://github.com/acme/web/pull/12",
+                 "task_number": 12, "due_at": None, "project_id": UUID},
+                {"id": UUID, "title": "Fix <Button> focus ring",
+                 "task_number": 13, "due_at": None, "project_id": UUID},
+            ]}
+        if call["path"].startswith("/projects/analytics/load"):
+            return {"people": [{"assignee": "<Ops> lead www.ops.test", "open_tasks": 4,
+                                "overdue": 1}]}
+        return _detail_responder(call)
+
+    fake_gateway(monkeypatch, hostile)
+    text = await skill_projects.status_report(UUID, make_report=True)
+    assert "make_report failed" not in text, text
+    (card,) = specs
+    data = _report_file(root, card)
+    blocked = next(s for s in data["sections"] if s.get("heading") == "Blocked work")
+    assert [r[1] for r in blocked["visual"]["rows"]] == [
+        "Review https://github.com/acme/web/pull/12", "Fix <Button> focus ring"]
+    load = next(s for s in data["sections"] if s.get("heading") == "Load")
+    assert load["visual"]["rows"][0][0] == "<Ops> lead www.ops.test"
 
 
 async def test_every_view_and_form_card_is_inline(monkeypatch) -> None:

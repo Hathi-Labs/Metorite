@@ -5,7 +5,8 @@ Spec: ``project-docs/specs/whatsapp_assistant_channel.md`` §15.4.
 ``acb_skills.documents.make_document`` takes the spec of ``whatsapp_ui`` kind
 ``document``, checks it with the same ``prepare``, lays it out through the ONE
 PDF seam (``gateway.pdf_render.render_pdf``, kind ``document``, its child
-process) and saves it with ``write_artifact``, so the chat shows a PDF card.
+process) and saves it with the safe opener
+(``documents.save_outputs``, H-236), so the chat shows a PDF card.
 
 R7 fences named here:
 
@@ -39,22 +40,31 @@ DECK = {
 
 
 @pytest.fixture
-def written(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+def written(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
+    """A chat run on a real working dir. Each saved file is listed with its
+    bytes. The blob mirror and the file card are faked."""
     import importlib
 
     # The package re-exports the FUNCTION under the module's name.
     wa = importlib.import_module("acb_skills.write_artifact")
 
-    out: list[dict[str, Any]] = []
+    async def _quiet(*_a: Any, **_kw: Any) -> None:
+        return None
 
-    async def _write(path: str, content: Any, *, encoding: Any = "utf-8",
-                     overwrite: bool = False) -> dict:
-        out.append({"path": path, "content": content, "encoding": encoding})
-        return {"path": path, "size": len(content), "sha256": "x",
-                "download_url": f"/api/agent/workspace/s/file?path={path}"}
+    monkeypatch.setattr(wa, "_notify", _quiet)
+    monkeypatch.setattr(wa, "mirror_to_blob_store", _quiet)
 
-    monkeypatch.setattr(wa, "write_artifact", _write)
-    return out
+    class _Written(list):
+        def refresh(self) -> _Written:
+            self[:] = [{"path": f.relative_to(tmp_path).as_posix(), "content": f.read_bytes()}
+                       for f in sorted((tmp_path / "outputs").rglob("*")) if f.is_file()] \
+                if (tmp_path / "outputs").exists() else []
+            return self
+
+    with wa.artifact_context_scope():
+        wa.bind_artifact_context(workspace_root=str(tmp_path), session_id="s",
+                                 agent_name="orchestrator")
+        yield _Written()
 
 
 async def test_a_deck_becomes_one_pdf_artifact_from_the_real_child(
@@ -63,8 +73,8 @@ async def test_a_deck_becomes_one_pdf_artifact_from_the_real_child(
     out = await documents.make_document(DECK)
     assert out["ok"] is True
     assert out["download_url"].endswith("outputs/Acme Q4 plan.pdf")
-    (file,) = written
-    assert file["path"] == "outputs/Acme Q4 plan.pdf" and file["encoding"] is None
+    (file,) = written.refresh()
+    assert file["path"] == "outputs/Acme Q4 plan.pdf"
     doc = pymupdf.open(stream=file["content"], filetype="pdf")
     assert doc.page_count == 2 and "Closed revenue" in doc[1].get_text()
 
@@ -106,7 +116,7 @@ async def test_a_bad_spec_writes_nothing_and_says_what_to_fix(
 ) -> None:
     out = await documents.make_document(spec)
     assert out["ok"] is False and says in out["error"]
-    assert written == []
+    assert written.refresh() == []
 
 
 async def test_on_whatsapp_the_tool_points_at_the_document_kind(
@@ -115,7 +125,7 @@ async def test_on_whatsapp_the_tool_points_at_the_document_kind(
     with wui.whatsapp_run("orchestrator"):
         out = await documents.make_document(DECK)
     assert out == {"ok": False, "error": 'on WhatsApp, call whatsapp_ui kind "document"'}
-    assert written == []
+    assert written.refresh() == []
 
 
 def test_the_chat_assistants_hold_it_and_whatsapp_withholds_it() -> None:
@@ -137,17 +147,20 @@ def test_the_chat_assistants_hold_it_and_whatsapp_withholds_it() -> None:
 
 
 async def test_a_pdf_that_could_not_be_saved_is_never_ok(
-    monkeypatch: pytest.MonkeyPatch,
+    written: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Review: write_artifact refuses with a dict (a quota, no workspace) and
-    never raises. The model must not claim a file that does not exist."""
+    """Review: the save refuses with a dict (a quota, no workspace) and never
+    raises. The model must not claim a file that does not exist."""
+    import contextlib
     import importlib
 
     wa = importlib.import_module("acb_skills.write_artifact")
 
-    async def _refuse(path: str, content: Any, **_kw: Any) -> dict:
-        return {"error": "This chat's folder is over its quota."}
+    @contextlib.asynccontextmanager
+    async def _over(_root: Any) -> Any:
+        yield True
 
-    monkeypatch.setattr(wa, "write_artifact", _refuse)
+    monkeypatch.setattr(wa, "_chat_dir_guard", _over)
     out = await documents.make_document(DECK)
     assert out["ok"] is False and "over its quota" in out["error"]
+    assert written.refresh() == []

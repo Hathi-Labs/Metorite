@@ -111,7 +111,7 @@ def _core() -> str:
 async def load_design_system(section: str = "") -> str:
     """Load the Metorite design system (palette, type, motion, block kits).
 
-    Call this BEFORE you write a full-page HTML or Markdown **report**, or any
+    Call this BEFORE you write a full-page HTML **page**, or any
     bespoke **custom HTML/CSS** for an ``emit_generative_ui`` ``html`` node, so
     the result matches the Metorite look. You do NOT need it for named
     ``emit_generative_ui`` templates — those are already on-brand — nor for a

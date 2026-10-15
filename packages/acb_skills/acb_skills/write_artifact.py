@@ -1221,6 +1221,7 @@ async def _notify(
     gateway_url: str,
     gateway_token: str,
     mirror_task: Any = None,
+    announce: bool = True,
 ) -> None:
     """Background task: push CUSTOM SSE event into the active run queue AND
     register workspace on the gateway.  Non-fatal — all errors are swallowed.
@@ -1229,7 +1230,15 @@ async def _notify(
     it, briefly, so the card carries the registry id (WS-60 AM-1). With no
     task, or a slow store, the card goes out with ``artifact_id`` ``None`` and
     opens through the session and the path as before.
+
+    ``announce=False`` registers the workspace and emits no card. A report
+    file has its own ``report`` card (``reports.make_report``), so its files
+    get no second card (``projects_ai_chat.md`` §14.9). Code passes it, never
+    a tool argument.
     """
+    if not announce:
+        await _register_workspace(session_id, workspace_root, gateway_url, gateway_token)
+        return
     artifact_id = None
     if mirror_task is not None and _registry_on():
         try:
@@ -1297,6 +1306,27 @@ async def _notify(
             )
     except Exception:
         pass  # Non-fatal — the sidebar can always refresh manually
+
+
+async def _register_workspace(
+    session_id: str | None, workspace_root: str, gateway_url: str, gateway_token: str,
+) -> None:
+    """The registration half of :func:`_notify`, with no card: the session
+    learns its working dir, so its file routes serve the file. Non-fatal."""
+    if not session_id:
+        return
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.patch(
+                f"{gateway_url}/agent/workspace/{session_id}",
+                json={"workspace_path": workspace_root},
+                headers={"Authorization": f"Bearer {gateway_token}",
+                         "Content-Type": "application/json"},
+            )
+    except Exception:
+        pass
 
 
 # ── Generative UI ───────────────────────────────────────────────────────────

@@ -165,3 +165,8 @@ def test_marker_drift_falls_back_to_the_full_document(monkeypatch):
     monkeypatch.setitem(dt._CHUNKS, "charts", ("NO SUCH MARKER", None))
     out = asyncio.run(dt.load_design_system("charts"))
     assert "Visual theme & atmosphere" in out  # i.e. the whole document
+
+def test_the_docstring_no_longer_sends_a_report_to_html_or_markdown():
+    """Review of #1064: a report is make_report, so the docstring names a page."""
+    doc = " ".join((dt.load_design_system.__doc__ or "").split())
+    assert "Markdown **report**" not in doc and "full-page HTML **page**" in doc

@@ -80,6 +80,9 @@ _ITALIC = re.compile(r"(?<![*\w])\*(?!\*)([^*\n]+?)\*(?![*\w])")
 #: both return it, so it costs no schema tokens.
 REPORT_GUIDE = """\
 make_report(spec) -- one report: a card in the chat, a full view, and a PDF.
+On WhatsApp the member gets the PDF. If you do not hold make_report, this
+guide is not for you: for a full-page HTML document, call
+load_design_system("blocks").
 
 spec fields (only "title" and "sections" are required):
 - "title" (120 characters), "subtitle" (200), "for" (who it is for, 200),
@@ -407,28 +410,23 @@ async def _make_on_the_web(report: dict[str, Any], layout: dict[str, Any],
                                member=docs._member(), org=docs._org())
     except ValueError as exc:  # pdf_render.PdfRenderError says what to fix
         return {"ok": False, "error": f"the PDF could not be made: {exc}"}
-    # The package re-exports the FUNCTION under the module's name, so the
-    # module is imported by name. A test records the writes through it.
-    wa = importlib.import_module("acb_skills.write_artifact")
-    saved = await wa.write_artifact(f"outputs/{slug}.pdf", pdf, encoding=None)
-    if "error" in saved or not saved.get("path"):
-        return {"ok": False, "error": f"the PDF was made but not saved: "
-                                      f"{saved.get('error') or 'no file'}"}
-    pdf_path = str(saved["path"])
-    # The report file takes the stem of the PDF that was really written. A
-    # free PDF name means that a file of that stem has no PDF, so it is
-    # replaced: a new name would break the ".report.json" suffix.
-    stem = pdf_path.rsplit("/", 1)[-1][: -len(".pdf")]
-    body = {**report, "pdf": pdf_path}
-    written = await wa.write_artifact(
-        f"outputs/{stem}{REPORT_SUFFIX}",
-        json.dumps(body, ensure_ascii=False, indent=2), overwrite=True)
-    if "error" in written or not written.get("path"):
-        return {"ok": False, "error": f"the report was made but not saved: "
-                                      f"{written.get('error') or 'no file'}"}
-    path = str(written["path"])
+    # Both files with the safe opener, under the dir lock, with ONE free
+    # stem: `<stem>.pdf` and `<stem>.report.json` (H-236). They register the
+    # workspace and get no file card, because the report card shows them.
+    def contents(rels: dict[str, str]) -> dict[str, bytes]:
+        body = {**report, "pdf": rels[".pdf"]}
+        return {".pdf": pdf,
+                REPORT_SUFFIX: json.dumps(body, ensure_ascii=False, indent=2).encode("utf-8")}
+
+    saved = await docs.save_outputs(slug, (".pdf", REPORT_SUFFIX), contents, announce=False)
+    if "error" in saved:
+        return {"ok": False, "error": f"the report was made but not saved: {saved['error']}"}
+    pdf_path = saved["files"][".pdf"]["path"]
+    path = saved["files"][REPORT_SUFFIX]["path"]
     card = {"type": "template",
-            "props": {"name": REPORT_TEMPLATE, "data": {**body, "path": path}}}
+            "props": {"name": REPORT_TEMPLATE,
+                      "data": {**report, "pdf": pdf_path, "path": path}}}
+    wa = importlib.import_module("acb_skills.write_artifact")
     try:
         drawn = await wa.emit_generative_ui(json.dumps(card, ensure_ascii=False))
     except Exception as exc:  # the emit never raises by contract
@@ -438,10 +436,11 @@ async def _make_on_the_web(report: dict[str, Any], layout: dict[str, Any],
                 "note": "The member sees the report card. Say in one or two lines "
                         "what it shows. Do not paste a link."}
     # No report card (no live chat, or a chat that cannot draw it): the PDF
-    # is still there, and write_artifact's own file card shows it (slice A:
-    # the reply names a file in words and pastes no link).
+    # is still there, so it gets its file card now (slice A: the reply names
+    # a file in words and pastes no link).
+    docs.announce_saved(saved, ".pdf")
     return {"ok": True, "path": path, "pdf_path": pdf_path,
-            "download_url": saved.get("download_url"),
+            "download_url": saved["files"][".pdf"]["download_url"],
             "note": "The chat could not draw the report card. A file card shows "
                     "the PDF. Name it in words, say in one or two lines what it "
                     "holds, and paste no link."}

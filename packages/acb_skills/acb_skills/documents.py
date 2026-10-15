@@ -234,10 +234,12 @@ __all__ = [
     "SLIDE_TYPES",
     "VISUAL_KINDS",
     "DocumentError",
+    "announce_saved",
     "filename_of",
     "make_document",
     "prepare",
     "rendition",
+    "save_outputs",
 ]
 
 
@@ -295,15 +297,14 @@ async def make_document(spec: dict[str, Any]) -> dict[str, Any]:
                                member=_member(), org=_org())
     except ValueError as exc:  # pdf_render.PdfRenderError says what to fix
         return {"ok": False, "error": f"the PDF could not be made: {exc}"}
-    from acb_skills.write_artifact import write_artifact
-
-    written = await write_artifact(f"outputs/{name}", pdf, encoding=None)
-    if "error" in written or not written.get("download_url"):
-        # A quota, no thread folder, no workspace: write_artifact refuses
-        # with a dict, and never raises. No file, so no "ok" (review).
-        return {"ok": False, "error": f"the PDF was made but not saved: "
-                                      f"{written.get('error') or 'no file'}"}
-    return {"ok": True, "path": written.get("path"),
+    saved = await save_outputs(name[: -len(".pdf")], (".pdf",), lambda _rels: {".pdf": pdf},
+                               announce=True)
+    if "error" in saved:
+        # A quota, no thread folder, no workspace, a link: nothing was
+        # written, so no "ok" (review of H-315).
+        return {"ok": False, "error": f"the PDF was made but not saved: {saved['error']}"}
+    written = saved["files"][".pdf"]
+    return {"ok": True, "path": written["path"],
             "download_url": written.get("download_url"),
             "note": "A card in the chat shows the file. Name it in words, say in "
                     "one line what it holds, and paste no link."}
@@ -327,3 +328,157 @@ def _org() -> str | None:
         return current_tenant()
     except Exception:
         return None
+
+
+# ── The safe write of a chat document (H-236) ──────────────────────────────
+#
+# A sandbox container mounts the chat's outputs folder read-write, and a
+# command in it can plant a link there. ``write_artifact`` resolves its path
+# with plain path calls, so a write through a planted link could change a
+# host file outside the tenant dir. So a document goes through the safe
+# opener, under the broker's dir lock, as ``package_artifacts`` does: each
+# file is a NEW file (``safe_open.publish_bytes``), a link at any depth fails
+# the write, and a name that is taken, also by a link, is never replaced.
+
+#: The most stems tried before the write gives up.
+_MAX_NAMES = 1000
+
+
+def _publish_all(root: Any, rels: dict[str, str], data: dict[str, bytes]) -> bool:
+    """Publish every file of one stem, or none. False when a name is taken."""
+    from acb_skills import safe_open
+
+    made: list[str] = []
+    for suffix, rel in rels.items():
+        try:
+            safe_open.publish_bytes(root, rel, data[suffix])
+        except FileExistsError:
+            for done in made:
+                safe_open.unlink(root, done)
+            return False
+        made.append(rel)
+    return True
+
+
+async def save_outputs(
+    stem: str, suffixes: tuple[str, ...],
+    contents: Any, *, announce: bool,
+) -> dict[str, Any]:
+    """Write the files ``<stem><suffix>`` of one document into this chat's
+    outputs, with ONE free stem for all of them.
+
+    *contents* takes ``{suffix: path}`` and returns ``{suffix: bytes}``, so a
+    file can name the path of its sibling. A taken stem becomes
+    ``<stem> (1)``, and every file of the set takes the same one. With
+    *announce* off, each file registers the workspace and gets no card.
+
+    Returns ``{"files": {suffix: {"path", "size", "sha256", "mime_type",
+    "download_url"}}, "dest": ...}``, or ``{"error"}``. The working dir, the
+    thread and the member come from the run's artifact context, never from
+    the model (R5). Fence: ``tests/unit/test_chat_reports.py``.
+    """
+    import asyncio
+    import hashlib
+    import importlib
+    import mimetypes
+    from pathlib import Path
+
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import refused_write
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    ctx = wa.artifact_context()
+    if not ctx.get("workspace_root"):
+        return {"error": "No workspace is configured for this run, so nothing was written."}
+    # A delegated run delivers to the chat that called it (``_destination``).
+    dest, delegated = wa._destination(ctx)
+    batch = not delegated and wa._is_batch_run(ctx)
+    root = Path(str(dest["workspace_root"])).resolve()
+    folder = "outputs"
+    if not batch:
+        probe = f"outputs/{stem}{suffixes[0]}"
+        scoped = wa._chat_document_path(probe, probe, dest)
+        if isinstance(scoped, dict):
+            return scoped
+        folder = scoped.rsplit("/", 1)[0]
+    session_id = str(dest.get("session_id") or "")
+    try:
+        async with wa._chat_dir_guard(root) as over_quota:
+            if over_quota:
+                return {"error": "The working dir of the chat is over its quota, "
+                                 "so nothing was written."}
+            for n in range(_MAX_NAMES):
+                name = stem if n == 0 else f"{stem} ({n})"
+                rels = {sfx: f"{folder}/{name}{sfx}" for sfx in suffixes}
+                for rel in rels.values():
+                    reason = refused_write(root, rel, member=ctx.get("member"),
+                                           thread_id=dest.get("session_id"))
+                    if reason:
+                        return {"error": f"The file was refused: {reason}."}
+                # A batch name is free only when the history holds no write
+                # there either (H-227, ``write_artifact._take_batch_name``).
+                if batch and any([await wa._path_has_history(r, ctx) for r in rels.values()]):
+                    continue
+                data = contents(rels)
+                if await asyncio.to_thread(_publish_all, root, rels, data):
+                    break
+            else:
+                return {"error": "No free name for the file, so nothing was written."}
+    except safe_open.UnsafePath:
+        return {"error": "The file was refused: its folder goes through a link."}
+    except OSError as exc:
+        return {"error": f"The file could not be written: {exc.strerror or exc}."}
+    files: dict[str, dict[str, Any]] = {}
+    for sfx, rel in rels.items():
+        body = data[sfx]
+        mime = mimetypes.guess_type(rel)[0] or "application/octet-stream"
+        files[sfx] = {
+            "path": rel, "size": len(body), "sha256": hashlib.sha256(body).hexdigest(),
+            "mime_type": mime,
+            "download_url": f"/api/agent/workspace/{session_id}/file?path={rel}"
+                            if session_id else None,
+        }
+        mirror = asyncio.ensure_future(wa.mirror_to_blob_store(
+            rel, body, mime_type=mime, action="create",
+            actor=wa.BATCH_ACTOR if batch else "agent",
+            target=dest if delegated else None,
+        ))
+        _announce(ctx, dest, files[sfx], mirror_task=mirror, announce=announce)
+    return {"files": files, "dest": dest}
+
+
+def _announce(ctx: Any, dest: Any, file: dict[str, Any], *, mirror_task: Any = None,
+              announce: bool = True) -> None:
+    """``write_artifact._notify`` for one saved file, in the chat that the
+    file went to. With *announce* off, it only registers the workspace."""
+    import asyncio
+    import importlib
+    from datetime import UTC, datetime
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    if not dest.get("session_id"):
+        return
+    asyncio.ensure_future(wa._notify(
+        session_id=str(dest["session_id"]),
+        workspace_root=str(dest["workspace_root"]),
+        artifact={"path": file["path"], "name": file["path"].rsplit("/", 1)[-1],
+                  "size": file["size"], "sha256": file["sha256"],
+                  "mime_type": file["mime_type"],
+                  "modified_at": datetime.now(tz=UTC).isoformat(), "is_dir": False},
+        gateway_url=ctx.get("gateway_url", "http://127.0.0.1:8000"),
+        gateway_token=ctx.get("gateway_token", "sk-local-dev-change-me"),
+        mirror_task=mirror_task,
+        announce=announce,
+    ))
+
+
+def announce_saved(saved: dict[str, Any], suffix: str) -> None:
+    """Show one file of :func:`save_outputs` as a file card, after the fact.
+
+    ``make_report`` calls it for the PDF when the chat could not draw the
+    report card, so the member still sees the file.
+    """
+    import importlib
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    _announce(wa.artifact_context(), saved["dest"], saved["files"][suffix])

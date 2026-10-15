@@ -102,13 +102,13 @@ def build_output_discipline_block(
             "content directly; do NOT build files with shell heredocs / echo / "
             "printf / base64 (fragile quoting truncates large writes). Put "
             "every file under outputs/ (logical subfolders, e.g. "
-            "outputs/reports/); never the working-dir root."
+            "outputs/docs/); never the working-dir root."
         )
         if not design_system:
             return text
         return text + (
             " For a full-page "
-            "report or bespoke custom HTML, call load_design_system() first to "
+            "HTML document or bespoke custom HTML, call load_design_system() first to "
             "match the Metorite look (named genUI templates are already "
             "on-brand)."
         )
@@ -119,10 +119,10 @@ def build_output_discipline_block(
             "pass the content of the file as `content`. Do not make a file with "
             "a shell heredoc, `echo`, `printf` or `base64`.\n"
             "- Write EVERY file you make under **outputs/**, in a folder that "
-            "names its kind, for example `outputs/reports/q3.md`. It persists, "
+            "names its kind, for example `outputs/docs/q3-notes.md`. It persists, "
             "and it is where the member looks for what you made.\n"
             "- Write Markdown (`.md`) for a document and HTML (`.html`) for a "
-            "rich report. Both open in the side panel."
+            "rich page. Both open in the side panel."
         )
     return (
         "### Output discipline (REQUIRED)\n"
@@ -132,9 +132,9 @@ def build_output_discipline_block(
         "that fragile quoting breaks on quotes/backticks, wastes your output "
         "budget, and can truncate a large write mid-file. Use the shell to RUN "
         "things, not to author file content.\n"
-        "- Write EVERY file you generate under **outputs/** — reports, docs, "
-        "HTML, data, scripts, images, everything. Use logical subfolders to "
-        "stay organised (e.g. `outputs/reports/q3.md`, `outputs/data/rows.csv`, "
+        "- Write EVERY file you generate under **outputs/** — docs, data, "
+        "HTML, scripts, images, everything. Use logical subfolders to "
+        "stay organised (e.g. `outputs/docs/q3-notes.md`, `outputs/data/rows.csv`, "
         "`outputs/site/index.html`). `write_artifact` already defaults bare "
         "paths to `outputs/`; when you use your own shell/editor tools, still "
         "target `outputs/` explicitly, never the working-directory root.\n"
@@ -142,8 +142,8 @@ def build_output_discipline_block(
         "redeploys and reboots. Treat it as the one place a user looks for what "
         "you made.\n"
         "- Prefer Markdown (`.md`) for written deliverables and HTML (`.html`) "
-        "for rich/interactive reports — both get a live preview in the side "
-        "panel. Before writing a full-page report or bespoke custom HTML, call "
+        "for rich/interactive pages — both get a live preview in the side "
+        "panel. Before writing a full-page HTML document or bespoke custom HTML, call "
         "**`load_design_system()`** to load the Metorite design language "
         "and follow it (named `emit_generative_ui` templates are already "
         "on-brand and need no extra step)."
@@ -173,9 +173,9 @@ REPORT_RULE = (
     "- **A report is make_report. Never write a report as a .md file.** This "
     "rule comes before the file rules above. Collect the facts first, from the "
     "tools that compute them, and copy each number as the tool gave it. "
-    "make_report({}) returns the field guide. The member sees a report card "
-    "with a full view and a PDF, so say in one or two lines what it shows, and "
-    "paste no link."
+    "make_report({}) returns the field guide. In the web chat the member sees "
+    "a report card with a full view and a PDF. On WhatsApp the member gets the "
+    "PDF. Say in one or two lines what it shows, and paste no link."
 )
 
 
@@ -490,7 +490,7 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     )),
     Section("documents", ("make_report",), (
         "make_report(spec) — A report is make_report: a card, a full view and "
-        "a PDF. Never write a report as a .md file. make_report({}) returns "
+        "a PDF (on WhatsApp, the PDF). Never write a report as a .md file. make_report({}) returns "
         "the field guide"
     )),
     Section("core", ("read_attachment",), (
