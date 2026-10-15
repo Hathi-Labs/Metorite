@@ -357,6 +357,12 @@ export const RULES_STEP_COPY = {
   draftNote: "Metorite writes a draft for mail that needs a reply. It sends nothing.",
   draftNeedsReplyRule: 'Reply drafts need the "Needs Reply" rule. Turn it on in AI Settings.',
   draftReadFailed: "Metorite could not read the drafting setting.",
+  // WS-17 EM-G11c2 (G2, §12.3.13.7): the member's Auto-run choice. A new
+  // Gmail mailbox reads OFF, so its rules sort no new mail until the member
+  // turns this on.
+  autoRunLabel: "Run my rules on new mail",
+  autoRunOffBody: 'Your rules sort new mail only when "Run my rules on new mail" is on.',
+  autoRunReadFailed: "Metorite could not read the Auto-run setting.",
   noneAdded: "Your recommended rules are there already, and they are off. Turn on a rule in AI Settings.",
   insights: "See insights",
   done: "Done",
@@ -656,4 +662,28 @@ export async function installRecommendedRules(api: RulesStepApi, accountId: stri
 export async function setDraftReplies(api: RulesStepApi, accountId: string, on: boolean): Promise<void> {
   const current = await api.getAssistantSettings(accountId);
   await api.saveAssistantSettings({ ...current, draft_replies: on });
+}
+
+/**
+ * Reads the stored Auto-run choice for the rules step (WS-17 EM-G11c2, G2,
+ * `email_app_master_plan.md` §12.3.13.7). The server owns the default:
+ * `rules.auto_run_on` answers OFF for a Gmail mailbox with no settings row,
+ * and ON for Outlook. The switch draws that answer, and a failed read is
+ * `failed`, never a guess.
+ */
+export async function readAutoRunSwitch(api: RulesStepApi, accountId: string): Promise<DraftSwitch> {
+  try {
+    return { state: "ready", on: (await api.getAssistantSettings(accountId)).auto_run === true };
+  } catch {
+    return { state: "failed" };
+  }
+}
+
+/**
+ * The Auto-run switch of the rules step (G2). It writes the settings row with
+ * the member's choice: `auto_run` changes and every other field stays.
+ */
+export async function setAutoRun(api: RulesStepApi, accountId: string, on: boolean): Promise<void> {
+  const current = await api.getAssistantSettings(accountId);
+  await api.saveAssistantSettings({ ...current, auto_run: on });
 }
