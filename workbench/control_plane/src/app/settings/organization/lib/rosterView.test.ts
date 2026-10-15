@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ROSTER_URL,
   emptyLine,
+  purgeAlternative,
   removeCopy,
   rowsFor,
   splitRoster,
@@ -63,6 +64,28 @@ describe("rowsFor", () => {
   it("an empty Removed list does not read like a failed load", () => {
     expect(emptyLine("removed")).toBe("Nobody has been removed.");
     expect(emptyLine("all")).toBe("No members here yet.");
+  });
+});
+
+describe("purgeAlternative", () => {
+  const line = (status: Member["status"]) => {
+    const a = purgeAlternative(member("x@acme.test", status));
+    return `${a.lead}${a.action ?? ""}${a.tail}`;
+  };
+
+  it("a removed person is not sent to a Remove that their row lacks", () => {
+    const a = purgeAlternative(member("dee@acme.test", "removed"));
+    expect(a.action).toBeNull();
+    expect(line("removed")).not.toContain("Remove");
+    expect(line("removed")).not.toContain("recoverable");
+    expect(line("removed")).toContain("already removed");
+  });
+
+  it("everybody else is still pointed at Remove", () => {
+    for (const s of ["active", "invited", "suspended"] as const) {
+      expect(purgeAlternative(member("x@acme.test", s)).action).toBe("Remove");
+      expect(line(s)).toContain("recoverable");
+    }
   });
 });
 

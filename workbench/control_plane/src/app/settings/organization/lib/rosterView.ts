@@ -53,6 +53,34 @@ export function emptyLine(filter: string): string {
     : "No members here yet.";
 }
 
+/**
+ * The Delete dialog's last line: what the admin can do instead.
+ *
+ * ⚠️ A removed person has no Remove to fall back to. The row offers none, and
+ * their access is gone already. So for them the line says what this step adds
+ * to the removal, and it must not send the admin to a button that is absent.
+ */
+export function purgeAlternative(member: Member): {
+  lead: string;
+  action: string | null;
+  tail: string;
+} {
+  if (member.status === "removed") {
+    return {
+      lead:
+        "This person is already removed and has no access. This step " +
+        "deletes their record and what it still holds.",
+      action: null,
+      tail: "",
+    };
+  }
+  return {
+    lead: "If you only want to end their access, use ",
+    action: "Remove",
+    tail: " — that one is recoverable.",
+  };
+}
+
 /** The words of the Remove dialog for one person. */
 export type RemoveCopy = {
   title: string;

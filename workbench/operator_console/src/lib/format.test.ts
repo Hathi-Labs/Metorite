@@ -21,6 +21,7 @@ import {
   TOMBSTONE_RE,
   partitionRoster,
   isSeated,
+  seatControl,
   memberTally,
   readMembers,
   readKeys,
@@ -341,6 +342,20 @@ describe("the customer's member roster (LS-9 · launch_surface.md §7)", () => {
     });
     expect(rows[0].seats).toEqual([]);
     expect(isSeated(rows[0])).toBe(false);
+  });
+
+  it("offers no Assign seat on a removed row, and keeps Release on a seated one", () => {
+    const row = (status: string, seats: string[]) => ({
+      email: "a@x.test",
+      role: "member",
+      status,
+      seats,
+    });
+    expect(seatControl(row("removed", []))).toBeNull();
+    expect(seatControl(row("removed", ["core"]))).toBe("release");
+    expect(seatControl(row("active", []))).toBe("assign");
+    expect(seatControl(row("invited", []))).toBe("assign");
+    expect(seatControl(row("active", ["core"]))).toBe("release");
   });
 
   it("tallies PEOPLE, counting a multi-plan holder once", () => {

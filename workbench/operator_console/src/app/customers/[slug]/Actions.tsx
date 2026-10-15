@@ -5,6 +5,7 @@ import { formatInr, type Price } from "@/lib/money";
 import {
   canActivate,
   isSeated,
+  seatControl,
   lifecycleActions,
   formatPaise,
   memberTally,
@@ -16,7 +17,11 @@ import {
   type KeyRow,
   type SeatRow,
 } from "@/lib/format";
-import { removeLabel, type MemberRemoveMode } from "@/lib/memberRemove";
+import {
+  refusedBy,
+  removeLabel,
+  type MemberRemoveMode,
+} from "@/lib/memberRemove";
 
 // The management ACTIONS for one customer. Every action POSTs to a server-side
 // `/api/operator/*` BFF route that holds the operator token; NOTHING here holds
@@ -48,13 +53,20 @@ async function post(path: string, body: unknown): Promise<Result> {
 }
 
 // A refusal is relayed VERBATIM (the Console is the authority); the framing
-// line just tells the operator whose voice the raw text is in.
-function ResultLine({ result }: { result: Result }) {
+// line just tells the operator whose voice the raw text is in. `who` is for
+// the member remove and delete only, where the gateway can refuse too.
+function ResultLine({
+  result,
+  who = "The Console",
+}: {
+  result: Result;
+  who?: string;
+}) {
   if (!result) return null;
   if (result.ok) return <div className="result ok">✓ Done</div>;
   return (
     <div className="result err">
-      The Console refused:
+      {who} refused:
       {"\n"}
       {result.text}
     </div>
@@ -259,6 +271,7 @@ function MembersPanel({
                           : ""}
                       </td>
                       <td>
+                        {seatControl(m) !== null && (
                         <button
                           type="button"
                           className={seated ? "secondary" : undefined}
@@ -287,6 +300,7 @@ function MembersPanel({
                               ? "Release"
                               : "Assign seat"}
                         </button>
+                        )}
                       </td>
                       <td>
                         {confirming?.email === m.email ? (
@@ -346,7 +360,12 @@ function MembersPanel({
           </div>
         </>
       )}
-      <ResultLine result={result} />
+      {/* A seat answer never carries the tenant marker, so it keeps "The
+          Console refused". A gateway refusal of a remove names the tenant. */}
+      <ResultLine
+        result={result}
+        who={result ? refusedBy(result.text) : undefined}
+      />
     </form>
   );
 }

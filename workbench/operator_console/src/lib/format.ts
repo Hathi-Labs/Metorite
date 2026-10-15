@@ -61,6 +61,17 @@ export function isSeated(m: MemberRow): boolean {
   return Array.isArray(m.seats) && m.seats.length > 0;
 }
 
+/** The seat button one roster row offers, or null for none.
+ *
+ * A removed person takes no new seat. The Console refuses to seat somebody
+ * who is not a member, and a button whose only outcome is a refusal is the
+ * wrong shape. A removed row that still holds a seat keeps Release, so the
+ * operator can free the seat that the removal did not. */
+export function seatControl(m: MemberRow): "release" | "assign" | null {
+  if (isSeated(m)) return "release";
+  return m.status === "removed" ? null : "assign";
+}
+
 /**
  * Read the roster off a `/billing/summary` body, tolerating its absence.
  *

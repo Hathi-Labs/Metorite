@@ -51,6 +51,7 @@ import { purgeConfirmed } from "./lib/confirmPurge";
 import {
   ROSTER_URL,
   emptyLine,
+  purgeAlternative,
   removeCopy,
   rowsFor,
   splitRoster,
@@ -960,6 +961,7 @@ function PurgeDialog({
   // The rule lives in `confirmPurge.ts` and is unit-tested there. Inline, it
   // was fenced only by a grep for the surrounding copy, and `= true` passed.
   const confirmed = purgeConfirmed(typed, member.email);
+  const alternative = purgeAlternative(member);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1005,10 +1007,14 @@ function PurgeDialog({
           </li>
         </ul>
 
+        {/* A removed person has no Remove to fall back to, so the line
+            changes for them (`rosterView.purgeAlternative`). */}
         <p className="mt-3 text-xs text-muted-foreground">
-          If you only want to end their access, use{" "}
-          <span className="text-foreground">Remove</span> — that one is
-          recoverable.
+          {alternative.lead}
+          {alternative.action && (
+            <span className="text-foreground">{alternative.action}</span>
+          )}
+          {alternative.tail}
         </p>
 
         <label className="mt-4 mb-1 block text-[11px] font-medium text-muted-foreground">

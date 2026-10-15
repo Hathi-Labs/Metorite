@@ -103,3 +103,17 @@ export function removeLabel(status: string): string | null {
   if (status === "invited") return "Revoke invite";
   return "Remove";
 }
+
+/** Who refused a remove or delete, as the result line names it. The BFF
+ *  route marks a gateway refusal with `refused_by: "tenant"`. Every other
+ *  refusal (a Console answer, the rank check, a bad body) keeps the words the
+ *  other panels use. A body that is not JSON keeps them too. */
+export function refusedBy(text: string): "The tenant plane" | "The Console" {
+  try {
+    const body = JSON.parse(text) as { refused_by?: unknown } | null;
+    if (body !== null && body.refused_by === "tenant") return "The tenant plane";
+  } catch {
+    // Not JSON, so not our marker.
+  }
+  return "The Console";
+}

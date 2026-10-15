@@ -90,6 +90,9 @@ export async function POST(request: Request): Promise<Response> {
         error:
           `the tenant plane answered ${tenant.status} — nothing was changed ` +
           `on the registry`,
+        // The roster reads this to name the tenant plane as the refuser
+        // (`memberRemove.refusedBy`), not the Console.
+        refused_by: "tenant",
         tenant: readBody(tenant.body),
       });
     }

@@ -160,8 +160,13 @@ describe("a tenant refusal is relayed, and stops the Console", () => {
       const res = await POST(req(good()));
       expect(res.status).toBe(status);
       expect(calls).toEqual(["session", "tenant"]);
-      const body = (await res.json()) as { tenant: { detail: string } };
+      const body = (await res.json()) as {
+        tenant: { detail: string };
+        refused_by: string;
+      };
       expect(body.tenant.detail).toBe(`door said ${status}`);
+      // The roster's result line reads this to name the tenant plane.
+      expect(body.refused_by).toBe("tenant");
     });
   }
 });
@@ -171,8 +176,14 @@ describe("a Console failure after the tenant half", () => {
     removeRegistryMember.mockResolvedValue({ status: 500, body: "boom" });
     const res = await POST(req(good()));
     expect(res.status).toBe(502);
-    const body = (await res.json()) as { error: string; registry: unknown };
+    const body = (await res.json()) as {
+      error: string;
+      registry: unknown;
+      refused_by?: string;
+    };
     expect(body.error).toContain("tenant half succeeded");
+    // The Console refused here, so the tenant marker must be absent.
+    expect(body.refused_by).toBeUndefined();
     expect(body.error).toContain("Run this action again");
     expect(body.registry).toBe("boom");
   });

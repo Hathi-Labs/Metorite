@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   mayRemove,
   readRemoveRequest,
+  refusedBy,
   removeLabel,
   requiredRole,
 } from "./memberRemove";
@@ -87,6 +88,27 @@ describe("mayRemove", () => {
   it("break-glass is admitted for both modes", () => {
     expect(mayRemove(BREAKGLASS, "remove", null)).toBeNull();
     expect(mayRemove(BREAKGLASS, "purge", null)).toBeNull();
+  });
+});
+
+describe("refusedBy", () => {
+  it("names the tenant plane only for the route's tenant marker", () => {
+    expect(
+      refusedBy(JSON.stringify({ error: "x", refused_by: "tenant" })),
+    ).toBe("The tenant plane");
+  });
+
+  it("keeps the Console's words for every other answer", () => {
+    for (const text of [
+      JSON.stringify({ detail: "seat cap reached" }),
+      JSON.stringify({ error: "the tenant half succeeded", registry: "boom" }),
+      JSON.stringify({ refused_by: "console" }),
+      "null",
+      "not json at all",
+      "",
+    ]) {
+      expect(refusedBy(text)).toBe("The Console");
+    }
   });
 });
 
