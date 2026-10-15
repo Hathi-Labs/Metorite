@@ -18,7 +18,7 @@ import {
   reviewRulePatterns, saveAssistantSettings, scanFollowUps, updateKnowledge,
   upsertColdSender,
 } from "../../../lib/api";
-import { AUTO_RUN_AI_LINE, autoDraftRepliesOn } from "../../../lib/assistantSettings";
+import { AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn } from "../../../lib/assistantSettings";
 import {
   AssistantSettings, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
   DraftConfidence, KnowledgeEntry, LearnedPattern,
@@ -353,7 +353,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
             title="Run rules automatically on new mail"
             description={
               <>
-                Processes incoming inbox mail with your enabled rules as it arrives. Turn it off to stop auto-running (rules still apply when you run them manually or process past emails).
+                {AUTO_RUN_DESCRIPTION}
                 <span className="block mt-1">{AUTO_RUN_AI_LINE}</span>
               </>
             }
