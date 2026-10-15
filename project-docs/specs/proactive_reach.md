@@ -641,6 +641,33 @@ nothing for it in RE-5. My Day may show requests later (§17, W6).
 - The urgency of `NOTIFY_ME` lives in the action row's `label`, so no
   column is added.
 
+**Fix round 1 (2026-10-15).** The adversarial review found 5 P1 and
+4 P2. These limits and shapes close them.
+
+| Rule | Value |
+|---|---|
+| Open rule and workflow requests for one member | 20 at most. The next one is refused as `backlog_full`, and the rule's History shows it |
+| The member's own requests | 20 in a rolling 24 hours. Then `POST /reach/tell-me` answers `limit` |
+| Batch window (D-RE-4) | 15 minutes between two messages that are not the member's own |
+| Urgent in quiet hours | One urgent message a night, with one request in it |
+| A send that Meta refuses | The requests stay open. The message key holds a 10-minute bucket, so it tries again at most once in 10 minutes |
+| A line that does not fit in 1,000 characters | It stays open for the next pass, and it is never logged `sent` |
+
+- **The body reaches the member.** A batch line is the title and the body,
+  cut to 200 characters. A message of one request is the title, the whole
+  body and the link.
+- **The member's own request reads first,** so a backlog never hides it.
+- **"Process past emails" never fires `NOTIFY_ME`.** A message about a mail
+  of weeks ago is noise.
+- **The action shows only where it can work.** `GET /reach/status` says if
+  Reach is available and if the phone is linked. The Rules UI hides the
+  action, or shows it disabled with "Link WhatsApp in My Profile first".
+  The rule generator offers it only when Reach is available. A rule that
+  runs for a member that Reach cannot reach shows the reason in History.
+- **Text from a rule or a workflow is quoted in the thread.** The bot's
+  thread records it under "The text below came from an email rule, not
+  from Metorite", so the text cannot speak as the bot.
+
 **RE-5b, the assistant tool.** `acb_skills/reach_tools.py` posts to
 `POST /reach/tell-me` with the run's identity. It needs an entry in
 `skill_families.py` and in `tool_annotations.TOOL_ANNOTATIONS`. It also
