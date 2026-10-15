@@ -333,6 +333,12 @@ class RoutingHarness:
         mp.setattr(settings, "maf_coding_scope", "", raising=False)
         mp.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
         mp.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
+        # WS-17 EM-G11d: the upward-egress mark in memory, as in the unit
+        # tests. CI has no Redis, and the read fails closed, so each member
+        # chat would read as marked and each delegation would ask a card.
+        from tests.unit._egress_mark_store import install_memory_mark_store
+
+        install_memory_mark_store(mp)
         ti._build_registry_block.cache_clear()
         ti._build_injected_tools_addendum.cache_clear()
         self._registry = registry()
