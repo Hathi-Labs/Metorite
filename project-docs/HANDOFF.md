@@ -5724,6 +5724,25 @@ line — never reclaim a number by deleting the other entry.
   Add an R8 test with two currencies in one lane.
 - **Authority:** `specs/crm_app.md` (the reports routes), `specs/projects_ai_chat.md` §14.10.9
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
+### H-334 · The mailbox lists of the email app name no tenant · [AGENT]
+- **Check:** `git grep -n -A2 "FROM email_accounts" -- apps/services/gateway/gateway/routes/email/transport/accounts.py`.
+  A `WHERE user_id = :user_id` with no `organization_id` term means this entry stays.
+- **Why.** Migration 223 lets one mailbox belong to a person in two orgs.
+  Production connects as the owner role, which reads past RLS. So two reads
+  can return the person's mailbox of another org. They are `feed_mailboxes`
+  and `list_accounts`, at about lines 361 and 320. So the LIVE bell can show
+  mail of org A in org B, and so can the mailbox list. The
+  mail is the same person's own, so no other member sees it. But it breaks
+  R5. MD-3d's wrappers refuse such a mailbox with a 404.
+- **Do this:**
+  1. Add `AND organization_id = <the bound tenant>` to both reads, as
+     `people.core.find_self_row` does with `NULLIF(current_setting(...))`.
+  2. Check each other read in `routes/email` that selects by `user_id` alone,
+     including `resolve_self_addresses`.
+  3. Add an owner-role R8 case with one mailbox in two orgs, modelled on
+     `test_feed_mail_kinds_r8.py::TestTheTenantUnderTheOwnerRole`.
+- **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3d (what the build found)
+- **Added:** 2026-10-15 · MD-3d build
 
 # DONE — deleted, not archived
 
