@@ -648,6 +648,11 @@ class MemberRemoveRequest(AdminSchemeRequest):
     #: address: an address the Console does not know is an answer
     #: (``found: false``), never a new global identity.
     member_email: str
+    #: Who inherits ownership when the target is the last active owner
+    #: (P1-b, 2026-10-15). Optional on the deployment arm, where the actor
+    #: inherits by default. Required for that case on the operator arm.
+    #: Ignored when the target is not the last active owner.
+    new_owner_email: str | None = None
 
 
 class CreditGrantRequest(BaseModel):
@@ -6296,9 +6301,31 @@ def remove_member_admin(
     has already committed its removal, and the gateway mirror runs after
     that. So a retry, or a person the registry never held, must not fail.
 
-    **Two refusals, both 409.** The deployment arm refuses an actor who
-    removes themselves. Both arms refuse a removal that leaves the org with no
-    active registry ``owner``.
+    **The deployment arm refuses an actor who removes themselves (409).**
+
+    **The last owner is handed on, never left behind** (P1-b, the owner's
+    decision of 2026-10-15: "Acting admin inherits"). A transfer happens ONLY
+    when the target is the org's last active registry ``owner``. Then, in the
+    same transaction and before the removal, one active member of the org
+    becomes ``owner``:
+
+    * Deployment arm: ``new_owner_email`` if the body names one, else the
+      ACTOR. ``_admin_scheme_context`` already proved the actor an active
+      member, and the self-removal 409 proved them not the target.
+    * Operator arm: ``new_owner_email`` is required. Without it the door
+      answers 409 and says to name a new owner. The operator is not a member,
+      so nobody can inherit by default.
+    * Either arm: a named new owner must be an ACTIVE member of this org and
+      not the target, or the door answers 400.
+
+    When the target is NOT the last active owner, ``new_owner_email`` is
+    IGNORED, and ``owner_transferred_to`` is null. It is ignored rather than
+    refused because the operator BFF acts on the tenant plane first. A 400
+    after the tenant removal would leave the two planes disagreeing about a
+    person who is already gone. The removed row keeps its ``role``.
+
+    Every answer carries ``owner_transferred_to``: the new owner's email, or
+    null. The audit payload carries it too.
 
     **The lifecycle.** A ``suspended`` or ``cancelled`` org CAN remove a
     member. Removing a person frees capacity and grows nothing, which is the
@@ -6328,7 +6355,7 @@ def remove_member_admin(
             else store.membership_status(conn, org_id=org_id, identity_id=identity_id)
         )
         if identity_id is None or previous is None:
-            return {"found": False}
+            return {"found": False, "owner_transferred_to": None}
 
         if caller is not None and _same_address(actor, req.member_email):
             raise HTTPException(
@@ -6337,18 +6364,19 @@ def remove_member_admin(
             )
         # The target is the LAST active owner when the org has one or more now
         # and none without them. An org that already has no active owner is
-        # not made worse by removing somebody else, so it is not refused.
+        # not made worse by removing somebody else, so nothing is handed on.
         owners_now = store.active_owner_count(conn, org_id=org_id)
         owners_after = store.active_owner_count(
             conn, org_id=org_id, excluding_identity_id=identity_id
         )
+        transferred_to: str | None = None
         if owners_now > 0 and owners_after == 0:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "this would leave the organization with no owner; "
-                    "make another member the owner first"
-                ),
+            transferred_to = _hand_on_ownership(
+                conn,
+                org_id=org_id,
+                target_identity_id=identity_id,
+                named=req.new_owner_email,
+                actor=actor if caller is not None else None,
             )
 
         previous_status, released = store.remove_member(
@@ -6362,11 +6390,60 @@ def remove_member_admin(
                 "email": req.member_email,
                 "previous_status": previous_status,
                 "released": released,
+                "owner_transferred_to": transferred_to,
             },
             actor=actor,
         )
 
-    return {"found": True, "previous_status": previous_status, "released": released}
+    return {
+        "found": True,
+        "previous_status": previous_status,
+        "released": released,
+        "owner_transferred_to": transferred_to,
+    }
+
+
+def _hand_on_ownership(
+    conn,
+    *,
+    org_id: str,
+    target_identity_id: str,
+    named: str | None,
+    actor: str | None,
+) -> str:
+    """Make one active member the owner before the last owner is removed.
+
+    Returns the new owner's email. ``named`` is the body's ``new_owner_email``.
+    ``actor`` is the deployment arm's acting member, and it is None on the
+    operator arm, where nobody inherits by default (409).
+
+    The caller runs this only when the target is the last active owner, and
+    in the removal's own transaction. So a refusal here rolls the whole
+    request back, and the removal and the promotion land together or not at
+    all.
+    """
+    heir = named if named is not None else actor
+    if heir is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this would leave the organization with no owner; name the "
+                "new owner in new_owner_email (an active member of the org)"
+            ),
+        )
+    heir_id = store.identity_id_for_email(conn, email=heir)
+    if heir_id is None or heir_id == target_identity_id:
+        raise HTTPException(
+            status_code=400,
+            detail="new_owner_email must name an active member other than the target",
+        )
+    if store.membership_status(conn, org_id=org_id, identity_id=heir_id) != "active":
+        raise HTTPException(
+            status_code=400,
+            detail="new_owner_email must name an active member other than the target",
+        )
+    store.make_owner(conn, org_id=org_id, identity_id=heir_id)
+    return heir
 
 
 def _same_address(a: str | None, b: str | None) -> bool:

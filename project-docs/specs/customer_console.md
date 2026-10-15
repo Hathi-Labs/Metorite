@@ -19,9 +19,9 @@ background model call names its feature on the usage report, as
 🆕 **Member removal by an operator or an admin: BUILT on branch
 `member-remove` (2026-10-15, owner request).** The backend, the operator
 console surface and the control-plane roster change are all built. The
-amendment under CP-2g's non-goals holds the contract. One decision is open
-for the owner: who owns the registry after an admin removes the founder
-(P1-b).
+amendment under CP-2g's non-goals holds the contract. When the removal takes
+the last registry owner, the acting admin inherits (P1-b, the owner's
+decision of 2026-10-15).
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
@@ -6228,9 +6228,11 @@ invited member, and a "Removed" filter that shows removed members.
   `member_admin` capability and both arms of `_admin_scheme_context`. It sets
   the membership to `removed` and releases every live seat. It never mints an
   identity: an unknown person gets 200 `{"found": false}`.
-- The Console door refuses a self-removal on the deployment arm (409) and the
-  last active registry owner (409). A `deleted` org gets 403. The operator
-  matrix row is EDITOR.
+- The Console door refuses a self-removal on the deployment arm (409). It
+  hands ownership on when the target is the last active registry owner (see
+  P1-b below). A `deleted` org gets 403. The operator matrix row is EDITOR.
+- Every answer of the Console door carries `owner_transferred_to`: the new
+  owner's email, or null. The `member.remove` audit payload carries it too.
 - The admin Remove and Purge routes now mirror onto the Console door after the
   commit, as best-effort. The deployment resolve writes no seat for a
   `removed` or `suspended` membership.
@@ -6242,7 +6244,9 @@ invited member, and a "Removed" filter that shows removed members.
 registry row `removed` for good. The tenant upsert (`_PROVISION_MEMBER_SQL`)
 moves `removed` to `invited`, but `store.add_invited_member` did nothing on a
 conflict. The person then signed in, the resolve wrote no seat, and they
-worked with no bill. Now the Console invite door applies the tenant rule. Its
+worked with no bill.
+
+The fix: the Console invite door now applies the tenant rule. Its
 conflict arm moves `removed` to `invited` and keeps the role. It does not
 change `active` or `suspended`. The first sign-in activates the row and
 allocates the seat. The invite mirror in the gateway logs
@@ -6250,17 +6254,37 @@ allocates the seat. The invite mirror in the gateway logs
 than `invited` or `active`. Fence:
 `TestRemoveThenReInviteIsBilledAgain` (R8).
 
-**Review round 1, P1-b — OPEN, the owner decides.** The Console door refuses
-to remove the last active registry owner. Only `provision` writes
-`org_membership.role`, so the founder is the only registry owner, and the door
-always refuses to remove the founder. The proposed fix drops that 409 and
-reports an `owner_gap`. It is NOT built, because a registry with no owner
-breaks one load-bearing door. The seat-admin doors (`/registry/seats`,
-`/registry/seats/release` and `/registry/seats/overview`) admit only an
-active `owner` or `admin`. The member door writes `member` only, so after
-the removal no customer member can assign, release or read seats. The
-customer Seats tab reaches those doors through the gateway `routes/seats.py`.
-A rule that moves ownership to another member is the owner's decision.
+**Review round 1, P1-b — FIXED (owner decision 2026-10-15, in chat: "Acting
+admin inherits").** Only `provision` writes `org_membership.role`, so the
+founder is the only registry owner. The door used to refuse to remove the
+founder for good. A registry with no owner is not an option either, because
+the seat-admin doors (`/registry/seats`, `/registry/seats/release` and
+`/registry/seats/overview`) admit only an active `owner` or `admin`.
+
+The rule as built:
+
+- A transfer happens ONLY when the target is the last active registry owner.
+  In the same transaction, the door makes one active member the `owner`
+  (`store.make_owner`), and then it removes the target.
+- Deployment arm, the admin path through the gateway mirror: the heir is
+  `new_owner_email` if the body names one, else the ACTOR. The actor is
+  already an active member, and the self-removal 409 keeps them off the
+  target.
+- Operator arm: `new_owner_email` is required for this case. Without it the
+  door answers 409, and the detail says to name a new owner.
+- On both arms, a named heir must be an ACTIVE member of the org and not the
+  target. Otherwise the door answers 400 and writes nothing.
+- When the target is NOT the last active owner, the door IGNORES
+  `new_owner_email` and answers `owner_transferred_to: null`. The door does
+  not refuse it, because the operator BFF acts on the tenant plane first. A
+  400 after that act would leave the planes in disagreement.
+- The removed row keeps its `role`. `store.deployment_placed_orgs` now
+  returns one row for each org and puts the active owner first, because an
+  org can hold two `owner` rows after a transfer.
+- The gateway needs no new call: its mirror is the deployment arm, so the
+  acting admin inherits. It logs `member_remove_console_owner_transferred`.
+- Fence: `TestTheLastOwnerIsHandedOn` (R8). Its tests also prove that the
+  heir can open `/registry/seats/overview`.
 
 **CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
 SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23

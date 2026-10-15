@@ -60,6 +60,7 @@ __all__ = [
     "issue_discount_code",
     "lock_discount_capacity",
     "lock_seat_capacity",
+    "make_owner",
     "membership_status",
     "operator_active_admin_count",
     "operator_by_email",
@@ -2371,6 +2372,13 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
 
     ``ORDER BY o.slug`` so a caller comparing two answers, and a fence asserting
     a list, do not depend on the planner.
+
+    ⚠️ **One row per organization, and the ACTIVE owner wins** (2026-10-15).
+    Since the member-remove door hands ownership on (``make_owner``), an org
+    can hold two ``role = 'owner'`` rows: the removed founder, who keeps the
+    role on the removed row, and the active heir. ``DISTINCT ON (o.slug)``
+    keeps one row, and the ``ORDER BY`` puts an active owner first, then the
+    earliest join. A plain join would list the org twice.
     """
     return [
         {
@@ -2384,7 +2392,8 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
         for r in conn.execute(
             text(
                 """
-                SELECT o.slug, o.name, o.status, ui.email, o.gstin,
+                SELECT DISTINCT ON (o.slug)
+                       o.slug, o.name, o.status, ui.email, o.gstin,
                        o.billing_state
                 FROM organization o
                 JOIN org_placement p ON p.organization_id = o.id
@@ -2392,7 +2401,8 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
                        ON m.organization_id = o.id AND m.role = 'owner'
                 LEFT JOIN user_identity ui ON ui.id = m.user_identity_id
                 WHERE p.deployment_id = :dep
-                ORDER BY o.slug
+                ORDER BY o.slug, (m.status = 'active') DESC NULLS LAST,
+                         m.joined_at NULLS LAST
                 """
             ),
             {"dep": deployment_id},
@@ -2593,6 +2603,26 @@ def remove_member(
         {"org": org_id, "i": identity_id},
     ).scalars().all()
     return str(previous), sorted(str(p) for p in released)
+
+
+def make_owner(conn: Connection, *, org_id: str, identity_id: str) -> None:
+    """Set one membership's registry ``role`` to ``owner``.
+
+    The ONE role writer besides ``provision``'s founder INSERT. Its only caller
+    is the member-remove door, which hands ownership on when it removes the
+    last active owner (P1-b, the owner's decision of 2026-10-15). The caller
+    decides who inherits and checks that they are an active member. This
+    function only writes.
+    """
+    conn.execute(
+        text(
+            """
+            UPDATE org_membership SET role = 'owner'
+             WHERE organization_id = :org AND user_identity_id = :i
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    )
 
 
 def active_owner_count(

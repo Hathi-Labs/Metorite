@@ -937,3 +937,33 @@ async def test_the_invite_mirror_warns_when_the_console_keeps_another_status(
                                "console_status": console_status}]
     else:
         assert mismatches == []
+
+
+async def test_the_remove_mirror_logs_an_ownership_transfer(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-b (2026-10-15): when the Console hands ownership to the acting
+    admin, the gateway says so. A change of who owns the account is never a
+    silent 200, and the route's answer does not change."""
+    from gateway.routes.admin import members
+
+    _record_console_calls(monkeypatch, db, (200, {
+        "found": True, "previous_status": "active", "released": ["core"],
+        "owner_transferred_to": "owner@fracktal.in",
+    }))
+    lines: list[tuple[str, dict[str, Any]]] = []
+
+    class _Log:
+        def warning(self, event: str, **kw: Any) -> None:
+            lines.append((event, kw))
+
+        def info(self, *_a: Any, **_kw: Any) -> None:
+            return None
+
+    monkeypatch.setattr(members, "_log", _Log())
+    out = await members.remove_member("priya@fracktal.in", admin=OWNER)
+
+    assert out == {"status": "removed", "email": "priya@fracktal.in"}
+    assert ("member_remove_console_owner_transferred", {
+        "email": "priya@fracktal.in", "new_owner": "owner@fracktal.in",
+    }) in lines

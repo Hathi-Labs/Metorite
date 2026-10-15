@@ -926,7 +926,8 @@ class TestTheRemoveDoorWrites:
                     actor_email=org["owner"])
         assert r.status_code == 200, r.text
         assert r.json() == {"found": True, "previous_status": "invited",
-                            "released": []}
+                            "released": [],
+                            "owner_transferred_to": None}
         assert _status(db, org_id=org["id"], email=who) == "removed"
 
     def test_every_live_seat_is_released_and_none_is_deleted(
@@ -957,7 +958,8 @@ class TestTheRemoveDoorWrites:
                     actor_email=org["owner"])
         assert r.status_code == 200, r.text
         assert r.json() == {"found": True, "previous_status": "active",
-                            "released": ["core", "sales"]}
+                            "released": ["core", "sales"],
+                            "owner_transferred_to": None}
         assert _live_seats(db, org_id=org["id"], email=who) == []
         # Released, not deleted: who held which seat is the invoice's trail.
         assert _seat_rows(db, org_id=org["id"], email=who) == 2
@@ -986,7 +988,8 @@ class TestTheRemoveDoorWrites:
         # with the break-glass token, which `auth._stash` names so.
         assert row[0] == "breakglass"
         assert row[1] == {"email": who, "previous_status": "invited",
-                          "released": []}
+                          "released": [],
+                          "owner_transferred_to": None}
 
     def test_a_suspended_organization_can_still_remove(
         self, client, db, member_key
@@ -1030,7 +1033,7 @@ class TestTheRemoveDoorIsIdempotentAndMintsNothing:
         r = _remove(client, member_key, member_email=who,
                     actor_email=org["owner"])
         assert r.status_code == 200, r.text
-        assert r.json() == {"found": False}
+        assert r.json() == {"found": False, "owner_transferred_to": None}
         assert _identity_count(db, who) == 0
 
     def test_an_identity_with_no_membership_here_is_found_false(
@@ -1042,7 +1045,7 @@ class TestTheRemoveDoorIsIdempotentAndMintsNothing:
         r = _remove(client, member_key, member_email=other["owner"],
                     actor_email=org["owner"])
         assert r.status_code == 200, r.text
-        assert r.json() == {"found": False}
+        assert r.json() == {"found": False, "owner_transferred_to": None}
         assert _status(db, org_id=other["id"], email=other["owner"]) == "active"
 
     def test_a_second_remove_is_a_200_that_releases_nothing(
@@ -1059,7 +1062,8 @@ class TestTheRemoveDoorIsIdempotentAndMintsNothing:
                         actor_email=org["owner"])
         assert again.status_code == 200, again.text
         assert again.json() == {"found": True, "previous_status": "removed",
-                                "released": []}
+                                "released": [],
+                                "owner_transferred_to": None}
 
     def test_the_address_is_matched_without_case(self, client, db, member_key):
         org = _new_org(client)
@@ -1088,34 +1092,177 @@ class TestTheRemoveDoorRefusals:
         assert "cannot remove yourself" in r.json()["detail"]
         assert _status(db, org_id=org["id"], email=second) == "active"
 
-    def test_the_last_active_owner_is_refused_on_both_arms(
-        self, client, db, member_key
-    ):
-        """⚠️ Mutation-checked: deleting the owner check makes this fail
-        (the founder reads ``removed``)."""
-        org = _new_org(client)
-        admin = f"adm-{uuid.uuid4().hex[:6]}@x.example"
-        _active_member(db, org_id=org["id"], email=admin, role="admin")
-
-        by_admin = _remove(client, member_key, member_email=org["owner"],
-                           actor_email=admin)
-        by_operator = _remove(client, None, member_email=org["owner"],
-                              org_slug=org["slug"])
-        for r in (by_admin, by_operator):
-            assert r.status_code == 409, r.text
-            assert "no owner" in r.json()["detail"]
-        assert _status(db, org_id=org["id"], email=org["owner"]) == "active"
-
     def test_an_owner_may_go_while_another_active_owner_remains(
         self, client, db
     ):
+        """Not the last owner, so nothing is handed on, and a named
+        ``new_owner_email`` is IGNORED rather than refused."""
         org = _new_org(client)
         second = f"owner2-{uuid.uuid4().hex[:6]}@x.example"
+        bystander = f"by-{uuid.uuid4().hex[:6]}@x.example"
         _active_member(db, org_id=org["id"], email=second, role="owner")
+        _active_member(db, org_id=org["id"], email=bystander)
+        r = _remove(client, None, member_email=org["owner"],
+                    org_slug=org["slug"], new_owner_email=bystander)
+        assert r.status_code == 200, r.text
+        assert r.json()["owner_transferred_to"] is None
+        assert _status(db, org_id=org["id"], email=org["owner"]) == "removed"
+        assert _role(db, org_id=org["id"], email=bystander) == "member"
+
+
+def _role(db, *, org_id: str, email: str) -> str | None:
+    with db.begin() as c:
+        return c.execute(
+            text(
+                """
+                SELECT m.role FROM org_membership m
+                JOIN user_identity ui ON ui.id = m.user_identity_id
+                WHERE m.organization_id = :o AND ui.email = :e
+                """
+            ),
+            {"o": org_id, "e": email},
+        ).scalar_one_or_none()
+
+
+def _overview(client, db, *, actor: str):
+    seat_key = _key(db, deployment_id=_deployment_id(db),
+                    capabilities=[SEAT_ADMIN_CAPABILITY])
+    return client.post(
+        "/registry/seats/overview",
+        headers={"Authorization": f"Bearer {seat_key}"},
+        json={"actor_email": actor},
+    )
+
+
+class TestTheLastOwnerIsHandedOn:
+    """P1-b, the owner's decision of 2026-10-15: "Acting admin inherits".
+
+    Only ``provision`` writes a registry role, so the founder is the only
+    registry owner. Removing them used to be refused for good. Now the door
+    makes one active member the owner, in the same transaction, and then
+    removes the founder. The seat-admin doors gate on ``owner|admin``, so the
+    last test of each case proves the heir can open them.
+    """
+
+    def test_deployment_arm_with_no_field_the_actor_inherits(
+        self, client, db, member_key
+    ):
+        """⚠️ Mutation-checked: making ``_hand_on_ownership`` skip
+        ``store.make_owner`` makes this fail (the heir stays ``member`` and
+        the seat overview answers 403)."""
+        org = _new_org(client)
+        acting = f"acting-{uuid.uuid4().hex[:6]}@x.example"
+        _active_member(db, org_id=org["id"], email=acting)
+
+        r = _remove(client, member_key, member_email=org["owner"],
+                    actor_email=acting)
+        assert r.status_code == 200, r.text
+        assert r.json()["owner_transferred_to"] == acting
+        assert _role(db, org_id=org["id"], email=acting) == "owner"
+        assert _status(db, org_id=org["id"], email=org["owner"]) == "removed"
+        # The removed founder keeps the role on the removed row.
+        assert _role(db, org_id=org["id"], email=org["owner"]) == "owner"
+        assert _overview(client, db, actor=acting).status_code == 200
+
+        with db.begin() as c:
+            detail = c.execute(
+                text(
+                    "SELECT detail FROM control_audit WHERE organization_id = :o "
+                    "AND action = 'member.remove'"
+                ),
+                {"o": org["id"]},
+            ).scalar_one()
+        assert detail["owner_transferred_to"] == acting
+
+    def test_deployment_arm_with_the_field_the_named_member_inherits(
+        self, client, db, member_key
+    ):
+        org = _new_org(client)
+        acting = f"acting-{uuid.uuid4().hex[:6]}@x.example"
+        heir = f"heir-{uuid.uuid4().hex[:6]}@x.example"
+        _active_member(db, org_id=org["id"], email=acting)
+        _active_member(db, org_id=org["id"], email=heir)
+
+        r = _remove(client, member_key, member_email=org["owner"],
+                    actor_email=acting, new_owner_email=heir)
+        assert r.status_code == 200, r.text
+        assert r.json()["owner_transferred_to"] == heir
+        assert _role(db, org_id=org["id"], email=heir) == "owner"
+        assert _role(db, org_id=org["id"], email=acting) == "member"
+        assert _overview(client, db, actor=heir).status_code == 200
+
+    def test_operator_arm_with_no_field_is_409_and_says_to_name_one(
+        self, client, db
+    ):
+        org = _new_org(client)
         r = _remove(client, None, member_email=org["owner"],
                     org_slug=org["slug"])
+        assert r.status_code == 409, r.text
+        assert "new_owner_email" in r.json()["detail"]
+        assert _status(db, org_id=org["id"], email=org["owner"]) == "active"
+
+    @pytest.mark.parametrize("who", ["stranger", "invited", "target"])
+    def test_operator_arm_refuses_a_heir_who_is_not_an_active_other_member(
+        self, client, db, member_key, who
+    ):
+        """400 for an address with no membership here, for a member who is
+        not ``active``, and for the target itself. Nothing is written."""
+        org = _new_org(client)
+        if who == "stranger":
+            heir = f"stranger-{uuid.uuid4().hex[:6]}@x.example"
+            other = _new_org(client)
+            _active_member(db, org_id=other["id"], email=heir)
+        elif who == "invited":
+            heir = f"inv-{uuid.uuid4().hex[:6]}@x.example"
+            assert _add(client, member_key, member_email=heir,
+                        actor_email=org["owner"]).status_code == 200
+        else:
+            heir = org["owner"]
+
+        r = _remove(client, None, member_email=org["owner"],
+                    org_slug=org["slug"], new_owner_email=heir)
+        assert r.status_code == 400, r.text
+        assert "active member" in r.json()["detail"]
+        assert _status(db, org_id=org["id"], email=org["owner"]) == "active"
+        if who != "target":
+            assert _role(db, org_id=org["id"], email=heir) in (None, "member")
+
+    def test_operator_arm_happy_path_promotes_then_removes(
+        self, client, db
+    ):
+        org = _new_org(client)
+        heir = f"heir-{uuid.uuid4().hex[:6]}@x.example"
+        _active_member(db, org_id=org["id"], email=heir)
+
+        r = _remove(client, None, member_email=org["owner"],
+                    org_slug=org["slug"], new_owner_email=heir.upper())
         assert r.status_code == 200, r.text
+        assert r.json()["found"] is True
+        assert r.json()["owner_transferred_to"] == heir.upper()
+        assert _role(db, org_id=org["id"], email=heir) == "owner"
         assert _status(db, org_id=org["id"], email=org["owner"]) == "removed"
+        assert _overview(client, db, actor=heir).status_code == 200
+
+    def test_the_bootstrap_read_lists_the_org_once_with_the_heir(
+        self, client, db, member_key
+    ):
+        """After a hand-on the org holds two ``role='owner'`` rows. The
+        inbound bootstrap read must still list it ONCE, naming the active
+        owner. ⚠️ Mutation-checked: dropping ``DISTINCT ON`` lists it twice."""
+        org = _new_org(client)
+        acting = f"acting-{uuid.uuid4().hex[:6]}@x.example"
+        _active_member(db, org_id=org["id"], email=acting)
+        assert _remove(client, member_key, member_email=org["owner"],
+                       actor_email=acting).status_code == 200
+
+        with db.begin() as c:
+            rows = [
+                r for r in store.deployment_placed_orgs(
+                    c, deployment_id=_deployment_id(db))
+                if r["slug"] == org["slug"]
+            ]
+        assert len(rows) == 1
+        assert rows[0]["owner_email"].lower() == acting
 
 
 class TestARemovedMemberBurnsNoSeatAtSignIn:

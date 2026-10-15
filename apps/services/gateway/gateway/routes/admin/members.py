@@ -534,12 +534,21 @@ async def _mirror_removal_to_console(*, actor_email: str, member_email: str) -> 
         )
         if cc_status >= 400:
             # A verdict, not an outage: capability missing, the actor not an
-            # active registry member, a self-removal, or the last registry
-            # owner. The planes now disagree, and this line is how anyone
-            # finds out.
+            # active registry member, or a self-removal. The planes now
+            # disagree, and this line is how anyone finds out.
             _log.warning(
                 "member_remove_console_refused",
                 email=member_email, status=cc_status, body=str(cc_body)[:200],
+            )
+        elif cc_body.get("owner_transferred_to"):
+            # The removed person was the org's last active registry owner, so
+            # the Console made the acting admin the owner in the same
+            # transaction (P1-b, the owner's decision of 2026-10-15). A change
+            # of who owns the account is never a silent 200.
+            _log.warning(
+                "member_remove_console_owner_transferred",
+                email=member_email,
+                new_owner=cc_body.get("owner_transferred_to"),
             )
     except ConsoleMemberWriteUnavailable as exc:
         _log.warning("member_remove_console_unavailable",
