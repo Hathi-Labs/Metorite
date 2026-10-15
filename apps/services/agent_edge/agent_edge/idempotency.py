@@ -1,15 +1,23 @@
-"""The ``idempotency_key`` of ``create_task`` (WS-55 EA-6d, spec §9.2).
+"""The ``idempotency_key`` of a write tool (WS-55 EA-6d and EA-6c, spec §9.2).
 
 Spec ``project-docs/specs/external_agent_access.md`` §9.2, "Rules of
-``create_task``".
+``create_task``" and "Rules of ``add_comment``". Two tools use a slot:
+``create_task`` (the key is optional) and ``add_comment`` (the key is
+required).
 
-**What it does.** The same key from the same connection gives the first
-result and makes one task. The edge keeps one slot for each key, in the
-tenant-prefixed Redis wrapper (``acb_common.tenant_redis``, R5). The slot key
-is ``cc:<organization>:agent_idem:<connection>:<sha256 of the key>``. The
+**What it does.** The same key from the same connection, sent to the same
+tool, gives the first result and makes one row. The edge keeps one slot for
+each key, in the tenant-prefixed Redis wrapper (``acb_common.tenant_redis``,
+R5). The slot key is
+``cc:<organization>:agent_idem:<connection>:<tool>:<sha256 of the key>``. The
 organization and the connection come from the token row of the call
 (``TokenLookup``), never from a request input. The raw key goes into no
 Redis key and no log line.
+
+**The tool name is part of the slot key (EA-6c, EA3-35).** So one key sent to
+``create_task`` and then to ``add_comment`` makes one task AND one comment.
+Without the tool name, the second call read the slot of the first, and an
+agent that reused a key across tools got a refusal.
 
 **The three states of a slot.**
 
@@ -17,13 +25,13 @@ Redis key and no log line.
   :data:`PENDING_TTL_S`, which is longer than the tool limit
   (``tools.TOOL_TIMEOUT_S``). A second call with the key gets
   ``TEXT_KEY_RUNNING`` and sends nothing.
-* ``done``: the call made the task. The slot holds the task id and lives
-  :data:`RESULT_TTL_S` (24 hours). A second call reads that task and returns
-  it with ``created: false``.
+* ``done``: the call made the row. The slot holds the id of the row (the
+  result id) and lives :data:`RESULT_TTL_S` (24 hours). A second call returns
+  that row with ``created: false``.
 * ``unknown``: the POST went out and no clear answer came back, so the edge
-  cannot tell whether the task exists. The slot lives :data:`RESULT_TTL_S`,
-  and a second call gets ``TEXT_KEY_UNKNOWN``. The agent then looks for the
-  task, and it does not make a second one by accident.
+  cannot tell whether the row exists. The slot lives :data:`RESULT_TTL_S`,
+  and a second call gets the unknown text of its tool. The agent then looks
+  for the row, and it does not make a second one by accident.
 
 A call that the edge or the gateway refused before any row existed releases
 the slot, so the agent can send the key again.
@@ -32,12 +40,12 @@ the slot, so the agent can send the key again.
 key at the same time, exactly one gets the slot. The other reads it.
 
 **The fingerprint.** Each slot holds the SHA-256 of the other inputs of the
-call. A second call whose inputs differ gets ``TEXT_KEY_REUSED``, so one key
-never names two different tasks.
+call. A second call whose inputs differ gets the reused-key text of its tool,
+so one key never names two different rows.
 
 **The residual.** When the edge process stops between the POST and the
 write of the result, the slot stays ``pending`` until it expires. A call with
-the key after that can make a second task. The pending life is short on
+the key after that can make a second row. The pending life is short on
 purpose: a long one would lock a key after every crash.
 
 **A store outage.** :meth:`Slot.claim` raises :class:`StoreUnavailable`, and
@@ -87,11 +95,13 @@ class StoreUnavailable(Exception):
 
 @dataclass(frozen=True)
 class Record:
-    """What an earlier call left in the slot."""
+    """What an earlier call left in the slot. ``result_id`` is the id of the
+    row that the call made: a task for ``create_task``, a comment for
+    ``add_comment``."""
 
     state: str
     fingerprint: str
-    task_id: str | None = None
+    result_id: str | None = None
 
 
 def fingerprint(arguments: Mapping[str, Any]) -> str:
@@ -103,35 +113,40 @@ def fingerprint(arguments: Mapping[str, Any]) -> str:
 
 def _encode(record: Record) -> str:
     return json.dumps({"state": record.state, "fingerprint": record.fingerprint,
-                       "task": record.task_id}, separators=(",", ":"))
+                       "id": record.result_id}, separators=(",", ":"))
 
 
 def _decode(raw: Any) -> Record:
     """A slot value as a :class:`Record`. A value the edge cannot read is
-    ``unknown``, so it never lets a second task through."""
+    ``unknown``, so it never lets a second row through."""
     try:
         data = json.loads(raw)
         state = data["state"]
         found = data["fingerprint"]
-        task = data.get("task")
-    except (TypeError, ValueError, KeyError):
+        result = data.get("id")
+    except (TypeError, ValueError, KeyError, AttributeError):
         return Record(state=UNKNOWN, fingerprint="")
     if state not in (PENDING, DONE, UNKNOWN) or not isinstance(found, str):
         return Record(state=UNKNOWN, fingerprint="")
     return Record(state=state, fingerprint=found,
-                  task_id=task if isinstance(task, str) else None)
+                  result_id=result if isinstance(result, str) else None)
 
 
 class Slot:
-    """The slot of one key of one connection."""
+    """The slot of one key of one connection, for one tool.
 
-    def __init__(self, caller: TokenLookup, key: str) -> None:
+    *tool* is a keyword with no default, so a new caller cannot forget it and
+    share the slots of another tool (EA3-35).
+    """
+
+    def __init__(self, caller: TokenLookup, key: str, *, tool: str) -> None:
         self._tenant = caller.organization_id
         self._connection = caller.connection_id
+        self._tool = tool
         self._digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     def _key(self) -> tenant_redis.TenantKey:
-        return tenant_redis.key(NAMESPACE, self._connection, self._digest)
+        return tenant_redis.key(NAMESPACE, self._connection, self._tool, self._digest)
 
     async def claim(self, fingerprint_: str) -> Record | None:
         """``None`` when this call now holds the slot. Else the record of the
@@ -143,7 +158,7 @@ class Slot:
         except StoreUnavailable:
             raise
         except Exception as exc:
-            _log.warning("agent_edge.idempotency_unavailable",
+            _log.warning("agent_edge.idempotency_unavailable", tool=self._tool,
                          error=type(exc).__name__, connection_id=self._connection)
             raise StoreUnavailable() from None
 
@@ -161,9 +176,9 @@ class Slot:
                     return _decode(raw)
         raise StoreUnavailable()
 
-    async def finish(self, fingerprint_: str, task_id: str) -> None:
-        """Keep the task id for :data:`RESULT_TTL_S`."""
-        await self._put(Record(state=DONE, fingerprint=fingerprint_, task_id=task_id))
+    async def finish(self, fingerprint_: str, result_id: str) -> None:
+        """Keep the id of the new row for :data:`RESULT_TTL_S`."""
+        await self._put(Record(state=DONE, fingerprint=fingerprint_, result_id=result_id))
 
     async def mark_unknown(self, fingerprint_: str) -> None:
         """The POST went out, and no clear answer came back."""

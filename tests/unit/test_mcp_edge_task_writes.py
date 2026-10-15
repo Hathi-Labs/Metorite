@@ -68,6 +68,10 @@ name. ``E`` is ``apps/services/agent_edge/agent_edge``, ``G`` is
 * M34. ``G/tasks.py``: the type check reads root-local types only. ``test_a_create_with_an_org_wide_type_lands``.
 * M36. ``_post_write_budget`` returns ``POST_WRITE_READ_CAP_S`` and ignores the time left. ``test_two_hung_reads_after_an_update_stay_inside_the_grace``.
 * M35. ``_after_write`` lets a ``ToolError`` or a ``TimeoutError`` through. ``test_a_slow_re_read_after_a_create_gives_the_post_answer`` and ``test_a_failed_name_read_after_the_write_still_reports_it``.
+* N1. (EA-6c fix round 1) ``_create_task`` drops ``_refuse_nul``. ``test_a_nul_is_refused_with_no_request`` (the create rows) and ``test_a_nul_leaves_the_key_of_create_task_free``.
+* N2. ``_update_task`` drops ``_refuse_nul``. ``test_a_nul_is_refused_with_no_request`` (the update rows).
+* N3. ``_add_task_reference`` drops ``_refuse_nul``. ``test_a_nul_is_refused_with_no_request`` (the reference rows).
+* N4. ``_holds_nul`` reads no list or dict. ``test_a_nul_is_refused_with_no_request`` (the ``tags`` and ``custom_fields`` rows).
 """
 from __future__ import annotations
 
@@ -457,9 +461,9 @@ class TestTheIdempotencyKey:
     async def test_the_slot_is_tenant_prefixed_and_holds_no_raw_key(self, edge):
         await _tool("create_task", _create_args(idempotency_key=IDEM))
         [(name, value)] = edge.redis.slots().items()
-        assert name.startswith(f"cc:{ORG}:{idempotency.NAMESPACE}:{CONN}:")
+        assert name.startswith(f"cc:{ORG}:{idempotency.NAMESPACE}:{CONN}:create_task:")
         assert IDEM not in name and IDEM not in json.dumps(value)
-        assert value["state"] == "done" and value["task"] == NEW
+        assert value["state"] == "done" and value["id"] == NEW
         assert edge.redis.store[name][1] == edge.redis.now + 24 * 60 * 60
 
     async def test_the_same_key_with_other_inputs_is_refused(self, edge):
@@ -521,13 +525,13 @@ class TestTheIdempotencyKey:
 
     @pytest.mark.parametrize("value", [
         "not json",
-        json.dumps({"state": "unknown", "fingerprint": "other", "task": None})])
+        json.dumps({"state": "unknown", "fingerprint": "other", "id": None})])
     async def test_an_unknown_or_unreadable_slot_always_gives_the_unknown_text(
             self, edge, value):
         """Fix round 1 (the verifier). The state is read first, so a slot the
         edge cannot read is never "used for a different task"."""
         with tenant_redis.organization_scope(ORG):
-            name = idempotency.Slot(w._lookup(), IDEM)._key().value
+            name = idempotency.Slot(w._lookup(), IDEM, tool="create_task")._key().value
         edge.redis.store[name] = (value, edge.redis.now + 100)
         result = await _tool("create_task", _create_args(idempotency_key=IDEM, title="Other"))
         assert _text(result) == tools.TEXT_KEY_UNKNOWN
@@ -673,6 +677,45 @@ class TestUpdateTask:
         assert result["structuredContent"]["task"]["status"]["name"] is None
 
 
+class TestANulNeverReachesTheGateway:
+    """EA-6c fix round 1 (P2). Postgres refuses a NUL in text, so the route
+    answered 500 and the edge said busy. With a key, ``create_task`` then
+    marked its slot ``unknown`` although no task existed. Each write tool now
+    refuses a NUL first, before any claim and any request."""
+
+    @pytest.mark.parametrize("tool,args,name", [
+        ("create_task", _create_args(title="a\x00b"), "title"),
+        ("create_task", _create_args(description="a\x00b"), "description"),
+        ("create_task", _create_args(tags=["ok", "a\x00b"]), "tags"),
+        ("update_task", _update_args(title="a\x00b"), "title"),
+        ("update_task", _update_args(description="a\x00b"), "description"),
+        ("update_task", _update_args(tags=["a\x00b"]), "tags"),
+        ("update_task", _update_args(custom_fields={"severity": "a\x00b"}), "custom_fields"),
+        ("update_task", _update_args(custom_fields={"labels": ["x", "a\x00b"]}),
+         "custom_fields"),
+        ("add_task_reference", {"task_id": TASK, "url": "https://x.io/a\x00b"}, "url"),
+        ("add_task_reference", {"task_id": TASK, "url": "https://x.io/a",
+                                "title": "a\x00b"}, "title"),
+    ])
+    async def test_a_nul_is_refused_with_no_request(self, edge, tool, args, name):
+        result = await _tool(tool, args)
+        assert _text(result) == tools.text_nul(name)
+        assert edge.gateway.requests == []
+        assert edge.redis.calls == []
+
+    async def test_a_nul_leaves_the_key_of_create_task_free(self, edge):
+        refused = await _tool("create_task", _create_args(title="a\x00b",
+                                                          idempotency_key=IDEM))
+        assert _text(refused) == tools.text_nul("title")
+        assert edge.redis.calls == [] and edge.redis.slots() == {}
+        again = await _tool("create_task", _create_args(idempotency_key=IDEM))
+        assert again["structuredContent"]["created"] is True
+
+    def test_the_comment_text_is_the_shared_text(self):
+        shared = tools.text_nul("body")
+        assert shared == tools.TEXT_COMMENT_NUL
+
+
 class TestALandedWriteIsNeverBusy:
     """Fix round 2 (F1). A write that landed comes back as the write's own
     answer, whatever the tool limit and however slow the reads after it.
@@ -701,7 +744,7 @@ class TestALandedWriteIsNeverBusy:
             assert edge.redis.slots() == {}
             return
         [slot] = edge.redis.slots().values()
-        assert (slot["state"], slot["task"]) == ("done", NEW)
+        assert (slot["state"], slot["id"]) == ("done", NEW)
         # A retry with the key gives the same task back and writes nothing.
         edge.gateway.slow.clear()
         again = await _tool("create_task", args)
@@ -1273,21 +1316,21 @@ class TestTheSlotOnARealRedis:
     async def test_one_claim_wins_and_the_result_lives_a_day(self, real_redis):
         lookup = w._lookup()
         key = f"real-{uuid.uuid4().hex}"
-        slots = [idempotency.Slot(lookup, key) for _ in range(5)]
+        slots = [idempotency.Slot(lookup, key, tool="create_task") for _ in range(5)]
         claims = await asyncio.gather(*(s.claim("fp") for s in slots))
         assert sum(c is None for c in claims) == 1
         assert {c.state for c in claims if c is not None} == {idempotency.PENDING}
         winner = slots[claims.index(None)]
         await winner.finish("fp", NEW)
-        again = await idempotency.Slot(lookup, key).claim("fp")
-        assert (again.state, again.task_id) == (idempotency.DONE, NEW)
+        again = await idempotency.Slot(lookup, key, tool="create_task").claim("fp")
+        assert (again.state, again.result_id) == (idempotency.DONE, NEW)
         with tenant_redis.organization_scope(ORG):
             ttl = await real_redis.ttl(winner._key().value)
         assert 24 * 60 * 60 - 5 <= ttl <= 24 * 60 * 60
 
     async def test_a_release_frees_the_slot(self, real_redis):
         lookup = w._lookup()
-        slot = idempotency.Slot(lookup, f"real-{uuid.uuid4().hex}")
+        slot = idempotency.Slot(lookup, f"real-{uuid.uuid4().hex}", tool="create_task")
         assert await slot.claim("fp") is None
         await slot.release()
         assert await slot.claim("fp") is None

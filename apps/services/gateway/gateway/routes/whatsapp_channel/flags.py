@@ -7,7 +7,10 @@ of WAC-2 and the run of WAC-3 ask it, and never read the settings themselves.
 
 * ``WHATSAPP_ASSISTANT_ENABLED`` — the kill switch, default OFF.
 * ``WHATSAPP_ASSISTANT_ORGS`` — the organization ids that may link, with a
-  comma between ids. Empty allows no organization. There is no ``*``.
+  comma between ids. Empty allows no organization. ``*`` allows every
+  organization, as ``AGENT_ACCESS_ORGS`` does. The sweep still visits only
+  the ids that the list names, so a stuck row of an org that ``*`` admits
+  waits for its member's next message.
 * ``WHATSAPP_ASSISTANT_DISPLAY_NUMBER`` — the bot's number, 8 to 15 digits
   with the country code and no ``+``. Any other value reads as unset, and the
   module logs it once, so a typo on the box closes the channel rather than
@@ -84,10 +87,14 @@ def assistant_orgs() -> frozenset[str]:
 
 
 def org_allowed(organization_id: str | None) -> bool:
-    """True when the switch is on AND the organization is on the list."""
+    """True when the switch is on AND the organization is on the list.
+
+    ``*`` on the list admits every organization.
+    """
     if not assistant_enabled() or not organization_id:
         return False
-    return str(organization_id).strip().lower() in assistant_orgs()
+    orgs = assistant_orgs()
+    return "*" in orgs or str(organization_id).strip().lower() in orgs
 
 
 @functools.lru_cache(maxsize=16)
