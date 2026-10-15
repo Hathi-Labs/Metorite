@@ -5434,7 +5434,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
 - **Added:** 2026-10-15 · WS-59 RE-2a
 
-### H-318 · A DSML stream shows a first tag that a delta cut before its `>` · [AGENT]
+### H-323 · A DSML stream shows a first tag that a delta cut before its `>` · [AGENT]
 - **Check:** in `tests/unit/test_router_dsml_tool_calls.py`, compare
   `_events(TASK_TOOLS, deltas)` with `_events(TASK_TOOLS, [whole])` for the
   three cases in `specs/customer_console.md` §6A.15, "The known gap". A

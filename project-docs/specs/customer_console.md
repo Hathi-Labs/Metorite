@@ -10596,7 +10596,7 @@ path. The Router owns this, because every chat completion crosses it.
 4. **A whole feed never shows markup outside a code fence to the member.** A
    stream holds the same rule, except in the three cases below.
 
-**The known gap: a first tag cut before its `>` (H-318).** `_TAG_HEAD_RE`
+**The known gap: a first tag cut before its `>` (H-323).** `_TAG_HEAD_RE`
 decides whether an open first tag can still become a tag. It refuses a `/`
 or a `'` before the `>`. When a delta ends there, `_not_a_tag` releases the
 region as text. A whole feed reads the complete tag, so it never takes that
