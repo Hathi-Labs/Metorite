@@ -2021,10 +2021,12 @@ import derives its hold counts from the saved estimate, which now carries
 An "on its own" run also reads each unheld parent of its keys, incrementally.
 So a child of a new parent keeps its link.
 
-The engine bounds the re-read of a held parent's children to the start of the
-hold, when the parent was in before it. The mark is `held_since` on the
-parent, and `reread_since` on the rules cursor. A parent that was never
-imported gets a full read.
+**Round three (2026-10-15).** A re-read of the children bounded to the hold
+lost records in two cases: a child whose import never ran, and a child made
+between the parent's last read and the hold. So the re-read of a held
+parent's children is a FULL read, on purpose. An "on its own" run reads an
+unheld parent for its changes only: no walk, no first import, no re-read, no
+deleted list and no deal roles.
 
 Two items stay open in `HANDOFF.md`. H-320 is the edge of the shared
 checkbox. H-321 is a generic module held past the 60 days of the deleted list.

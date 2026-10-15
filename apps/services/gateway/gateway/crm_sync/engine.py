@@ -1417,7 +1417,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     row = _row(ctx, module)
     saved = row.state or {}
     generic = _module(entity) is not None
-    if _skip_held(ctx, entity):
+    parent_only = _parent_of_only(ctx, entity)
+    if parent_only and (row.initial_done_at is None or saved.get("in_progress")):
+        return  # not in yet, or mid-walk: the next normal run owns it
+    if not parent_only and _skip_held(ctx, entity):
         # A held parent's children land with no link (review P1). Mark it, so
         # its next read, released or on its own, re-reads them once.
         if (
@@ -1430,14 +1433,14 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         return
     # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
     # its deletes come from the deleted list only (CRM-Q6a).
-    walking = entity in ctx.reconcile and not generic
+    walking = entity in ctx.reconcile and not generic and not parent_only
     rereading = generic and _module_reread(ctx, row)
     if generic and not rereading and _module_read_recently(ctx, row):
         return
     # A rejected or stale field rule on a fixed column (CRM-Q7a): one full read
     # writes the fixed map's value again. It stamps nothing and deletes
     # nothing, like the CRM-Q5 lead read below.
-    rule_wanted = not generic and entity in ctx.rule_rereads
+    rule_wanted = not generic and not parent_only and entity in ctx.rule_rereads
     if (
         row.initial_done_at is not None and saved.get("offset_paged") and not walking
         and not rereading and not rule_wanted
@@ -1450,7 +1453,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # children are read in full once, so their links fill in. A read that runs
     # over several runs carries the mark in its cursor, and queues only at its
     # last page: a child read before that would clear its entry too early.
-    recovering = not generic and (
+    recovering = not generic and not parent_only and (
         bool(saved.get("unavailable")) or bool(saved.get("held_skipped"))
         or (resumed and bool(saved.get("recovering")))
     )
@@ -1459,7 +1462,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     rule_reread = (rule_wanted and not resumed) or (resumed and bool(saved.get("rule_reread")))
     backfill = (
         entity == "lead" and row.initial_done_at is not None
-        and not saved.get("converted_both") and not resumed
+        and not saved.get("converted_both") and not resumed and not parent_only
     )
     hidden = bool(saved.get("offset_paged")) if resumed else False
     walk_start = ctx.started
@@ -1491,14 +1494,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         newest = _parse(saved.get("max_modified"))
         newest_ids = set(saved.get("watermark_ids") or ())
     else:
-        if walking or backfill or rereading:
-            since = None
-        elif rule_reread:
-            since = _reread_since(ctx, entity)  # None is a full read
-        else:
-            since = row.last_pulled_at
-        # The watermark ids belong to the cursor's own time, not to a bound.
-        ids = tuple(saved.get("watermark_ids") or ()) if since is not None and not rule_reread else ()
+        since = None if walking or backfill or rereading or rule_reread else row.last_pulled_at
+        ids = tuple(saved.get("watermark_ids") or ()) if since is not None else ()
         cursor = SourceCursor(since=since, seen_ids=ids)
         newest = since
         newest_ids = set(ids)
@@ -1517,8 +1514,6 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     progress_marks: dict[str, Any] = {**marks, "rule_reread": True} if rule_reread else marks
     if recovering:
         progress_marks = {**progress_marks, "recovering": True}
-        if saved.get("held_since"):
-            progress_marks["held_since"] = saved["held_since"]
     table = MODULE_TABLE if generic else _table(entity)
     try:
         while True:
@@ -1618,7 +1613,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                 if last_page and rule_reread:
                     await _rule_reread_done(ctx, db, entity)
                 if last_page and recovering:
-                    await _queue_dependents(ctx, db, entity, _parse(saved.get("held_since")))
+                    await _queue_dependents(ctx, db, entity)
             ctx.cursors[module] = row
             if last_page:
                 break
@@ -1680,7 +1675,7 @@ def _skip_held(ctx: _Ctx, entity: str) -> bool:
     """
     key = count_key(entity)
     if ctx.only is not None:
-        return key not in ctx.only and not _parent_of_only(ctx, entity)
+        return key not in ctx.only
     if key in ctx.held:
         if _module(entity):
             ctx.module_step(entity, "seen", 0)  # makes the key
@@ -1693,12 +1688,9 @@ async def _mark_held_skipped(ctx: _Ctx, entity: str, row: CursorRow) -> None:
     """Record that a hold skipped this parent (CRM-Q16). The next read of it
     re-reads its dependents, through ``recovering``. Every other key of the
     state stays, so a stopped walk resumes as it was."""
-    # A parent that was in before the hold needs its children only from the
-    # start of the hold. One never imported needs them all (since None).
-    since = {"held_since": _iso(ctx.started)} if row.initial_done_at is not None else {}
     marked = CursorRow(
         changed_module(entity), row.last_pulled_at,
-        {**(row.state or {}), "held_skipped": True, **since},
+        {**(row.state or {}), "held_skipped": True},
         row.initial_done_at, row.last_reconciled_at,
     )
     async with ctx.page() as db:
@@ -1714,9 +1706,11 @@ def _done_at_start(ctx: _Ctx, entity: str) -> bool:
 
 def _parent_of_only(ctx: _Ctx, entity: str) -> bool:
     """True when ``entity`` is an unheld parent of a key of this "on its own"
-    run. Its incremental read runs too, so a child of a parent made since the
-    last normal run gets its link and is not dropped (review P2)."""
-    if ctx.only is None or count_key(entity) in ctx.held:
+    run, and not a key of the run itself. Its CHANGES are read too, so a child
+    of a parent made since the last normal run gets its link and is not
+    dropped (review P2). Nothing else of the parent runs: no walk, no first
+    import, no re-read, no deleted list and no deal roles (review round 3)."""
+    if ctx.only is None or count_key(entity) in ctx.only or count_key(entity) in ctx.held:
         return False
     return any(count_key(c) in ctx.only for c in DEPENDENTS.get(entity, ()))
 
@@ -2660,33 +2654,13 @@ async def _execute(ctx: _Ctx) -> None:
 
 def _rules_row(
     ctx: _Ctx, applied: list[field_rules.Rule], reread: set[str],
-    reread_since: dict[str, str] | None = None,
 ) -> CursorRow:
-    """The rules cursor row with a new state.
-
-    ``reread_since`` bounds a re-read to a time (CRM-Q16): the children of a
-    parent that a hold skipped need only what changed since the hold. With
-    none given the old map is kept. An entity that leaves ``reread`` leaves
-    the map too.
-    """
+    """The rules cursor row with a new state."""
     old = _row(ctx, FIELD_RULES_ROW)
-    state = field_rules.state_of(applied, reread)
-    bounds = reread_since if reread_since is not None else dict(
-        (old.state or {}).get("reread_since") or {},
-    )
-    bounds = {k: v for k, v in bounds.items() if k in state["reread"]}
-    if bounds:
-        state["reread_since"] = bounds
     return CursorRow(
-        FIELD_RULES_ROW, old.last_pulled_at, state,
+        FIELD_RULES_ROW, old.last_pulled_at, field_rules.state_of(applied, reread),
         old.initial_done_at or _now(), old.last_reconciled_at,
     )
-
-
-def _reread_since(ctx: _Ctx, entity: str) -> datetime | None:
-    """The bound of a queued re-read of ``entity``, or None for a full read."""
-    bounds = (_row(ctx, FIELD_RULES_ROW).state or {}).get("reread_since") or {}
-    return _parse(bounds.get(entity))
 
 
 async def _field_rules(ctx: _Ctx) -> None:
@@ -2776,29 +2750,22 @@ async def _load_rules(ctx: _Ctx) -> None:
     )
 
 
-async def _queue_dependents(
-    ctx: _Ctx, db: Any, entity: str, since: datetime | None = None,
-) -> None:
+async def _queue_dependents(ctx: _Ctx, db: Any, entity: str) -> None:
     """``entity`` came back (CRM-Q15), or a hold on it ended (CRM-Q16). Queue
-    one read of each entity that links to it, in the transaction of its last
-    page. A child that comes later in this run is read in this run. ``since``
-    bounds the read to the hold. None is a full read, and it replaces a bound
-    that an earlier queue set."""
+    one FULL read of each entity that links to it, in the transaction of its
+    last page. A child that comes later in this run is read in this run.
+
+    A full read, on purpose. A read bounded to the hold loses a child whose
+    import never ran, and one made between the parent's last read and the
+    hold (review round 3). The cost is one read of each child module for
+    each release, and an admin chooses each release.
+    """
     deps = set(DEPENDENTS.get(entity, ()))
     if not deps:
         return
     state = _row(ctx, FIELD_RULES_ROW).state or {}
     reread = {str(e) for e in state.get("reread") or ()} | deps
-    bounds = dict(state.get("reread_since") or {})
-    queued_full = set(state.get("reread") or ()) - set(bounds)
-    for child in deps:
-        if since is None or child in queued_full:
-            bounds.pop(child, None)  # a full read is asked now, or was queued
-        elif child in bounds:
-            bounds[child] = min(bounds[child], _iso(since))  # the earlier bound wins
-        else:
-            bounds[child] = _iso(since)
-    saved = _rules_row(ctx, field_rules.applied_of(state), reread, bounds)
+    saved = _rules_row(ctx, field_rules.applied_of(state), reread)
     await _save_cursor(ctx, db, saved, "ok")
     ctx.cursors[FIELD_RULES_ROW] = saved
     ctx.rule_rereads |= deps

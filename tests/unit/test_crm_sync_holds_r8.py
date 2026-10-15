@@ -476,18 +476,24 @@ async def test_an_only_run_of_a_child_reads_its_unheld_parents(ns, zoho) -> None
     a.add("Notes", "n9", 31, Note_Title="On the new one", Note_Content="Body",
           Parent_Id={"id": "c9"}, **{"$se_module": "Contacts"})
 
+    def deleted_reads() -> int:
+        return sum(1 for r in a.requests if r.url.path == "/crm/v2/Contacts/deleted")
+
+    gone_before = deleted_reads()
     alone = await engine.run_org(ns.org_a, only=frozenset({"activities"}))
     assert alone.status == "ok"
     assert _count(ns, "crm_contacts", ns.org_a, "ext_id = 'c9'") == 1
     assert _count(ns, "crm_activities", ns.org_a,
                   "ext_id = 'n9' AND contact_id IS NOT NULL") == 1
+    # Round 3: the parent's changes only. Its deleted list is not read.
+    assert deleted_reads() == gone_before
 
 
-async def test_the_children_of_a_parent_that_was_in_are_re_read_from_the_hold(
+async def test_the_children_of_a_parent_that_was_in_are_re_read_in_full(
     ns, zoho,
 ) -> None:
-    """Round 2, P2. Contacts were in, then held. Its re-read of the notes is
-    bounded to the hold: one page for the one new note, not the whole module."""
+    """Round 3. Contacts were in, then held, then synced on its own. The notes
+    are then read in FULL once: a bound to the hold lost records (round 3)."""
     from gateway.crm_sync import engine
 
     a, _b = zoho
@@ -512,7 +518,7 @@ async def test_the_children_of_a_parent_that_was_in_are_re_read_from_the_hold(
     before = _reads(a, "Notes")
     after = await engine.run_org(ns.org_a)
     assert after.status == "ok"
-    assert _reads(a, "Notes") - before == 1, "one bounded page, not a full read"
+    assert _reads(a, "Notes") - before >= 3, "five notes, two a page: a full read"
     assert _count(ns, "crm_activities", ns.org_a) == 5
 
 
@@ -595,4 +601,64 @@ async def test_a_refused_deleted_list_gets_one_compare_not_one_every_run(ns, zoh
     third = await engine.run_org(ns.org_a)
     assert (third.status, third.kind) == ("ok", "incremental"), "one compare, then quiet"
     assert _count(ns, "crm_contacts", ns.org_a) == 2
+
+
+# ── The third review round (2026-10-15) ──────────────────────────────────────
+
+
+async def test_a_child_never_imported_gets_a_full_first_import_after_a_parent_hold(
+    ns, zoho,
+) -> None:
+    """Round 3, P1. Notes older than the contacts watermark. Activities was
+    held from the start, Contacts was held and released. The first import of
+    the notes must read all of them, not only the ones after the hold."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)  # c1 and c2 at minutes 2 and 3
+    for i in range(3):  # three notes at minutes 0 to 2, older than the contacts
+        a.add("Notes", f"n{i}", i, Note_Title=f"Note {i}", Note_Content="Body",
+              Parent_Id={"id": "c1"}, **{"$se_module": "Contacts"})
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"  # activities auto-held
+    assert _count(ns, "crm_activities", ns.org_a) == 0
+    admin = _admin("admin@crm-sync.test", ns.org_a)
+    assert (await _call_json(admin, "PUT", "/crm/sync/modules/contacts", {"sync": False})).status_code == 200
+    assert (await engine.run_org(ns.org_a)).status == "ok"  # contacts skipped, marked
+    assert (await _call_json(admin, "PUT", "/crm/sync/modules/contacts", {"sync": True})).status_code == 200
+    assert (await engine.run_org(ns.org_a)).status == "ok"  # contacts back, notes queued
+    assert (await _call_json(admin, "PUT", "/crm/sync/modules/activities", {"sync": True})).status_code == 200
+
+    run = await engine.run_org(ns.org_a)
+    assert run.status == "ok"
+    assert _count(ns, "crm_activities", ns.org_a, "contact_id IS NOT NULL") == 3
+
+
+async def test_a_child_made_during_a_hold_lands_when_the_parent_comes_back(
+    ns, zoho,
+) -> None:
+    """Round 3, P1. A contact and its note made after the last read of
+    Contacts and before the hold. The note landed with no parent during the
+    hold. The release re-reads the notes in full, so it lands with its link."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    a.add("Contacts", "c9", 5, Last_Name="New", Account_Name={"id": "a1"})
+    a.add("Notes", "n9", 6, Note_Title="On the new one", Note_Content="Body",
+          Parent_Id={"id": "c9"}, **{"$se_module": "Contacts"})
+    admin = _admin("admin@crm-sync.test", ns.org_a)
+    assert (await _call_json(admin, "PUT", "/crm/sync/modules/contacts", {"sync": False})).status_code == 200
+    held = await engine.run_org(ns.org_a)
+    assert held.status == "ok"
+    assert _count(ns, "crm_activities", ns.org_a, "ext_id = 'n9'") == 0, "no parent yet"
+
+    assert (await _call_json(admin, "PUT", "/crm/sync/modules/contacts", {"sync": True})).status_code == 200
+    back = await engine.run_org(ns.org_a)
+    assert back.status == "ok"
+    assert _count(ns, "crm_contacts", ns.org_a, "ext_id = 'c9'") == 1
+    assert _count(ns, "crm_activities", ns.org_a,
+                  "ext_id = 'n9' AND contact_id IS NOT NULL") == 1
 
