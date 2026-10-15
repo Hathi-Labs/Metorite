@@ -3,7 +3,13 @@
 **Status: ACTIVE, 2026-10-15.** Owner directive of 2026-10-15, in chat.
 The owner accepted every proposal of §15 and every default of §16 the same
 day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
-Verified against the code on 2026-10-15. Nothing is built yet.
+Verified against the code on 2026-10-15.
+
+**KB-0 is BUILT, 2026-10-15** (branch `ws61-kb0`, migration 270). The
+feature `knowledge`, the capability `knowledge:manage`, the pane at
+`preview`, the route gate, and the page scaffold with `AppTopBar`. The pane
+is hidden from the nav, and `/knowledge` renders by URL for a member with
+the feature. Nothing else is built.
 
 **What this spec owns.** The Knowledge app: the spaces, the pages, the files,
 the connected folders, and the one retrieval index over all of them. It also
@@ -313,7 +319,7 @@ the member's email, the member's groups as `group:<slug>`, and `org`.
 
 | Permission | Kind | Who holds it by default | What it allows |
 |---|---|---|---|
-| `feature:knowledge` | feature, `is_default true` | every role | Open the app. See the spaces the grants allow |
+| `feature:knowledge` | feature, `is_default true` | every role except guest, through `feature:*` (migration 207) | Open the app. See the spaces the grants allow |
 | `knowledge:manage` | capability | owner, admin | Make and remove spaces, change grants, archive, connect an org source |
 
 Two permissions and no more. A member writes a page when a space grant says
@@ -971,7 +977,7 @@ its own branch, three or four in flight at most.
 
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
-| **KB-0** | The feature (`FEATURES` and a `feature_catalog` row, in the shape of `144_crm.sql:558`), the capability `knowledge:manage` in `CAPABILITIES` (the owner holds it through `*`, and the admin seed is KB-1), the pane at `preview` with no job, `HREF_FEATURES` in `access.ts`, the page scaffold with `AppTopBar`, `PREVIEW_BAR_HOME`, the e2e `PAGES` and features mock, and the Preview row of `launch_surface.md` §2. No flag: a preview route renders by URL, and the nav entry stays hidden | `feature:knowledge` and `knowledge:manage` exist, and `test_org_access_control.py` proves both. `/knowledge` renders "Knowledge" as the one `h1`, by URL. `nav.test.ts`, `navAccessAgreement.test.ts` and `appBar.test.ts` pass. `seams.test.ts` gains no debt | AGENT-SAFE |
+| **KB-0** ✅ BUILT 2026-10-15 | The feature (`FEATURES` and a `feature_catalog` row, in the shape of `144_crm.sql:558`), the capability `knowledge:manage` in `CAPABILITIES` (the owner holds it through `*`, and the admin seed is KB-1), the pane at `preview` with no job, `HREF_FEATURES` in `access.ts`, the page scaffold with `AppTopBar`, `PREVIEW_BAR_HOME`, the e2e `PAGES` and features mock, and the Preview row of `launch_surface.md` §2. No flag: a preview route renders by URL, and the nav entry stays hidden | `feature:knowledge` and `knowledge:manage` exist, and `test_org_access_control.py` proves both. `/knowledge` renders "Knowledge" as the one `h1`, by URL. `nav.test.ts`, `navAccessAgreement.test.ts` and `appBar.test.ts` pass. `seams.test.ts` gains no debt | AGENT-SAFE |
 | **KB-1** | The tables of §12 except the sources, the three spaces of §4.1, the seed of `knowledge:manage` onto `admin` through `provision_org_roles` (the shape of 207 §2), `visible_pages_clause`, the shared subject validator (§5.1), the page and space routes of §5.3, the manifest and its coverage test | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green | AGENT-SAFE |
 | **KB-2a** | The Spaces view, the page tree, a Markdown editor with preview, publish, versions, files on a page through `register_artifact` (§4.3) | A member writes, publishes, attaches an image, reverts. The visual review passes in four contexts | AGENT-SAFE |
 | **KB-2b** | The TipTap editor over the same Markdown, links as pills with `[[`, the "Knowledge about this" component | The body round-trips through Markdown with no loss for the supported marks. A task shows its linked pages | AGENT-SAFE |
