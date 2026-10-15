@@ -44,6 +44,7 @@ import {
   type ThroughputReport,
   type FinishedReport,
   type ViewRow,
+  agentRunsApi,
   projectsApi,
   projectsKey,
   projectWatchersApi,
@@ -83,6 +84,7 @@ import { TimelineView } from "./components/TimelineView";
 import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
 import { TaskList } from "./components/TaskList";
+import { isWaitingOnMe } from "./lib/agentRuns";
 import { TaskPanel } from "./components/TaskPanel";
 import type { TaskWhere } from "@/components/TaskPanelHeader";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
@@ -802,6 +804,23 @@ function ProjectsWorkspace() {
   // member's overlay is the one place it lives. See `subtasksView` below.
   const [localSubtasks, setLocalSubtasks] = useState<SubtaskMode | null>(null);
   const [me, setMe] = useState("");
+  /**
+   * WS-55 EA-12c — "Waiting on me". Page state, not a view key: it filters
+   * the loaded rows in the browser. `agentRunsOn` is one probe of the
+   * agent-run routes, which answer 404 while their flag is off. The bar
+   * then offers no button.
+   */
+  const [waitingOnMe, setWaitingOnMe] = useState(false);
+  const [agentRunsOn, setAgentRunsOn] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void agentRunsApi.enabled().then((on) => {
+      if (live) setAgentRunsOn(on);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   // WS-27l — the selected node's custom field definitions. Root-scoped, so the
   // whole subtree shares one set; held here rather than in the panel because
@@ -2028,11 +2047,18 @@ function ProjectsWorkspace() {
   // (`onScreen`) must not keep a row nobody can see.
   const groups = useMemo(
     () =>
-      groupTasks(visibleTasks(tasks, subtaskMode), groupBy, {
-        statuses,
-        projectName,
-      }),
-    [tasks, subtaskMode, groupBy, statuses, projectName]
+      groupTasks(
+        visibleTasks(
+          waitingOnMe ? tasks.filter((t) => isWaitingOnMe(t, me)) : tasks,
+          subtaskMode,
+        ),
+        groupBy,
+        {
+          statuses,
+          projectName,
+        },
+      ),
+    [tasks, subtaskMode, groupBy, statuses, projectName, waitingOnMe, me]
   );
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
@@ -3783,6 +3809,8 @@ function ProjectsWorkspace() {
           subtasks={subtaskMode}
           onSubtasks={(next) => void changeSubtasks(next)}
           me={me}
+          waitingOnMe={waitingOnMe}
+          onWaitingOnMe={agentRunsOn ? setWaitingOnMe : undefined}
           people={people}
           tags={tags}
           shownFields={shownFields}

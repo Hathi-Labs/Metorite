@@ -5314,6 +5314,51 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md` §12.3.13.9 · PR-G8 review
 - **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
 
+### H-309 · Create the WS-59 tasks in the Metorite project "Proactive Intelligence" · [AGENT]
+- **Check:** in a session with the Metorite MCP, run `search_tasks` with the
+  query `RE-1`. A hit in the project "Proactive Intelligence" means the tasks
+  exist, and this entry goes.
+- **Why.** The owner asked for one Metorite task for each WS-59 ticket, and
+  for the status to move as the work moves. The MCP had no `create_task` on
+  2026-10-14, because EA-6d was not built.
+- **Do this:** when `create_task` is live, create one task for each of RE-1
+  to RE-10 of `specs/proactive_reach.md` §16. Use the project id
+  `55c1755e-b867-43ce-afba-ae3b641a0451`, the tag "Feature", and the title
+  "WS-59 RE-n: <what>". Then link each PR to its task with
+  `add_task_reference`.
+- **Authority:** `specs/proactive_reach.md` §16 · owner directive 2026-10-14
+- **Added:** 2026-10-14 · WS-59 RE-0
+
+### H-310 · A WhatsApp Confirm refuses a name that the `decide` engine resolved at the ask · [AGENT]
+- **Check:** `rg -n "bind_run_context|set_run_context|artifact_context" apps/services/gateway/gateway/routes/whatsapp_channel/acts.py`.
+  No hit means this is open.
+- **Why.** At the ask, `choices.resolve_name` can ask `decide` to pick a person or a
+  project for a name that is not exact. At Confirm, `acts._run` calls the tool with
+  no run bound, so `typed_choices_on()` answers False and the tool refuses the
+  same name. The act closes `failed`, and the member gets a refusal after the
+  tap. The tool writes nothing wrong. WAC-4 had it for `create_task` assignees, and
+  WAC-4b made it reachable through `waiting_on` of `set_my_overlay`.
+- **Do this:** at the ask, bind the resolved ids with `card_facts`, and pass
+  them to the stored call. Or bind the run context of the act's agent at
+  Confirm. Then add a run test where `decide` picks "Priya Sharma" for "Priya", and a
+  Confirm writes once.
+- **Authority:** `specs/whatsapp_assistant_channel.md` §14.9 (review round 1, item 4)
+- **Added:** 2026-10-15 · branch `wa-calendar-blocks`
+
+### H-311 · One WhatsApp message can ask for only one change · [AGENT]
+- **Check:** `rg -n "One change waits at a time" apps/services/gateway/gateway/routes/whatsapp_channel/bot_run.py`.
+  A hit means this is open.
+- **Why.** The owner asked for two time blocks in one message (2026-10-15). A run
+  parks one act (§14.3), so the bot prepares the first block, and the member
+  must ask again for the second after the Confirm.
+- **Do this:** let one run park up to 3 acts of `ALLOWED_ACTS`. Send one summary
+  that lists each. One Confirm runs each stored call once, in order. Each
+  call gets its own rebuilt card check. A failed act must not stop the acts after
+  it, and the reply names each result. Keep one row in `whatsapp_pending_acts`
+  for each act, under one offer.
+- **Authority:** `specs/whatsapp_assistant_channel.md` §14.9 (known limit)
+- **Added:** 2026-10-15 · branch `wa-calendar-blocks`
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

@@ -418,6 +418,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.my_day_loop_skipped", error=str(exc))
 
+    # Start the Reach loop (gateway/reach/loop.py; spec proactive_reach.md,
+    # WS-59 RE-1a). It messages an allowlisted member first on WhatsApp. Dark
+    # by default: with REACH_ENABLED off it starts no task and logs once.
+    try:
+        from gateway.reach.loop import start_reach_loop
+        reach_started = await start_reach_loop()
+        _log.info("gateway.reach_loop", started=reach_started)
+    except Exception as exc:
+        _log.warning("gateway.reach_loop_skipped", error=str(exc))
+
     # Start the mailbox purge loop (routes/email/memory_purge.py; spec
     # email_app_master_plan.md §12.3.13.9, WS-17 EM-G11f2). It finishes each
     # Mem0 purge that a disconnect owes. No flag: with Mem0 off a tick ends
@@ -509,6 +519,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.my_day_loop import stop_my_day_loop
         await stop_my_day_loop()
+    except Exception:
+        pass
+
+    # Stop the Reach loop. Unconditional, like the My Day stop above.
+    try:
+        from gateway.reach.loop import stop_reach_loop
+        await stop_reach_loop()
     except Exception:
         pass
 
@@ -1512,6 +1529,16 @@ try:
     from gateway.routes.shell import router as _shell_router
 
     app.include_router(_shell_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-59 RE-1a — Reach: `/reach/preview` and `/reach/brief`
+    # (proactive_reach.md). Gated on `feature:chat`, as the WhatsApp channel
+    # is. With REACH_ENABLED off, or the member off the allowlist, both 404.
+    from gateway.reach.routes import router as _reach_router
+
+    app.include_router(_reach_router)
 except Exception:  # pragma: no cover
     pass
 

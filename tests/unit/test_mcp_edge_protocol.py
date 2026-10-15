@@ -1528,7 +1528,7 @@ class TestGetTask:
 
     async def test_the_task_has_exactly_the_pinned_keys(self, armed):
         body = _structured(await _tool("get_task", {"task_id": T_ONE}))
-        assert set(body) == {"task", "subtasks", "links", "refs"}
+        assert set(body) == {"task", "subtasks", "links", "refs", "agent_runs"}
         assert tuple(body["task"]) == tools.GET_TASK_KEYS
         assert [tuple(s) for s in body["subtasks"]] == [tools.SUBTASK_KEYS]
         assert [tuple(link) for link in body["links"]] == [tools.LINK_KEYS]

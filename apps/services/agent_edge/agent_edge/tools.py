@@ -5,8 +5,12 @@ Spec ``project-docs/specs/external_agent_access.md`` §9.1, §9.4, §9.5 and
 other five read tools: ``whoami``, ``list_projects``, ``get_project``,
 ``get_task`` and ``get_task_timeline``. EA-6a adds the references to
 ``get_task`` and the first two write tools, ``set_task_status`` and
-``add_task_reference`` (§9.2). Each write needs ``projects:write``, and branch
-0 of the gateway checks the nonce, the scope, the writes flag and the cap.
+``add_task_reference`` (§9.2). EA-6d adds ``create_task`` and ``update_task``.
+Each write needs ``projects:write``, and branch 0 of the gateway checks the
+nonce, the scope, the writes flag and the cap. The ``idempotency_key`` of
+``create_task`` lives in ``agent_edge.idempotency``. EA-12b adds the six
+agent-run tools of §12.1 and ``agent_runs`` in ``get_task``. They show only
+while ``agent_runs_enabled`` is on.
 
 **The tool record (§9.5).** Each :class:`Tool` declares its ``name``,
 ``title``, ``required_scope``, ``inputSchema``, ``outputSchema``, the four
@@ -41,8 +45,15 @@ gives the same member the same access, so the client would loop.
 **Time (EA3-17).** Each gateway request has 10 seconds
 (``gateway_client.REQUEST_TIMEOUT_S``). Each tool call has
 :data:`TOOL_TIMEOUT_S` for all of its requests. ``list_tasks`` makes at most
-1 + :data:`MAX_STATUS_READS` requests, ``get_task`` makes three and
-``get_project`` makes five. The other tools make one each.
+1 + :data:`MAX_STATUS_READS` requests. ``get_task`` makes four, and one more
+for ``agent_runs`` while the runs flag is on (EA-12b). ``get_project`` makes
+five. ``create_task`` makes three: the statuses, the POST and the re-read. It
+makes one more for a parent and one more for a ``type_id``. ``update_task``
+makes three: the PATCH, the re-read and the statuses. The other tools make one
+or two. The long poll of ``get_agent_run`` is the one exception (EA-12b,
+§12.1): its request has ``wait_seconds`` plus
+:data:`LONG_POLL_REQUEST_MARGIN_S`, and its call has ``wait_seconds`` plus
+:data:`LONG_POLL_TOOL_MARGIN_S`.
 
 This module reads no request input: no header, no query and no form. The
 transport hands it the parsed arguments and the authenticated caller.
@@ -50,9 +61,11 @@ transport hands it the parsed arguments and the authenticated caller.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -61,8 +74,14 @@ from acb_auth import agent_oauth
 from acb_common import get_logger
 
 from agent_edge import cursor as cursor_mod
+from agent_edge import idempotency
 from agent_edge.bearer import Caller
-from agent_edge.gateway_client import Answer, GatewayUnreachable, RouteRefused
+from agent_edge.gateway_client import (
+    Answer,
+    GatewayNotSent,
+    GatewayUnreachable,
+    RouteRefused,
+)
 from agent_edge.gateway_client import get as gateway_get
 from agent_edge.gateway_client import write as gateway_write
 
@@ -70,6 +89,25 @@ _log = get_logger("agent_edge.tools")
 
 #: The limit of one tool call, for all of its gateway requests (EA3-17).
 TOOL_TIMEOUT_S = 25.0
+
+#: EA-6d fix round 2. A write that landed is never reported as busy. When a
+#: write answers 2xx, the tool limit moves out to at least this many seconds
+#: from that moment (:func:`_landed`), so the call can record the write (the
+#: idempotency slot, at most ``idempotency.STORE_TIMEOUT_S``) and report it.
+POST_WRITE_GRACE_S = 8.0
+
+#: Each read after a landed write (the re-read and the status names) gets at
+#: most this many seconds, and never more than the time left in the call less
+#: :data:`POST_WRITE_MARGIN_S`. A read that runs out gives the write's own
+#: answer (:func:`_after_write`).
+POST_WRITE_READ_CAP_S = 4.0
+POST_WRITE_MARGIN_S = 1.0
+
+#: The limit of the tool call that runs now (:func:`call`), so a write can
+#: move it out (:func:`_landed`) and a later read can see what is left.
+_TOOL_TIMER: ContextVar[asyncio.Timeout | None] = ContextVar("edge_tool_timer",
+                                                             default=None)
+
 
 #: ``list_tasks`` reads the statuses of at most this many projects (EA3-17).
 MAX_STATUS_READS = 10
@@ -97,6 +135,36 @@ TEXT_WRITES_OFF = "Changes are turned off for agents in this organization."
 #: crossed the add, and 422 when the classifier refuses the link.
 TEXT_REF_RETRY = "The link changed while Metorite added it. Add it again."
 TEXT_REF_BAD_URL = "The input 'url' is not a link that Metorite can add."
+#: ``create_task`` and ``update_task`` only (EA-6d, §9.2).
+TEXT_PARENT_NOT_FOUND = "Parent task not found."
+TEXT_PARENT_OTHER_PROJECT = (
+    "The parent task is in another project. Send the project_id of the parent task.")
+TEXT_UPDATE_EMPTY = (
+    "Send one or more fields to change: title, description, tags, due_at or"
+    " custom_fields.")
+#: The idempotency key of ``create_task`` (EA-6d, ``agent_edge.idempotency``).
+TEXT_KEY_REUSED = (
+    "This idempotency_key was used for a different task. Send a new key.")
+TEXT_KEY_RUNNING = (
+    "A call with this idempotency_key is still running. Wait a few seconds,"
+    " then send the same call again.")
+TEXT_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it made the task. Look for the task with list_tasks before you use a new key.")
+
+#: The fixed texts of the agent-run tools (EA-12b, §12.1).
+TEXT_RUN_NOT_FOUND = "Agent run not found."
+#: A call of an agent-run tool while ``agent_runs_enabled`` is off.
+TEXT_RUNS_OFF = "Agent runs are turned off in this organization."
+#: A 409 of the status machine: the run cannot take this activity now.
+TEXT_RUN_CONFLICT = (
+    "The agent run cannot take this now. Read it again with get_agent_run.")
+#: A 409 of ``ask_on_task`` while a question of the run waits.
+TEXT_QUESTION_WAITS = (
+    "A question on this run already waits for an answer. Call get_agent_run"
+    " with its run_id and wait_seconds 20.")
+#: A 409 of the start: the key started a run on another task.
+TEXT_KEY_USED = "This idempotency_key started another run. Send a new key."
 
 #: The four annotations of every EA-3 tool (§9.5).
 READ_ANNOTATIONS: Mapping[str, bool] = {
@@ -117,6 +185,12 @@ WRITE_ANNOTATIONS: Mapping[str, bool] = {
     "idempotentHint": True,
     "openWorldHint": False,
 }
+
+#: The annotations of ``create_task`` (EA-6d, §9.2). ``idempotentHint`` is
+#: false: the hint is one value for every call, and a call with no
+#: ``idempotency_key`` makes a new task each time. Only a call with a key is
+#: idempotent.
+CREATE_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "idempotentHint": False}
 
 #: The status categories that only a person moves a task into (§9.2). A copy
 #: of ``CLOSING_CATEGORIES`` in ``gateway/routes/projects/core.py``, because
@@ -143,6 +217,12 @@ class ToolError(Exception):
     def __init__(self, text: str) -> None:
         super().__init__(text)
         self.text = text
+
+
+class _NotSent(ToolError):
+    """The busy text of a write that never left the edge: the connection
+    failed before any byte went out (``gateway_client.GatewayNotSent``). The
+    gateway cannot have acted, so ``create_task`` frees its key (EA-6d)."""
 
 
 class GatewayUnauthorized(Exception):
@@ -206,11 +286,12 @@ def _body_of(answer: Answer, not_found: str, *, write: bool = False) -> Any:
 
 async def _get(ctx: Context, template: str, not_found: str, *,
                path_params: Mapping[str, str] | None = None,
-               query: list[tuple[str, str]] | None = None) -> Any:
+               query: list[tuple[str, str]] | None = None,
+               timeout_s: float | None = None) -> Any:
     try:
         answer = await gateway_get(
             ctx.key, ctx.caller.lookup, template,
-            path_params=path_params, query=query or [])
+            path_params=path_params, query=query or [], timeout_s=timeout_s)
     except GatewayUnreachable:
         raise ToolError(TEXT_BUSY) from None
     except RouteRefused:
@@ -231,13 +312,63 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
             path_params=path_params, query=query or [], if_match=if_match)
+    except GatewayNotSent:
+        raise _NotSent(TEXT_BUSY) from None
     except GatewayUnreachable:
         raise ToolError(TEXT_BUSY) from None
     except RouteRefused:
         raise ToolError(TEXT_BAD_REQUEST) from None
     if texts and answer.status in texts:
         raise ToolError(texts[answer.status])
-    return answer.status, _body_of(answer, not_found, write=True)
+    body = _body_of(answer, not_found, write=True)
+    # The write landed. From here on the call must report it (fix round 2).
+    _landed()
+    return answer.status, body
+
+
+def _landed() -> None:
+    """Move the tool limit out to at least :data:`POST_WRITE_GRACE_S` from
+    now, because a write landed (EA-6d fix round 2).
+
+    Without it, a limit that fires after the write made the call answer busy,
+    and with a key it marked the slot ``unknown``. An agent that retried then
+    made a second task. The limit never moves in: a later deadline stays.
+    """
+    timer = _TOOL_TIMER.get()
+    if timer is None:
+        return
+    floor = asyncio.get_running_loop().time() + POST_WRITE_GRACE_S
+    when = timer.when()
+    if when is not None and when < floor:
+        # A RuntimeError: the limit already fired, and its cancel is on its way.
+        with contextlib.suppress(RuntimeError):
+            timer.reschedule(floor)
+
+
+def _post_write_budget() -> float:
+    """The seconds that one read after a landed write may take."""
+    timer = _TOOL_TIMER.get()
+    when = timer.when() if timer is not None else None
+    if when is None:
+        return POST_WRITE_READ_CAP_S
+    left = when - asyncio.get_running_loop().time() - POST_WRITE_MARGIN_S
+    return min(POST_WRITE_READ_CAP_S, left)
+
+
+async def _after_write[T](read: Callable[[], Awaitable[T]], fallback: T) -> T:
+    """Run one read after a write that landed, inside its own small limit
+    (:func:`_post_write_budget`). A read that fails or runs out gives
+    *fallback*, the write's own answer. It never raises a tool error and never
+    lets the tool limit fire, so a landed write never comes back as busy
+    (EA-6d fix round 2)."""
+    budget = _post_write_budget()
+    if budget <= 0:
+        return fallback
+    try:
+        async with asyncio.timeout(budget):
+            return await read()
+    except (ToolError, GatewayUnauthorized, TimeoutError):
+        return fallback
 
 
 async def _together(*reads: Coroutine[Any, Any, Any]) -> list[Any]:
@@ -423,6 +554,8 @@ def _type_ok(value: Any, kind: str) -> bool:
         return isinstance(value, bool)
     if kind == "object":
         return isinstance(value, dict)
+    if kind == "array":
+        return isinstance(value, list)
     if kind == "null":
         return value is None
     return False
@@ -442,6 +575,11 @@ def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
     The schemas of this module use ``type``, ``properties``, ``required``,
     ``additionalProperties: false``, ``enum``, ``minimum``, ``maximum``,
     ``minLength``, ``maxLength`` and ``pattern``. The error text names the input (§9.6).
+    An ``array`` takes ``items``, ``minItems`` and ``maxItems``, and the edge
+    checks each item against ``items`` (EA-6d, EA-12b). An ``object`` may have
+    its own ``properties``, or an ``additionalProperties`` rule for each value
+    with ``maxProperties`` (EA-12b). An ``object`` with neither is free-form,
+    and its tool checks it (``custom_fields`` of ``update_task``, EA-6d).
     """
     if arguments is None:
         arguments = {}
@@ -486,6 +624,53 @@ def _check_value(name: str, rule: Mapping[str, Any], value: Any) -> None:
     # newline through `re.search` (fix round 1).
     if "pattern" in rule and not re.fullmatch(rule["pattern"], value):
         raise ToolError(f"The input {name!r} has the wrong form.")
+    if isinstance(value, list):
+        _check_items(name, rule, value)
+    elif isinstance(value, dict):
+        _check_members(name, rule, value)
+
+
+def _check_items(name: str, rule: Mapping[str, Any], value: list[Any]) -> None:
+    """Each item of an array input, and the count (EA-12b)."""
+    if "minItems" in rule and len(value) < rule["minItems"]:
+        raise ToolError(f"The input {name!r} needs at least {rule['minItems']} items.")
+    if "maxItems" in rule and len(value) > rule["maxItems"]:
+        raise ToolError(f"The input {name!r} takes at most {rule['maxItems']} items.")
+    items = rule.get("items")
+    for index, item in enumerate(value):
+        if item is None or items is None:
+            raise ToolError(f"The input {name!r} holds an item that is not valid.")
+        _check_value(f"{name}[{index}]", items, item)
+
+
+def _check_members(name: str, rule: Mapping[str, Any], value: dict[str, Any]) -> None:
+    """The keys and values of an object input (EA-12b). An object with
+    ``properties`` takes only those keys. An object whose
+    ``additionalProperties`` is a rule checks each value by that rule. An
+    object with neither is left to its tool."""
+    if "maxProperties" in rule and len(value) > rule["maxProperties"]:
+        raise ToolError(f"The input {name!r} has too many keys.")
+    properties: Mapping[str, Any] | None = rule.get("properties")
+    each = rule.get("additionalProperties")
+    if properties is not None:
+        for key in value:
+            if key not in properties:
+                raise ToolError(f"The input {name}.{str(key)[:40]} is not known.")
+        for key in rule.get("required", ()):
+            if value.get(key) is None:
+                raise ToolError(f"The input {name}.{key} is required.")
+        for key, sub in properties.items():
+            if value.get(key) is not None:
+                _check_value(f"{name}.{key}", sub, value[key])
+    elif isinstance(each, dict):
+        for key, item in value.items():
+            if not isinstance(key, str) or not key or len(key) > 100 or not _is_utf8(key):
+                raise ToolError(f"The input {name!r} has a key that is not valid.")
+            if item is None:
+                raise ToolError(f"The input {name}.{key[:40]} is not valid.")
+            _check_value(f"{name}.{key[:40]}", each, item)
+    # An object with neither rule is free-form, and its tool checks each
+    # key and value (``custom_fields`` of ``update_task``, EA-6d).
 
 
 # ── The tool record ─────────────────────────────────────────────────────────
@@ -528,6 +713,16 @@ class Tool:
     #: such parameter (§9.5 rule 4). Each one needs a spec amendment.
     edge_inputs: frozenset[str] = frozenset()
     annotations: Mapping[str, bool] = field(default_factory=lambda: dict(READ_ANNOTATIONS))
+    #: True for an agent-run tool (EA-12b). It shows only while
+    #: ``agent_runs_enabled`` is on, read through ``agent_oauth.runs_enabled``.
+    runs: bool = False
+    #: The write routes the tool sends BEFORE its write to :attr:`route`, with
+    #: the same method. An input may fill a parameter of one of them
+    #: (§9.5 rule 4). Only ``ask_on_task`` has one: the start of the run.
+    prior_writes: tuple[str, ...] = ()
+    #: The input that holds the wait of a long poll, or ``None`` (EA-12b).
+    #: The call limit is then that wait plus :data:`LONG_POLL_TOOL_MARGIN_S`.
+    wait_input: str | None = None
 
     def describe(self) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool."""
@@ -1229,6 +1424,241 @@ GET_PROJECT = Tool(
 )
 
 
+# ── Agent runs: the shapes (EA-12b, §12.1 and §9.4) ─────────────────────────
+
+TASK_RUNS_ROUTE = "/projects/tasks/{task_id}/agent-runs"
+MY_RUNS_ROUTE = "/projects/agent-runs"
+RUN_ROUTE = "/projects/agent-runs/{run_id}"
+RUN_ACTIVITIES_ROUTE = "/projects/agent-runs/{run_id}/activities"
+RUN_FINISH_ROUTE = "/projects/agent-runs/{run_id}/finish"
+
+#: The eight statuses of a run (§12.1). The gateway's CHECK holds the same.
+RUN_STATUSES: tuple[str, ...] = (
+    "created", "in_progress", "awaiting", "completed",
+    "stopping", "stopped", "failed", "stale",
+)
+#: A run is open in these statuses (EA12-6).
+OPEN_RUN_STATUSES: frozenset[str] = frozenset(
+    {"created", "in_progress", "awaiting", "stopping"})
+#: The types an agent writes. ``prompt`` is a person's (§12.1).
+AGENT_ACTIVITY_TYPES: tuple[str, ...] = (
+    "thought", "action", "response", "elicitation", "error")
+#: The longest ``body`` of an activity, as the gateway holds it.
+MAX_RUN_BODY = 20_000
+#: ``wait_seconds`` of ``get_agent_run``, at most (the gateway's ``wait_s``).
+MAX_WAIT_SECONDS = 20
+#: The request of the long poll has ``wait_seconds`` plus this (§12.1).
+LONG_POLL_REQUEST_MARGIN_S = 10.0
+#: The call of the long poll has ``wait_seconds`` plus this (§12.1).
+LONG_POLL_TOOL_MARGIN_S = 12.0
+
+#: The gateway's shapes of an option id and an action name (``agent_runs.py``).
+_OPTION_ID_PATTERN = "^[A-Za-z0-9_-]{1,64}$"
+_OPTION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_ACTION_PATTERN = "^[A-Za-z0-9_.:/-]{1,200}$"
+_ACTION_RE = re.compile(r"[A-Za-z0-9_.:/-]{1,200}")
+#: An idempotency key: no space, at most 128 characters.
+_IDEMPOTENCY_PATTERN = "^[A-Za-z0-9._:-]{1,128}$"
+#: The gateway's cursor of ``GET /projects/agent-runs`` is an offset.
+_RUNS_CURSOR_PATTERN = "^[0-9]{1,9}$"
+_RUNS_CURSOR_RE = re.compile(r"[0-9]{1,9}")
+
+#: The two authors of an activity. A person writes a ``prompt`` only.
+AUTHOR_AGENT = "agent"
+AUTHOR_PERSON = "person"
+
+_OPTION_ID_SCHEMA: dict[str, Any] = {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]}
+_OPTION_SCHEMA = _object({
+    "id": _OPTION_ID_SCHEMA, "label": _UNTRUSTED_SCHEMA,
+    "description": _UNTRUSTED_OR_NULL, "recommended": {"type": "boolean"},
+})
+_OPTIONS_OR_NULL: dict[str, Any] = {"anyOf": [
+    {"type": "array", "items": _OPTION_SCHEMA}, {"type": "null"}]}
+_QUESTION_SCHEMA = _object({
+    "id": {"type": "string"}, "seq": _NULLABLE_INTEGER, "body": _UNTRUSTED_OR_NULL,
+    "options": _OPTIONS_OR_NULL, "allow_multiple": {"type": "boolean"},
+    "created_at": _NULLABLE_STRING,
+})
+_LINE_SCHEMA = _object({
+    "type": {"type": "string"}, "body": _UNTRUSTED_OR_NULL,
+    "action": _SHAPED_OR_NULL, "created_at": _NULLABLE_STRING,
+})
+_RUN_SCHEMA = _object({
+    "id": {"type": "string"}, "task_id": {"type": "string"},
+    "status": _NULLABLE_STRING, "state": _NULLABLE_STRING,
+    "client_via": _NULLABLE_STRING, "member": _SHAPED_OR_NULL,
+    "external_link": _SHAPED_OR_NULL, "started_at": _NULLABLE_STRING,
+    "last_activity_at": _NULLABLE_STRING, "ended_at": _NULLABLE_STRING,
+    "open_question": {"anyOf": [_QUESTION_SCHEMA, {"type": "null"}]},
+    "latest_line": {"anyOf": [_LINE_SCHEMA, {"type": "null"}]},
+})
+_RUN_ACTIVITY_SCHEMA = _object({
+    "id": {"type": "string"}, "seq": _NULLABLE_INTEGER, "type": {"type": "string"},
+    "author": {"type": "string", "enum": [AUTHOR_AGENT, AUTHOR_PERSON]},
+    "member": _SHAPED_OR_NULL, "client_via": _NULLABLE_STRING,
+    "body": _UNTRUSTED_OR_NULL, "signal": _NULLABLE_STRING,
+    "options": _OPTIONS_OR_NULL, "allow_multiple": {"type": ["boolean", "null"]},
+    "selected": {"type": "array", "items": _OPTION_ID_SCHEMA},
+    "labels": {"type": "array", "items": _UNTRUSTED_SCHEMA},
+    "action": _SHAPED_OR_NULL,
+    "parameters": {"type": ["object", "null"], "additionalProperties": _UNTRUSTED_SCHEMA},
+    "in_reply_to": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+})
+
+#: The keys of one run and of one activity (§12.1) are the keys of the two
+#: schemas, and no other. An identity literal may appear only as a key of a
+#: dict display (EA3-9), so the tuples come from the schemas.
+RUN_KEYS: tuple[str, ...] = tuple(_RUN_SCHEMA["properties"])
+RUN_ACTIVITY_KEYS: tuple[str, ...] = tuple(_RUN_ACTIVITY_SCHEMA["properties"])
+
+
+def _via(value: Any) -> str | None:
+    """A client stamp ``mcp:<slug>``, or ``None`` for any other value."""
+    if isinstance(value, str) and agent_oauth.ACTOR_VIA_PATTERN.fullmatch(value):
+        return value
+    return None
+
+
+def _dict(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _option(raw: Any) -> dict[str, Any] | None:
+    """One option of a question (§12.1). The id is plain in the gateway's
+    shape. The label and the description are free text, so (U)."""
+    if not isinstance(raw, dict):
+        return None
+    description = raw.get("description")
+    return {
+        "id": shaped(raw.get("id") or "", _OPTION_ID_RE),
+        "label": untrusted(raw.get("label") or ""),
+        "description": untrusted(description) if isinstance(description, str) else None,
+        "recommended": _bool(raw.get("recommended")),
+    }
+
+
+def _options(signal_meta: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+    raw = signal_meta.get("options")
+    if not isinstance(raw, list):
+        return None
+    return [o for o in (_option(r) for r in raw) if o is not None]
+
+
+def _question(row: Any) -> dict[str, Any] | None:
+    """The open question of a run: an ``elicitation`` with no answer yet."""
+    if not isinstance(row, dict):
+        return None
+    content, meta = _dict(row.get("content")), _dict(row.get("signal_metadata"))
+    return {
+        "id": str(row.get("id")),
+        "seq": _int_or_none(row.get("seq")),
+        "body": untrusted(content.get("body")),
+        "options": _options(meta),
+        "allow_multiple": _bool(meta.get("allow_multiple")),
+        "created_at": _str_or_none(row.get("created_at")),
+    }
+
+
+def _line(row: Any) -> dict[str, Any] | None:
+    """The newest ephemeral line of a run: a ``thought`` or an ``action``."""
+    if not isinstance(row, dict):
+        return None
+    content = _dict(row.get("content"))
+    kind = row.get("type")
+    return {
+        "type": kind if isinstance(kind, str) else "",
+        "body": untrusted(content.get("body")),
+        "action": shaped(content.get("action"), _ACTION_RE),
+        "created_at": _str_or_none(row.get("created_at")),
+    }
+
+
+def _member_of(value: Any) -> str | dict[str, str] | None:
+    """A member address by :func:`assignee`, or ``None``."""
+    return assignee(value) if isinstance(value, str) else None
+
+
+def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One run of ``pm_agent_runs`` (§12.1). The pinned keys, and no other.
+
+    A database CHECK shapes ``status``, and the gateway derives ``state``.
+    The link is (S). The question and the line hold free text, so (U).
+    """
+    return {
+        "id": str(row.get("id")),
+        "task_id": str(row.get("task_id")),
+        "status": _key(row.get("status")),
+        "state": _key(row.get("state")),
+        "client_via": _via(row.get("client_via")),
+        "member": _member_of(row.get("member_email")),
+        "external_link": _capped(row.get("external_link"), _URL_RE, MAX_LINK_CHARS),
+        "started_at": _str_or_none(row.get("started_at")),
+        "last_activity_at": _str_or_none(row.get("last_activity_at")),
+        "ended_at": _str_or_none(row.get("ended_at")),
+        "open_question": _question(row.get("open_elicitation")),
+        "latest_line": _line(row.get("latest_ephemeral")),
+    }
+
+
+def _selected(value: Any) -> list[str | dict[str, str] | None]:
+    if not isinstance(value, list):
+        return []
+    return [shaped(v, _OPTION_ID_RE) for v in value if isinstance(v, str)]
+
+
+def _parameters(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {k: untrusted(v) for k, v in value.items()
+            if _key(k) is not None and isinstance(v, str)}
+
+
+def run_activity(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One activity of a run (§12.1). The pinned keys, and no other.
+
+    The ``body`` of every type is free text, so it is (U), and a member's
+    prompt above all (§9.4). A member's answer carries ``selected``, the
+    option ids in their shape, and ``labels``, the option labels as (U).
+    """
+    content = _dict(row.get("content"))
+    meta = _dict(row.get("signal_metadata"))
+    kind = row.get("type")
+    question = kind == "elicitation"
+    return {
+        "id": str(row.get("id")),
+        "seq": _int_or_none(row.get("seq")),
+        "type": kind if isinstance(kind, str) else "",
+        "author": AUTHOR_AGENT if row.get("actor_via") is not None else AUTHOR_PERSON,
+        "member": _member_of(row.get("actor")),
+        "client_via": _via(row.get("actor_via")),
+        "body": untrusted(content.get("body")),
+        "signal": _key(row.get("signal")),
+        "options": _options(meta) if question else None,
+        "allow_multiple": _bool(meta.get("allow_multiple")) if question else None,
+        "selected": _selected(content.get("selected")),
+        "labels": _untrusted_list(content.get("labels")),
+        "action": shaped(content.get("action"), _ACTION_RE),
+        "parameters": _parameters(content.get("parameters")),
+        "in_reply_to": _id(row.get("in_reply_to")),
+        "created_at": _str_or_none(row.get("created_at")),
+    }
+
+
+async def _open_runs(ctx: Context, where: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The open runs of a task, for ``get_task`` (§12.1). No request while
+    the runs flag is off. ``get_task`` read the task just before, so a 404
+    here means that the gateway has the flag off, and it gives no runs."""
+    if not agent_oauth.runs_enabled():
+        return []
+    try:
+        body = await _get(ctx, TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)
+    except ToolError as exc:
+        if exc.text == TEXT_TASK_NOT_FOUND:
+            return []
+        raise
+    return [agent_run(r) for r in _rows_of(body) if r.get("status") in OPEN_RUN_STATUSES]
+
+
 # ── get_task ────────────────────────────────────────────────────────────────
 
 #: The keys of the task of ``get_task`` (§9.1).
@@ -1348,6 +1778,7 @@ _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "links": {"type": "array", "items": _LINK_SCHEMA},
     "refs": {"type": "array", "items": _REF_SCHEMA},
+    "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
 })
 
 
@@ -1429,11 +1860,13 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         _get(ctx, REFS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
              query=[("refresh", "false")]),
     ]
+    # EA-12b: the open agent runs, only while the runs flag is on.
+    reads.append(_open_runs(ctx, where))
     if _id(project) is not None:
         reads.append(_status_names(ctx, [project]))
     found = await _together(*reads)
-    relations, refs = found[0], found[1]
-    names = found[2].get(project, {}) if len(found) > 2 else {}
+    relations, refs, runs = found[0], found[1], found[2]
+    names = found[3].get(project, {}) if len(found) > 3 else {}
     if not isinstance(relations, dict):
         raise ToolError(TEXT_BUSY)
     subtasks, links = relations.get("subtasks"), relations.get("links")
@@ -1444,6 +1877,7 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         "links": [_link(r) for r in links or () if isinstance(r, dict)]
         if isinstance(links, list) else [],
         "refs": [reference(r) for r in _rows_of(refs)],
+        "agent_runs": runs,
     }
 
 
@@ -1456,7 +1890,11 @@ GET_TASK = Tool(
         " its subtasks, its links to other tasks and its references (pull"
         " requests, commits, branches and documents). version is the token"
         " that set_task_status sends back as expected_version. The status name"
-        " is null when the member cannot open the task's project." + _UNTRUSTED_NOTE
+        " is null when the member cannot open the task's project. agent_runs"
+        " holds the open agent runs of the task, each with its state and any"
+        " question that waits for an answer. A run with the state awaiting"
+        " waits for a person, so do not start a second run for the same"
+        " work." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_TASK_ID_INPUT,
@@ -1465,7 +1903,7 @@ GET_TASK = Tool(
     params={"task_id": "task_id"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_get_task,
-    routes=(TASK_ROUTE, RELATIONS_ROUTE, REFS_ROUTE, STATUSES_ROUTE),
+    routes=(TASK_ROUTE, RELATIONS_ROUTE, REFS_ROUTE, TASK_RUNS_ROUTE, STATUSES_ROUTE),
 )
 
 
@@ -1829,29 +2267,960 @@ ADD_TASK_REFERENCE = Tool(
 )
 
 
+# ── create_task and update_task (EA-6d, §9.2) ───────────────────────────────
+
+CREATE_ROUTE = "/projects/tasks"
+
+#: The keys of the task of ``update_task``: those of ``get_task`` except
+#: ``assignees``. The PATCH answer does not carry the assignees, and the tool
+#: cannot change them.
+UPDATED_TASK_KEYS: tuple[str, ...] = tuple(k for k in GET_TASK_KEYS if k != "assignees")
+
+#: The body keys of each write, in a fixed order. The edge builds the body
+#: from these names only, so an input can never add a key. The gateway
+#: refuses any other key of a signed agent write too
+#: (``tasks.AGENT_CREATE_FIELDS`` and ``tasks.AGENT_PATCH_FIELDS``).
+CREATE_BODY_KEYS: tuple[str, ...] = (
+    "project_id", "parent_task_id", "type_id", "status_id", "title",
+    "description", "tags", "due_at",
+)
+UPDATE_BODY_KEYS: tuple[str, ...] = (
+    "title", "description", "tags", "due_at", "custom_fields",
+)
+
+#: ``custom_fields`` of ``update_task``: at most this many keys, each one
+#: key-shaped (``field_key``).
+MAX_CUSTOM_FIELD_KEYS = 50
+
+#: A due date: an ISO-8601 date, or a date and a time with an optional zone.
+_DUE_PATTERN = (
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    r"([T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?)?$"
+)
+
+_TAGS_INPUT: dict[str, Any] = {
+    "type": "array", "maxItems": 20,
+    "items": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[^,]+$"},
+}
+_TITLE_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": 500, "description": "The title."}
+_DESCRIPTION_INPUT: dict[str, Any] = {
+    "type": "string", "maxLength": 20000,
+    "description": "The description, in Markdown."}
+_DUE_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _DUE_PATTERN,
+    "description": "The due date: 2026-10-31, or a date and a time such as"
+                   " 2026-10-31T17:00:00+05:30."}
+
+_CREATE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "The project of the new task. A sub-project is a project"
+                           " too. Find the id with list_projects."},
+        "title": _TITLE_INPUT,
+        "description": _DESCRIPTION_INPUT,
+        "parent_task_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "Makes the new task a subtask of this task. The parent"
+                           " must be in the same project."},
+        "type_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "A task type id from get_project."},
+        "status_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "A status id from get_project. Leave it out to use the"
+                           " default status. A done or cancelled status is refused."},
+        "tags": {**_TAGS_INPUT,
+                 "description": "Tag names. get_project lists the tags of the project."
+                                " A new name adds a new tag."},
+        "due_at": _DUE_INPUT,
+        "idempotency_key": {
+            "type": "string", "pattern": idempotency.KEY_PATTERN,
+            "description": "8 to 128 letters, digits and . _ : -. The same key"
+                           " again gives back the first task and makes no second"
+                           " one. Use one key for one task. Metorite keeps a key"
+                           " for 24 hours."},
+    },
+    "required": ["project_id", "title"],
+    "additionalProperties": False,
+}
+
+_CREATE_OUTPUT: dict[str, Any] = _object({
+    "task": _TASK_SCHEMA, "created": {"type": "boolean"},
+})
+
+_UPDATE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks or get_task."},
+        "expected_version": {
+            "type": "string", "pattern": _VERSION_PATTERN,
+            "description": "The version that get_task returned for this task."},
+        "title": _TITLE_INPUT,
+        "description": _DESCRIPTION_INPUT,
+        "tags": {**_TAGS_INPUT,
+                 "description": "The new tag list. It replaces the whole list."},
+        "due_at": _DUE_INPUT,
+        "custom_fields": {
+            "type": "object",
+            "description": "A map from a field_key of get_project to its new value."
+                           " null clears that field. The other fields stay."},
+    },
+    "required": ["task_id", "expected_version"],
+    "additionalProperties": False,
+}
+
+_UPDATE_OUTPUT: dict[str, Any] = _object({
+    "task": _object({k: v for k, v in _TASK_SCHEMA["properties"].items()
+                     if k != "assignees"}),
+})
+
+
+async def _project_statuses(ctx: Context, project: str) -> dict[str, dict[str, Any]]:
+    """``{status id (lower case): row}`` of *project*, read before a write.
+
+    A project the member cannot open is ``Project not found.`` A 403 is the
+    write refusal. A busy gateway ends the call.
+    """
+    try:
+        body = await _get(ctx, STATUSES_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          path_params={"project_id": project})
+    except ToolError as exc:
+        if exc.text in (TEXT_BUSY, TEXT_PROJECT_NOT_FOUND):
+            raise
+        raise ToolError(TEXT_WRITE_FORBIDDEN) from None
+    return {str(r.get("id")).lower(): r for r in _rows_of(body)}
+
+
+def _names(statuses: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+    """``{status id: name}`` for :func:`_task`, which reads by the id as sent."""
+    return {str(r.get("id")): r["name"] for r in statuses.values()
+            if isinstance(r.get("name"), str)}
+
+
+async def _names_after_write(ctx: Context, project: Any) -> dict[str, str]:
+    """The status names of *project* after a write landed. Best effort: a
+    failed read gives no names, so the status ``name`` is null, and the tool
+    still reports the write that happened."""
+    if _id(project) is None:
+        return {}
+    try:
+        found = await _status_names(ctx, [str(project)])
+    except ToolError:
+        return {}
+    return found.get(str(project), {})
+
+
+class _Sent:
+    """Whether the POST of ``create_task`` went out. The idempotency slot
+    needs it: a failure before the POST wrote nothing."""
+
+    def __init__(self) -> None:
+        self.post = False
+
+
+async def _create(ctx: Context, args: dict[str, Any],
+                  sent: _Sent) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Check the inputs against the project, then POST the task. Returns the
+    POST answer and the project's statuses, and reads nothing after the POST.
+
+    The checks of ``set_task_status`` hold for ``status_id``: a status
+    outside the project's set is the bad-request text, and a ``done`` or
+    ``cancelled`` status is refused before the write. A parent must be a task
+    of the same project.
+    """
+    project = str(args["project_id"])
+    statuses = await _project_statuses(ctx, project)
+    if "status_id" in args:
+        target = statuses.get(str(args["status_id"]).lower())
+        if target is None:
+            raise ToolError(TEXT_BAD_REQUEST)
+        if target.get("category") in HUMAN_ONLY_CATEGORIES:
+            raise ToolError(TEXT_HUMAN_STEP)
+    if "parent_task_id" in args:
+        parent = await _get(ctx, TASK_ROUTE, TEXT_PARENT_NOT_FOUND,
+                            path_params={"task_id": str(args["parent_task_id"])})
+        if not isinstance(parent, dict):
+            raise ToolError(TEXT_BUSY)
+        if str(parent.get("project_id")).lower() != project.lower():
+            raise ToolError(TEXT_PARENT_OTHER_PROJECT)
+    if "type_id" in args:
+        await _check_type(ctx, project, str(args["type_id"]))
+    payload = {name: args[name] for name in CREATE_BODY_KEYS if name in args}
+    sent.post = True
+    _, row = await _write(ctx, "POST", CREATE_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          json_body=payload)
+    if not isinstance(row, dict) or _id(row.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    return row, statuses
+
+
+async def _created(ctx: Context, row: dict[str, Any],
+                   statuses: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """The result of a create that landed. Fix round 1: the re-read gives the
+    version after the links of the new text (`_reread`). Fix round 2: the
+    re-read is bounded, and the POST answer stands in for it."""
+    current = await _after_write(lambda: _reread(ctx, row), row)
+    return {"task": _task(current, _names(statuses)), "created": True}
+
+
+async def _check_type(ctx: Context, project: str, type_id: str) -> None:
+    """A ``type_id`` must be a type of the project (EA-6d fix round 1).
+
+    The edge reads the project's types through ``GET .../types``, the read of
+    ``get_project``. An id outside that set is the bad-request text of §9.6,
+    before the POST. Without this check a type of another project stored, and
+    a made-up id met the foreign key as a 500.
+    """
+    try:
+        body = await _get(ctx, TYPES_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          path_params={"project_id": project})
+    except ToolError as exc:
+        if exc.text in (TEXT_BUSY, TEXT_PROJECT_NOT_FOUND):
+            raise
+        raise ToolError(TEXT_WRITE_FORBIDDEN) from None
+    known = {str(r.get("id")).lower() for r in _rows_of(body)}
+    if type_id.lower() not in known:
+        raise ToolError(TEXT_BAD_REQUEST)
+
+
+async def _reread(ctx: Context, written: dict[str, Any]) -> dict[str, Any]:
+    """The task as it is now, after a write that landed (EA-6d fix round 1).
+
+    The gateway adds links from the new text AFTER the write commits
+    (``text_links.link_from_text``), and that touches the task again. So the
+    ``updated_at`` of the write's own answer can be stale, and an agent that
+    sends it back as ``expected_version`` gets 412. One GET of the task gives
+    the version that counts. When that read fails, the write's own answer is
+    the result: the write happened, and the tool must say so.
+    """
+    try:
+        row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+                         path_params={"task_id": str(written.get("id"))})
+    except (ToolError, GatewayUnauthorized):
+        return written
+    if not isinstance(row, dict) or str(row.get("id")).lower() != str(
+            written.get("id")).lower():
+        return written
+    return row
+
+
+async def _first_result(ctx: Context, earlier: idempotency.Record,
+                        fingerprint: str) -> dict[str, Any]:
+    """The answer to a call whose key an earlier call holds.
+
+    The state comes first (fix round 1): an ``unknown`` slot, and a slot that
+    the edge cannot read, always give the unknown text, whatever the inputs.
+    """
+    if earlier.state == idempotency.UNKNOWN or (
+            earlier.state == idempotency.DONE and _id(earlier.task_id) is None):
+        raise ToolError(TEXT_KEY_UNKNOWN)
+    if earlier.fingerprint != fingerprint:
+        raise ToolError(TEXT_KEY_REUSED)
+    if earlier.state == idempotency.PENDING:
+        raise ToolError(TEXT_KEY_RUNNING)
+    row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+                     path_params={"task_id": str(earlier.task_id)})
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    names = await _names_after_write(ctx, row.get("project_id"))
+    return {"task": _task(row, names), "created": False}
+
+
+async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``create_task``: one POST, and with a key at most one task per key.
+
+    With an ``idempotency_key`` the call first claims its slot
+    (``agent_edge.idempotency``). A refusal before any row existed releases
+    the slot. A POST with no clear answer marks it ``unknown``, so a retry
+    does not make a second task by accident.
+    """
+    key = args.get("idempotency_key")
+    sent = _Sent()
+    if key is None:
+        return await _created(ctx, *await _create(ctx, args, sent))
+    fingerprint = idempotency.fingerprint(
+        {k: v for k, v in args.items() if k != "idempotency_key"})
+    slot = idempotency.Slot(ctx.caller.lookup, str(key))
+    try:
+        earlier = await slot.claim(fingerprint)
+    except idempotency.StoreUnavailable:
+        raise ToolError(TEXT_BUSY) from None
+    if earlier is not None:
+        return await _first_result(ctx, earlier, fingerprint)
+    try:
+        row, statuses = await _create(ctx, args, sent)
+    except ToolError as exc:
+        # A busy text after the POST went out: the gateway may have made the
+        # task. Any other text is a clear refusal, and no row exists. A POST
+        # whose connection failed before any byte went out (`_NotSent`) made
+        # nothing either (fix round 1).
+        if sent.post and exc.text == TEXT_BUSY and not isinstance(exc, _NotSent):
+            await slot.mark_unknown(fingerprint)
+        else:
+            await slot.release()
+        raise
+    except GatewayUnauthorized:
+        await slot.release()
+        raise
+    except BaseException:
+        # The tool limit cancelled the call, or something else ended it.
+        if sent.post:
+            await slot.mark_unknown(fingerprint)
+        else:
+            await slot.release()
+        raise
+    # Fix round 2: record the write FIRST, outside the `try`, and only then
+    # read anything. A read after this point can never turn the slot
+    # `unknown`.
+    await slot.finish(fingerprint, str(row["id"]))
+    return await _created(ctx, row, statuses)
+
+
+CREATE_TASK = Tool(
+    name="create_task",
+    title="Create a task",
+    description=(
+        "Create one task in a project this member can see. A sub-project is a"
+        " project too: find its id with list_projects and send it as"
+        " project_id. Call get_project first: it gives the status ids, the task"
+        " type ids and the tag names of the project. Send parent_task_id to"
+        " make a subtask of a task in the same project. Leave status_id out to"
+        " use the default status. A done or cancelled status stays a human"
+        " step, so the tool refuses it. The new task has no assignee. Send an"
+        " idempotency_key when you may retry: the same key gives back the first"
+        " task with created false, and makes no second task. Returns the task"
+        " with its version." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_CREATE_INPUT,
+    output_schema=_CREATE_OUTPUT,
+    route=CREATE_ROUTE,
+    params={name: name for name in CREATE_BODY_KEYS},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_create_task,
+    routes=(STATUSES_ROUTE, TASK_ROUTE, TYPES_ROUTE),
+    method="POST",
+    edge_inputs=frozenset({"idempotency_key"}),
+    annotations=dict(CREATE_ANNOTATIONS),
+)
+
+
+def _custom_fields_input(value: Any) -> dict[str, Any]:
+    """The ``custom_fields`` input: at most :data:`MAX_CUSTOM_FIELD_KEYS`
+    keys, each key-shaped. The gateway checks each value against the field
+    definition, and an unknown key is its 422."""
+    if (not isinstance(value, dict) or len(value) > MAX_CUSTOM_FIELD_KEYS
+            or any(_key(k) is None for k in value)):
+        raise ToolError("The input 'custom_fields' has the wrong form.")
+    return value
+
+
+async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """PATCH the named fields only, with ``If-Match`` (§9.2).
+
+    The body holds only the keys of :data:`UPDATE_BODY_KEYS` that the call
+    sent. It never holds a status, a project, a parent, an assignee or an
+    archive key, and the PATCH has no query.
+    """
+    payload = {name: args[name] for name in UPDATE_BODY_KEYS if name in args}
+    if not payload:
+        raise ToolError(TEXT_UPDATE_EMPTY)
+    if "custom_fields" in payload:
+        payload["custom_fields"] = _custom_fields_input(payload["custom_fields"])
+    _, after = await _write(
+        ctx, "PATCH", TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])}, json_body=payload,
+        if_match=str(args["expected_version"]))
+    if not isinstance(after, dict):
+        raise ToolError(TEXT_BUSY)
+    written: dict[str, Any] = after
+    # Fix round 1: the version after the links of the new text (`_reread`).
+    # Fix round 2: each read after the PATCH is bounded, and the PATCH answer
+    # stands in for it.
+    current = await _after_write(lambda: _reread(ctx, written), written)
+    no_names: dict[str, str] = {}
+    names = await _after_write(
+        lambda: _names_after_write(ctx, current.get("project_id")), no_names)
+    task = _task(current, names)
+    return {"task": {k: task[k] for k in UPDATED_TASK_KEYS}}
+
+
+UPDATE_TASK = Tool(
+    name="update_task",
+    title="Update a task",
+    description=(
+        "Change the title, description, tags, due date or custom fields of one"
+        " task this member can see. Send only the fields to change. Send the"
+        " version that get_task returned as expected_version. When the task"
+        " changed after that read, the tool refuses, and you read the task"
+        " again. tags replaces the whole tag list. custom_fields maps a"
+        " field_key from get_project to its new value, and null clears that"
+        " field. This tool cannot change the status (use set_task_status), the"
+        " project, the parent or the assignees. Returns the task with its new"
+        " version." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_UPDATE_INPUT,
+    output_schema=_UPDATE_OUTPUT,
+    route=TASK_ROUTE,
+    params={"task_id": "task_id", "expected_version": "If-Match",
+            **{name: name for name in UPDATE_BODY_KEYS}},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_update_task,
+    routes=(TASK_ROUTE, STATUSES_ROUTE),
+    method="PATCH",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
+# ── The agent-run tools (EA-12b, §12.1) ─────────────────────────────────────
+
+_RUN_ID_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _UUID_PATTERN,
+    "description": "The run. An id from start_agent_run, ask_on_task or list_agent_runs."}
+_TASK_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _UUID_PATTERN,
+    "description": "The task. An id from list_tasks, search_tasks or get_task."}
+_KEY_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _IDEMPOTENCY_PATTERN,
+    "description": "A new unique key for this call, such as a UUID. The same key"
+                   " again returns the first result and changes nothing."}
+_BODY_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": MAX_RUN_BODY,
+    "description": "Markdown, at most 20000 characters."}
+_OPTIONS_INPUT: dict[str, Any] = {
+    "type": "array", "minItems": 2, "maxItems": 10,
+    "description": "2 to 10 choices. Mark at most one with recommended true.",
+    "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "pattern": _OPTION_ID_PATTERN,
+                   "description": "A short id: letters, digits, _ or -."},
+            "label": {"type": "string", "minLength": 1, "maxLength": 200,
+                      "description": "The text of the choice."},
+            "description": {"type": "string", "minLength": 1, "maxLength": 1000,
+                            "description": "What the choice means, if it is not clear."},
+            "recommended": {"type": "boolean",
+                            "description": "True for the choice you recommend."},
+        },
+        "required": ["id", "label"],
+        "additionalProperties": False,
+    },
+}
+_ALLOW_MULTIPLE_INPUT: dict[str, Any] = {
+    "type": "boolean", "description": "True when the member may choose more than one option."}
+
+
+def _run_body(body: Any) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+    run = body.get("run")
+    if not isinstance(run, dict):
+        raise ToolError(TEXT_BUSY)
+    return run
+
+
+def _check_options(options: list[dict[str, Any]] | None) -> None:
+    """The rules of the gateway that the schema cannot say: unique ids, and
+    at most one recommended option (§12.1)."""
+    if options is None:
+        return
+    ids = [o["id"] for o in options]
+    if len(set(ids)) != len(ids):
+        raise ToolError("Each option needs its own id.")
+    if sum(1 for o in options if o.get("recommended")) > 1:
+        raise ToolError("Mark at most one option as recommended.")
+
+
+async def _start(ctx: Context, task_id: str, key: str,
+                 link: str | None = None) -> tuple[bool, dict[str, Any]]:
+    """POST the start of a run. ``(created, run)``. The gateway gives the
+    open run of this member and client on the task, if one exists (EA12-6)."""
+    payload: dict[str, Any] = {"idempotency_key": key}
+    if link is not None:
+        payload["external_link"] = link
+    status, body = await _write(
+        ctx, "POST", TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": task_id}, json_body=payload,
+        texts={409: TEXT_KEY_USED})
+    return status == 201, _run_body(body)
+
+
+async def _post_activity(ctx: Context, run_id: str, payload: Mapping[str, Any], *,
+                         conflict: str = TEXT_RUN_CONFLICT) -> dict[str, Any]:
+    """POST one activity. The body of the answer: ``activity``, ``run`` and
+    ``created``."""
+    status, body = await _write(
+        ctx, "POST", RUN_ACTIVITIES_ROUTE, TEXT_RUN_NOT_FOUND,
+        path_params={"run_id": run_id}, json_body=payload, texts={409: conflict})
+    activity = body.get("activity") if isinstance(body, dict) else None
+    if not isinstance(activity, dict):
+        raise ToolError(TEXT_BUSY)
+    return {
+        "activity": run_activity(activity),
+        "run": agent_run(_run_body(body)),
+        "created": status == 201,
+    }
+
+
+# ── start_agent_run ─────────────────────────────────────────────────────────
+
+_START_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": _TASK_INPUT,
+        "external_link": {"type": "string", "minLength": 9, "maxLength": 2048,
+                          "pattern": r"^https://\S+$",
+                          "description": "An https link to your session or its log."},
+        "idempotency_key": _KEY_INPUT,
+    },
+    "required": ["task_id", "idempotency_key"],
+    "additionalProperties": False,
+}
+_START_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "created": {"type": "boolean"}})
+
+
+async def _start_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    created, run = await _start(ctx, str(args["task_id"]), str(args["idempotency_key"]),
+                                _str_or_none(args.get("external_link")))
+    return {"run": agent_run(run), "created": created}
+
+
+START_AGENT_RUN = Tool(
+    name="start_agent_run",
+    title="Start an agent run",
+    description=(
+        "Start an agent run on a task this member can see, when you begin work"
+        " on that task. The task then shows people that an agent works on it."
+        " If this member already has an open run on the task from this client,"
+        " you get that run back, and created is false. While you work, send a"
+        " thought with post_agent_activity at least once a minute. After 5"
+        " minutes with no activity, the task shows the run as idle. When you"
+        " need a decision from a person, use ask_on_task. When the work is"
+        " done, call finish_agent_run. If a person stops the run, the state"
+        " becomes stopping: stop the work at once." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_START_INPUT,
+    output_schema=_START_OUTPUT,
+    route=TASK_RUNS_ROUTE,
+    params={"task_id": "task_id", "external_link": "external_link",
+            "idempotency_key": "idempotency_key"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_start_agent_run,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
+# ── post_agent_activity ─────────────────────────────────────────────────────
+
+_POST_ACTIVITY_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": _RUN_ID_INPUT,
+        "type": {"type": "string", "enum": list(AGENT_ACTIVITY_TYPES),
+                 "description": "thought, action, response, elicitation or error."},
+        "body": _BODY_INPUT,
+        "options": _OPTIONS_INPUT,
+        "allow_multiple": _ALLOW_MULTIPLE_INPUT,
+        "action": {"type": "string", "pattern": _ACTION_PATTERN,
+                   "description": "For type action: the name of the tool you run."},
+        "parameters": {"type": "object", "maxProperties": 50,
+                       "additionalProperties": {"type": "string", "maxLength": 2000},
+                       "description": "For type action: its inputs, as strings."},
+        "idempotency_key": _KEY_INPUT,
+    },
+    "required": ["run_id", "type", "idempotency_key"],
+    "additionalProperties": False,
+}
+_ACTIVITY_OUTPUT: dict[str, Any] = _object({
+    "activity": _RUN_ACTIVITY_SCHEMA, "run": _RUN_SCHEMA, "created": {"type": "boolean"},
+})
+
+
+def _activity_payload(args: Mapping[str, Any]) -> dict[str, Any]:
+    """The body of the activity POST, with the checks of each type first, so
+    the agent gets a text that names its mistake (§12.1)."""
+    kind = str(args["type"])
+    if kind != "action" and ("action" in args or "parameters" in args):
+        raise ToolError("Only an activity of type action takes action and parameters.")
+    if kind != "elicitation" and ("options" in args or "allow_multiple" in args):
+        raise ToolError("Only an activity of type elicitation takes options.")
+    if kind == "action" and "action" not in args:
+        raise ToolError("The input 'action' is required for type action.")
+    if kind != "action" and "body" not in args:
+        raise ToolError(f"The input 'body' is required for type {kind}.")
+    _check_options(args.get("options"))
+    payload: dict[str, Any] = {"type": kind, "idempotency_key": str(args["idempotency_key"])}
+    for name in ("body", "options", "allow_multiple", "action", "parameters"):
+        if name in args:
+            payload[name] = args[name]
+    return payload
+
+
+async def _post_agent_activity(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    return await _post_activity(ctx, str(args["run_id"]), _activity_payload(args))
+
+
+POST_AGENT_ACTIVITY = Tool(
+    name="post_agent_activity",
+    title="Post an agent activity",
+    description=(
+        "Write one activity on your agent run. Use thought for a short line"
+        " about what you do now. Send a thought at least once a minute while"
+        " you work, or the task shows the run as idle after 5 minutes. Use"
+        " action for a tool that you run, response for a result that people"
+        " must read, and error when you cannot go on. Use elicitation for a"
+        " question, but ask_on_task is simpler. A thought or an action shows"
+        " only as the newest line of the run. A response, an elicitation or an"
+        " error also becomes a comment on the task. After an elicitation, call"
+        " get_agent_run with wait_seconds 20 again and again until the answer"
+        " arrives, or end the session. If the run in the result has the status"
+        " stopped, a person stopped it: stop the work at once." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_POST_ACTIVITY_INPUT,
+    output_schema=_ACTIVITY_OUTPUT,
+    route=RUN_ACTIVITIES_ROUTE,
+    params={"run_id": "run_id", "type": "type", "body": "body", "options": "options",
+            "allow_multiple": "allow_multiple", "action": "action",
+            "parameters": "parameters", "idempotency_key": "idempotency_key"},
+    not_found=TEXT_RUN_NOT_FOUND,
+    run=_post_agent_activity,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
+# ── ask_on_task ─────────────────────────────────────────────────────────────
+
+_ASK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": _TASK_INPUT,
+        "question": {**_BODY_INPUT, "description": "The question, in Markdown."},
+        "options": _OPTIONS_INPUT,
+        "allow_multiple": _ALLOW_MULTIPLE_INPUT,
+        "idempotency_key": _KEY_INPUT,
+    },
+    "required": ["task_id", "question", "idempotency_key"],
+    "additionalProperties": False,
+}
+
+
+async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """Start or reuse the open run of this member and client on the task,
+    then write the question (§12.1). The two writes share the key, so a
+    second call with the same key returns the same run and question."""
+    _check_options(args.get("options"))
+    key = str(args["idempotency_key"])
+    _, run = await _start(ctx, str(args["task_id"]), key)
+    run_id = _id(run.get("id"))
+    if run_id is None:
+        raise ToolError(TEXT_BUSY)
+    payload: dict[str, Any] = {"type": "elicitation", "body": str(args["question"]),
+                               "idempotency_key": key}
+    for name in ("options", "allow_multiple"):
+        if name in args:
+            payload[name] = args[name]
+    waits = run.get("status") == "awaiting"
+    return await _post_activity(
+        ctx, run_id, payload, conflict=TEXT_QUESTION_WAITS if waits else TEXT_RUN_CONFLICT)
+
+
+ASK_ON_TASK = Tool(
+    name="ask_on_task",
+    title="Ask on a task",
+    description=(
+        "Ask the member a question on a task when you need a decision before"
+        " you go on. The tool starts an agent run on the task, or uses the open"
+        " run of this member from this client, and writes the question. Give 2"
+        " to 10 options, each with a short id and a label, and mark the one you"
+        " recommend with recommended true. Set allow_multiple when more than"
+        " one option can apply. With no options, the member answers in free"
+        " text. The member gets a notification on the task. Then call"
+        " get_agent_run with the run id, after set to the seq of the question,"
+        " and wait_seconds 20. Call it again and again until an activity of"
+        " type prompt arrives. If you cannot wait, end the session. A later"
+        " session finds the answer with list_agent_runs and needs_agent true."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_ASK_INPUT,
+    output_schema=_ACTIVITY_OUTPUT,
+    route=RUN_ACTIVITIES_ROUTE,
+    params={"task_id": "task_id", "question": "body", "options": "options",
+            "allow_multiple": "allow_multiple", "idempotency_key": "idempotency_key"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_ask_on_task,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+    prior_writes=(TASK_RUNS_ROUTE,),
+)
+
+
+# ── get_agent_run ───────────────────────────────────────────────────────────
+
+_GET_RUN_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": _RUN_ID_INPUT,
+        "after": {"type": "integer", "minimum": 0, "maximum": 2**53,
+                  "description": "Only the activities after this seq. Send the"
+                                 " cursor of the call before."},
+        "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECONDS,
+                         "default": 0,
+                         "description": "Wait up to this many seconds for a new"
+                                        " activity. Use 20 while you wait for an answer."},
+    },
+    "required": ["run_id"],
+    "additionalProperties": False,
+}
+_GET_RUN_OUTPUT: dict[str, Any] = _object({
+    "run": _RUN_SCHEMA,
+    "activities": {"type": "array", "items": _RUN_ACTIVITY_SCHEMA},
+    "cursor": _NULLABLE_INTEGER,
+})
+
+
+async def _get_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    wait = int(args.get("wait_seconds", 0))
+    query = [("wait_s", str(wait))]
+    if "after" in args:
+        query.append(("after", str(int(args["after"]))))
+    body = await _get(ctx, RUN_ROUTE, TEXT_RUN_NOT_FOUND,
+                      path_params={"run_id": str(args["run_id"])}, query=query,
+                      timeout_s=wait + LONG_POLL_REQUEST_MARGIN_S)
+    rows = body.get("activities") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        raise ToolError(TEXT_BUSY)
+    return {
+        "run": agent_run(_run_body(body)),
+        "activities": [run_activity(r) for r in rows if isinstance(r, dict)],
+        "cursor": _int_or_none(body.get("cursor")),
+    }
+
+
+GET_AGENT_RUN = Tool(
+    name="get_agent_run",
+    title="Get an agent run",
+    description=(
+        "Read one agent run: its status, its state, its open question and its"
+        " activities after the cursor. Send the cursor of the result as after"
+        " in the next call, to read only newer activities. With wait_seconds,"
+        " the call waits until a new activity arrives or the time ends. While"
+        " you wait for an answer, call it with wait_seconds 20 again and again."
+        " A member's answer is an activity of type prompt with the author"
+        " person. Its selected holds the chosen option ids, labels holds their"
+        " labels, and body holds any text the member wrote. The state is"
+        " answered until your next activity, which tells the member that you"
+        " have the answer. If the state is stopping, a person asked you to"
+        " stop. Stop the work at once, post one response that says what you did"
+        " and what is left, and do no more on the run." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_GET_RUN_INPUT,
+    output_schema=_GET_RUN_OUTPUT,
+    route=RUN_ROUTE,
+    params={"run_id": "run_id", "after": "after", "wait_seconds": "wait_s"},
+    not_found=TEXT_RUN_NOT_FOUND,
+    run=_get_agent_run,
+    routes=(RUN_ROUTE,),
+    runs=True,
+    wait_input="wait_seconds",
+)
+
+
+# ── list_agent_runs ─────────────────────────────────────────────────────────
+
+_LIST_RUNS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": [s for s in RUN_STATUSES if s != "stale"],
+                   "description": "Only runs in this status."},
+        "needs_agent": {"type": "boolean",
+                        "description": "True for only the runs that wait for an agent."},
+        "task_id": {**_TASK_INPUT, "description": "Only the runs of this task."},
+        "cursor": {"type": "string", "pattern": _RUNS_CURSOR_PATTERN,
+                   "description": "The nextCursor of the page before."},
+    },
+    "additionalProperties": False,
+}
+_LIST_RUNS_OUTPUT: dict[str, Any] = _object({
+    "runs": {"type": "array", "items": _RUN_SCHEMA},
+    "nextCursor": _NULLABLE_STRING,
+})
+
+
+async def _list_agent_runs(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    query: list[tuple[str, str]] = []
+    if "status" in args:
+        query.append(("status", str(args["status"])))
+    if args.get("needs_agent"):
+        query.append(("needs_agent", "true"))
+    if "task_id" in args:
+        query.append(("task_id", str(args["task_id"])))
+    if "cursor" in args:
+        query.append(("cursor", str(args["cursor"])))
+    body = await _get(ctx, MY_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, query=query)
+    following = body.get("next_cursor") if isinstance(body, dict) else None
+    return {
+        "runs": [agent_run(r) for r in _rows_of(body)],
+        "nextCursor": following if isinstance(following, str)
+        and _RUNS_CURSOR_RE.fullmatch(following) else None,
+    }
+
+
+LIST_AGENT_RUNS = Tool(
+    name="list_agent_runs",
+    title="List agent runs",
+    description=(
+        "List this member's agent runs on the tasks they can see, newest first."
+        " At the start of every session, call it with needs_agent true before"
+        " other work. That lists the runs that wait for an agent: a run that a"
+        " member queued for an agent (state queued), a run whose question a"
+        " member answered (state answered), and a run that a member asked to"
+        " stop (state stopping). For a queued or answered run, read it with"
+        " get_agent_run and go on with the work. For a stopping run, post one"
+        " response that says what you did, and stop. Filter by status or task."
+        " Send nextCursor back as cursor to read the next page." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_RUNS_INPUT,
+    output_schema=_LIST_RUNS_OUTPUT,
+    route=MY_RUNS_ROUTE,
+    params={"status": "status", "needs_agent": "needs_agent", "task_id": "task_id",
+            "cursor": "cursor"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_list_agent_runs,
+    routes=(MY_RUNS_ROUTE,),
+    runs=True,
+)
+
+
+# ── finish_agent_run ────────────────────────────────────────────────────────
+
+_FINISH_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": _RUN_ID_INPUT,
+        "summary": {**_BODY_INPUT,
+                    "description": "What you did and what is left, in Markdown."},
+        "idempotency_key": _KEY_INPUT,
+    },
+    "required": ["run_id", "idempotency_key"],
+    "additionalProperties": False,
+}
+_FINISH_OUTPUT: dict[str, Any] = _object({
+    "run": _RUN_SCHEMA,
+    "activity": {"anyOf": [_RUN_ACTIVITY_SCHEMA, {"type": "null"}]},
+})
+
+#: A finished run. A second finish of one finds the run in one of these.
+_FINISHED_STATUSES: frozenset[str] = frozenset({"completed", "stopped"})
+
+
+async def _finish_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST the finish. A finish with no summary writes no activity, so the
+    gateway cannot find a replay by the key, and a second call gets 409. The
+    edge then reads the run, and a finished run is the answer of the replay."""
+    run_id = str(args["run_id"])
+    payload: dict[str, Any] = {"idempotency_key": str(args["idempotency_key"])}
+    if "summary" in args:
+        payload["summary"] = str(args["summary"])
+    try:
+        _, body = await _write(
+            ctx, "POST", RUN_FINISH_ROUTE, TEXT_RUN_NOT_FOUND,
+            path_params={"run_id": run_id}, json_body=payload,
+            texts={409: TEXT_RUN_CONFLICT})
+    except ToolError as exc:
+        if exc.text != TEXT_RUN_CONFLICT or "summary" in args:
+            raise
+        found = await _get(ctx, RUN_ROUTE, TEXT_RUN_NOT_FOUND,
+                           path_params={"run_id": run_id}, query=[("after", "0")])
+        run = _run_body(found)
+        if run.get("status") not in _FINISHED_STATUSES:
+            raise
+        return {"run": agent_run(run), "activity": None}
+    activity = body.get("activity") if isinstance(body, dict) else None
+    return {
+        "run": agent_run(_run_body(body)),
+        "activity": run_activity(activity) if isinstance(activity, dict) else None,
+    }
+
+
+FINISH_AGENT_RUN = Tool(
+    name="finish_agent_run",
+    title="Finish an agent run",
+    description=(
+        "Finish your agent run when your work on the task is done. Put what"
+        " you did and what is left in summary. It becomes a comment on the"
+        " task. The run status becomes completed, or stopped when a person"
+        " pressed Stop. This does not change the status of the task: use"
+        " set_task_status for that. A member can reply on the task later. The"
+        " reply opens the run again, and list_agent_runs with needs_agent true"
+        " finds it." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_FINISH_INPUT,
+    output_schema=_FINISH_OUTPUT,
+    route=RUN_FINISH_ROUTE,
+    params={"run_id": "run_id", "summary": "summary", "idempotency_key": "idempotency_key"},
+    not_found=TEXT_RUN_NOT_FOUND,
+    run=_finish_agent_run,
+    routes=(RUN_ROUTE,),
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
 # ── The registry ────────────────────────────────────────────────────────────
 
-#: Every tool of the edge, by name, in the order of ``tools/list``. The two
-#: write tools of EA-6a come last.
+#: Every tool of the edge, by name, in the order of ``tools/list``. The write
+#: tools come after the reads: the two of EA-6a, then the two of EA-6d. The
+#: six agent-run tools of EA-12b come last.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
-    SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE,
+    SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
+    LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
+    ASK_ON_TASK, FINISH_AGENT_RUN,
 )}
 
 
 def offered(tool: Tool) -> bool:
     """A read always. A write only while the writes flag is on (fix round 1),
-    read through the ONE reader, ``agent_oauth.writes_enabled``."""
+    read through the ONE reader, ``agent_oauth.writes_enabled``. An
+    agent-run tool only while the runs flag is on too (EA-12b), read through
+    the ONE reader, ``agent_oauth.runs_enabled``."""
+    if tool.runs and not agent_oauth.runs_enabled():
+        return False
     return tool.method == "GET" or agent_oauth.writes_enabled()
 
 
 def listed(scopes: frozenset[str]) -> list[dict[str, Any]]:
-    """The ``tools/list`` entries that *scopes* cover. Varies by scope, and a
-    write tool shows only while the writes flag is on (EA-6a)."""
+    """The ``tools/list`` entries that *scopes* cover. Varies by scope, a
+    write tool shows only while the writes flag is on (EA-6a), and an
+    agent-run tool only while the runs flag is on (EA-12b)."""
     return [
         t.describe() for t in TOOLS.values()
         if (t.required_scope is None or t.required_scope in scopes) and offered(t)
     ]
+
+
+def call_timeout(tool: Tool, args: Mapping[str, Any]) -> float:
+    """The limit of one call. :data:`TOOL_TIMEOUT_S`, or for a long poll its
+    wait plus :data:`LONG_POLL_TOOL_MARGIN_S` (EA-12b, §12.1)."""
+    if tool.wait_input is None:
+        return TOOL_TIMEOUT_S
+    return float(args.get(tool.wait_input, 0)) + LONG_POLL_TOOL_MARGIN_S
 
 
 async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
@@ -1860,14 +3229,21 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     Raises :class:`GatewayUnauthorized` for a gateway 401, which the
     transport answers as the MCP 401. Every other failure is a result with
     ``isError: true``. A write tool while the writes flag is off answers
-    :data:`TEXT_WRITES_OFF` and makes no gateway request.
+    :data:`TEXT_WRITES_OFF`, and an agent-run tool while the runs flag is
+    off answers :data:`TEXT_RUNS_OFF`. Neither makes a gateway request.
     """
     if not offered(tool):
+        if tool.runs and not agent_oauth.runs_enabled():
+            return error_result(TEXT_RUNS_OFF)
         return error_result(TEXT_WRITES_OFF)
     try:
         args = check_input(tool.input_schema, arguments)
-        async with asyncio.timeout(TOOL_TIMEOUT_S):
-            structured = await tool.run(ctx, args)
+        async with asyncio.timeout(call_timeout(tool, args)) as timer:
+            token = _TOOL_TIMER.set(timer)
+            try:
+                structured = await tool.run(ctx, args)
+            finally:
+                _TOOL_TIMER.reset(token)
     except ToolError as exc:
         return error_result(exc.text)
     except TimeoutError:
@@ -1878,25 +3254,44 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
 __all__ = [
     "ADD_REF_KEYS",
     "ADD_TASK_REFERENCE",
+    "AGENT_ACTIVITY_TYPES",
+    "ASK_ON_TASK",
+    "AUTHOR_AGENT",
+    "AUTHOR_PERSON",
+    "CREATE_ANNOTATIONS",
+    "CREATE_BODY_KEYS",
+    "CREATE_TASK",
     "FIELD_KEYS",
+    "FINISH_AGENT_RUN",
+    "GET_AGENT_RUN",
     "GET_PROJECT",
     "GET_TASK",
     "GET_TASK_KEYS",
     "GET_TASK_TIMELINE",
     "HUMAN_ONLY_CATEGORIES",
     "LINK_KEYS",
+    "LIST_AGENT_RUNS",
     "LIST_PROJECTS",
     "LIST_TASKS",
     "LIST_TASK_KEYS",
+    "LONG_POLL_REQUEST_MARGIN_S",
+    "LONG_POLL_TOOL_MARGIN_S",
     "MAX_STATUS_READS",
+    "MAX_WAIT_SECONDS",
+    "OPEN_RUN_STATUSES",
+    "POST_AGENT_ACTIVITY",
     "PROJECT_KEYS",
     "PROJECT_ROW_KEYS",
     "READ_ANNOTATIONS",
     "REF_KEYS",
+    "RUN_ACTIVITY_KEYS",
+    "RUN_KEYS",
+    "RUN_STATUSES",
     "SEARCH_HIT_KEYS",
     "SEARCH_TASKS",
     "SET_STATUS_KEYS",
     "SET_TASK_STATUS",
+    "START_AGENT_RUN",
     "STATUS_KEYS",
     "SUBTASK_KEYS",
     "TAG_KEYS",
@@ -1906,17 +3301,31 @@ __all__ = [
     "TEXT_CAP",
     "TEXT_FORBIDDEN",
     "TEXT_HUMAN_STEP",
+    "TEXT_KEY_REUSED",
+    "TEXT_KEY_RUNNING",
+    "TEXT_KEY_UNKNOWN",
+    "TEXT_KEY_USED",
+    "TEXT_PARENT_NOT_FOUND",
+    "TEXT_PARENT_OTHER_PROJECT",
     "TEXT_PROJECT_NOT_FOUND",
+    "TEXT_QUESTION_WAITS",
     "TEXT_REF_BAD_URL",
     "TEXT_REF_RETRY",
+    "TEXT_RUNS_OFF",
+    "TEXT_RUN_CONFLICT",
+    "TEXT_RUN_NOT_FOUND",
     "TEXT_STALE",
     "TEXT_TASK_NOT_FOUND",
+    "TEXT_UPDATE_EMPTY",
     "TEXT_WRITES_OFF",
     "TEXT_WRITE_FORBIDDEN",
     "TIMELINE_ROW_KEYS",
     "TOOLS",
     "TOOL_TIMEOUT_S",
     "TYPE_KEYS",
+    "UPDATED_TASK_KEYS",
+    "UPDATE_BODY_KEYS",
+    "UPDATE_TASK",
     "WHOAMI",
     "WHOAMI_KEYS",
     "WRITE_ANNOTATIONS",
@@ -1924,12 +3333,15 @@ __all__ = [
     "GatewayUnauthorized",
     "Tool",
     "ToolError",
+    "agent_run",
     "call",
+    "call_timeout",
     "check_input",
     "field_value",
     "listed",
     "offered",
     "reference",
+    "run_activity",
     "timeline_meta",
     "untrusted",
 ]

@@ -368,7 +368,21 @@ ACTIVITY_TYPES: tuple[str, ...] = (
 
 #: `pm_projects.source` / `pm_tasks.source`. Tasks carry two extra origins.
 PROJECT_SOURCES: tuple[str, ...] = ("manual", "import", "agent")
-TASK_SOURCES: tuple[str, ...] = ("manual", "import", "email", "agent", "automation")
+#: The values that the CHECK on `pm_tasks.source` accepts (migration 146,
+#: widened by the EA-6d migration with `mcp`). `test_projects_migration.py`
+#: reads the migrations and holds this tuple equal to the last CHECK.
+TASK_SOURCES: tuple[str, ...] = (
+    "manual", "import", "email", "agent", "automation", "mcp",
+)
+#: WS-55 EA-6d. The sources that only the server stamps. `mcp` marks a task
+#: that an outside agent made through the MCP edge, and `tasks.create_task`
+#: sets it from `UserContext.agent`, never from a request body.
+SERVER_TASK_SOURCES: tuple[str, ...] = ("mcp",)
+#: The sources that a request body may name. A body that names `mcp` gets 422.
+#: Each route that reads a source from a request checks it against THIS tuple.
+CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
+    s for s in TASK_SOURCES if s not in SERVER_TASK_SOURCES
+)
 
 #: Node kinds in the projects tree (migration 193). Mirrors the CHECK the
 #: migration adds — test_projects_node_kind.py reads the SQL file, because a
@@ -713,6 +727,17 @@ class TaskModel(BaseModel):
     #: ⚠️ `row_to_dict` FILTERS through this model, so a column added to the
     #: SELECT and not to the model is dropped without a word.
     view_position: float | None = None
+    #: WS-55 EA-12a (external_agent_access.md §12.1, EA12-10). The derived
+    #: state of the task's newest open agent run: ``queued``, ``working``,
+    #: ``awaiting``, ``answered``, ``stopping``, ``stale`` or ``failed``.
+    #: ``None`` with no open run. A JOIN PRODUCT, like ``view_position``:
+    #: ``filters.attach_agent_state`` fills it on the list rows and on
+    #: ``GET /projects/tasks/{id}``. Every other read leaves it ``None``.
+    agent_state: str | None = None
+    #: The same run's client stamp (``mcp:<slug>``) and member, for the pill
+    #: text ("Waiting for <member>", "<client> working"). ``None`` with no run.
+    agent_client_via: str | None = None
+    agent_member_email: str | None = None
 
     @field_validator("leveraged", mode="before")
     @classmethod

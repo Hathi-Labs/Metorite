@@ -45,6 +45,7 @@ from gateway.routes.projects import analytics_conflicts as _analytics_conflicts 
 from gateway.routes.projects import analytics_dataset as _analytics_dataset  # noqa: F401
 from gateway.routes.projects import analytics_rebalance as _analytics_rebalance  # noqa: F401
 from gateway.routes.projects import activities as _activities  # noqa: F401
+from gateway.routes.projects import agent_runs as _agent_runs  # noqa: F401
 from gateway.routes.projects import assignees as _assignees  # noqa: F401
 from gateway.routes.projects import admin as _admin  # noqa: F401
 from gateway.routes.projects import attachments as _attachments  # noqa: F401

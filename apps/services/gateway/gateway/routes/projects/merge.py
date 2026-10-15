@@ -72,6 +72,7 @@ from gateway.routes.projects.core import (
     touch_task,
     update_row,
 )
+from gateway.routes.projects.filters import attach_agent_state
 from gateway.routes.projects.relations import assert_no_block_cycle
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -530,6 +531,8 @@ async def merge_tasks(
         for child in dict.fromkeys(bumped):
             await touch_task(db, child)
         result = row_to_dict(row, TaskModel)
+        # WS-55 EA-12c — the kept task keeps its agent pill (EA12-10).
+        await attach_agent_state(db, [result])
         result["merged"] = [str(s.id) for s in sources]
 
     for source in sources:

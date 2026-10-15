@@ -23,7 +23,9 @@ gateway app through ``httpx.ASGITransport`` with :func:`use_transport`
 (EA3-20).
 
 **Time (EA3-17).** Each request has :data:`REQUEST_TIMEOUT_S`. The tool call
-limit lives in ``tools``.
+limit lives in ``tools``. One read is longer (EA-12b, spec §12.1): the long
+poll of ``get_agent_run`` passes ``timeout_s``, its ``wait_s`` plus 10
+seconds.
 
 This module maps no answer. It returns the status and the parsed body, and
 ``agent_edge.tools`` maps each one to a tool result (§9.6, EA3-16).
@@ -66,6 +68,12 @@ _TRANSPORT: list[httpx.AsyncBaseTransport | None] = [None]
 
 class GatewayUnreachable(Exception):
     """No answer came in time, or the connection failed."""
+
+
+class GatewayNotSent(GatewayUnreachable):
+    """The connection failed before any byte of the request went out
+    (``httpx.ConnectError`` or ``httpx.ConnectTimeout``). So the gateway
+    cannot have acted on it (EA-6d, the idempotency slot of ``create_task``)."""
 
 
 class RouteRefused(ValueError):
@@ -131,12 +139,15 @@ async def get(
     *,
     path_params: Mapping[str, str] | None = None,
     query: Sequence[tuple[str, str]] = (),
+    timeout_s: float | None = None,
 ) -> Answer:
     """One signed ``GET`` to the gateway, or raise :class:`GatewayUnreachable`.
 
     *key* is ``agent_signing.signing_key()``, which the transport checked.
     *query* holds each key once. The signed string sorts the pairs, and the
-    gateway refuses a repeated key.
+    gateway refuses a repeated key. *timeout_s* is the limit of this request,
+    and ``None`` is :data:`REQUEST_TIMEOUT_S`. Only the long poll of
+    ``get_agent_run`` sets it (EA-12b).
     """
     path = _path(template, path_params or {})
     pairs = [(str(k), str(v)) for k, v in query]
@@ -150,7 +161,7 @@ async def get(
         _log.warning("agent_edge.gateway_request_unbuildable", route=template,
                      error=type(exc).__name__)
         raise GatewayUnreachable(template) from None
-    return await _send(_GET, url, headers, b"", template)
+    return await _send(_GET, url, headers, b"", template, timeout_s)
 
 
 async def write(
@@ -198,14 +209,16 @@ def _url(path: str, pairs: Sequence[tuple[str, str]]) -> str:
 
 
 async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
-                template: str) -> Answer:
+                template: str, timeout_s: float | None = None) -> Answer:
+    # Read at call time, so a test that patches the module constant holds.
+    limit = REQUEST_TIMEOUT_S if timeout_s is None else timeout_s
     try:
         # Two limits, on purpose. httpx enforces its timeout on a socket only,
         # and an in-process transport has none, so the asyncio limit is the
         # one that always holds.
-        async with asyncio.timeout(REQUEST_TIMEOUT_S), httpx.AsyncClient(
+        async with asyncio.timeout(limit), httpx.AsyncClient(
             transport=_TRANSPORT[0],
-            timeout=REQUEST_TIMEOUT_S,
+            timeout=limit,
             follow_redirects=False,
             trust_env=False,
         ) as client:
@@ -214,6 +227,11 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
             else:
                 response = await client.request(method, url, headers=dict(headers),
                                                 content=body)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        # No connection, so no byte of the request went out.
+        _log.warning("agent_edge.gateway_unreachable", route=template,
+                     error=type(exc).__name__)
+        raise GatewayNotSent(template) from None
     except Exception as exc:  # a timeout, a transport error, or any other
         _log.warning("agent_edge.gateway_unreachable", route=template,
                      error=type(exc).__name__)
@@ -228,6 +246,7 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
 __all__ = [
     "REQUEST_TIMEOUT_S",
     "Answer",
+    "GatewayNotSent",
     "GatewayUnreachable",
     "RouteRefused",
     "get",

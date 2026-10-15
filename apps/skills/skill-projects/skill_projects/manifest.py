@@ -443,6 +443,15 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/tasks/{task_id}/refs", "task_detail", "A"),
     Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/refs/{ref_id}", "remove_task_ref", "B"),
+    # ── agent_runs.py — agent runs on a task (WS-55 EA-12a, EA12-9) ──────
+    # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
+    # §12.1). The in-product chat gets them in EA-12e.
+    Route("GET", "/projects/tasks/{task_id}/agent-runs", "agent_runs", "A"),
+    Route("GET", "/projects/agent-runs", "agent_runs", "A"),
+    Route("GET", "/projects/agent-runs/{run_id}", "agent_runs", "A"),
+    Route("POST", "/projects/tasks/{task_id}/agent-runs", "start_agent_run", "B"),
+    Route("POST", "/projects/agent-runs/{run_id}/activities", "post_agent_activity", "B"),
+    Route("POST", "/projects/agent-runs/{run_id}/finish", "finish_agent_run", "B"),
     Route("PUT", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("GET", "/projects/tasks/{task_id}/watchers", "watchers", "A"),
@@ -474,6 +483,12 @@ PLANNED: dict[str, str] = {
     # (2026-09-23) shipped the rest: views, calendar, contexts, watchers,
     # intake, notifications, grants (`inbox.py`). Every other tool the
     # manifest names is built.
+    # WS-55 EA-12a (2026-10-14) added the agent-run routes for an outside
+    # agent. The in-product chat gets their tools in EA-12e (EA12-9).
+    "agent_runs": "WS-55 EA-12e, in-product chat parity",
+    "start_agent_run": "WS-55 EA-12e, in-product chat parity",
+    "post_agent_activity": "WS-55 EA-12e, in-product chat parity",
+    "finish_agent_run": "WS-55 EA-12e, in-product chat parity",
 }
 
 
@@ -822,6 +837,9 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "context": "create_personal_task.context",
         "due_at": "create_personal_task.due",
         "notes": "create_personal_task.notes",
+        # WS-47 WAC-4b: a capture with a block on my calendar.
+        "scheduled_start": "create_personal_task.block_start",
+        "scheduled_end": "create_personal_task.block_end",
     },
     ("PATCH", "/projects/tasks/{task_id}/personal"): {
         "disposition": "set_my_overlay.disposition",
@@ -1115,6 +1133,8 @@ FIELD_GAPS: dict[str, str] = {
     # (2026-10-06). Their rows are in SENDS or FIELD_EXEMPT.
     "G10": "P9",
     "G11": "P9",
+    # WS-55 EA-12a (EA12-9): the agent-run routes, for the chat in EA-12e.
+    "G23": "EA-12e",
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
@@ -1124,6 +1144,25 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/intake"): {"source": "G11", "source_ref": "G11"},
     # G10's rule, on a node: the route takes `agent` as a source.
     ("POST", "/projects/nodes"): {"source": "G10"},
+    # G23 (WS-55 EA-12a, EA12-9): the agent-run routes. The chat gets them in
+    # EA-12e. Today an outside agent reaches them over MCP.
+    ("GET", "/projects/agent-runs"): {
+        "status": "G23", "needs_agent": "G23", "task_id": "G23",
+        "client_via": "G23", "limit": "G23", "cursor": "G23",
+    },
+    ("GET", "/projects/agent-runs/{run_id}"): {"after": "G23", "wait_s": "G23"},
+    ("POST", "/projects/tasks/{task_id}/agent-runs"): {
+        "external_link": "G23", "idempotency_key": "G23",
+        "connection_id": "G23", "body": "G23",
+    },
+    ("POST", "/projects/agent-runs/{run_id}/activities"): {
+        "type": "G23", "idempotency_key": "G23", "body": "G23", "options": "G23",
+        "allow_multiple": "G23", "selected": "G23", "action": "G23",
+        "parameters": "G23", "signal": "G23",
+    },
+    ("POST", "/projects/agent-runs/{run_id}/finish"): {
+        "summary": "G23", "idempotency_key": "G23",
+    },
 }
 
 
@@ -1231,6 +1270,12 @@ UI_ACTIONS: dict[str, str] = {
     "refsApi.list": "task_detail",
     "refsApi.add": "add_task_ref",
     "refsApi.remove": "remove_task_ref",
+    # ── agentRunsApi (WS-55 EA-12c): agent runs on a task ────────────────
+    # The tools are PLANNED for EA-12e, the in-product chat (EA12-9).
+    "agentRunsApi.list": "agent_runs",
+    "agentRunsApi.get": "agent_runs",
+    "agentRunsApi.post": "post_agent_activity",
+    "agentRunsApi.enabled": "agent_runs",
     # ── notificationsApi ─────────────────────────────────────────────────
     "notificationsApi.list": "notifications",
     "notificationsApi.markRead": "mark_notifications_read",

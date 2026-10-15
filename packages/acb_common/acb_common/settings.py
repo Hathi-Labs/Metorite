@@ -284,6 +284,24 @@ class Settings(BaseSettings):
     # A flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_my_day_loop.py.
     my_day_loop_enabled: bool = False
+
+    # ── Reach: Metorite messages a member first (WS-59 RE-1a, 2026-10-14) ───
+    #
+    # `reach_enabled` is the switch of the Reach loop and its two routes,
+    # default OFF. `reach_orgs` lists the organization ids that may reach,
+    # with a comma between ids. Empty allows none, and there is no `*`.
+    # `reach_members` lists the member emails of the demo allowlist. Empty
+    # allows nobody. `reach_daily_cap` is the most interrupts one member gets
+    # in one local day. `reach_brief_template` is an approved Meta template
+    # name for a brief outside the 24-hour window. Empty sends no template.
+    # The one reader is `gateway.reach.flags`. A flip on a box is gate
+    # `enforcement-flip`. Spec: project-docs/specs/proactive_reach.md.
+    # Fence: tests/unit/test_reach_loop.py.
+    reach_enabled: bool = False
+    reach_orgs: str = ""
+    reach_members: str = ""
+    reach_daily_cap: int = 3
+    reach_brief_template: str = ""
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 
@@ -1214,6 +1232,14 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.writes_enabled` is the one reader. Only the
     # gateway reads it. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_access_writes_enabled: bool = False
+    # EA-12a (spec §12.1, EA12-3): agent runs on a task. Default OFF. While
+    # it is false, each route of `gateway/routes/projects/agent_runs.py`
+    # answers 404, and the task rows carry no `agent_state`. EA-12b: the
+    # edge reads it too, and leaves the six agent-run tools out of
+    # `tools/list` while it is false. So both units need the same value.
+    # `acb_auth.agent_oauth.runs_enabled` is the one reader. 🔴 A flip on a
+    # box is gate `enforcement-flip`.
+    agent_runs_enabled: bool = False
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 162
+-- Tables in this phase: 164
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1275,6 +1275,30 @@ ALTER TABLE pm_activities ADD CONSTRAINT pm_activities_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_activities_org_idx ON pm_activities (organization_id);
 
+-- pm_agent_run_activities
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_agent_run_activities WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_agent_run_activities still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_agent_run_activities ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_agent_run_activities ADD CONSTRAINT pm_agent_run_activities_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_agent_run_activities_org_idx ON pm_agent_run_activities (organization_id);
+
+-- pm_agent_runs
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_agent_runs WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_agent_runs still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_agent_runs ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_agent_runs ADD CONSTRAINT pm_agent_runs_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_agent_runs_org_idx ON pm_agent_runs (organization_id);
+
 -- pm_custom_fields
 DO $$
 BEGIN
@@ -1982,3 +2006,27 @@ ALTER TABLE my_day_judgments ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE my_day_judgments ADD CONSTRAINT my_day_judgments_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS my_day_judgments_org_idx ON my_day_judgments (organization_id);
+
+-- reach_outbox
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM reach_outbox WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: reach_outbox still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE reach_outbox ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE reach_outbox ADD CONSTRAINT reach_outbox_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS reach_outbox_org_idx ON reach_outbox (organization_id);
+
+-- reach_signal_log
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM reach_signal_log WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: reach_signal_log still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE reach_signal_log ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE reach_signal_log ADD CONSTRAINT reach_signal_log_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS reach_signal_log_org_idx ON reach_signal_log (organization_id);

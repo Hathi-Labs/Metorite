@@ -168,6 +168,10 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # both routes serve the signed-in member, and the webhook stays on the
     # `/whatsapp` router.
     "gateway.routes.whatsapp_channel": set(),
+    # WS-59 RE-1a — Reach (`/reach/preview`, `/reach/brief`). Gated on
+    # `feature:chat`, because Reach speaks through the WhatsApp channel. No
+    # exemptions: both routes serve the signed-in member only.
+    "gateway.reach.routes": set(),
     "gateway.routes.actions": set(),
     "gateway.routes.integrations": set(),
     # WS-54 — the three routers of the Integrations console. Each one is

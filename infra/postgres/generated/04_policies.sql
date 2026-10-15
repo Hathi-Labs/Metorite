@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 162
+-- Tables in this phase: 164
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -761,6 +761,20 @@ CREATE POLICY pm_activities_tenant_isolation ON pm_activities
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE pm_agent_run_activities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_run_activities FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_run_activities_tenant_isolation ON pm_agent_run_activities;
+CREATE POLICY pm_agent_run_activities_tenant_isolation ON pm_agent_run_activities
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_agent_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_runs FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_runs_tenant_isolation ON pm_agent_runs;
+CREATE POLICY pm_agent_runs_tenant_isolation ON pm_agent_runs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_custom_fields ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_custom_fields FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_custom_fields_tenant_isolation ON pm_custom_fields;
@@ -1171,5 +1185,19 @@ ALTER TABLE my_day_judgments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE my_day_judgments FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS my_day_judgments_tenant_isolation ON my_day_judgments;
 CREATE POLICY my_day_judgments_tenant_isolation ON my_day_judgments
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE reach_outbox ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reach_outbox FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS reach_outbox_tenant_isolation ON reach_outbox;
+CREATE POLICY reach_outbox_tenant_isolation ON reach_outbox
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE reach_signal_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reach_signal_log FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS reach_signal_log_tenant_isolation ON reach_signal_log;
+CREATE POLICY reach_signal_log_tenant_isolation ON reach_signal_log
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

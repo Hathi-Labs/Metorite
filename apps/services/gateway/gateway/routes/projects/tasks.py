@@ -32,10 +32,11 @@ from gateway.routes.projects.cascade import (
     subtree_privacy_refusals,
 )
 from gateway.routes.projects.core import (
+    CLIENT_TASK_SOURCES,
+    CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
     DIRECTIONS,
     TASK_SORTS,
-    TASK_SOURCES,
     ListResponse,
     Page,
     TaskIn,
@@ -80,12 +81,14 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
     update_row,
     validate_choice,
+    vocabulary_scope,
 )
 from gateway.routes.projects.custom_fields import (
     apply_values,
     load_definitions,
 )
 from gateway.routes.projects.filters import (
+    attach_agent_state,
     attach_assignees,
     attach_parent_context,
     attach_relation_counts,
@@ -123,6 +126,98 @@ _TRACKED_TASK_FIELDS: tuple[str, ...] = (
 )
 
 _LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates")
+
+#: WS-55 EA-6d (spec `external_agent_access.md` §9.2). The body keys that a
+#: signed agent write may send, by route. The MCP edge sends no other key, and
+#: the route refuses any other key with 422 when `UserContext.agent` is set.
+#: So a holder of the signing key cannot skip the edge's rules with a body
+#: that the edge would never build. A human request is not narrowed.
+#: The create set is the input of `create_task`.
+AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
+    "project_id", "title", "description", "parent_task_id", "type_id",
+    "status_id", "tags", "due_at",
+})
+#: The PATCH set is the union of `set_task_status` (`status_id`) and
+#: `update_task` (the other five).
+AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
+    "status_id", "title", "description", "tags", "due_at", "custom_fields",
+})
+#: The `pm_tasks.source` that the server stamps on a task an agent makes.
+AGENT_TASK_SOURCE = "mcp"
+
+
+def _narrow_agent_body(user: UserContext, values: dict[str, Any],
+                       allowed: frozenset[str], *,
+                       include_subtasks: bool = False) -> None:
+    """Refuse a key outside *allowed* in the body of a signed agent write,
+    and the PATCH cascade ``include_subtasks``.
+
+    A no-op for a human request (``user.agent`` is ``None``).
+    """
+    if getattr(user, "agent", None) is None:
+        return
+    extra = sorted(set(values) - allowed)
+    if include_subtasks:
+        extra.append("include_subtasks")
+    if extra:
+        raise HTTPException(
+            status_code=422,
+            detail=f"An agent write may not send {extra}.",
+        )
+
+
+def _refuse_agent_parent(user: UserContext, parent: Any, project_id: str) -> None:
+    """An agent's subtask lives in its parent's project (§9.2, EA-6d).
+
+    The route itself does not check it for a member. For an agent the edge
+    refuses first, and this is the gateway's own copy of the rule.
+    """
+    if getattr(user, "agent", None) is None or parent is None:
+        return
+    if str(getattr(parent, "project_id", "")).lower() != project_id.lower():
+        raise HTTPException(
+            status_code=422,
+            detail="The parent task is in another project.",
+        )
+
+
+async def _refuse_agent_type(db: Any, user: UserContext, type_id: Any,
+                             root: str) -> None:
+    """An agent's ``type_id`` is a type of the project's vocabulary (§9.2).
+
+    The vocabulary is the one ``GET /nodes/{id}/types`` reads: the root's own
+    types and the org-wide ones (``core.vocabulary_scope``). The route itself
+    does not check it for a member, and a made-up id there hits the foreign
+    key. For an agent the edge refuses first, and this is the gateway's own
+    copy of the rule.
+    """
+    if getattr(user, "agent", None) is None or not type_id:
+        return
+    found = (await db.execute(
+        text(
+            "SELECT 1 FROM pm_task_types "
+            f"WHERE id = CAST(:type_id AS uuid) AND {vocabulary_scope()}"
+        ),
+        {"type_id": str(type_id), "root": root},
+    )).first()
+    if found is None:
+        raise HTTPException(
+            status_code=422,
+            detail="That task type does not belong to this project.",
+        )
+
+
+def _refuse_agent_close(user: UserContext, category: str | None) -> None:
+    """An agent never moves a task into ``done`` or ``cancelled`` (§9.2).
+
+    The edge refuses first. This is the gateway's own copy of the rule, for
+    a request that did not come through the edge's tools.
+    """
+    if getattr(user, "agent", None) is not None and category in CLOSING_CATEGORIES:
+        raise HTTPException(
+            status_code=422,
+            detail="Moving a task to done or cancelled stays a human step.",
+        )
 
 
 class MoveTask(BaseModel):
@@ -177,6 +272,14 @@ VIEW_POSITION_JOIN = (
     " LEFT JOIN pm_view_task_positions vp"
     "   ON vp.task_id = t.id AND vp.view_id = CAST(:view_id AS uuid)"
 )
+
+
+async def _with_agent_state(db: Any, row: dict) -> dict:
+    """*row* with its agent pill (WS-55 EA-12c, EA12-10). Every route that
+    hands a task row back to the client fills it, because the client merges
+    the row over its own copy."""
+    await attach_agent_state(db, [row])
+    return row
 
 
 @router.get("/tasks")
@@ -328,6 +431,8 @@ async def list_tasks(
         # card is N+1 across an imported workspace of hundreds.
         page_rows = [row_to_dict(r, TaskModel) for r in rows]
         await attach_assignees(db, page_rows)
+        # WS-55 EA-12a — the agent pill, in one query for the page.
+        await attach_agent_state(db, page_rows)
         await attach_relation_counts(db, page_rows, vis)
         # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
         await attach_parent_context(db, vis, page_rows)
@@ -351,6 +456,8 @@ async def get_task(
         )).fetchall()
         result["assignees"] = [r.assignee for r in assignees]
         result["time_spent_mins"] = await time_spent_mins(db, task_id)
+        # WS-55 EA-12a — the agent pill on the task detail (EA12-10).
+        await attach_agent_state(db, [result])
         return result
 
 
@@ -386,13 +493,19 @@ async def create_task(
     payload: TaskIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
     values = clean_payload(payload)
+    # WS-55 EA-6d. A signed agent write sends only the keys of `create_task`.
+    _narrow_agent_body(user, values, AGENT_CREATE_FIELDS)
     title = str(values.get("title") or "").strip()
     if not title:
         raise HTTPException(status_code=422, detail="A task needs a title.")
     project_id = values.get("project_id")
     if not project_id:
         raise HTTPException(status_code=422, detail="A task needs a project_id.")
-    validate_choice(values.get("source"), TASK_SOURCES, "source")
+    validate_choice(values.get("source"), CLIENT_TASK_SOURCES, "source")
+    if getattr(user, "agent", None) is not None:
+        # The task source of an agent comes from branch 0's signed context,
+        # never from the body (the narrowing above refuses a body `source`).
+        values["source"] = AGENT_TASK_SOURCE
     values["title"] = title
     values["created_by"] = actor(user)
 
@@ -436,6 +549,8 @@ async def create_task(
         parent = (
             await load_visible_task(db, vis, str(parent_id)) if parent_id else None
         )
+        _refuse_agent_parent(user, parent, str(project_id))
+        await _refuse_agent_type(db, user, values.get("type_id"), str(root))
         await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
 
         # A stated status always wins. A new step with no stated status takes
@@ -445,6 +560,7 @@ async def create_task(
             status = await require_status_in_project(
                 db, status_home, str(values["status_id"]),
             )
+            _refuse_agent_close(user, getattr(status, "category", None))
         elif parent is not None:
             status = await parent_lane_status(db, parent, status_home)
         else:
@@ -504,7 +620,11 @@ async def patch_task(
     ``subtasks_completed`` and ``subtask_changes``, the Undo record.
     """
     values = clean_payload(payload)
-    validate_choice(values.get("source"), TASK_SOURCES, "source")
+    # WS-55 EA-6d. A signed agent PATCH sends only the keys of
+    # `set_task_status` and `update_task`, and never the cascade.
+    _narrow_agent_body(user, values, AGENT_PATCH_FIELDS,
+                       include_subtasks=include_subtasks)
+    validate_choice(values.get("source"), CLIENT_TASK_SOURCES, "source")
     for guarded, endpoint in (
         ("project_id", "move"), ("parent_task_id", "move"),
     ):
@@ -574,6 +694,9 @@ async def patch_task(
             moved = await apply_status_transition(
                 db, after, str(new_status), created_by=actor(user),
             )
+            # WS-55 EA-6d. Inside the transaction, so the refusal rolls the
+            # whole PATCH back, the field changes too.
+            _refuse_agent_close(user, getattr(moved["to"], "category", None))
             after = moved["row"]
             # In the SAME transaction as the parent's own move, so a refused
             # cascade (a set with no Done status) leaves the parent open too.
@@ -605,6 +728,9 @@ async def patch_task(
             )
 
         result = row_to_dict(after, TaskModel)
+        # WS-55 EA-12c — the pill survives an edit. The client merges this
+        # row over its copy, so a null here would erase the pill (EA12-10).
+        await attach_agent_state(db, [result])
         if include_subtasks:
             result["subtasks_completed"] = len(cascade.ids) if cascade else 0
             result["subtask_changes"] = cascade.changes if cascade else []
@@ -911,6 +1037,7 @@ async def move_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         result = await move_task_in(db, vis, task, payload, by=actor(user))
+        await attach_agent_state(db, [result])
 
     await emit("pm.task.moved", {"task_id": task_id})
     # D-PM-38 — one event per task the move took along, like the bulk move.
@@ -1061,6 +1188,7 @@ async def archive_task(
             if include_subtasks else None
         )
         result = row_to_dict(row, TaskModel)
+        await attach_agent_state(db, [result])
         if cascade is not None:
             result["subtasks_archived"] = len(cascade.ids)
             result["subtask_ids"] = cascade.ids
@@ -1093,7 +1221,7 @@ async def unarchive_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         if getattr(task, "archived_at", None) is None:
-            return row_to_dict(task, TaskModel)
+            return await _with_agent_state(db, row_to_dict(task, TaskModel))
         # ⚠️ A MERGED task loses its pointer here, and it must: migration
         # 210's `pm_tasks_merged_is_archived` refuses a row that claims to be
         # merged while off the shelf, so clearing one without the other is a
@@ -1118,7 +1246,7 @@ async def unarchive_task(
                 else "Task restored from the archive"
             ),
         )
-        result = row_to_dict(row, TaskModel)
+        result = await _with_agent_state(db, row_to_dict(row, TaskModel))
 
     await emit("pm.task.unarchived", {"task_id": task_id})
     return result

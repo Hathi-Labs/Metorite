@@ -302,6 +302,67 @@ def test_the_activity_vocabulary_mirror_is_exact() -> None:
     assert set(ACTIVITY_TYPES) == _activity_check_values()
 
 
+def _task_source_check_values() -> set[str]:
+    """The `pm_tasks.source` vocabulary as the DATABASE will enforce it.
+
+    146 creates it inline in `CREATE TABLE pm_tasks`. The EA-6d migration
+    (WS-55) replaces it as the named `pm_tasks_source_check`, and it is found
+    by that name, never by its number (R1). The last definition in file order
+    is the one that survives a full replay.
+    """
+    latest: str | None = None
+    for path in sorted(MIGRATIONS.glob("*.sql"), key=lambda p: p.name):
+        if path.name == "schema.generated.sql":
+            continue
+        text = "\n".join(
+            re.sub(r"--.*$", "", line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+        )
+        table = re.search(
+            r"CREATE TABLE IF NOT EXISTS pm_tasks\s*\((.*?)\n\);", text, re.S,
+        )
+        if table is not None:
+            inline = re.search(
+                r"source\s+TEXT[^,]*?CHECK\s*\(\s*source\s+IN\s*\((.*?)\)\s*\)",
+                table.group(1), re.I | re.S,
+            )
+            if inline is not None:
+                latest = inline.group(1)
+        for match in re.finditer(
+            r"ADD CONSTRAINT pm_tasks_source_check\s+CHECK\s*\(\s*source\s+IN"
+            r"\s*\((.*?)\)\s*\)", text, re.I | re.S,
+        ):
+            latest = match.group(1)
+    assert latest is not None, "no migration constrains pm_tasks.source"
+    return set(re.findall(r"'([a-z_]+)'", latest))
+
+
+def test_the_task_source_vocabulary_mirror_is_exact() -> None:
+    """WS-55 EA-6d. `core.TASK_SOURCES` is the CHECK of `pm_tasks.source`.
+
+    A value in the tuple that the CHECK refuses is a 500 on a write. A value
+    in the CHECK that the tuple lacks is a value nothing can check.
+    """
+    from gateway.routes.projects.core import TASK_SOURCES
+
+    assert set(TASK_SOURCES) == _task_source_check_values()
+    assert "mcp" in TASK_SOURCES
+
+
+def test_a_request_never_names_a_server_source() -> None:
+    """WS-55 EA-6d. Only the server stamps `mcp` (from `UserContext.agent`).
+    The tuple that a request body is checked against leaves it out."""
+    from gateway.routes.projects.core import (
+        CLIENT_TASK_SOURCES,
+        SERVER_TASK_SOURCES,
+        TASK_SOURCES,
+    )
+
+    assert SERVER_TASK_SOURCES == ("mcp",)
+    assert not set(CLIENT_TASK_SOURCES) & set(SERVER_TASK_SOURCES)
+    assert set(CLIENT_TASK_SOURCES) | set(SERVER_TASK_SOURCES) == set(TASK_SOURCES)
+
+
 def test_every_activity_type_the_routes_write_is_in_the_vocabulary() -> None:
     """The other direction, and the one that actually broke.
 

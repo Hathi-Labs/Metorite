@@ -2018,7 +2018,10 @@ async def test_clearing_the_bell_prints_a_done_line_and_no_row(monkeypatch) -> N
 async def test_every_manifest_tool_is_now_built() -> None:
     from skill_projects import manifest as m
 
-    assert set(m.PLANNED) <= {"my_areas"}, m.PLANNED
+    # The four agent-run tools wait for WS-55 EA-12e, the in-product chat
+    # parity of the routes an outside agent already uses (EA12-9, §12.1).
+    ea_12e = {"agent_runs", "start_agent_run", "post_agent_activity", "finish_agent_run"}
+    assert set(m.PLANNED) <= {"my_areas"} | ea_12e, m.PLANNED
 
 
 async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:
