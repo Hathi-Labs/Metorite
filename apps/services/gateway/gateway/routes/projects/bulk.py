@@ -56,7 +56,6 @@ from gateway.routes.projects.core import (
     emit,
     lift_subtasks_to_grandparent,
     load_visible_task,
-    lock_task,
     now,
     record_activity,
     resolve_visibility,
@@ -350,12 +349,6 @@ async def _apply_to_one(
     task_id = str(task.id)
     outcome: dict[str, Any] = {"task_id": task_id, "changed": []}
     notify_these: list[str] = []
-
-    if add_people or drop_people:
-        # WS-55 EA-6b fix round 2. The task row before the assignee key, the
-        # one order of every assignee writer (`core.lock_task`). A people-only
-        # edit wrote the key and then bumped the row.
-        await lock_task(db, task_id)
 
     if add_people:
         # S6g repair (P2-a). The single-task routes refuse a colleague on a

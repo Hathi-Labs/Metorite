@@ -58,7 +58,6 @@ Run::
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import uuid
@@ -694,116 +693,111 @@ def _consistent(world, task: str) -> bool:
     return closed == (row.completed_at is not None)
 
 
+#: The runs of each race test (fix round 3). No barrier: the two requests
+#: start together, and the database decides who goes first.
+RACE_RUNS = 10
+
+
+async def _together(world, *calls: tuple[str, str, dict[str, Any], str | None, str | None],
+                    errors: bool = False) -> list[Any]:
+    """Start each ``(method, path, body, signed, if_match)`` request at once,
+    in one engine scope, and wait for all of them. With *errors*, an error
+    that the app raised comes back in the list."""
+    async def go() -> list[Any]:
+        return list(await asyncio.gather(*(
+            _gateway_unscoped(world, m, path, body=body, signed=signed, if_match=im)
+            for m, path, body, signed, im in calls), return_exceptions=errors))
+    return await tw._in_scope(world, go)
+
+
 class TestTheClaimRace:
-    """Fix round 1 (P2 of the review, and the verifier's failure). Two
-    requests run at the same time, through the real gateway app."""
+    """Fix rounds 1 to 3. Two requests run at the same time through the real
+    gateway app, ``RACE_RUNS`` times, with no barrier. Each run must end with
+    no deadlock and a consistent row (a deadlock is a 500, or an error that
+    the ASGI transport raises)."""
 
     pytestmark = _DB_GATE
 
-    async def test_two_claims_with_one_version_give_one_200_and_one_412(
-            self, live, monkeypatch):
-        from gateway.routes.projects import tasks as gateway_tasks
+    async def test_two_claims_with_one_version_give_one_200_and_one_412(self, live):
+        for n in range(RACE_RUNS):
+            task = _task(live, live.team, live.s.todo, f"two claims {n}")
+            version = await _version(live, task)
+            claim = ("POST", f"/projects/tasks/{task}/claim", {}, "write", version)
+            answers = await _together(live, claim, claim)
+            assert sorted(r.status_code for r in answers) == [200, 412], (
+                n, [r.text for r in answers])
+            assert len(_activities(live, task, "assignment")) == 1, n
+            assert len(_activities(live, task, "status_change")) == 1, n
+            assert _assignees(live, task) == [MEMBER], n
+            assert str(_row(live, task).status_id) == live.s.doing, n
 
-        task = _task(live, live.team, live.s.todo, "race two claims")
-        version = await _version(live, task)
-        # Each claim passes its visibility load, then waits for the other,
-        # so both reach the lock with the same version.
-        barrier = asyncio.Barrier(2)
-        real = gateway_tasks.load_visible_task
-        seen = {"n": 0}
-
-        async def held(db, vis, task_id):
-            row = await real(db, vis, task_id)
-            seen["n"] += 1
-            if seen["n"] <= 2:
-                await asyncio.wait_for(barrier.wait(), 15)
-            return row
-
-        monkeypatch.setattr(gateway_tasks, "load_visible_task", held)
-        path = f"/projects/tasks/{task}/claim"
-
-        async def both() -> list[httpx.Response]:
-            return list(await asyncio.gather(*(
-                _gateway_unscoped(live, "POST", path, body={}, if_match=version)
-                for _ in range(2))))
-
-        answers = await tw._in_scope(live, both)
-        assert sorted(r.status_code for r in answers) == [200, 412], [
-            r.text for r in answers]
-        assert len(_activities(live, task, "assignment")) == 1
-        assert len(_activities(live, task, "status_change")) == 1
-        assert _assignees(live, task) == [MEMBER]
-        assert str(_row(live, task).status_id) == live.s.doing
-
-    async def test_a_claim_racing_a_move_to_done_leaves_a_consistent_row(
-            self, live, monkeypatch):
-        from gateway.routes.projects import tasks as gateway_tasks
-
-        task = _task(live, live.team, live.s.todo, "race claim and done")
-        locked, patched = asyncio.Event(), asyncio.Event()
-        real = gateway_tasks.lock_task
-
-        async def held(db, task_id):
-            row = await real(db, task_id)
-            locked.set()
-            # Without the lock the member's PATCH lands here. With the lock
-            # it waits for this claim, so the wait ends at its limit.
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(patched.wait(), 2)
-            return row
-
-        monkeypatch.setattr(gateway_tasks, "lock_task", held)
-
-        async def race() -> tuple[httpx.Response, httpx.Response]:
-            claim = asyncio.ensure_future(_gateway_unscoped(
-                live, "POST", f"/projects/tasks/{task}/claim", body={}))
-            await asyncio.wait_for(locked.wait(), 15)
-            done = await _gateway_unscoped(
-                live, "PATCH", f"/projects/tasks/{task}", body={"status_id": live.s.done},
-                signed=None)
-            patched.set()
-            return await claim, done
-
-        claim, done = await tw._in_scope(live, race)
-        assert done.status_code == 200, done.text
-        assert claim.status_code in (200, 422), claim.text
-        assert _consistent(live, task), (claim.text, _row(live, task))
-        assert str(_row(live, task).status_id) in (live.s.done, live.s.doing)
-
+    async def test_a_claim_racing_a_move_to_done_leaves_a_consistent_row(self, live):
+        for n in range(RACE_RUNS):
+            task = _task(live, live.team, live.s.todo, f"claim vs done {n}")
+            claim, done = await _together(
+                live,
+                ("POST", f"/projects/tasks/{task}/claim", {}, "write", None),
+                ("PATCH", f"/projects/tasks/{task}", {"status_id": live.s.done}, None, None))
+            assert done.status_code == 200, (n, done.text)
+            assert claim.status_code in (200, 422), (n, claim.text)
+            assert _consistent(live, task), (n, claim.text)
+            assert str(_row(live, task).status_id) == live.s.done, n
+            if claim.status_code == 422:
+                assert _assignees(live, task) == [], n
 
     @pytest.mark.parametrize("other", ["put", "bulk"])
     async def test_a_claim_and_a_member_write_of_the_same_assignee_never_deadlock(
             self, live, other):
-        """Fix round 2. A claim against a PUT of the assignees, or a bulk
-        people edit, that adds the same member. No barrier: the two requests
-        start together, ten times. Each run ends with no deadlock, one
-        assignee row and a consistent row. The claim gets 200, or 412 when
-        the member write landed first and moved the version on."""
-        for n in range(10):
+        """A claim against a PUT of the assignees, or a bulk people edit, that
+        adds the same member. The claim gets 200, or 412 when the member
+        write landed first and moved the version on."""
+        for n in range(RACE_RUNS):
             task = _task(live, live.team, live.s.todo, f"claim vs {other} {n}")
             version = await _version(live, task)
             if other == "put":
-                method, path = "PUT", f"/projects/tasks/{task}/assignees"
-                body: dict[str, Any] = {"assignees": [MEMBER]}
+                member = ("PUT", f"/projects/tasks/{task}/assignees",
+                          {"assignees": [MEMBER]}, None, None)
             else:
-                method, path = "POST", "/projects/tasks/bulk"
-                body = {"task_ids": [task], "assignees_add": [MEMBER]}
-
-            async def both(task: str = task, version: str = version, method: str = method,
-                           path: str = path, body: dict[str, Any] = body
-                           ) -> list[httpx.Response]:
-                return list(await asyncio.gather(
-                    _gateway_unscoped(live, "POST", f"/projects/tasks/{task}/claim",
-                                      body={}, if_match=version),
-                    _gateway_unscoped(live, method, path, body=body, signed=None)))
-
-            claim, member = await tw._in_scope(live, both)
-            assert member.status_code == 200, (n, member.text)
+                member = ("POST", "/projects/tasks/bulk",
+                          {"task_ids": [task], "assignees_add": [MEMBER]}, None, None)
+            claim, written = await _together(
+                live, ("POST", f"/projects/tasks/{task}/claim", {}, "write", version), member)
+            assert written.status_code == 200, (n, written.text)
             assert claim.status_code in (200, 412), (n, claim.text)
             assert _assignees(live, task) == [MEMBER], n
             assert _consistent(live, task), n
-            if claim.status_code == 200:
-                assert str(_row(live, task).status_id) == live.s.doing, n
+            expected = live.s.doing if claim.status_code == 200 else live.s.todo
+            assert str(_row(live, task).status_id) == expected, n
+
+    async def test_a_claim_and_a_merge_that_brings_the_member_never_deadlock(self, live):
+        """A merge into the claimed task, whose source holds the member as an
+        assignee. The merge moves the assignee key and then writes the row.
+
+        ⚠️ The merge may fail with a unique violation of
+        ``pm_task_assignees_pkey``. That is the merge's own race: its
+        ``NOT EXISTS`` cannot see a key that another transaction holds. A PUT
+        of the same member gives it too, 10 times in 10, with no claim
+        involved (fix round 3). Spec §17 holds it. A deadlock fails the test."""
+        for n in range(RACE_RUNS):
+            task = _task(live, live.team, live.s.todo, f"merge target {n}")
+            source = _task(live, live.team, live.s.todo, f"merge source {n}")
+            _assign(live, source, MEMBER)
+            version = await _version(live, task)
+            claim, merged = await _together(
+                live, ("POST", f"/projects/tasks/{task}/claim", {}, "write", version),
+                ("POST", f"/projects/tasks/{task}/merge", {"sources": [source]}, None, None),
+                errors=True)
+            for answer in (claim, merged):
+                assert "deadlock" not in str(answer).lower(), (n, answer)
+            assert isinstance(claim, httpx.Response), (n, claim)
+            assert claim.status_code in (200, 412), (n, claim.text)
+            if not isinstance(merged, httpx.Response):
+                assert "pm_task_assignees_pkey" in str(merged), (n, merged)
+            else:
+                assert merged.status_code == 200, (n, merged.text)
+            assert _assignees(live, task) == [MEMBER], n
+            assert _consistent(live, task), n
+
 
 class TestTheClaimGuardsAndReach:
     """Fix round 1: the personal-project guard (R7 gap V4) and the reach of

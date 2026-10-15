@@ -500,8 +500,6 @@ def test_assigning_somebody_notifies_them(monkeypatch):
     bind(monkeypatch, db, pm_tasks, pm_notify, pm_core)
     monkeypatch.setattr(pm_tasks, "load_visible_task",
                         _async(_task()))
-    # WS-55 EA-6b fix round 2: `set_assignees` locks the task row too.
-    monkeypatch.setattr(pm_tasks, "lock_task", _async(_task()))
     monkeypatch.setattr(pm_tasks, "resolve_visibility",
                         _async(pm_core.Visibility(True, "", ())))
     monkeypatch.setattr(pm_tasks, "record_activity", _async(None))
@@ -522,8 +520,6 @@ def test_the_notification_is_written_inside_the_assignment_transaction(monkeypat
     bind(monkeypatch, db, pm_tasks, pm_notify, pm_core)
     monkeypatch.setattr(pm_tasks, "load_visible_task",
                         _async(_task()))
-    # WS-55 EA-6b fix round 2: `set_assignees` locks the task row too.
-    monkeypatch.setattr(pm_tasks, "lock_task", _async(_task()))
     monkeypatch.setattr(pm_tasks, "resolve_visibility",
                         _async(pm_core.Visibility(True, "", ())))
     monkeypatch.setattr(pm_tasks, "record_activity", _async(None))
@@ -552,8 +548,6 @@ def test_assigning_yourself_notifies_nobody(monkeypatch):
     bind(monkeypatch, db, pm_tasks, pm_notify, pm_core)
     monkeypatch.setattr(pm_tasks, "load_visible_task",
                         _async(_task()))
-    # WS-55 EA-6b fix round 2: `set_assignees` locks the task row too.
-    monkeypatch.setattr(pm_tasks, "lock_task", _async(_task()))
     monkeypatch.setattr(pm_tasks, "resolve_visibility",
                         _async(pm_core.Visibility(True, "", ())))
     monkeypatch.setattr(pm_tasks, "record_activity", _async(None))

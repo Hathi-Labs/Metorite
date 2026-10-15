@@ -845,12 +845,6 @@ async def move_task_in(
     as it always did.
     """
     task_id = str(task.id)
-    if payload.assignees is not None:
-        # WS-55 EA-6b fix round 2. Promote-and-assign writes assignee rows,
-        # so it takes the task row first, the one order of every assignee
-        # writer (`core.lock_task`). A move with no field change wrote the
-        # key before it bumped the row.
-        await lock_task(db, task_id)
     values: dict[str, Any] = {}
     #: Values that had no field in the destination (D-PM-29). Written to
     #: the timeline after the move, with their values, by `record_drops`.
@@ -1305,12 +1299,7 @@ async def set_assignees(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
-        # WS-55 EA-6b fix round 2. The task row before the assignee key, the
-        # one order of every assignee writer (`core.lock_task`). Without it a
-        # PUT that adds a member and a claim by that member deadlocked: the
-        # PUT held the key and waited for the row, and the claim the reverse.
-        task = await lock_task(db, task_id)
+        task = await load_visible_task(db, vis, task_id)
         # WS-27aa / H4 — the tenant the dispatch sink will bind, read HERE:
         # inside the request's already-bound session, off the task's own
         # `organization_id` (NOT NULL since migration 161). It is a stored
@@ -1453,22 +1442,50 @@ async def claim_task(
     ``ensure_watchers``, ``notify(kind="assigned")`` and the
     ``pm.task.assigned`` event. ``notify`` drops the actor, so a self claim
     pings nobody. ``record_activity`` stamps ``meta.via`` on both rows.
+
+    **The lock order (fix round 3, option A).** The visibility load, then
+    the assignee key, then the task row lock (``core.lock_task``), then the
+    version check and the refusals, then the row writes, then the watcher
+    key. That is the order of ``set_assignees``: the key before the row,
+    and the watcher key after it. So the claim adds no lock order that a
+    member path does not already have, and it changes no member path.
     """
     me = actor(user).strip().lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        # The visibility load answers 404 for a task the caller cannot see.
-        await load_visible_task(db, vis, task_id)
-        # Fix round 1. Lock the task row, and read it again from the lock.
-        # Two claims with one version, or a claim and a member's move to
-        # done, used to both pass the checks and both write. The second
-        # claim now waits here, then sees the new `updated_at` and gets 412,
-        # and `apply_status_transition` gets the row that the lock read.
-        # Fix round 2: the row comes before the assignee key, as it does for
-        # every assignee writer (`core.lock_task` holds the rule).
+        # 1. The visibility load answers 404 for a task the caller cannot see.
+        seen = await load_visible_task(db, vis, task_id)
+        # The tenant of the dispatch sink, read as `set_assignees` reads it.
+        task_org = str(getattr(seen, "organization_id", "") or "")
+
+        # 2. The assignee key FIRST, through the helpers and in the order of
+        # `set_assignees` (fix round 3, option A): the key, then the row,
+        # then the watcher key. The PUT, the merge and the bulk add take the
+        # key before the row too, so the claim adds no lock order that a
+        # member path does not already have. A second claim of the same
+        # member waits here on the first claim's key.
+        current = {
+            r.assignee for r in (await db.execute(
+                text(
+                    "SELECT assignee FROM pm_task_assignees "
+                    "WHERE task_id = CAST(:tid AS uuid)"
+                ),
+                {"tid": task_id},
+            )).fetchall()
+        }
+        added = sorted({me} - current)
+        await assert_assignable_here(db, str(seen.project_id), set(added))
+        await insert_assignees(db, task_id, added, by=actor(user))
+
+        # 3. The row lock, and the row as the lock read it (fix round 1).
+        # Two claims serialise here, and the second one sees the new
+        # `updated_at`. A PATCH to done that holds the row makes the claim
+        # wait, and the claim then reads the done.
         task = await lock_task(db, task_id)
-        # After the lock and before any write.
+        # 4. The version, on the locked row and before any row write.
         require_precondition(task, if_match, row_to_dict(task, TaskModel))
+        # 5. The refusals. Each one raises inside the transaction, so the
+        # keys of step 2 roll back and a refused claim writes nothing.
         if getattr(task, "archived_at", None) is not None:
             _refuse_claim(CLAIM_ARCHIVED, "An archived task cannot be claimed.")
         status = await require_row(
@@ -1481,38 +1498,26 @@ async def claim_task(
         if category == TRIAGE_CATEGORY:
             _refuse_claim(CLAIM_TRIAGE,
                           "A task in triage cannot be claimed. Accept it first.")
-        # The tenant of the dispatch sink, read as `set_assignees` reads it.
-        task_org = str(getattr(task, "organization_id", "") or "")
-
-        current = {
-            r.assignee for r in (await db.execute(
-                text(
-                    "SELECT assignee FROM pm_task_assignees "
-                    "WHERE task_id = CAST(:tid AS uuid)"
-                ),
-                {"tid": task_id},
-            )).fetchall()
-        }
-        added = sorted({me} - current)
-        await assert_assignable_here(db, str(task.project_id), set(added))
-        await insert_assignees(db, task_id, added, by=actor(user))
-        if added:
-            await record_activity(
-                db, activity_type="assignment", created_by=actor(user),
-                task_id=task_id, meta={"added": added, "removed": []},
-            )
-
-        moved = None
+        lane = None
         if category != STARTED_CATEGORY:
             home = await status_owner_id(db, str(task.project_id))
             try:
                 lane = await load_default_status(db, home, STARTED_CATEGORY)
             except HTTPException:
-                # Raised inside the transaction: the assignee rolls back.
                 _refuse_claim(
                     CLAIM_NO_STARTED_STATUS,
                     "This project has no in progress status. Add one first.",
                 )
+
+        # 6. The writes of the row: the activity (its `touch_task` bumps the
+        # locked row), then the move from the locked row.
+        if added:
+            await record_activity(
+                db, activity_type="assignment", created_by=actor(user),
+                task_id=task_id, meta={"added": added, "removed": []},
+            )
+        moved = None
+        if lane is not None:
             moved = await apply_status_transition(
                 db, task, str(lane.id), created_by=actor(user),
             )
@@ -1521,6 +1526,9 @@ async def claim_task(
             db, recipients=added, kind="assigned",
             task_id=task_id, actor_id=actor(user),
         )
+        # The watcher key after the row, as `set_assignees` writes it. Before
+        # the row it crossed a member's PATCH, which writes the row and then
+        # the editor's watcher key (fix round 3).
         await ensure_watchers(db, task_id, added, by=actor(user))
 
         row = await load_visible_task(db, vis, task_id)
