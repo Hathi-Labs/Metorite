@@ -57,6 +57,8 @@ class Capture:
     #: True for the about block: learned text sits in a trusted tag of ours,
     #: neutralised, and never in a block (the checks differ).
     learned: bool = False
+    #: The tags of ours that a learned text sits in, each written once.
+    own_tags: tuple[str, ...] = ()
     #: The ``decide`` requests of the live rule match, as ``(state,
     #: questions)`` pairs. ``None`` for every other path.
     decide_requests: list[Any] | None = None
@@ -227,7 +229,9 @@ def _email_dict(mail: Mail) -> dict[str, str]:
         "attachments": f"Attachments: {mail.value('attachment')} (application/pdf)",
         "self": "owner@company.example", "sender_scope": "external",
         "date": "2026-10-14",
-        "reply_memories": f"- [PREFERENCE/SENDER] {mail.value('memory')}",
+        # Round 2: a learned memory sits outside the frame, so its own path
+        # (drafter_memories) checks it. This path reads a benign one.
+        "reply_memories": "- [PREFERENCE/SENDER] Keep replies short.",
         "calendar": f"- Tue Oct 14, 10:00 {DASH} {mail.value('calendar')}",
     }
 
@@ -242,7 +246,7 @@ def drafter(mail: Mail) -> Capture:
 
     cap = Capture("drafter", fields=frozenset(
         {"from_name", "from", "subject", "body", "thread", "attachment",
-         "memory", "calendar"}))
+         "calendar"}))
     tools: list[Any] = []
 
     async def fake(*, model: str, messages: list[dict[str, Any]], **kw: Any) -> Any:
@@ -336,7 +340,42 @@ def learned_about(mail: Mail) -> Capture:
     with _patched((voice_profile, "load_voice_profile_block", no_profile)):
         about, _signature = asyncio.run(assistant._load_assistant_about(_Db(), _ACCOUNT))
     return Capture("learned_about", calls=[[about]], tools=frozenset(),
-                   fields=frozenset({"memory"}), learned=True)
+                   fields=frozenset({"memory"}), learned=True,
+                   own_tags=("learned_patterns", "learned_writing_style"))
+
+
+def drafter_memories(mail: Mail) -> Capture:
+    """The reply memories in the drafter's prompt (round 2). The real
+    ``_fetch_reply_memories`` reads one stored memory, and the real drafter
+    builds the prompt. The memories sit OUTSIDE the frame, so the edit-learning
+    loop works, and the check is the one for learned text."""
+    from gateway.routes.email.automation import drafting
+
+    class _Db:
+        async def execute(self, statement: Any, params: dict[str, Any]) -> _Result:
+            return _Result([SimpleNamespace(
+                pattern=mail.value("memory"), kind="PREFERENCE", scope_type="SENDER")])
+
+    email = _email_dict(mail)
+    email["reply_memories"] = asyncio.run(
+        drafting._fetch_reply_memories(_Db(), _ACCOUNT, email))
+    seen: list[str] = []
+
+    async def fake(*, model: str, messages: list[dict[str, Any]], **kw: Any) -> Any:
+        seen.append(str(messages[1]["content"]))
+        reply = SimpleNamespace(message=SimpleNamespace(content="Hello Priya,\n\nThanks."))
+        return SimpleNamespace(choices=[reply]), model
+
+    import acb_llm.context as llm_context
+
+    with _patched((llm_context, "acompletion_with_fallback", fake)):
+        asyncio.run(drafting._llm_draft_reply(
+            email, about="", signature="", model="tier-powerful"))
+    user = seen[0] if seen else ""
+    head = "Learned reply memories"
+    section = user[user.index(head):].split("\n\n", 1)[0] if head in user else ""
+    return Capture("drafter_memories", calls=[[section]] if seen else [],
+                   tools=frozenset(), fields=frozenset({"memory"}), learned=True)
 
 
 def consult_plan(mail: Mail) -> Capture:
@@ -501,6 +540,7 @@ PATHS: dict[str, Callable[[Mail], Capture]] = {
     "compose_assist": compose_assist,
     "reply_memory_extract": reply_memory_extract,
     "learned_about": learned_about,
+    "drafter_memories": drafter_memories,
     "consult_plan": consult_plan,
     "consult_run": consult_run,
     "classifier_one": classifier_one,

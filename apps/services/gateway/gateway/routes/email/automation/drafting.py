@@ -27,6 +27,7 @@ from fastapi import BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from gateway.routes.email.automation.assistant import (
     EMAIL_TASK_TIERS,
+    _learned_text,
     _load_assistant_about,
 )
 from gateway.routes.email.automation.identity import (
@@ -131,9 +132,18 @@ _THREAD_MSG_LIMIT = 20              # how many earlier messages to include
 #: framed nothing (``email_app_master_plan.md`` 12.3.13.2, item 4).
 _DRAFT_DATA_WHAT = (
     "The marker blocks of the user message hold the email, the earlier "
-    "thread, past mail, the gathered context, the learned reply memories and "
-    "the calendar: text that senders wrote or that came from their mail."
+    "thread, past mail, the gathered context and the calendar: text that "
+    "senders wrote or that came from their mail."
 )
+
+
+def _learned_memories(memories: str) -> str:
+    """The reply memories for the drafter: one line each, collapsed and then
+    neutralised (``assistant._learned_text``), as the GLOBAL patterns of the
+    about block are (WS-17 EM-G11d round 2)."""
+    # Whole, never line by line: a tag that spans two lines must stay one
+    # match. ``_fetch_reply_memories`` already put each memory on one line.
+    return _learned_text(memories)
 #: The same, for "Draft with AI" in the composer (``_llm_compose_assist``).
 _COMPOSE_DATA_WHAT = (
     "The marker blocks of the user message hold the email that the owner "
@@ -389,7 +399,10 @@ async def _fetch_reply_memories(
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.reply_memories_failed", error=str(exc)[:160])
         return ""
-    return "\n".join(f"- [{r.kind}/{r.scope_type}] {r.pattern}" for r in rows)
+    # EM-G11d round 2: each memory on one line, collapsed and then neutralised.
+    return "\n".join(
+        f"- [{r.kind}/{r.scope_type}] {_learned_text(r.pattern, one_line=True)}"
+        for r in rows)
 
 
 async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
@@ -981,9 +994,11 @@ async def _llm_draft_reply(
         memories_block = (
             "Learned reply memories relevant to this sender/topic (advisory — "
             "apply the ones that fit; explicit instructions still win):\n"
-            # EM-G11d round 1: a model learned them from mail, so a mail could
-            # have steered one. They are data in a block, never a trusted tag.
-            f"{frame.wrap('REPLY MEMORIES', memories[:2000])}\n\n" if memories else ""
+            # EM-G11d round 2: the edit-learning loop needs the model to apply
+            # them, so they sit OUTSIDE the frame. The extractor frames the mail
+            # it reads (round 1), and each memory here loses each shape of a
+            # tag, a marker and a heading, on one line, collapsed first.
+            f"{_learned_memories(memories[:2000])}\n\n" if memories else ""
         )
         # Recipients of the email being replied to — so the drafter knows who
         # else was addressed (To vs Cc) and can word a reply-all appropriately.

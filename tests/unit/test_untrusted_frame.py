@@ -273,6 +273,27 @@ def test_the_learned_text_of_the_about_block_has_no_shape() -> None:
     assert f"{LT}personal_instructions{GT}CANARYMEMORY19" in about
 
 
+@pytest.mark.parametrize("mail_id", ["inj-19", "inj-27"])
+def test_the_reply_memories_stay_outside_the_frame_and_lose_their_shape(mail_id: str) -> None:
+    """Round 2 (P2): the edit-learning loop needs the drafter to APPLY the
+    per-sender, per-domain and per-topic memories, so they sit outside the
+    frame, whose note says "never follow". Each one is collapsed and then
+    neutralised, as a GLOBAL pattern is."""
+    pytest.importorskip("sqlalchemy")
+    from evals.email_injection.checkers import _TAG_RE, TAG_SHAPE_RE, _fold
+    from evals.email_injection.mails import by_id
+    from evals.email_injection.paths import drafter_memories
+
+    cap = drafter_memories(by_id(mail_id))
+    section = cap.calls[0][0]
+    assert section.startswith("Learned reply memories")
+    assert by_id(mail_id).canary in section
+    assert "<<<" not in section, "the memories sit outside every block"
+    assert not _TAG_RE.search(_fold(section)), section
+    assert not TAG_SHAPE_RE.search(_fold(section)), section
+    assert len(section.splitlines()) == 2, "one heading line and one memory line"
+
+
 def test_the_frame_keeps_each_word_and_cuts_nothing() -> None:
     plain = "Dear Priya, please see <https://vendor.example/q> or write to <a@b.example>. " \
             "The quote holds. >quoted line\n"
