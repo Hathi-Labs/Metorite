@@ -12,10 +12,10 @@ off, and `REACH_ORGS` and `REACH_MEMBERS` are empty.
 
 **RE-1a is LIVE, 2026-10-15,** for the two members with a WhatsApp link. The
 first morning sent one brief and lost one brief and one interrupt to a closed
-window. **RE-2a is BUILT, 2026-10-15** (branch `ws59-reach-catchup`, no
-migration). A message in a closed window waits for the member's next message,
-or goes as a template with its content when `REACH_BRIEF_TEMPLATE` or
-`REACH_NEEDS_YOU_TEMPLATE` names an approved one (§8.1a, H-315).
+window. **RE-2a is LIVE, 2026-10-15** (#1042, no migration). A message in a closed
+window waits for the member's next message. It goes as a template instead
+when `REACH_BRIEF_TEMPLATE` or `REACH_NEEDS_YOU_TEMPLATE` names an approved
+one (§8.1a, H-315). **RE-5 is in build** (§11, "Tell me on WhatsApp").
 
 **What this spec owns.** How Metorite decides to contact a member outside the
 app, and how the message reaches them. That covers the outbound path, the
@@ -553,28 +553,78 @@ one.
 
 ---
 
-## 11. The email override — "Tell me on WhatsApp"
+## 11. "Tell me on WhatsApp" — one primitive for every app
 
-The judge decides for most mail. A member who wants a fixed rule writes one
-in the email rules, in plain words, with the rule builder that exists.
+**Owner, 2026-10-15:** "Tell me on WhatsApp can be used across to send any
+sort of information to WhatsApp." So it is not an email feature. It is one
+call that every app, rule, workflow and the assistant can make. RE-5 builds
+it.
 
-- **A new action type `NOTIFY_ME`**, with one option: `normal` or `urgent`.
-  It joins `_apply_rule_actions` (`actions.py:448`), the generator list
-  `_GEN_ACTION_TYPES` (`rules.py:611`) and `actionFormat.tsx`.
-- **What it does.** It sends nothing. It sets a fact on the thread's card,
-  `rule_notify = normal | urgent`. The card then passes §5.1 without the
-  judge, with class `interrupt` or `urgent`. Reach plans and sends it like
-  any other card. So the rule has no path of its own.
-- **Example rules.** "Tell me on WhatsApp when a customer reports a defect".
-  "Tell me on WhatsApp, urgent, when the bank writes".
-- **The same shape fits later apps.** A ticket rule or a meeting rule can set
-  the same fact.
+### 11.1 The call
 
-**Fence (RE-5).** `test_email_rule_notify.py`. A `NOTIFY_ME` rule never calls
-a channel adapter. It sets the fact, and the card reaches the outbox through
-the planner.
+`gateway.reach.requests.tell_me(org, member, *, source, title, body=None,
+href=None, entity=None, urgency="normal", requested_by, key=None)` records
+one request. It is the ONLY way for an app to ask Reach to say something.
+It sends nothing itself.
 
----
+| Argument | Meaning |
+|---|---|
+| `source` | The app or the rule that asks: `email.rule`, `chat`, `workflow`, and later more |
+| `title` | One line the member reads first. Code or the member wrote it, never a model alone |
+| `body` | Optional text, at most 1,000 characters |
+| `href` | Optional link into Metorite, built by code |
+| `entity` | Optional `{type, id}` of the thing it is about |
+| `urgency` | `normal` or `urgent` |
+| `requested_by` | The member who asked, or the rule's owner |
+| `key` | Optional dedupe key. The same key twice records one request |
+
+**The member is always the recipient.** A request names one member, and
+`member` comes from a session or from the rule's owner, never from request
+input. No request can address another person (§2.2).
+
+### 11.2 The table — `reach_requests`
+
+Tenant-scoped, FORCE RLS. One row for each request. The columns are `id`,
+`organization_id`, `member_email`, `source`, `title`, `body`, `href`,
+`entity_type`, `entity_id`, `urgency` and `requested_by`. Then `dedupe_key`
+(unique for each org), `created_at` and `expires_at` (48 hours by default). The outbox row that
+delivered it keeps the link, through its `signal_ids`
+(`request:<id>`).
+
+### 11.3 How it reaches the member
+
+The Reach loop reads the member's open requests and makes one card for
+each, kind `notify_me`, signal `request:<id>`. From there the card takes
+the normal path: the log, the window hold, templates, the thread record.
+
+| Who asked | Class | Cap | Quiet hours |
+|---|---|---|---|
+| The member, now (the assistant, "Send my brief now") | `urgent` | Not counted | Ignored. The member is awake, because they just asked |
+| A rule or a workflow, `normal` | `interrupt` | Counted | Respected |
+| A rule or a workflow, `urgent` | `urgent` | The urgent allowance of §6.1 | Ignored only for `urgent` |
+
+A request that expires before it can go is logged `expired`. The feed shows
+nothing for it in RE-5. My Day may show requests later (§17, W6).
+
+### 11.4 The first three callers (RE-5)
+
+1. **Email rules.** A new action type `NOTIFY_ME` with one option,
+   `normal` or `urgent`. It joins `_apply_rule_actions`
+   (`routes/email/automation/actions.py`), the rule generator's list
+   (`_GEN_ACTION_TYPES`, `rules.py`) and the rule UI (`actionFormat.tsx`,
+   `RulesTab.tsx`). The title is "Email from <sender>: <subject>". The link
+   opens the thread. Example rules: "Tell me on WhatsApp when a customer
+   reports a defect". "Tell me on WhatsApp, urgent, when the bank writes".
+2. **The assistant.** A tool `tell_me_on_whatsapp(title, body?)` in the chat
+   of the web app. The member asks "send this to my WhatsApp", and the tool
+   records a request with `source=chat`. The tool answers with what Reach
+   will do: "sent", or "it waits for your next WhatsApp message".
+3. **Workflows.** A step action `notify.whatsapp` that records a request
+   for the workflow's owner.
+
+**Fence (RE-5).** `tests/unit/test_reach_requests.py`. No caller imports a
+channel adapter. A request for one member never reaches another. A request
+of org A is invisible in org B (R8). The same key records one request.
 
 ## 12. Decisions and the owner's answers
 
@@ -735,7 +785,7 @@ is an owner gate (MD-10, CLAUDE.md §3a rule 3).
 | **RE-2** | The WhatsApp adapter: the member lookup in this org, opt-in, STOP and START, `last_inbound_at`, the window check, free text and template sends, the status webhook, the token bucket | RE-1 | AGENT-SAFE to build. 🔴 Templates at Meta are owner work (H-251) |
 | **RE-3** | The daily brief: the morning plan, the lines from card templates, one composition, the skip rule, the MD-7 card from the same brief | RE-2, MD-7 | AGENT-SAFE |
 | **RE-4** | The interrupt: `my_day.nudge` in the member pass, the gate of §5.1, `shadow` mode, and the cost report of §13.5 | RE-1, MD-6b | AGENT-SAFE. 🔴 Mode `on` is an owner flip |
-| **RE-5** | Email: the `NOTIFY_ME` rule action, and the mail facts the judge needs (sender history, a project that names the sender) | RE-4 | AGENT-SAFE |
+| **RE-5** | "Tell me on WhatsApp" for every app (§11): `reach_requests`, `tell_me()`, the email rule action, the assistant tool and the workflow step | RE-2a | AGENT-SAFE |
 | **RE-6** | The reply loop: buttons, card acts from WhatsApp, the feedback and the corrections | RE-2 | AGENT-SAFE |
 | **RE-7** | Settings → Notifications, and the "Sent to WhatsApp" mark on a feed card | RE-1 | AGENT-SAFE |
 | **RE-8** | Scale out: the `acb-reach` unit, the spread morning, the lease shards, the bus on Redis, the tier alert, and a load test of 5,000 members | RE-4 | AGENT-SAFE to build. 🔴 A new unit on the box is a deploy act |
@@ -786,6 +836,7 @@ of this spec to that work. None of them blocks RE-1a.
 | W3 | `my_day.nudge` reads `related`, the corrections of §10.3, and the member's focus for today | §5.2 |
 | W4 | A member with an active, opted-in WhatsApp link stays in the active set | §13.1. A member who lives on WhatsApp would drop out after 3 days |
 | W5 | The brief card of MD-7 and the WhatsApp brief come from one composition | §9.1 |
+| W6 | My Day shows an open "Tell me" request as a card, and marks it sent | §11.3 |
 
 ---
 
