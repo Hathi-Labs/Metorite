@@ -13589,7 +13589,8 @@ merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. ✅ *
 is merged** (#1019, 2026-10-14), and §12.3.13.6 records what it covers. The owner answered
 Q-GM-14 on 2026-10-14. ✅ **PR-G3b (EM-G11c1b) is merged** (#1030, 2026-10-15, §12.3.13.6b): the
 browser proves the pane shows cards, and the PR closes two gaps. ✅ **PR-G8 (EM-G11f2) is merged
-NARROWED** (#1020, 2026-10-14, migration 264). The other PRs are not built.
+NARROWED** (#1020, 2026-10-14, migration 264). 🔨 **PR-G4 (EM-G11c2) is built NARROWED, not
+merged** (2026-10-15, branch `gmail-bg-writes`, §12.3.13.7). The other PRs are not built.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
 Owner instruction, 2026-10-14. Google verifies an app that asks for a restricted scope only when the
@@ -13864,7 +13865,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
 | PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). ✅ Merged #1030 (2026-10-15). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
-| PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
+| PR-G4 | **EM-G11c2** — no background write without a member choice. 🔨 Built NARROWED, not merged (2026-10-15, branch `gmail-bg-writes`) | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
@@ -14594,6 +14595,33 @@ uv run pytest tests/unit/test_email_background_writes.py tests/unit/test_email_d
 ```
 
 Run one R8 suite at a time on the shared scratch database, or use a private ladder database.
+
+**What the build covers (2026-10-15, branch `gmail-bg-writes`).** The audit narrowed G1 to the
+background path. Each line names the code of record.
+
+- **G2.** `rules.auto_run_on` is the one reader of `auto_run`. The sync-cycle rule run, the Reply
+  Zero backfill, the sync-cycle sweep and `GET /email/assistant/settings` call it. The GET must give
+  the same answer, because the settings screen and the agent tool PUT its body back.
+- **G2, the row.** The rules step of the connect flow wrote the row only through the drafting switch.
+  It now shows "Run my rules on new mail" with the stored value, and a move saves `auto_run` only.
+- **G3.** `_mark_thread_replied` takes `labels`. The backfill passes the Auto-run choice, and the
+  send routes keep True. With Auto-run OFF the backfill builds no provider and reconciles no label.
+  The manual reclassify runs the backfill, so it obeys Auto-run too.
+- **G4.** `sweep_uncategorized` takes `obey_auto_run`, and only the sync cycle passes True. A sweep
+  that a member starts does not change.
+- **G5.** `rules.proposes_only` gates `_apply_and_log_match`, the one choke point. A manual rule logs
+  a PENDING row with `automated` false. The label of a manual conversation rule waits for the
+  approval too (`replyzero.conversation_match_proposes`). Process past emails and the rerun of one message go
+  through the same choke point.
+- **G7.** `_cleanup_thread_drafts` trashes a draft only when its text is the stored AI draft,
+  unchanged. Both send routes now add it before `_learn_from_sent`, because that task deletes the
+  `email_ai_drafts` row.
+- **Item 6.** `AUTO_RUN_AI_LINE` in `lib/assistantSettings.ts` holds the line, and the Settings tab
+  draws it under Auto-run.
+
+**Open after the build.** The History has no Approve button. `approveExecution` in `lib/api.ts`
+has no caller, so a member approves a proposal through the email agent tool only. Q-GM-12 stays
+open, and the Outlook live check runs after the merge.
 
 ##### 12.3.13.8 EM-G11d and EM-G11e — the Untrusted Mail Content Control (UMCC) (PR-G5, PR-G6)
 
