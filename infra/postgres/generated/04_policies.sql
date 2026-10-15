@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 164
+-- Tables in this phase: 167
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1199,5 +1199,26 @@ ALTER TABLE reach_signal_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reach_signal_log FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS reach_signal_log_tenant_isolation ON reach_signal_log;
 CREATE POLICY reach_signal_log_tenant_isolation ON reach_signal_log
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE artifact_member ENABLE ROW LEVEL SECURITY;
+ALTER TABLE artifact_member FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS artifact_member_tenant_isolation ON artifact_member;
+CREATE POLICY artifact_member_tenant_isolation ON artifact_member
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE artifact_shares ENABLE ROW LEVEL SECURITY;
+ALTER TABLE artifact_shares FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS artifact_shares_tenant_isolation ON artifact_shares;
+CREATE POLICY artifact_shares_tenant_isolation ON artifact_shares
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE artifacts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE artifacts FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS artifacts_tenant_isolation ON artifacts;
+CREATE POLICY artifacts_tenant_isolation ON artifacts
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
