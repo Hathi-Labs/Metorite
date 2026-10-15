@@ -222,6 +222,14 @@ export const setLifecycle = (body: unknown, d?: Deps) =>
 export const purgeOrgRegistry = (body: unknown, d?: Deps) =>
   callConsole("/orgs/purge", { method: "POST", body }, d ?? {});
 
+// The registry half of removing one member (owner request, 2026-10-15). Body
+// {org_slug, member_email}. The Console marks the membership removed and
+// releases the person's seats. It is idempotent: a second call answers
+// {found: false} or the same row again, so a retry after a half-failure is
+// safe. The BFF calls it only AFTER the tenant plane took access away.
+export const removeRegistryMember = (body: unknown, d?: Deps) =>
+  callConsole("/registry/members/remove", { method: "POST", body }, d ?? {});
+
 // Provision a new organization (create-only): the Console POST /orgs/provision
 // under the `Operator` scheme creates the org + its owner + Core seats, PLACES
 // it on the named deployment and starts a trial subscription in one idempotent

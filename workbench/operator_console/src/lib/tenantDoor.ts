@@ -6,14 +6,21 @@
 // and nowhere else, and no client component may import this file (the same
 // source scan in `console.test.ts` fences it).
 //
-// This is the operator console's ONLY road to the tenant plane, and it exists
-// for exactly one act: destroying an organization's tenant data after the
-// Console (the lifecycle authority) already holds it at `deleted`. Everything
-// else the console does stays Console-only (CP-8's "no per-deployment round
-// trip" rule) — a second gateway call added here should be treated as a
+// This is the operator console's ONLY road to the tenant plane. It serves two
+// acts, and no others:
+//
+//   1. `purgeTenantOrg` destroys an organization's tenant data after the
+//      Console (the lifecycle authority) already holds it at `deleted`.
+//   2. `removeTenantMember` removes one member, or deletes them permanently.
+//      The owner asked for it on 2026-10-15, so an operator can take a person
+//      out of a customer's organization (invited or signed in).
+//
+// Everything else the console does stays Console-only (CP-8's "no
+// per-deployment round trip" rule). A third gateway call added here is a
 // defect until a spec says otherwise.
 
 import type { ConsoleResult, FetchLike } from "./console";
+import type { MemberRemoveMode } from "./memberRemove";
 
 export type TenantDoorEnv = {
   url?: string;
@@ -24,6 +31,14 @@ export type TenantDoorEnv = {
 };
 
 export class TenantDoorUnconfigured extends Error {}
+
+/** Are all three values set? The member route asks this BEFORE any upstream
+ *  call, so an unconfigured door refuses with nothing touched. */
+export function tenantDoorConfigured(
+  env: TenantDoorEnv = readTenantDoorEnv(),
+): boolean {
+  return Boolean(env.url && env.internalToken && env.operatorToken);
+}
 
 const envTrim = (v: string | undefined): string | undefined => {
   const t = (v ?? "").trim();
@@ -65,6 +80,41 @@ export async function purgeTenantOrg(
   const res = await fetchImpl(
     `${env.url}/internal/operator/organizations/${encodeURIComponent(slug)}` +
       `?confirm=${encodeURIComponent(slug)}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${env.internalToken}`,
+        "X-Operator-Token": env.operatorToken,
+      },
+    },
+  );
+  return { status: res.status, body: await res.text() };
+}
+
+// DELETE one member on the tenant plane. The same two tokens as the org purge
+// above, for the same reason. The address goes in the path, and again as
+// `confirm`, verbatim: the gateway door re-checks the pair itself.
+//
+// Fails CLOSED when unconfigured, before any request. A Console-only removal
+// would report success while the person kept their access to the tenant.
+export async function removeTenantMember(
+  slug: string,
+  email: string,
+  mode: MemberRemoveMode,
+  deps: { env?: TenantDoorEnv; fetchImpl?: FetchLike } = {},
+): Promise<ConsoleResult> {
+  const env = deps.env ?? readTenantDoorEnv();
+  if (!env.url || !env.internalToken || !env.operatorToken) {
+    throw new TenantDoorUnconfigured(
+      "the gateway URL, internal token and operator-door token must all be " +
+        "set server-side before the operator console can remove a member",
+    );
+  }
+  const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+  const res = await fetchImpl(
+    `${env.url}/internal/operator/organizations/${encodeURIComponent(slug)}` +
+      `/members/${encodeURIComponent(email)}` +
+      `?mode=${encodeURIComponent(mode)}&confirm=${encodeURIComponent(email)}`,
     {
       method: "DELETE",
       headers: {

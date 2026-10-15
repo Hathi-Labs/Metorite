@@ -16,6 +16,7 @@ import {
   type KeyRow,
   type SeatRow,
 } from "@/lib/format";
+import { removeLabel, type MemberRemoveMode } from "@/lib/memberRemove";
 
 // The management ACTIONS for one customer. Every action POSTs to a server-side
 // `/api/operator/*` BFF route that holds the operator token; NOTHING here holds
@@ -157,6 +158,13 @@ export function AccessActions({
  * who is not already a member is refused Console-side (no identity, no
  * membership), and we are not adding a door that creates people inside a
  * customer's directory with no customer in the loop.
+ *
+ * **Removing a member is an operator act (owner request, 2026-10-15).** Each
+ * row offers "Remove" ("Revoke invite" for an invited person) and "Delete
+ * permanently". Both go to `/api/operator/members/remove`, which takes access
+ * away on the tenant plane first and then updates the registry. A removed row
+ * keeps only "Delete permanently". The delete arms only when the operator
+ * types the address, the same protocol as the purge's typed slug.
  */
 function MembersPanel({
   slug,
@@ -175,6 +183,12 @@ function MembersPanel({
   // hardcoded, so this follows the catalog if a second plan ever returns.
   const plan = plans[0]?.slug ?? "core";
   const counts = memberTally(members);
+  // The one row whose remove or delete waits for a confirmation.
+  const [confirming, setConfirming] = useState<{
+    email: string;
+    mode: MemberRemoveMode;
+  } | null>(null);
+  const [typed, setTyped] = useState("");
 
   async function act(email: string, path: string) {
     setBusy(email);
@@ -182,6 +196,27 @@ function MembersPanel({
     setResult(r);
     setBusy("");
     if (r?.ok) reload();
+  }
+
+  async function removeMember(email: string, mode: MemberRemoveMode) {
+    setBusy(email);
+    const r = await post("/api/operator/members/remove", {
+      org_slug: slug,
+      email,
+      mode,
+      confirm: email,
+    });
+    setResult(r);
+    setBusy("");
+    setConfirming(null);
+    setTyped("");
+    if (r?.ok) reload();
+  }
+
+  function ask(email: string, mode: MemberRemoveMode) {
+    setResult(null);
+    setTyped("");
+    setConfirming({ email, mode });
   }
 
   return (
@@ -253,6 +288,56 @@ function MembersPanel({
                               : "Assign seat"}
                         </button>
                       </td>
+                      <td>
+                        {confirming?.email === m.email ? (
+                          <ConfirmRemove
+                            email={m.email}
+                            mode={confirming.mode}
+                            label={removeLabel(m.status) ?? "Remove"}
+                            typed={typed}
+                            setTyped={setTyped}
+                            busy={busy === m.email}
+                            onConfirm={() =>
+                              removeMember(m.email, confirming.mode)
+                            }
+                            onCancel={() => setConfirming(null)}
+                          />
+                        ) : (
+                          <>
+                            {removeLabel(m.status) !== null && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="linklike"
+                                  title={
+                                    m.status === "invited"
+                                      ? "Cancel this invitation. The person " +
+                                        "cannot accept it after this."
+                                      : "Take this person's access away at " +
+                                        "once. Their work stays."
+                                  }
+                                  disabled={busy !== ""}
+                                  onClick={() => ask(m.email, "remove")}
+                                >
+                                  {removeLabel(m.status)}
+                                </button>{" "}
+                              </>
+                            )}
+                            <button
+                              type="button"
+                              className="linklike danger"
+                              title={
+                                "Remove this person and delete their own " +
+                                "data. This cannot be undone."
+                              }
+                              disabled={busy !== ""}
+                              onClick={() => ask(m.email, "purge")}
+                            >
+                              Delete permanently
+                            </button>
+                          </>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -263,6 +348,81 @@ function MembersPanel({
       )}
       <ResultLine result={result} />
     </form>
+  );
+}
+
+/**
+ * The confirmation for one row's remove or delete. A remove asks once. A
+ * delete arms only when the operator types the address, because it destroys
+ * the person's data and nothing brings it back. The BFF and the gateway door
+ * check the same address again.
+ */
+function ConfirmRemove({
+  email,
+  mode,
+  label,
+  typed,
+  setTyped,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  email: string;
+  mode: MemberRemoveMode;
+  label: string;
+  typed: string;
+  setTyped: (v: string) => void;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const cancel = (
+    <button type="button" className="linklike" onClick={onCancel}>
+      Cancel
+    </button>
+  );
+  if (mode === "remove") {
+    return (
+      <>
+        <button
+          type="button"
+          className="danger"
+          disabled={busy}
+          onClick={onConfirm}
+        >
+          {busy ? "…" : `${label} now`}
+        </button>{" "}
+        {cancel}
+      </>
+    );
+  }
+  return (
+    <>
+      <div className="field-hint">
+        This deletes {email} and their own data. There is no undo. Type the
+        address to arm the button.
+      </div>
+      <input
+        value={typed}
+        placeholder={email}
+        aria-label={`Type ${email} to confirm`}
+        onChange={(e) => setTyped(e.target.value)}
+      />{" "}
+      <button
+        type="button"
+        className="danger"
+        disabled={busy || typed !== email}
+        title={
+          typed !== email
+            ? "Type the exact address above to unlock this."
+            : "Delete this person permanently."
+        }
+        onClick={onConfirm}
+      >
+        {busy ? "Deleting…" : "Delete for good"}
+      </button>{" "}
+      {cancel}
+    </>
   );
 }
 
