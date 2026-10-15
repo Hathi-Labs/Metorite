@@ -30,6 +30,7 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
 
+from tests.unit.test_crm_hidden_module_r8 import _hide
 from tests.unit.test_crm_module_records_r8 import (  # noqa: F401
     _add_member,
     _connect_all,
@@ -143,7 +144,9 @@ async def test_a_held_module_syncs_on_its_own_and_only_it(ns, zoho) -> None:
     alone = await engine.run_org(ns.org_a, only=frozenset({"activities"}))
     assert alone.status == "ok"
     assert _count(ns, "crm_activities", ns.org_a, "type = 'note'") == 3
-    assert _reads(a, "Contacts") == contacts_before, "the other modules are not read"
+    # Round 2: an unheld parent of the key gets ONE incremental page, so a
+    # child of a parent made since the last normal run keeps its link.
+    assert _reads(a, "Contacts") == contacts_before + 1, "the parent read is incremental"
     assert alone.counts["contacts"].get("held", 0) == 0, "an on-its-own run marks no other key"
     assert _holds(ns, ns.org_a)["activities"]["held"] is True, "the hold stays"
 
@@ -351,6 +354,11 @@ async def test_a_deleted_list_older_than_the_provider_keeps_plans_a_full_compare
             "UPDATE crm_sync_cursors SET last_pulled_at = now() - interval '61 days' "
             "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:contact:deleted'"),
             {"o": ns.org_a})
+        # As after a real hold: the last compare of Contacts is as old.
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET last_reconciled_at = now() - interval '61 days' "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:contact'"),
+            {"o": ns.org_a})
 
     run = await engine.run_org(ns.org_a)
     assert (run.status, run.kind) == ("ok", "reconcile")
@@ -389,3 +397,165 @@ async def test_a_core_module_is_not_a_hold_key(mz) -> None:
     assert ok.status_code == 200, ok.text
     refused = await _call_json(admin, "PUT", "/crm/sync/modules/module:Deals", {"sync": False})
     assert refused.status_code == 422
+
+
+
+# ── The second review round (2026-10-15) ─────────────────────────────────────
+
+
+async def test_the_gap_compare_runs_once_and_never_for_a_hidden_module(ns, zoho) -> None:
+    """Round 2, P1. One completed compare answers the gap for 50 days, and a
+    module the account refuses is never due, because it cannot be walked."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    _hide(a, "Accounts")
+    await _connect(ns, ns.org_a, a)
+    first = await engine.run_org(ns.org_a)
+    assert first.status == "ok" and first.counts["organizations"]["hidden"] == 1
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET last_pulled_at = now() - interval '61 days' "
+            "WHERE organization_id = CAST(:o AS uuid) "
+            "AND module IN ('zoho:contact:deleted', 'zoho:company:deleted')"),
+            {"o": ns.org_a})
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET last_reconciled_at = now() - interval '61 days' "
+            "WHERE organization_id = CAST(:o AS uuid) "
+            "AND module IN ('zoho:contact', 'zoho:company')"),
+            {"o": ns.org_a})
+
+    second = await engine.run_org(ns.org_a)
+    assert (second.status, second.kind) == ("ok", "reconcile"), "contacts get one compare"
+    third = await engine.run_org(ns.org_a)
+    assert (third.status, third.kind) == ("ok", "incremental"), "and only one"
+    # Accounts is hidden, so its deleted list never moves. Its 61-day gap did
+    # not make the second run a compare of Accounts, nor the third.
+    assert third.counts["organizations"]["hidden"] == 1
+
+
+async def test_a_resumed_import_from_before_this_slice_still_holds(ns, zoho) -> None:
+    """Round 2, P1. The import that the incident interrupted carries an
+    estimate with no ``tasks`` key and no hold entry. On resume it counts once
+    more and holds, so the big module is not read with the rest."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    _notes(a)
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert _holds(ns, ns.org_a)["activities"]["held"] is True
+    # Make it look like an import from before CRM-Q16 that stopped mid-way.
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_settings SET sync_holds = '{}'::jsonb "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": ns.org_a})
+        c.execute(text(
+            "UPDATE crm_sync_runs SET status = 'stopped', error = 'shutdown', "
+            "estimate = estimate - 'tasks' "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": ns.org_a})
+
+    run = await engine.run_org(ns.org_a)
+    assert (run.status, run.kind) == ("ok", "import")
+    assert _holds(ns, ns.org_a)["activities"]["held"] is True
+    assert _reads(a, "Notes") == 0, "held again before its first read"
+
+
+async def test_an_only_run_of_a_child_reads_its_unheld_parents(ns, zoho) -> None:
+    """Round 2, P2. A note on a contact made since the last normal run lands
+    with its link, because the "on its own" run reads the parent too."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    a.add("Contacts", "c9", 30, Last_Name="New", Account_Name={"id": "a1"})
+    a.add("Notes", "n9", 31, Note_Title="On the new one", Note_Content="Body",
+          Parent_Id={"id": "c9"}, **{"$se_module": "Contacts"})
+
+    alone = await engine.run_org(ns.org_a, only=frozenset({"activities"}))
+    assert alone.status == "ok"
+    assert _count(ns, "crm_contacts", ns.org_a, "ext_id = 'c9'") == 1
+    assert _count(ns, "crm_activities", ns.org_a,
+                  "ext_id = 'n9' AND contact_id IS NOT NULL") == 1
+
+
+async def test_the_children_of_a_parent_that_was_in_are_re_read_from_the_hold(
+    ns, zoho,
+) -> None:
+    """Round 2, P2. Contacts were in, then held. Its re-read of the notes is
+    bounded to the hold: one page for the one new note, not the whole module."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    for i in range(4):  # four old notes, two pages at the suite's page size
+        a.add("Notes", f"o{i}", 10 + i, Note_Title=f"Old {i}", Note_Content="Body",
+              Parent_Id={"id": "c1"}, **{"$se_module": "Contacts"})
+    await _connect(ns, ns.org_a, a)
+    admin = _admin("admin@crm-sync.test", ns.org_a)
+    # Four notes are large at the test limit. The admin wants them all in.
+    on = await _call_json(admin, "PUT", "/crm/sync/modules/activities", {"sync": True})
+    assert on.status_code == 200
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert _count(ns, "crm_activities", ns.org_a) == 4
+    held = await _call_json(admin, "PUT", "/crm/sync/modules/contacts", {"sync": False})
+    assert held.status_code == 200
+    a.add("Notes", "n5", 40, Note_Title="New", Note_Content="Body",
+          Parent_Id={"id": "c1"}, **{"$se_module": "Contacts"})
+    assert (await engine.run_org(ns.org_a)).status == "ok"  # marks contacts held_skipped
+    assert (await engine.run_org(ns.org_a, only=frozenset({"contacts"}))).status == "ok"
+
+    before = _reads(a, "Notes")
+    after = await engine.run_org(ns.org_a)
+    assert after.status == "ok"
+    assert _reads(a, "Notes") - before == 1, "one bounded page, not a full read"
+    assert _count(ns, "crm_activities", ns.org_a) == 5
+
+
+async def test_deal_roles_wait_while_deals_is_held(ns, zoho) -> None:
+    """Verifier F4. No role call while Deals is held, and the queue is kept."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Deals", "d1", 4, Deal_Name="Deal", Stage="Qualify")
+    a.roles_fault = (400, {})  # the first role read fails, so d1 stays queued
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert a.role_calls == ["d1"]
+    a.roles_fault = None
+    a.roles["d1"] = [{"id": "c1", "Contact_Role": {"name": "Buyer"}}]
+    admin = _admin("admin@crm-sync.test", ns.org_a)
+
+    held = await _call_json(admin, "PUT", "/crm/sync/modules/deals", {"sync": False})
+    assert held.status_code == 200
+    run = await engine.run_org(ns.org_a)
+    assert run.status == "ok" and run.counts["deals"]["held"] == 1
+    assert a.role_calls == ["d1"], "no role read while Deals is held"
+
+    released = await _call_json(admin, "PUT", "/crm/sync/modules/deals", {"sync": True})
+    assert released.status_code == 200
+    back = await engine.run_org(ns.org_a)
+    assert back.status == "ok"
+    assert a.role_calls == ["d1", "d1"], "the kept queue is read once Deals is back"
+
+
+async def test_a_hold_with_no_settings_row_is_a_409(ns, zoho) -> None:
+    """Verifier F4. An org with no settings row has nothing to hold against."""
+    a, _b = zoho
+    _seed(a)
+    await _connect(ns, ns.org_a, a)
+    with ns.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_settings WHERE organization_id = CAST(:o AS uuid)"),
+                  {"o": ns.org_a})
+
+    put = await _call_json(
+        _admin("admin@crm-sync.test", ns.org_a), "PUT",
+        "/crm/sync/modules/contacts", {"sync": False},
+    )
+    assert put.status_code == 409, put.text
+    assert put.json()["detail"] == "no_settings"

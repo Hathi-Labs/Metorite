@@ -320,7 +320,7 @@ export function largeUnheld(health: SyncHealth | null | undefined, entity: Healt
 
 /** The suggestion for a large row that is not held. */
 export function largeSentence(label: string, count: number): string {
-  return `${label} has ${recordCount(count)} records. Sync it on its own to keep Metorite fast`;
+  return `${label} has ${recordCount(count)} records. Hold it, and sync it on its own when Metorite is quiet`;
 }
 
 /** The toast of a hold write that failed, from the status and code of `PUT /crm/sync/modules/{key}`. */

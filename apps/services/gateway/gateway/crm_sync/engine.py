@@ -427,6 +427,8 @@ def plan(
         if row is None or count_key(entity) in held:
             continue
         state = row.state or {}
+        if state.get("unavailable"):
+            continue  # a module the account refuses (CRM-Q15) cannot be walked
         gone = cursors.get(deleted_module(entity))
         if state.get("in_progress") and state.get("walk_start"):
             due.add(entity)  # a walk that stopped resumes first
@@ -437,9 +439,15 @@ def plan(
         elif (
             gone is not None and gone.last_pulled_at is not None
             and now - gone.last_pulled_at >= GAP_RECONCILE
+            and (
+                row.last_reconciled_at is None
+                or now - row.last_reconciled_at >= GAP_RECONCILE
+            )
         ):
             # Its deleted list is older than the provider keeps (a long hold,
-            # CRM-Q16 review). Only a full id compare finds those deletes.
+            # CRM-Q16 review). Only a full id compare finds those deletes. One
+            # completed compare then answers for the next 50 days, so a list
+            # that never moves (a refused deleted list) cannot ask every run.
             due.add(entity)
     if last_ok is not None and now - last_ok >= GAP_RECONCILE:
         due = {e for e in ENTITY_ORDER if count_key(e) not in held}
@@ -1483,8 +1491,14 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         newest = _parse(saved.get("max_modified"))
         newest_ids = set(saved.get("watermark_ids") or ())
     else:
-        since = None if walking or backfill or rereading or rule_reread else row.last_pulled_at
-        ids = tuple(saved.get("watermark_ids") or ()) if since is not None else ()
+        if walking or backfill or rereading:
+            since = None
+        elif rule_reread:
+            since = _reread_since(ctx, entity)  # None is a full read
+        else:
+            since = row.last_pulled_at
+        # The watermark ids belong to the cursor's own time, not to a bound.
+        ids = tuple(saved.get("watermark_ids") or ()) if since is not None and not rule_reread else ()
         cursor = SourceCursor(since=since, seen_ids=ids)
         newest = since
         newest_ids = set(ids)
@@ -1503,6 +1517,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     progress_marks: dict[str, Any] = {**marks, "rule_reread": True} if rule_reread else marks
     if recovering:
         progress_marks = {**progress_marks, "recovering": True}
+        if saved.get("held_since"):
+            progress_marks["held_since"] = saved["held_since"]
     table = MODULE_TABLE if generic else _table(entity)
     try:
         while True:
@@ -1602,7 +1618,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                 if last_page and rule_reread:
                     await _rule_reread_done(ctx, db, entity)
                 if last_page and recovering:
-                    await _queue_dependents(ctx, db, entity)
+                    await _queue_dependents(ctx, db, entity, _parse(saved.get("held_since")))
             ctx.cursors[module] = row
             if last_page:
                 break
@@ -1664,7 +1680,7 @@ def _skip_held(ctx: _Ctx, entity: str) -> bool:
     """
     key = count_key(entity)
     if ctx.only is not None:
-        return key not in ctx.only
+        return key not in ctx.only and not _parent_of_only(ctx, entity)
     if key in ctx.held:
         if _module(entity):
             ctx.module_step(entity, "seen", 0)  # makes the key
@@ -1677,9 +1693,12 @@ async def _mark_held_skipped(ctx: _Ctx, entity: str, row: CursorRow) -> None:
     """Record that a hold skipped this parent (CRM-Q16). The next read of it
     re-reads its dependents, through ``recovering``. Every other key of the
     state stays, so a stopped walk resumes as it was."""
+    # A parent that was in before the hold needs its children only from the
+    # start of the hold. One never imported needs them all (since None).
+    since = {"held_since": _iso(ctx.started)} if row.initial_done_at is not None else {}
     marked = CursorRow(
         changed_module(entity), row.last_pulled_at,
-        {**(row.state or {}), "held_skipped": True},
+        {**(row.state or {}), "held_skipped": True, **since},
         row.initial_done_at, row.last_reconciled_at,
     )
     async with ctx.page() as db:
@@ -1691,6 +1710,15 @@ def _done_at_start(ctx: _Ctx, entity: str) -> bool:
     """True when the first import of ``entity`` was done when this run began."""
     row = ctx.handle.cursors.get(changed_module(entity))
     return row is not None and row.initial_done_at is not None
+
+
+def _parent_of_only(ctx: _Ctx, entity: str) -> bool:
+    """True when ``entity`` is an unheld parent of a key of this "on its own"
+    run. Its incremental read runs too, so a child of a parent made since the
+    last normal run gets its link and is not dropped (review P2)."""
+    if ctx.only is None or count_key(entity) in ctx.held:
+        return False
+    return any(count_key(c) in ctx.only for c in DEPENDENTS.get(entity, ()))
 
 
 def _entities_of(key: str) -> tuple[str, ...]:
@@ -2523,10 +2551,41 @@ async def _estimate(ctx: _Ctx) -> None:
             totals[SLUGS[entity]] = totals.get(SLUGS[entity], 0) + count
             key = count_key(entity)
             by_key[key] = by_key.get(key, 0) + count
+            if key != SLUGS[entity]:
+                # ``tasks`` rides in the saved estimate too, so a resumed import
+                # can derive the hold counts with no new call (CRM-Q16).
+                totals[key] = totals.get(key, 0) + count
     ctx.estimate = totals or None
     ctx.key_counts = by_key
     async with ctx.page():
         pass
+
+
+def _key_counts_from(estimate: dict[str, Any] | None) -> dict[str, int] | None:
+    """The hold counts of a saved estimate, or None for one from before
+    CRM-Q16 (no ``tasks`` key). ``activities`` there includes the tasks."""
+    if not estimate or "tasks" not in estimate:
+        return None
+    out = {str(k): int(v or 0) for k, v in estimate.items() if k != "tasks"}
+    tasks = int(estimate.get("tasks") or 0)
+    out["activities"] = max(out.get("activities", 0) - tasks, 0)
+    out["tasks"] = tasks
+    return out
+
+
+def _hold_decision_pending(ctx: _Ctx) -> bool:
+    """True when a core key has no hold entry and its first import is not done.
+
+    A resumed import whose estimate predates CRM-Q16 counts once more, so the
+    import that the incident interrupted can still be held (review P1).
+    """
+    for entity in ENTITY_ORDER:
+        key = count_key(entity)
+        if key in ctx.holds or (ctx.only is not None and key in ctx.only):
+            continue
+        if _row(ctx, changed_module(entity)).initial_done_at is None:
+            return True
+    return False
 
 
 # ── Execute ─────────────────────────────────────────────────────────────────
@@ -2558,7 +2617,12 @@ async def _execute(ctx: _Ctx) -> None:
         if ctx.estimate is None:
             await _estimate(ctx)
         # CRM-Q16: hold a large key before its first record read. A resumed
-        # import has no fresh counts, and its first attempt already held.
+        # import derives the counts from its saved estimate. An estimate from
+        # before this code has no ``tasks`` key, so it counts once more.
+        if ctx.key_counts is None:
+            ctx.key_counts = _key_counts_from(ctx.estimate)
+        if ctx.key_counts is None and _hold_decision_pending(ctx):
+            await _estimate(ctx)
         if ctx.key_counts is not None:
             await _auto_hold(ctx, ctx.key_counts)
     if ctx.kind in (runs.KIND_IMPORT, runs.KIND_RECONCILE):
@@ -2596,13 +2660,33 @@ async def _execute(ctx: _Ctx) -> None:
 
 def _rules_row(
     ctx: _Ctx, applied: list[field_rules.Rule], reread: set[str],
+    reread_since: dict[str, str] | None = None,
 ) -> CursorRow:
-    """The rules cursor row with a new state."""
+    """The rules cursor row with a new state.
+
+    ``reread_since`` bounds a re-read to a time (CRM-Q16): the children of a
+    parent that a hold skipped need only what changed since the hold. With
+    none given the old map is kept. An entity that leaves ``reread`` leaves
+    the map too.
+    """
     old = _row(ctx, FIELD_RULES_ROW)
+    state = field_rules.state_of(applied, reread)
+    bounds = reread_since if reread_since is not None else dict(
+        (old.state or {}).get("reread_since") or {},
+    )
+    bounds = {k: v for k, v in bounds.items() if k in state["reread"]}
+    if bounds:
+        state["reread_since"] = bounds
     return CursorRow(
-        FIELD_RULES_ROW, old.last_pulled_at, field_rules.state_of(applied, reread),
+        FIELD_RULES_ROW, old.last_pulled_at, state,
         old.initial_done_at or _now(), old.last_reconciled_at,
     )
+
+
+def _reread_since(ctx: _Ctx, entity: str) -> datetime | None:
+    """The bound of a queued re-read of ``entity``, or None for a full read."""
+    bounds = (_row(ctx, FIELD_RULES_ROW).state or {}).get("reread_since") or {}
+    return _parse(bounds.get(entity))
 
 
 async def _field_rules(ctx: _Ctx) -> None:
@@ -2692,16 +2776,29 @@ async def _load_rules(ctx: _Ctx) -> None:
     )
 
 
-async def _queue_dependents(ctx: _Ctx, db: Any, entity: str) -> None:
-    """``entity`` came back on in Zoho (CRM-Q15). Queue one full read of each
-    entity that links to it, in the transaction of its last page. A child that
-    comes later in this run is read in full in this run."""
+async def _queue_dependents(
+    ctx: _Ctx, db: Any, entity: str, since: datetime | None = None,
+) -> None:
+    """``entity`` came back (CRM-Q15), or a hold on it ended (CRM-Q16). Queue
+    one read of each entity that links to it, in the transaction of its last
+    page. A child that comes later in this run is read in this run. ``since``
+    bounds the read to the hold. None is a full read, and it replaces a bound
+    that an earlier queue set."""
     deps = set(DEPENDENTS.get(entity, ()))
     if not deps:
         return
     state = _row(ctx, FIELD_RULES_ROW).state or {}
     reread = {str(e) for e in state.get("reread") or ()} | deps
-    saved = _rules_row(ctx, field_rules.applied_of(state), reread)
+    bounds = dict(state.get("reread_since") or {})
+    queued_full = set(state.get("reread") or ()) - set(bounds)
+    for child in deps:
+        if since is None or child in queued_full:
+            bounds.pop(child, None)  # a full read is asked now, or was queued
+        elif child in bounds:
+            bounds[child] = min(bounds[child], _iso(since))  # the earlier bound wins
+        else:
+            bounds[child] = _iso(since)
+    saved = _rules_row(ctx, field_rules.applied_of(state), reread, bounds)
     await _save_cursor(ctx, db, saved, "ok")
     ctx.cursors[FIELD_RULES_ROW] = saved
     ctx.rule_rereads |= deps

@@ -432,7 +432,7 @@ describe("a large module that is not held (CRM-Q16)", () => {
     expect(largeUnheld(health, big)).toBe(true);
     const html = draw(health);
     expect(html).toContain("Large");
-    expect(html).toContain("Contacts has 12,000 records. Sync it on its own to keep Metorite fast");
+    expect(html).toContain("Contacts has 12,000 records. Hold it, and sync it on its own when Metorite is quiet");
     expect(html).toContain("Hold it");
 
     const fresh = entity("contacts", 6000, 100);
@@ -466,7 +466,7 @@ describe("a large module that is not held (CRM-Q16)", () => {
     expect(largeUnheld(held, big)).toBe(false);
     expect(draw(held)).not.toContain("Hold it");
     expect(largeSentence("Contacts", 12000)).toBe(
-      "Contacts has 12,000 records. Sync it on its own to keep Metorite fast",
+      "Contacts has 12,000 records. Hold it, and sync it on its own when Metorite is quiet",
     );
   });
 });

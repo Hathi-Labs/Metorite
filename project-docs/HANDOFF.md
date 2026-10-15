@@ -5450,11 +5450,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
 - **Added:** 2026-10-15 · H-315 template submission
 
-# DONE — deleted, not archived
-
-Nothing lives here. When an entry's Check passes, **delete the block**. Git
-history is the archive; a "done" section in a loaded-into-context file is just
-tokens that make the open items harder to find.
 ### H-320 · An unticked checkbox has no visible edge · [AGENT]
 - **Check:** `rg -n "border-border" workbench/control_plane/src/components/ui/Checkbox.tsx`.
   A hit in the `BASE` string means the defect is open.
@@ -5471,3 +5466,24 @@ tokens that make the open items harder to find.
 - **Authority:** `workbench/control_plane/DESIGN_SYSTEM.md` (one look, one primitive)
 - **Added:** 2026-10-15 · WS-53 CRM-Q16
 
+### H-321 · A generic module held for a long time keeps its deleted rows · [AGENT]
+- **Check:** `rg -n "def _module_reread" apps/services/gateway/gateway/crm_sync/engine.py`.
+  If that function still runs a full re-read only for a module that hides
+  `Modified_Time`, this entry is open.
+- **Why.** A generic module (`module:<ApiName>`, CRM-Q6a) is never walked. Its
+  deletes come from the deleted list only, and Zoho keeps that list for 60
+  days. A module that CRM-Q16 holds for longer than that, and is then
+  released, keeps every row that Zoho deleted in the gap. The core entities
+  get a full compare after such a gap (`plan()`). Generic modules do not.
+- **Do this:** when a release follows a gap longer than `GAP_RECONCILE`,
+  re-read the module in full, with a stamp. Then drop the rows that the
+  re-read did not see. Or show the gap on the Sync health card, and offer a
+  start over of that one module.
+- **Authority:** `crm_platform.md` §18.7 (the generic store) and §18.8
+- **Added:** 2026-10-15 · WS-53 CRM-Q16 review
+
+# DONE — deleted, not archived
+
+Nothing lives here. When an entry's Check passes, **delete the block**. Git
+history is the archive; a "done" section in a loaded-into-context file is just
+tokens that make the open items harder to find.
