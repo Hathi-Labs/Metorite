@@ -738,6 +738,8 @@ Proposed, not recorded. An agent must not mint these.
 | **D-F** | **Who reviews what** — the CODEOWNERS map (7.4), once there is a second developer to name | Cannot be written before the people exist |
 | **D-G** | **Repository topology: one repo, with `site/` and `workbench/operator_console/` staying in it** (§2.4), and the named triggers that would reverse it — an outside agency on the landing page, or a separate ops team on the Operator Console | The question will be re-asked every time someone notices the two surfaces share no code; recording the *trigger* rather than just the answer is what stops that |
 
+> 🆕 **2026-10-15:** `specs/staging_and_daily_release.md` (PROPOSED) gives a concrete answer to **D-D** and a proposed amendment to **D-E**. It is not a decision. The owner records one.
+
 ---
 
 ## 10. Verification commands
