@@ -485,6 +485,16 @@ class TestTheRequest:
         assert len(_rows(runs, "SELECT id FROM pm_agent_runs WHERE task_id ="
                                " CAST(:t AS uuid)", t=task)) == 1
 
+    async def test_a_member_does_not_send_the_agents_request(self, runs):
+        """A member archives with the archive route. The request is the
+        agent's, so a person gets 403 and no run starts."""
+        task = runs.task(runs.team, runs.s.doing, "member request")
+        r = await _person(runs, MEMBER, "POST", f"/projects/tasks/{task}/archive-request",
+                          {"idempotency_key": _key()})
+        assert r.status_code == 403, r.text
+        assert _rows(runs, "SELECT id FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)",
+                     t=task) == []
+
     async def test_a_request_while_a_question_waits_is_refused(self, runs):
         task = runs.task(runs.team, runs.s.doing, "busy")
         await _agent(runs, "ask_on_task", task_id=task, question="Which?",
@@ -709,8 +719,9 @@ class TestTheApproval:
                         " AND subject = :s RETURNING project_id", p=runs.lost, s=MEMBER)
         try:
             before = _snapshot(runs, task, run_id)
-            r = await _answer(runs, run_id)
-            assert r.status_code == 404, r.text
+            for decision in ("decline", "approve"):
+                r = await _answer(runs, run_id, decision)
+                assert r.status_code == 404, (decision, r.text)
             assert _snapshot(runs, task, run_id) == before
         finally:
             _grant(runs.seeder, runs.lost, MEMBER)
