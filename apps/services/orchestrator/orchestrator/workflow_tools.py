@@ -26,6 +26,7 @@ import json
 from typing import Any
 
 from acb_common import get_logger
+from acb_common.paging import paged
 
 _log = get_logger("orchestrator.workflow_tools")
 
@@ -34,19 +35,27 @@ _log = get_logger("orchestrator.workflow_tools")
 MAX_WAIT_SECONDS = 120
 _POLL_INTERVAL_SECONDS = 2.0
 _TERMINAL = {"succeeded", "failed", "cancelled", "paused"}
+#: Workflows in one page of ``list_workflows`` (2026-10-15, agent reads page
+#: part 2). Each carries its description, so a large catalog floods the
+#: context. ``offset`` reads the next page.
+WORKFLOWS_PAGE = 25
 
 
-async def list_workflows() -> str:
+async def list_workflows(offset: int = 0) -> str:
     """List the published workflows you can trigger, with descriptions.
 
     Call this first to find the right workflow name for run_workflow.
+    offset reads the next page.
     """
     from gateway.routes.workflows.service import list_published_workflows
 
     rows = await list_published_workflows()
     if not rows:
         return "No published workflows exist yet."
-    return json.dumps(rows, default=str)
+    page = paged(rows, offset, WORKFLOWS_PAGE, default=WORKFLOWS_PAGE,
+                 maximum=WORKFLOWS_PAGE, noun="workflows")
+    out = json.dumps(page.items, default=str)
+    return "\n".join((out, page.line)) if page.line else out
 
 
 async def run_workflow(workflow: str, payload_json: str = "{}", wait_seconds: int = 0) -> str:

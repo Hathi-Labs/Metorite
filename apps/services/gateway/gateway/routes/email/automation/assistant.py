@@ -717,7 +717,7 @@ async def list_learned_patterns(
             """SELECT id, pattern, weight, kind, scope_type, scope_value
                FROM email_learned_patterns
                WHERE account_id = :aid
-               ORDER BY weight DESC, updated_at DESC"""
+               ORDER BY weight DESC, updated_at DESC, id DESC"""
         ), {"aid": account_id})).fetchall()
         return {"patterns": [
             {"id": str(r.id), "pattern": r.pattern, "weight": r.weight,

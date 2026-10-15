@@ -244,7 +244,8 @@ async def _visible_projects(
         text(
             f"SELECT * FROM pm_projects "
             f"WHERE {vis.project_clause()} AND personal_owner IS NULL "
-            f"ORDER BY position NULLS LAST, name"
+            # The id breaks a tie of the name: the chat pages this list.
+            f"ORDER BY position NULLS LAST, name, id"
         ),
         vis.params,
     )).fetchall()
