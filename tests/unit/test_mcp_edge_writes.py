@@ -107,8 +107,10 @@ def _uuid(n: int) -> str:
 
 
 #: Every write tool, in the order of ``tools/list``: the two of EA-6a, then
-#: the two of EA-6d (``test_mcp_edge_task_writes.py``).
-WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task")
+#: the two of EA-6d (``test_mcp_edge_task_writes.py``), then ``add_comment``
+#: of EA-6c (``test_mcp_edge_comments.py``).
+WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
+                    "add_comment")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -346,8 +348,8 @@ class TestTheWriteToolsAtTheEdge:
     async def test_tools_list_shows_the_writes_only_with_projects_write(self, edge):
         r = await _post(_rpc("tools/list"))
         names = [t["name"] for t in r.json()["result"]["tools"]]
-        # EA-6d appends its two tools after the two of EA-6a.
-        assert names[-4:] == list(WRITE_TOOL_NAMES)
+        # EA-6d appends its two tools after the two of EA-6a, and EA-6c one more.
+        assert names[-len(WRITE_TOOL_NAMES):] == list(WRITE_TOOL_NAMES)
         edge.tokens[GOOD] = _lookup(scope="projects:read", scopes=("projects:read",))
         r = await _post(_rpc("tools/list"))
         names = [t["name"] for t in r.json()["result"]["tools"]]
@@ -1011,11 +1013,14 @@ class TestTheGatewayHalf:
             "Changes are turned off for agents in this organization.")
 
     async def test_a_write_to_a_pair_outside_the_write_list_gets_401(self, live):
+        # EA-6c made the comment POST a pair, so this uses the hard delete of
+        # a task, a non-goal of spec §3 that never becomes a pair.
         task = live.task(live.team, live.s.todo, "pair")
-        path = f"/projects/tasks/{task}/comments"
-        body = json.dumps({"body": "hello"}).encode()
-        headers = _signed(live, "write", "POST", path, body=body)
-        assert (await _send(live, "POST", path, headers, body)).status_code == 401
+        path = f"/projects/tasks/{task}"
+        assert ("DELETE", "/projects/tasks/{task_id}") not in agent_oauth.MCP_WRITE_ROUTES
+        headers = _signed(live, "write", "DELETE", path)
+        assert (await _send(live, "DELETE", path, headers)).status_code == 401
+        assert _status_of(live, task) == live.s.todo, "the task is still there"
 
     async def test_the_121st_write_in_the_window_gets_429(self, live):
         """EA3-30. The counter holds 119 writes, so the 120th lands and the
