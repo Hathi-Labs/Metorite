@@ -1909,6 +1909,8 @@ async def sweep_once() -> int:
         return 0
     started = 0
     for raw in sorted(flags.assistant_orgs()):
+        if raw == "*":
+            continue  # admits every org at the door; the sweep needs named ids
         org = _uuid_or_none(raw)
         if org is None:
             _log.warning("whatsapp_channel.sweep.bad_org_id", length=len(raw))
