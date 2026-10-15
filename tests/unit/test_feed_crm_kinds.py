@@ -667,22 +667,30 @@ class TestOneLinkBuilder:
 # ── §5.9 item 7: the elapsed time of each provider run ──────────────────────
 
 
+def _answered(caplog, provider: str) -> dict[str, str]:
+    """The fields of one ``provider answered`` line, read from the formatted
+    text: the gateway prints ``%(message)s`` only (MD-3c review P1)."""
+    fmt = logging.Formatter("%(message)s")
+    lines = [fmt.format(r) for r in caplog.records]
+    [line] = [x for x in lines
+              if " provider answered " in x and f" provider={provider} " in x]
+    return dict(part.split("=", 1) for part in line.split() if "=" in part)
+
+
 class TestTheElapsedTime:
     def test_the_crm_run_logs_elapsed_ms(self, crm, monkeypatch, caplog):
         _list(monkeypatch, "crm")
         with caplog.at_level(logging.INFO, logger=shell.logger.name):
             run_feed(member(*CRM_MEMBER))
-        [line] = [r for r in caplog.records
-                  if r.getMessage() == "shell.feed provider answered" and r.provider == "crm"]
-        assert line.outcome == "ok"
-        assert isinstance(line.elapsed_ms, int) and line.elapsed_ms >= 0
+        fields = _answered(caplog, "crm")
+        assert fields["outcome"] == "ok"
+        assert int(fields["elapsed_ms"]) >= 0
 
     def test_an_absent_run_logs_it_too(self, crm, monkeypatch, caplog):
         _list(monkeypatch, "crm")
         crm.access = "admins"
         with caplog.at_level(logging.INFO, logger=shell.logger.name):
             run_feed(member(*CRM_MEMBER))
-        [line] = [r for r in caplog.records
-                  if r.getMessage() == "shell.feed provider answered" and r.provider == "crm"]
-        assert line.outcome == "absent"
-        assert isinstance(line.elapsed_ms, int)
+        fields = _answered(caplog, "crm")
+        assert fields["outcome"] == "absent"
+        assert int(fields["elapsed_ms"]) >= 0
