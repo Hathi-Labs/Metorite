@@ -519,6 +519,24 @@ async def bump_org(organization_id: Any) -> None:
         await _set_org_version(org, "shell.feed.cache org bump failed")
 
 
+#: Seconds that a write route waits for its org bump, at most
+#: (:func:`bump_org_safe`).
+BUMP_SAFE_WAIT_S = 0.5
+
+
+async def bump_org_safe(organization_id: Any) -> None:
+    """:func:`bump_org` for a write route of ANOTHER app, after its commit
+    (WS-58 MD-3c fix round 1). It waits ``BUMP_SAFE_WAIT_S`` at most, and it
+    never raises, so a slow or broken Redis never fails or holds a write
+    that already committed. The self absence writes of ``people/selfservice``
+    call it, and the absence writes of MD-3f reuse it."""
+    try:
+        await asyncio.wait_for(bump_org(organization_id), BUMP_SAFE_WAIT_S)
+    except Exception as exc:  # TimeoutError too: the write stands
+        logger.warning("shell.feed.cache org bump skipped",
+                       extra={"error": type(exc).__name__})
+
+
 async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> None:
     """The change sink (§8.2, §8.4 items 1 and 20): a ``pm.*`` event sets
     the org version with ONE ``SET``. It runs no SQL.
