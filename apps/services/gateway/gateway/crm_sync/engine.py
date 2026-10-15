@@ -1427,6 +1427,13 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         # (CRM-Q15), or a lead cursor that still owes its CRM-Q5 full read: the
         # next normal run owns it. A parent-only read here would rebuild the
         # cursor without the mark, and the relink or the backfill would be lost.
+        # The children this run reads now may miss a parent that is not in yet,
+        # so mark the parent: the read that completes it re-reads them.
+        if (
+            entity in DEPENDENTS and not saved.get("held_skipped")
+            and not saved.get("unavailable")
+        ):
+            await _mark_held_skipped(ctx, entity, row)
         return
     if not parent_only and _skip_held(ctx, entity):
         # A held parent's children land with no link (review P1). Mark it, so

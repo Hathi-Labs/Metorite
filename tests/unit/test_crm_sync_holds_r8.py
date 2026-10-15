@@ -690,3 +690,42 @@ async def test_an_only_run_right_after_a_release_keeps_the_relink(ns, zoho) -> N
     assert _count(ns, "crm_activities", ns.org_a,
                   "ext_id = 'n9' AND contact_id IS NOT NULL") == 1
 
+
+async def test_an_only_run_during_a_parents_first_import_still_relinks(ns, zoho) -> None:
+    """Round 5. Contacts is part-way through its first import. An only-run of
+    Activities reads a note on a contact that is not in yet and drops it. The
+    run that completes Contacts must re-read the notes, so the note links."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)  # c1, c2
+    a.add("Contacts", "c3", 4, Last_Name="Three", Account_Name={"id": "a1"})
+    a.add("Notes", "n3", 7, Note_Title="On three", Note_Content="Body",
+          Parent_Id={"id": "c3"}, **{"$se_module": "Contacts"})
+    await _connect(ns, ns.org_a, a)
+    admin = _admin("admin@crm-sync.test", ns.org_a)
+    # Three contacts are large at the test limit. The admin wants them in.
+    assert (await _call_json(admin, "PUT", "/crm/sync/modules/contacts", {"sync": True})).status_code == 200
+
+    def reads() -> int:
+        return sum(1 for r in a.requests if r.url.path == "/crm/v2/Contacts")
+
+    start = reads()
+    stopped = await engine.run_org(
+        ns.org_a,
+        # Page 1 of Contacts (c1, c2) lands. The call for page 2 stops.
+        should_stop=lambda: reads() >= start + 1,
+    )
+    assert stopped.status != "ok"
+    assert _count(ns, "crm_contacts", ns.org_a) == 2, "c3 is not in yet"
+
+    alone = await engine.run_org(ns.org_a, only=frozenset({"activities"}))
+    assert alone.status == "ok"
+    assert _count(ns, "crm_activities", ns.org_a, "ext_id = 'n3'") == 0, "no parent yet"
+
+    normal = await engine.run_org(ns.org_a)
+    assert normal.status == "ok"
+    assert _count(ns, "crm_contacts", ns.org_a) == 3
+    assert _count(ns, "crm_activities", ns.org_a,
+                  "ext_id = 'n3' AND contact_id IS NOT NULL") == 1
+
