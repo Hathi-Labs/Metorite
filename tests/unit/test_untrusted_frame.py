@@ -220,6 +220,7 @@ def test_each_bypass_of_the_round_1_verifier_is_closed(name: str) -> None:
     assert not any(x.lstrip().startswith("#") for x in folded.splitlines()), repr(inner)
     # Round 2: a collapse of the white space, before or after, makes no tag.
     from acb_skills.untrusted import collapse
+
     from evals.email_injection.checkers import TAG_SHAPE_RE
 
     for out in (collapse(inner), neutralise(collapse(text), TOKEN)):
@@ -236,6 +237,7 @@ def test_no_tag_survives_any_spacing_or_nesting() -> None:
     import random
 
     from acb_skills.untrusted import collapse
+
     from evals.email_injection.checkers import _TAG_RE, TAG_SHAPE_RE, _fold
 
     rng = random.Random(20261015)

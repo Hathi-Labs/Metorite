@@ -1077,7 +1077,7 @@ def test_the_policy_holds_each_egress_call_after_an_untrusted_answer() -> None:
 
 def test_a_marked_run_passes_no_egress_down() -> None:
     """A run that read the answer delegates with ``no_egress``."""
-    from acb_skills.egress import _UNTRUSTED_ANSWER_RUNS, _UNTRUSTED_ANSWER_LOCK
+    from acb_skills.egress import _UNTRUSTED_ANSWER_LOCK, _UNTRUSTED_ANSWER_RUNS
 
     ctx = {"agent_name": PA, "run_id": "run-marked-1", "no_egress": False}
     assert ti._delegated_no_egress(ctx, CRM) is False

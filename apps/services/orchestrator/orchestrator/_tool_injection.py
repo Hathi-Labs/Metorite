@@ -345,7 +345,7 @@ def _run_covered(agent_name: str, organization_id: str | None = None) -> bool:
 #: ``tests/unit/test_delegation_no_egress.py`` and
 #: ``tests/unit/test_untrusted_frame.py``.
 try:
-    from acb_skills.egress import (  # noqa: E402
+    from acb_skills.egress import (
         UNTRUSTED_INPUT_AGENTS,
         read_untrusted_answer,
     )
@@ -1048,10 +1048,10 @@ def _after_untrusted_answer(reason: str) -> bool:
 async def _untrusted_answer_card(tool_name: str, call_kwargs: dict[str, Any]) -> bool:
     """The member's card for one egress call after an untrusted answer. True
     only when the member approved it. No card channel, or a fault, is a no."""
-    import json  # noqa: PLC0415
+    import json
 
     try:
-        from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
+        from acb_skills.ask_tools import request_confirmation
 
         shown = json.dumps(call_kwargs or {}, ensure_ascii=False, default=str)[:600]
         answer = await request_confirmation(
@@ -1063,7 +1063,7 @@ async def _untrusted_answer_card(tool_name: str, call_kwargs: dict[str, Any]) ->
         return answer is True
     except asyncio.CancelledError:
         raise
-    except Exception:  # noqa: BLE001 — a fault is a no
+    except Exception:  # a fault is a no
         return False
 
 
