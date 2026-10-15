@@ -261,13 +261,21 @@ async def _seed_from_work_schedule(db: Any, user_id: str) -> dict[str, int]:
             person_schedule,
         )
 
-        row = (await db.execute(text(
-            "SELECT working_hours FROM people "
-            "WHERE lower(email) = :email LIMIT 1"),
-            {"email": (user_id or "").strip().lower()})).fetchone()
-        if row is None:
-            return {}
-        return calendar_seed(person_schedule(await load_policy(db), row))
+        # A savepoint, so a failed seed read cannot abort the caller's
+        # session: ``member_day`` runs this on the shared session of the
+        # My Day provider (MD-3c review). And the bound tenant, as
+        # ``people.core.find_self_row`` does: since migration 209 one address
+        # may hold a ``people`` row in two orgs, and the owner role reads
+        # past RLS. An unbound GUC matches no row, so it fails closed.
+        async with db.begin_nested():
+            row = (await db.execute(text(
+                "SELECT working_hours FROM people "
+                "WHERE lower(email) = :email "
+                f"  AND organization_id = {_BOUND_ORG} LIMIT 1"),
+                {"email": (user_id or "").strip().lower()})).fetchone()
+            if row is None:
+                return {}
+            return calendar_seed(person_schedule(await load_policy(db), row))
     except Exception as exc:
         _log.warning("tasks.settings.work_schedule_seed_failed",
                      error=str(exc)[:160])
