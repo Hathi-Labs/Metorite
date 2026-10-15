@@ -15,6 +15,10 @@ import { openAllRows } from "./railOpen";
  * 3. Stop asks first, then sends a `prompt` with the signal `stop`.
  * 4. A 409 (another member answered first) reads the run again, with no
  *    "Try again" (fix round 1).
+ * 5. EA-12d, "Ask an agent": the control is gone while the routes answer
+ *    404. A member picks a connection and sends, and the run reads "Queued
+ *    for Claude Code". With no connected agent, the dialog links to the AI
+ *    agents view. A 409 shows the server's text.
  *
  * Run it by name:
  *
@@ -104,6 +108,37 @@ function run(status: string, state: string) {
   };
 }
 
+/** EA-12d: the member's instruction, the first `prompt` of a queued run. */
+const PROMPT = {
+  id: "a5",
+  seq: 1,
+  type: "prompt",
+  content: { body: "Write the tests for the runner." },
+  signal: null,
+  signal_metadata: null,
+  actor: ME,
+  actor_via: null,
+  in_reply_to: null,
+  created_at: "2026-10-14T10:05:00Z",
+};
+
+/** EA-12d: one live connection of the member, with the write scope. */
+const CONNECTION = {
+  id: "c1",
+  member_email: ME,
+  client_name: "Claude Code",
+  client_origin: "https://claude.ai",
+  scopes: ["projects:read", "projects:write"],
+  pinned_projects: [],
+  include_personal: false,
+  created_at: "2026-10-10T09:00:00Z",
+  last_used_at: null,
+  expires_at: "2026-12-10T09:00:00Z",
+};
+
+/** EA-12d: the gateway's 409 when that agent has not picked up its last run. */
+const START_409 = "The agent has not picked this run up yet. Wait for it to start, then reply.";
+
 const EMPTY = { rows: [], items: [], total: 0, links: [], subtasks: [], children: [], buckets: [] };
 
 /**
@@ -112,10 +147,14 @@ const EMPTY = { rows: [], items: [], total: 0, links: [], subtasks: [], children
  */
 async function stub(
   page: Page,
-  start: "awaiting" | "working" | "off",
-  opts: { loseTheRace?: boolean } = {},
+  start: "awaiting" | "working" | "off" | "none",
+  opts: { loseTheRace?: boolean; connections?: unknown[]; startStatus?: number } = {},
 ) {
   const posts: Record<string, unknown>[] = [];
+  /** EA-12d: the bodies of each "Ask an agent" start. */
+  const starts: Record<string, unknown>[] = [];
+  /** EA-12d: `none` has no run until the member asks an agent. */
+  let queued = false;
   let answered = false;
   // Fix round 1, item 9: another member answers first, so the member's POST
   // gets 409 and the run now holds the other member's answer.
@@ -143,11 +182,13 @@ async function stub(
         ],
       };
     }
+    if (queued) return { run: run("created", "queued"), activities: [PROMPT] };
     return start === "awaiting"
       ? { run: run("awaiting", "awaiting"), activities: [THOUGHT, ELICITATION] }
       : { run: run("in_progress", "working"), activities: [THOUGHT] };
   };
-  const taskNow = () => ({ ...TASK, agent_state: start === "off" ? null : current().run.state });
+  const hasRun = () => start !== "off" && (start !== "none" || queued);
+  const taskNow = () => ({ ...TASK, agent_state: hasRun() ? current().run.state : null });
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -172,8 +213,20 @@ async function stub(
       if (Array.isArray(body.selected)) answered = true;
       return route.fulfill({ json: { id: "a9", status: "in_progress" } });
     }
+    if (request.method() === "POST" && path === "projects/tasks/t2/agent-runs") {
+      starts.push(request.postDataJSON() as Record<string, unknown>);
+      if (opts.startStatus === 409) {
+        return route.fulfill({ status: 409, json: { detail: START_409 } });
+      }
+      queued = true;
+      return route.fulfill({ status: 201, json: { run: current().run, created: true } });
+    }
     if (request.method() !== "GET") return route.fulfill({ json: EMPTY });
 
+    // EA-4b: the member's own agent connections.
+    if (path === "agent-access/connections") {
+      return route.fulfill({ json: { connections: opts.connections ?? [CONNECTION] } });
+    }
     if (path === "projects/agent-runs/r1") {
       // The cursor: only what is newer than `after`.
       const after = Number(url.searchParams.get("after") ?? "0");
@@ -183,7 +236,7 @@ async function stub(
       });
     }
     if (path === "projects/tasks/t2/agent-runs") {
-      return route.fulfill({ json: { rows: [current().run] } });
+      return route.fulfill({ json: { rows: hasRun() ? [current().run] : [] } });
     }
     if (path === "projects/agent-runs") return route.fulfill({ json: { rows: [] } });
     if (path === "projects/tasks/t2") return route.fulfill({ json: taskNow() });
@@ -205,7 +258,7 @@ async function stub(
   await openAllRows(page);
   await page.getByText("Bootloader", { exact: true }).first().click();
   await page.waitForTimeout(2500);
-  return { posts };
+  return { posts, starts };
 }
 
 /** Open the task's panel from its row or card. */
@@ -299,6 +352,8 @@ test("with the routes off, the task shows no panel and no filter", async ({ page
   await expect(page.getByRole("button", { name: "Comment", exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("[data-agent-run-panel]")).toHaveCount(0);
   await expect(page.locator("[data-agent-pill]")).toHaveCount(0);
+  // EA-12d: no "Ask an agent" while the routes answer 404.
+  await expect(page.locator("[data-ask-agent]")).toHaveCount(0);
 });
 
 test("Waiting on me keeps the tasks whose agent waits for me", async ({ page }) => {
@@ -311,4 +366,92 @@ test("Waiting on me keeps the tasks whose agent waits for me", async ({ page }) 
   await expect(filter).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText(TASK.title, { exact: true }).first()).toBeVisible();
   await expect(page.getByText(OTHER.title, { exact: true })).toHaveCount(0);
+});
+
+test("Waiting on me with nothing waiting says so, not Drop here", async ({ page }) => {
+  test.setTimeout(120_000);
+  await stub(page, "working");
+  const filter = page.getByRole("button", { name: "Waiting on me" });
+  await expect(filter).toBeVisible({ timeout: 15_000 });
+  await filter.click();
+  await expect(page.getByText("Nothing waits on you").first()).toBeVisible();
+  await expect(page.getByText("Drop here")).toHaveCount(0);
+});
+
+/* ── EA-12d: Ask an agent ──────────────────────────────────────────────── */
+
+/** Open the task that has no run. Its detail shows only the Ask control. */
+async function openAskable(page: Page) {
+  await page.getByText(TASK.title, { exact: true }).first().click();
+  await expect(page.locator("[data-ask-agent]")).toBeVisible({ timeout: 15_000 });
+}
+
+test("Ask an agent: pick a connection, send, and the run reads Queued", async ({ page }) => {
+  test.setTimeout(120_000);
+  const vscode = {
+    ...CONNECTION,
+    id: "c2",
+    client_name: "VS Code",
+    client_origin: "https://vscode.dev",
+  };
+  const { starts } = await stub(page, "none", { connections: [vscode, CONNECTION] });
+  await openAskable(page);
+  await expect(page.locator("[data-agent-run-panel]")).toHaveCount(0);
+
+  await page.locator("[data-ask-agent]").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Ask an agent").first()).toBeVisible();
+  const send = dialog.getByRole("button", { name: "Send to agent" });
+  // The instruction is required.
+  await expect(send).toBeDisabled();
+  // The first connection is picked for the member, who picks the other.
+  const picker = dialog.getByRole("button", { name: "Agent", exact: true });
+  await expect(picker).toContainText("VS Code (vscode.dev)");
+  await picker.click();
+  await page.getByRole("option", { name: "Claude Code (claude.ai)" }).click();
+  await expect(picker).toContainText("Claude Code (claude.ai)");
+  await dialog.getByRole("textbox").fill("Write the tests for the runner.");
+  await send.click();
+
+  await expect(dialog).toHaveCount(0, { timeout: 10_000 });
+  const panel = page.locator("[data-agent-run-panel]");
+  await expect(panel).toBeVisible();
+  await expect(panel.locator('[data-agent-pill="queued"]')).toHaveText("Queued for Claude Code");
+  // The caller now has an open run, so the task offers no second ask.
+  await expect(page.locator("[data-ask-agent]")).toHaveCount(0);
+
+  expect(starts).toHaveLength(1);
+  expect(starts[0]).toMatchObject({ connection_id: "c1", body: "Write the tests for the runner." });
+  expect(typeof starts[0].idempotency_key).toBe("string");
+});
+
+test("Ask an agent with no connected agent links to the AI agents view", async ({ page }) => {
+  test.setTimeout(120_000);
+  // A read-only connection cannot pick a run up, so it is not offered.
+  const { starts } = await stub(page, "none", {
+    connections: [{ ...CONNECTION, scopes: ["projects:read"] }],
+  });
+  await openAskable(page);
+  await page.locator("[data-ask-agent]").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.locator("[data-ask-agent-empty]")).toBeVisible();
+  await expect(dialog.getByRole("link", { name: "Connect an agent" })).toHaveAttribute(
+    "href",
+    "/integrations?view=agents",
+  );
+  await expect(dialog.getByRole("button", { name: "Send to agent" })).toHaveCount(0);
+  expect(starts).toHaveLength(0);
+});
+
+test("Ask an agent shows the server's text for a 409", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { starts } = await stub(page, "none", { startStatus: 409 });
+  await openAskable(page);
+  await page.locator("[data-ask-agent]").click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox").fill("And this too.");
+  await dialog.getByRole("button", { name: "Send to agent" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(START_409);
+  await expect(dialog.getByText(/Try again/)).toHaveCount(0);
+  expect(starts).toHaveLength(1);
 });

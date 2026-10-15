@@ -174,6 +174,16 @@ class SourceScopeError(SourceError):
     """
 
 
+class SourceModuleUnavailable(SourceError):
+    """The account refuses a whole module that the token may read (CRM-Q15).
+
+    The customer turned the module off, or the user who connected cannot see
+    it. A reconnect does not change that, so it is NOT a scope error and NOT a
+    dead token. The mirror skips the module, core or optional, reports it as
+    unavailable, and goes on with the rest.
+    """
+
+
 class UntrustedHost(SourceError):
     """A URL is not on the provider's allowlist, or it is not https."""
 
@@ -269,6 +279,7 @@ __all__ = [
     "SourceCredential",
     "SourceCursor",
     "SourceError",
+    "SourceModuleUnavailable",
     "SourcePage",
     "SourceRecord",
     "SourceScopeError",

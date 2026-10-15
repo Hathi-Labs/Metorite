@@ -21,6 +21,7 @@ import {
   TOMBSTONE_RE,
   partitionRoster,
   isSeated,
+  seatControl,
   memberTally,
   readMembers,
   readKeys,
@@ -343,6 +344,20 @@ describe("the customer's member roster (LS-9 · launch_surface.md §7)", () => {
     expect(isSeated(rows[0])).toBe(false);
   });
 
+  it("offers no Assign seat on a removed row, and keeps Release on a seated one", () => {
+    const row = (status: string, seats: string[]) => ({
+      email: "a@x.test",
+      role: "member",
+      status,
+      seats,
+    });
+    expect(seatControl(row("removed", []))).toBeNull();
+    expect(seatControl(row("removed", ["core"]))).toBe("release");
+    expect(seatControl(row("active", []))).toBe("assign");
+    expect(seatControl(row("invited", []))).toBe("assign");
+    expect(seatControl(row("active", ["core"]))).toBe("release");
+  });
+
   it("tallies PEOPLE, counting a multi-plan holder once", () => {
     // The trap: presenting this as the seat count. One person on two plans is
     // one seated row and two assigned seats — the seat counts are seatsTotals'.
@@ -358,6 +373,18 @@ describe("the customer's member roster (LS-9 · launch_surface.md §7)", () => {
 
   it("tallies an empty roster without dividing by anything", () => {
     expect(memberTally([])).toEqual({ total: 0, seated: 0, unassigned: 0 });
+  });
+
+  it("leaves removed people out of every count, seated or not", () => {
+    const rows = readMembers({
+      members: [
+        { email: "a@x.test", role: "owner", status: "active", seats: ["core"] },
+        { email: "b@x.test", role: "member", status: "invited", seats: [] },
+        { email: "c@x.test", role: "member", status: "removed", seats: [] },
+        { email: "d@x.test", role: "member", status: "removed", seats: ["core"] },
+      ],
+    });
+    expect(memberTally(rows)).toEqual({ total: 2, seated: 1, unassigned: 1 });
   });
 });
 

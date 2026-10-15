@@ -132,6 +132,10 @@ _PROBES: dict[tuple[str, str], dict] = {
     ("POST", "/billing/seats/release"): {"json": {"org_slug": "nope",
                                                   "email": "a@b.c",
                                                   "plan_slug": "core"}},
+    # 2026-10-15 — the member-REMOVE door. EDITOR, like the seat release
+    # above. An unknown org answers 404 past the gate, so nothing is written.
+    ("POST", "/registry/members/remove"): {"json": {"org_slug": "nope",
+                                                    "member_email": "a@b.c"}},
     ("POST", "/credits/grant"): {"json": {"org_slug": "nope", "credits": "1",
                                           "reason": "manual"}},
     ("POST", "/keys"): {"json": {"org_slug": "nope", "label": "t"}},

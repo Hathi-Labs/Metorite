@@ -23,6 +23,11 @@
  * route answers 404, and this panel draws nothing at all.
  *
  * It lives in `TaskBody`, so both hosts (Projects and My Tasks) show it.
+ *
+ * **Ask an agent (EA-12d).** While the routes are on and the caller has no
+ * open run on the task, the panel offers "Ask an agent". It opens
+ * `AskAgentDialog`, and the run that the dialog starts shows here as
+ * "Queued for <client>".
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -40,6 +45,7 @@ import {
   type AgentActivity,
   type AgentPromptBody,
   type AgentRun,
+  type AgentStartResult,
   type AgentState,
   answerPayload,
   answerTo,
@@ -57,7 +63,9 @@ import {
   stopPayload,
   writeFailure,
 } from "../lib/agentRuns";
+import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
 import { AgentPill } from "./AgentPill";
+import { AskAgentDialog } from "./AskAgentDialog";
 
 /** How often the open run is read again. */
 export const AGENT_RUN_POLL_MS = 5_000;
@@ -104,14 +112,19 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  /** The caller has an open run on this task that the panel does not show. */
+  const [otherOpenMine, setOtherOpenMine] = useState(false);
+  const [asking, setAsking] = useState(false);
 
   // The newest values, for the poll's closure.
   const runRef = useRef<AgentRun | null>(null);
   const activitiesRef = useRef<AgentActivity[]>([]);
+  const meRef = useRef(me);
   useEffect(() => {
     runRef.current = run;
     activitiesRef.current = activities;
-  }, [run, activities]);
+    meRef.current = me;
+  }, [run, activities, me]);
 
   /** Read the run again: the activities after the newest `seq` held. */
   const refresh = useCallback(async (runId: string) => {
@@ -133,6 +146,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     setSent(null);
     setReply("");
     setError(null);
+    setOtherOpenMine(false);
+    setAsking(false);
     void (async () => {
       try {
         const runs = await agentRunsApi.list(task.id);
@@ -143,6 +158,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         }
         setEnabled(true);
         const shown = runToShow(runs);
+        setOtherOpenMine(hasOpenRunOf(runs.filter((r) => r.id !== shown?.id), meRef.current));
         if (!shown) return;
         runRef.current = shown;
         setRun(shown);
@@ -195,7 +211,53 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, state, run?.client_via, run?.member_email]);
 
-  if (!enabled || !run) return null;
+  if (!enabled) return null;
+
+  // EA-12d: the caller may ask an agent while they have no open run here.
+  const canAsk = !otherOpenMine && !(run && isOpenRun(run) && hasOpenRunOf([run], me));
+
+  function started(result: AgentStartResult) {
+    setAsking(false);
+    setActivities([]);
+    setOptimistic(null);
+    setSent(null);
+    setError(null);
+    runRef.current = result.run;
+    activitiesRef.current = [];
+    setRun(result.run);
+    onActivity?.();
+    void refresh(result.run.id).catch(() => undefined);
+  }
+
+  const askDialog = (
+    <AskAgentDialog
+      open={asking}
+      taskId={task.id}
+      onClose={() => setAsking(false)}
+      onStarted={started}
+    />
+  );
+  const askButton = canAsk ? (
+    <Button
+      variant="ghost"
+      size="sm"
+      icon="Bot"
+      data-ask-agent=""
+      onClick={() => setAsking(true)}
+    >
+      {ASK_COPY.open}
+    </Button>
+  ) : null;
+
+  if (!run) {
+    if (!canAsk) return null;
+    return (
+      <div className="mb-3 flex items-center" data-ask-agent-row="">
+        {askButton}
+        {askDialog}
+      </div>
+    );
+  }
 
   const client = clientName(run.client_via);
   const host = httpsHost(run.external_link);
@@ -265,49 +327,67 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     <section
       aria-label={`Agent run of ${client}`}
       data-agent-run-panel={run.status}
-      className="mb-3 space-y-2 rounded-lg border border-border bg-card p-3"
+      className="@container mb-3 space-y-2 rounded-lg border border-border bg-card p-3"
     >
-      <div className="flex flex-wrap items-center gap-2">
+      {/* One row that never wraps: the name and the pill give way, and the
+          Stop control keeps its place at the end. The docked panel is about
+          340 px wide, and a wrapped Stop read as a second control row. */}
+      <div className="flex min-w-0 items-center gap-2" data-agent-run-header="">
         <Icon name="Bot" size={14} className="shrink-0 text-muted-foreground" aria-hidden />
-        <span className="text-sm font-medium text-foreground">{client}</span>
-        <AgentPill
-          state={state}
-          size="sm"
-          clientVia={run.client_via}
-          memberEmail={run.member_email}
-          thought={ephemeral}
-          labels={personLabels}
-        />
-        {host ? (
-          <a
-            href={run.external_link ?? undefined}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex min-w-0 items-center gap-1 text-xs text-primary hover:underline"
-            title={`Open the session on ${host}`}
-          >
-            <Icon name="ExternalLink" size={12} className="shrink-0" aria-hidden />
-            <span className="truncate">{host}</span>
-          </a>
-        ) : null}
+        <span className="min-w-0 truncate text-sm font-medium text-foreground">{client}</span>
+        <span className="flex min-w-0">
+          <AgentPill
+            state={state}
+            size="sm"
+            clientVia={run.client_via}
+            memberEmail={run.member_email}
+            thought={ephemeral}
+            labels={personLabels}
+          />
+        </span>
         {canStop ? (
+          // In the docked panel the control is its icon, with its name as
+          // the label and the tip. A wider panel shows the words too.
           <Button
-            className="ml-auto"
+            className="ml-auto shrink-0"
             variant="ghost"
             size="sm"
             icon="CircleStop"
+            aria-label="Stop agent"
+            title="Stop agent"
             disabled={busy}
             onClick={() => setConfirmStop(true)}
           >
-            Stop agent
+            <span className="hidden @md:inline">Stop agent</span>
           </Button>
         ) : null}
       </div>
 
-      {ephemeral && run.status !== "failed" ? (
-        <p className="truncate text-xs text-muted-foreground" title={ephemeral} data-agent-ephemeral="">
-          {ephemeral}
-        </p>
+      {/* The second line: the newest thought, and the session link. */}
+      {(ephemeral && run.status !== "failed") || host ? (
+        <div className="flex min-w-0 items-center gap-2 text-xs">
+          {ephemeral && run.status !== "failed" ? (
+            <p
+              className="min-w-0 flex-1 truncate text-muted-foreground"
+              title={ephemeral}
+              data-agent-ephemeral=""
+            >
+              {ephemeral}
+            </p>
+          ) : null}
+          {host ? (
+            <a
+              href={run.external_link ?? undefined}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ml-auto inline-flex min-w-0 shrink-0 items-center gap-1 text-primary hover:underline"
+              title={`Open the session on ${host}`}
+            >
+              <Icon name="ExternalLink" size={12} className="shrink-0" aria-hidden />
+              <span className="truncate">{host}</span>
+            </a>
+          ) : null}
+        </div>
       ) : null}
 
       {cardOpen && elicitation ? (
@@ -361,6 +441,9 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           {error}
         </p>
       ) : null}
+
+      {askButton ? <div className="flex items-center">{askButton}</div> : null}
+      {askDialog}
 
       <ConfirmDialog
         open={confirmStop}

@@ -50,6 +50,7 @@ import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
+import { WAITING_ON_ME_EMPTY, WAITING_ON_ME_HINT } from "../lib/agentRuns";
 import { sortForView } from "../lib/board";
 import { tagColours, taskDeepLink, taskRef, typeFacts, visibleChips } from "../lib/card";
 import { clampCursor, stepCursor } from "../lib/cursor";
@@ -97,6 +98,11 @@ interface Props {
    */
   filters: Filters;
   onClearFilters: () => void;
+  /**
+   * WS-55 EA-12c — "Waiting on me" is on. An empty list then says that
+   * nothing waits on the member, not that the project has no tasks.
+   */
+  waitingOnMe?: boolean;
   statuses: StatusRow[];
   /** S6 — the project's tag registry, for the colour of a tag chip alone. */
   tags?: readonly TagRow[];
@@ -135,6 +141,7 @@ export function TaskList({
   subtasks,
   filters,
   onClearFilters,
+  waitingOnMe = false,
   statuses,
   tags,
   taskTypes,
@@ -247,6 +254,16 @@ export function TaskList({
     }
     flash(created.id);
     onCreated(created);
+  }
+
+  if (total === 0 && waitingOnMe) {
+    return (
+      <EmptyState
+        icon="Bot"
+        message={WAITING_ON_ME_EMPTY}
+        hint={WAITING_ON_ME_HINT}
+      />
+    );
   }
 
   if (total === 0) {
