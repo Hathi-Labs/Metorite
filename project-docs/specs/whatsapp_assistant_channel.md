@@ -727,6 +727,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-10e** ✅ built 2026-10-11 | Reply and react like a person (§13.7): the first part of each answer quotes the member's message, the AI can react with an emoji, a long job says so first, and a plain thanks gets a 👍 with no AI call | AGENT-SAFE | §13.7, E1 to E7. Fence: `tests/unit/test_wac_react.py` |
 | **WAC-10f** ✅ built 2026-10-11 | One chart language (§13.8): the web app's chart engine draws WhatsApp charts on the server, in the product's look. 13 kinds, from a short spec. Falls back to the old renderer | AGENT-SAFE | §13.8, F1 to F5. Fences: `src/lib/charts/charts.test.ts`, `tests/unit/test_wac_chart_engine.py` |
 | **WAC-10g** ✅ built 2026-10-11 | The same charts live in the web chat (§13.9): a `chart` template with a tooltip and a legend, and `barChart` through the same engine | AGENT-SAFE | §13.9, G1 to G5. Fence: `src/components/LiveChart.test.ts` |
+| **WAC-13** | "Metorite is updating", and "back online" (§16): a member whose message met a restart or an outage hears so, and hears again when Metorite answers | AGENT-SAFE | §16.5, U1 to U6. Fence: `tests/unit/test_wac_updating.py` |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
@@ -1505,3 +1506,76 @@ prepares the first. The member asks for the next one after the Confirm.
 
 The events, meetings and reminders that are not task blocks are a separate
 proposal: `specs/calendar_events_reminders.md`.
+
+## 16. Amendment of 2026-10-15: WAC-13, "Metorite is updating"
+
+**Owner directive, 2026-10-15.** While Metorite updates, a member's message can
+fail, and the member then reads a general error. The bot must say that
+Metorite is updating. When Metorite is back, the bot must tell the member,
+so the member can send the message again.
+
+### 16.1 What happens today (measured on the box, 2026-10-15)
+
+| Event | What the member got |
+|---|---|
+| A gateway restart (about 40 a day, one for each merge) | `gateway-drain.sh` holds the stop for up to 60 s while runs end. A run that is still going is cancelled. The sweep runs its message again about 5 minutes later. The member gets the answer late, and no word in between |
+| The AI Router does not answer (`v1.router_unavailable`, 05:36 to 06:04) | Each model call waited 120 s. The run hit its 4-minute limit (`code=timeout`), and the member got `REPLY_FAILED`: "Metorite could not answer just now. Try again in a few minutes." Three members' messages ended this way |
+
+The second row is the error that the owner saw. The Router hung without a
+restart: the customer console's LiteLLM logging worker backed up. To the
+member, a restart and an outage look the same.
+
+### 16.2 The design
+
+1. **"Updating" in place of the general error.** A model run that fails with
+   the code `timeout` or `connection` (`acb_llm.run_errors`) means that
+   Metorite itself did not answer. The member gets `REPLY_UPDATING`. The row
+   closes `failed` with the code `updating`. Every other failure keeps its
+   own text.
+2. **"Back online" once.** The sweep looks for rows of the code `updating`
+   from the last 23 hours. It sends `REPLY_BACK` once to each phone, and the
+   row's code becomes `updating_told`. The UPDATE that changes the code is
+   the claim, so two sweeps never send it twice.
+3. **What "back" means.** Both of these must be true:
+   - The Router's `/health` answers.
+   - Either a model run succeeded after the last failure, or 5 minutes
+     passed with no new failure of this kind.
+   A `/health` answer alone is not enough. On 2026-10-15 the Router answered
+   its health check while every model call hung.
+4. **A restart in the middle of a run.** At shutdown, each run that still
+   waits on the model sends `REPLY_UPDATING_HOLD` first, best effort and
+   bounded. The sweep then runs that message again after the restart, as
+   before, so the member gets the answer itself.
+
+### 16.3 What the bot does not do
+
+- It does not run a failed message again by itself. The member decides
+  whether the question still matters, and sends it again.
+- It does not probe the model with a call. A probe spends an org's AI
+  credits that no member asked to spend.
+- It sends no note after the 24-hour reply window. The rows of the last 23
+  hours are the limit.
+
+### 16.4 Words
+
+- `REPLY_UPDATING`: "Metorite is updating right now, so it could not answer.
+  I will message you here when it is back online."
+- `REPLY_BACK`: "Metorite is back online. Send your message again, and I
+  will answer it."
+- `REPLY_UPDATING_HOLD`: "Metorite is updating right now. Your answer comes
+  here in a few minutes."
+
+The web chat already uses the same idea and the same words ("Metorite is
+updating", the run error code `updating`).
+
+### 16.5 Acceptance (WAC-13)
+
+| # | Check | Fence |
+|---|---|---|
+| U1 | A run that fails with `timeout` or `connection` sends `REPLY_UPDATING` once, and the row closes `failed`, `updating` | `test_wac_updating.py` |
+| U2 | A run that fails with any other code sends the text of that code, as before | `test_wac_updating.py` |
+| U3 | When the Router is back, each phone gets `REPLY_BACK` once for all of its failed messages, and a second sweep sends nothing | `test_wac_updating.py` |
+| U4 | While the Router's `/health` fails, or within 5 minutes of the last failure with no success since, no note goes | `test_wac_updating.py` |
+| U5 | A phone whose link changed, and a row older than 23 hours, get no note, and the row is closed | `test_wac_updating.py` |
+| U6 | At shutdown, a run that waits on the model sends `REPLY_UPDATING_HOLD`, and the shutdown stays bounded | `test_wac_updating.py` |
+

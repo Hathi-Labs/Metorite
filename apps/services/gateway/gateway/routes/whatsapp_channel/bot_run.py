@@ -137,6 +137,15 @@ REPLY_CREDITS = (
     "Settings, Billing."
 )
 REPLY_FAILED = "Metorite could not answer just now. Try again in a few minutes."
+#: WAC-13 (§16.4): Metorite itself did not answer (a restart, an outage).
+REPLY_UPDATING = ("Metorite is updating right now, so it could not answer. I will "
+                  "message you here when it is back online.")
+#: WAC-13: sent once to each phone that got :data:`REPLY_UPDATING`, when back.
+REPLY_BACK = "Metorite is back online. Send your message again, and I will answer it."
+#: WAC-13: a restart cancels a run that waits on the model. The sweep runs the
+#: message again after the restart, so the answer still comes.
+REPLY_UPDATING_HOLD = ("Metorite is updating right now. Your answer comes here in "
+                       "a few minutes.")
 #: The early message that code sends when a run takes long and the AI did not
 #: say so itself (WAC-10e).
 REPLY_WORKING = ("Still on it. This one takes a little longer, and I will reply "
@@ -250,6 +259,20 @@ QUICK_TIMEOUT_S = 15
 #: A run this long with no early message gets :data:`REPLY_WORKING` (WAC-10e).
 #: Meta hides "typing…" after 25 seconds, so the member hears before that.
 WORKING_AFTER_S = 20
+
+#: WAC-13: the run error codes that mean Metorite itself did not answer.
+UNAVAILABLE_CODES = frozenset({"timeout", "connection"})
+#: The row codes of WAC-13: a "back online" note is owed, then it went.
+UPDATING_CODE = "updating"
+TOLD_CODE = "updating_told"
+#: With no success since, the AI path counts as back only after this long
+#: with no new failure of :data:`UNAVAILABLE_CODES`.
+OUTAGE_QUIET_S = 5 * 60
+#: A note goes only to a message this recent: inside WhatsApp's 24-hour window.
+BACK_WINDOW_S = 23 * 3600
+#: The bound on the shutdown notes, and on one health read of the Router.
+HOLD_TIMEOUT_S = 3.0
+HEALTH_TIMEOUT_S = 5.0
 
 #: The namespace of a thread id that a message opens (:func:`new_thread_id`).
 _THREAD_NS = uuid.UUID("5f3c1a2e-9d47-4b8e-a6c1-7e2d0b9f4a13")
@@ -574,6 +597,35 @@ SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
 """
 
 
+#: WAC-13: the newest owed row of each phone in the bound org. A row counts
+#: only once its failure is older than :data:`OUTAGE_QUIET_S` (``:quiet``,
+#: 0 after a success), and only inside the reply window.
+_OWED_SQL = """
+SELECT DISTINCT ON (wa_id)
+       id::text AS id, organization_id::text AS organization_id,
+       member_email, wa_id, wamid, chat_session_id
+  FROM whatsapp_bot_messages
+ WHERE direction = 'in'
+   AND state = 'failed'
+   AND error_code = :owed
+   AND chat_session_id IS NOT NULL
+   AND received_at >= now() - make_interval(secs => CAST(:window AS double precision))
+   AND updated_at < now() - make_interval(secs => CAST(:quiet AS double precision))
+ ORDER BY wa_id, received_at DESC
+"""
+
+#: The claim of one phone's note: only the UPDATE that changes the code sends.
+_TOLD_SQL = """
+UPDATE whatsapp_bot_messages
+   SET error_code = :told, updated_at = now()
+ WHERE direction = 'in'
+   AND state = 'failed'
+   AND error_code = :owed
+   AND wa_id = :wa
+RETURNING id
+"""
+
+
 def _request(row: Any) -> RunRequest:
     return RunRequest(str(row["id"]), str(row["organization_id"]),
                       str(row["member_email"]), str(row["wa_id"]),
@@ -873,6 +925,12 @@ async def record_inbound(
 _RUNS: set[asyncio.Task[None]] = set()
 #: The rows whose run is live in this process.
 _LIVE_ROWS: set[str] = set()
+#: WAC-13: the runs that wait on the model now, by row id. At shutdown each
+#: one hears :data:`REPLY_UPDATING_HOLD` before its cancel.
+_WAITING_ON_MODEL: dict[str, RunRequest] = {}
+#: WAC-13: when a model run last failed with :data:`UNAVAILABLE_CODES`, and
+#: when one last answered, in this process (epoch seconds).
+_OUTAGE: dict[str, float] = {"failed": 0.0, "answered": 0.0}
 #: One lock for each THREAD with a run waiting or live in this process, and
 #: how many runs hold or wait for it. A lock leaves the map with its last
 #: user, so the map holds only the threads that are busy now.
@@ -906,11 +964,102 @@ async def stop_runs(timeout: float = 5.0) -> None:
     closed as ``replied`` in a shielded write, or stays ``sending`` for the
     sweep to close, so nothing goes out twice (at-most-once).
     """
+    waiting = list(_WAITING_ON_MODEL.values())
+    if waiting:
+        # WAC-13: each member whose run waits on the model hears why the
+        # answer is late. Best effort, and bounded, so a slow Meta never
+        # holds the shutdown.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.gather(
+                *(_send(req, [REPLY_UPDATING_HOLD], kind="updating_hold")
+                  for req in waiting), return_exceptions=True), HOLD_TIMEOUT_S)
+        _log.info("whatsapp_channel.run.hold_notes", runs=len(waiting))
     runs = list(_RUNS)
     for task in runs:
         task.cancel()
     if runs:
         await asyncio.wait(runs, timeout=timeout)
+
+
+async def _router_healthy() -> bool:
+    """True when the AI Router's ``/health`` answers 200 (WAC-13).
+
+    No Router wired (a dev box, a test) counts as healthy: the AI path is
+    then the gateway's own. Never raises.
+    """
+    try:
+        import httpx
+        from acb_common import get_settings
+
+        base = str(getattr(get_settings(), "customer_console_url", "") or "").strip()
+        if not base:
+            return True
+        async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_S) as client:
+            resp = await client.get(base.rstrip("/") + "/health")
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _quiet_s() -> float:
+    """How old a failure must be before its note goes: 0 once a model run
+    succeeded after the last failure, else :data:`OUTAGE_QUIET_S`."""
+    return 0.0 if _OUTAGE["answered"] > _OUTAGE["failed"] else float(OUTAGE_QUIET_S)
+
+
+async def _phone_still_linked(req: RunRequest) -> bool:
+    """The phone's current link still names this member in this org."""
+    from gateway.routes.whatsapp_channel import inbound
+
+    link = current_link(await inbound._active_links_for_phone(req.wa_id))
+    return (link is not None and str(link["organization_id"]) == req.organization_id
+            and str(link["member_email"]).strip().lower() == req.member_email)
+
+
+async def _owed_notes(quiet: float) -> list[RunRequest]:
+    """The newest owed row of each phone in the bound org (:data:`_OWED_SQL`)."""
+    async with tenant_session() as db:
+        rows = (await db.execute(text(_OWED_SQL), {
+            "owed": UPDATING_CODE, "window": BACK_WINDOW_S, "quiet": quiet,
+        })).mappings().all()
+    return [_request(r) for r in rows]
+
+
+async def _claim_note(wa_id: str) -> bool:
+    """Close every owed row of *wa_id*. True for the ONE call that closed any."""
+    async with tenant_session() as db:
+        return (await db.execute(text(_TOLD_SQL), {
+            "owed": UPDATING_CODE, "told": TOLD_CODE, "wa": wa_id,
+        })).first() is not None
+
+
+async def tell_back(org: str) -> int:
+    """Send :data:`REPLY_BACK` once to each phone of *org* that is owed one.
+
+    The caller binds nothing: this binds *org*. Returns the notes sent. A
+    phone whose link changed, or an org that left the allowlist, gets no
+    note, and its rows are closed all the same.
+    """
+    token = bind_tenant(org)
+    try:
+        owed = await _owed_notes(_quiet_s())
+        if not owed or not await _router_healthy():
+            return 0
+        sent = 0
+        for req in owed:
+            if not await _claim_note(req.wa_id):
+                continue
+            if not flags.org_allowed(org) or not await _phone_still_linked(req):
+                _log.info("whatsapp_channel.back.skipped", organization_id=org,
+                          phone_hint=req.wa_id[-4:])
+                continue
+            if await _send(req, [REPLY_BACK], kind="back_online"):
+                sent += 1
+        if sent:
+            _log.info("whatsapp_channel.back.sent", organization_id=org, phones=sent)
+        return sent
+    finally:
+        release_tenant(token)
 
 
 async def wait_for_runs() -> None:
@@ -1355,6 +1504,7 @@ async def _model_answer(req: RunRequest, message: str,
                             native=native, writes=writes)
     if native:
         await _show_typing(req)
+    _WAITING_ON_MODEL[req.message_id] = req
     try:
         with refuse_cards(), (whatsapp_run(
                 AGENT, org=req.organization_id,
@@ -1381,10 +1531,20 @@ async def _model_answer(req: RunRequest, message: str,
         _log.warning("whatsapp_channel.run.agent_failed", run_id=run_id,
                      message_id=req.message_id, code=code,
                      error_type=type(exc).__name__)
+        if code in UNAVAILABLE_CODES:
+            # WAC-13: Metorite itself did not answer. The member hears so,
+            # and the row owes a "back online" note (`tell_back`).
+            _OUTAGE["failed"] = time.time()
+            if await _end(req.message_id, "failed", UPDATING_CODE):
+                await _send(req, [REPLY_UPDATING], kind="updating", attempt=attempt)
+            return None
         if await _end(req.message_id, "failed", code):
             await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
                         kind="failed", attempt=attempt)
         return None
+    finally:
+        _WAITING_ON_MODEL.pop(req.message_id, None)
+    _OUTAGE["answered"] = time.time()
 
     reply = final_text(result).strip()
     ui: list[Any] = []
@@ -1921,6 +2081,11 @@ async def sweep_once() -> int:
                 started += 1
         except Exception as exc:
             _log.warning("whatsapp_channel.sweep.org_failed",
+                         organization_id=org, error_type=type(exc).__name__)
+        try:
+            await tell_back(org)  # WAC-13: "back online", once a phone
+        except Exception as exc:
+            _log.warning("whatsapp_channel.back.failed",
                          organization_id=org, error_type=type(exc).__name__)
     return started
 

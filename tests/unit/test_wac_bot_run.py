@@ -1066,7 +1066,9 @@ class _Wrapped(Exception):
     (_status_error(402), CREDITS_TEXT, "credits"),
     (_Wrapped(_status_error(402)), CREDITS_TEXT, "credits"),
     (RuntimeError("boom"), FAILED_TEXT, "unknown"),
-    (_status_error(503), FAILED_TEXT, "connection"),
+    # WAC-13 (§16): Metorite itself did not answer, so the member hears that
+    # it is updating, and the row owes a "back online" note.
+    (_status_error(503), bot_run.REPLY_UPDATING, "updating"),
 ])
 async def test_a_failed_run_sends_one_fixed_reply_and_ends_failed(
     world: _World, exc, text, code,
@@ -1079,15 +1081,17 @@ async def test_a_failed_run_sends_one_fixed_reply_and_ends_failed(
     assert world.store.reply_writes == 0
 
 
-async def test_a_run_past_its_time_limit_fails_with_the_general_text(
+async def test_a_run_past_its_time_limit_says_metorite_is_updating(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """WAC-13: a run that met no answer from the AI path (2026-10-15, the
+    Router hung) tells the member that Metorite is updating."""
     monkeypatch.setattr(bot_run, "RUN_TIMEOUT_S", 0.05)
     world.agent.gate = asyncio.Event()   # never set
     await _post_and_run(_message())
-    assert world.sent == [(PHONE, FAILED_TEXT)]
+    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING)]
     (row,) = world.store.inbound_rows()
-    assert row["state"] == "failed" and row["code"] == "timeout"
+    assert row["state"] == "failed" and row["code"] == "updating"
 
 
 async def test_an_empty_answer_is_a_failure(world: _World) -> None:
