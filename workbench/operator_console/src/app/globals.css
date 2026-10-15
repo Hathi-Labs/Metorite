@@ -505,17 +505,24 @@ button.linklike.danger:hover:not(:disabled) {
   margin: 0;
   white-space: nowrap;
 }
+/* A pair that must stay on one line: Remove (or Revoke invite) beside Delete
+   permanently. With wrap on, the 1440 table gave each its own line (round 4).
+   At 390 the table scrolls, so one line costs nothing there. */
+.rowactions.nowrap {
+  flex-wrap: nowrap;
+}
 
 /* The confirm step of a member remove or delete, on its own row under the
    person. The block sticks to the left edge of the scrolled table and is no
    wider than the window, so its warning wraps and is never cut off at 390px.
-   A long address breaks anywhere, because it has no space to break at. */
+   A long address breaks anywhere, because it has no space to break at. It
+   sticks 8px in from the edge, so it does not sit flush on the scroll edge. */
 .confirmrow td {
   background: var(--panel-2);
 }
 .confirmblock {
   position: sticky;
-  left: 0;
+  left: 8px;
   width: min(560px, calc(100vw - 96px));
   display: flex;
   flex-direction: column;

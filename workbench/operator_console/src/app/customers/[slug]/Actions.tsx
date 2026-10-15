@@ -22,6 +22,7 @@ import {
   ownerCandidates,
   refusedBy,
   removeLabel,
+  removePrompt,
   type MemberRemoveMode,
 } from "@/lib/memberRemove";
 
@@ -322,7 +323,8 @@ function MembersPanel({
                           </div>
                         </td>
                         <td>
-                          <div className="rowactions">
+                          {/* `nowrap`: the pair stays on one line (round 4). */}
+                          <div className="rowactions nowrap">
                             {label !== null && (
                               <button
                                 type="button"
@@ -365,6 +367,7 @@ function MembersPanel({
                               email={m.email}
                               mode={open.mode}
                               label={label ?? "Remove"}
+                              prompt={removePrompt(m.status, m.email, slug)}
                               typed={typed}
                               setTyped={setTyped}
                               candidates={
@@ -416,6 +419,7 @@ function ConfirmRemove({
   email,
   mode,
   label,
+  prompt,
   typed,
   setTyped,
   candidates,
@@ -428,6 +432,8 @@ function ConfirmRemove({
   email: string;
   mode: MemberRemoveMode;
   label: string;
+  /** The remove or revoke question, which names the person (`removePrompt`). */
+  prompt: string;
   typed: string;
   setTyped: (v: string) => void;
   /** Who may take over billing, or null when this is not the only owner. */
@@ -458,6 +464,7 @@ function ConfirmRemove({
   const typedOk = mode === "remove" || typed === email;
   return (
     <div className="confirmblock">
+      {mode === "remove" && <div className="field-hint">{prompt}</div>}
       {candidates !== null && (
         <>
           <label htmlFor={`new-owner-${email}`}>New billing owner</label>

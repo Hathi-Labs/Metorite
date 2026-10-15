@@ -111,6 +111,27 @@ export function removeLabel(status: string): string | null {
   return "Remove";
 }
 
+/** The question a remove or revoke confirm asks. It names the person and the
+ *  organization, because at 390px the email column has scrolled out of view
+ *  when the confirm opens (round 4). A purge names the person in its own
+ *  warning, so it needs no question here. */
+export function removePrompt(
+  status: string,
+  email: string,
+  slug: string,
+): string {
+  if (status === "invited") {
+    return (
+      `Revoke the invitation for ${email} to ${slug}? They cannot accept ` +
+      `it after this.`
+    );
+  }
+  return (
+    `Remove ${email} from ${slug}? They lose access at once. Their work ` +
+    `stays.`
+  );
+}
+
 /** The mark the BFF puts on a refusal that is its own: a bad body, the rank
  *  check, the owner hand-over, a door that is not configured. */
 export const OWN_REFUSAL = "operator-console";

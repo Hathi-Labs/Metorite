@@ -8,6 +8,7 @@ import {
   refusedBy,
   registryFailure,
   removeLabel,
+  removePrompt,
   requiredRole,
 } from "./memberRemove";
 import type { Whoami } from "./whoami";
@@ -208,6 +209,27 @@ describe("the owner hand-over", () => {
     expect(withOwner.ok && withOwner.req.newOwner).toBe("ana@acme.test");
     const empty = readRemoveRequest({ ...base, new_owner_email: "" });
     expect(empty.ok && empty.req.newOwner).toBeUndefined();
+  });
+});
+
+describe("removePrompt", () => {
+  // Round 4: at 390px the email column has scrolled away when the confirm
+  // opens, so the question itself must name the person and the org.
+  it("a remove names the person and the organization", () => {
+    const p = removePrompt("active", "arjun@acme.example", "acme");
+    expect(p).toContain("Remove arjun@acme.example from acme?");
+  });
+
+  it("a revoke names the invitation, the person and the organization", () => {
+    const p = removePrompt("invited", "kiran@acme.example", "acme");
+    expect(p).toContain("Revoke the invitation for kiran@acme.example to acme?");
+    expect(p).not.toContain("Remove");
+  });
+
+  it("a suspended person is removed, not revoked", () => {
+    expect(removePrompt("suspended", "s@acme.example", "acme")).toContain(
+      "Remove s@acme.example from acme?",
+    );
   });
 });
 
