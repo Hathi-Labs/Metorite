@@ -426,8 +426,10 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
+  // A Download button names `download`, so the proxy sends the raw bytes and
+  // never the rendered page (`rendersAsPage`, 2026-10-16).
   const downloadUrl = externalDownloadUrl
-    ?? workspaceFileUrl(sessionId, entry.path);
+    ?? workspaceFileUrl(sessionId, entry.path, { download: true });
   // WS-27bm S8: a session's Markdown or HTML file also downloads as a PDF.
   // A file from the global artifacts browser (`externalDownloadUrl`) has no
   // session route to convert it, so it keeps the raw download only.
@@ -523,7 +525,10 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
           <div className="order-1 flex min-w-0 flex-1 basis-40 items-center gap-2">
             <span className="min-w-0 truncate text-sm font-semibold text-foreground" title={entry.name}>{entry.name}</span>
             <span className="text-xs text-muted-foreground truncate hidden sm:block">{entry.path}</span>
-            <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">· {formatBytes(entry.size)}</span>
+            {/* A file that a link opened has no known size (`ArtifactLink.tsx`). */}
+            {entry.size > 0 && (
+              <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">· {formatBytes(entry.size)}</span>
+            )}
           </div>
           <div className="order-3 flex w-full flex-wrap items-center gap-2 sm:order-2 sm:w-auto sm:shrink-0">
             {editing ? (

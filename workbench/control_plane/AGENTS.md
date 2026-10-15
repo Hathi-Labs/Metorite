@@ -190,6 +190,17 @@ Ten rules on top of the three above. Each one exists because it was broken:
      chat, the entity pill and the My Day feed use it. It refuses `//`, a
      backslash, a control mark and a path to another origin. Do not write a
      second check. Fences: `inAppLink.test.ts` and `feedHandled.test.ts`.
+   - A link to a workspace file opens the app's viewer, never the raw file
+     (owner report, 2026-10-16). `workspaceFileOfHref` in
+     `src/lib/artifactKind.ts` is the one parser of that link.
+     `artifactOpenSurface` in the same file is the one rule for the panel
+     or the full viewer, and the file card and `components/ArtifactLink.tsx`
+     both read it. `MessageBubble` provides the viewers. The link's `href`
+     is `artifactViewUrl`, the Artifacts app with `?file=`.
+   - A tab that opens a Markdown file address gets a 303 to that view
+     (`rendersAsPage`). A Download button names `download: true` in
+     `workspaceFileUrl`, so it always gets the raw bytes. Fences:
+     `components/artifactLink.test.ts` and `artifactLinkRoute.test.ts`.
    **A send during a run steers it, through one seam,** `src/lib/chatSteer.ts`
    (owner, 2026-10-12). The composer has ONE main control, Send or Stop,
    and no send mode and no queue. Do not add a second send path. Fences:

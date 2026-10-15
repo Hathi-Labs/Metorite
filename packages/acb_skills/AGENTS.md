@@ -19,6 +19,10 @@ clone cache.
 3. agent_tools.py -- call_agent, call_agents_parallel, call_agent_background for cross-agent delegation.
 4. web_tools.py -- web_search (DuckDuckGo) and fetch_page (Jina Reader). Zero credential.
 5. write_artifact.py -- write_artifact tool for surfacing created files in the UI.
+   The chat shows a card for each file. So `write_artifact`, `share_artifact`
+   and `_DELIVERED_NOTE` tell the model to name the file and to paste no link
+   (owner report, 2026-10-16). The result keeps `download_url`. Fence:
+   tests/unit/test_artifact_link_prompts.py.
    It also owns the run's artifact context, the ContextVar seam that every
    workspace tool reads through `artifact_context()` (H-201 part 4). Bind it
    with `bind_artifact_context`, change it with `derive_artifact_context`, and
