@@ -205,7 +205,7 @@ def test_a_document_layout_has_its_own_size_limit() -> None:
 class _DocProvider(_UiProvider):
     """Records each upload's type and each document it sends."""
 
-    def __init__(self, world: _World, *, fail_upload: bool = False) -> None:
+    def __init__(self, world: _World, *, fail_upload: bool = False) -> None:  # noqa: F811
         super().__init__(world)
         self.fail_upload = fail_upload
         self.documents: list[tuple[str, str, str | None]] = []
@@ -248,7 +248,7 @@ def _switches(monkeypatch: pytest.MonkeyPatch, *, documents_on: bool) -> None:
     monkeypatch.setattr(s, "whatsapp_documents", documents_on, raising=False)
 
 
-def _provider(monkeypatch: pytest.MonkeyPatch, world: _World, **kw: Any) -> _DocProvider:
+def _provider(monkeypatch: pytest.MonkeyPatch, world: _World, **kw: Any) -> _DocProvider:  # noqa: F811
     from whatsapp_ingestion.providers import factory
 
     prov = _DocProvider(world, **kw)
@@ -257,7 +257,7 @@ def _provider(monkeypatch: pytest.MonkeyPatch, world: _World, **kw: Any) -> _Doc
 
 
 async def test_the_member_gets_the_text_then_one_pdf_file_that_the_thread_names(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     _switches(monkeypatch, documents_on=True)
     prov = _provider(monkeypatch, world)
@@ -278,7 +278,7 @@ async def test_the_member_gets_the_text_then_one_pdf_file_that_the_thread_names(
 
 
 async def test_with_the_switch_off_the_kind_refuses_and_the_rule_offers_nothing(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     _switches(monkeypatch, documents_on=False)
     prov = _provider(monkeypatch, world)
@@ -292,7 +292,7 @@ async def test_with_the_switch_off_the_kind_refuses_and_the_rule_offers_nothing(
 
 
 async def test_a_failed_upload_sends_no_document_and_the_text_once(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     _switches(monkeypatch, documents_on=True)
     prov = _provider(monkeypatch, world, fail_upload=True)
@@ -300,3 +300,66 @@ async def test_a_failed_upload_sends_no_document_and_the_text_once(
     await _post_and_run(_message("Make me a deck"))
     assert prov.documents == []
     assert [s for _to, s in world.sent] == ["Here is the Q4 plan."]
+
+
+# ── Review round 1 ──────────────────────────────────────────────────────────
+
+
+def test_the_pdf_ships_its_own_geist_so_ci_lays_out_what_the_box_does() -> None:
+    """CI has no ``node_modules``, so a font read from there was a fallback in
+    CI and Geist on the box. The fonts now ship with the gateway."""
+    for name, _weight in pdf_render._GEIST_FACES:
+        assert (pdf_render._GEIST / name).is_file(), name
+    assert (pdf_render._GEIST / "OFL.txt").is_file()
+
+
+def test_a_word_with_tt_ff_or_fi_is_copied_and_searched_as_written() -> None:
+    """P1: Geist's ligatures wrote "seǪings" for "settings" in the text layer."""
+    words = "http settings Attention office staff fifty flow"
+    doc = _pdf({"format": "deck", "title": "Office settings", "slides": [
+        {"type": "content", "title": "Office settings", "text": words}]})
+    assert words in doc[0].get_text()
+    assert doc[0].search_for("settings") and doc[0].search_for("office")
+
+
+def test_a_slide_with_more_text_than_it_holds_is_refused_by_number() -> None:
+    """P1: the body was not drawn, and the tool still said ok."""
+    spec = {"format": "deck", "title": "T", "slides": [
+        {"type": "cover", "title": "T"},
+        {"type": "content", "title": "Where we stand", "text": "Revenue grew a lot. " * 57,
+         "bullets": ["A long finding about one account and its open deals. " * 4] * 8,
+         "visual": STATS}]}
+    layout = documents.prepare(spec)
+    with pytest.raises(PdfRenderError, match="Slide 2 has more text than one slide holds"):
+        document_to_pdf(json.dumps(layout))
+
+
+def test_a_full_slide_that_still_fits_keeps_every_bullet() -> None:
+    """The other side of the refusal: text that fits is drawn, never dropped."""
+    doc = _pdf({"format": "deck", "title": "T", "slides": [
+        {"type": "content", "title": "Where we stand", "text": "Revenue grew. " * 40,
+         "bullets": [f"Finding {i} about one account and its deals." for i in range(8)],
+         "visual": STATS}]})
+    text = doc[0].get_text()
+    assert "Revenue grew." in text
+    assert all(f"Finding {i}" in text for i in range(8))
+
+
+@pytest.mark.parametrize("cell", ["Product URL (draft)", "curl (v8)", "Add href to links",
+                                  "<!DOCTYPE x>"])
+def test_a_word_in_a_visual_is_never_read_as_a_resource(cell: str) -> None:
+    """P2: the SVG check read the table's own text."""
+    doc = _pdf({"format": "report", "title": "T", "sections": [
+        {"heading": "H", "visual": {**TABLE, "rows": [[cell, "Demo", "1"]]}}]})
+    assert cell in _all_text(doc)
+
+
+def test_a_second_document_for_the_same_member_is_refused_while_one_runs() -> None:
+    pdf_render._members_rendering.add("busy@x.io")
+    try:
+        with pytest.raises(PdfRenderError) as err:
+            asyncio.run(render_pdf("document", json.dumps(documents.prepare(DECK)),
+                                   member="busy@x.io", org="org-doc"))
+    finally:
+        pdf_render._members_rendering.discard("busy@x.io")
+    assert err.value.status == 429

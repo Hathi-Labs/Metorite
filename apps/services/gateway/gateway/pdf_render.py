@@ -678,11 +678,17 @@ DECK_SIZE = (960.0, 540.0)
 #: over a full-width visual. Longer text sits beside the visual.
 LEAD_MAX = 160
 
-_GEIST = (Path(__file__).resolve().parents[4] / "workbench" / "control_plane"
-          / "node_modules" / "geist" / "dist" / "fonts" / "geist-sans")
+#: Geist with no GSUB table, so it makes no ligature: with one, MuPDF wrote a
+#: wrong character for "tt", "ff" and "fi", and "settings" searched as
+#: "seǪings" (review round 1). ``fonts/README.md`` says how they were made.
+_GEIST = Path(__file__).resolve().parent / "fonts"
 _GEIST_FACES = (("Geist-Regular.ttf", "normal"), ("Geist-SemiBold.ttf", "bold"))
-_SVG_RESOURCE = re.compile(r"<\s*(image|script|foreignobject|use)\b|href|url\s*\(",
-                           re.IGNORECASE)
+_SVG_RESOURCE = re.compile(
+    r"<\s*(image|script|foreignobject|use)\b|href|url\s*\(|<!(doctype|entity)|@import",
+    re.IGNORECASE)
+#: The text between two tags. The check reads tags and attributes only, so a
+#: table cell that says "Product URL (draft)" is no resource (review round 1).
+_SVG_TEXT = re.compile(r">[^<]*<")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 
 
@@ -740,18 +746,26 @@ class _Writer:
         self.c = _palette()
 
     def html(self, page: Any, rect: Any, body: str, css: str, *,
-             shrink: float = 1.0) -> float:
+             shrink: float = 1.0, where: str | None = None) -> float:
         """Place *body* in *rect*. Returns the spare height, or -1 when it does
-        not fit (then nothing is drawn)."""
+        not fit (then nothing is drawn).
+
+        With *where*, a body that does not fit even at *shrink* is a refusal
+        that names the slide, never a slide with its text left out (review
+        round 1: the tool said "ok" and the member's bullets were gone)."""
         spare, _scale = page.insert_htmlbox(
             rect, body, css=self.faces + css, archive=self.archive, scale_low=shrink)
+        if spare < 0 and where is not None:
+            raise PdfRenderError(
+                f"{where} has more text than one slide holds. Split it into two "
+                "slides, or shorten the text and the bullets.", status=422)
         return float(spare)
 
     def visual(self, page: Any, rect: Any, visual: dict[str, Any]) -> None:
         pymupdf = self.pymupdf
         if visual.get("svg"):
             svg = str(visual["svg"])
-            if _SVG_RESOURCE.search(svg):
+            if _SVG_RESOURCE.search(_SVG_TEXT.sub("><", svg)):
                 raise PdfRenderError("A visual names a resource, so it was not drawn.")
             src = pymupdf.open(stream=svg.encode("utf-8"), filetype="svg")
             try:
@@ -806,7 +820,8 @@ def _deck(w: _Writer, layout: dict[str, Any]) -> None:
     pymupdf, c = w.pymupdf, w.c
     width, height = DECK_SIZE
     m = 48.0
-    for slide in layout["slides"]:
+    for number, slide in enumerate(layout["slides"], start=1):
+        where = f"Slide {number}"
         page = w.doc.new_page(width=width, height=height)
         kind = slide.get("type", "content")
         title, subtitle = slide.get("title", ""), slide.get("subtitle", "")
@@ -818,20 +833,20 @@ def _deck(w: _Writer, layout: dict[str, Any]) -> None:
                    f"<h1>{_inline(title)}</h1>"
                    + (f"<p class='sub'>{_inline(subtitle)}</p>" if subtitle else ""),
                    f"h1 {{font-size: 50pt; font-weight: bold; color: {c['fg']}; margin: 0 0 12pt 0;}}"
-                   f" .sub {{font-size: 22pt; color: {c['muted']}; margin: 0;}}", shrink=0.5)
+                   f" .sub {{font-size: 22pt; color: {c['muted']}; margin: 0;}}", shrink=0.5, where=where)
             body = _body_html(slide.get("text", ""), slide.get("bullets", []))
             if body:
                 below = head.y1 - max(spare, 0) + 22
                 w.html(page, pymupdf.Rect(72, below, width - 72, 430), body,
                        f"p, li {{font-size: 20pt; color: {c['fg']}; margin: 0 0 6pt 0;}}",
-                       shrink=0.5)
+                       shrink=0.5, where=where)
             if kind == "cover":
                 line = " · ".join(v for v in (
                     f"Prepared for {layout['for']}" if layout.get("for") else "",
                     layout.get("date", "")) if v)
                 w.html(page, pymupdf.Rect(72, 440, width - 72, 470),
                        f"<p>{_inline(line)}</p>",
-                       f"p {{font-size: 15pt; color: {c['muted']}; margin: 0;}}", shrink=0.6)
+                       f"p {{font-size: 15pt; color: {c['muted']}; margin: 0;}}", shrink=0.6, where=where)
             continue
         if kind == "section":
             page.draw_rect(page.rect, color=None, fill=_rgb(c["stripe"]))
@@ -840,24 +855,24 @@ def _deck(w: _Writer, layout: dict[str, Any]) -> None:
                    f"<h1>{_inline(title)}</h1>"
                    + (f"<p>{_inline(subtitle)}</p>" if subtitle else ""),
                    f"h1 {{font-size: 46pt; font-weight: bold; color: {c['fg']}; margin: 0 0 10pt 0;}}"
-                   f" p {{font-size: 22pt; color: {c['muted']}; margin: 0;}}", shrink=0.5)
+                   f" p {{font-size: 22pt; color: {c['muted']}; margin: 0;}}", shrink=0.5, where=where)
             continue
         if kind == "quote":
             w.html(page, pymupdf.Rect(110, 120, width - 110, 380),
                    f"<p class='q'>“{_inline(slide.get('quote', ''))}”</p>"
                    + (f"<p class='by'>{_inline(slide.get('by', ''))}</p>" if slide.get("by") else ""),
                    f".q {{font-size: 34pt; color: {c['fg']}; margin: 0 0 14pt 0;}}"
-                   f" .by {{font-size: 18pt; color: {c['muted']}; margin: 0;}}", shrink=0.5)
+                   f" .by {{font-size: 18pt; color: {c['muted']}; margin: 0;}}", shrink=0.5, where=where)
             continue
         # A content slide: the title, then the text and the visual.
         w.html(page, pymupdf.Rect(m, 30, width - m, 86),
                f"<h2>{_inline(title)}</h2>",
                f"h2 {{font-size: 34pt; font-weight: bold; color: {c['fg']}; margin: 0;}}",
-               shrink=0.55)
+               shrink=0.55, where=where)
         top = 90.0
         if subtitle:
             w.html(page, pymupdf.Rect(m, 88, width - m, 114), f"<p>{_inline(subtitle)}</p>",
-                   f"p {{font-size: 17pt; color: {c['muted']}; margin: 0;}}", shrink=0.6)
+                   f"p {{font-size: 17pt; color: {c['muted']}; margin: 0;}}", shrink=0.6, where=where)
             top = 118.0
         page.draw_rect(pymupdf.Rect(m, top + 2, m + 56, top + 6), color=None,
                        fill=_rgb(c["primary"]))
@@ -870,18 +885,18 @@ def _deck(w: _Writer, layout: dict[str, Any]) -> None:
         if visual and body and not bullets and len(text) <= LEAD_MAX:
             # A short lead line over a full-width visual.
             spare = w.html(page, pymupdf.Rect(m, top + 18, width - m, top + 80), body,
-                           css, shrink=0.6)
+                           css, shrink=0.6, where=where)
             lead_end = top + 80 - max(spare, 0)
             w.visual(page, pymupdf.Rect(m, lead_end + 6, width - m, bottom), visual)
         elif visual and body:
             w.html(page, pymupdf.Rect(m, top + 22, 372, bottom), body,
-                   css.replace("21pt", "19pt"), shrink=0.45)
+                   css.replace("21pt", "19pt"), shrink=0.45, where=where)
             w.visual(page, pymupdf.Rect(392, top + 16, width - m, bottom), visual)
         elif visual:
             w.visual(page, pymupdf.Rect(m, top + 16, width - m, bottom), visual)
         elif body:
             w.html(page, pymupdf.Rect(m, top + 24, width - m, bottom), body,
-                   css.replace("21pt", "25pt"), shrink=0.45)
+                   css.replace("21pt", "25pt"), shrink=0.45, where=where)
 
 
 def _report(w: _Writer, layout: dict[str, Any]) -> None:
@@ -900,7 +915,7 @@ def _report(w: _Writer, layout: dict[str, Any]) -> None:
                 f" .sub {{font-size: 13pt; color: {c['muted']}; margin: 0 0 4pt 0;}}"
                 f" .meta {{font-size: 9.5pt; color: {c['muted']}; margin: 0;}}")
     rect = pymupdf.Rect(m, m, width - m, bottom)
-    spare = w.html(page, rect, head, head_css, shrink=0.6)
+    spare = w.html(page, rect, head, head_css, shrink=0.6, where="The title of the report")
     y = rect.y1 - max(spare, 0) + 8
     page.draw_rect(pymupdf.Rect(m, y, m + 56, y + 3), color=None, fill=_rgb(c["primary"]))
     y += 18
@@ -922,7 +937,8 @@ def _report(w: _Writer, layout: dict[str, Any]) -> None:
                 break
             page, y = w.doc.new_page(width=width, height=height), m
         # Taller than a page: it is shrunk to fit one page.
-        spare = w.html(page, pymupdf.Rect(m, y, width - m, bottom), body, text_css, shrink=0.3)
+        spare = w.html(page, pymupdf.Rect(m, y, width - m, bottom), body, text_css, shrink=0.3,
+                       where="A section of the report")
         y = bottom - max(spare, 0) + gap
 
     for section in layout["sections"]:

@@ -1588,7 +1588,7 @@ that documents are off, and the scope rule does not offer documents.
 | D3 | The member gets one WhatsApp document part with a `.pdf` file name and the caption. The thread keeps a rendition that names the file and each slide title | `test_wac_documents.py`, a run test |
 | D4 | A model value with HTML or a script reaches the PDF as plain text, and a spec key that holds an image, an SVG or a URL is refused | `test_wac_documents.py` |
 | D5 | Too many slides, too many visuals or a text past its limit is refused with what to fix, before any render | `test_wac_documents.py` |
-| D6 | The layout runs in the `render_pdf` child, and a second render for the same member waits or is refused as before | `test_pdf_render.py` |
+| D6 | The layout runs in the `render_pdf` child, and a second render for the same member waits or is refused as before | `test_wac_documents.py` |
 | D7 | With the switch off, the kind refuses, and the scope rule does not offer documents | `test_wac_documents.py` |
 | D8 | An upload or a send that surely failed is a failed part. An unclear one is never sent again | `test_wac_documents.py` |
 
