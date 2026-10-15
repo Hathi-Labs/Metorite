@@ -1418,8 +1418,16 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     saved = row.state or {}
     generic = _module(entity) is not None
     parent_only = _parent_of_only(ctx, entity)
-    if parent_only and (row.initial_done_at is None or saved.get("in_progress")):
-        return  # not in yet, or mid-walk: the next normal run owns it
+    if parent_only and (
+        row.initial_done_at is None or saved.get("in_progress")
+        or saved.get("held_skipped") or saved.get("unavailable")
+        or (entity == "lead" and not saved.get("converted_both"))
+    ):
+        # Not in yet, mid-walk, marked from a hold (CRM-Q16) or from a refusal
+        # (CRM-Q15), or a lead cursor that still owes its CRM-Q5 full read: the
+        # next normal run owns it. A parent-only read here would rebuild the
+        # cursor without the mark, and the relink or the backfill would be lost.
+        return
     if not parent_only and _skip_held(ctx, entity):
         # A held parent's children land with no link (review P1). Mark it, so
         # its next read, released or on its own, re-reads them once.

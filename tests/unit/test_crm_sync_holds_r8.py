@@ -662,3 +662,31 @@ async def test_a_child_made_during_a_hold_lands_when_the_parent_comes_back(
     assert _count(ns, "crm_activities", ns.org_a,
                   "ext_id = 'n9' AND contact_id IS NOT NULL") == 1
 
+
+async def test_an_only_run_right_after_a_release_keeps_the_relink(ns, zoho) -> None:
+    """Round 4. Contacts held, then released, then Activities synced on its
+    own before any normal run. The parent-only read must not clear the mark,
+    or the note that landed with no parent during the hold never relinks."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    admin = _admin("admin@crm-sync.test", ns.org_a)
+    assert (await _call_json(admin, "PUT", "/crm/sync/modules/contacts", {"sync": False})).status_code == 200
+    a.add("Contacts", "c9", 5, Last_Name="New", Account_Name={"id": "a1"})
+    a.add("Notes", "n9", 6, Note_Title="On the new one", Note_Content="Body",
+          Parent_Id={"id": "c9"}, **{"$se_module": "Contacts"})
+    assert (await engine.run_org(ns.org_a)).status == "ok"  # marks contacts, n9 has no parent
+    assert _count(ns, "crm_activities", ns.org_a, "ext_id = 'n9'") == 0
+    assert (await _call_json(admin, "PUT", "/crm/sync/modules/contacts", {"sync": True})).status_code == 200
+
+    alone = await engine.run_org(ns.org_a, only=frozenset({"activities"}))
+    assert alone.status == "ok"
+    normal = await engine.run_org(ns.org_a)
+    assert normal.status == "ok"
+    assert _count(ns, "crm_contacts", ns.org_a, "ext_id = 'c9'") == 1
+    assert _count(ns, "crm_activities", ns.org_a,
+                  "ext_id = 'n9' AND contact_id IS NOT NULL") == 1
+
