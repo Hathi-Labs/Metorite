@@ -26,6 +26,8 @@ import { DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { openDoc, openGenUI } from "@/lib/sidePanelStore";
 import { useSidePanelFits } from "@/lib/sidePanelFit";
+import { GenUiFileContext, genUiFiles } from "@/lib/genUiFiles";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
@@ -157,6 +159,13 @@ function MessageBubble({
 }) {
   // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
   const panelFits = useSidePanelFits();
+  // What a card may do with a workspace file: the report card opens its
+  // report and saves its PDF through this (`lib/genUiFiles.ts`).
+  const { isMobile } = useViewMode();
+  const files = useMemo(
+    () => genUiFiles({ sessionId, isMobile, panelFits, openDoc, onFileOpen }),
+    [sessionId, isMobile, panelFits, onFileOpen],
+  );
   // Deliberately NOT `role === "user"`.  `role` is the model's vocabulary: it
   // says which side of the conversation a turn sits on, and in a room every
   // person's turn is `role: "user"` — mine and yours alike.  Ownership is an
@@ -709,6 +718,7 @@ function MessageBubble({
           view lives in the side panel); specs carrying a request_id route
           interactions through the blocking HITL resume path. */}
       {blocks.length > 0 && (
+        <GenUiFileContext.Provider value={files}>
         <EntityIndexContext.Provider value={entityIndex}>
           {blocks.map((b, k) =>
             b.kind === "cards" ? (
@@ -731,6 +741,7 @@ function MessageBubble({
             ),
           )}
         </EntityIndexContext.Provider>
+        </GenUiFileContext.Provider>
       )}
       {/* Inline email-assistant cards (editable draft, rule disable/delete).
           Inert unless the message contains email-assistant tool calls, so this

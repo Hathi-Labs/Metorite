@@ -16,6 +16,7 @@
 
 export type ArtifactKind =
   | "markdown"
+  | "report"
   | "html"
   | "react"
   | "code"
@@ -51,6 +52,13 @@ const DOCX_MIME =
 export const MARKDOWN_EXTS: readonly string[] = ["md", "markdown", "mdx"];
 export const HTML_EXTS: readonly string[] = ["html", "htm"];
 
+/**
+ * A report the agent made (`make_report`, owner directive 2026-10-16). It is
+ * JSON, so the code list below would take it. It is tested first, by its
+ * whole ending, and every viewer draws it with `ReportView`.
+ */
+export const REPORT_SUFFIX = ".report.json";
+
 export function extOf(name: string): string {
   return (name.split(".").pop() ?? "").toLowerCase();
 }
@@ -78,6 +86,7 @@ export function classifyArtifact(
   mimeType = "",
 ): ArtifactKind {
   const ext = extOf(name);
+  if (name.toLowerCase().endsWith(REPORT_SUFFIX)) return "report";
   if (MARKDOWN_EXTS.includes(ext)) return "markdown";
   if (HTML_EXTS.includes(ext)) return "html";
   if ((ext === "jsx" || ext === "tsx") && isArtifactPath(path)) return "react";
@@ -105,6 +114,15 @@ export function isArchive(name: string, mimeType = ""): boolean {
 /** Kinds with a rendered view distinct from their source. */
 export function isRenderable(kind: ArtifactKind): boolean {
   return kind === "html" || kind === "react";
+}
+
+/**
+ * Kinds that open RENDERED by a click and by themselves: a document, a
+ * full-page artifact and a report. Anything else stays a file card. The file
+ * card, the auto-open rule and the chat's report card all ask this.
+ */
+export function opensRendered(kind: ArtifactKind): boolean {
+  return kind === "markdown" || kind === "report" || isRenderable(kind);
 }
 
 /**

@@ -5,6 +5,8 @@
  *
  * Rendering matrix:
  *   .md                 → react-markdown + remark-gfm
+ *   .report.json        → ReportView (the one report renderer); a file that
+ *                         does not parse as a report shows as JSON source
  *   .py .ts .js .sh … → shiki syntax highlighter
  *   .pdf                → react-pdf (pdfjs-dist)
  *   .docx               → mammoth.js (converted to HTML)
@@ -35,6 +37,8 @@ import {
   workspaceFileUrl,
 } from "@/lib/artifactKind";
 import type { FileEntry } from "./ArtifactSidebar";
+import { ReportView } from "@/components/genUITemplates";
+import { type Report, parseReportFile, siblingFileUrl } from "@/lib/report";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -61,6 +65,8 @@ type ViewerState =
   | { status: "error"; message: string }
   | { status: "text"; content: string; lang?: string }
   | { status: "markdown"; content: string }
+  /** A report file that parsed. `content` is its source, for "Code". */
+  | { status: "report"; report: Report; content: string }
   /** A runnable artifact: HTML for the sandbox, or React source to compile. */
   | { status: "rendered"; content: string; kind: "html" | "react" }
   | { status: "image"; url: string }
@@ -391,6 +397,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
         if (!cancelled) {
           if (kind === "markdown") {
             setState({ status: "markdown", content: text });
+          } else if (kind === "report") {
+            // A report that does not parse opens as its JSON source: the
+            // raw file, never a blank sheet.
+            const report = parseReportFile(text, entry.path);
+            setState(report ? { status: "report", report, content: text } : { status: "text", content: text, lang: "json" });
           } else if (kind === "html" || kind === "react") {
             setState({ status: "rendered", content: text, kind });
           } else if (kind === "code") {
@@ -435,6 +446,14 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     !externalDownloadUrl && canDownloadPdf(kind)
       ? workspaceFileUrl(sessionId, entry.path, { pdf: true })
       : null;
+  // A report's PDF sits beside it. The /artifacts browser reads files through
+  // a route of its own, so the PDF goes through that route too.
+  const reportPdfUrl = (report: Report): string | null => {
+    if (!report.pdf) return null;
+    return externalDownloadUrl
+      ? siblingFileUrl(externalDownloadUrl, report.pdf)
+      : workspaceFileUrl(sessionId, report.pdf);
+  };
   const deletable =
     !readOnly && !externalDownloadUrl && (
       entry.path.startsWith("inputs/") ||
@@ -558,7 +577,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               </>
             ) : (
               <>
-                {renderable && (
+                {(renderable || state.status === "report") && (
                   <button
                     onClick={() => setShowSource((v) => !v)}
                     className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
@@ -715,6 +734,14 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               code={state.content}
               lang={state.kind === "html" ? "html" : "tsx"}
             />
+          )}
+
+          {state.status === "report" && !showSource && (
+            <ReportView report={state.report} pdfUrl={reportPdfUrl(state.report)} />
+          )}
+
+          {state.status === "report" && showSource && (
+            <CodeBlock code={state.content} lang="json" />
           )}
 
           {state.status === "markdown" && (

@@ -9,6 +9,7 @@ import {
   classifyArtifact,
   isArtifactPath,
   isRenderable,
+  opensRendered,
   pdfNameFor,
   workspaceFileUrl,
 } from "./artifactKind";
@@ -51,6 +52,13 @@ describe("classifyArtifact", () => {
     expect(classifyArtifact("b.bin", "outputs/b.bin")).toBe("binary");
   });
 
+  it("a report file is a report, tested before the code list that holds json", () => {
+    expect(classifyArtifact("q3.report.json", "outputs/q3.report.json")).toBe("report");
+    expect(classifyArtifact("Q3.REPORT.JSON", "outputs/Q3.REPORT.JSON")).toBe("report");
+    expect(classifyArtifact("q3.json", "outputs/q3.json")).toBe("code");
+    expect(classifyArtifact("report.json", "outputs/report.json")).toBe("code");
+  });
+
   it("is case-insensitive about extensions", () => {
     expect(classifyArtifact("R.HTML", "outputs/R.HTML")).toBe("html");
     expect(classifyArtifact("D.JSX", "outputs/D.JSX")).toBe("react");
@@ -72,9 +80,19 @@ describe("isRenderable", () => {
   it("is true for exactly the kinds with a rendered view", () => {
     expect(isRenderable("html")).toBe(true);
     expect(isRenderable("react")).toBe(true);
-    for (const k of ["markdown", "code", "image", "pdf", "docx", "text", "binary"] as const) {
+    for (const k of ["markdown", "report", "code", "image", "pdf", "docx", "text", "binary"] as const) {
       expect(isRenderable(k)).toBe(false);
     }
+  });
+});
+
+// A report is not "renderable": that word means HTML or React for the
+// sandbox, and the edit preview would hand a report's JSON to it. It opens
+// rendered all the same, through `ReportView`.
+describe("opensRendered", () => {
+  it("is true for a document, an artifact and a report", () => {
+    for (const k of ["markdown", "html", "react", "report"] as const) expect(opensRendered(k), k).toBe(true);
+    for (const k of ["code", "image", "pdf", "docx", "text", "binary"] as const) expect(opensRendered(k), k).toBe(false);
   });
 });
 
@@ -85,7 +103,7 @@ describe("canDownloadPdf", () => {
   it("is true for Markdown and HTML only", () => {
     expect(canDownloadPdf("markdown")).toBe(true);
     expect(canDownloadPdf("html")).toBe(true);
-    for (const k of ["react", "code", "image", "pdf", "docx", "text", "binary"] as const) {
+    for (const k of ["react", "report", "code", "image", "pdf", "docx", "text", "binary"] as const) {
       expect(canDownloadPdf(k)).toBe(false);
     }
   });
