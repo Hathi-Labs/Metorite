@@ -10,8 +10,11 @@
  *
  * - an `image` or an `imageReference` goes;
  * - a `link` or a `linkReference` becomes its own words, with no target;
- * - a `definition` goes, so a reference has nothing to point at;
  * - raw `html` goes.
+ *
+ * A `[r]: url` definition draws nothing by itself, and each reference to it
+ * becomes its words, so no definition rule is needed (a mutation that keeps
+ * definitions changes no output).
  *
  * `MarkdownBody` runs it when `textOnly` is set. Fence:
  * `src/components/reportView.test.ts` ("report text drops every image and
@@ -23,7 +26,7 @@ interface MdNode {
   children?: MdNode[];
 }
 
-const DROP = new Set(["image", "imageReference", "definition", "html"]);
+const DROP = new Set(["image", "imageReference", "html"]);
 const UNWRAP = new Set(["link", "linkReference"]);
 
 function clean(node: MdNode): void {
