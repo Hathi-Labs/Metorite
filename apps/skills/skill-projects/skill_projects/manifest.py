@@ -1287,6 +1287,8 @@ UI_ACTIONS: dict[str, str] = {
     "agentRunsApi.list": "agent_runs",
     "agentRunsApi.get": "agent_runs",
     "agentRunsApi.post": "post_agent_activity",
+    # EA-12d: "Ask an agent", a member starts a run for their own agent.
+    "agentRunsApi.start": "start_agent_run",
     "agentRunsApi.enabled": "agent_runs",
     # ── notificationsApi ─────────────────────────────────────────────────
     "notificationsApi.list": "notifications",
