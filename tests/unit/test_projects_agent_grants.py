@@ -342,7 +342,6 @@ ALLOWED_CLAIMS: dict[str, str] = {
     "an admin can see them": "server-hidden: rebalance, conflicts, dataset HR tier",
     "an admin can see it": "server-hidden: analytics_dataset.py HR tier",
     # A capability of the run, not a permission: no tool makes a PDF.
-    "You cannot make a PDF yourself": "no PDF tool without run_command (spec §14)",
     # The server's own answer: `may_edit` on the status-set read, which is
     # `core.can_manage_settings`, the status write's predicate.
     "may not edit the statuses": "server answer: writes.status_edit_refusal",
@@ -351,7 +350,7 @@ ALLOWED_CLAIMS: dict[str, str] = {
     "rows you cannot see": "server-filtered: guarded.move_project subtree count",
 }
 #: ``len(ALLOWED_CLAIMS)`` on 2026-10-07. Lower it with each removal.
-CLAIM_CEILING = 8
+CLAIM_CEILING = 7
 
 
 def _md_text(path: Path) -> str:

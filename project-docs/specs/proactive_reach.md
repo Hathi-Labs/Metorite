@@ -10,6 +10,13 @@ WhatsApp adapter, the loop and two routes. My Profile shows "Messages
 Metorite starts", with a preview and "Send my brief now". `REACH_ENABLED` is
 off, and `REACH_ORGS` and `REACH_MEMBERS` are empty.
 
+**RE-1a is LIVE, 2026-10-15,** for the two members with a WhatsApp link. The
+first morning sent one brief and lost one brief and one interrupt to a closed
+window. **RE-2a is BUILT, 2026-10-15** (branch `ws59-reach-catchup`, no
+migration). A message in a closed window waits for the member's next message,
+or goes as a template with its content when `REACH_BRIEF_TEMPLATE` or
+`REACH_NEEDS_YOU_TEMPLATE` names an approved one (§8.1a, H-315).
+
 **What this spec owns.** How Metorite decides to contact a member outside the
 app, and how the message reaches them. That covers the outbound path, the
 attention budget, the delivery ledger, the channel adapters, the reply loop
@@ -425,7 +432,7 @@ it read them.
 | Name | When | Body (category UTILITY, language `en`) | Button (quick reply) |
 |---|---|---|---|
 | `metorite_daily_brief` | The brief, window closed, in the first 3 hours of the day | Hi {{1}}, your Metorite brief for {{2}} is ready. {{3}} items need you today, starting with: {{4}}. Tap below to see the full brief. | Show my brief |
-| `metorite_needs_you` | An interrupt, window closed | Hi {{1}}, something in Metorite needs you now: {{2}}. Tap below to see it. | Show me |
+| `metorite_needs_you` | An interrupt of `approval` cards only, window closed | Hi {{1}}, your approval is pending in Metorite: "{{2}}". Tap below to review it. | Show me |
 | `metorite_opt_in` | The link flow, when Metorite asks for opt-in | Later, with RE-2 | Yes · No |
 
 **The owner submits them at Meta** (H-315). The auto-mode classifier refused
@@ -437,6 +444,17 @@ sets `REACH_BRIEF_TEMPLATE=metorite_daily_brief` and
 `metorite_meeting_reminder` are approved utility templates. Their words do
 not fit a brief, and they have no button, so Reach does not use them.
 
+**Measured 2026-10-15, at submission.** Meta's pre-check refused three general
+bodies for `metorite_needs_you` as utility, and it recommended marketing:
+
+1. `Hi {{1}}, something in Metorite needs you now: {{2}}. Tap below to see it.`
+2. `Hi {{1}}, an item in your Metorite account needs your action: {{2}}. ...`
+3. `Hi {{1}}, an update from Metorite: "{{2}}" is waiting for your response. ...`
+
+The approval body in the table passed the pre-check. The owner chose to narrow
+the template, not to make it marketing. So the template carries an approval
+only, and every other interrupt in a closed window waits (§8.1a).
+
 ### 8.1a Hold, then catch up (RE-2a)
 
 The window is closed for most members at the brief time. On 2026-10-15 the
@@ -444,8 +462,8 @@ first live morning sent one brief and dropped one brief and one interrupt
 for that reason. So Reach holds a message instead of dropping it.
 
 - **An interrupt in a closed window** goes as `metorite_needs_you` when that
-  template is set. Otherwise Reach holds it: it plans nothing and logs
-  nothing. The first tick after the member writes to the bot sends it as
+  template is set and every card in it is of kind `approval`. Otherwise Reach
+  holds it: it plans nothing and logs nothing. The first tick after the member writes to the bot sends it as
   free text, inside the cap and outside quiet hours.
 - **A brief in a closed window** goes as `metorite_daily_brief` in the first
   3 hours of the day, when that template is set. Otherwise Reach holds it

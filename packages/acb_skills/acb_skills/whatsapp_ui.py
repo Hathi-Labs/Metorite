@@ -76,6 +76,9 @@ WITHHELD_TOOLS: frozenset[str] = frozenset({
     "write_artifact", "share_artifact", "read_attachment",
     # a background run posts its answer into the web chat thread
     "call_agent_background",
+    # the web chat's PDF card. WhatsApp sends the same PDF as a file through
+    # whatsapp_ui kind "document" (WAC-12), so the function stays.
+    "make_document",
 })
 
 #: The most elements one reply sends. More reads as spam on a phone.
@@ -137,6 +140,12 @@ class OutMessage:
     #: The pending act that this part offers (WAC-4: the Confirm and Cancel
     #: buttons). ``bot_run`` marks the act offered once Meta took the part.
     act_id: str | None = None
+    #: The SVG of an image built for print (:func:`printing`, WAC-12). A PDF
+    #: places it as vector. A chat image never carries it.
+    svg: str | None = None
+    #: A "document" part (WAC-12): the PDF and its file name.
+    pdf: bytes | None = None
+    filename: str | None = None
 
     @property
     def counts(self) -> bool:
@@ -166,6 +175,9 @@ class WhatsAppRun:
     writes: bool = False
     #: The act that this run parked (``whatsapp_acts.ParkedAct``), or None.
     parked: Any = None
+    #: Lays out a document layout as a PDF (WAC-12). ``bot_run`` gives it when
+    #: ``WHATSAPP_DOCUMENTS`` is on, through ``gateway.pdf_render``. None: off.
+    document: Callable[[dict[str, Any]], Awaitable[bytes]] | None = None
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
@@ -177,6 +189,7 @@ def whatsapp_run(agent: str, *,
                  org: str | None = None,
                  notify: Callable[[str], Awaitable[bool]] | None = None,
                  writes: bool = False,
+                 document: Callable[[dict[str, Any]], Awaitable[bytes]] | None = None,
                  ) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
@@ -185,7 +198,7 @@ def whatsapp_run(agent: str, *,
     value it found. *writes* lets the run park one write (WAC-4).
     """
     run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify,
-                      writes=writes)
+                      writes=writes, document=document)
     token = _RUN.set(run)
     try:
         yield run
@@ -446,6 +459,24 @@ def _chart_rendition(kind: str, title: str, data: dict[str, Any]) -> str:
     return head
 
 
+#: True while :func:`printing` builds an image for a PDF (WAC-12).
+_PRINT: ContextVar[bool] = ContextVar("whatsapp_print", default=False)
+#: The chart engine draws a chart for print this many times its width.
+PRINT_SCALE = 2
+
+
+@contextlib.contextmanager
+def printing() -> Iterator[None]:
+    """Build images for print (WAC-12): an SVG image keeps its SVG and gets
+    no PNG, and the chart engine draws in its light mode at
+    :data:`PRINT_SCALE`. A chat image is built as before outside it."""
+    token = _PRINT.set(True)
+    try:
+        yield
+    finally:
+        _PRINT.reset(token)
+
+
 def _engine_png(spec: dict[str, Any]) -> bytes | None:
     """The chart from the chart engine (WAC-10f), or None to fall back.
 
@@ -456,6 +487,8 @@ def _engine_png(spec: dict[str, Any]) -> bytes | None:
     if not engine.enabled():
         return None
     try:
+        if _PRINT.get():
+            return engine.render_png(_with_hues(spec), mode="light", scale=PRINT_SCALE)
         return engine.render_png(_with_hues(spec))
     except engine.EngineUnavailable:
         return None
@@ -486,9 +519,9 @@ def _chart(data: dict[str, Any]) -> OutMessage:
     png = _engine_png({**data, "type": kind})
     if png is None and kind not in _OLD_KINDS:
         raise _Refused(f'chart "type" must be one of: {", ".join(_OLD_KINDS)}')
-    if png is None:
-        png = render.to_png(_old_chart_svg(kind, title, data))
     rendition = _chart_rendition(kind, title, data) + (f"\n{caption}" if caption else "")
+    if png is None:
+        return _svg_image(_old_chart_svg(kind, title, data), rendition, caption)
     return OutMessage("image", rendition, png=png, caption=caption or None)
 
 
@@ -522,13 +555,19 @@ def _table(data: dict[str, Any]) -> OutMessage:
         " | ".join("" if c is None else str(c) for c in r) for r in rows
     ]
     rendition = f"[Table: {title}]\n" + "\n".join(lines) + (f"\n{caption}" if caption else "")
-    return OutMessage("image", rendition, png=render.to_png(svg), caption=caption or None)
+    return _svg_image(svg, rendition, caption)
 
 
 def _image(data: dict[str, Any], svg: str, rendition: str) -> OutMessage:
     caption = _text(data, "caption", limit=CAPTION_MAX, required=False)
-    return OutMessage("image", rendition + (f"\n{caption}" if caption else ""),
-                      png=render.to_png(svg), caption=caption or None)
+    return _svg_image(svg, rendition + (f"\n{caption}" if caption else ""), caption)
+
+
+def _svg_image(svg: str, rendition: str, caption: str | None) -> OutMessage:
+    """An image from our own SVG: a PNG for the chat, or the SVG for print."""
+    if _PRINT.get():
+        return OutMessage("image", rendition, svg=svg, caption=caption or None)
+    return OutMessage("image", rendition, png=render.to_png(svg), caption=caption or None)
 
 
 def _head(data: dict[str, Any]) -> tuple[str, str | None]:
@@ -670,7 +709,8 @@ def build(kind: str, data: dict[str, Any]) -> OutMessage:
     msg = builder(data)
     if len(msg.rendition) > RENDITION_MAX:
         msg = OutMessage(msg.kind, msg.rendition[: RENDITION_MAX - 1] + "…",
-                         interactive=msg.interactive, png=msg.png, caption=msg.caption)
+                         interactive=msg.interactive, png=msg.png, caption=msg.caption,
+                         svg=msg.svg)
     return msg
 
 
@@ -722,6 +762,20 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - react: {"emoji": "👍"}: one emoji ON the member's message, as a person
       reacts. Not an element, and a later one replaces it. Call it in the
       same step as your first other tool call.
+    - document: a PDF FILE the member can forward: a sales or pitch deck, a
+      report, an analysis. Collect the facts first (CRM, email, projects),
+      then send ONE spec: {"format": "deck"|"report", "title", "subtitle",
+      "for" (who it is for), "filename", "caption",
+      deck: "slides": [{"type": "cover"|"section"|"content"|"quote"|
+      "closing", "title", "subtitle", "text", "bullets" (8),
+      "quote", "by", "visual"}] x 1-20;
+      report: "sections": [{"heading", "text", "bullets", "visual"}] x 1-30}.
+      A "visual" is {"kind": chart|stats|table|board|timeline|gantt|agenda,
+      ...that kind's data above, with a "title"}, at most 12. Only a
+      "content" slide holds one. Text and numbers only: **bold** works, and
+      no HTML, image or URL. One idea a slide: a title that says the point,
+      3 to 5 short bullets or one visual with a lead line. Call "working"
+      first, because a document takes a while.
     - working: {"text"}: sent NOW, before your answer, once. Use it FIRST
       when the job takes more than about 15 seconds (an image, a
       calculation, code, a page, a long search): one line of what you are
@@ -755,6 +809,8 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
                 "error": f"this reply already has {MAX_MESSAGES} elements. Put the rest in text"}
     if str(kind or "").strip().lower() == "view":
         return await _send_view(run, data)
+    if str(kind or "").strip().lower() == "document":
+        return await _send_document(run, data)
     try:
         # In a worker thread: drawing an image must never hold the gateway's
         # event loop, which serves every tenant (`whatsapp_render` locks).
@@ -764,6 +820,40 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     run.outbox.append(message)
     return {"ok": True, "queued": len(run.outbox),
             "note": "It goes after your text. Refer to it in one line."}
+
+
+async def _send_document(run: WhatsAppRun, data: Any) -> dict[str, Any]:
+    """A deck or a report as a PDF file (WAC-12, spec §15).
+
+    ``acb_skills.documents.prepare`` checks the spec and draws every visual
+    with the builders above, in print mode. ``run.document`` lays it out in
+    ``gateway.pdf_render``'s child process. The PDF is queued as one element.
+    """
+    from acb_skills import documents
+
+    if run.document is None:
+        return {"ok": False, "error": "documents are off in this chat. Answer in text"}
+    try:
+        # A worker thread: the chart engine and the SVG checks never hold
+        # the gateway's event loop. The thread copies this context.
+        layout = await asyncio.to_thread(documents.prepare, data)
+    except (ValueError, TypeError, OverflowError) as exc:
+        return {"ok": False, "error": str(exc)}
+    given = data.get("filename") if isinstance(data, dict) else None
+    name = documents.filename_of(layout["title"], given if isinstance(given, str) else "")
+    caption = ""
+    if isinstance(data, dict) and isinstance(data.get("caption"), str):
+        caption = data["caption"].strip()[:CAPTION_MAX]
+    try:
+        pdf = await run.document(layout)
+    except ValueError as exc:  # pdf_render.PdfRenderError says what to fix
+        return {"ok": False, "error": f"the PDF could not be made: {exc}"}
+    rendition = documents.rendition(layout, name) + (f"\n{caption}" if caption else "")
+    run.outbox.append(OutMessage("document", rendition[:RENDITION_MAX], pdf=pdf,
+                                 filename=name, caption=caption or None))
+    return {"ok": True, "queued": len(run.outbox), "file": name,
+            "note": "The PDF goes after your text. Say in one line what it holds, "
+                    "and do not repeat its content."}
 
 
 #: The longest "working" line. One line, read at a glance.

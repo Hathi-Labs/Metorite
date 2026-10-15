@@ -1,10 +1,16 @@
 # Artifacts — one library for what members and agents make
 
-**Status: PROPOSED, 2026-10-15. Verified against code on 2026-10-15.** Owner
+**Status: ACTIVE, 2026-10-15. Verified against code on 2026-10-15.** Owner
 directive of 2026-10-15: "start building the comprehensive system for managing
 artifacts". Board row **WS-60**. §13 lists the six choices the owner must
 confirm. Each one has a recommended default, and the first two slices build on
 those defaults behind a flag.
+
+**AM-1 is BUILT, 2026-10-15** (branch `ws60-am1-artifact-registry`, migration
+268, dark behind `ARTIFACT_REGISTRY_ENABLED`). `acb_memory/artifacts.py` is
+the one writer. The blob store registers in the same transaction. The two
+read routes are under `/artifacts`. `scripts/backfill_artifacts.py` registers
+what exists. The flag is off everywhere.
 
 **What this spec owns.** What an artifact is, where its row lives, and who
 can see it. How a member finds it again, and how long it stays. How every
@@ -365,7 +371,8 @@ keeps the 422 on a refused ref.
 ### 6.6 On WhatsApp
 
 - **Out:** a run on WhatsApp makes or finds an artifact. The bot sends it as
-  a document (PDF, DOCX, XLSX, CSV, image) through a new `send_document`.
+  a document (PDF, DOCX, XLSX, CSV, image) through the `send_document` that
+  WS-47 WAC-12 adds (PR #1040). AM-6 adds no second one.
   One `cta_url` button, "Open in Metorite", opens `/artifacts/<id>`. The bot
   renders an html or react artifact to PDF with the existing `format=pdf` path.
   When the render fails, the bot sends the link alone. A zip is sent as the
@@ -520,10 +527,10 @@ My Day and Reach loops, in the shape of `routes/email/memory_purge.py`:
 
 Each slice is one PR, dark behind its flag, verified by the commands in §12.
 The order is the dependency order. AM-1 and AM-2 build on the §13 defaults
-and need no owner answer first. The flags are `ARTIFACT_REGISTRY` (gateway)
-and `NEXT_PUBLIC_ARTIFACT_LIBRARY` (frontend).
+and need no owner answer first. The flags are `ARTIFACT_REGISTRY_ENABLED`
+(gateway) and `NEXT_PUBLIC_ARTIFACT_LIBRARY` (frontend).
 
-### AM-1 · The registry — AGENT-SAFE
+### AM-1 · The registry — AGENT-SAFE · BUILT 2026-10-15, dark
 
 Migration (R6, expand only): `artifacts`, `artifact_member`,
 `artifact_shares`, with RLS in the shape of migration 255. The live database
@@ -598,8 +605,8 @@ sweep on in production.
 
 ### AM-6 · Channels — AGENT-SAFE, one gate
 
-`send_document` in `cloud_api.py`, and the document send with the `cta_url`
-button. Html and react to PDF. Inbound media kept as an artifact.
+The document send on WAC-12's `send_document`, with the `cta_url` button.
+Html and react to PDF. Inbound media kept as an artifact.
 `write_artifact` back on WhatsApp, with the card as a document.
 
 Done when: a WhatsApp run that makes a PDF sends it as a document with one
@@ -639,7 +646,7 @@ unchanged by this spec).
 ```
 # Backend, per slice. Run the DB first (R8):
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_artifact_registry_r8.py tests/unit/test_artifact_access.py \
+uv run pytest tests/unit/test_artifact_registry.py tests/unit/test_artifact_access.py \
   tests/unit/test_artifact_sweep.py tests/unit/test_artifact_routes.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_boundary.py -q
 uv run pytest tests/unit/test_h201_artifact_routes.py tests/unit/test_h227_thread_files.py -q
@@ -695,10 +702,10 @@ others gate the slice they name.
 
 | Rule | Fence |
 |---|---|
-| Only `register_artifact` writes `artifacts` | `tests/unit/test_artifact_registry_writers.py`: a grep over the tree for `INSERT INTO artifacts` outside `acb_memory/artifacts.py` fails |
+| Only `register_artifact` writes `artifacts` | `tests/unit/test_artifact_registry.py`: a grep over the tree for `INSERT INTO artifacts` outside `acb_memory/artifacts.py` fails |
 | Every new table is tenant-scoped | `tests/unit/test_tenant_coverage.py` (exists) |
 | No second subject grammar | `tests/unit/test_subject_grammar.py`: `artifact_shares.subject` writes go through the one validator |
 | No bytes without `can_read` | `tests/unit/test_artifact_routes.py`: every bytes route refuses a second member on a personal row, with the two-org fixture (R8) |
 | The sweep never purges a kept row | `tests/unit/test_artifact_sweep.py`, verified red first |
 | The app draws no shell of its own | `src/lib/shell/seams.test.ts` (exists) |
-| The classifier has one home | `src/lib/artifactKind.test.ts` reads the shared table and fails on a second list |
+| The classifier has one home | `tests/unit/test_artifact_registry.py` reads the viewer's sets in `lib/artifactKind.ts` and fails when one maps to a kind the registry does not expect |

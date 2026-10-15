@@ -30,7 +30,21 @@ describe("reachView", () => {
       status: 200,
       body: { brief: "*Your day*", interrupts: " ", window_open: true, linked: true },
     });
-    expect(v).toEqual({ kind: "ready", brief: "*Your day*", interrupts: null, blocked: null });
+    expect(v).toEqual({
+      kind: "ready",
+      brief: "*Your day*",
+      interrupts: null,
+      blocked: null,
+      held: false,
+    });
+  });
+
+  it("reads held only when the gateway says so", () => {
+    const v = reachView({
+      status: 200,
+      body: { brief: null, interrupts: "x", window_open: false, linked: true, held: true },
+    });
+    expect(v.kind === "ready" && v.held).toBe(true);
   });
 });
 

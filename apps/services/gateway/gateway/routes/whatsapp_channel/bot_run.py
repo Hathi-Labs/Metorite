@@ -225,6 +225,18 @@ SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
     "Metorite web app, and add a link button.\n"
 ))
 
+#: What a run with documents on adds to its scope rule (WAC-12, §15).
+#: Advisory, like ``SCOPE_RULE``: ``whatsapp_ui`` checks every spec.
+DOCUMENTS_RULE = (
+    "You can send a PDF file that the member can forward: a sales deck, a pitch "
+    "deck, a report or an analysis. When the member asks for one, first collect "
+    "the facts from Metorite (the CRM, email, projects, through the assistants "
+    "that hold them). Never invent a number. Then call whatsapp_ui kind "
+    "\"document\" once, with a deck of slides or a report of sections, and "
+    "charts, tiles and tables as visuals. Tell the member in one line what the "
+    "file holds."
+)
+
 # ── The limits ──────────────────────────────────────────────────────────────
 
 #: WhatsApp's limit for one text message.
@@ -1247,18 +1259,21 @@ def _offered_ai_choice(history: list[dict[str, str]]) -> bool:
 
 def build_payload(message: str, history: list[dict[str, str]],
                   member_email: str, *, native: bool = False,
-                  writes: bool = False) -> dict[str, Any]:
+                  writes: bool = False, documents: bool = False) -> dict[str, Any]:
     """The event payload of one run.
 
     ``_history_loader`` makes the batch executor take its STRUCTURED path on
     every turn, the first one too: the scope rule is then a leading system
     message, and never text folded into the member's turn
     (``executor._run_with_maf_agent``). *native* picks the scope rule of the
-    WhatsApp profile (WAC-10a), and *writes* the rule of WAC-4.
+    WhatsApp profile (WAC-10a), and *writes* the rule of WAC-4. *documents*
+    adds :data:`DOCUMENTS_RULE` (WAC-12).
     """
     prior = [model_turn(m) for m in history]
     rule = (SCOPE_RULE_WRITES if native and writes
             else SCOPE_RULE_NATIVE if native else SCOPE_RULE)
+    if native and documents:
+        rule = f"{rule}\n{DOCUMENTS_RULE}"
     return {
         "mode": "chat",
         "message": message,
@@ -1351,15 +1366,17 @@ async def _model_answer(req: RunRequest, message: str,
     from acb_skills.whatsapp_ui import whatsapp_run
     from gateway.routes.whatsapp_channel import views
 
+    documents = native and flags.documents_enabled()
     payload = build_payload(message, history, req.member_email,
-                            native=native, writes=writes)
+                            native=native, writes=writes, documents=documents)
     if native:
         await _show_typing(req)
     try:
         with refuse_cards(), (whatsapp_run(
                 AGENT, org=req.organization_id,
                 views=views.runner(req.member_email, req.organization_id),
-                notify=_notifier(req), writes=writes)
+                notify=_notifier(req), writes=writes,
+                document=_document_renderer(req) if documents else None)
                 if native else contextlib.nullcontext()) as wa_run:
             result = await _still_working(req, wa_run, asyncio.wait_for(
                 _executor()(
@@ -1512,6 +1529,24 @@ def _said_elsewhere(i: int, texts: list[str]) -> bool:
         if len(mine & theirs) / len(mine) >= _RESTATED:
             return True
     return False
+
+
+def _document_renderer(req: RunRequest) -> Callable[[dict[str, Any]], Awaitable[bytes]]:
+    """Lays out a document for this run's member (WAC-12): the ONE PDF seam.
+
+    ``pdf_render.render_pdf`` runs the layout in its child process, with its
+    timeout and its turn for each member and each org. The member and the org
+    are the link's, never the message's (D-WAC-3).
+    """
+    async def _render(layout: dict[str, Any]) -> bytes:
+        import json
+
+        from gateway.pdf_render import render_pdf
+
+        return await render_pdf("document", json.dumps(layout, ensure_ascii=False),
+                                member=req.member_email, org=req.organization_id)
+
+    return _render
 
 
 def _resend_text(stored: str | None) -> str | None:
@@ -1799,7 +1834,7 @@ async def _send(req: RunRequest, texts: list[Any], *, kind: str,
 
 async def _send_part(provider: Any, wa_id: str, part: Any, *,
                      reply_to: str | None = None) -> str:
-    """Send one part: a text, an interactive element, or an image.
+    """Send one part: a text, an interactive element, an image or a document.
 
     *reply_to* quotes the member's message above the part, as a person's
     swipe reply does (WAC-10e). Meta drops the quote, and still delivers the
@@ -1818,6 +1853,10 @@ async def _send_part(provider: Any, wa_id: str, part: Any, *,
         return await provider.send_text(wa_id, part.rendition, **quote)
     if part.kind == "interactive":
         return await provider.send_interactive(wa_id, part.interactive, **quote)
+    if part.kind == "document":  # a PDF file (WAC-12)
+        media_id = await provider.upload_media(part.pdf, "application/pdf", part.filename)
+        return await provider.send_document(wa_id, media_id, filename=part.filename,
+                                            caption=part.caption, **quote)
     media_id = await provider.upload_media(part.png, "image/png", "metorite.png")
     return await provider.send_image(wa_id, media_id, caption=part.caption, **quote)
 
