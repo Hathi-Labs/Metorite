@@ -301,6 +301,16 @@ class Settings(BaseSettings):
     # The one reader is `gateway.reach.flags`. A flip on a box is gate
     # `enforcement-flip`. Spec: project-docs/specs/proactive_reach.md.
     # Fence: tests/unit/test_reach_loop.py.
+    # ── The artifact registry (WS-60 AM-1, 2026-10-15) ──────────────────────
+    #
+    # `artifact_registry_enabled` turns on the one register hook in the blob
+    # store and the two read routes under /artifacts, default OFF. With it
+    # off, no row lands in `artifacts` and the routes answer 404. The one
+    # reader is `acb_memory.artifacts.enabled`. A flip on a box is gate
+    # `enforcement-flip`. Spec: project-docs/specs/artifact_management.md
+    # §11 AM-1. Fence: tests/unit/test_artifact_registry.py.
+    artifact_registry_enabled: bool = False
+
     reach_enabled: bool = False
     reach_orgs: str = ""
     reach_members: str = ""
