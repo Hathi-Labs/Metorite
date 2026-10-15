@@ -486,6 +486,58 @@ async def stored_draft_replies(db: Any, account_id: str) -> bool:
     return getattr(row, "draft_replies", None) is True
 
 
+#: The providers whose mailbox runs no background write until the member
+#: chooses Auto-run (WS-17 EM-G11c2, ``email_app_master_plan.md``
+#: §12.3.13.7). For these, a missing settings row reads OFF. Outlook and IMAP
+#: keep the old read, ON, so a live mailbox does not stop.
+AUTO_RUN_OFF_WITHOUT_ROW = frozenset({"gmail"})
+
+
+async def auto_run_on(db: Any, account_id: str) -> bool:
+    """The account's "Run rules automatically on new mail" choice.
+
+    🔴 **The ONE reader of ``email_assistant_settings.auto_run``** (WS-17
+    EM-G11c2, §12.3.13.7). Four callers use it: the rule run of each sync
+    cycle (``scheduler_hooks.auto_run_rules_for_account``), the Reply Zero
+    backfill, the cleanup sweep of each sync cycle and
+    ``GET /email/assistant/settings``. The GET must give the same answer,
+    because the settings screen and the agent tool PUT its body back. A
+    different answer there would store ON for a member who chose nothing.
+
+    - A stored row gives its stored value.
+    - A missing row gives OFF for a provider in
+      :data:`AUTO_RUN_OFF_WITHOUT_ROW` (Gmail), and ON for the others.
+    - A missing mailbox gives OFF, so a failed read writes nothing.
+
+    The read joins ``email_accounts``, so it runs under the RLS of the bound
+    tenant and needs no organization argument.
+    """
+    row = (await db.execute(text(
+        "SELECT a.provider, s.auto_run, s.account_id AS settings_row "
+        "FROM email_accounts a "
+        "LEFT JOIN email_assistant_settings s ON s.account_id = a.id "
+        "WHERE a.id = :aid"
+    ), {"aid": account_id})).fetchone()
+    if row is None:
+        return False
+    if getattr(row, "settings_row", None) is None:
+        return (getattr(row, "provider", "") or "") not in AUTO_RUN_OFF_WITHOUT_ROW
+    # ``is True``: only a stored true runs the background writes.
+    return getattr(row, "auto_run", None) is True
+
+
+def proposes_only(rule: dict[str, Any]) -> bool:
+    """True for a rule with ``automated=false`` (WS-17 EM-G11c2, G5).
+
+    ``create_rule`` promises such a rule "proposes for approval". So the
+    runner logs it as a PENDING row in the History and changes nothing in
+    the mailbox. The member approves it there
+    (``POST /email/rules/history/{id}/approve``). A rule dict with no
+    ``automated`` key keeps the old behaviour and applies.
+    """
+    return rule.get("automated", True) is False
+
+
 # The rule that the "Auto draft replies" switch governs.
 # ``sync_draft_reply_action`` edits it and ``reply_rule_drafts`` reads it, so
 # both name it from here. The names cover the renames of migration 92.

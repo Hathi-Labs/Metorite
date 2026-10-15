@@ -298,6 +298,11 @@ async def get_assistant_settings(
                 reply_rule_drafts,
             )
             draft_replies = await reply_rule_drafts(db, account_id)
+        # WS-17 EM-G11c2: the ONE auto_run reader, so a missing Gmail row
+        # reads OFF here too. A PUT of this body then stores no ON that the
+        # member did not choose.
+        from gateway.routes.email.automation.rules import auto_run_on
+        auto_run = await auto_run_on(db, account_id)
         return {
             "account_id": account_id,
             "about": row.about if row else "",
@@ -307,7 +312,7 @@ async def get_assistant_settings(
             # idempotent re-signing recognises it (a client-side re-derivation
             # could differ by whitespace and get double-signed).
             "signature_text": signature_text((row.signature if row else "") or ""),
-            "auto_run": bool(row.auto_run) if row else True,
+            "auto_run": auto_run,
             "cold_email_blocker": (row.cold_email_blocker if row else "OFF") or "OFF",
             "digest_frequency": (row.digest_frequency if row else "OFF") or "OFF",
             "personal_instructions": (

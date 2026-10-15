@@ -347,6 +347,23 @@ async def _thread_is_self_only(db: Any, account_id: str, thread_id: str) -> bool
     return isinstance(n, int) and n > 0 and getattr(row, "outside", True) is False
 
 
+def conversation_match_proposes(
+    matches: list[dict[str, Any]] | None,
+) -> bool:
+    """True when a conversation rule among ``matches`` has ``automated=false``
+    (WS-17 EM-G11c2, §12.3.13.7, G5).
+
+    Such a rule proposes for approval, so its label must wait for the member
+    too. The status row of the thread is still written for the UI. Each
+    caller of :func:`project_reply_status_from_matches` that then calls
+    :func:`_reconcile_thread_labels` asks this first.
+    """
+    from gateway.routes.email.automation.rules import proposes_only
+    return any(
+        _match_conversation_key(m) and proposes_only(m.get("rule") or {})
+        for m in matches or [])
+
+
 async def project_reply_status_from_matches(
     db: Any, account_id: str, message_row: Any,
     matches: list[dict[str, Any]] | None,
@@ -2170,6 +2187,7 @@ async def ask_job_status(read: StatusRead | None) -> JobStatus:
 async def _mark_thread_replied(
     account_id: str, thread_id: str,
     sent_body: str | None = None, sent_subject: str | None = None,
+    *, labels: bool = True,
 ) -> JobStatus | None:
     """After the user sends a reply, re-determine the thread's status with the
     AI (exact inbox-zero aiDetermineThreadStatus parity) and reconcile labels:
@@ -2207,6 +2225,12 @@ async def _mark_thread_replied(
     WS-17 EM-T16 PR-A: it returns :data:`UNDECIDED` when the ask gave no
     decision, and None in every other case. The Reply Zero backfill then
     writes its back-off mark. The send and draft routes drop the value.
+
+    WS-17 EM-G11c2 (§12.3.13.7, G3): with ``labels=False`` it writes the
+    status row and stops. It writes no label, local or at the provider, and
+    it builds no provider. The Reply Zero backfill passes the Auto-run choice
+    of the mailbox. The send and draft routes keep the default, because the
+    member sent the reply.
     """
     if not thread_id:
         return None
@@ -2250,8 +2274,8 @@ async def _mark_thread_replied(
         # Reconcile the thread to a SINGLE conversation label (mutually
         # exclusive, inbox-zero parity): clear any stale Reply / Awaiting / FYI /
         # Follow-up across the thread and apply the new status label. Needs the
-        # provider.
-        if not acc:
+        # provider. EM-G11c2: with Auto-run OFF the backfill writes no label.
+        if not acc or not labels:
             return
         from acb_llm.key_store import get_key_store  # noqa: PLC0415
         store = get_key_store()
@@ -2604,6 +2628,12 @@ async def _maybe_classify_threads(account_id: str) -> None:
     EM-T16 PR-A: in ``on``, with ``email_triage_once_per_cycle``, an
     undecided status ask keeps a back-off mark (:func:`_mark_status_backoff`),
     and the selection drops a marked thread before both caps.
+
+    🔴 WS-17 EM-G11c2 (§12.3.13.7, G3): the backfill obeys Auto-run, on each
+    provider. Phase 0 reads it through the one helper ``rules.auto_run_on``.
+    With Auto-run OFF it still writes each status row for the UI, but it
+    builds no provider, moves no mail and writes no label, local or at the
+    provider. Fence: ``tests/unit/test_email_background_writes.py``.
     """
     try:
         from gateway.routes.email.automation.engine import (  # noqa: PLC0415
@@ -2614,7 +2644,11 @@ async def _maybe_classify_threads(account_id: str) -> None:
             read_classification,
             resolve_classification,
         )
+        from gateway.routes.email.automation.rules import auto_run_on
         async with _tenant_session() as db:
+            # EM-G11c2: the member's Auto-run choice decides every write of
+            # this job other than the status rows.
+            writes = await auto_run_on(db, account_id)
             # Select threads that NEED WORK, not simply the newest ones.
             #
             # This used to take the 200 most recent threads from the last 30
@@ -2710,7 +2744,7 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # 2026-08-06: a session parked mid-LLM-call, a migration's ALTER
             # TABLE queued behind its lock, and Postgres's FIFO lock queue then
             # stalling every later reader of that table.
-            outcome = await _mark_thread_replied(account_id, tid)
+            outcome = await _mark_thread_replied(account_id, tid, labels=writes)
             await _back_off_if_undecided(
                 backoff, outcome, account_id, tid, latest_ids[tid])
 
@@ -2727,7 +2761,9 @@ async def _maybe_classify_threads(account_id: str) -> None:
                 "WHERE id = :id"
             ), {"id": account_id})).fetchone()
         provider = store = None
-        if acc_row:
+        # EM-G11c2: with Auto-run OFF there is no provider, so the resolver
+        # moves no mail (`_restore_conversation_messages`).
+        if acc_row and writes:
             from acb_llm.key_store import get_key_store  # noqa: PLC0415
             store = get_key_store()
             creds = json.loads(store.decrypt(acc_row.credentials_encrypted))
@@ -2789,7 +2825,10 @@ async def _maybe_classify_threads(account_id: str) -> None:
                     # account. The status row and the labels are two views of
                     # one decision; writing only the first is what let them
                     # disagree.
-                    if keep_label:
+                    # EM-G11c2: with Auto-run OFF, the status row is the
+                    # only write. No label changes, local or upstream.
+                    if keep_label and writes \
+                            and not conversation_match_proposes(matches):
                         await _reconcile_thread_labels(
                             db, provider, account_id, r.thread_id, keep_label)
             except LLMUnavailable as exc:
