@@ -91,6 +91,14 @@ class CommentIn(BaseModel):
 #: enforcing one rule should be able to point at each other.
 MAX_COMMENT_DEPTH = 1
 
+#: The longest comment that a signed agent request may write (WS-55 EA-6c,
+#: EA3-35, ``external_agent_access.md`` §9.2). The edge refuses a longer body
+#: first (``agent_edge.tools.MAX_COMMENT_CHARS``). This is the gateway's own
+#: copy of the rule, as ``tasks._narrow_agent_body`` is for a task write. A
+#: member's comment has no cap here. ``test_mcp_edge_comments.py`` pins the
+#: two numbers equal.
+AGENT_MAX_COMMENT_CHARS = 20_000
+
 
 async def _parent_comment(db: Any, parent_id: str, task_id: str) -> Any:
     """The comment a reply may attach to, or a 4xx that says why not.
@@ -228,6 +236,12 @@ async def add_comment(
     body = (payload.body or "").strip()
     if not body:
         raise HTTPException(status_code=422, detail="A comment needs a body.")
+    if getattr(user, "agent", None) is not None and len(body) > AGENT_MAX_COMMENT_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A comment from an agent holds at most {AGENT_MAX_COMMENT_CHARS}"
+                   " characters.",
+        )
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)

@@ -179,9 +179,11 @@ def _app() -> FastAPI:
         return _who(user)
 
     # A write route that no pair of MCP_WRITE_ROUTES names. It was
-    # `POST /projects/tasks` until EA-6d made that a write pair.
-    @app.post("/projects/tasks/{task_id}/comments")
-    async def _comment(task_id: str, user: UserContext = Depends(get_current_user)) -> dict:
+    # `POST /projects/tasks` until EA-6d made that a write pair, and the
+    # comment POST until EA-6c did the same. The hard delete of a task is a
+    # non-goal of spec §3, so it never becomes a pair.
+    @app.delete("/projects/tasks/{task_id}")
+    async def _delete(task_id: str, user: UserContext = Depends(get_current_user)) -> dict:
         return _who(user)
 
     @app.get("/healthz")
@@ -393,26 +395,30 @@ async def test_a_member_with_no_organization_refuses(world):
 
 
 #: A write route that no pair of ``MCP_WRITE_ROUTES`` names. EA-6d made
-#: ``POST /projects/tasks`` a write pair, so these two tests moved to the
-#: comment route, which EA-6c has not built yet.
-_UNLISTED_WRITE = TASK + "/comments"
-_UNLISTED_WRITE_TEMPLATE = "/projects/tasks/{task_id}/comments"
+#: ``POST /projects/tasks`` a write pair, and EA-6c made the comment POST
+#: one. So these two tests use the hard delete of a task. Spec §3 makes a
+#: hard delete a non-goal, so this pair never joins the list.
+_UNLISTED_METHOD = "DELETE"
+_UNLISTED_WRITE = TASK
+_UNLISTED_WRITE_TEMPLATE = "/projects/tasks/{task_id}"
 
 
 async def test_a_method_other_than_get_refuses(world):
-    headers = _signed(_UNLISTED_WRITE, method="POST")
-    assert (await _call("POST", _UNLISTED_WRITE, headers)).status_code == 401
+    assert (_UNLISTED_METHOD, _UNLISTED_WRITE_TEMPLATE) not in agent_oauth.MCP_WRITE_ROUTES
+    headers = _signed(_UNLISTED_WRITE, method=_UNLISTED_METHOD)
+    assert (await _call(_UNLISTED_METHOD, _UNLISTED_WRITE, headers)).status_code == 401
 
 
 async def test_a_non_get_pair_in_the_allowlist_still_refuses(world, monkeypatch):
     """A method other than GET needs a pair of ``MCP_WRITE_ROUTES`` and the
     writes flag (EA-6a, EA3-29). A pair that a change puts into ``MCP_ROUTES``
     alone stays refused (§10.1, replay)."""
-    assert ("POST", _UNLISTED_WRITE_TEMPLATE) not in agent_oauth.MCP_WRITE_ROUTES
-    widened = agent_oauth.MCP_ROUTES | {("POST", _UNLISTED_WRITE_TEMPLATE)}
+    pair = (_UNLISTED_METHOD, _UNLISTED_WRITE_TEMPLATE)
+    assert pair not in agent_oauth.MCP_WRITE_ROUTES
+    widened = agent_oauth.MCP_ROUTES | {pair}
     monkeypatch.setattr(agent_oauth, "MCP_ROUTES", widened)
-    headers = _signed(_UNLISTED_WRITE, method="POST")
-    assert (await _call("POST", _UNLISTED_WRITE, headers)).status_code == 401
+    headers = _signed(_UNLISTED_WRITE, method=_UNLISTED_METHOD)
+    assert (await _call(_UNLISTED_METHOD, _UNLISTED_WRITE, headers)).status_code == 401
 
 
 async def test_a_route_outside_the_allowlist_refuses(world):
