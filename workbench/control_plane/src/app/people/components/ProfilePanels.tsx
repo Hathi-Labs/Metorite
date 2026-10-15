@@ -36,6 +36,7 @@ import {
   type FieldSpec,
   type RenderedField,
   changedFields,
+  chipsText,
   completeness,
   formatChips,
   isFilled,
@@ -87,6 +88,34 @@ function ReadValue({ field }: { field: RenderedField }) {
     );
   }
   return <span className="text-foreground">{String(value)}</span>;
+}
+
+/**
+ * A comma-separated list input. It keeps what the member typed, so a comma or
+ * a space between two words stays on screen until the next word arrives
+ * (`chipsText` says when the stored value wins instead).
+ */
+function ChipsInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: unknown;
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+}) {
+  const [typed, setTyped] = useState(() => formatChips(value));
+  return (
+    <Input
+      inputSize="sm"
+      value={chipsText(typed, value)}
+      placeholder={placeholder}
+      onChange={(e) => {
+        setTyped(e.target.value);
+        onChange(parseChips(e.target.value));
+      }}
+    />
+  );
 }
 
 function EditControl({
@@ -147,11 +176,10 @@ function EditControl({
       );
     case "chips":
       return (
-        <Input
-          inputSize="sm"
-          value={formatChips(value)}
+        <ChipsInput
+          value={value}
           placeholder="comma, separated"
-          onChange={(e) => onChange(parseChips(e.target.value))}
+          onChange={onChange}
         />
       );
     case "hours":
@@ -174,25 +202,35 @@ function EditControl({
               <span className="w-16 shrink-0 text-[11px] text-muted-foreground">
                 {k}
               </span>
-              <Input
-                inputSize="sm"
-                value={
-                  Array.isArray(record[k])
-                    ? (record[k] as unknown[]).join(",")
-                    : record[k] === undefined || record[k] === null
+              {k === "days" ? (
+                <ChipsInput
+                  value={
+                    Array.isArray(record[k]) ? (record[k] as unknown[]).map(String) : []
+                  }
+                  onChange={(days) => {
+                    const next = { ...record };
+                    if (days.length === 0) delete next[k];
+                    else next[k] = days.map((n) => Number(n));
+                    onChange(Object.keys(next).length ? next : null);
+                  }}
+                />
+              ) : (
+                <Input
+                  inputSize="sm"
+                  value={
+                    record[k] === undefined || record[k] === null
                       ? ""
                       : String(record[k])
-                }
-                onChange={(e) => {
-                  const next = { ...record };
-                  const raw = e.target.value;
-                  if (raw === "") delete next[k];
-                  else if (k === "days")
-                    next[k] = parseChips(raw).map((n) => Number(n));
-                  else next[k] = raw;
-                  onChange(Object.keys(next).length ? next : null);
-                }}
-              />
+                  }
+                  onChange={(e) => {
+                    const next = { ...record };
+                    const raw = e.target.value;
+                    if (raw === "") delete next[k];
+                    else next[k] = raw;
+                    onChange(Object.keys(next).length ? next : null);
+                  }}
+                />
+              )}
             </label>
           ))}
         </div>
