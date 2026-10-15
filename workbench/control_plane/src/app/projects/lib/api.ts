@@ -6,6 +6,8 @@ import {
   type AgentPromptBody,
   type AgentRun,
   type AgentRunDetail,
+  type AgentStartBody,
+  type AgentStartResult,
   type AgentState,
   agentRunRows,
   normalizeRunDetail,
@@ -2489,6 +2491,17 @@ export const agentRunsApi = {
   /** A member writes one `prompt`: an answer, a reply or a Stop. */
   post: (runId: string, body: AgentPromptBody) =>
     call<unknown>(`agent-runs/${encodeURIComponent(runId)}/activities`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * A member starts a run for one of their own live agent connections
+   * (EA-12d). The run starts as `created`, and `body` is its first `prompt`.
+   * A 409 means that agent has an open run here that it has not picked up.
+   */
+  start: (taskId: string, body: AgentStartBody) =>
+    call<AgentStartResult>(`tasks/${encodeURIComponent(taskId)}/agent-runs`, {
       method: "POST",
       body: JSON.stringify(body),
     }),

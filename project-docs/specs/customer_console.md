@@ -16,6 +16,13 @@ CP-13h, Jev through the AI/ML API reseller, is BUILT on branch `cp13-aimlapi`
 background model call names its feature on the usage report, as
 `email.rule_match`. It has no flag, because it changes metadata only.
 
+🆕 **Member removal by an operator or an admin: BUILT on branch
+`member-remove` (2026-10-15, owner request).** The backend, the operator
+console surface and the control-plane roster change are all built. The
+amendment under CP-2g's non-goals holds the contract. When the removal takes
+the last registry owner, the acting admin inherits (P1-b, the owner's
+decision of 2026-10-15).
+
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
 2026-08-26 (D57)** — the SERVING HOP, the first-caller ticket §6 (d) has waited for
@@ -6172,10 +6179,112 @@ depth rather than the only wall.
 
 **Non-goals.** No customer-side self-delete (an org admin cannot destroy the
 org from inside the product) · no export bundle (the window keeps sign-in
-alive; a one-click export is future work) · no per-member operator delete —
+alive. A one-click export is future work) · ~~no per-member operator delete —
 member offboarding/purge stays the customer admin's door
-(`colleague_onboarding.md` N8), deliberately · no backup/restore integration:
+(`colleague_onboarding.md` N8), deliberately~~ · no backup/restore integration:
 a purge is forward-only, like every act on this platform (R6).
+
+**Amended 2026-10-15 (owner request in chat).** The owner asked: "give
+ability for operator (backend) and admins to remove/delete a person who's
+invited/logged in". That request overrides the per-member non-goal above.
+**BUILT on branch `member-remove` (2026-10-15): the backend, the operator
+console surface and the control-plane roster change.**
+
+**The operator BFF, `POST /api/operator/members/remove`.** The body is
+`{org_slug, email, mode, confirm}`, and `confirm` must equal the email.
+
+- The route checks the tenant door first. If the door is not configured, it
+  answers 503 and changes nothing.
+- The rank comes from the Console session. Remove needs EDITOR. Purge needs
+  ADMIN and an open elevation window.
+- The tenant act runs before the Console act, because the tenant act takes
+  the access away. An `already_absent` answer counts as success.
+- The route relays a tenant refusal with its own status and
+  `refused_by: "tenant"`.
+- The Console half runs last. If the Console gives no answer, or a 5xx, the
+  route answers 502 and the caller can retry. The route relays a Console
+  4xx with its own status.
+
+**The control plane.** The organisation roster gains "Revoke invite" for an
+invited member, and a "Removed" filter that shows removed members.
+
+**Frontend fences.** `operator_console/.../members/remove/route.test.ts`,
+`lib/memberRemove.test.ts` and `lib/tenantDoor.test.ts`. In the control plane,
+`settings/organization/lib/rosterView.test.ts`.
+
+- The gateway door is `DELETE /internal/operator/organizations/{slug}/members/{email}`.
+  It takes `?mode=remove|purge&confirm=<email>`, and `remove` is the default.
+  It uses the two tokens of the org purge. `confirm` must equal the email
+  verbatim, or the door answers 400. An unknown mode is 400, and an unknown
+  slug is 404.
+- An absent member gets 200 `{"already_absent": true, "email": ...}`. The
+  last owner gets 409. Remove answers
+  `{"status": "removed", "email", "tree_projects"}`, and purge answers the
+  admin purge shape.
+- The door runs the same in-transaction body as the admin routes:
+  `members.remove_member_rows` and `members.purge_member_rows`. It does not
+  call the Console. The operator BFF calls the Console itself.
+- The Console door is `POST /registry/members/remove`. It uses the
+  `member_admin` capability and both arms of `_admin_scheme_context`. It sets
+  the membership to `removed` and releases every live seat. It never mints an
+  identity: an unknown person gets 200 `{"found": false}`.
+- The Console door refuses a self-removal on the deployment arm (409). It
+  hands ownership on when the target is the last active registry owner (see
+  P1-b below). A `deleted` org gets 403. The operator matrix row is EDITOR.
+- Every answer of the Console door carries `owner_transferred_to`: the new
+  owner's email, or null. The `member.remove` audit payload carries it too.
+- The admin Remove and Purge routes now mirror onto the Console door after the
+  commit, as best-effort. The deployment resolve writes no seat for a
+  `removed` or `suspended` membership.
+- Fences: `test_operator_door.py`, `test_admin_member_offboarding.py` and
+  `test_admin_member_purge.py`. Also `test_customer_console_member_write.py`
+  (R8) and `test_operator_role_matrix_source.py`.
+
+**Review round 1, P1-a — FIXED.** A re-invite after a removal left the
+registry row `removed` for good. The tenant upsert (`_PROVISION_MEMBER_SQL`)
+moves `removed` to `invited`, but `store.add_invited_member` did nothing on a
+conflict. The person then signed in, the resolve wrote no seat, and they
+worked with no bill.
+
+The fix: the Console invite door now applies the tenant rule. Its
+conflict arm moves `removed` to `invited` and keeps the role. It does not
+change `active` or `suspended`. The first sign-in activates the row and
+allocates the seat. The invite mirror in the gateway logs
+`member_invite_console_status_mismatch` when the Console keeps a status other
+than `invited` or `active`. Fence:
+`TestRemoveThenReInviteIsBilledAgain` (R8).
+
+**Review round 1, P1-b — FIXED (owner decision 2026-10-15, in chat: "Acting
+admin inherits").** Only `provision` writes `org_membership.role`, so the
+founder is the only registry owner. The door used to refuse to remove the
+founder for good. A registry with no owner is not an option either, because
+the seat-admin doors (`/registry/seats`, `/registry/seats/release` and
+`/registry/seats/overview`) admit only an active `owner` or `admin`.
+
+The rule as built:
+
+- A transfer happens ONLY when the target is the last active registry owner.
+  In the same transaction, the door makes one active member the `owner`
+  (`store.make_owner`), and then it removes the target.
+- Deployment arm, the admin path through the gateway mirror: the heir is
+  `new_owner_email` if the body names one, else the ACTOR. The actor is
+  already an active member, and the self-removal 409 keeps them off the
+  target.
+- Operator arm: `new_owner_email` is required for this case. Without it the
+  door answers 409, and the detail says to name a new owner.
+- On both arms, a named heir must be an ACTIVE member of the org and not the
+  target. Otherwise the door answers 400 and writes nothing.
+- When the target is NOT the last active owner, the door IGNORES
+  `new_owner_email` and answers `owner_transferred_to: null`. The door does
+  not refuse it, because the operator BFF acts on the tenant plane first. A
+  400 after that act would leave the planes in disagreement.
+- The removed row keeps its `role`. `store.deployment_placed_orgs` now
+  returns one row for each org and puts the active owner first, because an
+  org can hold two `owner` rows after a transfer.
+- The gateway needs no new call: its mirror is the deployment arm, so the
+  acting admin inherits. It logs `member_remove_console_owner_transferred`.
+- Fence: `TestTheLastOwnerIsHandedOn` (R8). Its tests also prove that the
+  heir can open `/registry/seats/overview`.
 
 **CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
 SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23

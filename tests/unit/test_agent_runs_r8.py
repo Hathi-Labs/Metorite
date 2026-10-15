@@ -1031,3 +1031,70 @@ class TestAgentRunsOnARealDatabase:
             assert payload == {"task_id": w.task_a}
             assert set(payload) == set(comments[0])
             assert str(uuid.UUID(payload["task_id"])) == w.task_a
+
+    # ── EA-12d: a member starts a run ───────────────────────────────────
+
+    async def test_ea12d_a_members_run_is_queued_found_and_picked_up(self, w):
+        """EA-12d, the acceptance of §15. A member starts a run for one of
+        their own connections: it reads ``queued``. The agent finds it with
+        ``needs_agent=true``. Its first activity moves it to ``in_progress``,
+        and then ``needs_agent`` no longer lists it.
+
+        Mutations: ``_NEEDS_AGENT_SQL`` drops ``'created'`` and the find
+        fails. ``member_start`` maps ``created`` to ``in_progress`` and the
+        queued check fails."""
+        async with _session(w.p) as call:
+            made = await call(w.a, "POST", f"/projects/tasks/{w.task_a}/agent-runs",
+                              {"connection_id": w.conn_a, "body": "Write the tests",
+                               "idempotency_key": _key()})
+            assert made.status_code == 201, made.text
+            assert made.json()["created"] is True
+            run = made.json()["run"]
+            assert (run["status"], run["state"]) == ("created", "queued")
+            assert run["connection_id"] == w.conn_a and run["client_via"] == VIA
+            assert run["started_at"] is None and run["started_by"] == w.a_email
+            task = await call(w.a, "GET", f"/projects/tasks/{w.task_a}")
+            assert task.json()["agent_state"] == "queued"
+            # The instruction is the first prompt, with no status move.
+            read = await call(w.agent_a, "GET", f"/projects/agent-runs/{run['id']}")
+            (prompt,) = read.json()["activities"]
+            assert prompt["type"] == "prompt" and prompt["actor_via"] is None
+            assert prompt["content"]["body"] == "Write the tests"
+
+            needs = await call(w.agent_a, "GET", "/projects/agent-runs?needs_agent=true")
+            assert needs.status_code == 200, needs.text
+            assert [r["id"] for r in needs.json()["rows"]] == [run["id"]]
+            assert needs.json()["rows"][0]["state"] == "queued"
+
+            moved = await _act(call, w.agent_a, run["id"], type="thought", body="On it")
+            assert moved.status_code == 201, moved.text
+            assert moved.json()["run"]["status"] == "in_progress"
+            assert moved.json()["run"]["state"] == "working"
+            assert moved.json()["run"]["started_at"] is not None
+            again = await call(w.agent_a, "GET", "/projects/agent-runs?needs_agent=true")
+            assert again.json()["rows"] == []
+
+    async def test_ea12d_only_the_members_own_live_connection_starts_a_run(self, w):
+        """EA-12d. A member names only their own live connection. Another
+        member's connection, a revoked one and an empty instruction are 422,
+        and no run is made. Mutation: the connection read drops
+        ``lower(member_email) = :me`` and the first check fails."""
+        async with _session(w.p) as call:
+            theirs = await call(w.c, "POST", f"/projects/tasks/{w.task_a}/agent-runs",
+                                {"connection_id": w.conn_a, "body": "Go"})
+            assert theirs.status_code == 422, theirs.text
+            empty = await call(w.a, "POST", f"/projects/tasks/{w.task_a}/agent-runs",
+                               {"connection_id": w.conn_a, "body": "   "})
+            assert empty.status_code == 422, empty.text
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE agent_connection SET revoked_at = now() "
+                               "WHERE id = CAST(:c AS uuid)"), {"c": w.conn_a})
+            try:
+                revoked = await call(w.a, "POST", f"/projects/tasks/{w.task_a}/agent-runs",
+                                     {"connection_id": w.conn_a, "body": "Go"})
+                assert revoked.status_code == 422, revoked.text
+            finally:
+                with w.p.admin_engine.begin() as c:
+                    c.execute(text("UPDATE agent_connection SET revoked_at = NULL "
+                                   "WHERE id = CAST(:c AS uuid)"), {"c": w.conn_a})
+        assert _count(w.p, "SELECT count(*) FROM pm_agent_runs") == 0

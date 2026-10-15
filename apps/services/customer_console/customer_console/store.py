@@ -36,6 +36,7 @@ from customer_console.credits import (
 
 __all__ = [
     "activate_subscription",
+    "active_owner_count",
     "active_plans",
     "add_credit",
     "apply_discount_to_order",
@@ -54,10 +55,14 @@ __all__ = [
     "ensure_organization",
     "grant_seats",
     "has_live_seat",
+    "identity_id_for_email",
     "issue_deployment_key",
     "issue_discount_code",
     "lock_discount_capacity",
+    "lock_org_owners",
     "lock_seat_capacity",
+    "make_owner",
+    "membership_status",
     "operator_active_admin_count",
     "operator_by_email",
     "operator_by_id",
@@ -88,6 +93,7 @@ __all__ = [
     "record_usage",
     "redemption_for_order",
     "release_seat",
+    "remove_member",
     "resolve_deployment_key",
     "resolve_discount_code",
     "resolve_key",
@@ -2367,6 +2373,13 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
 
     ``ORDER BY o.slug`` so a caller comparing two answers, and a fence asserting
     a list, do not depend on the planner.
+
+    ⚠️ **One row per organization, and the ACTIVE owner wins** (2026-10-15).
+    Since the member-remove door hands ownership on (``make_owner``), an org
+    can hold two ``role = 'owner'`` rows: the removed founder, who keeps the
+    role on the removed row, and the active heir. ``DISTINCT ON (o.slug)``
+    keeps one row, and the ``ORDER BY`` puts an active owner first, then the
+    earliest join. A plain join would list the org twice.
     """
     return [
         {
@@ -2380,7 +2393,8 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
         for r in conn.execute(
             text(
                 """
-                SELECT o.slug, o.name, o.status, ui.email, o.gstin,
+                SELECT DISTINCT ON (o.slug)
+                       o.slug, o.name, o.status, ui.email, o.gstin,
                        o.billing_state
                 FROM organization o
                 JOIN org_placement p ON p.organization_id = o.id
@@ -2388,7 +2402,8 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
                        ON m.organization_id = o.id AND m.role = 'owner'
                 LEFT JOIN user_identity ui ON ui.id = m.user_identity_id
                 WHERE p.deployment_id = :dep
-                ORDER BY o.slug
+                ORDER BY o.slug, (m.status = 'active') DESC NULLS LAST,
+                         m.joined_at NULLS LAST
                 """
             ),
             {"dep": deployment_id},
@@ -2397,7 +2412,7 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
 
 
 def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tuple[bool, str]:
-    """Create an ``invited`` membership if the org has none for this identity.
+    """Create an ``invited`` membership, or put a ``removed`` one back to ``invited``.
 
     CP-2f / D50.2 — the ONLY member-add writer besides ``provision``'s founder
     INSERT, and the reason an invited colleague can be seen by ``GET /me/members``
@@ -2405,13 +2420,26 @@ def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tu
 
     Returns ``(created, status_now)``.
 
-    **Create-only, by construction.** ``ON CONFLICT DO NOTHING`` means an existing
-    row is left exactly as it is: an ``active`` member is never demoted back to
-    ``invited`` by a re-invite, and a ``removed`` one is never silently
-    resurrected — reinstating somebody is an ``admin:members:manage`` decision on
-    the tenant plane and must not ride in on the weaker invite door. The caller is
-    told which happened (``created``) and what the row says now (``status_now``),
-    so a re-invite is legible rather than a silent 200.
+    **Create, or reinstate a ``removed`` row — the tenant plane's rule.** The
+    conflict arm rewrites exactly ONE status: ``removed`` goes back to
+    ``invited``. An ``active`` member is never demoted, a ``suspended`` one is
+    never un-suspended, and an ``invited`` one stays as it is. The arm names the
+    status it rewrites in its own ``WHERE`` and never negates, the
+    ``_PROVISION_MEMBER_SQL`` idiom (``gateway/routes/admin/_common.py``).
+
+    ⚠️ **Why a removed row is reinstated (review round 1, P1-a, 2026-10-15).**
+    This door was create-only until then. But the tenant upsert already moves
+    ``removed`` to ``invited`` on a re-invite. So after a remove and a
+    re-invite, the tenant plane said ``invited`` and the registry said
+    ``removed`` for good. The person signed in, the resolve wrote no seat for a
+    ``removed`` membership, and they worked with no seat and no bill. Repeated,
+    that is a seat-cap bypass. Now the re-invited row is ``invited``, the first
+    sign-in activates it through :func:`activate_invited_member`, and the seat
+    is allocated as for anybody else. The row keeps its ``role``.
+
+    The caller is told which happened (``created``) and what the row says now
+    (``status_now``), so a re-invite is legible rather than a silent 200. A
+    reinstatement answers ``(False, 'invited')``.
 
     **``role`` is not a parameter and never will be one.** It takes the column
     default ``member`` (``001_customer_console.sql:121-124``). ``org_membership.
@@ -2429,18 +2457,23 @@ def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tu
             INSERT INTO org_membership
                 (organization_id, user_identity_id, status)
             VALUES (:org, :i, 'invited')
-            ON CONFLICT (organization_id, user_identity_id) DO NOTHING
-            RETURNING status
+            ON CONFLICT (organization_id, user_identity_id) DO UPDATE
+                SET status = 'invited'
+                WHERE org_membership.status = 'removed'
+            RETURNING status, (xmax = 0) AS inserted
             """
         ),
         {"org": org_id, "i": identity_id},
     ).first()
     if row is not None:
-        return True, str(row[0])
+        # `xmax = 0` is true for a row this statement INSERTED and false for
+        # one its conflict arm UPDATED, which is the reinstatement.
+        return bool(row[1]), str(row[0])
 
-    # The conflict path. Re-read rather than assume: what the row says now is
-    # exactly the thing the caller could not know, and inventing 'invited' here
-    # would report a demotion that did not happen.
+    # The conflict path that rewrote nothing (`active`, `suspended` or
+    # `invited`). Re-read rather than assume: what the row says now is exactly
+    # the thing the caller could not know, and inventing 'invited' here would
+    # report a demotion that did not happen.
     existing = conn.execute(
         text(
             "SELECT status FROM org_membership "
@@ -2485,6 +2518,159 @@ def activate_invited_member(conn: Connection, *, org_id: str, identity_id: str) 
         {"org": org_id, "i": identity_id},
     ).first()
     return row is not None
+
+
+def membership_status(conn: Connection, *, org_id: str, identity_id: str) -> str | None:
+    """The ``org_membership.status`` of one person in one organization, or None.
+
+    None means that the organization holds no membership row for this identity.
+    It does not mean a status. The caller decides what each value permits.
+    """
+    row = conn.execute(
+        text(
+            "SELECT status FROM org_membership "
+            "WHERE organization_id = :org AND user_identity_id = :i"
+        ),
+        {"org": org_id, "i": identity_id},
+    ).first()
+    return None if row is None else str(row[0])
+
+
+def identity_id_for_email(conn: Connection, *, email: str) -> str | None:
+    """The global identity for this address, or None. It never mints one.
+
+    The read half of :func:`ensure_identity`. A door that must not create a
+    person calls this one. ``user_identity.email`` is CITEXT (001:110), so the
+    match ignores case without a ``lower()``.
+    """
+    row = conn.execute(
+        text("SELECT id FROM user_identity WHERE email = :email"),
+        {"email": email},
+    ).first()
+    return None if row is None else str(row[0])
+
+
+def remove_member(
+    conn: Connection, *, org_id: str, identity_id: str
+) -> tuple[str, list[str]]:
+    """Set one membership to ``removed`` and release every live seat it holds.
+
+    Returns ``(previous_status, released_plans)``. ``released_plans`` lists
+    the plan slugs, sorted, whose seat this call released. The caller must
+    first make sure that the membership exists.
+
+    Both writes run on the caller's connection, so they share one transaction.
+    A removed member who still holds a seat would keep the seat counted
+    against the cap. A released seat with a member still ``active`` would let
+    the next sign-in burn a new one. So the two writes go together, or neither
+    goes.
+
+    The seat UPDATE sets ``released_at`` and deletes nothing, as
+    :func:`release_seat` does. Who held which seat, and when, is the audit
+    trail behind an invoice. It releases the seats of EVERY plan, the Core seat
+    included, because a removed person holds no seat of any kind.
+
+    ``FOR UPDATE`` on the membership read serialises two removals of one
+    person, so ``previous_status`` is the status that this call replaced.
+    """
+    previous = conn.execute(
+        text(
+            """
+            SELECT status FROM org_membership
+             WHERE organization_id = :org AND user_identity_id = :i
+             FOR UPDATE
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).scalar_one()
+    conn.execute(
+        text(
+            """
+            UPDATE org_membership SET status = 'removed'
+             WHERE organization_id = :org AND user_identity_id = :i
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    )
+    released = conn.execute(
+        text(
+            """
+            UPDATE seat_assignment SET released_at = now()
+             WHERE organization_id = :org AND user_identity_id = :i
+               AND released_at IS NULL
+            RETURNING plan_slug
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).scalars().all()
+    return str(previous), sorted(str(p) for p in released)
+
+
+def lock_org_owners(conn: Connection, *, org_id: str) -> None:
+    """Serialise the member-remove door for one organization (review P2).
+
+    The door reads two owner counts, then may promote an heir and remove the
+    target. At READ COMMITTED two removals at once both read the counts
+    before either writes. A removes the founder while B removes A, or two
+    co-owners are removed together. Both pass, and the org ends with no
+    active registry owner.
+
+    The :func:`lock_org_activation` idiom, one door along. It is an ADVISORY
+    lock and not ``FOR UPDATE`` on the owner rows, for two reasons. A
+    ``FOR UPDATE`` locks only the rows that are ``owner`` when it reads, and
+    the hand-on promotes a row that is not one yet. And an org with no owner
+    row locks nothing at all. One per-org key covers every case.
+
+    The caller takes it as the first statement after the org is known, BEFORE
+    the counts. Transaction-scoped, so COMMIT or ROLLBACK releases it. The key
+    ``owners:<org_id>`` is namespaced away from the seat, discount and
+    activation keys in ``hashtext``'s one keyspace.
+    """
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"owners:{org_id}"},
+    )
+
+
+def make_owner(conn: Connection, *, org_id: str, identity_id: str) -> None:
+    """Set one membership's registry ``role`` to ``owner``.
+
+    The ONE role writer besides ``provision``'s founder INSERT. Its only caller
+    is the member-remove door, which hands ownership on when it removes the
+    last active owner (P1-b, the owner's decision of 2026-10-15). The caller
+    decides who inherits and checks that they are an active member. This
+    function only writes.
+    """
+    conn.execute(
+        text(
+            """
+            UPDATE org_membership SET role = 'owner'
+             WHERE organization_id = :org AND user_identity_id = :i
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    )
+
+
+def active_owner_count(
+    conn: Connection, *, org_id: str, excluding_identity_id: str | None = None
+) -> int:
+    """How many ACTIVE registry owners the organization holds.
+
+    The registry names an owner by ``org_membership.role = 'owner'``, the same
+    predicate :func:`deployment_placed_orgs` and :func:`org_owned_by_other`
+    use. ``excluding_identity_id`` leaves one person out, so the caller can ask
+    whether an owner would remain after that person goes.
+    """
+    sql = (
+        "SELECT count(*) FROM org_membership "
+        "WHERE organization_id = :org AND role = 'owner' AND status = 'active'"
+    )
+    params: dict[str, Any] = {"org": org_id}
+    if excluding_identity_id is not None:
+        sql += " AND user_identity_id <> :i"
+        params["i"] = excluding_identity_id
+    return int(conn.execute(text(sql), params).scalar_one())
 
 
 def org_members(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:

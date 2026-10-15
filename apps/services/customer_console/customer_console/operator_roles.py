@@ -171,6 +171,12 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     ("POST", "/registry/orgs"): _R(VIEWER),
     ("POST", "/registry/seats/release"): _R(EDITOR),
     ("POST", "/registry/members"): _R(EDITOR),
+    # The member-REMOVE door (owner request, 2026-10-15). EDITOR, the rank of
+    # `/billing/seats/release`: it releases seats and grows nothing. Without
+    # this row `check_route` fails CLOSED, so a signed-in operator would remove
+    # the person on the tenant plane and then meet a Console 403. The operator
+    # BFF checks EDITOR for remove and ADMIN with a window for purge first.
+    ("POST", "/registry/members/remove"): _R(EDITOR),
     # ⚠️ Editor covers a grant AT OR BELOW the threshold only. The amount is in
     # the BODY, which a dependency cannot see, so the route body raises the bar
     # to `admin` above `credit_elevation()`. Both halves are tested.
