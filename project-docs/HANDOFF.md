@@ -5376,12 +5376,40 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3c (fix round 1)
 - **Added:** 2026-10-15 · MD-3c review
 
-### H-313 · The member writers of assignee rows take the row and the key in different orders · [AGENT]
+### H-313 · An operator viewer can reach the tenant org purge · [AGENT]
+- **Check:** `rg -c "operators/session" workbench/operator_console/src/app/api/operator/purge/route.ts`.
+  No hit means this is open.
+- **Why.** The org purge BFF reads only `GET /orgs` (viewer rank) before it calls
+  the gateway door. The Console checks the operator's rank only at
+  `POST /orgs/purge`, which runs after the tenant purge. So a viewer can destroy
+  the tenant plane of an org that is already `deleted`, and then get a 403.
+- **Do this:** copy the rank check of `api/operator/members/remove/route.ts`. Read
+  `GET /operators/session` and `GET /operators/elevate`, and refuse anything below
+  ADMIN with an open window BEFORE the tenant act. Fence it in `route.test.ts`.
+- **Authority:** `specs/customer_console.md` §CP-2g (the operator matrix row for
+  `/orgs/purge`)
+- **Added:** 2026-10-15 · branch `member-remove`
+
+### H-314 · A feed approvals test fails at one time of day · [AGENT]
+- **Check:** run `tests/unit/test_feed_handled_r8.py::TestApprovals::test_iii_org_bs_admin_sees_no_approval_of_org_a`
+  with the clock frozen at 2026-10-15 07:14 UTC. A failure means this is open.
+- **Why.** On 2026-10-15 the test failed in two CI runs of PR #1038, at about
+  07:14 UTC both times: `assert [] == [{'kind': 'you', ...}]`. The rerun at
+  08:07 UTC passed. The PR touches no feed code. The test picks its zone with
+  `_a_daytime_zone(NOW)` and puts a decision at `NOW - 2 minutes`, so a day
+  boundary is the likely cause.
+- **Do this:** find which zone and day start the test picks at 07:14 UTC. Make
+  the zone choice keep the decision inside the member's day, and pin the
+  clock in the test.
+- **Authority:** R7 (a fence that fails by the clock is not a fence)
+- **Added:** 2026-10-15 · branch `member-remove`
+
+### H-315 · The member writers of assignee rows take the row and the key in different orders · [AGENT]
 - **Check:** `git grep -n -e "ids = dedupe_ids(payload.task_ids)" -e "await _move_satellites(db, str(source.id), task_id)" -- apps/services/gateway/gateway/routes/projects/bulk.py apps/services/gateway/gateway/routes/projects/merge.py`. The first anchor is the unsorted selection of the bulk edit. The second is the merge, which moves the assignee keys before `update_row` of the target. Two hits mean this entry stays. With fewer hits, read the changed code, and delete this entry when the orders agree.
 - **Why.** The reviewer and the verifier of WS-55 EA-6b found these orders already disagree on main. A PUT of the assignees writes the key and then bumps the row. A move with assignees writes the row and the destination counter, then the key. A merge moves the assignee and watcher keys, then writes the target row. A bulk edit locks rows in request order. So a PUT against a move that assigns the same member, a merge against a PUT on the watcher keys, and two bulk edits with the same ids in another order can each deadlock. A merge against a PUT of the same member also fails with a unique violation of `pm_task_assignees_pkey` (10 times in 10).
 - **Do.** Sort the ids of every bulk write. Give every member writer one helper that writes the assignee key, then the row. Fix the merge's `NOT EXISTS` race. Prove each pair with a looped R8 race test. The claim (`claim_task`) already writes the key before the row, so it needs no change.
 - **Authority:** R8 · `specs/external_agent_access.md` §17 (EA-6b fix round 3)
-- **Added:** 2026-10-15 · EA-6b fix round 3 review
+- **Added:** 2026-10-15 · EA-6b fix round 3 review (taken as H-313, renumbered to H-315 at merge because main took H-313 and H-314)
 
 # DONE — deleted, not archived
 

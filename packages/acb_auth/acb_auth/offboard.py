@@ -95,6 +95,28 @@ _CRM_DELETES: tuple[tuple[str, str], ...] = (
 )
 
 
+async def organization_id_for_slug(slug: str) -> str | None:
+    """The tenant org id for a slug, or None. The ONE unbound read here.
+
+    ``organization`` is RLS-EXEMPT, and this read finds WHICH tenant to bind,
+    so it cannot bind one first. It is the read that
+    ``test_db_engine_seam.py::_FACTORY_OPEN_ALLOW`` declares for this file.
+    Two operator acts use it: the org purge below and the member door in
+    ``gateway/routes/operator.py``. One read for both keeps the count at one.
+
+    The slug is compared byte for byte. The caller trims whitespace and never
+    case-folds, for the reason :func:`purge_tenant_organization` records.
+    """
+    from sqlalchemy import text
+
+    factory = _get_session_factory()
+    async with factory() as session:
+        org_id = (
+            await session.execute(text(_ORG_BY_SLUG_SQL), {"slug": slug})
+        ).scalar_one_or_none()
+    return None if org_id is None else str(org_id)
+
+
 async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
     """Destroy every tenant-plane row the organization owns. Idempotent.
 
@@ -114,14 +136,9 @@ async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
 
     from sqlalchemy import text
 
-    factory = _get_session_factory()
-    async with factory() as session:
-        org_id = (
-            await session.execute(text(_ORG_BY_SLUG_SQL), {"slug": slug})
-        ).scalar_one_or_none()
+    org_id = await organization_id_for_slug(slug)
     if org_id is None:
         return {"slug": slug, "already_absent": True, "deleted": {}}
-    org_id = str(org_id)
 
     deleted: dict[str, int] = {}
     # One DELETE whose FK cascade is the purge. Bound through tenant_session

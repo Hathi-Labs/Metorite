@@ -18,7 +18,6 @@ import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
 import { syncFailureMessage } from "../lib/connect";
 import {
-  UNAVAILABLE_SENTENCE,
   agoLabel,
   creditsPercent,
   difference,
@@ -29,6 +28,7 @@ import {
   moduleState,
   runLine,
   statusLines,
+  unavailableSentence,
   type SyncHealth,
 } from "../lib/syncHealth";
 import { invalidateCrmMode, useSyncHealth } from "../lib/useCrmMode";
@@ -117,7 +117,7 @@ export function SyncHealthCardView({
                 <li key={entity.key} className="flex flex-wrap items-center gap-2 text-xs">
                   <Badge tone="warning">Unavailable</Badge>
                   <span className="font-medium text-foreground">{entityLabel(entity.key)}</span>
-                  <span className="text-muted-foreground">{UNAVAILABLE_SENTENCE}</span>
+                  <span className="text-muted-foreground">{unavailableSentence(entity)}</span>
                 </li>
               ))}
             </ul>

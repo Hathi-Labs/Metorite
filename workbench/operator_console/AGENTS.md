@@ -62,9 +62,18 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   the ONE sanctioned exception to "Console is the only upstream". It exists
   for exactly one act — destroying an organization's tenant plane after the
   Console holds it at `deleted` — and holds TWO more server credentials
-  (`GATEWAY_INTERNAL_TOKEN` + `GATEWAY_OPERATOR_TOKEN`; both fenced by the
-  same `console.test.ts` scan). A second gateway call added here is a defect
-  until a spec says otherwise.
+  (`GATEWAY_INTERNAL_TOKEN` + `GATEWAY_OPERATOR_TOKEN`). The same
+  `console.test.ts` scan fences both.
+  The owner added a second act on 2026-10-15. `removeTenantMember` removes
+  one member, or deletes the member permanently. A third gateway call added
+  here is a defect until a spec says otherwise.
+  `api/operator/members/remove` calls it. That route reads the caller's rank
+  BEFORE the tenant act, because the gateway door trusts our token for every
+  caller. A remove needs `editor`. A delete needs `admin`, and an open window
+  when the Console requires one. It also reads the registry roster BEFORE
+  the tenant act. The only active owner needs `new_owner_email`, which must
+  name another active member (owner decision, 2026-10-15). A failed roster
+  read refuses with no write. Fence: `members/remove/route.test.ts`.
 - `src/lib/staff.ts` — the **INTERIM** staff-secret gate
   (`OPERATOR_CONSOLE_STAFF_SECRET`), marked for replacement by staff Entra.
   Fails closed when unset.
@@ -95,8 +104,10 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   the Console from a client component, and never expose the operator token.
 - Reuse the Console's existing operator routes; reimplement none of them. The
   new backend surfaces this app consumes are `GET /orgs` + `POST /orgs/purge`
-  (on the Console) and the gateway's CP-2g operator door (via
+  (on the Console) and the gateway's CP-2g operator door (through
   `src/lib/tenantDoor.ts`, its one permitted use).
+  `POST /registry/members/remove` and the gateway's member door joined them on
+  2026-10-15 (owner request). They are the roster's Remove and Delete.
   `POST /catalog/decide/try` joined them on 2026-09-23 (CP-13b). It is the
   "Try a decision" panel on `/tiers`, and it never calls the customer door.
 - The invocation verbs and their pairing rule live in `src/lib/invocation.ts`.
