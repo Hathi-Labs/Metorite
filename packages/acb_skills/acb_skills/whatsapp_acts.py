@@ -52,7 +52,9 @@ from acb_skills.whatsapp_ui import OutMessage, current_run
 #: defines it. A tool of the same name in another module is not the act.
 #: Each one is class B, asks ONE card, and sends no rows (§14.4). WAC-4b
 #: adds the time block: a private task with a block, and a block (or any
-#: other part of the member's own overlay) on a task that exists. The
+#: other field of ``set_my_overlay``) on a task that exists. One of those
+#: fields is a board write: INBOX, NEXT or WAITING on a finished task
+#: reopens it (D77), and its card says so. Each is one card the web undoes. The
 #: Calendar is the scheduled time of a task (D52-D54), so this is the
 #: Calendar's write. The web chat already had both tools.
 ALLOWED_ACTS: dict[str, str] = {

@@ -865,6 +865,17 @@ async def test_a_new_time_block_parks_then_one_confirm_writes_it_once(env: _Env)
     assert len(_captures(env)) == 1, "a second Confirm wrote again"
 
 
+async def test_a_block_with_an_end_and_no_start_is_refused_before_any_card(
+    env: _Env,
+) -> None:
+    """The Calendar reads a block by its start (review round 1)."""
+    env.world.agent = _ActAgent({"title": "Call", "block_end": "2026-10-16 10:30"},
+                                tool="create_personal_task")
+    await _post_and_run(_message("Block until 10:30"))
+    assert env.world.agent.outputs[0].startswith("A block needs block_start")
+    assert env.acts.rows == {} and env.prov.buttons == []
+
+
 async def test_a_block_that_ends_before_it_starts_is_refused_before_any_card(
     env: _Env,
 ) -> None:
@@ -927,32 +938,62 @@ async def test_a_chase_with_no_since_when_still_confirms(
 
 
 class _TwoStepAgent:
-    """A run whose model wrote a line, called a tool, then wrote its answer.
+    """A run whose model wrote one step, called a tool, then wrote another.
 
-    ``result`` is MAF's ``response.text``, which joins the two steps with
-    no separator. ``final`` is the last step (``executor._last_step_text``).
+    ``result`` is MAF's ``response.text``, which joins the steps with no
+    separator. ``steps`` is each step's text (``executor._step_texts``).
     """
 
+    def __init__(self, *steps: str) -> None:
+        self.steps = list(steps)
+
     async def __call__(self, agent: str, payload: dict[str, Any], **kw: Any) -> Any:
-        first = "Here are the two blocks: 8:30 and 4:30 PM, Sahakar Nagar"
-        last = "Two blocks to add: 8:30 and 4:30 PM in Sahakar Nagar."
-        return {"result": first + last, "answer": first + last, "final": last}
+        joined = "".join(self.steps)
+        return {"result": joined, "answer": joined, "steps": list(self.steps)}
 
 
-async def test_the_member_gets_the_last_step_once_and_never_two_texts_glued(
+#: The owner's incident of 2026-10-15, word for word: the answer, a link
+#: button, then the same answer said again.
+SAID_TWICE = (
+    "I can add a task from here, but I can't write calendar events. Blocking "
+    "time is a change you'll need to make in the web app. Here's the two "
+    "blocks to drop in: - *8:30–10:30* — Sharath and Mr. Manoj - *4:30 PM* — "  # noqa: RUF001 (the owner's text)
+    "Manani, Sahakar Nagar",
+    "Two blocks to add in the web app: *8:30–10:30* with Sharath and Mr. "  # noqa: RUF001 (the owner's text)
+    "Manoj, and *4:30 PM* with Manani in Sahakar Nagar. I can't write "
+    "calendar events from here, so open the calendar to drop them in.",
+)
+#: The reverse order (review round 1): the text card first, then a short line
+#: after the link button. The card is the answer and must reach the phone.
+CARD_THEN_LINE = ("*Fix the extruder*\n🔥 Critical · ⏳ In progress · 📅 Fri 16 Oct\n"
+                  "The nozzle is on order, and Priya checks it on Friday.",
+                  "Open it with the button below.")
+
+
+async def test_the_member_gets_the_answer_once_and_never_two_texts_glued(
     env: _Env,
 ) -> None:
-    env.world.agent = _TwoStepAgent()
+    env.world.agent = _TwoStepAgent(*SAID_TWICE)
     await _post_and_run(_message("What blocks do I add?"))
     (answer,) = [t for t in _texts(env) if "Two blocks" in t or "Here are" in t]
     assert "Sahakar NagarTwo" not in answer
-    assert answer.endswith("Two blocks to add: 8:30 and 4:30 PM in Sahakar Nagar.")
-    assert "Here are the two blocks" not in answer
+    assert answer.endswith(SAID_TWICE[1])
+    assert SAID_TWICE[0] not in answer, "the same answer reached the phone twice"
 
 
-def test_the_executor_carries_the_last_step_beside_the_joined_text() -> None:
+async def test_an_answer_written_before_the_tool_call_is_never_dropped(
+    env: _Env,
+) -> None:
+    env.world.agent = _TwoStepAgent(*CARD_THEN_LINE)
+    await _post_and_run(_message("How is the extruder fix?"))
+    (answer,) = [t for t in _texts(env) if "Fix the extruder" in t]
+    assert CARD_THEN_LINE[0] in answer and CARD_THEN_LINE[1] in answer
+    assert "Friday.Open" not in answer, "two steps glued together"
+
+
+def test_the_executor_carries_each_step_beside_the_joined_text() -> None:
     from agent_framework._types import AgentResponse, Content, Message
-    from orchestrator.executor import _last_step_text
+    from orchestrator.executor import _step_texts
 
     response = AgentResponse(messages=[
         Message("assistant", ["Here are the two blocks: A"]),
@@ -961,7 +1002,11 @@ def test_the_executor_carries_the_last_step_beside_the_joined_text() -> None:
         Message("assistant", [""]),
     ])
     assert response.text == "Here are the two blocks: ATwo blocks to add: A"
-    assert _last_step_text(response) == "Two blocks to add: A"
-    assert _last_step_text(AgentResponse(messages=[])) == ""
-    assert bot_run.final_text({"result": "AB", "final": ""}) == "AB"
-    assert bot_run.final_text({"result": "AB", "final": "B"}) == "B"
+    assert _step_texts(response) == ["Here are the two blocks: A", "Two blocks to add: A"]
+    assert _step_texts(AgentResponse(messages=[])) == []
+    assert bot_run.final_text({"result": "AB", "steps": []}) == "AB"
+    assert bot_run.final_text({"result": "AB"}) == "AB"
+    assert bot_run.final_text({"result": "", "steps": list(SAID_TWICE)}) == SAID_TWICE[1]
+    assert bot_run.final_text({"result": "", "steps": list(CARD_THEN_LINE)}) \
+        == "\n\n".join(CARD_THEN_LINE)
+    assert bot_run.final_text({"result": "", "steps": ["Only one."]}) == "Only one."

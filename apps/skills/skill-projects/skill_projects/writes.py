@@ -3566,6 +3566,9 @@ async def create_personal_task(
         payload["next_action"] = next_action.strip()
     given = {"block_start": block_start, "block_end": block_end}
     block: dict[str, Any] = {}
+    if str(block_end or "").strip() and not str(block_start or "").strip():
+        # The Calendar reads a block by its start, so an end alone shows nowhere.
+        return "A block needs block_start. Pass both, or block_start alone."
     if any(str(v or "").strip() for v in given.values()):
         await _overlay_times({k: str(v or "").strip() for k, v in given.items()}, block)
         refusal = _block_refusal(block, {})

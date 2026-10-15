@@ -105,6 +105,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
@@ -190,6 +191,8 @@ SCOPE_RULE_NATIVE = (
     "kind \"react\"): 👍 noted, ✅ done, 🎉 good news, 🙏 thanks, 👀 looking into "
     "it, 😕 bad news. Do it in the same step as your first other tool call. A "
     "message that needs no answer gets the reaction and no text.\n"
+    "Say each thing once. The text that you write before a tool call reaches "
+    "the member too, so after the call add only what is new.\n"
     "When a job takes more than about 15 seconds (an image, a calculation, "
     "code, a page, a long search), FIRST call whatsapp_ui kind \"working\" with "
     "one line: what you are doing and about how long it takes. Then do the job."
@@ -1444,24 +1447,57 @@ async def _offer_act(req: RunRequest, act: Any) -> list[Any] | str:
 
 
 def final_text(result: Any) -> str:
-    """The text of the run's LAST model step, which is the answer (WAC-4b).
+    """The one WhatsApp text of a run, from its model steps (WAC-4b).
 
     The agent framework's ``response.text`` joins the text of EVERY model
-    step with no separator. A model that writes a line, calls a tool (a
-    link button, a reaction) and then writes its answer gave the member
-    both texts glued together ("Sahakar NagarTwo blocks…", 2026-10-15).
-    The web chat streams each step as its own part, so only a channel that
-    sends one text needed the last step. The executor carries it as
-    ``final`` (``_run_with_maf_agent``). A result without it, from another
+    step with no separator. A model that wrote a line, called a tool (a
+    link button) and then wrote its answer again gave the member both texts
+    glued together ("Sahakar NagarTwo blocks…", 2026-10-15). The web chat
+    streams each step as its own part, so only a channel that sends one
+    text needs this.
+
+    * The last step says again what an earlier step said: most of its words
+      (:data:`_RESTATED`) are in the earlier text. Send the last step only.
+      The owner's incident measures 0.83.
+    * Else the last step adds something (a text card, then "Open it with
+      the button below.", which measures 0.2). Send every step, a blank
+      line apart, so no answer is lost.
+
+    A result with no ``steps`` (``executor._step_texts``), from another
     path, falls back to the joined text.
     """
     from gateway.routes.projects.agent_dispatch import reply_text
 
-    if isinstance(result, dict):
-        final = result.get("final")
-        if isinstance(final, str) and final.strip():
-            return final
-    return reply_text(result)
+    steps = result.get("steps") if isinstance(result, dict) else None
+    if not isinstance(steps, list):
+        return reply_text(result)
+    texts = [str(t).strip() for t in steps if str(t or "").strip()]
+    if not texts:
+        return reply_text(result)
+    *earlier, last = texts
+    if earlier and _restates(last, " ".join(earlier)):
+        return last
+    return "\n\n".join(texts)
+
+
+#: The share of a last step's words that an earlier step already holds, at
+#: or above which the last step is the same answer said again.
+_RESTATED = 0.6
+#: A last step with fewer words than this is a closing line, never a repeat.
+_RESTATED_MIN_WORDS = 6
+_WORD = re.compile("[\\w:\u2013'-]+")  # \u2013: the en dash of "8:30\u201310:30"
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in _WORD.findall(text.lower()) if len(w) >= 3}
+
+
+def _restates(last: str, earlier: str) -> bool:
+    """True when *last* is mostly the words of *earlier* (:func:`final_text`)."""
+    words = _words(last)
+    if len(words) < _RESTATED_MIN_WORDS:
+        return False
+    return len(words & _words(earlier)) / len(words) >= _RESTATED
 
 
 def _resend_text(stored: str | None) -> str | None:
