@@ -44,6 +44,7 @@ import {
   rulesStepPhase,
   setAutoRun,
   setDraftReplies,
+  settingsSaver,
   sortEstimateView,
   sortPollDelay,
   sortSpanDays,
@@ -377,7 +378,7 @@ function view(over: Partial<RulesStepViewProps>): string {
     error: null,
     replyRule: true,
     draft: { state: "ready", on: false },
-    draftBusy: false,
+    settingsBusy: false,
     pastFrom: "2026-07-05",
     sort: { state: "ready", estimate: ESTIMATE },
     onRecommended: noop,
@@ -399,6 +400,53 @@ function buttons(markup: string): Array<{ text: string; attrs: string }> {
     text: m[2].replace(/<[^>]*>/g, "").trim(),
   }));
 }
+
+describe("one save at a time for both switches (EM-G11c2 fix round 1)", () => {
+  it("refuses a second save while the first runs, then takes the next", async () => {
+    const saver = settingsSaver();
+    let release: () => void = () => {};
+    const calls: string[] = [];
+    const first = saver.run(
+      () => new Promise<void>((done) => {
+        calls.push("first");
+        release = done;
+      }),
+    );
+    expect(saver.busy()).toBe(true);
+    expect(await saver.run(async () => void calls.push("second"))).toBe(false);
+    release();
+    expect(await first).toBe(true);
+    expect(saver.busy()).toBe(false);
+    expect(await saver.run(async () => void calls.push("third"))).toBe(true);
+    expect(calls).toEqual(["first", "third"]);
+  });
+
+  it("a failed save frees the guard and passes the failure up", async () => {
+    const saver = settingsSaver();
+    await expect(saver.run(async () => {
+      throw new Error("503");
+    })).rejects.toThrow("503");
+    expect(saver.busy()).toBe(false);
+  });
+
+  it("one busy flag disables both switches", () => {
+    const out = view({ phase: "ready", settingsBusy: true, autoRun: { state: "ready", on: false } });
+    const sw = buttons(out).filter((b) => b.attrs.includes('role="switch"'));
+    expect(sw).toHaveLength(2);
+    for (const s of sw) expect(s.attrs).toMatch(/disabled=""/);
+    const idle = view({ phase: "ready", settingsBusy: false, autoRun: { state: "ready", on: false } });
+    for (const s of buttons(idle).filter((b) => b.attrs.includes('role="switch"'))) {
+      expect(s.attrs).not.toMatch(/disabled=""/);
+    }
+  });
+
+  it("both handlers save through the one guard", () => {
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toContain("const [saver] = useState(() => settingsSaver());");
+    expect(src.match(/await saveSetting\(/g)).toHaveLength(2);
+    expect(src).not.toMatch(/draftBusy|autoRunBusy/);
+  });
+});
 
 describe("the Auto-run switch draws (G2)", () => {
   it("OFF: the switch reads OFF, and the body says the rules sort no new mail", () => {

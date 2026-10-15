@@ -84,6 +84,7 @@ import {
   rulesStepPhase,
   setAutoRun,
   setDraftReplies,
+  settingsSaver,
   sortEstimateView,
   sortPollDelay,
   type DraftSwitch,
@@ -122,10 +123,10 @@ export interface RulesStepViewProps {
   /** True when an enabled reply rule exists, so drafting can act. */
   replyRule: boolean;
   draft: DraftSwitch;
-  draftBusy: boolean;
+  /** A save of either switch runs. Both switches wait (EM-G11c2 fix round 1). */
+  settingsBusy: boolean;
   /** The stored Auto-run choice (WS-17 EM-G11c2, G2). Absent: no switch. */
   autoRun?: DraftSwitch;
-  autoRunBusy?: boolean;
   onAutoRunChange?: (on: boolean) => void;
   /** The start of the import range, or null when nothing was imported. */
   pastFrom: string | null;
@@ -243,7 +244,7 @@ export function RulesStepView(p: RulesStepViewProps) {
                 <label className="flex items-center gap-2 text-xs text-foreground">
                   <Toggle
                     enabled={p.autoRun.state === "ready" && p.autoRun.on}
-                    disabled={p.autoRun.state !== "ready" || !!p.autoRunBusy || locked}
+                    disabled={p.autoRun.state !== "ready" || p.settingsBusy || locked}
                     onChange={(on) => p.onAutoRunChange?.(on)}
                   />
                   {COPY.autoRunLabel}
@@ -253,7 +254,7 @@ export function RulesStepView(p: RulesStepViewProps) {
                 <label className="flex items-center gap-2 text-xs text-foreground">
                   <Toggle
                     enabled={draftOn}
-                    disabled={p.draft.state !== "ready" || p.draftBusy || locked}
+                    disabled={p.draft.state !== "ready" || p.settingsBusy || locked}
                     onChange={p.onDraftChange}
                   />
                   {COPY.draftLabel}
@@ -358,10 +359,12 @@ export function OnboardingRulesStep({
   const [error, setError] = useState<string | null>(null);
   // The stored value, read once the step is ready. Disabled until then.
   const [draft, setDraft] = useState<DraftSwitch>({ state: "loading" });
-  const [draftBusy, setDraftBusy] = useState(false);
   // G2 (EM-G11c2): the stored Auto-run choice, read once the step is ready.
   const [autoRun, setAutoRunState] = useState<DraftSwitch>({ state: "loading" });
-  const [autoRunBusy, setAutoRunBusy] = useState(false);
+  // One save at a time for both switches (fix round 1). Each save is a GET
+  // and a PUT of the whole body, so two at once could undo each other.
+  const [saver] = useState(() => settingsSaver());
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [finished, setFinished] = useState(false);
   const [sort, setSort] = useState<SortEstimate>({ state: "loading" });
   // A new value reads the count again ("Count again").
@@ -482,31 +485,34 @@ export function OnboardingRulesStep({
     setBusy(null);
   };
 
-  const changeDraft = async (on: boolean) => {
-    setDraftBusy(true);
+  // Both switches save through `saver`, which refuses a second save while
+  // one runs. `settingsBusy` disables both switches meanwhile.
+  const saveSetting = async (save: () => Promise<void>) => {
+    if (saver.busy()) return;
+    setSettingsBusy(true);
     setError(null);
     try {
-      await setDraftReplies(RULES_API, account.id, on);
-      setDraft({ state: "ready", on });
+      await saver.run(save);
     } catch {
       setError(COPY.failed);
     } finally {
-      setDraftBusy(false);
+      setSettingsBusy(false);
     }
+  };
+
+  const changeDraft = async (on: boolean) => {
+    await saveSetting(async () => {
+      await setDraftReplies(RULES_API, account.id, on);
+      setDraft({ state: "ready", on });
+    });
   };
 
   // The one write of Auto-run in this step: the member's own move (G2).
   const changeAutoRun = async (on: boolean) => {
-    setAutoRunBusy(true);
-    setError(null);
-    try {
+    await saveSetting(async () => {
       await setAutoRun(RULES_API, account.id, on);
       setAutoRunState({ state: "ready", on });
-    } catch {
-      setError(COPY.failed);
-    } finally {
-      setAutoRunBusy(false);
-    }
+    });
   };
 
   if (finished) return null;
@@ -520,9 +526,8 @@ export function OnboardingRulesStep({
       error={error}
       replyRule={hasEnabledReplyRule(rules)}
       draft={draft}
-      draftBusy={draftBusy}
+      settingsBusy={settingsBusy}
       autoRun={autoRun}
-      autoRunBusy={autoRunBusy}
       onAutoRunChange={(on) => void changeAutoRun(on)}
       pastFrom={pastFrom}
       sort={sort}

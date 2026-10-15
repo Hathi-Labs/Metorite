@@ -680,6 +680,36 @@ export async function readAutoRunSwitch(api: RulesStepApi, accountId: string): P
 }
 
 /**
+ * The one save of the two switches of the rules step (WS-17 EM-G11c2 fix
+ * round 1). Each switch reads the settings and PUTs the whole body back, so
+ * two saves at once can write a stale copy of the other field. `run` refuses
+ * a save while one runs: the check and the mark are one synchronous call, so
+ * no render can come between (the `ruleCopier` rule). It gives `false` for a
+ * refused save, and passes a failure up.
+ */
+export interface SettingsSaver {
+  run(save: () => Promise<void>): Promise<boolean>;
+  busy(): boolean;
+}
+
+export function settingsSaver(): SettingsSaver {
+  let running = false;
+  return {
+    async run(save) {
+      if (running) return false;
+      running = true;
+      try {
+        await save();
+        return true;
+      } finally {
+        running = false;
+      }
+    },
+    busy: () => running,
+  };
+}
+
+/**
  * The Auto-run switch of the rules step (G2). It writes the settings row with
  * the member's choice: `auto_run` changes and every other field stays.
  */
