@@ -5434,6 +5434,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
 - **Added:** 2026-10-15 · WS-59 RE-2a
 
+### H-323 · A DSML stream shows a first tag that a delta cut before its `>` · [AGENT]
+- **Check:** in `tests/unit/test_router_dsml_tool_calls.py`, compare
+  `_events(TASK_TOOLS, deltas)` with `_events(TASK_TOOLS, [whole])` for the
+  three cases in `specs/customer_console.md` §6A.15, "The known gap". A
+  difference in any case means this is open.
+- **Why.** `_TAG_HEAD_RE` refuses a `/` or a `'` before the `>`. When a delta
+  ends there, `_not_a_tag` releases the region as text. A whole feed never
+  takes that path. In all three cases, the stream shows raw markup to the
+  member. In case C, the stream runs no call, but a whole feed runs the call.
+  No case runs MORE calls, so the gap fails closed. The independent review of
+  PR #1047 found it.
+- **Do this:** let `_TAG_HEAD_RE` accept what `_FIRST_TAG_RE` accepts before
+  the `>`. Or test the head with `_FIRST_TAG_RE` when the `>` arrives. Add the
+  three cases to `_REPLIES`, so that the every-cut test fences them. Keep the
+  linear fences.
+- **Authority:** `specs/customer_console.md` §6A.15 (contract items 1 and 4)
+- **Added:** 2026-10-15 · PR #1047
+
 ### H-316 · The member writers of assignee rows take the row and the key in different orders · [AGENT]
 - **Check:** `git grep -n -e "ids = dedupe_ids(payload.task_ids)" -e "await _move_satellites(db, str(source.id), task_id)" -- apps/services/gateway/gateway/routes/projects/bulk.py apps/services/gateway/gateway/routes/projects/merge.py`. The first anchor is the unsorted selection of the bulk edit. The second is the merge, which moves the assignee keys before `update_row` of the target. Two hits mean this entry stays. With fewer hits, read the changed code, and delete this entry when the orders agree.
 - **Why.** The reviewer and the verifier of WS-55 EA-6b found these orders already disagree on main. A PUT of the assignees writes the key and then bumps the row. A move with assignees writes the row and the destination counter, then the key. A merge moves the assignee and watcher keys, then writes the target row. A bulk edit locks rows in request order. So a PUT against a move that assigns the same member, a merge against a PUT on the watcher keys, and two bulk edits with the same ids in another order can each deadlock. A merge against a PUT of the same member also fails with a unique violation of `pm_task_assignees_pkey` (10 times in 10).
