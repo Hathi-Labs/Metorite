@@ -501,7 +501,11 @@ SELECT id::text AS id, organization_id::text AS organization_id,
    AND direction = 'in'
    AND state = 'received'
    AND tries < :max
-   AND (error_code IS DISTINCT FROM 'updating' OR :back)
+   AND (error_code IS DISTINCT FROM 'updating' OR (:back AND NOT EXISTS (
+       SELECT 1 FROM whatsapp_bot_messages a
+        WHERE a.chat_session_id = whatsapp_bot_messages.chat_session_id
+          AND a.direction = 'in' AND a.state = 'replied'
+          AND a.received_at > whatsapp_bot_messages.received_at)))
    AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
  ORDER BY received_at, id
  LIMIT :n
@@ -594,7 +598,11 @@ SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
          AND state IN ('received', 'running')
          AND tries < :max
          AND chat_session_id IS NOT NULL
-         AND (error_code IS DISTINCT FROM 'updating' OR :back)
+         AND (error_code IS DISTINCT FROM 'updating' OR (:back AND NOT EXISTS (
+             SELECT 1 FROM whatsapp_bot_messages a
+              WHERE a.chat_session_id = whatsapp_bot_messages.chat_session_id
+                AND a.direction = 'in' AND a.state = 'replied'
+                AND a.received_at > whatsapp_bot_messages.received_at)))
          AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
        ORDER BY chat_session_id, received_at, id
   ) oldest

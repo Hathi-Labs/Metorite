@@ -1,19 +1,21 @@
-"""WS-47 WAC-13 — "Metorite is updating", and "back online" (spec §16.5).
+"""WS-47 WAC-13 — "Metorite is updating": hold the message, answer it when
+Metorite is back (spec §16.6).
 
 Database-free. The REAL webhook route and the REAL ``bot_run`` logic run on
-the fakes of ``test_wac_bot_run.py``. The two queries of the note
-(``_owed_notes``, ``_claim_note``) are fakes here, and the R8 suite
-(``test_wac_bot_run_r8.py``) runs them on a real Postgres.
+the fakes of ``test_wac_bot_run.py``. The R8 suite
+(``test_wac_bot_run_r8.py``) runs the hold, the queue filter, the supersede
+and the expiry on a real Postgres.
 
 R7 fences named here:
 
-* ``wac13-updating`` (U1, U2): only a failure of the AI path says
-  "updating", and every other failure keeps its own text.
-* ``wac13-back-once`` (U3): one note to each phone, then none.
-* ``wac13-back-when-back`` (U4): no note while the Router's health fails, or
-  inside the quiet time with no success since.
-* ``wac13-back-link`` (U5): a phone whose link changed gets no note.
-* ``wac13-hold`` (U6): a restart tells each waiting member, within a bound.
+* ``wac13-hold`` (U1, U2): only a failure of the AI path holds the message,
+  the member hears so once, and every other failure keeps its own text.
+* ``wac13-wait-until-back`` (U3): a held message does not run while the AI
+  path is not proved back, and it runs first, in thread order, once it is.
+* ``wac13-back`` (U4): the sweep counts the AI path as back only with the
+  Router's health AND a success or 5 quiet minutes.
+* ``wac13-no-promise`` (U5): an org that the sweep skips gets no promise.
+* ``wac13-restart`` (U6): a restart tells each waiting member, within a bound.
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ import pytest
 from gateway.routes.whatsapp_channel import bot_run
 
 from tests.unit.test_wac_bot_run import (  # noqa: F401 - `world` is a fixture
+    ANSWER,
     CREDITS_TEXT,
     FAILED_TEXT,
     ORG_A,
@@ -45,22 +48,40 @@ def _fresh_outage(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bot_run, "_WAITING_ON_MODEL", {})
 
 
-# ── U1 and U2: the words of a failure ───────────────────────────────────────
+def _in_rows(world: _World) -> list[dict[str, Any]]:  # noqa: F811
+    return world.store.inbound_rows()
+
+
+# ── U1 and U2: hold, and say so once ────────────────────────────────────────
 
 
 @pytest.mark.parametrize("exc", [
     _status_error(502), _status_error(503), _status_error(504),
     ConnectionRefusedError("router down"), TimeoutError("router hung"),
 ], ids=["502", "503", "504", "refused", "timeout"])
-async def test_a_failure_of_the_ai_path_says_metorite_is_updating(
+async def test_a_failure_of_the_ai_path_holds_the_message_and_says_so(
     world: _World, exc: BaseException,  # noqa: F811
 ) -> None:
     world.agent.exc = exc
     await _post_and_run(_message())
     assert world.sent == [(PHONE, bot_run.REPLY_UPDATING)]
-    (row,) = world.store.inbound_rows()
-    assert (row["state"], row["code"]) == ("failed", bot_run.UPDATING_CODE)
+    (row,) = _in_rows(world)
+    assert (row["state"], row["code"], row["tries"]) == (
+        "received", bot_run.UPDATING_CODE, 0), "it waits, and the outage took no try"
     assert bot_run._OUTAGE["failed"] > 0
+
+
+async def test_a_message_held_twice_is_told_once(world: _World) -> None:  # noqa: F811
+    world.agent.exc = _status_error(503)
+    await _post_and_run(_message())
+    (row,) = _in_rows(world)
+    # The sweep ran it again too early, and the AI path was still down.
+    row["stale"] = True
+    await bot_run.run_message(bot_run.RunRequest(
+        row["id"], ORG_A, row["email"], PHONE, row["wamid"], row["sid"]), stale=True)
+    await bot_run.wait_for_runs()
+    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING)]
+    assert len(world.agent.calls) == 2
 
 
 @pytest.mark.parametrize(("exc", "text", "code"), [
@@ -75,133 +96,113 @@ async def test_every_other_failure_keeps_its_own_text(
     world.agent.exc = exc
     await _post_and_run(_message())
     assert world.sent == [(PHONE, text)]
-    assert world.store.inbound_rows()[0]["code"] == code
+    assert (_in_rows(world)[0]["state"], _in_rows(world)[0]["code"]) == ("failed", code)
     assert bot_run._OUTAGE["failed"] == 0
 
 
-async def test_an_answer_marks_the_ai_path_as_answering(world: _World) -> None:  # noqa: F811
+async def test_the_run_limit_while_the_router_failed_holds_the_message(
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    """The 2026-10-15 incident: the Router failed during the run, and the run
+    then met its own limit. A long job with the Router up keeps the general
+    text (``test_wac_bot_run``)."""
+    from gateway.routes import v1_compat
+
+    monkeypatch.setattr(bot_run, "RUN_TIMEOUT_S", 0.05)
+
+    class _Hung:
+        async def __call__(self, *_a: Any, **_kw: Any) -> Any:
+            v1_compat._router_failed()
+            await asyncio.sleep(60)
+
+    monkeypatch.setattr(bot_run, "_executor", lambda: _Hung())
     await _post_and_run(_message())
-    assert bot_run._OUTAGE["answered"] > 0
+    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING)]
+    assert _in_rows(world)[0]["code"] == bot_run.UPDATING_CODE
 
 
-# ── U3, U4, U5: the "back online" note ──────────────────────────────────────
+# ── U3: wait until back, then answer in order ───────────────────────────────
 
 
-class _Owed:
-    """The owed rows of one org, and the claim, in memory."""
-
-    def __init__(self, *phones: str, answered: tuple[str, ...] = ()) -> None:
-        self.rows = {p: 2 for p in phones}   # two failed messages each
-        self.answered = set(answered)
-        self.quiet: list[float] = []
-
-    async def owed(self, quiet: float) -> list[tuple[bot_run.RunRequest, bool]]:
-        self.quiet.append(quiet)
-        return [(bot_run.RunRequest(f"row-{p}", ORG_A, "a@fracktal.in", p,
-                                    f"wamid.{p}", "sid-1"), p in self.answered)
-                for p, n in self.rows.items() if n]
-
-    async def claim(self, wa_id: str) -> bool:
-        claimed = self.rows.get(wa_id, 0) > 0
-        self.rows[wa_id] = 0
-        return claimed
+async def test_a_held_message_waits_while_the_ai_path_is_not_back(
+    world: _World,  # noqa: F811
+) -> None:
+    """A new message during the outage runs by itself. The held one does
+    not run with it until the AI path is proved back."""
+    world.agent.exc = _status_error(503)
+    await _post_and_run(_message("First"))
+    world.agent.exc = None
+    bot_run._OUTAGE["failed"] = time.time()   # the outage is still fresh
+    await _post_and_run(_message("Second"))
+    asked = [c["payload"]["message"] for c in world.agent.calls]
+    assert asked == ["First", "Second"], "the held message ran again too early"
+    # The answer to "Second" proved the AI path back, and it read "First" in
+    # the thread's history. So "First" is covered, and never runs after it.
+    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING), (PHONE, ANSWER)]
 
 
-def _owed(monkeypatch: pytest.MonkeyPatch, *phones: str, healthy: bool = True,
-          linked: bool = True, answered: tuple[str, ...] = ()) -> _Owed:
-    owed = _Owed(*phones, answered=answered)
-    monkeypatch.setattr(bot_run, "_owed_notes", owed.owed)
-    monkeypatch.setattr(bot_run, "_claim_note", owed.claim)
+async def test_once_back_the_held_message_runs_first_in_thread_order(
+    world: _World,  # noqa: F811
+) -> None:
+    world.agent.exc = _status_error(503)
+    await _post_and_run(_message("First"))
+    world.agent.exc = None
+    bot_run._OUTAGE["failed"] = time.time() - bot_run.OUTAGE_QUIET_S - 1
+    await _post_and_run(_message("Second"))
+    asked = [c["payload"]["message"] for c in world.agent.calls]
+    assert asked == ["First", "First", "Second"]
+    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING), (PHONE, ANSWER),
+                          (PHONE, ANSWER)]
+    assert [r["state"] for r in _in_rows(world)] == ["replied", "replied"]
+
+
+# ── U4: what "back" means to the sweep ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(("failed_ago", "answered", "healthy", "back"), [
+    (60, False, True, False),                       # a fresh failure
+    (bot_run.OUTAGE_QUIET_S + 1, False, True, True),  # quiet long enough
+    (60, True, True, True),                         # a success since
+    (bot_run.OUTAGE_QUIET_S + 1, False, False, False),  # health fails
+    (60, True, False, False),
+])
+async def test_the_sweep_counts_the_ai_path_back_only_with_health_and_proof(
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+    failed_ago: float, answered: bool, healthy: bool, back: bool,
+) -> None:
+    seen: list[bool] = []
+
+    async def _org(_org: str, *, back: bool = True) -> list[Any]:
+        seen.append(back)
+        return []
 
     async def _health() -> bool:
         return healthy
 
-    async def _linked(_req: bot_run.RunRequest) -> bool:
-        return linked
-
+    now = time.time()
+    bot_run._OUTAGE.update(failed=now - failed_ago,
+                           answered=now if answered else 0.0)
+    monkeypatch.setattr(bot_run, "_sweep_org", _org)
     monkeypatch.setattr(bot_run, "_router_healthy", _health)
-    monkeypatch.setattr(bot_run, "_phone_still_linked", _linked)
-    return owed
-
-
-async def test_each_phone_hears_back_online_once(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    other = "919990000777"
-    _owed(monkeypatch, PHONE, other)
-    assert await bot_run.tell_back(ORG_A) == 2
-    assert sorted(world.sent) == sorted([(PHONE, bot_run.REPLY_BACK),
-                                         (other, bot_run.REPLY_BACK)])
-    assert await bot_run.tell_back(ORG_A) == 0
-    assert len(world.sent) == 2
-
-
-async def test_no_note_while_the_router_health_fails(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    owed = _owed(monkeypatch, PHONE, healthy=False)
-    assert await bot_run.tell_back(ORG_A) == 0
-    assert world.sent == [] and owed.rows[PHONE] == 2, "a note was claimed"
-
-
-async def test_a_new_failure_on_any_phone_holds_every_note(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    """Review round 1, P1: the quiet time was each row's own age, so during
-    an outage a member heard "back online" while others still failed. Now a
-    failure less than 5 minutes ago holds every note, and the org's query
-    gets the quiet time too, so a restart that lost the stamp still waits."""
-    owed = _owed(monkeypatch, PHONE)
-    bot_run._OUTAGE.update(failed=time.time() - 60, answered=0.0)
-    assert await bot_run.tell_back(ORG_A) == 0
-    assert owed.quiet == [] and world.sent == []
-    bot_run._OUTAGE["failed"] = time.time() - bot_run.OUTAGE_QUIET_S - 1
-    assert await bot_run.tell_back(ORG_A) == 1
-    assert owed.quiet == [bot_run.OUTAGE_QUIET_S]
-
-
-async def test_an_answer_after_the_failure_lifts_the_quiet_time(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    owed = _owed(monkeypatch, PHONE)
-    bot_run._OUTAGE.update(failed=time.time() - 30, answered=time.time())
-    assert await bot_run.tell_back(ORG_A) == 1
-    assert owed.quiet == [0.0]
-
-
-async def test_a_phone_that_got_an_answer_since_gets_no_note(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    """Review round 1, P2: "send it again" after the member already did."""
-    owed = _owed(monkeypatch, PHONE, answered=(PHONE,))
-    assert await bot_run.tell_back(ORG_A) == 0
-    assert world.sent == [] and owed.rows[PHONE] == 0, "the rows are closed"
-
-
-async def test_a_phone_whose_link_changed_gets_no_note_and_its_rows_close(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    owed = _owed(monkeypatch, PHONE, linked=False)
-    assert await bot_run.tell_back(ORG_A) == 0
-    assert world.sent == [] and owed.rows[PHONE] == 0
-
-
-async def test_the_sweep_sends_the_notes_of_each_org(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    told: list[str] = []
-
-    async def _tell(org: str, _healthy: Any = None) -> int:
-        told.append(org)
-        return 0
-
-    async def _none(_org: str) -> list[Any]:
-        return []
-
-    monkeypatch.setattr(bot_run, "_sweep_org", _none)
-    monkeypatch.setattr(bot_run, "tell_back", _tell)
     await bot_run.sweep_once()
-    assert sorted(told) == sorted(bot_run.flags.assistant_orgs())
+    assert seen and set(seen) == {back}
+
+
+# ── U5: an org that the sweep skips ─────────────────────────────────────────
+
+
+async def test_an_org_the_sweep_skips_gets_no_promise_and_no_hold(
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    """Only ``*`` admits the org, so no sweep would run its message again."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "whatsapp_assistant_orgs", "*", raising=False)
+    world.agent.exc = _status_error(503)
+    await _post_and_run(_message())
+    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING_PLAIN)]
+    assert (_in_rows(world)[0]["state"], _in_rows(world)[0]["code"]) == (
+        "failed", bot_run.PLAIN_CODE)
 
 
 # ── U6: a restart in the middle of a run ────────────────────────────────────
@@ -215,65 +216,9 @@ async def test_a_restart_tells_the_member_whose_run_waits_on_the_model(
     await _until_called(world)
     await asyncio.wait_for(bot_run.stop_runs(timeout=1.0), timeout=10)
     assert world.sent == [(PHONE, bot_run.REPLY_UPDATING_HOLD)]
-    (row,) = world.store.inbound_rows()
+    (row,) = _in_rows(world)
     assert row["state"] in ("running", "received"), "the sweep must run it again"
     assert bot_run._WAITING_ON_MODEL == {}
-
-
-async def test_a_slow_meta_never_holds_the_shutdown(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    from whatsapp_ingestion.providers import factory
-
-    class _Hangs:
-        async def send_text(self, to: str, body: str, **_kw: Any) -> str:
-            await asyncio.sleep(60)
-            return "never"
-
-    world.agent.gate = asyncio.Event()
-    await _post(_message())
-    await _until_called(world)
-    monkeypatch.setattr(factory, "build_provider", lambda _n, _c: _Hangs())
-    monkeypatch.setattr(bot_run, "HOLD_TIMEOUT_S", 0.2)
-    started = time.monotonic()
-    await asyncio.wait_for(bot_run.stop_runs(timeout=1.0), timeout=10)
-    assert time.monotonic() - started < 3
-
-
-# ── Review round 1: the run's own limit, and an org the sweep skips ────────
-
-
-async def test_the_run_limit_while_the_router_failed_says_updating(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    """The 2026-10-15 incident: the Router failed during the run, and the run
-    then met its own limit."""
-    from gateway.routes import v1_compat
-
-    monkeypatch.setattr(bot_run, "RUN_TIMEOUT_S", 0.05)
-
-    class _Hung:
-        async def __call__(self, *_a: Any, **_kw: Any) -> Any:
-            v1_compat._router_failed()
-            await asyncio.sleep(60)
-
-    monkeypatch.setattr(bot_run, "_executor", lambda: _Hung())
-    await _post_and_run(_message())
-    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING)]
-
-
-async def test_an_org_the_sweep_skips_gets_no_promise(
-    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
-) -> None:
-    """Review round 1, P1: only ``*`` admits the org, so no sweep sends its
-    note or runs its row again. The text promises nothing."""
-    from acb_common import get_settings
-
-    monkeypatch.setattr(get_settings(), "whatsapp_assistant_orgs", "*", raising=False)
-    world.agent.exc = _status_error(503)
-    await _post_and_run(_message())
-    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING_PLAIN)]
-    assert world.store.inbound_rows()[0]["code"] == bot_run.PLAIN_CODE
 
 
 async def test_the_hold_note_binds_the_org_and_promises_nothing_unswept(
@@ -297,3 +242,23 @@ async def test_the_hold_note_binds_the_org_and_promises_nothing_unswept(
     await asyncio.wait_for(bot_run.stop_runs(timeout=1.0), timeout=10)
     assert world.sent == [(PHONE, bot_run.REPLY_UPDATING_PLAIN)]
     assert bound == [ORG_A]
+
+
+async def test_a_slow_meta_never_holds_the_shutdown(
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    from whatsapp_ingestion.providers import factory
+
+    class _Hangs:
+        async def send_text(self, to: str, body: str, **_kw: Any) -> str:
+            await asyncio.sleep(60)
+            return "never"
+
+    world.agent.gate = asyncio.Event()
+    await _post(_message())
+    await _until_called(world)
+    monkeypatch.setattr(factory, "build_provider", lambda _n, _c: _Hangs())
+    monkeypatch.setattr(bot_run, "HOLD_TIMEOUT_S", 0.2)
+    started = time.monotonic()
+    await asyncio.wait_for(bot_run.stop_runs(timeout=1.0), timeout=10)
+    assert time.monotonic() - started < 3
