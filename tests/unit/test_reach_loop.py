@@ -103,7 +103,8 @@ class FakeOutbox:
     async def full_brief_due(self, org, member, local_date, key):
         sent_template = any(
             r["kind"] == "brief" and r["local_date"] == local_date and r["member"] == member
-            and r["state"] == "sent" and r.get("regime") == "template" for r in self.rows)
+            and ((r["state"] == "sent" and r.get("regime") == "template")
+                 or r["state"] == "failed") for r in self.rows)
         return sent_template and not any(r["key"] == key for r in self.rows)
 
 
@@ -313,6 +314,24 @@ class TestHoldAndCatchUp:
         assert {world.outbox.log_rows[(ORG, ME, *plan.pair(c))] for c in world.cards} == {"sent"}
         assert world.outbox.rows[-1]["regime"] == "template"
 
+    async def test_a_refused_needs_you_template_holds_then_sends_free_text(
+            self, world, monkeypatch):
+        # Review of RE-2a, P2: a refused template logs nothing, a closed
+        # window does not retry it, and the open window sends free text.
+        monkeypatch.setattr(get_settings(), "reach_needs_you_template", "not_approved")
+        await loop.member_pass(ORG, ME)
+        world.open = False
+        world.cards = [approval("approvals:1", "Refund")]
+        world.sent.state, world.sent.reason = "failed", "send_failed"
+        assert await loop.member_pass(ORG, ME) == "interrupt:failed:send_failed"
+        assert (ORG, ME, *plan.pair(world.cards[0])) not in world.outbox.log_rows
+        assert await loop.member_pass(ORG, ME) == "interrupt:duplicate"
+        world.sent.state, world.sent.reason = "sent", None
+        world.open = True
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        assert world.sent.calls[-1]["template"] is None
+        assert len(world.sent.calls) == 2
+
     async def test_with_an_open_window_the_needs_you_template_is_not_used(self, world,
                                                                           monkeypatch):
         monkeypatch.setattr(get_settings(), "reach_needs_you_template", "metorite_needs_you")
@@ -363,6 +382,47 @@ class TestHoldAndCatchUp:
         assert world.sent.calls[0]["body"].startswith("*Your day, Thu 15 Oct*")
         assert world.sent.calls[0]["template"] is None
         assert await loop.member_pass(ORG, ME) == "nothing"
+
+    async def test_an_empty_morning_then_an_afternoon_card_is_an_interrupt(self, world):
+        # Review of RE-2a, P1, with no seeded brief: the empty morning keeps a
+        # row, so the 15:00 approval is a capped interrupt, not a brief.
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.now = kolkata(9, 30)
+        assert await loop.member_pass(ORG, ME) == "brief:empty"
+        assert world.outbox.rows[-1]["state"] == "skipped"
+        world.now = kolkata(15)
+        world.cards = [approval("approvals:1", "Refund")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        assert world.sent.calls[0]["kind"] == "interrupt"
+
+    async def test_a_refused_template_brief_gets_the_full_brief_on_open(
+            self, world, monkeypatch):
+        # Review of RE-2a, P2: Meta refuses the template, and the day's brief
+        # still goes once the member writes.
+        monkeypatch.setattr(get_settings(), "reach_brief_template", "not_approved")
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.open, world.now = False, kolkata(9, 30)
+        world.cards = [card("tasks:1", "overdue")]
+        world.sent.state, world.sent.reason = "failed", "send_failed"
+        assert await loop.member_pass(ORG, ME) == "brief:failed:send_failed"
+        world.sent.state, world.sent.reason = "sent", None
+        world.open, world.now = True, kolkata(10)
+        assert await loop.member_pass(ORG, ME) == "brief_full:sent"
+        assert await loop.member_pass(ORG, ME) == "nothing"
+
+    async def test_one_pass_sends_one_template_not_two(self, world, monkeypatch):
+        # Review of RE-2a, P2: with both templates set, the brief template
+        # goes and the approval waits for the full brief.
+        monkeypatch.setattr(get_settings(), "reach_brief_template", "daily_brief")
+        monkeypatch.setattr(get_settings(), "reach_needs_you_template", "needs_you")
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.open, world.now = False, kolkata(9, 30)
+        world.cards = [approval("approvals:1", "Refund")]
+        assert await loop.member_pass(ORG, ME) == "brief:sent,held"
+        assert [c["template"] for c in world.sent.calls] == ["daily_brief"]
 
     async def test_no_brief_after_the_day_end(self, world):
         no_brief_yet(world)

@@ -160,7 +160,10 @@ async def _send_now(org: str, member: str, *, kind: str, cards: list[dict[str, A
     await outbox.finish(org, outbox_id, state=got.state, regime=got.regime,
                         reason=got.reason, provider_message_id=got.provider_message_id)
     outcome = "sent" if got.state == "sent" else "skipped"
-    if kind == "interrupt":
+    if kind == "interrupt" and not (template is not None and got.state != "sent"):
+        # A template that Meta refused logs nothing: the cards stay held, and
+        # the first open window sends them as free text. Its key ends in
+        # ":tpl", so that free text is a new row (review of RE-2a, P2).
         await outbox.log(org, member, map(plan.pair, cards), outcome, outbox_id)
     _log.info("reach.message", kind=kind, state=got.state, reason=got.reason,
               items=len(cards))
@@ -174,7 +177,8 @@ async def first_name(org: str, member: str) -> str:
 
 async def send_brief(org: str, member: str, snap: Snapshot, *, key: str,
                      template: str | None = None,
-                     reach: tuple[str | None, bool] | None = None) -> str:
+                     reach: tuple[str | None, bool] | None = None,
+                     record_empty: bool = False) -> str:
     """Compose and send one brief. Answers what happened.
 
     *template* is the brief template the channel uses when the window is
@@ -182,6 +186,14 @@ async def send_brief(org: str, member: str, snap: Snapshot, *, key: str,
     when it chose the template itself."""
     body = plan.compose_brief(snap.cards, app_url(), snap.local_date, now=snap.now)
     if body is None:
+        if record_empty:
+            # The day's brief had nothing to say. A row says so, or the first
+            # card of the afternoon would arrive as a "Your day" brief, past
+            # the cap (review of RE-2a, P1).
+            row = await outbox.plan(org, member, kind="brief", signal_ids=[], key=key,
+                                    body="", local_date=snap.local_date)
+            if row is not None:
+                await outbox.finish(org, row, state="skipped", reason="empty")
         return "empty"
     sends = None
     if template:
@@ -194,35 +206,38 @@ async def send_brief(org: str, member: str, snap: Snapshot, *, key: str,
 
 
 async def _brief_step(org: str, member: str, snap: Snapshot,
-                      reach: tuple[str | None, bool]) -> tuple[str | None, bool]:
-    """The brief of this pass. Answers what it did, or None, and True when a
-    free-text brief went out, so its cards need not interrupt."""
+                      reach: tuple[str | None, bool]) -> tuple[str | None, str]:
+    """The brief of this pass. Answers what it did, or None, and how the
+    brief went: ``free_text`` (its cards need not interrupt), ``template``
+    (its cards wait for the full brief) or ``none``."""
     due = plan.brief_date(snap.day, snap.now, snap.working_day)
     if due is None:
-        return None, False
+        return None, "none"
     wa_id, is_open = reach
     if not await outbox.brief_planned(org, member, due):
         template = flags.brief_template()
         if wa_id is None or is_open:
             # Free text, or the channel skips no_link, as before RE-2a.
             got = await send_brief(org, member, snap, key=plan.brief_key(member, due),
-                                   reach=reach)
-            return f"brief:{got}", got == "sent"
+                                   reach=reach, record_empty=True)
+            return f"brief:{got}", "free_text" if got == "sent" else "none"
         if template and plan.brief_morning(snap.day, snap.now):
             got = await send_brief(org, member, snap, key=plan.brief_key(member, due),
                                    template=template, reach=reach)
-            # The template named one item, so the others still interrupt.
-            return f"brief:{got}", False
-        return "brief:held", False
+            # The template named one item. The others wait for the full brief
+            # of the first open window, so one pass never sends two paid
+            # templates about the same card (review of RE-2a, P2).
+            return f"brief:{got}", "template" if got == "sent" else "none"
+        return "brief:held", "none"
     full_key = plan.full_brief_key(member, due)
     if is_open and await outbox.full_brief_due(org, member, due, full_key):
         body = plan.compose_brief(snap.cards, app_url(), due, now=snap.now)
         if body is None:
-            return None, False
+            return None, "none"
         got = await _send(org, member, kind="brief", cards=plan.brief_items(snap.cards),
                           key=full_key, body=body, local_date=due, reach=reach)
-        return f"brief_full:{got}", got == "sent"
-    return None, False
+        return f"brief_full:{got}", "free_text" if got == "sent" else "none"
+    return None, "none"
 
 
 async def member_pass(org: str, member: str, now: datetime | None = None) -> str:
@@ -255,10 +270,14 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
     logged = await outbox.logged_pairs(org, member)
     candidates = plan.interrupt_candidates(snap.cards, logged, snap.now)
 
-    brief, free_text = await _brief_step(org, member, snap, reach)
+    brief, how = await _brief_step(org, member, snap, reach)
     if brief is not None:
         did.append(brief)
-    if free_text and candidates:
+    if how == "template" and candidates:
+        # HELD for the full brief of the first open window.
+        did.append("held")
+        candidates = []
+    if how == "free_text" and candidates:
         # The brief already named them. One message, not two.
         await outbox.log(org, member, map(plan.pair, candidates), "deferred")
         candidates = []
@@ -282,8 +301,9 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
             if needs_you is not None:
                 name = await first_name(org, member)
                 sends = Template(needs_you, plan.needs_you_params(name, candidates, snap.now))
+            key = plan.interrupt_key(member, candidates)
             sent = await _send(org, member, kind="interrupt", cards=candidates,
-                               key=plan.interrupt_key(member, candidates), body=body,
+                               key=f"{key}:tpl" if sends is not None else key, body=body,
                                local_date=snap.local_date, template=sends, reach=reach)
             did.append(f"interrupt:{sent}")
     return ",".join(did) or "nothing"

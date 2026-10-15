@@ -70,8 +70,8 @@ _BRIEF_SQL = (
 _FULL_DUE_SQL = (
     "SELECT EXISTS (SELECT 1 FROM reach_outbox "
     f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
-    "AND kind = 'brief' AND local_date = :d AND state = 'sent' "
-    "AND regime = 'template') "
+    "AND kind = 'brief' AND local_date = :d "
+    "AND ((state = 'sent' AND regime = 'template') OR state = 'failed')) "
     "AND NOT EXISTS (SELECT 1 FROM reach_outbox "
     f"WHERE organization_id = {_BOUND_ORG} AND dedupe_key = :key)"
 )

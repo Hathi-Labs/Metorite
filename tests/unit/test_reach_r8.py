@@ -286,6 +286,27 @@ class TestCatchUpReads:
             await outbox.finish(p.org_a, str(row), state="sent", regime="free_text")
             assert not await outbox.full_brief_due(p.org_a, A, day, f"brief:ft-{TAG}:full")
 
+    async def test_a_failed_brief_calls_for_its_full_brief(self, promoted):  # noqa: F811
+        # Review of RE-2a, P2: a template Meta refused still lets the day's
+        # brief go once the window opens.
+        p = promoted
+        day = date(2026, 10, 15)
+        async with _as_member(p, p.org_a):
+            row = await outbox.plan(p.org_a, A, kind="brief", signal_ids=[],
+                                    key=f"brief:fail-{TAG}", body="b", local_date=day)
+            await outbox.finish(p.org_a, str(row), state="failed", reason="send_failed")
+            assert await outbox.full_brief_due(p.org_a, A, day, f"brief:fail-{TAG}:full")
+
+    async def test_an_empty_brief_calls_for_no_full_brief(self, promoted):  # noqa: F811
+        p = promoted
+        day = date(2026, 10, 15)
+        async with _as_member(p, p.org_a):
+            row = await outbox.plan(p.org_a, A, kind="brief", signal_ids=[],
+                                    key=f"brief:empty-{TAG}", body="", local_date=day)
+            await outbox.finish(p.org_a, str(row), state="skipped", reason="empty")
+            assert await outbox.brief_planned(p.org_a, A, day)
+            assert not await outbox.full_brief_due(p.org_a, A, day, f"brief:empty-{TAG}:full")
+
     async def test_the_display_name_is_read_in_its_org(self, promoted):  # noqa: F811
         p = promoted
         with p.admin_engine.begin() as c:
