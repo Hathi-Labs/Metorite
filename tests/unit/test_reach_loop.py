@@ -34,7 +34,7 @@ from acb_auth.permissions import EffectiveAccess
 from acb_common.settings import get_settings
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from gateway.reach import loop, outbox, plan
+from gateway.reach import loop, outbox, plan, requests
 from gateway.reach import whatsapp as channel
 from gateway.routes.shell import state
 
@@ -158,7 +158,14 @@ def world(monkeypatch):
     monkeypatch.setattr(s, "reach_needs_you_template", "")
     monkeypatch.setattr(s, "reach_template_language", "en")
     w = SimpleNamespace(outbox=fake, sent=sent, cards=[], now=NOW, working=True,
-                        complete=True, wa_id="919800000001", open=True)
+                        complete=True, wa_id="919800000001", open=True, asks=[])
+
+    async def undelivered(org, member):
+        # The real read: the member's requests that no log row closed (RE-5).
+        logged = {k[2] for k in fake.log_rows if k[0] == org and k[1] == member}
+        return [r for r in w.asks if r.signal_id not in logged]
+
+    monkeypatch.setattr(requests, "undelivered", undelivered)
 
     async def reach_state(org, member):
         return w.wa_id, (w.open if w.wa_id else False)
@@ -756,3 +763,204 @@ def test_the_settings_default_to_off():
     assert fields["reach_enabled"].default is False
     assert fields["reach_orgs"].default == "" and fields["reach_members"].default == ""
     assert plan.MAX_CHARS <= 1000
+
+
+# ── RE-5: "Tell me on WhatsApp" ─────────────────────────────────────────────
+
+QUIET = datetime(2026, 10, 15, 15, 0, tzinfo=UTC)  # 20:30 in Kolkata, after the day
+
+
+def ask(rid: str, *, source: str = "chat", urgency: str = "normal", by: str = ME,
+        title: str = "Call the bank", body: str | None = "Ask for the IFSC code.",
+        age: timedelta = timedelta(minutes=1), expires: timedelta = timedelta(hours=48),
+        href: str | None = None) -> requests.Request:
+    created = NOW - age
+    return requests.Request(id=rid, source=source, title=title, body=body, href=href,
+                            entity_type=None, entity_id=None, urgency=urgency,
+                            requested_by=by, created_at=created,
+                            expires_at=created + expires)
+
+
+def seed_interrupts(world, n: int) -> None:
+    for i in range(n):
+        world.outbox.rows.append({"id": f"ob-int-{i}", "org": ORG, "member": ME,
+                                  "kind": "interrupt", "key": f"interrupt:{i}", "body": "b",
+                                  "state": "sent", "local_date": TODAY, "created_at": NOW})
+
+
+def logged(world, rid: str) -> str | None:
+    return next((v for k, v in world.outbox.log_rows.items()
+                 if k[2] == f"request:{rid}"), None)
+
+
+class TestTellMe:
+    """WS-59 RE-5 (``proactive_reach.md`` §11.3): the requests on the loop."""
+
+    async def _past_baseline(self, world) -> None:
+        await outbox.log(ORG, ME, [loop.BASELINE_MARK], "baseline")
+
+    async def test_the_members_own_request_goes_whole_and_once(self, world):
+        await self._past_baseline(world)
+        world.asks = [ask("r1", href="/email?email=m1&account=a1")]
+        assert await loop.member_pass(ORG, ME) == "request:sent"
+        body = world.sent.calls[0]["body"]
+        assert body.startswith("*Call the bank*") and "Ask for the IFSC code." in body
+        assert body.endswith("/email?email=m1&account=a1")
+        assert logged(world, "r1") == "sent"
+        # Never sent twice.
+        assert await loop.member_pass(ORG, ME) == "nothing"
+        assert len(world.sent.calls) == 1
+
+    async def test_the_members_own_request_passes_the_cap_and_is_not_counted(self, world):
+        await self._past_baseline(world)
+        seed_interrupts(world, 3)
+        world.asks = [ask("r1")]
+        assert await loop.member_pass(ORG, ME) == "request:sent"
+        assert world.outbox.rows[-1]["kind"] == "request"
+        assert await outbox.interrupts_since(ORG, ME, NOW - timedelta(hours=1)) == 3
+
+    async def test_the_members_own_request_passes_quiet_hours(self, world):
+        await self._past_baseline(world)
+        world.now = QUIET
+        world.asks = [ask("r1")]
+        assert await loop.member_pass(ORG, ME) == "request:sent"
+
+    async def test_a_rule_request_is_never_the_members_own(self, world):
+        # The rule's owner IS the member, but a rule did not ask "now".
+        await self._past_baseline(world)
+        world.now = QUIET
+        world.asks = [ask("r1", source="email.rule")]
+        assert await loop.member_pass(ORG, ME) == "requests_wait"
+        assert world.sent.calls == [] and logged(world, "r1") is None
+
+    async def test_a_normal_rule_request_respects_the_cap_and_waits(self, world):
+        await self._past_baseline(world)
+        seed_interrupts(world, 3)
+        world.asks = [ask("r1", source="email.rule")]
+        assert await loop.member_pass(ORG, ME) == "requests_wait"
+        assert world.sent.calls == [] and logged(world, "r1") is None
+        # Under the cap it goes, as an interrupt the cap counts.
+        world.outbox.rows[:] = [r for r in world.outbox.rows if r["kind"] != "interrupt"]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        assert world.sent.calls[0]["body"].startswith("*Needs you now*")
+        assert "Call the bank" in world.sent.calls[0]["body"]
+        assert logged(world, "r1") == "sent"
+
+    async def test_an_urgent_rule_request_uses_the_one_extra_and_quiet_hours(self, world):
+        await self._past_baseline(world)
+        seed_interrupts(world, 3)
+        world.now = QUIET
+        world.asks = [ask("r1", source="email.rule", urgency="urgent")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        # The allowance is one: the next urgent request waits.
+        world.asks.append(ask("r2", source="email.rule", urgency="urgent"))
+        assert await loop.member_pass(ORG, ME) == "requests_wait"
+        assert len(world.sent.calls) == 1 and logged(world, "r2") is None
+
+    async def test_an_expired_request_is_logged_expired_and_never_sent(self, world):
+        await self._past_baseline(world)
+        world.asks = [ask("r1", age=timedelta(hours=50))]
+        assert await loop.member_pass(ORG, ME) == "expired:1"
+        assert logged(world, "r1") == "expired" and world.sent.calls == []
+        assert await loop.member_pass(ORG, ME) == "nothing"
+
+    async def test_a_closed_window_holds_a_request_and_the_open_one_sends_it(self, world,
+                                                                            monkeypatch):
+        await self._past_baseline(world)
+        # Even with the needs-you template set: it fits approvals only.
+        monkeypatch.setattr(get_settings(), "reach_needs_you_template", "metorite_needs_you")
+        world.open = False
+        world.asks = [ask("r1")]
+        assert await loop.member_pass(ORG, ME) == "requests_held"
+        assert world.sent.calls == [] and logged(world, "r1") is None
+        world.open = True
+        assert await loop.member_pass(ORG, ME) == "request:sent"
+        assert world.sent.calls[0]["template"] is None
+
+    async def test_a_request_is_never_baselined(self, world):
+        world.asks = [ask("r1")]
+        assert await loop.member_pass(ORG, ME) == "baseline"
+        assert logged(world, "r1") is None
+        assert await loop.member_pass(ORG, ME) == "request:sent"
+
+    async def test_a_pass_that_sends_a_brief_sends_no_request(self, world):
+        await self._past_baseline(world)
+        no_brief_yet(world)
+        world.cards = [card("tasks:1", "overdue")]
+        world.asks = [ask("r1")]
+        got = await loop.member_pass(ORG, ME)
+        assert got == "brief:sent,requests_wait"
+        assert len(world.sent.calls) == 1 and logged(world, "r1") is None
+        assert await loop.member_pass(ORG, ME) == "request:sent"
+
+    async def test_requests_ride_with_the_interrupts_in_one_message(self, world):
+        await self._past_baseline(world)
+        world.cards = [card("email:a:t1")]
+        world.asks = [ask("r1", source="workflow", title="The nightly sync failed")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        body = world.sent.calls[0]["body"]
+        assert "The nightly sync failed" in body and "Reply to Priya" in body
+        assert logged(world, "r1") == "sent"
+
+    async def test_at_most_three_requests_in_one_message(self, world):
+        await self._past_baseline(world)
+        world.asks = [ask(f"r{i}", source="workflow", title=f"Item {i}") for i in range(5)]
+        assert await loop.member_pass(ORG, ME) == "requests_wait,interrupt:sent"
+        assert [logged(world, f"r{i}") for i in range(5)] == [
+            "sent", "sent", "sent", None, None]
+
+    async def test_a_skipped_send_closes_the_request(self, world):
+        # No link: the channel skips, and the request is not tried for ever.
+        await self._past_baseline(world)
+        world.wa_id = None
+        world.sent.state, world.sent.reason = "skipped", "no_link"
+        world.asks = [ask("r1")]
+        assert await loop.member_pass(ORG, ME) == "request:skipped:no_link"
+        assert logged(world, "r1") == "skipped"
+
+
+class TestTellMeRoute:
+    """``POST /reach/tell-me``: the seam of the assistant's tool (RE-5)."""
+
+    @pytest.fixture
+    def recorded(self, monkeypatch):
+        got: list[dict] = []
+
+        async def tell_me(org, member, **kw):
+            got.append({"org": org, "member": member, **kw})
+            return "req-1"
+
+        monkeypatch.setattr(requests, "tell_me", tell_me)
+        monkeypatch.setattr(channel, "channel_ready", lambda org: True)
+        return got
+
+    def _post(self, email, org, body):
+        return TestTheRoutes._client(None, email, org).post("/reach/tell-me", json=body)
+
+    def test_it_records_for_the_session_member_only(self, world, recorded):
+        got = self._post(ME, ORG, {"title": "Hi", "body": "x", "member": "other@x.test"})
+        # An unknown key names no recipient: the body has no member field.
+        assert got.status_code == 200
+        assert got.json() == {"state": "sent", "request_id": "req-1",
+                              "answer": "Sent to your WhatsApp in about a minute."}
+        assert recorded == [{"org": ORG, "member": ME, "source": "chat", "title": "Hi",
+                             "body": "x", "requested_by": ME}]
+
+    def test_a_closed_window_says_it_waits(self, world, recorded):
+        world.open = False
+        assert self._post(ME, ORG, {"title": "Hi"}).json()["state"] == "waits"
+
+    def test_no_link_records_nothing(self, world, recorded):
+        world.wa_id = None
+        assert self._post(ME, ORG, {"title": "Hi"}).json()["state"] == "no_link"
+        assert recorded == []
+
+    @pytest.mark.parametrize(("email", "org"), [("other@reach.test", ORG), (ME, OTHER)])
+    def test_off_the_allowlist_says_off_and_records_nothing(self, world, recorded, email, org):
+        got = self._post(email, org, {"title": "Hi"}).json()
+        assert got["state"] == "off" and got["answer"] == "Reach is not on for you yet."
+        assert recorded == []
+
+    def test_a_bad_title_is_422(self, world, monkeypatch):
+        monkeypatch.setattr(channel, "channel_ready", lambda org: True)
+        assert self._post(ME, ORG, {"title": "   "}).status_code == 422

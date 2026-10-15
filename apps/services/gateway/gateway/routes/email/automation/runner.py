@@ -427,8 +427,9 @@ async def message_timeline(
 # a reply to a stale conversation is neither, and doing it unattended as part of
 # a bulk repair is exactly the kind of outward-facing surprise the user cannot
 # undo. If a reply was genuinely wanted, it can be drafted from the message.
+# NOTIFY_ME too: a WhatsApp message about a mail of weeks ago is noise (RE-5).
 _RETRY_SKIPPED_ACTIONS = frozenset({"REPLY", "DRAFT_EMAIL", "FORWARD",
-                                    "SEND_EMAIL", "CALL_WEBHOOK"})
+                                    "SEND_EMAIL", "CALL_WEBHOOK", "NOTIFY_ME"})
 
 
 async def retry_failed_executions(
@@ -516,6 +517,7 @@ async def retry_failed_executions(
                 db, provider, str(r.message_id), r.provider_message_id,
                 actions, email, about, signature, owner,
                 account_id=account_id, errors_out=errors,
+                rule_id=str(r.rule_id),
             )
             status = "FAILED" if (errors and not taken) else "APPLIED"
             if status == "APPLIED":
@@ -599,7 +601,7 @@ async def approve_execution(
         taken = await _apply_rule_actions(
             db, provider, str(row.message_id), row.provider_message_id,
             actions, email, about, signature, row.user_id,
-            account_id=str(row.account_id),
+            account_id=str(row.account_id), rule_id=str(row.rule_id),
         )
         await db.execute(text(
             "UPDATE email_executed_rules SET status='APPLIED', actions_taken=:acts "
@@ -1251,6 +1253,7 @@ async def _apply_and_log_match(
             db, provider, str(r.id), pmid,
             rule["actions"], email, about, signature, account_user,
             account_id=account_id, errors_out=action_errors,
+            rule_id=str(rule.get("id") or ""),
         )
         # A row that changed NOTHING must not claim it did. APPLIED is what the
         # auto-learn gate counts as evidence and what Analytics counts as work

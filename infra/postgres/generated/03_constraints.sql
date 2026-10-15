@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 167
+-- Tables in this phase: 168
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2066,3 +2066,15 @@ ALTER TABLE artifacts ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE artifacts ADD CONSTRAINT artifacts_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS artifacts_org_idx ON artifacts (organization_id);
+
+-- reach_requests
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM reach_requests WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: reach_requests still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE reach_requests ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE reach_requests ADD CONSTRAINT reach_requests_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS reach_requests_org_idx ON reach_requests (organization_id);

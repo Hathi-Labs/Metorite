@@ -7,9 +7,13 @@
 * ``POST /reach/brief`` — send the signed-in member's brief now. It skips the
   once-a-day guard, and keeps every other check: the switch, the org list,
   the member allowlist, the link and the 24-hour window.
+* ``POST /reach/tell-me`` — "Tell me on WhatsApp" for the signed-in member
+  (RE-5, §11.4 item 2). It records one request with ``source=chat`` and
+  answers what Reach will do with it. The assistant's tool calls it.
 
-Both answer 404 when Reach is off for the member, so a closed feature looks
-like no feature. The member and the org come from the session only (R5,
+The first two answer 404 when Reach is off for the member, so a closed
+feature looks like no feature. ``tell-me`` answers ``off`` instead and
+records nothing, because the assistant must tell the member why. The member and the org come from the session only (R5,
 R11). Gated on ``feature:chat``, as the WhatsApp channel's own router is,
 because Reach speaks through that channel.
 """
@@ -21,8 +25,9 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
-from gateway.reach import flags, loop, outbox, plan
+from gateway.reach import flags, loop, outbox, plan, requests
 from gateway.reach import whatsapp as channel
 
 router = APIRouter(
@@ -89,3 +94,48 @@ def result_body(outcome: str) -> dict[str, Any]:
         return {"state": "skipped", "reason": "already_sent"}
     state, _, reason = outcome.partition(":")
     return {"state": state, "reason": reason or None}
+
+
+class TellMeBody(BaseModel):
+    """What the member wants on WhatsApp. No recipient: it is the member."""
+
+    title: str
+    body: str | None = None
+
+
+#: What the assistant says for each state of ``POST /reach/tell-me``.
+TELL_ME_ANSWERS = {
+    "sent": "Sent to your WhatsApp in about a minute.",
+    "waits": ("It waits for your next WhatsApp message to Metorite "
+              "(WhatsApp's 24-hour rule)."),
+    "no_link": ("Your WhatsApp is not linked yet. Link it in My Profile, "
+                "then ask again."),
+    "off": "Reach is not on for you yet.",
+}
+
+
+def tell_me_body(state: str, request_id: str | None = None) -> dict[str, Any]:
+    return {"state": state, "request_id": request_id, "answer": TELL_ME_ANSWERS[state]}
+
+
+@router.post("/tell-me")
+async def reach_tell_me(req: TellMeBody,
+                        user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+    """Record a request for the signed-in member, and say what happens next.
+
+    The member and the org come from the session only. The body names no
+    recipient, so the request can reach nobody else (R5, R11)."""
+    org = str(getattr(user, "organization_id", None) or "")
+    email = (user.email or "").strip().lower()
+    if not org or not email or not flags.member_allowed(org, email) \
+            or not channel.channel_ready(org):
+        return tell_me_body("off")
+    wa_id, is_open = await channel.reach_state(org, email)
+    if wa_id is None:
+        return tell_me_body("no_link")
+    try:
+        rid = await requests.tell_me(org, email, source="chat", title=req.title,
+                                     body=req.body, requested_by=email)
+    except requests.RequestInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return tell_me_body("sent" if is_open else "waits", rid)

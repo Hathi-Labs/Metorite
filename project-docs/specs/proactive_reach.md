@@ -15,7 +15,11 @@ first morning sent one brief and lost one brief and one interrupt to a closed
 window. **RE-2a is LIVE, 2026-10-15** (#1042, no migration). A message in a closed
 window waits for the member's next message. It goes as a template instead
 when `REACH_BRIEF_TEMPLATE` or `REACH_NEEDS_YOU_TEMPLATE` names an approved
-one (§8.1a, H-315). **RE-5 is in build** (§11, "Tell me on WhatsApp").
+one (§8.1a, H-315). **RE-5 is BUILT, 2026-10-15** (branch `ws59-tell-me`,
+migration 269). `tell_me()`, `reach_requests`, the email rule action
+`NOTIFY_ME` and the workflow step `notify.whatsapp` are wired.
+`POST /reach/tell-me` is built. The assistant tool that calls it is RE-5b,
+because it lives in the orchestrator's tool manifests (§11.4).
 
 **What this spec owns.** How Metorite decides to contact a member outside the
 app, and how the message reaches them. That covers the outbound path, the
@@ -621,6 +625,25 @@ nothing for it in RE-5. My Day may show requests later (§17, W6).
    will do: "sent", or "it waits for your next WhatsApp message".
 3. **Workflows.** A step action `notify.whatsapp` that records a request
    for the workflow's owner.
+
+**Decisions taken at build (RE-5, 2026-10-15).**
+
+- A request is the member's own only when `source` is `chat` and the
+  member asked. A rule's owner is the member too, but a rule request keeps
+  the budget.
+- A request that may not go now waits, and it is not logged. A later pass
+  sends it before it expires. The brief never carries a request.
+- One message holds 3 requests at most, the member's own first. A message
+  of the member's own requests only is outbox kind `request`, so the cap
+  does not count it.
+- The urgency of `NOTIFY_ME` lives in the action row's `label`, so no
+  column is added.
+
+**RE-5b, the assistant tool.** `acb_skills/reach_tools.py` posts to
+`POST /reach/tell-me` with the run's identity. It needs an entry in
+`skill_families.py` and `tool_annotations.TOOL_ANNOTATIONS`, an injection
+line in `orchestrator/_tool_injection.py`, and the name in
+`whatsapp_ui.WITHHELD_TOOLS`, so a WhatsApp run does not carry it.
 
 **Fence (RE-5).** `tests/unit/test_reach_requests.py`. No caller imports a
 channel adapter. A request for one member never reaches another. A request

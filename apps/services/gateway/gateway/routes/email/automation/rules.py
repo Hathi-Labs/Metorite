@@ -611,6 +611,8 @@ def _gen_text(value: Any) -> str | None:
 _GEN_ACTION_TYPES = {
     "ARCHIVE", "LABEL", "MARK_READ", "STAR", "MARK_SPAM", "TRASH",
     "MOVE_FOLDER", "REPLY", "FORWARD", "DRAFT_EMAIL", "CALL_WEBHOOK",
+    # WS-59 RE-5: "Tell me on WhatsApp". Its label is "normal" or "urgent".
+    "NOTIFY_ME",
 }
 
 
@@ -635,10 +637,15 @@ async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
             '"<optional>", "content": "<optional draft text; leave empty to let '
             'the AI write it>", "url": "<for CALL_WEBHOOK>"}]}\n'
             "ACTION must be one of: ARCHIVE, LABEL, MARK_READ, STAR, MARK_SPAM, "
-            "TRASH, MOVE_FOLDER, REPLY, FORWARD, DRAFT_EMAIL, CALL_WEBHOOK.\n"
+            "TRASH, MOVE_FOLDER, REPLY, FORWARD, DRAFT_EMAIL, CALL_WEBHOOK, "
+            "NOTIFY_ME.\n"
+            "NOTIFY_ME tells the mailbox owner about the email on WhatsApp. Its "
+            'label is "urgent" when the user says urgent, else "normal". It '
+            "never messages anyone else.\n"
             "Rules of thumb: 'label X as Y' → LABEL with label Y; 'archive' → "
             "ARCHIVE; 'forward to a@b.com' → FORWARD to_address a@b.com; 'draft a "
-            "reply' → DRAFT_EMAIL; 'reply with …' → REPLY content. Prefer an AI "
+            "reply' → DRAFT_EMAIL; 'reply with …' → REPLY content; 'tell me on "
+            "WhatsApp' → NOTIFY_ME. Prefer an AI "
             "`instructions` condition for fuzzy intent; use from_pattern/"
             "subject_pattern only for literal sender/subject text. Keep names "
             'short. Omit empty fields. Output {"rules": []} if nothing parses.'

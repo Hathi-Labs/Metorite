@@ -1716,6 +1716,9 @@ async def get_sender_categories(account_id: str) -> str:
 _RULE_ENGINE_TYPES = frozenset({
     "ARCHIVE", "LABEL", "MARK_READ", "STAR", "MARK_SPAM", "TRASH",
     "MOVE_FOLDER", "REPLY", "DRAFT_EMAIL", "FORWARD", "CALL_WEBHOOK",
+    # WS-59 RE-5: "Tell me on WhatsApp" tells the mailbox owner only, so it
+    # is not outward.
+    "NOTIFY_ME",
 })
 _OUTWARD_RULE_TYPES = frozenset({"FORWARD", "CALL_WEBHOOK"})
 # A REPLY or DRAFT_EMAIL with one of these goes to an address that the rule

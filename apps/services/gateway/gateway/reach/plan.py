@@ -34,6 +34,14 @@ BRIEF_LINES = 7
 MAX_CHARS = 1000
 #: The most characters of a title inside a line.
 TITLE_CHARS = 80
+#: The most characters of a request's title inside a batched line (RE-5).
+REQUEST_TITLE_CHARS = 200
+#: The most characters of a request's body inside a batched message (RE-5).
+REQUEST_BODY_CHARS = 300
+#: The most characters of a message that is one request of the member's own:
+#: the title of 300 and the body of 1,000 fit, with the link (RE-5). WhatsApp
+#: takes 4,096.
+SELF_REQUEST_CHARS = 1600
 #: The most characters of one template parameter.
 PARAM_CHARS = 160
 #: A template parameter is never empty. Meta refuses an empty one.
@@ -202,6 +210,8 @@ def line(card: dict[str, Any], now: datetime, *, kind: str | None = None) -> str
         return f"Overbooked: {_clean(card.get('why'), 100)}"
     if kind == "no_plan_yet":
         return "Nothing is planned for today yet"
+    if kind == "notify_me":
+        return _clean(card.get("title"), REQUEST_TITLE_CHARS)
     return title
 
 
@@ -216,11 +226,45 @@ def _fit(head: str, lines: list[str], tail: str) -> str:
     return "\n".join([head, *kept, "", tail])
 
 
+def is_self_request(card: dict[str, Any]) -> bool:
+    """True for a "Tell me on WhatsApp" card that the member asked for now."""
+    return card.get("kind") == "notify_me" and (card.get("facts") or {}).get("self") is True
+
+
+def compose_self_request(card: dict[str, Any], app_url: str) -> str:
+    """A message of one request of the member's own: the title, the body and
+    the link. The member asked for this text, so it goes whole (RE-5)."""
+    title = _clean(card.get("title"), 300)
+    parts = [f"*{title}*"]
+    body = str((card.get("facts") or {}).get("body") or "").strip()
+    if body:
+        parts.append(body)
+    href = str(card.get("href") or "")
+    if href.startswith("/"):
+        parts.append(f"{app_url.rstrip('/')}{href}")
+    text = "\n\n".join(parts)
+    return text if len(text) <= SELF_REQUEST_CHARS else text[:SELF_REQUEST_CHARS - 1] + "…"
+
+
 def compose_interrupt(cards: list[dict[str, Any]], app_url: str, *,
                       now: datetime) -> str:
-    """One batched interrupt for *cards*, which must not be empty."""
+    """One batched interrupt for *cards*, which must not be empty.
+
+    A message of exactly one request of the member's own is that request:
+    its title and body (RE-5). In a batch, the one request of the member's
+    own carries its body after the title, cut to a short line."""
+    selfs = [c for c in cards if is_self_request(c)]
+    if len(cards) == 1 and selfs:
+        return compose_self_request(cards[0], app_url)
+    lines = []
+    for c in cards:
+        text = line(c, now, kind=reach_kind(c))
+        body = (c.get("facts") or {}).get("body")
+        if len(selfs) == 1 and c is selfs[0] and body:
+            text = f"{text}: {_clean(body, REQUEST_BODY_CHARS)}"
+        lines.append(text)
     tail = f"Reply here to act on any of these, or open My Day: {app_url.rstrip('/')}/"
-    return _fit("*Needs you now*", [line(c, now, kind=reach_kind(c)) for c in cards], tail)
+    return _fit("*Needs you now*", lines, tail)
 
 
 def _date_words(day: date) -> str:

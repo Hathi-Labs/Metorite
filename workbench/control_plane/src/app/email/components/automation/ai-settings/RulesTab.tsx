@@ -5,6 +5,7 @@
 // Process past emails, artifact picker). Extracted from AISettingsView.tsx.
 
 import Button from "@/components/ui/Button";
+import SelectButton from "@/components/ui/SelectButton";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -1226,7 +1227,7 @@ function ActionConfig({
   const isDraftReply = action.type === "DRAFT_EMAIL" || action.type === "REPLY";
   const isForward = action.type === "FORWARD";
   const draftLike = isDraftReply || isForward;
-  const delayable = action.type !== "CALL_WEBHOOK";
+  const delayable = action.type !== "CALL_WEBHOOK" && action.type !== "NOTIFY_ME";
   // Forward is inherently manual (a note above the forwarded body); reply/draft
   // follow the explicit content_manual toggle (default = AI writes it).
   const manual = isForward ? true : !!action.content_manual;
@@ -1349,6 +1350,21 @@ function ActionConfig({
         />
       )}
 
+      {/* Tell me on WhatsApp (WS-59 RE-5): one option, kept in `label`. */}
+      {action.type === "NOTIFY_ME" && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <FieldLabel>Urgency</FieldLabel>
+          <SelectButton
+            label="Urgency"
+            value={action.label === "urgent" ? "urgent" : "normal"}
+            options={NOTIFY_URGENCY}
+            defaultValue="normal"
+            onChange={(v) => set({ label: v })}
+            widthClass="w-56"
+          />
+        </div>
+      )}
+
       {action.type === "CALL_WEBHOOK" && (
         <input
           value={action.url ?? ""}
@@ -1467,6 +1483,12 @@ function ActionConfig({
 }
 
 /** Small field label used inside the action config card. */
+/** The one option of "Tell me on WhatsApp" (WS-59 RE-5), kept in `label`. */
+const NOTIFY_URGENCY = [
+  { value: "normal", label: "Normal", description: "Inside my daily limit and my working hours." },
+  { value: "urgent", label: "Urgent", description: "Also in my quiet hours. One a day past my limit." },
+] as const;
+
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
     <span className="text-xs font-medium text-foreground">{children}</span>
