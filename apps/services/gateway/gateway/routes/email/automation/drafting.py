@@ -459,7 +459,7 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
         # provider. It closes before any network call.
         async with _tenant_session() as db:
             records = (await db.execute(text(
-                "SELECT draft_text FROM email_ai_drafts "
+                "SELECT thread_id, draft_text FROM email_ai_drafts "
                 "WHERE account_id = :aid AND thread_id IN (:tid, :tmpl)"
             ), {"aid": account_id, "tid": thread_id,
                 "tmpl": template_draft_key(thread_id)})).fetchall()
@@ -478,6 +478,18 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
                 "AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')"
             ), {"aid": account_id, "tid": thread_id})).fetchall()
             candidates = [r for r in rows if _fold(r.body_text) in wrote]
+            # Round 2: no draft of the thread holds the template text any
+            # more, so the member sent the template draft (or removed it).
+            # Its record has nothing left to clean, so it goes now.
+            template_texts = {
+                _fold(r.draft_text) for r in records
+                if getattr(r, "thread_id", "") == template_draft_key(thread_id)}
+            if template_texts and not any(
+                    _fold(r.body_text) in template_texts for r in rows):
+                await db.execute(text(
+                    "DELETE FROM email_ai_drafts "
+                    "WHERE account_id = :aid AND thread_id = :tmpl"
+                ), {"aid": account_id, "tmpl": template_draft_key(thread_id)})
             if not candidates:
                 return
             # No request user to scope by. A missing account raises 404, and

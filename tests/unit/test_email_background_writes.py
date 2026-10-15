@@ -598,7 +598,11 @@ def _drafts_rig(monkeypatch, records: list[str], drafts: list[Any],
     ``(text, html)`` pair, or an exception. With no entry, a draft still holds
     its stored body."""
     db = _FakeDb([
-        ("FROM email_ai_drafts", [SimpleNamespace(draft_text=t) for t in records]),
+        # A plain text is the AI record of the thread. A ``(key, text)`` pair
+        # names its key, e.g. a template record.
+        ("FROM email_ai_drafts", [
+            SimpleNamespace(thread_id=t[0], draft_text=t[1]) if isinstance(t, tuple)
+            else SimpleNamespace(thread_id="t-1", draft_text=t) for t in records]),
         ("FROM email_messages", drafts),
         ("FROM email_assistant_settings", [SimpleNamespace(signature="")]),
     ])
@@ -731,14 +735,31 @@ async def test_a_template_draft_is_trashed_again(monkeypatch) -> None:
     """Fix round 1 (P2). A template DRAFT_EMAIL draft records its text under
     ``template:<thread>``, so the cleanup trashes it, as on main, and drops
     the record."""
-    db, trashed = _drafts_rig(monkeypatch, [TEMPLATE_TEXT], [
+    db, trashed = _drafts_rig(monkeypatch, [("template:t-1", TEMPLATE_TEXT)], [
         _draft("p-tpl", TEMPLATE_TEXT), _draft("p-own", "Mine.")])
     await drafting._cleanup_thread_drafts(ACC, "t-1")
     assert trashed == ["p-tpl"]
-    [read] = db.ran("SELECT draft_text FROM email_ai_drafts")
+    [read] = db.ran("SELECT thread_id, draft_text FROM email_ai_drafts")
     assert read["tmpl"] == "template:t-1" and read["tid"] == "t-1"
     [dropped] = db.ran("DELETE FROM email_ai_drafts")
     assert dropped["tmpl"] == "template:t-1"
+
+
+async def test_a_sent_template_draft_drops_its_record(monkeypatch) -> None:
+    """Round 2 (P2): the member sent the template draft itself, so no draft
+    of the thread holds its text. The cleanup drops the template record."""
+    db, trashed = _drafts_rig(monkeypatch, [("template:t-1", TEMPLATE_TEXT)], [
+        _draft("p-own", "Mine.")])
+    await drafting._cleanup_thread_drafts(ACC, "t-1")
+    assert trashed == []
+    [dropped] = db.ran("DELETE FROM email_ai_drafts")
+    assert dropped["tmpl"] == "template:t-1"
+
+
+def test_ingestion_mirrors_the_template_prefix() -> None:
+    from email_ingestion import storage
+
+    assert storage.TEMPLATE_DRAFT_PREFIX == drafting.TEMPLATE_DRAFT_PREFIX
 
 
 def test_a_template_draft_records_its_text_under_its_own_key() -> None:
@@ -1221,5 +1242,40 @@ class TestThePutKeepsAutoRun:
                 p.admin_engine, "SELECT auto_run FROM email_assistant_settings "
                 "WHERE account_id = CAST(:a AS uuid)", a=acc)
             assert stored is expected
+        finally:
+            _drop_owner(p.admin_engine, owner)
+
+
+@_DB_GATE
+class TestTheTemplateRecordFollowsItsThread:
+
+    async def test_a_removed_thread_takes_its_template_record(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Round 2 (P2): ``storage.delete_orphan_ai_drafts`` deletes the
+        ``template:`` record of a thread with no mail left, and keeps the one
+        of a thread that still has mail."""
+        from email_ingestion import storage
+
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner, provider="gmail")
+        _seed_message(p.admin_engine, org=p.org_b, account_id=acc, thread="t-kept")
+        with p.admin_engine.begin() as c:
+            for tid in ("t-gone", "template:t-gone", "template:t-kept"):
+                c.execute(text(
+                    "INSERT INTO email_ai_drafts (account_id, thread_id, draft_text, "
+                    "organization_id) VALUES (CAST(:a AS uuid), :tid, 'x', "
+                    "CAST(:o AS uuid))"), {"a": acc, "tid": tid, "o": p.org_b})
+        try:
+            async with _as_tenant(p), _tenant_session() as db:
+                gone = await storage.delete_orphan_ai_drafts(
+                    db, acc, ["t-gone", "t-kept"])
+            assert gone == 2
+            left = {r[0] for r in _admin_read(
+                p.admin_engine, "SELECT thread_id FROM email_ai_drafts "
+                "WHERE account_id = CAST(:a AS uuid)", a=acc)}
+            assert left == {"template:t-kept"}
         finally:
             _drop_owner(p.admin_engine, owner)
