@@ -576,6 +576,11 @@ async def test_a_space_manager_cannot_grant_org(ns, app_engine) -> None:  # noqa
         lead_grant, {"subject": "group:eng", "level": "write"},
         {"subject": peer_email, "level": "read"}]})
 
+    # A malformed email is a 422 at the boundary, never a 500 from the CHECK.
+    for bad in ("a@b@c", "a b@c", "@x"):
+        response = await _call(ns, admin, "PUT", path,
+                               {"grants": [{"subject": bad, "level": "read"}]})
+        assert response.status_code == 422, (bad, response.status_code)
     await _ok(ns, admin, "PUT", path, {"grants": [lead_grant, {"subject": "org", "level": "read"}]})
     # An unchanged `org` entry is fine. A changed or removed one is not.
     await _ok(ns, lead, "PUT", path, {"grants": [
