@@ -21,6 +21,7 @@ The rule this file pins:
 # ruff: noqa: F811 - the fixtures come in by import and are used as arguments
 from __future__ import annotations
 
+import httpx
 import pytest
 
 pytest.importorskip("sqlalchemy")
@@ -115,6 +116,14 @@ async def test_hidden_accounts_and_deals_no_longer_stop_the_other_modules(ns, zo
     assert third.status == "ok"
     assert third.counts["organizations"].get("unavailable", 0) == 0
     assert _count(ns, "crm_companies", ns.org_a) == 1
+    # The contacts landed with no company while Accounts was off, and they did
+    # not change in Zoho. The return of Accounts reads them in full once, so
+    # the link fills in (review P1).
+    assert _count(ns, "crm_contacts", ns.org_a, "company_id IS NULL") == 0
+    queued = _q(ns, "SELECT cursor_state FROM crm_sync_cursors WHERE "
+                    "organization_id = CAST(:o AS uuid) AND module = 'zoho:field_rules'",
+                o=ns.org_a)
+    assert "contact" not in (queued[0][0] or {}).get("reread", []), "the re-read is done"
 
 
 async def test_a_module_turned_off_later_keeps_its_rows(ns, zoho) -> None:
@@ -151,3 +160,62 @@ async def test_any_other_failure_of_a_core_module_still_fails_the_run(ns, zoho) 
     run = await engine.run_org(ns.org_a)
     assert run.status == "failed"
     assert run.counts["organizations"].get("unavailable", 0) == 0
+
+
+async def test_a_refused_deleted_list_alone_is_reported_not_swallowed(ns, zoho) -> None:
+    """Review P2. The changed list reads and only the deleted list is refused."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+
+    real = a.handle
+
+    def handle(request):
+        if request.url.path == "/crm/v2/Accounts/deleted":
+            a.requests.append(request)
+            return httpx.Response(NO_PERMISSION[0], json=NO_PERMISSION[1])
+        return real(request)
+
+    a.handle = handle
+    # Force a full compare, so the deleted list is read in this run.
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_runs SET finished_at = finished_at - interval '60 days', "
+            "started_at = started_at - interval '60 days' "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": ns.org_a})
+    run = await engine.run_org(ns.org_a)
+    assert run.status == "ok"
+    assert run.counts["organizations"]["hidden"] == 1
+    assert _count(ns, "crm_companies", ns.org_a) == 1
+
+
+async def test_deal_roles_wait_while_deals_is_off(ns, zoho) -> None:
+    """Review P2. No role call while Deals is off, and the queue is kept."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Deals", "d1", 4, Deal_Name="Deal", Stage="Qualify")
+    a.roles_fault = (400, {})  # the first role read fails, so d1 stays queued
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert a.role_calls == ["d1"]
+
+    a.roles_fault = None
+    a.roles["d1"] = [{"id": "c1", "Contact_Role": {"name": "Buyer"}}]
+    _hide(a, "Deals")
+    hidden = await engine.run_org(ns.org_a)
+    assert hidden.status == "ok"
+    assert hidden.counts["deals"]["hidden"] == 1
+    again = await engine.run_org(ns.org_a)
+    assert again.status == "ok"
+    assert a.role_calls == ["d1"], "no role read while Deals is off"
+
+    a.faults.pop("Deals")
+    _age_checked_at(ns, ns.org_a, "zoho:deal")
+    back = await engine.run_org(ns.org_a)
+    assert back.status == "ok"
+    assert a.role_calls[-1] == "d1", "the kept queue is read once Deals is back"

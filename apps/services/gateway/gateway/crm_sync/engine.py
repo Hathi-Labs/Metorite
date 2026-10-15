@@ -140,6 +140,17 @@ OPTIONAL_ENTITIES: frozenset[str] = frozenset({"task"})
 #: An unavailable module is asked again after this long.
 UNAVAILABLE_RETRY = timedelta(hours=1)
 
+#: The entities whose rows link to a core entity (CRM-Q15). A child that landed
+#: while its parent module was off has no link. When the parent comes back, each
+#: child is read in full once, through the re-read list of the field rules, so
+#: the link fills in. That read stamps nothing and deletes nothing. Leads are
+#: not here, because ``_relink_leads`` runs at the end of every run.
+DEPENDENTS: dict[str, tuple[str, ...]] = {
+    "company": ("contact", "deal", "note", "call", "meeting", "task"),
+    "contact": ("deal", "note", "call", "meeting", "task"),
+    "deal": ("note", "call", "meeting", "task"),
+}
+
 #: The entities that have field definitions.
 FIELD_DEF_ENTITIES: tuple[str, ...] = ("company", "contact", "lead", "deal")
 
@@ -1355,6 +1366,9 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     if _unavailable_now(ctx, entity):
         return
     generic = _module(entity) is not None
+    # The module was off and is asked again (CRM-Q15). When this read ends, its
+    # children are read in full once, so their links fill in.
+    recovering = bool(saved.get("unavailable")) and not generic
     # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
     # its deletes come from the deleted list only (CRM-Q6a).
     walking = entity in ctx.reconcile and not generic
@@ -1526,6 +1540,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                 await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
                 if last_page and rule_reread:
                     await _rule_reread_done(ctx, db, entity)
+                if last_page and recovering:
+                    await _queue_dependents(ctx, db, entity)
             ctx.cursors[module] = row
             if last_page:
                 break
@@ -1599,6 +1615,10 @@ def _count_unavailable(ctx: _Ctx, entity: str, reason: str = "scope") -> None:
         ctx.counts[key]["hidden"] = 1
 
 
+#: The cursor keys that a module keeps while it is unavailable (CRM-Q15).
+_KEPT_WHEN_UNAVAILABLE = frozenset({"failed", "retry_from", "converted_both"})
+
+
 async def _mark_unavailable(
     ctx: _Ctx, entity: str, row: CursorRow, reason: str = "scope",
 ) -> None:
@@ -1608,12 +1628,19 @@ async def _mark_unavailable(
     plan at ``import`` for ever. The error text is not kept, only the fact and
     its reason. It deletes nothing: the rows that a core module mirrored
     before it was turned off stay, and no reconcile runs while it is off.
+
+    It keeps the records still to retry and the CRM-Q5 lead mark, so a module
+    that comes back loses neither. It drops the walk marks on purpose: with no
+    ``prev_walk_start``, the first walk after the module comes back cannot
+    delete a row.
     """
     now = _now()
     _log.warning("crm.sync.module_unavailable entity=%s reason=%s", entity, reason)
+    kept = {k: v for k, v in (row.state or {}).items() if k in _KEPT_WHEN_UNAVAILABLE}
     marked = CursorRow(
         changed_module(entity), row.last_pulled_at,
         {
+            **kept,
             "in_progress": False, "unavailable": True, "reason": reason,
             "checked_at": _iso(now),
         },
@@ -1718,6 +1745,10 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
         except SourceError as exc:
             if not _skip_module(entity, exc):
                 raise
+            if isinstance(exc, SourceModuleUnavailable):
+                # The changed list read, and the deleted list alone is refused.
+                # Say so on the card, so the missing deletes are not silent.
+                _count_unavailable(ctx, entity, "hidden")
             _log.warning("crm.sync.module_unavailable entity=%s reason=deleted", entity)
             return
         last_page = page.next_cursor is None
@@ -2045,7 +2076,12 @@ async def _deal_roles(ctx: _Ctx) -> None:
     counts the deals it left. A role that Zoho no longer lists is removed, and a
     contact that is not here is counted in ``unlinked``. A scope refusal or a
     failed read keeps the deal queued, and the third failure drops it.
+
+    While Deals is off in Zoho (CRM-Q15) the step reads nothing and keeps the
+    queue, so it neither spends credits on calls that fail nor drops a deal.
     """
+    if (_row(ctx, changed_module("deal")).state or {}).get("unavailable"):
+        return
     await _seed_roles(ctx)
     pending = list(ctx.roles_pending or [])
     if not pending:
@@ -2500,6 +2536,22 @@ async def _load_rules(ctx: _Ctx) -> None:
     ctx.rules = field_rules.by_entity(
         r for r in ctx.handled_rules if r.id not in ctx.stale_rule_ids
     )
+
+
+async def _queue_dependents(ctx: _Ctx, db: Any, entity: str) -> None:
+    """``entity`` came back on in Zoho (CRM-Q15). Queue one full read of each
+    entity that links to it, in the transaction of its last page. A child that
+    comes later in this run is read in full in this run."""
+    deps = set(DEPENDENTS.get(entity, ()))
+    if not deps:
+        return
+    state = _row(ctx, FIELD_RULES_ROW).state or {}
+    reread = {str(e) for e in state.get("reread") or ()} | deps
+    saved = _rules_row(ctx, field_rules.applied_of(state), reread)
+    await _save_cursor(ctx, db, saved, "ok")
+    ctx.cursors[FIELD_RULES_ROW] = saved
+    ctx.rule_rereads |= deps
+    _log.info("crm.sync.module_back entity=%s reread=%s", entity, ",".join(sorted(deps)))
 
 
 async def _rule_reread_done(ctx: _Ctx, db: Any, entity: str) -> None:

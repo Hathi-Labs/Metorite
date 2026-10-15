@@ -161,9 +161,11 @@ DISCOVERED_MODULES: tuple[str, ...] = ("Leads", "Contacts", "Accounts", "Deals")
 _SCOPE_ERROR_CODES = frozenset({"OAUTH_SCOPE_MISMATCH"})
 _VERSION_ERROR_CODES = frozenset({"INVALID_URL_PATTERN", "INVALID_MODULE"})
 #: A record read that Zoho refuses for the whole module (CRM-Q15). Measured on
-#: a live tenant on 2026-10-15: a module the customer turned off answers
-#: ``INVALID_MODULE`` on v2 and ``NO_PERMISSION`` on v8. The record reads use a
-#: fixed API name, so neither code can mean a typo of ours.
+#: a live tenant on 2026-10-15: a module the customer turned off answers the v2
+#: record read with HTTP 400 ``INVALID_MODULE``. Its v8 count and field reads
+#: answer ``NO_PERMISSION``. A v2 record read answers ``NO_PERMISSION`` when the
+#: profile of the user who connected cannot see the module. The record reads
+#: use a fixed API name, so neither code can mean a typo of ours.
 _MODULE_REFUSAL_CODES = frozenset({"INVALID_MODULE", "NO_PERMISSION"})
 
 
