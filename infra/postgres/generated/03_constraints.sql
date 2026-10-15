@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 164
+-- Tables in this phase: 167
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2030,3 +2030,39 @@ ALTER TABLE reach_signal_log ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE reach_signal_log ADD CONSTRAINT reach_signal_log_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS reach_signal_log_org_idx ON reach_signal_log (organization_id);
+
+-- artifact_member
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM artifact_member WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: artifact_member still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE artifact_member ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE artifact_member ADD CONSTRAINT artifact_member_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS artifact_member_org_idx ON artifact_member (organization_id);
+
+-- artifact_shares
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM artifact_shares WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: artifact_shares still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE artifact_shares ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE artifact_shares ADD CONSTRAINT artifact_shares_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS artifact_shares_org_idx ON artifact_shares (organization_id);
+
+-- artifacts
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM artifacts WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: artifacts still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE artifacts ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE artifacts ADD CONSTRAINT artifacts_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS artifacts_org_idx ON artifacts (organization_id);

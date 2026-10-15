@@ -695,6 +695,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: 2026-10-11: package_artifacts joined the floor. It reads and writes the
 #: working dir through the safe opener and under the broker's dir lock, so it
 #: is no `_HOST_FILE_TOOLS` member, and it says open_world=False.
+#: 2026-10-15 (H-315): make_document joined by scope. It lays out a PDF in the
+#: gateway's own child and writes the chat's outputs, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -710,7 +712,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "file_access_replace", "file_access_replace_lines", "file_access_write",
     "find_conflicts", "find_tasks", "fit_for_task",
     "intake_queue", "link_tasks", "list_tasks",
-    "mark_notifications_read", "merge_tags", "merge_tasks", "move_project",
+    "make_document", "mark_notifications_read", "merge_tags", "merge_tasks", "move_project",
     "move_task", "my_areas", "my_contexts", "my_led_projects", "my_task", "my_work",
     "notifications", "open_in_app", "package_artifacts", "people_for", "project_access",
     "project_summary", "project_views", "projects_tree", "propose_plan",
@@ -1624,7 +1626,7 @@ TASK_MANAGER_RISK_BLOCK = (
     "recall_notes, recall_timeline, remember, request_confirmation, run_diagnostics, "
     "share_artifact, web_search\n"
     "- State-writing (reversible): call_agent, call_agent_background, "
-    "call_agents_parallel, code_task, manage_todo_list, my_tasks_add_subtasks, "
+    "call_agents_parallel, code_task, make_document, manage_todo_list, my_tasks_add_subtasks, "
     "my_tasks_archive, my_tasks_capture, my_tasks_capture_many, my_tasks_complete, "
     "my_tasks_day_digest, my_tasks_delegate, my_tasks_estimate_stats, "
     "my_tasks_list_schedule, my_tasks_move, my_tasks_organize, my_tasks_plan_day, "

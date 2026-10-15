@@ -9,6 +9,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §4 (``tasks.py`` row).
     DELETE /projects/tasks/{id}                  → what cascaded
     POST   /projects/tasks/{id}/move
     PUT    /projects/tasks/{id}/assignees        → replaces the set
+    POST   /projects/tasks/{id}/claim            → add the caller, and start it
     POST   /projects/tasks/{id}/links
     DELETE /projects/tasks/{id}/links/{link_id}
 
@@ -19,7 +20,7 @@ no second table (§3.5). ``?parent_task_id=`` lists one task's children;
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NoReturn
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Header, HTTPException
@@ -36,7 +37,9 @@ from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
     DIRECTIONS,
+    STARTED_CATEGORY,
     TASK_SORTS,
+    TRIAGE_CATEGORY,
     ListResponse,
     Page,
     TaskIn,
@@ -60,6 +63,7 @@ from gateway.routes.projects.core import (
     load_default_status,
     load_visible_project,
     load_visible_task,
+    lock_task,
     next_task_number,
     node_kind,
     now,
@@ -207,17 +211,31 @@ async def _refuse_agent_type(db: Any, user: UserContext, type_id: Any,
         )
 
 
-def _refuse_agent_close(user: UserContext, category: str | None) -> None:
-    """An agent never moves a task into ``done`` or ``cancelled`` (§9.2).
+#: WS-55 EA-6f (EA3-32, spec `external_agent_access.md` §9.2). An agent may
+#: move a task into ``done``. Cancel stays a human step, so a signed agent
+#: MOVE refuses only the abandoned half of the closing categories. The shape
+#: is `tree.ABANDONED_CATEGORIES`, and no new literal names a category.
+AGENT_MOVE_REFUSED: frozenset[str] = CLOSING_CATEGORIES - {COMPLETED_CATEGORY}
+#: A signed agent CREATE still refuses both closing categories: a new task
+#: that starts closed is not work that an agent did.
+AGENT_CREATE_REFUSED: frozenset[str] = CLOSING_CATEGORIES
 
-    The edge refuses first. This is the gateway's own copy of the rule, for
-    a request that did not come through the edge's tools.
+#: The two texts of the refusal, one for each door.
+AGENT_MOVE_REFUSAL = "Cancelling a task stays a human step."
+AGENT_CREATE_REFUSAL = "A new task cannot start in a done or cancelled status."
+
+
+def _refuse_agent_close(user: UserContext, category: str | None, *,
+                        refused: frozenset[str], detail: str) -> None:
+    """An agent never moves a task into a category of *refused* (§9.2).
+
+    The create passes :data:`AGENT_CREATE_REFUSED` and the PATCH passes
+    :data:`AGENT_MOVE_REFUSED` (EA-6f). The edge refuses first. This is the
+    gateway's own copy of the rule, for a request that did not come through
+    the edge's tools.
     """
-    if getattr(user, "agent", None) is not None and category in CLOSING_CATEGORIES:
-        raise HTTPException(
-            status_code=422,
-            detail="Moving a task to done or cancelled stays a human step.",
-        )
+    if getattr(user, "agent", None) is not None and category in refused:
+        raise HTTPException(status_code=422, detail=detail)
 
 
 class MoveTask(BaseModel):
@@ -560,7 +578,9 @@ async def create_task(
             status = await require_status_in_project(
                 db, status_home, str(values["status_id"]),
             )
-            _refuse_agent_close(user, getattr(status, "category", None))
+            _refuse_agent_close(user, getattr(status, "category", None),
+                                refused=AGENT_CREATE_REFUSED,
+                                detail=AGENT_CREATE_REFUSAL)
         elif parent is not None:
             status = await parent_lane_status(db, parent, status_home)
         else:
@@ -695,8 +715,13 @@ async def patch_task(
                 db, after, str(new_status), created_by=actor(user),
             )
             # WS-55 EA-6d. Inside the transaction, so the refusal rolls the
-            # whole PATCH back, the field changes too.
-            _refuse_agent_close(user, getattr(moved["to"], "category", None))
+            # whole PATCH back, the field changes too. EA-6f: an agent may
+            # move a task into done, and only a cancel is refused. The
+            # narrowing above refuses `include_subtasks`, so an agent's done
+            # never closes a subtask.
+            _refuse_agent_close(user, getattr(moved["to"], "category", None),
+                                refused=AGENT_MOVE_REFUSED,
+                                detail=AGENT_MOVE_REFUSAL)
             after = moved["row"]
             # In the SAME transaction as the parent's own move, so a refused
             # cascade (a set with no Done status) leaves the parent open too.
@@ -1365,6 +1390,200 @@ async def set_assignees(
         # fix it.
         "not_notified": notified["skipped"],
     }
+
+
+# ── Claim (WS-55 EA-6b) ─────────────────────────────────────────────────────
+
+#: The codes of a refused claim (spec `external_agent_access.md` §9.2,
+#: EA3-34). Each refusal is a 422 whose detail is ``{"error": <code>,
+#: "message": <text>}``. The MCP edge maps each code to a fixed text of its
+#: own (``agent_edge.tools.CLAIM_TEXTS``) and never shows the message. A test
+#: pins the two sets equal.
+CLAIM_CLOSED = "claim_closed"
+CLAIM_TRIAGE = "claim_triage"
+CLAIM_ARCHIVED = "claim_archived"
+CLAIM_NO_STARTED_STATUS = "claim_no_started_status"
+CLAIM_REFUSALS: frozenset[str] = frozenset({
+    CLAIM_CLOSED, CLAIM_TRIAGE, CLAIM_ARCHIVED, CLAIM_NO_STARTED_STATUS,
+})
+
+
+#: The claim's own insert of its assignee key. It is ``core.insert_assignees``
+#: with ``RETURNING``, so the claim knows which rows it wrote. The PUT keeps
+#: the shared helper, which returns nothing.
+_CLAIM_INSERT_SQL = (
+    "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
+    "VALUES (CAST(:tid AS uuid), :who, :by) "
+    "ON CONFLICT (task_id, assignee) DO NOTHING RETURNING assignee"
+)
+
+
+async def _insert_claim_assignees(db: Any, task_id: str, wanted: list[str], *,
+                                  by: str) -> list[str]:
+    """Insert each assignee of *wanted* (lower case), and return the ones that
+    this insert wrote. A key that another transaction committed first is not
+    in the answer."""
+    written: list[str] = []
+    for who in sorted({str(w).strip().lower() for w in wanted if str(w or "").strip()}):
+        row = (await db.execute(
+            text(_CLAIM_INSERT_SQL), {"tid": task_id, "who": who, "by": by},
+        )).fetchone()
+        if row is not None:
+            written.append(str(row.assignee))
+    return written
+
+
+def _refuse_claim(code: str, message: str) -> NoReturn:
+    """Raise the 422 of a refused claim. Inside the transaction, so a
+    refusal after a write rolls that write back."""
+    raise HTTPException(status_code=422,
+                        detail={"error": code, "message": message})
+
+
+@router.post("/tasks/{task_id}/claim")
+async def claim_task(
+    task_id: str, user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
+) -> dict:
+    """The caller takes the task: add them as an assignee, and start it.
+
+    WS-55 EA-6b (spec `external_agent_access.md` §9.2, EA3-34). ONE
+    transaction, with ``If-Match`` and no body. The name says that the call
+    can move the status, which ``assignees/self`` hid. A member may call it
+    too, and nothing here reads ``UserContext.agent``.
+
+    * ``backlog`` or ``todo``: add the caller, keep every other assignee, and
+      move the task to the first ``in_progress`` lane of its OWN status set
+      (``status_owner_id``, never the root: a subproject can own its set).
+    * ``in_progress``: add the caller. The status does not move.
+    * ``done``, ``cancelled``, ``triage``, or an archived task: 422, and
+      nothing is written. ``load_visible_task`` does not filter these, so
+      this route checks.
+    * No ``in_progress`` lane: 422, and the assignee write rolls back.
+    * Already assigned and already started: 200, and no activity row.
+
+    The assignee half reuses the path of ``set_assignees``: the personal
+    project guard, the key insert (``_insert_claim_assignees``, the SQL of
+    ``insert_assignees`` with ``RETURNING``), an ``assignment`` activity,
+    ``ensure_watchers``, ``notify(kind="assigned")`` and the
+    ``pm.task.assigned`` event. ``notify`` drops the actor, so a self claim
+    pings nobody. ``record_activity`` stamps ``meta.via`` on both rows.
+
+    **The lock order (fix round 3, option A).** The visibility load, then
+    the assignee key, then the task row lock (``core.lock_task``), then the
+    version check and the refusals, then the row writes, then the watcher
+    key. That is the order of ``set_assignees``: the key before the row,
+    and the watcher key after it. So the claim adds no lock order that a
+    member path does not already have, and it changes no member path.
+    """
+    me = actor(user).strip().lower()
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        # 1. The visibility load answers 404 for a task the caller cannot see.
+        seen = await load_visible_task(db, vis, task_id)
+        # The tenant of the dispatch sink, read as `set_assignees` reads it.
+        task_org = str(getattr(seen, "organization_id", "") or "")
+
+        # 2. The assignee key FIRST, through the helpers and in the order of
+        # `set_assignees` (fix round 3, option A): the key, then the row,
+        # then the watcher key. The PUT, the merge and the bulk add take the
+        # key before the row too, so the claim adds no lock order that a
+        # member path does not already have. A second claim of the same
+        # member waits here on the first claim's key.
+        current = {
+            r.assignee for r in (await db.execute(
+                text(
+                    "SELECT assignee FROM pm_task_assignees "
+                    "WHERE task_id = CAST(:tid AS uuid)"
+                ),
+                {"tid": task_id},
+            )).fetchall()
+        }
+        wanted = sorted({me} - current)
+        await assert_assignable_here(db, str(seen.project_id), set(wanted))
+        # Final fix (review P2): `added` is the set that THIS insert wrote,
+        # not the set that the read above missed. Two claims of one member
+        # with no If-Match both read an empty set, and the second insert
+        # writes nothing. Without RETURNING the second claim also wrote an
+        # `assignment` row, answered `assigned: true` and emitted
+        # `pm.task.assigned` for a row it did not write.
+        added = await _insert_claim_assignees(db, task_id, wanted, by=actor(user))
+
+        # 3. The row lock, and the row as the lock read it (fix round 1).
+        # Two claims serialise here, and the second one sees the new
+        # `updated_at`. A PATCH to done that holds the row makes the claim
+        # wait, and the claim then reads the done.
+        task = await lock_task(db, task_id)
+        # 4. The version, on the locked row and before any row write.
+        require_precondition(task, if_match, row_to_dict(task, TaskModel))
+        # 5. The refusals. Each one raises inside the transaction, so the
+        # keys of step 2 roll back and a refused claim writes nothing.
+        if getattr(task, "archived_at", None) is not None:
+            _refuse_claim(CLAIM_ARCHIVED, "An archived task cannot be claimed.")
+        status = await require_row(
+            db, "pm_task_statuses", str(task.status_id), "Status",
+        )
+        category = str(getattr(status, "category", "") or "")
+        if category in CLOSING_CATEGORIES:
+            _refuse_claim(CLAIM_CLOSED,
+                          "A done or cancelled task cannot be claimed.")
+        if category == TRIAGE_CATEGORY:
+            _refuse_claim(CLAIM_TRIAGE,
+                          "A task in triage cannot be claimed. Accept it first.")
+        lane = None
+        if category != STARTED_CATEGORY:
+            home = await status_owner_id(db, str(task.project_id))
+            try:
+                lane = await load_default_status(db, home, STARTED_CATEGORY)
+            except HTTPException:
+                _refuse_claim(
+                    CLAIM_NO_STARTED_STATUS,
+                    "This project has no in progress status. Add one first.",
+                )
+
+        # 6. The writes of the row: the activity (its `touch_task` bumps the
+        # locked row), then the move from the locked row.
+        if added:
+            await record_activity(
+                db, activity_type="assignment", created_by=actor(user),
+                task_id=task_id, meta={"added": added, "removed": []},
+            )
+        moved = None
+        if lane is not None:
+            moved = await apply_status_transition(
+                db, task, str(lane.id), created_by=actor(user),
+            )
+
+        notified = await notify(
+            db, recipients=added, kind="assigned",
+            task_id=task_id, actor_id=actor(user),
+        )
+        # The watcher key after the row, as `set_assignees` writes it. Before
+        # the row it crossed a member's PATCH, which writes the row and then
+        # the editor's watcher key (fix round 3).
+        await ensure_watchers(db, task_id, added, by=actor(user))
+
+        row = await load_visible_task(db, vis, task_id)
+        result = row_to_dict(row, TaskModel)
+        result["assignees"] = sorted(current | set(wanted))
+        await attach_agent_state(db, [result])
+        result["moved"] = moved is not None
+        result["assigned"] = bool(added)
+        result["not_notified"] = notified["skipped"]
+
+    if added:
+        await emit("pm.task.assigned", {
+            "task_id": task_id, "assignees": added,
+            "organization_id": task_org,
+        })
+    if moved is not None:
+        await emit("pm.task.updated", {"task_id": task_id})
+        await emit("pm.task.status_changed", {
+            "task_id": task_id,
+            "from": moved["from"].name, "to": moved["to"].name,
+            "to_category": moved["to"].category,
+        })
+    return result
 
 
 # ── Links ───────────────────────────────────────────────────────────────────

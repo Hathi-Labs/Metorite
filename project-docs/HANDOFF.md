@@ -5404,6 +5404,59 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R7 (a fence that fails by the clock is not a fence)
 - **Added:** 2026-10-15 · branch `member-remove`
 
+### H-315 · Submit the two Reach templates at Meta, then name them on the box · [OWNER]
+- **Check:** on the box, `grep -E "^REACH_(BRIEF|NEEDS_YOU)_TEMPLATE=" /opt/acb/app/.env`
+  shows `metorite_daily_brief` and `metorite_needs_you`. Then this entry goes.
+- **Why.** Free text reaches a member only within 24 hours of their last
+  message to the bot. On 2026-10-15 Reach dropped one brief and one interrupt
+  for that reason. A template can open the window. The auto-mode classifier
+  refused a template submission from the box, so the owner's PC does it.
+- **Where.** On the owner's PC, signed in to Meta as the owner. Use the
+  browser. The account is the test WhatsApp Business Account
+  `1151567084229350` in the portfolio Hathi Labs `1586671155804254`.
+- **Done 2026-10-15.** An agent submitted both templates from the owner's
+  browser. Both show **In review** as Utility:
+  - `metorite_daily_brief`, with the body of §8.1 and the button `Show my brief`.
+  - `metorite_needs_you`, with the APPROVAL body of §8.1 and the button
+    `Show me`. Meta's pre-check refused three general bodies as utility, so
+    the owner narrowed it to approvals (§8.1, "Measured at submission").
+- **Do this:**
+  1. Open `https://business.facebook.com/wa/manage/message-templates/?waba_id=1151567084229350`.
+     Wait until both show **Active** or **Approved**. If Meta rejects one or
+     moves it to **Marketing**, do not use it. Tell an agent.
+  2. Set `REACH_BRIEF_TEMPLATE=metorite_daily_brief` on the box after the
+     RE-2a code is live. An agent adds the line to `/opt/acb/app/.env` and
+     restarts `acb-gateway`.
+  3. Set `REACH_NEEDS_YOU_TEMPLATE=metorite_needs_you` only after H-317 is
+     live. Before that, RE-2a sends the approval words for every interrupt.
+- **Do not** use `metorite_task_reminder` or `metorite_meeting_reminder`.
+  They are approved, but their words do not fit, and they have no button.
+- **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
+- **Added:** 2026-10-15 · WS-59 RE-2a
+
+### H-316 · The member writers of assignee rows take the row and the key in different orders · [AGENT]
+- **Check:** `git grep -n -e "ids = dedupe_ids(payload.task_ids)" -e "await _move_satellites(db, str(source.id), task_id)" -- apps/services/gateway/gateway/routes/projects/bulk.py apps/services/gateway/gateway/routes/projects/merge.py`. The first anchor is the unsorted selection of the bulk edit. The second is the merge, which moves the assignee keys before `update_row` of the target. Two hits mean this entry stays. With fewer hits, read the changed code, and delete this entry when the orders agree.
+- **Why.** The reviewer and the verifier of WS-55 EA-6b found these orders already disagree on main. A PUT of the assignees writes the key and then bumps the row. A move with assignees writes the row and the destination counter, then the key. A merge moves the assignee and watcher keys, then writes the target row. A bulk edit locks rows in request order. So a PUT against a move that assigns the same member, a merge against a PUT on the watcher keys, and two bulk edits with the same ids in another order can each deadlock. A merge against a PUT of the same member also fails with a unique violation of `pm_task_assignees_pkey` (10 times in 10).
+- **Do.** Sort the ids of every bulk write. Give every member writer one helper that writes the assignee key, then the row. Fix the merge's `NOT EXISTS` race. Prove each pair with a looped R8 race test. The claim (`claim_task`) already writes the key before the row, so it needs no change.
+- **Authority:** R8 · `specs/external_agent_access.md` §17 (EA-6b fix round 3)
+- **Added:** 2026-10-15 · EA-6b fix round 3 review (taken as H-313, renumbered to H-316 at merge because main took H-313 to H-315)
+
+### H-317 · Reach must send the needs-you template for an approval only · [AGENT]
+- **Check:** `git grep -n "needs_you_template" -- apps/services/gateway/gateway/reach/loop.py`.
+  Read the branch that sends the template. No test of the `approval` kind
+  beside it means this is open.
+- **Why.** Meta accepted `metorite_needs_you` as utility only with the words
+  "your approval is pending in Metorite". RE-2a (PR #1042, as of
+  2026-10-15) sends it for every interrupt in a closed window, which
+  includes `needs_reply` and `overdue` cards. Those would arrive with the
+  wrong words.
+- **Do this:** in `reach/loop.py`, use the template only when every
+  candidate card has `kind == "approval"`. Hold every other interrupt in a
+  closed window, as when no template is set. Add a test for each path in
+  `tests/unit/test_reach_loop.py`. `needs_you_params` keeps two parameters.
+- **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
+- **Added:** 2026-10-15 · H-315 template submission
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
