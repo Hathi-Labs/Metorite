@@ -112,7 +112,11 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'install_dependency': {'params': {'packages': 'string'},
                            'required': ['packages']},
     'list_integrations': {'params': {}, 'required': []},
-    'list_workflows': {'params': {}, 'required': []},
+    # 2026-10-15, agent reads page part 2 (test_read_tool_paging.py): an
+    # optional `offset` on list_workflows, query_history and recall_notes.
+    # Each read every row into the context, with no page. A new optional
+    # argument, so no call breaks.
+    'list_workflows': {'params': {'offset': 'integer'}, 'required': []},
     'load_artifact_kit': {'params': {'components': 'string'},
                           'required': []},
     'load_design_system': {'params': {'section': 'string'}, 'required': []},
@@ -131,6 +135,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # saas_multitenancy.md §0.9.3 makes a condition on the pooled decision. All
     # criteria are optional: "recall recent conversation" is a valid call.
     'query_history': {'params': {'agent_name': 'string', 'limit': 'integer',
+                                 'offset': 'integer',
                                  'search': 'string', 'since_days': 'integer',
                                  'thread_id': 'string'},
                       'required': []},
@@ -139,7 +144,8 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'read_attachment': {'params': {'name': 'string', 'offset': 'integer'},
                         'required': ['name']},
     'recall_agent': {'params': {'query': 'string'}, 'required': ['query']},
-    'recall_notes': {'params': {'path': 'string', 'query': 'string'},
+    'recall_notes': {'params': {'offset': 'integer', 'path': 'string',
+                                'query': 'string'},
                      'required': ['path']},
     'recall_org': {'params': {'query': 'string'}, 'required': ['query']},
     'recall_timeline': {'params': {'entity_name': 'string',
@@ -223,6 +229,9 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
 #: The whole floor. Nudging one tool up must be paid for elsewhere.
 #: 9,000 until 2026-10-09. The floor then measured 6,438 with `decide`, after
 #: the catalog of emit_generative_ui went on demand.
+#: 2026-10-15, agent reads page part 2: recall_notes gained an `offset`
+#: (193 -> 215, +22), and paid for it itself. Its worked example left the
+#: docstring, so it measured 180, and the floor 6,693 -> 6,680.
 CORE_SCHEMA_TOTAL_CEILING = 6_700
 
 

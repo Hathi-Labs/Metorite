@@ -654,6 +654,35 @@ def test_query_history_reads_only_rooms_the_member_may_read(graph_as_app, monkey
     assert _seen(_ALICE, thread_id=bobs) == set()
 
 
+@_DB_GATE
+def test_query_history_pages_a_tie_with_no_repeat_and_no_gap(graph_as_app, monkeypatch):  # noqa: F811
+    """2026-10-15, agent reads page part 2. The messages of one room are
+    written in one transaction, so they share ``created_at``. A message id is
+    unique in its session only. Three pages of 10 hold all 25 once, in the
+    order of the session and then the id, and the hint names the next page."""
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "true")
+    a = graph_as_app.org_a
+    term = f"page-{uuid.uuid4().hex[:8]}"
+    own = _seed_room(graph_as_app, a, _ALICE, [(f"{term} {k}", 100 + k) for k in range(25)])
+    other = _seed_room(graph_as_app, a, _ALICE, [(f"{term} b", 900)])
+    seen: list[tuple[str, str]] = []
+    lines: list[str] = []
+    for offset in (0, 10, 20):
+        out = _history(a, _ALICE, search=term, limit=10, offset=offset)
+        rows, end = json.JSONDecoder().raw_decode(out)
+        seen += [(r["thread_id"], r["content"]) for r in rows]
+        lines.append(out[end:].strip())
+    assert len(seen) == 26 and len(set(seen)) == 26, "a page repeated or skipped a message"
+    # The later room is newer, so it leads.
+    assert seen[0] == (other, f"{term} b")
+    assert {sid for sid, _ in seen[1:]} == {own}
+    assert lines == [
+        "Showing 1-10. More messages exist. Call again with offset=10 for the rest.",
+        "Showing 11-20. More messages exist. Call again with offset=20 for the rest.",
+        "Showing 21-26. This is the last page.",
+    ]
+
+
 # ── routes/agent.py — pending_commit and audit_event ────────────────────────
 
 def _seed_commit(promoted, org: str) -> str:  # noqa: F811

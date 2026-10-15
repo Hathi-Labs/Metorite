@@ -2420,6 +2420,15 @@ async def _read_my_task(db: Any, email: str, task_id: str) -> dict[str, Any]:
     return task
 
 
+def calendar_key(task: dict[str, Any]) -> tuple[str, str]:
+    """The order of ``/my/calendar``: the start, then the task id.
+
+    The chat pages this list (``my_tasks_list_schedule``), so two blocks at
+    one start must keep one order, or page 2 can repeat a block.
+    """
+    return (str(task.get("scheduled_start") or ""), str(task.get("id") or ""))
+
+
 @router.get("/my/calendar")
 async def my_calendar(
     start: str,
@@ -2505,7 +2514,7 @@ async def my_calendar(
         await attach_assignees(db, items)
         await attach_my_parents(db, params, items)
 
-    items.sort(key=lambda t: t["scheduled_start"] or "")
+    items.sort(key=calendar_key)
     # Deliberately unpaged: a window is already the bound, and a paged calendar
     # week would be a page of Tuesday.
     return ListResponse(rows=items, total=len(items))
@@ -3273,7 +3282,8 @@ async def list_my_areas(
                 " WHERE p.parent_project_id = CAST(:root AS uuid) "
                 "   AND lower(p.personal_owner) = :who "
                 + clause +
-                " ORDER BY lower(p.name)"
+                # The id breaks a tie of the name: the chat pages this list.
+                " ORDER BY lower(p.name), p.id"
             ),
             {"root": str(root.id), "who": email},
         )).fetchall()

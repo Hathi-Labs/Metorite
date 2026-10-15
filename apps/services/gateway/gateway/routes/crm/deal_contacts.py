@@ -78,7 +78,8 @@ async def list_deal_contacts(
                 "FROM crm_deal_contacts dc "
                 "JOIN crm_contacts c ON c.id = dc.contact_id "
                 "WHERE dc.deal_id = CAST(:deal_id AS uuid) "
-                "ORDER BY dc.is_primary DESC, c.first_name"
+                # The id breaks a tie of the name: the chat pages this list.
+                "ORDER BY dc.is_primary DESC, c.first_name, c.id"
             ),
             {"deal_id": deal_id},
         )).fetchall()
