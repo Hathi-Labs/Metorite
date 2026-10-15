@@ -37,6 +37,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -1051,7 +1052,7 @@ async def test_neither_the_stale_read_nor_the_stale_claim_takes_a_sending_row(
             async with b.tenant_session() as db:
                 rows = (await db.execute(text(b._STALE_SQL), {
                     "max": b.MAX_TRIES, "stale": b.STALE_S,
-                    "expire": b.EXPIRE_S, "n": 1000,
+                    "expire": b.EXPIRE_S, "n": 1000, "back": True,
                 })).mappings().all()
             claimed = await b._claim(req.message_id, stale=True)
             return [str(r["id"]) for r in rows], claimed
@@ -1208,3 +1209,160 @@ async def test_a_used_up_row_with_a_stored_answer_gets_the_answer(
     assert _state(bot, req.message_id).state == "replied"
     await _sweeps_later(bot, req.message_id)
     assert [s for s in bot.sent if s[0] == phone] == [(phone, _ANSWER)]
+
+
+# ── WAC-13 (§16): hold the message, answer it when back, on the real SQL ──
+
+
+def _in(bot, phone: str) -> list:
+    return [r for r in _bot_rows(bot, phone) if r.direction == "in"]
+
+
+async def test_an_outage_holds_the_message_and_the_sweep_answers_it_when_back(
+    bot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U1, U3, U4 on the real rows, as the app role under FORCE RLS."""
+    p, bot_run = bot.p, bot.bot_run
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    monkeypatch.setattr(bot_run, "_OUTAGE", {"failed": 0.0, "answered": 0.0})
+
+    async def _healthy() -> bool:
+        return True
+
+    monkeypatch.setattr(bot_run, "_router_healthy", _healthy)
+    agent = bot.agent
+
+    class _Down:
+        async def __call__(self, *_a: Any, **_kw: Any) -> Any:
+            raise _http_status(503)
+
+    monkeypatch.setattr(bot_run, "_executor", lambda: _Down())
+    await _webhook(bot, (_change(phone, "First"),))
+    await _webhook(bot, (_change(phone, "Second"),))
+    # Each new message hears it once. Both wait, and the outage took no try.
+    assert bot.sent == [(phone, bot_run.REPLY_UPDATING)] * 2
+    assert [(r.state, r.error_code, r.tries) for r in _in(bot, phone)] == [
+        ("received", "updating", 0)] * 2
+
+    # Still inside the quiet time: the sweep runs nothing, even when stale.
+    with p.admin_engine.begin() as c:
+        c.execute(text(f"UPDATE {_TABLE} SET updated_at = now() - interval '10 minutes' "
+                       "WHERE wa_id = :w"), {"w": phone})
+    bot_run._OUTAGE["failed"] = time.time()
+    assert await _in_scope(bot, bot_run.sweep_once) == 0
+
+    # Back: each sweep runs the thread's oldest held message. No drain runs a
+    # held one, so the next waits for the next sweep (verifier F3).
+    bot_run._OUTAGE["failed"] = time.time() - bot_run.OUTAGE_QUIET_S - 1
+    monkeypatch.setattr(bot_run, "_executor", lambda: agent)
+    bot.sent.clear()
+    assert await _in_scope(bot, bot_run.sweep_once) == 1
+    assert await _in_scope(bot, bot_run.sweep_once) == 1
+    assert [c["payload"]["message"] for c in agent.calls] == ["First", "Second"]
+    assert bot.sent == [(phone, _ANSWER), (phone, _ANSWER)]
+    assert [r.state for r in _in(bot, phone)] == ["replied", "replied"]
+
+
+async def test_a_held_message_is_answered_even_after_a_later_answer(
+    bot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifier F1: a later answer, a code-only one too, never closes a held
+    message unanswered. The bot promised to answer it."""
+    p, bot_run = bot.p, bot.bot_run
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    monkeypatch.setattr(bot_run, "_OUTAGE", {"failed": 0.0, "answered": 0.0})
+
+    async def _healthy() -> bool:
+        return True
+
+    monkeypatch.setattr(bot_run, "_router_healthy", _healthy)
+    agent = bot.agent
+
+    class _Down:
+        async def __call__(self, *_a: Any, **_kw: Any) -> Any:
+            raise _http_status(503)
+
+    monkeypatch.setattr(bot_run, "_executor", lambda: _Down())
+    await _webhook(bot, (_change(phone, "Held"),))
+    monkeypatch.setattr(bot_run, "_executor", lambda: agent)
+    await _webhook(bot, (_change(phone, "Asked again"),))
+    assert [c["payload"]["message"] for c in agent.calls] == ["Asked again"]
+    with p.admin_engine.begin() as c:
+        c.execute(text(f"UPDATE {_TABLE} SET updated_at = now() - interval '10 minutes' "
+                       "WHERE wa_id = :w"), {"w": phone})
+    assert await _in_scope(bot, bot_run.sweep_once) == 1
+    assert [c["payload"]["message"] for c in agent.calls] == ["Asked again", "Held"]
+    assert [r.state for r in _in(bot, phone)] == ["replied", "replied"]
+
+
+async def test_a_message_that_fails_each_time_ends_after_its_tries(
+    bot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifier F2: only the first hold gives back the try. A message whose
+    run fails each time ends with the general text once, never 288 runs."""
+    p, bot_run = bot.p, bot.bot_run
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    monkeypatch.setattr(bot_run, "_OUTAGE", {"failed": 0.0, "answered": 0.0})
+
+    async def _healthy() -> bool:
+        return True
+
+    monkeypatch.setattr(bot_run, "_router_healthy", _healthy)
+
+    class _Down:
+        calls = 0
+
+        async def __call__(self, *_a: Any, **_kw: Any) -> Any:
+            _Down.calls += 1
+            raise _http_status(503)
+
+    monkeypatch.setattr(bot_run, "_executor", lambda: _Down())
+    await _webhook(bot, (_change(phone, "Never answers"),))
+    assert _in(bot, phone)[0].tries == 0
+    for _ in range(6):
+        with p.admin_engine.begin() as c:
+            c.execute(text(f"UPDATE {_TABLE} SET updated_at = now() - interval '10 minutes' "
+                           "WHERE wa_id = :w"), {"w": phone})
+        bot_run._OUTAGE["failed"] = time.time() - bot_run.OUTAGE_QUIET_S - 1
+        await _in_scope(bot, bot_run.sweep_once)
+    row = _in(bot, phone)[0]
+    assert (row.state, row.error_code) == ("failed", "tries")
+    assert _Down.calls == 1 + bot_run.MAX_TRIES
+    assert bot.sent == [(phone, bot_run.REPLY_UPDATING), (phone, _FAILED)]
+
+
+async def test_a_held_message_past_24_hours_expires_with_no_send(
+    bot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reply window: WhatsApp takes no free text after 24 hours."""
+    p, bot_run = bot.p, bot.bot_run
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    monkeypatch.setattr(bot_run, "_OUTAGE", {"failed": 0.0, "answered": 0.0})
+
+    async def _healthy() -> bool:
+        return True
+
+    monkeypatch.setattr(bot_run, "_router_healthy", _healthy)
+
+    class _Down:
+        async def __call__(self, *_a: Any, **_kw: Any) -> Any:
+            raise _http_status(503)
+
+    monkeypatch.setattr(bot_run, "_executor", lambda: _Down())
+    await _webhook(bot, (_change(phone, "Yesterday"),))
+    with p.admin_engine.begin() as c:
+        c.execute(text(f"UPDATE {_TABLE} SET updated_at = now() - interval '25 hours', "
+                       "received_at = now() - interval '25 hours' WHERE wa_id = :w"),
+                  {"w": phone})
+    bot.sent.clear()
+    assert await _in_scope(bot, bot_run.sweep_once) == 0
+    assert _in(bot, phone)[0].state == "expired"
+    assert bot.sent == []

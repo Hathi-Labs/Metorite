@@ -23,6 +23,21 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 _log = get_logger("v1")
 
+#: When this process last met ``ConsoleRouterUnavailable`` (epoch seconds), or
+#: 0. WS-47 WAC-13 reads it: a WhatsApp run that ran out of time while the
+#: Router was down is "Metorite is updating", and a slow run is not.
+ROUTER_FAILED_AT: float = 0.0
+
+
+def _router_failed() -> None:
+    global ROUTER_FAILED_AT
+    ROUTER_FAILED_AT = time.time()
+
+
+def router_failed_since(when: float) -> bool:
+    """True when the Router was unavailable at or after *when*."""
+    return ROUTER_FAILED_AT >= when > 0
+
 
 def _member_for(request: Request) -> tuple[str | None, bool]:
     """Who is calling, and whether they PROVED it. H-73.
@@ -585,6 +600,7 @@ async def _serve_via_router_stream(
         )
         return JSONResponse(status_code=verdict.status, content=verdict.body)
     except ConsoleRouterUnavailable as exc:
+        _router_failed()
         _log.error(
             "v1.router_unavailable", error=str(exc), stream=True,
             elapsed_ms=round((time.monotonic() - started) * 1000),
@@ -657,6 +673,7 @@ async def _serve_via_router(
             run_id=request.headers.get("x-cc-run") or None,
         )
     except ConsoleRouterUnavailable as exc:
+        _router_failed()
         _log.error(
             "v1.router_unavailable", error=str(exc),
             elapsed_ms=round((time.monotonic() - started) * 1000),
