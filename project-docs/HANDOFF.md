@@ -5376,7 +5376,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3c (fix round 1)
 - **Added:** 2026-10-15 · MD-3c review
 
-### H-312 · The web chat cannot make a deck as a PDF, and WhatsApp can · [AGENT]
+### H-313 · The web chat cannot make a deck as a PDF, and WhatsApp can · [AGENT]
 - **Check:** `rg -n "\"document\"" apps/services/gateway/gateway/routes/workspace.py`.
   No hit means this is open.
 - **Why.** WAC-12 (2026-10-15) gave the WhatsApp bot a deck and a report as a PDF,
@@ -5388,7 +5388,7 @@ line — never reclaim a number by deleting the other entry.
   the PDF with `write_artifact`, so the web shows it as a PDF artifact with a
   download. Reuse `render_pdf("document", ...)`, and add no second renderer.
 - **Authority:** `specs/whatsapp_assistant_channel.md` §15.4
-- **Added:** 2026-10-15 · branch `wa-pdf-documents`
+- **Added:** 2026-10-15 · branch `wa-pdf-documents` (minted as H-312, renumbered at merge: main took H-312 first)
 
 # DONE — deleted, not archived
 
