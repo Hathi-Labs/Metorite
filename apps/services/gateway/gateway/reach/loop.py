@@ -214,7 +214,7 @@ async def _brief_step(org: str, member: str, snap: Snapshot,
     if due is None:
         return None, "none"
     wa_id, is_open = reach
-    if not await outbox.brief_planned(org, member, due):
+    if not await outbox.brief_planned(org, member, due, plan.brief_key(member, due)):
         template = flags.brief_template()
         if wa_id is None or is_open:
             # Free text, or the channel skips no_link, as before RE-2a.

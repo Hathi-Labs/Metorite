@@ -95,9 +95,10 @@ class FakeOutbox:
         return sum(1 for r in self.rows if r["kind"] == "interrupt" and r["state"] == "sent"
                    and r["member"] == member and r["created_at"] >= since)
 
-    async def brief_planned(self, org, member, local_date):
+    async def brief_planned(self, org, member, local_date, key):
         return any(r["kind"] == "brief" and r["local_date"] == local_date
-                   and r["member"] == member for r in self.rows)
+                   and r["member"] == member and (r["key"] == key or r["state"] == "sent")
+                   for r in self.rows)
 
 
     async def full_brief_due(self, org, member, local_date, key):
@@ -423,6 +424,21 @@ class TestHoldAndCatchUp:
         world.cards = [approval("approvals:1", "Refund")]
         assert await loop.member_pass(ORG, ME) == "brief:sent,held"
         assert [c["template"] for c in world.sent.calls] == ["daily_brief"]
+
+    async def test_a_skipped_brief_now_does_not_cancel_the_held_brief(self, world):
+        # RE-2a verification, P3: "Send my brief now" in a closed window
+        # writes a skipped row with its own key, and the day's brief still
+        # goes when the window opens.
+        no_brief_yet(world)
+        await loop.member_pass(ORG, ME)
+        world.open, world.now = False, kolkata(9, 30)
+        world.cards = [card("tasks:1", "overdue")]
+        world.outbox.rows.append({"id": "ob-now", "org": ORG, "member": ME, "kind": "brief",
+                                  "key": "brief-now:x", "body": "b", "state": "skipped",
+                                  "regime": None, "local_date": TODAY, "created_at": NOW})
+        assert await loop.member_pass(ORG, ME) == "brief:held"
+        world.open, world.now = True, kolkata(11)
+        assert await loop.member_pass(ORG, ME) == "brief:sent"
 
     async def test_no_brief_after_the_day_end(self, world):
         no_brief_yet(world)

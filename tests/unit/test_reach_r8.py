@@ -139,8 +139,10 @@ class TestTheOutbox:
         async with _as_member(p, p.org_b):
             in_b = await outbox.plan(p.org_b, B, kind="brief", signal_ids=[], key="brief:same",
                                      body="b", local_date=date(2026, 10, 15))
-            assert await outbox.brief_planned(p.org_b, B, date(2026, 10, 15))
-            assert not await outbox.brief_planned(p.org_b, B, date(2026, 10, 16))
+            assert await outbox.brief_planned(p.org_b, B, date(2026, 10, 15), "brief:same")
+            assert not await outbox.brief_planned(p.org_b, B, date(2026, 10, 16), "brief:same")
+            # Another key that did not go out does not count (RE-2a, P3).
+            assert not await outbox.brief_planned(p.org_b, B, date(2026, 10, 15), "brief:x")
         assert in_a and in_b and in_a != in_b
 
     async def test_the_log_keeps_its_first_outcome(self, promoted):  # noqa: F811
@@ -304,7 +306,7 @@ class TestCatchUpReads:
             row = await outbox.plan(p.org_a, A, kind="brief", signal_ids=[],
                                     key=f"brief:empty-{TAG}", body="", local_date=day)
             await outbox.finish(p.org_a, str(row), state="skipped", reason="empty")
-            assert await outbox.brief_planned(p.org_a, A, day)
+            assert await outbox.brief_planned(p.org_a, A, day, f"brief:empty-{TAG}")
             assert not await outbox.full_brief_due(p.org_a, A, day, f"brief:empty-{TAG}:full")
 
     async def test_the_display_name_is_read_in_its_org(self, promoted):  # noqa: F811
