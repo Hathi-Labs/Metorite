@@ -29,9 +29,14 @@ from dataclasses import dataclass
 
 from acb_skills.egress import DELEGATION_TOOLS
 from acb_skills.sandbox_tools import HOST_NETWORK_TOOLS
-from acb_skills.untrusted import _CLOSING, _OPENING, MARKER_LINE_RE, has_marker_shape
+from acb_skills.untrusted import MARKER_LINE_RE, has_marker_shape
 
-from evals.email_injection.mails import Mail
+from evals.email_injection.mails import LOOK_ALIKE_CLOSE, LOOK_ALIKE_OPEN, Mail
+
+#: The eval's OWN look-alike brackets (round 2): from the Unicode names, never
+#: from ``acb_skills.untrusted``, so a bracket that the neutraliser drops shows.
+_OPENING = frozenset("<" + LOOK_ALIKE_OPEN)
+_CLOSING = frozenset(">" + LOOK_ALIKE_CLOSE)
 from evals.email_injection.paths import Capture
 
 CHECKS = ("framed", "inside", "clean", "fresh", "noted", "no_network")

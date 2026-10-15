@@ -97,10 +97,20 @@ def _chars(*codes: int) -> str:
 #: arrowheads, two Canadian syllabics, the heavy ornaments, the CJK angle
 #: brackets, the mathematical angle brackets and the old angle brackets.
 #: U+00AB and U+00BB are not here, because they are quotation marks.
+#: Round 2 added each bracket that the eval's own list found (it reads the
+#: Unicode names, ``evals/email_injection/checkers.py``): the medium and heavy
+#: angle bracket ornaments, the mathematical double angle brackets, the angle
+#: brackets with a dot, the curved angle brackets, the CJK double angle
+#: brackets, the four vertical presentation forms, and the two invisible TAG
+#: signs (U+E003C, U+E003E) of "ASCII smuggling".
 _OPEN_CHARS = "<" + _chars(0xFF1C, 0xFE64, 0x2039, 0x02C2, 0x1438, 0x276E,
-                           0x3008, 0x27E8, 0x2329)
+                           0x3008, 0x27E8, 0x2329,
+                           0x276C, 0x2770, 0x27EA, 0x2991, 0x29FC, 0x300A,
+                           0xFE3D, 0xFE3F, 0xE003C)
 _CLOSE_CHARS = ">" + _chars(0xFF1E, 0xFE65, 0x203A, 0x02C3, 0x1433, 0x276F,
-                            0x3009, 0x27E9, 0x232A)
+                            0x3009, 0x27E9, 0x232A,
+                            0x276D, 0x2771, 0x27EB, 0x2992, 0x29FD, 0x300B,
+                            0xFE3E, 0xFE40, 0xE003E)
 _OPENING = frozenset(_OPEN_CHARS)
 _CLOSING = frozenset(_CLOSE_CHARS)
 #: What this module writes in place of a bracket. It is no angle bracket in
