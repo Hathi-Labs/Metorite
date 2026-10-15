@@ -53,8 +53,13 @@ So the answer is the same as before, byte for byte. MD-3c also adds the
 shared rows of all eleven MD-3 kinds, so MD-3d to MD-3f add only their
 providers and reads.
 
-The rest of this file is not built. The open AGENT-SAFE tickets are MD-3d
-to MD-3f, MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
+**MD-3d is BUILT, 2026-10-15** (the mail kinds, no migration). The source
+`email_followups` is gated, and `MY_DAY_PROVIDERS` is empty in production.
+So the answer is the same as before, byte for byte, and so is the email
+digest.
+
+The rest of this file is not built. The open AGENT-SAFE tickets are MD-3e,
+MD-3f, MD-4, MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
@@ -509,8 +514,8 @@ catalogue in the PR that promotes Notes (H-21). Its link is
 |---|---|---|---|---|---|---|
 | `needs_reply` | Today's provider | Template: "Asked yesterday at 4:12 PM." | The last message, 3 lines | Open thread, Snooze | None | MD-1 |
 | `reply_drafted` | `needs_reply` and a draft in `email_ai_drafts` (card B) | Template, plus the promise when the email app holds one for the thread | The full draft and its attachments. For a thread of 6 messages or more, the gist above it | "Review and send" (B), "Edit draft" | The draft is the email app's. The gist is a text composition (MD-6c) | MD-4 |
-| `promise_due` | A promise I made in sent mail falls due (card B's "You said you would send it by Friday") | Template from the promise | — | Done (A), Open | **None in My Day.** The email app's own detector found the promise and filed it as a task (`capture_email.py:1007`, `:1176`). The provider reads the open ones through `_digest_commitments` (`digest.py:293`) | MD-3 |
-| `no_answer` | A mail I sent has waited 3 working days for the other side | Template | — | "Follow up" (opens a draft), Snooze | None. It reads the email app's AWAITING threads (`digest.py`, the read above `:293`) | MD-3 |
+| `promise_due` | A promise I made in sent mail falls due (card B's "You said you would send it by Friday") | Template from the promise | — | Done (A), Open thread | **None in My Day.** The email app's own detector found the promise and filed it as a task (`capture_email.py:1007`, `:1176`). The provider reads the open ones through `digest.promise_tasks`, which reads only a commitment task (§5.9 rule 10.1) | MD-3d, built |
+| `no_answer` | A mail I sent has waited longer than the mailbox's follow-up wait, 3 business days by default, and less than 30 days | Template | — | "Follow up" (opens the thread), Snooze | None. It reads the email app's AWAITING threads through `digest.awaiting_threads` | MD-3d, built |
 
 **The gist of a long thread is not a card.** It is part of the body of the
 thread's one card (§4.5).
@@ -3287,6 +3292,54 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell/f
 node .claude/hooks/ste-lint.mjs project-docs/specs/my_day_feed.md
 ```
 
+**BUILT, 2026-10-15.** No migration, and no flag changed. The source
+`email_followups` is gated, so it runs only when `MY_DAY_PROVIDERS` lists
+it. These are the parts:
+
+- `feed.py`: the provider `_email_followups` and its two signals. It skips a
+  separate mailbox, and a mailbox that answers 404. Each mailbox gets one
+  `MAILBOX_TIMEOUT_S` for its two reads.
+- `feed_rank.py`: `weight(facts, kinds)` adds `PROMISE_WEIGHT`, 10, when
+  `promise_due` is on the card. `feed_decide.old_level` passes no kinds, so
+  its level stays 0 to 4.
+- `digest.py`: `awaiting_threads`, `promise_tasks`, the bounds of
+  `_digest_thread_list` and the core `_commitments_core`. With no bound, the
+  digest sends the same statements, byte for byte.
+- `email/core.py`: `_assert_account_owner` takes `this_tenant`, off by
+  default. The two wrappers set it.
+- `feed.test.ts`: case (d1d), the carry of a failed `email_followups`.
+
+**What the build found, for the slices after it.**
+
+- The cutoff needs the mailbox's `follow_up_awaiting_days`, and the spec
+  gave no session for that read. `awaiting_threads` reads it in its own
+  session, when the caller gives no `before`.
+- `feed_mailboxes` names no tenant. Under the owner role it lists the
+  member's mailbox of another organization too. The wrappers refuse it with a
+  404, and the provider skips it. The needs provider `_email` still reads it,
+  and that is a finding for the board.
+- A `promise_due` that folds into a notification card adds `due_at` to the
+  card. So it changes the state fingerprint of that card, as item 4 allows.
+
+**Mutations, run by hand on 2026-10-15.** Each one failed a fence:
+
+1. `commitment=True` dropped from the promise read.
+2. The owner check dropped from `awaiting_threads`.
+3. The error of the promise read swallowed in the provider.
+4. The 30-day bound dropped from the SQL.
+5. The digest default changed (`this_tenant` on by default).
+6. The promise weight set to 0.
+7. The tenant predicate dropped from the owner check.
+8. A 404 mailbox counted as a failure.
+9. The default wait set to 2 days.
+10. The promise read run without `feature:projects`.
+11. The text of the latest-message statement changed.
+
+**The measure.** The provider ran 40 times on the R8 seed, with two
+mailboxes, against a local Docker Postgres. The p50 was 136 ms, and the p95
+was 165 ms. The rule of §5.9 item 7 still needs the measure on the
+production box.
+
 ### MD-3e · The CRM kinds — AGENT-SAFE, after MD-3b
 
 `crm_followup_due`, `deal_quiet` and `deal_close_passed`, from the source
@@ -3872,6 +3925,9 @@ npx vitest run src/lib/shell/feedApps.test.ts  # MD-3b
 uv run pytest tests/unit/test_feed_task_kinds.py tests/unit/test_feed_task_kinds_r8.py tests/unit/test_shell_feed.py tests/unit/test_shell_feed_r8.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_shell_needs_r8.py tests/unit/test_projects_relations.py tests/unit/test_people_absences.py tests/unit/test_my_day_prefs.py tests/unit/test_my_day_state.py tests/unit/test_feed_decide.py tests/unit/test_no_new_clock_flakes.py -q  # MD-3c
 uv run ruff check apps/services/gateway/gateway/routes/shell apps/services/gateway/gateway/routes/projects/personal.py apps/services/gateway/gateway/routes/people/selfservice.py  # MD-3c
 npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts  # MD-3c
+uv run pytest tests/unit/test_feed_mail_kinds.py tests/unit/test_feed_mail_kinds_r8.py tests/unit/test_email_digest.py tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_feed_rank.py tests/unit/test_my_day_cache.py tests/unit/test_email_follow_up_scan.py tests/unit/test_email_reply_zero.py -q  # MD-3d
+uv run ruff check apps/services/gateway/gateway/routes/shell  # MD-3d
+npx vitest run src/lib/shell/feed.test.ts src/lib/shell/feedApps.test.ts  # MD-3d
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 uv run pytest tests/unit/test_shell_feed.py tests/unit/test_shell_needs.py tests/unit/test_my_day_cache.py -q -rs  # MD-3a
