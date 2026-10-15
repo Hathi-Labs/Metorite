@@ -37,6 +37,7 @@ from customer_console.credits import (
 __all__ = [
     "activate_subscription",
     "active_plans",
+    "active_owner_count",
     "add_credit",
     "apply_discount_to_order",
     "capture_provider_refs",
@@ -54,10 +55,12 @@ __all__ = [
     "ensure_organization",
     "grant_seats",
     "has_live_seat",
+    "identity_id_for_email",
     "issue_deployment_key",
     "issue_discount_code",
     "lock_discount_capacity",
     "lock_seat_capacity",
+    "membership_status",
     "operator_active_admin_count",
     "operator_by_email",
     "operator_by_id",
@@ -88,6 +91,7 @@ __all__ = [
     "record_usage",
     "redemption_for_order",
     "release_seat",
+    "remove_member",
     "resolve_deployment_key",
     "resolve_discount_code",
     "resolve_key",
@@ -2485,6 +2489,113 @@ def activate_invited_member(conn: Connection, *, org_id: str, identity_id: str) 
         {"org": org_id, "i": identity_id},
     ).first()
     return row is not None
+
+
+def membership_status(conn: Connection, *, org_id: str, identity_id: str) -> str | None:
+    """The ``org_membership.status`` of one person in one organization, or None.
+
+    None means that the organization holds no membership row for this identity.
+    It does not mean a status. The caller decides what each value permits.
+    """
+    row = conn.execute(
+        text(
+            "SELECT status FROM org_membership "
+            "WHERE organization_id = :org AND user_identity_id = :i"
+        ),
+        {"org": org_id, "i": identity_id},
+    ).first()
+    return None if row is None else str(row[0])
+
+
+def identity_id_for_email(conn: Connection, *, email: str) -> str | None:
+    """The global identity for this address, or None. It never mints one.
+
+    The read half of :func:`ensure_identity`. A door that must not create a
+    person calls this one. ``user_identity.email`` is CITEXT (001:110), so the
+    match ignores case without a ``lower()``.
+    """
+    row = conn.execute(
+        text("SELECT id FROM user_identity WHERE email = :email"),
+        {"email": email},
+    ).first()
+    return None if row is None else str(row[0])
+
+
+def remove_member(
+    conn: Connection, *, org_id: str, identity_id: str
+) -> tuple[str, list[str]]:
+    """Set one membership to ``removed`` and release every live seat it holds.
+
+    Returns ``(previous_status, released_plans)``. ``released_plans`` lists
+    the plan slugs, sorted, whose seat this call released. The caller must
+    first make sure that the membership exists.
+
+    Both writes run on the caller's connection, so they share one transaction.
+    A removed member who still holds a seat would keep the seat counted
+    against the cap. A released seat with a member still ``active`` would let
+    the next sign-in burn a new one. So the two writes go together, or neither
+    goes.
+
+    The seat UPDATE sets ``released_at`` and deletes nothing, as
+    :func:`release_seat` does. Who held which seat, and when, is the audit
+    trail behind an invoice. It releases the seats of EVERY plan, the Core seat
+    included, because a removed person holds no seat of any kind.
+
+    ``FOR UPDATE`` on the membership read serialises two removals of one
+    person, so ``previous_status`` is the status that this call replaced.
+    """
+    previous = conn.execute(
+        text(
+            """
+            SELECT status FROM org_membership
+             WHERE organization_id = :org AND user_identity_id = :i
+             FOR UPDATE
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).scalar_one()
+    conn.execute(
+        text(
+            """
+            UPDATE org_membership SET status = 'removed'
+             WHERE organization_id = :org AND user_identity_id = :i
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    )
+    released = conn.execute(
+        text(
+            """
+            UPDATE seat_assignment SET released_at = now()
+             WHERE organization_id = :org AND user_identity_id = :i
+               AND released_at IS NULL
+            RETURNING plan_slug
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).scalars().all()
+    return str(previous), sorted(str(p) for p in released)
+
+
+def active_owner_count(
+    conn: Connection, *, org_id: str, excluding_identity_id: str | None = None
+) -> int:
+    """How many ACTIVE registry owners the organization holds.
+
+    The registry names an owner by ``org_membership.role = 'owner'``, the same
+    predicate :func:`deployment_placed_orgs` and :func:`org_owned_by_other`
+    use. ``excluding_identity_id`` leaves one person out, so the caller can ask
+    whether an owner would remain after that person goes.
+    """
+    sql = (
+        "SELECT count(*) FROM org_membership "
+        "WHERE organization_id = :org AND role = 'owner' AND status = 'active'"
+    )
+    params: dict[str, Any] = {"org": org_id}
+    if excluding_identity_id is not None:
+        sql += " AND user_identity_id <> :i"
+        params["i"] = excluding_identity_id
+    return int(conn.execute(text(sql), params).scalar_one())
 
 
 def org_members(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:

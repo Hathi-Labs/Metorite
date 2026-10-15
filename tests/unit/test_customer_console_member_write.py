@@ -770,3 +770,406 @@ class TestTheGatewayClientSpeaksThisDoorsWire:
         assert status == 200, body
         # The wire matched: the row is really there, with the door's semantics.
         assert _status(db, org_id=org["id"], email=who) == "invited"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# The member-REMOVE door, `POST /registry/members/remove` (owner request,
+# 2026-10-15). R8 for the same reason as the add door: a `FOR UPDATE` read, a
+# guarded seat UPDATE with RETURNING, a CITEXT identity read that must NOT mint,
+# and an owner count. A fake would agree with all of it.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _remove(client, key: str | None, **body) -> object:
+    """Drive the door. ``key=None`` is the operator arm."""
+    headers = OP if key is None else {"Authorization": f"Bearer {key}"}
+    return client.post("/registry/members/remove", headers=headers, json=body)
+
+
+def _identity_count(db, email: str) -> int:
+    with db.begin() as c:
+        return int(c.execute(
+            text("SELECT count(*) FROM user_identity WHERE email = :e"),
+            {"e": email},
+        ).scalar_one())
+
+
+def _live_seats(db, *, org_id: str, email: str) -> list[str]:
+    with db.begin() as c:
+        return sorted(c.execute(
+            text(
+                """
+                SELECT sa.plan_slug FROM seat_assignment sa
+                JOIN user_identity ui ON ui.id = sa.user_identity_id
+                WHERE sa.organization_id = :o AND ui.email = :e
+                  AND sa.released_at IS NULL
+                """
+            ),
+            {"o": org_id, "e": email},
+        ).scalars().all())
+
+
+def _seat_rows(db, *, org_id: str, email: str) -> int:
+    """Every seat row, released or not — a release deletes nothing."""
+    with db.begin() as c:
+        return int(c.execute(
+            text(
+                """
+                SELECT count(*) FROM seat_assignment sa
+                JOIN user_identity ui ON ui.id = sa.user_identity_id
+                WHERE sa.organization_id = :o AND ui.email = :e
+                """
+            ),
+            {"o": org_id, "e": email},
+        ).scalar_one())
+
+
+def _active_member(db, *, org_id: str, email: str, role: str = "member") -> None:
+    with db.begin() as c:
+        identity = store.ensure_identity(c, email=email)
+        c.execute(
+            text(
+                "INSERT INTO org_membership (organization_id, "
+                "user_identity_id, role, status, joined_at) "
+                "VALUES (:o, :i, :r, 'active', now())"
+            ),
+            {"o": org_id, "i": identity, "r": role},
+        )
+
+
+class TestTheRemoveDoorGate:
+    """The add door's capability, scheme and body rules, unchanged."""
+
+    def test_a_resolve_only_key_is_refused_and_told_what_it_lacks(
+        self, client, db
+    ):
+        org = _new_org(client)
+        narrow = _key(db, deployment_id=_deployment_id(db))
+        r = _remove(client, narrow, member_email="x@y.example",
+                    actor_email=org["owner"])
+        assert r.status_code == 403, r.text
+        assert MEMBER_ADMIN_CAPABILITY in r.json()["detail"]
+
+    def test_a_deployment_key_naming_an_org_is_400(self, client, member_key):
+        org = _new_org(client)
+        r = _remove(client, member_key, member_email="x@y.example",
+                    actor_email=org["owner"], org_slug=org["slug"])
+        assert r.status_code == 400, r.text
+
+    def test_the_operator_must_name_the_org(self, client):
+        r = _remove(client, None, member_email="x@y.example")
+        assert r.status_code == 400, r.text
+        assert "org_slug is required" in r.json()["detail"]
+
+    def test_an_extra_body_field_is_422_never_ignored(self, client, member_key):
+        org = _new_org(client)
+        r = _remove(client, member_key, member_email="x@y.example",
+                    actor_email=org["owner"], role="owner")
+        assert r.status_code == 422, r.text
+
+
+class TestTheRemoveDoorWrites:
+    def test_an_invited_member_is_removed_by_the_deployment_arm(
+        self, client, db, member_key
+    ):
+        org = _new_org(client)
+        who = f"rm-{uuid.uuid4().hex[:6]}@x.example"
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+
+        r = _remove(client, member_key, member_email=who,
+                    actor_email=org["owner"])
+        assert r.status_code == 200, r.text
+        assert r.json() == {"found": True, "previous_status": "invited",
+                            "released": []}
+        assert _status(db, org_id=org["id"], email=who) == "removed"
+
+    def test_every_live_seat_is_released_and_none_is_deleted(
+        self, client, db, member_key
+    ):
+        """The Core seat from sign-in AND a paid seat: both go, rows stay.
+
+        ⚠️ Mutation-checked: dropping the seat UPDATE from
+        ``store.remove_member`` makes this fail with both seats still live.
+        """
+        org = _new_org(client, core_seats=3)
+        who = f"seated-{uuid.uuid4().hex[:6]}@x.example"
+        resolve_key = _key(db, deployment_id=_deployment_id(db))
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+        assert _resolve(client, resolve_key, email=who).json()[
+            "organizations"][0]["seat"] == "allocated"
+        with db.begin() as c:
+            store.grant_seats(c, org_id=org["id"], plan_slug="sales",
+                              quantity=1, reason="test")
+            store.try_assign_seat(
+                c, org_id=org["id"], plan_slug="sales",
+                identity_id=store.ensure_identity(c, email=who),
+            )
+        assert _live_seats(db, org_id=org["id"], email=who) == ["core", "sales"]
+
+        r = _remove(client, member_key, member_email=who,
+                    actor_email=org["owner"])
+        assert r.status_code == 200, r.text
+        assert r.json() == {"found": True, "previous_status": "active",
+                            "released": ["core", "sales"]}
+        assert _live_seats(db, org_id=org["id"], email=who) == []
+        # Released, not deleted: who held which seat is the invoice's trail.
+        assert _seat_rows(db, org_id=org["id"], email=who) == 2
+
+    def test_the_operator_arm_removes_and_audits_as_staff(
+        self, client, db, member_key
+    ):
+        org = _new_org(client)
+        who = f"opr-{uuid.uuid4().hex[:6]}@x.example"
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+
+        r = _remove(client, None, member_email=who, org_slug=org["slug"])
+        assert r.status_code == 200, r.text
+        assert r.json()["found"] is True
+        assert _status(db, org_id=org["id"], email=who) == "removed"
+        with db.begin() as c:
+            row = c.execute(
+                text(
+                    "SELECT actor, detail FROM control_audit "
+                    "WHERE organization_id = :o AND action = 'member.remove'"
+                ),
+                {"o": org["id"]},
+            ).one()
+        # The staff identity, never a member address. This suite signs in
+        # with the break-glass token, which `auth._stash` names so.
+        assert row[0] == "breakglass"
+        assert row[1] == {"email": who, "previous_status": "invited",
+                          "released": []}
+
+    def test_a_suspended_organization_can_still_remove(
+        self, client, db, member_key
+    ):
+        """Removing frees capacity and grows nothing, like a seat release."""
+        org = _new_org(client)
+        who = f"susp-{uuid.uuid4().hex[:6]}@x.example"
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+        assert client.post("/orgs/lifecycle", headers=OP, json={
+            "org_slug": org["slug"], "target": "suspended",
+        }).status_code == 200
+
+        r = _remove(client, member_key, member_email=who,
+                    actor_email=org["owner"])
+        assert r.status_code == 200, r.text
+        assert _status(db, org_id=org["id"], email=who) == "removed"
+
+    def test_a_deleted_organization_is_refused_on_the_operator_arm(
+        self, client, db
+    ):
+        org = _new_org(client)
+        for target in ("cancelled", "deleted"):
+            assert client.post("/orgs/lifecycle", headers=OP, json={
+                "org_slug": org["slug"], "target": target,
+            }).status_code == 200
+        r = _remove(client, None, member_email=org["owner"],
+                    org_slug=org["slug"])
+        assert r.status_code == 403, r.text
+        assert "deleted" in r.json()["detail"]
+
+
+class TestTheRemoveDoorIsIdempotentAndMintsNothing:
+    def test_an_unknown_address_is_found_false_and_mints_no_identity(
+        self, client, db, member_key
+    ):
+        """⚠️ Mutation-checked: swapping ``identity_id_for_email`` for
+        ``ensure_identity`` makes this fail with one identity minted."""
+        org = _new_org(client)
+        who = f"never-{uuid.uuid4().hex[:6]}@x.example"
+        r = _remove(client, member_key, member_email=who,
+                    actor_email=org["owner"])
+        assert r.status_code == 200, r.text
+        assert r.json() == {"found": False}
+        assert _identity_count(db, who) == 0
+
+    def test_an_identity_with_no_membership_here_is_found_false(
+        self, client, db, member_key
+    ):
+        """A person the Console knows from ANOTHER org is not this org's."""
+        org = _new_org(client)
+        other = _new_org(client)
+        r = _remove(client, member_key, member_email=other["owner"],
+                    actor_email=org["owner"])
+        assert r.status_code == 200, r.text
+        assert r.json() == {"found": False}
+        assert _status(db, org_id=other["id"], email=other["owner"]) == "active"
+
+    def test_a_second_remove_is_a_200_that_releases_nothing(
+        self, client, db, member_key
+    ):
+        org = _new_org(client)
+        who = f"twice-{uuid.uuid4().hex[:6]}@x.example"
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+        assert _remove(client, member_key, member_email=who,
+                       actor_email=org["owner"]).status_code == 200
+
+        again = _remove(client, member_key, member_email=who,
+                        actor_email=org["owner"])
+        assert again.status_code == 200, again.text
+        assert again.json() == {"found": True, "previous_status": "removed",
+                                "released": []}
+
+    def test_the_address_is_matched_without_case(self, client, db, member_key):
+        org = _new_org(client)
+        who = f"cased-{uuid.uuid4().hex[:6]}@x.example"
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+        r = _remove(client, member_key, member_email=who.upper(),
+                    actor_email=org["owner"])
+        assert r.status_code == 200, r.text
+        assert r.json()["found"] is True
+        assert _status(db, org_id=org["id"], email=who) == "removed"
+
+
+class TestTheRemoveDoorRefusals:
+    def test_an_actor_cannot_remove_themselves(self, client, db, member_key):
+        """Seeded with a SECOND owner, so the refusal can only be the self
+        guard. ⚠️ Mutation-checked: deleting the ``_same_address`` check
+        makes this fail (the actor's own row reads ``removed``)."""
+        org = _new_org(client)
+        second = f"owner2-{uuid.uuid4().hex[:6]}@x.example"
+        _active_member(db, org_id=org["id"], email=second, role="owner")
+
+        r = _remove(client, member_key, member_email=second.upper(),
+                    actor_email=second)
+        assert r.status_code == 409, r.text
+        assert "cannot remove yourself" in r.json()["detail"]
+        assert _status(db, org_id=org["id"], email=second) == "active"
+
+    def test_the_last_active_owner_is_refused_on_both_arms(
+        self, client, db, member_key
+    ):
+        """⚠️ Mutation-checked: deleting the owner check makes this fail
+        (the founder reads ``removed``)."""
+        org = _new_org(client)
+        admin = f"adm-{uuid.uuid4().hex[:6]}@x.example"
+        _active_member(db, org_id=org["id"], email=admin, role="admin")
+
+        by_admin = _remove(client, member_key, member_email=org["owner"],
+                           actor_email=admin)
+        by_operator = _remove(client, None, member_email=org["owner"],
+                              org_slug=org["slug"])
+        for r in (by_admin, by_operator):
+            assert r.status_code == 409, r.text
+            assert "no owner" in r.json()["detail"]
+        assert _status(db, org_id=org["id"], email=org["owner"]) == "active"
+
+    def test_an_owner_may_go_while_another_active_owner_remains(
+        self, client, db
+    ):
+        org = _new_org(client)
+        second = f"owner2-{uuid.uuid4().hex[:6]}@x.example"
+        _active_member(db, org_id=org["id"], email=second, role="owner")
+        r = _remove(client, None, member_email=org["owner"],
+                    org_slug=org["slug"])
+        assert r.status_code == 200, r.text
+        assert _status(db, org_id=org["id"], email=org["owner"]) == "removed"
+
+
+class TestARemovedMemberBurnsNoSeatAtSignIn:
+    """`deployment_visible_orgs` does not read the membership status (its
+    recorded finding), so a removed person still reaches the seat branch of
+    resolve. The branch now reads the status and writes no seat."""
+
+    def test_a_removed_member_does_not_retake_a_seat(
+        self, client, db, member_key
+    ):
+        """⚠️ Mutation-checked: deleting ``membership_inert`` from the
+        ``seats_locked`` expression makes this fail with ``allocated``."""
+        org = _new_org(client, core_seats=3)
+        who = f"back-{uuid.uuid4().hex[:6]}@x.example"
+        resolve_key = _key(db, deployment_id=_deployment_id(db))
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+        assert _resolve(client, resolve_key, email=who).status_code == 200
+        assert _remove(client, member_key, member_email=who,
+                       actor_email=org["owner"]).status_code == 200
+        assert _live_seats(db, org_id=org["id"], email=who) == []
+
+        r = _resolve(client, resolve_key, email=who)
+        assert r.status_code == 200, r.text
+        assert r.json()["organizations"][0]["seat"] == "not_allocated"
+        assert _live_seats(db, org_id=org["id"], email=who) == []
+        assert _status(db, org_id=org["id"], email=who) == "removed"
+
+    def test_a_suspended_member_keeps_a_seat_but_gains_none(
+        self, client, db, member_key
+    ):
+        org = _new_org(client, core_seats=3)
+        resolve_key = _key(db, deployment_id=_deployment_id(db))
+        held = f"held-{uuid.uuid4().hex[:6]}@x.example"
+        fresh = f"fresh-{uuid.uuid4().hex[:6]}@x.example"
+        for who in (held, fresh):
+            assert _add(client, member_key, member_email=who,
+                        actor_email=org["owner"]).status_code == 200
+        assert _resolve(client, resolve_key, email=held).status_code == 200
+        _set_status(db, org_id=org["id"], email=held, status="suspended")
+        _set_status(db, org_id=org["id"], email=fresh, status="suspended")
+
+        assert _resolve(client, resolve_key, email=held).json()[
+            "organizations"][0]["seat"] == "already_held"
+        assert _resolve(client, resolve_key, email=fresh).json()[
+            "organizations"][0]["seat"] == "not_allocated"
+        assert _live_seats(db, org_id=org["id"], email=fresh) == []
+
+    def test_an_active_member_is_still_seated(self, client, db, member_key):
+        """The guard narrows nothing else: the invitee path is unchanged."""
+        org = _new_org(client, core_seats=3)
+        who = f"ok-{uuid.uuid4().hex[:6]}@x.example"
+        resolve_key = _key(db, deployment_id=_deployment_id(db))
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+        r = _resolve(client, resolve_key, email=who)
+        assert r.json()["organizations"][0]["seat"] == "allocated"
+
+
+class TestTheGatewayClientSpeaksTheRemoveWire:
+    def test_remove_member_on_console_lands_end_to_end(
+        self, client, db, member_key, monkeypatch
+    ):
+        """The REAL gateway client into the REAL Console app (finding 8's
+        precedent), so a field-name drift between the two halves is red."""
+        import asyncio
+
+        import httpx
+
+        from acb_auth import console_resolve as cr
+
+        org = _new_org(client)
+        who = f"wire-rm-{uuid.uuid4().hex[:6]}@x.example"
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+
+        monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "http://console.test")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", member_key)
+        from acb_common import get_settings
+
+        get_settings.cache_clear()
+
+        from customer_console.main import app as console_app
+
+        def asgi_client():
+            return httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=console_app),
+                base_url="http://console.test",
+                timeout=5.0,
+            )
+
+        monkeypatch.setattr(cr, "_new_http_client", asgi_client)
+        try:
+            status, body = asyncio.run(
+                cr.remove_member_on_console(
+                    actor_email=org["owner"], member_email=who,
+                )
+            )
+        finally:
+            get_settings.cache_clear()
+        assert status == 200, body
+        assert body["found"] is True
+        assert _status(db, org_id=org["id"], email=who) == "removed"

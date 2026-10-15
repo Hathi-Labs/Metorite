@@ -630,6 +630,26 @@ class MemberAdminRequest(AdminSchemeRequest):
     display_name: str | None = None
 
 
+class MemberRemoveRequest(AdminSchemeRequest):
+    """The body of ``POST /registry/members/remove`` (owner request, 2026-10-15).
+
+    The sibling of :class:`MemberAdminRequest`. It names the person to remove
+    and nothing else. The org and the actor come from the scheme, exactly as at
+    the add door (R11).
+
+    ⚠️ **Extra fields are refused (422).** A ``role``, an ``org_id`` or a
+    ``status`` here would be a caller who believes it chose what the removal
+    does. The door decides that, and the body only names who.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    #: The person to remove. The door NEVER mints an identity for this
+    #: address: an address the Console does not know is an answer
+    #: (``found: false``), never a new global identity.
+    member_email: str
+
+
 class CreditGrantRequest(BaseModel):
     """An operator's ledger write.
 
@@ -5013,6 +5033,12 @@ _SEAT_ALLOCATED = "allocated"
 _SEAT_ALREADY_HELD = "already_held"
 _SEAT_NOT_ALLOCATED = "not_allocated"
 
+#: The membership statuses whose sign-in resolve writes NO seat (2026-10-15).
+#: A `removed` or `suspended` person cannot use the product, so a seat for them
+#: is capacity the customer pays for and nobody uses. `invited` is absent on
+#: purpose: the resolve promotes an invitee to `active` first.
+_SEATLESS_MEMBERSHIP_STATUSES: frozenset[str] = frozenset({"removed", "suspended"})
+
 
 def _resolve_for_deployment(req: ResolveRequest, caller: DeploymentCaller) -> dict[str, Any]:
     """A box asking about a person it has just authenticated (CP-2b).
@@ -5103,6 +5129,22 @@ def _resolve_for_deployment(req: ResolveRequest, caller: DeploymentCaller) -> di
                 conn, org_id=org["organization_id"], identity_id=identity_id
             )
 
+            # ── A removed or suspended member burns no seat (2026-10-15) ────
+            # `deployment_visible_orgs` does not read the membership status
+            # (its recorded finding), so a removed person still reaches this
+            # branch. Without this read their next sign-in took a NEW Core
+            # seat, right after the remove door released their old one. The
+            # status is read AFTER the promotion above, so a just-activated
+            # invitee reads `active` and is seated as before.
+            #
+            # ⚠️ This changes the SEAT only, never the admission. The tenant
+            # plane still refuses the person at its own gate. The outcome
+            # comes from `_allocate_core_seat`'s report-only arm, so the token
+            # is one the box already knows (`already_held` / `not_allocated`).
+            membership_inert = store.membership_status(
+                conn, org_id=org["organization_id"], identity_id=identity_id
+            ) in _SEATLESS_MEMBERSHIP_STATUSES
+
             seat_outcomes[org["organization_id"]] = _allocate_core_seat(
                 conn,
                 org_id=org["organization_id"],
@@ -5110,7 +5152,11 @@ def _resolve_for_deployment(req: ResolveRequest, caller: DeploymentCaller) -> di
                 # The lifecycle decides whether a seat may be WRITTEN, and it
                 # is a different question from whether this person may sign in
                 # — the state machine answers both, and this arm asks both.
-                seats_locked=not capabilities_of(org["status"]).can_write_seats,
+                # A removed or suspended membership locks the write too.
+                seats_locked=(
+                    membership_inert
+                    or not capabilities_of(org["status"]).can_write_seats
+                ),
             )
         else:
             # More than one visible organization → allocate NOTHING. Allocating
@@ -6206,6 +6252,130 @@ def add_member_admin(
         )
 
     return {"created": created, "status": status_now}
+
+
+# ── The member-REMOVE door (owner request, 2026-10-15) ──────────────────────
+#
+# The reverse of the add door above. The owner asked on 2026-10-15 that an
+# operator and an org admin can remove a person who was invited or who signed
+# in. The tenant plane removes the person first. This door then makes the
+# registry agree, so the person holds no seat and is no longer counted.
+
+
+@app.post("/registry/members/remove")
+def remove_member_admin(
+    req: MemberRemoveRequest,
+    caller: MemberAdminCaller,
+    request: Request,
+) -> dict[str, Any]:
+    """Remove a member and release their seats (owner request, 2026-10-15).
+
+    The **exact sibling of** ``POST /registry/members``: the same
+    ``member_admin`` capability, the same two-arm shape and the same
+    derivation seam (:func:`_admin_scheme_context`). The deployment arm
+    derives the org and the actor. The operator arm names the org.
+
+    **The role set is** :data:`_MEMBER_ADMIN_ROLES` **on purpose.** The
+    tenant plane's ``admin:members:manage`` is the real gate, and the gateway
+    mirrors here only after that gate passed and the tenant write committed.
+    The tenant's second admin is a Console ``member`` (D12 maps no tenant role
+    onto the registry role). So an ``owner|admin`` set would refuse that
+    admin's removals here, after the tenant plane removed the person. The two
+    planes would then disagree, and the person would keep a seat.
+
+    **What it writes, in one transaction.** ``store.remove_member`` sets the
+    membership to ``removed`` and releases every live seat of that person in
+    that org, of every plan. One ``member.remove`` audit row records the
+    address, the previous status and the released plans.
+
+    **It never mints an identity.** An unknown address, or an identity with no
+    membership in the org, answers 200 ``{"found": false}``. The tenant plane
+    has already committed its removal, and the gateway mirror runs after
+    that. So a retry, or a person the registry never held, must not fail.
+
+    **Two refusals, both 409.** The deployment arm refuses an actor who
+    removes themselves. Both arms refuse a removal that leaves the org with no
+    active registry ``owner``.
+
+    **The lifecycle.** A ``suspended`` or ``cancelled`` org CAN remove a
+    member. Removing a person frees capacity and grows nothing, which is the
+    same reason the seat release is ungated. A ``deleted`` org holds no data
+    (``data_retained`` is False), so the door refuses it with 403. The
+    deployment arm never reaches that check, because ``can_sign_in`` already
+    excludes a ``deleted`` org in the derivation.
+    """
+    with get_engine().begin() as conn:
+        org_id, actor = _admin_scheme_context(
+            conn, req, caller, roles=_MEMBER_ADMIN_ROLES, request=request
+        )
+
+        state = conn.execute(
+            text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+        ).scalar_one()
+        if not capabilities_of(state).data_retained:
+            raise HTTPException(
+                status_code=403,
+                detail=f"organization is {state}; it holds no members to remove",
+            )
+
+        identity_id = store.identity_id_for_email(conn, email=req.member_email)
+        previous = (
+            None
+            if identity_id is None
+            else store.membership_status(conn, org_id=org_id, identity_id=identity_id)
+        )
+        if identity_id is None or previous is None:
+            return {"found": False}
+
+        if caller is not None and _same_address(actor, req.member_email):
+            raise HTTPException(
+                status_code=409,
+                detail="you cannot remove yourself; ask another admin to do it",
+            )
+        # The target is the LAST active owner when the org has one or more now
+        # and none without them. An org that already has no active owner is
+        # not made worse by removing somebody else, so it is not refused.
+        owners_now = store.active_owner_count(conn, org_id=org_id)
+        owners_after = store.active_owner_count(
+            conn, org_id=org_id, excluding_identity_id=identity_id
+        )
+        if owners_now > 0 and owners_after == 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "this would leave the organization with no owner; "
+                    "make another member the owner first"
+                ),
+            )
+
+        previous_status, released = store.remove_member(
+            conn, org_id=org_id, identity_id=identity_id
+        )
+        _audit(
+            conn,
+            org_id,
+            "member.remove",
+            {
+                "email": req.member_email,
+                "previous_status": previous_status,
+                "released": released,
+            },
+            actor=actor,
+        )
+
+    return {"found": True, "previous_status": previous_status, "released": released}
+
+
+def _same_address(a: str | None, b: str | None) -> bool:
+    """Two addresses name one person: case-folded and trimmed, never empty.
+
+    ``user_identity.email`` is CITEXT, so the registry treats case as one
+    person. This comparison does the same. An empty side matches nothing,
+    because a caller with no address is not everybody.
+    """
+    left = (a or "").strip().lower()
+    right = (b or "").strip().lower()
+    return bool(left) and left == right
 
 
 # ── H-152 · the customer billing READS under the deployment key ─────────────

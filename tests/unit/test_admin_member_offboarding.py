@@ -794,3 +794,98 @@ def test_the_browsers_copy_of_the_rule_is_a_courtesy_not_a_second_boundary(
     assert "not a boundary" in guard or "courtesy" in guard, (
         "selfGuard.ts does not say that it is presentation only"
     )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 6. The Customer Console mirror (owner request, 2026-10-15)
+#
+# Remove tells the Console, AFTER the tenant commit, so the registry sets the
+# membership to `removed` and releases the person's seats. It is the invite
+# mirror's posture: best-effort, and no outcome changes the route's answer.
+# ════════════════════════════════════════════════════════════════════════════
+
+def _record_console_calls(monkeypatch: pytest.MonkeyPatch, db: _FakeDB,
+                          answer: Any) -> list[dict[str, Any]]:
+    """Patch the Console client on the route module and record each call.
+
+    ``answer`` is the value to return, or an exception to raise. Each record
+    keeps ``db.committed`` at call time, which is how a test proves the mirror
+    ran after the commit rather than merely ran.
+    """
+    from gateway.routes.admin import members
+
+    seen: list[dict[str, Any]] = []
+
+    async def _fake(**kw: Any) -> Any:
+        seen.append({**kw, "committed_at_call": db.committed})
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(members, "remove_member_on_console", _fake)
+    return seen
+
+
+async def test_remove_mirrors_onto_the_console_after_the_commit(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The actor is the AUTHENTICATED admin (R11), and the hop is post-commit.
+
+    ⚠️ Mutation-checked: deleting the `_mirror_removal_to_console` call from
+    `remove_member` makes this fail with no call recorded.
+    """
+    from gateway.routes.admin.members import remove_member
+
+    seen = _record_console_calls(
+        monkeypatch, db, (200, {"found": True, "released": ["core"]}))
+
+    out = await remove_member("priya@fracktal.in", admin=OWNER)
+
+    assert out == {"status": "removed", "email": "priya@fracktal.in"}
+    assert seen == [{
+        "actor_email": "owner@fracktal.in",
+        "member_email": "priya@fracktal.in",
+        "committed_at_call": 1,
+    }]
+
+
+@pytest.mark.parametrize("answer", [
+    (409, {"detail": "this would leave the organization with no owner"}),
+    (403, {"detail": "the acting member is not an active admin"}),
+    RuntimeError("the console went away"),
+])
+async def test_a_console_refusal_or_failure_never_changes_the_answer(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch, answer: Any,
+) -> None:
+    """The tenant removal has committed. The Console cannot take it back."""
+    from acb_auth.console_resolve import ConsoleMemberWriteUnavailable
+    from gateway.routes.admin.members import remove_member
+
+    _record_console_calls(monkeypatch, db, answer)
+    out = await remove_member("priya@fracktal.in", admin=OWNER)
+
+    assert out == {"status": "removed", "email": "priya@fracktal.in"}
+    assert db.users["u-priya"]["status"] == "removed"
+    assert db.committed == 1
+
+    # The outage type too, which the client raises for an unwired box.
+    _record_console_calls(monkeypatch, db,
+                          ConsoleMemberWriteUnavailable("unwired"))
+    db.users["u-priya"]["status"] = "active"
+    again = await remove_member("priya@fracktal.in", admin=OWNER)
+    assert again["status"] == "removed"
+
+
+async def test_a_refused_remove_never_reaches_the_console(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A self-removal is refused before anything commits, so the Console is
+    never told about a removal that did not happen."""
+    from gateway.routes.admin.members import remove_member
+
+    _second_owner(db)
+    seen = _record_console_calls(monkeypatch, db, (200, {"found": True}))
+
+    with pytest.raises(HTTPException):
+        await remove_member("owner@fracktal.in", admin=OWNER)
+    assert seen == []
