@@ -10,6 +10,13 @@ WhatsApp adapter, the loop and two routes. My Profile shows "Messages
 Metorite starts", with a preview and "Send my brief now". `REACH_ENABLED` is
 off, and `REACH_ORGS` and `REACH_MEMBERS` are empty.
 
+**RE-1a is LIVE, 2026-10-15,** for the two members with a WhatsApp link. The
+first morning sent one brief and lost one brief and one interrupt to a closed
+window. **RE-2a is BUILT, 2026-10-15** (branch `ws59-reach-catchup`, no
+migration). A message in a closed window waits for the member's next message,
+or goes as a template with its content when `REACH_BRIEF_TEMPLATE` or
+`REACH_NEEDS_YOU_TEMPLATE` names an approved one (§8.1a, H-315).
+
 **What this spec owns.** How Metorite decides to contact a member outside the
 app, and how the message reaches them. That covers the outbound path, the
 attention budget, the delivery ledger, the channel adapters, the reply loop

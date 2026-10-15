@@ -62,7 +62,19 @@ _SENT_SINCE_SQL = (
 _BRIEF_SQL = (
     "SELECT EXISTS (SELECT 1 FROM reach_outbox "
     f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
-    "AND kind = 'brief' AND local_date = :d)"
+    "AND kind = 'brief' AND local_date = :d "
+    "AND (dedupe_key = :key OR state = 'sent'))"
+)
+
+#: A template brief went out for the date, and its full brief did not yet
+#: (RE-2a). The full brief has its own key, so the second EXISTS reads it.
+_FULL_DUE_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM reach_outbox "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND kind = 'brief' AND local_date = :d "
+    "AND ((state = 'sent' AND regime = 'template') OR state = 'failed')) "
+    "AND NOT EXISTS (SELECT 1 FROM reach_outbox "
+    f"WHERE organization_id = {_BOUND_ORG} AND dedupe_key = :key)"
 )
 
 
@@ -120,8 +132,19 @@ async def interrupts_since(org: str, member: str, since: datetime) -> int:
                                      {"m": member, "since": since})).scalar() or 0)
 
 
-async def brief_planned(org: str, member: str, local_date: date) -> bool:
-    """True when a brief for *local_date* is already in the outbox."""
+async def brief_planned(org: str, member: str, local_date: date, key: str) -> bool:
+    """True when the day's own brief row (*key*) exists in any state, or any
+    brief for *local_date* went out. A "Send my brief now" that a closed
+    window skipped has its own key, so it does not cancel the held brief of
+    the day (RE-2a verification, P3)."""
     async with tenant_session(org) as db:
         return bool((await db.execute(text(_BRIEF_SQL),
-                                      {"m": member, "d": local_date})).scalar())
+                                      {"m": member, "d": local_date, "key": key})).scalar())
+
+
+async def full_brief_due(org: str, member: str, local_date: date, key: str) -> bool:
+    """True when the brief of *local_date* went out as the template and no
+    row with *key*, the full brief's key, exists yet (RE-2a)."""
+    async with tenant_session(org) as db:
+        return bool((await db.execute(text(_FULL_DUE_SQL), {
+            "m": member, "d": local_date, "key": key})).scalar())
