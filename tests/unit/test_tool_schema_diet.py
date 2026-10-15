@@ -123,6 +123,9 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # run binds them (R5).
     'package_artifacts': {'params': {'name': 'string', 'paths': 'string'},
                           'required': []},
+    # H-315 (2026-10-15): a deck or a report as a PDF, from one spec object.
+    # No member, org or path argument: the run binds them (R5).
+    'make_document': {'params': {'spec': 'object'}, 'required': ['spec']},
     # MT-0c-1 (D16): query_history no longer takes SQL. The contract change is
     # deliberate — a model-composed `query` string was a raw-SQL tool, which
     # saas_multitenancy.md §0.9.3 makes a condition on the pooled decision. All

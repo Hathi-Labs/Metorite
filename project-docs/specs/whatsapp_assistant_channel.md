@@ -1569,9 +1569,16 @@ record for it.
 ### 15.4 The channel rule
 
 The channel changes delivery, never function (owner, 2026-10-10). On
-WhatsApp a document goes as a file. The web chat keeps its own artifacts and
-its "Download PDF". A web deck through the same `document` source kind is a
-later slice (HANDOFF).
+WhatsApp a document goes as a file. In the web chat the same spec goes to the
+tool `make_document` (`acb_skills.documents`, family `documents`). It lays out
+the PDF through the same `render_pdf` kind `document`, and `write_artifact`
+saves it, so the chat shows a PDF card with a download.
+
+The main assistant
+and the Projects assistant hold it by scope. WhatsApp withholds it, because
+`whatsapp_ui` kind `document` sends the same PDF as a file. Fence:
+`tests/unit/test_chat_documents.py` (owner, 2026-10-15: "live in the AI chat
+too").
 
 ### 15.5 The switch
 

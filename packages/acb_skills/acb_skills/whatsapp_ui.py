@@ -76,6 +76,9 @@ WITHHELD_TOOLS: frozenset[str] = frozenset({
     "write_artifact", "share_artifact", "read_attachment",
     # a background run posts its answer into the web chat thread
     "call_agent_background",
+    # the web chat's PDF card. WhatsApp sends the same PDF as a file through
+    # whatsapp_ui kind "document" (WAC-12), so the function stays.
+    "make_document",
 })
 
 #: The most elements one reply sends. More reads as spam on a phone.

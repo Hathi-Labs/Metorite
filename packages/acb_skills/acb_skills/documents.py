@@ -235,6 +235,90 @@ __all__ = [
     "VISUAL_KINDS",
     "DocumentError",
     "filename_of",
+    "make_document",
     "prepare",
     "rendition",
 ]
+
+
+# ── The web chat: the same document, as a file in the chat (H-315) ─────────
+
+
+async def make_document(spec: dict[str, Any]) -> dict[str, Any]:
+    """Make a PDF FILE from Metorite's data: a sales or pitch deck, a report or
+    an analysis, laid out as slides or pages with charts, tiles and tables.
+    The member gets a card with a preview and a download. Collect the facts
+    first (CRM, email, projects). Never invent a number.
+
+    spec: {"format": "deck"|"report", "title", "subtitle", "for" (who it is
+    for), "filename",
+    deck: "slides": [{"type": "cover"|"section"|"content"|"quote"|"closing",
+    "title", "subtitle", "text", "bullets" (8), "quote", "by", "visual"}]
+    x 1-20;
+    report: "sections": [{"heading", "text", "bullets", "visual"}] x 1-30}.
+    A "visual" is {"kind": chart|stats|table|board|timeline|gantt|agenda,
+    "title", ...}, at most 12, and only on a "content" slide:
+    - chart: {"type": bar|line|area|donut|funnel|progress|waterfall|...,
+      "labels", "values" (or "series": [{"name", "values"}]), "unit"}
+    - stats: {"tiles": [{"label", "value", "delta", "good": "up"|"down"}]}
+    - table: {"columns" (6), "rows": [[cell]] (20)}
+    - board: {"columns": [{"name", "cards": [{"title", "meta"}]}]}
+    - timeline: {"events": [{"date", "title", "state"}]}
+    - gantt: {"rows": [{"label", "start", "end"}]}
+    Text and numbers only: **bold** works, and no HTML, image or URL. One
+    idea a slide: a title that says the point, 3 to 5 short bullets or one
+    visual with a lead line.
+
+    Returns {"ok": true, "path", "download_url"}: put the download_url in
+    your answer as a link. Or {"ok": false, "error"}: fix the spec and call
+    again.
+    """
+    import asyncio
+    import json
+
+    from acb_skills.whatsapp_ui import current_run
+
+    if current_run() is not None:
+        return {"ok": False, "error": 'on WhatsApp, call whatsapp_ui kind "document"'}
+    try:
+        layout = await asyncio.to_thread(prepare, spec)
+    except (ValueError, TypeError, OverflowError) as exc:
+        return {"ok": False, "error": str(exc)}
+    given = spec.get("filename") if isinstance(spec, dict) else None
+    name = filename_of(layout["title"], given if isinstance(given, str) else "")
+    try:
+        from gateway.pdf_render import render_pdf  # the ONE PDF seam
+    except ImportError:  # pragma: no cover - the skill runs in the gateway
+        return {"ok": False, "error": "this server cannot make a PDF"}
+    try:
+        pdf = await render_pdf("document", json.dumps(layout, ensure_ascii=False),
+                               member=_member(), org=_org())
+    except ValueError as exc:  # pdf_render.PdfRenderError says what to fix
+        return {"ok": False, "error": f"the PDF could not be made: {exc}"}
+    from acb_skills.write_artifact import write_artifact
+
+    written = await write_artifact(f"outputs/{name}", pdf, encoding=None)
+    return {"ok": True, "path": written.get("path"),
+            "download_url": written.get("download_url"),
+            "note": "Link the download_url in your answer, and say in one line "
+                    "what the file holds."}
+
+
+def _member() -> str:
+    """The run's member: the run's own ContextVar, never the spec."""
+    try:
+        from acb_skills.memory_tools import _get_memory_user_id
+
+        return _get_memory_user_id() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _org() -> str | None:
+    """The tenant the run bound, never the spec."""
+    try:
+        from acb_common.db import current_tenant
+
+        return current_tenant()
+    except Exception:
+        return None
