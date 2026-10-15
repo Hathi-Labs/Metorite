@@ -111,6 +111,8 @@ TELL_ME_ANSWERS = {
     "no_link": ("Your WhatsApp is not linked yet. Link it in My Profile, "
                 "then ask again."),
     "off": "Reach is not on for you yet.",
+    "limit": ("You asked for 20 WhatsApp messages in the last 24 hours. That is "
+              "the limit, so this one did not go. Ask again later."),
 }
 
 
@@ -136,6 +138,10 @@ async def reach_tell_me(req: TellMeBody,
     try:
         rid = await requests.tell_me(org, email, source="chat", title=req.title,
                                      body=req.body, requested_by=email)
+    except requests.RequestRefused as exc:
+        if exc.reason == "daily_limit":
+            return tell_me_body("limit")
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except requests.RequestInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return tell_me_body("sent" if is_open else "waits", rid)

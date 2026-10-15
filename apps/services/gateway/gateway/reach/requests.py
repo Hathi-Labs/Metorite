@@ -54,8 +54,15 @@ SELF_SOURCES = frozenset({"chat"})
 #: The kind of the card a request becomes, and the prefix of its signal.
 KIND = "notify_me"
 SIGNAL_PREFIX = "request:"
-#: The most open requests one pass reads for one member.
+#: The most open requests one pass reads for one member. The member's own
+#: requests come first, so a backlog never starves one (review of RE-5, P1-2).
 READ_LIMIT = 100
+#: The most open requests of rules and workflows that one member may hold.
+#: :func:`tell_me` refuses the next one with ``backlog_full`` (P1-2).
+BACKLOG_LIMIT = 20
+#: The most requests of the member's own in 24 hours. :func:`tell_me`
+#: refuses the next one with ``daily_limit`` (review of RE-5, P3-1).
+SELF_DAILY_LIMIT = 20
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
 #: A link into the app: one leading slash, then no space, no control
@@ -80,12 +87,39 @@ _UNDELIVERED_SQL = (
     "WHERE l.organization_id = r.organization_id "
     "AND l.member_email = r.member_email "
     "AND l.signal_id = 'request:' || r.id::text) "
-    "ORDER BY r.created_at, r.id LIMIT :lim"
+    "ORDER BY (r.source = 'chat') DESC, r.created_at, r.id LIMIT :lim"
+)
+
+#: The member's open requests of rules and workflows, and the member's own
+#: requests of the last 24 hours. ``'chat'`` is the one source of
+#: :data:`SELF_SOURCES`.
+_COUNTS_SQL = (
+    "SELECT (SELECT count(*) FROM reach_requests r "
+    f"WHERE r.organization_id = {_BOUND_ORG} AND r.member_email = :m "
+    "AND r.source <> 'chat' AND r.expires_at > now() "
+    "AND NOT EXISTS (SELECT 1 FROM reach_signal_log l "
+    "WHERE l.organization_id = r.organization_id "
+    "AND l.member_email = r.member_email "
+    "AND l.signal_id = 'request:' || r.id::text)) AS backlog, "
+    "(SELECT count(*) FROM reach_requests r "
+    f"WHERE r.organization_id = {_BOUND_ORG} AND r.member_email = :m "
+    "AND r.source = 'chat' "
+    "AND r.created_at > now() - interval '24 hours') AS own_today"
 )
 
 
 class RequestInvalid(ValueError):
     """A request that :func:`tell_me` refuses. The text names the field only."""
+
+
+class RequestRefused(RequestInvalid):
+    """A valid request that :func:`tell_me` refuses because of a limit.
+    ``reason`` is ``backlog_full`` or ``daily_limit``. A caller that catches
+    :class:`RequestInvalid` shows the text, so a rule's History says why."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(f"{reason}: {message}")
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -178,9 +212,10 @@ async def tell_me(org: str, member: str, *, source: str, title: str,
     """Record one request for *member* in *org*. Answers its id, or None when
     *key* already holds a request. Sends nothing.
 
-    Raises :class:`RequestInvalid` for a bad argument. *member* comes from a
-    session or from the owner of a rule or a workflow, never from request
-    input."""
+    Raises :class:`RequestInvalid` for a bad argument, and
+    :class:`RequestRefused` over :data:`BACKLOG_LIMIT` or
+    :data:`SELF_DAILY_LIMIT`. *member* comes from a session or from the owner
+    of a rule or a workflow, never from request input."""
     if not org:
         raise RequestInvalid("org is missing")
     if source not in SOURCES:
@@ -197,6 +232,14 @@ async def tell_me(org: str, member: str, *, source: str, title: str,
         "urg": urgency, "by": _email(requested_by, "requested_by"), "key": dedupe,
     }
     async with tenant_session(org) as db:
+        backlog, own_today = (await db.execute(text(_COUNTS_SQL),
+                                               {"m": params["m"]})).one()
+        if source in SELF_SOURCES and int(own_today) >= SELF_DAILY_LIMIT:
+            raise RequestRefused("daily_limit", f"{SELF_DAILY_LIMIT} requests in 24 hours "
+                                 "is the limit")
+        if source not in SELF_SOURCES and int(backlog) >= BACKLOG_LIMIT:
+            raise RequestRefused("backlog_full", f"{BACKLOG_LIMIT} messages already wait "
+                                 "for this member")
         row = (await db.execute(text(_INSERT_SQL), params)).first()
     return None if row is None else str(row[0])
 

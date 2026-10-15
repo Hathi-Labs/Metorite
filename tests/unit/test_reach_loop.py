@@ -975,6 +975,17 @@ class TestTellMeRoute:
         assert got["state"] == "off" and got["answer"] == "Reach is not on for you yet."
         assert recorded == []
 
+    def test_over_the_daily_limit_it_answers_limit(self, world, monkeypatch):
+        # RE-5 review, P3-1.
+        async def refuse(org, member, **kw):
+            raise requests.RequestRefused("daily_limit", "20 requests in 24 hours")
+
+        monkeypatch.setattr(requests, "tell_me", refuse)
+        monkeypatch.setattr(channel, "channel_ready", lambda org: True)
+        got = self._post(ME, ORG, {"title": "Hi"})
+        assert got.status_code == 200 and got.json()["state"] == "limit"
+        assert "20 WhatsApp messages" in got.json()["answer"]
+
     def test_a_bad_title_is_422(self, world, monkeypatch):
         monkeypatch.setattr(channel, "channel_ready", lambda org: True)
         assert self._post(ME, ORG, {"title": "   "}).status_code == 422

@@ -41,6 +41,9 @@ class FakeSession:
 
     def __init__(self) -> None:
         self.keys: dict[str, dict[str, Any]] = {}
+        #: What the counts read answers: the open rule and workflow requests,
+        #: and the member's own requests of the last 24 hours.
+        self.backlog, self.own_today = 0, 0
 
     @asynccontextmanager
     async def __call__(self, org=None):
@@ -49,6 +52,14 @@ class FakeSession:
 
     async def execute(self, sql, params):
         fake = self
+        if "count(*)" in str(sql):
+            counts = (self.backlog, self.own_today)
+
+            class _C:
+                def one(self):
+                    return counts
+
+            return _C()
 
         class _R:
             def first(self):
@@ -109,6 +120,31 @@ class TestTheCall:
         with pytest.raises(requests.RequestInvalid):
             await requests.tell_me(ORG, member, **args)
         assert db.keys == {}
+
+    async def test_a_full_backlog_refuses_a_rule_and_never_the_member(self, db):
+        # RE-5 review, P1-2.
+        db.backlog = requests.BACKLOG_LIMIT
+        with pytest.raises(requests.RequestRefused) as got:
+            await requests.tell_me(ORG, "me@org.test", source="email.rule", title="T",
+                                   requested_by="me@org.test")
+        assert got.value.reason == "backlog_full" and db.keys == {}
+        assert isinstance(got.value, requests.RequestInvalid)
+        assert await requests.tell_me(ORG, "me@org.test", source="chat", title="T",
+                                      requested_by="me@org.test") is not None
+        db.backlog = requests.BACKLOG_LIMIT - 1
+        assert await requests.tell_me(ORG, "me@org.test", source="workflow", title="T",
+                                      requested_by="me@org.test") is not None
+
+    async def test_the_members_own_requests_stop_at_the_daily_limit(self, db):
+        # RE-5 review, P3-1.
+        db.own_today = requests.SELF_DAILY_LIMIT
+        with pytest.raises(requests.RequestRefused) as got:
+            await requests.tell_me(ORG, "me@org.test", source="chat", title="T",
+                                   requested_by="me@org.test")
+        assert got.value.reason == "daily_limit" and db.keys == {}
+        # A rule does not count against the member's own limit.
+        assert await requests.tell_me(ORG, "me@org.test", source="email.rule", title="T",
+                                      requested_by="me@org.test") is not None
 
     async def test_no_org_is_refused(self, db):
         with pytest.raises(requests.RequestInvalid):
@@ -439,6 +475,60 @@ class TestOnARealDatabase:
                                            requested_by=A)
             assert await requests.open_requests(p.org_a, A, now + timedelta(hours=49)) == []
             assert [r.id for r in await requests.undelivered(p.org_a, A)] == [later]
+
+    async def test_the_members_own_request_reads_first_and_the_limits_count(
+            self, promoted):  # noqa: F811
+        # RE-5 review, P1-2 and P3-1, on the real SQL.
+        from sqlalchemy import text
+
+        p = promoted
+        async with _as_member(p, p.org_a):
+            rules = [await requests.tell_me(p.org_a, A, source="email.rule",
+                                            title=f"R{i}", requested_by=A)
+                     for i in range(3)]
+            own = await requests.tell_me(p.org_a, A, source="chat", title="Mine",
+                                         requested_by=A)
+            rows = await requests.undelivered(p.org_a, A)
+            assert [r.id for r in rows] == [own, *rules]
+        # Fill the backlog to the limit, with the admin role.
+        with promoted.admin_engine.begin() as c:
+            for i in range(requests.BACKLOG_LIMIT - 3):
+                c.execute(text(
+                    "INSERT INTO reach_requests (organization_id, member_email, source, "
+                    "title, requested_by, dedupe_key) VALUES (CAST(:o AS uuid), :m, "
+                    "'workflow', 't', :m, :k)"), {"o": p.org_a, "m": A, "k": f"fill{i}"})
+        async with _as_member(p, p.org_a):
+            with pytest.raises(requests.RequestRefused, match="backlog_full"):
+                await requests.tell_me(p.org_a, A, source="workflow", title="One more",
+                                       requested_by=A)
+        # A log row closes one, and an expired one does not count.
+        from gateway.reach import outbox
+
+        async with _as_member(p, p.org_a):
+            await outbox.log(p.org_a, A, [(f"request:{rules[0]}", "fp")], "sent")
+            assert await requests.tell_me(p.org_a, A, source="workflow", title="Now",
+                                          requested_by=A) is not None
+        with promoted.admin_engine.begin() as c:
+            c.execute(text("UPDATE reach_requests SET expires_at = now() - interval '1 s' "
+                           "WHERE member_email = :m AND dedupe_key = 'fill0'"), {"m": A})
+        async with _as_member(p, p.org_a):
+            assert await requests.tell_me(p.org_a, A, source="workflow", title="Again",
+                                          requested_by=A) is not None
+        # The member's own: 20 in 24 hours. One is already there.
+        with promoted.admin_engine.begin() as c:
+            for i in range(requests.SELF_DAILY_LIMIT - 1):
+                c.execute(text(
+                    "INSERT INTO reach_requests (organization_id, member_email, source, "
+                    "title, requested_by, dedupe_key) VALUES (CAST(:o AS uuid), :m, "
+                    "'chat', 't', :m, :k)"), {"o": p.org_a, "m": A, "k": f"own{i}"})
+        async with _as_member(p, p.org_a):
+            with pytest.raises(requests.RequestRefused, match="daily_limit"):
+                await requests.tell_me(p.org_a, A, source="chat", title="21st",
+                                       requested_by=A)
+        # Org B's member is not touched by A's counts.
+        async with _as_member(p, p.org_b):
+            assert await requests.tell_me(p.org_b, B, source="chat", title="B",
+                                          requested_by=B) is not None
 
     async def test_org_b_never_sees_the_request_of_org_a(self, promoted):  # noqa: F811
         p = promoted
