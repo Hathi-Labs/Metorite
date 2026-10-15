@@ -45,7 +45,7 @@ Seven tools read:
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |
 
-Four tools make or change a task:
+Five tools make or change a task:
 
 | Tool | What it does |
 |---|---|
@@ -53,8 +53,11 @@ Four tools make or change a task:
 | `update_task` | It changes the title, the description, the tags, the due date or the custom fields of a task |
 | `set_task_status` | It moves a task to another status. It never moves a task to a done or cancelled status. A person does that step |
 | `add_task_reference` | It links a pull request, a commit or a branch to a task |
+| `add_comment` | It writes a comment on a task, such as a short progress note while it works. You are the author of the comment. It can reply to a top-level comment. A comment holds at most 20,000 characters. With the same `idempotency_key`, a second call gives back the first comment and adds no second comment |
 
 Each change shows in the task history, with the agent as `mcp:<host>`. A connection makes at most 120 changes in 10 minutes.
+
+**A comment notifies people.** Each comment that the agent writes notifies the watchers and the assignees of the task, as your own comment does. An `@` followed by the address of a member who can see the task notifies that member too. These notifications go to the bell and the inbox in Metorite. Metorite does not send them by email.
 
 ## What the agent cannot do
 
