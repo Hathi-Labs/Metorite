@@ -152,6 +152,25 @@ TEXT_KEY_UNKNOWN = (
     "A call with this idempotency_key got no answer, so Metorite cannot tell if"
     " it made the task. Look for the task with list_tasks before you use a new key.")
 
+#: ``add_comment`` only (EA-6c, §9.2). The key texts name a comment, not a
+#: task. The four ``parent_id`` refusals of ``activities._parent_comment``
+#: each have their own text.
+TEXT_COMMENT_KEY_REUSED = (
+    "This idempotency_key was used for a different comment. Send a new key.")
+TEXT_COMMENT_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it added the comment. Read the comments with get_task_timeline before you"
+    " use a new key.")
+TEXT_COMMENT_BLANK = "The input 'body' holds no text."
+TEXT_COMMENT_NUL = "The input 'body' holds a character that Metorite cannot store."
+TEXT_PARENT_COMMENT_NOT_FOUND = "Parent comment not found."
+TEXT_PARENT_COMMENT_OTHER_TASK = (
+    "The parent comment is on another task. Reply on the task of that comment.")
+TEXT_PARENT_NOT_A_COMMENT = (
+    "The parent_id is not a comment. Reply only to a comment.")
+TEXT_PARENT_TOO_DEEP = (
+    "Replies go one level deep. Send the parent_id of the first comment of the thread.")
+
 #: The fixed texts of the agent-run tools (EA-12b, §12.1).
 TEXT_RUN_NOT_FOUND = "Agent run not found."
 #: A call of an agent-run tool while ``agent_runs_enabled`` is off.
@@ -304,10 +323,16 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
                  path_params: Mapping[str, str] | None = None,
                  query: list[tuple[str, str]] | None = None,
                  if_match: str | None = None,
-                 texts: Mapping[int, str] | None = None) -> tuple[int, Any]:
+                 texts: Mapping[int, str] | None = None,
+                 details: Mapping[tuple[int, str], str] | None = None,
+                 ) -> tuple[int, Any]:
     """One write through ``gateway_client.write``: ``(status, body)`` of a
     2xx answer, or raise the write mapping of :func:`_body_of`. *texts* gives
-    a tool its own fixed text for a status of its route (§9.2)."""
+    a tool its own fixed text for a status of its route (§9.2).
+
+    *details* (EA-6c) maps a status AND the gateway's own ``detail`` to a
+    fixed text, for a route whose one status has more than one meaning. The
+    edge reads the detail to choose a text, and never sends the detail."""
     try:
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
@@ -318,6 +343,9 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         raise ToolError(TEXT_BUSY) from None
     except RouteRefused:
         raise ToolError(TEXT_BAD_REQUEST) from None
+    detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
+    if details and isinstance(detail, str) and (answer.status, detail) in details:
+        raise ToolError(details[(answer.status, detail)])
     if texts and answer.status in texts:
         raise ToolError(texts[answer.status])
     body = _body_of(answer, not_found, write=True)
