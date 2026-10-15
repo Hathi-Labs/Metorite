@@ -175,7 +175,8 @@ describe("the chat card", () => {
     expect(row).toContain('aria-label="Open report"');
     expect(row).toContain('aria-label="Download PDF"');
     // The word gives way in a narrow card, and the icon stays.
-    expect(row).toContain("hidden @[17rem]:inline");
+    // Each of the two acts carries it: "Open" and "PDF".
+    expect(row.match(/<span class="hidden @\[17rem\]:inline">(Open|PDF)<\/span>/g)).toHaveLength(2);
     expect(html.slice(body)).not.toContain("Open report");
     expect(html).not.toContain("data-report-actions");
   });
