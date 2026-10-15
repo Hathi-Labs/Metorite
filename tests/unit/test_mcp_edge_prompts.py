@@ -17,7 +17,31 @@ Run::
 **The mutations (R7).** Each one turned the named test red. ``E`` is
 ``apps/services/agent_edge/agent_edge``.
 
-MUTATIONS
+* M1. ``E/mcp.py`` ``CAPABILITIES`` without ``prompts``. ``test_p1_initialize_always_declares_tools_and_prompts`` (and the capabilities test of ``test_mcp_edge_protocol.py``).
+* M2. ``E/prompts.py`` ``offered``: no ``projects:write`` check. ``test_p3_a_read_only_connection_gets_an_empty_list``.
+* M3. ``E/prompts.py`` ``offered``: no writes flag. ``test_p3_with_the_writes_flag_off_the_list_is_empty``.
+* M4. ``E/prompts.py`` ``listed``: ``required`` is always true. ``test_p2_with_writes_and_projects_write_the_list_is_work_on_task``.
+* M5. ``E/prompts.py`` ``get``: the name check only, no ``offered``. ``test_p4_a_hidden_prompt_gets_unknown_prompt_for_a_read_only_token``.
+* M6. ``E/prompts.py``: ``_NUMBER.match`` for ``fullmatch``. ``test_p5_any_other_shape_gets_minus_32602_that_names_task[42 ]``.
+* M7. ``E/prompts.py``: ``MAX_DIGITS = 19``. ``test_p5_any_other_shape_...[9999999999999999999]``.
+* M8. ``E/prompts.py``: ``\\d`` for ``[0-9]``, with no ``re.ASCII``. ``test_p5_any_other_shape_...`` with two Arabic-Indic digits.
+* M9. ``E/prompts.py`` ``get``: no check of an extra argument name. ``test_p5_an_extra_argument_name_gets_minus_32602``.
+* M10. ``E/prompts.py`` ``get``: ``str(value)`` for a value that is not a string. ``test_p5_a_value_that_is_not_a_string_gets_minus_32602[42]``.
+* M11. ``E/mcp.py``: ``prompts/get`` calls ``get_task`` and appends the result to the text. ``test_p6_prompts_get_makes_no_gateway_request_and_holds_no_member_text``.
+* M12. ``E/prompts.py``: the done step says "when you open the pull request". ``test_p7_the_routine_with_the_runs_flag_on``.
+* M13. ``E/prompts.py`` ``_steps``: no ``start_agent_run`` step. ``test_p7_the_routine_with_the_runs_flag_on``.
+* M14. ``E/prompts.py`` ``_rules``: no ``BRIEF_RULE``. ``test_p8_the_message_carries_the_brief_rule_and_the_advisory_note``.
+* M15. ``E/prompts.py`` ``BRIEF_RULE`` without the advisory sentences. The same test.
+* M16. ``E/mcp.py`` ``instructions``: no ``BRIEF_RULE``. ``test_p8_the_instructions_carry_the_brief_rule_and_the_advisory_note``.
+* M17. ``E/prompts.py`` ``get``: a missing argument with the runs flag off is not refused. ``test_p9_with_the_runs_flag_off_a_missing_argument_gets_minus_32602``.
+* M18. ``E/prompts.py`` ``get``: an empty value is not an absent value. ``test_p9_with_no_argument_and_runs_on_the_message_names_list_agent_runs[arguments2]``.
+* M19. ``E/mcp.py`` ``instructions``: the routine shows with no ``offered`` check. ``test_p10_a_read_only_connection_names_no_write_tool``.
+* M20. ``E/mcp.py``: the version check skips ``prompts/*``. ``test_p11_a_bad_version_header_gets_400``.
+* M21. ``E/mcp.py``: ``resources/list`` joins ``SERVED_METHODS``. ``test_p12_each_other_method_still_gets_minus_32601[resources/list]``.
+* M22. ``E/mcp.py`` ``instructions``: no ``_ROUTINE_INSTRUCTIONS``. ``test_p10_writes_and_projects_write_name_the_routine_tools``.
+* M23. ``test_agent_oauth_server.py`` ``_prompt_role_ids``: any value of ``"role"`` is exempt. ``test_the_prompt_role_is_the_one_exempt_position``.
+* M24. ``E/prompts.py`` holds a stray ``"member"`` literal. ``test_no_module_reads_a_tenant_or_a_member_from_input[prompts.py]``.
+* M25. ``E/mcp.py`` ``instructions`` returns ``_INSTRUCTIONS`` alone. ``test_mcp_edge_agent_runs.py::TestTheInstructions::test_with_the_flag_on_initialize_teaches_the_runs``.
 """
 from __future__ import annotations
 

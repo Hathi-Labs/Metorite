@@ -25,6 +25,16 @@ The **AI agents** view of the Integrations app shows this address, with a copy b
 4. Read the page. Its headline names the verified host of the agent. The name that the agent gives itself shows second, as "It calls itself".
 5. Make your choices on the page (see below), then select **Approve**.
 
+## Work on a task from Claude Code
+
+When the connection can change tasks, Claude Code shows the command `/mcp__metorite__work_on_task`.
+
+- Run `/mcp__metorite__work_on_task 42` with the task number or the task id. The agent reads the task, claims it, does the work, and links the branch and the pull request.
+- When the pull request opens, the agent moves the task to an "in progress" status whose name says review. It moves the task to done only after the merge.
+- Run the command with no number to continue the work that you gave the agent with **Ask an agent** in Metorite.
+
+The description of the task is the brief of the agent. Metorite limits what the connection can reach. It cannot limit the tools of the agent on your computer, such as the shell and `git push`. Your Claude Code permission settings control those tools.
+
 ## The choices on the consent page
 
 - **The scopes.** Clear a box to give less. You cannot add a scope that the agent did not ask for.
