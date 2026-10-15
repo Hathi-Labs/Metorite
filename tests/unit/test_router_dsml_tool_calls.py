@@ -1091,6 +1091,115 @@ class TestTheChunkingNeverChangesTheAnswer:
             assert [(c["function"]["name"], args_of(c)) for c in _streamed_calls(out)] == calls
 
 
+#: The whitespace a closing tag may hold before its ``>``. The closer regexes
+#: read ``\s*``, so a tab, a newline and a Unicode space count too.
+_CLOSER_SPACES = {
+    "spaces": " ",
+    "tabs": "\t",
+    "newlines": "\n",
+    "mixed": " \t\r\n　",
+}
+
+
+def _long_closer_reply(kind: str, space: str, width: int) -> tuple[str, str]:
+    """A reply whose closing tag holds ``width`` whitespace characters.
+
+    Returns the reply and its closing tag. ``kind`` is a block name, or
+    ``invoke`` for a bare invoke with no block around it."""
+    gap = (space * width)[:width]
+    closer = f"</{BAR}DSML{BAR}{kind}{gap}>"
+    call = f'<{BAR}DSML{BAR}invoke name="create_task">' + param("title", "t")
+    if kind == "invoke":
+        return "ok " + call + closer + "\n", closer
+    return "Two. " + tag(kind) + " " + call + close("invoke") + " " + closer + "\n", closer
+
+
+class TestALongClosingTagIsFoundAtEveryCut:
+    """🔴 **A delta boundary inside a long closing tag lost the call.**
+
+    The stream searched for a closing tag in a fixed lookback of 32
+    characters plus the new delta. A closing tag with many spaces before its
+    ``>`` began before that window. So the stream never found it, logged
+    ``unterminated_block`` and ran nothing, where a whole feed ran the call.
+    #1027's review measured the first miss when the cut falls just before
+    the ``>``: 11 spaces for ``function_calls``, 19 for ``invoke`` and 20 for
+    ``calls``.
+
+    Now the region keeps a closing tag that has its name and waits for its
+    ``>``. Each new delta continues that tag from where it stopped."""
+
+    @pytest.mark.parametrize("space", list(_CLOSER_SPACES))
+    @pytest.mark.parametrize("kind", ["function_calls", "tool_calls", "calls", "invoke"])
+    def test_EVERY_cut_of_a_closer_with_0_to_200_spaces_runs_the_call(self, kind, space):
+        for width in range(201):
+            text, closer = _long_closer_reply(kind, _CLOSER_SPACES[space], width)
+            whole = _events(TASK_TOOLS, [text])
+            assert whole[1] == [("create_task", {"title": "t"})], width
+            assert whole[3] == [], width
+            at = text.index(closer)
+            for n in range(at, at + len(closer) + 1):
+                assert _events(TASK_TOOLS, [text[:n], text[n:]]) == whole, (width, n)
+
+    @pytest.mark.parametrize("width", [0, 1, 9, 10, 11, 19, 20, 21, 33, 64, 200])
+    @pytest.mark.parametrize("kind", ["function_calls", "calls", "invoke"])
+    def test_ONE_CHARACTER_deltas_and_THREE_cuts_find_a_long_closer(self, kind, width):
+        """Three cuts put one boundary in the name and two in the spaces."""
+        text, closer = _long_closer_reply(kind, " \t\n", width)
+        whole = _events(TASK_TOOLS, [text])
+        assert _events(TASK_TOOLS, list(text)) == whole
+        at = text.index(closer)
+        rng = random.Random(f"closer-{kind}-{width}")
+        for _ in range(60):
+            a = rng.randint(at, at + min(22, len(closer)))
+            b, c = sorted(rng.randint(a, at + len(closer)) for _ in range(2))
+            assert _events(TASK_TOOLS, [text[:a], text[a:b], text[b:c], text[c:]]) == whole
+
+    @pytest.mark.parametrize("kind", ["calls", "invoke"])
+    def test_a_WAITING_closer_that_gets_a_letter_is_not_a_closer(self, kind):
+        """The spaces end in a letter, so the tag is no closer. A real closer
+        after it still ends the region, at every cut."""
+        text, closer = _long_closer_reply(kind, " ", 50)
+        broken = closer[:-1] + "x"
+        text = text.replace(closer, broken + " " + closer)
+        whole = _events(TASK_TOOLS, [text])
+        assert _events(TASK_TOOLS, list(text)) == whole
+        at = text.index(broken)
+        for n in range(at, at + len(broken) + 2):
+            assert _events(TASK_TOOLS, [text[:n], text[n:]]) == whole, n
+
+    def test_200_KB_of_SPACES_inside_an_open_closer_stay_linear(self, monkeypatch):
+        """🔴 A hostile stream holds a closing tag open with a long run of
+        whitespace. A fix that searched again from the start of that tag on
+        each delta would cost O(n²). The spy limit fails such a fix after a
+        few thousand deltas, and it reads no clock."""
+        count = _ScanCount(monkeypatch)
+        text, _ = _long_closer_reply("calls", " \t\n", 200_000)
+        count.limit = 64 * len(text)
+        st = DsmlStream(TASK_TOOLS)
+        shown = "".join(st.feed(0, ch) for ch in text)
+        tail, calls = st.finish(0)
+        assert shown + tail == "Two. \n"
+        assert [args_of(c) for c in calls] == [{"title": "t"}]
+        assert count.handed <= count.limit
+
+    def test_a_closer_that_NEVER_closes_stays_linear(self, monkeypatch):
+        """The same run with no ``>``: the call never runs, and the work grows
+        as the reply grows (``assert_linear_count``)."""
+        count = _ScanCount(monkeypatch)
+
+        def _handed(size: int) -> int:
+            text = "Two. " + tag("calls") + " " + invoke("create_task", param("title", "t"))
+            text += f" </{BAR}DSML{BAR}calls" + " " * size
+            st = DsmlStream(TASK_TOOLS)
+            count.handed = 0
+            for ch in text:
+                st.feed(0, ch)
+            assert st.finish(0) == ("", [])
+            return count.handed
+
+        assert_linear_count(_handed, 40_000)
+
+
 class TestParallelToolCallsFalse:
 
     def test_only_the_FIRST_call_runs(self, caplog):
