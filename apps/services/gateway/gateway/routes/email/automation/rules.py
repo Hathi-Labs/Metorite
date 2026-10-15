@@ -632,7 +632,7 @@ async def _notify_me_available(user: Any) -> bool:
     try:
         available, _ = await reach_requests.reach_status(
             str(getattr(user, "organization_id", None) or ""), user.email)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log.warning("email.generate_rules_reach_status_failed",
                      error=type(exc).__name__)
         return False
