@@ -4,7 +4,7 @@
  * `/artifacts`. Each visual draws through the template of its kind.
  *
  * Node-env vitest renders markup and no state, so a click is proved through
- * `lib/genUiFiles.ts` (its own test) and the wiring here by markup and source.
+ * `reportCardActions` (tested here) and the wiring by markup and source.
  *
  * Mutations this file catches (R7), each run red before the change:
  *
@@ -30,9 +30,9 @@ vi.mock("next/navigation", () => ({
 
 import { cardPdf } from "@/components/ArtifactCard";
 import MessageBubble from "@/components/MessageBubble";
-import { REPORT_VISUAL_MISSING, ReportView, TEMPLATE_CATALOG, TEMPLATE_REGISTRY, deltaWords, shownDelta, tileNumber } from "@/components/genUITemplates";
+import { REPORT_VISUAL_MISSING, ReportView, reportCardActions, TEMPLATE_CATALOG, TEMPLATE_REGISTRY, deltaWords, shownDelta, tileNumber } from "@/components/genUITemplates";
 import type { ChatMessage } from "@/hooks/useAgentChat";
-import { GenUiFileContext } from "@/lib/genUiFiles";
+import { ArtifactOpenContext } from "@/components/ArtifactLink";
 import { REPORT_KIND, parseReportFile, reportFrom } from "@/lib/report";
 import { SidePanelFitContext } from "@/lib/sidePanelFit";
 
@@ -141,14 +141,14 @@ describe("the full report", () => {
 
 describe("the chat card", () => {
   const card = (files: unknown) =>
-    renderToStaticMarkup(h(GenUiFileContext.Provider, { value: files }, TEMPLATE_REGISTRY.report(FULL)));
+    renderToStaticMarkup(h(ArtifactOpenContext.Provider, { value: files }, TEMPLATE_REGISTRY.report(FULL)));
 
   it("is a catalog template", () => {
     expect(TEMPLATE_CATALOG.some((t) => t.name === "report")).toBe(true);
   });
 
   it("draws the short form: tiles, a clipped summary, the first visual and the contents", () => {
-    const html = card({ sessionId: "s1", open: () => {} });
+    const html = card({ sessionId: "s1", openPanel: () => {}, openModal: () => {} });
     expect(html).toContain('data-report-view="card"');
     expect(html).toContain("Revenue grew 12%. Delivery held. Pipeline is up · Churn is down");
     expect(html.match(/data-report-visual=/g)).toHaveLength(1);
@@ -159,14 +159,14 @@ describe("the chat card", () => {
   });
 
   it("the card offers Open report and the PDF when the chat can open the file", () => {
-    const html = card({ sessionId: "s1", open: () => {} });
+    const html = card({ sessionId: "s1", openPanel: () => {}, openModal: () => {} });
     expect(html).toContain("Open report");
     expect(html).toContain("Download PDF");
     expect(html).toContain('title="Download q3-review.pdf"');
   });
 
   it("the acts sit in the header row as dense icon buttons, never as blocks in the body (fix round 1)", () => {
-    const html = card({ sessionId: "s1", open: () => {} });
+    const html = card({ sessionId: "s1", openPanel: () => {}, openModal: () => {} });
     const acts = html.indexOf("data-template-actions");
     const body = html.indexOf('data-report-view="card"');
     expect(acts).toBeGreaterThan(-1);
@@ -182,7 +182,7 @@ describe("the chat card", () => {
   });
 
   it("the card is dense: tiles two or four to a row, a 3-line summary, a chart of readable width", () => {
-    const html = card({ sessionId: "s1", open: () => {} });
+    const html = card({ sessionId: "s1", openPanel: () => {}, openModal: () => {} });
     expect(html).toContain('class="@container min-w-0"');
     expect(html).toContain("@[13rem]:grid-cols-2 @[30rem]:grid-cols-4");
     expect(html.match(/data-stat-tile="dense"/g)).toHaveLength(4);
@@ -192,7 +192,7 @@ describe("the chat card", () => {
   });
 
   it("the card's chart is short, and its title is the card's words, not a picture (fix round 2)", () => {
-    const html = card({ sessionId: "s1", open: () => {} });
+    const html = card({ sessionId: "s1", openPanel: () => {}, openModal: () => {} });
     expect(html.match(/data-chart-max-height="240"/g)).toHaveLength(1);
     expect(html).toMatch(/data-report-chart-title=""[^>]*class="mb-1 truncate text-xs font-medium text-foreground"[^>]*>Revenue</);
   });
@@ -286,7 +286,7 @@ describe("the stat tile", () => {
 describe("a report file", () => {
   it("the file card downloads the PDF beside it, by its own name", () => {
     expect(cardPdf("s1", { name: "q3.report.json", path: "outputs/q3.report.json" })).toEqual({
-      url: "/api/agent/workspace/s1/file?path=outputs%2Fq3.pdf",
+      url: "/api/agent/workspace/s1/file?path=outputs%2Fq3.pdf&download=1",
       name: "q3.pdf",
     });
     // A document still converts on the gateway.
@@ -383,5 +383,38 @@ describe("a report file stays editable", () => {
     expect(modal).toMatch(/handleSave[\s\S]*kind === "report"[\s\S]*parseReportFile\(editContent, entry\.path\)/);
     const pane = read("./DocumentPane.tsx");
     expect(pane).toMatch(/kind === "code" \|\| kind === "text" \|\| kind === "report"/);
+  });
+});
+
+// ── The card opens through #1063's seam (moved from genUiFiles.test.ts) ────
+describe("reportCardActions", () => {
+  const entryOf = (fn: { mock: { calls: unknown[][] } }) => fn.mock.calls[0]?.[0] as { path: string; name: string };
+
+  it("the card opens the report by its own path, in the side panel where it fits", () => {
+    const openPanel = vi.fn(), openModal = vi.fn();
+    const acts = reportCardActions({ path: "outputs/q3.report.json", pdf: "outputs/q3.pdf" },
+      { sessionId: "s9", openPanel, openModal }, false);
+    acts.open!();
+    expect(openPanel).toHaveBeenCalledTimes(1);
+    expect(entryOf(openPanel)).toMatchObject({ path: "outputs/q3.report.json", name: "q3.report.json" });
+    expect(openModal).not.toHaveBeenCalled();
+    expect(acts.pdfUrl).toBe("/api/agent/workspace/s9/file?path=outputs%2Fq3.pdf&download=1");
+  });
+
+  it("a phone, or a row where the panel does not fit, opens the viewer", () => {
+    for (const [isMobile, panel] of [[true, true], [false, false]] as const) {
+      const openPanel = vi.fn(), openModal = vi.fn();
+      reportCardActions({ path: "outputs/q3.report.json", pdf: null },
+        { sessionId: "s9", openPanel: panel ? openPanel : undefined, openModal }, isMobile).open!();
+      expect(openModal).toHaveBeenCalledTimes(1);
+      expect(entryOf(openModal).path).toBe("outputs/q3.report.json");
+      expect(openPanel).not.toHaveBeenCalled();
+    }
+  });
+
+  it("offers no act it cannot do", () => {
+    expect(reportCardActions({ path: null, pdf: null }, { sessionId: "s", openModal: vi.fn() }, false)).toEqual({ open: null, pdfUrl: null });
+    expect(reportCardActions({ path: "outputs/a.report.json", pdf: "outputs/a.pdf" }, null, false)).toEqual({ open: null, pdfUrl: null });
+    expect(reportCardActions({ path: "outputs/a.report.json", pdf: null }, { sessionId: "s" }, false).open).toBeNull();
   });
 });

@@ -105,6 +105,27 @@ async def display_name(org: str, member: str) -> str | None:
     return str(value) if value else None
 
 
+def send_failure(exc: BaseException) -> str:
+    """Why a send failed, for the retry rule (review of RE-5 fix round 1, P2).
+
+    ``send_retry``: the request surely did not reach Meta, or Meta asked us
+    to slow down (429). A later pass may try again. ``send_refused``: Meta
+    refused it (another 4xx), and a retry would fail the same way.
+    ``send_unsure``: a timeout or a 5xx, after which Meta may have the
+    message. A retry could send it twice, so none is made."""
+    import httpx
+
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return "send_retry"
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = getattr(exc.response, "status_code", None)
+        if status == 429:
+            return "send_retry"
+        if isinstance(status, int) and 400 <= status < 500:
+            return "send_refused"
+    return "send_unsure"
+
+
 def body_components(params: list[str] | None) -> list[dict[str, Any]] | None:
     """The ``components`` of a template send: one body with text parameters."""
     if not params:
@@ -130,11 +151,14 @@ def channel_ready(org: str) -> bool:
 
 async def deliver(org: str, member: str, *, kind: str, body: str, outbox_id: str,
                   template: str | None = None, template_params: list[str] | None = None,
-                  reach: tuple[str | None, bool] | None = None) -> Delivery:
+                  reach: tuple[str | None, bool] | None = None,
+                  record: str | None = None) -> Delivery:
     """Send *body* to *member* on WhatsApp. Never raises.
 
     *reach* is the ``(wa_id, window_open)`` the loop already read, so the
-    loop's choice and the send agree. None reads them here."""
+    loop's choice and the send agree. None reads them here. *record* is
+    what the thread records for a free-text send, when it is not *body*:
+    the loop quotes text that a rule or a workflow wrote (RE-5, P2-4)."""
     from gateway.routes.whatsapp_channel import flags as wa_flags
 
     if not wa_flags.org_allowed(org):
@@ -169,13 +193,15 @@ async def deliver(org: str, member: str, *, kind: str, body: str, outbox_id: str
                 wa_id, str(template), flags.template_language(),
                 components=body_components(template_params))
     except Exception as exc:
+        reason = send_failure(exc)
         _log.warning("reach.whatsapp.send_failed", kind=kind, phone_hint=wa_id[-4:],
-                     **meta_error_fields(exc))
-        return Delivery("failed", reason="send_failed")
+                     reason=reason, **meta_error_fields(exc))
+        return Delivery("failed", reason=reason)
     out = str(out_id)[:200] if out_id else None
     # A template carries none of the body, so the thread records what the
     # member saw, not the body (review of RE-1a, P3).
-    seen = body if regime == "free_text" else template_marker(str(template), template_params)
+    seen = (record or body) if regime == "free_text" \
+        else template_marker(str(template), template_params)
     await _record(org, member, wa_id, out, seen, outbox_id)
     _log.info("reach.whatsapp.sent", kind=kind, regime=regime, phone_hint=wa_id[-4:])
     return Delivery("sent", regime=regime, provider_message_id=out)

@@ -32,7 +32,9 @@ import GenUIFallback from "@/components/GenUIFallback";
 import LiveChart from "@/components/LiveChart";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { saveBlob } from "@/lib/export";
-import { GenUiFileContext, reportCardActions } from "@/lib/genUiFiles";
+import { ArtifactOpenContext, type ArtifactOpeners, openFileLink } from "@/components/ArtifactLink";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { workspaceFileUrl } from "@/lib/artifactKind";
 import {
   type Report,
   type ReportVisual,
@@ -2150,11 +2152,39 @@ export function ReportView({ report, pdfUrl = null, variant = "full" }: ReportVi
  * The `report` template: the chat card of a report. Its title row is the
  * card's one header, and its body is `ReportView`'s short form. "Open
  * report" and the PDF come from the chat that hosts the card
- * (`lib/genUiFiles.ts`), because the card holds a path and no session.
+ * (`ArtifactOpenContext`), because the card holds a path and no session.
  */
+/**
+ * The two acts of a report card: open the report by ITS path, and the
+ * address of its PDF. Null for an act this chat cannot do. It opens through
+ * the seam a file link in the reply uses (`openFileLink`), so the card and
+ * the link open a file in the same place (`artifactOpenSurface`). Exported
+ * for its test.
+ */
+export function reportCardActions(
+  report: { path: string | null; pdf: string | null },
+  openers: ArtifactOpeners | null,
+  isMobile: boolean,
+): { open: (() => void) | null; pdfUrl: string | null } {
+  const path = report.path;
+  const canOpen = Boolean(openers && path && (openers.openPanel || openers.openModal));
+  return {
+    open: canOpen && openers && path
+      ? () => {
+          // The file is this chat's, so a viewer always takes it. The page
+          // navigation is the seam's last resort, and never runs here.
+          openFileLink({ sessionId: openers.sessionId, path, name: baseName(path) }, openers, isMobile,
+            (href) => window.location.assign(href));
+        }
+      : null,
+    pdfUrl: openers && report.pdf ? workspaceFileUrl(openers.sessionId, report.pdf, { download: true }) : null,
+  };
+}
+
 function ReportTemplate({ data }: { data: Data }) {
   const report = reportFrom(data);
-  const { open, pdfUrl } = reportCardActions(report, useContext(GenUiFileContext));
+  const { isMobile } = useViewMode();
+  const { open, pdfUrl } = reportCardActions(report, useContext(ArtifactOpenContext), isMobile);
   const pdfName = report.pdf ? baseName(report.pdf) : "report.pdf";
   const pdf = usePdfDownload(pdfUrl, pdfName);
   // The card is its own size container: its acts drop their words, and its

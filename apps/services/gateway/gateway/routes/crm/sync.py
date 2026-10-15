@@ -111,10 +111,67 @@ class SyncHealthModel(BaseModel):
     #: True only for a running row with a fresh heartbeat. A crashed run is not live.
     running: bool = False
     credits: HealthCreditsModel
+    #: CRM-Q16: the hold entries of the org, by count key.
+    holds: dict[str, HoldModel] = {}
 
 
 class StartedModel(BaseModel):
     started: bool = True
+
+
+class HoldModel(BaseModel):
+    """One hold entry (CRM-Q16). ``count`` is the provider count when it was set."""
+
+    held: bool
+    by: str
+    count: int | None = None
+    at: datetime | None = None
+
+
+class SyncNowIn(BaseModel):
+    """``POST /crm/sync/zoho``. ``only`` syncs one count key on its own (CRM-Q16)."""
+
+    only: str | None = None
+
+
+class HoldIn(BaseModel):
+    """``PUT /crm/sync/modules/{key}``. ``sync: false`` holds the key."""
+
+    sync: bool
+
+
+class HoldsModel(BaseModel):
+    holds: dict[str, HoldModel] = {}
+
+
+SyncHealthModel.model_rebuild()
+
+
+def _hold_key_known(key: str, profile_body: dict | None) -> bool:
+    """A count key that a hold may name: a fixed key, or a GENERIC module of
+    the profile. A core module (Accounts, Deals) syncs under its fixed key, so
+    ``module:Accounts`` would hold nothing and is refused."""
+    from gateway.crm_sync import holds
+
+    if key in holds.FIXED_KEYS:
+        return True
+    if not key.startswith(holds.MODULE_PREFIX):
+        return False
+    name = key[len(holds.MODULE_PREFIX):]
+    return any(
+        isinstance(m, dict) and m.get("api_name") == name and m.get("generic")
+        for m in (profile_body or {}).get("modules") or []
+    )
+
+
+def _holds_out(entries: dict[str, dict[str, Any]]) -> dict[str, HoldModel]:
+    return {
+        k: HoldModel(
+            held=bool(v.get("held")), by=str(v.get("by") or ""),
+            count=_int(v.get("count")), at=v.get("at"),
+        )
+        for k, v in entries.items()
+    }
 
 
 def _organization(user: UserContext) -> str:
@@ -271,11 +328,12 @@ async def get_sync_health(
     counts that this module does not know passes through, so a later slice
     adds an entity with no change here.
     """
-    from gateway.crm_sync import engine, profiles, runs
+    from gateway.crm_sync import engine, holds, profiles, runs
 
     org = _organization(user)
     ours: dict[str, int] = {}
     async with _tenant_session() as db:
+        hold_entries = await holds.read(db, org)
         latest = await runs.latest(db, org)
         last_ok = await runs.last_success_at(db, org)
         connection = await store.get(db, org, engine.PROVIDER, engine.OWNING_APP)
@@ -334,6 +392,7 @@ async def get_sync_health(
         history=[_run_model(r) for r in history],
         running=live,
         credits=HealthCreditsModel(budget_24h=budget, used_24h=used, resumes_at=resumes),
+        holds=_holds_out(hold_entries),
     )
 
 
@@ -342,17 +401,60 @@ async def get_sync_health(
     dependencies=[Depends(require_crm_mirror), require_permission(ADMIN_PERMISSION)],
 )
 async def sync_now(
+    payload: SyncNowIn | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> StartedModel:
-    """Start a run now. It answers before the run ends."""
-    from gateway.crm_sync import engine, scheduler
+    """Start a run now. It answers before the run ends.
+
+    ``only`` (CRM-Q16) runs one count key on its own, also when it is held.
+    An unknown key answers 422 and starts nothing.
+    """
+    from gateway.crm_sync import engine, profiles, scheduler
 
     org = _organization(user)
+    only: frozenset[str] | None = None
+    if payload is not None and payload.only:
+        async with _tenant_session() as db:
+            profile = await profiles.latest(db, org)
+        if not _hold_key_known(payload.only, profile.profile if profile else None):
+            raise HTTPException(status_code=422, detail="unknown_module")
+        only = frozenset({payload.only})
     try:
-        handle = await engine.acquire(org)
+        handle = await engine.acquire(org, only=only)
     except engine.NotConnected as exc:
         raise HTTPException(status_code=409, detail="not_connected") from exc
     except engine.SyncRunning as exc:
         raise HTTPException(status_code=409, detail="sync_running") from exc
     scheduler.spawn(handle)
     return StartedModel(started=True)
+
+
+@router.put(
+    "/sync/modules/{key}", response_model=HoldsModel,
+    dependencies=[Depends(require_crm_mirror), require_permission(ADMIN_PERMISSION)],
+)
+async def set_module_sync(
+    key: str,
+    payload: HoldIn,
+    user: UserContext = Depends(get_current_user),
+) -> HoldsModel:
+    """Turn the scheduled sync of one count key on or off (CRM-Q16).
+
+    ``sync: false`` holds the key. ``sync: true`` releases it, and the entry
+    stays with ``held: false``, so the next import does not hold it again.
+    It deletes nothing and starts no run.
+    """
+    from gateway.crm_sync import holds, profiles
+
+    org = _organization(user)
+    async with _tenant_session() as db:
+        profile = await profiles.latest(db, org)
+        if not _hold_key_known(key, profile.profile if profile else None):
+            raise HTTPException(status_code=422, detail="unknown_module")
+        written = await holds.write(
+            db, org, key, held=not payload.sync, by=holds.BY_ADMIN,
+            count=_int(((await holds.read(db, org)).get(key) or {}).get("count")),
+        )
+        if written is None:
+            raise HTTPException(status_code=409, detail="no_settings")
+    return HoldsModel(holds=_holds_out(written))

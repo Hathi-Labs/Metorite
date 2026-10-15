@@ -131,6 +131,24 @@ class TestTheOutbox:
             p.org_a, "sent", "free_text")
         assert rows[0]["sent_at"] is not None and rows[0]["provider_message_id"] == "wamid.1"
 
+    async def test_urgent_since_counts_only_sent_urgent_keys(self, promoted):  # noqa: F811
+        # RE-5 review, P2-1: the loop marks an urgent message by its key.
+        p = promoted
+        since = datetime.now(UTC) - timedelta(hours=1)
+        async with _as_member(p, p.org_a):
+            for key, state in (("urgent:interrupt:k1", "sent"),
+                               ("urgent:interrupt:k2", "failed"),
+                               ("interrupt:k3", "sent")):
+                row = await outbox.plan(p.org_a, A, kind="interrupt", signal_ids=[],
+                                        key=key, body="b", local_date=date.today())
+                await outbox.finish(p.org_a, row, state=state)
+            assert await outbox.urgent_since(p.org_a, A, since) == 1
+            assert await outbox.interrupts_since(p.org_a, A, since) == 2
+            assert await outbox.urgent_since(p.org_a, A, datetime.now(UTC)
+                                             + timedelta(minutes=1)) == 0
+        async with _as_member(p, p.org_b):
+            assert await outbox.urgent_since(p.org_b, A, since) == 0
+
     async def test_another_org_may_hold_the_same_key(self, promoted):  # noqa: F811
         p = promoted
         async with _as_member(p, p.org_a):

@@ -233,9 +233,12 @@ async def _check_reset_allowed(db: Any, org: str) -> None:
 
 async def _reset_setup(db: Any, org: str) -> None:
     """Clear the mode, the connection pointer and the seeded pipeline."""
+    from gateway.crm_sync import holds
+
     await db.execute(text(
         "UPDATE crm_settings SET connection_id = NULL "
         "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
+    await holds.clear(db, org)  # CRM-Q16: the next import decides again
     try:
         for table in _RESET_DELETES:
             await db.execute(text(
@@ -526,6 +529,9 @@ async def _start_over(*, mode: str | None, org: str, user: UserContext) -> dict[
                 "The CRM mode changed while this request ran. Nothing was removed."
             ))
         await db.execute(text(_CLEAR_CONNECTION_SQL), {"o": org})
+        from gateway.crm_sync import holds
+
+        await holds.clear(db, org)  # CRM-Q16: the next import decides again
         # The next consent may be for any account (CRM-X0 review P1-2).
         connection = await store.get(db, org, PROVIDER, OWNING_APP)
         if connection is not None:

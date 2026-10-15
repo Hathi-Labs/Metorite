@@ -8,7 +8,7 @@
  * appeared only as a card. Two copies of the rule would drift, so both chats
  * call this module.
  *
- * Which files open is `artifactKind`'s answer (`opensRendered`), not a second
+ * Which files open is `artifactKind`'s answer (`hasRenderedView`), not a second
  * extension list: Markdown, HTML, a React artifact under `outputs/` and a
  * report (`.report.json`). Anything else stays a card in the thread.
  *
@@ -19,7 +19,7 @@
  * The side-panel calls are injected so the rule is a pure function a node-env
  * test can drive (`autoOpenArtifact.test.ts`).
  */
-import { classifyArtifact, opensRendered } from "@/lib/artifactKind";
+import { hasRenderedView } from "@/lib/artifactKind";
 import { openDoc, pruneToSession, setDocLive } from "@/lib/sidePanelStore";
 
 /** How long the "writing" badge stays after the last write to a file. */
@@ -47,7 +47,7 @@ const DEFAULT_DEPS: AutoOpenDeps = {
 export function shouldAutoOpen(path: string, isMobile: boolean, panelFits = true): boolean {
   if (isMobile || !panelFits) return false;
   const name = path.split("/").pop() ?? path;
-  return opensRendered(classifyArtifact(name, path, "", "workspace"));
+  return hasRenderedView(name, path);
 }
 
 /**

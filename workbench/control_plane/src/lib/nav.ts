@@ -386,6 +386,21 @@ export const NAV_SECTIONS: NavSection[] = [
         // this member reach it*, and they stay two questions.
         launch: "live",
       },
+      {
+        href: "/knowledge",
+        team: "across",
+        blurb: "What the company knows, written down",
+        label: "Knowledge",
+        icon: "BookOpen",
+        note: "Spaces, pages and connected folders",
+        feature: "knowledge",
+        // `preview` from WS-61 KB-0 (`knowledge_base.md` §11). The route
+        // renders by URL, and the nav entry stays hidden. The owner promotes
+        // it at KB-12 (H-21). The pane carries no job, no keywords and no
+        // agent until then: `held_jobs` filters a job by feature and not by
+        // launch status, so a job here would reach every member.
+        launch: "preview",
+      },
       // The six Center landing pages, kept as `preview` so they remain
       // reachable with the flag on and by URL always (D49 / launch_surface.md
       // §5). Derived from CENTERS rather than transcribed, so registering a

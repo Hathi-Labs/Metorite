@@ -193,6 +193,51 @@ class TestTheWords:
         assert len(plan.compose_interrupt(long, APP, now=NOW)) <= plan.MAX_CHARS
         assert len(plan.compose_brief(long, APP, date(2026, 10, 15), now=NOW)) <= plan.MAX_CHARS
 
+    @staticmethod
+    def _ask(sid: str, *, self_: bool, body: str | None, source: str = "chat") -> dict:
+        return {**card(f"request:{sid}", "notify_me", group="now", title=f"Ask {sid}"),
+                "facts": {"source": source, "urgency": "normal", "self": self_,
+                          "body": body}}
+
+    @pytest.mark.parametrize("self_", [True, False])
+    def test_a_message_of_one_request_carries_its_whole_body(self, self_):
+        # RE-5 review, P1-1: a rule's request too.
+        body = "b" * 1000
+        text, kept = plan.compose_message(
+            [self._ask("r1", self_=self_, body=body, source="chat" if self_ else "workflow")],
+            APP, now=NOW)
+        assert text == f"*Ask r1*\n\n{body}" and len(kept) == 1
+
+    def test_every_request_line_in_a_batch_carries_its_body_cut_short(self):
+        # Two of the member's own, and one of a rule: each keeps its body.
+        cards = [self._ask("r1", self_=True, body="first " * 60),
+                 self._ask("r2", self_=True, body="second body"),
+                 self._ask("r3", self_=False, body="third body", source="email.rule")]
+        text, kept = plan.compose_message(cards, APP, now=NOW)
+        assert len(kept) == 3
+        assert "• Ask r2: second body" in text and "• Ask r3: third body" in text
+        first = next(row for row in text.splitlines() if row.startswith("• Ask r1: "))
+        assert len(first) - len("• Ask r1: ") == plan.REQUEST_BODY_CHARS
+        assert first.endswith("…")
+
+    def test_the_cards_that_do_not_fit_are_not_in_the_kept_list(self):
+        # RE-5 review, P1-5: the caller logs only what the message holds.
+        cards = [card(f"email:a:{i}", title="x" * 300) for i in range(20)]
+        text, kept = plan.compose_message(cards, APP, now=NOW)
+        assert len(text) <= plan.MAX_CHARS
+        assert 0 < len(kept) < 20 and kept == cards[:len(kept)]
+        assert text.count("\n• ") == len(kept)
+
+    def test_the_thread_quotes_a_request_that_the_member_did_not_ask_for(self):
+        # RE-5 review, P2-4.
+        rule = self._ask("r1", self_=False, body="x", source="email.rule")
+        flow = self._ask("r2", self_=False, body="y", source="workflow")
+        mine = self._ask("r3", self_=True, body="z")
+        assert plan.thread_record([mine], "*Ask r3*\n\nz") == "*Ask r3*\n\nz"
+        assert plan.thread_record([rule, flow, mine], "one\ntwo") == (
+            "Reach message. The text below came from an email rule and a workflow, "
+            "not from Metorite:\n> one\n> two")
+
     def test_a_title_cannot_add_lines(self):
         text = plan.compose_interrupt([card("email:a:t1", title="a\nb\n\n*c*")], APP, now=NOW)
         assert "\"a b *c*\"" in text

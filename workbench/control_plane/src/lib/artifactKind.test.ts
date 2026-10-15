@@ -7,6 +7,7 @@ import {
   MARKDOWN_EXTS,
   canDownloadPdf,
   classifyArtifact,
+  hasRenderedView,
   isArtifactPath,
   isRenderable,
   opensRendered,
@@ -99,13 +100,25 @@ describe("classifyArtifact", () => {
       const at = src.indexOf("<ArtifactViewerModal");
       expect(src.slice(at, src.indexOf("/>", at)), host).toContain('origin="workspace"');
     }
+    // /artifacts: the chat files, the deep-linked file (#1063) and the registry.
     const artifacts = readSrc("../app/artifacts/page.tsx");
-    expect(artifacts.split('origin="workspace"')).toHaveLength(3);
-    for (const caller of ["../components/DocumentPane.tsx", "./autoOpenArtifact.ts", "../components/ArtifactCard.tsx"]) {
+    expect(artifacts.split('origin="workspace"')).toHaveLength(4);
+    expect(artifacts.split("<ArtifactViewerModal")).toHaveLength(4);
+    // Auto-open, the file card and a file link read #1063's one rule.
+    expect(readSrc("./autoOpenArtifact.ts")).toContain("return hasRenderedView(name, path);");
+    for (const caller of ["../components/DocumentPane.tsx", "../components/ArtifactCard.tsx"]) {
       const calls = readSrc(caller).split("classifyArtifact(").slice(1).map((c) => c.slice(0, c.indexOf(")")));
       expect(calls.length, caller).toBeGreaterThan(0);
       for (const call of calls) expect(call, caller).toContain('"workspace"');
     }
+    const kindSrc = readSrc("./artifactKind.ts");
+    const rule = kindSrc.slice(kindSrc.indexOf("export function hasRenderedView("), kindSrc.indexOf("export type ArtifactSurface"));
+    expect(rule).toContain('opensRendered(classifyArtifact(name, path, "", "workspace"))');
+  });
+
+  it("a report opens rendered, through #1063's one rule", () => {
+    expect(hasRenderedView("q3.report.json", "outputs/q3.report.json")).toBe(true);
+    expect(hasRenderedView("q3.report.json", "inputs/q3.report.json")).toBe(false);
   });
 
   it("is case-insensitive about extensions", () => {

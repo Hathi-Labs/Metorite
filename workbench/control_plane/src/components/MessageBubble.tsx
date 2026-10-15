@@ -10,6 +10,7 @@ import MarkdownMessage, { MarkdownBody } from "@/components/MarkdownMessage";
 import MessageActionBar from "@/components/MessageActionBar";
 import GenerativeUIPanel from "@/components/GenerativeUIPanel";
 import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
+import { ArtifactOpenContext, type ArtifactOpeners } from "@/components/ArtifactLink";
 import EmailToolCards, { emailEvidence } from "@/components/email/EmailToolCards";
 import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
@@ -26,8 +27,6 @@ import { DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { openDoc, openGenUI } from "@/lib/sidePanelStore";
 import { useSidePanelFits } from "@/lib/sidePanelFit";
-import { GenUiFileContext, genUiFiles } from "@/lib/genUiFiles";
-import { useViewMode } from "@/components/ViewModeProvider";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
@@ -159,13 +158,16 @@ function MessageBubble({
 }) {
   // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
   const panelFits = useSidePanelFits();
-  // What a card may do with a workspace file: the report card opens its
-  // report and saves its PDF through this (`lib/genUiFiles.ts`).
-  const { isMobile } = useViewMode();
-  const files = useMemo(
-    () => genUiFiles({ sessionId, isMobile, panelFits, openDoc, onFileOpen }),
-    [sessionId, isMobile, panelFits, onFileOpen],
-  );
+  // A link to a file in the reply opens these viewers, as the file card does
+  // (owner report, 2026-10-16, `components/ArtifactLink.tsx`). The report
+  // card opens its report through the same openers (`ReportTemplate`).
+  const artifactOpeners = useMemo<ArtifactOpeners>(() => ({
+    sessionId,
+    openModal: onFileOpen,
+    openPanel: panelFits
+      ? (entry) => openDoc({ path: entry.path, name: entry.name, sessionId })
+      : undefined,
+  }), [sessionId, onFileOpen, panelFits]);
   // Deliberately NOT `role === "user"`.  `role` is the model's vocabulary: it
   // says which side of the conversation a turn sits on, and in a room every
   // person's turn is `role: "user"` — mine and yours alike.  Ownership is an
@@ -656,6 +658,7 @@ function MessageBubble({
 
   // ═══ Assistant message — no bubble, renders directly ═══
   return (
+    <ArtifactOpenContext.Provider value={artifactOpeners}>
     <div className="group">
       {/* Which agent is speaking — only in a thread where that is a real
           question (see showAgentLabel). The turn's layout is otherwise
@@ -718,7 +721,6 @@ function MessageBubble({
           view lives in the side panel); specs carrying a request_id route
           interactions through the blocking HITL resume path. */}
       {blocks.length > 0 && (
-        <GenUiFileContext.Provider value={files}>
         <EntityIndexContext.Provider value={entityIndex}>
           {blocks.map((b, k) =>
             b.kind === "cards" ? (
@@ -741,7 +743,6 @@ function MessageBubble({
             ),
           )}
         </EntityIndexContext.Provider>
-        </GenUiFileContext.Provider>
       )}
       {/* Inline email-assistant cards (editable draft, rule disable/delete).
           Inert unless the message contains email-assistant tool calls, so this
@@ -780,6 +781,7 @@ function MessageBubble({
         </div>
       )}
     </div>
+    </ArtifactOpenContext.Provider>
   );
 }
 

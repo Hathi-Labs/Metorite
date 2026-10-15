@@ -545,7 +545,9 @@ export type RuleActionType =
   | "REPLY"
   | "FORWARD"
   | "DRAFT_EMAIL"
-  | "CALL_WEBHOOK";
+  | "CALL_WEBHOOK"
+  // WS-59 RE-5: "Tell me on WhatsApp". `label` holds "normal" or "urgent".
+  | "NOTIFY_ME";
 
 /** A draft attachment sourced from the email-assistant workspace. */
 export interface RuleActionAttachment {

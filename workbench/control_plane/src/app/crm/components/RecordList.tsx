@@ -246,12 +246,28 @@ export default function RecordList({
                 onClick={() => onOpen(String(row.id))}
                 className="cursor-pointer border-b border-border/60 hover:bg-secondary/40 tech-transition"
               >
-                {columns.map((column) => (
+                {columns.map((column, index) => (
                   <td
                     key={column.key}
                     className={`px-4 py-2 text-muted-foreground ${column.className ?? ""}`}
                   >
-                    {cell(column.key, row, { statuses, mode })}
+                    {index === 0 ? (
+                      // The row opens on a click, and Tab cannot reach a row. So
+                      // the first cell is a real button: the keyboard opens the
+                      // record here (DESIGN_SYSTEM §9, fence `crmRowKeyboard.test.ts`).
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpen(String(row.id));
+                        }}
+                        className="cc-link rounded-sm text-left"
+                      >
+                        {cell(column.key, row, { statuses, mode })}
+                      </button>
+                    ) : (
+                      cell(column.key, row, { statuses, mode })
+                    )}
                   </td>
                 ))}
                 {extra.map((def) => (
