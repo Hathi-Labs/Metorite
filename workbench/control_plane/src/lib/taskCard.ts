@@ -172,9 +172,11 @@ export interface TypeFact {
 /**
  * WS-27bh — where a task CAME FROM, for the origins that are not `manual`.
  *
- * `pm_tasks.source` is `manual | import | email | agent | automation`
- * (migration 146). `manual` is every task somebody typed, so a badge on it
- * would be a badge on almost every card, saying nothing.
+ * `pm_tasks.source` is `manual | import | email | agent | automation | mcp`
+ * (migration 146, and migration 265 added `mcp`). `manual` is every task
+ * somebody typed, so a badge on it would be a badge on almost every card,
+ * saying nothing. `mcp` is a task that an outside AI agent made through the
+ * MCP edge (WS-55 EA-6d). The gateway stamps it, and no member can name it.
  *
  * ⚠️ **NOT `/tasks`' `SourceBadge`, and the spec's instruction to promote
  * that one is STALE.** §9.9.2 said to reuse it rather than author a fourth
@@ -190,6 +192,7 @@ export const TASK_SOURCES = {
   email: { label: "Email", icon: "Mail" },
   agent: { label: "Agent", icon: "Bot" },
   automation: { label: "Automation", icon: "Zap" },
+  mcp: { label: "AI agent", icon: "Bot" },
 } as const;
 
 export type TaskSource = keyof typeof TASK_SOURCES;

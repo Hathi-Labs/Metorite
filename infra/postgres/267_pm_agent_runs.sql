@@ -109,9 +109,13 @@ CREATE TABLE IF NOT EXISTS pm_agent_run_activities (
     -- The cursor `after` of the long poll (EA12-2). A timestamp can tie, and
     -- the cap of 20 ephemeral rows deletes rows.
     seq               BIGINT GENERATED ALWAYS AS IDENTITY,
+    -- Written as `= ANY (ARRAY[...])`, not `IN (...)`, on purpose:
+    -- tests/unit/test_projects_migration.py reads the LAST `CHECK (type IN`
+    -- of the tree as the vocabulary of `pm_activities.type`. The two forms
+    -- enforce the same rule.
     type              TEXT NOT NULL
-                      CHECK (type IN ('prompt', 'thought', 'action', 'response',
-                                      'elicitation', 'error')),
+                      CHECK (type = ANY (ARRAY['prompt', 'thought', 'action', 'response',
+                                               'elicitation', 'error'])),
     content           JSONB NOT NULL DEFAULT '{}'::jsonb,
     content_metadata  JSONB NULL,
     -- True for `thought` and `action`. The route keeps the last 20.

@@ -368,7 +368,21 @@ ACTIVITY_TYPES: tuple[str, ...] = (
 
 #: `pm_projects.source` / `pm_tasks.source`. Tasks carry two extra origins.
 PROJECT_SOURCES: tuple[str, ...] = ("manual", "import", "agent")
-TASK_SOURCES: tuple[str, ...] = ("manual", "import", "email", "agent", "automation")
+#: The values that the CHECK on `pm_tasks.source` accepts (migration 146,
+#: widened by the EA-6d migration with `mcp`). `test_projects_migration.py`
+#: reads the migrations and holds this tuple equal to the last CHECK.
+TASK_SOURCES: tuple[str, ...] = (
+    "manual", "import", "email", "agent", "automation", "mcp",
+)
+#: WS-55 EA-6d. The sources that only the server stamps. `mcp` marks a task
+#: that an outside agent made through the MCP edge, and `tasks.create_task`
+#: sets it from `UserContext.agent`, never from a request body.
+SERVER_TASK_SOURCES: tuple[str, ...] = ("mcp",)
+#: The sources that a request body may name. A body that names `mcp` gets 422.
+#: Each route that reads a source from a request checks it against THIS tuple.
+CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
+    s for s in TASK_SOURCES if s not in SERVER_TASK_SOURCES
+)
 
 #: Node kinds in the projects tree (migration 193). Mirrors the CHECK the
 #: migration adds — test_projects_node_kind.py reads the SQL file, because a

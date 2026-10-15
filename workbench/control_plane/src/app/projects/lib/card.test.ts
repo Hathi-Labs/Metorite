@@ -32,6 +32,36 @@ import { chipClass } from "./tags";
 const NOW = Date.parse("2026-08-07T12:00:00Z");
 const hours = (n: number) => new Date(NOW + n * 3_600_000).toISOString();
 
+/**
+ * The values of the CHECK on `pm_tasks.source`, read from the migrations.
+ *
+ * Migration 146 holds it inline in `CREATE TABLE pm_tasks`. Migration 265
+ * (WS-55 EA-6d) replaces it as `pm_tasks_source_check`. A file is found by its
+ * content, never by its number (R1), and the last definition wins.
+ * `tests/unit/test_projects_migration.py` reads the same CHECK for the
+ * gateway's `core.TASK_SOURCES`.
+ */
+function taskSourceCheck(): Set<string> {
+  const dir = new URL("../../../../../../infra/postgres/", import.meta.url);
+  let latest: string | undefined;
+  for (const name of readdirSync(dir).filter((n) => /^\d+_.*\.sql$/.test(n)).sort()) {
+    const sql = readFileSync(new URL(name, dir), "utf-8")
+      .split(/\r?\n/)
+      .map((line) => line.replace(/--.*$/, ""))
+      .join("\n");
+    const table = /CREATE TABLE IF NOT EXISTS pm_tasks\s*\(([\s\S]*?)\n\);/.exec(sql);
+    const inline = table && /source\s+TEXT[^,]*?CHECK\s*\(\s*source\s+IN\s*\(([\s\S]*?)\)\s*\)/i.exec(table[1]);
+    if (inline) latest = inline[1];
+    for (const m of sql.matchAll(
+      /ADD CONSTRAINT pm_tasks_source_check\s+CHECK\s*\(\s*source\s+IN\s*\(([\s\S]*?)\)\s*\)/gi,
+    )) {
+      latest = m[1];
+    }
+  }
+  if (latest === undefined) throw new Error("no migration constrains pm_tasks.source");
+  return new Set([...latest.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
+}
+
 const row = (over: Partial<TaskRow> = {}): TaskRow => ({
   id: "t1",
   project_id: "p1",
@@ -453,16 +483,16 @@ describe("the task SOURCE chip (WS-27bh)", () => {
     expect(sourceChip("telepathy")).toBeUndefined();
   });
 
-  it("covers exactly the non-manual half of the migration-146 CHECK", () => {
-    // The fence against the vocabularies drifting apart. `pm_tasks.source`
-    // is CHECK (source IN ('manual','import','email','agent','automation')),
-    // and every value but `manual` earns a chip.
-    expect(Object.keys(TASK_SOURCES).sort()).toEqual([
-      "agent",
-      "automation",
-      "email",
-      "import",
-    ]);
+  it("covers exactly the non-manual half of the CHECK on pm_tasks.source", () => {
+    // The fence against the vocabularies drifting apart. It READS the
+    // migrations (`taskSourceCheck`), so a value that a later migration adds
+    // fails here until it has a chip. Every value but `manual` earns one.
+    // Migration 265 (WS-55 EA-6d) added `mcp`.
+    expect(Object.keys(TASK_SOURCES).sort()).toEqual(
+      [...taskSourceCheck()].filter((s) => s !== "manual").sort(),
+    );
+    expect(taskSourceCheck().has("mcp")).toBe(true);
+    expect(sourceChip("mcp")?.label).toBe("AI agent");
   });
 });
 

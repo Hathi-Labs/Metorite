@@ -50,7 +50,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
-    TASK_SOURCES,
+    CLIENT_TASK_SOURCES,
     TRIAGE_CATEGORY,
     Page,
     TaskModel,
@@ -304,8 +304,9 @@ async def capture_intake(
             "task_number": await next_task_number(db, root),
             "created_by": actor(user),
             # The task's own source speaks the CHECK'd vocabulary; the
-            # wrapper's is free text. When they coincide, both say it.
-            **({"source": source} if source in TASK_SOURCES else {}),
+            # wrapper's is free text. When they coincide, both say it. Only a
+            # source that a request may name (EA-6d): `mcp` is the server's.
+            **({"source": source} if source in CLIENT_TASK_SOURCES else {}),
         })
         wrapper = await insert_row(db, "pm_intake", {
             "task_id": str(task.id),

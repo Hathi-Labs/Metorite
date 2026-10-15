@@ -5,10 +5,12 @@ Spec ``project-docs/specs/external_agent_access.md`` §9.1, §9.4, §9.5 and
 other five read tools: ``whoami``, ``list_projects``, ``get_project``,
 ``get_task`` and ``get_task_timeline``. EA-6a adds the references to
 ``get_task`` and the first two write tools, ``set_task_status`` and
-``add_task_reference`` (§9.2). Each write needs ``projects:write``, and branch
-0 of the gateway checks the nonce, the scope, the writes flag and the cap.
-EA-12b adds the six agent-run tools of §12.1 and ``agent_runs`` in
-``get_task``. They show only while ``agent_runs_enabled`` is on.
+``add_task_reference`` (§9.2). EA-6d adds ``create_task`` and ``update_task``.
+Each write needs ``projects:write``, and branch 0 of the gateway checks the
+nonce, the scope, the writes flag and the cap. The ``idempotency_key`` of
+``create_task`` lives in ``agent_edge.idempotency``. EA-12b adds the six
+agent-run tools of §12.1 and ``agent_runs`` in ``get_task``. They show only
+while ``agent_runs_enabled`` is on.
 
 **The tool record (§9.5).** Each :class:`Tool` declares its ``name``,
 ``title``, ``required_scope``, ``inputSchema``, ``outputSchema``, the four
@@ -43,11 +45,15 @@ gives the same member the same access, so the client would loop.
 **Time (EA3-17).** Each gateway request has 10 seconds
 (``gateway_client.REQUEST_TIMEOUT_S``). Each tool call has
 :data:`TOOL_TIMEOUT_S` for all of its requests. ``list_tasks`` makes at most
-1 + :data:`MAX_STATUS_READS` requests, ``get_task`` makes three and
-``get_project`` makes five. The other tools make one each. The long poll of
-``get_agent_run`` is the one exception (EA-12b, §12.1): its request has
-``wait_seconds`` plus :data:`LONG_POLL_REQUEST_MARGIN_S`, and its call has
-``wait_seconds`` plus :data:`LONG_POLL_TOOL_MARGIN_S`.
+1 + :data:`MAX_STATUS_READS` requests. ``get_task`` makes four, and one more
+for ``agent_runs`` while the runs flag is on (EA-12b). ``get_project`` makes
+five. ``create_task`` makes three: the statuses, the POST and the re-read. It
+makes one more for a parent and one more for a ``type_id``. ``update_task``
+makes three: the PATCH, the re-read and the statuses. The other tools make one
+or two. The long poll of ``get_agent_run`` is the one exception (EA-12b,
+§12.1): its request has ``wait_seconds`` plus
+:data:`LONG_POLL_REQUEST_MARGIN_S`, and its call has ``wait_seconds`` plus
+:data:`LONG_POLL_TOOL_MARGIN_S`.
 
 This module reads no request input: no header, no query and no form. The
 transport hands it the parsed arguments and the authenticated caller.
@@ -55,9 +61,11 @@ transport hands it the parsed arguments and the authenticated caller.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -66,8 +74,14 @@ from acb_auth import agent_oauth
 from acb_common import get_logger
 
 from agent_edge import cursor as cursor_mod
+from agent_edge import idempotency
 from agent_edge.bearer import Caller
-from agent_edge.gateway_client import Answer, GatewayUnreachable, RouteRefused
+from agent_edge.gateway_client import (
+    Answer,
+    GatewayNotSent,
+    GatewayUnreachable,
+    RouteRefused,
+)
 from agent_edge.gateway_client import get as gateway_get
 from agent_edge.gateway_client import write as gateway_write
 
@@ -75,6 +89,25 @@ _log = get_logger("agent_edge.tools")
 
 #: The limit of one tool call, for all of its gateway requests (EA3-17).
 TOOL_TIMEOUT_S = 25.0
+
+#: EA-6d fix round 2. A write that landed is never reported as busy. When a
+#: write answers 2xx, the tool limit moves out to at least this many seconds
+#: from that moment (:func:`_landed`), so the call can record the write (the
+#: idempotency slot, at most ``idempotency.STORE_TIMEOUT_S``) and report it.
+POST_WRITE_GRACE_S = 8.0
+
+#: Each read after a landed write (the re-read and the status names) gets at
+#: most this many seconds, and never more than the time left in the call less
+#: :data:`POST_WRITE_MARGIN_S`. A read that runs out gives the write's own
+#: answer (:func:`_after_write`).
+POST_WRITE_READ_CAP_S = 4.0
+POST_WRITE_MARGIN_S = 1.0
+
+#: The limit of the tool call that runs now (:func:`call`), so a write can
+#: move it out (:func:`_landed`) and a later read can see what is left.
+_TOOL_TIMER: ContextVar[asyncio.Timeout | None] = ContextVar("edge_tool_timer",
+                                                             default=None)
+
 
 #: ``list_tasks`` reads the statuses of at most this many projects (EA3-17).
 MAX_STATUS_READS = 10
@@ -102,6 +135,22 @@ TEXT_WRITES_OFF = "Changes are turned off for agents in this organization."
 #: crossed the add, and 422 when the classifier refuses the link.
 TEXT_REF_RETRY = "The link changed while Metorite added it. Add it again."
 TEXT_REF_BAD_URL = "The input 'url' is not a link that Metorite can add."
+#: ``create_task`` and ``update_task`` only (EA-6d, §9.2).
+TEXT_PARENT_NOT_FOUND = "Parent task not found."
+TEXT_PARENT_OTHER_PROJECT = (
+    "The parent task is in another project. Send the project_id of the parent task.")
+TEXT_UPDATE_EMPTY = (
+    "Send one or more fields to change: title, description, tags, due_at or"
+    " custom_fields.")
+#: The idempotency key of ``create_task`` (EA-6d, ``agent_edge.idempotency``).
+TEXT_KEY_REUSED = (
+    "This idempotency_key was used for a different task. Send a new key.")
+TEXT_KEY_RUNNING = (
+    "A call with this idempotency_key is still running. Wait a few seconds,"
+    " then send the same call again.")
+TEXT_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it made the task. Look for the task with list_tasks before you use a new key.")
 
 #: The fixed texts of the agent-run tools (EA-12b, §12.1).
 TEXT_RUN_NOT_FOUND = "Agent run not found."
@@ -137,6 +186,12 @@ WRITE_ANNOTATIONS: Mapping[str, bool] = {
     "openWorldHint": False,
 }
 
+#: The annotations of ``create_task`` (EA-6d, §9.2). ``idempotentHint`` is
+#: false: the hint is one value for every call, and a call with no
+#: ``idempotency_key`` makes a new task each time. Only a call with a key is
+#: idempotent.
+CREATE_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "idempotentHint": False}
+
 #: The status categories that only a person moves a task into (§9.2). A copy
 #: of ``CLOSING_CATEGORIES`` in ``gateway/routes/projects/core.py``, because
 #: the edge may not import the gateway. ``test_mcp_edge_writes.py`` pins the
@@ -162,6 +217,12 @@ class ToolError(Exception):
     def __init__(self, text: str) -> None:
         super().__init__(text)
         self.text = text
+
+
+class _NotSent(ToolError):
+    """The busy text of a write that never left the edge: the connection
+    failed before any byte went out (``gateway_client.GatewayNotSent``). The
+    gateway cannot have acted, so ``create_task`` frees its key (EA-6d)."""
 
 
 class GatewayUnauthorized(Exception):
@@ -251,13 +312,63 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
             path_params=path_params, query=query or [], if_match=if_match)
+    except GatewayNotSent:
+        raise _NotSent(TEXT_BUSY) from None
     except GatewayUnreachable:
         raise ToolError(TEXT_BUSY) from None
     except RouteRefused:
         raise ToolError(TEXT_BAD_REQUEST) from None
     if texts and answer.status in texts:
         raise ToolError(texts[answer.status])
-    return answer.status, _body_of(answer, not_found, write=True)
+    body = _body_of(answer, not_found, write=True)
+    # The write landed. From here on the call must report it (fix round 2).
+    _landed()
+    return answer.status, body
+
+
+def _landed() -> None:
+    """Move the tool limit out to at least :data:`POST_WRITE_GRACE_S` from
+    now, because a write landed (EA-6d fix round 2).
+
+    Without it, a limit that fires after the write made the call answer busy,
+    and with a key it marked the slot ``unknown``. An agent that retried then
+    made a second task. The limit never moves in: a later deadline stays.
+    """
+    timer = _TOOL_TIMER.get()
+    if timer is None:
+        return
+    floor = asyncio.get_running_loop().time() + POST_WRITE_GRACE_S
+    when = timer.when()
+    if when is not None and when < floor:
+        # A RuntimeError: the limit already fired, and its cancel is on its way.
+        with contextlib.suppress(RuntimeError):
+            timer.reschedule(floor)
+
+
+def _post_write_budget() -> float:
+    """The seconds that one read after a landed write may take."""
+    timer = _TOOL_TIMER.get()
+    when = timer.when() if timer is not None else None
+    if when is None:
+        return POST_WRITE_READ_CAP_S
+    left = when - asyncio.get_running_loop().time() - POST_WRITE_MARGIN_S
+    return min(POST_WRITE_READ_CAP_S, left)
+
+
+async def _after_write[T](read: Callable[[], Awaitable[T]], fallback: T) -> T:
+    """Run one read after a write that landed, inside its own small limit
+    (:func:`_post_write_budget`). A read that fails or runs out gives
+    *fallback*, the write's own answer. It never raises a tool error and never
+    lets the tool limit fire, so a landed write never comes back as busy
+    (EA-6d fix round 2)."""
+    budget = _post_write_budget()
+    if budget <= 0:
+        return fallback
+    try:
+        async with asyncio.timeout(budget):
+            return await read()
+    except (ToolError, GatewayUnauthorized, TimeoutError):
+        return fallback
 
 
 async def _together(*reads: Coroutine[Any, Any, Any]) -> list[Any]:
@@ -464,9 +575,11 @@ def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
     The schemas of this module use ``type``, ``properties``, ``required``,
     ``additionalProperties: false``, ``enum``, ``minimum``, ``maximum``,
     ``minLength``, ``maxLength`` and ``pattern``. The error text names the input (§9.6).
-    EA-12b adds an ``array`` with ``items``, ``minItems`` and ``maxItems``,
-    an ``object`` with its own ``properties``, and an ``object`` whose
-    ``additionalProperties`` is a rule for each value, with ``maxProperties``.
+    An ``array`` takes ``items``, ``minItems`` and ``maxItems``, and the edge
+    checks each item against ``items`` (EA-6d, EA-12b). An ``object`` may have
+    its own ``properties``, or an ``additionalProperties`` rule for each value
+    with ``maxProperties`` (EA-12b). An ``object`` with neither is free-form,
+    and its tool checks it (``custom_fields`` of ``update_task``, EA-6d).
     """
     if arguments is None:
         arguments = {}
@@ -533,7 +646,8 @@ def _check_items(name: str, rule: Mapping[str, Any], value: list[Any]) -> None:
 def _check_members(name: str, rule: Mapping[str, Any], value: dict[str, Any]) -> None:
     """The keys and values of an object input (EA-12b). An object with
     ``properties`` takes only those keys. An object whose
-    ``additionalProperties`` is a rule checks each value by that rule."""
+    ``additionalProperties`` is a rule checks each value by that rule. An
+    object with neither is left to its tool."""
     if "maxProperties" in rule and len(value) > rule["maxProperties"]:
         raise ToolError(f"The input {name!r} has too many keys.")
     properties: Mapping[str, Any] | None = rule.get("properties")
@@ -555,8 +669,8 @@ def _check_members(name: str, rule: Mapping[str, Any], value: dict[str, Any]) ->
             if item is None:
                 raise ToolError(f"The input {name}.{key[:40]} is not valid.")
             _check_value(f"{name}.{key[:40]}", each, item)
-    elif value:
-        raise ToolError(f"The input {name!r} must be an empty object.")
+    # An object with neither rule is free-form, and its tool checks each
+    # key and value (``custom_fields`` of ``update_task``, EA-6d).
 
 
 # ── The tool record ─────────────────────────────────────────────────────────
@@ -2153,6 +2267,415 @@ ADD_TASK_REFERENCE = Tool(
 )
 
 
+# ── create_task and update_task (EA-6d, §9.2) ───────────────────────────────
+
+CREATE_ROUTE = "/projects/tasks"
+
+#: The keys of the task of ``update_task``: those of ``get_task`` except
+#: ``assignees``. The PATCH answer does not carry the assignees, and the tool
+#: cannot change them.
+UPDATED_TASK_KEYS: tuple[str, ...] = tuple(k for k in GET_TASK_KEYS if k != "assignees")
+
+#: The body keys of each write, in a fixed order. The edge builds the body
+#: from these names only, so an input can never add a key. The gateway
+#: refuses any other key of a signed agent write too
+#: (``tasks.AGENT_CREATE_FIELDS`` and ``tasks.AGENT_PATCH_FIELDS``).
+CREATE_BODY_KEYS: tuple[str, ...] = (
+    "project_id", "parent_task_id", "type_id", "status_id", "title",
+    "description", "tags", "due_at",
+)
+UPDATE_BODY_KEYS: tuple[str, ...] = (
+    "title", "description", "tags", "due_at", "custom_fields",
+)
+
+#: ``custom_fields`` of ``update_task``: at most this many keys, each one
+#: key-shaped (``field_key``).
+MAX_CUSTOM_FIELD_KEYS = 50
+
+#: A due date: an ISO-8601 date, or a date and a time with an optional zone.
+_DUE_PATTERN = (
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    r"([T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?)?$"
+)
+
+_TAGS_INPUT: dict[str, Any] = {
+    "type": "array", "maxItems": 20,
+    "items": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[^,]+$"},
+}
+_TITLE_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": 500, "description": "The title."}
+_DESCRIPTION_INPUT: dict[str, Any] = {
+    "type": "string", "maxLength": 20000,
+    "description": "The description, in Markdown."}
+_DUE_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _DUE_PATTERN,
+    "description": "The due date: 2026-10-31, or a date and a time such as"
+                   " 2026-10-31T17:00:00+05:30."}
+
+_CREATE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "The project of the new task. A sub-project is a project"
+                           " too. Find the id with list_projects."},
+        "title": _TITLE_INPUT,
+        "description": _DESCRIPTION_INPUT,
+        "parent_task_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "Makes the new task a subtask of this task. The parent"
+                           " must be in the same project."},
+        "type_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "A task type id from get_project."},
+        "status_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "A status id from get_project. Leave it out to use the"
+                           " default status. A done or cancelled status is refused."},
+        "tags": {**_TAGS_INPUT,
+                 "description": "Tag names. get_project lists the tags of the project."
+                                " A new name adds a new tag."},
+        "due_at": _DUE_INPUT,
+        "idempotency_key": {
+            "type": "string", "pattern": idempotency.KEY_PATTERN,
+            "description": "8 to 128 letters, digits and . _ : -. The same key"
+                           " again gives back the first task and makes no second"
+                           " one. Use one key for one task. Metorite keeps a key"
+                           " for 24 hours."},
+    },
+    "required": ["project_id", "title"],
+    "additionalProperties": False,
+}
+
+_CREATE_OUTPUT: dict[str, Any] = _object({
+    "task": _TASK_SCHEMA, "created": {"type": "boolean"},
+})
+
+_UPDATE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks or get_task."},
+        "expected_version": {
+            "type": "string", "pattern": _VERSION_PATTERN,
+            "description": "The version that get_task returned for this task."},
+        "title": _TITLE_INPUT,
+        "description": _DESCRIPTION_INPUT,
+        "tags": {**_TAGS_INPUT,
+                 "description": "The new tag list. It replaces the whole list."},
+        "due_at": _DUE_INPUT,
+        "custom_fields": {
+            "type": "object",
+            "description": "A map from a field_key of get_project to its new value."
+                           " null clears that field. The other fields stay."},
+    },
+    "required": ["task_id", "expected_version"],
+    "additionalProperties": False,
+}
+
+_UPDATE_OUTPUT: dict[str, Any] = _object({
+    "task": _object({k: v for k, v in _TASK_SCHEMA["properties"].items()
+                     if k != "assignees"}),
+})
+
+
+async def _project_statuses(ctx: Context, project: str) -> dict[str, dict[str, Any]]:
+    """``{status id (lower case): row}`` of *project*, read before a write.
+
+    A project the member cannot open is ``Project not found.`` A 403 is the
+    write refusal. A busy gateway ends the call.
+    """
+    try:
+        body = await _get(ctx, STATUSES_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          path_params={"project_id": project})
+    except ToolError as exc:
+        if exc.text in (TEXT_BUSY, TEXT_PROJECT_NOT_FOUND):
+            raise
+        raise ToolError(TEXT_WRITE_FORBIDDEN) from None
+    return {str(r.get("id")).lower(): r for r in _rows_of(body)}
+
+
+def _names(statuses: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+    """``{status id: name}`` for :func:`_task`, which reads by the id as sent."""
+    return {str(r.get("id")): r["name"] for r in statuses.values()
+            if isinstance(r.get("name"), str)}
+
+
+async def _names_after_write(ctx: Context, project: Any) -> dict[str, str]:
+    """The status names of *project* after a write landed. Best effort: a
+    failed read gives no names, so the status ``name`` is null, and the tool
+    still reports the write that happened."""
+    if _id(project) is None:
+        return {}
+    try:
+        found = await _status_names(ctx, [str(project)])
+    except ToolError:
+        return {}
+    return found.get(str(project), {})
+
+
+class _Sent:
+    """Whether the POST of ``create_task`` went out. The idempotency slot
+    needs it: a failure before the POST wrote nothing."""
+
+    def __init__(self) -> None:
+        self.post = False
+
+
+async def _create(ctx: Context, args: dict[str, Any],
+                  sent: _Sent) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Check the inputs against the project, then POST the task. Returns the
+    POST answer and the project's statuses, and reads nothing after the POST.
+
+    The checks of ``set_task_status`` hold for ``status_id``: a status
+    outside the project's set is the bad-request text, and a ``done`` or
+    ``cancelled`` status is refused before the write. A parent must be a task
+    of the same project.
+    """
+    project = str(args["project_id"])
+    statuses = await _project_statuses(ctx, project)
+    if "status_id" in args:
+        target = statuses.get(str(args["status_id"]).lower())
+        if target is None:
+            raise ToolError(TEXT_BAD_REQUEST)
+        if target.get("category") in HUMAN_ONLY_CATEGORIES:
+            raise ToolError(TEXT_HUMAN_STEP)
+    if "parent_task_id" in args:
+        parent = await _get(ctx, TASK_ROUTE, TEXT_PARENT_NOT_FOUND,
+                            path_params={"task_id": str(args["parent_task_id"])})
+        if not isinstance(parent, dict):
+            raise ToolError(TEXT_BUSY)
+        if str(parent.get("project_id")).lower() != project.lower():
+            raise ToolError(TEXT_PARENT_OTHER_PROJECT)
+    if "type_id" in args:
+        await _check_type(ctx, project, str(args["type_id"]))
+    payload = {name: args[name] for name in CREATE_BODY_KEYS if name in args}
+    sent.post = True
+    _, row = await _write(ctx, "POST", CREATE_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          json_body=payload)
+    if not isinstance(row, dict) or _id(row.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    return row, statuses
+
+
+async def _created(ctx: Context, row: dict[str, Any],
+                   statuses: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """The result of a create that landed. Fix round 1: the re-read gives the
+    version after the links of the new text (`_reread`). Fix round 2: the
+    re-read is bounded, and the POST answer stands in for it."""
+    current = await _after_write(lambda: _reread(ctx, row), row)
+    return {"task": _task(current, _names(statuses)), "created": True}
+
+
+async def _check_type(ctx: Context, project: str, type_id: str) -> None:
+    """A ``type_id`` must be a type of the project (EA-6d fix round 1).
+
+    The edge reads the project's types through ``GET .../types``, the read of
+    ``get_project``. An id outside that set is the bad-request text of §9.6,
+    before the POST. Without this check a type of another project stored, and
+    a made-up id met the foreign key as a 500.
+    """
+    try:
+        body = await _get(ctx, TYPES_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          path_params={"project_id": project})
+    except ToolError as exc:
+        if exc.text in (TEXT_BUSY, TEXT_PROJECT_NOT_FOUND):
+            raise
+        raise ToolError(TEXT_WRITE_FORBIDDEN) from None
+    known = {str(r.get("id")).lower() for r in _rows_of(body)}
+    if type_id.lower() not in known:
+        raise ToolError(TEXT_BAD_REQUEST)
+
+
+async def _reread(ctx: Context, written: dict[str, Any]) -> dict[str, Any]:
+    """The task as it is now, after a write that landed (EA-6d fix round 1).
+
+    The gateway adds links from the new text AFTER the write commits
+    (``text_links.link_from_text``), and that touches the task again. So the
+    ``updated_at`` of the write's own answer can be stale, and an agent that
+    sends it back as ``expected_version`` gets 412. One GET of the task gives
+    the version that counts. When that read fails, the write's own answer is
+    the result: the write happened, and the tool must say so.
+    """
+    try:
+        row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+                         path_params={"task_id": str(written.get("id"))})
+    except (ToolError, GatewayUnauthorized):
+        return written
+    if not isinstance(row, dict) or str(row.get("id")).lower() != str(
+            written.get("id")).lower():
+        return written
+    return row
+
+
+async def _first_result(ctx: Context, earlier: idempotency.Record,
+                        fingerprint: str) -> dict[str, Any]:
+    """The answer to a call whose key an earlier call holds.
+
+    The state comes first (fix round 1): an ``unknown`` slot, and a slot that
+    the edge cannot read, always give the unknown text, whatever the inputs.
+    """
+    if earlier.state == idempotency.UNKNOWN or (
+            earlier.state == idempotency.DONE and _id(earlier.task_id) is None):
+        raise ToolError(TEXT_KEY_UNKNOWN)
+    if earlier.fingerprint != fingerprint:
+        raise ToolError(TEXT_KEY_REUSED)
+    if earlier.state == idempotency.PENDING:
+        raise ToolError(TEXT_KEY_RUNNING)
+    row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+                     path_params={"task_id": str(earlier.task_id)})
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    names = await _names_after_write(ctx, row.get("project_id"))
+    return {"task": _task(row, names), "created": False}
+
+
+async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``create_task``: one POST, and with a key at most one task per key.
+
+    With an ``idempotency_key`` the call first claims its slot
+    (``agent_edge.idempotency``). A refusal before any row existed releases
+    the slot. A POST with no clear answer marks it ``unknown``, so a retry
+    does not make a second task by accident.
+    """
+    key = args.get("idempotency_key")
+    sent = _Sent()
+    if key is None:
+        return await _created(ctx, *await _create(ctx, args, sent))
+    fingerprint = idempotency.fingerprint(
+        {k: v for k, v in args.items() if k != "idempotency_key"})
+    slot = idempotency.Slot(ctx.caller.lookup, str(key))
+    try:
+        earlier = await slot.claim(fingerprint)
+    except idempotency.StoreUnavailable:
+        raise ToolError(TEXT_BUSY) from None
+    if earlier is not None:
+        return await _first_result(ctx, earlier, fingerprint)
+    try:
+        row, statuses = await _create(ctx, args, sent)
+    except ToolError as exc:
+        # A busy text after the POST went out: the gateway may have made the
+        # task. Any other text is a clear refusal, and no row exists. A POST
+        # whose connection failed before any byte went out (`_NotSent`) made
+        # nothing either (fix round 1).
+        if sent.post and exc.text == TEXT_BUSY and not isinstance(exc, _NotSent):
+            await slot.mark_unknown(fingerprint)
+        else:
+            await slot.release()
+        raise
+    except GatewayUnauthorized:
+        await slot.release()
+        raise
+    except BaseException:
+        # The tool limit cancelled the call, or something else ended it.
+        if sent.post:
+            await slot.mark_unknown(fingerprint)
+        else:
+            await slot.release()
+        raise
+    # Fix round 2: record the write FIRST, outside the `try`, and only then
+    # read anything. A read after this point can never turn the slot
+    # `unknown`.
+    await slot.finish(fingerprint, str(row["id"]))
+    return await _created(ctx, row, statuses)
+
+
+CREATE_TASK = Tool(
+    name="create_task",
+    title="Create a task",
+    description=(
+        "Create one task in a project this member can see. A sub-project is a"
+        " project too: find its id with list_projects and send it as"
+        " project_id. Call get_project first: it gives the status ids, the task"
+        " type ids and the tag names of the project. Send parent_task_id to"
+        " make a subtask of a task in the same project. Leave status_id out to"
+        " use the default status. A done or cancelled status stays a human"
+        " step, so the tool refuses it. The new task has no assignee. Send an"
+        " idempotency_key when you may retry: the same key gives back the first"
+        " task with created false, and makes no second task. Returns the task"
+        " with its version." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_CREATE_INPUT,
+    output_schema=_CREATE_OUTPUT,
+    route=CREATE_ROUTE,
+    params={name: name for name in CREATE_BODY_KEYS},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_create_task,
+    routes=(STATUSES_ROUTE, TASK_ROUTE, TYPES_ROUTE),
+    method="POST",
+    edge_inputs=frozenset({"idempotency_key"}),
+    annotations=dict(CREATE_ANNOTATIONS),
+)
+
+
+def _custom_fields_input(value: Any) -> dict[str, Any]:
+    """The ``custom_fields`` input: at most :data:`MAX_CUSTOM_FIELD_KEYS`
+    keys, each key-shaped. The gateway checks each value against the field
+    definition, and an unknown key is its 422."""
+    if (not isinstance(value, dict) or len(value) > MAX_CUSTOM_FIELD_KEYS
+            or any(_key(k) is None for k in value)):
+        raise ToolError("The input 'custom_fields' has the wrong form.")
+    return value
+
+
+async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """PATCH the named fields only, with ``If-Match`` (§9.2).
+
+    The body holds only the keys of :data:`UPDATE_BODY_KEYS` that the call
+    sent. It never holds a status, a project, a parent, an assignee or an
+    archive key, and the PATCH has no query.
+    """
+    payload = {name: args[name] for name in UPDATE_BODY_KEYS if name in args}
+    if not payload:
+        raise ToolError(TEXT_UPDATE_EMPTY)
+    if "custom_fields" in payload:
+        payload["custom_fields"] = _custom_fields_input(payload["custom_fields"])
+    _, after = await _write(
+        ctx, "PATCH", TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])}, json_body=payload,
+        if_match=str(args["expected_version"]))
+    if not isinstance(after, dict):
+        raise ToolError(TEXT_BUSY)
+    written: dict[str, Any] = after
+    # Fix round 1: the version after the links of the new text (`_reread`).
+    # Fix round 2: each read after the PATCH is bounded, and the PATCH answer
+    # stands in for it.
+    current = await _after_write(lambda: _reread(ctx, written), written)
+    no_names: dict[str, str] = {}
+    names = await _after_write(
+        lambda: _names_after_write(ctx, current.get("project_id")), no_names)
+    task = _task(current, names)
+    return {"task": {k: task[k] for k in UPDATED_TASK_KEYS}}
+
+
+UPDATE_TASK = Tool(
+    name="update_task",
+    title="Update a task",
+    description=(
+        "Change the title, description, tags, due date or custom fields of one"
+        " task this member can see. Send only the fields to change. Send the"
+        " version that get_task returned as expected_version. When the task"
+        " changed after that read, the tool refuses, and you read the task"
+        " again. tags replaces the whole tag list. custom_fields maps a"
+        " field_key from get_project to its new value, and null clears that"
+        " field. This tool cannot change the status (use set_task_status), the"
+        " project, the parent or the assignees. Returns the task with its new"
+        " version." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_UPDATE_INPUT,
+    output_schema=_UPDATE_OUTPUT,
+    route=TASK_ROUTE,
+    params={"task_id": "task_id", "expected_version": "If-Match",
+            **{name: name for name in UPDATE_BODY_KEYS}},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_update_task,
+    routes=(TASK_ROUTE, STATUSES_ROUTE),
+    method="PATCH",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
 # ── The agent-run tools (EA-12b, §12.1) ─────────────────────────────────────
 
 _RUN_ID_INPUT: dict[str, Any] = {
@@ -2661,12 +3184,12 @@ FINISH_AGENT_RUN = Tool(
 
 # ── The registry ────────────────────────────────────────────────────────────
 
-#: Every tool of the edge, by name, in the order of ``tools/list``. The two
-#: write tools of EA-6a come after the reads, and the six agent-run tools of
-#: EA-12b come last.
+#: Every tool of the edge, by name, in the order of ``tools/list``. The write
+#: tools come after the reads: the two of EA-6a, then the two of EA-6d. The
+#: six agent-run tools of EA-12b come last.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
-    SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE,
+    SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN,
 )}
@@ -2715,8 +3238,12 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
         return error_result(TEXT_WRITES_OFF)
     try:
         args = check_input(tool.input_schema, arguments)
-        async with asyncio.timeout(call_timeout(tool, args)):
-            structured = await tool.run(ctx, args)
+        async with asyncio.timeout(call_timeout(tool, args)) as timer:
+            token = _TOOL_TIMER.set(timer)
+            try:
+                structured = await tool.run(ctx, args)
+            finally:
+                _TOOL_TIMER.reset(token)
     except ToolError as exc:
         return error_result(exc.text)
     except TimeoutError:
@@ -2731,6 +3258,9 @@ __all__ = [
     "ASK_ON_TASK",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
+    "CREATE_ANNOTATIONS",
+    "CREATE_BODY_KEYS",
+    "CREATE_TASK",
     "FIELD_KEYS",
     "FINISH_AGENT_RUN",
     "GET_AGENT_RUN",
@@ -2771,7 +3301,12 @@ __all__ = [
     "TEXT_CAP",
     "TEXT_FORBIDDEN",
     "TEXT_HUMAN_STEP",
+    "TEXT_KEY_REUSED",
+    "TEXT_KEY_RUNNING",
+    "TEXT_KEY_UNKNOWN",
     "TEXT_KEY_USED",
+    "TEXT_PARENT_NOT_FOUND",
+    "TEXT_PARENT_OTHER_PROJECT",
     "TEXT_PROJECT_NOT_FOUND",
     "TEXT_QUESTION_WAITS",
     "TEXT_REF_BAD_URL",
@@ -2781,12 +3316,16 @@ __all__ = [
     "TEXT_RUN_NOT_FOUND",
     "TEXT_STALE",
     "TEXT_TASK_NOT_FOUND",
+    "TEXT_UPDATE_EMPTY",
     "TEXT_WRITES_OFF",
     "TEXT_WRITE_FORBIDDEN",
     "TIMELINE_ROW_KEYS",
     "TOOLS",
     "TOOL_TIMEOUT_S",
     "TYPE_KEYS",
+    "UPDATED_TASK_KEYS",
+    "UPDATE_BODY_KEYS",
+    "UPDATE_TASK",
     "WHOAMI",
     "WHOAMI_KEYS",
     "WRITE_ANNOTATIONS",
