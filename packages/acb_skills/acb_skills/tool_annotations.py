@@ -42,6 +42,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # One zip of this chat's files, in this chat's own folder. No code runs,
     # and nothing leaves the working dir, so it is no egress tool (H-236).
     "package_artifacts":     {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # H-315: lays out a PDF in the gateway's own child and writes it to the
+    # chat's outputs. No network, no egress.
+    "make_document":         {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # H-229: the text of a file attached in this chat. Pure parsing, no code.
     "read_attachment":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # Memory

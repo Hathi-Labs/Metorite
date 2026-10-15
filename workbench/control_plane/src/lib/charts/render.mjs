@@ -29,11 +29,13 @@ const FONTS = ["Regular", "Medium", "SemiBold", "Bold"].map((w) => join(GEIST, `
 /** The most charts one call draws, and the tallest drawing. */
 export const MAX_CHARTS = 6;
 const MAX_HEIGHT = 2400;
+/** The largest zoom a caller may ask for (a PDF asks for 2). */
+const MAX_SCALE = 3;
 
 /**
  * One chart as a PNG.
  * @param {any} spec
- * @param {{ mode?: "dark" | "light" }} [opts]
+ * @param {{ mode?: "dark" | "light", scale?: number }} [opts]
  * @returns {Buffer}
  */
 export function renderPng(spec, opts = {}) {
@@ -42,8 +44,13 @@ export function renderPng(spec, opts = {}) {
   try {
     chart.setOption(option);
     const svg = chart.renderToSVGString();
-    return new Resvg(svg, { font: { fontFiles: FONTS, loadSystemFonts: false, defaultFontFamily: "Geist" } })
-      .render().asPng();
+    // A PDF (WAC-12) asks for 2x, so a chart stays sharp on a slide. A chat
+    // image keeps 1x. The scale is clamped, so no request can ask for a huge PNG.
+    const zoom = Math.min(Math.max(Number(opts.scale) || 1, 1), MAX_SCALE);
+    return new Resvg(svg, {
+      font: { fontFiles: FONTS, loadSystemFonts: false, defaultFontFamily: "Geist" },
+      fitTo: { mode: "zoom", value: zoom },
+    }).render().asPng();
   } finally {
     // An undisposed chart keeps a timer, and the process never exits.
     chart.dispose();
@@ -74,7 +81,7 @@ export function handle(raw) {
   return {
     images: charts.map((spec) => {
       try {
-        return { png: renderPng(spec, { mode: req.mode }).toString("base64") };
+        return { png: renderPng(spec, { mode: req.mode, scale: req.scale }).toString("base64") };
       } catch (err) {
         return classify(err);
       }

@@ -49,6 +49,8 @@ INJECTABLE_PLATFORM_TOOLS = {
     "crm_deal_contacts", "crm_list_owners", "crm_report", "crm_aggregate",
     "crm_stage_dwell", "crm_list_modules", "crm_list_module_records",
     "crm_get_module_record",
+    # H-315 (2026-10-15): the `documents` family, a deck or a report as a PDF.
+    "make_document",
 }
 
 # The agents this item scopes, with a per-agent leanness ceiling.
@@ -58,7 +60,9 @@ SCOPED_AGENTS = {
     # 20 since CRM-C7 (2026-10-13): the chat reads the CRM directly, by the
     # owner's report that the chat could not reach the Zoho data. The 12 CRM
     # read tools sit beside the 8 core tools.
-    "agent-orchestrator": 20,
+    # 21 since H-315 (2026-10-15): the owner asked for PDF decks and reports
+    # in the AI chat, so the chat holds make_document beside the CRM reads.
+    "agent-orchestrator": 21,
 }
 
 

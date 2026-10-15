@@ -250,6 +250,28 @@ class WhatsAppCloudProvider(BaseWhatsAppProvider):
             payload["context"] = {"message_id": reply_to_wa_message_id}
         return await self._post_message(payload)
 
+    async def send_document(
+        self, to_wa_id: str, media_id: str, *, filename: str,
+        caption: str | None = None, reply_to_wa_message_id: str | None = None,
+    ) -> str:
+        """A file the member can open and forward: a PDF (WS-47 WAC-12).
+
+        Meta shows *filename* on the file, and *caption* under it.
+        """
+        document: dict[str, Any] = {"id": media_id, "filename": filename}
+        if caption:
+            document["caption"] = caption
+        payload: dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "document",
+            "document": document,
+        }
+        if reply_to_wa_message_id:
+            payload["context"] = {"message_id": reply_to_wa_message_id}
+        return await self._post_message(payload)
+
     async def show_typing(self, wa_message_id: str) -> bool:
         """Mark the member's message read and show "typing…" to them.
 

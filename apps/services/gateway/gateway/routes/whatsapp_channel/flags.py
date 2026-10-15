@@ -59,6 +59,11 @@ def native_ui_enabled() -> bool:
     return get_settings().whatsapp_assistant_native_ui is True
 
 
+def documents_enabled() -> bool:
+    """WS-47 WAC-12: ``WHATSAPP_DOCUMENTS``, and the native UI under it (§15.5)."""
+    return get_settings().whatsapp_documents is True and native_ui_enabled()
+
+
 def writes_enabled(organization_id: str | None) -> bool:
     """True when a bot run in *organization_id* may park a write (WAC-4).
 
