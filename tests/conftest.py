@@ -79,6 +79,49 @@ def _isolate_write_artifact_context():
         reset_artifact_context(token)
 
 
+class _MemoryMarkClient:
+    """An in-memory Redis client for the upward-egress mark under test."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def setex(self, name: str, _seconds: int, value: str) -> bool:
+        self.values[name] = value
+        return True
+
+    async def exists(self, *names: str) -> int:
+        return sum(1 for n in names if n in self.values)
+
+    async def expire(self, name: str, _seconds: int) -> bool:
+        return name in self.values
+
+
+@pytest.fixture(autouse=True)
+def _isolate_the_egress_mark(monkeypatch):
+    """Keep the upward-egress mark (WS-17 EM-G11d) in memory under test.
+
+    The mark lives in tenant Redis, and its read FAILS CLOSED. The shared
+    pool of ``acb_common.tenant_redis`` belongs to the event loop of the first
+    test that used it. The read in a later test then failed, and the gate
+    asked a card for an MCP call of a session that read nothing. So each test
+    starts with an empty process set and its own in-memory client. A test
+    that inspects the store, or makes it fail, patches over this one.
+    """
+    try:
+        from acb_common.tenant_redis import TenantRedis
+        from acb_skills import egress
+    except ImportError:  # acb_skills unavailable, so there is no mark
+        yield
+        return
+    store = TenantRedis(_MemoryMarkClient())
+    monkeypatch.setattr(egress, "get_tenant_redis", lambda: store)
+    with egress._MARKED_LOCK:
+        egress._MARKED_SESSIONS.clear()
+    yield
+    with egress._MARKED_LOCK:
+        egress._MARKED_SESSIONS.clear()
+
+
 @pytest.fixture(autouse=True)
 def _no_docker_daemon_outside_the_sandbox_docker_marker(request, monkeypatch):
     """A unit test never reaches the Docker daemon through the sandbox broker.
