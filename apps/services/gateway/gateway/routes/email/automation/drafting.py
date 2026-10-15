@@ -368,10 +368,22 @@ async def _fetch_reply_memories(
 
 
 async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
-    """Trash any drafts left in a thread (upstream + local) after a reply is sent
-    — e.g. an AI DRAFT_EMAIL draft a rule created (which the user never sent
-    because they composed their own reply), or a Gmail-style auto-save that wasn't
-    the one consumed by the send. Best-effort background task.
+    """Trash the AI draft that Metorite left in a thread, after a reply is sent
+    — e.g. a DRAFT_EMAIL draft a rule created, which the user never sent
+    because they composed their own reply. Best-effort background task.
+
+    🔴 WS-17 EM-G11c2 (``email_app_master_plan.md`` §12.3.13.7, G7): it
+    trashes ONLY a draft that Metorite made. That is a draft whose text is
+    the thread's stored AI draft (``email_ai_drafts``), unchanged, with the
+    signature stripped from both sides. A draft that the member wrote in
+    Gmail stays, and so does an AI draft that the member edited. The draft
+    of the send left the mailbox in the send route, and the composer drops
+    its own other drafts (``dropStaleDrafts``). Fence:
+    ``tests/unit/test_email_background_writes.py``.
+
+    ⚠️ Both send routes add this task BEFORE ``_learn_from_sent``, because
+    that task deletes the ``email_ai_drafts`` row. Starlette runs the tasks
+    in order.
 
     EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the send routes start this
     as a BackgroundTask. Starlette runs the task inside the tenant scope of its
@@ -382,12 +394,23 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
         return
     try:
         async with _tenant_session() as db:
+            ai = (await db.execute(text(
+                "SELECT draft_text FROM email_ai_drafts "
+                "WHERE account_id = :aid AND thread_id = :tid"
+            ), {"aid": account_id, "tid": thread_id})).fetchone()
+            original = (ai.draft_text if ai else "") or ""
+            if not original.strip():
+                return
             rows = (await db.execute(text(
-                "SELECT id, provider_message_id FROM email_messages "
+                "SELECT id, provider_message_id, body_text FROM email_messages "
                 "WHERE account_id = :aid AND thread_id = :tid "
                 "AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')"
             ), {"aid": account_id, "tid": thread_id})).fetchall()
-            if not rows:
+            sig = await _account_signature(db, account_id)
+            want = _normalize_text(strip_signature_text(sig, original))
+            ours = [r for r in rows if _normalize_text(
+                strip_signature_text(sig, r.body_text or "")) == want]
+            if not ours:
                 return
             # No request user to scope by. A missing account raises 404, and
             # the broad handler below catches it.
@@ -396,15 +419,15 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
             ) as sess:
                 if not sess.authed:
                     return
-                for r in rows:
+                for r in ours:
                     try:
                         await sess.provider.trash_message(r.provider_message_id)
                     except Exception:  # noqa: BLE001 — one stuck draft: no abort
                         pass
                     await db.execute(text(
                         "DELETE FROM email_messages WHERE id = :id"), {"id": r.id})
-        _log.info("email.thread_drafts_cleaned",
-                  account_id=account_id, count=len(rows))
+        _log.info("email.thread_drafts_cleaned", account_id=account_id,
+                  count=len(ours), kept=len(rows) - len(ours))
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.cleanup_thread_drafts_failed", error=str(exc)[:160])
 
@@ -3118,15 +3141,16 @@ async def send_draft_endpoint(
             from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
                 _mark_thread_replied,
             )
+            # Trash the AI draft left in the thread (EM-G11c2, G7). FIRST:
+            # `_learn_from_sent` deletes the `email_ai_drafts` row.
+            background.add_task(
+                _cleanup_thread_drafts, req.account_id, drow.thread_id)
             background.add_task(
                 _learn_from_sent, req.account_id, drow.thread_id,
                 drow.body_text or "")
             background.add_task(
                 _mark_thread_replied, req.account_id, drow.thread_id,
                 drow.body_text or "", drow.subject or "")
-            # Trash any other drafts left in the thread (e.g. an AI draft).
-            background.add_task(
-                _cleanup_thread_drafts, req.account_id, drow.thread_id)
         return {"sent": True}
 
 
