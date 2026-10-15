@@ -69,10 +69,11 @@ __all__ = [
     "MARKER_LINE_RE",
     "TOKEN_BYTES",
     "UntrustedFrame",
+    "collapse",
     "frame_untrusted",
     "has_marker_shape",
-    "collapse",
     "neutralise",
+    "neutralised_pattern",
     "new_token",
 ]
 
@@ -241,6 +242,28 @@ def collapse(text: str) -> str:
     and never after it (round 2): a collapse changes no tag shape that the
     neutraliser reads, and the order keeps the two passes in one place."""
     return " ".join(str(text or "").split())
+
+
+def neutralised_pattern(text: str) -> re.Pattern[str]:
+    """A pattern that finds, in the ORIGINAL text, the span that *text* (a
+    span of the neutralised copy) stands for.
+
+    WS-17 EM-G11d round 2. A model reads the framed copy, so a quote of it can
+    hold ``[`` or ``]`` for a bracket and a backslash before a ``#``. Each
+    ``[`` or ``]`` matches itself or any bracket of its side, and a backslash
+    may be absent. The Insights check uses it to store the span of the
+    source, never the neutralised form (D-EM-41)."""
+    parts = []
+    for ch in str(text or ""):
+        if ch == _SAFE_OPEN:
+            parts.append("[" + re.escape(_SAFE_OPEN + _OPEN_CHARS) + "]")
+        elif ch == _SAFE_CLOSE:
+            parts.append("[" + re.escape(_SAFE_CLOSE + _CLOSE_CHARS) + "]")
+        elif ch == "\\":
+            parts.append(r"\\?")
+        else:
+            parts.append(re.escape(ch))
+    return re.compile("".join(parts))
 
 
 def has_marker_shape(text: str) -> bool:

@@ -509,10 +509,14 @@ def test_a_quote_of_the_framed_copy_is_in_the_source() -> None:
         quote="\\# Total payable: ₹500 Due date: 15 October 2026", ref=None,
         counterpart=None, amount="₹500")]}, source)
     assert [f.amount for f in heading.facts] == [Decimal("500")], heading.drops
+    # Round 2: the fact keeps the span of the SOURCE, not the framed form.
+    assert heading.facts[0].quote == "# Total payable: ₹500 Due date: 15 October 2026"
     tag = X.check_answer({"facts": [_fact(
         quote="[b]Ref SRT/9[/b]", ref=None, counterpart=None, amount=None,
         due_on=None)]}, source)
     assert len(tag.facts) == 1, tag.drops
+    assert tag.facts[0].quote == "<b>Ref SRT/9</b>"
+    assert tag.facts[0].quote in X.fold(source.text)
     plain = X.check_answer({"facts": [_fact(
         quote="Total payable: ₹500 Due date: 15 October 2026", ref=None,
         counterpart=None, amount="₹500")]}, source)

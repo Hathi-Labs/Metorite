@@ -40,7 +40,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple
 
 from acb_skills.attachment_text import SUPPORTED_SUFFIXES
-from acb_skills.untrusted import UntrustedFrame, neutralise
+from acb_skills.untrusted import UntrustedFrame, neutralise, neutralised_pattern
 from gateway.routes.email.automation.insights_store import (
     CAPS,
     DIRECTIONS,
@@ -631,10 +631,17 @@ def _check_fact(
     if quote is None:
         drops["bad_quote"] += 1
         return None
-    # EM-G11d round 1: the model read the framed copy, so a quote that spans
-    # an escaped "#" line or a tag holds the neutralised form. It counts when
-    # the folded framed copy holds it (*framed*). The source is the same text.
-    hits = _occurrences(folded, quote) or (_occurrences(framed, quote) if framed else 0)
+    # EM-G11d: the model read the framed copy, so a quote that spans an
+    # escaped "#" line or a tag holds the neutralised form. When the folded
+    # framed copy holds it (*framed*), the fact keeps the matching span of the
+    # SOURCE, never the neutralised form, so a quote is always a span of the
+    # source (D-EM-41, round 2).
+    hits = _occurrences(folded, quote)
+    if not hits and framed and _occurrences(framed, quote):
+        span = neutralised_pattern(quote).search(folded)
+        if span is not None:
+            quote = span.group(0)
+            hits = _occurrences(folded, quote)
     if not hits:
         drops["quote_not_in_source"] += 1
         return None
