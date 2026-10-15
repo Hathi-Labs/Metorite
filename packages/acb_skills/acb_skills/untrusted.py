@@ -30,9 +30,14 @@ could read as structure of the prompt:
 3. A tag such as ``<personal_instructions>``, ``</system>``,
    ``</ personal_instructions>`` or ``<|im_start|>``, also with a look-alike
    bracket or an invisible character before or inside its name, gets ``[``
-   and ``]`` for its brackets. The prompts of the drafter trust a few tags
-   that Metorite writes outside the frame, so the text must not open or close
-   one.
+   and ``]`` for its brackets. A name may start with any word character, a
+   dash or a dot (``<1x>``, ``<a.b>``), and white space of any kind, also a
+   line break, may sit inside the brackets. A nested ``<<name>>`` loses both
+   pairs. The prompts of the drafter trust a few tags that Metorite writes
+   outside the frame, so the text must not open or close one. Text such as
+   ``a < b and c > d`` gets ``[`` and ``]`` too. An address in brackets
+   (``<a@b.example>``) and a URL with a scheme stay as they are. A caller
+   that collapses white space does it BEFORE this function (:func:`collapse`).
 4. A line that starts with ``#`` gets a backslash before it, so the text
    cannot start a Markdown heading that the prompt reads as its own section.
    A line starts after each line break of Unicode (``\\r``, ``\\n``, U+2028,
@@ -66,6 +71,7 @@ __all__ = [
     "UntrustedFrame",
     "frame_untrusted",
     "has_marker_shape",
+    "collapse",
     "neutralise",
     "new_token",
 ]
@@ -117,30 +123,32 @@ _INVISIBLE_CODES = (
 _INVISIBLE = "".join(re.escape(chr(c)) for c in _INVISIBLE_CODES)
 _OPEN_CLASS = "[" + re.escape(_OPEN_CHARS) + "]"
 _CLOSE_CLASS = "[" + re.escape(_CLOSE_CHARS) + "]"
-_NOT_BRACKET = "[^" + re.escape(_OPEN_CHARS + _CLOSE_CHARS) + r"\n]"
-_NAME_PART = rf"[A-Za-z_{_INVISIBLE}][A-Za-z0-9_\-{_INVISIBLE}]*"
-#: A name, with an optional namespace such as ``ns:``. A letter must follow
-#: the ``:``, so ``https://`` and ``mailto:a@b`` are not names.
-_NAME = rf"{_NAME_PART}(?::{_NAME_PART})?"
+_NOT_BRACKET = "[^" + re.escape(_OPEN_CHARS + _CLOSE_CHARS) + "]"
+#: What may come before a name: white space of any kind (also line breaks),
+#: a ``/``, the safe brackets of an earlier pass and invisible characters.
+_LEAD = rf"[\s/\[\]{_INVISIBLE}]*"
+#: One part of a name. Its first character is a visible word character, a
+#: dash or a dot, so ``<1x>`` and ``<a.b>`` are names too.
+#: Possessive (``*+``), so a name never gives back a character: ``https``
+#: cannot shrink to ``http`` to slip past the rule after the name.
+_WORD = rf"[\w\-.][\w\-.{_INVISIBLE}]*+"
+#: A name, with namespaces such as ``ns:``. A word character must follow
+#: each ``:``, so ``https://`` and ``mailto:a@b`` are not names.
+_NAME = rf"{_WORD}(?::{_WORD})*+"
+#: What may not follow a name: ``@`` or ``:``. So ``<name@host>`` and
+#: ``<https://x>`` stay as they are, and anything else after a name, also a
+#: safe bracket of an earlier pass, is part of a tag (round 2).
+_AFTER_NAME = "(?![@:])"
 
-#: A tag: an opening bracket, invisible characters, an optional ``/`` with
-#: white space after it, a name, attributes, and a closing bracket. The name
-#: holds no ``:``, ``.`` or ``@``, so ``<https://x>`` and ``<name@host>`` stay
-#: as they are, and no white space may follow the opening bracket, so
-#: ``a < b and c > d`` is not a tag.
+#: A tag: an opening bracket, the lead, a name, attributes, and a closing
+#: bracket. The lead and the attributes may hold line breaks, so a tag that
+#: spans lines is a tag, and a later collapse of its white space cannot make
+#: one (verifier, round 2). Text such as ``a < b and c > d`` is a tag here too:
+#: its brackets become ``[`` and ``]``, and its words stay.
 _TAG_RE = re.compile(
-    _OPEN_CLASS
-    + rf"([{_INVISIBLE}]*(?:/[\s{_INVISIBLE}]*)?{_NAME}"
-    + rf"(?:[\s/]{_NOT_BRACKET}*)?)"
-    + _CLOSE_CLASS
-)
-#: A tag with white space after its opening bracket, such as
-#: ``< personal_instructions>``. It holds a name and nothing else, so text
-#: such as ``a < b and c > d`` stays as it is.
-_SPACED_TAG_RE = re.compile(
-    _OPEN_CLASS + rf"(\s+/?[\s{_INVISIBLE}]*{_NAME}\s*)" + _CLOSE_CLASS)
+    _OPEN_CLASS + f"({_LEAD}{_NAME}{_AFTER_NAME}{_NOT_BRACKET}*)" + _CLOSE_CLASS)
 #: A chat-role token of a model, such as ``<|im_start|>``.
-_ROLE_TOKEN_RE = re.compile(_OPEN_CLASS + r"(\|[^|\n]{0,40}\|)" + _CLOSE_CLASS)
+_ROLE_TOKEN_RE = re.compile(_OPEN_CLASS + r"(\s*\|[^|]{0,40}\|\s*)" + _CLOSE_CLASS)
 
 #: Each line break of Unicode, and the white space of one line.
 _BREAKS = r"\r\n\x0b\x0c\x85" + re.escape(chr(0x2028) + chr(0x2029))
@@ -205,10 +213,24 @@ def neutralise(text: str, token: str) -> str:
         while pattern.search(out):
             out = pattern.sub("", out)
     out = _break_runs(out)
-    out = _ROLE_TOKEN_RE.sub(_bracketed, out)
-    out = _TAG_RE.sub(_bracketed, out)
-    out = _SPACED_TAG_RE.sub(_bracketed, out)
+    # Again until nothing changes: "<<name>>" loses its inner pair first, and
+    # the outer pair then encloses "[name]" (round 2). Each pass removes two
+    # brackets, so the loop ends.
+    while True:
+        before = out
+        out = _TAG_RE.sub(_bracketed, _ROLE_TOKEN_RE.sub(_bracketed, out))
+        if out == before:
+            break
     return _HEADING_RE.sub(lambda m: m.group(1) + m.group(2) + "\\", out)
+
+
+def collapse(text: str) -> str:
+    """*text* with each run of white space as one space, and the ends cut.
+
+    A caller that puts text on one line collapses it BEFORE :func:`neutralise`,
+    and never after it (round 2): a collapse changes no tag shape that the
+    neutraliser reads, and the order keeps the two passes in one place."""
+    return " ".join(str(text or "").split())
 
 
 def has_marker_shape(text: str) -> bool:

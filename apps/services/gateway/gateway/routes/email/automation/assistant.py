@@ -137,25 +137,28 @@ async def _load_assistant_about(
     if lp_rows:
         parts.append(
             "<learned_patterns>\n"
-            + "\n".join(f"- {' '.join(_learned_text(r.pattern).split())}" for r in lp_rows)
+            + "\n".join(f"- {_learned_text(r.pattern, one_line=True)}" for r in lp_rows)
             + "\n</learned_patterns>"
         )
 
     return "\n\n".join(parts), signature
 
 
-def _learned_text(value: Any) -> str:
-    """Text that a model learned from mail, for a tag of the about block.
+def _learned_text(value: Any, *, one_line: bool = False) -> str:
+    """Text that a model learned from mail, for the prompt of a drafter.
 
     WS-17 EM-G11d round 1 (UMCC). The reply-memory extractor and the style
     learner read mail, so a mail could steer what they store. The drafter
-    trusts the tags of this block, so the text loses each shape of a tag, a
-    marker and a heading (``acb_skills.untrusted.neutralise``) and can never
-    close ``<learned_patterns>`` or open ``<personal_instructions>``. A
-    pattern also stays on one line, as its bullet."""
-    from acb_skills.untrusted import neutralise
+    trusts this text, so it loses each shape of a tag, a marker and a heading
+    (``acb_skills.untrusted.neutralise``) and can never close
+    ``<learned_patterns>`` or open ``<personal_instructions>``. With
+    *one_line*, as for a bullet, the text collapses FIRST and then loses its
+    shapes. A collapse after the neutraliser made a live tag of
+    ``<personal_instructions\\n\\n>`` (round 2)."""
+    from acb_skills.untrusted import collapse, neutralise
 
-    return neutralise(str(value or "").strip(), "")
+    text = collapse(value) if one_line else str(value or "").strip()
+    return neutralise(text, "")
 
 
 # The tier of each email AI task (D-EM-61, owner, 2026-10-09). Our code

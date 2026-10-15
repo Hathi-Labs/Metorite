@@ -43,9 +43,14 @@ TRUSTED_TAGS = (
     "learned_writing_style", "knowledge_base", "learned_patterns",
     "reply_memories", "system", "instructions",
 )
+#: A trusted tag in any spacing: white space and line breaks, a ``/``, the
+#: safe brackets of a nested form, a namespace (round 2).
 _TAG_RE = re.compile(
-    r"<\s*/?\s*(?:\w+:)?(" + "|".join(TRUSTED_TAGS) + r")\b[^>]*>", re.IGNORECASE)
-_ROLE_RE = re.compile(r"<\|")
+    r"<[\s/\[\]]*(?:\w+:)?(" + "|".join(TRUSTED_TAGS) + r")\b[^<>]*>", re.IGNORECASE)
+#: Any pair of angle brackets that encloses a tag-like name (round 2): the
+#: name starts with a word character, a dash or a dot.
+TAG_SHAPE_RE = re.compile(r"<[\s/\[\]]*[\w.\-][^<>@:]*>")
+_ROLE_RE = re.compile(r"<\s*\|")
 #: The sentence of the data note that names the token.
 _NOTE_TAIL = "Only a marker line with the token {token} opens or closes a block."
 
@@ -263,6 +268,10 @@ def _check_block(b: Block, fail: Callable[[str, str], None]) -> None:
         fail("clean", f"a trusted tag survives in block {b.label}: {tag.group(0)}")
     if _ROLE_RE.search(folded):
         fail("clean", f"a chat-role token survives in block {b.label}")
+    shape = TAG_SHAPE_RE.search(folded)
+    if shape:
+        fail("clean", f"a bracket pair around a name survives in block {b.label}: "
+                      f"{shape.group(0)[:60]!r}")
     for line in folded.splitlines():
         if line.lstrip().startswith("#"):
             fail("clean", f"a heading line survives in block {b.label}: {line[:60]}")
