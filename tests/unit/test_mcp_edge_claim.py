@@ -53,7 +53,8 @@ Run::
 * M29. Fix round 3. ``G/tasks.py`` ``claim_task``: no row lock, ``task = seen``. ``test_two_claims_with_one_version_give_one_200_and_one_412``.
 * M30. Fix round 3. ``G/tasks.py`` ``claim_task``: a closed task returns a 422 answer instead of raising, so the transaction commits the key. ``test_c4_...[done]`` and ``[cancelled]``.
 * M31. Fix round 3. ``G/tasks.py`` ``claim_task``: ``ensure_watchers`` before the row lock. ``test_a_claim_racing_a_move_to_done_leaves_a_consistent_row`` (a ``DeadlockDetectedError``: the member's PATCH writes the row, then the editor's watcher key).
-* M25. ``G/tasks.py`` ``claim_task``: no visibility load, a plain read by id. ``test_a_task_outside_the_reach_of_the_connection_is_not_found``, all three cases.
+* M32. Final fix. ``G/tasks.py`` ``claim_task``: ``added = wanted``, the set of the read before the insert. ``test_two_claims_with_no_version_write_one_assignment_row``.
+* M25. ``G/tasks.py`` ``claim_task``: no visibility load, a plain read by id. ``test_a_task_outside_the_reach_of_the_connection_is_not_found[outside_pins]`` and ``[personal_off]``. ``[other_org]`` goes red too, but only because the plain read finds no row under RLS and the route fails before any write. RLS refuses that case as well, so ``[other_org]`` does not fence the visibility load.
 """
 from __future__ import annotations
 
@@ -730,6 +731,24 @@ class TestTheClaimRace:
             assert len(_activities(live, task, "status_change")) == 1, n
             assert _assignees(live, task) == [MEMBER], n
             assert str(_row(live, task).status_id) == live.s.doing, n
+
+    async def test_two_claims_with_no_version_write_one_assignment_row(self, live):
+        """Final fix (review P2). With no If-Match both claims pass, and the
+        second one waits on the key of the first. Only the claim whose insert
+        wrote the row reports it: one ``assignment`` row, one
+        ``assigned: true``, and one ``pm.task.assigned`` event."""
+        for n in range(RACE_RUNS):
+            task = _task(live, live.team, live.s.todo, f"two claims no version {n}")
+            claim = ("POST", f"/projects/tasks/{task}/claim", {}, "write", None)
+            answers = await _together(live, claim, claim)
+            assert [r.status_code for r in answers] == [200, 200], (
+                n, [r.text for r in answers])
+            assert sorted(r.json()["assigned"] for r in answers) == [False, True], n
+            assert len(_activities(live, task, "assignment")) == 1, n
+            assert len(_activities(live, task, "status_change")) == 1, n
+            assert _assignees(live, task) == [MEMBER], n
+            for r in answers:
+                assert r.json()["assignees"] == [MEMBER], n
 
     async def test_a_claim_racing_a_move_to_done_leaves_a_consistent_row(self, live):
         for n in range(RACE_RUNS):

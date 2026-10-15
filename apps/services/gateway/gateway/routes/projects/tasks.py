@@ -1408,6 +1408,31 @@ CLAIM_REFUSALS: frozenset[str] = frozenset({
 })
 
 
+#: The claim's own insert of its assignee key. It is ``core.insert_assignees``
+#: with ``RETURNING``, so the claim knows which rows it wrote. The PUT keeps
+#: the shared helper, which returns nothing.
+_CLAIM_INSERT_SQL = (
+    "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
+    "VALUES (CAST(:tid AS uuid), :who, :by) "
+    "ON CONFLICT (task_id, assignee) DO NOTHING RETURNING assignee"
+)
+
+
+async def _insert_claim_assignees(db: Any, task_id: str, wanted: list[str], *,
+                                  by: str) -> list[str]:
+    """Insert each assignee of *wanted* (lower case), and return the ones that
+    this insert wrote. A key that another transaction committed first is not
+    in the answer."""
+    written: list[str] = []
+    for who in sorted({str(w).strip().lower() for w in wanted if str(w or "").strip()}):
+        row = (await db.execute(
+            text(_CLAIM_INSERT_SQL), {"tid": task_id, "who": who, "by": by},
+        )).fetchone()
+        if row is not None:
+            written.append(str(row.assignee))
+    return written
+
+
 def _refuse_claim(code: str, message: str) -> NoReturn:
     """Raise the 422 of a refused claim. Inside the transaction, so a
     refusal after a write rolls that write back."""
@@ -1438,7 +1463,8 @@ async def claim_task(
     * Already assigned and already started: 200, and no activity row.
 
     The assignee half reuses the path of ``set_assignees``: the personal
-    project guard, ``insert_assignees``, an ``assignment`` activity,
+    project guard, the key insert (``_insert_claim_assignees``, the SQL of
+    ``insert_assignees`` with ``RETURNING``), an ``assignment`` activity,
     ``ensure_watchers``, ``notify(kind="assigned")`` and the
     ``pm.task.assigned`` event. ``notify`` drops the actor, so a self claim
     pings nobody. ``record_activity`` stamps ``meta.via`` on both rows.
@@ -1473,9 +1499,15 @@ async def claim_task(
                 {"tid": task_id},
             )).fetchall()
         }
-        added = sorted({me} - current)
-        await assert_assignable_here(db, str(seen.project_id), set(added))
-        await insert_assignees(db, task_id, added, by=actor(user))
+        wanted = sorted({me} - current)
+        await assert_assignable_here(db, str(seen.project_id), set(wanted))
+        # Final fix (review P2): `added` is the set that THIS insert wrote,
+        # not the set that the read above missed. Two claims of one member
+        # with no If-Match both read an empty set, and the second insert
+        # writes nothing. Without RETURNING the second claim also wrote an
+        # `assignment` row, answered `assigned: true` and emitted
+        # `pm.task.assigned` for a row it did not write.
+        added = await _insert_claim_assignees(db, task_id, wanted, by=actor(user))
 
         # 3. The row lock, and the row as the lock read it (fix round 1).
         # Two claims serialise here, and the second one sees the new
@@ -1533,7 +1565,7 @@ async def claim_task(
 
         row = await load_visible_task(db, vis, task_id)
         result = row_to_dict(row, TaskModel)
-        result["assignees"] = sorted(current | set(added))
+        result["assignees"] = sorted(current | set(wanted))
         await attach_agent_state(db, [result])
         result["moved"] = moved is not None
         result["assigned"] = bool(added)
