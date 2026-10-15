@@ -1,5 +1,5 @@
 -- ============================================================================
--- 266_pm_agent_runs.sql — agent runs on a task, and the typed activities of
+-- 267_pm_agent_runs.sql — agent runs on a task, and the typed activities of
 -- each run (the Plane model).
 --
 -- What: two new tables and one wider CHECK.
@@ -37,7 +37,7 @@
 -- from request input.
 -- The number is taken at build time (R1). On 2026-10-14 main held 264, and
 -- the open branch ws55-ea6d held 265 (`265_pm_tasks_source_mcp.sql`). So
--- this file takes 266. Check it again at merge.
+-- this file takes 267. Check it again at merge.
 -- Pinned by tests/unit/test_agent_runs_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
