@@ -504,7 +504,10 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-6g (2026-10-15) added the archive request and its approval.
     # The chat archives through `archive_task`.
     "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
-    "approve_task_archive": "WS-55, in-product chat parity, after EA-12e",
+    # ⚠️ NEVER a chat tool (EA3-40): only the run's member answers, in the
+    # card. Do not build it for the assistant. It stays here so the
+    # chat-coverage fence knows the route.
+    "approve_task_archive": "WS-55 EA3-40: member-only answer in the card, never a chat tool",
 }
 
 
