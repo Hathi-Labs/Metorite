@@ -14678,9 +14678,9 @@ The eval module name follows the pattern of `evals/email_insights/`. Read it aga
 audit of 2026-10-14 returned GO-NARROWED. Its narrowing replaces scope items 1, 4 and 5 above.
 
 - **One helper.** `acb_skills/untrusted.py` holds `UntrustedFrame` and `frame_untrusted`. One
-  token from `secrets.token_hex(8)` serves each model call. The frame removes each copy of the
-  token. It breaks each run of three angle brackets, a trusted tag, a chat-role token and a
-  heading line. It cuts no text. The attachment frame and the two Insights frames use it now.
+  token from `secrets.token_hex(8)` serves each model call. Since fix round 3, the module has two
+  modes, and the round 3 block below states them. It cuts no text. The attachment frame and the
+  two Insights frames use it now.
   `agent_edge/tools.py` keeps its own `{"untrusted_text"}` shape, because it is not a marker
   framer.
 - **The six paths.** `read_email` and `read_thread` frame their text. A sender writes the
@@ -14750,6 +14750,32 @@ Each P1 has a mutation that turns its fence red.
   breaks them. The list leaves out about 100 math comparison signs and the French quotes.
 - **P2, Insights quotes.** A quote of the framed copy is stored as the span of the source.
 - **Prove.** The eval holds 30 attack mails and 14 paths, and it passes with zero failures.
+
+**Fix round 3 (2026-10-15).** The tag rule failed three rounds in a row, so round 3 changes the
+design. Each P1 has a mutation that turns its fence red.
+
+- **Two modes.** Mode (a) is `neutralise`, for text INSIDE a frame. It removes each copy of the
+  token until none is left, and it breaks each run of three or more brackets. It no longer
+  rewrites a tag or a heading, because the frame and the data note carry that job.
+- **Mode (b)** is `defang_trusted`, for learned text OUTSIDE every frame. That is a learned
+  pattern, the learned style, the learned memories and the reply memories. It removes each
+  format character, folds the text to NFKC, and then changes EACH bracket to `(` or `)`.
+- **The bracket set of mode (b)** holds the ASCII brackets, the look-alikes and the tag block
+  U+E0000 to U+E007F. It has no regular expression for a tag, and no exemption for `@` or `:`.
+  The eval now checks that no learned text outside a frame holds a bracket.
+- **P1, time.** Both modes run in one linear pass. `neutralise` takes about 0.1 s on 200 KB of
+  the worst nesting, and a test holds it under 1 s.
+- **P1, the upward-egress mark.** The mark now has the key of the chat session: the bound
+  tenant, the member and the session id of the run context. No request field reaches it.
+- **The store of the mark** is tenant Redis, through the prefix wrapper. Its TTL is 400 days,
+  and each read slides it, because a chat has no retention bound. The bound of 4096 runs is gone.
+- **Fail closed.** When Redis does not answer, the gate reads the session as marked. A test in the
+  real harness runs two turns of one session. The second turn is a new run, and the gate refuses
+  its `fetch_page`. Another session and another org stay clear.
+- **P2, the card.** A batch run, or a run with no member, cannot show the card. So the gate refuses
+  the call at once, by the rule of the MCP card. It never waits on the relay.
+- **The import stub.** When `acb_skills` does not import, the gate reads each session as marked.
+- **Prove.** The eval holds 34 attack mails and 14 paths, and it passes with zero failures.
 
 **"Draft with AI" and forms.** "Draft with AI" in the composer still fills a form that the mail
 gives. It can fill the form with facts from the knowledge base. The member reviews the draft

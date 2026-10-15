@@ -249,11 +249,16 @@ clone cache.
    (`is_egress_request`). The orchestrator decides the flag
    (`_tool_injection._run_no_egress`), because this package cannot import it.
    Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
-   WS-17 EM-G11d round 2: `UNTRUSTED_INPUT_AGENTS` names the agents that
-   read stranger text. `mark_untrusted_answer` records, by run id, a run
-   that read the answer of one, and `read_untrusted_answer` reads it. Then
-   `permission_policy.decide` answers `untrusted_answer_confirm` for each
-   egress call: the member's card first, and no call with no card channel.
+   WS-17 EM-G11d: `UNTRUSTED_INPUT_AGENTS` names the agents that read
+   stranger text. `mark_untrusted_answer` marks the CHAT SESSION that read
+   the answer of one. The key is the bound tenant, the member and the
+   session id of the run context, never a request field. The mark lives in
+   tenant Redis (namespace `egress-mark`, a sliding TTL of 400 days).
+   `session_is_marked` is the async reader, and it FAILS CLOSED: a Redis
+   fault reads as marked. `read_untrusted_answer` is the sync reader of the
+   process set. Then `permission_policy.decide` answers
+   `untrusted_answer_confirm` for each egress call: the member's card first,
+   and no call with no card channel.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`
    (H-236). Every tool of every in-repo agent states it, and the WS43-F24
    fence reads the real registry to check. The risk block of the addendum is
@@ -338,12 +343,13 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    EM-G11d, UMCC, spec `email_app_master_plan.md` §12.3.13.8). Make one
    `UntrustedFrame` for each model call. `wrap(label, text)` puts the text
    between two marker lines that hold a random token, and `note(what)` is the
-   data note. The frame removes each copy of the token, and it breaks each
-   marker shape, trusted tag, chat-role token and heading line, also in the
-   look-alike and invisible forms. A broken bracket becomes `[` or `]`. It
-   cuts no text. `neutralise(text, "")` serves learned text that sits in a
-   trusted tag. The email paths, the attachment frame and the Insights frames use
-   it. Do not build a `<<<` marker anywhere else. `agent_edge/tools.py`
+   data note. Two modes, each one linear. Mode (a), `neutralise`, is for
+   text INSIDE a frame. It removes each copy of the token until none is
+   left, and it breaks each run of three or more brackets to `[` or `]`.
+   Mode (b), `defang_trusted`, is for learned text OUTSIDE every frame. It
+   changes EACH bracket, ASCII, look-alike or tag block, to `(` or `)`.
+   Do not add a tag regex or an exemption to mode (b). It cuts no text. The
+   email paths, the attachment frame and the Insights frames use it. Do not build a `<<<` marker anywhere else. `agent_edge/tools.py`
    keeps its own `{"untrusted_text"}` shape for WS-55. Fences:
    `tests/unit/test_untrusted_frame.py` (the scan for a second framer) and
    `evals/email_injection/`.
