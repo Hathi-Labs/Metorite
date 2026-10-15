@@ -162,8 +162,8 @@ _COMPANY_SEARCH_SWAPS: tuple[tuple[str, str], ...] = (
         "1. For data questions: call retrieve_entity_context or retrieve_sales_context FIRST.\n",
         "1. When the member asks about the company, its work, its customers, its\n"
         "   mail or its policies, call search_company first. Answer from what it\n"
-        "   returns, and cite each item you used. When it returns nothing, say so,\n"
-        "   and offer to draft a page.\n",
+        "   returns, and cite each item you used. When it returns nothing, say\n"
+        "   that the company's records hold nothing on it.\n",
     ),
     (
         "5. Every factual claim from retrieval must cite [entity:uuid] tokens exactly as returned.\n",

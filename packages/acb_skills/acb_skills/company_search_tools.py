@@ -192,7 +192,7 @@ def format_answer(body: Any) -> str:
         lines.append("(no matching records)")
     if skipped:
         names = ", ".join(_line(s) for s in skipped)
-        lines.append(f"Not searched, because the app failed or ran out of time: {names}.")
+        lines.append(f"Not searched (the app failed, refused or ran out of time): {names}.")
     return "\n".join(lines)
 
 

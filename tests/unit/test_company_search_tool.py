@@ -44,8 +44,8 @@ LEGACY_RULE_1 = "1. For data questions: call retrieve_entity_context or retrieve
 GROUNDING = (
     "1. When the member asks about the company, its work, its customers, its\n"
     "   mail or its policies, call search_company first. Answer from what it\n"
-    "   returns, and cite each item you used. When it returns nothing, say so,\n"
-    "   and offer to draft a page.\n"
+    "   returns, and cite each item you used. When it returns nothing, say\n"
+    "   that the company's records hold nothing on it.\n"
 )
 
 
