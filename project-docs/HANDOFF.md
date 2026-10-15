@@ -5540,7 +5540,7 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-15 · WS-53 CRM-Q16 review
 
 
-### H-322 · Three calls on the CRM mapping design · [OWNER]
+### H-325 · Three calls on the CRM mapping design · [OWNER]
 - **Check:** read `crm_platform.md` §18.9.1, "Open, with a recommendation".
   If it still lists three open calls, this entry is open.
 - **Why.** The v4 design (§18.9) needs three owner answers before CRM-Q20
@@ -5555,7 +5555,7 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-16 · WS-53 §18.9 spec
 
 
-### H-323 · A Zoho module count is higher than the records the sync keeps · [AGENT]
+### H-326 · A Zoho module count is higher than the records the sync keeps · [AGENT]
 - **Check:** on prod, compare `crm_sync_runs.estimate` with the rows in
   `crm_module_records` for DEWiN (`f01d029f-…`). If Payment_Made still holds
   3,003 rows against an estimate of 4,947, this entry is open.
@@ -5571,7 +5571,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `crm_platform.md` §18.7 (the generic store) and §18.9.2
 - **Added:** 2026-10-16 · WS-53, DEWiN import
 
-### H-324 · A Zoho task on a custom-module record is skipped · [AGENT]
+### H-327 · A Zoho task on a custom-module record is skipped · [AGENT]
 - **Check:** on prod, read the counts of DEWiN's last run. If `tasks` shows
   `unlinked` equal to `seen` (1,145 on 2026-10-15), this entry is open.
 - **Why.** DEWiN keeps its work in custom modules. A Zoho task whose parent

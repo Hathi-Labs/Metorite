@@ -2123,7 +2123,7 @@ and CRM-Q17b hides the empty Deals row. The custom modules fill better than
 Contacts. Operator Associates has 71 of 127 fields over 80% filled, and 35
 under 20%.
 
-The run also found two gaps, H-323 and H-324. Payment Made holds 3,003 of
+The run also found two gaps, H-326 and H-327. Payment Made holds 3,003 of
 Zoho's 4,947 records. 1,145 Zoho tasks were skipped, because their parent is
 a custom-module record.
 
