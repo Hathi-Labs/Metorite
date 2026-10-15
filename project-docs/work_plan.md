@@ -5286,7 +5286,7 @@ Owner direction, 2026-10-15, in chat. The owner asked for a knowledge base
 in the shape of Notion or Confluence, linked to Artifacts, queryable by the
 chat and every agent, fed by Dropbox, OneDrive and Google Drive, and able to
 give insights in chat and My Day. On the proposal: "Go with defaults."
-Board: **WS-60**. Owning spec: **`specs/knowledge_base.md`**.
+Board: **WS-61**. Owning spec: **`specs/knowledge_base.md`**.
 
 1. **Knowledge is an authored, cited store with one index.** It is not a
    surface over Mem0. It replaces the framing of `future_modules_roadmap.md`

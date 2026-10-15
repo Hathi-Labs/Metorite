@@ -2,7 +2,7 @@
 
 **Status: ACTIVE, 2026-10-15.** Owner directive of 2026-10-15, in chat.
 The owner accepted every proposal of §15 and every default of §16 the same
-day ("Go with defaults"), recorded as **D104**. Board row **WS-60**.
+day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
 Verified against the code on 2026-10-15. Nothing is built yet.
 
 **What this spec owns.** The Knowledge app: the spaces, the pages, the files,
@@ -18,9 +18,12 @@ read and grow it. And it owns the "Save to Knowledge" act on an artifact.
 - **The connection registry and the credential rule.** `integrations_console.md`
   (WS-54, D96) owns `integration_connections` and the store module. A
   Knowledge source is one more row in it, and this spec adds no second store.
-- **The artifact file store.** `navigation_shell.md` NS-6 and
-  `agent_file_and_memory_framework.md` own `agent_blob`. Knowledge copies out
-  of it, with provenance, and never reads it directly.
+- **The artifacts.** `artifact_management.md` (WS-60, AM-1 built 2026-10-15)
+  owns the `artifacts` registry, its scope and shares, and the library.
+  `agent_file_and_memory_framework.md` owns the bytes in `agent_blob`. A file
+  on a page is an artifact, registered through `register_artifact`, and
+  Knowledge keeps only the join. "Save to Knowledge" copies an artifact's
+  text into a page, with the artifact id as provenance (§10.1).
 - **The judge and the delivery.** `my_day_feed.md` (WS-58) owns the cards
   and `proactive_reach.md` (WS-59) owns the message. Knowledge registers one
   provider and adds no feed of its own.
@@ -49,9 +52,9 @@ read and grow it. And it owns the "Save to Knowledge" act on an artifact.
    which folders to index. The bytes stay at the provider until a member
    says "Keep a copy". So the cost and the exposure grow only with a choice.
 4. **An artifact becomes knowledge by a copy with provenance.** An artifact
-   has no identity of its own and inherits the chat room's visibility. "Save
-   to Knowledge" copies the file into a space, records where it came from,
-   and asks for a visibility once. The artifact stays where it is.
+   has its own row and its own audience, through its scope and shares. A page
+   has a space. "Save to Knowledge" copies the text into a space, records the
+   artifact id, and asks for a space once. The artifact stays where it is.
 5. **The assistant reads knowledge through tools, and knows what exists.**
    Each turn carries a small index of the spaces the member can see. So the model
    knows what to ask for. It then calls `search_knowledge`, and every
@@ -133,12 +136,12 @@ read and grow it. And it owns the "Save to Knowledge" act on an artifact.
 | What | Where | What it means for this spec |
 |---|---|---|
 | pgvector is installed, with ivfflat cosine indexes on three 1536-dim tables | `infra/postgres/01_schema.sql:6`. `mem0_memories`, `email_embeddings` (migration 73), `wa_message_embeddings` (migration 111) | The index type is proven. Knowledge adds one table of the same shape and no new extension |
-| No stored `tsvector` column anywhere. Email and WhatsApp search use expression GIN indexes with `websearch_to_tsquery` | `72_email_search_fts.sql:30`, `routes/email/transport/search.py:217` | `kb_chunks.tsv` is the first stored one. A generated column keeps it honest |
+| One stored `tsvector` column, `artifacts.search_tsv`, since AM-1 (2026-10-15). Email and WhatsApp search use expression GIN indexes with `websearch_to_tsquery` | `268_artifacts.sql:73`, `72_email_search_fts.sql:30`, `routes/email/transport/search.py:217` | `kb_chunks.tsv` is a generated column, so it cannot drift from the text. The query shape follows the email search, the house template |
 | `tier-embed` is catalog and price data only. No code calls it. The Router has no embedding door | `ai_tier_routing.md:579`, `customer_console/router.py:627-645` | Knowledge embeds through the gateway `POST /v1/embeddings` door, in one function. WS-45 S5 moves that door onto the Router, and Knowledge changes nothing when it does |
 | `acb_search` (BO-22) is planned and unbuilt. The workflows catalog search waits for it | `FOUNDATION_BUILDOUT_CHECKLIST.md:289`, `routes/workflows/search.py:10-14` | Knowledge builds it, as `packages/acb_search/`, with one namespace. The catalog can adopt it later |
 | `agent_kb_chunk` is designed and unbuilt | `agent_architecture.md` §7 | `kb_chunks` is that shape, keyed by the company and not by an agent. An agent's base knowledge (layer 3) becomes a space with `agent:<slug>` as a reader. That is §8.5 |
-| An artifact is a workspace file, not an entity. Identity is `(agent_name, instance, path)`. Bytes are BYTEA in `agent_blob`. Visibility is the chat room's | `routes/workspace.py:1732-2964`, `71_agent_blob_store.sql`, `136_agent_blob_instance.sql` | A link to an artifact must hold `session_id` and `path`. A page made from an artifact must be a copy with its own visibility (§10.1) |
-| The only lifecycle verb on an artifact is "promote", from `inputs/` to `agent-data/` | `routes/workspace.py:2365-2437` | "Save to Knowledge" is a new act, in the Artifacts app and on the chat card |
+| An artifact has a row since AM-1: `artifacts(id, owner_email, agent_name, instance, path, sha256, kind, title, scope, search_tsv, …)`, with `artifact_shares` in the D12 grammar. The bytes stay BYTEA in `agent_blob`. The registry is dark behind `ARTIFACT_REGISTRY_ENABLED` | `268_artifacts.sql`, `acb_memory/artifacts.py`, `artifact_management.md` §4 and §5 | A link to an artifact holds its UUID. A page made from an artifact is a copy with its own space, because the artifact's audience is its scope and shares, and a page's audience is its space (§10.1). A file on a page is an artifact, and Knowledge adds no file store (§4.3) |
+| The lifecycle verbs on an artifact are "promote" (`inputs/` to `agent-data/`), and from AM-2 star, rename, trash and share. None makes a page | `routes/workspace.py:2365-2437`, `artifact_management.md` §6.1 | "Save to Knowledge" is a new act, on the artifact page, on the chat card and in the library |
 | One registry of connections, one encrypted column, one store module, and a fence | `245_integration_connections.sql`, `gateway/connections/store.py`, `tests/unit/test_crm_connection.py` | A source row is `provider ∈ google_drive, onedrive, dropbox`, `owning_app = knowledge`. ⚠️ `save_credential` and `_DISCONNECT_SQL` carry CRM-only side effects (`_DROP_PROFILES_SQL`, the `provider_meta` strip). KB-3a lifts them behind an `owning_app` test first |
 | The CRM sync is provider-generic: an adapter protocol, a discovery step, cursors, a run lock, and an in-process loop that ticks every 60 s | `gateway/crm_sources/base.py:184-259`, `gateway/crm_sync/engine.py`, `scheduler.py`, `runs.py` | `gateway/kb_sources/` and `gateway/kb_sync/` copy the shape, and share `shared_token.fresh_credential`. They do not import the CRM engine, because its steps are CRM entities |
 | Metorite owns ONE Google OAuth client. Google keeps one grant per account and client | `email_app_master_plan.md:552` (D-EM-5), `263_email_gmail_grant_shared.sql` | A Drive scope on the same client shares the Gmail grant. Disconnecting one must not revoke the other. §7.4 |
@@ -226,11 +229,20 @@ fires when it passes (§9).
 
 ### 4.3 A file on a page
 
-A file is an `attachments` row joined through `kb_page_files`. The upload goes through the existing attachments seam, with its 15 MB cap and
-its blocklist. The join carries the page, the position and the caption. An
-image renders inline, from the Knowledge file route, with the same MIME
-safelist and `nosniff` header as the Projects attachment route. Any other
-file renders as a card with a download.
+A file on a page is an artifact. The upload goes through the artifact seam
+of `artifact_management.md` §4.5. That is one call to `register_artifact`
+with `via = 'app'`, which writes the blob and the row in one transaction. The
+join `kb_page_files` carries the page, the artifact id, the position and the
+caption. An image renders inline, from the artifact's own file route, with
+the MIME safelist and the `nosniff` header. Any other file renders as a card
+with a download.
+
+So a page file shows in the Artifacts library too, with "On a page" as its
+provenance, and Knowledge adds no second file store.
+
+This makes KB-2a depend on AM-1, which is built and dark. KB-2a reads the
+registry behind the same flag, and the Knowledge flags stay off until
+`ARTIFACT_REGISTRY_ENABLED` is on for the org.
 
 The text of a file is indexed under its page. `attachment_text.extract_text`
 reads it once at upload, and the chunks carry `source_kind = 'file'`.
@@ -285,9 +297,16 @@ CREATE TABLE kb_space_grants (
 );
 ```
 
-`subject` is checked by `validate_grant_subject`, moved to
-`acb_auth/permissions.py` in KB-1 so Projects and Knowledge share one
-validator. The grant closure reuses the shape of `_VISIBLE_PROJECTS_SQL`:
+`subject` is checked by the one shared validator. Today Projects holds
+`validate_grant_subject` in `routes/projects/core.py:3383`, with a note that
+it belongs in `acb_auth/permissions.py`. AM-1 wrote a second grammar in
+`268_artifacts.sql` with `user:<email>` and `project:<uuid>`.
+
+KB-1 uses
+whichever shared validator main holds at build time, and moves the Projects
+one to `acb_auth` when none exists. The bare email of Projects and the
+`user:` prefix of Artifacts must become one spelling before KB-1. HANDOFF
+**H-319** carries that to the WS-60 session. The grant closure reuses the shape of `_VISIBLE_PROJECTS_SQL`:
 the member's email, the member's groups as `group:<slug>`, and `org`.
 
 ### 5.2 The permissions
@@ -359,7 +378,7 @@ CREATE TABLE kb_links (
     target_kind     TEXT NOT NULL CHECK (target_kind IN
                       ('page','task','project','crm_record','email_thread',
                        'meeting','artifact','url')),
-    target_id       TEXT NOT NULL,   -- a UUID, or for an artifact '<session_id>:<path>', or a URL
+    target_id       TEXT NOT NULL,   -- a UUID (an artifact's too), or a URL
     label           TEXT,
     created_by      TEXT NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -732,26 +751,31 @@ list", is §19, after the index has data to contradict.
 
 ### 10.1 Save to Knowledge
 
-An artifact is a file in a chat's workspace with the room's visibility and
-no identity of its own (§3). So the act is a copy:
+An artifact has a row, a scope and shares (§3). A page has a space. The two
+audiences differ, so the act is a copy, and the registry row is the
+provenance:
 
-1. The member clicks "Save to Knowledge" on the artifact card, in the chat's
-   Files panel, or in the Artifacts app. The assistant can call
+1. The member clicks "Save to Knowledge" on the artifact card, on the
+   artifact page `/artifacts/<id>`, or in the library. The assistant can call
    `save_to_knowledge` and the same card appears.
 2. A small sheet asks two things: the space (default `me`) and the title
    (default the file name). Nothing else.
-3. `POST /knowledge/from-artifact` reads the file through
-   `GET /agent/workspace/{session}/file`, so the room rules apply. A Markdown
+3. `POST /knowledge/from-artifact` takes the artifact id. It reads the row
+   through the artifact read rule of `artifact_management.md` §5.2. So a
+   member copies only what they can see. It reads the bytes through the
+   artifact file route. A Markdown
    or HTML file becomes the page body (HTML converted to Markdown). A React artifact saves its rendered HTML as a file on a new page. The source
    is a second file. Any other kind becomes a file on a new page.
-4. The page carries `origin = {kind: 'artifact', session_id, path, sha256,
-   agent_name}` in its metadata, and a `kb_links` row of kind `artifact`
-   points back. The page history shows "Saved from the chat 'Q3 pricing
-   review' by Ravi".
+4. The page carries `origin = {kind: 'artifact', artifact_id, sha256,
+   version}` in its metadata, and a `kb_links` row of kind `artifact` points
+   back. The page history shows "Saved from the artifact 'Q3 pricing review'
+   by Ravi". The artifact page shows "In Knowledge: <page>", from the same
+   row.
 5. The artifact is untouched.
 
-A later edit of the artifact does not change the page. When the sha differs,
-the page says so: "The chat file changed after this was saved. Compare."
+A later edit of the artifact does not change the page. When the artifact's
+`version` or `sha256` differs from the origin, the page says so: "The
+artifact changed after this was saved. Compare."
 
 ### 10.2 Knowledge about this
 
@@ -799,7 +823,13 @@ The index then answers "what did we ship in September".
 
 The app mounts no ⌘K listener, no palette, no bell and no assistant rail.
 `seams.test.ts` holds that. The page registers in `appBar.test.ts`
-`APP_BAR_HOME` and `e2e/app-title-bar.spec.ts` `PAGES`.
+`PREVIEW_BAR_HOME` while preview, and moves to `APP_BAR_HOME` at KB-12. It
+registers in `e2e/app-title-bar.spec.ts` `PAGES` and in its features mock.
+
+**The jobs land with KB-12, not before.** The gateway's `held_jobs`
+(`routes/shell/intent.py`) filters a job by feature and not by launch
+status. So a job of a preview app would reach the tier-2 coordinator for
+every member. A preview pane carries its nav entry and no job.
 
 ### 11.1 The surface — what a member sees
 
@@ -810,7 +840,7 @@ first screen is the Company space.
 |---|---|
 | Spaces | The spaces as cards, then a space's page tree on the left and the page on the right. This is the Notion shape, and the whole app for most members |
 | Search | The one search box, results grouped by space, each with the heading path and the matched text. The same results the assistant sees |
-| Files | Every file and connected document the member can see, as a list with kind, size, space and where it lives. Filter by kind and source. This is the "file app" the owner raised, as a view |
+| Files | The connected documents and the files on pages the member can see, as a list with kind, size, space and where it lives. Filter by kind and source. A link opens the Artifacts library for everything members and agents make. This is the "file app" the owner raised, as a view, and the library of `artifact_management.md` stays the one library |
 | Sources | The connected folders, their trees, the include switches, the last sync. An admin connects an org source here. A member connects a personal one here |
 | Review | For a space manager: the drafts proposed by agents, the pages past review, the gaps. Hidden from a member with no `manage` |
 
@@ -834,7 +864,7 @@ compact density, a changed accent, and four widths.
 | `kb_space_grants` | §5.1 | — |
 | `kb_pages` | id, organization_id, space_id, parent_id, position, title, body_md, state, author_email, reviewers TEXT[], review_at, source_ref (document id or null), origin JSONB, published_at, archived_at, updated_at, created_at | inherits the space, plus the author and the reviewers of a draft |
 | `kb_page_versions` | id, organization_id, page_id, version, body_md, title, author_email, reason, `via`, created_at | as the page |
-| `kb_page_files` | organization_id, page_id, attachment_id, position, caption, created_by, created_at | as the page |
+| `kb_page_files` | organization_id, page_id, artifact_id (→ `artifacts`), position, caption, created_by, created_at | as the page |
 | `kb_links` | §5.5 | as the page |
 | `kb_chunks` | §6.1 | as the page or the document |
 | `kb_gaps` | id, organization_id, question_norm, question, asker_email, space_hint, asked_at, resolved_page_id | the space the hint names, else org |
@@ -941,9 +971,9 @@ its own branch, three or four in flight at most.
 
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
-| **KB-0** | The feature, the permission, the pane at `preview`, the manifest, the page scaffold with `AppTopBar`. The three spaces move to KB-1, with their table | `feature:knowledge` and `knowledge:manage` exist. `/knowledge` renders "Knowledge" as the one `h1` behind the flag. `nav.test.ts` and `appBar.test.ts` pass. `seams.test.ts` is unchanged | AGENT-SAFE |
-| **KB-1** | The tables of §12 except the sources, the three spaces of §4.1, `visible_pages_clause`, `validate_grant_subject` moved to `acb_auth`, the page and space routes of §5.3, the manifest and its coverage test | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green | AGENT-SAFE |
-| **KB-2a** | The Spaces view, the page tree, a Markdown editor with preview, publish, versions, files on a page through the attachments seam | A member writes, publishes, attaches an image, reverts. The visual review passes in four contexts | AGENT-SAFE |
+| **KB-0** | The feature (`FEATURES` and a `feature_catalog` row, in the shape of `144_crm.sql:558`), the capability `knowledge:manage` in `CAPABILITIES` (the owner holds it through `*`, and the admin seed is KB-1), the pane at `preview` with no job, `HREF_FEATURES` in `access.ts`, the page scaffold with `AppTopBar`, `PREVIEW_BAR_HOME`, the e2e `PAGES` and features mock, and the Preview row of `launch_surface.md` §2. No flag: a preview route renders by URL, and the nav entry stays hidden | `feature:knowledge` and `knowledge:manage` exist, and `test_org_access_control.py` proves both. `/knowledge` renders "Knowledge" as the one `h1`, by URL. `nav.test.ts`, `navAccessAgreement.test.ts` and `appBar.test.ts` pass. `seams.test.ts` gains no debt | AGENT-SAFE |
+| **KB-1** | The tables of §12 except the sources, the three spaces of §4.1, the seed of `knowledge:manage` onto `admin` through `provision_org_roles` (the shape of 207 §2), `visible_pages_clause`, the shared subject validator (§5.1), the page and space routes of §5.3, the manifest and its coverage test | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green | AGENT-SAFE |
+| **KB-2a** | The Spaces view, the page tree, a Markdown editor with preview, publish, versions, files on a page through `register_artifact` (§4.3) | A member writes, publishes, attaches an image, reverts. The visual review passes in four contexts | AGENT-SAFE |
 | **KB-2b** | The TipTap editor over the same Markdown, links as pills with `[[`, the "Knowledge about this" component | The body round-trips through Markdown with no loss for the supported marks. A task shows its linked pages | AGENT-SAFE |
 | **KB-3** | `packages/acb_search`: chunking, the generated `tsv`, `embed()` through `/v1/embeddings` with a `usage_event`, `query()` with fusion, the index-on-publish hook, `GET /knowledge/search`, the Search view, the command-bar provider | A published page is found by an exact token and by a paraphrase. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds | AGENT-SAFE to build. The embed flip spends credits: owner |
 | **KB-3a** | Lift the CRM-only side effects out of `connections/store.py` behind an `owning_app` test | `save_credential` for `owning_app = knowledge` touches no `crm_source_profiles` row. The CRM tests are unchanged | AGENT-SAFE |
@@ -969,7 +999,14 @@ with no index is the assistant we have today.
 ## 18. Verification commands
 
 ```bash
-# The fences this spec names
+# KB-0 (the fences that exist today)
+uv run pytest tests/unit/test_org_access_control.py tests/unit/test_auth_me_features.py \
+  tests/unit/test_shell_intent.py tests/unit/test_tenant_coverage.py tests/unit/test_every_app_by_default.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/nav.test.ts \
+  src/lib/navAccessAgreement.test.ts src/lib/shell/appBar.test.ts src/lib/shell/seams.test.ts \
+  src/lib/shell/registry.test.ts && npx playwright test e2e/app-title-bar.spec.ts
+
+# The fences this spec adds, from KB-1 on
 uv run pytest tests/unit/test_kb_visibility_one_seam.py tests/unit/test_kb_one_index.py \
   tests/unit/test_knowledge_chat_coverage.py tests/unit/test_kb_sources_no_global_creds.py -q
 
