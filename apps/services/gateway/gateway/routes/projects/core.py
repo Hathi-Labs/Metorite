@@ -2975,6 +2975,43 @@ async def apply_status_transition(
     }
 
 
+# ── The task row lock (WS-55 EA-6b fix round 2) ─────────────────────────────
+
+#: ⚠️ **ONE lock order for the assignee rows of an existing task: the task
+#: row FIRST, then the `pm_task_assignees` key.** Every writer that adds or
+#: removes an assignee of a task that already exists calls :func:`lock_task`
+#: before its first assignee write: `claim_task`, `set_assignees`,
+#: `move_task_in` when the move assigns, and the bulk edit when it changes
+#: people. The other writers already hold the row first (the importer's update
+#: writes the row before `_sync_assignees`) or write a NEW task (a capture,
+#: the importer's create, a recurring successor), which no one else can hold.
+#:
+#: Why the row first, and not the key first. Both orders existed. A PUT
+#: inserted the key and then bumped the row (`touch_task`). A move or a bulk
+#: patch wrote the row and then the key. A claim that locked the row and then
+#: inserted the key deadlocked against the PUT, 10 times in 10 (fix round 1
+#: re-verify). Putting the claim's key first would deadlock it against the
+#: move and the bulk patch instead. Only one order for every writer removes
+#: the cycle, and the row is the one that every writer already touches.
+#:
+#: NO KEY, as `admin._LOCK_STATUS_SET_SQL` explains: it does not conflict with
+#: the FOR KEY SHARE of a foreign key check, and it still queues a second
+#: writer. Fence: `tests/unit/test_mcp_edge_claim.py`, `TestTheClaimRace`.
+_LOCK_TASK_SQL = (
+    "SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid) FOR NO KEY UPDATE"
+)
+
+
+async def lock_task(db: Any, task_id: str) -> Any:
+    """Lock one task row until the transaction ends, and return the row as
+    the lock read it. The caller has passed its visibility load, so the lock
+    reads by id only. 404 when a delete crossed that load."""
+    row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return row
+
+
 # ── The satellite bump (WS-27ae / P-27) ─────────────────────────────────────
 
 async def touch_task(db: Any, *task_ids: Any) -> None:

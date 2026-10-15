@@ -63,6 +63,7 @@ from gateway.routes.projects.core import (
     load_default_status,
     load_visible_project,
     load_visible_task,
+    lock_task,
     next_task_number,
     node_kind,
     now,
@@ -844,6 +845,12 @@ async def move_task_in(
     as it always did.
     """
     task_id = str(task.id)
+    if payload.assignees is not None:
+        # WS-55 EA-6b fix round 2. Promote-and-assign writes assignee rows,
+        # so it takes the task row first, the one order of every assignee
+        # writer (`core.lock_task`). A move with no field change wrote the
+        # key before it bumped the row.
+        await lock_task(db, task_id)
     values: dict[str, Any] = {}
     #: Values that had no field in the destination (D-PM-29). Written to
     #: the timeline after the move, with their values, by `record_drops`.
@@ -1298,7 +1305,12 @@ async def set_assignees(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        task = await load_visible_task(db, vis, task_id)
+        await load_visible_task(db, vis, task_id)
+        # WS-55 EA-6b fix round 2. The task row before the assignee key, the
+        # one order of every assignee writer (`core.lock_task`). Without it a
+        # PUT that adds a member and a claim by that member deadlocked: the
+        # PUT held the key and waited for the row, and the claim the reverse.
+        task = await lock_task(db, task_id)
         # WS-27aa / H4 — the tenant the dispatch sink will bind, read HERE:
         # inside the request's already-bound session, off the task's own
         # `organization_id` (NOT NULL since migration 161). It is a stored
@@ -1407,27 +1419,6 @@ CLAIM_REFUSALS: frozenset[str] = frozenset({
 })
 
 
-#: The row lock of a claim (fix round 1). NO KEY, as the note on
-#: ``admin._LOCK_STATUS_SET_SQL`` explains: it does not conflict with the
-#: FOR KEY SHARE of a foreign key check, and it still queues a second claim.
-#: The order is the PATCH's: a PATCH takes the same task row lock at its
-#: UPDATE, then the status row's KEY SHARE. The claim takes the task row
-#: first too, so no new deadlock order exists. The caller has passed the
-#: visibility load, so the lock reads by id only.
-_LOCK_TASK_SQL = (
-    "SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid) FOR NO KEY UPDATE"
-)
-
-
-async def _lock_task(db: Any, task_id: str) -> Any:
-    """Lock one task row until the transaction ends, and return the row as
-    the lock read it. 404 when a delete crossed the visibility load."""
-    row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": task_id})).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return row
-
-
 def _refuse_claim(code: str, message: str) -> NoReturn:
     """Raise the 422 of a refused claim. Inside the transaction, so a
     refusal after a write rolls that write back."""
@@ -1473,7 +1464,9 @@ async def claim_task(
         # done, used to both pass the checks and both write. The second
         # claim now waits here, then sees the new `updated_at` and gets 412,
         # and `apply_status_transition` gets the row that the lock read.
-        task = await _lock_task(db, task_id)
+        # Fix round 2: the row comes before the assignee key, as it does for
+        # every assignee writer (`core.lock_task` holds the rule).
+        task = await lock_task(db, task_id)
         # After the lock and before any write.
         require_precondition(task, if_match, row_to_dict(task, TaskModel))
         if getattr(task, "archived_at", None) is not None:

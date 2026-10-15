@@ -739,7 +739,7 @@ class TestTheClaimRace:
 
         task = _task(live, live.team, live.s.todo, "race claim and done")
         locked, patched = asyncio.Event(), asyncio.Event()
-        real = gateway_tasks._lock_task
+        real = gateway_tasks.lock_task
 
         async def held(db, task_id):
             row = await real(db, task_id)
@@ -750,7 +750,7 @@ class TestTheClaimRace:
                 await asyncio.wait_for(patched.wait(), 2)
             return row
 
-        monkeypatch.setattr(gateway_tasks, "_lock_task", held)
+        monkeypatch.setattr(gateway_tasks, "lock_task", held)
 
         async def race() -> tuple[httpx.Response, httpx.Response]:
             claim = asyncio.ensure_future(_gateway_unscoped(
@@ -768,6 +768,40 @@ class TestTheClaimRace:
         assert _consistent(live, task), (claim.text, _row(live, task))
         assert str(_row(live, task).status_id) in (live.s.done, live.s.doing)
 
+
+    @pytest.mark.parametrize("other", ["put", "bulk"])
+    async def test_a_claim_and_a_member_write_of_the_same_assignee_never_deadlock(
+            self, live, other):
+        """Fix round 2. A claim against a PUT of the assignees, or a bulk
+        people edit, that adds the same member. No barrier: the two requests
+        start together, ten times. Each run ends with no deadlock, one
+        assignee row and a consistent row. The claim gets 200, or 412 when
+        the member write landed first and moved the version on."""
+        for n in range(10):
+            task = _task(live, live.team, live.s.todo, f"claim vs {other} {n}")
+            version = await _version(live, task)
+            if other == "put":
+                method, path = "PUT", f"/projects/tasks/{task}/assignees"
+                body: dict[str, Any] = {"assignees": [MEMBER]}
+            else:
+                method, path = "POST", "/projects/tasks/bulk"
+                body = {"task_ids": [task], "assignees_add": [MEMBER]}
+
+            async def both(task: str = task, version: str = version, method: str = method,
+                           path: str = path, body: dict[str, Any] = body
+                           ) -> list[httpx.Response]:
+                return list(await asyncio.gather(
+                    _gateway_unscoped(live, "POST", f"/projects/tasks/{task}/claim",
+                                      body={}, if_match=version),
+                    _gateway_unscoped(live, method, path, body=body, signed=None)))
+
+            claim, member = await tw._in_scope(live, both)
+            assert member.status_code == 200, (n, member.text)
+            assert claim.status_code in (200, 412), (n, claim.text)
+            assert _assignees(live, task) == [MEMBER], n
+            assert _consistent(live, task), n
+            if claim.status_code == 200:
+                assert str(_row(live, task).status_id) == live.s.doing, n
 
 class TestTheClaimGuardsAndReach:
     """Fix round 1: the personal-project guard (R7 gap V4) and the reach of
