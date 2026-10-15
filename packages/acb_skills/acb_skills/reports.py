@@ -360,16 +360,40 @@ async def make_report(spec: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "documents are off in this chat. Answer in text"}
     try:
         report = check_report(spec)
-        layout = await asyncio.to_thread(layout_of, report)
     except (ValueError, TypeError, OverflowError) as exc:
         return {"ok": False, "error": str(exc)}
     given = spec.get("filename") if isinstance(spec.get("filename"), str) else ""
+    slug = slug_of(report["title"], given)
+    # The card's own validator, on the data the card gets, before any file.
+    refused = card_refusal({**report, "pdf": f"outputs/{slug}.pdf",
+                            "path": f"outputs/{slug}{REPORT_SUFFIX}"})
+    if refused:
+        return {"ok": False, "error": refused}
+    try:
+        layout = await asyncio.to_thread(layout_of, report)
+    except (ValueError, TypeError, OverflowError) as exc:
+        return {"ok": False, "error": str(exc)}
     if run is not None:
         # WhatsApp: the same PDF, as a file the member can forward. No card.
         from acb_skills.whatsapp_ui import queue_document
 
         return await queue_document(layout, docs.filename_of(report["title"], given))
-    return await _make_on_the_web(report, layout, slug_of(report["title"], given))
+    return await _make_on_the_web(report, layout, slug)
+
+
+def card_refusal(data: dict[str, Any]) -> str | None:
+    """Why the ``report`` card would refuse *data*, or None.
+
+    The ONE validator of the card is ``write_artifact.genui_report_refusal``
+    (B2, PR #1065), and ``emit_generative_ui`` calls it too. So the tool and
+    the card refuse the same data, and this module holds no copy of its caps.
+    Where a cap of the PDF is tighter (12 sources, a summary of 2000), the
+    tool's own check refuses first. Until #1065 merges the function does not
+    exist, and this returns None.
+    """
+    wa = importlib.import_module("acb_skills.write_artifact")
+    refuse = getattr(wa, "genui_report_refusal", None)
+    return refuse(data) if callable(refuse) else None
 
 
 async def _make_on_the_web(report: dict[str, Any], layout: dict[str, Any],

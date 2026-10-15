@@ -109,6 +109,51 @@ async def test_a_bad_spec_writes_nothing_and_says_what_to_fix(
     assert chat["writes"] == [] and chat["cards"] == []
 
 
+#: What the fake card validator answers.
+CARD_REFUSAL = "data: the report is 300000 characters, and the most is 200000. Shorten it."
+
+
+async def test_the_cards_own_validator_refuses_before_any_file(
+    chat: dict[str, list[Any]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One validator for the tool and the card: ``genui_report_refusal`` of
+    ``write_artifact`` (B2). make_report hands it the data the card gets."""
+    wa = importlib.import_module("acb_skills.write_artifact")
+    seen: list[Any] = []
+
+    def _refuse(data: object, where: str = "data") -> str | None:
+        seen.append(data)
+        return CARD_REFUSAL
+
+    monkeypatch.setattr(wa, "genui_report_refusal", _refuse, raising=False)
+    out = await reports.make_report(SPEC)
+    assert out == {"ok": False, "error": CARD_REFUSAL}
+    assert chat["writes"] == [] and chat["cards"] == []
+    (data,) = seen
+    assert data["path"] == "outputs/q3-pipeline-review.report.json"
+    assert data["pdf"] == "outputs/q3-pipeline-review.pdf"
+    assert data["kind"] == "metorite.report" and data["sections"]
+
+
+async def test_every_report_the_tool_makes_is_a_card_the_validator_accepts(
+    chat: dict[str, list[Any]],
+) -> None:
+    """The largest report make_report accepts: 8 kpis, 12 sources, 11 full
+    tables and the tiles. The card's validator must accept its data."""
+    wa = importlib.import_module("acb_skills.write_artifact")
+    if not hasattr(wa, "genui_report_refusal"):
+        pytest.skip("genui_report_refusal arrives with B2 (PR #1065)")
+    full_table = {**TABLE, "columns": list("ABCDEF"), "rows": [list("abcdef")] * 20}
+    spec = {**SPEC,
+            "kpis": [{"label": f"K{i}", "value": i} for i in range(8)],
+            "sources": [f"Source {i}" for i in range(12)],
+            "sections": [{"heading": f"S{i}", "visual": full_table} for i in range(11)]}
+    out = await reports.make_report(spec)
+    assert out["ok"] is True, out
+    (card,) = chat["cards"]
+    assert wa.genui_report_refusal(card["props"]["data"]) is None
+
+
 async def test_an_empty_spec_returns_the_field_guide_and_makes_nothing(
     chat: dict[str, list[Any]],
 ) -> None:

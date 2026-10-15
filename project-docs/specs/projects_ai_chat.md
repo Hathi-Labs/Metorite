@@ -2193,6 +2193,11 @@ mappers that build a spec by code from `report_render` and `crm_report`.
   `whatsapp_ui` in print mode. With the chart engine off, a chart is our own
   SVG, and the PDF places it as vector.
 - `write_artifact` saves both files. `emit_generative_ui` carries the card.
+- `write_artifact.genui_report_refusal` (B2) is the ONE validator of the
+  card. `make_report` calls it through `reports.card_refusal`, on the data
+  of the card, before it writes a file. So the tool and the card refuse the
+  same data. Where the PDF has a tighter limit, for example 12 sources, the
+  tool refuses first.
 - `whatsapp_ui` keeps the WhatsApp delivery. `queue_document` is the second
   half of its kind `document`. B1 split it out, so a ready layout can use it.
 
