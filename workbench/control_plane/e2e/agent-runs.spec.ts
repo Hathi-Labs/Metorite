@@ -388,7 +388,13 @@ async function openAskable(page: Page) {
 
 test("Ask an agent: pick a connection, send, and the run reads Queued", async ({ page }) => {
   test.setTimeout(120_000);
-  const { starts } = await stub(page, "none");
+  const vscode = {
+    ...CONNECTION,
+    id: "c2",
+    client_name: "VS Code",
+    client_origin: "https://vscode.dev",
+  };
+  const { starts } = await stub(page, "none", { connections: [vscode, CONNECTION] });
   await openAskable(page);
   await expect(page.locator("[data-agent-run-panel]")).toHaveCount(0);
 
@@ -398,7 +404,12 @@ test("Ask an agent: pick a connection, send, and the run reads Queued", async ({
   const send = dialog.getByRole("button", { name: "Send to agent" });
   // The instruction is required.
   await expect(send).toBeDisabled();
-  await expect(dialog.getByRole("combobox")).toHaveValue("c1");
+  // The first connection is picked for the member, who picks the other.
+  const picker = dialog.getByRole("button", { name: "Agent", exact: true });
+  await expect(picker).toContainText("VS Code (vscode.dev)");
+  await picker.click();
+  await page.getByRole("option", { name: "Claude Code (claude.ai)" }).click();
+  await expect(picker).toContainText("Claude Code (claude.ai)");
   await dialog.getByRole("textbox").fill("Write the tests for the runner.");
   await send.click();
 

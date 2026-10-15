@@ -17,8 +17,9 @@ import { useEffect, useState } from "react";
 
 import { listMine, type AgentConnection } from "@/app/integrations/lib/agents";
 import Button from "@/components/ui/Button";
-import { Select, Textarea } from "@/components/ui/Input";
+import { Textarea } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import SelectButton from "@/components/ui/SelectButton";
 
 import { ProjectsApiError, agentRunsApi } from "../lib/api";
 import type { AgentStartResult } from "../lib/agentRuns";
@@ -127,21 +128,20 @@ export function AskAgentDialog({ open, taskId, onClose, onStarted }: Props) {
           </div>
         ) : (
           <>
-            <label className="block space-y-1">
-              <span className="text-muted-foreground">{ASK_COPY.agentLabel}</span>
-              <Select
+            <div className="space-y-1">
+              <span className="block text-muted-foreground">{ASK_COPY.agentLabel}</span>
+              <SelectButton
+                label={ASK_COPY.agentLabel}
                 value={connectionId}
-                onChange={(e) => setConnectionId(e.target.value)}
-                inputSize="sm"
+                onChange={setConnectionId}
+                options={rows.map((row) => ({
+                  value: row.id,
+                  label: connectionLabel(row, rows),
+                }))}
+                widthClass="max-w-full"
                 disabled={busy}
-              >
-                {rows.map((row) => (
-                  <option key={row.id} value={row.id}>
-                    {connectionLabel(row, rows)}
-                  </option>
-                ))}
-              </Select>
-            </label>
+              />
+            </div>
             <label className="block space-y-1">
               <span className="text-muted-foreground">{ASK_COPY.instructionLabel}</span>
               <Textarea
