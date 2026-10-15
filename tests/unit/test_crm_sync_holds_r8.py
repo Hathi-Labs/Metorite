@@ -28,6 +28,8 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
+from sqlalchemy import text
+
 from tests.unit.test_crm_module_records_r8 import (  # noqa: F401
     _add_member,
     _connect_all,
@@ -255,3 +257,135 @@ async def test_a_large_custom_module_is_held_before_its_first_read(mz) -> None:
     alone = await engine.run_org(p.org_a, only=frozenset({"module:Install_Base"}))
     assert alone.status == "ok"
     assert {k for m, k in _records(p, p.org_a) if m == "Install_Base"} == {"i1", "i2", "i3"}
+
+
+
+# ── The review round (2026-10-15) ────────────────────────────────────────────
+
+
+async def test_a_held_parent_relinks_its_children_when_it_syncs(ns, zoho) -> None:
+    """Review P1. Notes landed with no contact while Contacts was held. A sync
+    of Contacts on its own re-reads the notes once, so the link fills in."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Contacts", "c3", 4, Last_Name="Three", Account_Name={"id": "a1"})
+    _notes(a, 1)  # one note on c1: small, so Activities is not held
+    await _connect(ns, ns.org_a, a)
+
+    first = await engine.run_org(ns.org_a)
+    assert first.status == "ok"
+    assert first.counts["contacts"]["held"] == 1, "3 contacts is large at the test limit"
+    assert _count(ns, "crm_contacts", ns.org_a) == 0
+    assert _count(ns, "crm_activities", ns.org_a) == 0, "a note with no parent waits"
+
+    alone = await engine.run_org(ns.org_a, only=frozenset({"contacts"}))
+    assert alone.status == "ok"
+    assert _count(ns, "crm_contacts", ns.org_a) == 3
+
+    after = await engine.run_org(ns.org_a)
+    assert after.status == "ok"
+    assert _count(ns, "crm_activities", ns.org_a, "contact_id IS NOT NULL") == 1
+
+
+async def test_tasks_are_held_under_their_own_key(ns, zoho) -> None:
+    """Review P1. The estimate sums tasks into activities. The hold must not."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    for i in range(3):
+        a.add("Tasks", f"t{i}", 20 + i, Subject=f"Task {i}", What_Id={"id": "a1"},
+              **{"$se_module": "Accounts"})
+    _notes(a, 1)
+    await _connect(ns, ns.org_a, a)
+
+    run = await engine.run_org(ns.org_a)
+    assert run.status == "ok"
+    entries = _holds(ns, ns.org_a)
+    assert entries["tasks"]["held"] is True and entries["tasks"]["count"] == 3
+    assert "activities" not in entries, "one note is not large"
+    assert _reads(a, "Tasks") == 0
+    assert _count(ns, "crm_activities", ns.org_a, "type = 'note'") == 1
+
+
+async def test_an_import_run_reads_the_deleted_lists_of_the_modules_already_in(
+    ns, zoho,
+) -> None:
+    """Review P2. A release puts the org back at ``import``. The modules that
+    are in still read their deleted lists."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    _notes(a)
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert _count(ns, "crm_contacts", ns.org_a) == 2
+
+    a.drop("Contacts", "c2", tombstone=True)
+    released = await _call_json(
+        _admin("admin@crm-sync.test", ns.org_a), "PUT",
+        "/crm/sync/modules/activities", {"sync": True},
+    )
+    assert released.status_code == 200
+    run = await engine.run_org(ns.org_a)
+    assert (run.status, run.kind) == ("ok", "import"), "the released module imports"
+    assert _count(ns, "crm_contacts", ns.org_a, "ext_id = 'c2'") == 0, "the delete still lands"
+
+
+async def test_a_deleted_list_older_than_the_provider_keeps_plans_a_full_compare(
+    ns, zoho,
+) -> None:
+    """Review P2. After a long hold the deleted list has a gap that the
+    provider no longer fills. The next run compares every id."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET last_pulled_at = now() - interval '61 days' "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:contact:deleted'"),
+            {"o": ns.org_a})
+
+    run = await engine.run_org(ns.org_a)
+    assert (run.status, run.kind) == ("ok", "reconcile")
+    assert _count(ns, "crm_contacts", ns.org_a) == 2, "a compare of live rows deletes nothing"
+
+
+async def test_a_start_over_forgets_the_holds(ns, zoho) -> None:
+    """Review P2. The next account's first import decides again."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    _notes(a)
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert _holds(ns, ns.org_a)["activities"]["held"] is True
+
+    reset = await _call_json(
+        _admin("admin@crm-sync.test", ns.org_a), "POST", "/crm/reset",
+        {"confirm": "DELETE", "then": "none"},
+    )
+    assert reset.status_code == 200, reset.text
+    assert _holds(ns, ns.org_a) == {}
+
+
+async def test_a_core_module_is_not_a_hold_key(mz) -> None:
+    """Review note. ``module:Accounts`` would hold nothing, so it is refused."""
+    p, a, _b = mz
+    _seed_modules(a)
+    _add_member(p, p.org_a)
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    admin = _admin("admin@crm-sync.test", p.org_a)
+
+    ok = await _call_json(admin, "PUT", "/crm/sync/modules/module:Products", {"sync": False})
+    assert ok.status_code == 200, ok.text
+    refused = await _call_json(admin, "PUT", "/crm/sync/modules/module:Accounts", {"sync": False})
+    assert refused.status_code == 422

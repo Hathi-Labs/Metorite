@@ -339,6 +339,10 @@ describe("a held module (CRM-Q16, spec section 18.8)", () => {
       "Activities has 18,674 records in Zoho. Sync it on its own when Metorite is quiet, so the rest stays fast",
     );
     expect(html).toContain("Sync it on its own");
+    // The table reads 18,674 like the sentence, and a held row gets no difference badge.
+    expect(html).toContain(">18,674<");
+    expect(html).not.toContain("-14826");
+    expect(html).not.toContain("-14,826");
     // The Sync switch of the held row is off, and the other row is on.
     const box = (name: string) => html.match(new RegExp(`<input[^>]*aria-label="Sync ${name}"[^>]*>`))?.[0] ?? "";
     expect(box("Activities")).toContain('type="checkbox"');
@@ -421,20 +425,34 @@ describe("module keys (CRM-Q16)", () => {
 });
 
 describe("a large module that is not held (CRM-Q16)", () => {
-  it("suggests a hold above the limit, from the Zoho count or the hold count", () => {
+  it("suggests a hold above the limit while records remain and nobody decided", () => {
     expect(LARGE_MODULE_RECORDS).toBe(5000);
     const big = entity("contacts", 12000, 800);
     const health = healthy({ entities: [entity("leads", 40, 40), big] });
     expect(largeUnheld(health, big)).toBe(true);
     const html = draw(health);
+    expect(html).toContain("Large");
     expect(html).toContain("Contacts has 12,000 records. Sync it on its own to keep Metorite fast");
     expect(html).toContain("Hold it");
 
-    // The hold map knows a count that the last estimate does not.
-    const quiet = entity("deals", null, 0);
-    expect(
-      largeUnheld(healthy({ holds: { deals: { held: false, by: "admin", count: 6000, at: null } } }), quiet),
-    ).toBe(true);
+    const fresh = entity("contacts", 6000, 100);
+    expect(largeUnheld(healthy({ entities: [fresh] }), fresh)).toBe(true);
+    const unknown = entity("contacts", 6000, null);
+    expect(largeUnheld(healthy({ entities: [unknown] }), unknown)).toBe(true);
+  });
+
+  it("does not nag about a module that is already in, nor after an admin decided (review P2)", () => {
+    const done = entity("contacts", 6000, 6000);
+    expect(largeUnheld(healthy({ entities: [done] }), done)).toBe(false);
+    expect(draw(healthy({ entities: [done] }))).not.toContain("Hold it");
+
+    const decided = entity("contacts", 6000, 100);
+    const released = healthy({
+      entities: [decided],
+      holds: { contacts: { held: false, by: "admin", count: 6000, at: null } },
+    });
+    expect(largeUnheld(released, decided)).toBe(false);
+    expect(draw(released)).not.toContain("Hold it");
   });
 
   it("does not suggest at or below the limit, nor for a held row", () => {

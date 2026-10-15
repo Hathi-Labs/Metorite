@@ -1991,6 +1991,30 @@ in `crmQ9.test.ts`.
 activity whose parent cannot exist. The owner moved the activities of DEWiN
 to "later".
 
+**Review round (2026-10-15).** The adversarial review found two P1 and four
+P2 defects. The build fixed each one:
+
+- A held parent (`organizations`, `contacts`, `leads`, `deals`) makes its
+  children land with no link. The engine marks the parent `held_skipped` in
+  its cursor. Its next read, released or on its own, re-reads the entities in
+  `DEPENDENTS` once, through the CRM-Q15 `recovering` path.
+- The estimate sums tasks into `activities`. The hold decision counts by
+  COUNT KEY (`ctx.key_counts`), so `tasks` is held on its own. A resumed
+  import holds nothing again: its first try did.
+- An import run reads the deleted list of each entity whose first import was
+  done when the run began. A released hold no longer stops every delete.
+- `plan()` asks a full compare of an entity whose deleted cursor is older than
+  `GAP_RECONCILE`, held keys apart. That is one strike, as the org-level gap
+  is today.
+- A start over clears `sync_holds` (`holds.clear`), in both reset paths.
+- `PUT /crm/sync/modules/{key}` accepts `module:<ApiName>` only for a generic
+  module of the profile. The auto-hold writes only a key with no entry, so an
+  admin's choice made while the run planned stays.
+- The card suggests a hold only for a key with no entry that still has
+  records to sync. A held row shows a neutral badge and no difference badge.
+
+Open after this round: `HANDOFF.md` H-320, the edge of the shared checkbox.
+
 ---
 
 ## 19. The daily-use UX (2026-10-12)

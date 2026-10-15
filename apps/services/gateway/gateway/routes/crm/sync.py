@@ -148,7 +148,9 @@ SyncHealthModel.model_rebuild()
 
 
 def _hold_key_known(key: str, profile_body: dict | None) -> bool:
-    """A count key that a hold may name: a fixed key, or a module of the profile."""
+    """A count key that a hold may name: a fixed key, or a GENERIC module of
+    the profile. A core module (Accounts, Deals) syncs under its fixed key, so
+    ``module:Accounts`` would hold nothing and is refused."""
     from gateway.crm_sync import holds
 
     if key in holds.FIXED_KEYS:
@@ -157,7 +159,7 @@ def _hold_key_known(key: str, profile_body: dict | None) -> bool:
         return False
     name = key[len(holds.MODULE_PREFIX):]
     return any(
-        isinstance(m, dict) and m.get("api_name") == name
+        isinstance(m, dict) and m.get("api_name") == name and m.get("generic")
         for m in (profile_body or {}).get("modules") or []
     )
 

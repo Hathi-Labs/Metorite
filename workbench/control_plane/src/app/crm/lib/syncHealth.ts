@@ -306,13 +306,16 @@ export function holdSentence(label: string, count: number): string {
 }
 
 /**
- * A row that syncs with the rest and holds more than `LARGE_MODULE_RECORDS`.
- * The card suggests a hold for it.
+ * A row that the card suggests a hold for: it holds more than
+ * `LARGE_MODULE_RECORDS`, it still has records to sync, and `holds` has NO
+ * entry for it. An entry, held or released, means an admin or the first
+ * import already decided, so the card does not ask again (review P2).
  */
 export function largeUnheld(health: SyncHealth | null | undefined, entity: HealthEntity): boolean {
-  if (!isHoldable(entity.key) || isHeld(health, entity.key)) return false;
+  if (!isHoldable(entity.key) || entity.key in holdsOf(health)) return false;
   const n = recordsOf(health, entity.key, entity);
-  return n !== null && n > LARGE_MODULE_RECORDS;
+  if (n === null || n <= LARGE_MODULE_RECORDS) return false;
+  return entity.ours === null || entity.ours < n;
 }
 
 /** The suggestion for a large row that is not held. */

@@ -45,6 +45,18 @@ _WRITE_SQL = (
     "UPDATE crm_settings SET sync_holds = sync_holds || CAST(:patch AS jsonb) "
     "WHERE organization_id = CAST(:org AS uuid) RETURNING sync_holds"
 )
+#: The auto-hold writes only a key that has no entry, so an admin's choice
+#: made while the run planned is never overwritten.
+_WRITE_NEW_SQL = (
+    "UPDATE crm_settings SET sync_holds = sync_holds || CAST(:patch AS jsonb) "
+    "WHERE organization_id = CAST(:org AS uuid) AND NOT (sync_holds ? :key) "
+    "RETURNING sync_holds"
+)
+#: A start over forgets every hold. The next import decides again.
+_CLEAR_SQL = (
+    "UPDATE crm_settings SET sync_holds = '{}'::jsonb "
+    "WHERE organization_id = CAST(:org AS uuid)"
+)
 
 
 def _clean(raw: Any) -> dict[str, dict[str, Any]]:
@@ -70,17 +82,24 @@ def held_keys(entries: dict[str, dict[str, Any]]) -> frozenset[str]:
 
 async def write(
     db: Any, org: str, key: str, *, held: bool, by: str, count: int | None = None,
+    only_new: bool = False,
 ) -> dict[str, dict[str, Any]] | None:
-    """Set one entry. Returns the new map, or None when the org has no settings row."""
+    """Set one entry. Returns the new map, or None when nothing was written:
+    the org has no settings row, or ``only_new`` and the key has an entry."""
     entry = {
         "held": held, "by": by,
         "count": int(count) if count is not None else None,
         "at": datetime.now(UTC).isoformat(),
     }
-    row = (await db.execute(text(_WRITE_SQL), {
-        "org": str(org), "patch": json.dumps({key: entry}),
+    row = (await db.execute(text(_WRITE_NEW_SQL if only_new else _WRITE_SQL), {
+        "org": str(org), "key": key, "patch": json.dumps({key: entry}),
     })).first()
     return _clean(row.sync_holds) if row is not None else None
+
+
+async def clear(db: Any, org: str) -> None:
+    """Forget every hold of the org. The start over calls this (CRM-X0)."""
+    await db.execute(text(_CLEAR_SQL), {"org": str(org)})
 
 
 def is_large(count: int | None) -> bool:
@@ -93,6 +112,7 @@ __all__ = [
     "FIXED_KEYS",
     "LARGE_MODULE_RECORDS",
     "MODULE_PREFIX",
+    "clear",
     "held_keys",
     "is_large",
     "read",

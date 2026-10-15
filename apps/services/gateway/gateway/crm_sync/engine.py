@@ -427,11 +427,19 @@ def plan(
         if row is None or count_key(entity) in held:
             continue
         state = row.state or {}
+        gone = cursors.get(deleted_module(entity))
         if state.get("in_progress") and state.get("walk_start"):
             due.add(entity)  # a walk that stopped resumes first
         elif state.get("offset_paged") and (
             row.last_reconciled_at is None or now - row.last_reconciled_at >= RECONCILE_EVERY
         ):
+            due.add(entity)
+        elif (
+            gone is not None and gone.last_pulled_at is not None
+            and now - gone.last_pulled_at >= GAP_RECONCILE
+        ):
+            # Its deleted list is older than the provider keeps (a long hold,
+            # CRM-Q16 review). Only a full id compare finds those deletes.
             due.add(entity)
     if last_ok is not None and now - last_ok >= GAP_RECONCILE:
         due = {e for e in ENTITY_ORDER if count_key(e) not in held}
@@ -626,6 +634,9 @@ class _Ctx:
         self.holds: dict[str, dict[str, Any]] = dict(handle.holds)
         self.held: frozenset[str] = holds.held_keys(self.holds)
         self.only = handle.only
+        #: CRM-Q16: the provider count by COUNT KEY, from ``_estimate``. The
+        #: estimate itself is by slug, and ``activities`` there includes tasks.
+        self.key_counts: dict[str, int] | None = None
         self.should_stop = should_stop
         self.mapping = mapping_for(PROVIDER)
         self.started = _now()
@@ -1397,11 +1408,18 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     module = changed_module(entity)
     row = _row(ctx, module)
     saved = row.state or {}
+    generic = _module(entity) is not None
     if _skip_held(ctx, entity):
+        # A held parent's children land with no link (review P1). Mark it, so
+        # its next read, released or on its own, re-reads them once.
+        if (
+            not generic and entity in DEPENDENTS and count_key(entity) in ctx.held
+            and not saved.get("held_skipped")
+        ):
+            await _mark_held_skipped(ctx, entity, row)
         return
     if _unavailable_now(ctx, entity):
         return
-    generic = _module(entity) is not None
     # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
     # its deletes come from the deleted list only (CRM-Q6a).
     walking = entity in ctx.reconcile and not generic
@@ -1425,7 +1443,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # over several runs carries the mark in its cursor, and queues only at its
     # last page: a child read before that would clear its entry too early.
     recovering = not generic and (
-        bool(saved.get("unavailable")) or (resumed and bool(saved.get("recovering")))
+        bool(saved.get("unavailable")) or bool(saved.get("held_skipped"))
+        or (resumed and bool(saved.get("recovering")))
     )
     # A full read for a rule starts fresh, or goes on with its own mark. A
     # read that was already under way when the rule changed does not count.
@@ -1654,6 +1673,26 @@ def _skip_held(ctx: _Ctx, entity: str) -> bool:
     return False
 
 
+async def _mark_held_skipped(ctx: _Ctx, entity: str, row: CursorRow) -> None:
+    """Record that a hold skipped this parent (CRM-Q16). The next read of it
+    re-reads its dependents, through ``recovering``. Every other key of the
+    state stays, so a stopped walk resumes as it was."""
+    marked = CursorRow(
+        changed_module(entity), row.last_pulled_at,
+        {**(row.state or {}), "held_skipped": True},
+        row.initial_done_at, row.last_reconciled_at,
+    )
+    async with ctx.page() as db:
+        await _save_cursor(ctx, db, marked, "held")
+    ctx.cursors[changed_module(entity)] = marked
+
+
+def _done_at_start(ctx: _Ctx, entity: str) -> bool:
+    """True when the first import of ``entity`` was done when this run began."""
+    row = ctx.handle.cursors.get(changed_module(entity))
+    return row is not None and row.initial_done_at is not None
+
+
 def _entities_of(key: str) -> tuple[str, ...]:
     """The entities that one count key covers."""
     if key.startswith(holds.MODULE_PREFIX):
@@ -1681,9 +1720,14 @@ async def _auto_hold(ctx: _Ctx, counts: dict[str, int]) -> None:
         async with ctx.page() as db:
             written = await holds.write(
                 db, ctx.org, key, held=True, by=holds.BY_AUTO, count=int(count),
+                only_new=True,
             )
-        if written is None:
-            return  # no settings row: nothing to hold against
+            if written is None:
+                # No settings row, or an admin wrote the key since the run
+                # began. Their entry wins: read it and go on.
+                ctx.holds = await holds.read(db, ctx.org)
+                ctx.held = holds.held_keys(ctx.holds)
+                continue
         ctx.holds = written
         ctx.held = holds.held_keys(written)
         _log.warning("crm.sync.module_held key=%s count=%s by=auto", key, count)
@@ -2465,6 +2509,7 @@ async def _stage_types_from_profile(ctx: _Ctx) -> None:
 async def _estimate(ctx: _Ctx) -> None:
     """The record count of each entity, for the progress bar. Best effort."""
     totals: dict[str, int] = {}
+    by_key: dict[str, int] = {}
     for entity in ENTITY_ORDER:
         try:
             count = await ctx.call(lambda s, e=entity: s.count_records(e))
@@ -2476,7 +2521,10 @@ async def _estimate(ctx: _Ctx) -> None:
             continue
         if count is not None:
             totals[SLUGS[entity]] = totals.get(SLUGS[entity], 0) + count
+            key = count_key(entity)
+            by_key[key] = by_key.get(key, 0) + count
     ctx.estimate = totals or None
+    ctx.key_counts = by_key
     async with ctx.page():
         pass
 
@@ -2509,8 +2557,10 @@ async def _execute(ctx: _Ctx) -> None:
         await _start_deleted_windows(ctx)
         if ctx.estimate is None:
             await _estimate(ctx)
-        # CRM-Q16: hold a large key before its first record read.
-        await _auto_hold(ctx, {k: int(v) for k, v in (ctx.estimate or {}).items()})
+        # CRM-Q16: hold a large key before its first record read. A resumed
+        # import has no fresh counts, and its first attempt already held.
+        if ctx.key_counts is not None:
+            await _auto_hold(ctx, ctx.key_counts)
     if ctx.kind in (runs.KIND_IMPORT, runs.KIND_RECONCILE):
         await _field_defs(ctx)
     elif _discovery_due(ctx):
@@ -2530,8 +2580,11 @@ async def _execute(ctx: _Ctx) -> None:
     await _load_rules(ctx)
     for entity in ENTITY_ORDER:
         await _changed_pass(ctx, entity)
-    if ctx.kind != runs.KIND_IMPORT:
-        for entity in ENTITY_ORDER:
+    # An import run reads the deleted list of each entity that was already in
+    # when the run started (CRM-Q16 review). Otherwise a released hold, which
+    # puts the org back at ``import`` for days, would stop every delete.
+    for entity in ENTITY_ORDER:
+        if ctx.kind != runs.KIND_IMPORT or _done_at_start(ctx, entity):
             await _deleted_pass(ctx, entity)
     await _relink_leads(ctx)
     await _deal_roles(ctx)
@@ -2720,7 +2773,7 @@ async def _module_records(ctx: _Ctx) -> None:
             if _skip_held(ctx, entity):
                 continue
         await _changed_pass(ctx, entity)
-        if ctx.kind != runs.KIND_IMPORT and not _unavailable_now(ctx, entity):
+        if (ctx.kind != runs.KIND_IMPORT or _done_at_start(ctx, entity)) and not _unavailable_now(ctx, entity):
             await _deleted_pass(ctx, entity)
         if not _unavailable_now(ctx, entity):
             await _module_estimate(ctx, entity)
@@ -2849,11 +2902,11 @@ __all__ = [
     "Stopped",
     "SyncRunning",
     "acquire",
+    "count_key",
     "daily_budget",
     "error_code",
     "execute",
     "next_interval",
-    "count_key",
     "plan",
     "run_org",
 ]
