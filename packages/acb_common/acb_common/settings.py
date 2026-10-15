@@ -311,6 +311,22 @@ class Settings(BaseSettings):
     # §11 AM-1. Fence: tests/unit/test_artifact_registry.py.
     artifact_registry_enabled: bool = False
 
+    # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
+    #
+    # `/knowledge` serves an organization only when both settings allow it.
+    # `knowledge_enabled` is the kill switch, default OFF. `knowledge_orgs`
+    # lists the organization ids that may reach `/knowledge`, with a comma
+    # between ids, in the grammar of `crm_orgs`. `*` allows each organization
+    # with a bound tenant. An empty list allows no organization. Off, each
+    # route answers 404, never 403.
+    # The one reader of both is `gateway.routes.knowledge.flags`. It takes the
+    # organization from the server-side `UserContext`, never from request
+    # input. `env_guard` refuses each `KNOWLEDGE_*` name on each Integrations
+    # write. A flip for an org is the owner's (knowledge_base.md §13), gate
+    # `enforcement-flip`. Fence: tests/unit/test_kb_flags.py.
+    knowledge_enabled: bool = False
+    knowledge_orgs: str = ""
+
     reach_enabled: bool = False
     reach_orgs: str = ""
     reach_members: str = ""

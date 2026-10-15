@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 167
+-- Tables in this phase: 172
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2066,3 +2066,63 @@ ALTER TABLE artifacts ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE artifacts ADD CONSTRAINT artifacts_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS artifacts_org_idx ON artifacts (organization_id);
+
+-- kb_links
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_links WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_links still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_links ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_links ADD CONSTRAINT kb_links_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_links_org_idx ON kb_links (organization_id);
+
+-- kb_page_versions
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_page_versions WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_page_versions still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_page_versions ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_page_versions ADD CONSTRAINT kb_page_versions_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_page_versions_org_idx ON kb_page_versions (organization_id);
+
+-- kb_pages
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_pages WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_pages still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_pages ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_pages ADD CONSTRAINT kb_pages_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_pages_org_idx ON kb_pages (organization_id);
+
+-- kb_space_grants
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_space_grants WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_space_grants still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_space_grants ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_space_grants ADD CONSTRAINT kb_space_grants_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_space_grants_org_idx ON kb_space_grants (organization_id);
+
+-- kb_spaces
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM kb_spaces WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: kb_spaces still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE kb_spaces ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE kb_spaces ADD CONSTRAINT kb_spaces_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS kb_spaces_org_idx ON kb_spaces (organization_id);
