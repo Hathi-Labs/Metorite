@@ -18,7 +18,7 @@ when `REACH_BRIEF_TEMPLATE` or `REACH_NEEDS_YOU_TEMPLATE` names an approved
 one (§8.1a, H-315).
 
 **RE-5 is BUILT, 2026-10-15** (branch `ws59-tell-me`,
-migration 270). `tell_me()`, `reach_requests`, the email rule action
+migration 271). `tell_me()`, `reach_requests`, the email rule action
 `NOTIFY_ME` and the workflow step `notify.whatsapp` are wired.
 `POST /reach/tell-me` is built. The assistant tool that calls it is RE-5b,
 because it lives in the orchestrator's tool manifests (§11.4).

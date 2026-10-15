@@ -1,5 +1,5 @@
 -- ============================================================================
--- 270_reach_requests.sql — "Tell me on WhatsApp": the requests of Reach.
+-- 271_reach_requests.sql — "Tell me on WhatsApp": the requests of Reach.
 --
 -- What: one new table, and two wider CHECKs on the tables of 266.
 --       `reach_requests` holds one row for each request that an app, a rule,
@@ -30,7 +30,8 @@
 -- no comma between. The foreign key is inline, never `ADD CONSTRAINT
 -- <table>_org_fk`, because generated phase 3 adds that name.
 -- The number is taken at build time (R1). On 2026-10-15 main held 268, and no
--- open branch held 270. It was 269 until open PR #1053 took that number first. Check it again at merge.
+-- open branch held 271. It was 269, then 270: open PR #1053 took 269, and
+-- 270_knowledge_feature.sql reached main first. Check it again at merge.
 -- Pinned by tests/unit/test_reach_requests.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================

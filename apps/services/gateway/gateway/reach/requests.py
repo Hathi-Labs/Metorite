@@ -1,7 +1,7 @@
 """"Tell me on WhatsApp" — the one call every app makes (WS-59 RE-5).
 
 Spec: ``project-docs/specs/proactive_reach.md`` §11. Migration
-``270_reach_requests.sql``.
+``271_reach_requests.sql``.
 
 :func:`tell_me` records ONE request for ONE member. It sends nothing. The
 Reach loop reads the member's open requests on its next pass, turns each one
