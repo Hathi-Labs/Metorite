@@ -520,7 +520,7 @@ owning specs are the archive; this file owns ordering, gates and states only.
 | WS-57 | **Task references — links, PRs, commits, pasted images and `#123` pills** *(minted 2026-10-13, owner directive)* | ✅ **BUILT.** TR-1, TR-2 and TR-3 are LIVE (2026-10-13, PR #956, migration 255 applied). TR-4 is LIVE (2026-10-13, PR #955). TR-5 is BUILT on branch `task-pills-v2` (2026-10-13): `#123` pills on the card, and links and references from the text (`routes/projects/text_links.py`, no migration). Migration 255 holds `pm_task_refs`, `routes/projects/refs.py` holds the route and the GitHub read, and `add_task_ref` and `remove_task_ref` are the chat tools. ⚠️ Check migration 255 again at merge (R1). | **`specs/task_references.md`** · `external_agent_access.md` §11 | All five slices are built. 🔴 OWNER-GATE: a GitHub App (§8). **Next: merge TR-5 (branch `task-pills-v2`). Later: a GitHub App (§8), an OWNER-GATE.** |
 | WS-58 | **My Day as a live feed — the chief of staff** *(minted 2026-10-13, owner directive)* | 🔨 **MD-1a, MD-1b, MD-2a, MD-2d and the server half of MD-2c BUILT and merged** (#964, #967, #983, #980, #986), and MD-2b and the client half of MD-2c BUILT (2026-10-14), all dark behind `NEXT_PUBLIC_MY_DAY_FEED`. MD-2 is split in four (2a to 2d), and it is complete when the client half of MD-2c merges. MD-6a-1 BUILT 2026-10-14 (the `my_day.*` features, the helpers and `my_day_judgments`, migration 262), dark: each `my_day.*` mode is `off`. MD-6a-2 BUILT 2026-10-14 (the member pass of the `my_day` loop, no migration). It stops at its gate while each `my_day.*` mode is `off`. MD-6a-3 BUILT 2026-10-14 (the admin measure read `GET /shell/feed/decide-measure`, no migration). MD-3 is split in six, MD-3a to MD-3f (2026-10-14, spec §5.8 and §16). MD-3a BUILT 2026-10-14 (the links `/calendar?date=&at=` and `/approvals?action=`, no migration and no flag). It is live when it deploys, because the feed is live. MD-3b BUILT 2026-10-14 (the seam, no migration): the `MY_DAY_PROVIDERS` list, two feed-only providers at a time under a 2.3-second ceiling, `SourceAbsent` and `source_apps`. While the list is empty, `source_apps` is the only change to the answer. MD-3c to MD-3f ship dark behind `MY_DAY_PROVIDERS`. D100 and D101 taken 2026-10-13. My Day becomes one ranked column of cards. Code finds the signals and a template writes every card. `decide` makes the judgment calls as typed questions, and a text model writes only a gist or a prep list. The owner answered Q2 (the customer pays in AI credits) and Q3 (calendar clashes fold in when calendar sync lands) on 2026-10-13. A card has a life, and fixed rules bring it back when it matters again. It extends the one needs feed of WS-44 and adds no second feed | **`specs/my_day_feed.md`** · the page frame, the bell and the shell flags stay in `specs/navigation_shell.md` | AGENT-SAFE: MD-1a (the gateway feed) and MD-1b (the frontend), MD-2 to MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12, all dark. MD-1a and MD-1b are built. 🔴 OWNER-GATE: turning on `NEXT_PUBLIC_MY_DAY_FEED`, `MY_DAY_COMPOSE` or any `my_day.*` decide mode, and MD-10 (messages outside the app). MD-6c also waits on H-171 and H-69. Repair round 1 of PR #939 fixed 14 P1 and 5 P2 review findings on 2026-10-13. MD-11 (meeting overlaps) is BLOCKED on calendar P4 |
 | WS-59 | **Reach — the chief of staff speaks first** *(minted 2026-10-14, owner directive)* | 🔨 **ACTIVE 2026-10-14 (D103).** The owner accepted every proposal the same day. **RE-1a BUILT 2026-10-14** (branch `ws59-proactive-reach`, migration 266, dark): `gateway/reach/` and the My Profile section. Metorite messages a member first, on WhatsApp and later web push, about what needs them: important email, the day's work, and context from projects. Reach is the one outbound seam. It reads My Day's judged cards and adds no second feed, registry or judge. Each app joins through a reach class on its card kinds, so meetings, tickets, notes, a knowledge base and insights fit later. A funnel keeps it cheap: a free gate in code, then `my_day.nudge` packed into the member pass, then one brief composition each day. An attention budget (3 interrupts a day, quiet hours, a 15-minute batch) keeps it useful. A Postgres outbox drained with `SKIP LOCKED` makes delivery scale out. §13 plans the move of the loop out of the gateway | **`specs/proactive_reach.md`** · the signals and the judge stay in `specs/my_day_feed.md`, the bot in `specs/whatsapp_assistant_channel.md` | **Next: RE-1a, then RE-4 with the context join that §17 asks of WS-58.** AGENT-SAFE: RE-1 to RE-10 to build, each dark. 🔴 OWNER-GATE: the Meta templates (H-251), turning `REACH_ENABLED` or `my_day.nudge` on for any member (MD-10), Q1 (who pays the template charge), and the `acb-reach` unit on the box (RE-8) |
-| WS-60 | **Knowledge — the company brain a member can read, and an agent can use** *(minted 2026-10-15, owner directive)* | 🆕 **PROPOSED 2026-10-15. No decision taken, nothing built.** The owner asked for a knowledge base in the shape of Notion or Confluence, linked to Artifacts, queryable by the chat and every agent, fed by Dropbox, OneDrive and Google Drive, and able to give insights in chat and My Day. The spec answers with three nouns on the surface (a space, a page, a source) and one index under them (`kb_chunks`, lexical and vector in one table, the BO-22 seam built at last). A connected folder is discovered as metadata, indexed by choice, and copied on request. "Save to Knowledge" copies an artifact with provenance, because an artifact has no identity of its own. An agent never publishes. Files is a view of the app, not a pane. My Day gets four kinds, and `/mcp` gets `kb:read` | **`specs/knowledge_base.md`** · the agent's memory stays in `specs/memory_architecture.md`, the registry in `specs/integrations_console.md`, the cards in `specs/my_day_feed.md` | **Next: the owner reads §15 and §16.** On acceptance the eight clauses become one decision in §3, and KB-0 starts. AGENT-SAFE: KB-0 to KB-11 to build, each dark. 🔴 OWNER-GATE: KB-12 (promotion, H-21), every flag flip for an org (§13), the Dropbox and Microsoft app registrations, Google's restricted-scope verification (Q2), and `kb:read` as a scope amendment to `specs/external_agent_access.md` §8 |
+| WS-60 | **Knowledge — the company brain a member can read, and an agent can use** *(minted 2026-10-15, owner directive)* | 🔨 **ACTIVE 2026-10-15 (D104).** The owner accepted every proposal and every default the same day. The owner asked for a knowledge base in the shape of Notion or Confluence, linked to Artifacts, queryable by the chat and every agent, fed by Dropbox, OneDrive and Google Drive, and able to give insights in chat and My Day. The spec answers with three nouns on the surface (a space, a page, a source) and one index under them (`kb_chunks`, lexical and vector in one table, the BO-22 seam built at last). A connected folder is discovered as metadata, indexed by choice, and copied on request. "Save to Knowledge" copies an artifact with provenance, because an artifact has no identity of its own. An agent never publishes. Files is a view of the app, not a pane. My Day gets four kinds, and `/mcp` gets `kb:read` | **`specs/knowledge_base.md`** · the agent's memory stays in `specs/memory_architecture.md`, the registry in `specs/integrations_console.md`, the cards in `specs/my_day_feed.md` | **Next: KB-0, then KB-1.** AGENT-SAFE: KB-0 to KB-11 to build, each dark. 🔴 OWNER-GATE: KB-12 (promotion, H-21), every flag flip for an org (§13), the Dropbox and Microsoft app registrations, Google's restricted-scope verification (Q2), and `kb:read` as a scope amendment to `specs/external_agent_access.md` §8 |
 
 ### Product — Centers (`department_centers.md` §3 · combined board record 2026-08-09 there)
 
@@ -5278,6 +5278,49 @@ spec: **`specs/proactive_reach.md`**.
 **What it does not change.** `my_day_feed.md` keeps the signals, the cards
 and the judge. `whatsapp_assistant_channel.md` keeps the bot. CLAUDE.md §3a
 rule 3 still binds: a flag that sends to a real person is the owner's flip.
+
+### D104 — Knowledge is the company brain, authored and cited, with one index (2026-10-15)
+
+Owner direction, 2026-10-15, in chat. The owner asked for a knowledge base
+in the shape of Notion or Confluence, linked to Artifacts, queryable by the
+chat and every agent, fed by Dropbox, OneDrive and Google Drive, and able to
+give insights in chat and My Day. On the proposal: "Go with defaults."
+Board: **WS-60**. Owning spec: **`specs/knowledge_base.md`**.
+
+1. **Knowledge is an authored, cited store with one index.** It is not a
+   surface over Mem0. It replaces the framing of `future_modules_roadmap.md`
+   §1. Memory stays WS-9 (D-KB-1).
+2. **One retrieval seam, `acb_search`, over one table, `kb_chunks`.** The
+   lexical half and the vector half live in one row. It is BO-22 built. No
+   app adds a second vector table for documents (D-KB-2).
+3. **Visibility is the space's grants in the one subject grammar.** A page
+   inherits its space. A draft is the author's. There is no page-level ACL
+   and no provider ACL mirror in the first release (D-KB-3).
+4. **An agent never publishes.** Every agent write to knowledge is a draft
+   or a card that a person answers (D-KB-4).
+5. **A connected folder is linked, not copied.** Metadata at connect, text
+   on inclusion, bytes on a member's "Keep a copy". Metorite never writes
+   to a provider (D-KB-5).
+6. **"Save to Knowledge" is a copy with provenance.** The artifact stays in
+   its chat with the chat's visibility (D-KB-6).
+7. **Files is a view of the Knowledge app, not a pane** (D-KB-7).
+8. **`kb:read` joins the `/mcp` scopes**, as an amendment to
+   `specs/external_agent_access.md` §8 (D-KB-8).
+9. **The owner's answers, by default.** Dropbox first, then OneDrive, then
+   Google Drive (Q1). Google's restricted-scope verification is filed when
+   the first paying customer asks for Drive, and Drive serves test users
+   until then (Q2). An org source lands in one space at connect, and a
+   member maps folders one at a time after (Q3). No per-file ACL mirror in
+   v1 (Q4). The index is lexical only until the owner flips
+   `KNOWLEDGE_EMBED` for an org (Q5). The `me` space ships in the first
+   release (Q6). The editor is TipTap in KB-2b, over a Markdown textarea
+   from KB-2a (Q7).
+
+**What it does not change.** `memory_architecture.md` keeps the agent's
+memory. `integrations_console.md` keeps the registry and the credential
+rule. `my_day_feed.md` keeps the cards. CLAUDE.md §3a rule 3 still binds:
+a flag that spends credits or reaches a provider for an org is the owner's
+flip.
 
 ---
 
