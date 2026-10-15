@@ -98,6 +98,11 @@ FEATURES: tuple[str, ...] = (
     # restricted by `admin:members:read`, a projection WS-24 N4 already shipped
     # and which this feature must NOT re-implement.
     "people",
+    # The Knowledge app — spaces, pages and connected folders
+    # (270_knowledge_feature.sql, category `apps`, sort_order 58: after People).
+    # `is_default true`, and migration 207's `feature:*` reaches every role
+    # except `guest` (specs/knowledge_base.md §5.2, WS-61 KB-0).
+    "knowledge",
     "dashboard",
     "observability",
     "artifacts",
@@ -160,6 +165,12 @@ CAPABILITIES: tuple[str, ...] = (
     "memory:read_org",
     "memory:write_org",
     "data:org:read",
+    # The Knowledge app's admin verb: make and remove spaces, change their
+    # grants, archive, and connect an org-wide source. Writing a page needs a
+    # space grant, not this. Argued in specs/knowledge_base.md §5.2. The owner
+    # holds it through `*`. Its seed onto `admin` is KB-1, through
+    # provision_org_roles, and no migration grants it yet.
+    "knowledge:manage",
 )
 
 #: System role slugs seeded by migration 128. `agent_service` is never
