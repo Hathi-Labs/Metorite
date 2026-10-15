@@ -1228,6 +1228,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
 | **CRM-Q12** | Per-owner visibility in the mirror | P1 |
 | **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
+| **CRM-Q15** | ✅ built 2026-10-15 (hotfix). A Zoho account can turn off a core module, such as Accounts or Deals, and keep its data in custom modules. Zoho then answers each record read of that module with HTTP 400 `INVALID_MODULE` (v2) or `NO_PERMISSION` (v8). Measured on a live tenant on 2026-10-15. Before this fix, the run read Accounts first, failed, and mirrored nothing. Now the client raises `SourceModuleUnavailable` for those two codes. The engine skips ANY module that raises it, core or optional, and records the reason `hidden` in the cursor. The run is `ok`, the other modules and the generic modules land, and the connection stays `connected`. The count key of the module gets `unavailable` and `hidden`. The Sync health card then says "Turned off in your Zoho", and not "Connect Zoho again". A skip deletes nothing, and no reconcile runs for the module while it is off. The engine asks again after `UNAVAILABLE_RETRY`, so a module turned on again heals. Any other failure of a core module still fails the run. Fence: `tests/unit/test_crm_hidden_module_r8.py` (R8) and two client tests in `test_crm_sources_zoho.py` | P0 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
