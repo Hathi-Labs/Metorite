@@ -81,29 +81,35 @@ def _node() -> str | None:
     return shutil.which(name)
 
 
-def render_png(spec: dict[str, Any], *, mode: str = "dark") -> bytes:
+def render_png(spec: dict[str, Any], *, mode: str = "dark", scale: float = 1) -> bytes:
     """One chart as a PNG. Raises :class:`render.RenderError` for a bad spec,
-    and :class:`EngineUnavailable` when the engine cannot draw."""
-    (out,) = render_many([spec], mode=mode)
+    and :class:`EngineUnavailable` when the engine cannot draw. *scale* draws
+    it that many times its width, for print (WAC-12)."""
+    (out,) = render_many([spec], mode=mode, scale=scale)
     if isinstance(out, str):
         raise render.RenderError(out)
     return out
 
 
-def render_many(specs: list[dict[str, Any]], *, mode: str = "dark") -> list[bytes | str]:
+def render_many(specs: list[dict[str, Any]], *, mode: str = "dark",
+                scale: float = 1) -> list[bytes | str]:
     """Each chart as PNG bytes, or the engine's reason it refused that spec."""
     try:
-        return _render_many(specs, mode)
+        return _render_many(specs, mode, scale)
     except EngineUnavailable as exc:
         _log.warning("whatsapp_engine.unavailable", reason=str(exc)[:160])
         raise
 
 
-def _render_many(specs: list[dict[str, Any]], mode: str) -> list[bytes | str]:
+def _render_many(specs: list[dict[str, Any]], mode: str,
+                 scale: float = 1) -> list[bytes | str]:
     node = _node()
     if node is None or not ENGINE.is_file():
         raise EngineUnavailable("node or the chart engine is missing")
-    payload = json.dumps({"charts": specs, "mode": mode}, ensure_ascii=False).encode("utf-8")
+    request: dict[str, Any] = {"charts": specs, "mode": mode}
+    if scale != 1:
+        request["scale"] = scale
+    payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
     if not _SLOTS.acquire(timeout=TIMEOUT_S):
         raise EngineUnavailable("the chart engine is busy")
     started = time.monotonic()

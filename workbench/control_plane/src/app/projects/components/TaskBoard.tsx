@@ -55,6 +55,7 @@ import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
+import { WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
 import {
   buildCellDropPatch,
   buildColumnDropUpdate,
@@ -113,6 +114,11 @@ interface Props {
    */
   filters: Filters;
   onClearFilters: () => void;
+  /**
+   * WS-55 EA-12c — "Waiting on me" is on. An empty column then says that
+   * nothing waits on the member, not "Drop here".
+   */
+  waitingOnMe?: boolean;
   /** WS-27y — the second axis and its lane state. */
   lanes: BoardLanes;
   onToggleLane: (key: string) => void;
@@ -194,6 +200,7 @@ export function TaskBoard({
   subtasks,
   filters,
   onClearFilters,
+  waitingOnMe = false,
   lanes,
   onToggleLane,
   onShowEmptyLanes,
@@ -980,9 +987,11 @@ export function TaskBoard({
                   ? undefined
                   : shelf
                     ? "Nothing archived in this lane"
-                    : droppable
-                      ? "Drop here"
-                      : "Nothing here"
+                    : waitingOnMe
+                      ? WAITING_ON_ME_EMPTY
+                      : droppable
+                        ? "Drop here"
+                        : "Nothing here"
               }
               // No composer on the shelf — see `shelf` above.
               addLabel={`Add to ${column.label}`}
@@ -1046,7 +1055,7 @@ export function TaskBoard({
                             empty={
                               cell.length > 0
                                 ? undefined
-                                : shelf
+                                : shelf || waitingOnMe
                                   ? "—"
                                   : droppable
                                     ? "Drop here"

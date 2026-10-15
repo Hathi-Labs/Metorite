@@ -294,14 +294,30 @@ class Settings(BaseSettings):
     # allows nobody. `reach_daily_cap` is the most interrupts one member gets
     # in one local day. `reach_brief_template` is an approved Meta template
     # name for a brief outside the 24-hour window. Empty sends no template.
+    # `reach_needs_you_template` (RE-2a) is an approved Meta template for an
+    # interrupt outside the window. Empty holds the interrupt until the member
+    # next writes to the bot. `reach_template_language` is the language code
+    # of both templates.
     # The one reader is `gateway.reach.flags`. A flip on a box is gate
     # `enforcement-flip`. Spec: project-docs/specs/proactive_reach.md.
     # Fence: tests/unit/test_reach_loop.py.
+    # ── The artifact registry (WS-60 AM-1, 2026-10-15) ──────────────────────
+    #
+    # `artifact_registry_enabled` turns on the one register hook in the blob
+    # store and the two read routes under /artifacts, default OFF. With it
+    # off, no row lands in `artifacts` and the routes answer 404. The one
+    # reader is `acb_memory.artifacts.enabled`. A flip on a box is gate
+    # `enforcement-flip`. Spec: project-docs/specs/artifact_management.md
+    # §11 AM-1. Fence: tests/unit/test_artifact_registry.py.
+    artifact_registry_enabled: bool = False
+
     reach_enabled: bool = False
     reach_orgs: str = ""
     reach_members: str = ""
     reach_daily_cap: int = 3
     reach_brief_template: str = ""
+    reach_needs_you_template: str = ""
+    reach_template_language: str = "en"
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 
@@ -1186,6 +1202,10 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_wac_chart_engine.py.
     whatsapp_chart_engine: bool = False
     whatsapp_chart_node: str = "node"
+    # WAC-12 (spec §15): the bot makes a deck or a report as a PDF, through
+    # `gateway.pdf_render`, and sends it as a file. Default OFF. It works only
+    # with the native UI above ON. Fence: tests/unit/test_wac_documents.py.
+    whatsapp_documents: bool = False
     # WAC-4 (spec §14): a confirmed write from WhatsApp. ON, with the profile
     # above also ON, `create_task` parks its act in an org of
     # `whatsapp_assistant_writes_orgs`, and the member's Confirm runs it. OFF,

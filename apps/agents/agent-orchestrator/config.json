@@ -29,6 +29,7 @@
     "recall_timeline",
     "remember",
     "emit_generative_ui",
+    "make_document",
     "crm_list_records",
     "crm_get_record",
     "crm_list_fields",

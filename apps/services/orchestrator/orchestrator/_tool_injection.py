@@ -1554,6 +1554,14 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     except ImportError:
         pass
 
+    # A deck or a report as a PDF file in the chat (H-315), through the same
+    # card seam and the one PDF seam (`gateway.pdf_render`).
+    try:
+        from acb_skills.documents import make_document
+        _all_tools = [*_all_tools, make_document]
+    except ImportError:
+        pass
+
     # Chat attachments (H-229) — the text of a file the member attached in
     # THIS chat, by pure parsing: no subprocess, no code. It is no shell
     # tool, so D85 does not withhold it (`_withheld_shell_tools`).

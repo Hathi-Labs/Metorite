@@ -7,6 +7,11 @@ Two callers, one renderer:
   turns a Markdown or HTML file the agent wrote into a PDF download.
 * ``routes/documents.py`` — ``POST /documents/pdf`` turns the HTML that
   ``lib/reportEmail.ts`` formats from a saved report's render into a PDF.
+* ``routes/whatsapp_channel/bot_run.py`` — a deck or a report that the
+  WhatsApp bot sends as a file (WS-47 WAC-12). Its source kind is
+  ``document``: a JSON layout that ``acb_skills.documents.prepare`` checked,
+  with text, and visuals that our own renderers drew. See the section
+  "Documents" below.
 
 It lives here, beside ``csv_export.py``, for that file's reason: it belongs to
 neither caller, and a security control with two copies is one that does not
@@ -39,8 +44,10 @@ report PDF are the render route's, formatted once by ``reportEmail.ts``.
 """
 from __future__ import annotations
 
+import base64
 import html as _html
 import io
+import json
 import os
 import re
 import subprocess
@@ -48,6 +55,7 @@ import sys
 import unicodedata
 import weakref
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -563,10 +571,10 @@ def markdown_to_html(source: str) -> str:
     return md.render(source)
 
 
-def _check_size(source: str) -> None:
-    if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
+def _check_size(source: str, limit: int = MAX_SOURCE_BYTES) -> None:
+    if len(source.encode("utf-8")) > limit:
         raise PdfRenderError(
-            f"The document is larger than {MAX_SOURCE_BYTES} bytes, the most "
+            f"The document is larger than {limit} bytes, the most "
             "a PDF render accepts.",
             status=413,
         )
@@ -642,7 +650,349 @@ def source_to_pdf(kind: str, source: str) -> bytes:
         return markdown_to_pdf(source)
     if kind == "html":
         return html_to_pdf(source)
+    if kind == "document":
+        return document_to_pdf(source)
     raise PdfRenderError(f"A {kind} file cannot become a PDF.", status=415)
+
+
+# ── Documents: a deck or a report (WS-47 WAC-12) ─────────────────────────────
+#
+# The source is a JSON LAYOUT, never markup from a model. `acb_skills.documents`
+# checked every value and drew every visual with our own renderers. This code
+# escapes each text value before it builds HTML, so a model's "<b>" or
+# "<script>" is printed as text. A visual is our own SVG (placed as vector)
+# or our own chart engine's PNG. The SVG check below refuses one that names a
+# resource, in case a renderer ever does. The archive holds the Geist font
+# folder only, so the layout can load a font and nothing else.
+
+#: The largest document layout. Its charts travel as PNG, so it is larger
+#: than a text source. The fields of each slide have their own limits.
+MAX_DOCUMENT_BYTES = 16_000_000
+#: The largest PDF that a document may become. WhatsApp takes 100 MB.
+MAX_DOCUMENT_PDF_BYTES = 10_000_000
+#: The most pages a report may run to.
+MAX_DOCUMENT_PAGES = 60
+#: A deck slide, 16:9, in points: the size of a widescreen PowerPoint slide.
+DECK_SIZE = (960.0, 540.0)
+#: A content slide's text up to this length, with no bullets, is a lead line
+#: over a full-width visual. Longer text sits beside the visual.
+LEAD_MAX = 160
+
+#: Geist with no GSUB table, so it makes no ligature: with one, MuPDF wrote a
+#: wrong character for "tt", "ff" and "fi", and "settings" searched as
+#: "seǪings" (review round 1). ``fonts/README.md`` says how they were made.
+_GEIST = Path(__file__).resolve().parent / "fonts"
+_GEIST_FACES = (("Geist-Regular.ttf", "normal"), ("Geist-SemiBold.ttf", "bold"))
+_SVG_RESOURCE = re.compile(
+    r"<\s*(image|script|foreignobject|use)\b|href|url\s*\(|<!(doctype|entity)|@import",
+    re.IGNORECASE)
+#: The text between two tags. The check reads tags and attributes only, so a
+#: table cell that says "Product URL (draft)" is no resource (review round 1).
+_SVG_TEXT = re.compile(r">[^<]*<")
+_BOLD = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _palette() -> dict[str, str]:
+    """The light values of ``globals.css``, as ``whatsapp_render`` holds them."""
+    from acb_skills import whatsapp_render as look
+
+    return {"fg": look.FOREGROUND, "muted": look.MUTED, "border": look.BORDER,
+            "stripe": look.STRIPE, "primary": look.PRIMARY, "bg": look.BACKGROUND}
+
+
+def _fonts() -> tuple[Any, str]:
+    """``(archive, css)`` for Geist, or ``(None, css)`` for the built-in face."""
+    import pymupdf
+
+    if all((_GEIST / name).is_file() for name, _ in _GEIST_FACES):
+        faces = "".join(
+            f"@font-face {{font-family: G; font-weight: {weight}; src: url({name});}}"
+            for name, weight in _GEIST_FACES)
+        return pymupdf.Archive(str(_GEIST)), faces + " * {font-family: G;}"
+    return None, " * {font-family: sans-serif;}"
+
+
+def _rgb(hex_colour: str) -> tuple[float, float, float]:
+    value = hex_colour.lstrip("#")
+    return tuple(int(value[i:i + 2], 16) / 255 for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _inline(text: str) -> str:
+    """One escaped text value as HTML: ``**bold**`` and line breaks only."""
+    escaped = _html.escape(str(text or ""), quote=True)
+    return _BOLD.sub(r"<b>\1</b>", escaped).replace("\n", "<br>")
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r"\n\s*\n", str(text or "")) if p.strip()]
+
+
+def _body_html(text: str, bullets: list[str]) -> str:
+    parts = [f"<p>{_inline(p)}</p>" for p in _paragraphs(text)]
+    if bullets:
+        parts.append("<ul>" + "".join(f"<li>{_inline(b)}</li>" for b in bullets) + "</ul>")
+    return "".join(parts)
+
+
+class _Writer:
+    """One document: pages, the font archive and the look."""
+
+    def __init__(self) -> None:
+        import pymupdf
+
+        self.pymupdf = pymupdf
+        self.doc = pymupdf.open()
+        self.archive, self.faces = _fonts()
+        self.c = _palette()
+
+    def html(self, page: Any, rect: Any, body: str, css: str, *,
+             shrink: float = 1.0, where: str | None = None) -> float:
+        """Place *body* in *rect*. Returns the spare height, or -1 when it does
+        not fit (then nothing is drawn).
+
+        With *where*, a body that does not fit even at *shrink* is a refusal
+        that names the slide, never a slide with its text left out (review
+        round 1: the tool said "ok" and the member's bullets were gone)."""
+        spare, _scale = page.insert_htmlbox(
+            rect, body, css=self.faces + css, archive=self.archive, scale_low=shrink)
+        if spare < 0 and where is not None:
+            raise PdfRenderError(
+                f"{where} has more text than one slide holds. Split it into two "
+                "slides, or shorten the text and the bullets.", status=422)
+        return float(spare)
+
+    def visual(self, page: Any, rect: Any, visual: dict[str, Any]) -> None:
+        pymupdf = self.pymupdf
+        if visual.get("svg"):
+            svg = str(visual["svg"])
+            if _SVG_RESOURCE.search(_SVG_TEXT.sub("><", svg)):
+                raise PdfRenderError("A visual names a resource, so it was not drawn.")
+            src = pymupdf.open(stream=svg.encode("utf-8"), filetype="svg")
+            try:
+                vector = pymupdf.open("pdf", src.convert_to_pdf())
+            finally:
+                src.close()
+            page.show_pdf_page(rect, vector, 0, keep_proportion=True)
+            vector.close()
+            return
+        png = base64.b64decode(str(visual.get("png") or ""), validate=True)
+        if not png.startswith(b"\x89PNG"):
+            raise PdfRenderError("A visual is not an image that Metorite drew.")
+        page.insert_image(rect, stream=png, keep_proportion=True)
+
+    def visual_size(self, visual: dict[str, Any]) -> tuple[float, float]:
+        pymupdf = self.pymupdf
+        if visual.get("svg"):
+            src = pymupdf.open(stream=str(visual["svg"]).encode("utf-8"), filetype="svg")
+            try:
+                r = src[0].rect
+                return float(r.width), float(r.height)
+            finally:
+                src.close()
+        pix = pymupdf.Pixmap(base64.b64decode(str(visual.get("png") or ""), validate=True))
+        return float(pix.width), float(pix.height)
+
+    def footers(self, title: str, size: tuple[float, float], margin: float) -> None:
+        pymupdf, c = self.pymupdf, self.c
+        total = self.doc.page_count
+        width, height = size
+        css = f"p {{font-size: {9 if width < 700 else 11}pt; color: {c['muted']}; margin: 0;}}"
+        for n, page in enumerate(self.doc, start=1):
+            y = height - margin * 0.62
+            page.draw_line((margin, y - 6), (width - margin, y - 6),
+                           color=_rgb(c["border"]), width=0.6)
+            self.html(page, pymupdf.Rect(margin, y, width * 0.7, y + 20),
+                      f"<p>{_inline(title)}</p>", css, shrink=0.6)
+            self.html(page, pymupdf.Rect(width - margin - 90, y, width - margin, y + 20),
+                      f'<p style="text-align: right">{n} / {total}</p>', css, shrink=0.6)
+
+    def finish(self) -> bytes:
+        self.doc.subset_fonts()
+        out = self.doc.tobytes(garbage=3, deflate=True)
+        self.doc.close()
+        if len(out) > MAX_DOCUMENT_PDF_BYTES:
+            raise PdfRenderError("The document is too large to send. Use fewer charts.",
+                                 status=413)
+        return out
+
+
+def _deck(w: _Writer, layout: dict[str, Any]) -> None:
+    pymupdf, c = w.pymupdf, w.c
+    width, height = DECK_SIZE
+    m = 48.0
+    for number, slide in enumerate(layout["slides"], start=1):
+        where = f"Slide {number}"
+        page = w.doc.new_page(width=width, height=height)
+        kind = slide.get("type", "content")
+        title, subtitle = slide.get("title", ""), slide.get("subtitle", "")
+        if kind in ("cover", "closing"):
+            page.draw_rect(pymupdf.Rect(0, 0, 14, height), color=None,
+                           fill=_rgb(c["primary"]))
+            head = pymupdf.Rect(72, 130 if kind == "cover" else 110, width - 72, 330)
+            spare = w.html(page, head,
+                   f"<h1>{_inline(title)}</h1>"
+                   + (f"<p class='sub'>{_inline(subtitle)}</p>" if subtitle else ""),
+                   f"h1 {{font-size: 50pt; font-weight: bold; color: {c['fg']}; margin: 0 0 12pt 0;}}"
+                   f" .sub {{font-size: 22pt; color: {c['muted']}; margin: 0;}}", shrink=0.5, where=where)
+            body = _body_html(slide.get("text", ""), slide.get("bullets", []))
+            if body:
+                below = head.y1 - max(spare, 0) + 22
+                w.html(page, pymupdf.Rect(72, below, width - 72, 430), body,
+                       f"p, li {{font-size: 20pt; color: {c['fg']}; margin: 0 0 6pt 0;}}",
+                       shrink=0.5, where=where)
+            if kind == "cover":
+                line = " · ".join(v for v in (
+                    f"Prepared for {layout['for']}" if layout.get("for") else "",
+                    layout.get("date", "")) if v)
+                w.html(page, pymupdf.Rect(72, 440, width - 72, 470),
+                       f"<p>{_inline(line)}</p>",
+                       f"p {{font-size: 15pt; color: {c['muted']}; margin: 0;}}", shrink=0.6, where=where)
+            continue
+        if kind == "section":
+            page.draw_rect(page.rect, color=None, fill=_rgb(c["stripe"]))
+            page.draw_rect(pymupdf.Rect(72, 236, 132, 240), color=None, fill=_rgb(c["primary"]))
+            w.html(page, pymupdf.Rect(72, 250, width - 72, 400),
+                   f"<h1>{_inline(title)}</h1>"
+                   + (f"<p>{_inline(subtitle)}</p>" if subtitle else ""),
+                   f"h1 {{font-size: 46pt; font-weight: bold; color: {c['fg']}; margin: 0 0 10pt 0;}}"
+                   f" p {{font-size: 22pt; color: {c['muted']}; margin: 0;}}", shrink=0.5, where=where)
+            continue
+        if kind == "quote":
+            w.html(page, pymupdf.Rect(110, 120, width - 110, 380),
+                   f"<p class='q'>“{_inline(slide.get('quote', ''))}”</p>"
+                   + (f"<p class='by'>{_inline(slide.get('by', ''))}</p>" if slide.get("by") else ""),
+                   f".q {{font-size: 34pt; color: {c['fg']}; margin: 0 0 14pt 0;}}"
+                   f" .by {{font-size: 18pt; color: {c['muted']}; margin: 0;}}", shrink=0.5, where=where)
+            continue
+        # A content slide: the title, then the text and the visual.
+        w.html(page, pymupdf.Rect(m, 30, width - m, 86),
+               f"<h2>{_inline(title)}</h2>",
+               f"h2 {{font-size: 34pt; font-weight: bold; color: {c['fg']}; margin: 0;}}",
+               shrink=0.55, where=where)
+        top = 90.0
+        if subtitle:
+            w.html(page, pymupdf.Rect(m, 88, width - m, 114), f"<p>{_inline(subtitle)}</p>",
+                   f"p {{font-size: 17pt; color: {c['muted']}; margin: 0;}}", shrink=0.6, where=where)
+            top = 118.0
+        page.draw_rect(pymupdf.Rect(m, top + 2, m + 56, top + 6), color=None,
+                       fill=_rgb(c["primary"]))
+        text, bullets = slide.get("text", ""), slide.get("bullets", [])
+        body = _body_html(text, bullets)
+        bottom = height - 50
+        visual = slide.get("visual")
+        css = (f"p {{font-size: 21pt; line-height: 1.3; color: {c['fg']}; margin: 0 0 10pt 0;}}"
+               f" li {{font-size: 21pt; line-height: 1.3; color: {c['fg']}; margin: 0 0 8pt 0;}}")
+        if visual and body and not bullets and len(text) <= LEAD_MAX:
+            # A short lead line over a full-width visual.
+            spare = w.html(page, pymupdf.Rect(m, top + 18, width - m, top + 80), body,
+                           css, shrink=0.6, where=where)
+            lead_end = top + 80 - max(spare, 0)
+            w.visual(page, pymupdf.Rect(m, lead_end + 6, width - m, bottom), visual)
+        elif visual and body:
+            w.html(page, pymupdf.Rect(m, top + 22, 372, bottom), body,
+                   css.replace("21pt", "19pt"), shrink=0.45, where=where)
+            w.visual(page, pymupdf.Rect(392, top + 16, width - m, bottom), visual)
+        elif visual:
+            w.visual(page, pymupdf.Rect(m, top + 16, width - m, bottom), visual)
+        elif body:
+            w.html(page, pymupdf.Rect(m, top + 24, width - m, bottom), body,
+                   css.replace("21pt", "25pt"), shrink=0.45, where=where)
+
+
+def _report(w: _Writer, layout: dict[str, Any]) -> None:
+    pymupdf, c = w.pymupdf, w.c
+    paper = pymupdf.paper_rect("a4")
+    width, height = paper.width, paper.height
+    m = 54.0
+    bottom = height - m - 18
+    page = w.doc.new_page(width=width, height=height)
+    head = (f"<h1>{_inline(layout['title'])}</h1>"
+            + (f"<p class='sub'>{_inline(layout['subtitle'])}</p>" if layout.get("subtitle") else "")
+            + "<p class='meta'>" + _inline(" · ".join(v for v in (
+                f"Prepared for {layout['for']}" if layout.get("for") else "",
+                layout.get("date", "")) if v)) + "</p>")
+    head_css = (f"h1 {{font-size: 24pt; font-weight: bold; color: {c['fg']}; margin: 0 0 6pt 0;}}"
+                f" .sub {{font-size: 13pt; color: {c['muted']}; margin: 0 0 4pt 0;}}"
+                f" .meta {{font-size: 9.5pt; color: {c['muted']}; margin: 0;}}")
+    rect = pymupdf.Rect(m, m, width - m, bottom)
+    spare = w.html(page, rect, head, head_css, shrink=0.6, where="The title of the report")
+    y = rect.y1 - max(spare, 0) + 8
+    page.draw_rect(pymupdf.Rect(m, y, m + 56, y + 3), color=None, fill=_rgb(c["primary"]))
+    y += 18
+    text_css = (f"p {{font-size: 10.5pt; line-height: 1.45; color: {c['fg']}; margin: 0;}}"
+                f" li {{font-size: 10.5pt; line-height: 1.45; color: {c['fg']}; margin: 0;}}"
+                f" h2 {{font-size: 15pt; font-weight: bold; color: {c['fg']}; margin: 0;}}"
+                " ul {margin: 0; padding: 0 0 0 14pt;}")
+
+    def place(body: str, gap: float, keep: float = 0.0) -> None:
+        nonlocal page, y
+        if bottom - y < keep:
+            page, y = w.doc.new_page(width=width, height=height), m
+        for _ in range(2):
+            spare = w.html(page, pymupdf.Rect(m, y, width - m, bottom), body, text_css)
+            if spare >= 0:
+                y = bottom - spare + gap
+                return
+            if y == m:
+                break
+            page, y = w.doc.new_page(width=width, height=height), m
+        # Taller than a page: it is shrunk to fit one page.
+        spare = w.html(page, pymupdf.Rect(m, y, width - m, bottom), body, text_css, shrink=0.3,
+                       where="A section of the report")
+        y = bottom - max(spare, 0) + gap
+
+    for section in layout["sections"]:
+        if w.doc.page_count > MAX_DOCUMENT_PAGES:
+            raise PdfRenderError(f"The report runs past {MAX_DOCUMENT_PAGES} pages.", status=413)
+        if section.get("heading"):
+            # A heading never ends a page: it keeps room for its first lines.
+            place(f"<h2>{_inline(section['heading'])}</h2>", 6, keep=150)
+        for para in _paragraphs(section.get("text", "")):
+            place(f"<p>{_inline(para)}</p>", 7)
+        for bullet in section.get("bullets", []):
+            place(f"<ul><li>{_inline(bullet)}</li></ul>", 2)
+        visual = section.get("visual")
+        if visual:
+            vw, vh = w.visual_size(visual)
+            box_w = width - 2 * m
+            box_h = min(box_w * vh / vw if vw else 300, 420)
+            if y + box_h > bottom:
+                page, y = w.doc.new_page(width=width, height=height), m
+            w.visual(page, pymupdf.Rect(m, y + 4, width - m, y + 4 + box_h), visual)
+            y += box_h + 16
+        y += 8
+
+
+def document_to_pdf(source: str) -> bytes:
+    """A checked document layout as a PDF: a 16:9 deck or an A4 report.
+
+    Pure, like :func:`html_to_pdf`: no network, and no file but the font
+    folder. ⚠️ **It runs in the worker only.** A caller uses
+    :func:`render_pdf` with the kind ``document``.
+    """
+    _check_size(source, MAX_DOCUMENT_BYTES)
+    try:
+        layout = json.loads(source)
+    except ValueError as exc:
+        raise PdfRenderError("The document layout is not JSON.", status=422) from exc
+    if not isinstance(layout, dict) or layout.get("format") not in ("deck", "report") \
+            or not isinstance(layout.get(
+                "slides" if layout.get("format") == "deck" else "sections"), list):
+        raise PdfRenderError("The document layout has no deck or report.", status=422)
+    w = _Writer()
+    try:
+        if layout["format"] == "deck":
+            _deck(w, layout)
+            w.footers(str(layout.get("title") or ""), DECK_SIZE, 48.0)
+        else:
+            _report(w, layout)
+            paper = w.pymupdf.paper_rect("a4")
+            w.footers(str(layout.get("title") or ""), (paper.width, paper.height), 54.0)
+        return w.finish()
+    except PdfRenderError:
+        raise
+    except Exception as exc:
+        raise PdfRenderError("The document could not be laid out as a PDF.") from exc
 
 
 # ── Out of process ───────────────────────────────────────────────────────────
@@ -843,9 +1193,9 @@ async def render_pdf(
     """
     import asyncio
 
-    if kind not in ("markdown", "html"):
+    if kind not in ("markdown", "html", "document"):
         raise PdfRenderError(f"A {kind} file cannot become a PDF.", status=415)
-    _check_size(source)
+    _check_size(source, MAX_DOCUMENT_BYTES if kind == "document" else MAX_SOURCE_BYTES)
     who = (member or "").strip().lower()
     tenant = str(org) if org else "unbound"
     if who in _members_rendering:
@@ -911,7 +1261,11 @@ def attachment_disposition(filename: str) -> str:
 
 
 __all__ = [
+    "DECK_SIZE",
     "MAX_DEPTH",
+    "MAX_DOCUMENT_BYTES",
+    "MAX_DOCUMENT_PAGES",
+    "MAX_DOCUMENT_PDF_BYTES",
     "MAX_PAGES",
     "MAX_SOURCE_BYTES",
     "MAX_WORD_CHARS",
@@ -923,6 +1277,7 @@ __all__ = [
     "attachment_disposition",
     "check_repeated_runs",
     "check_word_lengths",
+    "document_to_pdf",
     "html_to_pdf",
     "markdown_to_html",
     "markdown_to_pdf",

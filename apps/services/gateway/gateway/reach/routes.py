@@ -1,8 +1,9 @@
 """The two routes of Reach (WS-59 RE-1a, ``proactive_reach.md`` §11).
 
 * ``GET /reach/preview`` — what Reach would send the signed-in member now: the
-  brief, the interrupt, and the state of the channel. It sends nothing and
-  writes nothing.
+  brief, the interrupt, and the state of the channel. ``held`` is True when
+  the interrupt waits for the member's next message to the bot (RE-2a). It
+  sends nothing and writes nothing.
 * ``POST /reach/brief`` — send the signed-in member's brief now. It skips the
   once-a-day guard, and keeps every other check: the switch, the org list,
   the member allowlist, the link and the 24-hour window.
@@ -51,14 +52,17 @@ async def reach_preview(user: UserContext = Depends(get_current_user)) -> dict[s
         raise HTTPException(status_code=503, detail="My Day could not be read in full")
     logged = await outbox.logged_pairs(org, email)
     candidates = plan.interrupt_candidates(snap.cards, logged, snap.now)
-    wa_id = await channel.linked_phone(org, email)
+    wa_id, is_open = await channel.reach_state(org, email)
+    held = (wa_id is not None and not is_open and bool(candidates)
+            and flags.needs_you_template() is None)
     return {
         "brief": plan.compose_brief(snap.cards, loop.app_url(), snap.local_date,
                                     now=snap.now),
         "interrupts": (plan.compose_interrupt(candidates, loop.app_url(), now=snap.now)
                        if candidates else None),
         "linked": wa_id is not None,
-        "window_open": bool(wa_id) and await channel.window_open(org, str(wa_id)),
+        "window_open": is_open,
+        "held": held,
     }
 
 
@@ -72,7 +76,8 @@ async def reach_brief_now(user: UserContext = Depends(get_current_user)) -> dict
     # One brief for each minute at most: a double click sends once.
     minute = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")
     key = plan.dedupe_key("brief-now", email, [minute])
-    return result_body(await loop.send_brief(org, email, snap, key=key))
+    return result_body(await loop.send_brief(org, email, snap, key=key,
+                                             template=flags.brief_template()))
 
 
 def result_body(outcome: str) -> dict[str, Any]:
