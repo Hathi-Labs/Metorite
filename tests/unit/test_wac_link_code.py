@@ -271,6 +271,16 @@ def test_an_empty_org_list_allows_no_org(channel, monkeypatch) -> None:
     assert channel.opened == 0
 
 
+def test_a_star_on_the_org_list_allows_every_org(channel, monkeypatch) -> None:
+    from gateway.routes.whatsapp_channel import flags
+
+    monkeypatch.setattr(get_settings(), "whatsapp_assistant_orgs", "*",
+                        raising=False)
+    assert flags.org_allowed(ORG_A) is True
+    assert flags.org_allowed("any-other-org") is True
+    assert flags.org_allowed(None) is False
+
+
 def test_no_display_number_refuses_the_post_and_reads_disabled(
     channel, monkeypatch,
 ) -> None:
