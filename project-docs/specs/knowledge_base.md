@@ -5,7 +5,7 @@ The owner accepted every proposal of §15 and every default of §16 the same
 day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
 Verified against the code on 2026-10-15.
 
-**KB-0 is BUILT, 2026-10-15** (branch `ws61-kb0`, migration 270). The
+**KB-0 is BUILT, 2026-10-15** (PR #1058, migration 270). The
 feature `knowledge`, the capability `knowledge:manage`, the pane at
 `preview`, the route gate, and the page scaffold with `AppTopBar`. The pane
 is hidden from the nav, and `/knowledge` renders by URL for a member with
@@ -159,7 +159,7 @@ read and grow it. And it owns the "Save to Knowledge" act on an artifact.
 | The CRM sync is provider-generic: an adapter protocol, a discovery step, cursors, a run lock, and an in-process loop that ticks every 60 s | `gateway/crm_sources/base.py:184-259`, `gateway/crm_sync/engine.py`, `scheduler.py`, `runs.py` | `gateway/kb_sources/` and `gateway/kb_sync/` copy the shape, and share `shared_token.fresh_credential`. They do not import the CRM engine, because its steps are CRM entities |
 | Metorite owns ONE Google OAuth client. Google keeps one grant per account and client | `email_app_master_plan.md:552` (D-EM-5), `263_email_gmail_grant_shared.sql` | A Drive scope on the same client shares the Gmail grant. Disconnecting one must not revoke the other. §7.4 |
 | Text extraction exists and is hardened: docx, xlsx, pptx, pdf, odt, rtf, html, text. No OCR | `packages/acb_skills/acb_skills/attachment_text.py:312` | The one extractor. Knowledge adds Google Docs export (as text) in front of it and nothing else |
-| One file registry, `attachments`, bytes on local disk, 15 MB, extension blocklist, no scan | `52_gtd_attachments.sql:47`, `routes/tasks/attachments.py:29-38`, `150_projects_attachments.sql:28` | A page file is an `attachments` row plus a join, as Projects did. No second store. MT-1g moves the bytes to an object store later, for every app at once |
+| A file registry for tasks, `attachments`, bytes on local disk, 15 MB, extension blocklist, no scan | `52_gtd_attachments.sql:47`, `routes/tasks/attachments.py:29-38`, `150_projects_attachments.sql:28` | A page file is NOT an `attachments` row. It is an artifact (§4.3), so the Artifacts library is the one file store for what members and agents make |
 | TipTap 3 is installed and used once, for the email signature | `workbench/control_plane/package.json:18-25` | The page editor is TipTap. Markdown is the text of record |
 | My Day has a provider registry, a feed-only mode and a gate list | `routes/shell/needs.py:924-972`, `MY_DAY_PROVIDERS` | Knowledge registers `knowledge`, `needs=False`, `gated=True` |
 | Reach already names two Knowledge kinds, both `brief` | `proactive_reach.md:191` | `doc_shared_with_me` and `doc_needs_review` keep those names |
@@ -187,7 +187,7 @@ memory system stays what it is, and §8.5 draws the line between them.
  ─────────────            ─────────────────                    ───────────────
  Space ─────────────────▶ kb_spaces + kb_space_grants ─┐
    ├ Page ──────────────▶ kb_pages + kb_page_versions  ├──▶ kb_chunks ──▶ search_knowledge
-   │   ├ file ──────────▶ attachments + kb_page_files  │     (tsv + vector)   │
+   │   ├ file ──────────▶ artifacts + kb_page_files    │     (tsv + vector)   │
    │   └ link ──────────▶ kb_links                     │                      ├▶ the app, the command bar
    └ Source ────────────▶ kb_sources (integration_connections)                ├▶ the assistant (tools)
        └ folder ────────▶ kb_source_nodes (metadata) ──┘                      ├▶ My Day (provider)
@@ -207,9 +207,9 @@ or remove two of them:
 
 | Slug | Name | Grants | Why it exists |
 |---|---|---|---|
-| `company` | Company | `org` read, admins write | The handbook. Products, services, policies, "how we do things" |
+| `company` | Company | `org` read. A holder of `knowledge:manage` writes (§5.2) | The handbook. Products, services, policies, "how we do things" |
 | `team-<slug>` | one per group that asks | `group:<slug>` read and write | A department's manuals and runbooks. Made on demand, never in bulk |
-| `me` | My notes | the member only | The private drafts. "Save to Knowledge" lands here when the member does not choose |
+| `me` | My notes | the member only. No grant and no capability opens it | The private drafts. "Save to Knowledge" lands here when the member does not choose |
 
 The `me` space is one row per member, created on the member's first write,
 and it is the only space a member cannot share. To share a page from it, the
@@ -328,7 +328,7 @@ the member's email, the member's groups as `group:<slug>`, and `org`.
 | Permission | Kind | Who holds it by default | What it allows |
 |---|---|---|---|
 | `feature:knowledge` | feature, `is_default true` | every role except guest, through `feature:*` (migration 207) | Open the app. See the spaces the grants allow |
-| `knowledge:manage` | capability | owner, admin | Make and remove spaces, change grants, archive, connect an org source |
+| `knowledge:manage` | capability | owner, admin | `manage` on every space except a `me` space. So a holder makes and removes spaces, changes grants, archives, writes, and connects an org source. It reads published pages only. It never shows a draft that is not its own, and never a `me` space. `data:org:read` gives nothing in Knowledge |
 
 Two permissions and no more. A member writes a page when a space grant says
 `write`, and that is a grant, not a permission. `user_management_contract.md`
@@ -356,7 +356,7 @@ card. C is a hard-to-undo write with one card per act. X is not on chat.
 | `POST /knowledge/pages/{id}/move` | B | Change the space or the parent. Re-index when the space changes |
 | `POST /knowledge/pages/{id}/archive` | C | Archive. Leave the index |
 | `POST /knowledge/pages/{id}/revert` | B | A new version with an old body |
-| `POST /knowledge/pages/{id}/files` | B | Attach a file through the attachments seam |
+| `POST /knowledge/pages/{id}/files` | B | Attach a file through `register_artifact` (§4.3) |
 | `GET /knowledge/files/{id}/{name}` | X | Serve one file. The MIME safelist and `nosniff` |
 | `POST /knowledge/pages/{id}/links` | B | Add a typed link |
 | `GET /knowledge/about?entity=task:<id>` | A | Every page that links to this entity (§10.2) |
@@ -418,7 +418,7 @@ CREATE TABLE kb_chunks (
     id              BIGSERIAL PRIMARY KEY,
     space_id        UUID NOT NULL,
     source_kind     TEXT NOT NULL CHECK (source_kind IN ('page','file','document')),
-    source_id       UUID NOT NULL,           -- kb_pages.id, attachments.id or kb_documents.id
+    source_id       UUID NOT NULL,           -- kb_pages.id, artifacts.id or kb_documents.id
     page_id         UUID,                    -- the page a file hangs off, or null
     ordinal         INT  NOT NULL,
     heading_path    TEXT,                    -- "Returns policy > Refund window"
@@ -596,7 +596,7 @@ The defaults keep it cheap and safe:
   pages, and says so on the page.
 - A type the extractor does not read (a video, a CAD file, an archive) is a
   node with a name and nothing else.
-- "Keep a copy" on one document fetches the bytes into `attachments` and
+- "Keep a copy" on one document registers the bytes as an artifact and
   joins them to a page. It is a member's act, one document at a time, and
   never a folder setting.
 
@@ -989,7 +989,7 @@ its own branch, three or four in flight at most.
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
 | **KB-0** ✅ BUILT 2026-10-15 | The feature (`FEATURES` and a `feature_catalog` row, in the shape of `144_crm.sql:558`), the capability `knowledge:manage` in `CAPABILITIES` (the owner holds it through `*`, and the admin seed is KB-1), the pane at `preview` with no job, `HREF_FEATURES` in `access.ts`, the page scaffold with `AppTopBar`, `PREVIEW_BAR_HOME`, the e2e `PAGES` and features mock, and the Preview row of `launch_surface.md` §2. No flag: a preview route renders by URL, and the nav entry stays hidden | `feature:knowledge` and `knowledge:manage` exist, and `test_org_access_control.py` proves both. `/knowledge` renders "Knowledge" as the one `h1`, by URL. `nav.test.ts`, `navAccessAgreement.test.ts` and `appBar.test.ts` pass. `seams.test.ts` gains no debt | AGENT-SAFE |
-| **KB-1** | The tables of §12 except the sources, the three spaces of §4.1, the seed of `knowledge:manage` onto `admin` through `provision_org_roles` (the shape of 207 §2), `visible_pages_clause`, the shared subject validator (§5.1), the page and space routes of §5.3, the manifest and its coverage test | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green | AGENT-SAFE |
+| **KB-1** | Migration 272 (check at merge): `kb_spaces`, `kb_space_grants`, `kb_pages`, `kb_page_versions` and `kb_links`, in the tenancy shape of `268_artifacts.sql`, with the generated-phase lines for them. `kb_page_files` waits for KB-2a, `kb_chunks` for KB-3, `kb_gaps` for KB-4, and the source tables for KB-7. `kb_page_files.artifact_id` carries no foreign key, because the artifact sweep deletes registry rows. The seed of `knowledge:manage` onto `admin` in every org, and in `provision_org_roles`, in the shape of 207 §2. A pure `normalize_grant_subject` in `acb_auth/permissions.py`, which `core.validate_grant_subject` wraps as the 422. `visible_pages_clause`, over the member's email, `org` and the groups of `_MY_GROUPS_SQL`, with no copy of the project grant SQL. The `company` space made lazily with an `org` read grant, the `me` space on the member's first write, and `team-*` only by `POST /knowledge/spaces`, each race-free by a partial unique index. The 4 space routes and the 8 page routes of §5.3, behind `require_feature_router("knowledge")`, `KNOWLEDGE_ENABLED` and `KNOWLEDGE_ORGS` (404 when off). The chat manifest and its coverage test move to KB-4, with the skill | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green. After the ladder, `admin` holds `knowledge:manage`, and `manager` and `member` do not. A new org holds it too. Two concurrent first writes make one `me` space | AGENT-SAFE |
 | **KB-2a** | The Spaces view, the page tree, a Markdown editor with preview, publish, versions, files on a page through `register_artifact` (§4.3) | A member writes, publishes, attaches an image, reverts. The visual review passes in four contexts | AGENT-SAFE |
 | **KB-2b** | The TipTap editor over the same Markdown, links as pills with `[[`, the "Knowledge about this" component | The body round-trips through Markdown with no loss for the supported marks. A task shows its linked pages | AGENT-SAFE |
 | **KB-3** | `packages/acb_search`: chunking, the generated `tsv`, `embed()` through `/v1/embeddings` with a `usage_event`, `query()` with fusion, the index-on-publish hook, `GET /knowledge/search`, the Search view, the command-bar provider | A published page is found by an exact token and by a paraphrase. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds | AGENT-SAFE to build. The embed flip spends credits: owner |

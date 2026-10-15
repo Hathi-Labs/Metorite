@@ -5524,6 +5524,19 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-15 · WS-53 CRM-Q16 review
 
 
+### H-322 · An artifact on a Knowledge page must count as kept · [AGENT]
+- **Check:** `rg -n "kb_page_files" apps/services/gateway packages/acb_memory infra/postgres`.
+  No hit in the artifact sweep's `keep` rule means this is open.
+- **Why.** WS-61 KB-2a makes a page file an artifact, joined through
+  `kb_page_files` with no foreign key. The artifact sweep
+  (`artifact_management.md` §7.4) deletes a registry row that is not kept.
+  A file on a published page would then vanish from the page with no record.
+- **Do this:** in the WS-60 `keep` rule (§7.1), count an artifact as kept
+  while a `kb_page_files` row names it. Add a test beside the sweep's own.
+  It must land before KB-2a turns on for any org.
+- **Authority:** `specs/artifact_management.md` §7.1, `specs/knowledge_base.md` §4.3
+- **Added:** 2026-10-15 · WS-61 KB-1 audit
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
