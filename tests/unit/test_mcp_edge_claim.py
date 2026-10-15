@@ -377,8 +377,8 @@ class TestClaimOnARealDatabase:
         assert result["isError"] is False, result
         body = result["structuredContent"]
         assert body["moved"] is True
-        assert sorted(body["task"]["assignees"]) == [LEAD, MEMBER]
-        assert _assignees(live, task) == [LEAD, MEMBER]
+        assert sorted(body["task"]["assignees"]) == sorted([LEAD, MEMBER])
+        assert _assignees(live, task) == sorted([LEAD, MEMBER])
         assert str(_row(live, task).status_id) == live.s.doing
 
     async def test_a_backlog_task_moves_too(self, live):
@@ -440,8 +440,10 @@ class TestClaimOnARealDatabase:
     async def test_c6_a_stale_version_gives_the_stale_text(self, live):
         task = _task(live, live.team, live.s.todo, "c6")
         stale = await _version(live, task)
-        live.seeder.one("UPDATE pm_tasks SET title = 'c6 moved on' WHERE id ="
-                        " CAST(:t AS uuid) RETURNING id", t=task)
+        # A real change through the gateway, so `updated_at` moves on.
+        moved_on = await _send(live, "PATCH", f"/projects/tasks/{task}",
+                               body={"title": "c6 moved on"})
+        assert moved_on.status_code == 200, moved_on.text
         result = await _claim(live, task, stale)
         assert result == {"content": [{"type": "text", "text": STALE}], "isError": True}
         assert _assignees(live, task) == []
