@@ -1445,10 +1445,35 @@ button. So `split_reply`, the "still working" line and a resend did not join
 the texts. The web chat streams each step as its own part, so it did not show
 the defect.
 
-**The fix.** `executor._run_with_maf_agent` adds `final`, the text of the last
-assistant message that has any. `bot_run.final_text` sends `final`, and falls
-back to the joined text when a result has none. Every other caller keeps
-`result`, unchanged.
+**The fix.** `executor._run_with_maf_agent` adds `steps`, the text of each
+assistant message that has any. `bot_run.final_text` builds the one WhatsApp
+text from them:
+
+- Sometimes the earlier steps hold most words of the last step (60% or
+  more, and 6 words or more). Then the last step says the answer again, and
+  only the last step goes. The owner's incident measures 0.83.
+- Else the last step adds something, for example "Open it with the button
+  below." after a text card. Every step goes, a blank line apart, so no
+  answer is lost. That case measures 0.2.
+
+A result with no `steps` falls back to the joined text. Every other caller
+keeps `result`, unchanged. `SCOPE_RULE_NATIVE` also tells the model to say
+each thing once.
+
+**Review round 1 (2026-10-15).**
+
+1. The first fix sent the last step only. Then a text card, a link button
+   and "Open it with the button below." lost the card. The rule above
+   replaced it, and a fence holds each order.
+2. The tool refuses a block with an end and no start, because the
+   Calendar reads a block by its start.
+3. `set_my_overlay` is not only the member's own overlay. INBOX, NEXT or
+   WAITING on a finished task reopens it for the board (D77), and its card
+   says so. The web app undoes it, so it stays inside §14.4.
+4. Known gap, from WAC-4: at Confirm no run is bound, so the `decide` engine
+   does not run. The tool then refuses a name that `decide` resolved at the
+   ask (an assignee of `create_task`, a `waiting_on` of `set_my_overlay`).
+   The act closes `failed`, and the tool writes nothing. HANDOFF holds it.
 
 **Known limit.** One act waits at a time (§14.3). For two blocks, the bot
 prepares the first. The member asks for the next one after the Confirm.
@@ -1464,7 +1489,9 @@ prepares the first. The member asks for the next one after the Confirm.
 | A block on a task that exists parks and confirms, and the card binds the task id | `test_a_block_on_a_task_that_exists_parks_then_confirms` |
 | A chase with no since-when confirms | `test_a_chase_with_no_since_when_still_confirms` |
 | A backwards block gets no card | `test_a_block_that_ends_before_it_starts_is_refused_before_any_card` |
-| The member gets the last step once, never two texts glued | `test_the_member_gets_the_last_step_once_and_never_two_texts_glued`, `test_the_executor_carries_the_last_step_beside_the_joined_text` |
+| The member gets the answer once, never two texts glued | `test_the_member_gets_the_answer_once_and_never_two_texts_glued`, `test_the_executor_carries_each_step_beside_the_joined_text` |
+| An answer written before the tool call is never dropped | `test_an_answer_written_before_the_tool_call_is_never_dropped` |
+| A block with an end and no start gets no card | `test_a_block_with_an_end_and_no_start_is_refused_before_any_card` |
 | The capture writes the block on a real Postgres under FORCE RLS, and the Calendar read answers it (R8) | `tests/unit/test_wac_calendar_block_r8.py` |
 
 The events, meetings and reminders that are not task blocks are a separate
