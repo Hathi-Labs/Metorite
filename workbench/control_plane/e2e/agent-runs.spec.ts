@@ -19,6 +19,9 @@ import { openAllRows } from "./railOpen";
  *    404. A member picks a connection and sends, and the run reads "Queued
  *    for Claude Code". With no connected agent, the dialog links to the AI
  *    agents view. A 409 shows the server's text.
+ * 6. EA-6g, the archive request: only the run's member sees Approve and
+ *    Decline, and the decision goes to the approval route. Every other
+ *    member reads "Waiting for <name>". An expired request offers nothing.
  *
  * Run it by name:
  *
@@ -108,6 +111,36 @@ function run(status: string, state: string) {
   };
 }
 
+/** EA-6g: an archive request, typed by the server. The stamp is far ahead. */
+function archiveRequest(expired = false) {
+  return {
+    id: "a7",
+    seq: 2,
+    type: "elicitation",
+    content: {
+      body: "The agent asks to archive this task. The subtasks stay where they are. Only the member of this agent run can approve or decline.",
+    },
+    content_metadata: {
+      request: {
+        kind: "archive_task",
+        expires_at: expired ? "2020-01-01T00:00:00Z" : "2999-01-01T00:00:00Z",
+      },
+    },
+    signal: "select",
+    signal_metadata: {
+      options: [
+        { id: "approve", label: "Approve" },
+        { id: "decline", label: "Decline" },
+      ],
+      allow_multiple: false,
+    },
+    actor: ME,
+    actor_via: "mcp:claude-code",
+    in_reply_to: null,
+    created_at: "2026-10-14T10:00:00Z",
+  };
+}
+
 /** EA-12d: the member's instruction, the first `prompt` of a queued run. */
 const PROMPT = {
   id: "a5",
@@ -148,9 +181,18 @@ const EMPTY = { rows: [], items: [], total: 0, links: [], subtasks: [], children
 async function stub(
   page: Page,
   start: "awaiting" | "working" | "off" | "none",
-  opts: { loseTheRace?: boolean; connections?: unknown[]; startStatus?: number } = {},
+  opts: {
+    loseTheRace?: boolean;
+    connections?: unknown[];
+    startStatus?: number;
+    /** EA-6g: the open question is an archive request of this member's run. */
+    archive?: { member?: string; expired?: boolean };
+  } = {},
 ) {
   const posts: Record<string, unknown>[] = [];
+  /** EA-6g: the bodies of each archive approval. */
+  const approvals: Record<string, unknown>[] = [];
+  let decided = "approve";
   /** EA-12d: the bodies of each "Ask an agent" start. */
   const starts: Record<string, unknown>[] = [];
   /** EA-12d: `none` has no run until the member asks an agent. */
@@ -160,32 +202,39 @@ async function stub(
   // gets 409 and the run now holds the other member's answer.
   let answeredBy = ME;
 
+  const question = opts.archive ? archiveRequest(opts.archive.expired) : ELICITATION;
+  const runOf = (status: string, state: string) => ({
+    ...run(status, state),
+    member_email: opts.archive?.member ?? ME,
+  });
   const current = () => {
     if (answered) {
       return {
-        run: run("in_progress", "answered"),
+        run: runOf("in_progress", "answered"),
         activities: [
           THOUGHT,
-          ELICITATION,
+          question,
           {
             id: "a3",
             seq: 3,
             type: "prompt",
-            content: { selected: ["pg"] },
+            content: opts.archive
+              ? { selected: [decided], archived: decided === "approve" }
+              : { selected: ["pg"] },
             signal: "continue",
             signal_metadata: null,
             actor: answeredBy,
             actor_via: null,
-            in_reply_to: "a1",
+            in_reply_to: question.id,
             created_at: "2026-10-14T10:01:00Z",
           },
         ],
       };
     }
-    if (queued) return { run: run("created", "queued"), activities: [PROMPT] };
+    if (queued) return { run: runOf("created", "queued"), activities: [PROMPT] };
     return start === "awaiting"
-      ? { run: run("awaiting", "awaiting"), activities: [THOUGHT, ELICITATION] }
-      : { run: run("in_progress", "working"), activities: [THOUGHT] };
+      ? { run: runOf("awaiting", "awaiting"), activities: [THOUGHT, question] }
+      : { run: runOf("in_progress", "working"), activities: [THOUGHT] };
   };
   const hasRun = () => start !== "off" && (start !== "none" || queued);
   const taskNow = () => ({ ...TASK, agent_state: hasRun() ? current().run.state : null });
@@ -212,6 +261,21 @@ async function stub(
       }
       if (Array.isArray(body.selected)) answered = true;
       return route.fulfill({ json: { id: "a9", status: "in_progress" } });
+    }
+    if (request.method() === "POST" && path === "projects/agent-runs/r1/archive-approval") {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      approvals.push(body);
+      decided = String(body.decision);
+      answered = true;
+      return route.fulfill({
+        json: {
+          activity: null,
+          run: current().run,
+          created: true,
+          archived: decided === "approve",
+          task: decided === "approve" ? { ...TASK, archived_at: "2026-10-14T10:02:00Z" } : null,
+        },
+      });
     }
     if (request.method() === "POST" && path === "projects/tasks/t2/agent-runs") {
       starts.push(request.postDataJSON() as Record<string, unknown>);
@@ -258,7 +322,7 @@ async function stub(
   await openAllRows(page);
   await page.getByText("Bootloader", { exact: true }).first().click();
   await page.waitForTimeout(2500);
-  return { posts, starts };
+  return { posts, starts, approvals };
 }
 
 /** Open the task's panel from its row or card. */
@@ -454,4 +518,63 @@ test("Ask an agent shows the server's text for a 409", async ({ page }) => {
   await expect(dialog.getByRole("alert")).toHaveText(START_409);
   await expect(dialog.getByText(/Try again/)).toHaveCount(0);
   expect(starts).toHaveLength(1);
+});
+
+/* ── EA-6g: the archive request ────────────────────────────────────────── */
+
+test("the run's member approves an archive request", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { posts, approvals } = await stub(page, "awaiting", { archive: {} });
+  await openTask(page);
+  const panel = page.locator("[data-agent-run-panel]");
+  const card = panel.locator('[data-archive-request="mine"]');
+  await expect(card).toBeVisible();
+  await expect(card.locator("[data-elicitation-option]")).toHaveCount(2);
+  await expect(card.getByText("Approve archives this task. Its subtasks stay where they are.")).toBeVisible();
+  // The approval takes a decision only: no free text, and no reply box.
+  await expect(card.getByRole("textbox")).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: /Reply to/ })).toHaveCount(0);
+
+  await card.locator("[data-elicitation-option]").filter({ hasText: "Approve" }).click();
+  await card.locator("[data-elicitation-submit]").click();
+
+  await expect(panel.locator("[data-agent-answered]")).toHaveText(/Answered by you: Approve/i, {
+    timeout: 10_000,
+  });
+  await expect(panel.locator("[data-archive-request]")).toHaveCount(0);
+  expect(approvals).toHaveLength(1);
+  expect(approvals[0]).toMatchObject({ decision: "approve" });
+  expect(typeof approvals[0].idempotency_key).toBe("string");
+  // The generic answer route is never used for a request.
+  expect(posts).toHaveLength(0);
+});
+
+test("another member reads Waiting for the run's member, with no button", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { posts, approvals } = await stub(page, "awaiting", {
+    archive: { member: "priya@example.com" },
+  });
+  await openTask(page);
+  const panel = page.locator("[data-agent-run-panel]");
+  const waiting = panel.locator('[data-archive-request="waiting"]');
+  await expect(waiting).toBeVisible();
+  await expect(waiting.locator("[data-archive-waiting]")).toHaveText("Waiting for Priya");
+  await expect(waiting.getByText(/asks to archive this task/)).toBeVisible();
+  await expect(panel.locator("[data-elicitation-option]")).toHaveCount(0);
+  await expect(panel.locator("[data-elicitation-submit]")).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: /Reply to/ })).toHaveCount(0);
+  expect(approvals).toHaveLength(0);
+  expect(posts).toHaveLength(0);
+});
+
+test("an expired archive request offers nothing", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { approvals } = await stub(page, "awaiting", { archive: { expired: true } });
+  await openTask(page);
+  const panel = page.locator("[data-agent-run-panel]");
+  await expect(panel.locator('[data-archive-request="expired"]')).toHaveText(
+    "This archive request expired. Nothing was archived.",
+  );
+  await expect(panel.locator("[data-elicitation-option]")).toHaveCount(0);
+  expect(approvals).toHaveLength(0);
 });

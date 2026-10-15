@@ -10,7 +10,10 @@
  *   choice, or drops the typed text;
  * - Stop loses its `stop` signal;
  * - the collapsed card loses the answerer or the labels;
- * - "Waiting on me" shows a task that waits for somebody else.
+ * - "Waiting on me" shows a task that waits for somebody else;
+ * - EA-6g: a free question with an `approve` option reads as an archive
+ *   request, the card offers free text, the decision goes out as a label,
+ *   or an expired request still offers a button.
  *
  * The click paths run in a real browser in `e2e/agent-runs.spec.ts`.
  */
@@ -27,6 +30,7 @@ import { AGENT_STATES, accentForHue, agentStateChip } from "@/lib/statusAccent";
 import { AgentPill } from "../components/AgentPill";
 import {
   AGENT_STATE_VALUES,
+  ARCHIVE_HINT,
   type AgentActivity,
   type AgentRun,
   agentKindLabel,
@@ -34,8 +38,15 @@ import {
   answerPayload,
   answerTo,
   answeredLine,
+  archiveApprovalPayload,
+  archiveCardQuestion,
+  archiveDecisionOf,
+  archiveExpired,
+  archiveRequestOf,
+  archiveWaitingText,
   cardQuestion,
   clientName,
+  isRunMember,
   isWaitingOnMe,
   latestElicitation,
   mergeActivities,
@@ -315,5 +326,95 @@ describe("Waiting on me, and the timeline mark", () => {
     expect(agentKindLabel("elicitation")).toBe("Agent question");
     expect(agentKindLabel("response")).toBe("Agent reply");
     expect(agentKindLabel(undefined)).toBeNull();
+  });
+});
+
+describe("the archive request (EA-6g, EA3-40)", () => {
+  const TYPED: AgentActivity = {
+    id: "q9",
+    seq: 7,
+    type: "elicitation",
+    content: { body: "The agent asks to archive this task." },
+    content_metadata: { request: { kind: "archive_task", expires_at: "2026-10-16T10:00:00Z" } },
+    signal: "select",
+    signal_metadata: {
+      options: [
+        { id: "approve", label: "Approve" },
+        { id: "decline", label: "Decline" },
+      ],
+      allow_multiple: false,
+    },
+    actor_via: "mcp:claude-code",
+  };
+  const FREE: AgentActivity = { ...TYPED, id: "q8", content_metadata: null };
+  const NOW = Date.parse("2026-10-15T10:00:00Z");
+
+  it("reads only a request that the server typed", () => {
+    // A free question with an option `approve` is never a request (G2).
+    expect(archiveRequestOf(TYPED)?.kind).toBe("archive_task");
+    expect(archiveRequestOf(FREE)).toBeNull();
+    expect(archiveRequestOf({ ...TYPED, type: "prompt" })).toBeNull();
+    expect(archiveRequestOf(null)).toBeNull();
+  });
+
+  it("expires at its stamp, and a bad stamp reads as expired", () => {
+    const request = archiveRequestOf(TYPED)!;
+    expect(archiveExpired(request, NOW)).toBe(false);
+    expect(archiveExpired(request, Date.parse("2026-10-16T10:00:00Z"))).toBe(true);
+    expect(archiveExpired({ kind: "archive_task", expires_at: "soon" }, NOW)).toBe(true);
+    expect(archiveExpired({ kind: "archive_task" }, NOW)).toBe(true);
+  });
+
+  it("knows the run's member, whatever the case", () => {
+    expect(isRunMember({ member_email: "Priya@Example.com" }, "priya@example.com")).toBe(true);
+    expect(isRunMember({ member_email: "priya@example.com" }, "vj@example.com")).toBe(false);
+    expect(isRunMember({ member_email: "priya@example.com" }, "")).toBe(false);
+  });
+
+  it("draws the two options with no free text", () => {
+    const question = archiveCardQuestion(TYPED);
+    expect(question.allowFreeformInput).toBe(false);
+    expect(question.multiSelect).toBe(false);
+    expect(question.options?.map((o) => o.label)).toEqual(["Approve", "Decline"]);
+    const html = renderToStaticMarkup(
+      createElement(ElicitationCard, { questions: [question], onSubmit: () => {}, hint: ARCHIVE_HINT }),
+    );
+    expect(html.match(/data-elicitation-option/g)).toHaveLength(2);
+    expect(html).not.toContain("Or type your own answer");
+    expect(html).toContain(ARCHIVE_HINT);
+  });
+
+  it("sends the decision, never a label", () => {
+    expect(archiveDecisionOf(TYPED, { Question: { selected: ["Approve"] } })).toBe("approve");
+    expect(archiveDecisionOf(TYPED, { Question: { selected: ["Decline"] } })).toBe("decline");
+    expect(archiveDecisionOf(TYPED, { Question: { selected: [] } })).toBeNull();
+    expect(archiveDecisionOf(TYPED, { Question: { selected: ["Archive it"] } })).toBeNull();
+    expect(archiveApprovalPayload("approve", "k9")).toEqual({
+      decision: "approve",
+      idempotency_key: "k9",
+    });
+  });
+
+  it("names who must answer for every other member", () => {
+    expect(archiveWaitingText({ member_email: "priya.sharma@example.com" })).toBe(
+      "Waiting for Priya",
+    );
+    const labels = new Map([["priya.sharma@example.com", "Priyanka Sharma"]]);
+    expect(archiveWaitingText({ member_email: "priya.sharma@example.com" }, labels)).toBe(
+      "Waiting for Priyanka",
+    );
+  });
+
+  it("collapses to the decision once the member answers", () => {
+    const prompt: AgentActivity = {
+      id: "p9",
+      seq: 8,
+      type: "prompt",
+      content: { selected: ["approve"], archived: true },
+      actor: "vj@example.com",
+      in_reply_to: "q9",
+    };
+    expect(answerTo([TYPED, prompt], TYPED)).toBe(prompt);
+    expect(answeredLine(prompt, TYPED)).toBe("Answered by Vj: Approve");
   });
 });
