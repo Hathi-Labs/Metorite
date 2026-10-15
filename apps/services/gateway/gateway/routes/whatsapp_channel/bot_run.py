@@ -266,11 +266,9 @@ WORKING_AFTER_S = 20
 #: WAC-13: the run error codes that mean Metorite itself did not answer.
 UNAVAILABLE_CODES = frozenset({"timeout", "connection"})
 #: The row codes of WAC-13. ``updating``: the message waits for the AI path.
-#: ``superseded``: a later message of its thread got an answer first, so it is
-#: closed with no reply. ``updating_plain``: an org that the sweep does not
-#: visit, so nothing waits, and the member sends the message again.
+#: ``updating_plain``: an org that the sweep does not visit, so nothing waits,
+#: and the member sends the message again.
 UPDATING_CODE = "updating"
-SUPERSEDED_CODE = "superseded"
 PLAIN_CODE = "updating_plain"
 #: With no success since, the AI path counts as back only after this long
 #: with no new failure of :data:`UNAVAILABLE_CODES`.
@@ -501,11 +499,7 @@ SELECT id::text AS id, organization_id::text AS organization_id,
    AND direction = 'in'
    AND state = 'received'
    AND tries < :max
-   AND (error_code IS DISTINCT FROM 'updating' OR (:back AND NOT EXISTS (
-       SELECT 1 FROM whatsapp_bot_messages a
-        WHERE a.chat_session_id = whatsapp_bot_messages.chat_session_id
-          AND a.direction = 'in' AND a.state = 'replied'
-          AND a.received_at > whatsapp_bot_messages.received_at)))
+   AND error_code IS DISTINCT FROM 'updating'
    AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
  ORDER BY received_at, id
  LIMIT :n
@@ -598,11 +592,7 @@ SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
          AND state IN ('received', 'running')
          AND tries < :max
          AND chat_session_id IS NOT NULL
-         AND (error_code IS DISTINCT FROM 'updating' OR (:back AND NOT EXISTS (
-             SELECT 1 FROM whatsapp_bot_messages a
-              WHERE a.chat_session_id = whatsapp_bot_messages.chat_session_id
-                AND a.direction = 'in' AND a.state = 'replied'
-                AND a.received_at > whatsapp_bot_messages.received_at)))
+         AND (error_code IS DISTINCT FROM 'updating' OR :back)
          AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
        ORDER BY chat_session_id, received_at, id
   ) oldest
@@ -612,37 +602,24 @@ SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
 """
 
 
-#: WAC-13: the message waits for the AI path. The outage takes back its try,
-#: so an outage never uses up a message. ``before`` is the code it had: the
-#: member hears :data:`REPLY_UPDATING` only on its first hold.
+#: WAC-13: the message waits for the AI path. Its FIRST hold gives back its
+#: try, so one outage never uses up a message. A later hold keeps the try, so
+#: a message that fails each time ends after :data:`MAX_TRIES` with the general
+#: text (verifier F2). ``before`` is the code it had: the member hears
+#: :data:`REPLY_UPDATING` only on its first hold.
 _HOLD_SQL = """
 WITH prev AS (
     SELECT error_code FROM whatsapp_bot_messages WHERE id = CAST(:id AS uuid)
 )
 UPDATE whatsapp_bot_messages
-   SET state = 'received', error_code = :code, tries = GREATEST(tries - 1, 0),
+   SET state = 'received', error_code = :code,
+       tries = CASE WHEN error_code IS DISTINCT FROM :code
+                    THEN GREATEST(tries - 1, 0) ELSE tries END,
        updated_at = now()
  WHERE id = CAST(:id AS uuid)
    AND state = 'running'
 RETURNING (SELECT error_code FROM prev) AS before
 """
-
-#: WAC-13: a held message whose thread got an answer to a LATER message is
-#: closed with no reply. That answer's run read it in the thread's history.
-_SUPERSEDE_SQL = """
-UPDATE whatsapp_bot_messages o
-   SET state = 'failed', error_code = :superseded, updated_at = now()
- WHERE o.direction = 'in'
-   AND o.state = 'received'
-   AND o.error_code = :held
-   AND EXISTS (
-       SELECT 1 FROM whatsapp_bot_messages a
-        WHERE a.chat_session_id = o.chat_session_id AND a.direction = 'in'
-          AND a.state = 'replied' AND a.received_at > o.received_at
-   )
-RETURNING o.id::text AS id
-"""
-
 
 def _request(row: Any) -> RunRequest:
     return RunRequest(str(row["id"]), str(row["organization_id"]),
@@ -824,11 +801,12 @@ async def _retry(message_id: str, code: str) -> bool:
 
 async def _waiting(session_id: str) -> list[RunRequest]:
     """The waiting rows of one thread, oldest first. A message that waits for
-    the AI path (WAC-13) counts only once this process proves it back."""
+    the AI path (WAC-13) is never one of them: only the sweep, which reads the
+    Router's health, runs it again (verifier F3)."""
     async with tenant_session() as db:
         rows = (await db.execute(text(_NEXT_SQL), {
             "sid": session_id, "max": MAX_TRIES, "expire": EXPIRE_S,
-            "n": SWEEP_BATCH, "back": _quiet_now(),
+            "n": SWEEP_BATCH,
         })).mappings().all()
     return [_request(r) for r in rows]
 
@@ -1080,15 +1058,6 @@ async def _hold(message_id: str) -> str | None:
     if row is None:
         return None
     return str(row[0]) if row[0] is not None else ""
-
-
-async def _supersede() -> int:
-    """Close the held messages of the bound org that a later answer covered."""
-    async with tenant_session() as db:
-        rows = (await db.execute(text(_SUPERSEDE_SQL), {
-            "held": UPDATING_CODE, "superseded": SUPERSEDED_CODE,
-        })).fetchall()
-    return len(rows)
 
 
 async def wait_for_runs() -> None:
@@ -1561,6 +1530,7 @@ async def _model_answer(req: RunRequest, message: str,
         _log.warning("whatsapp_channel.run.agent_failed", run_id=run_id,
                      message_id=req.message_id, code=code,
                      error_type=type(exc).__name__)
+        _WAITING_ON_MODEL.pop(req.message_id, None)  # no hold note after this
         if _ai_path_down(code, exc, run_started):
             # WAC-13: Metorite itself did not answer. In an org that the
             # sweep visits, the message waits, and the sweep answers it when
@@ -2062,12 +2032,6 @@ async def _sweep_org(org: str, *, back: bool = True) -> list[RunRequest]:
     """
     token = bind_tenant(org)
     try:
-        if back:
-            # WAC-13: a held message that a later answer covered closes first.
-            superseded = await _supersede()
-            if superseded:
-                _log.info("whatsapp_channel.sweep.superseded", organization_id=org,
-                          rows=superseded)
         async with tenant_session() as db:
             expired = (await db.execute(
                 text(_EXPIRE_SQL), {"expire": EXPIRE_S},
