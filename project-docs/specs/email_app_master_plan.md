@@ -14604,6 +14604,11 @@ background path. Each line names the code of record.
   the same answer, because the settings screen and the agent tool PUT its body back.
 - **G2, the row.** The rules step of the connect flow wrote the row only through the drafting switch.
   It now shows "Run my rules on new mail" with the stored value, and a move saves `auto_run` only.
+  One save runs at a time for the two switches (`settingsSaver`), and one flag disables both.
+- **G2, every first row (fix round 1).** The column default of `auto_run` is false. So each INSERT
+  into `email_assistant_settings` names `auto_run` and stores what `auto_run_on` reads. That covers
+  the writing-style save and the PUT. The PUT model has `auto_run: bool | None`, and None keeps the
+  effective choice. A fence in `test_email_background_writes.py` scans each INSERT for the column.
 - **G3.** `_mark_thread_replied` takes `labels`. The backfill passes the Auto-run choice, and the
   send routes keep True. With Auto-run OFF the backfill builds no provider and reconciles no label.
   A reclassify that the member starts passes `obey_auto_run=False`, because the click is the
@@ -14614,11 +14619,15 @@ background path. Each line names the code of record.
   a PENDING row with `automated` false. The label of a manual conversation rule waits for the
   approval too (`replyzero.conversation_match_proposes`). Process past emails and the rerun of one message go
   through the same choke point.
-- **G7.** `_cleanup_thread_drafts` trashes a draft only when its text is the stored AI draft,
-  unchanged. Both send routes now add it before `_learn_from_sent`, because that task deletes the
-  `email_ai_drafts` row.
+- **G7.** `_cleanup_thread_drafts` trashes a draft only when Metorite wrote it AND the provider's
+  live body still equals that text (`get_message_body`, fix round 1). Outlook keeps the stored text
+  when a synced body comes from HTML, so the mirror alone is not enough. A template DRAFT_EMAIL
+  records its text under `template:<thread_id>` (`drafting._record_rule_draft`), so the cleanup
+  trashes it as on main. The edit-learning reads the bare thread id only. Both send routes add the
+  cleanup before `_learn_from_sent`, because that task deletes the AI record.
 - **Item 6.** `AUTO_RUN_AI_LINE` in `lib/assistantSettings.ts` holds the line, and the Settings tab
-  draws it under Auto-run.
+  draws it under Auto-run. `AUTO_RUN_DESCRIPTION` says that OFF also stops the Reply Zero labels
+  and the sorting sweep (fix round 1).
 
 **Open after the build.** The History has no Approve button. `approveExecution` in `lib/api.ts`
 has no caller, so a member approves a proposal through the email agent tool only. Q-GM-12 stays
