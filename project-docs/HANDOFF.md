@@ -5376,6 +5376,13 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3c (fix round 1)
 - **Added:** 2026-10-15 · MD-3c review
 
+### H-313 · The member writers of assignee rows take the row and the key in different orders · [AGENT]
+- **Check:** `git grep -n "sorted(" -- apps/services/gateway/gateway/routes/projects/bulk.py` shows no sort of the selected ids, and `merge.py` still moves the assignee keys before `update_row` of the target. While both hold, this entry stays.
+- **Why.** The reviewer and the verifier of WS-55 EA-6b found these orders already disagree on main. A PUT of the assignees writes the key and then bumps the row. A move with assignees writes the row and the destination counter, then the key. A merge moves the assignee and watcher keys, then writes the target row. A bulk edit locks rows in request order. So a PUT against a move that assigns the same member, a merge against a PUT on the watcher keys, and two bulk edits with the same ids in another order can each deadlock. A merge against a PUT of the same member also fails with a unique violation of `pm_task_assignees_pkey` (10 times in 10).
+- **Do.** Sort the ids of every bulk write. Give every member writer one helper that writes the assignee key, then the row. Fix the merge's `NOT EXISTS` race. Prove each pair with a looped R8 race test. The claim (`claim_task`) already writes the key before the row, so it needs no change.
+- **Authority:** R8 · `specs/external_agent_access.md` §17 (EA-6b fix round 3)
+- **Added:** 2026-10-15 · EA-6b fix round 3 review
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

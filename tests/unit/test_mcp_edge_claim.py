@@ -48,12 +48,12 @@ Run::
 * M20. ``G/tasks.py``: the narrowing lets ``include_subtasks`` through. ``test_f3_an_agents_done_leaves_the_open_subtasks_open``.
 * M21. ``G/recurrence.py`` ``spawn_successor``: no ``recurrence_spawned_at`` guard. ``test_f4_an_agents_done_on_a_recurring_task_makes_one_successor``.
 * M22. ``E/tools.py`` ``_create``: the create checks ``AGENT_MOVE_REFUSED``. ``test_f5_create_task_with_a_done_status_is_still_refused``.
-* M23. Fix round 1. ``G/core.py`` ``_LOCK_TASK_SQL`` without ``FOR NO KEY UPDATE``. ``test_two_claims_with_one_version_give_one_200_and_one_412`` and ``test_a_claim_racing_a_move_to_done_leaves_a_consistent_row``.
-* M23b. ``G/tasks.py`` ``claim_task``: ``load_visible_task`` in place of ``lock_task`` (the code before fix round 1). The same two tests.
-* M26. Fix round 2. ``G/tasks.py`` ``set_assignees``: no ``lock_task``, so the PUT takes the key before the row again. ``test_a_claim_and_a_member_write_of_the_same_assignee_never_deadlock[put]`` (a ``DeadlockDetectedError``).
-* M27. Fix round 2. ``G/bulk.py`` ``_apply_to_one``: no ``lock_task``. ``test_a_claim_and_a_member_write_of_the_same_assignee_never_deadlock[bulk]`` (a ``DeadlockDetectedError``).
 * M24. ``G/tasks.py`` ``claim_task``: no ``assert_assignable_here`` (the review's V4). ``test_a_task_in_another_persons_personal_project_is_refused``.
-* M25. ``G/tasks.py`` ``claim_task``: no visibility load, so the lock reads by id. ``test_a_task_outside_the_reach_of_the_connection_is_not_found[outside_pins]`` and ``[personal_off]``. The ``[other_org]`` case stays green, because RLS refuses it too.
+* M28. Fix round 3. ``G/tasks.py`` ``claim_task``: ``lock_task`` right after the visibility load, so the row comes before the key. ``test_a_claim_and_a_member_write_of_the_same_assignee_never_deadlock[put]`` (a ``DeadlockDetectedError``).
+* M29. Fix round 3. ``G/tasks.py`` ``claim_task``: no row lock, ``task = seen``. ``test_two_claims_with_one_version_give_one_200_and_one_412``.
+* M30. Fix round 3. ``G/tasks.py`` ``claim_task``: a closed task returns a 422 answer instead of raising, so the transaction commits the key. ``test_c4_...[done]`` and ``[cancelled]``.
+* M31. Fix round 3. ``G/tasks.py`` ``claim_task``: ``ensure_watchers`` before the row lock. ``test_a_claim_racing_a_move_to_done_leaves_a_consistent_row`` (a ``DeadlockDetectedError``: the member's PATCH writes the row, then the editor's watcher key).
+* M25. ``G/tasks.py`` ``claim_task``: no visibility load, a plain read by id. ``test_a_task_outside_the_reach_of_the_connection_is_not_found``, all three cases.
 """
 from __future__ import annotations
 
