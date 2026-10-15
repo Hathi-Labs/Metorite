@@ -269,9 +269,31 @@ async def mirror_to_blob_store(
     )
 
 
-def _owner_from_instance(instance: str) -> str:
-    """The member of a personal dir, ``u:<email>`` → the email, else ``''``."""
-    return instance[2:] if instance.startswith("u:") and "@" in instance else ""
+def _verified_member() -> str:
+    """The verified member of the run on this frame, lower case, or ``''``.
+
+    The run binding carries ``user`` and ``member_verified`` (H-73). Only a
+    binding the route made from a signed-in session sets the flag, so a
+    payload claim never passes here.
+    """
+    try:
+        from acb_common import get_run_context
+
+        rc = get_run_context() or {}
+    except Exception:
+        return ""
+    member = str(rc.get("user") or "").strip().lower()
+    return member if member and str(rc.get("member_verified")) == "1" else ""
+
+
+def _registry_on() -> bool:
+    """True when the registry flag is on, so the card is worth a short wait."""
+    try:
+        from acb_memory import artifacts as _artifacts
+
+        return _artifacts.enabled()
+    except Exception:
+        return False
 
 
 def _provenance(
@@ -280,10 +302,13 @@ def _provenance(
 ) -> Any:
     """The registry provenance of this write (WS-60 AM-1, §4.5).
 
-    The owner is the run's member, else the member of a personal dir. With
-    no owner there is no row, because a row belongs to a member. The door is
-    ``chat``: a run wrote it. ``made_by`` is the agent, or ``member`` when the
-    actor is a person. ``None`` with the registry flag off.
+    The owner is the VERIFIED member of the run: the one the route bound from
+    its session (H-73, ``bind_run_context`` with ``member_verified``). The
+    body's ``user_email`` claim, which ``ctx["member"]`` and a personal dir's
+    key can carry, is never an owner, because ownership is enforcement
+    (``can_read`` rule 1). With no verified member there is no row. The door
+    is ``chat``: a run wrote it. ``made_by`` is the agent, or ``member`` when
+    the actor is a person. ``None`` with the registry flag off.
     """
     try:
         from acb_memory import artifacts as _artifacts
@@ -291,7 +316,7 @@ def _provenance(
         return None
     if not _artifacts.enabled():
         return None
-    owner = str(ctx.get("member") or "") or _owner_from_instance(instance)
+    owner = _verified_member()
     if not owner:
         return None
     return _artifacts.Provenance(
@@ -1206,13 +1231,13 @@ async def _notify(
     opens through the session and the path as before.
     """
     artifact_id = None
-    if mirror_task is not None:
+    if mirror_task is not None and _registry_on():
         try:
             import asyncio as _asyncio
 
             meta = await _asyncio.wait_for(_asyncio.shield(mirror_task), timeout=5)
             artifact_id = getattr(meta, "artifact_id", None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             artifact_id = None
     artifact = dict(artifact, artifact_id=artifact_id)
     # 1. Push AG-UI CUSTOM event into the active executor SSE queue so the

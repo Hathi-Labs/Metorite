@@ -9,11 +9,14 @@ row in ``artifacts``, or whose row carries a different sha. The register
 upsert is idempotent, so a second run changes nothing.
 
 The owner of a row comes from, in order: the ``u:<email>`` instance key, the
-``actor`` of the first history row when it names a member, else the
-``--owner`` argument. A row with no owner is skipped and counted.
+member of the chat session that first wrote the path, else the ``--owner``
+argument. A row with no owner is skipped and counted. Every query names the
+organization, so the walk is right even as the table owner, who bypasses
+RLS. Do not pass ``--owner`` with ``--all`` unless one member should own
+every unowned file in every organization.
 
     uv run python scripts/backfill_artifacts.py --org <uuid>
-    uv run python scripts/backfill_artifacts.py --all --owner ops@example.com
+    uv run python scripts/backfill_artifacts.py --all
     uv run python scripts/backfill_artifacts.py --org <uuid> --dry-run
 
 Runs as the migration runner does, on the box, with ``DATABASE_URL`` of the
@@ -58,6 +61,31 @@ def _orgs(all_orgs: bool, org: str | None) -> list[str]:
     return [str(r[0]) for r in rows]
 
 
+def _owner_of(s, org: str, instance: str, session_id: str | None) -> str:
+    """The member a stored file belongs to.
+
+    A personal dir names its member in the key (``u:<email>``). Otherwise the
+    chat session that first wrote the path names its member. The history
+    ``actor`` never does: every writer passes ``agent``, ``user`` or
+    ``batch`` there (review, 2026-10-15).
+    """
+    from sqlalchemy import text
+
+    if instance.startswith("u:") and "@" in instance:
+        return instance[2:]
+    if session_id:
+        row = s.execute(
+            text(
+                "SELECT user_id FROM chat_session "
+                "WHERE id = :sid AND organization_id = CAST(:org AS uuid)"
+            ),
+            {"sid": str(session_id), "org": org},
+        ).fetchone()
+        if row is not None and "@" in str(row[0] or ""):
+            return str(row[0])
+    return ""
+
+
 def backfill_org(org: str, *, default_owner: str, dry_run: bool) -> Counts:
     from acb_graph import tenant_session
     from acb_memory import artifacts
@@ -65,18 +93,24 @@ def backfill_org(org: str, *, default_owner: str, dry_run: bool) -> Counts:
 
     counts = Counts(org)
     with tenant_session(org) as s:
+        # The org predicates are explicit, so the walk is right even when the
+        # role bypasses RLS (the migration runner is the table owner). The
+        # content is read per row, never for the whole org at once.
         blobs = s.execute(
             text(
-                "SELECT b.agent_name, b.instance, b.path, b.content, b.sha256, "
-                "       b.mime_type, a.id, a.sha256 AS reg_sha "
+                "SELECT b.agent_name, b.instance, b.path, b.sha256, b.mime_type, "
+                "       a.id, a.sha256 AS reg_sha "
                 "FROM agent_blob b "
-                "LEFT JOIN artifacts a ON a.agent_name = b.agent_name "
+                "LEFT JOIN artifacts a ON a.organization_id = b.organization_id "
+                "  AND a.agent_name = b.agent_name "
                 "  AND a.instance = b.instance AND a.path = b.path "
-                "WHERE b.folder IN ('inputs', 'outputs') "
+                "WHERE b.organization_id = CAST(:org AS uuid) "
+                "  AND b.folder IN ('inputs', 'outputs') "
                 "ORDER BY b.updated_at"
-            )
+            ),
+            {"org": org},
         ).fetchall()
-        for agent, instance, path, content, sha, mime, reg_id, reg_sha in blobs:
+        for agent, instance, path, sha, mime, reg_id, reg_sha in blobs:
             counts.seen += 1
             if reg_id is not None and reg_sha == sha:
                 counts.unchanged += 1
@@ -84,14 +118,13 @@ def backfill_org(org: str, *, default_owner: str, dry_run: bool) -> Counts:
             first = s.execute(
                 text(
                     "SELECT actor, session_id, run_id FROM agent_file_history "
-                    "WHERE agent_name = :a AND instance = :i AND path = :p "
+                    "WHERE organization_id = CAST(:org AS uuid) "
+                    "AND agent_name = :a AND instance = :i AND path = :p "
                     "AND action <> 'delete' ORDER BY created_at ASC LIMIT 1"
                 ),
-                {"a": agent, "i": instance, "p": path},
+                {"org": org, "a": agent, "i": instance, "p": path},
             ).fetchone()
-            owner = instance[2:] if instance.startswith("u:") and "@" in instance else ""
-            if not owner and first is not None and "@" in str(first[0] or ""):
-                owner = str(first[0])
+            owner = _owner_of(s, org, instance, first[1] if first is not None else None)
             owner = owner or default_owner
             if not owner:
                 counts.no_owner += 1
@@ -108,6 +141,13 @@ def backfill_org(org: str, *, default_owner: str, dry_run: bool) -> Counts:
                 counts.added += 1 if reg_id is None else 0
                 counts.repaired += 1 if reg_id is not None else 0
                 continue
+            content = s.execute(
+                text(
+                    "SELECT content FROM agent_blob WHERE organization_id = CAST(:org AS uuid) "
+                    "AND agent_name = :a AND instance = :i AND path = :p"
+                ),
+                {"org": org, "a": agent, "i": instance, "p": path},
+            ).scalar()
             got = artifacts.register_in_session(
                 s, agent_name=agent, instance=instance, path=path,
                 data=bytes(content or b""), sha256=sha, mime_type=mime or "application/octet-stream",

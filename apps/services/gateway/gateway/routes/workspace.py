@@ -1652,7 +1652,7 @@ def _walk_tree(root: Path) -> list[FileEntry]:
                     # A FIFO, a socket or a device is never a workspace file.
                     if not _stat_mod.S_ISREG(stat.st_mode):
                         continue
-                    rel_path = str((rel_dir / fname)).replace("\\", "/")
+                    rel_path = str(rel_dir / fname).replace("\\", "/")
                     mime, _ = mimetypes.guess_type(fname)
                     entries.append(FileEntry(
                         path=rel_path,
@@ -1880,6 +1880,7 @@ async def _file_as_pdf(
     refused type costs nothing. The read runs in a thread, and the layout
     runs in a child process (``pdf_render.render_pdf``).
     """
+    from acb_skills import safe_open
     from gateway.db import current_tenant
     from gateway.pdf_render import (
         MAX_SOURCE_BYTES,
@@ -1889,8 +1890,6 @@ async def _file_as_pdf(
         pdf_filename,
         render_pdf,
     )
-
-    from acb_skills import safe_open
 
     kind = SOURCE_KINDS.get(Path(name).suffix.lower())
     if kind is None:
@@ -1991,6 +1990,8 @@ class ArtifactEvent(BaseModel):
     path: str
     sha256: str | None = None
     size: int | None = None
+    #: The registry row (WS-60 AM-1). None for a write with no row.
+    artifact_id: str | None = None
 
 
 @router.post("/workspace/{session_id}/events", status_code=status.HTTP_204_NO_CONTENT)
@@ -2040,7 +2041,7 @@ async def stream_artifact_events(
                 try:
                     payload = await asyncio.wait_for(q.get(), timeout=30.0)
                     yield f"data: {json.dumps({'type': 'custom', 'name': payload['name'], 'data': payload})}\n\n"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # heartbeat keep-alive
                     yield ": keep-alive\n\n"
         finally:
@@ -2691,8 +2692,7 @@ def _discover_agent_workspaces(
 
     # ── 2. Dynamic registry (Postgres-backed) — live agents only ──────────
     try:
-        from gateway.routes.agent import \
-            _load_dynamic_agents
+        from gateway.routes.agent import _load_dynamic_agents
         for entry in _load_dynamic_agents():
             name = entry.get("name")
             if name and entry.get("status", "live") == "live":
@@ -2777,7 +2777,7 @@ def _walk_agent_artifacts(
             name=cat,
             size=0,
             modified_at=_dt.datetime.fromtimestamp(
-                mtime, tz=_dt.timezone.utc,
+                mtime, tz=_dt.UTC,
             ).isoformat(),
             mime_type="inode/directory",
             category=cat,
@@ -2814,7 +2814,7 @@ def _walk_agent_artifacts(
                 dstat = dpath.stat()
             except OSError:
                 continue
-            rel_dpath = str((rel_dir / dname)).replace("\\", "/")
+            rel_dpath = str(rel_dir / dname).replace("\\", "/")
             if rel_dpath in emitted_dirs:
                 continue  # already emitted as a synthetic special folder
             emitted_dirs.add(rel_dpath)
@@ -2824,7 +2824,7 @@ def _walk_agent_artifacts(
                 name=dname,
                 size=0,
                 modified_at=_dt.datetime.fromtimestamp(
-                    dstat.st_mtime, tz=_dt.timezone.utc,
+                    dstat.st_mtime, tz=_dt.UTC,
                 ).isoformat(),
                 mime_type="inode/directory",
                 category=_category_for(rel_dpath),
@@ -2840,7 +2840,7 @@ def _walk_agent_artifacts(
                 stat = fpath.stat()
             except OSError:
                 continue
-            rel_path = str((rel_dir / fname)).replace("\\", "/")
+            rel_path = str(rel_dir / fname).replace("\\", "/")
             mime, _ = mimetypes.guess_type(fname)
             entries.append(ArtifactEntry(
                 agent_name=agent_name,
@@ -2848,7 +2848,7 @@ def _walk_agent_artifacts(
                 name=fname,
                 size=stat.st_size,
                 modified_at=_dt.datetime.fromtimestamp(
-                    stat.st_mtime, tz=_dt.timezone.utc,
+                    stat.st_mtime, tz=_dt.UTC,
                 ).isoformat(),
                 mime_type=mime or "application/octet-stream",
                 category=_category_for(rel_path),

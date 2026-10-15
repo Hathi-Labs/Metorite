@@ -35,6 +35,7 @@ The R8 class carries ``_DB_GATE``, so it skips where no ladder URL is set
 from __future__ import annotations
 
 import re
+import sys
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -152,24 +153,73 @@ def test_the_viewer_extension_sets_agree_with_the_registry_kinds() -> None:
         assert reg.classify_kind(f"outputs/x.{ext}") == "document", ext
 
 
-def test_provenance_needs_the_flag_and_an_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_provenance_needs_the_flag_and_a_verified_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The owner is the VERIFIED member of the run (H-73), never the body's
+    claim in ``ctx["member"]`` and never the personal dir's key."""
+    import contextvars
+    import importlib
+
+    from acb_common import bind_run_context, get_settings
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    settings = get_settings()
+    claim_ctx = {"member": "colleague@x.test", "run_id": "r1"}
+
+    def _with_run(user: str | None, verified: bool):
+        def run():
+            bind_run_context(run_id="r1", user=user, member_verified=verified)
+            return wa._provenance(claim_ctx, "writer", "u:colleague@x.test", "s1", "agent")
+        return contextvars.copy_context().run(run)
+
+    monkeypatch.setattr(settings, "artifact_registry_enabled", False)
+    assert _with_run("ann@x.test", True) is None, "flag off: no row"
+    monkeypatch.setattr(settings, "artifact_registry_enabled", True)
+    assert _with_run(None, False) is None, "no member: no row"
+    assert _with_run("colleague@x.test", False) is None, "a claim is not an owner"
+    p = _with_run("Ann@x.test", True)
+    assert p is not None and p.owner_email == "ann@x.test" and p.made_by == "writer"
+    assert p.via == "chat" and p.session_id == "s1" and p.run_id == "r1"
+    assert contextvars.copy_context().run(
+        lambda: (bind_run_context(run_id="r2", user="bob@x.test", member_verified=True),
+                 wa._provenance({}, "writer", "", "s2", "user"))[1]
+    ).made_by == "member"
+
+
+async def test_the_card_event_carries_the_registry_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AM-1 done-when: the ``artifact_created`` event carries the id, and the
+    wait is skipped with the flag off."""
+    import asyncio
     import importlib
 
     from acb_common import get_settings
 
     wa = importlib.import_module("acb_skills.write_artifact")
+    executor = importlib.import_module("orchestrator.executor")
+    queue: asyncio.Queue = asyncio.Queue()
+    monkeypatch.setattr(executor, "resolve_run_queue", lambda _sid: queue)
 
-    settings = get_settings()
-    ctx = {"member": "", "run_id": "r1"}
-    monkeypatch.setattr(settings, "artifact_registry_enabled", False)
-    assert wa._provenance(ctx, "writer", "u:ann@x.test", "s1", "agent") is None
-    monkeypatch.setattr(settings, "artifact_registry_enabled", True)
-    assert wa._provenance(ctx, "writer", "o:" + "0" * 36, "s1", "agent") is None
-    p = wa._provenance(ctx, "writer", "u:ann@x.test", "s1", "agent")
-    assert p is not None and p.owner_email == "ann@x.test" and p.made_by == "writer"
-    assert p.via == "chat" and p.session_id == "s1" and p.run_id == "r1"
-    p2 = wa._provenance({"member": "bob@x.test"}, "writer", "", "s2", "user")
-    assert p2 is not None and p2.owner_email == "bob@x.test" and p2.made_by == "member"
+    async def _run(flag: bool, meta):
+        monkeypatch.setattr(get_settings(), "artifact_registry_enabled", flag)
+        fut = asyncio.get_running_loop().create_future()
+        fut.set_result(meta)
+        await wa._notify(
+            session_id="s1", workspace_root="/tmp/x", artifact={"path": "outputs/a.md", "sha256": "ab", "size": 2},
+            gateway_url="http://127.0.0.1:9", gateway_token="t", mirror_task=fut,
+        )
+        return queue.get_nowait()
+
+    ev = await _run(True, SimpleNamespace(artifact_id="11111111-1111-4111-8111-111111111111"))
+    assert ev["name"] == "artifact_created"
+    assert ev["value"]["artifact_id"] == "11111111-1111-4111-8111-111111111111"
+    ev = await _run(True, None)
+    assert ev["value"]["artifact_id"] is None
+    never = asyncio.get_running_loop().create_future()  # a slow store
+    monkeypatch.setattr(get_settings(), "artifact_registry_enabled", False)
+    await asyncio.wait_for(wa._notify(
+        session_id="s1", workspace_root="/tmp/x", artifact={"path": "outputs/b.md"},
+        gateway_url="http://127.0.0.1:9", gateway_token="t", mirror_task=never,
+    ), timeout=2)
+    assert queue.get_nowait()["value"]["artifact_id"] is None
 
 
 def test_can_read_rules_one_and_two() -> None:
@@ -222,6 +272,142 @@ class TestRegistryR8:
 
         monkeypatch.setattr(get_settings(), "artifact_registry_enabled", True)
 
+    @pytest.fixture
+    def graph_on_promoted(self, promoted, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
+        """Point ``acb_graph.tenant_session`` (the blob store's sync seam) at
+        the promoted database, as the non-privileged role."""
+        import contextlib
+
+        import acb_graph
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session
+
+        eng = create_engine(promoted.app_url, future=True)
+
+        @contextlib.contextmanager
+        def _ts(organization_id=None):
+            with Session(eng) as s:
+                s.begin()
+                s.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(organization_id)})
+                yield s
+
+        monkeypatch.setattr(acb_graph, "tenant_session", _ts)
+        try:
+            yield eng
+        finally:
+            eng.dispose()
+
+    def test_the_blob_store_registers_an_upload_and_trashes_a_delete(self, promoted, graph_on_promoted) -> None:  # noqa: F811
+        """AM-1 done-when: an upload leaves ``via = upload``; a delete in the
+        store marks the row trashed; a write with no provenance leaves none."""
+        from acb_memory import blob_store
+
+        path = f"inputs/{uuid.uuid4().hex}/rows.csv"
+        prov = reg.Provenance(owner_email=ANN, made_by="member", via="upload", session_id="chat-up")
+        meta = blob_store._sync_put(
+            AGENT, path, b"a,b\n1,2\n", "text/csv", action="create", run_id=None,
+            session_id="chat-up", actor="user", instance=f"u:{ANN}",
+            organization_id=promoted.org_a, provenance=prov,
+        )
+        assert meta is not None and meta.artifact_id
+        eng, s = _session(promoted, promoted.org_a)
+        try:
+            row = _row(s, meta.artifact_id)
+            assert row["via"] == "upload" and row["made_by"] == "member" and row["kind"] == "data"
+            assert row["owner_email"] == ANN and row["session_id"] == "chat-up"
+            s.rollback()
+        finally:
+            s.close()
+            eng.dispose()
+        blob_store._sync_delete(
+            AGENT, path, run_id=None, session_id="chat-up", actor="user",
+            instance=f"u:{ANN}", organization_id=promoted.org_a,
+        )
+        eng, s = _session(promoted, promoted.org_a)
+        try:
+            assert _row(s, meta.artifact_id)["status"] == "trashed"
+            s.rollback()
+        finally:
+            s.close()
+            eng.dispose()
+        bare = blob_store._sync_put(
+            AGENT, f"outputs/{uuid.uuid4().hex}.md", b"# x", "text/markdown", action="create",
+            run_id=None, session_id=None, actor="agent", instance=f"u:{ANN}",
+            organization_id=promoted.org_a,
+        )
+        assert bare is not None and bare.artifact_id is None
+
+    def test_a_write_onto_a_trashed_name_is_a_new_artifact(self, promoted) -> None:  # noqa: F811
+        """Review 2026-10-15: member A's trashed row must not swallow member
+        B's file of the same name in a shared dir."""
+        shared = "o:" + promoted.org_a
+        eng, s = _session(promoted, promoted.org_a)
+        try:
+            path = f"inputs/{uuid.uuid4().hex}/image.png"
+            a_id = _put(s, path=path, data=b"\x89PNG-a", owner=ANN, instance=shared, mime="image/png")
+            s.execute(text("UPDATE artifacts SET scope = 'org', keep = true WHERE id = CAST(:i AS uuid)"), {"i": a_id})
+            reg.trash_in_session(s, agent_name=AGENT, instance=shared, path=path)
+            b_id = _put(s, path=path, data=b"\x89PNG-b", owner=BOB, instance=shared, mime="image/png", session_id="chat-b")
+            assert b_id == a_id, "the store key is the same, so the row is reused"
+            row = _row(s, a_id)
+            assert row["owner_email"] == BOB and row["session_id"] == "chat-b"
+            assert row["scope"] == "personal" and row["keep"] is False and row["version"] == 1
+            assert row["status"] == "active"
+            s.commit()
+        finally:
+            s.close()
+            eng.dispose()
+
+    def test_the_backfill_registers_what_exists_and_a_second_run_adds_nothing(self, promoted, graph_on_promoted) -> None:  # noqa: F811
+        """AM-1 done-when: the backfill run twice adds nothing the second time.
+        The owner comes from the personal key or the chat session, never from
+        the history actor."""
+        import importlib.util
+        from pathlib import Path as _P
+
+        from acb_memory import blob_store
+
+        spec = importlib.util.spec_from_file_location(
+            "backfill_artifacts", _P(__file__).resolve().parents[2] / "scripts" / "backfill_artifacts.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["backfill_artifacts"] = mod  # a dataclass needs its module registered
+        spec.loader.exec_module(mod)
+
+        tag = uuid.uuid4().hex
+        personal = f"outputs/{tag}/p.md"
+        shared = f"outputs/{tag}/s.md"
+        orphan = f"outputs/{tag}/o.md"
+        sid = f"sess-{tag}"
+        # Three blobs with no registry row (no provenance passed).
+        blob_store._sync_put(AGENT, personal, b"# P", "text/markdown", action="create", run_id=None,
+                             session_id=None, actor="agent", instance=f"u:{ANN}", organization_id=promoted.org_a)
+        blob_store._sync_put(AGENT, shared, b"# S", "text/markdown", action="create", run_id="r9",
+                             session_id=sid, actor="agent", instance="o:" + promoted.org_a, organization_id=promoted.org_a)
+        blob_store._sync_put(AGENT, orphan, b"# O", "text/markdown", action="create", run_id=None,
+                             session_id=None, actor="agent", instance="o:" + promoted.org_a, organization_id=promoted.org_a)
+        with promoted.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO chat_session (id, user_id, organization_id) VALUES (:id, :u, CAST(:o AS uuid)) "
+                "ON CONFLICT (id) DO NOTHING"), {"id": sid, "u": BOB, "o": promoted.org_a})
+
+        first = mod.backfill_org(promoted.org_a, default_owner="", dry_run=False)
+        assert first.added >= 2 and first.no_owner >= 1 and first.failed == 0
+        second = mod.backfill_org(promoted.org_a, default_owner="", dry_run=False)
+        assert second.added == 0 and second.repaired == 0
+        assert second.unchanged >= 2 and second.no_owner >= 1
+
+        eng, s = _session(promoted, promoted.org_a)
+        try:
+            rows = {r[0]: r for r in s.execute(text(
+                "SELECT path, owner_email, via, session_id FROM artifacts WHERE path LIKE :p"), {"p": f"outputs/{tag}/%"}).fetchall()}
+            assert rows[personal][1] == ANN and rows[personal][2] == "backfill"
+            assert rows[shared][1] == BOB and rows[shared][3] == sid
+            assert orphan not in rows
+            s.rollback()
+        finally:
+            s.close()
+            eng.dispose()
+
     def test_a_write_leaves_one_row_and_a_rewrite_moves_the_version(self, promoted) -> None:  # noqa: F811
         eng, s = _session(promoted, promoted.org_a)
         try:
@@ -241,7 +427,7 @@ class TestRegistryR8:
             row = _row(s, first)
             assert row["version"] == 2
             assert row["title"] == "Q3 numbers", "a rewrite keeps the title"
-            assert row["sha256"] != first
+            assert row["sha256"] == __import__("hashlib").sha256(b"# Renamed heading\nrevenue fell").hexdigest()
             s.commit()
         finally:
             s.close()

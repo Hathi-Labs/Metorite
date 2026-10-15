@@ -124,7 +124,9 @@ _WS = re.compile(r"\s+")
 
 
 def _decode(data: bytes, limit: int = _INDEX_BYTES) -> str:
-    return data[:limit].decode("utf-8", errors="ignore")
+    """The first *limit* bytes as text. A NUL is dropped: Postgres refuses
+    one in a text column, and a UTF-16 export is full of them."""
+    return data[:limit].decode("utf-8", errors="ignore").replace("\x00", "")
 
 
 def title_of(path: str, data: bytes, kind: str) -> str:
@@ -215,15 +217,30 @@ _REGISTER_SQL = (
     " CAST(:project_id AS uuid), CAST(:task_id AS uuid), "
     " CAST(:labels AS text[]), to_tsvector('english', :index_text)) "
     "ON CONFLICT (organization_id, agent_name, instance, path) DO UPDATE SET "
-    " version = artifacts.version + CASE WHEN artifacts.sha256 = EXCLUDED.sha256 THEN 0 ELSE 1 END, "
+    # A trashed row is a dead name. The new write is a NEW artifact on that
+    # name, so every provenance column comes from the write, and the version
+    # starts again. A live row keeps its owner, title and door.
+    " version = CASE WHEN artifacts.status = 'trashed' THEN 1 "
+    "   WHEN artifacts.sha256 = EXCLUDED.sha256 THEN artifacts.version "
+    "   ELSE artifacts.version + 1 END, "
     " sha256 = EXCLUDED.sha256, size = EXCLUDED.size, mime_type = EXCLUDED.mime_type, "
     " kind = EXCLUDED.kind, "
-    " session_id = COALESCE(artifacts.session_id, EXCLUDED.session_id), "
+    " owner_email = CASE WHEN artifacts.status = 'trashed' THEN EXCLUDED.owner_email ELSE artifacts.owner_email END, "
+    " title = CASE WHEN artifacts.status = 'trashed' THEN EXCLUDED.title ELSE artifacts.title END, "
+    " made_by = CASE WHEN artifacts.status = 'trashed' THEN EXCLUDED.made_by ELSE artifacts.made_by END, "
+    " via = CASE WHEN artifacts.status = 'trashed' THEN EXCLUDED.via ELSE artifacts.via END, "
+    " labels = CASE WHEN artifacts.status = 'trashed' THEN EXCLUDED.labels ELSE artifacts.labels END, "
+    " scope = CASE WHEN artifacts.status = 'trashed' THEN 'personal' ELSE artifacts.scope END, "
+    " keep = CASE WHEN artifacts.status = 'trashed' THEN false ELSE artifacts.keep END, "
+    " session_id = CASE WHEN artifacts.status = 'trashed' THEN EXCLUDED.session_id "
+    "   ELSE COALESCE(artifacts.session_id, EXCLUDED.session_id) END, "
     " run_id = COALESCE(EXCLUDED.run_id, artifacts.run_id), "
-    " project_id = COALESCE(artifacts.project_id, EXCLUDED.project_id), "
-    " task_id = COALESCE(artifacts.task_id, EXCLUDED.task_id), "
+    " project_id = CASE WHEN artifacts.status = 'trashed' THEN EXCLUDED.project_id "
+    "   ELSE COALESCE(artifacts.project_id, EXCLUDED.project_id) END, "
+    " task_id = CASE WHEN artifacts.status = 'trashed' THEN EXCLUDED.task_id "
+    "   ELSE COALESCE(artifacts.task_id, EXCLUDED.task_id) END, "
     " search_tsv = EXCLUDED.search_tsv, "
-    " status = 'active', trashed_at = NULL, "
+    " status = 'active', trashed_at = NULL, expires_at = NULL, "
     " updated_at = now(), last_activity_at = now() "
     "RETURNING id, version"
 )
@@ -247,8 +264,10 @@ def register_in_session(
     flag is off, the path is outside ``inputs/`` and ``outputs/``, the owner
     is unknown, or the write failed (logged as ``artifact_register_failed``).
 
-    A second write of the same path keeps the row and its title, moves
-    ``version`` when the sha changed, and re-activates a trashed row.
+    A second write of the same path keeps the row and its title, and moves
+    ``version`` when the sha changed. A write onto a TRASHED row makes it a
+    new artifact on the old name: the owner, title, door, labels and scope
+    come from the write, and the version starts at 1 (review, 2026-10-15).
     """
     if not enabled():
         return None
@@ -429,4 +448,7 @@ async def get_artifact(artifact_id: str, member_email: str) -> dict[str, Any] | 
     if r is None:
         return None
     row = _row(r)
+    if row.get("status") == "trashed" and row.get("owner_email") != member_email:
+        # Only the owner sees their own trash, as the list does.
+        return None
     return row if can_read(row, member_email) else None

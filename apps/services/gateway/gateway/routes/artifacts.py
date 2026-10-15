@@ -17,6 +17,7 @@ The router is gated on ``feature:artifacts`` by construction
 """
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
@@ -67,9 +68,11 @@ async def get_artifact(
     """One artifact. A row the member cannot read answers 404, never 403."""
     if not registry.enabled():
         raise _off()
-    if len(artifact_id) != 36:
-        raise _off()
-    row = await registry.get_artifact(artifact_id, _user.email or "")
+    try:
+        parsed = str(uuid.UUID(artifact_id))
+    except ValueError:
+        raise _off() from None
+    row = await registry.get_artifact(parsed, _user.email or "")
     if row is None:
         raise _off()
     return row
