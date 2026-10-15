@@ -627,6 +627,38 @@ def test_both_send_routes_clean_before_learning() -> None:
         assert first < tail.index("_learn_from_sent, req.account_id")
 
 
+# ── fix round 1, P1: a first settings row keeps the effective Auto-run ────
+
+_GATEWAY = _ROOT / "apps" / "services" / "gateway" / "gateway"
+
+
+def _settings_inserts() -> list[tuple[str, str]]:
+    """Each SQL string in the gateway code that inserts a settings row."""
+    found: list[tuple[str, str]] = []
+    for path in sorted(_GATEWAY.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)                     and "INSERT INTO email_assistant_settings" in " ".join(
+                        node.value.split()):
+                found.append((path.name, node.value))
+    return found
+
+
+def test_every_settings_insert_names_auto_run() -> None:
+    """The column default of ``auto_run`` is false. An INSERT that omits it
+    makes a first row that turns OFF the rules, the Reply Zero labels and the
+    sweep of an Outlook mailbox. So each INSERT must name ``auto_run``, and
+    the writer must pass what ``rules.auto_run_on`` reads (R7 fence)."""
+    inserts = _settings_inserts()
+    assert len(inserts) >= 2, inserts  # the PUT and the writing style
+    for name, sql in inserts:
+        cols = sql[sql.index("(") + 1:sql.index(")")]
+        assert "auto_run" in cols, f"{name} inserts a settings row without auto_run"
+    gen = inspect.getsource(assistant.generate_writing_style)
+    assert '"auto": await auto_run_on(db, account_id)' in gen
+    assert "auto_run = EXCLUDED" not in gen, "the style save must keep a stored choice"
+
+
 # ── R8: the real SQL under FORCE RLS ─────────────────────────────────────────
 
 
@@ -920,5 +952,70 @@ class TestTheDraftCleanupUnderForceRLS:
                 "account_id = CAST(:a AS uuid) AND folder = 'drafts'", a=acc)}
             assert left == {own_id}, "the member's own draft was removed"
             assert ai_id not in left
+        finally:
+            _drop_owner(p.admin_engine, owner)
+
+
+@_DB_GATE
+class TestTheWritingStyleKeepsAutoRun:
+
+    async def test_generating_a_writing_style_keeps_outlook_on(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Fix round 1 (P1): an Outlook mailbox with no settings row, then
+        "Generate writing style". The new row stores ON, so the rules, the
+        Reply Zero labels and the sweep go on as before."""
+        import acb_memory
+
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            provider="microsoft")
+        _seed_message(p.admin_engine, org=p.org_b, account_id=acc, thread="t-s",
+                      folder="sent", body="Thanks, see you on Monday. Ravi")
+        monkeypatch.setattr(assistant, "_llm_writing_style",
+                            AsyncMock(return_value="Short and warm."))
+        monkeypatch.setattr(acb_memory, "add_memories_background", AsyncMock())
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
+        try:
+            async with _as_tenant(p):
+                async with _tenant_session() as db:
+                    assert await rules.auto_run_on(db, acc) is True
+                await assistant.generate_writing_style(account_id=acc, user=user)
+                async with _tenant_session() as db:
+                    assert await rules.auto_run_on(db, acc) is True, (
+                        "Generate writing style turned Auto-run OFF")
+            [(stored, style)] = _admin_read(
+                p.admin_engine, "SELECT auto_run, writing_style FROM "
+                "email_assistant_settings WHERE account_id = CAST(:a AS uuid)", a=acc)
+            assert stored is True and style == "Short and warm."
+        finally:
+            _drop_owner(p.admin_engine, owner)
+
+    async def test_a_stored_off_stays_off(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        import acb_memory
+
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            provider="microsoft")
+        _seed_settings(p.admin_engine, org=p.org_b, account_id=acc, auto_run=False)
+        _seed_message(p.admin_engine, org=p.org_b, account_id=acc, thread="t-s",
+                      folder="sent", body="Thanks. Ravi")
+        monkeypatch.setattr(assistant, "_llm_writing_style",
+                            AsyncMock(return_value="Short."))
+        monkeypatch.setattr(acb_memory, "add_memories_background", AsyncMock())
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
+        try:
+            async with _as_tenant(p):
+                await assistant.generate_writing_style(account_id=acc, user=user)
+            [(stored,)] = _admin_read(
+                p.admin_engine, "SELECT auto_run FROM email_assistant_settings "
+                "WHERE account_id = CAST(:a AS uuid)", a=acc)
+            assert stored is False
         finally:
             _drop_owner(p.admin_engine, owner)

@@ -678,17 +678,23 @@ async def generate_writing_style(
         # mailbox from before D-EM-6 drafts through its Needs Reply rule, and a
         # stored false would show the switch OFF while the engine drafts. The
         # DO UPDATE does not name draft_replies, so a stored choice stays.
+        # WS-17 EM-G11c2 fix round 1 (P1): the same rule for auto_run. The
+        # column default is false, so a first row that omits it turned OFF
+        # the rules, the Reply Zero labels and the sweep of an Outlook mailbox
+        # with one click. The new row stores what `auto_run_on` reads now.
         from gateway.routes.email.automation.rules import (
+            auto_run_on,
             reply_rule_drafts,
         )
         await db.execute(text(
             """INSERT INTO email_assistant_settings
-                 (account_id, writing_style, draft_replies, updated_at)
-               VALUES (:aid, :ws, :dr, now())
+                 (account_id, writing_style, draft_replies, auto_run, updated_at)
+               VALUES (:aid, :ws, :dr, :auto, now())
                ON CONFLICT (account_id) DO UPDATE SET
                  writing_style = EXCLUDED.writing_style, updated_at = now()"""
         ), {"aid": account_id, "ws": style,
-            "dr": await reply_rule_drafts(db, account_id)})
+            "dr": await reply_rule_drafts(db, account_id),
+            "auto": await auto_run_on(db, account_id)})
         # Index the derived style into Mem0 — keyed PER ACCOUNT so a user's other
         # mailboxes don't inherit this inbox's writing voice (see
         # email_memory_scope). The drafter reads it back under the same scope.
