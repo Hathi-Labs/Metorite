@@ -5359,6 +5359,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/whatsapp_assistant_channel.md` §14.9 (known limit)
 - **Added:** 2026-10-15 · branch `wa-calendar-blocks`
 
+### H-312 · An operator viewer can reach the tenant org purge · [AGENT]
+- **Check:** `rg -c "operators/session" workbench/operator_console/src/app/api/operator/purge/route.ts`.
+  No hit means this is open.
+- **Why.** The org purge BFF reads only `GET /orgs` (viewer rank) before it calls
+  the gateway door. The Console checks the operator's rank only at
+  `POST /orgs/purge`, which runs after the tenant purge. So a viewer can destroy
+  the tenant plane of an org that is already `deleted`, and then get a 403.
+- **Do this:** copy the rank check of `api/operator/members/remove/route.ts`. Read
+  `GET /operators/session` and `GET /operators/elevate`, and refuse anything below
+  ADMIN with an open window BEFORE the tenant act. Fence it in `route.test.ts`.
+- **Authority:** `specs/customer_console.md` §CP-2g (the operator matrix row for
+  `/orgs/purge`)
+- **Added:** 2026-10-15 · branch `member-remove`
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
