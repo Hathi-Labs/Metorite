@@ -868,7 +868,7 @@ def test_the_route_holds_exactly_one_commit() -> None:
     early and drop the tenant GUC for everything after it), and keeps every
     destructive statement INSIDE the block, before that commit.
     """
-    from gateway.routes.admin.members import purge_member
+    from gateway.routes.admin.members import purge_member, purge_member_rows
 
     src = inspect.getsource(purge_member)
     assert src.count("async with _tenant_session() as db:") == 1
@@ -876,13 +876,27 @@ def test_the_route_holds_exactly_one_commit() -> None:
         "a mid-block commit would end the transaction (and the tenant "
         "binding) before the wrapper's own commit"
     )
+    # Since 2026-10-15 the deletes live in `purge_member_rows`, the body the
+    # operator door shares. So the route must call that body INSIDE its one
+    # block, and the body must open no session and commit nothing.
     block_indent = " " * 8
     after_block = src[src.index("async with _tenant_session() as db:"):]
-    for line in after_block.splitlines()[1:]:
-        if "rows.delete_sql" in line:
-            assert line.startswith(block_indent), (
-                "something is deleted outside the one transaction"
-            )
+    calls = [ln for ln in after_block.splitlines()[1:]
+             if "purge_member_rows(" in ln]
+    assert calls, "the route no longer calls the shared purge body"
+    for line in calls:
+        assert line.startswith(block_indent), (
+            "the shared purge body runs outside the one transaction"
+        )
+    body = inspect.getsource(purge_member_rows)
+    assert "rows.delete_sql" in body, "the shared body no longer deletes"
+    assert "commit(" not in body, (
+        "the shared body commits — the caller's transaction would end early"
+    )
+    assert "_tenant_session" not in body and "tenant_session" not in body, (
+        "the shared body opens its own session — the deletes would leave the "
+        "caller's one transaction"
+    )
 
 
 async def test_the_purge_is_audited_before_it_is_committed(
@@ -941,7 +955,7 @@ def test_purge_is_a_separate_route_and_remove_is_unchanged() -> None:
     flag on it would have made the soft path one typo from the hard one.
     """
     from gateway.routes.admin._common import router
-    from gateway.routes.admin.members import remove_member
+    from gateway.routes.admin.members import remove_member, remove_member_rows
 
     paths = {
         (route.path, tuple(sorted(route.methods)))
@@ -951,7 +965,14 @@ def test_purge_is_a_separate_route_and_remove_is_unchanged() -> None:
     assert ("/admin/members/{email}", ("DELETE",)) in paths
     assert ("/admin/members/{email}/purge", ("DELETE",)) in paths
 
-    src = inspect.getsource(remove_member)
+    # Since 2026-10-15 the writes live in `remove_member_rows`, the body the
+    # operator door shares. The route must call THAT body and no purge body,
+    # and the body must stay the soft removal.
+    route_src = inspect.getsource(remove_member)
+    assert "remove_member_rows(" in route_src
+    assert "purge_member_rows" not in route_src
+    assert "_PURGE_DELETES" not in route_src
+    src = inspect.getsource(remove_member_rows)
     assert "UPDATE app_user SET status = 'removed'" in src
     assert "DELETE FROM app_user" not in src
     assert "_PURGE_DELETES" not in src
@@ -1104,3 +1125,121 @@ def test_the_browsers_copy_of_the_purge_rule_is_still_only_a_courtesy() -> None:
 
     assert "canPurge" in guard
     assert "not a boundary" in guard or "courtesy" in guard
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 7. The Customer Console mirror (owner request, 2026-10-15)
+#
+# The registry has no hard delete. A purged person becomes a `removed`
+# membership there, with every seat released. The hop is post-commit and
+# best-effort, the invite mirror's posture.
+# ════════════════════════════════════════════════════════════════════════════
+
+async def test_purge_mirrors_onto_the_console_after_the_commit(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠️ Mutation-checked: deleting the `_mirror_removal_to_console` call
+    from `purge_member` makes this fail with no call recorded."""
+    from gateway.routes.admin import members
+
+    seen: list[dict] = []
+
+    async def _fake(**kw):
+        seen.append({**kw, "committed_at_call": db.committed})
+        return 200, {"found": True, "released": ["core"]}
+
+    monkeypatch.setattr(members, "remove_member_on_console", _fake)
+    out = await members.purge_member(PRIYA, admin=OWNER)
+
+    assert out.email == PRIYA
+    assert seen == [{
+        "actor_email": "owner@fracktal.in",
+        "member_email": PRIYA,
+        "committed_at_call": 1,
+    }]
+
+
+@pytest.mark.parametrize("boom", ["outage", "refusal", "crash"])
+async def test_a_console_failure_never_changes_the_purge_answer(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch, boom: str,
+) -> None:
+    from acb_auth.console_resolve import ConsoleMemberWriteUnavailable
+    from gateway.routes.admin import members
+
+    async def _fake(**_kw):
+        if boom == "outage":
+            raise ConsoleMemberWriteUnavailable("HTTP 503")
+        if boom == "crash":
+            raise TypeError("a changed signature")
+        return 409, {"detail": "no owner would remain"}
+
+    monkeypatch.setattr(members, "remove_member_on_console", _fake)
+    out = await members.purge_member(PRIYA, admin=OWNER)
+
+    assert out.deleted["member_record"] == 1
+    assert "u-priya" not in db.users
+    assert db.committed == 1
+
+
+def _route_node(name: str):
+    import ast
+
+    src = (REPO_ROOT / "apps/services/gateway/gateway/routes/admin/"
+           "members.py").read_text(encoding="utf-8-sig")
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"members.py has no `{name}` — this fence is vacuous")
+
+
+def _called(node) -> set[str]:
+    import ast
+
+    return {
+        sub.func.id for sub in ast.walk(node)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+    }
+
+
+@pytest.mark.parametrize("route", ["remove_member", "purge_member"])
+def test_the_console_mirror_runs_outside_the_tenant_transaction(
+    route: str,
+) -> None:
+    """POST-COMMIT, by the shape of each route, as the invite fence pins it.
+
+    Inside the ``_tenant_session`` block the hop would run before the commit,
+    so a rollback would leave the registry saying `removed` for a member the
+    tenant plane kept. A slow Console would also hold the transaction open.
+    """
+    import ast
+
+    node = _route_node(route)
+    assert "_mirror_removal_to_console" in _called(node), (
+        f"`{route}` no longer mirrors the removal onto the Console"
+    )
+    inside: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.AsyncWith):
+            for item in sub.items:
+                call = item.context_expr
+                if (isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Name)
+                        and call.func.id == "_tenant_session"):
+                    for stmt in sub.body:
+                        inside |= _called(stmt)
+    assert "_mirror_removal_to_console" not in inside
+
+
+def test_the_console_mirror_swallows_both_failure_kinds() -> None:
+    """A verdict, an outage and an unforeseen exception all end as a log
+    line. Both handlers are required, as at the invite mirror."""
+    import ast
+
+    node = _route_node("_mirror_removal_to_console")
+    handlers = [
+        h for sub in ast.walk(node) if isinstance(sub, ast.Try)
+        and "remove_member_on_console" in _called(sub)
+        for h in sub.handlers
+    ]
+    caught = {h.type.id for h in handlers if isinstance(h.type, ast.Name)}
+    assert {"ConsoleMemberWriteUnavailable", "Exception"} <= caught, caught

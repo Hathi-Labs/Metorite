@@ -61,6 +61,17 @@ export function isSeated(m: MemberRow): boolean {
   return Array.isArray(m.seats) && m.seats.length > 0;
 }
 
+/** The seat button one roster row offers, or null for none.
+ *
+ * A removed person takes no new seat. The Console refuses to seat somebody
+ * who is not a member, and a button whose only outcome is a refusal is the
+ * wrong shape. A removed row that still holds a seat keeps Release, so the
+ * operator can free the seat that the removal did not. */
+export function seatControl(m: MemberRow): "release" | "assign" | null {
+  if (isSeated(m)) return "release";
+  return m.status === "removed" ? null : "assign";
+}
+
 /**
  * Read the roster off a `/billing/summary` body, tolerating its absence.
  *
@@ -158,12 +169,18 @@ export function liveKeys(keys: KeyRow[]): KeyRow[] {
  * row and two assigned seats; the seat counts are `seatsTotals`' — the
  * Console's own `seat_counts` — and presenting this tally as them would be
  * quietly wrong exactly where it matters.
+ *
+ * ⚠️ A REMOVED person is not counted. They are on the roster so an operator
+ * can delete them, but they are not one of the organization's people, and
+ * "3 of 6 seated" with two of the six gone reads as three people waiting
+ * for a seat.
  */
 export function memberTally(
   members: MemberRow[],
 ): { total: number; seated: number; unassigned: number } {
-  const seated = members.filter(isSeated).length;
-  return { total: members.length, seated, unassigned: members.length - seated };
+  const current = members.filter((m) => m.status !== "removed");
+  const seated = current.filter(isSeated).length;
+  return { total: current.length, seated, unassigned: current.length - seated };
 }
 
 

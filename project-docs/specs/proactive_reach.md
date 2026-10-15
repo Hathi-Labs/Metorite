@@ -428,7 +428,7 @@ it read them.
 | `metorite_needs_you` | An interrupt, window closed | Hi {{1}}, something in Metorite needs you now: {{2}}. Tap below to see it. | Show me |
 | `metorite_opt_in` | The link flow, when Metorite asks for opt-in | Later, with RE-2 | Yes · No |
 
-**The owner submits them at Meta** (H-313). The auto-mode classifier refused
+**The owner submits them at Meta** (H-315). The auto-mode classifier refused
 an agent's submission through the Graph API on 2026-10-15. Then the operator
 sets `REACH_BRIEF_TEMPLATE=metorite_daily_brief` and
 `REACH_NEEDS_YOU_TEMPLATE=metorite_needs_you`.
