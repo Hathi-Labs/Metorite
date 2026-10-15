@@ -31,6 +31,7 @@ import contextlib
 import json
 import uuid
 from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -38,7 +39,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_auth.permissions import EffectiveAccess
 from acb_auth.roles import UserContext, UserRole
-from gateway.routes.shell import feed
+from gateway.routes.shell import feed, state
 from gateway.routes.shell import needs as shell
 from sqlalchemy import text
 
@@ -59,8 +60,14 @@ ME = f"kinds-me-{TAG}@md3c.test"
 COLL = f"kinds-coll-{TAG}@md3c.test"
 NOROW = f"kinds-norow-{TAG}@md3c.test"
 #: My day starts at midnight UTC, so "my day start" is the UTC midnight of NOW.
-DAY_START = datetime.combine(NOW.astimezone(UTC).date(), time.min, tzinfo=UTC)
-TODAY = DAY_START.date()
+#: The UTC midnight of NOW's own date: the due times and the days away.
+MIDNIGHT = datetime.combine(NOW.astimezone(UTC).date(), time.min, tzinfo=UTC)
+TODAY = MIDNIGHT.date()
+#: My day starts at 01:00 UTC. A stored 0 would read 7 (`tasks.settings._load`,
+#: the rule of the state join), so the seed stores 1. "My day start" is the
+#: start of my current day, by `state.Day`.
+DAY_START_HOUR = 1
+DAY_START = state.Day(ZoneInfo("UTC"), DAY_START_HOUR).day_start(NOW)
 
 
 @pytest.fixture(autouse=True)
@@ -82,7 +89,7 @@ def _member(email: str) -> UserContext:
 
 def _at(day_offset: int, hour: int = 11) -> datetime:
     """A local instant on today + ``day_offset`` (the zone is UTC)."""
-    return DAY_START + timedelta(days=day_offset, hours=hour)
+    return MIDNIGHT + timedelta(days=day_offset, hours=hour)
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +107,7 @@ def seeded(promoted):  # noqa: F811
                 "CAST(:o AS uuid))"), {"e": email, "o": org})
             c.execute(text(
                 "INSERT INTO user_settings (user_id, timezone, day_start_hour, "
-                "day_end_hour, organization_id) VALUES (:e, 'UTC', 0, 23, "
+                "day_end_hour, organization_id) VALUES (:e, 'UTC', 1, 23, "
                 "CAST(:o AS uuid))"), {"e": email, "o": org})
         # NOROW has no directory row: the app_user insert made one, so it goes.
         gone = c.execute(text("DELETE FROM people WHERE lower(email) = :e"), {"e": NOROW})
@@ -294,11 +301,12 @@ class TestTheKindsOnARealDatabase:
         async with _as_member(promoted, promoted.org_b):
             quiet = await personal.my_quiet_tasks(user, limit=50, now=NOW)
             free = await personal.my_unblocked_since(user, DAY_START, limit=50)
-            ahead = await personal.my_due_ahead(user, DAY_START, DAY_START + timedelta(days=15),
-                                               limit=50)
+            ahead = await personal.my_due_ahead(
+                user, MIDNIGHT, MIDNIGHT + timedelta(days=15), limit=50,
+                days=[TODAY + timedelta(days=d) for d in range(15)], zone="UTC")
         got = {r["id"]: r["disposition"] for r in quiet["rows"]}
         assert got == {seeded["wait"]: "WAITING", seeded["stale"]: "NEXT"}
-        assert quiet["day_start_hour"] == 0 and quiet["timezone"] == "UTC"
+        assert quiet["day_start_hour"] == DAY_START_HOUR and quiet["timezone"] == "UTC"
         rows = {r["id"]: r["unblocked_by"] for r in free["rows"]}
         assert set(rows) == {seeded["free"], seeded["hid"]}
         assert rows[seeded["hid"]] == {"readable": False, "id": None, "title": None,
@@ -486,7 +494,7 @@ class TestTheTenantUnderTheOwnerRole:
             quiet = await personal.my_quiet_tasks(user, limit=50, now=NOW)
             free = await personal.my_unblocked_since(user, DAY_START, limit=50)
             ahead = await personal.my_due_ahead(
-                user, DAY_START, DAY_START + timedelta(days=15), limit=50,
+                user, MIDNIGHT, MIDNIGHT + timedelta(days=15), limit=50,
                 days=[TODAY + timedelta(days=d) for d in range(15)], zone="UTC")
         got = {r["id"] for r in quiet["rows"] + free["rows"] + ahead["rows"]}
         assert not got & {two_orgs[k] for k in ("a_stale", "a_wait", "a_free", "a_due")}
