@@ -37,6 +37,7 @@ import ast
 import asyncio
 import inspect
 import json
+import re
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -790,18 +791,48 @@ def test_both_send_routes_clean_before_learning() -> None:
 
 # ── fix round 1, P1: a first settings row keeps the effective Auto-run ────
 
-_GATEWAY = _ROOT / "apps" / "services" / "gateway" / "gateway"
+_SERVICES = _ROOT / "apps" / "services"
+_SETTINGS_INSERT = re.compile(
+    r"INSERT\s+INTO\s+(public\.)?email_assistant_settings\b", re.IGNORECASE)
 
 
-def _settings_inserts() -> list[tuple[str, str]]:
-    """Each SQL string in the gateway code that inserts a settings row."""
+def _literal(node: ast.AST) -> str | None:
+    """The SQL text of a string literal, an f-string or a ``+`` of the two.
+    A ``{...}`` part of an f-string reads as ``{}``, so the column list of an
+    INSERT can still be read around it."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "{}"
+                       for v in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _literal(node.left), _literal(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _settings_inserts(root: Path = _SERVICES) -> list[tuple[str, str]]:
+    """Each INSERT into ``email_assistant_settings`` in the code of every
+    service, with its column list (round 2: every service, f-strings too)."""
     found: list[tuple[str, str]] = []
-    for path in sorted(_GATEWAY.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path in sorted(root.rglob("*.py")):
+        if {"node_modules", ".venv", "__pycache__"} & set(path.parts):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        inner = {id(c) for n in ast.walk(tree)
+                 if isinstance(n, (ast.JoinedStr, ast.BinOp))
+                 for c in ast.iter_child_nodes(n)}
         for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)                     and "INSERT INTO email_assistant_settings" in " ".join(
-                        node.value.split()):
-                found.append((path.name, node.value))
+            if id(node) in inner:
+                continue
+            sql = _literal(node)
+            if sql is None:
+                continue
+            for m in _SETTINGS_INSERT.finditer(sql):
+                rest = sql[m.end():]
+                cols = rest[rest.index("(") + 1:rest.index(")")] if "(" in rest else ""
+                found.append((path.relative_to(_ROOT).as_posix(), cols))
     return found
 
 
@@ -812,8 +843,7 @@ def test_every_settings_insert_names_auto_run() -> None:
     the writer must pass what ``rules.auto_run_on`` reads (R7 fence)."""
     inserts = _settings_inserts()
     assert len(inserts) >= 2, inserts  # the PUT and the writing style
-    for name, sql in inserts:
-        cols = sql[sql.index("(") + 1:sql.index(")")]
+    for name, cols in inserts:
         assert "auto_run" in cols, f"{name} inserts a settings row without auto_run"
     gen = inspect.getsource(assistant.generate_writing_style)
     assert '"auto": await auto_run_on(db, account_id)' in gen
