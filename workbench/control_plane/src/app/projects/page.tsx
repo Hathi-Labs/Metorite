@@ -4051,6 +4051,7 @@ function ProjectsWorkspace() {
               // S4 — the empty state has to know whether the filters emptied it.
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
+              waitingOnMe={waitingOnMe}
               lanes={lanes}
               onToggleLane={(key) =>
                 setLanes((current) => ({
@@ -4098,6 +4099,7 @@ function ProjectsWorkspace() {
               subtasks={subtaskMode}
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
+              waitingOnMe={waitingOnMe}
               statuses={statuses}
               tags={tags}
               taskTypes={taskTypes}

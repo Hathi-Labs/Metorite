@@ -5376,7 +5376,35 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3c (fix round 1)
 - **Added:** 2026-10-15 · MD-3c review
 
-### H-313 · The web chat cannot make a deck as a PDF, and WhatsApp can · [AGENT]
+### H-313 · An operator viewer can reach the tenant org purge · [AGENT]
+- **Check:** `rg -c "operators/session" workbench/operator_console/src/app/api/operator/purge/route.ts`.
+  No hit means this is open.
+- **Why.** The org purge BFF reads only `GET /orgs` (viewer rank) before it calls
+  the gateway door. The Console checks the operator's rank only at
+  `POST /orgs/purge`, which runs after the tenant purge. So a viewer can destroy
+  the tenant plane of an org that is already `deleted`, and then get a 403.
+- **Do this:** copy the rank check of `api/operator/members/remove/route.ts`. Read
+  `GET /operators/session` and `GET /operators/elevate`, and refuse anything below
+  ADMIN with an open window BEFORE the tenant act. Fence it in `route.test.ts`.
+- **Authority:** `specs/customer_console.md` §CP-2g (the operator matrix row for
+  `/orgs/purge`)
+- **Added:** 2026-10-15 · branch `member-remove`
+
+### H-314 · A feed approvals test fails at one time of day · [AGENT]
+- **Check:** run `tests/unit/test_feed_handled_r8.py::TestApprovals::test_iii_org_bs_admin_sees_no_approval_of_org_a`
+  with the clock frozen at 2026-10-15 07:14 UTC. A failure means this is open.
+- **Why.** On 2026-10-15 the test failed in two CI runs of PR #1038, at about
+  07:14 UTC both times: `assert [] == [{'kind': 'you', ...}]`. The rerun at
+  08:07 UTC passed. The PR touches no feed code. The test picks its zone with
+  `_a_daytime_zone(NOW)` and puts a decision at `NOW - 2 minutes`, so a day
+  boundary is the likely cause.
+- **Do this:** find which zone and day start the test picks at 07:14 UTC. Make
+  the zone choice keep the decision inside the member's day, and pin the
+  clock in the test.
+- **Authority:** R7 (a fence that fails by the clock is not a fence)
+- **Added:** 2026-10-15 · branch `member-remove`
+
+### H-315 · The web chat cannot make a deck as a PDF, and WhatsApp can · [AGENT]
 - **Check:** `rg -n "\"document\"" apps/services/gateway/gateway/routes/workspace.py`.
   No hit means this is open.
 - **Why.** WAC-12 (2026-10-15) gave the WhatsApp bot a deck and a report as a PDF,
@@ -5388,7 +5416,7 @@ line — never reclaim a number by deleting the other entry.
   the PDF with `write_artifact`, so the web shows it as a PDF artifact with a
   download. Reuse `render_pdf("document", ...)`, and add no second renderer.
 - **Authority:** `specs/whatsapp_assistant_channel.md` §15.4
-- **Added:** 2026-10-15 · branch `wa-pdf-documents` (minted as H-312, renumbered at merge: main took H-312 first)
+- **Added:** 2026-10-15 · branch `wa-pdf-documents` (minted as H-312, renumbered twice at merge: main took H-312 and H-313 first)
 
 # DONE — deleted, not archived
 
