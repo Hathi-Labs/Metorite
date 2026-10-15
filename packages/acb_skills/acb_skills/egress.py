@@ -106,9 +106,10 @@ STORE_WRITES: frozenset[str] = frozenset({
 # So ``agent_tools`` frames that answer, and it marks the CHAT SESSION of the
 # calling run (:func:`mark_untrusted_answer`). Round 3: the relayed URL stays in
 # the thread on the next turn, and each turn is a new run, so the mark is keyed
-# by the session and not by the run id. The key is the run's tenant, its member
-# and its session, each from the server-bound run context (R11), never from a
-# request field. The mark lives in Redis through the tenant prefix wrapper
+# by the session and not by the run id. The key is the run's tenant and its
+# session, each from the server-bound run context (R11), never from a request
+# field. Round 4: the member is NOT in the key. In a shared room, member B's
+# turn reads the URL that member A's turn relayed, so B's turn is held too. The mark lives in Redis through the tenant prefix wrapper
 # (``acb_common.tenant_redis``), with :data:`MARK_TTL_S`, so every process and
 # every later turn sees it. Each read that finds it slides the TTL.
 #
@@ -134,18 +135,19 @@ MARK_NAMESPACE = "egress-mark"
 #: ``email_app_master_plan.md`` 12.3.13.8.
 MARK_TTL_S = 400 * 24 * 3600
 
-#: The sessions this process saw marked: ``(org, member, session)``. Positives
+#: The sessions this process saw marked: ``(org, session)``. Positives
 #: only, never evicted, so a sync reader never fails open by eviction.
-_MARKED_SESSIONS: set[tuple[str, str, str]] = set()
+_MARKED_SESSIONS: set[tuple[str, str]] = set()
 _MARKED_LOCK = threading.Lock()
 
 
-def _session_of(ctx: Mapping[str, Any] | None = None) -> tuple[str, str, str] | None:
-    """``(org, member, session)`` of the run on this frame, or None.
+def _session_of(ctx: Mapping[str, Any] | None = None) -> tuple[str, str] | None:
+    """``(org, session)`` of the run on this frame, or None.
 
     The tenant is the run's bound tenant (``acb_common.db.current_tenant``),
-    and the member and the session come from the run's bound artifact
-    context. None of them comes from a request field or a tool argument."""
+    and the session comes from the run's bound artifact context. Neither
+    comes from a request field or a tool argument. The member is not part of
+    the key, because members of a shared room read one thread."""
     try:
         if ctx is None:
             from acb_skills.write_artifact import artifact_context
@@ -159,7 +161,7 @@ def _session_of(ctx: Mapping[str, Any] | None = None) -> tuple[str, str, str] | 
     session = str((ctx or {}).get("session_id") or "")
     if not (org and session):
         return None
-    return org, str((ctx or {}).get("member") or "-"), session
+    return org, session
 
 
 def _bound_context() -> Mapping[str, Any]:
@@ -213,13 +215,13 @@ async def mark_untrusted_answer() -> bool:
     if _minted_session(_bound_context()):
         _log.info("egress.untrusted_answer_marked", store="process")
         return True
-    org, member, thread = session
+    org, thread = session
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
             await get_tenant_redis().setex(
-                key(MARK_NAMESPACE, member, thread), MARK_TTL_S, "1")
+                key(MARK_NAMESPACE, thread), MARK_TTL_S, "1")
     except Exception as exc:  # the class only: a value never reaches a log
         _log.warning("egress.untrusted_answer_mark_failed", error=type(exc).__name__)
         return False
@@ -244,13 +246,13 @@ async def session_is_marked(ctx: Mapping[str, Any] | None = None) -> bool:
     if _minted_session(ctx):
         # A batch run minted this session, so only this process can mark it.
         return False
-    org, member, thread = session
+    org, thread = session
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
             client = get_tenant_redis()
-            mark = key(MARK_NAMESPACE, member, thread)
+            mark = key(MARK_NAMESPACE, thread)
             if not await client.exists(mark):
                 return False
             await client.expire(mark, MARK_TTL_S)
