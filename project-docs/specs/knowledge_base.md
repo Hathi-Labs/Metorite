@@ -1,11 +1,9 @@
 # Knowledge — the company brain a member can read, and an agent can use
 
-**Status: PROPOSED, 2026-10-15.** Owner directive of 2026-10-15, in chat.
-Nothing is built. No decision is taken.
-
-§15 lists the decisions the owner
-must take, and §16 the questions with a default for each. Board row
-**WS-60**. Verified against the code on 2026-10-15.
+**Status: ACTIVE, 2026-10-15.** Owner directive of 2026-10-15, in chat.
+The owner accepted every proposal of §15 and every default of §16 the same
+day ("Go with defaults"), recorded as **D104**. Board row **WS-60**.
+Verified against the code on 2026-10-15. Nothing is built yet.
 
 **What this spec owns.** The Knowledge app: the spaces, the pages, the files,
 the connected folders, and the one retrieval index over all of them. It also
@@ -894,7 +892,7 @@ The first migration adds, and nothing renames (R6).
 
 ---
 
-## 15. Decisions proposed — the owner takes these
+## 15. Decisions — accepted as D104 on 2026-10-15
 
 - **D-KB-1 — Knowledge is an authored, cited store with one index, and it
   is not a surface over Mem0.** It supersedes the framing in
@@ -917,12 +915,12 @@ The first migration adds, and nothing renames (R6).
 - **D-KB-8 — `kb:read` joins the `/mcp` scopes**, as an amendment to
   `external_agent_access.md` §8.
 
-When the owner accepts these, they are recorded once in `work_plan.md` §3 as
-one decision with eight clauses, and this header changes to ACTIVE.
+The owner accepted all eight on 2026-10-15. `work_plan.md` §3 records them
+once, as D104, with the answers of §16.
 
 ---
 
-## 16. Owner questions, each with a default
+## 16. Owner questions — each answered by its default on 2026-10-15
 
 | # | Question | Default if unanswered |
 |---|---|---|
@@ -943,8 +941,8 @@ its own branch, three or four in flight at most.
 
 | Ticket | What | Done when | Gate |
 |---|---|---|---|
-| **KB-0** | The feature, the permission, the three spaces, the pane at `preview`, the manifest, the page scaffold with `AppTopBar` | `feature:knowledge` and `knowledge:manage` exist. `/knowledge` renders "Knowledge" as the one `h1` behind the flag. `nav.test.ts` and `appBar.test.ts` pass. `seams.test.ts` is unchanged | AGENT-SAFE |
-| **KB-1** | The tables of §12 except the sources, `visible_pages_clause`, `validate_grant_subject` moved to `acb_auth`, the page and space routes of §5.3, the manifest and its coverage test | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green | AGENT-SAFE |
+| **KB-0** | The feature, the permission, the pane at `preview`, the manifest, the page scaffold with `AppTopBar`. The three spaces move to KB-1, with their table | `feature:knowledge` and `knowledge:manage` exist. `/knowledge` renders "Knowledge" as the one `h1` behind the flag. `nav.test.ts` and `appBar.test.ts` pass. `seams.test.ts` is unchanged | AGENT-SAFE |
+| **KB-1** | The tables of §12 except the sources, the three spaces of §4.1, `visible_pages_clause`, `validate_grant_subject` moved to `acb_auth`, the page and space routes of §5.3, the manifest and its coverage test | R8 against a real database. Two orgs, two spaces, one grant each: the other org and the other space see nothing. `test_kb_visibility_one_seam.py` is red-first, then green | AGENT-SAFE |
 | **KB-2a** | The Spaces view, the page tree, a Markdown editor with preview, publish, versions, files on a page through the attachments seam | A member writes, publishes, attaches an image, reverts. The visual review passes in four contexts | AGENT-SAFE |
 | **KB-2b** | The TipTap editor over the same Markdown, links as pills with `[[`, the "Knowledge about this" component | The body round-trips through Markdown with no loss for the supported marks. A task shows its linked pages | AGENT-SAFE |
 | **KB-3** | `packages/acb_search`: chunking, the generated `tsv`, `embed()` through `/v1/embeddings` with a `usage_event`, `query()` with fusion, the index-on-publish hook, `GET /knowledge/search`, the Search view, the command-bar provider | A published page is found by an exact token and by a paraphrase. The embed door down returns the lexical half with `degraded`. `test_kb_one_index.py` holds | AGENT-SAFE to build. The embed flip spends credits: owner |
