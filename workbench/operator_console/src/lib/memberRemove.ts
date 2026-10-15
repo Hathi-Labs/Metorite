@@ -117,3 +117,50 @@ export function refusedBy(text: string): "The tenant plane" | "The Console" {
   }
   return "The Console";
 }
+
+/**
+ * The answer when the tenant half succeeded and the registry half did not.
+ *
+ * ⚠️ **Two kinds of failure, and only one is worth a retry.**
+ *
+ * - No answer (`status` null) or a 5xx is a fault on the way. The Console
+ *   call is idempotent, so the same action again finishes the job. 502.
+ * - A 4xx (403, 404, 409) is the Console's VERDICT. The same request gets the
+ *   same verdict, so "run it again" would only teach the operator to click
+ *   until it stops. The Console's own status is relayed, because it is the
+ *   truth of what happened. The text says the tenant half is done and that
+ *   the registry row needs a person to look at it.
+ *
+ * Both are non-2xx, so the roster never reads either as success.
+ */
+export function registryFailure(
+  email: string,
+  status: number | null,
+  detail: unknown,
+): { status: number; retry: boolean; error: string } {
+  const done = `the tenant half succeeded (${email} has no access now)`;
+  if (status === null || status >= 500 || status < 400) {
+    const what = status === null ? "did not answer" : `answered ${status}`;
+    return {
+      status: 502,
+      retry: true,
+      error:
+        `${done}, but the Console ${what}. Run this action again to finish ` +
+        `the registry half. A retry is safe.`,
+    };
+  }
+  const said =
+    typeof (detail as { detail?: unknown } | null)?.detail === "string"
+      ? (detail as { detail: string }).detail
+      : typeof detail === "string" && detail
+        ? detail
+        : "no detail";
+  return {
+    status,
+    retry: false,
+    error:
+      `${done}, but the registry refused with ${status}: ${said}. Do not ` +
+      `retry. The registry row for ${email} needs attention, because it ` +
+      `still shows this person.`,
+  };
+}

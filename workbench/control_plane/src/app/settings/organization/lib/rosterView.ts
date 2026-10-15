@@ -103,9 +103,9 @@ export function removeCopy(member: Member): RemoveCopy {
   if (member.status === "invited") {
     return {
       title: `Revoke the invite for ${name}?`,
-      effect:
-        "cannot accept the invitation after this, and cannot sign in. " +
-        "Their seat goes back to the pool.",
+      // ⚠️ No word about a seat. An invited person holds no Core seat yet,
+      // so "their seat goes back to the pool" would be false (review round 1).
+      effect: "cannot accept the invitation after this, and cannot sign in.",
       after:
         "To bring them in later, invite them again. Use Delete permanently " +
         "if you also want their record gone.",

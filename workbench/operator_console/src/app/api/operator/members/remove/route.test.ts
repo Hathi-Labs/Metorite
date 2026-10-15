@@ -187,6 +187,43 @@ describe("a Console failure after the tenant half", () => {
     expect(body.error).toContain("Run this action again");
     expect(body.registry).toBe("boom");
   });
+
+  it("a Console that does not answer is a 502 with the retry, and says the tenant half is done", async () => {
+    removeRegistryMember.mockRejectedValue(new TypeError("fetch failed"));
+    const res = await POST(req(good()));
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string; retry: boolean };
+    expect(body.error).toContain("tenant half succeeded");
+    expect(body.error).toContain("did not answer");
+    expect(body.retry).toBe(true);
+  });
+
+  // Review round 1: a 4xx is the Console's VERDICT. The same request gets the
+  // same answer, so advice to retry would be false.
+  for (const status of [403, 404, 409]) {
+    it(`a Console ${status} is relayed with no retry advice`, async () => {
+      removeRegistryMember.mockResolvedValue({
+        status,
+        body: JSON.stringify({ detail: `registry said ${status}` }),
+      });
+      const res = await POST(req(good()));
+      expect(res.status).toBe(status);
+      const body = (await res.json()) as {
+        error: string;
+        retry: boolean;
+        refused_by?: string;
+      };
+      expect(body.retry).toBe(false);
+      expect(body.error).toContain("tenant half succeeded");
+      expect(body.error).toContain("registry refused");
+      expect(body.error).toContain(`registry said ${status}`);
+      expect(body.error).toContain("needs attention");
+      expect(body.error).not.toContain("Run this action again");
+      expect(body.error).not.toContain("A retry is safe");
+      // The Console refused, not the tenant plane.
+      expect(body.refused_by).toBeUndefined();
+    });
+  }
 });
 
 describe("the confirmation protocol", () => {

@@ -98,6 +98,11 @@ describe("removeCopy", () => {
     // Suspend is not offered on an invited row, so the dialog must not
     // send the admin to it.
     expect(c.after).not.toContain("Suspend");
+    // Review round 1: an invited person holds no Core seat yet, so the copy
+    // must make no claim about a seat.
+    for (const text of [c.title, c.effect, c.after, c.confirm]) {
+      expect(text.toLowerCase()).not.toContain("seat");
+    }
   });
 
   it("a signed-in person is removed, with the seal preview", () => {

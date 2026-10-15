@@ -17,7 +17,8 @@
 //      still run (an invite that never reached the tenant, or a retry).
 //   3. Console `POST /registry/members/remove`: the registry plane. It marks
 //      the membership removed and releases the seats. It is idempotent, so a
-//      retry after a failure here is safe.
+//      retry after a fault on the way (no answer, a 5xx) is safe. A 4xx is
+//      the Console's verdict: its status is relayed, with no retry advice.
 
 import {
   ConsoleUnconfigured,
@@ -30,7 +31,12 @@ import {
   tenantDoorConfigured,
   TenantDoorUnconfigured,
 } from "@/lib/tenantDoor";
-import { mayRemove, readRemoveRequest, type ElevationRead } from "@/lib/memberRemove";
+import {
+  mayRemove,
+  readRemoveRequest,
+  registryFailure,
+  type ElevationRead,
+} from "@/lib/memberRemove";
 import { readWhoami } from "@/lib/whoami";
 import { gate, json, readJsonBody, relay } from "@/lib/route";
 
@@ -97,19 +103,32 @@ export async function POST(request: Request): Promise<Response> {
       });
     }
 
-    // 3 — the registry plane.
-    const registry = await removeRegistryMember(
-      { org_slug: slug, member_email: email },
-      d,
-    );
-    if (registry.status !== 200) {
-      return json(502, {
-        error:
-          `the tenant half succeeded (${email} has no access now), but the ` +
-          `Console answered ${registry.status}. Run this action again to ` +
-          `finish the registry half. A retry is safe.`,
+    // 3 — the registry plane. A fault on the way (no answer, a 5xx) gets 502
+    // and the retry. A Console verdict (a 4xx) is relayed with its own status
+    // and no retry (`registryFailure` holds the split).
+    let registry;
+    try {
+      registry = await removeRegistryMember(
+        { org_slug: slug, member_email: email },
+        d,
+      );
+    } catch (e) {
+      if (e instanceof ConsoleUnconfigured) throw e;
+      const f = registryFailure(email, null, null);
+      return json(f.status, {
+        error: f.error,
+        retry: f.retry,
         tenant: readBody(tenant.body),
-        registry: readBody(registry.body),
+      });
+    }
+    if (registry.status !== 200) {
+      const detail = readBody(registry.body);
+      const f = registryFailure(email, registry.status, detail);
+      return json(f.status, {
+        error: f.error,
+        retry: f.retry,
+        tenant: readBody(tenant.body),
+        registry: detail,
       });
     }
 

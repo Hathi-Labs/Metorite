@@ -3,6 +3,7 @@ import {
   mayRemove,
   readRemoveRequest,
   refusedBy,
+  registryFailure,
   removeLabel,
   requiredRole,
 } from "./memberRemove";
@@ -109,6 +110,34 @@ describe("refusedBy", () => {
     ]) {
       expect(refusedBy(text)).toBe("The Console");
     }
+  });
+});
+
+describe("registryFailure", () => {
+  const E = "ana@acme.test";
+
+  it("a fault on the way is a 502 with the retry", () => {
+    for (const status of [null, 500, 502, 503]) {
+      const f = registryFailure(E, status, "boom");
+      expect(f.status).toBe(502);
+      expect(f.retry).toBe(true);
+      expect(f.error).toContain("A retry is safe");
+    }
+  });
+
+  it("a 4xx verdict keeps its status and gives no retry advice", () => {
+    const f = registryFailure(E, 409, { detail: "organization is deleted" });
+    expect(f.status).toBe(409);
+    expect(f.retry).toBe(false);
+    expect(f.error).toContain("tenant half succeeded");
+    expect(f.error).toContain("organization is deleted");
+    expect(f.error).toContain("needs attention");
+    expect(f.error).not.toContain("A retry is safe");
+  });
+
+  it("a verdict with no usable detail still says so", () => {
+    expect(registryFailure(E, 403, null).error).toContain("no detail");
+    expect(registryFailure(E, 404, "Not Found").error).toContain("Not Found");
   });
 });
 
