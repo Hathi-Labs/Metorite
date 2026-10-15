@@ -418,3 +418,13 @@ describe("reportCardActions", () => {
     expect(reportCardActions({ path: "outputs/a.report.json", pdf: null }, { sessionId: "s" }, false).open).toBeNull();
   });
 });
+
+describe("the card reads the chat's openers and the phone (merge with #1063)", () => {
+  it("passes the view mode, so a phone opens the viewer", () => {
+    // Node-env vitest renders no view mode, so this reads the wiring.
+    const src = readFileSync(fileURLToPath(new URL("./genUITemplates.tsx", import.meta.url)), "utf8");
+    const card = src.slice(src.indexOf("function ReportTemplate("), src.indexOf("function ChartCard("));
+    expect(card).toContain("const { isMobile } = useViewMode();");
+    expect(card).toContain("reportCardActions(report, useContext(ArtifactOpenContext), isMobile);");
+  });
+});
