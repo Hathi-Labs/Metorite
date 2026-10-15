@@ -34,7 +34,36 @@ Run::
 ``apps/services/agent_edge/agent_edge`` and ``G`` is
 ``apps/services/gateway/gateway/routes/projects``.
 
-MUTATIONS_GO_HERE
+* M1 (G1). ``G/agent_runs.py`` ``_write_activity``: no ``content_metadata.request`` on the question. ``test_g1_the_request_writes_one_typed_question_and_archives_nothing``.
+* M2 (G1). ``agent_oauth.MCP_WRITE_ROUTES`` gains the approval pair. ``test_g1_neither_archive_route_is_on_the_edge`` and ``test_mcp_edge_coverage.py::test_the_archive_and_its_approval_stay_off_the_edge``.
+* M3 (G2). ``G/agent_runs.py`` ``archive_request_of``: any question with an option ``approve`` is a request. ``test_g2_a_free_question_with_an_approve_option_never_archives``.
+* M4 (G2). ``G/agent_runs.py`` ``ActivityIn``: ``extra="ignore"``. ``test_g2_a_signed_body_that_names_request_gets_422``.
+* M5 (G3). ``G/agent_runs.py`` ``approve_task_archive``: no check of ``run.member_email``. ``test_g3_another_member_gets_403_and_the_member_archives``.
+* M6 (G3, rule 4). ``G/agent_runs.py`` ``_answer``: no refusal of a generic prompt on a typed request. ``test_g3_the_generic_route_refuses_a_typed_request``.
+* M7 (G3). ``G/agent_runs.py`` ``approve_task_archive``: no ``pm.task.archived`` event. ``test_g3_another_member_gets_403_and_the_member_archives``.
+* M8 (G4). ``G/agent_runs.py`` ``approve_task_archive``: the archive runs in its own ``_tenant_session``. ``test_g4_the_answer_and_the_archive_commit_together[answer]`` and ``[archive]``.
+* M9 (G5). ``G/agent_runs.py`` ``approve_task_archive``: ``include_subtasks=True``. ``test_g5_open_subtasks_stay_on_the_board``.
+* M10 (G6). ``G/agent_runs.py`` ``approve_task_archive``: a decline archives too. ``test_g6_a_decline_archives_nothing``.
+* M11 (G7). ``G/agent_runs.py`` ``_request_expired`` returns False. ``test_g7_an_approve_after_the_expiry_gets_409``.
+* M12 (G7). ``G/agent_runs.py`` ``approve_task_archive``: no ``awaiting`` check. ``test_g7_an_approve_on_a_run_that_does_not_wait_gets_409``.
+* M13 (G8). ``G/agent_runs.py`` ``approve_task_archive``: no replay of the key. ``test_g8_a_second_approve_gives_one_archive``.
+* M14 (G9). ``G/tasks.py`` ``archive_task_in``: write the ``system`` row when the task is already archived. ``test_g9_an_archived_task_gets_no_second_activity_row``.
+* M15 (G10). ``G/agent_runs.py`` ``approve_task_archive``: no ``_load_visible_run``. ``test_g10_a_member_who_lost_access_gets_404``.
+* M16 (G11). ``G/agent_runs.py`` ``_comment``: a typed request notifies ``task_audience()`` too. ``test_g11_the_question_reaches_the_runs_member_only``.
+* M17 (G12). ``G/agent_runs.py``: the approval route loses ``dependencies=_ENABLED``. ``test_g12_with_the_runs_flag_off_the_routes_give_404``.
+* M18 (G12). ``E/tools.py`` ``REQUEST_TASK_ARCHIVE``: no ``runs=True``. ``test_g12_the_flags_hide_the_tool_and_send_nothing``.
+* M19 (G12). ``E/tools.py`` ``REQUEST_TASK_ARCHIVE.required_scope`` is ``projects:read``. ``test_g12_a_read_connection_gets_the_step_up_403``.
+* M20 (G13). ⚠️ Two layers at once. The app role of this file gets ``BYPASSRLS``, AND ``approve_task_archive`` drops ``_load_visible_run``. ``test_g13_organization_b_gets_404``. Each layer alone stays green, by design: FORCE RLS hides B's run, and the ``vis_org`` predicate of ``task_visibility_clause`` and of the grant closure hides B's task. ``BYPASSRLS`` alone, and ``BYPASSRLS`` with the outer ``vis_org`` set to TRUE, were both measured green.
+* M21 (G14). ``E/tools.py`` ``run_activity``: ``archived`` is always None. ``test_g14_get_agent_run_shows_the_answer_and_archived`` and ``test_the_activity_keys_carry_archived``.
+* M22 (G14). ``G/agent_runs.py`` ``approve_task_archive``: no ``archived`` in the answer's content. ``test_g14_get_agent_run_shows_the_answer_and_archived`` and ``test_g6_a_decline_archives_nothing``.
+* M23. ``E/tools.py`` ``_request_task_archive``: the body names ``task_id`` too. ``test_it_posts_the_key_only``.
+* M24. ``E/tools.py`` ``_request_task_archive``: no 409 text. ``test_the_answer_table[409]`` and ``test_a_request_while_a_question_waits_is_refused``.
+* M25. ``G/agent_runs.py`` ``request_task_archive``: a member may send the request. ``test_a_member_does_not_send_the_agents_request``.
+* M26 (G16). The approval row leaves ``manifest.py``. ``test_projects_chat_coverage.py::test_every_projects_route_is_mapped_or_excluded``.
+* M27 (G16). The approval row is class B. ``test_mcp_edge_coverage.py::test_the_archive_and_its_approval_stay_off_the_edge``.
+* M28. ``G/agent_runs.py`` ``request_task_archive``: no refusal of a stopping run. ``test_a_request_on_a_stopping_run_is_refused``.
+
+G15 is the UI. ``agentRuns.test.ts`` and ``e2e/agent-runs.spec.ts`` name their own mutations (U1 to U5, and P1 to P3 in the pull request).
 """
 from __future__ import annotations
 

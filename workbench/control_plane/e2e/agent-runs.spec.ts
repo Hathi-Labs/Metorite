@@ -22,6 +22,10 @@ import { openAllRows } from "./railOpen";
  * 6. EA-6g, the archive request: only the run's member sees Approve and
  *    Decline, and the decision goes to the approval route. Every other
  *    member reads "Waiting for <name>". An expired request offers nothing.
+ *    Mutations that turned these red: P1 `archiveMine = true` (the waiting
+ *    test), P2 the panel answers through the generic route (the approve
+ *    test), and P3 the generic card draws for a typed request (the waiting
+ *    test).
  *
  * Run it by name:
  *
