@@ -38,6 +38,12 @@ export type RowActions = {
   canSuspend: boolean;
   canRemove: boolean;
   /**
+   * The words on the Remove button. An invited person never signed in, so
+   * for them the act is to revoke the invite (owner request, 2026-10-15).
+   * The request is the same `DELETE /admin/members/{email}` for both.
+   */
+  removeLabel: "Remove" | "Revoke invite";
+  /**
    * Hard delete — `DELETE /admin/members/{email}/purge` (N8). Offered on
    * anybody else's row **including an already-removed one**: "remove, then
    * delete once you are sure" is the ordinary sequence, and a control that
@@ -65,6 +71,7 @@ export function rowActions(viewerEmail: string, member: Member): RowActions {
     canActivate: dormant,
     canSuspend: !self && !dormant && member.status !== "removed",
     canRemove: !self && member.status !== "removed",
+    removeLabel: member.status === "invited" ? "Revoke invite" : "Remove",
     canPurge: !self,
   };
 }

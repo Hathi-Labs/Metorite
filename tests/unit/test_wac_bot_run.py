@@ -162,10 +162,25 @@ class _Store:
         row.update(state="received", code=code)
         return True
 
+    async def hold(self, message_id: str) -> str | None:
+        """``bot_run._HOLD_SQL`` (WAC-13): wait again, give the try back, and
+        return the code it had."""
+        row = self.rows[message_id]
+        if row["state"] != "running":
+            return None
+        before = row.get("code") or ""
+        first = before != bot_run.UPDATING_CODE   # only it gives the try back
+        row.update(state="received", code=bot_run.UPDATING_CODE,
+                   tries=max(row["tries"] - 1, 0) if first else row["tries"])
+        return before
+
     async def waiting(self, sid: str) -> list[bot_run.RunRequest]:
+        # `_NEXT_SQL`: a message that waits for the AI path (WAC-13) is never
+        # one of them. Only the sweep runs it again.
         rows = sorted((r for r in self.rows.values()
                        if r["sid"] == sid and r["direction"] == "in"
-                       and r["state"] == "received" and r["tries"] < 3),
+                       and r["state"] == "received" and r["tries"] < 3
+                       and r.get("code") != bot_run.UPDATING_CODE),
                       key=lambda r: r["order"])
         return [bot_run.RunRequest(r["id"], r["org"], r["email"], r["wa_id"],
                                    r["wamid"], r["sid"]) for r in rows]
@@ -296,6 +311,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(bot_run, "_RUNS", set())
     monkeypatch.setattr(bot_run, "_LIVE_ROWS", set())
     monkeypatch.setattr(bot_run, "_retry", st.retry)
+    monkeypatch.setattr(bot_run, "_hold", st.hold)
     monkeypatch.setattr(bot_run, "_move", st.move)
     monkeypatch.setattr(bot_run, "_stored_reply", st.stored_reply)
     monkeypatch.setattr(bot_run, "_waiting", st.waiting)
@@ -1066,7 +1082,8 @@ class _Wrapped(Exception):
     (_status_error(402), CREDITS_TEXT, "credits"),
     (_Wrapped(_status_error(402)), CREDITS_TEXT, "credits"),
     (RuntimeError("boom"), FAILED_TEXT, "unknown"),
-    (_status_error(503), FAILED_TEXT, "connection"),
+    # WAC-13 (§16): a 503 holds the message for the AI path, and the member
+    # hears so. ``test_wac_updating.py`` holds that case.
 ])
 async def test_a_failed_run_sends_one_fixed_reply_and_ends_failed(
     world: _World, exc, text, code,
@@ -1082,6 +1099,9 @@ async def test_a_failed_run_sends_one_fixed_reply_and_ends_failed(
 async def test_a_run_past_its_time_limit_fails_with_the_general_text(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A long job meets the run's own limit with every part of Metorite up,
+    so it is no "updating" (WAC-13 review round 1). ``test_wac_updating``
+    holds the other case: the Router failed during the run."""
     monkeypatch.setattr(bot_run, "RUN_TIMEOUT_S", 0.05)
     world.agent.gate = asyncio.Event()   # never set
     await _post_and_run(_message())
@@ -1161,7 +1181,7 @@ async def test_the_sweep_does_nothing_with_the_switch_off(
 ) -> None:
     seen: list[str] = []
 
-    async def _sweep_org(org: str):
+    async def _sweep_org(org: str, **_kw: Any):
         seen.append(org)
         return []
 
@@ -1182,7 +1202,7 @@ async def test_the_sweep_binds_each_org_and_reruns_from_the_thread(
     row["stale"] = True
     seen: list[str] = []
 
-    async def _sweep_org(org: str):
+    async def _sweep_org(org: str, **_kw: Any):
         seen.append(org)
         if org != ORG_A:
             return []

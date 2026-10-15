@@ -849,7 +849,9 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "CP-2g's tenant-discovery read: `purge_tenant_organization` resolves "
         "slug→org_id against the RLS-EXEMPT `organization` table — unbound by "
         "design, the `resolve_identity` argument (it resolves WHICH tenant). "
-        "The destructive DELETE itself is bound via `tenant_session()`.",
+        "The destructive DELETE itself is bound via `tenant_session()`. "
+        "Since 2026-10-15 the read is `organization_id_for_slug`, and the "
+        "operator member door calls it too. It stays ONE open.",
     ),
     "packages/acb_auth/acb_auth/console_resolve.py": (
         6,

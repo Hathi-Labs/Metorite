@@ -295,7 +295,9 @@ async def search_messages(
             params["q"] = q
 
         join_sql = ""
-        order_sql = "m.sent_at DESC NULLS LAST"
+        # The id breaks a tie in both orders, so a bigger LIMIT begins with
+        # the smaller one (the chat pages by a bigger LIMIT).
+        order_sql = "m.sent_at DESC NULLS LAST, m.id DESC"
         if hybrid and q:
             qvec = None
             try:
@@ -313,7 +315,7 @@ async def search_messages(
                 order_sql = (
                     f"(LEAST(ts_rank_cd({_WA_FTS}, {tsquery}), 1.0) * 0.5"
                     " + COALESCE(1 - (e.embedding <=> CAST(:qvec AS vector)), 0)"
-                    " * 0.5) DESC, m.sent_at DESC NULLS LAST")
+                    " * 0.5) DESC, m.sent_at DESC NULLS LAST, m.id DESC")
 
         rows = (await db.execute(
             text(f"""SELECT {_COLUMNS}

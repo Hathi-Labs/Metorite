@@ -157,6 +157,22 @@ export interface AgentPromptBody {
   idempotency_key: string;
 }
 
+/**
+ * The body of `POST /projects/tasks/{task_id}/agent-runs` from a member
+ * (EA-12d): one of their own live connections, and the first `prompt`.
+ */
+export interface AgentStartBody {
+  connection_id: string;
+  body: string;
+  idempotency_key: string;
+}
+
+/** The answer of a start. `created` is false when an open run answered. */
+export interface AgentStartResult {
+  run: AgentRun;
+  created: boolean;
+}
+
 /* ── The wire readers ────────────────────────────────────────────────────── */
 
 /**
@@ -554,3 +570,12 @@ export function isWaitingOnMe(task: AgentRowFacts, me: string): boolean {
   if (task.agent_member_email?.trim().toLowerCase() === who) return true;
   return (task.assignees ?? []).some((a) => a.trim().toLowerCase() === who);
 }
+
+/**
+ * What an empty board column, or an empty list, says while "Waiting on me"
+ * is on. "Drop here" invited a drag into a lane that the filter emptied.
+ */
+export const WAITING_ON_ME_EMPTY = "Nothing waits on you";
+
+/** The hint under the list's empty state while the filter is on. */
+export const WAITING_ON_ME_HINT = "No agent waits for your answer on a task in this view.";

@@ -107,8 +107,11 @@ def _uuid(n: int) -> str:
 
 
 #: Every write tool, in the order of ``tools/list``: the two of EA-6a, then
-#: the two of EA-6d (``test_mcp_edge_task_writes.py``).
-WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task")
+#: the two of EA-6d (``test_mcp_edge_task_writes.py``), then ``add_comment``
+#: of EA-6c (``test_mcp_edge_comments.py``) and ``claim_task`` of EA-6b
+#: (``test_mcp_edge_claim.py``).
+WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
+                    "add_comment", "claim_task")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -346,8 +349,9 @@ class TestTheWriteToolsAtTheEdge:
     async def test_tools_list_shows_the_writes_only_with_projects_write(self, edge):
         r = await _post(_rpc("tools/list"))
         names = [t["name"] for t in r.json()["result"]["tools"]]
-        # EA-6d appends its two tools after the two of EA-6a.
-        assert names[-4:] == list(WRITE_TOOL_NAMES)
+        # EA-6d appends its two tools after the two of EA-6a, EA-6c one more,
+        # and EA-6b `claim_task`.
+        assert names[-len(WRITE_TOOL_NAMES):] == list(WRITE_TOOL_NAMES)
         edge.tokens[GOOD] = _lookup(scope="projects:read", scopes=("projects:read",))
         r = await _post(_rpc("tools/list"))
         names = [t["name"] for t in r.json()["result"]["tools"]]
@@ -413,12 +417,18 @@ class TestTheWriteToolsAtTheEdge:
         assert not agent_signing.verify(post.headers["x-agent-signature"], tampered,
                                         {agent_signing.key_id(KEY): KEY})
 
-    @pytest.mark.parametrize("status", [S_DONE, S_CANCELLED])
-    async def test_a_move_into_done_or_cancelled_is_refused_before_the_write(
-            self, edge, status):
-        assert _text(await _tool("set_task_status", _status_args(status))) == (
-            "Moving a task to done or cancelled stays a human step.")
+    async def test_a_move_into_cancelled_is_refused_before_the_write(self, edge):
+        """EA-6f (EA3-32): a cancel stays a human step."""
+        assert _text(await _tool("set_task_status", _status_args(S_CANCELLED))) == (
+            "Cancelling a task stays a human step.")
         assert edge.gateway.writes() == []
+
+    async def test_a_move_into_done_is_sent(self, edge):
+        """EA-6f (EA3-32): an agent may move a task to done."""
+        result = await _tool("set_task_status", _status_args(S_DONE))
+        assert result["isError"] is False, result
+        [patch] = edge.gateway.writes()
+        assert json.loads(patch.body) == {"status_id": S_DONE}
 
     async def test_a_status_outside_the_set_is_a_bad_request_before_the_write(self, edge):
         assert _text(await _tool("set_task_status", _status_args(_uuid(9999)))) == (
@@ -542,10 +552,18 @@ class TestTheWriteToolsAtTheEdge:
         edge.gateway.answers[route] = (403, {"detail": "something else"})
         assert _text(await _tool(name, args)) == "This member cannot change that."
 
-    def test_the_human_only_categories_mirror_the_gateway(self):
-        from gateway.routes.projects.core import CLOSING_CATEGORIES
+    def test_the_closing_categories_mirror_the_gateway(self):
+        """EA-6f. Each edge copy equals its gateway source, and the move
+        refusal is the abandoned half in both units."""
+        from gateway.routes.projects import tasks as gateway_tasks
+        from gateway.routes.projects import tree
+        from gateway.routes.projects.core import CLOSING_CATEGORIES, COMPLETED_CATEGORY
 
-        assert tools.HUMAN_ONLY_CATEGORIES == CLOSING_CATEGORIES
+        assert tools.CLOSING_CATEGORIES == CLOSING_CATEGORIES
+        assert tools.COMPLETED_CATEGORY == COMPLETED_CATEGORY
+        assert tools.AGENT_MOVE_REFUSED == gateway_tasks.AGENT_MOVE_REFUSED == (
+            tree.ABANDONED_CATEGORIES) == frozenset({"cancelled"})
+        assert gateway_tasks.AGENT_CREATE_REFUSED == CLOSING_CATEGORIES
 
     @pytest.mark.parametrize("row,key,plain", [
         ({"url": "https://github.com/Hathi-Labs/Metorite/pull/974"}, "url", True),
@@ -1011,11 +1029,14 @@ class TestTheGatewayHalf:
             "Changes are turned off for agents in this organization.")
 
     async def test_a_write_to_a_pair_outside_the_write_list_gets_401(self, live):
+        # EA-6c made the comment POST a pair, so this uses the hard delete of
+        # a task, a non-goal of spec §3 that never becomes a pair.
         task = live.task(live.team, live.s.todo, "pair")
-        path = f"/projects/tasks/{task}/comments"
-        body = json.dumps({"body": "hello"}).encode()
-        headers = _signed(live, "write", "POST", path, body=body)
-        assert (await _send(live, "POST", path, headers, body)).status_code == 401
+        path = f"/projects/tasks/{task}"
+        assert ("DELETE", "/projects/tasks/{task_id}") not in agent_oauth.MCP_WRITE_ROUTES
+        headers = _signed(live, "write", "DELETE", path)
+        assert (await _send(live, "DELETE", path, headers)).status_code == 401
+        assert _status_of(live, task) == live.s.todo, "the task is still there"
 
     async def test_the_121st_write_in_the_window_gets_429(self, live):
         """EA3-30. The counter holds 119 writes, so the 120th lands and the
@@ -1160,14 +1181,13 @@ class TestTheToolsOverMcp:
             " AND type = 'link'", t=task)
         assert link_via == "mcp:client.example"
 
-    @pytest.mark.parametrize("target", ["done", "cancelled"])
-    async def test_a_move_into_done_or_cancelled_stays_a_human_step(self, live, target):
-        task = live.task(live.team, live.s.todo, f"human {target}")
+    async def test_a_move_into_cancelled_stays_a_human_step(self, live):
+        """EA-6f (EA3-32). ``test_mcp_edge_claim.py`` holds the move to done."""
+        task = live.task(live.team, live.s.todo, "human cancelled")
         result = await _result(live, "write", "set_task_status", task_id=task,
-                               status_id=getattr(live.s, target),
+                               status_id=live.s.cancelled,
                                expected_version=await _version(live, task))
-        assert result["content"][0]["text"] == (
-            "Moving a task to done or cancelled stays a human step.")
+        assert result["content"][0]["text"] == "Cancelling a task stays a human step."
         assert _status_of(live, task) == live.s.todo
 
     async def test_a_link_the_classifier_refuses_names_the_url_input(self, live):

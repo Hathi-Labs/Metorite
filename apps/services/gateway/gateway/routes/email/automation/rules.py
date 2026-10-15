@@ -1457,7 +1457,7 @@ async def list_rule_patterns(
                    FROM email_rule_patterns p
                    LEFT JOIN email_rules r ON p.rule_id = r.id
                    WHERE p.account_id = :aid
-                   ORDER BY p.approved_at NULLS FIRST, p.created_at DESC"""
+                   ORDER BY p.approved_at NULLS FIRST, p.created_at DESC, p.id DESC"""
             ), {"aid": account_id})).fetchall()
         except Exception as e:  # noqa: BLE001 — table may not exist pre-migration
             _log.warning("email.list_rule_patterns_failed",

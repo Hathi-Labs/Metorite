@@ -6,9 +6,12 @@ other five read tools: ``whoami``, ``list_projects``, ``get_project``,
 ``get_task`` and ``get_task_timeline``. EA-6a adds the references to
 ``get_task`` and the first two write tools, ``set_task_status`` and
 ``add_task_reference`` (§9.2). EA-6d adds ``create_task`` and ``update_task``.
-Each write needs ``projects:write``, and branch 0 of the gateway checks the
-nonce, the scope, the writes flag and the cap. The ``idempotency_key`` of
-``create_task`` lives in ``agent_edge.idempotency``. EA-12b adds the six
+EA-6c adds ``add_comment``. EA-6b adds ``claim_task``, and EA-6f lets a move
+reach a done status. Each write needs ``projects:write``, and branch 0
+of the gateway checks the nonce, the scope, the writes flag and the cap. The
+``idempotency_key`` of ``create_task`` and of ``add_comment`` lives in
+``agent_edge.idempotency``, and :func:`_claim_slot` and :func:`_keyed_write` hold
+the rules of its slot for both tools. EA-12b adds the six
 agent-run tools of §12.1 and ``agent_runs`` in ``get_task``. They show only
 while ``agent_runs_enabled`` is on.
 
@@ -49,7 +52,8 @@ gives the same member the same access, so the client would loop.
 for ``agent_runs`` while the runs flag is on (EA-12b). ``get_project`` makes
 five. ``create_task`` makes three: the statuses, the POST and the re-read. It
 makes one more for a parent and one more for a ``type_id``. ``update_task``
-makes three: the PATCH, the re-read and the statuses. The other tools make one
+makes three: the PATCH, the re-read and the statuses. ``claim_task`` makes
+three: the POST, the re-read and the statuses. The other tools make one
 or two. The long poll of ``get_agent_run`` is the one exception (EA-12b,
 §12.1): its request has ``wait_seconds`` plus
 :data:`LONG_POLL_REQUEST_MARGIN_S`, and its call has ``wait_seconds`` plus
@@ -127,7 +131,10 @@ TEXT_BAD_CURSOR = "The cursor is not valid. List again with no cursor."
 TEXT_WRITE_FORBIDDEN = "This member cannot change that."
 TEXT_STALE = "The task changed. Read it again."
 TEXT_CAP = "Too many changes. Wait a few minutes."
-TEXT_HUMAN_STEP = "Moving a task to done or cancelled stays a human step."
+#: EA-6f (EA3-32). An agent may move a task to done. A cancel stays a human
+#: step, and a new task may not start closed.
+TEXT_CANCEL_STEP = "Cancelling a task stays a human step."
+TEXT_CREATE_CLOSED = "A new task cannot start in a done or cancelled status."
 #: A write while ``agent_access_writes_enabled`` is off (fix round 1). It is a
 #: tool error and never the MCP 401, so the client keeps its token.
 TEXT_WRITES_OFF = "Changes are turned off for agents in this organization."
@@ -151,6 +158,33 @@ TEXT_KEY_RUNNING = (
 TEXT_KEY_UNKNOWN = (
     "A call with this idempotency_key got no answer, so Metorite cannot tell if"
     " it made the task. Look for the task with list_tasks before you use a new key.")
+
+#: ``add_comment`` only (EA-6c, §9.2). The key texts name a comment, not a
+#: task. The four ``parent_id`` refusals of ``activities._parent_comment``
+#: each have their own text.
+TEXT_COMMENT_KEY_REUSED = (
+    "This idempotency_key was used for a different comment. Send a new key.")
+TEXT_COMMENT_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it added the comment. Read the comments with get_task_timeline before you"
+    " use a new key.")
+TEXT_COMMENT_BLANK = "The input 'body' holds no text."
+
+
+def text_nul(name: str) -> str:
+    """The fixed text of a NUL character in the input *name* (EA-6c fix
+    round 1). Postgres refuses a NUL in text, so the route would answer 500."""
+    return f"The input {name!r} holds a character that Metorite cannot store."
+
+
+TEXT_COMMENT_NUL = text_nul("body")
+TEXT_PARENT_COMMENT_NOT_FOUND = "Parent comment not found."
+TEXT_PARENT_COMMENT_OTHER_TASK = (
+    "The parent comment is on another task. Reply on the task of that comment.")
+TEXT_PARENT_NOT_A_COMMENT = (
+    "The parent_id is not a comment. Reply only to a comment.")
+TEXT_PARENT_TOO_DEEP = (
+    "Replies go one level deep. Send the parent_id of the first comment of the thread.")
 
 #: The fixed texts of the agent-run tools (EA-12b, §12.1).
 TEXT_RUN_NOT_FOUND = "Agent run not found."
@@ -192,11 +226,16 @@ WRITE_ANNOTATIONS: Mapping[str, bool] = {
 #: idempotent.
 CREATE_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "idempotentHint": False}
 
-#: The status categories that only a person moves a task into (§9.2). A copy
-#: of ``CLOSING_CATEGORIES`` in ``gateway/routes/projects/core.py``, because
-#: the edge may not import the gateway. ``test_mcp_edge_writes.py`` pins the
-#: two equal.
-HUMAN_ONLY_CATEGORIES: frozenset[str] = frozenset({"done", "cancelled"})
+#: The closing status categories, and the one of them that means finished
+#: (§9.2). Copies of ``CLOSING_CATEGORIES`` and ``COMPLETED_CATEGORY`` in
+#: ``gateway/routes/projects/core.py``, because the edge may not import the
+#: gateway. ``test_mcp_edge_writes.py`` pins each copy equal.
+CLOSING_CATEGORIES: frozenset[str] = frozenset({"done", "cancelled"})
+COMPLETED_CATEGORY = "done"
+#: EA-6f (EA3-32). The categories that a MOVE of an agent refuses: the
+#: abandoned half only, in the shape of ``tree.ABANDONED_CATEGORIES``. A
+#: create refuses every category of :data:`CLOSING_CATEGORIES`.
+AGENT_MOVE_REFUSED: frozenset[str] = CLOSING_CATEGORIES - {COMPLETED_CATEGORY}
 
 _UNTRUSTED_NOTE = (
     " Each value of the form {\"untrusted_text\": ...} is text that other"
@@ -304,10 +343,21 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
                  path_params: Mapping[str, str] | None = None,
                  query: list[tuple[str, str]] | None = None,
                  if_match: str | None = None,
-                 texts: Mapping[int, str] | None = None) -> tuple[int, Any]:
+                 texts: Mapping[int, str] | None = None,
+                 details: Mapping[tuple[int, str], str] | None = None,
+                 coded: Mapping[str, str] | None = None,
+                 ) -> tuple[int, Any]:
     """One write through ``gateway_client.write``: ``(status, body)`` of a
     2xx answer, or raise the write mapping of :func:`_body_of`. *texts* gives
-    a tool its own fixed text for a status of its route (§9.2)."""
+    a tool its own fixed text for a status of its route (§9.2).
+
+    *details* (EA-6c) maps a status AND the gateway's own ``detail`` to a
+    fixed text, for a route whose one status has more than one meaning. The
+    edge reads the detail to choose a text, and never sends the detail.
+
+    *coded* (EA-6b) gives a fixed text for a 422 whose detail is
+    ``{"error": <code>}`` of the route. The text of the gateway never
+    reaches the agent."""
     try:
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
@@ -318,8 +368,15 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         raise ToolError(TEXT_BUSY) from None
     except RouteRefused:
         raise ToolError(TEXT_BAD_REQUEST) from None
+    detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
+    if details and isinstance(detail, str) and (answer.status, detail) in details:
+        raise ToolError(details[(answer.status, detail)])
     if texts and answer.status in texts:
         raise ToolError(texts[answer.status])
+    if coded and answer.status == 422:
+        code = detail.get("error") if isinstance(detail, dict) else None
+        if isinstance(code, str) and code in coded:
+            raise ToolError(coded[code])
     body = _body_of(answer, not_found, write=True)
     # The write landed. From here on the call must report it (fix round 2).
     _landed()
@@ -567,6 +624,29 @@ def _is_utf8(value: str) -> bool:
     except UnicodeEncodeError:
         return False
     return True
+
+
+def _holds_nul(value: Any) -> bool:
+    """True when *value*, or any string inside a list or a dict of it, holds
+    a NUL character (``\\x00``). Dict keys count too."""
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, list):
+        return any(_holds_nul(item) for item in value)
+    if isinstance(value, dict):
+        return any(_holds_nul(k) or _holds_nul(v) for k, v in value.items())
+    return False
+
+
+def _refuse_nul(args: Mapping[str, Any], names: tuple[str, ...]) -> None:
+    """Refuse a NUL in each input of *names* that the call sent (EA-6c fix
+    round 1). Postgres refuses a NUL in text, so the route answers 500, the
+    edge says busy, and a keyed write marks its slot ``unknown`` although no
+    row exists. Each write tool calls this FIRST, before any claim and any
+    request."""
+    for name in names:
+        if name in args and _holds_nul(args[name]):
+            raise ToolError(text_nul(name))
 
 
 def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
@@ -2134,8 +2214,8 @@ _SET_STATUS_OUTPUT: dict[str, Any] = _object({
 async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """Read the task and the categories of its statuses, then PATCH the status.
 
-    The edge refuses a move into a category of :data:`HUMAN_ONLY_CATEGORIES`
-    before the write. When the member cannot open the task's project, the
+    The edge refuses a move into a category of :data:`AGENT_MOVE_REFUSED`
+    before the write (EA-6f: a move into done passes). When the member cannot open the task's project, the
     edge cannot read the category, so it refuses too (§9.2).
     """
     where = {"task_id": str(args["task_id"])}
@@ -2154,8 +2234,8 @@ async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
     target = statuses.get(str(args["status_id"]).lower())
     if target is None:
         raise ToolError(TEXT_BAD_REQUEST)
-    if target.get("category") in HUMAN_ONLY_CATEGORIES:
-        raise ToolError(TEXT_HUMAN_STEP)
+    if target.get("category") in AGENT_MOVE_REFUSED:
+        raise ToolError(TEXT_CANCEL_STEP)
     _, after = await _write(
         ctx, "PATCH", TASK_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
         json_body={"status_id": str(target.get("id"))},
@@ -2182,9 +2262,10 @@ SET_TASK_STATUS = Tool(
         "Move one task this member can see to another status of its project."
         " Send the version that get_task returned as expected_version. When the"
         " task changed after that read, the tool refuses, and you read the task"
-        " again. A move into a done or cancelled status stays a human step, so"
-        " the tool refuses it. Returns the task id, its status and its new"
-        " version." + _UNTRUSTED_NOTE
+        " again. Move the task to a done status when the work is finished. A"
+        " move into a cancelled status stays a human step, so the tool refuses"
+        " it. A move to done does not close the subtasks. Returns the task id,"
+        " its status and its new version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_SET_STATUS_INPUT,
@@ -2204,6 +2285,9 @@ SET_TASK_STATUS = Tool(
 
 #: The keys of the result of ``add_task_reference`` (§9.2).
 ADD_REF_KEYS: tuple[str, ...] = (*REF_KEYS, "created")
+
+#: The body keys of ``add_task_reference``. The NUL check reads them.
+ADD_REF_BODY_KEYS: tuple[str, ...] = ("url", "title")
 
 _ADD_REF_INPUT: dict[str, Any] = {
     "type": "object",
@@ -2231,6 +2315,7 @@ async def _add_task_reference(ctx: Context, args: dict[str, Any]) -> dict[str, A
     A new row answers 201 and a row that already holds the link answers 200,
     so ``created`` tells the two apart.
     """
+    _refuse_nul(args, ADD_REF_BODY_KEYS)
     payload: dict[str, Any] = {"url": str(args["url"])}
     if "title" in args:
         payload["title"] = str(args["title"])
@@ -2330,7 +2415,8 @@ _CREATE_INPUT: dict[str, Any] = {
         "status_id": {
             "type": "string", "pattern": _UUID_PATTERN,
             "description": "A status id from get_project. Leave it out to use the"
-                           " default status. A done or cancelled status is refused."},
+                           " default status. A new task cannot start in a done or"
+                           " cancelled status."},
         "tags": {**_TAGS_INPUT,
                  "description": "Tag names. get_project lists the tags of the project."
                                 " A new name adds a new tag."},
@@ -2437,8 +2523,8 @@ async def _create(ctx: Context, args: dict[str, Any],
         target = statuses.get(str(args["status_id"]).lower())
         if target is None:
             raise ToolError(TEXT_BAD_REQUEST)
-        if target.get("category") in HUMAN_ONLY_CATEGORIES:
-            raise ToolError(TEXT_HUMAN_STEP)
+        if target.get("category") in CLOSING_CATEGORIES:
+            raise ToolError(TEXT_CREATE_CLOSED)
     if "parent_task_id" in args:
         parent = await _get(ctx, TASK_ROUTE, TEXT_PARENT_NOT_FOUND,
                             path_params={"task_id": str(args["parent_task_id"])})
@@ -2507,56 +2593,79 @@ async def _reread(ctx: Context, written: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-async def _first_result(ctx: Context, earlier: idempotency.Record,
-                        fingerprint: str) -> dict[str, Any]:
-    """The answer to a call whose key an earlier call holds.
+@dataclass(frozen=True)
+class _KeyTexts:
+    """The texts of a reused key and of an ``unknown`` slot, for one tool.
+    The running text is the same for every tool."""
 
-    The state comes first (fix round 1): an ``unknown`` slot, and a slot that
-    the edge cannot read, always give the unknown text, whatever the inputs.
+    reused: str
+    unknown: str
+
+
+_TASK_KEY_TEXTS = _KeyTexts(reused=TEXT_KEY_REUSED, unknown=TEXT_KEY_UNKNOWN)
+_COMMENT_KEY_TEXTS = _KeyTexts(reused=TEXT_COMMENT_KEY_REUSED,
+                               unknown=TEXT_COMMENT_KEY_UNKNOWN)
+
+
+@dataclass(frozen=True)
+class _ClaimSlot:
+    """A claimed slot (``earlier`` is ``None``), or the result id that an
+    earlier call with the same key and the same inputs made."""
+
+    slot: idempotency.Slot
+    fingerprint: str
+    earlier: str | None
+
+
+async def _claim_slot(ctx: Context, tool: str, key: str, args: Mapping[str, Any],
+                      texts: _KeyTexts) -> _ClaimSlot:
+    """Claim the slot of *key* for *tool* (``agent_edge.idempotency``).
+
+    Returns the claim, or the result id of an earlier call with the same key
+    and the same inputs. Every other state raises a text of the tool. The
+    state comes first (EA-6d fix round 1): an ``unknown`` slot, and a slot
+    that the edge cannot read, always give the unknown text, whatever the
+    inputs. A store outage gives the busy text, and no write goes out.
     """
-    if earlier.state == idempotency.UNKNOWN or (
-            earlier.state == idempotency.DONE and _id(earlier.task_id) is None):
-        raise ToolError(TEXT_KEY_UNKNOWN)
-    if earlier.fingerprint != fingerprint:
-        raise ToolError(TEXT_KEY_REUSED)
-    if earlier.state == idempotency.PENDING:
-        raise ToolError(TEXT_KEY_RUNNING)
-    row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
-                     path_params={"task_id": str(earlier.task_id)})
-    if not isinstance(row, dict):
-        raise ToolError(TEXT_BUSY)
-    names = await _names_after_write(ctx, row.get("project_id"))
-    return {"task": _task(row, names), "created": False}
-
-
-async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    """``create_task``: one POST, and with a key at most one task per key.
-
-    With an ``idempotency_key`` the call first claims its slot
-    (``agent_edge.idempotency``). A refusal before any row existed releases
-    the slot. A POST with no clear answer marks it ``unknown``, so a retry
-    does not make a second task by accident.
-    """
-    key = args.get("idempotency_key")
-    sent = _Sent()
-    if key is None:
-        return await _created(ctx, *await _create(ctx, args, sent))
     fingerprint = idempotency.fingerprint(
         {k: v for k, v in args.items() if k != "idempotency_key"})
-    slot = idempotency.Slot(ctx.caller.lookup, str(key))
+    slot = idempotency.Slot(ctx.caller.lookup, key, tool=tool)
     try:
         earlier = await slot.claim(fingerprint)
     except idempotency.StoreUnavailable:
         raise ToolError(TEXT_BUSY) from None
-    if earlier is not None:
-        return await _first_result(ctx, earlier, fingerprint)
+    if earlier is None:
+        return _ClaimSlot(slot, fingerprint, None)
+    if earlier.state == idempotency.UNKNOWN or (
+            earlier.state == idempotency.DONE and _id(earlier.result_id) is None):
+        raise ToolError(texts.unknown)
+    if earlier.fingerprint != fingerprint:
+        raise ToolError(texts.reused)
+    if earlier.state == idempotency.PENDING:
+        raise ToolError(TEXT_KEY_RUNNING)
+    return _ClaimSlot(slot, fingerprint, str(earlier.result_id))
+
+
+async def _keyed_write[T](claim: _ClaimSlot, sent: _Sent,
+                          write: Callable[[], Awaitable[T]],
+                          result_id: Callable[[T], str]) -> T:
+    """Run *write* under a claimed slot, and record its result first.
+
+    The rules of the slot (EA-6d), the same for each tool that takes a key:
+
+    * A refusal before any row existed frees the slot: a refusal of the edge,
+      a 4xx of the gateway, a 401, and a POST whose connection failed before
+      any byte went out (``_NotSent``, fix round 1).
+    * A busy text after the POST went out, or an end of the call after it,
+      marks the slot ``unknown``, because the gateway may have made the row.
+    * A write that landed is recorded (``done``) BEFORE the caller reads
+      anything (fix round 2). So a read after it can never turn the slot
+      ``unknown``.
+    """
+    slot, fingerprint = claim.slot, claim.fingerprint
     try:
-        row, statuses = await _create(ctx, args, sent)
+        written = await write()
     except ToolError as exc:
-        # A busy text after the POST went out: the gateway may have made the
-        # task. Any other text is a clear refusal, and no row exists. A POST
-        # whose connection failed before any byte went out (`_NotSent`) made
-        # nothing either (fix round 1).
         if sent.post and exc.text == TEXT_BUSY and not isinstance(exc, _NotSent):
             await slot.mark_unknown(fingerprint)
         else:
@@ -2572,10 +2681,38 @@ async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         else:
             await slot.release()
         raise
-    # Fix round 2: record the write FIRST, outside the `try`, and only then
-    # read anything. A read after this point can never turn the slot
-    # `unknown`.
-    await slot.finish(fingerprint, str(row["id"]))
+    await slot.finish(fingerprint, result_id(written))
+    return written
+
+
+async def _first_result(ctx: Context, task_id: str) -> dict[str, Any]:
+    """The answer to a ``create_task`` call whose key made a task before: the
+    task as it is now, with ``created: false``."""
+    row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+                     path_params={"task_id": task_id})
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    names = await _names_after_write(ctx, row.get("project_id"))
+    return {"task": _task(row, names), "created": False}
+
+
+async def _create_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``create_task``: one POST, and with a key at most one task per key.
+
+    With an ``idempotency_key`` the call first claims its slot
+    (:func:`_claim_slot`). :func:`_keyed_write` holds the rules of the slot. A
+    NUL in a body input is refused first, before the claim (fix round 1).
+    """
+    _refuse_nul(args, CREATE_BODY_KEYS)
+    key = args.get("idempotency_key")
+    sent = _Sent()
+    if key is None:
+        return await _created(ctx, *await _create(ctx, args, sent))
+    claim = await _claim_slot(ctx, "create_task", str(key), args, _TASK_KEY_TEXTS)
+    if claim.earlier is not None:
+        return await _first_result(ctx, claim.earlier)
+    row, statuses = await _keyed_write(
+        claim, sent, lambda: _create(ctx, args, sent), lambda done: str(done[0]["id"]))
     return await _created(ctx, row, statuses)
 
 
@@ -2588,8 +2725,8 @@ CREATE_TASK = Tool(
         " project_id. Call get_project first: it gives the status ids, the task"
         " type ids and the tag names of the project. Send parent_task_id to"
         " make a subtask of a task in the same project. Leave status_id out to"
-        " use the default status. A done or cancelled status stays a human"
-        " step, so the tool refuses it. The new task has no assignee. Send an"
+        " use the default status. A new task cannot start in a done or"
+        " cancelled status. The new task has no assignee. Send an"
         " idempotency_key when you may retry: the same key gives back the first"
         " task with created false, and makes no second task. Returns the task"
         " with its version." + _UNTRUSTED_NOTE
@@ -2623,8 +2760,10 @@ async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 
     The body holds only the keys of :data:`UPDATE_BODY_KEYS` that the call
     sent. It never holds a status, a project, a parent, an assignee or an
-    archive key, and the PATCH has no query.
+    archive key, and the PATCH has no query. A NUL in a field, also in a
+    string value of ``custom_fields``, is refused first (EA-6c fix round 1).
     """
+    _refuse_nul(args, UPDATE_BODY_KEYS)
     payload = {name: args[name] for name in UPDATE_BODY_KEYS if name in args}
     if not payload:
         raise ToolError(TEXT_UPDATE_EMPTY)
@@ -2672,6 +2811,255 @@ UPDATE_TASK = Tool(
     run=_update_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE),
     method="PATCH",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
+# ── add_comment (EA-6c, §9.2) ───────────────────────────────────────────────
+
+COMMENTS_ROUTE = "/projects/tasks/{task_id}/comments"
+
+#: The cap of a comment body, in characters (EA3-35). The edge refuses a
+#: longer body before any request. The gateway refuses a longer body of a
+#: signed agent request too (``activities.AGENT_MAX_COMMENT_CHARS``), and
+#: ``test_mcp_edge_comments.py`` pins the two equal.
+MAX_COMMENT_CHARS = 20_000
+
+#: The keys of the result of ``add_comment`` (§9.2). A replay returns only
+#: ``id``, ``task_id`` and ``created``, because no route reads one comment by
+#: its id. The route's ``not_notified`` never reaches an agent: it names the
+#: people who cannot see the task.
+COMMENT_KEYS: tuple[str, ...] = (
+    "id", "task_id", "parent_id", "body", "created_by", "created_at", "created",
+)
+COMMENT_REPLAY_KEYS: tuple[str, ...] = ("id", "task_id", "created")
+
+#: The body keys of the POST, in a fixed order (edge rule 18).
+COMMENT_BODY_KEYS: tuple[str, ...] = ("body", "parent_id")
+
+#: The ``parent_id`` refusals of ``activities._parent_comment``, by the
+#: status and the gateway's own ``detail``. A copy, because the edge may not
+#: import the gateway. The R8 tests of ``test_mcp_edge_comments.py`` send each
+#: refusal through the real route, so a changed detail fails them.
+_PARENT_DETAILS: Mapping[tuple[int, str], str] = {
+    (404, "Comment not found"): TEXT_PARENT_COMMENT_NOT_FOUND,
+    (422, "A reply must be on the same task as the comment it answers."):
+        TEXT_PARENT_COMMENT_OTHER_TASK,
+    (422, "You can only reply to a comment."): TEXT_PARENT_NOT_A_COMMENT,
+    (422, "Replies go one level deep. Reply to the first comment instead."):
+        TEXT_PARENT_TOO_DEEP,
+}
+
+_COMMENT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks, search_tasks or"
+                                   " get_task."},
+        "body": {"type": "string", "minLength": 1, "maxLength": MAX_COMMENT_CHARS,
+                 "description": "The comment, in Markdown, at most 20000 characters."
+                                " Keep a progress note short."},
+        "parent_id": {"type": "string", "pattern": _UUID_PATTERN,
+                      "description": "Makes the comment a reply. The id of a top-level"
+                                     " comment of the same task, from"
+                                     " get_task_timeline."},
+        "idempotency_key": {
+            "type": "string", "pattern": idempotency.KEY_PATTERN,
+            "description": "8 to 128 letters, digits and . _ : -. Use a new key for"
+                           " each comment. The same key again gives back the first"
+                           " comment and adds no second one. Metorite keeps a key"
+                           " for 24 hours."},
+    },
+    "required": ["task_id", "body", "idempotency_key"],
+    "additionalProperties": False,
+}
+
+_COMMENT_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"}, "task_id": {"type": "string"},
+        "parent_id": _NULLABLE_STRING, "body": _UNTRUSTED_OR_NULL,
+        "created_by": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+        "created": {"type": "boolean"},
+    },
+    "required": list(COMMENT_REPLAY_KEYS),
+    "additionalProperties": False,
+}
+
+
+def comment(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The pinned keys of a new comment (§9.2), and no other. The body is
+    (U). ``created_by`` is the member's own address."""
+    return {
+        "id": str(row.get("id")),
+        "task_id": str(row.get("task_id")),
+        "parent_id": _str_or_none(row.get("parent_id")),
+        "body": untrusted(row.get("body")),
+        "created_by": _str_or_none(row.get("created_by")),
+        "created_at": _str_or_none(row.get("created_at")),
+        "created": True,
+    }
+
+
+async def _post_comment(ctx: Context, task_id: str, args: Mapping[str, Any],
+                        sent: _Sent) -> dict[str, Any]:
+    """POST the comment, and return the gateway's row. A hidden task is
+    ``Task not found.``, and each ``parent_id`` refusal has its own text."""
+    payload = {name: str(args[name]) for name in COMMENT_BODY_KEYS if name in args}
+    sent.post = True
+    _, row = await _write(ctx, "POST", COMMENTS_ROUTE, TEXT_TASK_NOT_FOUND,
+                          path_params={"task_id": task_id}, json_body=payload,
+                          details=_PARENT_DETAILS)
+    if not isinstance(row, dict) or _id(row.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    return row
+
+
+async def _add_comment(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``add_comment``: one POST, and at most one comment per key (EA-6c).
+
+    The edge checks the body before it claims the slot. A replay returns the
+    first comment's id with no read, because no route reads one comment.
+    """
+    body = str(args["body"])
+    if not body.strip():
+        raise ToolError(TEXT_COMMENT_BLANK)
+    # Postgres refuses a NUL in text. Without this check the route answers
+    # 500, and the slot goes `unknown` for a write that never happened.
+    _refuse_nul(args, COMMENT_BODY_KEYS)
+    task_id = str(args["task_id"])
+    claim = await _claim_slot(ctx, "add_comment", str(args["idempotency_key"]), args,
+                         _COMMENT_KEY_TEXTS)
+    if claim.earlier is not None:
+        return {"id": claim.earlier, "task_id": task_id, "created": False}
+    sent = _Sent()
+    row = await _keyed_write(claim, sent, lambda: _post_comment(ctx, task_id, args, sent),
+                             lambda done: str(done["id"]))
+    return comment(row)
+
+
+ADD_COMMENT = Tool(
+    name="add_comment",
+    title="Add a comment",
+    description=(
+        "Add one comment to a task this member can see. The comment shows"
+        " the member as its author, and the timeline names your client. Use it"
+        " to post short progress notes while you work on a task with no agent"
+        " run: what you did, what you found and what comes next. Keep each"
+        " note short. Use add_task_reference for a pull request, a commit or a"
+        " branch, not a comment. When you hold an open agent run on the task,"
+        " use post_agent_activity instead: a thought for a progress line, and"
+        " a response for a result that people must read. Every comment"
+        " notifies the watchers and the assignees of the task in Metorite. An"
+        " @ followed by the address of a member who can see the task notifies"
+        " that member too. These notifications go to the bell in Metorite, not"
+        " by email. Each comment also emits the event pm.task.comment_added. A"
+        " published workflow of the organization can start on it, and that"
+        " workflow can call an integration or a web address, as it can for a"
+        " comment that the member writes. Send parent_id to reply to a top-level"
+        " comment. Replies go"
+        " one level deep. Send a new idempotency_key for each comment. The same"
+        " key again returns the first comment with created false, and adds no"
+        " second one. Returns the comment with its id." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_COMMENT_INPUT,
+    output_schema=_COMMENT_OUTPUT,
+    route=COMMENTS_ROUTE,
+    params={"task_id": "task_id", "body": "body", "parent_id": "parent_id"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_add_comment,
+    routes=(),
+    method="POST",
+    edge_inputs=frozenset({"idempotency_key"}),
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
+# ── claim_task (EA-6b, §9.2, EA3-34) ────────────────────────────────────────
+
+CLAIM_ROUTE = "/projects/tasks/{task_id}/claim"
+
+#: The fixed text of each refused claim, by the code of the gateway's 422
+#: (``tasks.CLAIM_REFUSALS``). The edge never shows the gateway's message. A
+#: 422 with any other detail is the bad-request text. ``test_mcp_edge_claim``
+#: pins the two sets of codes equal.
+CLAIM_TEXTS: Mapping[str, str] = {
+    "claim_closed": "This task is done or cancelled, so it cannot be claimed.",
+    "claim_triage": (
+        "This task waits in triage. A person must accept it before you claim it."),
+    "claim_archived": "This task is archived, so it cannot be claimed.",
+    "claim_no_started_status": (
+        "The project of this task has no in progress status. Ask a person to add one."),
+}
+
+_CLAIM_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks or get_task."},
+        "expected_version": {
+            "type": "string", "pattern": _VERSION_PATTERN,
+            "description": "The version that get_task returned for this task."},
+    },
+    "required": ["task_id", "expected_version"],
+    "additionalProperties": False,
+}
+
+_CLAIM_OUTPUT: dict[str, Any] = _object({
+    "task": _TASK_SCHEMA, "moved": {"type": "boolean"},
+})
+
+
+async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST the claim with ``If-Match`` and no body field (§9.2).
+
+    The gateway adds the member, keeps every other assignee, and moves a
+    ``backlog`` or ``todo`` task to the first ``in_progress`` lane of its own
+    status set, in one transaction. Then the edge reads the task again, as
+    ``update_task`` does, so the version works as the next
+    ``expected_version``. A failed re-read gives the claim's own answer.
+
+    It needs no ``_refuse_nul`` (EA-6c): both inputs must match a pattern of
+    the input schema, a UUID and a version, so no control character passes.
+    """
+    _, after = await _write(
+        ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])}, json_body={},
+        if_match=str(args["expected_version"]), coded=CLAIM_TEXTS)
+    if not isinstance(after, dict) or _id(after.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    written: dict[str, Any] = after
+    current = await _after_write(lambda: _reread(ctx, written), written)
+    no_names: dict[str, str] = {}
+    names = await _after_write(
+        lambda: _names_after_write(ctx, current.get("project_id")), no_names)
+    return {"task": _task(current, names), "moved": written.get("moved") is True}
+
+
+CLAIM_TASK = Tool(
+    name="claim_task",
+    title="Claim a task",
+    description=(
+        "Take one task this member can see. Call it first, when you start work"
+        " on the task. The member becomes an assignee, and the other assignees"
+        " stay. A task in a backlog or to do status moves to the first in"
+        " progress status of its project, and moved is true. A task that is"
+        " already in progress does not move. A done, cancelled, archived or"
+        " triage task is refused. Send the version that get_task returned as"
+        " expected_version. When the task changed after that read, the tool"
+        " refuses, and you read the task again. A second claim changes"
+        " nothing. Returns the task with its new version." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_CLAIM_INPUT,
+    output_schema=_CLAIM_OUTPUT,
+    route=CLAIM_ROUTE,
+    params={"task_id": "task_id", "expected_version": "If-Match"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_claim_task,
+    routes=(TASK_ROUTE, STATUSES_ROUTE),
+    method="POST",
     annotations=dict(WRITE_ANNOTATIONS),
 )
 
@@ -3185,11 +3573,13 @@ FINISH_AGENT_RUN = Tool(
 # ── The registry ────────────────────────────────────────────────────────────
 
 #: Every tool of the edge, by name, in the order of ``tools/list``. The write
-#: tools come after the reads: the two of EA-6a, then the two of EA-6d. The
-#: six agent-run tools of EA-12b come last.
+#: tools come after the reads: the two of EA-6a, then the two of EA-6d, then
+#: ``add_comment`` of EA-6c and ``claim_task`` of EA-6b. The six agent-run
+#: tools of EA-12b come last.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
+    ADD_COMMENT, CLAIM_TASK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN,
 )}
@@ -3252,12 +3642,22 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "ADD_COMMENT",
+    "ADD_REF_BODY_KEYS",
     "ADD_REF_KEYS",
     "ADD_TASK_REFERENCE",
     "AGENT_ACTIVITY_TYPES",
+    "AGENT_MOVE_REFUSED",
     "ASK_ON_TASK",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
+    "CLAIM_TASK",
+    "CLAIM_TEXTS",
+    "CLOSING_CATEGORIES",
+    "COMMENT_BODY_KEYS",
+    "COMMENT_KEYS",
+    "COMMENT_REPLAY_KEYS",
+    "COMPLETED_CATEGORY",
     "CREATE_ANNOTATIONS",
     "CREATE_BODY_KEYS",
     "CREATE_TASK",
@@ -3268,7 +3668,6 @@ __all__ = [
     "GET_TASK",
     "GET_TASK_KEYS",
     "GET_TASK_TIMELINE",
-    "HUMAN_ONLY_CATEGORIES",
     "LINK_KEYS",
     "LIST_AGENT_RUNS",
     "LIST_PROJECTS",
@@ -3276,6 +3675,7 @@ __all__ = [
     "LIST_TASK_KEYS",
     "LONG_POLL_REQUEST_MARGIN_S",
     "LONG_POLL_TOOL_MARGIN_S",
+    "MAX_COMMENT_CHARS",
     "MAX_STATUS_READS",
     "MAX_WAIT_SECONDS",
     "OPEN_RUN_STATUSES",
@@ -3298,15 +3698,24 @@ __all__ = [
     "TEXT_BAD_CURSOR",
     "TEXT_BAD_REQUEST",
     "TEXT_BUSY",
+    "TEXT_CANCEL_STEP",
     "TEXT_CAP",
+    "TEXT_COMMENT_BLANK",
+    "TEXT_COMMENT_KEY_REUSED",
+    "TEXT_COMMENT_KEY_UNKNOWN",
+    "TEXT_COMMENT_NUL",
+    "TEXT_CREATE_CLOSED",
     "TEXT_FORBIDDEN",
-    "TEXT_HUMAN_STEP",
     "TEXT_KEY_REUSED",
     "TEXT_KEY_RUNNING",
     "TEXT_KEY_UNKNOWN",
     "TEXT_KEY_USED",
+    "TEXT_PARENT_COMMENT_NOT_FOUND",
+    "TEXT_PARENT_COMMENT_OTHER_TASK",
+    "TEXT_PARENT_NOT_A_COMMENT",
     "TEXT_PARENT_NOT_FOUND",
     "TEXT_PARENT_OTHER_PROJECT",
+    "TEXT_PARENT_TOO_DEEP",
     "TEXT_PROJECT_NOT_FOUND",
     "TEXT_QUESTION_WAITS",
     "TEXT_REF_BAD_URL",
@@ -3337,11 +3746,13 @@ __all__ = [
     "call",
     "call_timeout",
     "check_input",
+    "comment",
     "field_value",
     "listed",
     "offered",
     "reference",
     "run_activity",
+    "text_nul",
     "timeline_meta",
     "untrusted",
 ]

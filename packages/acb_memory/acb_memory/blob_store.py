@@ -37,6 +37,7 @@ import asyncio
 import hashlib
 from pathlib import Path
 from dataclasses import dataclass
+from typing import Any
 
 from acb_common import get_logger
 
@@ -79,6 +80,9 @@ class BlobMeta:
     sha256: str
     size: int
     mime_type: str
+    #: The registry row of this write (WS-60 AM-1), when the flag is on and
+    #: the caller passed a provenance. ``None`` otherwise.
+    artifact_id: str | None = None
 
 
 def _caller_tenant(organization_id: str | None) -> str | None:
@@ -117,6 +121,7 @@ def _sync_put(
     actor: str,
     instance: str = "",
     organization_id: str | None = None,
+    provenance: Any = None,
 ) -> BlobMeta | None:
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -156,8 +161,18 @@ def _sync_put(
              "sz": size, "m": mime_type, "act": action, "rid": run_id,
              "sid": session_id, "actor": actor},
         )
+        # WS-60 AM-1: the registry row, in the same transaction, in a
+        # savepoint. The one writer of `artifacts` is acb_memory.artifacts.
+        artifact_id = None
+        if provenance is not None:
+            from acb_memory import artifacts as _artifacts  # noqa: PLC0415
+
+            artifact_id = _artifacts.register_in_session(
+                s, agent_name=agent_name, instance=instance, path=path,
+                data=data, sha256=sha, mime_type=mime_type, prov=provenance,
+            )
         s.commit()
-    return BlobMeta(agent_name, path, folder, sha, size, mime_type)
+    return BlobMeta(agent_name, path, folder, sha, size, mime_type, artifact_id)
 
 
 def _sync_get(
@@ -233,6 +248,10 @@ def _sync_delete(
             {"a": agent_name, "i": instance, "p": path, "f": folder,
              "sha": _DELETE_SHA, "rid": run_id, "sid": session_id, "actor": actor},
         )
+        # WS-60 AM-1: the registry row goes to trash. The sweep purges it.
+        from acb_memory import artifacts as _artifacts  # noqa: PLC0415
+
+        _artifacts.trash_in_session(s, agent_name=agent_name, instance=instance, path=path)
         s.commit()
 
 
@@ -366,6 +385,7 @@ async def put_file(
     actor: str = "agent",
     instance: str = "",
     organization_id: str | None = None,
+    provenance: Any = None,
 ) -> BlobMeta | None:
     """Write-through: store *data* at (agent, instance, path) + a history version.
 
@@ -376,6 +396,9 @@ async def put_file(
                    ``"u:<email>"`` for a personal agent, ``"t:<team>"`` for a
                    team one. Defaults to ``""`` so a caller that doesn't know
                    about instances sees exactly what it saw before migration 136.
+        provenance: an ``acb_memory.artifacts.Provenance`` (WS-60 AM-1). With
+                   one, and the registry flag on, the write also lands one row
+                   in ``artifacts``, and the result carries ``artifact_id``.
     """
     if not agent_name or not is_stored_path(path):
         return None
@@ -384,6 +407,7 @@ async def put_file(
             _sync_put, agent_name, path, data, mime_type,
             action=action, run_id=run_id, session_id=session_id, actor=actor,
             instance=instance, organization_id=_caller_tenant(organization_id),
+            provenance=provenance,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("blob_store.put_failed", agent=agent_name, path=path, error=str(exc)[:200])

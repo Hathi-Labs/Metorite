@@ -45,21 +45,50 @@ Seven tools read:
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |
 
-Four tools make or change a task:
+Six tools make or change a task:
 
 | Tool | What it does |
 |---|---|
 | `create_task` | It makes a task in a project or a sub-project that you can see, and it can make a subtask. In Projects, the task shows the source "AI agent". With the same `idempotency_key`, a second call gives back the first task and makes no second task |
 | `update_task` | It changes the title, the description, the tags, the due date or the custom fields of a task |
-| `set_task_status` | It moves a task to another status. It never moves a task to a done or cancelled status. A person does that step |
+| `claim_task` | It makes you an assignee of a task, and the other assignees stay. A task in a backlog or to do status moves to the first in progress status. The agent calls it when it starts the work |
+| `set_task_status` | It moves a task to another status. It can move a task to a done status when the agent finishes the work. It never moves a task to a cancelled status. A person does that step |
 | `add_task_reference` | It links a pull request, a commit or a branch to a task |
+| `add_comment` | It writes a comment on a task, such as a short progress note while it works. You are the author of the comment. It can reply to a top-level comment. A comment holds at most 20,000 characters. With the same `idempotency_key`, a second call gives back the first comment and adds no second comment |
 
-Each change shows in the task history, with the agent as `mcp:<host>`. A connection makes at most 120 changes in 10 minutes.
+Each change shows in the task history, with the agent as `mcp:<host>`. A status change of the agent can start a workflow of your organization that runs on a status change, as your own change does. A move to done is a status change too. A connection makes at most 120 changes in 10 minutes.
+
+**A comment notifies people.** Each comment that the agent writes notifies the watchers and the assignees of the task, as your own comment does. An `@` followed by the address of a member who can see the task notifies that member too. These notifications go to the bell and the inbox in Metorite. Metorite does not send them by email.
+
+**A comment can start a workflow.** Each comment, also one that the agent writes, sends the event `pm.task.comment_added`. If your organization has a published workflow that starts on that event, the workflow runs. That workflow can call an integration or a web address, as it does for your own comment.
+
+## Ask an agent in Metorite
+
+**"Ask an agent" is live in each organization since 2026-10-15.** You can give work to your agent from the task itself:
+
+1. Open the task in Projects, then select **Ask an agent**.
+2. Choose one of your connected agents. Only an agent that may make changes shows in the list.
+3. Write what the agent must do, then send it. The task shows "Queued for" and the name of the agent.
+
+Your agent finds the work when it next starts a session, because it looks for queued runs first. It does not start by itself.
+
+While the agent works, it can ask you a question on the task. The task then shows "Waiting for" and your name, and the bell tells you. Answer on the task. The agent reads your answer, also in a later session. You can stop the agent from the same place.
+
+Six tools work with these runs:
+
+| Tool | What it does |
+|---|---|
+| `start_agent_run` | It starts a run on a task, so the task shows that the agent works on it |
+| `post_agent_activity` | It posts a progress line, a result or a question in the run |
+| `ask_on_task` | It asks you a question on a task, with choices or free text |
+| `get_agent_run` | It reads a run and your answers |
+| `list_agent_runs` | It lists your runs, such as the runs that wait for the agent |
+| `finish_agent_run` | It ends a run |
 
 ## What the agent cannot do
 
-- It cannot close or cancel a task, and it cannot make a task in a done or cancelled status.
-- It cannot assign a task, move a task to another project, or archive or delete a task.
+- It cannot cancel a task, and it cannot make a task in a done or cancelled status. A move to done does not close the subtasks.
+- It cannot assign a task to another person, move a task to another project, or archive or delete a task. It can claim a task for you only.
 - It cannot see what you cannot see. If an admin removes your access to a project, the agent loses it on the next call.
 - It cannot act after you revoke it.
 

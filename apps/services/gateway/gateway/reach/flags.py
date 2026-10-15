@@ -1,6 +1,6 @@
 """The switches of Reach (WS-59 RE-1a, ``proactive_reach.md``).
 
-This module is the ONE reader of the five ``REACH_*`` settings.
+This module is the ONE reader of the seven ``REACH_*`` settings.
 
 * ``REACH_ENABLED`` — the switch of the loop and the routes, default OFF.
 * ``REACH_ORGS`` — the organization ids that may reach. Empty allows none,
@@ -10,6 +10,10 @@ This module is the ONE reader of the five ``REACH_*`` settings.
 * ``REACH_DAILY_CAP`` — the most interrupts for one member in one local day.
 * ``REACH_BRIEF_TEMPLATE`` — an approved Meta template for a brief outside
   the 24-hour window. Empty sends no template.
+* ``REACH_NEEDS_YOU_TEMPLATE`` — an approved Meta template for an interrupt
+  outside the window (RE-2a). Empty holds the interrupt until the window
+  opens.
+* ``REACH_TEMPLATE_LANGUAGE`` — the language code of both templates.
 
 The organization and the member always come from a session or from the loop's
 own list, never from request input (R5, R11).
@@ -69,3 +73,14 @@ def brief_template() -> str | None:
     """The approved template name for a brief, or None."""
     value = str(get_settings().reach_brief_template or "").strip()
     return value or None
+
+
+def needs_you_template() -> str | None:
+    """The approved template name for an interrupt, or None (RE-2a)."""
+    value = str(get_settings().reach_needs_you_template or "").strip()
+    return value or None
+
+
+def template_language() -> str:
+    """The language code of the templates. Default ``en``."""
+    return str(get_settings().reach_template_language or "").strip() or "en"

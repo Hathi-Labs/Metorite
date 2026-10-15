@@ -5358,6 +5358,136 @@ line — never reclaim a number by deleting the other entry.
   for each act, under one offer.
 - **Authority:** `specs/whatsapp_assistant_channel.md` §14.9 (known limit)
 - **Added:** 2026-10-15 · branch `wa-calendar-blocks`
+### H-312 · Five reads of a member's settings name no tenant · [AGENT]
+- **Check:** `git grep -n -A2 "WHERE user_id = :uid" -- apps/services/gateway/gateway/routes/tasks`.
+  A statement that names no `organization_id` means this entry stays.
+- **Why.** Migration 239 keys `user_settings` on `(organization_id, user_id)`.
+  Production connects as the owner role, which reads past RLS. So a read by
+  `user_id` alone can return the row of another org, for a member who belongs
+  to two orgs. The data is the same person's own, so the impact is low. MD-3c
+  fixed `stored_zone`, `tasks.settings._load` and the work-schedule seed. These
+  reads still name no tenant:
+  1. `routes/tasks/settings.py` `task_models` (about :134).
+  2. `routes/tasks/settings.py` `task_toggles` (about :156).
+  3. `routes/tasks/calendar.py` (about :571, :608 and :1171).
+- **Do this:** add `AND organization_id = {_BOUND_ORG}` to each statement, as
+  `prefs.py` and `admin/me.py` do. Add one owner-role R8 case with a member in
+  two orgs, modelled on `test_feed_task_kinds_r8.py::TestTheTenantUnderTheOwnerRole`.
+- **Authority:** R5 · `specs/my_day_feed.md` §16 MD-3c (fix round 1)
+- **Added:** 2026-10-15 · MD-3c review
+
+### H-313 · An operator viewer can reach the tenant org purge · [AGENT]
+- **Check:** `rg -c "operators/session" workbench/operator_console/src/app/api/operator/purge/route.ts`.
+  No hit means this is open.
+- **Why.** The org purge BFF reads only `GET /orgs` (viewer rank) before it calls
+  the gateway door. The Console checks the operator's rank only at
+  `POST /orgs/purge`, which runs after the tenant purge. So a viewer can destroy
+  the tenant plane of an org that is already `deleted`, and then get a 403.
+- **Do this:** copy the rank check of `api/operator/members/remove/route.ts`. Read
+  `GET /operators/session` and `GET /operators/elevate`, and refuse anything below
+  ADMIN with an open window BEFORE the tenant act. Fence it in `route.test.ts`.
+- **Authority:** `specs/customer_console.md` §CP-2g (the operator matrix row for
+  `/orgs/purge`)
+- **Added:** 2026-10-15 · branch `member-remove`
+
+### H-314 · A feed approvals test fails at one time of day · [AGENT]
+- **Check:** run `tests/unit/test_feed_handled_r8.py::TestApprovals::test_iii_org_bs_admin_sees_no_approval_of_org_a`
+  with the clock frozen at 2026-10-15 07:14 UTC. A failure means this is open.
+- **Why.** On 2026-10-15 the test failed in two CI runs of PR #1038, at about
+  07:14 UTC both times: `assert [] == [{'kind': 'you', ...}]`. The rerun at
+  08:07 UTC passed. The PR touches no feed code. The test picks its zone with
+  `_a_daytime_zone(NOW)` and puts a decision at `NOW - 2 minutes`, so a day
+  boundary is the likely cause.
+- **Do this:** find which zone and day start the test picks at 07:14 UTC. Make
+  the zone choice keep the decision inside the member's day, and pin the
+  clock in the test.
+- **Authority:** R7 (a fence that fails by the clock is not a fence)
+- **Added:** 2026-10-15 · branch `member-remove`
+
+### H-315 · Submit the two Reach templates at Meta, then name them on the box · [OWNER]
+- **Check:** on the box, `grep -E "^REACH_(BRIEF|NEEDS_YOU)_TEMPLATE=" /opt/acb/app/.env`
+  shows `metorite_daily_brief` and `metorite_needs_you`. Then this entry goes.
+- **Why.** Free text reaches a member only within 24 hours of their last
+  message to the bot. On 2026-10-15 Reach dropped one brief and one interrupt
+  for that reason. A template can open the window. The auto-mode classifier
+  refused a template submission from the box, so the owner's PC does it.
+- **Where.** On the owner's PC, signed in to Meta as the owner. Use the
+  browser. The account is the test WhatsApp Business Account
+  `1151567084229350` in the portfolio Hathi Labs `1586671155804254`.
+- **Done 2026-10-15.** An agent submitted both templates from the owner's
+  browser. Both show **In review** as Utility:
+  - `metorite_daily_brief`, with the body of §8.1 and the button `Show my brief`.
+  - `metorite_needs_you`, with the APPROVAL body of §8.1 and the button
+    `Show me`. Meta's pre-check refused three general bodies as utility, so
+    the owner narrowed it to approvals (§8.1, "Measured at submission").
+- **Do this:**
+  1. Open `https://business.facebook.com/wa/manage/message-templates/?waba_id=1151567084229350`.
+     Wait until both show **Active** or **Approved**. If Meta rejects one or
+     moves it to **Marketing**, do not use it. Tell an agent.
+  2. Set `REACH_BRIEF_TEMPLATE=metorite_daily_brief` on the box after the
+     RE-2a code is live. An agent adds the line to `/opt/acb/app/.env` and
+     restarts `acb-gateway`.
+  3. Set `REACH_NEEDS_YOU_TEMPLATE=metorite_needs_you` only after H-317 is
+     live. Before that, RE-2a sends the approval words for every interrupt.
+- **Do not** use `metorite_task_reminder` or `metorite_meeting_reminder`.
+  They are approved, but their words do not fit, and they have no button.
+- **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
+- **Added:** 2026-10-15 · WS-59 RE-2a
+
+### H-316 · The member writers of assignee rows take the row and the key in different orders · [AGENT]
+- **Check:** `git grep -n -e "ids = dedupe_ids(payload.task_ids)" -e "await _move_satellites(db, str(source.id), task_id)" -- apps/services/gateway/gateway/routes/projects/bulk.py apps/services/gateway/gateway/routes/projects/merge.py`. The first anchor is the unsorted selection of the bulk edit. The second is the merge, which moves the assignee keys before `update_row` of the target. Two hits mean this entry stays. With fewer hits, read the changed code, and delete this entry when the orders agree.
+- **Why.** The reviewer and the verifier of WS-55 EA-6b found these orders already disagree on main. A PUT of the assignees writes the key and then bumps the row. A move with assignees writes the row and the destination counter, then the key. A merge moves the assignee and watcher keys, then writes the target row. A bulk edit locks rows in request order. So a PUT against a move that assigns the same member, a merge against a PUT on the watcher keys, and two bulk edits with the same ids in another order can each deadlock. A merge against a PUT of the same member also fails with a unique violation of `pm_task_assignees_pkey` (10 times in 10).
+- **Do.** Sort the ids of every bulk write. Give every member writer one helper that writes the assignee key, then the row. Fix the merge's `NOT EXISTS` race. Prove each pair with a looped R8 race test. The claim (`claim_task`) already writes the key before the row, so it needs no change.
+- **Authority:** R8 · `specs/external_agent_access.md` §17 (EA-6b fix round 3)
+- **Added:** 2026-10-15 · EA-6b fix round 3 review (taken as H-313, renumbered to H-316 at merge because main took H-313 to H-315)
+
+### H-317 · Reach must send the needs-you template for an approval only · [AGENT]
+- **Check:** `git grep -n "needs_you_template" -- apps/services/gateway/gateway/reach/loop.py`.
+  Read the branch that sends the template. No test of the `approval` kind
+  beside it means this is open.
+- **Why.** Meta accepted `metorite_needs_you` as utility only with the words
+  "your approval is pending in Metorite". RE-2a (PR #1042, as of
+  2026-10-15) sends it for every interrupt in a closed window, which
+  includes `needs_reply` and `overdue` cards. Those would arrive with the
+  wrong words.
+- **Do this:** in `reach/loop.py`, use the template only when every
+  candidate card has `kind == "approval"`. Hold every other interrupt in a
+  closed window, as when no template is set. Add a test for each path in
+  `tests/unit/test_reach_loop.py`. `needs_you_params` keeps two parameters.
+- **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
+- **Added:** 2026-10-15 · H-315 template submission
+
+### H-318 · A preview app's jobs reach the tier-2 coordinator · [AGENT]
+- **Check:** `rg -n "launch" apps/services/gateway/gateway/routes/shell/intent.py`.
+  No hit inside `held_jobs` means this is open.
+- **Why.** `navigation_shell.md` §5.2 rule 8 says a `preview` app may carry a
+  manifest and nothing renders it. The bar's `buildItems` honours that,
+  because `visibleSections` drops a preview pane. The gateway's `held_jobs`
+  filters a job by feature only, and every member holds `feature:*` since
+  migration 207. So a job of a preview app would be offered to every member
+  before the owner promotes the app. Found by the WS-61 KB-0 audit on
+  2026-10-15, and it is why KB-0 carries no job.
+- **Do this:** either `held_jobs` reads the launch status of the job's app
+  from one list the gateway owns, or rule 8 changes to "a preview app
+  carries no job". Pin it in `tests/unit/test_shell_intent.py`.
+- **Authority:** `specs/navigation_shell.md` §5.2 rule 8 and §5.3
+- **Added:** 2026-10-15 · WS-61 KB-0 audit
+
+### H-319 · Two spellings of the subject grammar: a bare email and `user:<email>` · [AGENT]
+- **Check:** `rg -n "user:" infra/postgres/268_artifacts.sql packages/acb_auth/acb_auth/permissions.py apps/services/gateway/gateway/routes/projects/core.py`.
+  A `user:` prefix in the artifacts CHECK and a bare email in
+  `validate_grant_subject` means this is open.
+- **Why.** `pm_project_grants` and `validate_grant_subject`
+  (`routes/projects/core.py:3383`) take a bare email as a subject. AM-1
+  (`268_artifacts.sql`, 2026-10-15) takes `user:<email>` and adds
+  `project:<uuid>`. CLAUDE.md §4 names one subject-grammar validator as a
+  seam. `knowledge_base.md` §5.1 (WS-61 KB-1) must use the shared one, so
+  the spelling has to be decided before KB-1 and AM-3 both write grants.
+- **Do this:** pick one spelling, put the validator in
+  `acb_auth/permissions.py`, and make Projects, Artifacts and Knowledge call
+  it. A migration that widens the artifacts CHECK is expand-only (R6).
+- **Authority:** CLAUDE.md §4 (respect the seams), `tenancy_and_visibility.md` §3
+- **Added:** 2026-10-15 · WS-61 KB-0 audit
 
 # DONE — deleted, not archived
 
