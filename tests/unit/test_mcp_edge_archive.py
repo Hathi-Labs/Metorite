@@ -41,10 +41,19 @@ Run::
 * M5 (G3). ``G/agent_runs.py`` ``approve_task_archive``: no check of ``run.member_email``. ``test_g3_another_member_gets_403_and_the_member_archives``.
 * M6 (G3, rule 4). ``G/agent_runs.py`` ``_answer``: no refusal of a generic prompt on a typed request. ``test_g3_the_generic_route_refuses_a_typed_request``.
 * M7 (G3). ``G/agent_runs.py`` ``approve_task_archive``: no ``pm.task.archived`` event. ``test_g3_another_member_gets_403_and_the_member_archives``.
-* M8 (G4). ``G/agent_runs.py`` ``approve_task_archive``: the archive runs in its own ``_tenant_session``. ``test_g4_the_answer_and_the_archive_commit_together[answer]`` and ``[archive]``.
+* M8 (G4). ``G/agent_runs.py`` ``approve_task_archive``: the archive runs in its own ``_tenant_session``. ``test_g4_the_answer_and_the_archive_commit_together[answer]``. ⚠️ ``[archive]`` stays green under M8 (measured in fix round 1): the fault is inside the archive's own session, so that session rolls back too.
+* M8b (G4). ``G/agent_runs.py`` ``approve_task_archive``: swallow a ``RuntimeError`` of the archive core and go on. ``test_g4_the_answer_and_the_archive_commit_together[archive]``.
 * M9 (G5). ``G/agent_runs.py`` ``approve_task_archive``: ``include_subtasks=True``. ``test_g5_open_subtasks_stay_on_the_board``.
 * M10 (G6). ``G/agent_runs.py`` ``approve_task_archive``: a decline archives too. ``test_g6_a_decline_archives_nothing``.
 * M11 (G7). ``G/agent_runs.py`` ``_request_expired`` returns False. ``test_g7_an_approve_after_the_expiry_gets_409``.
+* N1 (fix round 1). ``G/agent_runs.py`` ``approve_task_archive``: the expiry refuses a decline too. ``test_g7_a_decline_closes_an_expired_request``.
+* N2 (fix round 1). ``G/agent_runs.py`` ``_answer``: an expired request still refuses a free reply. ``test_g7_a_free_reply_moves_a_run_on_after_the_expiry``.
+* N3 (fix round 1). ``G/agent_runs.py`` ``approve_task_archive``: no expiry check at all. ``test_g7_an_approve_after_the_expiry_gets_409``.
+* N4 (fix round 1, 4a). ``G/agent_runs.py`` ``approve_task_archive``: no refusal of an agent caller. ``test_the_approval_route_refuses_an_agent_past_branch_0``.
+* N5 (fix round 1, 4b). ``G/agent_runs.py`` ``_request_expired``: no check of a naive stamp. ``test_a_naive_expiry_stamp_reads_as_expired``.
+* N6 (fix round 1, 4c). ``G/agent_runs.py`` ``request_task_archive``: no ``load_visible_task``. ``test_a_task_out_of_reach_in_the_same_org_is_not_found``.
+* N7 (fix round 1, item 6). ``G/agent_runs.py`` ``approve_task_archive``: a replay returns no task. ``test_g8_a_second_approve_gives_one_archive``.
+* N8 (fix round 1, item 7). ``E/tools.py`` ``GET_AGENT_RUN``: the old text, "post one response". ``test_a_stopping_run_is_finished_with_no_activity_first``.
 * M12 (G7). ``G/agent_runs.py`` ``approve_task_archive``: no ``awaiting`` check. ``test_g7_an_approve_on_a_run_that_does_not_wait_gets_409``.
 * M13 (G8). ``G/agent_runs.py`` ``approve_task_archive``: no replay of the key. ``test_g8_a_second_approve_gives_one_archive``.
 * M14 (G9). ``G/tasks.py`` ``archive_task_in``: write the ``system`` row when the task is already archived. ``test_g9_an_archived_task_gets_no_second_activity_row``.
@@ -63,7 +72,7 @@ Run::
 * M27 (G16). The approval row is class B. ``test_mcp_edge_coverage.py::test_the_archive_and_its_approval_stay_off_the_edge``.
 * M28. ``G/agent_runs.py`` ``request_task_archive``: no refusal of a stopping run. ``test_a_request_on_a_stopping_run_is_refused``.
 
-G15 is the UI. ``agentRuns.test.ts`` and ``e2e/agent-runs.spec.ts`` name their own mutations (U1 to U5, and P1 to P3 in the pull request).
+G15 is the UI. ``agentRuns.test.ts`` and ``e2e/agent-runs.spec.ts`` hold it. Their mutations are U1 to U6 and P1 to P5, listed in the pull request.
 """
 from __future__ import annotations
 

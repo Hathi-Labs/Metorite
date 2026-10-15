@@ -13,7 +13,9 @@
  * - "Waiting on me" shows a task that waits for somebody else;
  * - EA-6g: a free question with an `approve` option reads as an archive
  *   request, the card offers free text, the decision goes out as a label,
- *   or an expired request still offers a button.
+ *   or an expired request still offers a button;
+ * - EA-6g fix round 1 (U6): the card ignores its `title` and reads
+ *   "Question" for an archive request.
  *
  * The click paths run in a real browser in `e2e/agent-runs.spec.ts`.
  */

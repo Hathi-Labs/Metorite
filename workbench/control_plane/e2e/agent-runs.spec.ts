@@ -26,7 +26,9 @@ import { openAllRows } from "./railOpen";
  *    Mutations that turned these red: P1 `archiveMine = true` (the waiting
  *    test), P2 the panel answers through the generic route (the approve
  *    test), and P3 the generic card draws for a typed request (the waiting
- *    test).
+ *    test). Fix round 1: P4 the expired state has no Decline (the decline
+ *    test), and P5 the reply box stays away after the expiry (the expired
+ *    test of another member).
  *
  * Run it by name:
  *
