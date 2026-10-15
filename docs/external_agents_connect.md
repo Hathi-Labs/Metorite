@@ -55,7 +55,7 @@ Seven tools read:
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |
 
-Five tools make or change a task:
+Six tools make or change a task:
 
 | Tool | What it does |
 |---|---|
@@ -71,6 +71,29 @@ Each change shows in the task history, with the agent as `mcp:<host>`. A status 
 **A comment notifies people.** Each comment that the agent writes notifies the watchers and the assignees of the task, as your own comment does. An `@` followed by the address of a member who can see the task notifies that member too. These notifications go to the bell and the inbox in Metorite. Metorite does not send them by email.
 
 **A comment can start a workflow.** Each comment, also one that the agent writes, sends the event `pm.task.comment_added`. If your organization has a published workflow that starts on that event, the workflow runs. That workflow can call an integration or a web address, as it does for your own comment.
+
+## Ask an agent in Metorite
+
+**"Ask an agent" is live in each organization since 2026-10-15.** You can give work to your agent from the task itself:
+
+1. Open the task in Projects, then select **Ask an agent**.
+2. Choose one of your connected agents. Only an agent that may make changes shows in the list.
+3. Write what the agent must do, then send it. The task shows "Queued for" and the name of the agent.
+
+Your agent finds the work when it next starts a session, because it looks for queued runs first. It does not start by itself.
+
+While the agent works, it can ask you a question on the task. The task then shows "Waiting for" and your name, and the bell tells you. Answer on the task. The agent reads your answer, also in a later session. You can stop the agent from the same place.
+
+Six tools work with these runs:
+
+| Tool | What it does |
+|---|---|
+| `start_agent_run` | It starts a run on a task, so the task shows that the agent works on it |
+| `post_agent_activity` | It posts a progress line, a result or a question in the run |
+| `ask_on_task` | It asks you a question on a task, with choices or free text |
+| `get_agent_run` | It reads a run and your answers |
+| `list_agent_runs` | It lists your runs, such as the runs that wait for the agent |
+| `finish_agent_run` | It ends a run |
 
 ## What the agent cannot do
 

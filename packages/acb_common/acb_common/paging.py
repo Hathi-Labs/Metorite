@@ -64,7 +64,7 @@ def bounds(offset: Any, limit: Any, *, default: int,
 def page_line(total: int | None, offset: int, shown: int, *,
               more: bool | None = None, cursor: str = "",
               noun: str = "items", param: str = "offset",
-              page_size: int = 0) -> str:
+              page_size: int = 0, base: int = 0, tool: str = "") -> str:
     """The one line that says what a page left out, or "" when it left nothing.
 
     ``total`` is the full count, or None when the backend does not give one.
@@ -72,7 +72,9 @@ def page_line(total: int | None, offset: int, shown: int, *,
     ``cursor`` the hint names it instead of an offset. ``param`` is the
     name of the tool's offset argument, when it is not ``offset``. A tool
     whose argument is a page number passes ``page_size``, and the hint then
-    names ``page=N``.
+    names ``page=N``. ``base`` is 1 for an argument that counts from 1, such
+    as a line number, so the hint names the next one. ``tool`` names another
+    tool that reads the rest, in place of "Call again".
     """
 
     def _next(end: int) -> str:
@@ -80,8 +82,9 @@ def page_line(total: int | None, offset: int, shown: int, *,
             return f"cursor={cursor!r}"
         if page_size > 0:
             return f"page={end // page_size + 1}"
-        return f"{param}={end}"
+        return f"{param}={end + base}"
 
+    call = f"Call {tool} with" if tool else "Call again with"
     end = offset + shown
     if total is not None:
         if total > 0 and offset >= total and page_size > 0:
@@ -89,22 +92,21 @@ def page_line(total: int | None, offset: int, shown: int, *,
             return (f"Nothing on page {offset // page_size + 1}. There are "
                     f"{total} {noun}, so the last page is {last}.")
         if total > 0 and offset >= total:
-            return (f"Nothing at {param}={offset}. There are {total} {noun}, "
-                    f"so start below {param}={total}.")
+            return (f"Nothing at {param}={offset + base}. There are {total} {noun}, "
+                    f"so start below {param}={total + base}.")
         if end >= total:
             return (f"Showing {offset + 1}-{end} of {total}. This is the last page."
                     if offset > 0 and shown else "")
         nxt = _next(end)
-        return (f"Showing {offset + 1}-{end} of {total}. "
-                f"Call again with {nxt} for the rest.")
+        return f"Showing {offset + 1}-{end} of {total}. {call} {nxt} for the rest."
     if not (more or cursor):
         if offset > 0 and not shown:
-            return f"Nothing at {param}={offset}. This is past the end."
+            return f"Nothing at {param}={offset + base}. This is past the end."
         return (f"Showing {offset + 1}-{end}. This is the last page."
                 if offset > 0 else "")
     nxt = _next(end)
     return (f"Showing {offset + 1}-{end}. More {noun} exist. "
-            f"Call again with {nxt} for the rest.")
+            f"{call} {nxt} for the rest.")
 
 
 def paged(items: Sequence[Any], offset: Any = 0, limit: Any = 0, *,

@@ -134,9 +134,12 @@ const APP_BAR_HOME: Record<string, string> = {
 /**
  * A `preview` pane that already opens with the bar. It is not in the live set,
  * so it is apart from `APP_BAR_HOME`, and the browser census visits it too.
- * When a pane goes live, its row moves to `APP_BAR_HOME`. The table is empty now.
+ * When a pane goes live, its row moves to `APP_BAR_HOME`.
  */
-const PREVIEW_BAR_HOME: Record<string, string> = {};
+const PREVIEW_BAR_HOME: Record<string, string> = {
+  // WS-61 KB-0 (`knowledge_base.md` §11). It moves to `APP_BAR_HOME` at KB-12.
+  "/knowledge": "app/knowledge/page.tsx",
+};
 
 /** My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Not a nav pane, so apart. */
 const MY_DAY_HOME = "lib/shell/MyDayPage.tsx";

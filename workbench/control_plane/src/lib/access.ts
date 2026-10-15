@@ -121,6 +121,10 @@ const HREF_FEATURES: ReadonlyArray<[string, string]> = [
   // (specs/project_management_app.md §5).
   ["/projects", "projects"],
   ["/people", "people"],
+  // The Knowledge app (WS-61 KB-0, `knowledge_base.md` §5.2). Its own slug,
+  // in the same shape as /crm. The space grants in the API are the real
+  // boundary, and this is the courtesy half.
+  ["/knowledge", "knowledge"],
   ["/dashboard", "dashboard"],
   ["/observability", "observability"],
   ["/artifacts", "artifacts"],

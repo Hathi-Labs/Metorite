@@ -496,7 +496,8 @@ async def priority_inbox(
                    AND em.received_at > now() - make_interval(days => :days)
                    AND COALESCE(LOWER(se.category), '') NOT IN
                        ('newsletter', 'marketing', 'cold email', 'notification')
-                 ORDER BY em.thread_id, em.received_at DESC
+                 -- The id chooses one message when two share the instant.
+                 ORDER BY em.thread_id, em.received_at DESC, em.id DESC
                )
                SELECT *, (
                    (CASE WHEN reply_status = 'NEEDS_REPLY' THEN 100 ELSE 0 END)
@@ -511,7 +512,9 @@ async def priority_inbox(
                          = ANY(:human_cats) THEN 15 ELSE 0 END)
                ) AS score
                FROM latest
-               ORDER BY score DESC, received_at DESC
+               -- The id breaks a tie, so a bigger LIMIT begins with the
+               -- smaller one (the chat pages by a bigger LIMIT).
+               ORDER BY score DESC, received_at DESC, id DESC
                LIMIT :limit"""
         ), {"aid": account_id, "days": days, "limit": limit,
             "human_cats": HUMAN_SENDER_CATEGORIES_LOWER})).fetchall()
