@@ -2975,6 +2975,38 @@ async def apply_status_transition(
     }
 
 
+# ── The task row lock of a claim (WS-55 EA-6b) ──────────────────────────────
+
+#: The row lock of ``tasks.claim_task``, and of nothing else. ⚠️ **Do not call
+#: it from a member path.** Fix round 2 locked `set_assignees`, `move_task_in`
+#: and the bulk edit with it too, and each of those locks moved a deadlock to
+#: another member writer (the merge, the bulk move). The member writers of
+#: assignee rows take the row and the key in different orders today. That is
+#: an open follow-up of its own (`external_agent_access.md` §17).
+#:
+#: The claim takes this lock AFTER its assignee key and before its watcher
+#: key, in the order of `set_assignees` (fix round 3, option A). So the claim adds no lock
+#: order that a member path does not already have.
+#:
+#: NO KEY, as `admin._LOCK_STATUS_SET_SQL` explains: it does not conflict with
+#: the FOR KEY SHARE of a foreign key check, and it still queues a second
+#: claim. Fence: `tests/unit/test_mcp_edge_claim.py`, `TestTheClaimRace`.
+_LOCK_TASK_SQL = (
+    "SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid) FOR NO KEY UPDATE"
+)
+
+
+async def lock_task(db: Any, task_id: str) -> Any:
+    """Lock one task row until the transaction ends, and return the row as
+    the lock read it. Only ``claim_task`` calls it. The claim has passed its
+    visibility load, so the lock reads by id only. 404 when a delete crossed
+    that load."""
+    row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return row
+
+
 # ── The satellite bump (WS-27ae / P-27) ─────────────────────────────────────
 
 async def touch_task(db: Any, *task_ids: Any) -> None:

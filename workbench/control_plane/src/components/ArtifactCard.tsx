@@ -41,6 +41,8 @@ export interface ArtifactMeta {
   mimeType?: string;
   /** SHA-256 hex digest from the write_artifact tool (optional). */
   sha256?: string;
+  /** The registry row (WS-60 AM-1). Absent for a card older than the registry. */
+  artifact_id?: string | null;
 }
 
 interface ArtifactCardProps {

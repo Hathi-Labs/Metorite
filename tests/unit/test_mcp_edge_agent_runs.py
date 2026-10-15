@@ -626,3 +626,36 @@ class TestAgentRunsOverMcp:
         assert run["state"] == "awaiting"
         assert run["open_question"]["body"] == {"untrusted_text": "Which?"}
         assert run["client_via"] == "mcp:client.example"
+
+    async def test_ea12d_the_agent_finds_a_members_run_and_picks_it_up(self, runs):
+        """EA-12d through the edge. The member starts a run for their own
+        connection, as a person. The agent finds it with
+        ``list_agent_runs(needs_agent=true)``, reads the instruction as
+        untrusted text, and its first activity moves the run to
+        ``in_progress``. Mutation: ``_NEEDS_AGENT_SQL`` drops ``'created'``
+        and the find fails."""
+        task = runs.task(runs.team, runs.s.doing, "ea12d")
+        made = await _person(runs, "POST", f"/projects/tasks/{task}/agent-runs",
+                             {"connection_id": runs.c["write"],
+                              "body": "Write the release notes.",
+                              "idempotency_key": _key()})
+        assert made.status_code == 201, made.text
+        run_id = made.json()["run"]["id"]
+        assert made.json()["run"]["state"] == "queued"
+
+        found = await _ok(runs, "write", "list_agent_runs", needs_agent=True)
+        ids = {r["id"]: r for r in found["runs"]}
+        assert run_id in ids, "the agent must find the member's queued run"
+        assert (ids[run_id]["status"], ids[run_id]["state"]) == ("created", "queued")
+
+        read = await _ok(runs, "write", "get_agent_run", run_id=run_id)
+        (prompt,) = read["activities"]
+        assert prompt["type"] == "prompt" and prompt["author"] == "person"
+        assert prompt["body"] == {"untrusted_text": "Write the release notes."}
+
+        went = await _ok(runs, "write", "post_agent_activity", run_id=run_id,
+                         type="thought", body="Reading the changes.",
+                         idempotency_key=_key())
+        assert (went["run"]["status"], went["run"]["state"]) == ("in_progress", "working")
+        again = await _ok(runs, "write", "list_agent_runs", needs_agent=True)
+        assert run_id not in {r["id"] for r in again["runs"]}

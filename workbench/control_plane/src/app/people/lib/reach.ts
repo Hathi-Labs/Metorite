@@ -17,6 +17,8 @@ export interface ReachPreview {
   interrupts: string | null;
   window_open: boolean;
   linked: boolean;
+  /** RE-2a: the window is closed, so the interrupts wait for the member's next message. */
+  held?: boolean;
 }
 
 export type ReachView =
@@ -27,6 +29,8 @@ export type ReachView =
       interrupts: string | null;
       /** Why the member cannot send now, or null when they can. */
       blocked: string | null;
+      /** True when the interrupts wait for the member's next message (RE-2a). */
+      held: boolean;
     };
 
 export function reachView(
@@ -48,6 +52,7 @@ export function reachView(
     brief: text(body.brief),
     interrupts: text(body.interrupts),
     blocked,
+    held: body.held === true,
   };
 }
 

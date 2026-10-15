@@ -48,6 +48,12 @@ export type SyncHealth = {
 };
 
 export const UNAVAILABLE_SENTENCE = "Connect Zoho again to allow this module";
+/**
+ * CRM-Q15: the account refuses the module. It is turned off in Zoho, or the
+ * user who connected cannot see it. A reconnect does not change that.
+ */
+export const HIDDEN_SENTENCE =
+  "Turned off in your Zoho, or hidden from the user who connected. Turn it on in Zoho to sync it";
 
 const ENTITY_LABELS: Record<string, string> = {
   organizations: "Companies",
@@ -180,9 +186,14 @@ export function differenceLabel(diff: number): string {
   return diff > 0 ? `+${diff}` : `-${Math.abs(diff)}`;
 }
 
-/** A module that the last run could not read, for lack of a Zoho scope. */
+/** A module that the last run could not read: no Zoho scope, or turned off in Zoho. */
 export function isUnavailable(entity: HealthEntity): boolean {
   return (entity.last_run.unavailable ?? 0) > 0;
+}
+
+/** Why the module is unavailable, in words the admin can act on (CRM-Q15). */
+export function unavailableSentence(entity: HealthEntity): string {
+  return (entity.last_run.hidden ?? 0) > 0 ? HIDDEN_SENTENCE : UNAVAILABLE_SENTENCE;
 }
 
 export function moduleState(module: HealthModule): string {

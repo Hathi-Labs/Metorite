@@ -11,6 +11,8 @@ clock. Each rule is held here:
 * **Words.** The interrupt and the brief name what the member must do, from
   the card's own facts, under 1,000 characters.
 * **Dedupe.** One plan gives one key, and the key holds no title.
+* **Template parameters** (RE-2a). One line, no tab, no run of spaces, at
+  most 160 characters, never empty.
 """
 
 from __future__ import annotations
@@ -141,9 +143,22 @@ class TestWhen:
         at = datetime(2026, 10, 15, 4, 0, tzinfo=UTC)  # 09:30 in Kolkata
         assert plan.brief_date(DAY, at, True) == date(2026, 10, 15)
 
-    def test_the_brief_is_not_due_later_or_on_a_day_off(self):
-        assert plan.brief_date(DAY, datetime(2026, 10, 15, 7, 0, tzinfo=UTC), True) is None
+    def test_the_brief_is_due_until_the_day_end_but_not_after_or_on_a_day_off(self):
+        # RE-2a changed this on purpose: a held brief may go at any hour of the
+        # day. RE-1a ended the brief window at 3 hours (12:00 here).
+        assert plan.brief_date(DAY, datetime(2026, 10, 15, 7, 0, tzinfo=UTC), True) == date(
+            2026, 10, 15)  # 12:30 in Kolkata
+        assert plan.brief_date(DAY, datetime(2026, 10, 15, 12, 29, tzinfo=UTC), True) == date(
+            2026, 10, 15)  # 17:59
+        assert plan.brief_date(DAY, datetime(2026, 10, 15, 12, 30, tzinfo=UTC), True) is None
+        assert plan.brief_date(DAY, datetime(2026, 10, 15, 3, 0, tzinfo=UTC), True) is None
         assert plan.brief_date(DAY, datetime(2026, 10, 15, 4, 0, tzinfo=UTC), False) is None
+
+    def test_the_template_brief_is_only_for_the_first_three_hours(self):
+        assert plan.brief_morning(DAY, datetime(2026, 10, 15, 4, 0, tzinfo=UTC))  # 09:30
+        assert plan.brief_morning(DAY, datetime(2026, 10, 15, 6, 29, tzinfo=UTC))  # 11:59
+        assert not plan.brief_morning(DAY, datetime(2026, 10, 15, 6, 30, tzinfo=UTC))
+        assert not plan.brief_morning(DAY, datetime(2026, 10, 15, 3, 0, tzinfo=UTC))
 
 
 class TestTheWords:
@@ -198,3 +213,64 @@ class TestTheDedupeKey:
         assert k1 == plan.brief_key("m@x.test", date(2026, 10, 15))
         assert k1 != plan.brief_key("m@x.test", date(2026, 10, 16))
         assert "m@x.test" not in k1 and k1.startswith("brief:")
+
+
+class TestTheTemplateParameters:
+    """RE-2a: Meta refuses a body parameter with a newline, a tab, more than
+    four spaces in a row, or no text."""
+
+    @pytest.mark.parametrize(("raw", "want"), [
+        ("Approve:\nthe refund", "Approve: the refund"),
+        ("a\tb\t\tc", "a b c"),
+        ("five     spaces", "five spaces"),
+        ("  stripped  ", "stripped"),
+        ("", "\u2013"),
+        (None, "\u2013"),
+        (" \n\t ", "\u2013"),
+    ])
+    def test_the_text_is_cleaned(self, raw, want):
+        assert plan.template_param(raw) == want
+
+    def test_a_long_text_is_cut_with_an_ellipsis(self):
+        got = plan.template_param("x" * 300)
+        assert len(got) == plan.PARAM_CHARS and got.endswith("…")
+
+    @pytest.mark.parametrize("raw", ["a\nb", "x  " * 200, "\t" * 10, ""])
+    def test_no_param_breaks_a_meta_rule(self, raw):
+        got = plan.template_param(raw)
+        assert got and "\n" not in got and "\t" not in got and "  " not in got
+        assert len(got) <= plan.PARAM_CHARS
+
+    @pytest.mark.parametrize(("name", "email", "want"), [
+        ("Priya Shah", "p@x.test", "Priya"),
+        ("  ", "priya.shah@x.test", "Priya"),
+        (None, "raj_kumar@x.test", "Raj"),
+        (None, "-anu-k@x.test", "Anu"),
+        (None, "@x.test", "there"),
+    ])
+    def test_the_first_name(self, name, email, want):
+        assert plan.first_name(name, email) == want
+
+    def test_the_needs_you_params_name_the_first_and_count_the_rest(self):
+        cards = [card("approvals:1", "approval", title="the refund for Acme", facts={}),
+                 card("email:a:t1"), card("email:a:t2")]
+        assert plan.needs_you_params("Priya", cards[:1], NOW) == [
+            "Priya", "Approve: the refund for Acme"]
+        got = plan.needs_you_params("Priya", cards, NOW)
+        assert got[1].endswith(" (and 2 more)")
+
+    def test_a_long_first_line_keeps_the_count(self):
+        cards = [card("approvals:1", "approval", title="y" * 300, facts={}),
+                 card("email:a:t1")]
+        got = plan.needs_you_params("P", cards, NOW)[1]
+        assert got.endswith("… (and 1 more)") and len(got) <= plan.PARAM_CHARS
+
+    def test_the_brief_params(self):
+        cards = [card("tasks:1", "overdue", title="Ship it", facts={"days_late": 1}),
+                 card("tasks:2", "overdue", group="fyi")]
+        assert plan.brief_params("Priya", cards, date(2026, 10, 15), NOW) == [
+            "Priya", "Thu 15 Oct", "1", "Overdue: Ship it (1 day late)"]
+
+    def test_the_full_brief_key_is_the_brief_key_and_a_suffix(self):
+        d = date(2026, 10, 15)
+        assert plan.full_brief_key("m@x.test", d) == plan.brief_key("m@x.test", d) + ":full"

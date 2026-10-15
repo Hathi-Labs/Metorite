@@ -1,6 +1,10 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-4b built (2026-10-15): the bot also blocks time on the
+**Status:** WAC-13 built (2026-10-15). When Metorite's AI path does not answer,
+the bot says that Metorite is updating and holds the message. It answers the
+message when Metorite is back (§16).
+
+WAC-4b built (2026-10-15): the bot also blocks time on the
 member's calendar, with `create_personal_task` and `set_my_overlay`, and a
 reply sends each answer once (§14.9). `WHATSAPP_ASSISTANT_WRITES` is on for
 the beta orgs (read on the box, 2026-10-15). WAC-4 built (2026-10-11): a
@@ -727,6 +731,8 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-10e** ✅ built 2026-10-11 | Reply and react like a person (§13.7): the first part of each answer quotes the member's message, the AI can react with an emoji, a long job says so first, and a plain thanks gets a 👍 with no AI call | AGENT-SAFE | §13.7, E1 to E7. Fence: `tests/unit/test_wac_react.py` |
 | **WAC-10f** ✅ built 2026-10-11 | One chart language (§13.8): the web app's chart engine draws WhatsApp charts on the server, in the product's look. 13 kinds, from a short spec. Falls back to the old renderer | AGENT-SAFE | §13.8, F1 to F5. Fences: `src/lib/charts/charts.test.ts`, `tests/unit/test_wac_chart_engine.py` |
 | **WAC-10g** ✅ built 2026-10-11 | The same charts live in the web chat (§13.9): a `chart` template with a tooltip and a legend, and `barChart` through the same engine | AGENT-SAFE | §13.9, G1 to G5. Fence: `src/components/LiveChart.test.ts` |
+| **WAC-13** ✅ built 2026-10-15 | "Metorite is updating" (§16): a message that meets a restart or an outage of the AI path waits, the member hears so once, and the bot answers it when Metorite is back | AGENT-SAFE | §16.6, U1 to U7. Fences: `tests/unit/test_wac_updating.py`, `tests/unit/test_wac_bot_run_r8.py` |
+| **WAC-12** ✅ live 2026-10-15 | A PDF document from WhatsApp (§15): a deck or a report, laid out from the org's own data, sent as a file that the member can forward | AGENT-SAFE. Ships dark behind `WHATSAPP_DOCUMENTS` | §15.6, D1 to D8. Fences: `tests/unit/test_wac_documents.py`, `tests/unit/test_pdf_render.py` |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
@@ -1505,3 +1511,210 @@ prepares the first. The member asks for the next one after the Confirm.
 
 The events, meetings and reminders that are not task blocks are a separate
 proposal: `specs/calendar_events_reminders.md`.
+
+## 15. Amendment of 2026-10-15: WAC-12, a PDF document from WhatsApp
+
+**Owner directive, 2026-10-15.** The bot makes a sales deck, a pitch deck, a
+report or an analysis from the org's own data (CRM, email, projects). It sends
+the result as a PDF file on WhatsApp, and the member can forward the file to
+other people. A deck is a presentation, not a Markdown document.
+
+§5.11 planned "a report as a PDF" for WhatsApp. This section is the design of
+record for it.
+
+### 15.1 What exists (measured 2026-10-15)
+
+| Part | State |
+|---|---|
+| The PDF seam | `gateway/pdf_render.py`, the ONE document-to-PDF seam. It lays out Markdown or HTML on A4 in a child process, with a 13 s limit and a slot for each member and each org. Its sanitizer drops every image and every colour |
+| The visuals | `whatsapp_cards` (tiles, board, timeline, agenda, gantt, donut) and `whatsapp_render` (charts, table) draw SVG in the product's light look. The chart engine (WAC-10f) draws 13 chart kinds with ECharts |
+| The transport | `upload_media` takes any file type. There is no `send_document`, and `OutMessage` has no document kind |
+| The data | The orchestrator holds the CRM reads. It reaches email and projects through `call_agent` |
+| Decks | No deck kind, no slide layout, and no browser on the box |
+
+### 15.2 The design
+
+1. **One tool kind.** `whatsapp_ui` gets the kind `document`. The model
+   collects the facts first. Then it sends ONE spec: the format (`deck` or
+   `report`), a title, and the slides or the sections. Each slide or section
+   holds text, bullets and at most one visual. A visual uses the data of a
+   `whatsapp_ui` image kind: chart, stats, table, board, timeline, gantt or
+   agenda.
+2. **The visuals come from the existing renderers.** `acb_skills/documents.py`
+   checks the spec and draws each visual. A card or a table becomes SVG. A
+   chart goes through the chart engine in its light mode, or the old
+   renderer. So a deck has the look of a chart on WhatsApp and on the web.
+3. **The layout goes through the one PDF seam.** `pdf_render` gets the source
+   kind `document`: a JSON layout of text and drawn visuals. It lays out in
+   the same child process, with the same limits. A deck is 16:9 slides. A
+   report is A4 pages. The text is vector, in Geist, and a reader can select
+   and search it.
+4. **The send.** `bot_run` uploads the PDF to Meta's media store. Then it
+   sends the PDF as a document, with its file name and a caption. The member can forward it
+   like any file.
+
+### 15.3 Security
+
+- **The model gives text and numbers, never markup or bytes.** `documents.py`
+  escapes every text value before it builds HTML. A spec key that holds an
+  image, an SVG or a URL is refused.
+- **Only code draws a visual.** The layout that reaches the child holds SVG
+  from our own renderers and PNG from our own engine. A model value never
+  reaches it as markup.
+- **The renderer loads nothing.** The child gets an archive of the Geist font
+  folder only. The HTML has no `img`, no `style` attribute and no link to a
+  resource.
+- **The bounds.** At most 20 slides or 30 sections, and 12 visuals. Each text
+  value has a length limit. The source limit is `MAX_DOCUMENT_BYTES`, and a
+  PDF over 10 MB is refused.
+- **Tenancy.** The PDF holds only what the run read as the link's member, in
+  the link's org (D-WAC-3). The render waits in the member's and the org's
+  queue of `render_pdf`.
+
+### 15.4 The channel rule
+
+The channel changes delivery, never function (owner, 2026-10-10). On
+WhatsApp a document goes as a file. In the web chat the same spec goes to the
+tool `make_document` (`acb_skills.documents`, family `documents`). It lays out
+the PDF through the same `render_pdf` kind `document`, and `write_artifact`
+saves it, so the chat shows a PDF card with a download.
+
+The main assistant
+and the Projects assistant hold it by scope. WhatsApp withholds it, because
+`whatsapp_ui` kind `document` sends the same PDF as a file. Fence:
+`tests/unit/test_chat_documents.py` (owner, 2026-10-15: "live in the AI chat
+too").
+
+### 15.5 The switch
+
+`WHATSAPP_DOCUMENTS` turns WAC-12 on. It is default OFF, and it works only with
+`WHATSAPP_ASSISTANT_NATIVE_UI` on. With it off, the kind `document` answers
+that documents are off, and the scope rule does not offer documents.
+
+### 15.6 Acceptance (WAC-12)
+
+| # | Check | Fence |
+|---|---|---|
+| D1 | A deck spec of a cover, three content slides with a chart, tiles and a table, and a closing slide gives one PDF with five 16:9 pages. The text is selectable | `test_wac_documents.py` |
+| D2 | A report spec gives A4 pages, and a long report flows onto a second page | `test_wac_documents.py` |
+| D3 | The member gets one WhatsApp document part with a `.pdf` file name and the caption. The thread keeps a rendition that names the file and each slide title | `test_wac_documents.py`, a run test |
+| D4 | A model value with HTML or a script reaches the PDF as plain text, and a spec key that holds an image, an SVG or a URL is refused | `test_wac_documents.py` |
+| D5 | Too many slides, too many visuals or a text past its limit is refused with what to fix, before any render | `test_wac_documents.py` |
+| D6 | The layout runs in the `render_pdf` child, and a second render for the same member waits or is refused as before | `test_wac_documents.py` |
+| D7 | With the switch off, the kind refuses, and the scope rule does not offer documents | `test_wac_documents.py` |
+| D8 | An upload or a send that surely failed is a failed part. An unclear one is never sent again | `test_wac_documents.py` |
+
+## 16. Amendment of 2026-10-15: WAC-13, "Metorite is updating"
+
+**Owner directive, 2026-10-15, in two parts.** While Metorite updates, a
+member's message can fail, and the member then reads a general error. The bot
+must say that Metorite is updating. Then, better than asking the member to
+send it again: keep the message, and answer it with its chat context when
+Metorite is back.
+
+### 16.1 What happens today (measured on the box, 2026-10-15)
+
+| Event | What the member got |
+|---|---|
+| A gateway restart (about 40 a day, one for each merge) | `gateway-drain.sh` holds the stop for up to 60 s while runs end. A run that is still going is cancelled. The sweep runs its message again about 5 minutes later. The member gets the answer late, and no word in between |
+| The AI Router was slow, then unavailable (05:36 to 06:04) | Some model calls took 37 s to 89 s, and three reached the 120 s limit (`v1.router_unavailable` at 05:58, 06:02 and 06:04). Three runs from one phone hit their 4-minute limit (`code=timeout`). Each time the member got `REPLY_FAILED`: "Metorite could not answer just now. Try again in a few minutes." |
+
+The second row is the error that the owner saw. The Router was not
+restarted: the customer console's LiteLLM logging worker backed up. To the
+member, a restart and an outage look the same.
+
+### 16.2 The design: hold, then answer
+
+1. **Which failures.** Some codes mean that Metorite's AI path did not
+   answer. One is `connection`: a 502 or 503 from the Router, or a refused
+   connection. The other is `timeout` from a call: a 504, or a read timeout. The run's
+   OWN 4-minute limit counts too, but only when the Router failed during that
+   run: `v1_compat` stamps each `ConsoleRouterUnavailable`. A long job that
+   meets the limit with the Router up keeps the general text.
+2. **Hold.** The message goes back to wait (`received`), with the code
+   `updating`. Its first hold gives back its try, so one outage never uses up
+   a message. A later hold keeps the try. So a message that fails each time
+   ends after 3 tries with the general text, once. The member hears
+   `REPLY_UPDATING` once, on the first hold of that message.
+3. **Back.** The sweep runs a held message again only when the AI path is
+   back. Both of these must be true:
+   - The Router's `/health` answers. The sweep reads it once.
+   - Either a model run succeeded after the last failure, or 5 minutes passed
+     with no new failure on any phone.
+   A `/health` answer alone is not enough. On 2026-10-15 the Router answered
+   its health check while its model calls were slow or failed.
+4. **Answer.** The held message runs as any waiting message runs. It has the
+   thread's history, and it runs oldest first. It runs as the link's member,
+   after the run's own checks (§5.5). The first part quotes the member's
+   message (§13.7), so a late answer shows which message it answers. A thread's newer message
+   runs at once, as before. Only the sweep runs a held message again, and
+   the sweep reads the Router's health first. No drain runs one.
+5. **Every held message gets its answer.** A later answer never closes a held
+   message. A code-only answer (a 👍 for "thanks", a view, a Confirm) did not
+   read it. And the bot promised to answer it. A member who asked again can
+   get two answers. Each one quotes its own message.
+6. **A restart in the middle of a run.** At shutdown, each run that still
+   waits on the model sends `REPLY_UPDATING_HOLD` first, best effort, bounded,
+   with its org bound. The sweep then runs that message again, as before.
+
+### 16.3 Limits
+
+- **The reply window.** WhatsApp takes free text only for 24 hours after the
+  member's message. A held message that is older expires, with no send
+  (`_EXPIRE_SQL`, as for every waiting message).
+- **An org that the sweep does not visit.** The sweep visits the orgs that
+  `WHATSAPP_ASSISTANT_ORGS` names. It skips `*`. So an org that only `*`
+  admits holds nothing: the row closes `failed` with the code
+  `updating_plain`, and the member reads `REPLY_UPDATING_PLAIN`, which
+  promises nothing.
+- **No probe.** The bot does not test the model with a call. A probe would
+  spend an org's AI credits that no member asked to spend.
+- **One process.** The proof of "back" is this process's own record. After a
+  restart it starts empty, and then 5 minutes with no failure count as back.
+
+### 16.4 Words
+
+- `REPLY_UPDATING`: "Metorite is updating right now. I have your message, and
+  I will answer it here when Metorite is back online."
+- `REPLY_UPDATING_PLAIN`: "Metorite is updating right now, so it could not
+  answer. Send your message again in a few minutes."
+- `REPLY_UPDATING_HOLD`: "Metorite is updating right now. Your answer comes
+  here in a few minutes."
+
+The web chat uses the same idea and the same words ("Metorite is updating",
+the run error code `updating`).
+
+### 16.5 Review round 1 (2026-10-15)
+
+The first build sent "back online, send your message again" instead of an
+answer. The reviewer and the verifier found these, and the build above fixes
+each one:
+
+| Found | Fix |
+|---|---|
+| The quiet time was each row's own age, so a member heard "back" during the outage | A new failure on any phone holds every message |
+| An org that only `*` admits got a promise that no sweep kept | The plain text, and no hold |
+| The run's own limit on a long job said "updating" | Only with a Router failure during the run |
+| A shutdown note had no org bound, so its record failed | `_send_bound` |
+| No test held the 24-hour window | An R8 test |
+
+**Review round 2 (the hold design).**
+
+| Found | Fix |
+|---|---|
+| A later code-only answer (a 👍 for "thanks") closed a held message unanswered | No later answer closes a held message |
+| Each hold gave back the try, so a message that failed each time ran for 24 hours | Only the first hold gives back the try |
+| A drain ran a held message with no health read | Only the sweep runs a held message |
+| A shutdown just after a hold sent both notes | The run leaves the shutdown list before the hold |
+
+### 16.6 Acceptance (WAC-13)
+
+| # | Check | Fence |
+|---|---|---|
+| U1 | A run that fails with `connection`, or `timeout` from a call, holds the message and sends `REPLY_UPDATING` once. A second hold sends nothing | `test_wac_updating.py`, R8 |
+| U2 | A run that fails with any other code keeps its text. The run's own limit with the Router up keeps the general text | `test_wac_updating.py`, `test_wac_bot_run.py` |
+| U3 | No drain runs a held message. Once the AI path is back, the sweep runs each held message, oldest first, and each gets its answer | `test_wac_updating.py`, R8 |
+| U4 | "Back" needs the Router's health AND a success or 5 quiet minutes | `test_wac_updating.py` |
+| U5 | A later answer never closes a held message. Only the first hold gives back the try, so a message that fails each time ends after 3 tries with the general text once | `test_wac_updating.py`, R8 |
+| U6 | A held message past 24 hours expires with no send. An org that the sweep skips gets the plain text and no hold | R8, `test_wac_updating.py` |
+| U7 | At shutdown, a run that waits on the model sends `REPLY_UPDATING_HOLD` with its org bound, and the shutdown stays bounded | `test_wac_updating.py` |

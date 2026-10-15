@@ -82,12 +82,13 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     """A new write pair needs a spec amendment (§9.2, EA3-31). EA-6a listed
     the PATCH and the references POST. EA-6d adds the task create. EA-12a
     adds the three POST pairs of the agent runs (§12.1, EA12-9). EA-6c adds
-    the comment POST (EA3-35)."""
+    the comment POST (EA3-35). EA-6b adds the claim (§9.2, EA3-34)."""
     expected = {
         ("PATCH", "/projects/tasks/{task_id}"),
         ("POST", "/projects/tasks/{task_id}/refs"),
         ("POST", "/projects/tasks"),
         ("POST", "/projects/tasks/{task_id}/comments"),
+        ("POST", "/projects/tasks/{task_id}/claim"),
         ("POST", "/projects/tasks/{task_id}/agent-runs"),
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),

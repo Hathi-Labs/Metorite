@@ -137,6 +137,18 @@ REPLY_CREDITS = (
     "Settings, Billing."
 )
 REPLY_FAILED = "Metorite could not answer just now. Try again in a few minutes."
+#: WAC-13 (§16.4): Metorite itself did not answer (a restart, an outage). The
+#: message waits, and the sweep answers it when the AI path is back.
+REPLY_UPDATING = ("Metorite is updating right now. I have your message, and I will "
+                  "answer it here when Metorite is back online.")
+#: WAC-13: a restart cancels a run that waits on the model. The sweep runs the
+#: message again after the restart, so the answer still comes.
+REPLY_UPDATING_HOLD = ("Metorite is updating right now. Your answer comes here in "
+                       "a few minutes.")
+#: WAC-13, for an org that the sweep does not visit (only ``*`` admits it). No
+#: sweep keeps a promise there, so the text makes none (review round 1).
+REPLY_UPDATING_PLAIN = ("Metorite is updating right now, so it could not answer. "
+                        "Send your message again in a few minutes.")
 #: The early message that code sends when a run takes long and the AI did not
 #: say so itself (WAC-10e).
 REPLY_WORKING = ("Still on it. This one takes a little longer, and I will reply "
@@ -225,6 +237,18 @@ SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
     "Metorite web app, and add a link button.\n"
 ))
 
+#: What a run with documents on adds to its scope rule (WAC-12, §15).
+#: Advisory, like ``SCOPE_RULE``: ``whatsapp_ui`` checks every spec.
+DOCUMENTS_RULE = (
+    "You can send a PDF file that the member can forward: a sales deck, a pitch "
+    "deck, a report or an analysis. When the member asks for one, first collect "
+    "the facts from Metorite (the CRM, email, projects, through the assistants "
+    "that hold them). Never invent a number. Then call whatsapp_ui kind "
+    "\"document\" once, with a deck of slides or a report of sections, and "
+    "charts, tiles and tables as visuals. Tell the member in one line what the "
+    "file holds."
+)
+
 # ── The limits ──────────────────────────────────────────────────────────────
 
 #: WhatsApp's limit for one text message.
@@ -250,6 +274,20 @@ QUICK_TIMEOUT_S = 15
 #: A run this long with no early message gets :data:`REPLY_WORKING` (WAC-10e).
 #: Meta hides "typing…" after 25 seconds, so the member hears before that.
 WORKING_AFTER_S = 20
+
+#: WAC-13: the run error codes that mean Metorite itself did not answer.
+UNAVAILABLE_CODES = frozenset({"timeout", "connection"})
+#: The row codes of WAC-13. ``updating``: the message waits for the AI path.
+#: ``updating_plain``: an org that the sweep does not visit, so nothing waits,
+#: and the member sends the message again.
+UPDATING_CODE = "updating"
+PLAIN_CODE = "updating_plain"
+#: With no success since, the AI path counts as back only after this long
+#: with no new failure of :data:`UNAVAILABLE_CODES`.
+OUTAGE_QUIET_S = 5 * 60
+#: The bound on the shutdown notes, and on one health read of the Router.
+HOLD_TIMEOUT_S = 3.0
+HEALTH_TIMEOUT_S = 5.0
 
 #: The namespace of a thread id that a message opens (:func:`new_thread_id`).
 _THREAD_NS = uuid.UUID("5f3c1a2e-9d47-4b8e-a6c1-7e2d0b9f4a13")
@@ -473,6 +511,7 @@ SELECT id::text AS id, organization_id::text AS organization_id,
    AND direction = 'in'
    AND state = 'received'
    AND tries < :max
+   AND error_code IS DISTINCT FROM 'updating'
    AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
  ORDER BY received_at, id
  LIMIT :n
@@ -565,6 +604,7 @@ SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
          AND state IN ('received', 'running')
          AND tries < :max
          AND chat_session_id IS NOT NULL
+         AND (error_code IS DISTINCT FROM 'updating' OR :back)
          AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
        ORDER BY chat_session_id, received_at, id
   ) oldest
@@ -573,6 +613,25 @@ SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
  LIMIT :n
 """
 
+
+#: WAC-13: the message waits for the AI path. Its FIRST hold gives back its
+#: try, so one outage never uses up a message. A later hold keeps the try, so
+#: a message that fails each time ends after :data:`MAX_TRIES` with the general
+#: text (verifier F2). ``before`` is the code it had: the member hears
+#: :data:`REPLY_UPDATING` only on its first hold.
+_HOLD_SQL = """
+WITH prev AS (
+    SELECT error_code FROM whatsapp_bot_messages WHERE id = CAST(:id AS uuid)
+)
+UPDATE whatsapp_bot_messages
+   SET state = 'received', error_code = :code,
+       tries = CASE WHEN error_code IS DISTINCT FROM :code
+                    THEN GREATEST(tries - 1, 0) ELSE tries END,
+       updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND state = 'running'
+RETURNING (SELECT error_code FROM prev) AS before
+"""
 
 def _request(row: Any) -> RunRequest:
     return RunRequest(str(row["id"]), str(row["organization_id"]),
@@ -753,7 +812,9 @@ async def _retry(message_id: str, code: str) -> bool:
 
 
 async def _waiting(session_id: str) -> list[RunRequest]:
-    """The waiting rows of one thread, oldest first."""
+    """The waiting rows of one thread, oldest first. A message that waits for
+    the AI path (WAC-13) is never one of them: only the sweep, which reads the
+    Router's health, runs it again (verifier F3)."""
     async with tenant_session() as db:
         rows = (await db.execute(text(_NEXT_SQL), {
             "sid": session_id, "max": MAX_TRIES, "expire": EXPIRE_S,
@@ -873,6 +934,12 @@ async def record_inbound(
 _RUNS: set[asyncio.Task[None]] = set()
 #: The rows whose run is live in this process.
 _LIVE_ROWS: set[str] = set()
+#: WAC-13: the runs that wait on the model now, by row id. At shutdown each
+#: one hears :data:`REPLY_UPDATING_HOLD` before its cancel.
+_WAITING_ON_MODEL: dict[str, RunRequest] = {}
+#: WAC-13: when a model run last failed with :data:`UNAVAILABLE_CODES`, and
+#: when one last answered, in this process (epoch seconds).
+_OUTAGE: dict[str, float] = {"failed": 0.0, "answered": 0.0}
 #: One lock for each THREAD with a run waiting or live in this process, and
 #: how many runs hold or wait for it. A lock leaves the map with its last
 #: user, so the map holds only the threads that are busy now.
@@ -906,11 +973,103 @@ async def stop_runs(timeout: float = 5.0) -> None:
     closed as ``replied`` in a shielded write, or stays ``sending`` for the
     sweep to close, so nothing goes out twice (at-most-once).
     """
+    waiting = list(_WAITING_ON_MODEL.values())
+    if waiting:
+        # WAC-13: each member whose run waits on the model hears why the
+        # answer is late. Best effort, and bounded, so a slow Meta never
+        # holds the shutdown.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.gather(
+                *(_send_bound(req, REPLY_UPDATING_HOLD if _swept(req.organization_id)
+                              else REPLY_UPDATING_PLAIN, kind="updating_hold")
+                  for req in waiting), return_exceptions=True), HOLD_TIMEOUT_S)
+        _log.info("whatsapp_channel.run.hold_notes", runs=len(waiting))
     runs = list(_RUNS)
     for task in runs:
         task.cancel()
     if runs:
         await asyncio.wait(runs, timeout=timeout)
+
+
+async def _router_healthy() -> bool:
+    """True when the AI Router's ``/health`` answers 200 (WAC-13).
+
+    No Router wired (a dev box, a test) counts as healthy: the AI path is
+    then the gateway's own. Never raises.
+    """
+    try:
+        import httpx
+        from acb_common import get_settings
+
+        base = str(getattr(get_settings(), "customer_console_url", "") or "").strip()
+        if not base:
+            return True
+        async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_S) as client:
+            resp = await client.get(base.rstrip("/") + "/health")
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _quiet_now() -> bool:
+    """True when this process counts the AI path as back: a model run
+    answered after the last failure, or no failure for :data:`OUTAGE_QUIET_S`.
+    A new failure on ANY phone holds every waiting message (review round 1).
+    The sweep also asks the Router's health (:func:`_back`)."""
+    if _OUTAGE["answered"] > _OUTAGE["failed"]:
+        return True
+    return time.time() - _OUTAGE["failed"] >= OUTAGE_QUIET_S
+
+
+def _swept(org: str) -> bool:
+    """True when the sweep visits *org*: it is named in the allowlist. An org
+    that only ``*`` admits gets no re-run, so none of its messages waits."""
+    return org.lower() in {o.strip().lower() for o in flags.assistant_orgs()}
+
+
+def _ai_path_down(code: str, exc: BaseException, run_started: float) -> bool:
+    """Did Metorite's AI path fail to answer (WAC-13)?
+
+    ``connection`` always: the Router or the model refused or dropped the
+    call. ``timeout`` from a call (a 504, a read timeout) too. The run's OWN
+    time limit is ``timeout`` as well, and a long job meets it with every
+    part of Metorite up. So that one counts only when the Router failed during
+    this run (review round 1).
+    """
+    if code not in UNAVAILABLE_CODES:
+        return False
+    own_limit = (type(exc) is TimeoutError
+                 and time.time() - run_started >= RUN_TIMEOUT_S - 1)
+    if not own_limit:
+        return True
+    from gateway.routes.v1_compat import router_failed_since
+
+    return router_failed_since(run_started)
+
+
+async def _send_bound(req: RunRequest, text_: str, *, kind: str) -> int:
+    """:func:`_send` with the request's org bound: a shutdown has none bound,
+    and the ``out`` row needs one (review round 1)."""
+    token = bind_tenant(req.organization_id)
+    try:
+        return await _send(req, [text_], kind=kind)
+    finally:
+        release_tenant(token)
+
+
+async def _hold(message_id: str) -> str | None:
+    """Put a running message back to wait for the AI path (:data:`_HOLD_SQL`).
+
+    Returns the code that it had, or None when it was not ``running``. Only
+    a message that was not held before gets :data:`REPLY_UPDATING`.
+    """
+    async with tenant_session() as db:
+        row = (await db.execute(text(_HOLD_SQL), {
+            "id": message_id, "code": UPDATING_CODE,
+        })).first()
+    if row is None:
+        return None
+    return str(row[0]) if row[0] is not None else ""
 
 
 async def wait_for_runs() -> None:
@@ -1247,18 +1406,21 @@ def _offered_ai_choice(history: list[dict[str, str]]) -> bool:
 
 def build_payload(message: str, history: list[dict[str, str]],
                   member_email: str, *, native: bool = False,
-                  writes: bool = False) -> dict[str, Any]:
+                  writes: bool = False, documents: bool = False) -> dict[str, Any]:
     """The event payload of one run.
 
     ``_history_loader`` makes the batch executor take its STRUCTURED path on
     every turn, the first one too: the scope rule is then a leading system
     message, and never text folded into the member's turn
     (``executor._run_with_maf_agent``). *native* picks the scope rule of the
-    WhatsApp profile (WAC-10a), and *writes* the rule of WAC-4.
+    WhatsApp profile (WAC-10a), and *writes* the rule of WAC-4. *documents*
+    adds :data:`DOCUMENTS_RULE` (WAC-12).
     """
     prior = [model_turn(m) for m in history]
     rule = (SCOPE_RULE_WRITES if native and writes
             else SCOPE_RULE_NATIVE if native else SCOPE_RULE)
+    if native and documents:
+        rule = f"{rule}\n{DOCUMENTS_RULE}"
     return {
         "mode": "chat",
         "message": message,
@@ -1351,15 +1513,19 @@ async def _model_answer(req: RunRequest, message: str,
     from acb_skills.whatsapp_ui import whatsapp_run
     from gateway.routes.whatsapp_channel import views
 
+    documents = native and flags.documents_enabled()
     payload = build_payload(message, history, req.member_email,
-                            native=native, writes=writes)
+                            native=native, writes=writes, documents=documents)
     if native:
         await _show_typing(req)
+    _WAITING_ON_MODEL[req.message_id] = req
+    run_started = time.time()
     try:
         with refuse_cards(), (whatsapp_run(
                 AGENT, org=req.organization_id,
                 views=views.runner(req.member_email, req.organization_id),
-                notify=_notifier(req), writes=writes)
+                notify=_notifier(req), writes=writes,
+                document=_document_renderer(req) if documents else None)
                 if native else contextlib.nullcontext()) as wa_run:
             result = await _still_working(req, wa_run, asyncio.wait_for(
                 _executor()(
@@ -1381,10 +1547,29 @@ async def _model_answer(req: RunRequest, message: str,
         _log.warning("whatsapp_channel.run.agent_failed", run_id=run_id,
                      message_id=req.message_id, code=code,
                      error_type=type(exc).__name__)
+        _WAITING_ON_MODEL.pop(req.message_id, None)  # no hold note after this
+        if _ai_path_down(code, exc, run_started):
+            # WAC-13: Metorite itself did not answer. In an org that the
+            # sweep visits, the message waits, and the sweep answers it when
+            # the AI path is back. The member hears so once. Elsewhere no
+            # sweep would keep that promise, so the text makes none.
+            _OUTAGE["failed"] = time.time()
+            if _swept(req.organization_id):
+                before = await _hold(req.message_id)
+                if before is not None and before != UPDATING_CODE:
+                    await _send(req, [REPLY_UPDATING], kind="updating", attempt=attempt)
+                _log.info("whatsapp_channel.run.held", message_id=req.message_id,
+                          first=before != UPDATING_CODE)
+            elif await _end(req.message_id, "failed", PLAIN_CODE):
+                await _send(req, [REPLY_UPDATING_PLAIN], kind="updating", attempt=attempt)
+            return None
         if await _end(req.message_id, "failed", code):
             await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
                         kind="failed", attempt=attempt)
         return None
+    finally:
+        _WAITING_ON_MODEL.pop(req.message_id, None)
+    _OUTAGE["answered"] = time.time()
 
     reply = final_text(result).strip()
     ui: list[Any] = []
@@ -1512,6 +1697,24 @@ def _said_elsewhere(i: int, texts: list[str]) -> bool:
         if len(mine & theirs) / len(mine) >= _RESTATED:
             return True
     return False
+
+
+def _document_renderer(req: RunRequest) -> Callable[[dict[str, Any]], Awaitable[bytes]]:
+    """Lays out a document for this run's member (WAC-12): the ONE PDF seam.
+
+    ``pdf_render.render_pdf`` runs the layout in its child process, with its
+    timeout and its turn for each member and each org. The member and the org
+    are the link's, never the message's (D-WAC-3).
+    """
+    async def _render(layout: dict[str, Any]) -> bytes:
+        import json
+
+        from gateway.pdf_render import render_pdf
+
+        return await render_pdf("document", json.dumps(layout, ensure_ascii=False),
+                                member=req.member_email, org=req.organization_id)
+
+    return _render
 
 
 def _resend_text(stored: str | None) -> str | None:
@@ -1799,7 +2002,7 @@ async def _send(req: RunRequest, texts: list[Any], *, kind: str,
 
 async def _send_part(provider: Any, wa_id: str, part: Any, *,
                      reply_to: str | None = None) -> str:
-    """Send one part: a text, an interactive element, or an image.
+    """Send one part: a text, an interactive element, an image or a document.
 
     *reply_to* quotes the member's message above the part, as a person's
     swipe reply does (WAC-10e). Meta drops the quote, and still delivers the
@@ -1818,6 +2021,10 @@ async def _send_part(provider: Any, wa_id: str, part: Any, *,
         return await provider.send_text(wa_id, part.rendition, **quote)
     if part.kind == "interactive":
         return await provider.send_interactive(wa_id, part.interactive, **quote)
+    if part.kind == "document":  # a PDF file (WAC-12)
+        media_id = await provider.upload_media(part.pdf, "application/pdf", part.filename)
+        return await provider.send_document(wa_id, media_id, filename=part.filename,
+                                            caption=part.caption, **quote)
     media_id = await provider.upload_media(part.png, "image/png", "metorite.png")
     return await provider.send_image(wa_id, media_id, caption=part.caption, **quote)
 
@@ -1856,7 +2063,7 @@ def _uuid_or_none(value: str) -> str | None:
         return None
 
 
-async def _sweep_org(org: str) -> list[RunRequest]:
+async def _sweep_org(org: str, *, back: bool = True) -> list[RunRequest]:
     """Expire, close and collect the waiting rows of ONE org. Bound.
 
     A row that used its tries gets its last word once, here: the UPDATE
@@ -1879,7 +2086,7 @@ async def _sweep_org(org: str) -> list[RunRequest]:
             )).fetchall()
             rows = (await db.execute(text(_STALE_SQL), {
                 "max": MAX_TRIES, "stale": STALE_S, "expire": EXPIRE_S,
-                "n": SWEEP_BATCH,
+                "n": SWEEP_BATCH, "back": back,
             })).mappings().all()
         for row in exhausted:
             if row["chat_session_id"] is None:
@@ -1908,6 +2115,9 @@ async def sweep_once() -> int:
     if not flags.assistant_enabled():
         return 0
     started = 0
+    # WAC-13: a waiting message runs again only when the AI path is back:
+    # this process proves it, and the Router's health answers. One read.
+    back = _quiet_now() and await _router_healthy()
     for raw in sorted(flags.assistant_orgs()):
         if raw == "*":
             continue  # admits every org at the door; the sweep needs named ids
@@ -1916,7 +2126,7 @@ async def sweep_once() -> int:
             _log.warning("whatsapp_channel.sweep.bad_org_id", length=len(raw))
             continue
         try:
-            for req in await _sweep_org(org):
+            for req in await _sweep_org(org, back=back):
                 start(req, stale=True)
                 started += 1
         except Exception as exc:

@@ -193,6 +193,7 @@ __all__ = [
     "reconcile",
     "redeem_code_on_console",
     "release_seat_on_console",
+    "remove_member_on_console",
     "resolve_for_signin",
     "router_is_wired",
     "seat_overview_on_console",
@@ -962,6 +963,41 @@ async def invite_member_on_console(
     if not isinstance(body, dict):
         body = {}
     return response.status_code, body
+
+
+async def remove_member_on_console(
+    *,
+    actor_email: str,
+    member_email: str,
+) -> tuple[int, dict[str, Any]]:
+    """Mirror a member removal onto the Customer Console (owner request, 2026-10-15).
+
+    The reverse of :func:`invite_member_on_console`, on the same
+    ``member_admin`` door family: ``POST /registry/members/remove``. The
+    Console sets the membership to ``removed`` and releases every live seat
+    that person holds in the org. It never mints an identity, so an unknown
+    address answers 200 ``{"found": false}``.
+
+    The body carries ``member_email`` and ``actor_email`` only. The org is
+    the ANSWER, derived Console-side (R11), exactly as at the invite door.
+
+    It goes through :func:`_post_deployment_door`, the ONE deployment-key
+    transport, so the verdict-or-outage line is the one every door draws.
+
+    Returns the Console's ``(status_code, body)``.
+
+    Raises:
+        ConsoleMemberWriteUnavailable: the box is not wired, or the Console
+            produced no answer. Never raised for a verdict.
+    """
+    if not is_wired():
+        # Ship-dark, the invite mirror's posture: an unwired box makes no hop.
+        raise ConsoleMemberWriteUnavailable("unwired")
+    return await _post_deployment_door(
+        "/registry/members/remove",
+        {"member_email": member_email, "actor_email": actor_email},
+        unavailable=ConsoleMemberWriteUnavailable,
+    )
 
 
 # ── The customer BILLING client (H-152, the billing half) ───────────────────

@@ -161,6 +161,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/tasks/{task_id}/archive", "archive_task", "C"),
     Route("POST", "/projects/tasks/{task_id}/unarchive", "unarchive_task", "B"),
     Route("PUT", "/projects/tasks/{task_id}/assignees", "assign", "B"),
+    # WS-55 EA-6b (EA3-34). An outside agent reaches it over MCP as
+    # `claim_task` (external_agent_access.md §9.2). The chat has no tool yet.
+    Route("POST", "/projects/tasks/{task_id}/claim", "claim_task", "B"),
     Route("POST", "/projects/tasks/{task_id}/links", "link_tasks", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/links/{link_id}", "unlink_tasks", "B"),
     # ── bulk.py · move.py · merge.py ─────────────────────────────────────
@@ -489,6 +492,9 @@ PLANNED: dict[str, str] = {
     "start_agent_run": "WS-55 EA-12e, in-product chat parity",
     "post_agent_activity": "WS-55 EA-12e, in-product chat parity",
     "finish_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
+    # The chat assigns through `assign` and moves through `update_task`.
+    "claim_task": "WS-55, in-product chat parity, after EA-12e",
 }
 
 
@@ -1004,6 +1010,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "view_id": "The hand-arranged order of a saved view, which only the board reads.",
         "top_level": "The board's subtask toggle. Each row the chat reads names its parent.",
     },
+    ("POST", "/projects/tasks/{task_id}/claim"): {
+        "If-Match": (
+            "The edit guard of an outside agent (D-PM-20, WS-55 EA-6b). The chat "
+            "has no claim tool."
+        ),
+    },
     ("PATCH", "/projects/tasks/{task_id}"): {
         "If-Match": "The browser's edit guard (D-PM-20). A chat write reads the row first.",
         "project_id": "The route refuses it: a move goes through move_task.",
@@ -1275,6 +1287,8 @@ UI_ACTIONS: dict[str, str] = {
     "agentRunsApi.list": "agent_runs",
     "agentRunsApi.get": "agent_runs",
     "agentRunsApi.post": "post_agent_activity",
+    # EA-12d: "Ask an agent", a member starts a run for their own agent.
+    "agentRunsApi.start": "start_agent_run",
     "agentRunsApi.enabled": "agent_runs",
     # ── notificationsApi ─────────────────────────────────────────────────
     "notificationsApi.list": "notifications",
