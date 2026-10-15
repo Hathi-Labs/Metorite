@@ -5475,6 +5475,38 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
 - **Added:** 2026-10-15 · H-315 template submission
 
+### H-318 · A preview app's jobs reach the tier-2 coordinator · [AGENT]
+- **Check:** `rg -n "launch" apps/services/gateway/gateway/routes/shell/intent.py`.
+  No hit inside `held_jobs` means this is open.
+- **Why.** `navigation_shell.md` §5.2 rule 8 says a `preview` app may carry a
+  manifest and nothing renders it. The bar's `buildItems` honours that,
+  because `visibleSections` drops a preview pane. The gateway's `held_jobs`
+  filters a job by feature only, and every member holds `feature:*` since
+  migration 207. So a job of a preview app would be offered to every member
+  before the owner promotes the app. Found by the WS-61 KB-0 audit on
+  2026-10-15, and it is why KB-0 carries no job.
+- **Do this:** either `held_jobs` reads the launch status of the job's app
+  from one list the gateway owns, or rule 8 changes to "a preview app
+  carries no job". Pin it in `tests/unit/test_shell_intent.py`.
+- **Authority:** `specs/navigation_shell.md` §5.2 rule 8 and §5.3
+- **Added:** 2026-10-15 · WS-61 KB-0 audit
+
+### H-319 · Two spellings of the subject grammar: a bare email and `user:<email>` · [AGENT]
+- **Check:** `rg -n "user:" infra/postgres/268_artifacts.sql packages/acb_auth/acb_auth/permissions.py apps/services/gateway/gateway/routes/projects/core.py`.
+  A `user:` prefix in the artifacts CHECK and a bare email in
+  `validate_grant_subject` means this is open.
+- **Why.** `pm_project_grants` and `validate_grant_subject`
+  (`routes/projects/core.py:3383`) take a bare email as a subject. AM-1
+  (`268_artifacts.sql`, 2026-10-15) takes `user:<email>` and adds
+  `project:<uuid>`. CLAUDE.md §4 names one subject-grammar validator as a
+  seam. `knowledge_base.md` §5.1 (WS-61 KB-1) must use the shared one, so
+  the spelling has to be decided before KB-1 and AM-3 both write grants.
+- **Do this:** pick one spelling, put the validator in
+  `acb_auth/permissions.py`, and make Projects, Artifacts and Knowledge call
+  it. A migration that widens the artifacts CHECK is expand-only (R6).
+- **Authority:** CLAUDE.md §4 (respect the seams), `tenancy_and_visibility.md` §3
+- **Added:** 2026-10-15 · WS-61 KB-0 audit
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
