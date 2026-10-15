@@ -45,7 +45,28 @@ export type SyncHealth = {
    * the budget. `null` while the window is below it.
    */
   credits: { budget_24h: number; used_24h: number; resumes_at?: string | null };
+  /**
+   * CRM-Q16: the holds, keyed by the count keys of `entities`. An older
+   * gateway sends no map, so read it through `holdsOf`, never directly.
+   */
+  holds?: Record<string, SyncHold>;
 };
+
+/**
+ * One entry of `crm_settings.sync_holds` (CRM-Q16, spec section 18.8).
+ * `held: false` records that an admin turned the module on, so the next
+ * import does not hold it again.
+ */
+export type SyncHold = {
+  held: boolean;
+  by: "auto" | "admin";
+  /** The provider count when the hold was written. `null` when unknown. */
+  count: number | null;
+  at: string | null;
+};
+
+/** A module is large above this many records in the provider count (CRM-Q16). */
+export const LARGE_MODULE_RECORDS = 5000;
 
 export const UNAVAILABLE_SENTENCE = "Connect Zoho again to allow this module";
 /**
@@ -66,11 +87,22 @@ const ENTITY_LABELS: Record<string, string> = {
   deal_contacts: "Deal contacts",
 };
 
-/** A name for an entity key. A key that is not known reads as words. */
-export function entityLabel(key: string): string {
+const MODULE_PREFIX = "module:";
+
+/**
+ * A name for an entity key. A key that is not known reads as words. A generic
+ * module key (`module:<ApiName>`) takes the Zoho label of that module when the
+ * caller passes the modules, and the words of its API name when not.
+ */
+export function entityLabel(key: string, modules?: readonly HealthModule[]): string {
   const known = ENTITY_LABELS[key];
   if (known) return known;
-  const words = key.replace(/_/g, " ").trim();
+  const apiName = key.startsWith(MODULE_PREFIX) ? key.slice(MODULE_PREFIX.length) : null;
+  if (apiName !== null) {
+    const zoho = modules?.find((m) => m.api_name === apiName)?.label;
+    if (zoho) return zoho;
+  }
+  const words = (apiName ?? key).replace(/_/g, " ").trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
 }
 
@@ -213,4 +245,85 @@ export function runLine(run: HealthRun): string {
   const parts = [kind, run.status ?? "unknown"];
   if (run.credits_used != null) parts.push(`${run.credits_used} credits`);
   return parts.join(", ");
+}
+
+// ── Holds (CRM-Q16, spec section 18.8) ────────────────────────────────────
+
+/** The core keys that an admin can hold. A generic module key is `module:<ApiName>`. */
+const HOLDABLE_KEYS = new Set(["organizations", "contacts", "leads", "deals", "activities", "tasks"]);
+
+/**
+ * The keys that `PUT /crm/sync/modules/{key}` accepts. `converted_leads` and
+ * `deal_contacts` are counts of a step, not modules, so they have no switch.
+ */
+export function isHoldable(key: string): boolean {
+  return HOLDABLE_KEYS.has(key) || (key.startsWith(MODULE_PREFIX) && key.length > MODULE_PREFIX.length);
+}
+
+/** The hold map. An older health answer has none, and that holds nothing. */
+export function holdsOf(health: SyncHealth | null | undefined): Record<string, SyncHold> {
+  const holds = health?.holds;
+  return holds && typeof holds === "object" ? holds : {};
+}
+
+/** The map is the source of truth. `last_run.held` only says the last run skipped it. */
+export function isHeld(health: SyncHealth | null | undefined, key: string): boolean {
+  return holdsOf(health)[key]?.held === true;
+}
+
+/** The held keys, in the order of the entity rows, then any key with no row. */
+export function heldKeys(health: SyncHealth | null | undefined): string[] {
+  const holds = holdsOf(health);
+  const rows = (health?.entities ?? []).map((e) => e.key);
+  const ordered = [...rows, ...Object.keys(holds).filter((k) => !rows.includes(k))];
+  return ordered.filter((k) => holds[k]?.held === true);
+}
+
+/** "18,674": the Indian digit grouping of `format.ts`. */
+export function recordCount(n: number): string {
+  return new Intl.NumberFormat("en-IN").format(n);
+}
+
+/**
+ * The record count of a key: the larger of the hold count and the Zoho count
+ * of the last estimate. `null` when neither is known.
+ */
+export function recordsOf(
+  health: SyncHealth | null | undefined,
+  key: string,
+  entity?: HealthEntity | null,
+): number | null {
+  const row = entity ?? health?.entities.find((e) => e.key === key) ?? null;
+  const counts = [holdsOf(health)[key]?.count, row?.zoho_count].filter(
+    (n): n is number => typeof n === "number" && Number.isFinite(n),
+  );
+  return counts.length ? Math.max(...counts) : null;
+}
+
+/** The sentence beside a held module (spec section 18.8, "The card"). */
+export function holdSentence(label: string, count: number): string {
+  return `${label} has ${recordCount(count)} records in Zoho. Sync it on its own when Metorite is quiet, so the rest stays fast`;
+}
+
+/**
+ * A row that syncs with the rest and holds more than `LARGE_MODULE_RECORDS`.
+ * The card suggests a hold for it.
+ */
+export function largeUnheld(health: SyncHealth | null | undefined, entity: HealthEntity): boolean {
+  if (!isHoldable(entity.key) || isHeld(health, entity.key)) return false;
+  const n = recordsOf(health, entity.key, entity);
+  return n !== null && n > LARGE_MODULE_RECORDS;
+}
+
+/** The suggestion for a large row that is not held. */
+export function largeSentence(label: string, count: number): string {
+  return `${label} has ${recordCount(count)} records. Sync it on its own to keep Metorite fast`;
+}
+
+/** The toast of a hold write that failed, from the status and code of `PUT /crm/sync/modules/{key}`. */
+export function holdFailureMessage(status: number, code: string | undefined): string {
+  if (code === "unknown_module") return "Zoho has no such module, so it cannot be held.";
+  if (code === "no_settings") return "Set up the CRM before you hold a module.";
+  if (status === 403) return "Only an admin can hold a module.";
+  return "The change did not save. Try again.";
 }

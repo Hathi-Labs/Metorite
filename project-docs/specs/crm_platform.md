@@ -1229,6 +1229,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q12** | Per-owner visibility in the mirror | P1 |
 | **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
 | **CRM-Q15** | ✅ built 2026-10-15 (hotfix). A Zoho account can turn off a core module, such as Accounts or Deals, and keep its data in custom modules. Zoho then answers each record read of that module with HTTP 400 `INVALID_MODULE` (v2) or `NO_PERMISSION` (v8). Measured on a live tenant on 2026-10-15. Before this fix, the run read Accounts first, failed, and mirrored nothing. Now the client raises `SourceModuleUnavailable` for those two codes. The engine skips ANY module that raises it, core or optional, and records the reason `hidden` in the cursor. The run is `ok`, the other modules and the generic modules land, and the connection stays `connected`. The count key of the module gets `unavailable` and `hidden`. The Sync health card then says "Turned off in your Zoho", and not "Connect Zoho again". A skip deletes nothing, and no reconcile runs for the module while it is off. The engine asks again after `UNAVAILABLE_RETRY`, so a module turned on again heals. When a core module comes back, each entity in `DEPENDENTS` is read in full once, through the re-read list of the field rules, so a child that landed with no parent gets its link. That read stamps nothing and deletes nothing. While Deals is off, the contact roles step reads nothing and keeps its queue. A refused deleted list is counted as `hidden`. The cursor keeps `failed`, `retry_from` and `converted_both` while the module is off. Any other failure of a core module still fails the run. Fence: `tests/unit/test_crm_hidden_module_r8.py` (R8) and two client tests in `test_crm_sources_zoho.py` | P0 |
+| **CRM-Q16** | Hold a module, and sync one module on its own. The first import holds a module above 5,000 records and suggests a sync of it on its own. §18.8 | P0 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -1925,6 +1926,70 @@ cd workbench/control_plane && npx vitest run src/app/crm/components/crmQ9.test.t
   pause sentence.
 - `test_crm_reset_r8.py` now expects the first same-account consent to keep the
   profile.
+
+### 18.8 CRM-Q16: hold a module, and sync one module on its own (2026-10-15)
+
+**Why.** On 2026-10-15 the first import of DEWiN Solutions read 805 contacts
+and 3,848 of 18,674 notes in five minutes. In the same window the gateway pool
+ran dry. A member's sign-in failed twice, and the email reads hit the statement
+timeout.
+
+The owner paused the org and asked for two things. An admin must be able to
+sync one module at a time. The product must suggest that when one module
+holds a lot of data.
+
+**Owner decisions (2026-10-15, in chat).**
+
+| Question | Answer |
+|---|---|
+| What does the first import do with a large module? | It holds the module and suggests a sync of it on its own. The rest syncs |
+| When is a module large? | Above 5,000 records in the provider count (`LARGE_MODULE_RECORDS`) |
+
+**The keys.** A hold names a count key of `crm_sync_runs.counts`:
+`organizations`, `contacts`, `leads`, `deals`, `activities` (notes, calls and
+meetings), `tasks`, or `module:<ApiName>`. The card already lists these keys.
+
+**The store.** Migration 268 adds `crm_settings.sync_holds`, a JSONB map from
+a key to `{"held": bool, "by": "auto" | "admin", "count": int | null, "at": iso}`.
+An empty map holds nothing. An entry with `held: false` records that an admin
+turned the module on, so the next import does not hold it again.
+`gateway/crm_sync/holds.py` is the one reader and the one writer.
+
+**The engine.**
+1. A held key is not read. Its changed pass, its deleted pass and its generic
+   module step return at once. The run counts `held: 1` under the key.
+2. A held core entity does not keep the plan at `import`. `plan()` skips it,
+   as it skips an optional entity. So the deleted lists of the other entities
+   still run.
+3. **Auto-hold.** An `import` run reads the counts with `_estimate` before the
+   first record read. Then it holds each key whose count is above
+   `LARGE_MODULE_RECORDS`, with `by: "auto"`. That applies only when the key has no entry yet and
+   its first import is not done. A generic module does the same after
+   `_module_estimate`.
+4. **One module on its own.** `POST /crm/sync/zoho` takes an optional body
+   `{"only": "<key>"}`. The run then reads only that key, also when it is held.
+   It does not read the other keys, and it counts nothing under them. A held
+   key stays held. The admin clicks again until the module is in, or turns it on.
+5. A hold deletes nothing. The rows that a held module mirrored stay.
+
+**The routes.**
+- `PUT /crm/sync/modules/{key}` with `{"sync": bool}`. It needs
+  `admin:access:manage` and `CRM_MIRROR`. It writes `held: !sync, by: "admin"`.
+  An unknown key answers 422. The key is checked against the fixed list, or
+  against the modules of the source profile for `module:<ApiName>`.
+- `GET /crm/sync/health` adds `holds`, the map of the store.
+
+**The card.** Each entity row of the Sync health card shows a "Sync" switch.
+A held row shows a "Held" badge and the sentence: "<Label> has <n> records in
+Zoho. Sync it on its own when Metorite is quiet, so the rest stays fast". It
+also shows a "Sync it on its own" button, which posts `only`.
+
+**Fences.** `tests/unit/test_crm_sync_holds_r8.py` (R8) and `syncHealth` tests
+in `crmQ9.test.ts`.
+
+**Not in this slice.** Pacing inside one module, and a cheaper write of an
+activity whose parent cannot exist. The owner moved the activities of DEWiN
+to "later".
 
 ---
 

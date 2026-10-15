@@ -93,7 +93,7 @@ from gateway.crm_sources.base import (
     UntrustedHost,
 )
 from gateway.crm_sources.registry import mapping_for, source_class
-from gateway.crm_sync import field_rules, profiles, runs
+from gateway.crm_sync import field_rules, holds, profiles, runs
 from gateway.crm_sync.runs import CursorRow, RunLost, SyncRunning
 from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import flags
@@ -389,15 +389,33 @@ def cursor_from(state: dict[str, Any]) -> SourceCursor:
 # ── The plan ────────────────────────────────────────────────────────────────
 
 
+def count_key(entity: str) -> str:
+    """The count key of an entity: its slug, ``tasks``, or ``module:<ApiName>``.
+
+    A hold names this key (CRM-Q16), and the card lists it.
+    """
+    if entity == "task":
+        return "tasks"
+    if _module(entity):
+        return entity
+    return SLUGS[entity]
+
+
 def plan(
     cursors: dict[str, CursorRow],
     now: datetime,
     last_ok: datetime | None,
+    held: frozenset[str] = frozenset(),
 ) -> tuple[str, frozenset[str]]:
-    """The kind of the next run, and the entities that need a full id compare."""
+    """The kind of the next run, and the entities that need a full id compare.
+
+    A held entity (CRM-Q16) neither keeps the plan at ``import`` nor asks for a
+    full compare. Otherwise one held module would stop the deleted lists of
+    every other module for as long as it is held.
+    """
     for entity in ENTITY_ORDER:
         row = cursors.get(changed_module(entity))
-        if entity in OPTIONAL_ENTITIES:
+        if entity in OPTIONAL_ENTITIES or count_key(entity) in held:
             # An optional module that never read must not hold the plan at
             # import for ever (CRM-Q5). The incremental run reads it.
             continue
@@ -406,7 +424,7 @@ def plan(
     due: set[str] = set()
     for entity in ENTITY_ORDER:
         row = cursors.get(changed_module(entity))
-        if row is None:
+        if row is None or count_key(entity) in held:
             continue
         state = row.state or {}
         if state.get("in_progress") and state.get("walk_start"):
@@ -416,7 +434,7 @@ def plan(
         ):
             due.add(entity)
     if last_ok is not None and now - last_ok >= GAP_RECONCILE:
-        due = set(ENTITY_ORDER)
+        due = {e for e in ENTITY_ORDER if count_key(e) not in held}
     if due:
         return runs.KIND_RECONCILE, frozenset(due)
     return runs.KIND_INCREMENTAL, frozenset()
@@ -505,6 +523,11 @@ class RunHandle:
     #: The scopes of the connection. They decide which generic module the
     #: profile mirrors (CRM-Q6a).
     scopes: tuple[str, ...] = ()
+    #: CRM-Q16: the hold entries of the org when the run was planned.
+    holds: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: CRM-Q16: the count keys that this run reads, and no other. ``None`` is
+    #: a normal run. A key here is read also when it is held.
+    only: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -543,8 +566,11 @@ def _enabled(org: str) -> bool:
     return flags.mirror_sync_enabled() and flags.crm_mirror_allowed(org)
 
 
-async def acquire(org: str) -> RunHandle:
+async def acquire(org: str, *, only: frozenset[str] | None = None) -> RunHandle:
     """Take the run lock for ``org`` and plan the run.
+
+    ``only`` limits the run to those count keys (CRM-Q16, "sync it on its
+    own"). The caller checks the keys first.
 
     Raises :class:`NotConnected` with no live connection and
     :class:`SyncRunning` when a run holds the lock. It makes no provider call.
@@ -561,7 +587,8 @@ async def acquire(org: str) -> RunHandle:
             raise NotConnected("mode")
         cursors = await runs.read_cursors(db, org, f"{PROVIDER}:")
         last_ok = await runs.last_success_at(db, org)
-        kind, reconcile = plan(cursors, now, last_ok)
+        entries = await holds.read(db, org)
+        kind, reconcile = plan(cursors, now, last_ok, holds.held_keys(entries))
         saved_counts: dict[str, Any] = {}
         saved_estimate: dict[str, Any] | None = None
         if kind == runs.KIND_IMPORT:
@@ -573,7 +600,7 @@ async def acquire(org: str) -> RunHandle:
     return RunHandle(
         org=org, run_id=run_id, kind=kind, connection_id=connection.id,
         reconcile=reconcile, cursors=cursors, counts=counts, estimate=saved_estimate,
-        scopes=tuple(connection.scopes or ()),
+        scopes=tuple(connection.scopes or ()), holds=entries, only=only,
     )
 
 
@@ -594,6 +621,11 @@ class _Ctx:
         self.reconcile = handle.reconcile
         self.counts = handle.counts
         self.estimate = handle.estimate
+        #: CRM-Q16: the hold entries, the keys held now, and the keys of an
+        #: "on its own" run.
+        self.holds: dict[str, dict[str, Any]] = dict(handle.holds)
+        self.held: frozenset[str] = holds.held_keys(self.holds)
+        self.only = handle.only
         self.should_stop = should_stop
         self.mapping = mapping_for(PROVIDER)
         self.started = _now()
@@ -1365,6 +1397,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     module = changed_module(entity)
     row = _row(ctx, module)
     saved = row.state or {}
+    if _skip_held(ctx, entity):
+        return
     if _unavailable_now(ctx, entity):
         return
     generic = _module(entity) is not None
@@ -1603,6 +1637,58 @@ def _unavailable_now(ctx: _Ctx, entity: str) -> bool:
     return True
 
 
+def _skip_held(ctx: _Ctx, entity: str) -> bool:
+    """True when this run must not read ``entity`` (CRM-Q16).
+
+    An "on its own" run reads its keys and nothing else, and it counts nothing
+    under the others. A normal run skips a held key and counts ``held: 1``.
+    """
+    key = count_key(entity)
+    if ctx.only is not None:
+        return key not in ctx.only
+    if key in ctx.held:
+        if _module(entity):
+            ctx.module_step(entity, "seen", 0)  # makes the key
+        ctx.counts.setdefault(key, {})["held"] = 1
+        return True
+    return False
+
+
+def _entities_of(key: str) -> tuple[str, ...]:
+    """The entities that one count key covers."""
+    if key.startswith(holds.MODULE_PREFIX):
+        return (key,)
+    return tuple(e for e in ENTITY_ORDER if count_key(e) == key)
+
+
+async def _auto_hold(ctx: _Ctx, counts: dict[str, int]) -> None:
+    """Hold each large key whose first import is not done (CRM-Q16).
+
+    It runs before the first record read of the key. A key that has an entry
+    already (an admin turned it on, or it is held) is left alone, and so is
+    the key of an "on its own" run. The write and the run see the same map.
+    """
+    for key, count in counts.items():
+        if not holds.is_large(count) or key in ctx.holds:
+            continue
+        if ctx.only is not None and key in ctx.only:
+            continue
+        entities = _entities_of(key)
+        if not entities or all(
+            _row(ctx, changed_module(e)).initial_done_at is not None for e in entities
+        ):
+            continue
+        async with ctx.page() as db:
+            written = await holds.write(
+                db, ctx.org, key, held=True, by=holds.BY_AUTO, count=int(count),
+            )
+        if written is None:
+            return  # no settings row: nothing to hold against
+        ctx.holds = written
+        ctx.held = holds.held_keys(written)
+        _log.warning("crm.sync.module_held key=%s count=%s by=auto", key, count)
+
+
 def _count_unavailable(ctx: _Ctx, entity: str, reason: str = "scope") -> None:
     """Set ``unavailable`` under the count key of the module.
 
@@ -1726,6 +1812,8 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
     module = deleted_module(entity)
     row = _row(ctx, module)
     saved = row.state
+    if _skip_held(ctx, entity):
+        return
     # A module the changed pass found unavailable has no deleted list to read.
     # Since CRM-Q15 that can be a core module too.
     if (_row(ctx, changed_module(entity)).state or {}).get("unavailable"):
@@ -2087,8 +2175,11 @@ async def _deal_roles(ctx: _Ctx) -> None:
 
     While Deals is off in Zoho (CRM-Q15) the step reads nothing and keeps the
     queue, so it neither spends credits on calls that fail nor drops a deal.
+    The same holds while Deals is held, or out of an "on its own" run (CRM-Q16).
     """
     if (_row(ctx, changed_module("deal")).state or {}).get("unavailable"):
+        return
+    if _skip_held(ctx, "deal"):
         return
     await _seed_roles(ctx)
     pending = list(ctx.roles_pending or [])
@@ -2418,6 +2509,8 @@ async def _execute(ctx: _Ctx) -> None:
         await _start_deleted_windows(ctx)
         if ctx.estimate is None:
             await _estimate(ctx)
+        # CRM-Q16: hold a large key before its first record read.
+        await _auto_hold(ctx, {k: int(v) for k, v in (ctx.estimate or {}).items()})
     if ctx.kind in (runs.KIND_IMPORT, runs.KIND_RECONCILE):
         await _field_defs(ctx)
     elif _discovery_due(ctx):
@@ -2614,7 +2707,18 @@ async def _module_records(ctx: _Ctx) -> None:
     for entity in entities:
         if _budget_low(ctx, MODULES_RESERVE):
             break
+        if _skip_held(ctx, entity):
+            continue
         ctx.module_step(entity, "seen", 0)  # the key shows in the counts
+        if _row(ctx, changed_module(entity)).initial_done_at is None:
+            # CRM-Q16: count a module before its first import, so a large
+            # one is held before its first page is read.
+            await _module_estimate(ctx, entity)
+            known = (_row(ctx, MODULE_COUNTS_ROW).state or {}).get("counts") or {}
+            if entity in known:
+                await _auto_hold(ctx, {entity: int(known[entity])})
+            if _skip_held(ctx, entity):
+                continue
         await _changed_pass(ctx, entity)
         if ctx.kind != runs.KIND_IMPORT and not _unavailable_now(ctx, entity):
             await _deleted_pass(ctx, entity)
@@ -2723,9 +2827,10 @@ async def run_org(
     *,
     should_stop: Callable[[], bool] = lambda: False,
     credit_budget: int | None = None,
+    only: frozenset[str] | None = None,
 ) -> RunResult:
-    """:func:`acquire`, then :func:`execute`."""
-    handle = await acquire(org)
+    """:func:`acquire`, then :func:`execute`. ``only``: see :func:`acquire`."""
+    handle = await acquire(org, only=only)
     return await execute(handle, should_stop=should_stop, credit_budget=credit_budget)
 
 
@@ -2748,6 +2853,7 @@ __all__ = [
     "error_code",
     "execute",
     "next_interval",
+    "count_key",
     "plan",
     "run_org",
 ]
