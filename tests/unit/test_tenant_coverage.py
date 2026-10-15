@@ -215,11 +215,13 @@ def test_the_my_day_judgments_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE my_day_judgments FORCE  ROW LEVEL SECURITY" in policies
 
 
-@pytest.mark.parametrize("table", ["reach_outbox", "reach_signal_log"])
+@pytest.mark.parametrize("table", ["reach_outbox", "reach_signal_log", "reach_requests"])
 def test_the_reach_tables_are_tenant_scoped(table: str) -> None:
     """WS-59 RE-1a (``proactive_reach.md`` §7). The outbox holds the text
-    Reach sent a member, and the log holds which cards it looked at. Neither
-    may be exempt, and the committed policy phase must carry both (R5)."""
+    Reach sent a member, and the log holds which cards it looked at. RE-5
+    (§11.2) adds the requests of "Tell me on WhatsApp", which hold tenant
+    text too. None may be exempt, and the committed policy phase must carry
+    each (R5)."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT
