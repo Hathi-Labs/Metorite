@@ -5489,6 +5489,39 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** CLAUDE.md §4 (respect the seams), `tenancy_and_visibility.md` §3
 - **Added:** 2026-10-15 · WS-61 KB-0 audit
 
+### H-320 · An unticked checkbox has no visible edge · [AGENT]
+- **Check:** `rg -n "border-border" workbench/control_plane/src/components/ui/Checkbox.tsx`.
+  A hit in the `BASE` string means the defect is open.
+- **Why.** The visual review of CRM-Q16 (2026-10-15) measured the unticked box
+  of the shared `Checkbox` primitive. Its edge is about 1.2:1 against the
+  background, in dark mode and in light mode. WCAG 1.4.11 asks 3:1 for the edge of a control.
+  The Sync health card is the first screen where the one unticked box carries
+  the meaning (a held module), so it showed there first. Every checkbox in the
+  product has the same edge.
+- **Do this:** give the unticked box a stronger border in the primitive.
+  `border-muted-foreground/60` or an input-border token from `globals.css`
+  will do. Then run the conformance suite and look at one checkbox in
+  both colour modes. Do not fix it in the card.
+- **Authority:** `workbench/control_plane/DESIGN_SYSTEM.md` (one look, one primitive)
+- **Added:** 2026-10-15 · WS-53 CRM-Q16
+
+### H-321 · A generic module held for a long time keeps its deleted rows · [AGENT]
+- **Check:** `rg -n "def _module_reread" apps/services/gateway/gateway/crm_sync/engine.py`.
+  If that function still runs a full re-read only for a module that hides
+  `Modified_Time`, this entry is open.
+- **Why.** A generic module (`module:<ApiName>`, CRM-Q6a) is never walked. Its
+  deletes come from the deleted list only, and Zoho keeps that list for 60
+  days. A module that CRM-Q16 holds for longer than that, and is then
+  released, keeps every row that Zoho deleted in the gap. The core entities
+  get a full compare after such a gap (`plan()`). Generic modules do not.
+- **Do this:** when a release follows a gap longer than `GAP_RECONCILE`,
+  re-read the module in full, with a stamp. Then drop the rows that the
+  re-read did not see. Or show the gap on the Sync health card, and offer a
+  start over of that one module.
+- **Authority:** `crm_platform.md` §18.7 (the generic store) and §18.8
+- **Added:** 2026-10-15 · WS-53 CRM-Q16 review
+
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

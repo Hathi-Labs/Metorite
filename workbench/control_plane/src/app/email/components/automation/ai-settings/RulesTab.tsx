@@ -5,6 +5,7 @@
 // Process past emails, artifact picker). Extracted from AISettingsView.tsx.
 
 import Button from "@/components/ui/Button";
+import SelectButton from "@/components/ui/SelectButton";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -24,6 +25,9 @@ import { useEmailStore } from "../../../lib/emailStore";
 import { moveFieldCopy, moveTargets } from "../../../lib/connect";
 import { guardedLoad, loadGuard } from "../../../lib/mailboxSettings";
 import { PROCESS_PAST_MAX_SPAN_DAYS } from "../../../lib/onboarding";
+import {
+  actionOptions, fetchReachStatus, REACH_OFF, type ReachStatus,
+} from "../../../lib/reachStatus";
 import { isPendingReview, PatternRow } from "./SettingsTab";
 import { LabeledToggle, Modal } from "../ui";
 import {
@@ -867,6 +871,19 @@ function RuleEditor({
   // free-type for new labels), mirroring inbox-zero's LabelCombobox.
   const availableLabels = useEmailStore((s) => s.availableLabels);
 
+  // "Tell me on WhatsApp" is offered only when Reach can deliver it (WS-59
+  // RE-5, P1-4). Until the read answers, the action is not offered.
+  const [reach, setReach] = useState<ReachStatus>(REACH_OFF);
+  useEffect(() => {
+    let live = true;
+    void fetchReachStatus().then((r) => {
+      if (live) setReach(r);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
   // Conditions visible in the builder: any pre-filled field, plus ones the user
   // explicitly adds. A new rule starts with the AI Prompt row.
   const prefilled = COND_ORDER.filter(
@@ -1034,9 +1051,11 @@ function RuleEditor({
                 title={ACTION_META[a.type].description}
                 className={`${INPUT_BASE} w-40 flex-shrink-0`}
               >
-                {ACTION_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {ACTION_META[t].label}
+                {actionOptions(ACTION_TYPES, reach, a.type).map((o) => (
+                  <option key={o.type} value={o.type} disabled={o.disabled}>
+                    {o.hint
+                      ? `${ACTION_META[o.type].label} (${o.hint})`
+                      : ACTION_META[o.type].label}
                   </option>
                 ))}
               </select>
@@ -1226,7 +1245,7 @@ function ActionConfig({
   const isDraftReply = action.type === "DRAFT_EMAIL" || action.type === "REPLY";
   const isForward = action.type === "FORWARD";
   const draftLike = isDraftReply || isForward;
-  const delayable = action.type !== "CALL_WEBHOOK";
+  const delayable = action.type !== "CALL_WEBHOOK" && action.type !== "NOTIFY_ME";
   // Forward is inherently manual (a note above the forwarded body); reply/draft
   // follow the explicit content_manual toggle (default = AI writes it).
   const manual = isForward ? true : !!action.content_manual;
@@ -1349,6 +1368,25 @@ function ActionConfig({
         />
       )}
 
+      {/* Tell me on WhatsApp (WS-59 RE-5): one option, kept in `label`. */}
+      {action.type === "NOTIFY_ME" && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {/* The SelectButton carries the name "Urgency", so the visible
+              word is hidden from a screen reader: it is said once. */}
+          <span aria-hidden="true">
+            <FieldLabel>Urgency</FieldLabel>
+          </span>
+          <SelectButton
+            label="Urgency"
+            value={action.label === "urgent" ? "urgent" : "normal"}
+            options={NOTIFY_URGENCY}
+            defaultValue="normal"
+            onChange={(v) => set({ label: v })}
+            widthClass="w-56"
+          />
+        </div>
+      )}
+
       {action.type === "CALL_WEBHOOK" && (
         <input
           value={action.url ?? ""}
@@ -1465,6 +1503,12 @@ function ActionConfig({
     </div>
   );
 }
+
+/** The one option of "Tell me on WhatsApp" (WS-59 RE-5), kept in `label`. */
+const NOTIFY_URGENCY = [
+  { value: "normal", label: "Normal", description: "Inside my daily limit and my working hours." },
+  { value: "urgent", label: "Urgent", description: "Also in my quiet hours. One a day past my limit." },
+] as const;
 
 /** Small field label used inside the action config card. */
 function FieldLabel({ children }: { children: React.ReactNode }) {

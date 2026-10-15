@@ -11,6 +11,7 @@
 
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import Checkbox from "@/components/ui/Checkbox";
 import ProgressBar from "@/components/ui/ProgressBar";
 import { useToast } from "@/components/ui/Toast";
 import { useState } from "react";
@@ -23,9 +24,18 @@ import {
   difference,
   differenceLabel,
   entityLabel,
+  heldKeys,
+  holdFailureMessage,
+  holdSentence,
+  isHeld,
+  isHoldable,
   isRunning,
   isUnavailable,
+  largeSentence,
+  largeUnheld,
   moduleState,
+  recordCount,
+  recordsOf,
   runLine,
   statusLines,
   unavailableSentence,
@@ -45,15 +55,27 @@ export function SyncHealthCardView({
   nowMs = Date.now(),
   syncing = false,
   onSyncNow,
+  busyKey = null,
+  onSetSync = () => undefined,
+  onSyncOnly = () => undefined,
 }: {
   health: SyncHealth;
   nowMs?: number;
   syncing?: boolean;
   onSyncNow: () => void;
+  /** CRM-Q16: the key of a hold write or a one-module run that is in flight. */
+  busyKey?: string | null;
+  /** CRM-Q16: `false` holds the key, `true` releases it. */
+  onSetSync?: (key: string, sync: boolean) => void;
+  /** CRM-Q16: sync this one key on its own. */
+  onSyncOnly?: (key: string) => void;
 }) {
   const lines = statusLines(health, nowMs);
   const running = isRunning(health);
   const unavailable = health.entities.filter(isUnavailable);
+  const label = (key: string) => entityLabel(key, health.modules);
+  const held = heldKeys(health);
+  const large = health.entities.filter((entity) => largeUnheld(health, entity));
   return (
     <Card title="Sync health" note={NOTE}>
       <div className="divide-y divide-border/60">
@@ -77,40 +99,66 @@ export function SyncHealthCardView({
           )}
         </div>
 
-        <div className="overflow-x-auto px-2 py-2" aria-label="Counts by entity">
-          <table className="w-full min-w-[32rem]">
-            <thead>
-              <tr>
-                <th className={th}>Entity</th>
-                <th className={th}>Zoho</th>
-                <th className={th}>Ours</th>
-                <th className={th}>Difference</th>
-                <th className={th}>Skipped</th>
-                <th className={th}>Unlinked</th>
-                <th className={th}>Failed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {health.entities.map((entity) => {
-                const diff = difference(entity);
-                return (
-                  <tr key={entity.key} aria-label={entityLabel(entity.key)}>
-                    <td className="px-2 py-1.5 text-xs font-medium text-foreground">
-                      {entityLabel(entity.key)}
-                    </td>
-                    <td className={td}>{entity.zoho_count ?? "—"}</td>
-                    <td className={td}>{entity.ours ?? "—"}</td>
-                    <td className={td}>
-                      {diff !== null && <Badge tone="warning">{differenceLabel(diff)}</Badge>}
-                    </td>
-                    <td className={td}>{entity.last_run.skipped ?? 0}</td>
-                    <td className={td}>{entity.last_run.unlinked ?? 0}</td>
-                    <td className={td}>{entity.last_run.failed ?? 0}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        {/* The table scrolls sideways on a phone. The lists below it do not, so
+            they stay in a sibling block (visual review, CRM-Q16). */}
+        <div className="px-2 pt-2" aria-label="Counts by entity">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[32rem]">
+              <thead>
+                <tr>
+                  <th className={th}>Entity</th>
+                  {/* The one control sits beside the name, so a phone shows it. */}
+                  <th className={th}>Sync</th>
+                  <th className={th}>Zoho</th>
+                  <th className={th}>Ours</th>
+                  <th className={th}>Difference</th>
+                  <th className={th}>Skipped</th>
+                  <th className={th}>Unlinked</th>
+                  <th className={th}>Failed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {health.entities.map((entity) => {
+                  const heldRow = isHeld(health, entity.key);
+                  // A held row is behind on purpose, so its gap is not a warning.
+                  const diff = heldRow ? null : difference(entity);
+                  return (
+                    <tr key={entity.key} aria-label={label(entity.key)}>
+                      <td className="px-2 py-1.5 text-xs font-medium text-foreground">
+                        {label(entity.key)}
+                      </td>
+                      <td className={td}>
+                        {isHoldable(entity.key) ? (
+                          <Checkbox
+                            size="sm"
+                            className="align-middle"
+                            checked={!heldRow}
+                            disabled={busyKey === entity.key}
+                            aria-label={`Sync ${label(entity.key)}`}
+                            onChange={(e) => onSetSync(entity.key, e.currentTarget.checked)}
+                          />
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className={td}>
+                        {entity.zoho_count === null ? "—" : recordCount(entity.zoho_count)}
+                      </td>
+                      <td className={td}>{entity.ours === null ? "—" : recordCount(entity.ours)}</td>
+                      <td className={td}>
+                        {diff !== null && <Badge tone="warning">{differenceLabel(diff)}</Badge>}
+                      </td>
+                      <td className={td}>{entity.last_run.skipped ?? 0}</td>
+                      <td className={td}>{entity.last_run.unlinked ?? 0}</td>
+                      <td className={td}>{entity.last_run.failed ?? 0}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="px-2 pb-2">
           {unavailable.length > 0 && (
             <ul className="space-y-1 px-2 pt-2">
               {unavailable.map((entity) => (
@@ -118,6 +166,58 @@ export function SyncHealthCardView({
                   <Badge tone="warning">Unavailable</Badge>
                   <span className="font-medium text-foreground">{entityLabel(entity.key)}</span>
                   <span className="text-muted-foreground">{unavailableSentence(entity)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {held.length > 0 && (
+            <ul className="space-y-1 px-2 pt-2" aria-label="Held modules">
+              {held.map((key) => {
+                const count = recordsOf(health, key);
+                return (
+                  <li key={key} className="flex flex-wrap items-center gap-2 text-xs">
+                    <Badge tone="neutral">Held</Badge>
+                    {/* The sentence starts with the name, so the name span goes only without one. */}
+                    {count === null ? (
+                      <span className="min-w-0 flex-1 font-medium text-foreground">{label(key)}</span>
+                    ) : (
+                      <span className="min-w-0 flex-1 text-muted-foreground">
+                        {holdSentence(label(key), count)}
+                      </span>
+                    )}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="ml-auto shrink-0"
+                      loading={busyKey === key}
+                      disabled={running || (busyKey !== null && busyKey !== key)}
+                      onClick={() => onSyncOnly(key)}
+                    >
+                      Sync it on its own
+                    </Button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {large.length > 0 && (
+            <ul className="space-y-1 px-2 pt-2" aria-label="Large modules">
+              {large.map((entity) => (
+                <li key={entity.key} className="flex flex-wrap items-center gap-2 text-xs">
+                  <Badge tone="neutral">Large</Badge>
+                  <span className="min-w-0 flex-1 text-muted-foreground">
+                    {largeSentence(label(entity.key), recordsOf(health, entity.key, entity) ?? 0)}
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="ml-auto shrink-0"
+                    loading={busyKey === entity.key}
+                    disabled={busyKey !== null && busyKey !== entity.key}
+                    onClick={() => onSetSync(entity.key, false)}
+                  >
+                    Hold it
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -178,6 +278,7 @@ export default function SyncHealthCard() {
   const toast = useToast();
   const { health, loading } = useSyncHealth(true);
   const [syncing, setSyncing] = useState(false);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
 
   async function syncNow() {
     setSyncing(true);
@@ -197,6 +298,49 @@ export default function SyncHealthCard() {
     }
   }
 
+  /** CRM-Q16: hold a key (`sync: false`) or release it (`sync: true`). */
+  async function setSync(key: string, sync: boolean) {
+    const name = entityLabel(key, health?.modules);
+    setBusyKey(key);
+    try {
+      await api.setModuleSync(key, sync);
+      toast.show({
+        key: "crm-sync-hold",
+        variant: "success",
+        title: sync ? `${name} syncs with the rest` : `${name} is held`,
+      });
+    } catch (err) {
+      const e = err instanceof CrmError ? err : null;
+      toast.show({
+        key: "crm-sync-hold",
+        variant: "error",
+        title: holdFailureMessage(e?.status ?? 0, e?.code),
+      });
+    } finally {
+      setBusyKey(null);
+      invalidateCrmMode();
+    }
+  }
+
+  /** CRM-Q16: one key on its own, also when it is held. */
+  async function syncOnly(key: string) {
+    setBusyKey(key);
+    try {
+      await api.syncZohoNow({ only: key });
+      toast.show({ key: "crm-sync", variant: "success", title: "Sync started" });
+    } catch (err) {
+      const e = err instanceof CrmError ? err : null;
+      toast.show({
+        key: "crm-sync",
+        variant: "error",
+        title: syncFailureMessage(e?.status ?? 0, e?.code),
+      });
+    } finally {
+      setBusyKey(null);
+      invalidateCrmMode();
+    }
+  }
+
   if (!health) {
     return (
       <Card title="Sync health" note={NOTE}>
@@ -206,5 +350,14 @@ export default function SyncHealthCard() {
       </Card>
     );
   }
-  return <SyncHealthCardView health={health} syncing={syncing} onSyncNow={syncNow} />;
+  return (
+    <SyncHealthCardView
+      health={health}
+      syncing={syncing}
+      onSyncNow={syncNow}
+      busyKey={busyKey}
+      onSetSync={setSync}
+      onSyncOnly={syncOnly}
+    />
+  );
 }

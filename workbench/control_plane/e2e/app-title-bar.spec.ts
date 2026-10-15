@@ -23,7 +23,7 @@ const ADMIN = {
   email: "admin@example.com",
   name: "Asha Rao",
   is_admin: true,
-  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals", "crm", "integrations", "artifacts"],
+  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals", "crm", "integrations", "artifacts", "knowledge"],
   permissions: ["admin:members:read", "admin:members:manage"],
   capabilities: ["admin:members:read", "admin:members:manage"],
   roles: ["owner"],
@@ -165,6 +165,8 @@ const PAGES: Array<[string, string]> = [
   ["Appearance", "/settings/appearance"],
   // Live since 2026-10-13 (owner, WS-54).
   ["Integrations", "/integrations"],
+  // Preview since WS-61 KB-0. It renders by URL, so the census opens it.
+  ["Knowledge", "/knowledge"],
   ["Teams", "/settings/groups"],
   ["Roles", "/settings/roles"],
   ["Billing", "/settings/billing"],

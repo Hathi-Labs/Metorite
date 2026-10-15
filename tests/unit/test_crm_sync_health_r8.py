@@ -54,7 +54,7 @@ async def test_the_health_route_has_the_contract_shape(q) -> None:
     body = got.json()
     assert set(body) == {
         "last_run", "last_success_at", "next_run_at", "entities", "modules",
-        "history", "credits", "running"}
+        "history", "credits", "running", "holds"}  # holds: CRM-Q16
     assert set(body["last_run"]) == {
         "kind", "status", "started_at", "finished_at", "error", "credits_used"}
     assert body["last_run"]["status"] == "ok" and body["last_run"]["error"] is None
