@@ -130,19 +130,22 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # H-315 (WS-47 WAC-12, owner 2026-10-15): a deck or a report as a PDF
     # file in the chat, through the one PDF seam. A family, not the floor:
     # its spec is long, and only the assistants that make documents hold it.
+    # projects_ai_chat.md §14.9 (2026-10-16): make_report joins it. A report
+    # is a card in the chat, a full view and the same PDF.
     "documents": {
         "label": "Documents",
         "summary": (
-            "Make a deck or a report as a PDF file, with charts, tiles and "
-            "tables, from Metorite's data."
+            "Make a report or a deck, with charts, tiles and tables, from "
+            "Metorite's data."
         ),
         "description": (
-            "A sales or pitch deck (16:9 slides) or a report (A4 pages), laid "
-            "out by the gateway's PDF seam from a short spec, with the "
-            "product's charts and cards. The member gets a PDF card with a "
-            "download. WhatsApp sends the same PDF as a file."
+            "A report shows as a card in the chat, with a full view and a "
+            "PDF (make_report). A sales or pitch deck (16:9 slides) or A4 "
+            "pages come as a PDF file (make_document). The gateway's PDF seam "
+            "lays out both, with the product's charts and cards. WhatsApp "
+            "sends the same PDF as a file."
         ),
-        "tools": ("make_document",),
+        "tools": ("make_document", "make_report"),
         "core": False,
         "scope_governed": True,
         "dynamic": False,

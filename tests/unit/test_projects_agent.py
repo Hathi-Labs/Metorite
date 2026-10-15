@@ -1176,6 +1176,29 @@ async def test_status_report_flags_a_leaf_project_from_its_own_work(monkeypatch)
     assert stats["Blocked"] == 1 and stats["On track"] == 0
 
 
+async def test_status_report_hands_make_report_a_spec_that_code_built(monkeypatch) -> None:
+    """projects_ai_chat.md §14.9: W2 steers into make_report, never a .md
+    file. Code builds the spec from the same reads, so each number in it is
+    the routes' number, and make_report's checks and builders accept it."""
+    from acb_skills.reports import check_report, layout_of
+
+    drawn(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID)
+    assert "Markdown artifact with write_artifact" not in text
+    assert "Never save a report as a .md file" in text
+    spec = json.loads(text.split("REPORT_SPEC: ", 1)[1])
+    kpis = {k["label"]: k["value"] for k in spec["kpis"]}
+    assert kpis["Open tasks"] == 3 and kpis["Overdue tasks"] == 1
+    assert kpis["Blocked projects"] == 1 and kpis["On track projects"] == 0
+    table = next(s for s in spec["sections"] if s.get("heading") == "Projects")
+    assert table["visual"]["rows"] == [["Ops", "blocked", 3, 1]]
+    health = next(s for s in spec["sections"] if s.get("heading") == "Project health")
+    assert health["visual"]["labels"] == ["Blocked"] and health["visual"]["values"] == [1]
+    layout = layout_of(check_report(spec))  # draws every visual, or raises
+    assert layout["sections"][0]["heading"] == "Summary"
+
+
 async def test_every_view_and_form_card_is_inline(monkeypatch) -> None:
     """The Projects rail has no side-panel host, so a panel card opens nothing."""
     specs = drawn(monkeypatch)

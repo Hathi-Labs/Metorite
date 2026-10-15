@@ -163,6 +163,21 @@ PLACEMENT_RULE = (
     "A form or a picker that waits for the member is not the answer card."
 )
 
+#: A report is ``make_report`` (``projects_ai_chat.md`` §14.9, owner directive
+#: 2026-10-16: "a proper report with proper imagery and graphs"). It comes
+#: before the file rules of the output discipline block, which name ``.md``
+#: for a document. Only an agent that holds ``make_report`` reads it.
+#: Fence: ``tests/unit/test_chat_reports.py``.
+REPORT_RULE = (
+    "### Reports\n"
+    "- **A report is make_report. Never write a report as a .md file.** This "
+    "rule comes before the file rules above. Collect the facts first, from the "
+    "tools that compute them, and copy each number as the tool gave it. "
+    "make_report({}) returns the field guide. The member sees a report card "
+    "with a full view and a PDF, so say in one or two lines what it shows, and "
+    "paste no link."
+)
+
 
 def ui_first_directive(*, compact: bool = False) -> str:
     """The proactive 'render UI by default' rule (generative_ui_2 Phase 2).
@@ -334,6 +349,10 @@ Workspace folders visible in the Files Viewer: **outputs/** (default for generat
     # "bundle". Gated, so an agent that opts the tool out never reads it.
     Section("core", ("package_artifacts",), """- **package_artifacts(paths?, name?)** — When the member asks to zip, package or bundle files, call this. With no paths it zips every file this chat produced. It shows ONE download card for the .zip, so do not list the files' links again. On WhatsApp it cannot send a file, so say so.
 """),
+    # projects_ai_chat.md §14.9 (owner 2026-10-16): a report is a card, a full
+    # view and a PDF from one spec. Gated, so an agent without the tool never
+    # reads it. It comes before the file rules above for a report.
+    Section("documents", ("make_report",), REPORT_RULE + "\n"),
     # H-229: the text of a file attached in this chat, with no code run. A
     # floor tool since 2026-10-09, and the failure rule is the incident's.
     Section("core", ("read_attachment",), f"""### Chat attachments
@@ -468,6 +487,11 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("core", ("package_artifacts",), (
         "package_artifacts(paths?,name?) — zip this chat's files into one "
         "download card when the member asks to zip, package or bundle them"
+    )),
+    Section("documents", ("make_report",), (
+        "make_report(spec) — A report is make_report: a card, a full view and "
+        "a PDF. Never write a report as a .md file. make_report({}) returns "
+        "the field guide"
     )),
     Section("core", ("read_attachment",), (
         f"read_attachment(name,offset?) — the text of a {_ATTACHMENT_KINDS} "

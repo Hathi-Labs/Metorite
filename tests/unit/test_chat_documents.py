@@ -131,7 +131,8 @@ def test_the_chat_assistants_hold_it_and_whatsapp_withholds_it() -> None:
     for agent in ("agent-orchestrator", "agent-projects"):
         scope = json.loads((root / agent / "config.json").read_text(encoding="utf-8"))
         assert "make_document" in scope["tool_scope"], agent
-    assert SKILL_FAMILIES["documents"]["tools"] == ("make_document",)
+    # §14.9 of projects_ai_chat.md: make_report joined the family.
+    assert SKILL_FAMILIES["documents"]["tools"] == ("make_document", "make_report")
     assert "make_document" in wui.WITHHELD_TOOLS
 
 

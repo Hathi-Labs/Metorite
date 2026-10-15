@@ -51,6 +51,8 @@ INJECTABLE_PLATFORM_TOOLS = {
     "crm_get_module_record",
     # H-315 (2026-10-15): the `documents` family, a deck or a report as a PDF.
     "make_document",
+    # projects_ai_chat.md §14.9 (2026-10-16): a report as a chat card and a PDF.
+    "make_report",
 }
 
 # The agents this item scopes, with a per-agent leanness ceiling.
@@ -62,7 +64,9 @@ SCOPED_AGENTS = {
     # read tools sit beside the 8 core tools.
     # 21 since H-315 (2026-10-15): the owner asked for PDF decks and reports
     # in the AI chat, so the chat holds make_document beside the CRM reads.
-    "agent-orchestrator": 21,
+    # 22 since §14.9 of projects_ai_chat.md (2026-10-16): a report is a card
+    # in the chat with its PDF, so the chat holds make_report too.
+    "agent-orchestrator": 22,
 }
 
 

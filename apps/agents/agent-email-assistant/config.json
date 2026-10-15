@@ -27,6 +27,7 @@
     "recall_timeline",
     "save_memory",
     "emit_generative_ui",
+    "make_report",
     "call_agent"
   ],
   "floor_opt_out": [

@@ -28,6 +28,7 @@
     "recall_timeline",
     "save_memory",
     "emit_generative_ui",
+    "make_report",
     "call_agent"
   ],
   "own_tool_scope": [

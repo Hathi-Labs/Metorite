@@ -30,6 +30,8 @@ import json
 import re
 from typing import Any
 
+from acb_common.paging import paged
+
 from skill_projects.client import GatewayRefusal, data, get, post, uuid_of
 from skill_projects.priority import change_view, level_label
 from skill_projects.reads import (
@@ -773,13 +775,119 @@ def _flag(child: dict[str, Any], blocked_ids: set[str], overdue_ids: set[str]) -
     return "on track"
 
 
+#: The most rows of the project table in a status report. A table visual
+#: holds 20 rows (``whatsapp_render.MAX_ROWS``).
+REPORT_TABLE_ROWS = 20
+#: The most blocked tasks a status report lists. A section holds 16 bullets.
+REPORT_BLOCKED_ROWS = 16
+
+
+def _status_report_spec(
+    scope_name: str,
+    summary: dict[str, Any],
+    stuck: dict[str, Any],
+    flags: list[tuple[dict[str, Any], str]],
+    counts: dict[str, int],
+    *,
+    load_lines: list[str],
+    load_note: str,
+    forecast: str,
+) -> dict[str, Any]:
+    """The W2 status report as a ``make_report`` spec (``projects_ai_chat.md``
+    §14.9). Code builds it from the reads of :func:`status_report`, so every
+    number in it is the analytics routes' number, never the model's."""
+    blocked_rows = stuck.get("blocked") or []
+    kpis = [
+        {"label": "Open tasks", "value": summary.get("tasks") or 0},
+        {"label": "Overdue tasks", "value": summary.get("overdue") or 0},
+        {"label": "Blocked by open work", "value": stuck.get("blocked_total") or 0},
+        {"label": "Blocked projects", "value": counts["blocked"]},
+        {"label": "At risk projects", "value": counts["at risk"]},
+        {"label": "On track projects", "value": counts["on track"]},
+    ]
+    sections: list[dict[str, Any]] = []
+    health = {
+        "heading": "Project health",
+        "text": (
+            f"{counts['blocked']} blocked, {counts['at risk']} at risk and "
+            f"{counts['on track']} on track. A project is blocked when a task in it "
+            "has an open blocking link, and at risk when it has overdue work."
+        ),
+    }
+    shown = [(f.capitalize(), counts[f], tone)
+             for f, tone in zip(FLAG_ORDER, ("red", "amber", "green"), strict=True)
+             if counts[f]]
+    if shown:
+        health["visual"] = {
+            "kind": "chart", "type": "donut", "title": "Projects by flag",
+            "labels": [s[0] for s in shown], "values": [s[1] for s in shown],
+            "tones": [s[2] for s in shown],
+        }
+    sections.append(health)
+    if flags:
+        ordered = sorted(flags, key=lambda cf: FLAG_ORDER.index(cf[1]))
+        page = paged(ordered, 0, REPORT_TABLE_ROWS, default=REPORT_TABLE_ROWS)
+        table = {
+            "heading": "Projects",
+            "visual": {
+                "kind": "table", "title": "Each project and its flag",
+                "columns": ["Project", "Flag", "Open", "Overdue"],
+                "rows": [
+                    [_plain(c.get("name")), flag, c.get("tasks") or 0, c.get("overdue") or 0]
+                    for c, flag in page.items
+                ],
+            },
+        }
+        if page.total > len(page.items):
+            table["text"] = (
+                f"The table shows {len(page.items)} of {page.total} projects, "
+                "the blocked and at-risk ones first."
+            )
+        sections.append(table)
+    if blocked_rows:
+        page = paged(blocked_rows, 0, REPORT_BLOCKED_ROWS, default=REPORT_BLOCKED_ROWS)
+        blocked = {
+            "heading": "Blocked work",
+            "bullets": [
+                f"#{r.get('task_number')} {_plain(r.get('title'))[:180]} "
+                f"(due {_day(r.get('due_at'))})"
+                for r in page.items
+            ],
+        }
+        total = stuck.get("blocked_total") or page.total
+        if total > len(page.items):
+            blocked["text"] = f"The first {len(page.items)} of {total} blocked tasks."
+        sections.append(blocked)
+    if load_note:
+        load = {"heading": "Load", "text": load_note}
+        if load_lines:
+            load["bullets"] = load_lines
+        sections.append(load)
+    if forecast:
+        sections.append({"heading": "Forecast", "text": forecast})
+    return {
+        "title": f"Status report · {scope_name[:100]}",
+        "summary": (
+            f"**{counts['blocked']} blocked**, {counts['at risk']} at risk and "
+            f"{counts['on track']} on track. {summary.get('overdue') or 0} of "
+            f"{summary.get('tasks') or 0} open tasks are overdue."
+        ),
+        "kpis": kpis,
+        "sections": sections,
+        "sources": [
+            "Projects analytics: the summary, stuck, load and outlook reads",
+        ],
+    }
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def status_report(project_id: str = "") -> str:
     """W2: a status report for a node or the portfolio. Every child project
     gets one flag from the server's reads: blocked (a task with an open
     blocking link), at risk (overdue work, or named by the stuck read), on
-    track. Draws a dashboard card and returns the report as Markdown, which
-    you then save with write_artifact so the member can open it. The
+    track. Draws a dashboard card and returns the report as Markdown, with
+    REPORT_SPEC: a make_report spec that code built from the same reads.
+    For a report the member keeps, pass it to make_report unchanged. The
     numbers are the analytics routes'; nothing here counts a list."""
     params: dict[str, Any] = {"include_subtree": True}
     scope_name = "the portfolio"
@@ -839,35 +947,36 @@ async def status_report(project_id: str = "") -> str:
                 f"- #{r.get('task_number')} {_plain(r.get('title'))} (due {_day(r.get('due_at'))})"
             )
     hidden = hidden_people_line(load, "view")
+    load_lines: list[str] = []
+    load_note = ""
     if hidden:
         # WS-27bn R5a. The load rows are only the people this reader may
         # report on. "Most" over those rows is false, so list them and say
         # how many people the view hides.
         shown = [p for p in people if int(p.get("open_tasks") or 0)][:10]
-        md += ["", "## Load", ""]
-        md += [
-            f"- {_plain(p.get('assignee') or 'unassigned')}: "
+        load_lines = [
+            f"{_plain(p.get('assignee') or 'unassigned')}: "
             f"{p.get('open_tasks')} open, {p.get('overdue', 0)} overdue."
             for p in shown
         ]
-        md.append(f"{hidden}.")
+        load_note = f"{hidden}."
     elif top and int(top.get("open_tasks") or 0):
-        md += [
-            "",
-            "## Load",
-            "",
+        load_note = (
             f"Most open work: {_plain(top.get('assignee') or 'unassigned')} with "
-            f"{top.get('open_tasks')} open, {top.get('overdue', 0)} overdue.",
-        ]
+            f"{top.get('open_tasks')} open, {top.get('overdue', 0)} overdue."
+        )
+    if load_note:
+        md += ["", "## Load", ""]
+        md += [f"- {line}" for line in load_lines]
+        md.append(load_note)
     plan = outlook.get("plan") or {}
+    forecast = ""
     if plan.get("planned_finish"):
-        md += [
-            "",
-            "## Forecast",
-            "",
+        forecast = (
             f"Planned finish {_day(plan.get('planned_finish'))} over {plan.get('dated', 0)} dated "
-            f"of {plan.get('tasks', 0)} tasks; slip {plan.get('slip_days', 0)} days.",
-        ]
+            f"of {plan.get('tasks', 0)} tasks; slip {plan.get('slip_days', 0)} days."
+        )
+        md += ["", "## Forecast", "", forecast]
     await _emit(
         _template(
             "statDashboard",
@@ -882,10 +991,16 @@ async def status_report(project_id: str = "") -> str:
             },
         )
     )
+    spec = _status_report_spec(
+        scope_name, summary, stuck, flags, counts,
+        load_lines=load_lines, load_note=load_note, forecast=forecast,
+    )
     text_lines = [legend(), *md]
     text_lines.append(
-        "Save this as a Markdown artifact with write_artifact, then offer to comment on "
-        "each at-risk task (one class B batch)."
+        "For a report the member can keep, call make_report with REPORT_SPEC below, "
+        "unchanged: code built it from the analytics routes. Never save a report as a "
+        ".md file. Then offer to comment on each at-risk task (one class B batch).\n"
+        f"REPORT_SPEC: {json.dumps(spec, ensure_ascii=False)}"
     )
     return "\n".join(text_lines)
 

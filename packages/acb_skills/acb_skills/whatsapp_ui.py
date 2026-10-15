@@ -844,6 +844,34 @@ async def _send_document(run: WhatsAppRun, data: Any) -> dict[str, Any]:
     caption = ""
     if isinstance(data, dict) and isinstance(data.get("caption"), str):
         caption = data["caption"].strip()[:CAPTION_MAX]
+    return await _queue_layout(run, layout, name, caption)
+
+
+async def queue_document(layout: dict[str, Any], name: str) -> dict[str, Any]:
+    """Queue a layout that ``documents.prepare`` made, as ONE PDF element.
+
+    ``reports.make_report`` calls it in a WhatsApp run (``projects_ai_chat.md``
+    §14.9). A report reaches the member as this PDF, never as a card. The
+    limits of kind "document" apply.
+    """
+    run = _RUN.get()
+    if run is None:
+        return {"ok": False, "error": "this works only in a WhatsApp chat"}
+    if run.document is None:
+        return {"ok": False, "error": "documents are off in this chat. Answer in text"}
+    if _elements(run) >= MAX_MESSAGES:
+        return {"ok": False,
+                "error": f"this reply already has {MAX_MESSAGES} elements. Put the rest in text"}
+    return await _queue_layout(run, layout, name, "")
+
+
+async def _queue_layout(run: WhatsAppRun, layout: dict[str, Any], name: str,
+                        caption: str) -> dict[str, Any]:
+    """Lay out *layout* in ``pdf_render``'s child and queue the PDF."""
+    from acb_skills import documents
+
+    if run.document is None:  # both callers check it first
+        return {"ok": False, "error": "documents are off in this chat. Answer in text"}
     try:
         pdf = await run.document(layout)
     except ValueError as exc:  # pdf_render.PdfRenderError says what to fix

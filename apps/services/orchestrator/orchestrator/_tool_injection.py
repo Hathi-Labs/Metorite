@@ -1427,6 +1427,14 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     except ImportError:
         pass
 
+    # A report: one file the chat draws as a card, and its PDF, from one spec
+    # (projects_ai_chat.md §14.9). The same family and the same PDF seam.
+    try:
+        from acb_skills.reports import make_report
+        _all_tools = [*_all_tools, make_report]
+    except ImportError:
+        pass
+
     # Chat attachments (H-229) — the text of a file the member attached in
     # THIS chat, by pure parsing: no subprocess, no code. It is no shell
     # tool, so D85 does not withhold it (`_withheld_shell_tools`).
