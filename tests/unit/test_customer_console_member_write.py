@@ -1401,3 +1401,96 @@ class TestTheGatewayClientSpeaksTheRemoveWire:
         assert status == 200, body
         assert body["found"] is True
         assert _status(db, org_id=org["id"], email=who) == "removed"
+
+
+class TestRemovalsOfOneOrgAreSerialised:
+    """Review P2: the owner counts are read under a per-org lock.
+
+    Without it, two removals at once both read the counts before either
+    writes, and the org can end with no active registry owner. These tests
+    are deterministic: one connection HOLDS the lock, and the other side is
+    shown to wait for it.
+    """
+
+    def test_the_lock_blocks_a_second_holder_of_the_same_org_only(
+        self, client, db
+    ):
+        org = _new_org(client)
+        other = _new_org(client)
+        holder = db.connect()
+        tx = holder.begin()
+        try:
+            store.lock_org_owners(holder, org_id=org["id"])
+            with db.connect() as second:
+                with second.begin():
+                    second.execute(text("SET LOCAL lock_timeout = '200ms'"))
+                    # A different org takes its own lock at once.
+                    store.lock_org_owners(second, org_id=other["id"])
+                with pytest.raises(Exception) as exc:
+                    with second.begin():
+                        second.execute(text("SET LOCAL lock_timeout = '200ms'"))
+                        store.lock_org_owners(second, org_id=org["id"])
+                assert "lock timeout" in str(exc.value).lower()
+        finally:
+            tx.rollback()
+            holder.close()
+
+    def test_the_door_waits_for_the_lock_before_it_reads_the_owners(
+        self, client, db, member_key
+    ):
+        """The door takes the lock itself. While another transaction holds
+        it, the request does not finish. When it is released, the request
+        finishes with a 200.
+
+        ⚠️ Mutation-checked: deleting the ``store.lock_org_owners`` call from
+        the door makes this fail, because the request finishes at once.
+        """
+        import threading
+
+        org = _new_org(client)
+        who = f"wait-{uuid.uuid4().hex[:6]}@x.example"
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+
+        holder = db.connect()
+        tx = holder.begin()
+        store.lock_org_owners(holder, org_id=org["id"])
+        result: dict = {}
+
+        def _call() -> None:
+            result["r"] = _remove(client, member_key, member_email=who,
+                                  actor_email=org["owner"])
+
+        worker = threading.Thread(target=_call)
+        worker.start()
+        try:
+            worker.join(1.0)
+            assert worker.is_alive(), (
+                "the remove door finished while another transaction held the "
+                "org's owner lock, so it does not take the lock"
+            )
+            assert _status(db, org_id=org["id"], email=who) == "invited"
+        finally:
+            tx.rollback()
+            holder.close()
+        worker.join(15.0)
+        assert not worker.is_alive()
+        assert result["r"].status_code == 200, result["r"].text
+        assert _status(db, org_id=org["id"], email=who) == "removed"
+
+
+def test_the_door_takes_the_lock_before_the_owner_counts() -> None:
+    """The source half: the lock call comes before the first count read in
+    the door's own body. A lock taken after the counts protects nothing."""
+    import inspect
+
+    from customer_console import main
+
+    src = inspect.getsource(main.remove_member_admin)
+    assert "store.lock_org_owners(" in src
+    assert src.index("store.lock_org_owners(") < src.index(
+        "store.active_owner_count("
+    )
+    assert src.index("store.lock_org_owners(") < src.index(
+        "store.membership_status("
+    )

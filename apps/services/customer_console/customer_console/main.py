@@ -6338,6 +6338,11 @@ def remove_member_admin(
         org_id, actor = _admin_scheme_context(
             conn, req, caller, roles=_MEMBER_ADMIN_ROLES, request=request
         )
+        # FIRST, before every read below (review P2). Two removals at once
+        # would otherwise both read the owner counts before either writes, and
+        # the org could end with no active owner. Every membership read after
+        # this line, the heir's included, sees the other removal's commit.
+        store.lock_org_owners(conn, org_id=org_id)
 
         state = conn.execute(
             text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}

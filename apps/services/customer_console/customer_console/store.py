@@ -59,6 +59,7 @@ __all__ = [
     "issue_deployment_key",
     "issue_discount_code",
     "lock_discount_capacity",
+    "lock_org_owners",
     "lock_seat_capacity",
     "make_owner",
     "membership_status",
@@ -2603,6 +2604,32 @@ def remove_member(
         {"org": org_id, "i": identity_id},
     ).scalars().all()
     return str(previous), sorted(str(p) for p in released)
+
+
+def lock_org_owners(conn: Connection, *, org_id: str) -> None:
+    """Serialise the member-remove door for one organization (review P2).
+
+    The door reads two owner counts, then may promote an heir and remove the
+    target. At READ COMMITTED two removals at once both read the counts
+    before either writes. A removes the founder while B removes A, or two
+    co-owners are removed together. Both pass, and the org ends with no
+    active registry owner.
+
+    The :func:`lock_org_activation` idiom, one door along. It is an ADVISORY
+    lock and not ``FOR UPDATE`` on the owner rows, for two reasons. A
+    ``FOR UPDATE`` locks only the rows that are ``owner`` when it reads, and
+    the hand-on promotes a row that is not one yet. And an org with no owner
+    row locks nothing at all. One per-org key covers every case.
+
+    The caller takes it as the first statement after the org is known, BEFORE
+    the counts. Transaction-scoped, so COMMIT or ROLLBACK releases it. The key
+    ``owners:<org_id>`` is namespaced away from the seat, discount and
+    activation keys in ``hashtext``'s one keyspace.
+    """
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"owners:{org_id}"},
+    )
 
 
 def make_owner(conn: Connection, *, org_id: str, identity_id: str) -> None:
