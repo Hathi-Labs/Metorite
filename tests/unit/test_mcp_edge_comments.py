@@ -42,7 +42,7 @@ Run::
 
 * C1. ``E/tools.py``: ``_add_comment`` skips the claim. ``test_k1_one_key_makes_one_row_and_the_replay_gives_its_id`` and ``test_the_replay_sends_nothing``.
 * C2. ``E/idempotency.py``: the slot key leaves out the tool name. ``test_k3_a_key_of_create_task_does_not_collide`` (both halves).
-* C3. ``E/tools.py``: ``_claim`` drops the fingerprint check. ``test_k2_one_key_with_other_inputs_is_refused`` (both halves).
+* C3. ``E/tools.py``: ``_claim_slot`` drops the fingerprint check. ``test_k2_one_key_with_other_inputs_is_refused`` (both halves).
 * C4. ``E/tools.py``: ``_keyed_write`` marks a clear refusal ``unknown``. ``test_k5_each_parent_refusal_has_its_text_and_frees_the_slot`` and ``test_k6_a_hidden_task_is_not_found_and_frees_the_slot``.
 * C5. ``E/tools.py``: ``_post_comment`` sends no ``details``. The same K5 test.
 * C6. ``E/tools.py``: the body schema loses ``maxLength``. ``test_k8_a_body_over_the_cap_sends_nothing`` (both halves).
