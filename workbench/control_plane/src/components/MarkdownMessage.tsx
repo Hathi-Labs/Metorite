@@ -8,7 +8,8 @@
  *  • Syntax-highlighted code blocks (token colours, `lib/codeTheme.ts`)
  *  • Terminal blocks with macOS-style chrome (red/yellow/green dots)
  *  • One-click copy button on every code block
- *  • Links: an in-app path opens in this tab, any other URL in a new tab
+ *  • Links: an in-app path opens in this tab, any other URL in a new tab, and
+ *    a workspace file in the app's own viewer (`ArtifactLink.tsx`)
  *  • Images: a remote URL loads only on a member's click (`MarkdownImage`)
  *  • Entity pills (opt-in, WS-27bm S9): «names» from the tools as pills
  *  • Collapsible tool-call accordion blocks (mirrors VS Code's "Used tool: …")
@@ -29,6 +30,8 @@ import { stripDsmlMarkup } from "@/lib/dsmlMarkup";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { isInAppPath } from "@/components/ui/EntityPill";
 import { announceInAppLink, externalHost } from "@/lib/inAppLink";
+import { workspaceFileOfHref } from "@/lib/artifactKind";
+import ArtifactFileLink from "@/components/ArtifactLink";
 import { buildEntityIndex, projectIdOfHref, type EntityIndex } from "@/lib/entityIndex";
 import ProjectLinkPill from "@/components/ProjectLinkPill";
 import type { TaskRefResolver } from "@/lib/taskRefs";
@@ -289,6 +292,10 @@ function nodeText(node: ReactNode): string {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+  // A link to a workspace file opens the app's viewer, never the raw file in
+  // a new tab (owner report, 2026-10-16, `components/ArtifactLink.tsx`).
+  const file = workspaceFileOfHref(href);
+  if (file) return <ArtifactFileLink file={file} className={LINK_CLASS}>{children}</ArtifactFileLink>;
   if (href && isInAppPath(href)) return <InAppLink href={href}>{children}</InAppLink>;
   if (href?.toLowerCase().startsWith("mailto:")) {
     return <a href={href} className={LINK_CLASS}>{children}</a>;

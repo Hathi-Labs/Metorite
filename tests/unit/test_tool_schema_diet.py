@@ -221,9 +221,12 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     "run_diagnostics": 240,
     "run_script": 270,
     "save_note": 290,
-    "share_artifact": 230,
+    # 2026-10-16 (owner report: a pasted link opened raw Markdown). Both
+    # tools now say "name the file, and paste no link". share_artifact
+    # measured 196 (was 201) and write_artifact 533 (was 575).
+    "share_artifact": 210,
     "web_search": 280,
-    "write_artifact": 600,
+    "write_artifact": 550,
 }
 
 #: The whole floor. Nudging one tool up must be paid for elsewhere.

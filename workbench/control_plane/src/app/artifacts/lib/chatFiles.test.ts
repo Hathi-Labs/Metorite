@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { chatFilesHref } from "@/lib/shell/chatHistory";
 
-import { artifactsTab, chatToShow } from "./chatFiles";
+import { artifactsTab, chatToShow, linkedFile } from "./chatFiles";
 
 const SRC = fileURLToPath(new URL("../../..", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -82,5 +82,26 @@ describe("the assistant links a chat's files here", () => {
     expect(page).toContain('<AppTopBar title="Artifacts"');
     expect(page).not.toMatch(/<h1\b/);
     expect(page).toContain("function AgentWorkspaces()");
+  });
+});
+
+describe("linkedFile — `?file=` opens one file in the viewer (2026-10-16)", () => {
+  it("names the file of the link, in the session of the link", () => {
+    expect(linkedFile("s-1", "outputs/report.md")).toEqual({
+      sessionId: "s-1", path: "outputs/report.md", name: "report.md",
+    });
+  });
+
+  it("opens nothing without both values, or for an odd session id", () => {
+    expect(linkedFile("s-1", null)).toBeNull();
+    expect(linkedFile(null, "outputs/a.md")).toBeNull();
+    expect(linkedFile("a/b", "outputs/a.md")).toBeNull();
+    expect(linkedFile("a.b", "outputs/a.md")).toBeNull();
+  });
+
+  it("the page opens it in the one viewer", () => {
+    const page = readFileSync(join(SRC, "app", "artifacts", "page.tsx"), "utf-8");
+    expect(page).toContain("linkedFile(asked, askedFile)");
+    expect(page).toContain("entry={linkedFileEntry(linked)}");
   });
 });

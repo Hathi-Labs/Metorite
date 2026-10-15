@@ -1716,6 +1716,9 @@ async def get_sender_categories(account_id: str) -> str:
 _RULE_ENGINE_TYPES = frozenset({
     "ARCHIVE", "LABEL", "MARK_READ", "STAR", "MARK_SPAM", "TRASH",
     "MOVE_FOLDER", "REPLY", "DRAFT_EMAIL", "FORWARD", "CALL_WEBHOOK",
+    # WS-59 RE-5: "Tell me on WhatsApp" tells the mailbox owner only, so it
+    # is not outward.
+    "NOTIFY_ME",
 })
 _OUTWARD_RULE_TYPES = frozenset({"FORWARD", "CALL_WEBHOOK"})
 # A REPLY or DRAFT_EMAIL with one of these goes to an address that the rule
@@ -1969,6 +1972,7 @@ _RULE_ACT_WORDS = {
     "MOVE_FOLDER": "moves to the folder", "REPLY": "drafts a reply",
     "DRAFT_EMAIL": "drafts an email", "FORWARD": "forwards",
     "CALL_WEBHOOK": "calls a webhook",
+    "NOTIFY_ME": "tells you on WhatsApp",
 }
 _RULE_CONDITION_FIELDS = (
     ("instructions", "when"), ("from_pattern", "from"), ("to_pattern", "to"),
@@ -2066,7 +2070,9 @@ async def create_rule(
 
     Actions:
         action_type: ARCHIVE | LABEL | MARK_READ | STAR | MARK_SPAM | TRASH |
-                     MOVE_FOLDER | REPLY | FORWARD | DRAFT_EMAIL | CALL_WEBHOOK.
+                     MOVE_FOLDER | REPLY | FORWARD | DRAFT_EMAIL | CALL_WEBHOOK |
+                     NOTIFY_ME ("Tell me on WhatsApp"; label is "normal" or
+                     "urgent").
         label: label/folder name for LABEL / MOVE_FOLDER.
         forward_to: recipient for a FORWARD action.
         draft_subject / draft_content: subject + body for REPLY / DRAFT_EMAIL

@@ -78,7 +78,11 @@ from gateway.routes.workflows.engine.handlers import (
     resolve_wait_seconds,
 )
 from gateway.routes.workflows.engine.runner import execute_workflow
-from gateway.routes.workflows.tools import execute_tool
+from gateway.routes.workflows.tools import (
+    NOTIFY_WHATSAPP,
+    execute_tool,
+    notify_owner_whatsapp,
+)
 from sqlalchemy import text
 
 #: Global + per-workflow concurrency caps (spec R2 mitigation).
@@ -389,13 +393,7 @@ def _pm_lifecycle_sweeper(workflow_id: str) -> Any:
             )
         except Exception as exc:  # pragma: no cover — Projects ships with the gateway
             raise NodeExecutionError("the Projects app is not available") from exc
-        # H4: unbound ON PURPOSE — this session's whole job is to decide the
-        # tenant, and it writes nothing.
-        resolver = await _get_db()
-        try:
-            organization_id = await _workflow_organization(resolver, workflow_id)
-        finally:
-            await resolver.close()
+        organization_id = await _resolve_workflow_organization(workflow_id)
         async with _tenant_session(organization_id) as db:
             return await run_lifecycle_sweep(
                 db,
@@ -406,10 +404,58 @@ def _pm_lifecycle_sweeper(workflow_id: str) -> Any:
     return _sweep
 
 
+async def _resolve_workflow_organization(workflow_id: str) -> str:
+    """:func:`_workflow_organization` on its own unbound resolver session.
+
+    H4: unbound ON PURPOSE — this session's whole job is to decide the
+    tenant, and it writes nothing. The lifecycle sweep and ``notify.whatsapp``
+    share it, so the two take the tenant one way."""
+    resolver = await _get_db()
+    try:
+        return await _workflow_organization(resolver, workflow_id)
+    finally:
+        await resolver.close()
+
+
+async def _workflow_owner(workflow_id: str) -> tuple[str, str]:
+    """The tenant and the owner's email of a workflow. **Stored facts.**
+
+    The tenant comes from :func:`_resolve_workflow_organization`, as the
+    lifecycle sweep takes it. The owner is then read in that tenant's
+    session. Raises when either is missing."""
+    organization_id = await _resolve_workflow_organization(workflow_id)
+    async with _tenant_session(organization_id) as db:
+        owner = (
+            await db.execute(
+                text("SELECT owner_email FROM workflows WHERE id = CAST(:wid AS uuid)"),
+                {"wid": workflow_id},
+            )
+        ).scalar()
+    if not owner:
+        raise NodeExecutionError(f"workflow {workflow_id} has no owner to tell")
+    return organization_id, str(owner).strip().lower()
+
+
+def _tool_runner(workflow_id: str) -> Any:
+    """``execute_tool``, with the workflow's owner bound into the one step
+    that tells a member: ``notify.whatsapp`` (WS-59 RE-5). The step's
+    arguments never name the member."""
+
+    async def _run(action: str, args: dict[str, Any], actor: str) -> dict[str, Any]:
+        if action != NOTIFY_WHATSAPP:
+            return await execute_tool(action, args, actor)
+        if not workflow_id:
+            raise NodeExecutionError("notify.whatsapp needs a saved workflow")
+        org, owner = await _workflow_owner(workflow_id)
+        return await notify_owner_whatsapp(org, owner, workflow_id, args)
+
+    return _run
+
+
 def build_node_services(actor: str, workflow_id: str = "") -> NodeServices:
     return NodeServices(
         run_agent=_agent_runner(workflow_id),
-        run_tool=execute_tool,
+        run_tool=_tool_runner(workflow_id),
         get_module_code=_get_module_code,
         actor=actor,
         update_task=_pm_task_updater(workflow_id),
