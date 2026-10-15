@@ -27,10 +27,12 @@ call_agent_background(agent_name, message) -> str
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import json as _json
 import os as _os
 import uuid as _uuid
+from collections.abc import Iterator
 
 from acb_common.paging import paged
 
@@ -125,6 +127,10 @@ async def call_agent(agent_name: str, message: str) -> str:
     _chain_token = _delegation_chain.set(
         (*_delegation_chain.get(), agent_name)
     )
+    # EM-G11d round 3: a session that read an untrusted agent's answer, on
+    # this turn or an earlier one, delegates with no_egress.
+    _held = contextlib.ExitStack()
+    _held.enter_context(_delegate_held(await _session_marked()))
     try:
         # If there is an active parent SSE queue (set by run_agent_stream via
         # ContextVar), stream sub-agent events through it live.
@@ -139,8 +145,8 @@ async def call_agent(agent_name: str, message: str) -> str:
             try:
                 from orchestrator.executor import _run_sub_agent_streaming  # noqa: PLC0415
                 # EM-G11d round 2: the answer of an untrusted-input agent
-                # comes back framed, and it marks this run (_answer_of).
-                return _answer_of(agent_name, await asyncio.wait_for(
+                # comes back framed, and it marks this session (_answer_of).
+                return await _answer_of(agent_name, await asyncio.wait_for(
                     _run_sub_agent_streaming(
                         agent_name, message, run_id, event_queue,
                         model=_parent_model,
@@ -164,7 +170,7 @@ async def call_agent(agent_name: str, message: str) -> str:
             _relay_tid = _stream_relay_thread_id.get(None)
             if _relay_tid:
                 try:
-                    return _answer_of(agent_name, await asyncio.wait_for(
+                    return await _answer_of(agent_name, await asyncio.wait_for(
                         _run_sub_agent_streaming(
                             agent_name, message, run_id, None,
                             model=_parent_model,
@@ -194,7 +200,7 @@ async def call_agent(agent_name: str, message: str) -> str:
             text = result.get("result") or result.get("answer") or ""
             if isinstance(text, dict):
                 text = text.get("content", str(text))
-            return _answer_of(agent_name, str(text)) if text else (
+            return await _answer_of(agent_name, str(text)) if text else (
                 f"({agent_name!r} returned an empty response)")
         except TimeoutError:
             return (
@@ -204,7 +210,32 @@ async def call_agent(agent_name: str, message: str) -> str:
         except Exception as exc:  # noqa: BLE001
             return f"Sub-task to {agent_name!r} failed: {exc}"
     finally:
+        _held.close()
         _delegation_chain.reset(_chain_token)
+
+
+async def _session_marked() -> bool:
+    """True when the chat session of this run read an untrusted agent's
+    answer (``egress.session_is_marked``, which fails closed)."""
+    from acb_skills.egress import session_is_marked
+
+    return await session_is_marked()
+
+
+@contextlib.contextmanager
+def _delegate_held(held: bool) -> Iterator[None]:
+    """While *held*, the run that starts in the block binds ``no_egress``: it
+    reads this frame's artifact context as its parent (H-236). The scope gives
+    the frame its own context back at the end."""
+    if not held:
+        yield
+        return
+    from acb_skills.egress import NO_EGRESS_KEY
+    from acb_skills.write_artifact import artifact_context_scope, derive_artifact_context
+
+    with artifact_context_scope():
+        derive_artifact_context(**{NO_EGRESS_KEY: True})
+        yield
 
 
 #: Where an answer of an agent of ``egress.UNTRUSTED_INPUT_AGENTS`` comes
@@ -217,20 +248,21 @@ _UNTRUSTED_ANSWER_WHAT = (
 )
 
 
-def _answer_of(agent_name: str, text: str) -> str:
+async def _answer_of(agent_name: str, text: str) -> str:
     """The answer of *agent_name* as the calling run reads it.
 
-    WS-17 EM-G11d round 2: the answer of an agent that reads stranger text
-    sits in a frame of ``acb_skills.untrusted``, and the CALLING run is marked
-    (``egress.mark_untrusted_answer``). From then on, each egress call of that
-    run asks the member's card (``permission_policy.UNTRUSTED_ANSWER_CONFIRM``),
-    and each run that it delegates to binds ``no_egress``. The answer of any
+    WS-17 EM-G11d: the answer of an agent that reads stranger text sits in a
+    frame of ``acb_skills.untrusted``, and the CHAT SESSION of the calling run
+    is marked in Redis (``egress.mark_untrusted_answer``, round 3). From then
+    on, on this turn and each later turn, each egress call of the session asks
+    the member's card (``permission_policy.UNTRUSTED_ANSWER_CONFIRM``), and
+    each run that it delegates to binds ``no_egress``. The answer of any
     other agent passes unchanged."""
     from acb_skills.egress import UNTRUSTED_INPUT_AGENTS, mark_untrusted_answer
 
     if agent_name not in UNTRUSTED_INPUT_AGENTS:
         return text
-    mark_untrusted_answer()
+    await mark_untrusted_answer()
     from acb_skills.untrusted import UntrustedFrame
 
     frame = UntrustedFrame.new()
@@ -309,6 +341,8 @@ async def call_agents_parallel(tasks: str) -> str:
         if refusal:
             return agent_name, refusal
         _tok = _delegation_chain.set((*_delegation_chain.get(), agent_name))
+        _held = contextlib.ExitStack()
+        _held.enter_context(_delegate_held(await _session_marked()))
         try:
             # Use streaming path if we have either a queue (Tier 2) or
             # Redis relay (Tier 1 / Tier 1.5).  Pass event_queue=None
@@ -353,6 +387,7 @@ async def call_agents_parallel(tasks: str) -> str:
             except Exception as exc:  # noqa: BLE001
                 return agent_name, f"Sub-task failed: {exc}"
         finally:
+            _held.close()
             _delegation_chain.reset(_tok)
 
     runnable = [t for t in task_list
@@ -388,7 +423,7 @@ async def call_agents_parallel(tasks: str) -> str:
 
     parts = []
     for agent_name, response in results:
-        parts.append(f"[{agent_name}]\n{_answer_of(agent_name, response)}")
+        parts.append(f"[{agent_name}]\n{await _answer_of(agent_name, response)}")
     parts.extend(_not_run())
     return "\n\n".join(parts)
 
@@ -423,6 +458,10 @@ async def call_agent_background(agent_name: str, message: str) -> str:
         # Extend the chain BEFORE create_task (the task copies this context),
         # then reset — the parent's own context is unchanged.
         _tok = _delegation_chain.set((*_delegation_chain.get(), agent_name))
+        # EM-G11d round 3: the task copies this context, so a marked session
+        # starts it with no_egress bound.
+        _held = contextlib.ExitStack()
+        _held.enter_context(_delegate_held(await _session_marked()))
         try:
             _task = asyncio.create_task(
                 run_agent(
@@ -433,6 +472,7 @@ async def call_agent_background(agent_name: str, message: str) -> str:
                 )
             )
         finally:
+            _held.close()
             _delegation_chain.reset(_tok)
         # Register under the parent thread so Stop cancels background
         # children too (review P1-4) — previously they kept burning tokens
