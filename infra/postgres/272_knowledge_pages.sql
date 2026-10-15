@@ -132,6 +132,11 @@ CREATE TABLE IF NOT EXISTS kb_pages (
     -- so the history written in the old space (a `me` draft, say) does not
     -- travel to the new readers. The code holds the rule (history_floor).
     history_from     INTEGER NOT NULL DEFAULT 1 CHECK (history_from >= 1),
+    -- The state an archived page had before the archive. Restore returns the
+    -- page to it, so a published page comes back published. NULL on a page
+    -- that is not archived.
+    archived_from_state TEXT NULL
+                     CHECK (archived_from_state IN ('draft', 'published')),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (parent_id IS NULL OR parent_id <> id)

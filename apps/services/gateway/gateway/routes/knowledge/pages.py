@@ -1,4 +1,4 @@
-"""The eight page routes of ``/knowledge`` (WS-61 KB-1).
+"""The nine page routes of ``/knowledge`` (WS-61 KB-1).
 
 Spec: ``project-docs/specs/knowledge_base.md`` §4.2, §5.3 and §5.4.
 
@@ -9,7 +9,7 @@ Spec: ``project-docs/specs/knowledge_base.md`` §4.2, §5.3 and §5.4.
     POST /knowledge/pages/{id}/publish                publish
     POST /knowledge/pages/{id}/move                   change the space or the parent
     POST /knowledge/pages/{id}/archive                archive (manage on the space)
-    POST /knowledge/pages/{id}/restore                archived back to draft (manage)
+    POST /knowledge/pages/{id}/restore                archived back to its prior state (manage)
     POST /knowledge/pages/{id}/revert                 a new version with an old body
 
 Each read goes through ``core.visible_pages_clause``. A write needs ``write``
@@ -382,10 +382,11 @@ async def move_page(
         source_ok = core.can_write_page(await core.space_level(db, user, source))
         target = await _move_target(db, user, page, source, body)
         moved_space = str(target.id) != str(source.id)
-        # An author who lost `write` may still take the page home: a move into
-        # their own `me` space (`_move_target` refuses another member's).
-        home = moved_space and target.kind == "me" and (
-            page.author_email == core.viewer_email(user))
+        # An author who lost `write` may still take their DRAFT home: a move
+        # into their own `me` space (`_move_target` refuses another member's).
+        # A published page belongs to the space, and needs `write` there.
+        home = (moved_space and target.kind == "me" and page.state == "draft"
+                and page.author_email == core.viewer_email(user))
         if not source_ok and not home:
             raise core.forbidden("Moving this page needs a write grant on its space.")
         new_parent = await _move_parent(db, user, page, target, body, moved_space)
@@ -429,7 +430,8 @@ async def archive_page(
             raise core.forbidden("Archiving a page needs manage on its space.")
         row = await _update(
             db, user, str(page.id),
-            "state = 'archived', archived_at = now()", {},
+            # The right side reads the row as it was, so the prior state is kept.
+            "state = 'archived', archived_at = now(), archived_from_state = state", {},
         )
         return await _written(db, user, row, "archive")
 
@@ -439,11 +441,12 @@ async def restore_page(
     page_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Return an archived page to ``draft``. A manager of the space restores.
+    """Return an archived page to the state it had before the archive.
 
     The gate is the one of archive: ``manage`` on the page's space, which is
-    ``knowledge:manage``, the space owner, or a ``manage`` grant. The page
-    comes back as a draft, so a writer publishes it again.
+    ``knowledge:manage``, the space owner, or a ``manage`` grant. A published
+    page comes back published, so nobody is locked out when its author has
+    left. A draft comes back a draft. A row with no recorded state is a draft.
     """
     async with core._tenant_session() as db:
         page = await core.load_page(db, user, page_id, lock=True)
@@ -455,7 +458,10 @@ async def restore_page(
         if await core.space_level(db, user, space) != "manage":
             raise core.forbidden("Restoring a page needs manage on its space.")
         row = await _update(
-            db, user, str(page.id), "state = 'draft', archived_at = NULL", {},
+            db, user, str(page.id),
+            "state = COALESCE(archived_from_state, 'draft'), archived_at = NULL, "
+            "archived_from_state = NULL",
+            {},
         )
         return await _written(db, user, row, "restore")
 

@@ -457,8 +457,10 @@ async def test_each_write_appends_a_version_with_reason_and_via(ns, app_engine) 
         (4, "revert", "web", writer_email),
         (5, "archive", "web", admin.email),
     ]
-    # The author still sees the archived page. The page carries its history.
-    detail = await _ok(ns, writer, "GET", f"/knowledge/pages/{pid}")
+    # The archive view: a manager sees the archived page and its history. The
+    # author, a writer with no manage, does not (fix round 2, P1-e).
+    assert await _status(ns, writer, pid) == 404
+    detail = await _ok(ns, admin, "GET", f"/knowledge/pages/{pid}")
     assert detail["state"] == "archived"
     assert [v["reason"] for v in detail["versions"]] == [
         "archive", "revert", "publish", "edit", "create"]
@@ -620,15 +622,17 @@ async def test_a_manager_sees_and_restores_an_archived_page(ns, app_engine) -> N
         archive = await _ok(ns, manager, "GET", f"/knowledge/pages?space={space}&state=archived")
         assert [r["id"] for r in archive["pages"]] == [pid]
     assert await _status(ns, reader, pid) == 404
-    assert await _status(ns, writer, pid) == 200  # the author, as before
+    assert await _status(ns, writer, pid) == 404  # authorship opens no archive
 
-    assert (await _call(ns, writer, "POST", f"/knowledge/pages/{pid}/restore")).status_code == 403
+    # The writer cannot see the archived page, so restore is a 404 for them.
+    assert (await _call(ns, writer, "POST", f"/knowledge/pages/{pid}/restore")).status_code == 404
     restored = await _ok(ns, lead, "POST", f"/knowledge/pages/{pid}/restore")
-    assert restored["state"] == "draft" and restored["archived_at"] is None
-    # Back to a draft, the page follows the draft rule again: its author sees
-    # it, and a manager who is not the author does not.
-    assert await _status(ns, writer, pid) == 200
-    assert (await _call(ns, lead, "POST", f"/knowledge/pages/{pid}/restore")).status_code == 404
+    # A published page comes back published, so every reader has it again.
+    assert restored["state"] == "published" and restored["archived_at"] is None
+    assert restored["archived_from_state"] is None
+    for member in (lead, reader, writer):
+        assert await _status(ns, member, pid) == 200
+    assert (await _call(ns, lead, "POST", f"/knowledge/pages/{pid}/restore")).status_code == 409
     with ns.admin_engine.connect() as c:
         reason = c.execute(text(
             "SELECT reason FROM kb_page_versions WHERE page_id = CAST(:p AS uuid) "
@@ -644,9 +648,58 @@ async def test_an_archived_me_page_stays_its_owners(ns, app_engine) -> None:  # 
     await _ok(ns, owner, "POST", f"/knowledge/pages/{note['id']}/archive")
     admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
     assert await _status(ns, admin, note["id"]) == 404
-    await _ok(ns, owner, "POST", f"/knowledge/pages/{note['id']}/restore")
+    restored = await _ok(ns, owner, "POST", f"/knowledge/pages/{note['id']}/restore")
+    assert restored["state"] == "draft"  # a draft that was archived is a draft again
     again = await _call(ns, owner, "POST", f"/knowledge/pages/{note['id']}/restore")
     assert again.status_code == 409
+
+
+# ── Fix round 2 ─────────────────────────────────────────────────────────────
+
+async def test_a_revoked_author_reads_no_published_page(ns, app_engine) -> None:  # noqa: F811
+    """P1-e. Authorship gives no read of a published page. With the grant
+    gone, the author sees neither the page nor a later edit by another."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    author_email, editor_email = _address("author"), _address("editor")
+    author = _principal(author_email, ns.org_a)
+    editor = _principal(editor_email, ns.org_a)
+    eng = await _space(ns, admin, "Eng", [
+        {"subject": author_email, "level": "write"},
+        {"subject": editor_email, "level": "write"},
+    ])
+    pid = await _published(ns, author, eng, "Runbook")
+    await _ok(ns, admin, "PUT", f"/knowledge/spaces/{eng}/grants",
+              {"grants": [{"subject": editor_email, "level": "write"}]})
+    await _ok(ns, editor, "PATCH", f"/knowledge/pages/{pid}", {"body_md": "secret after revoke"})
+
+    assert await _status(ns, author, pid) == 404
+    assert "Runbook" not in await _titles(ns, author)
+    assert await _status(ns, editor, pid) == 200
+
+
+async def test_an_author_cannot_yank_a_published_page(ns, app_engine) -> None:  # noqa: F811
+    """P1-f. A published page belongs to its space. An author who still reads
+    it, but lost ``write``, cannot move it into their own ``me`` space."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    author_email, editor_email = _address("author"), _address("editor")
+    author = _principal(author_email, ns.org_a)
+    editor = _principal(editor_email, ns.org_a)
+    eng = await _space(ns, admin, "Eng", [
+        {"subject": author_email, "level": "write"},
+        {"subject": editor_email, "level": "write"},
+    ])
+    pid = await _published(ns, author, eng, "Runbook")
+    await _ok(ns, admin, "PUT", f"/knowledge/spaces/{eng}/grants", {"grants": [
+        {"subject": author_email, "level": "read"},
+        {"subject": editor_email, "level": "write"},
+    ]})
+    home = await _me_space(ns, author)
+    yank = await _call(ns, author, "POST", f"/knowledge/pages/{pid}/move", {"space_id": home})
+    assert yank.status_code == 403, yank.text
+    detail = await _ok(ns, editor, "GET", f"/knowledge/pages/{pid}")
+    assert detail["space_id"] == eng
 
 
 # ── One `me` space under concurrent first writes ────────────────────────────

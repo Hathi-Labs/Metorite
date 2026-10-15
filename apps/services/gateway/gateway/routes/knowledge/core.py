@@ -19,8 +19,11 @@ that does not. A member sees a page when one of these holds:
 * the page is ``archived`` in a space that is not a ``me`` space, and the
   member manages the space: ``knowledge:manage``, the space owner, or a
   ``manage`` grant. That is the archive view of §4.2;
-* the member wrote the page, in any state;
-* the page is a ``draft`` and names the member in ``reviewers``.
+* the page is a ``draft`` that the member wrote. Authorship gives no read of
+  a published or archived page: an author whose grant is gone reads the
+  space no more, like any other member;
+* the page is a ``draft`` and names the member in ``reviewers``;
+* the page is in the member's own ``me`` space, in any state.
 
 ``knowledge:manage`` never shows a draft that is not the holder's own, and
 never a ``me`` space. ``data:org:read`` gives nothing here, so this module
@@ -98,7 +101,8 @@ REVIEW_DAYS = 180
 PAGE_COLUMNS = (
     "p.id, p.space_id, p.parent_id, p.position, p.title, p.body_md, p.state, "
     "p.author_email, p.reviewers, p.review_at, p.source_ref, p.origin, "
-    "p.published_at, p.archived_at, p.updated_at, p.created_at, p.history_from"
+    "p.published_at, p.archived_at, p.updated_at, p.created_at, p.history_from, "
+    "p.archived_from_state"
 )
 
 #: The space columns that each space read returns.
@@ -223,8 +227,12 @@ def visible_pages_clause(
         f" OR EXISTS (SELECT 1 FROM kb_space_grants kb_g"
         f" WHERE kb_g.space_id = kb_s.id AND kb_g.level = 'manage'"
         f" AND {_subject_match('kb_g')}))))"
-        f" OR {a}.author_email = :kb_viewer"
+        f" OR ({a}.state = 'draft' AND {a}.author_email = :kb_viewer)"
         f" OR ({a}.state = 'draft' AND :kb_viewer = ANY({a}.reviewers))"
+        f" OR EXISTS (SELECT 1 FROM kb_spaces kb_s"
+        f" WHERE kb_s.id = {a}.space_id"
+        f" AND kb_s.organization_id = CAST(:kb_org AS uuid)"
+        f" AND kb_s.kind = 'me' AND kb_s.owner_email = :kb_viewer)"
         f"))"
     )
     return sql, _viewer_params(user)
@@ -484,6 +492,7 @@ def page_dict(row: Any, *, body: bool = True) -> dict[str, Any]:
         "published_at": _iso(row.published_at),
         "archived_at": _iso(row.archived_at),
         "history_from": row.history_from,
+        "archived_from_state": row.archived_from_state,
         "updated_at": _iso(row.updated_at),
         "created_at": _iso(row.created_at),
     }
