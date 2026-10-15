@@ -1181,7 +1181,8 @@ async def list_published_workflows(*, organization_id: str) -> list[dict[str, An
                 text(
                     "SELECT id, name, description, latest_version FROM workflows "
                     "WHERE status = 'published' AND latest_version IS NOT NULL "
-                    "ORDER BY name"
+                    # The id breaks a tie of the name: the chat pages this list.
+                    "ORDER BY name, id"
                 ),
             )
         ).fetchall()

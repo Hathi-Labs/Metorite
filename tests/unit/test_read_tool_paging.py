@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -215,6 +216,9 @@ ALLOWED: dict[str, str] = {
         'Text: the head of a long command output. The cut is marked.',
     'packages/acb_skills/acb_skills/history_tools.py::query_history::val[:_CONTENT_CAP]':
         "Text: one message body, cut and marked '...'.",
+    'packages/acb_skills/acb_skills/sandbox_tools.py::_long_line::text[:FILE_READ_CHARS]':
+        'Text: one line of a sandbox file, longer than the read window. The '
+        'answer names its size and how to read the rest.',
     'packages/acb_skills/acb_skills/todo_tools.py::manage_todo_list::title[:120]':
         'Text, not rows: the cut shortens one string.',
     'packages/acb_skills/acb_skills/web_tools.py::fetch_page::text[:max_chars]':
@@ -236,8 +240,10 @@ ALLOWED: dict[str, str] = {
 #: `" ".join(...)` result, as text. 48 - 3 + 15 = 60. #1019 on main added one
 #: confirm-card line (61). The re-review of #1014 stopped exempting a
 #: `join(...)[:N]`, so the three email entries that collapse one string's
-#: whitespace came back with their reason (64).
-ALLOWED_CEILING = 64
+#: whitespace came back with their reason (64). Part 2 (2026-10-15) added
+#: one: the sandbox read cuts a single line that is longer than its window,
+#: and says so (65).
+ALLOWED_CEILING = 65
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -1170,3 +1176,262 @@ def test_the_attachment_listing_names_every_file(tmp_path) -> None:
         (folder / f"f{k:02d}.pdf").write_bytes(b"x")
     names = attachment_tools._listing(str(tmp_path), "thread")
     assert len(names) == 60
+
+
+# ── 10. Part 2: query_history and the reads that had no cap ────────────────
+
+
+def test_a_one_based_argument_is_named_with_its_own_next_value() -> None:
+    """A line number starts at 1, so the next start is one past the last shown."""
+    assert page_line(500, 0, 400, param="start_line", base=1, noun="lines") == (
+        "Showing 1-400 of 500. Call again with start_line=401 for the rest.")
+    assert page_line(500, 0, 400, param="start_line", base=1,
+                     tool="file_access_read_lines") == (
+        "Showing 1-400 of 500. Call file_access_read_lines with start_line=401 "
+        "for the rest.")
+
+
+class _HistoryResult:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    def fetchmany(self, n: int) -> list[tuple[Any, ...]]:
+        return list(self._rows)[:n]
+
+    def keys(self) -> list[str]:
+        return ["role", "content", "created_at", "thread_id", "agent_name", "title"]
+
+
+@pytest.fixture
+def history(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """``query_history`` over a fake session that answers ``sink["rows"]``."""
+    import acb_skills.history_tools as ht
+    from orchestrator import executor
+
+    sink: dict[str, Any] = {"rows": []}
+
+    class _Session:
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *a: Any) -> bool:
+            return False
+
+        def execute(self, stmt: Any, params: Any = None) -> _HistoryResult:
+            sink["sql"], sink["params"] = str(stmt), params
+            # The database applies the OFFSET and the LIMIT, as Postgres would.
+            start, limit = int(params["offset"]), int(params["limit"]) + 1
+            return _HistoryResult(sink["rows"][start:start + limit])
+
+    monkeypatch.setattr(ht, "_acting_user", lambda: "alice@example.test")
+    monkeypatch.setattr(executor, "_graph_session_opener_current", lambda: _Session)
+    return sink
+
+
+def _said(k: int) -> tuple[Any, ...]:
+    return ("user", f"message {k}", "2026-10-01", "t1", "orchestrator", "T")
+
+
+def _history_rows(out: str) -> tuple[list[Any], str]:
+    """The JSON array of an answer, and the line after it."""
+    rows, end = json.JSONDecoder().raw_decode(out)
+    return rows, out[end:].strip()
+
+
+def test_query_history_takes_an_offset_and_breaks_a_tie(history: dict[str, Any]) -> None:
+    from acb_skills.history_tools import query_history
+
+    history["rows"] = [_said(k) for k in range(25)]
+    out = run(query_history(limit=10, offset=10))
+    rows, line = _history_rows(out)
+    assert [r["content"] for r in rows] == [f"message {k}" for k in range(10, 20)]
+    assert line == "Showing 11-20. More messages exist. Call again with offset=20 for the rest."
+    assert history["params"]["offset"] == 10
+    # One message id is unique in its session only (the key is both).
+    assert "m.created_at DESC, m.session_id DESC, m.id DESC" in history["sql"]
+    assert "OFFSET" in history["sql"]
+
+
+def test_query_history_says_the_last_page_and_past_the_end(history: dict[str, Any]) -> None:
+    from acb_skills.history_tools import query_history
+
+    history["rows"] = [_said(k) for k in range(25)]
+    rows, line = _history_rows(run(query_history(limit=10, offset=20)))
+    assert len(rows) == 5 and line == "Showing 21-25. This is the last page."
+    rows, line = _history_rows(run(query_history(limit=10, offset=40)))
+    assert rows == [] and line == "Nothing at offset=40. This is past the end."
+    # One page that holds everything stays a bare JSON array.
+    history["rows"] = [_said(k) for k in range(3)]
+    assert json.loads(run(query_history()))[2]["content"] == "message 2"
+
+
+def _notes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str) -> Any:
+    from acb_skills import note_tools
+
+    (tmp_path / "agent-data").mkdir(parents=True)
+    (tmp_path / "agent-data" / "NOTES.md").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(note_tools, "_get_agent_dir", lambda: str(tmp_path))
+    return note_tools
+
+
+def test_recall_notes_pages_a_long_file(monkeypatch, tmp_path) -> None:
+    nt = _notes(monkeypatch, tmp_path, "\n".join(f"fact {k}" for k in range(450)))
+    out = run(nt.recall_notes("NOTES.md"))
+    assert out.splitlines()[:2] == ["fact 0", "fact 1"]
+    assert "fact 199" in out and "fact 200" not in out
+    assert out.endswith("Showing 1-200 of 450. Call again with offset=200 for the rest.")
+    out = run(nt.recall_notes("NOTES.md", offset=400))
+    assert out.splitlines()[0] == "fact 400"
+    assert out.endswith("Showing 401-450 of 450. This is the last page.")
+
+
+def test_recall_notes_pages_the_matching_lines_and_bounds_the_characters(
+        monkeypatch, tmp_path) -> None:
+    nt = _notes(monkeypatch, tmp_path, "\n".join(
+        [f"lead {k}" for k in range(300)] + ["x" * 9_000 for _ in range(5)]))
+    out = run(nt.recall_notes("NOTES.md", query="lead", offset=200))
+    assert out.splitlines()[0] == "lead 200"
+    assert out.endswith("Showing 201-300 of 300. This is the last page.")
+    # Long lines end the page early, on a line, and the hint names the next.
+    out = run(nt.recall_notes("NOTES.md", offset=300))
+    assert len(out) < nt.NOTES_PAGE_CHARS + 200
+    assert out.endswith("Showing 301-302 of 305. Call again with offset=302 for the rest.")
+    # A short file reads as before, with no line.
+    nt2 = _notes(monkeypatch, tmp_path / "s", "one\ntwo")
+    assert run(nt2.recall_notes("NOTES.md")) == "one\ntwo"
+
+
+def test_list_workflows_pages(monkeypatch) -> None:
+    import gateway.routes.workflows.service as svc
+    from acb_common.db import bind_tenant, release_tenant
+    from orchestrator import workflow_tools
+
+    orgs: list[str] = []
+
+    async def published(*, organization_id: str) -> list[dict[str, Any]]:
+        orgs.append(organization_id)
+        return [{"id": f"w{k}", "name": f"Flow {k}", "description": "", "version": 1}
+                for k in range(30)]
+
+    monkeypatch.setattr(svc, "list_published_workflows", published)
+    # The tool takes the org from the run binding (PR #1052). The real
+    # binding under FORCE RLS: ``test_workflows_tool_rls_r8.py``.
+    token = bind_tenant("org-paging")
+    try:
+        out = run(workflow_tools.list_workflows())
+        rows, line = _history_rows(out)
+        assert len(rows) == workflow_tools.WORKFLOWS_PAGE == 25
+        assert line == "Showing 1-25 of 30. Call again with offset=25 for the rest."
+        rows, line = _history_rows(run(workflow_tools.list_workflows(offset=25)))
+        assert [r["id"] for r in rows] == [f"w{k}" for k in range(25, 30)]
+        assert line == "Showing 26-30 of 30. This is the last page."
+    finally:
+        release_tenant(token)
+    assert orgs == ["org-paging", "org-paging"]
+
+
+def test_my_tasks_list_schedule_pages(monkeypatch) -> None:
+    blocks = [{**TASK, "id": f"{k:032x}", "title": f"block {k}",
+               "scheduled_start": f"2026-10-15T{k // 4:02d}:{k % 4 * 15:02d}:00+00:00"}
+              for k in range(60)]
+
+    async def request(method: str, path: str, **kw: Any) -> Any:
+        return {"rows": blocks, "total": len(blocks)}
+
+    monkeypatch.setattr(core, "_request", request)
+    out = run(core.my_tasks_list_schedule("2026-10-15T00:00", "2026-10-16T00:00"))
+    assert "block 49" in out and "block 50" not in out
+    assert out.endswith("Showing 1-50 of 60. Call again with offset=50 for the rest.")
+    out = run(core.my_tasks_list_schedule("2026-10-15T00:00", "2026-10-16T00:00",
+                                          offset=50))
+    assert "block 50" in out and "block 49" not in out
+    assert out.endswith("Showing 51-60 of 60. This is the last page.")
+
+
+def test_the_calendar_route_breaks_a_tie_of_the_start_by_id() -> None:
+    from gateway.routes.projects.personal import calendar_key
+
+    rows = [{"id": i, "scheduled_start": "2026-10-15T09:00:00+00:00"} for i in "cab"]
+    rows.append({"id": "z", "scheduled_start": "2026-10-15T08:00:00+00:00"})
+    assert [r["id"] for r in sorted(rows, key=calendar_key)] == ["z", "a", "b", "c"]
+
+
+# ── 11. The sandbox file tools ──────────────────────────────────────────────
+
+async def _file_tools(files: dict[str, str]) -> dict[str, Any]:
+    """MAF's file tools over an in-memory store, after the paging wrap."""
+    from acb_skills.sandbox_tools import page_file_tools
+    from agent_framework import FileAccessProvider, InMemoryAgentFileStore, SessionContext
+
+    store = InMemoryAgentFileStore()
+    for name, body in files.items():
+        await store.write(name, body)
+    context = SessionContext(input_messages=[])
+    provider = FileAccessProvider(store, disable_readonly_tool_approval=True,
+                                  disable_write_tool_approval=True)
+    await provider.before_run(agent=None, session=None, context=context, state={})
+    return {t.name: t for t in page_file_tools(list(context.tools))}
+
+
+def test_a_long_sandbox_file_reads_in_windows() -> None:
+    from acb_skills import sandbox_tools as st
+
+    body = "".join(f"row {k}\n" for k in range(1000))
+
+    async def go() -> tuple[str, str, str]:
+        tools = await _file_tools({"big.csv": body, "small.txt": "a\nb"})
+        whole = await tools["file_access_read"].func(file_name="big.csv")
+        part = await tools["file_access_read_lines"].func(file_name="big.csv",
+                                                          start_line=401)
+        small = await tools["file_access_read"].func(file_name="small.txt")
+        return whole, part, small
+
+    whole, part, small = run(go())
+    assert whole.startswith("row 0\n") and "row 399\n" in whole and "row 400" not in whole
+    assert whole.endswith(
+        f"Showing 1-{st.FILE_READ_LINES} of 1001. Call file_access_read_lines with "
+        f"start_line={st.FILE_READ_LINES + 1} for the rest.")
+    assert part.startswith("401\trow 400\n") and "800\trow 799\n" in part
+    assert "801\t" not in part
+    assert part.endswith("Showing 401-800 of 1001. Call again with start_line=801 for the rest.")
+    assert small == "a\nb", "a short file reads as before"
+
+
+def test_a_sandbox_file_of_long_lines_reads_in_character_windows() -> None:
+    from acb_skills import sandbox_tools as st
+
+    body = "\n".join("y" * 30_000 for _ in range(5))
+
+    async def go() -> tuple[str, str]:
+        tools = await _file_tools({"wide.txt": body, "one.txt": "z" * 90_000})
+        return (await tools["file_access_read"].func(file_name="wide.txt"),
+                await tools["file_access_read"].func(file_name="one.txt"))
+
+    wide, one = run(go())
+    assert len(wide) < st.FILE_READ_CHARS + 200
+    assert wide.endswith("Showing 1-1 of 5. Call file_access_read_lines with start_line=2 "
+                         "for the rest.")
+    assert len(one) < st.FILE_READ_CHARS + 300
+    assert "Line 1 holds 90000 characters" in one
+
+
+def test_a_large_sandbox_folder_lists_in_pages() -> None:
+    from acb_skills import sandbox_tools as st
+
+    files = {f"outputs/f{k:04d}.txt": "x" for k in range(450)}
+
+    async def go() -> tuple[Any, Any, dict[str, Any]]:
+        tools = await _file_tools(files)
+        ls = tools["file_access_ls"]
+        return (await ls.func(directory="outputs"),
+                await ls.func(directory="outputs", offset=400),
+                ls.parameters())
+
+    first, last, schema = run(go())
+    rows, line = _history_rows(first)
+    assert len(rows) == st.LS_PAGE == 200 and rows[0]["name"] == "f0000.txt"
+    assert line == "Showing 1-200 of 450. Call again with offset=200 for the rest."
+    rows, line = _history_rows(last)
+    assert [r["name"] for r in rows][:1] == ["f0400.txt"] and len(rows) == 50
+    assert line == "Showing 401-450 of 450. This is the last page."
+    assert set(schema["properties"]) == {"directory", "glob_pattern", "offset"}

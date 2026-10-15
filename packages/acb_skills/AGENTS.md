@@ -157,7 +157,11 @@ clone cache.
    thread's own slug may lead a path (`inputs/<slug>/x` is `inputs/x`),
    because the upload message and the cards name a file so. The slug of
    another thread is refused (`_own_folder_rest`). It
-   mirrors each kept write and delete. WS-43u: the provider
+   mirrors each kept write and delete. `page_file_tools` (2026-10-15) gives
+   `file_access_read` and `file_access_read_lines` a window of 400 lines or
+   40,000 characters, and `file_access_ls` an `offset` and pages of 200.
+   Each answer that holds part of the data says how to get the rest. The
+   fence is tests/unit/test_read_tool_paging.py. WS-43u: the provider
    adds the rules for code to the instructions of the turn, from
    `addendum.render_run_sections` over the tools that the turn holds. Put
    prose for a tool that only a sandboxed run holds in `addendum.RUN_SECTIONS`,

@@ -5434,6 +5434,13 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
 - **Added:** 2026-10-15 · WS-59 RE-2a
 
+### H-316 · The member writers of assignee rows take the row and the key in different orders · [AGENT]
+- **Check:** `git grep -n -e "ids = dedupe_ids(payload.task_ids)" -e "await _move_satellites(db, str(source.id), task_id)" -- apps/services/gateway/gateway/routes/projects/bulk.py apps/services/gateway/gateway/routes/projects/merge.py`. The first anchor is the unsorted selection of the bulk edit. The second is the merge, which moves the assignee keys before `update_row` of the target. Two hits mean this entry stays. With fewer hits, read the changed code, and delete this entry when the orders agree.
+- **Why.** The reviewer and the verifier of WS-55 EA-6b found these orders already disagree on main. A PUT of the assignees writes the key and then bumps the row. A move with assignees writes the row and the destination counter, then the key. A merge moves the assignee and watcher keys, then writes the target row. A bulk edit locks rows in request order. So a PUT against a move that assigns the same member, a merge against a PUT on the watcher keys, and two bulk edits with the same ids in another order can each deadlock. A merge against a PUT of the same member also fails with a unique violation of `pm_task_assignees_pkey` (10 times in 10).
+- **Do.** Sort the ids of every bulk write. Give every member writer one helper that writes the assignee key, then the row. Fix the merge's `NOT EXISTS` race. Prove each pair with a looped R8 race test. The claim (`claim_task`) already writes the key before the row, so it needs no change.
+- **Authority:** R8 · `specs/external_agent_access.md` §17 (EA-6b fix round 3)
+- **Added:** 2026-10-15 · EA-6b fix round 3 review (taken as H-313, renumbered to H-316 at merge because main took H-313 to H-315)
+
 ### H-317 · Reach must send the needs-you template for an approval only · [AGENT]
 - **Check:** `git grep -n "needs_you_template" -- apps/services/gateway/gateway/reach/loop.py`.
   Read the branch that sends the template. No test of the `approval` kind
@@ -5449,6 +5456,38 @@ line — never reclaim a number by deleting the other entry.
   `tests/unit/test_reach_loop.py`. `needs_you_params` keeps two parameters.
 - **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
 - **Added:** 2026-10-15 · H-315 template submission
+
+### H-318 · A preview app's jobs reach the tier-2 coordinator · [AGENT]
+- **Check:** `rg -n "launch" apps/services/gateway/gateway/routes/shell/intent.py`.
+  No hit inside `held_jobs` means this is open.
+- **Why.** `navigation_shell.md` §5.2 rule 8 says a `preview` app may carry a
+  manifest and nothing renders it. The bar's `buildItems` honours that,
+  because `visibleSections` drops a preview pane. The gateway's `held_jobs`
+  filters a job by feature only, and every member holds `feature:*` since
+  migration 207. So a job of a preview app would be offered to every member
+  before the owner promotes the app. Found by the WS-61 KB-0 audit on
+  2026-10-15, and it is why KB-0 carries no job.
+- **Do this:** either `held_jobs` reads the launch status of the job's app
+  from one list the gateway owns, or rule 8 changes to "a preview app
+  carries no job". Pin it in `tests/unit/test_shell_intent.py`.
+- **Authority:** `specs/navigation_shell.md` §5.2 rule 8 and §5.3
+- **Added:** 2026-10-15 · WS-61 KB-0 audit
+
+### H-319 · Two spellings of the subject grammar: a bare email and `user:<email>` · [AGENT]
+- **Check:** `rg -n "user:" infra/postgres/268_artifacts.sql packages/acb_auth/acb_auth/permissions.py apps/services/gateway/gateway/routes/projects/core.py`.
+  A `user:` prefix in the artifacts CHECK and a bare email in
+  `validate_grant_subject` means this is open.
+- **Why.** `pm_project_grants` and `validate_grant_subject`
+  (`routes/projects/core.py:3383`) take a bare email as a subject. AM-1
+  (`268_artifacts.sql`, 2026-10-15) takes `user:<email>` and adds
+  `project:<uuid>`. CLAUDE.md §4 names one subject-grammar validator as a
+  seam. `knowledge_base.md` §5.1 (WS-61 KB-1) must use the shared one, so
+  the spelling has to be decided before KB-1 and AM-3 both write grants.
+- **Do this:** pick one spelling, put the validator in
+  `acb_auth/permissions.py`, and make Projects, Artifacts and Knowledge call
+  it. A migration that widens the artifacts CHECK is expand-only (R6).
+- **Authority:** CLAUDE.md §4 (respect the seams), `tenancy_and_visibility.md` §3
+- **Added:** 2026-10-15 · WS-61 KB-0 audit
 
 ### H-322 · The workflow run lifecycle outside the agent tools names no tenant (H4 slice 6c) · [AGENT]
 - **Check:** `git grep -n "await _get_db()" -- apps/services/gateway/gateway/routes/workflows/`.
