@@ -1028,6 +1028,11 @@ six example questions.
 
 ### 6.3 Three tiers
 
+**Amended 2026-10-15 by D105.** Tier 1's providers are a projection of the
+one retrieval registry in `gateway/retrieval/sources.py`
+(`knowledge_base.md` §20). The bar's budget, order and item shape do not
+change. The assistant's `search_company` reads the same registry.
+
 | Tier | Budget | Where it runs | What it costs |
 |---|---|---|---|
 | **0 — the registry** | 50 ms | In the browser | Nothing. No server call |
