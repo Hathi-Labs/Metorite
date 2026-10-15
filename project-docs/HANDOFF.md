@@ -5450,6 +5450,33 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
 - **Added:** 2026-10-15 · H-315 template submission
 
+### H-322 · The workflow run lifecycle outside the agent tools names no tenant (H4 slice 6c) · [AGENT]
+- **Check:** `git grep -n "await _get_db()" -- apps/services/gateway/gateway/routes/workflows/`.
+  Each hit is an unbound read or write on a FORCE RLS table. This entry is
+  open until the only hits left are tenant-discovery reads.
+- **Why.** PR #1052 binds the F13 agent path: the list, the run, the run
+  rows, an approval resume and the status read. The rest of the lifecycle
+  still opens `get_db()` with no tenant. In production FORCE RLS gives that
+  read zero rows, and that write fails.
+- **The unbound sites, as of 2026-10-15:**
+  - `service.py` `_get_module_code`. A module node reads `workflow_modules` and fails.
+  - `service.py` `_pm_task_updater`. A Projects node writes `pm_tasks` unbound.
+  - `service.py` `_run_session` with no org. It serves the manual Run, the schedule, the webhook and the event runs.
+  - `service.py` `record_skipped_run`, `reconcile_orphaned_runs` and `evaluate_automation_health`.
+  - `service.py` `_workflow_billing_member`. It is a tenant-discovery read (H-152), so it stays unbound.
+  - `scheduler.py` `_scan_once` and `scan_due_waits`. Because of this, an agent cannot start a workflow with a long wait yet.
+  - `triggers.py` (the event dispatch) and `hooks.py` (the webhook route).
+  - `runs.py` calls `start_run` with no org (the manual Run button).
+- **Do this:** take the org from a stored fact, never from the ambient
+  context: the workflow row for a trigger, the run row for the sweeps. Then
+  pass it to `start_run` and `resume_run`. Enumerate the RLS-exempt
+  `organization` table for the scans, as `crm_sync/scheduler.py` does. Then
+  remove the long-wait refusal in `run_published_workflow`
+  (`_long_wait_nodes`), and lower `H2_BASELINE_ELSEWHERE`.
+- **Authority:** `specs/workflows_app.md` F13 · `routes/workflows/service.py`
+  header note · R5
+- **Added:** 2026-10-15 · PR #1052 review round 1
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

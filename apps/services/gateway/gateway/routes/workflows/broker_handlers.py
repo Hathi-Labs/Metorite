@@ -16,14 +16,27 @@ _log = get_logger("gateway.workflows.broker")
 
 
 async def _resume_run_handler(proposal: Any) -> dict[str, Any]:
-    """Broker ``execute`` calls this on approve — resume the paused run."""
+    """Broker ``execute`` calls this on approve — resume the paused run.
+
+    **The org is the approver's (2026-10-15).** ``broker.approve`` runs in the
+    approver's request, so ``current_tenant()`` is the org that the auth
+    dependency bound from the session. It never comes from the proposal or
+    its payload (R5, R11). ``resume_run`` reads and writes in that org, so a
+    run of another org reads as ``no run``. With no bound org this refuses
+    and reads nothing. Fence: ``tests/unit/test_workflows_tool_rls_r8.py``.
+    """
+    from acb_common.db import current_tenant
     from gateway.routes.workflows.service import resume_run
 
     payload = getattr(proposal, "payload", None) or {}
     run_id = str(payload.get("run_id") or "")
     if not run_id:
         return {"ok": False, "error": "proposal has no run_id"}
-    result = await resume_run(run_id, resumed_by="approvals-inbox")
+    org = current_tenant()
+    if not org:
+        _log.warning("workflows.approval_resume_unbound", run_id=run_id)
+        return {"ok": False, "error": "no organization is bound, so the run cannot resume"}
+    result = await resume_run(run_id, resumed_by="approvals-inbox", organization_id=str(org))
     _log.info(
         "workflows.approval_resume",
         run_id=run_id,

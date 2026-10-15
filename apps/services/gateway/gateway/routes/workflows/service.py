@@ -58,8 +58,10 @@ from typing import Any
 # binding. `list_published_workflows`, `run_published_workflow` and
 # `run_summary` read inside `_tenant_session(org)`, and refuse with no org.
 # A run they start carries that org, so `start_run`, `_finish_run` and
-# `_hold_at_gate` write it through `_run_session(org)`. A run with no org
-# (manual, schedule, webhook, event, resume) keeps the unbound path above.
+# `_hold_at_gate` write it through `_run_session(org)`. An approval resumes
+# through `resume_run(org)`, with the approver's org. A long wait refuses at
+# the start, because the wait scan is unbound. A run with no org (manual,
+# schedule, webhook, event, the wait scan) keeps the unbound path above.
 # Fence: `tests/unit/test_workflows_tool_rls_r8.py`.
 from acb_common.db import TenantUnbound
 from gateway.routes.workflows.core import (
@@ -70,8 +72,10 @@ from gateway.routes.workflows.core import (
     publish_workflow_activity,
 )
 from gateway.routes.workflows.engine.handlers import (
+    WAIT_INLINE_MAX_SECONDS,
     NodeExecutionError,
     NodeServices,
+    resolve_wait_seconds,
 )
 from gateway.routes.workflows.engine.runner import execute_workflow
 from gateway.routes.workflows.tools import execute_tool
@@ -439,6 +443,29 @@ async def _run_session(organization_id: str | None) -> Any:
         await db.commit()
     finally:
         await db.close()
+
+
+def _long_wait_nodes(serialized: dict[str, Any]) -> list[str]:
+    """Ids of the wait nodes in *serialized* that can pause the run.
+
+    A wait of up to ``WAIT_INLINE_MAX_SECONDS`` runs inline and never pauses.
+    A longer wait, or a duration that only the trigger data decides, can
+    pause. Only the schedule scanner resumes such a pause, and its scan is
+    not tenant-bound yet (H4 slice 6c). So the F13 entry point refuses these
+    workflows rather than start a run that stays paused for good.
+    """
+    out: list[str] = []
+    for block in serialized.get("blocks") or []:
+        if str(block.get("type") or "") != "wait":
+            continue
+        try:
+            seconds = resolve_wait_seconds(block.get("config") or {}, {})
+        except NodeExecutionError:
+            out.append(str(block.get("id")))
+            continue
+        if seconds > WAIT_INLINE_MAX_SECONDS:
+            out.append(str(block.get("id")))
+    return out
 
 
 def _require_org(organization_id: str | None) -> str:
@@ -1045,17 +1072,25 @@ async def _hold_at_gate(
         _log.warning("workflows.pause_persist_failed", run_id=run_id, error=str(exc)[:160])
 
 
-async def resume_run(run_id: str, *, resumed_by: str = "approver") -> dict[str, Any]:
+async def resume_run(
+    run_id: str, *, resumed_by: str = "approver", organization_id: str | None = None,
+) -> dict[str, Any]:
     """Resume a paused run: replay completed nodes from stored outputs and
     let the gate node through.
 
     Two callers, one path: the broker handler when a human approves, and the
     schedule scanner when a long wait's deadline passes. The pause row's
     ``reason`` decides which gate is cleared — an elapsed wait must not also
-    clear an approval further down the graph."""
+    clear an approval further down the graph.
+
+    *organization_id* binds the read, the claim and the resumed run
+    (:func:`_run_session`). The broker handler passes the approver's org.
+    Under FORCE RLS a run of another org is not visible, so it reads as
+    ``no run`` and nothing resumes. The schedule scanner passes no org yet
+    (H4 slice 6c), so the agent entry point refuses a long wait.
+    """
     global _ACTIVE_TOTAL
-    db = await _get_db()
-    try:
+    async with _run_session(organization_id) as db:
         run = (
             await db.execute(
                 text("SELECT * FROM workflow_runs WHERE id = :id"),
@@ -1091,10 +1126,7 @@ async def resume_run(run_id: str, *, resumed_by: str = "approver") -> dict[str, 
             text("UPDATE workflow_runs SET status = 'running' WHERE id = :id"),
             {"id": run_id},
         )
-        await db.commit()
         node_results = parse_jsonb(run.node_results, {}) or {}
-    finally:
-        await db.close()
 
     gate_node = str(pause.node_id)
     is_wait = str(getattr(pause, "reason", "approval") or "approval") == "wait"
@@ -1124,6 +1156,7 @@ async def resume_run(run_id: str, *, resumed_by: str = "approver") -> dict[str, 
             precomputed=precomputed,
             resolved_approvals=set() if is_wait else {gate_node},
             elapsed_waits={gate_node} if is_wait else set(),
+            organization_id=organization_id,
         ),
         name=f"workflow-resume:{run_id}",
     )
@@ -1197,6 +1230,13 @@ async def run_published_workflow(
         serialized = await load_version_serialized(db, str(row.id), int(row.latest_version))
     if serialized is None:
         return {"error": f"published version missing for workflow '{row.name}'"}
+    long_waits = _long_wait_nodes(serialized)
+    if long_waits:
+        return {
+            "error": f"workflow '{row.name}' has a wait node that can pause the "
+            f"run ({', '.join(long_waits)}). An agent cannot start it yet, "
+            "because nothing can resume that pause for this organization."
+        }
     try:
         run_id = await start_run(
             workflow_id=str(row.id),

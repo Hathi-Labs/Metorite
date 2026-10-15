@@ -94,13 +94,29 @@ def _node(nid: str, ntype: str, config: dict | None = None) -> dict:
             "data": {"label": nid, "config": config or {}}}
 
 
-def _serialized(marker: str) -> dict:
-    """trigger -> output. No agent and no tool node, so the run ends alone."""
-    return compile_graph({
-        "nodes": [_node("start", "trigger", {"kind": "manual"}),
-                  _node("done", "output", {"value": marker})],
-        "edges": [{"id": "start->done", "source": "start", "target": "done"}],
-    })
+def _serialized(marker: str, gate: tuple[str, dict] | None = None) -> dict:
+    """trigger -> [gate ->] output. No agent and no tool node, so the run
+    ends alone, or pauses at the gate."""
+    nodes = [_node("start", "trigger", {"kind": "manual"})]
+    edges = []
+    prev = "start"
+    if gate is not None:
+        nodes.append(_node("gate", gate[0], gate[1]))
+        edges.append({"id": "start->gate", "source": "start", "target": "gate"})
+        prev = "gate"
+    nodes.append(_node("done", "output", {"value": marker}))
+    edges.append({"id": f"{prev}->done", "source": prev, "target": "done"})
+    return compile_graph({"nodes": nodes, "edges": edges})
+
+
+#: Org A's gate workflows: name -> (gate type, gate config).
+_GATED = {
+    "Approval in A": ("approval", {}),
+    "Long wait in A": ("wait", {"seconds": 3600}),
+    "Trigger-timed wait in A": ("wait", {"seconds": "{{trigger.delay}}"}),
+    "Short wait in A": ("wait", {"seconds": 0.05}),
+}
+_A_NAMES = {_SHARED, "Only in A", *_GATED}
 
 
 def _exec_sql_file(conn, sql: str) -> None:
@@ -179,6 +195,20 @@ def promoted():
                     "(:w, 1, CAST(:s AS jsonb), 'seed', :org)"),
                     {"w": wid, "s": json.dumps(_serialized(f"out-{tag}")),
                      "org": oid})
+        for name, gate in _GATED.items():
+            wid = str(uuid.uuid4())
+            wf[("A", name)] = wid
+            conn.execute(text(
+                "INSERT INTO workflows (id, name, description, owner_email, "
+                "status, latest_version, organization_id) VALUES "
+                "(:id, :n, 'org A', 'owner@a.wfrls.test', 'published', 1, :org)"),
+                {"id": wid, "n": name, "org": org_a})
+            conn.execute(text(
+                "INSERT INTO workflow_versions (workflow_id, version, "
+                "serialized, published_by, organization_id) VALUES "
+                "(:w, 1, CAST(:s AS jsonb), 'seed', :org)"),
+                {"w": wid, "s": json.dumps(_serialized("out-A", gate)),
+                 "org": org_a})
 
     class _NS:
         pass
@@ -203,10 +233,28 @@ def _fast_poll(monkeypatch):
     monkeypatch.setattr(workflow_tools, "_POLL_INTERVAL_SECONDS", 0.05)
 
 
+@pytest.fixture(autouse=True)
+def proposals(monkeypatch):
+    """The approval gate files its proposal through ``broker.submit``. Record
+    it, with the tenant bound at that moment, instead of writing
+    ``pending_actions``: the broker's own R8 suite owns that write."""
+    import action_broker.broker as broker
+    from acb_common.db import current_tenant
+
+    filed: list[dict] = []
+
+    async def _submit(proposal):
+        filed.append({"payload": dict(proposal.payload), "org": current_tenant()})
+        return {"action_id": f"pa-{len(filed)}"}
+
+    monkeypatch.setattr(broker, "submit", _submit)
+    return filed
+
+
 async def _drain_runs() -> None:
     """Let every run task of this loop finish before the engine goes."""
     tasks = [t for t in asyncio.all_tasks()
-             if t.get_name().startswith("workflow-run:")]
+             if t.get_name().startswith(("workflow-run:", "workflow-resume:"))]
     if tasks:
         await asyncio.wait(tasks, timeout=30)
 
@@ -261,9 +309,8 @@ def test_list_workflows_lists_the_run_orgs_own_workflows(promoted):
 
     out = _as_run(promoted, promoted.org_a, workflow_tools.list_workflows)
     rows = json.loads(out)
-    assert {r["name"] for r in rows} == {_SHARED, "Only in A"}
-    assert {r["id"] for r in rows} == {
-        promoted.wf[("A", _SHARED)], promoted.wf[("A", "Only in A")]}
+    assert {r["name"] for r in rows} == _A_NAMES
+    assert {r["id"] for r in rows} == {promoted.wf[("A", n)] for n in _A_NAMES}
     assert all(r["description"] == "org A" for r in rows)
 
 
@@ -272,8 +319,7 @@ def test_list_workflows_never_shows_another_orgs_workflow(promoted):
 
     out = _as_run(promoted, promoted.org_b, workflow_tools.list_workflows)
     ids = {r["id"] for r in json.loads(out)}
-    assert promoted.wf[("A", _SHARED)] not in ids
-    assert promoted.wf[("A", "Only in A")] not in ids
+    assert not ids & {promoted.wf[("A", n)] for n in _A_NAMES}
     assert ids == {promoted.wf[("B", _SHARED)], promoted.wf[("B", "Only in B")]}
 
 
@@ -365,7 +411,112 @@ def test_the_service_run_refuses_an_empty_org(promoted):
         _as_run(promoted, promoted.org_a, body)
 
 
-# ── 3. Tool input never chooses the tenant (R5 / R11) ────────────────────────
+# ── 3. Gates: an approval resumes in the approver's org, a long wait refuses ──
+
+
+def _pause_rows(promoted, run_id: str) -> list:
+    with promoted.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT status, reason, CAST(organization_id AS text) AS org "
+            "FROM workflow_run_pauses WHERE run_id = CAST(:r AS uuid)"),
+            {"r": run_id}).fetchall()
+
+
+def _run_row(promoted, run_id: str):
+    with promoted.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT status, output FROM workflow_runs WHERE id = CAST(:r AS uuid)"),
+            {"r": run_id}).fetchone()
+
+
+def _start_approval_run(promoted) -> str:
+    from orchestrator import workflow_tools
+
+    async def body():
+        return await workflow_tools.run_workflow("Approval in A", "{}", wait_seconds=20)
+
+    out = _as_run(promoted, promoted.org_a, body)
+    assert "paused" in out and "approvals inbox" in out, out
+    return out.split("Run ", 1)[1].split(" ", 1)[0]
+
+
+def _approve(promoted, org: str | None, run_id: str) -> dict:
+    """What ``broker.approve`` does in the approver's request: it runs the
+    registered handler with the approver's org bound. The payload names org B
+    on purpose: a payload field must never choose the tenant."""
+    from types import SimpleNamespace
+
+    from gateway.routes.workflows.broker_handlers import _resume_run_handler
+
+    proposal = SimpleNamespace(
+        payload={"run_id": run_id, "organization_id": promoted.org_b})
+
+    async def body():
+        return await _resume_run_handler(proposal)
+
+    return _as_run(promoted, org, body)
+
+
+def test_the_gate_pause_is_written_with_the_runs_org(promoted, proposals):
+    run_id = _start_approval_run(promoted)
+    assert [(p.status, p.reason, p.org) for p in _pause_rows(promoted, run_id)] == [
+        ("pending", "approval", promoted.org_a)]
+    assert _run_row(promoted, run_id).status == "paused"
+    assert [(f["payload"]["run_id"], f["org"]) for f in proposals] == [
+        (run_id, promoted.org_a)]
+
+
+def test_an_approval_in_the_runs_org_resumes_it_to_the_end(promoted):
+    run_id = _start_approval_run(promoted)
+    result = _approve(promoted, promoted.org_a, run_id)
+    assert result["ok"] is True, result
+    row = _run_row(promoted, run_id)
+    assert row.status == "succeeded"
+    output = json.loads(row.output) if isinstance(row.output, str) else row.output
+    assert output == ["out-A"]
+    assert [p.status for p in _pause_rows(promoted, run_id)] == ["resolved"]
+
+
+def test_an_approval_from_another_org_resumes_nothing(promoted):
+    run_id = _start_approval_run(promoted)
+    result = _approve(promoted, promoted.org_b, run_id)
+    assert result["ok"] is False and "no run" in result["error"], result
+    assert _run_row(promoted, run_id).status == "paused"
+    assert [p.status for p in _pause_rows(promoted, run_id)] == ["pending"]
+
+
+def test_an_approval_with_no_bound_org_resumes_nothing(promoted):
+    run_id = _start_approval_run(promoted)
+    result = _approve(promoted, None, run_id)
+    assert result["ok"] is False, result
+    assert _run_row(promoted, run_id).status == "paused"
+
+
+@pytest.mark.parametrize("name", ["Long wait in A", "Trigger-timed wait in A"])
+def test_run_workflow_refuses_a_wait_that_can_pause(promoted, name):
+    """Only the wait scan resumes a long wait, and it is not tenant-bound
+    (H4 slice 6c). So the agent cannot start a run that would stay paused."""
+    from orchestrator import workflow_tools
+
+    async def body():
+        return await workflow_tools.run_workflow(name, '{"delay": 7200}')
+
+    out = _as_run(promoted, promoted.org_a, body)
+    assert out.startswith("Could not start workflow") and "wait node" in out, out
+    assert _runs(promoted, promoted.wf[("A", name)]) == []
+
+
+def test_run_workflow_still_runs_a_short_inline_wait(promoted):
+    from orchestrator import workflow_tools
+
+    async def body():
+        return await workflow_tools.run_workflow("Short wait in A", "{}", wait_seconds=20)
+
+    out = _as_run(promoted, promoted.org_a, body)
+    assert "succeeded" in out, out
+
+
+# ── 4. Tool input never chooses the tenant (R5 / R11) ────────────────────────
 
 
 def test_no_workflow_tool_takes_an_org_argument():

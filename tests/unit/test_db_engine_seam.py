@@ -457,7 +457,9 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: `start_run`, `_finish_run` and `_hold_at_gate` share one `_run_session`,
 #: which keeps ONE unbound site for a run with no org (-2).
 #: `test_workflows_tool_rls_r8.py` fences the path under FORCE RLS.
-H2_BASELINE_ELSEWHERE = 70
+#: 70 → 69: the same PR, review round 1. `resume_run` moved to
+#: `_run_session(org)`, and the approval handler passes the approver's org.
+H2_BASELINE_ELSEWHERE = 69
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
