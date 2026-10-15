@@ -65,12 +65,20 @@ Read               What it gives
 Each read takes the member from the session and nothing else, so another
 member's block never reaches a card. Fence: ``tests/unit/test_shell_feed.py``
 and ``tests/unit/test_shell_feed_r8.py``.
+
+**The task kinds** (MD-3c, §5.9 item 11) come from the gated source
+``tasks_followups``: ``waiting_quiet``, ``stale_next``, ``unblocked`` and
+``absent_on_due``. A card names its ``source`` when the source id is not its
+app, so the client's carry keeps a failed source's own cards (§5.9 item 1).
+This file holds the why templates of all eleven MD-3 kinds. Fence:
+``tests/unit/test_feed_task_kinds.py`` and ``test_feed_task_kinds_r8.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import hashlib
 import json
 import logging
@@ -326,6 +334,205 @@ async def _working_day(user: UserContext, today: date) -> bool:
 register(Provider("calendar", ("tasks", "projects"), _calendar, CALENDAR_KINDS, needs=False))
 
 
+# ── The task kinds (§5.9 item 11, MD-3c, feed only, gated) ──────────────────
+#
+# The source `tasks_followups`: four kinds about my own tasks, each keyed on
+# `tasks:<task id>`, so each folds into the task's one card (§4.5). The
+# provider calls four reads, each of which opens its own tenant session
+# (R5b), one after another: `my_quiet_tasks`, `my_unblocked_since`, my
+# absences (`selfservice.my_absences`), and `my_due_ahead` only when an
+# absence falls in its window. So it opens 4 sessions at most (§5.9 item 7).
+#
+# ⚠️ No task kind carries a state fact (`state.STATE_FACTS`). A notification
+# card has no `due_at`, so a kind that carried one would change the state
+# fingerprint of that card when it folds in (done-when 11). The fingerprint
+# of the card (`STABLE_FACTS`) takes each kind's own names.
+
+#: The kinds of the source (§5.9 item 11).
+TASK_FOLLOWUP_KINDS = frozenset({"waiting_quiet", "stale_next", "unblocked", "absent_on_due"})
+#: The days that ``absent_on_due`` reads: today, and the 14 after it.
+ABSENCE_AHEAD_DAYS = 14
+#: The absences that make a day away. A ``partial`` absence does not.
+FULL_ABSENCES = frozenset({"away", "holiday"})
+
+
+def _local_days(earlier: Any, today: date, tz: ZoneInfo) -> int:
+    """Whole local days from ``earlier`` to ``today``."""
+    at = _instant(earlier)
+    return 0 if at is None else max(0, (today - at.astimezone(tz).date()).days)
+
+
+def _waiting_who(waiting_on: Any) -> str | None:
+    """Who a waiting task waits on, by the bell's ``_who``: the name the
+    delegation stored, or the address's local part. None when the task names
+    nobody."""
+    if not isinstance(waiting_on, dict):
+        return None
+    raw = str(waiting_on.get("name") or waiting_on.get("email") or "").strip()
+    return needs._who(raw) if raw else None
+
+
+def _task_facts(task: dict[str, Any]) -> dict[str, Any]:
+    """The facts every task kind carries: the D78 level, which the old-path
+    weight reads, and the project name."""
+    return {"priority": task_cell(task), "project": task.get("project_name")}
+
+
+def _quiet_signal(task: dict[str, Any], today: date, tz: ZoneInfo) -> Signal | None:
+    """``waiting_quiet`` or ``stale_next``, from one row of ``my_quiet_tasks``."""
+    task_id = str(task["id"])
+    entity = task_entity(task_id, task.get("title"))
+    facts = _task_facts(task)
+    if task.get("disposition") == "WAITING":
+        delegated = _instant(task.get("delegated_at"))
+        if delegated is None:
+            return None  # a task with no delegated_at never fires
+        who = _waiting_who(task.get("waiting_on"))
+        facts.update({"delegated_at": _iso(delegated),
+                      "waited_days": _local_days(delegated, today, tz), "who": who})
+        return Signal(
+            signal_id=f"tasks:{task_id}", app="tasks", kind="waiting_quiet",
+            entity=entity, title=entity["label"], facts=facts, href=task_href(task_id),
+            # Class B: a nudge reaches another person. Until MD-8 it opens the task.
+            acts=(link("nudge", f"Nudge {who}" if who else "Nudge", task_href(task_id),
+                       cls="B"),),
+            at=_iso(delegated),
+        )
+    if task.get("disposition") == "NEXT":
+        changed = _instant(task.get("last_change_at"))
+        if changed is None:
+            return None
+        facts.update({"changed_at": _iso(changed),
+                      "stale_days": _local_days(changed, today, tz)})
+        return Signal(
+            signal_id=f"tasks:{task_id}", app="tasks", kind="stale_next",
+            entity=entity, title=entity["label"], facts=facts, href=task_href(task_id),
+            acts=(link("move-someday", "Move to Someday", task_href(task_id)),),
+            at=_iso(changed),
+        )
+    return None
+
+
+def _unblocked_signal(task: dict[str, Any]) -> Signal:
+    """``unblocked``, from one row of ``my_unblocked_since``. ⚠️ The facts
+    of a blocker that the member cannot read hold no title, no id and no
+    actor: only that a blocker closed, and when."""
+    task_id = str(task["id"])
+    entity = task_entity(task_id, task.get("title"))
+    blocker = task.get("unblocked_by") or {}
+    facts = _task_facts(task)
+    facts["unblocked_at"] = _iso(blocker.get("closed_at"))
+    if blocker.get("readable") and blocker.get("id"):
+        facts.update({"blocker": task_entity(str(blocker["id"]), blocker.get("title"))["label"],
+                      "blocker_ids": [str(blocker["id"])],
+                      "who": needs._who(blocker.get("closed_by"))})
+    return Signal(
+        signal_id=f"tasks:{task_id}", app="tasks", kind="unblocked",
+        entity=entity, title=entity["label"], facts=facts, href=task_href(task_id),
+        acts=(link("open", "Open", task_href(task_id)),),
+        at=_iso(blocker.get("closed_at")),
+    )
+
+
+def _absent_signal(task: dict[str, Any], away: set[date], tz: ZoneInfo) -> Signal | None:
+    """``absent_on_due``: the local due date of the task is one of my days
+    away. The day is the fact, so no state fact rides on the fold."""
+    due = _instant(task.get("due_at"))
+    if due is None:
+        return None
+    day = due.astimezone(tz).date()
+    if day not in away:
+        return None
+    task_id = str(task["id"])
+    entity = task_entity(task_id, task.get("title"))
+    facts = _task_facts(task)
+    facts["absence_day"] = day.isoformat()
+    return Signal(
+        signal_id=f"tasks:{task_id}", app="tasks", kind="absent_on_due",
+        entity=entity, title=entity["label"], facts=facts, href=task_href(task_id),
+        acts=(link("move-date", "Move the date", task_href(task_id)),),
+        at=_iso(due),
+    )
+
+
+async def _my_days_away(user: UserContext, today: date) -> set[date]:
+    """My days of full absence, from today to today + 14, through the People
+    app's own self read. ⚠️ A 404 says that I have no People row. That is no
+    absence, and NOT ``SourceAbsent``, because the other three kinds still
+    hold (§5.9 item 11). Any other error raises, so the source fails."""
+    from gateway.routes.people.selfservice import my_absences
+
+    try:
+        answer = await my_absences(user=user)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return set()
+        raise
+    last = today + timedelta(days=ABSENCE_AHEAD_DAYS)
+    days: set[date] = set()
+    for row in (answer or {}).get("rows") or []:
+        if row.get("kind") not in FULL_ABSENCES:
+            continue
+        start = max(date.fromisoformat(str(row["starts_on"])), today)
+        end = min(date.fromisoformat(str(row["ends_on"])), last)
+        while start <= end:
+            days.add(start)
+            start += timedelta(days=1)
+    return days
+
+
+def _followup_order(signal: Signal) -> tuple[int, float, str]:
+    """By ``BASE``, then by age: the oldest time first (§5.9 item 11)."""
+    at = _instant(signal.at)
+    return (-feed_rank.base(signal.kind), at.timestamp() if at is not None else float("inf"),
+            signal.signal_id)
+
+
+async def _tasks_followups(user: UserContext) -> Found:
+    from gateway.routes.projects.personal import (
+        my_due_ahead,
+        my_quiet_tasks,
+        my_unblocked_since,
+    )
+
+    now = needs._now()  # the feed's one clock (needs._now)
+    size = PER_APP + 1  # one row more than the cap, so the cap is known
+    quiet = await my_quiet_tasks(user, limit=size, now=now)
+    zone = quiet.get("timezone")
+    tz = state.zone_of(zone)
+    today = now.astimezone(tz).date()
+    # "Since my day start": the member's day starts at `day_start_hour`, by
+    # the one rule of the state join and of Handled (`state._hours`, through
+    # `personal.member_day`). The quiet read gave the hour on its own
+    # session, so no session opens for it. None (no Calendar pane) reads as
+    # the column default, as `state._hours` does.
+    day = state.Day(tz, state._hour(quiet.get("day_start_hour"), state.DEFAULT_DAY_START, 23))
+    unblocked = await my_unblocked_since(user, day.day_start(now), limit=size, today=today)
+    away = await _my_days_away(user, today)
+    ahead: dict[str, Any] = {"rows": []}
+    if away:
+        ahead = await my_due_ahead(
+            user, datetime.combine(min(away), time.min, tzinfo=tz),
+            datetime.combine(max(away) + timedelta(days=1), time.min, tzinfo=tz),
+            limit=size, days=sorted(away), zone=tz.key)
+
+    signals: list[Signal] = []
+    signals += [s for s in (_quiet_signal(t, today, tz) for t in quiet.get("rows") or []) if s]
+    signals += [_unblocked_signal(t) for t in unblocked.get("rows") or []]
+    signals += [s for s in (_absent_signal(t, away, tz) for t in ahead.get("rows") or []) if s]
+    signals.sort(key=_followup_order)
+    full = any(len(r.get("rows") or []) >= size for r in (quiet, unblocked, ahead))
+    return Found([], 0, capped=full or len(signals) > PER_APP,
+                 signals=lambda: signals[:PER_APP], zone=zone)
+
+
+# The gate (§5.9 item 11): the lens reads need `feature:projects`. Gated, so
+# it runs only while MY_DAY_PROVIDERS lists it (§5.8 item 1). Its cards are
+# the `tasks` app's, and no Handled read: a closed task is My Tasks' row.
+register(Provider("tasks_followups", ("projects",), _tasks_followups, TASK_FOLLOWUP_KINDS,
+                  needs=False, gated=True, app="tasks"))
+
+
 # ── The templates (§4.2): code writes every why line ────────────────────────
 
 
@@ -345,7 +552,11 @@ def _when(value: Any, tz: ZoneInfo, today: date) -> str:
     at = _instant(value)
     if at is None:
         return ""
-    day = at.astimezone(tz).date()
+    return _day_words(at.astimezone(tz).date(), today)
+
+
+def _day_words(day: date, today: date) -> str:
+    """A local date in words, the rule of :func:`_when`."""
     delta = (day - today).days
     if delta == 0:
         return "today"
@@ -425,15 +636,95 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
     if kind == "no_plan_yet":
         return "no_plan", (f"Your day started at {_clock(facts.get('day_start'), tz)}, "
                            "and nothing is on the calendar.")
+    return _md3_why(kind, facts, tz, today)
+
+
+def _days(n: Any) -> str:
+    count = max(0, int(n or 0))
+    return f"{count} day" if count == 1 else f"{count} days"
+
+
+def _absent_line(facts: dict[str, Any], today: date) -> str:
+    try:
+        day = date.fromisoformat(str(facts.get("absence_day")))
+    except ValueError:
+        return "Due on a day you are away."
+    return f"Due {_day_words(day, today)}. You are away that day."
+
+
+def _colleague_line(facts: dict[str, Any]) -> str:
+    names = [str(n) for n in facts.get("out") or [] if n]
+    task = facts.get("task") or "a task"
+    if len(names) > 1:
+        return (f"{names[0]} and {len(names) - 1} more are away today. "
+                f"You share {task} with them.")
+    return f"{names[0] if names else 'A colleague'} is away today. You share {task} with them."
+
+
+def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
+             today: date) -> tuple[str, str]:
+    """The templates of the eleven MD-3 kinds (§5.9 items 11 to 14). MD-3c
+    writes them all, so MD-3d to MD-3f add only their providers. Each reads
+    the facts that its provider must give, and the spec names them (§5.9,
+    "The facts of each template"). An unknown kind raises."""
+    if kind == "waiting_quiet":
+        n = _days(facts.get("waited_days"))
+        who = facts.get("who")
+        if who:
+            return "waited", f"You have waited {n} on {who}."
+        return "waited_anon", f"You have waited {n} for this."
+    if kind == "stale_next":
+        return "no_change", f"No change for {_days(facts.get('stale_days'))}."
+    if kind == "unblocked":
+        if facts.get("blocker"):
+            return "unblocked", (f"{facts.get('who') or 'Somebody'} closed "
+                                 f"{facts['blocker']}, which you waited on.")
+        return "unblocked_hidden", "A task that blocked this is closed."
+    if kind == "absent_on_due":
+        return "absent_on_due", _absent_line(facts, today)
+    if kind == "promise_due":
+        return "promised", (f"You promised this by mail. It is due "
+                            f"{_when(facts.get('due_at'), tz, today)}.")
+    if kind == "no_answer":
+        return "no_answer", (f"You wrote {_when(facts.get('waiting_since'), tz, today)}. "
+                             f"{facts.get('who') or 'They'} "
+                             f"{'has' if facts.get('who') else 'have'} not answered.")
+    if kind == "crm_followup_due":
+        due = facts.get("due_at")
+        when = f"{_when(due, tz, today)} at {_clock(due, tz)}"
+        subject = str(facts.get("subject") or "").strip()
+        if subject:
+            return "followup_due", f"{subject[:1].upper()}{subject[1:]} is due {when}."
+        return "followup_due", f"A follow-up is due {when}."
+    if kind == "deal_quiet":
+        return "in_stage", (f"In {facts.get('stage') or 'this stage'} for "
+                            f"{_days(facts.get('stage_days'))}. The stage limit is "
+                            f"{_days(facts.get('stage_limit'))}.")
+    if kind == "deal_close_passed":
+        return "close_passed", (f"The close date was {_when(facts.get('due_at'), tz, today)}, "
+                                "and the deal is still open.")
+    if kind == "colleague_out":
+        return "colleague_out", _colleague_line(facts)
+    if kind == "agent_asks":
+        at = facts.get("waiting_since")
+        return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "
+                        "The run waits for your answer.")
     raise KeyError(kind)
 
 
 def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
-    """The sentence a folded kind adds to the card's why line (§4.5)."""
+    """The sentence a folded kind adds to the card's why line (§4.5, and
+    §5.9 items 11, 12 and 14 for MD-3)."""
     if kind == "block_soon":
         return f"Its block starts in {_duration(facts.get('minutes'))}."
     if kind == "notification":
         return _note_clause(facts, tz, today)[1]
+    if kind == "absent_on_due":
+        return "You are away on its due day."
+    if kind == "promise_due":
+        return "You promised this by mail."
+    if kind == "colleague_out":
+        return _colleague_line(facts)
     return ""
 
 
@@ -444,8 +735,12 @@ def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) 
 #: the entity changes in substance. ⚠️ A countdown such as ``minutes`` or
 #: ``days_late`` never goes in, or the fingerprint moves on every poll and
 #: MD-2's "changed in substance" rule (§6.3) fires for nothing.
+#: MD-3c adds the names of the MD-3 kinds (§5.9 item 4): ``delegated_at``,
+#: ``blocker_ids``, ``absence_day``, ``out`` and ``request_ids``. A card of
+#: MD-1 holds none of them, so its fingerprint does not change.
 STABLE_FACTS = ("due_at", "block_start", "block_end", "overlap_ids", "note_ids",
-                "waiting_since")
+                "waiting_since", "delegated_at", "blocker_ids", "absence_day", "out",
+                "request_ids")
 
 
 def _fingerprint(signal_id: str, kind: str, folded: list[str],
@@ -528,9 +823,14 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
         clauses += [c for c in (_folded_clause(s.kind, s.facts, tz, today) for s in rest) if c]
         if main.kind != "block_overlap" and facts.get("overlaps"):
             clauses.append(f"Its block overlaps {_names(facts['overlaps'])}.")
+        card: dict[str, Any] = {"signal_id": key, "app": main.app}
+        # The source of the main signal, for the carry of a failed source
+        # (MD-3c, §5.9 item 1). Sent only when it is not the app, so a card of
+        # an MD-1 source keeps its bytes.
+        if main.source and main.source != main.app:
+            card["source"] = main.source
         cards.append({
-            "signal_id": key,
-            "app": main.app,
+            **card,
             "kind": main.kind,
             "folded": folded,
             # The most urgent group of every kind on the card (§4.5). The main
@@ -619,7 +919,7 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
     # The loop's pass takes one slot, so the loop alone cannot fill the pool.
     extra = await needs.run_providers(
         user, needs.feed_only_providers(), budget_s=FEED_BUDGET_S,
-        timeout_s=FEED_PROVIDER_TIMEOUT_S, event="shell.feed",
+        timeout_s=FEED_PROVIDER_TIMEOUT_S, event=needs.FEED_EVENT,
         slots=FEED_CONCURRENCY if read else FEED_PASS_CONCURRENCY,
         ceiling_s=FEED_TOTAL_S)
 
@@ -631,7 +931,9 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
         if answer.signals is None:
             continue
         try:
-            signals.extend(answer.signals()[:PER_APP])
+            # Each signal is tagged with its source id (MD-3c, §5.9 item 1).
+            signals.extend(dataclasses.replace(s, source=s.source or key)
+                           for s in answer.signals()[:PER_APP])
         except Exception as exc:
             # The rows stay in the needs view. Only the feed loses them.
             logger.warning("shell.feed signals failed",
