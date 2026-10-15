@@ -52,7 +52,7 @@ Five tools make or change a task:
 | `create_task` | It makes a task in a project or a sub-project that you can see, and it can make a subtask. In Projects, the task shows the source "AI agent". With the same `idempotency_key`, a second call gives back the first task and makes no second task |
 | `update_task` | It changes the title, the description, the tags, the due date or the custom fields of a task |
 | `claim_task` | It makes you an assignee of a task, and the other assignees stay. A task in a backlog or to do status moves to the first in progress status. The agent calls it when it starts the work |
-| `set_task_status` | It moves a task to another status. It can move a task to a done status when the work is finished. It never moves a task to a cancelled status. A person does that step |
+| `set_task_status` | It moves a task to another status. It can move a task to a done status when the agent finishes the work. It never moves a task to a cancelled status. A person does that step |
 | `add_task_reference` | It links a pull request, a commit or a branch to a task |
 
 Each change shows in the task history, with the agent as `mcp:<host>`. A connection makes at most 120 changes in 10 minutes.
