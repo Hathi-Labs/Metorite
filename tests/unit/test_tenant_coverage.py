@@ -172,6 +172,21 @@ def test_the_task_refs_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE pm_task_refs FORCE  ROW LEVEL SECURITY" in policies
 
 
+@pytest.mark.parametrize("table", ["pm_agent_runs", "pm_agent_run_activities"])
+def test_the_agent_run_tables_are_tenant_scoped(table: str) -> None:
+    """WS-55 EA-12a (``external_agent_access.md`` §12.1, EA12-1). The runs of
+    an outside agent and their activities hold one organization's work. Neither
+    may be exempt, and the committed policy phase must carry each (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_my_day_card_state_table_is_tenant_scoped() -> None:
     """WS-58 MD-2a (``my_day_feed.md`` §13.1). ``my_day_card_state`` holds what
     one member of one organization did with each card. It must never be

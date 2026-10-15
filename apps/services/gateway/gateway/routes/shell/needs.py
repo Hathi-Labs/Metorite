@@ -477,8 +477,12 @@ async def _tasks_handled(user: UserContext, since: datetime) -> list[Closed]:
 # ── Projects: unread notifications, through the bell's read ─────────────────
 
 #: The bell's verbs (`app/projects/lib/notifications.ts` `VERB`).
+#: `agent_question` is the question an outside agent asks (WS-55 EA-12a,
+#: external_agent_access.md §12.1). Fence: every kind of
+#: `NOTIFICATION_KINDS` has a verb (`tests/unit/test_agent_runs_r8.py`).
 _VERB = {"assigned": "assigned you", "mention": "mentioned you on",
-         "comment": "commented on", "nudge": "nudged you about"}
+         "comment": "commented on", "nudge": "nudged you about",
+         "agent_question": "asked you about"}
 
 
 def _who(actor: Any) -> str:
@@ -488,7 +492,36 @@ def _who(actor: Any) -> str:
         return "Somebody"
     if raw.startswith("agent:"):
         return raw[len("agent:"):] or raw
+    # An outside agent's client stamp, `mcp:<slug>` (EA-12a): the client's
+    # name, as the Projects UI draws it ("Claude Code").
+    if raw.startswith("mcp:"):
+        return client_name(raw)
     return raw.split("@")[0] or raw
+
+
+#: Names that title case gets wrong. The same table as ``CLIENT_NAMES`` in
+#: ``app/projects/lib/agentRuns.ts``, and ``tests/unit/test_shell_needs.py``
+#: fails when the two differ.
+CLIENT_NAMES: dict[str, str] = {
+    "chatgpt": "ChatGPT",
+    "claude-ai": "Claude",
+    "vscode": "VS Code",
+    "vs-code": "VS Code",
+    "github-copilot": "GitHub Copilot",
+    "openai": "OpenAI",
+}
+
+
+def client_name(via: Any) -> str:
+    """``mcp:claude-code`` → "Claude Code", as ``clientName`` in
+    ``agentRuns.ts`` reads it. An empty value reads "Agent"."""
+    raw = str(via or "").strip()
+    slug = (raw[len("mcp:"):] if raw.startswith("mcp:") else raw).lower()
+    if not slug:
+        return "Agent"
+    if slug in CLIENT_NAMES:
+        return CLIENT_NAMES[slug]
+    return " ".join(w[:1].upper() + w[1:] for w in re.split(r"[-_\s]+", slug) if w)
 
 
 def closed_by(actor: Any, member: str) -> dict[str, str | None]:
@@ -577,7 +610,8 @@ async def _projects(user: UserContext) -> Found:
 
 #: The notification kinds that ask the member for something. One of them
 #: sets the card's reason over a ``comment`` (§4.3, §14.1a).
-ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge"})
+#: `agent_question` asks the member to answer an agent (EA-12a, §12.1).
+ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge", "agent_question"})
 
 
 def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:

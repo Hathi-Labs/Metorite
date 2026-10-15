@@ -88,6 +88,7 @@ from gateway.routes.projects.custom_fields import (
     load_definitions,
 )
 from gateway.routes.projects.filters import (
+    attach_agent_state,
     attach_assignees,
     attach_parent_context,
     attach_relation_counts,
@@ -273,6 +274,14 @@ VIEW_POSITION_JOIN = (
 )
 
 
+async def _with_agent_state(db: Any, row: dict) -> dict:
+    """*row* with its agent pill (WS-55 EA-12c, EA12-10). Every route that
+    hands a task row back to the client fills it, because the client merges
+    the row over its own copy."""
+    await attach_agent_state(db, [row])
+    return row
+
+
 @router.get("/tasks")
 async def list_tasks(
     user: UserContext = Depends(get_current_user),
@@ -422,6 +431,8 @@ async def list_tasks(
         # card is N+1 across an imported workspace of hundreds.
         page_rows = [row_to_dict(r, TaskModel) for r in rows]
         await attach_assignees(db, page_rows)
+        # WS-55 EA-12a — the agent pill, in one query for the page.
+        await attach_agent_state(db, page_rows)
         await attach_relation_counts(db, page_rows, vis)
         # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
         await attach_parent_context(db, vis, page_rows)
@@ -445,6 +456,8 @@ async def get_task(
         )).fetchall()
         result["assignees"] = [r.assignee for r in assignees]
         result["time_spent_mins"] = await time_spent_mins(db, task_id)
+        # WS-55 EA-12a — the agent pill on the task detail (EA12-10).
+        await attach_agent_state(db, [result])
         return result
 
 
@@ -715,6 +728,9 @@ async def patch_task(
             )
 
         result = row_to_dict(after, TaskModel)
+        # WS-55 EA-12c — the pill survives an edit. The client merges this
+        # row over its copy, so a null here would erase the pill (EA12-10).
+        await attach_agent_state(db, [result])
         if include_subtasks:
             result["subtasks_completed"] = len(cascade.ids) if cascade else 0
             result["subtask_changes"] = cascade.changes if cascade else []
@@ -1021,6 +1037,7 @@ async def move_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         result = await move_task_in(db, vis, task, payload, by=actor(user))
+        await attach_agent_state(db, [result])
 
     await emit("pm.task.moved", {"task_id": task_id})
     # D-PM-38 — one event per task the move took along, like the bulk move.
@@ -1171,6 +1188,7 @@ async def archive_task(
             if include_subtasks else None
         )
         result = row_to_dict(row, TaskModel)
+        await attach_agent_state(db, [result])
         if cascade is not None:
             result["subtasks_archived"] = len(cascade.ids)
             result["subtask_ids"] = cascade.ids
@@ -1203,7 +1221,7 @@ async def unarchive_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         if getattr(task, "archived_at", None) is None:
-            return row_to_dict(task, TaskModel)
+            return await _with_agent_state(db, row_to_dict(task, TaskModel))
         # ⚠️ A MERGED task loses its pointer here, and it must: migration
         # 210's `pm_tasks_merged_is_archived` refuses a row that claims to be
         # merged while off the shelf, so clearing one without the other is a
@@ -1228,7 +1246,7 @@ async def unarchive_task(
                 else "Task restored from the archive"
             ),
         )
-        result = row_to_dict(row, TaskModel)
+        result = await _with_agent_state(db, row_to_dict(row, TaskModel))
 
     await emit("pm.task.unarchived", {"task_id": task_id})
     return result

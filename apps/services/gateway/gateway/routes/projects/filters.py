@@ -906,3 +906,95 @@ async def attach_assignees(db: Any, rows: list[dict[str, Any]]) -> list[dict[str
     for row in rows:
         row["assignees"] = by_task.get(str(row["id"]), [])
     return rows
+
+
+# ── WS-55 EA-12a: the agent pill (external_agent_access.md §12.1, EA12-10) ──
+
+#: The runs that are OPEN (EA12-6). The partial unique index of the
+#: `pm_agent_runs` migration lists the same four values.
+AGENT_RUN_OPEN_STATUSES: tuple[str, ...] = ("created", "in_progress", "awaiting", "stopping")
+
+#: Seconds with no activity before an `in_progress` run reads `stale`.
+AGENT_RUN_STALE_AFTER_S = 300
+
+#: The derived state of one run, in SQL, over the alias ``r``. ONE copy:
+#: ``agent_runs.py`` reads it for each run, and :func:`attach_agent_state`
+#: reads it for the pill. The database ``now()`` decides ``stale`` (EA12-10).
+#:
+#: * ``answered`` comes BEFORE ``stale`` (EA12-5): the newest activity is a
+#:   member's prompt when ``last_activity_at`` is later than the agent's.
+#: * Only ``in_progress`` goes ``stale``. ``created`` reads ``queued``, and an
+#:   ``awaiting`` run waits for a person, not for the agent.
+#: * Every other status reads as itself.
+AGENT_RUN_STATE_SQL = (
+    "CASE r.status"
+    " WHEN 'created' THEN 'queued'"
+    " WHEN 'in_progress' THEN CASE"
+    "   WHEN r.last_agent_activity_at IS NULL"
+    "     OR r.last_activity_at > r.last_agent_activity_at THEN 'answered'"
+    f"   WHEN r.last_activity_at < now() - interval '{AGENT_RUN_STALE_AFTER_S} seconds'"
+    "     THEN 'stale'"
+    "   ELSE 'working' END"
+    " ELSE r.status END"
+)
+
+_OPEN_LIST = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
+
+#: The pill of each task, from its OPEN runs (§12.1, "The task pill"):
+#:
+#: 1. an `awaiting` run, because a person must act, and a newer run of
+#:    another member must not hide the question;
+#: 2. else an `answered` run, so the answer stays in view;
+#: 3. else the newest open run.
+#:
+#: A task with no open run shows a `failed` run that is the newest run of its
+#: task (EA12-12: the pill stays until a newer run exists). One query for the
+#: page, as `_ASSIGNEES_SQL` does.
+_AGENT_STATE_SQL = f"""
+SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
+       r.client_via, r.member_email
+  FROM pm_agent_runs r
+ WHERE r.task_id = ANY(CAST(:ids AS uuid[]))
+   AND (r.status IN ({_OPEN_LIST})
+        OR (r.status = 'failed'
+            AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
+                             WHERE n.task_id = r.task_id
+                               AND (n.created_at, n.id) > (r.created_at, r.id))))
+ ORDER BY r.task_id, (r.status IN ({_OPEN_LIST})) DESC,
+          CASE {AGENT_RUN_STATE_SQL} WHEN 'awaiting' THEN 0 WHEN 'answered' THEN 1
+               ELSE 2 END,
+          r.created_at DESC, r.id DESC
+"""
+
+
+def agent_runs_enabled() -> bool:
+    """The flag ``agent_runs_enabled`` (default OFF). The gateway side of the
+    one reader, ``acb_auth.agent_oauth.runs_enabled``, which the edge reads
+    too (EA-12b)."""
+    from acb_auth import agent_oauth
+
+    return agent_oauth.runs_enabled()
+
+
+async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill each row's ``agent_state``, ``agent_client_via`` and
+    ``agent_member_email``, mutating and returning the list.
+
+    ``queued``, ``working``, ``awaiting``, ``answered``, ``stopping``,
+    ``stale`` or ``failed``. ``None`` for a task with no open run. While the
+    flag is off, every row gets ``None`` and no statement runs, so the task
+    reads cost nothing until the owner turns the feature on.
+    """
+    for row in rows:
+        row.update(agent_state=None, agent_client_via=None, agent_member_email=None)
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids or not agent_runs_enabled():
+        return rows
+    found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
+    by_task = {str(r.task_id): r for r in found}
+    for row in rows:
+        hit = by_task.get(str(row["id"]))
+        if hit is not None:
+            row.update(agent_state=hit.state, agent_client_via=hit.client_via,
+                       agent_member_email=hit.member_email)
+    return rows

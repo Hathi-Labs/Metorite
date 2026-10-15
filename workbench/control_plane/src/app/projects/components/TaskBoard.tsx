@@ -41,6 +41,7 @@ import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
+import { AgentPill } from "./AgentPill";
 import { DropGap } from "@/components/DropGap";
 import { EmptyState } from "@/components/EmptyState";
 import Icon, { themedIcon } from "@/components/Icon";
@@ -835,6 +836,17 @@ export function TaskBoard({
             already carried and the card threw away: the priority the view's
             `shown_fields` has always asked for, and the tags by NAME in the
             colour their registry gives them, instead of a bare count. */}
+        {/* WS-55 EA-12c — the agent run's state. Nothing without a run. */}
+        {task.agent_state ? (
+          <div className="mt-1 flex">
+            <AgentPill
+              state={task.agent_state}
+              clientVia={task.agent_client_via}
+              memberEmail={task.agent_member_email}
+              labels={personLabels}
+            />
+          </div>
+        ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />
         {composingHere ? (
           <CardInput

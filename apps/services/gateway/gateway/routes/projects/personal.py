@@ -78,7 +78,11 @@ from gateway.routes.projects.core import (
     touch_task,
     update_row,
 )
-from gateway.routes.projects.filters import attach_assignees, attach_parent_context
+from gateway.routes.projects.filters import (
+    attach_agent_state,
+    attach_assignees,
+    attach_parent_context,
+)
 
 # `notifications` imports only `core` and `watchers`, so this direction adds no
 # cycle — the same note `notifications` itself carries about `watchers`, and the
@@ -2357,6 +2361,8 @@ async def complete_task(
         )
         moved = await complete_for_member(db, task, email)
         result = row_to_dict(moved["row"], TaskModel)
+        # WS-55 EA-12c — the agent pill survives a completion (EA12-10).
+        await attach_agent_state(db, [result])
         if cascade is not None:
             result["subtasks_completed"] = len(cascade.ids)
             result["subtask_changes"] = cascade.changes

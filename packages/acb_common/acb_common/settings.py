@@ -1232,6 +1232,14 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.writes_enabled` is the one reader. Only the
     # gateway reads it. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_access_writes_enabled: bool = False
+    # EA-12a (spec §12.1, EA12-3): agent runs on a task. Default OFF. While
+    # it is false, each route of `gateway/routes/projects/agent_runs.py`
+    # answers 404, and the task rows carry no `agent_state`. EA-12b: the
+    # edge reads it too, and leaves the six agent-run tools out of
+    # `tools/list` while it is false. So both units need the same value.
+    # `acb_auth.agent_oauth.runs_enabled` is the one reader. 🔴 A flip on a
+    # box is gate `enforcement-flip`.
+    agent_runs_enabled: bool = False
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

@@ -119,6 +119,17 @@ def writes_enabled() -> bool:
     return bool(get_settings().agent_access_writes_enabled)
 
 
+def runs_enabled() -> bool:
+    """True when ``agent_runs_enabled`` is on (EA-12a and EA-12b, spec §12.1).
+
+    The ONE reader of the agent-runs flag, for both units. The gateway
+    answers 404 on each agent-runs route while it is false. The edge leaves
+    the six agent-run tools out of ``tools/list`` and makes no request for
+    ``agent_runs`` in ``get_task``. So both units need the same value.
+    """
+    return bool(get_settings().agent_runs_enabled)
+
+
 #: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
 #: writes flag is off (EA-6a fix round 1). The edge maps it to a tool error,
 #: never to the MCP 401, so a client keeps its token and its reads.
@@ -522,11 +533,16 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: ``projects:write`` on the connection, a fresh nonce and room under the cap.
 #: EA-6d adds the task create, the route of ``create_task``. The PATCH serves
 #: ``set_task_status`` and ``update_task``.
+#: EA-12a adds the three POST pairs of the agent runs (spec §12.1). They
+#: share the cap of EA3-30 (EA12-13).
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PATCH", "/projects/tasks/{task_id}"),
     ("POST", "/projects/tasks/{task_id}/refs"),
     ("POST", "/projects/tasks"),
+    ("POST", "/projects/tasks/{task_id}/agent-runs"),
+    ("POST", "/projects/agent-runs/{run_id}/activities"),
+    ("POST", "/projects/agent-runs/{run_id}/finish"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -534,7 +550,8 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
 #: every other pair, and the edge client reads this set before it sends a
 #: request. EA-3 listed the GET routes of the seven read tools (§9.1). EA-6a
 #: adds the references read and the two write pairs of
-#: :data:`MCP_WRITE_ROUTES` (§9.2). Fence: ``tests/unit/test_mcp_edge_coverage.py``.
+#: :data:`MCP_WRITE_ROUTES` (§9.2). EA-12a adds the three GET pairs of the
+#: agent runs (§12.1). Fence: ``tests/unit/test_mcp_edge_coverage.py``.
 MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/auth/me"),
     ("GET", "/projects/tree"),
@@ -549,6 +566,9 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks/{task_id}/timeline"),
     ("GET", "/projects/tasks/{task_id}/refs"),
     ("GET", "/projects/search"),
+    ("GET", "/projects/tasks/{task_id}/agent-runs"),
+    ("GET", "/projects/agent-runs"),
+    ("GET", "/projects/agent-runs/{run_id}"),
     *MCP_WRITE_ROUTES,
 })
 
@@ -634,6 +654,7 @@ __all__ = [
     "redirect_uri_matches",
     "resource",
     "revocation_endpoint",
+    "runs_enabled",
     "s256",
     "scope_string",
     "token_endpoint",
