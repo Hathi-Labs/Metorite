@@ -897,7 +897,8 @@ async def test_a_chase_with_no_since_when_still_confirms(
 ) -> None:
     """The tool stamps the since-when at the call. The card says "now", so
     the card that Confirm builds again is the card the member saw."""
-    from datetime import datetime as real, timedelta
+    from datetime import datetime as real
+    from datetime import timedelta
 
     import skill_projects.writes as writes
 
