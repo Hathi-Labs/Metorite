@@ -445,14 +445,57 @@ async def _move_folder_action(
     return provider_msg_id
 
 
+async def _notify_me(
+    db: Any, action: dict[str, Any], email: dict[str, str], message_id: str, *,
+    user_email: str, account_id: str, rule_id: str,
+) -> None:
+    """NOTIFY_ME: "Tell me on WhatsApp" (WS-59 RE-5, ``proactive_reach.md``
+    §11.4 item 1). Records one Reach request for the MAILBOX OWNER, never for
+    the sender. The action's ``label`` holds its one option, ``normal`` or
+    ``urgent``. The Reach loop decides when it goes. Raises when the owner,
+    the rule or the tenant is unknown, so History shows the issue."""
+    from acb_common.db import current_tenant
+    from gateway.reach import requests as reach_requests
+    from gateway.routes.shell.needs import _email_href
+
+    org = current_tenant() or (await db.execute(text(
+        "SELECT NULLIF(current_setting('app.tenant_id', true), '')"))).scalar()
+    if not org or not user_email or not rule_id or not account_id:
+        raise RuntimeError("tell me on WhatsApp needs the mailbox owner and the rule")
+    # A request that Reach cannot deliver is not a silent success. History
+    # shows the reason (review of RE-5, P1-4).
+    available, linked = await reach_requests.reach_status(str(org), user_email)
+    if not available:
+        raise RuntimeError("Tell me on WhatsApp is not on for this mailbox owner yet")
+    if not linked:
+        raise RuntimeError("Link WhatsApp in My Profile first")
+    sender = (email.get("from") or "").strip() or "an unknown sender"
+    subject = (email.get("subject") or "").strip() or "(no subject)"
+    urgency = "urgent" if str(action.get("label") or "").strip().lower() == "urgent" \
+        else "normal"
+    await reach_requests.tell_me(
+        str(org), user_email, source="email.rule",
+        title=reach_requests.clip(f"Email from {sender}: {subject}",
+                                  reach_requests.TITLE_MAX),
+        href=_email_href(str(message_id), str(account_id)),
+        entity={"type": "email", "id": str(message_id)}, urgency=urgency,
+        requested_by=user_email,
+        key=f"email:{account_id}:{message_id}:{rule_id}")
+
+
 async def _apply_rule_actions(
     db: Any, provider: Any, message_id: str, provider_msg_id: str,
     actions: list[dict[str, Any]], email: dict[str, str] | None = None,
     about: str = "", signature: str = "", user_email: str = "",
     account_id: str = "", errors_out: list[dict[str, str]] | None = None,
+    rule_id: str = "",
 ) -> list[str]:
     """Apply a rule's actions. Reply/forward/draft create provider DRAFTS (never
     auto-send) so a misfiring rule can't email anyone without review.
+
+    ``rule_id`` keys the NOTIFY_ME request, so a second run of one rule on one
+    message records one request (WS-59 RE-5). ``user_email`` is the mailbox
+    owner, and NOTIFY_ME tells that member only.
 
     If ``errors_out`` is provided, each action that raises is appended as
     ``{"type", "error"}`` so the History view can show inbox-zero-style
@@ -670,6 +713,9 @@ async def _apply_rule_actions(
                         to_email=a["to_address"],
                         subject=fwd_subject, body=fwd,
                     )
+            elif t == "NOTIFY_ME":
+                await _notify_me(db, a, email, message_id, user_email=user_email,
+                                 account_id=account_id, rule_id=rule_id)
             elif t == "CALL_WEBHOOK" and a.get("url"):
                 # The one outbound guard (EM-T13b-2): a public host only, the
                 # resolved address pinned, no redirect, and capped in time
