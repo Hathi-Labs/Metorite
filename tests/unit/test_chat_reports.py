@@ -271,6 +271,18 @@ async def test_the_pdf_holds_the_drawn_chart_tiles_and_table_with_the_engine_off
     assert drawn - lines >= 8, (drawn, lines)
 
 
+@pytest.mark.parametrize(("kpi", "tile"), [
+    ({"label": "A", "value": 1234567.5, "unit": "₹"}, {"label": "A", "value": "1234567.5 ₹"}),
+    ({"label": "A", "value": 12.0, "unit": "%"}, {"label": "A", "value": "12%"}),
+    ({"label": "A", "value": "₹1.4 Cr", "delta": 3, "good": "down"},
+     {"label": "A", "value": "₹1.4 Cr", "delta": "+3", "good": "down"}),
+    ({"label": "A", "value": 7, "delta": -2.5}, {"label": "A", "value": "7", "delta": "-2.5"}),
+])
+def test_a_kpi_becomes_a_tile_with_its_number_as_written(kpi: dict, tile: dict) -> None:
+    """A tile prints the number as the tool gave it, never "1.23457e+06"."""
+    assert reports._tile(kpi) == tile
+
+
 async def test_thirty_sections_with_a_summary_and_sources_still_make_a_pdf(
     chat: dict[str, list[Any]],
 ) -> None:

@@ -272,8 +272,10 @@ def _pdf_text(text: str) -> str:
 
 
 def _shown(value: Any) -> str:
-    return value if isinstance(value, str) else f"{value:g}" if isinstance(value, float) \
-        else str(value)
+    """A number as the member wrote it: 128, 12.5, 1234567.5. Never "1.2e+06"."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _tile(kpi: dict[str, Any]) -> dict[str, Any]:
