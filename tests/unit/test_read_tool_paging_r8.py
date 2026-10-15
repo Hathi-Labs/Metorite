@@ -381,15 +381,15 @@ async def test_the_priority_inbox_breaks_a_tie_by_id(db) -> None:
     recent = "now() - interval '1 day'"
     with db.admin_engine.begin() as c:
         ids = _messages(c, box, db.org_b, [(t, "x@y.io") for t in threads], at=recent)
-        # A second message of thread 0 at the same instant: the newest of a
-        # thread is a tie too, and the id must choose it.
-        twin = _messages(c, box, db.org_b, [(threads[0], "x@y.io")], at=recent)[0]
+        # A second message of each thread at the same instant: the newest of
+        # a thread is a tie too, and the id must choose it.
+        twins = _messages(c, box, db.org_b, [(t, "x@y.io") for t in threads], at=recent)
     user = _user(db.org_b, "feature:email")
     async with _as_member(db, db.org_b):
         got = {n: await _direct(messages.priority_inbox, account_id=box, limit=n,
                                 user=user) for n in (11, 30)}
     rows = {n: [e["message_id"] for e in got[n]["emails"]] for n in got}
-    heads = [_sorted_desc([ids[0], twin])[0], *ids[1:]]
+    heads = [_sorted_desc([one, two])[0] for one, two in zip(ids, twins, strict=True)]
     assert rows[30] == _sorted_desc(heads)
     assert rows[11] == rows[30][:11], "a bigger LIMIT must begin with the smaller one"
 
