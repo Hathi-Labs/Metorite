@@ -2112,6 +2112,21 @@ plan. Most of those questions decide nothing:
 - No choice needs a larger text model. A parameter, such as the first month
   of a fiscal year, is a choice question.
 
+**Real data, after DEWiN's import (2026-10-15, counts only).** The first
+run after CRM-Q16 took 7 minutes and 155 credits, and the pool stayed
+healthy. CRM-Q16 held Invoices (31,924 records) and Payment Received (8,681)
+by itself. Commercials, Quotes and Sales Orders hold 0 records in Zoho.
+
+So the design page's example, "Commercials as Deals", does not fit DEWiN. No
+module is a sure candidate for Deals, so the pipeline makes no suggestion,
+and CRM-Q17b hides the empty Deals row. The custom modules fill better than
+Contacts. Operator Associates has 71 of 127 fields over 80% filled, and 35
+under 20%.
+
+The run also found two gaps, H-323 and H-324. Payment Made holds 3,003 of
+Zoho's 4,947 records. 1,145 Zoho tasks were skipped, because their parent is
+a custom-module record.
+
 **The admin's path (impeccable, apple-design).** The admin must see useful
 records at once, and approve a result, not a table of rules. A suggestion
 shows where the gap is. No confidence number and no engine word reaches the
