@@ -1186,6 +1186,10 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_wac_chart_engine.py.
     whatsapp_chart_engine: bool = False
     whatsapp_chart_node: str = "node"
+    # WAC-12 (spec §15): the bot makes a deck or a report as a PDF, through
+    # `gateway.pdf_render`, and sends it as a file. Default OFF. It works only
+    # with the native UI above ON. Fence: tests/unit/test_wac_documents.py.
+    whatsapp_documents: bool = False
     # WAC-4 (spec §14): a confirmed write from WhatsApp. ON, with the profile
     # above also ON, `create_task` parks its act in an org of
     # `whatsapp_assistant_writes_orgs`, and the member's Confirm runs it. OFF,
