@@ -187,8 +187,13 @@ async def calendar_prefs(db: Any, user_id: str) -> dict[str, Any]:
 
 
 async def _load(db: Any, user_id: str) -> UserSettingsModel:
+    # The row of the BOUND tenant (WS-58 MD-3c fix round 1). Since migration
+    # 239 a member has one row for each organization. The predicate is beside
+    # RLS, not instead of it: an owner role that bypasses RLS still reads the
+    # row of this organization, and never another's.
     row = (await db.execute(text(
-        "SELECT * FROM user_settings WHERE user_id = :uid"),
+        f"SELECT * FROM user_settings WHERE organization_id = {_BOUND_ORG}"
+        " AND user_id = :uid"),
         {"uid": user_id})).fetchone()
     if not row:
         # ── WS-28p / D-PC-16: the calendar SEEDS itself from the People
@@ -256,13 +261,21 @@ async def _seed_from_work_schedule(db: Any, user_id: str) -> dict[str, int]:
             person_schedule,
         )
 
-        row = (await db.execute(text(
-            "SELECT working_hours FROM people "
-            "WHERE lower(email) = :email LIMIT 1"),
-            {"email": (user_id or "").strip().lower()})).fetchone()
-        if row is None:
-            return {}
-        return calendar_seed(person_schedule(await load_policy(db), row))
+        # A savepoint, so a failed seed read cannot abort the caller's
+        # session: ``member_day`` runs this on the shared session of the
+        # My Day provider (MD-3c review). And the bound tenant, as
+        # ``people.core.find_self_row`` does: since migration 209 one address
+        # may hold a ``people`` row in two orgs, and the owner role reads
+        # past RLS. An unbound GUC matches no row, so it fails closed.
+        async with db.begin_nested():
+            row = (await db.execute(text(
+                "SELECT working_hours FROM people "
+                "WHERE lower(email) = :email "
+                f"  AND organization_id = {_BOUND_ORG} LIMIT 1"),
+                {"email": (user_id or "").strip().lower()})).fetchone()
+            if row is None:
+                return {}
+            return calendar_seed(person_schedule(await load_policy(db), row))
     except Exception as exc:
         _log.warning("tasks.settings.work_schedule_seed_failed",
                      error=str(exc)[:160])
