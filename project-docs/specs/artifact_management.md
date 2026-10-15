@@ -82,7 +82,7 @@ outside agents.
 
 | Thing | Where | What it does | Gap |
 |---|---|---|---|
-| Bytes of a file | `agent_blob` (`infra/postgres/71_agent_blob_store.sql`, `136_agent_blob_instance.sql`) | Current content, keyed `(agent_name, instance, path)`, BYTEA | No tenant column in a numbered migration. Only the generated MT-1b files add `organization_id` and RLS. Check the live database before AM-1 |
+| Bytes of a file | `agent_blob` (`infra/postgres/71_agent_blob_store.sql`, `136_agent_blob_instance.sql`) | Current content, keyed `(agent_name, instance, path)`, BYTEA. **Checked on production 2026-10-15:** it carries `organization_id` and FORCE RLS, from the generated MT-1b files. 32 rows, 2.4 MB, 34 history rows | No numbered migration says so. The registry joins on the store key inside the same tenant session |
 | Versions | `agent_file_history` | One metadata row per unique version. **No bytes** | An old version cannot be opened |
 | Write path | `packages/acb_skills/acb_skills/write_artifact.py` `mirror_to_blob_store` | Disk write, blob mirror, history row, `artifact_created` event to the chat | No row that says what the file is or who may see it |
 | Upload path | `routes/workspace.py` `POST /agent/workspace/{sid}/upload` | 25 MB cap, extension allowlist, lands in `inputs/<thread slug>/` | Same gap |
@@ -526,10 +526,11 @@ and `NEXT_PUBLIC_ARTIFACT_LIBRARY` (frontend).
 ### AM-1 · The registry — AGENT-SAFE
 
 Migration (R6, expand only): `artifacts`, `artifact_member`,
-`artifact_shares`, with RLS in the shape of migration 255. Before it,
-**check on the live database** whether `agent_blob` carries
-`organization_id` and RLS, and record the answer in the PR. The hook in
-`mirror_to_blob_store`. The classifier moved to a shared module. The backfill
+`artifact_shares`, with RLS in the shape of migration 255. The live database
+check is done (§2). `agent_blob` carries `organization_id` and FORCE RLS in
+production, so the registry joins on the store key under one tenant session.
+
+The hook in `mirror_to_blob_store`. The classifier moved to a shared module. The backfill
 command `scripts/backfill_artifacts.py` over `agent_blob` rows under
 `inputs/` and `outputs/`, idempotent. `GET /artifacts` and
 `GET /artifacts/{id}` with `can_read` rule 1 and 2 only.
@@ -679,9 +680,10 @@ others gate the slice they name.
   a task by disk path, outside the blob store and the registry. A later slice
   moves them in. Until then a task shows both lists.
 - `agent_blob` tenancy is in the generated MT-1b files and in no numbered
-  migration. AM-1 checks the live database and records the fact. If the
-  column is absent, the registry still carries its own `organization_id`.
-  The read path then joins on the store key under the same tenant session.
+  migration. Production has the column and FORCE RLS (checked 2026-10-15),
+  because the phase-4 promotion applied the generated files. The CI ladder
+  replay never runs them on purpose. The `promoted` fixture of the H3
+  rehearsal does, so every R8 suite of this spec uses that fixture.
 - The global `GET /agent/artifacts` walk (4000 files, disk) stays for the
   "Agent workspaces" page until AM-2 reads the registry everywhere.
 - `agent_file_history` claims "directly retrievable versions" and holds no
