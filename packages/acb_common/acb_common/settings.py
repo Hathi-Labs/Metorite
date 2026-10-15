@@ -455,6 +455,17 @@ class Settings(BaseSettings):
     # customer_console.md §6A.14 CP-13c. Fence: tests/unit/test_acb_llm_decide.py.
     decide_enabled: bool = False
 
+    # ── Company retrieval for the assistant (WS-61 KR-2, D105) ──────────────
+    #
+    # ON gives the orchestrator `search_company` in its core tools, takes out
+    # `retrieve_entity_context` and `retrieve_sales_context`, and swaps rule 1
+    # of its persona for the grounding paragraph of knowledge_base.md §8.2.
+    # OFF leaves the tool list and the persona byte-identical. The one reader is
+    # `acb_skills.company_search_tools.company_search_enabled`. The flip is the
+    # agent's under the dev-phase `enforcement-flip` grant (knowledge_base.md
+    # §13). Fence: tests/unit/test_company_search_tool.py.
+    company_search_enabled: bool = False
+
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
     # `decide_feature_modes` holds `feature=mode` pairs with a comma between

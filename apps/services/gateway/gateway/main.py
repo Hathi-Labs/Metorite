@@ -1542,6 +1542,17 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-61 KR-1 — company retrieval, `GET /search/company`
+    # (knowledge_base.md §20.4). It asks each source of
+    # `gateway.retrieval.sources.REGISTRY`, and each source checks its own
+    # app's feature, as the command bar does. No router-level feature gate.
+    from gateway.retrieval.company import router as _company_search_router
+
+    app.include_router(_company_search_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-59 RE-1a — Reach: `/reach/preview` and `/reach/brief`
     # (proactive_reach.md). Gated on `feature:chat`, as the WhatsApp channel
     # is. With REACH_ENABLED off, or the member off the allowlist, both 404.

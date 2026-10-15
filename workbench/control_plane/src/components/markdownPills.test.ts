@@ -88,10 +88,18 @@ describe("the link component", () => {
   });
 
   it("treats //host and /api/ as not in-app", () => {
-    for (const href of ["//evil.example/x", "/api/agent/workspace/s/file?path=a"]) {
+    for (const href of ["//evil.example/x", "/api/email/attachments/1"]) {
       const [a] = anchors(body(`[x](${href})`));
       expect(a).toContain('target="_blank"');
     }
+  });
+
+  it("opens a workspace file link in the app's viewer, never raw in a new tab", () => {
+    // Owner report, 2026-10-16: this link opened raw Markdown in a new tab.
+    // `artifactLink.test.ts` holds the click.
+    const [a] = anchors(body("[x](/api/agent/workspace/s/file?path=a.md)"));
+    expect(a).not.toContain('target="_blank"');
+    expect(a).toContain('href="/artifacts?session=s&amp;file=a.md"');
   });
 
   it("uses the primary token and no palette blue", () => {

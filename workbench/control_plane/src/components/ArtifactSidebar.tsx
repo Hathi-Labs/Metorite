@@ -14,6 +14,7 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { workspaceFileUrl } from "@/lib/artifactKind";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -177,7 +178,9 @@ function TreeNodeRow({
   }
 
   const entry = node.entry!;
-  const downloadUrl = `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(entry.path)}`;
+  // A Download button names `download`, so the proxy sends the raw bytes and
+  // never the rendered page (`rendersAsPage`, 2026-10-16).
+  const downloadUrl = workspaceFileUrl(sessionId, entry.path, { download: true });
   const deletable = isDeletable(entry);
   const isInput = entry.path.startsWith("inputs/");
 
