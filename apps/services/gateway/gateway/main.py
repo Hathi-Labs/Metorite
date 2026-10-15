@@ -1620,6 +1620,15 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-60 AM-1 — the artifact registry reads. Dark behind
+    # ARTIFACT_REGISTRY_ENABLED (both routes answer 404 with it off).
+    from gateway.routes.artifacts import router as _artifacts_router
+
+    app.include_router(_artifacts_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-27bm S8 — POST /documents/pdf, formatted HTML as a PDF download.
     from gateway.routes.documents import router as _documents_router
 

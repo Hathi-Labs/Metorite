@@ -127,6 +127,8 @@ async def _mirror_gateway_write(
     action: str,
     session_id: str | None,
     organization_id: str | None = None,
+    owner_email: str | None = None,
+    via: str = "upload",
 ) -> None:
     """Write-through a gateway file write into the authoritative blob store.
 
@@ -136,9 +138,14 @@ async def _mirror_gateway_write(
 
     *organization_id* is the caller's tenant, from the authenticated identity
     (H-201 part 2). ``None`` falls back to the tenant the request bound.
+
+    *owner_email* and *via* are the provenance of the registry row (WS-60
+    AM-1): the member who uploaded or saved the file, and the door
+    (``upload`` or ``app``). With no owner, no row is registered.
     """
     try:
         from acb_memory import is_stored_path, put_file
+        from acb_memory.artifacts import Provenance
     except ImportError:
         return
     rel = rel_path.replace("\\", "/")
@@ -148,11 +155,15 @@ async def _mirror_gateway_write(
 
     mime = _mt.guess_type(rel)[0] or "application/octet-stream"
     agent, instance = _blob_key_for_workspace(workspace)
+    prov = (
+        Provenance(owner_email=owner_email, made_by="member", via=via, session_id=session_id)
+        if owner_email else None
+    )
     try:
         await put_file(
             agent, rel, data,
             mime_type=mime, action=action, session_id=session_id, actor="user",
-            instance=instance, organization_id=organization_id,
+            instance=instance, organization_id=organization_id, provenance=prov,
         )
     except Exception as exc:
         _log.warning("workspace.blob_mirror_failed", path=rel, error=str(exc)[:200])
@@ -2176,6 +2187,7 @@ async def upload_files(
         await _mirror_gateway_write(
             workspace, rel_path, content, action="create", session_id=session_id,
             organization_id=_user.organization_id,
+            owner_email=_user.email, via="upload",
         )
 
         uploaded.append(FileEntry(
@@ -2265,6 +2277,7 @@ async def upload_artifact(
         await _mirror_gateway_write(
             workspace, rel_path, content, action="create", session_id=None,
             organization_id=_user.organization_id,
+            owner_email=_user.email, via="upload",
         )
         uploaded.append(FileEntry(
             path=rel_path, name=rel_path.rsplit("/", 1)[-1], size=stat.st_size,
@@ -2603,6 +2616,7 @@ async def write_workspace_file(
         workspace, rel_path, data,
         action="modify" if _existed else "create", session_id=session_id,
         organization_id=_user.organization_id,
+        owner_email=_user.email, via="app",
     )
 
     _log.info(
@@ -3017,6 +3031,7 @@ async def write_artifact_file(
         workspace, rel_path, data,
         action="modify" if _existed else "create", session_id=None,
         organization_id=_user.organization_id,
+        owner_email=_user.email, via="app",
     )
 
     # Determine category from path

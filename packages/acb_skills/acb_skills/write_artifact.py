@@ -220,7 +220,7 @@ async def mirror_to_blob_store(
     action: str = "modify",
     actor: str = "agent",
     target: Mapping[str, Any] | None = None,
-) -> None:
+) -> Any:
     """Write-through a workspace file into the authoritative blob store.
 
     Files under agent-data/, inputs/, outputs/ are mirrored to Postgres (source
@@ -231,13 +231,16 @@ async def mirror_to_blob_store(
     *target* is a delegated run's delivery target (:func:`delegation_target`).
     The row then carries the agent, the store key and the session of the chat
     whose working dir holds the file, so the fault-in of that chat finds it.
+
+    Returns the store's ``BlobMeta`` (with ``artifact_id`` when the registry
+    is on, WS-60 AM-1), or ``None`` when nothing was mirrored.
     """
     try:
         from acb_memory import is_stored_path, put_file
     except ImportError:
-        return
+        return None
     if not is_stored_path(rel_path):
-        return
+        return None
     ctx = artifact_context()
     if target is not None:
         agent_name = str(target.get("agent_name") or "")
@@ -251,8 +254,8 @@ async def mirror_to_blob_store(
         # personal agent's files rehydrate into the wrong person's run.
         instance = ctx.get("instance", "")
     if not agent_name:
-        return
-    await put_file(
+        return None
+    return await put_file(
         agent_name,
         rel_path.replace("\\", "/"),
         data,
@@ -262,6 +265,43 @@ async def mirror_to_blob_store(
         session_id=session_id,
         actor=actor,
         instance=instance,
+        provenance=_provenance(ctx, agent_name, instance, session_id, actor),
+    )
+
+
+def _owner_from_instance(instance: str) -> str:
+    """The member of a personal dir, ``u:<email>`` → the email, else ``''``."""
+    return instance[2:] if instance.startswith("u:") and "@" in instance else ""
+
+
+def _provenance(
+    ctx: Mapping[str, Any], agent_name: str, instance: str,
+    session_id: str | None, actor: str,
+) -> Any:
+    """The registry provenance of this write (WS-60 AM-1, §4.5).
+
+    The owner is the run's member, else the member of a personal dir. With
+    no owner there is no row, because a row belongs to a member. The door is
+    ``chat``: a run wrote it. ``made_by`` is the agent, or ``member`` when the
+    actor is a person. ``None`` with the registry flag off.
+    """
+    try:
+        from acb_memory import artifacts as _artifacts
+    except ImportError:
+        return None
+    if not _artifacts.enabled():
+        return None
+    owner = str(ctx.get("member") or "") or _owner_from_instance(instance)
+    if not owner:
+        return None
+    return _artifacts.Provenance(
+        owner_email=owner,
+        made_by="member" if actor == "user" else agent_name,
+        via="chat",
+        session_id=session_id,
+        run_id=ctx.get("run_id"),
+        task_id=ctx.get("task_id"),
+        project_id=ctx.get("project_id"),
     )
 
 
@@ -821,7 +861,7 @@ async def write_artifact(
     # Fire-and-forget: the disk file is already written, so a store outage never
     # blocks the agent.
     import asyncio as _asyncio
-    _asyncio.ensure_future(mirror_to_blob_store(
+    mirror_task = _asyncio.ensure_future(mirror_to_blob_store(
         clean_path, data, mime_type=mime,
         action="modify" if (_existed and overwrite) else "create",
         # H-227: "batch" marks a document of a run with no chat. Only the
@@ -856,6 +896,7 @@ async def write_artifact(
             artifact=artifact,
             gateway_url=gateway_url,
             gateway_token=gateway_token,
+            mirror_task=mirror_task,
         ))
 
     result: dict = {"path": clean_path, "size": size, "sha256": digest}
@@ -1154,10 +1195,26 @@ async def _notify(
     artifact: dict,
     gateway_url: str,
     gateway_token: str,
+    mirror_task: Any = None,
 ) -> None:
     """Background task: push CUSTOM SSE event into the active run queue AND
     register workspace on the gateway.  Non-fatal — all errors are swallowed.
+
+    *mirror_task* is the write-through of the same file. The event waits for
+    it, briefly, so the card carries the registry id (WS-60 AM-1). With no
+    task, or a slow store, the card goes out with ``artifact_id`` ``None`` and
+    opens through the session and the path as before.
     """
+    artifact_id = None
+    if mirror_task is not None:
+        try:
+            import asyncio as _asyncio
+
+            meta = await _asyncio.wait_for(_asyncio.shield(mirror_task), timeout=5)
+            artifact_id = getattr(meta, "artifact_id", None)
+        except Exception:  # noqa: BLE001
+            artifact_id = None
+    artifact = dict(artifact, artifact_id=artifact_id)
     # 1. Push AG-UI CUSTOM event into the active executor SSE queue so the
     #    frontend receives it immediately as part of the existing chat stream.
     #    resolve_run_queue falls back to the plain _RUN_QUEUES registry, keyed
@@ -1171,6 +1228,7 @@ async def _notify(
                 "sha256": artifact.get("sha256"),
                 "size": artifact.get("size"),
                 "mime_type": artifact.get("mime_type"),
+                "artifact_id": artifact.get("artifact_id"),
             }
             await queue.put({
                 "type": "CUSTOM",
@@ -1208,6 +1266,7 @@ async def _notify(
                     "path": artifact["path"],
                     "sha256": artifact.get("sha256"),
                     "size": artifact.get("size"),
+                    "artifact_id": artifact.get("artifact_id"),
                 },
                 headers=headers,
             )
