@@ -1456,12 +1456,16 @@ def final_text(result: Any) -> str:
     streams each step as its own part, so only a channel that sends one
     text needs this.
 
-    * The last step says again what an earlier step said: most of its words
-      (:data:`_RESTATED`) are in the earlier text. Send the last step only.
-      The owner's incident measures 0.83.
-    * Else the last step adds something (a text card, then "Open it with
-      the button below.", which measures 0.2). Send every step, a blank
-      line apart, so no answer is lost.
+    Each step goes, in order, a blank line apart, except a step that says
+    again what another step says (:func:`_said_elsewhere`). A step goes
+    out when another step that is at least as long holds most of its
+    words. So the fuller of two copies stays, and a step that adds
+    something is never lost:
+
+    * The owner's incident: the answer, a link button, then the same answer
+      said again (0.83 of its words). One copy goes.
+    * A text card, a link button, then "Open it with the button below." The
+      line is too short to be a copy, so both go.
 
     A result with no ``steps`` (``executor._step_texts``), from another
     path, falls back to the joined text.
@@ -1474,16 +1478,14 @@ def final_text(result: Any) -> str:
     texts = [str(t).strip() for t in steps if str(t or "").strip()]
     if not texts:
         return reply_text(result)
-    *earlier, last = texts
-    if earlier and _restates(last, " ".join(earlier)):
-        return last
-    return "\n\n".join(texts)
+    kept = [t for i, t in enumerate(texts) if not _said_elsewhere(i, texts)]
+    return "\n\n".join(kept)
 
 
-#: The share of a last step's words that an earlier step already holds, at
-#: or above which the last step is the same answer said again.
+#: The share of a step's words that another step holds, at or above which
+#: the step is the same text said again.
 _RESTATED = 0.6
-#: A last step with fewer words than this is a closing line, never a repeat.
+#: A step with fewer words than this is a short line, never a copy.
 _RESTATED_MIN_WORDS = 6
 _WORD = re.compile("[\\w:\u2013'-]+")  # \u2013: the en dash of "8:30\u201310:30"
 
@@ -1492,12 +1494,24 @@ def _words(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if len(w) >= 3}
 
 
-def _restates(last: str, earlier: str) -> bool:
-    """True when *last* is mostly the words of *earlier* (:func:`final_text`)."""
-    words = _words(last)
-    if len(words) < _RESTATED_MIN_WORDS:
+def _said_elsewhere(i: int, texts: list[str]) -> bool:
+    """True when another step holds most words of step *i* (:func:`final_text`).
+
+    That other step has at least as many words, so the fuller copy stays.
+    Of two copies with as many words, the later one stays.
+    """
+    mine = _words(texts[i])
+    if len(mine) < _RESTATED_MIN_WORDS:
         return False
-    return len(words & _words(earlier)) / len(words) >= _RESTATED
+    for j, other in enumerate(texts):
+        if j == i:
+            continue
+        theirs = _words(other)
+        if len(theirs) < len(mine) or (len(theirs) == len(mine) and j < i):
+            continue
+        if len(mine & theirs) / len(mine) >= _RESTATED:
+            return True
+    return False
 
 
 def _resend_text(stored: str | None) -> str | None:

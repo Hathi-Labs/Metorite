@@ -975,10 +975,10 @@ async def test_the_member_gets_the_answer_once_and_never_two_texts_glued(
 ) -> None:
     env.world.agent = _TwoStepAgent(*SAID_TWICE)
     await _post_and_run(_message("What blocks do I add?"))
-    (answer,) = [t for t in _texts(env) if "Two blocks" in t or "Here are" in t]
+    (answer,) = [t for t in _texts(env) if "Sahakar" in t]
     assert "Sahakar NagarTwo" not in answer
-    assert answer.endswith(SAID_TWICE[1])
-    assert SAID_TWICE[0] not in answer, "the same answer reached the phone twice"
+    assert answer.endswith(SAID_TWICE[0]), "the fuller copy stays"
+    assert SAID_TWICE[1] not in answer, "the same answer reached the phone twice"
 
 
 async def test_an_answer_written_before_the_tool_call_is_never_dropped(
@@ -1006,7 +1006,32 @@ def test_the_executor_carries_each_step_beside_the_joined_text() -> None:
     assert _step_texts(AgentResponse(messages=[])) == []
     assert bot_run.final_text({"result": "AB", "steps": []}) == "AB"
     assert bot_run.final_text({"result": "AB"}) == "AB"
-    assert bot_run.final_text({"result": "", "steps": list(SAID_TWICE)}) == SAID_TWICE[1]
+    assert bot_run.final_text({"result": "", "steps": list(SAID_TWICE)}) == SAID_TWICE[0]
     assert bot_run.final_text({"result": "", "steps": list(CARD_THEN_LINE)}) \
         == "\n\n".join(CARD_THEN_LINE)
     assert bot_run.final_text({"result": "", "steps": ["Only one."]}) == "Only one."
+
+
+#: Verifier round 1: the first overlap rule compared the last step with every
+#: earlier step joined, so a middle step that said something new was lost.
+LIST = ("Due today: the vendor call at 11, the extruder fix, and the invoice "
+        "for Acme Tools.")
+NEW_FACT = "Also, Priya's review of the nozzle order is overdue since Monday."
+DETAIL = ("*Fix the extruder*\nBlocked by the supplier quote from Manoj, which "
+          "was due on Tuesday. Priya owns the follow-up, and the nozzle is "
+          "still on order with the vendor.")
+SUMMARY = "The extruder fix is blocked by the supplier quote from Manoj."
+
+
+@pytest.mark.parametrize("steps,sent", [
+    ((LIST, NEW_FACT, "Due today: the vendor call at 11, the extruder fix and "
+      "the invoice for Acme Tools."), [NEW_FACT, "the invoice for Acme Tools."]),
+    ((DETAIL, SUMMARY), [DETAIL]),
+    ((SUMMARY, DETAIL), [DETAIL]),
+], ids=["a-new-fact-between-two-copies", "detail-then-summary", "summary-then-detail"])
+def test_a_step_that_adds_something_is_never_lost(steps: tuple[str, ...],
+                                                  sent: list[str]) -> None:
+    text = bot_run.final_text({"result": "".join(steps), "steps": list(steps)})
+    for part in sent:
+        assert part in text
+    assert text.count("vendor call") <= 1 and text.count("supplier quote") <= 1

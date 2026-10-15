@@ -1,6 +1,10 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-4 built, dark (2026-10-11): a confirmed `create_task` from
+**Status:** WAC-4b built (2026-10-15): the bot also blocks time on the
+member's calendar, with `create_personal_task` and `set_my_overlay`, and a
+reply sends each answer once (§14.9). `WHATSAPP_ASSISTANT_WRITES` is on for
+the beta orgs (read on the box, 2026-10-15). WAC-4 built (2026-10-11): a
+confirmed `create_task` from
 WhatsApp behind `WHATSAPP_ASSISTANT_WRITES`, default OFF (§14, §14.8). The
 switch-on for an org is the owner's (WAC-9).
 
@@ -1302,9 +1306,10 @@ buttons, as on any chat. `whatsapp_ui` refuses the titles "Confirm" and
 
 ### 14.4 Which acts may go by button
 
-- **Allowed (the first slice):** the Projects tool `create_task` (class B,
-  one card, no rows). A later slice can add another class B tool that asks one
-  card with no rows, by name (`update_task`, `edit_task`).
+- **Allowed:** the Projects tools `create_task`, `create_personal_task` and
+  `set_my_overlay`. Each is class B, with one card and no rows. WAC-4b added
+  the last two (§14.9). A later slice can add another class B tool that asks
+  one card with no rows, by name (`update_task`, `edit_task`).
 - **A web link, never a button:** every class C act (for example
   `archive_task`, `move_project`) and every class X act. A class X act has no
   chat tool at all (D-PM-35). The reply gives a deep link to the item.
@@ -1432,7 +1437,7 @@ time of a task (D52 to D54), so the Calendar's write is a Projects write.
    transaction. A task with a block lands as NEXT and clarified, not in the
    inbox. A block that ends before it starts is a 422 before any row.
 3. `set_my_overlay` binds the task id to its card (`card_facts`). Its card
-   shows "now" for a since-when that the tool stamps. Before, the card held
+   shows "now" for a since-when that the tool stamps, on the web card too. Before, the card held
    the stamped instant, so the card that Confirm builds again never matched.
 4. `SCOPE_RULE_WRITES` allows two changes: add a task, and block time. It
    names the two tools, and it says that one change waits at a time.
@@ -1446,15 +1451,16 @@ the texts. The web chat streams each step as its own part, so it did not show
 the defect.
 
 **The fix.** `executor._run_with_maf_agent` adds `steps`, the text of each
-assistant message that has any. `bot_run.final_text` builds the one WhatsApp
-text from them:
+assistant message that has any. `bot_run.final_text` sends every step, a
+blank line apart, but it removes a copy:
 
-- Sometimes the earlier steps hold most words of the last step (60% or
-  more, and 6 words or more). Then the last step says the answer again, and
-  only the last step goes. The owner's incident measures 0.83.
-- Else the last step adds something, for example "Open it with the button
-  below." after a text card. Every step goes, a blank line apart, so no
-  answer is lost. That case measures 0.2.
+- A step goes out when another step holds 60% or more of its words. That
+  other step must have at least as many words, so the fuller copy stays. A
+  step of fewer than 6 words is never a copy.
+- In the owner's incident, the first step holds 83% of the words of the last
+  step. So the first step goes alone.
+- Take a text card, then a link button, then "Open it with the button
+  below." Both steps go, because the line is too short to be a copy.
 
 A result with no `steps` falls back to the joined text. Every other caller
 keeps `result`, unchanged. `SCOPE_RULE_NATIVE` also tells the model to say
@@ -1463,8 +1469,10 @@ each thing once.
 **Review round 1 (2026-10-15).**
 
 1. The first fix sent the last step only. Then a text card, a link button
-   and "Open it with the button below." lost the card. The rule above
-   replaced it, and a fence holds each order.
+   and "Open it with the button below." lost the card. A second rule
+   compared the last step with all earlier steps joined. Then a middle step
+   with a new fact was lost (verifier round 1). The rule above replaced
+   both, and a fence holds each case.
 2. The tool refuses a block with an end and no start, because the
    Calendar reads a block by its start.
 3. `set_my_overlay` is not only the member's own overlay. INBOX, NEXT or
@@ -1491,6 +1499,7 @@ prepares the first. The member asks for the next one after the Confirm.
 | A backwards block gets no card | `test_a_block_that_ends_before_it_starts_is_refused_before_any_card` |
 | The member gets the answer once, never two texts glued | `test_the_member_gets_the_answer_once_and_never_two_texts_glued`, `test_the_executor_carries_each_step_beside_the_joined_text` |
 | An answer written before the tool call is never dropped | `test_an_answer_written_before_the_tool_call_is_never_dropped` |
+| A step that adds something is never lost: a new fact between two copies, a detail and its summary in each order | `test_a_step_that_adds_something_is_never_lost` |
 | A block with an end and no start gets no card | `test_a_block_with_an_end_and_no_start_is_refused_before_any_card` |
 | The capture writes the block on a real Postgres under FORCE RLS, and the Calendar read answers it (R8) | `tests/unit/test_wac_calendar_block_r8.py` |
 
