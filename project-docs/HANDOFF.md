@@ -5438,6 +5438,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
 - **Added:** 2026-10-15 · WS-59 RE-2a
 
+### H-318 · A DSML stream shows a first tag that a delta cut before its `>` · [AGENT]
+- **Check:** in `tests/unit/test_router_dsml_tool_calls.py`, compare
+  `_events(TASK_TOOLS, deltas)` with `_events(TASK_TOOLS, [whole])` for the
+  three cases in `specs/customer_console.md` §6A.15, "The known gap". A
+  difference in any case means this is open.
+- **Why.** `_TAG_HEAD_RE` refuses a `/` or a `'` before the `>`. When a delta
+  ends there, `_not_a_tag` releases the region as text. A whole feed never
+  takes that path. In all three cases, the stream shows raw markup to the
+  member. In case C, the stream runs no call, but a whole feed runs the call.
+  No case runs MORE calls, so the gap fails closed. The independent review of
+  PR #1047 found it.
+- **Do this:** let `_TAG_HEAD_RE` accept what `_FIRST_TAG_RE` accepts before
+  the `>`. Or test the head with `_FIRST_TAG_RE` when the `>` arrives. Add the
+  three cases to `_REPLIES`, so that the every-cut test fences them. Keep the
+  linear fences.
+- **Authority:** `specs/customer_console.md` §6A.15 (contract items 1 and 4)
+- **Added:** 2026-10-15 · PR #1047
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

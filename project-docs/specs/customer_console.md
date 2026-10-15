@@ -10584,10 +10584,9 @@ path. The Router owns this, because every chat completion crosses it.
 
 **The parser's contract.**
 
-1. **A stream never runs a call that a whole feed does not run.** In all
-   other cases, a stream gives the same answer as a whole feed: the same
-   shown text, the same calls and the same drop lines. The three
-   `_TAG_HEAD_RE` cases below are the known exceptions.
+1. **A stream never runs a call that a whole feed does not run.** A stream
+   runs the same calls, shows the same text and logs the same drop lines as a
+   whole feed. The three `_TAG_HEAD_RE` cases below are the known exceptions.
 2. **The stream is linear in the reply length.** Each delta reads its own text
    once. It reads at most 22 characters again for each delta.
 3. **A closing tag may hold any amount of whitespace before its `>`.** The
@@ -10595,7 +10594,7 @@ path. The Router owns this, because every chat completion crosses it.
    keeps a closing tag that has its name and waits for its `>`
    (`_Region.waiting`). The next delta continues from the end of the text.
 4. **A whole feed never shows markup outside a code fence to the member.** A
-   stream holds the same rule, except in cases A and B below.
+   stream holds the same rule, except in the three cases below.
 
 **The known gap: a first tag cut before its `>` (H-318).** `_TAG_HEAD_RE`
 decides whether an open first tag can still become a tag. It refuses a `/`
@@ -10607,10 +10606,10 @@ path. Three cases, measured on 2026-10-15:
 |---|---|---|---|
 | A | `On it. </｜DSML｜invoke/`, then `>` | Shows `On it. `, logs `stray_tag` | Shows the raw tag to the member |
 | B | `<｜DSML｜invoke name='create_task'`, then `>` and the rest | Hides the tag, logs `malformed_invoke`, runs nothing | Shows the raw tag, logs `stray_tag`, runs nothing |
-| C | A good block, then `</｜DSML｜calls` and a newline and `/`, then `>` | Runs the call, logs `stray_tag` | Shows the tag, logs `not_trailing`, runs nothing |
+| C | A good block, then `</｜DSML｜calls` and a newline and `/`, then `>` | Runs the call, logs `stray_tag` | Shows the raw tag, logs `not_trailing`, runs nothing |
 
 **The gap fails closed for calls.** In each case the stream runs the same
-calls or fewer, and never more. Cases A and B show raw markup to the member.
+calls or fewer, and never more. All three cases show raw markup to the member.
 
 **The drop rules.** A call runs only when all five rules hold:
 
