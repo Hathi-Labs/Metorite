@@ -772,7 +772,11 @@ class TestCallsLeaveAtTheFinish:
 
 class _CountedPattern:
     """A compiled regex of ``dsml`` that adds to ``count.chars`` the characters
-    each call may read: from ``pos`` to the end, or to the end of a match."""
+    each call may read: from ``pos`` to the end, or to the end of a match.
+
+    It also adds to ``count.handed`` the length of the WHOLE string that the
+    call gets. A parser that grows one string and hands it over on each delta
+    has copied that string on each delta, and ``handed`` sees that cost."""
 
     def __init__(self, real: re.Pattern[str], count: _ScanCount) -> None:
         self._real = real
@@ -781,7 +785,15 @@ class _CountedPattern:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
+    def _hand(self, string: str) -> None:
+        self._count.handed += len(string)
+        if self._count.handed > self._count.limit:
+            # Stop a quadratic run early, so that it fails in a second.
+            raise AssertionError(
+                f"the parser handed its regexes more than {self._count.limit} characters")
+
     def _scan(self, name: str, string: str, pos: int = 0, *a: Any, **kw: Any) -> Any:
+        self._hand(string)
         self._count.chars += max(0, len(string) - pos)
         return getattr(self._real, name)(string, pos, *a, **kw)
 
@@ -798,11 +810,13 @@ class _CountedPattern:
         return self._scan("findall", string, pos, *a)
 
     def match(self, string: str, pos: int = 0, *a: Any) -> Any:
+        self._hand(string)
         found = self._real.match(string, pos, *a)
         self._count.chars += (found.end() if found else len(string)) - pos
         return found
 
     def sub(self, repl: Any, string: str, count: int = 0) -> Any:
+        self._hand(string)
         self._count.chars += len(string)
         return self._real.sub(repl, string, count)
 
@@ -812,6 +826,9 @@ class _ScanCount:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.chars = 0
+        self.handed = 0
+        #: Past this many handed characters the spy raises. No limit by default.
+        self.limit: float = float("inf")
         for name, value in list(vars(dsml_mod).items()):
             if isinstance(value, re.Pattern):
                 monkeypatch.setattr(dsml_mod, name, _CountedPattern(value, self))
@@ -848,7 +865,8 @@ class TestABareMarkerIsText:
         (``_ScanCount``), and compares equal work (``assert_linear_count``).
         It reads no clock. The ratio of two timings failed on CI at 2.1 and
         2.2 against 2, because the clock also measured a copy of the region
-        on each character. That copy is no rescan."""
+        on each character. That copy is no rescan, and the two tests below
+        fence it."""
         count = _ScanCount(monkeypatch)
 
         def _scanned(size: int) -> int:
@@ -861,6 +879,216 @@ class TestABareMarkerIsText:
             return count.chars
 
         assert_linear_count(_scanned, 40_000)
+
+    def test_a_200_KB_reply_in_ONE_CHARACTER_deltas_hands_linear_text(self, monkeypatch):
+        """🔴 The region was one string that grew with ``+=`` on each delta,
+        and each delta handed the whole region to the regexes again. So a
+        long call cost O(n²). A 200 KB reply took 2.4 s on a dev box.
+
+        ``count.handed`` adds the length of each string a regex gets. Each
+        delta may hand a bounded lookback plus its own text, so the total
+        stays under 64 characters for each character of the reply. The spy
+        reads no clock. On the old parser it raises after about 5000 deltas."""
+        count = _ScanCount(monkeypatch)
+        big = "On it. " + block(invoke("create_task", param("title", "y" * 200_000))) + "\n"
+        count.limit = 64 * len(big)
+        st = DsmlStream(TASK_TOOLS)
+        shown = "".join(st.feed(0, ch) for ch in big)
+        tail, calls = st.finish(0)
+        assert shown + tail == "On it. \n"
+        assert [args_of(c)["title"] for c in calls] == ["y" * 200_000]
+        assert count.handed <= count.limit
+
+    def test_the_text_HANDED_to_the_regexes_grows_linearly(self, monkeypatch):
+        """The same fence as a ratio of equal work (``assert_linear_count``)."""
+        count = _ScanCount(monkeypatch)
+
+        def _handed(size: int) -> int:
+            big = block(invoke("create_task", param("title", "y" * size)))
+            st = DsmlStream(TASK_TOOLS)
+            count.handed = 0
+            for ch in big:
+                st.feed(0, ch)
+            assert len(st.finish(0)[1]) == 1
+            return count.handed
+
+        assert_linear_count(_handed, 40_000)
+
+
+# ── The chunking never changes the answer ───────────────────────────────────
+
+
+#: A tool name that makes its whole invoke tag exactly 96 characters long.
+_LONG_TOOL = "projects_update_task_dependencies_bulk_for_project_" + "x" * 23
+assert len(f'<{BAR}DSML{BAR}invoke name="{_LONG_TOOL}">') == dsml_mod.MAX_FIRST_TAG
+#: A closing block tag with ten spaces before its ``>``: 33 characters.
+_LONG_CLOSER = f"</{BAR}DSML{BAR}function_calls{' ' * 10}>"
+assert len(_LONG_CLOSER) == 33
+
+
+#: Real-shaped replies, and the policy each one runs under. Each one holds a
+#: behaviour that a change to ``DsmlStream.feed`` must keep. The reply goes in
+#: whole, at every single cut, one character at a time, and in random chunks.
+_REPLIES: dict[str, tuple[str, DsmlPolicy | frozenset[str]]] = {
+    "plain_text": (f"a < b, c | d, <tags>, a lone {BAR} and <{BAR}Dog. No markup.", TASK_TOOLS),
+    "near_markers": (f"a <{BAR}D, a <{BAR}DSM and </{BAR}DSMLx, then done", TASK_TOOLS),
+    "owner_answer": (ANSWER, TASK_TOOLS),
+    "bare_invoke": ("ok " + invoke("create_task", param("title", "t")), TASK_TOOLS),
+    "function_calls_json": ("Two. " + block(
+        invoke("create_task", param("count", "3", "false"), param("meta", '{"a": [1]}', "false")),
+        invoke("update_task", param("task_id", "t2"), param("title", "कार्य “q” ✅", None)),
+        kind="function_calls") + "\n", TASK_TOOLS),
+    "two_trailing_blocks": (
+        OWNER_BLOCK + "\n" + block(invoke("create_task", param("title", "t")), kind="tool_calls"),
+        TASK_TOOLS),
+    "prose_after_block": ("Summary: " + OWNER_BLOCK + " and that is all.", TASK_TOOLS),
+    "undeclared_tool": ("Sure. " + block(invoke("delete_org", param("org", "acme"))), TASK_TOOLS),
+    "malformed_invokes": ("ok " + block(
+        invoke("create_task", param("n", "{not json", "false")),
+        f"<{BAR}DSML{BAR}invoke>" + param("x", "1") + close("invoke"),
+        invoke("create_task", param("title", "good"))), TASK_TOOLS),
+    "stray_closing_tags": ("a " + close("invoke") + " b " + close("calls") + " c", TASK_TOOLS),
+    "block_without_invoke": ("a " + tag("calls") + " junk " + close("calls"), TASK_TOOLS),
+    "nested_block": ("n " + tag("calls") + " " + tag("calls") + " " + invoke(
+        "create_task", param("title", "in")) + " " + close("calls") + " " + close("calls"),
+        TASK_TOOLS),
+    "fenced_then_real": (
+        f"The email says:\n```\n{OWNER_BLOCK}\n```\nDoing it now. " + OWNER_BLOCK, TASK_TOOLS),
+    "ends_mid_call": ("Let me do it. " + tag("calls") + " " + invoke(
+        "update_task", param("task_id", "abc")) + f' <{BAR}DSML{BAR}invoke name="create_task">'
+        + param("title", "half"), TASK_TOOLS),
+    "ends_mid_tag": (f"done <{BAR}DSML{BAR}inv", TASK_TOOLS),
+    "marker_without_tag_name": (
+        f"The token <{BAR}DSML{BAR} is odd, <{BAR}DSML{BAR}1 too.", TASK_TOOLS),
+    "marker_then_prose": (f"I saw <{BAR}DSML{BAR}hello world. It is fine. " + OWNER_BLOCK,
+                          TASK_TOOLS),
+    "long_head_released": (
+        f'<{BAR}DSML{BAR}invoke name="' + "x" * 200 + " the rest of the answer", TASK_TOOLS),
+    # A first tag of 96 characters, the longest that is still a tag. It fences
+    # ``dsml._HEAD``: a head shorter than the tag shows the markup and runs nothing.
+    "first_tag_96_chars": (
+        "Linking. " + invoke(_LONG_TOOL, param("task_id", "t1")) + "\n",
+        DsmlPolicy(declared=TASK_TOOLS | {_LONG_TOOL})),
+    # A first tag of 97 characters is too long, so it stays text.
+    "first_tag_97_chars": (
+        "Linking. " + invoke(_LONG_TOOL + "s", param("task_id", "t1")) + "\n",
+        DsmlPolicy(declared=TASK_TOOLS | {_LONG_TOOL + "s"})),
+    # A closing tag of 33 characters, the longest that the 32-character
+    # lookback finds at every cut. It fences ``dsml._CLOSE_LOOKBACK``.
+    "closer_33_chars": (
+        "Two. " + tag("function_calls") + " " + invoke("create_task", param("title", "t"))
+        + " " + _LONG_CLOSER + "\n", TASK_TOOLS),
+    "echoed_input": (ANSWER, DsmlPolicy(declared=TASK_TOOLS, tainted=True)),
+    "parallel_disabled": (block(
+        invoke("create_task", param("title", "1")), invoke("create_task", param("title", "2"))),
+        DsmlPolicy(declared=TASK_TOOLS, single_call=True)),
+}
+
+
+class _Drops(logging.Handler):
+    """Every ``router.dsml_dropped`` line, with its ``dsml_*`` fields."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.seen: list[tuple[tuple[str, Any], ...]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.msg == "router.dsml_dropped":
+            self.seen.append(tuple(sorted(
+                (k, v) for k, v in vars(record).items() if k.startswith("dsml_"))))
+
+
+def _events(policy: DsmlPolicy | frozenset[str], pieces: list[str]) -> tuple[Any, ...]:
+    """What one stream emits for these deltas: text, calls, markup flag, drop lines.
+
+    The call ids are random, so a call counts as its name and arguments."""
+    logger = logging.getLogger("platform.router")
+    drops, level = _Drops(), logger.level
+    logger.addHandler(drops)
+    logger.setLevel(logging.WARNING)
+    try:
+        st = DsmlStream(policy)
+        shown = "".join(st.feed(0, p) for p in pieces)
+        tail, calls = st.finish(0)
+    finally:
+        logger.removeHandler(drops)
+        logger.setLevel(level)
+    named = [(c["function"]["name"], args_of(c)) for c in calls]
+    return shown + tail, named, st.saw_markup(0), drops.seen
+
+
+class TestTheChunkingNeverChangesTheAnswer:
+    """A characterisation of ``DsmlStream.feed``, written before its linear rewrite.
+
+    A long reply reaches the Router in many small deltas. Where the deltas
+    split the text must not change what the member sees, which calls run, or
+    which drop lines the log gets."""
+
+    @pytest.mark.parametrize("name", list(_REPLIES))
+    def test_EVERY_single_cut_gives_the_whole_feed_answer(self, name):
+        text, policy = _REPLIES[name]
+        whole = _events(policy, [text])
+        for n in range(len(text) + 1):
+            assert _events(policy, [text[:n], text[n:]]) == whole, n
+
+    @pytest.mark.parametrize("name", list(_REPLIES))
+    def test_ONE_CHARACTER_per_delta_gives_the_whole_feed_answer(self, name):
+        text, policy = _REPLIES[name]
+        assert _events(policy, list(text)) == _events(policy, [text])
+
+    @pytest.mark.parametrize("name", list(_REPLIES))
+    def test_RANDOM_chunks_and_EMPTY_deltas_give_the_whole_feed_answer(self, name):
+        """An empty delta is how a byte cut inside the bar reaches the Router."""
+        text, policy = _REPLIES[name]
+        whole = _events(policy, [text])
+        rng = random.Random(f"dsml-{name}")
+        for _ in range(100):
+            pieces, at = [], 0
+            while at < len(text):
+                size = rng.randint(0, 16)
+                pieces.append(text[at:at + size])
+                at += size
+            assert _events(policy, pieces) == whole, pieces
+
+    def test_the_LIMITS_give_the_same_answer_as_before(self):
+        """The cases above compare a parser with itself, so a limit that moves
+        on both sides stays green. This test pins the answer at each limit.
+
+        ``dsml._HEAD`` below 96 turns the 96-character tag into text, and the
+        call never runs. ``dsml._CLOSE_LOOKBACK`` below 32 fails the cuts of
+        ``closer_33_chars`` above."""
+        text, policy = _REPLIES["first_tag_96_chars"]
+        shown, calls, found, drops = _events(policy, [text])
+        assert (shown, calls, found, drops) == (
+            "Linking. \n", [(_LONG_TOOL, {"task_id": "t1"})], True, [])
+        text, policy = _REPLIES["first_tag_97_chars"]
+        shown, calls, _, drops = _events(policy, [text])
+        assert shown.startswith(f'Linking. <{BAR}DSML{BAR}invoke name="{_LONG_TOOL}s">')
+        assert calls == []
+        assert [dict(d)["dsml_reason"] for d in drops] == ["stray_tag"] * 3
+        text, policy = _REPLIES["closer_33_chars"]
+        assert _events(policy, [text])[:2] == ("Two. \n", [("create_task", {"title": "t"})])
+
+    @pytest.mark.parametrize("name", ["owner_answer", "function_calls_json", "prose_after_block"])
+    def test_REASONING_deltas_pass_untouched_around_the_content(self, name):
+        """``reasoning_content`` is not text the filter reads. Each reasoning
+        chunk leaves as the same object, and the content reads the same."""
+        text, policy = _REPLIES[name]
+        shown, calls, _, _ = _events(policy, [text])
+        thought = "First I check the task. Then I call <the tool> | done."
+        rng = random.Random(f"reasoning-{name}")
+        for _ in range(40):
+            cuts = rng.sample(range(1, len(text)), rng.randint(1, 30))
+            reasoning = [
+                {**_chunk(), "choices": [{"index": 0, "finish_reason": None,
+                                          "delta": {"reasoning_content": part}}]}
+                for part in _pieces(thought, rng.sample(range(1, len(thought)), 5))]
+            chunks = [*reasoning, *(_chunk(p) for p in _pieces(text, cuts)), _chunk(finish="stop")]
+            out = _run(_collect(chunks, policy))
+            # The same objects, all of them, in their order.
+            assert [o for o in out if any(o is r for r in reasoning)] == reasoning
+            assert _visible(out) == shown, cuts
+            assert [(c["function"]["name"], args_of(c)) for c in _streamed_calls(out)] == calls
 
 
 class TestParallelToolCallsFalse:
