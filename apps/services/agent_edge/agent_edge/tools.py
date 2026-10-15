@@ -199,6 +199,11 @@ TEXT_QUESTION_WAITS = (
     " with its run_id and wait_seconds 20.")
 #: A 409 of the start: the key started a run on another task.
 TEXT_KEY_USED = "This idempotency_key started another run. Send a new key."
+#: A 409 of ``request_task_archive`` (EA-6g): a question of the run waits,
+#: the run is stopping, or the key wrote another activity.
+TEXT_ARCHIVE_CONFLICT = (
+    "Your agent run on this task cannot take an archive request now. Call"
+    " list_agent_runs with this task_id, then read the run with get_agent_run.")
 
 #: The four annotations of every EA-3 tool (§9.5).
 READ_ANNOTATIONS: Mapping[str, bool] = {
@@ -1511,6 +1516,9 @@ MY_RUNS_ROUTE = "/projects/agent-runs"
 RUN_ROUTE = "/projects/agent-runs/{run_id}"
 RUN_ACTIVITIES_ROUTE = "/projects/agent-runs/{run_id}/activities"
 RUN_FINISH_ROUTE = "/projects/agent-runs/{run_id}/finish"
+#: EA-6g (EA3-40). The agent ASKS to archive here. The approval route of the
+#: member is not in ``MCP_ROUTES``, and the edge never names it.
+ARCHIVE_REQUEST_ROUTE = "/projects/tasks/{task_id}/archive-request"
 
 #: The eight statuses of a run (§12.1). The gateway's CHECK holds the same.
 RUN_STATUSES: tuple[str, ...] = (
@@ -1583,6 +1591,7 @@ _RUN_ACTIVITY_SCHEMA = _object({
     "action": _SHAPED_OR_NULL,
     "parameters": {"type": ["object", "null"], "additionalProperties": _UNTRUSTED_SCHEMA},
     "in_reply_to": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+    "archived": {"type": ["boolean", "null"]},
 })
 
 #: The keys of one run and of one activity (§12.1) are the keys of the two
@@ -1721,6 +1730,10 @@ def run_activity(row: Mapping[str, Any]) -> dict[str, Any]:
         "parameters": _parameters(content.get("parameters")),
         "in_reply_to": _id(row.get("in_reply_to")),
         "created_at": _str_or_none(row.get("created_at")),
+        # EA-6g: the member's answer to an archive request says whether the
+        # task is archived now. Null on every other activity.
+        "archived": archived if isinstance(archived := content.get("archived"), bool)
+        else None,
     }
 
 
@@ -3144,6 +3157,12 @@ async def _post_activity(ctx: Context, run_id: str, payload: Mapping[str, Any], 
     status, body = await _write(
         ctx, "POST", RUN_ACTIVITIES_ROUTE, TEXT_RUN_NOT_FOUND,
         path_params={"run_id": run_id}, json_body=payload, texts={409: conflict})
+    return _activity_result(status, body)
+
+
+def _activity_result(status: int, body: Any) -> dict[str, Any]:
+    """``activity``, ``run`` and ``created`` of an answer that wrote one
+    activity: the activity POST, and the archive request of EA-6g."""
     activity = body.get("activity") if isinstance(body, dict) else None
     if not isinstance(activity, dict):
         raise ToolError(TEXT_BUSY)
@@ -3351,6 +3370,71 @@ ASK_ON_TASK = Tool(
     annotations=dict(WRITE_ANNOTATIONS),
     runs=True,
     prior_writes=(TASK_RUNS_ROUTE,),
+)
+
+
+# ── request_task_archive (EA-6g, §9.2, EA3-33 and EA3-40) ───────────────────
+
+_ARCHIVE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {**_TASK_INPUT, "description": "The task to archive. An id from"
+                                                   " list_tasks, search_tasks or get_task."},
+        "idempotency_key": _KEY_INPUT,
+    },
+    "required": ["task_id", "idempotency_key"],
+    "additionalProperties": False,
+}
+
+
+async def _request_task_archive(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST the request with the key only (EA3-40 rule 1).
+
+    The gateway types the question, fixes its two options and sets its
+    expiry. The edge sends no text and no target other than the task of the
+    path. The gateway keeps the key, as it does for ``ask_on_task``, so a
+    second call with the same key returns the first request. It needs no
+    ``_refuse_nul`` (EA-6c): both inputs must match a pattern of the input
+    schema, a UUID and a key, so no control character passes.
+    """
+    status, body = await _write(
+        ctx, "POST", ARCHIVE_REQUEST_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])},
+        json_body={"idempotency_key": str(args["idempotency_key"])},
+        texts={409: TEXT_ARCHIVE_CONFLICT})
+    return _activity_result(status, body)
+
+
+REQUEST_TASK_ARCHIVE = Tool(
+    name="request_task_archive",
+    title="Ask to archive a task",
+    description=(
+        "Ask the member to archive a task this member can see, when the work"
+        " on it is not needed any more. This tool does not archive the task."
+        " Metorite archives it only after the member approves the request on"
+        " the task in Metorite. The tool starts an agent run on the task, or"
+        " uses your open run there, and writes the request. The member gets a"
+        " notification. Then call get_agent_run with the run id, after set to"
+        " the seq of the request, and wait_seconds 20. Call it again and again"
+        " until an activity of type prompt arrives. Its selected holds approve"
+        " or decline, and archived is true after an approve. If you cannot"
+        " wait, end the session. A later session finds the answer with"
+        " list_agent_runs and needs_agent true. The request expires after 24"
+        " hours. An archive moves the task off the boards, and a person can"
+        " restore it. The subtasks are not archived, and nothing deletes a"
+        " task. Send a new idempotency_key for each request. The same key"
+        " again returns the first request." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_ARCHIVE_INPUT,
+    output_schema=_ACTIVITY_OUTPUT,
+    route=ARCHIVE_REQUEST_ROUTE,
+    params={"task_id": "task_id", "idempotency_key": "idempotency_key"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_request_task_archive,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
 )
 
 
@@ -3575,13 +3659,14 @@ FINISH_AGENT_RUN = Tool(
 #: Every tool of the edge, by name, in the order of ``tools/list``. The write
 #: tools come after the reads: the two of EA-6a, then the two of EA-6d, then
 #: ``add_comment`` of EA-6c and ``claim_task`` of EA-6b. The six agent-run
-#: tools of EA-12b come last.
+#: tools of EA-12b come last, then ``request_task_archive`` of EA-6g, which
+#: shows only while the runs flag is on too.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     ADD_COMMENT, CLAIM_TASK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
-    ASK_ON_TASK, FINISH_AGENT_RUN,
+    ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE,
 )}
 
 
@@ -3648,6 +3733,7 @@ __all__ = [
     "ADD_TASK_REFERENCE",
     "AGENT_ACTIVITY_TYPES",
     "AGENT_MOVE_REFUSED",
+    "ARCHIVE_REQUEST_ROUTE",
     "ASK_ON_TASK",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
@@ -3684,6 +3770,7 @@ __all__ = [
     "PROJECT_ROW_KEYS",
     "READ_ANNOTATIONS",
     "REF_KEYS",
+    "REQUEST_TASK_ARCHIVE",
     "RUN_ACTIVITY_KEYS",
     "RUN_KEYS",
     "RUN_STATUSES",
@@ -3695,6 +3782,7 @@ __all__ = [
     "STATUS_KEYS",
     "SUBTASK_KEYS",
     "TAG_KEYS",
+    "TEXT_ARCHIVE_CONFLICT",
     "TEXT_BAD_CURSOR",
     "TEXT_BAD_REQUEST",
     "TEXT_BUSY",

@@ -20,6 +20,7 @@ no second table (§3.5). ``?parent_task_id=`` lists one task's children;
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, NoReturn
 
 from acb_auth import UserContext, get_current_user
@@ -1157,6 +1158,65 @@ async def delete_task(
 
 # ── Archive (WS-27w item 1) ─────────────────────────────────────────────────
 
+
+@dataclass(frozen=True)
+class ArchiveOutcome:
+    """What :func:`archive_task_in` did, for the reply and the events that
+    the caller emits after its commit."""
+
+    #: The task row, with its agent pill.
+    row: dict
+    #: True when the task was on the shelf before, so nothing was written.
+    was_archived: bool
+    #: The subtree that ``include_subtasks`` shelved, or ``None``.
+    cascade: Any | None
+
+
+async def archive_task_in(
+    db: Any, vis: Any, task: Any, user: UserContext, *, include_subtasks: bool,
+) -> ArchiveOutcome:
+    """The ONE core of an archive, inside the caller's transaction.
+
+    Two callers: :func:`archive_task`, and the archive approval of WS-55
+    EA-6g (``agent_runs.approve_task_archive``, EA3-40), which writes the
+    member's answer in the same transaction. *task* is a row that the caller
+    loaded through ``load_visible_task``. ``include_subtasks`` has no
+    default, so each caller says whether it shelves the subtree. The caller
+    emits ``pm.task.archived`` after its commit when ``was_archived`` is
+    false, and the events of ``cascade``.
+    """
+    task_id = str(task.id)
+    status = await require_row(
+        db, "pm_task_statuses", str(task.status_id), "Status",
+    )
+    was_archived = getattr(task, "archived_at", None) is not None
+    row = task
+    # Already archived — idempotent, the double-click answer. The
+    # subtasks are still asked about, so a second click with the box
+    # ticked shelves children the first click left out.
+    if not was_archived:
+        row = await update_row(
+            db, "pm_tasks", task_id, {"archived_at": now()},
+        )
+        await record_activity(
+            db, activity_type="system", created_by=actor(user),
+            task_id=task_id,
+            # Names the lane, because the status no longer implies the
+            # outcome. See `archive_note`.
+            body=archive_note(
+                getattr(status, "name", None),
+                str(getattr(status, "category", "") or ""),
+            ),
+        )
+    cascade = (
+        await archive_subtree(db, vis, task_id, by=actor(user))
+        if include_subtasks else None
+    )
+    result = row_to_dict(row, TaskModel)
+    await attach_agent_state(db, [result])
+    return ArchiveOutcome(result, was_archived, cascade)
+
+
 @router.post("/tasks/{task_id}/archive")
 async def archive_task(
     task_id: str, user: UserContext = Depends(get_current_user),
@@ -1182,43 +1242,23 @@ async def archive_task(
     ``subtasks_archived`` and ``subtask_ids``. The default is false. Unarchive
     does NOT cascade: the client's Undo restores ``subtask_ids``, which are
     exactly the tasks this call shelved.
+
+    The work is :func:`archive_task_in`, the one core that the archive
+    approval of WS-55 EA-6g calls too.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
-        status = await require_row(
-            db, "pm_task_statuses", str(task.status_id), "Status",
+        outcome = await archive_task_in(
+            db, vis, task, user, include_subtasks=include_subtasks,
         )
-        was_archived = getattr(task, "archived_at", None) is not None
-        row = task
-        # Already archived — idempotent, the double-click answer. The
-        # subtasks are still asked about, so a second click with the box
-        # ticked shelves children the first click left out.
-        if not was_archived:
-            row = await update_row(
-                db, "pm_tasks", task_id, {"archived_at": now()},
-            )
-            await record_activity(
-                db, activity_type="system", created_by=actor(user),
-                task_id=task_id,
-                # Names the lane, because the status no longer implies the
-                # outcome. See `archive_note`.
-                body=archive_note(
-                    getattr(status, "name", None),
-                    str(getattr(status, "category", "") or ""),
-                ),
-            )
-        cascade = (
-            await archive_subtree(db, vis, task_id, by=actor(user))
-            if include_subtasks else None
-        )
-        result = row_to_dict(row, TaskModel)
-        await attach_agent_state(db, [result])
+        result = outcome.row
+        cascade = outcome.cascade
         if cascade is not None:
             result["subtasks_archived"] = len(cascade.ids)
             result["subtask_ids"] = cascade.ids
 
-    if not was_archived:
+    if not outcome.was_archived:
         await emit("pm.task.archived", {"task_id": task_id})
     if cascade is not None:
         await emit_all(cascade.events)
