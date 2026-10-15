@@ -152,9 +152,11 @@ async def remove_organization_member(
 ) -> dict[str, Any]:
     """Remove or purge one member of one organization (owner request, 2026-10-15).
 
-    **The order of the refusals.** The operator token comes first, so an
-    unconfigured box answers 503 and a wrong token 401 before any input is
-    read. Then ``confirm`` must equal the email VERBATIM (400): the typed
+    **The order of the refusals.** FastAPI validates the query first, so a
+    request with no ``confirm`` at all gets its 422 before this body runs.
+    Inside the body the operator token comes first, so an unconfigured box
+    answers 503 and a wrong token 401 before ``confirm``, ``mode`` or the slug
+    is checked. Then ``confirm`` must equal the email VERBATIM (400): the typed
     confirmation, repeated here so a mis-wired caller cannot remove somebody
     by accident. Then ``mode`` must be ``remove`` or ``purge`` (400).
 

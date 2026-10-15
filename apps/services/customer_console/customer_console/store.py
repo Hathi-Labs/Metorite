@@ -2401,7 +2401,7 @@ def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict
 
 
 def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tuple[bool, str]:
-    """Create an ``invited`` membership if the org has none for this identity.
+    """Create an ``invited`` membership, or put a ``removed`` one back to ``invited``.
 
     CP-2f / D50.2 — the ONLY member-add writer besides ``provision``'s founder
     INSERT, and the reason an invited colleague can be seen by ``GET /me/members``
@@ -2409,13 +2409,26 @@ def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tu
 
     Returns ``(created, status_now)``.
 
-    **Create-only, by construction.** ``ON CONFLICT DO NOTHING`` means an existing
-    row is left exactly as it is: an ``active`` member is never demoted back to
-    ``invited`` by a re-invite, and a ``removed`` one is never silently
-    resurrected — reinstating somebody is an ``admin:members:manage`` decision on
-    the tenant plane and must not ride in on the weaker invite door. The caller is
-    told which happened (``created``) and what the row says now (``status_now``),
-    so a re-invite is legible rather than a silent 200.
+    **Create, or reinstate a ``removed`` row — the tenant plane's rule.** The
+    conflict arm rewrites exactly ONE status: ``removed`` goes back to
+    ``invited``. An ``active`` member is never demoted, a ``suspended`` one is
+    never un-suspended, and an ``invited`` one stays as it is. The arm names the
+    status it rewrites in its own ``WHERE`` and never negates, the
+    ``_PROVISION_MEMBER_SQL`` idiom (``gateway/routes/admin/_common.py``).
+
+    ⚠️ **Why a removed row is reinstated (review round 1, P1-a, 2026-10-15).**
+    This door was create-only until then. But the tenant upsert already moves
+    ``removed`` to ``invited`` on a re-invite. So after a remove and a
+    re-invite, the tenant plane said ``invited`` and the registry said
+    ``removed`` for good. The person signed in, the resolve wrote no seat for a
+    ``removed`` membership, and they worked with no seat and no bill. Repeated,
+    that is a seat-cap bypass. Now the re-invited row is ``invited``, the first
+    sign-in activates it through :func:`activate_invited_member`, and the seat
+    is allocated as for anybody else. The row keeps its ``role``.
+
+    The caller is told which happened (``created``) and what the row says now
+    (``status_now``), so a re-invite is legible rather than a silent 200. A
+    reinstatement answers ``(False, 'invited')``.
 
     **``role`` is not a parameter and never will be one.** It takes the column
     default ``member`` (``001_customer_console.sql:121-124``). ``org_membership.
@@ -2433,18 +2446,23 @@ def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tu
             INSERT INTO org_membership
                 (organization_id, user_identity_id, status)
             VALUES (:org, :i, 'invited')
-            ON CONFLICT (organization_id, user_identity_id) DO NOTHING
-            RETURNING status
+            ON CONFLICT (organization_id, user_identity_id) DO UPDATE
+                SET status = 'invited'
+                WHERE org_membership.status = 'removed'
+            RETURNING status, (xmax = 0) AS inserted
             """
         ),
         {"org": org_id, "i": identity_id},
     ).first()
     if row is not None:
-        return True, str(row[0])
+        # `xmax = 0` is true for a row this statement INSERTED and false for
+        # one its conflict arm UPDATED, which is the reinstatement.
+        return bool(row[1]), str(row[0])
 
-    # The conflict path. Re-read rather than assume: what the row says now is
-    # exactly the thing the caller could not know, and inventing 'invited' here
-    # would report a demotion that did not happen.
+    # The conflict path that rewrote nothing (`active`, `suspended` or
+    # `invited`). Re-read rather than assume: what the row says now is exactly
+    # the thing the caller could not know, and inventing 'invited' here would
+    # report a demotion that did not happen.
     existing = conn.execute(
         text(
             "SELECT status FROM org_membership "

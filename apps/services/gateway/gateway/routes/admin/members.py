@@ -263,6 +263,18 @@ async def invite_member(
                 "member_invite_console_refused",
                 email=email, status=cc_status, body=str(cc_body)[:200],
             )
+        elif (cc_body.get("created") is False
+              and cc_body.get("status") not in ("invited", "active")):
+            # The Console kept an existing row in a status that does not
+            # match the invite (`suspended`, or a status this gateway does
+            # not know). The planes now disagree: the tenant says `invited`
+            # and the registry does not, so the person's next sign-in takes
+            # no seat. Review round 1, P1-a: a silent 200 here is how that
+            # state went unseen.
+            _log.warning(
+                "member_invite_console_status_mismatch",
+                email=email, console_status=cc_body.get("status"),
+            )
     except ConsoleMemberWriteUnavailable as exc:
         # The box is unwired, or the Console gave no answer. Logged, never
         # raised: the tenant-plane invite stands.

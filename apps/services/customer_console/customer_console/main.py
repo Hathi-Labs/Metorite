@@ -6198,10 +6198,13 @@ def add_member_admin(
     (:data:`_MEMBER_ADMIN_ROLES` — any ACTIVE member, and the reason is written
     at that constant).
 
-    **The write is create-only and mints no role.** ``store.add_invited_member``
-    inserts ``status='invited'`` at the ``role`` column default and leaves an
-    existing row untouched, so a re-invite neither demotes an ``active`` member
-    nor resurrects a ``removed`` one. The response says which happened —
+    **The write mints no role, and it follows the tenant upsert.**
+    ``store.add_invited_member`` inserts ``status='invited'`` at the ``role``
+    column default. On a conflict it rewrites ONE status: a ``removed`` row goes
+    back to ``invited``, as the tenant plane's ``_PROVISION_MEMBER_SQL`` does
+    on a re-invite (review round 1, P1-a, 2026-10-15). An ``active`` member is
+    not demoted and a ``suspended`` one is not un-suspended. A reinstatement
+    answers ``created: false, status: invited``. The response says which happened —
     ``created`` plus the row's CURRENT ``status`` — because a silent 200 over a
     conflict is how two planes come to disagree without anybody noticing.
 

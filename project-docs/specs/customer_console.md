@@ -16,10 +16,12 @@ CP-13h, Jev through the AI/ML API reseller, is BUILT on branch `cp13-aimlapi`
 background model call names its feature on the usage report, as
 `email.rule_match`. It has no flag, because it changes metadata only.
 
-🆕 **Member removal by an operator or an admin: backend BUILT on branch
-`member-remove` (2026-10-15, owner request).** The amendment under CP-2g's
-non-goals holds the wire contract. The operator console surface is a separate
-slice.
+🆕 **Member removal by an operator or an admin: BUILT on branch
+`member-remove` (2026-10-15, owner request).** The backend, the operator
+console surface and the control-plane roster change are all built. The
+amendment under CP-2g's non-goals holds the contract. One decision is open
+for the owner: who owns the registry after an admin removes the founder
+(P1-b).
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
@@ -6185,8 +6187,30 @@ a purge is forward-only, like every act on this platform (R6).
 **Amended 2026-10-15 (owner request in chat).** The owner asked: "give
 ability for operator (backend) and admins to remove/delete a person who's
 invited/logged in". That request overrides the per-member non-goal above.
-**Backend BUILT on branch `member-remove` (2026-10-15).** The operator console
-surface is a separate slice.
+**BUILT on branch `member-remove` (2026-10-15): the backend, the operator
+console surface and the control-plane roster change.**
+
+**The operator BFF, `POST /api/operator/members/remove`.** The body is
+`{org_slug, email, mode, confirm}`, and `confirm` must equal the email.
+
+- The route checks the tenant door first. If the door is not configured, it
+  answers 503 and changes nothing.
+- The rank comes from the Console session. Remove needs EDITOR. Purge needs
+  ADMIN and an open elevation window.
+- The tenant act runs before the Console act, because the tenant act takes
+  the access away. An `already_absent` answer counts as success.
+- The route relays a tenant refusal with its own status and
+  `refused_by: "tenant"`.
+- The Console half runs last. If the Console gives no answer, or a 5xx, the
+  route answers 502 and the caller can retry. The route relays a Console
+  4xx with its own status.
+
+**The control plane.** The organisation roster gains "Revoke invite" for an
+invited member, and a "Removed" filter that shows removed members.
+
+**Frontend fences.** `operator_console/.../members/remove/route.test.ts`,
+`lib/memberRemove.test.ts` and `lib/tenantDoor.test.ts`. In the control plane,
+`settings/organization/lib/rosterView.test.ts`.
 
 - The gateway door is `DELETE /internal/operator/organizations/{slug}/members/{email}`.
   It takes `?mode=remove|purge&confirm=<email>`, and `remove` is the default.
@@ -6213,6 +6237,30 @@ surface is a separate slice.
 - Fences: `test_operator_door.py`, `test_admin_member_offboarding.py` and
   `test_admin_member_purge.py`. Also `test_customer_console_member_write.py`
   (R8) and `test_operator_role_matrix_source.py`.
+
+**Review round 1, P1-a — FIXED.** A re-invite after a removal left the
+registry row `removed` for good. The tenant upsert (`_PROVISION_MEMBER_SQL`)
+moves `removed` to `invited`, but `store.add_invited_member` did nothing on a
+conflict. The person then signed in, the resolve wrote no seat, and they
+worked with no bill. Now the Console invite door applies the tenant rule. Its
+conflict arm moves `removed` to `invited` and keeps the role. It does not
+change `active` or `suspended`. The first sign-in activates the row and
+allocates the seat. The invite mirror in the gateway logs
+`member_invite_console_status_mismatch` when the Console keeps a status other
+than `invited` or `active`. Fence:
+`TestRemoveThenReInviteIsBilledAgain` (R8).
+
+**Review round 1, P1-b — OPEN, the owner decides.** The Console door refuses
+to remove the last active registry owner. Only `provision` writes
+`org_membership.role`, so the founder is the only registry owner, and the door
+always refuses to remove the founder. The proposed fix drops that 409 and
+reports an `owner_gap`. It is NOT built, because a registry with no owner
+breaks one load-bearing door. The seat-admin doors (`/registry/seats`,
+`/registry/seats/release` and `/registry/seats/overview`) admit only an
+active `owner` or `admin`. The member door writes `member` only, so after
+the removal no customer member can assign, release or read seats. The
+customer Seats tab reaches those doors through the gateway `routes/seats.py`.
+A rule that moves ownership to another member is the owner's decision.
 
 **CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
 SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23

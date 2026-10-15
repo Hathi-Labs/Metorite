@@ -472,9 +472,23 @@ class TestTheWriteIsCreateOnly:
             "a re-invite must not touch the registry role either"
         )
 
-    def test_re_inviting_a_removed_member_does_not_resurrect_them(
+    def test_re_inviting_a_removed_member_puts_them_back_to_invited(
         self, client, db, member_key
     ):
+        """The rule CHANGED on purpose (review round 1, P1-a, 2026-10-15).
+
+        This test used to assert the opposite: a re-invite left a ``removed``
+        row ``removed``, because reinstating somebody was held to be a
+        tenant-plane decision. But the tenant plane ALREADY reinstates on a
+        re-invite: ``_PROVISION_MEMBER_SQL`` moves ``removed`` to ``invited``.
+        A registry that does not follow says ``removed`` while the tenant says
+        ``invited``, and the resolve then writes no seat for the person who
+        signs in and works. That is a free seat, and a seat-cap bypass when it
+        is repeated. So the invite door applies the tenant's rule now.
+
+        ⚠️ Mutation-checked: restoring ``ON CONFLICT DO NOTHING`` makes this
+        fail with the row still ``removed``.
+        """
         org = _new_org(client)
         who = f"gone-{uuid.uuid4().hex[:6]}@x.example"
         assert _add(client, member_key, member_email=who,
@@ -484,10 +498,42 @@ class TestTheWriteIsCreateOnly:
         r = _add(client, member_key, member_email=who,
                  actor_email=org["owner"])
         assert r.status_code == 200, r.text
-        # Reinstating somebody is an `admin:members:manage` decision on the
-        # tenant plane; it must not ride in on the weaker invite door.
-        assert r.json() == {"created": False, "status": "removed"}
-        assert _status(db, org_id=org["id"], email=who) == "removed"
+        assert r.json() == {"created": False, "status": "invited"}
+        assert _status(db, org_id=org["id"], email=who) == "invited"
+
+    def test_re_inviting_a_suspended_member_does_not_un_suspend_them(
+        self, client, db, member_key
+    ):
+        """The conflict arm rewrites ONE status, `removed`, and no other."""
+        org = _new_org(client)
+        who = f"susp-{uuid.uuid4().hex[:6]}@x.example"
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+        _set_status(db, org_id=org["id"], email=who, status="suspended")
+
+        r = _add(client, member_key, member_email=who,
+                 actor_email=org["owner"])
+        assert r.status_code == 200, r.text
+        assert r.json() == {"created": False, "status": "suspended"}
+        assert _status(db, org_id=org["id"], email=who) == "suspended"
+
+    def test_a_reinstated_owner_keeps_the_registry_role(
+        self, client, db, member_key
+    ):
+        """The conflict arm sets `status` only. A role is never rewritten."""
+        org = _new_org(client)
+        admin = f"adm-{uuid.uuid4().hex[:6]}@x.example"
+        _active_member(db, org_id=org["id"], email=admin, role="admin")
+        _set_status(db, org_id=org["id"], email=org["owner"],
+                    status="removed")
+        r = _add(client, member_key, member_email=org["owner"],
+                 actor_email=admin)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"created": False, "status": "invited"}
+        with db.begin() as c:
+            roster = store.org_members(c, org_id=org["id"])
+        row = next(m for m in roster if m["email"].lower() == org["owner"])
+        assert row["role"] == "owner"
 
     def test_the_identity_is_case_insensitive_and_not_duplicated(
         self, client, db, member_key
@@ -1127,6 +1173,42 @@ class TestARemovedMemberBurnsNoSeatAtSignIn:
                     actor_email=org["owner"]).status_code == 200
         r = _resolve(client, resolve_key, email=who)
         assert r.json()["organizations"][0]["seat"] == "allocated"
+
+
+class TestRemoveThenReInviteIsBilledAgain:
+    """The whole loop of review round 1, P1-a, end to end on a real database.
+
+    Remove, re-invite, sign in: the person must hold a Core seat again. Before
+    the fix the re-invite left the row ``removed``, the resolve wrote no seat,
+    and the person worked unbilled.
+    """
+
+    def test_remove_reinvite_resolve_allocates_the_seat(
+        self, client, db, member_key
+    ):
+        """⚠️ Mutation-checked: restoring ``ON CONFLICT DO NOTHING`` in
+        ``store.add_invited_member`` makes this fail with ``not_allocated``."""
+        org = _new_org(client, core_seats=3)
+        who = f"loop-{uuid.uuid4().hex[:6]}@x.example"
+        resolve_key = _key(db, deployment_id=_deployment_id(db))
+
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+        first = _resolve(client, resolve_key, email=who)
+        assert first.json()["organizations"][0]["seat"] == "allocated"
+
+        assert _remove(client, member_key, member_email=who,
+                       actor_email=org["owner"]).json()["released"] == ["core"]
+
+        again = _add(client, member_key, member_email=who,
+                     actor_email=org["owner"])
+        assert again.json() == {"created": False, "status": "invited"}
+
+        back = _resolve(client, resolve_key, email=who)
+        assert back.status_code == 200, back.text
+        assert back.json()["organizations"][0]["seat"] == "allocated"
+        assert _status(db, org_id=org["id"], email=who) == "active"
+        assert _live_seats(db, org_id=org["id"], email=who) == ["core"]
 
 
 class TestTheGatewayClientSpeaksTheRemoveWire:

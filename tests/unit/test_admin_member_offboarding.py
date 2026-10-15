@@ -896,3 +896,44 @@ async def test_a_refused_remove_never_reaches_the_console(
     with pytest.raises(HTTPException):
         await remove_member("owner@fracktal.in", admin=OWNER)
     assert seen == []
+
+
+@pytest.mark.parametrize("console_status,warns", [
+    ("suspended", True),
+    ("removed", True),
+    ("invited", False),
+    ("active", False),
+])
+async def test_the_invite_mirror_warns_when_the_console_keeps_another_status(
+    db: _FakeDB, monkeypatch: pytest.MonkeyPatch, console_status: str,
+    warns: bool,
+) -> None:
+    """Review round 1, P1-a. A 200 with ``created: false`` and a status that
+    is not ``invited`` or ``active`` means the planes disagree. That must be
+    a warning line, never a silent 200."""
+    from gateway.routes.admin import members
+
+    async def _console(**_kw: Any) -> Any:
+        return 200, {"created": False, "status": console_status}
+
+    monkeypatch.setattr(members, "invite_member_on_console", _console)
+    lines: list[tuple[str, dict[str, Any]]] = []
+
+    class _Log:
+        def warning(self, event: str, **kw: Any) -> None:
+            lines.append((event, kw))
+
+        def info(self, *_a: Any, **_kw: Any) -> None:
+            return None
+
+    monkeypatch.setattr(members, "_log", _Log())
+    await members.invite_member(
+        members.InviteRequest(email="newcomer@fracktal.in"), admin=OWNER,
+    )
+    mismatches = [kw for ev, kw in lines
+                  if ev == "member_invite_console_status_mismatch"]
+    if warns:
+        assert mismatches == [{"email": "newcomer@fracktal.in",
+                               "console_status": console_status}]
+    else:
+        assert mismatches == []
