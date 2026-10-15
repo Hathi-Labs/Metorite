@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { autoDraftRepliesOn } from "./assistantSettings";
+import { AUTO_RUN_AI_LINE, autoDraftRepliesOn } from "./assistantSettings";
 
 type NewMailboxFixture = {
   get_without_settings_row: { draft_replies: boolean };
@@ -81,6 +81,25 @@ describe("SettingsTab wiring", () => {
 
   it("still saves the member's choice", () => {
     expect(src).toMatch(/persistPatch\(\{\s*draft_replies:\s*v\s*\}\)/);
+  });
+});
+
+describe("the Auto-run line (WS-17 EM-G11c2, item 6)", () => {
+  const src = codeOnly(readFileSync(SETTINGS_TAB, { encoding: "utf-8" }));
+
+  it("holds the words of the spec, word for word", () => {
+    expect(AUTO_RUN_AI_LINE).toBe(
+      "An AI model reads each new message to choose the rule that matches. "
+        + "Each action is one that you set.",
+    );
+  });
+
+  it("draws the line in the Auto-run card", () => {
+    const card = src.slice(
+      src.indexOf("Run rules automatically on new mail"),
+      src.indexOf("persistPatch({ auto_run: v })"),
+    );
+    expect(card).toContain("{AUTO_RUN_AI_LINE}");
   });
 });
 

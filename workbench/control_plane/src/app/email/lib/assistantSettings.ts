@@ -23,6 +23,15 @@ import type { AssistantSettings } from "./types";
  */
 export const EMAIL_CHAT_TIER = "tier-powerful";
 
+/**
+ * The line under the Auto-run switch (WS-17 EM-G11c2,
+ * `email_app_master_plan.md` §12.3.13.7 item 6). Product copy, word for word
+ * from the spec. `assistantSettings.test.ts` pins the words and scans
+ * `SettingsTab.tsx` for the use.
+ */
+export const AUTO_RUN_AI_LINE =
+  "An AI model reads each new message to choose the rule that matches. Each action is one that you set.";
+
 /** True only when the server stored `draft_replies: true` for the mailbox. */
 export function autoDraftRepliesOn(
   settings: Partial<Pick<AssistantSettings, "draft_replies">> | null | undefined,
