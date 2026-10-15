@@ -1,14 +1,14 @@
 # External agent access — Metorite as an MCP server
 
-**Status: DECIDED (D97, 2026-10-10). Updated 2026-10-15. EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
+**Status: DECIDED (D97, 2026-10-10). Updated 2026-10-15 (EA-6b and EA-6f). EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
 
-**Verified against code on 2026-10-14 at 2295c9bf9.** The EA-6 audit read the anchors of §6.1 (EA3-28 to EA3-31), §9.2, §9.5, §9.6 and §15 at that commit.
+**Verified against code on 2026-10-14 at 2295c9bf9.** The EA-6 audit read the anchors of §6.1 (EA3-28 to EA3-31), §9.2, §9.5, §9.6 and §15 at that commit. The build of EA-6b and EA-6f read them again on 2026-10-15 at `c55520941`, and it corrected four of them.
 
-**EA-6, 2026-10-14.** The spec audit of EA-6 gave NO-GO, and it narrowed the dispatch to EA-6a. The decisions EA3-28 to EA3-31 (§6.1) answer it. EA-6 now splits into EA-6a, EA-6b, EA-6c and EA-6d.
+**EA-6, 2026-10-14.** The spec audit of EA-6 gave NO-GO, and it narrowed the dispatch to EA-6a. The decisions EA3-28 to EA3-31 (§6.1) answer it. EA-6 now splits into EA-6a, EA-6b, EA-6c and EA-6d. The fifth audit (2026-10-15) adds EA-6e, EA-6f and EA-6g.
 
-**EA-6a is MERGED and dark (2026-10-14), after fix round 1.** It changes branch 0, and it passed an adversarial review and an independent verification (§10.1). The owner turned the writes flag `agent_access_writes_enabled` on with the go-live of 2026-10-14. EA-6b and EA-6c are not built.
+**EA-6a is MERGED and live (2026-10-14), after fix round 1.** It changes branch 0, and it passed an adversarial review and an independent verification (§10.1). The owner turned the writes flag `agent_access_writes_enabled` on with the go-live of 2026-10-14.
 
-**EA-6d is MERGED (#1031, 2026-10-15), after fix rounds 1 and 2.** It adds `create_task`, `update_task`, the task source `mcp` (migration 265) and the gateway narrowing of an agent write (§9.2). It does not change branch 0.
+**EA-6d is MERGED and live (#1031, `c4641922a`, 2026-10-15), after fix rounds 1 and 2.** It adds `create_task`, `update_task`, the task source `mcp` (migration 265) and the gateway narrowing of an agent write (§9.2). It does not change branch 0.
 
 **The switch of EA-6d (owner decision, 2026-10-15, in chat).** EA-6d has no flag of its own. The writes flag `agent_access_writes_enabled` is ON, so the two tools go live when EA-6d merges. To turn the flag off hides every agent write tool, the two of EA-6a and the two of EA-6d.
 
@@ -16,7 +16,9 @@
 
 **EA-3a is MERGED and dark (#946, `d5d8244f5`, 2026-10-13), after fix rounds 1 to 5. EA-2c is MERGED and dark (#953, 2026-10-13). EA-3b-1 is MERGED and dark (#954, `355c18bcf`, 2026-10-13), after fix rounds 1 and 2. EA-3b-2 is MERGED and dark (2026-10-13), after fix rounds 1 and 2. EA-4a is MERGED and dark (2026-10-13), after fix rounds 1 and 2.**
 
-**EA-10p, the organization allowlist (EA3-27), is MERGED and dark (2026-10-13), after fix round 1. EA-10a and EA-10b are MERGED and dark (2026-10-13), after fix rounds 1 and 2: the unit is installed and not enabled (§15.3). EA-4b is MERGED and live (2026-10-14). EA-12a, EA-12b and EA-12c are BUILT and dark behind `agent_runs_enabled`, on the branch `ws55-ea12-agent-runs` (2026-10-14), after fix rounds 1 and 2 (§15). That branch holds the merged EA-6d too (2026-10-15). EA-2b, EA-3c, EA-4c, EA-5 to EA-9, EA-10c, EA-11 and EA-12d are not built.**
+**EA-10p, the organization allowlist (EA3-27), is MERGED and dark (2026-10-13), after fix round 1. EA-10a and EA-10b are MERGED and dark (2026-10-13), after fix rounds 1 and 2: the unit is installed and not enabled (§15.3). EA-4b is MERGED and live (2026-10-14). EA-12a, EA-12b and EA-12c are MERGED and dark behind `agent_runs_enabled` (#1029, `c55520941`, 2026-10-15), after fix rounds 1 and 2 (§15). EA-2b, EA-3c, EA-4c, EA-5, EA-6c, EA-6e, EA-6g, EA-7 to EA-9, EA-11 and EA-12d are not built.**
+
+**EA-6b and EA-6f are BUILT and not merged (2026-10-15, branch `ws55-ea6b`).** EA-6b adds `claim_task` and the route `POST /projects/tasks/{task_id}/claim` (EA3-34). EA-6f lets an agent move a task to done (EA3-32). They go live at the merge under `agent_access_writes_enabled`, as EA-6d did (EA3-36). The fifth audit of 2026-10-15 records the decisions EA3-32 to EA3-38 (§6.1).
 
 **EA-3b, 2026-10-13.** The spec audit of EA-3b gave NO-GO. The decisions EA3-9 to EA3-23 (§6.1) answer it. EA-3b now splits into EA-3b-1 and EA-3b-2. A new slice, EA-2c, accepts a loopback redirect on any port, and it comes before EA-4.
 
@@ -304,6 +306,17 @@ A spec audit of EA-3 on 2026-10-11 gave NO-GO. The spec had no testable done-whe
 | EA3-30 | **The cap.** After the nonce, the gateway runs `INCR` on the tenant key `agent_writes:<connection>`, with a life of 600 seconds from the first write. A connection makes at most 120 writes in that window. The 121st write gets 429 with `Retry-After`. The edge maps a 429 to the tool error "Too many changes. Wait a few minutes." | §9.6, §10.1 |
 | EA3-31 | **The split.** EA-6a builds `set_task_status`, `add_task_reference` and the references in `get_task`. EA-6b builds `claim_task`, which needs a new add-only route `POST /projects/tasks/{task_id}/assignees/self`, because the PUT of the assignees replaces the set. EA-6c builds `add_comment`, with a required `idempotency_key`. EA-6d builds `create_task`, `update_task` and the migration for the task source `mcp` | §9.2, §15 |
 
+**The fifth audit, 2026-10-15.** A spec audit of EA-6b and EA-6f gave GO-NARROWED after these doc edits. The owner took five of the decisions below. The orchestrator took EA3-34. The id EA3-35 stays free for the build of EA-6c.
+
+| # | Decision | Where |
+|---|---|---|
+| EA3-32 | **Owner, 2026-10-14. An agent may move a task to done.** Cancel stays a human step. The PATCH still refuses `include_subtasks`, so the done of an agent never closes a subtask. A create still refuses a done or cancelled status. This changes the EA-6a rule for done only. EA-6f builds it | §9.2, §15 (EA-6f) |
+| EA3-33 | **Owner, 2026-10-15. An agent may archive a task only after the member of the connection approves it on the task in Metorite.** The agent never deletes a task, and an archive does not cascade to the subtasks. The design builds on the runs of EA-12 (#1029). It does not use MCP elicitation, because EA3-2 keeps `/mcp` stateless. Also, Claude Code declines a form elicitation in the terminal and in VS Code. This is a record only. EA-6g builds it | §9.2, §15 (EA-6g) |
+| EA3-34 | **The claim route.** `POST /projects/tasks/{task_id}/claim` in `routes/projects/tasks.py`, with `If-Match` and no body, in one transaction. It replaces the name `assignees/self` of EA3-31, because that name hides a status move. A member can call it too. §9.2 holds the behaviour | §9.2, §9.5, §15 (EA-6b) |
+| EA3-36 | **Owner, 2026-10-15.** EA-6b, EA-6c and EA-6f go live at the merge under `agent_access_writes_enabled`, as EA-6d did. None of them has a flag of its own | §15 |
+| EA3-37 | **Owner, 2026-10-15. The description of the task that an agent works on is its brief.** No `untrusted_text` value may widen what the agent reaches. It may not send data out or call a tool outside that task. EA-6e builds this | §9.4, §15 (EA-6e) |
+| EA3-38 | **Owner, 2026-10-15.** Work starts from two paths: the Claude Code command (EA-6e) and "Ask an agent" in Metorite (EA-12d) | §12, §15 |
+
 ## 7. The connection model
 
 A **connection** is one agent client that one member has authorized in one organization.
@@ -487,21 +500,24 @@ On `attachment`, `system`, `agent_run` and `sync` rows the edge keeps only `via`
 
 ### 9.2 Writes (class B, undoable, and class C, hard to undo)
 
-EA-6a builds two write tools, and EA-6d builds two more (EA3-31). Each needs `projects:write`, and each write passes the nonce, the scope check, the flag and the cap of branch 0 (EA3-28 to EA3-30).
+EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `claim_task` (EA3-34). Each needs `projects:write`, and each write passes the nonce, the scope check, the flag and the cap of branch 0 (EA3-28 to EA3-30).
 
 | Tool | Class | Input | Gateway route | Returns |
 |---|---|---|---|---|
-| `set_task_status` | B | `task_id`, `status_id`, `expected_version` | First `GET /projects/tasks/{task_id}` and `GET /projects/nodes/{project_id}/statuses`, to find the category of the target status. Then `PATCH /projects/tasks/{task_id}` (`tasks.py:484`) with the body `{status_id}` only and `If-Match: <expected_version>`. It never sends `include_subtasks` | `id`, `status` (an object with `id` and `name` (U)) and `version` |
+| `set_task_status` | B | `task_id`, `status_id`, `expected_version` | First `GET /projects/tasks/{task_id}` and `GET /projects/nodes/{project_id}/statuses`, to find the category of the target status. Then `PATCH /projects/tasks/{task_id}` (`tasks.py:619`) with the body `{status_id}` only and `If-Match: <expected_version>`. It never sends `include_subtasks` | `id`, `status` (an object with `id` and `name` (U)) and `version` |
 | `add_task_reference` | B | `task_id`, `url`, `title?` | `POST /projects/tasks/{task_id}/refs?refresh=false` (`refs.py:418`) with the body `{url, title?}` | `id`, `kind`, `provider`, `ref` (S), `url` (S), `label` (S), `title` (U), `state` and `created` |
 | `create_task` (EA-6d) | B | `project_id`, `title`, `description?`, `parent_task_id?`, `type_id?`, `status_id?`, `tags?`, `due_at?`, `idempotency_key?` | First `GET /projects/nodes/{project_id}/statuses`, `GET /projects/tasks/{parent_task_id}` when a parent is sent, and `GET /projects/nodes/{project_id}/types` when a type is sent. Then `POST /projects/tasks` with the sent keys of the input, except `idempotency_key`, and no other key. Then `GET /projects/tasks/{task_id}`, the re-read | `task`, the task of `get_task` (§9.1), and `created` |
 | `update_task` (EA-6d) | B | `task_id`, `expected_version`, and one or more of `title`, `description`, `tags`, `due_at` and `custom_fields` | `PATCH /projects/tasks/{task_id}` with the sent fields only and `If-Match: <expected_version>`. No query. Then `GET /projects/tasks/{task_id}`, the re-read, and `GET /projects/nodes/{project_id}/statuses` for the status name | `task`, the task of `get_task` without `assignees`, because the PATCH answer does not carry them |
+| `claim_task` (EA-6b) | B | `task_id`, `expected_version` | `POST /projects/tasks/{task_id}/claim` with the body `{}` and `If-Match: <expected_version>`. No query. Then `GET /projects/tasks/{task_id}`, the re-read, and `GET /projects/nodes/{project_id}/statuses` for the status name | `task`, the task of `get_task`, and `moved` |
 
 **Rules of `set_task_status`.**
 
-- The edge refuses a target status whose category is `done` or `cancelled` (`core.py`, `CLOSING_CATEGORIES`), with the text "Moving a task to done or cancelled stays a human step." The refusal comes before the PATCH, so nothing changes.
+- **EA-6f (EA3-32).** An agent may move a task to a `done` status. The transition path stamps `completed_at`, and a recurring task makes its successor once.
+- The edge refuses a target status whose category is `cancelled`, with the text "Cancelling a task stays a human step." The refused set is `CLOSING_CATEGORIES - {COMPLETED_CATEGORY}` (`core.py`), in the shape of `tree.ABANDONED_CATEGORIES`. The edge holds a pinned copy as `AGENT_MOVE_REFUSED`. The refusal comes before the PATCH, so nothing changes.
+- A move to done never closes a subtask, because the gateway refuses `include_subtasks` on a signed agent PATCH.
 - A target status that is not in the status set of the task's project gets the bad-request text of §9.6, before the PATCH.
 - When the member cannot open the task's project, the edge cannot read the category. It then refuses with "This member cannot change that.", before the PATCH.
-- `expected_version` is the `version` that `get_task` returned. The gateway compares it with `If-Match` (`core.py:1860`). A stale version gets 412, and the edge maps it to "The task changed. Read it again."
+- `expected_version` is the `version` that `get_task` returned. The gateway compares it with `If-Match` (`core.py:1885`). A stale version gets 412, and the edge maps it to "The task changed. Read it again."
 - The transition path of the PATCH stamps `completed_at` and the timeline row, and `record_activity` stamps `meta.via` with `mcp:<slug>`.
 
 **Rules of `add_task_reference`.**
@@ -517,7 +533,7 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). Each needs `pr
 **Rules of `create_task` (EA-6d).**
 
 - A sub-project is a project. The agent finds its id with `list_projects`, and it reads the status ids, the type ids and the tag names with `get_project`. The tool description says so.
-- The rules of `set_task_status` hold for `status_id`. A status outside the set of the project gets the bad-request text of §9.6. A status in `done` or `cancelled` gets "Moving a task to done or cancelled stays a human step." Both refusals come before the POST. With no `status_id`, the route takes the default status, or the open lane of the parent (D-PM-38).
+- The rules of `set_task_status` hold for `status_id`. A status outside the set of the project gets the bad-request text of §9.6. A status in `done` or `cancelled` gets "A new task cannot start in a done or cancelled status." (EA3-32 keeps both refused on a create.) Both refusals come before the POST. With no `status_id`, the route takes the default status, or the open lane of the parent (D-PM-38).
 - A parent must be a task of the same project. The edge reads the parent first. A parent that the member cannot see gets "Parent task not found." A parent of another project gets "The parent task is in another project. Send the project_id of the parent task." The route does not check this rule for a member, so the rule is the agent's only.
 - **The type (fix round 1).** A `type_id` must be a type of the project. The edge reads `GET /projects/nodes/{project_id}/types`, the read of `get_project`, before the POST. An id outside that set gets the bad-request text of §9.6, and a key stays free. The gateway checks the same rule for an agent create against `pm_task_types` in the vocabulary of the root (`core.vocabulary_scope`). So a made-up id gets 422 and never the 500 of the foreign key. The route does not check this rule for a member.
 - The tool has no assignee input, so the member cannot assign other people through it. The new task has no assignee.
@@ -551,18 +567,44 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). Each needs `pr
 - The edge cannot clear `due_at` or `description` with a null, because the input check drops a null. A later slice can add that.
 - `record_activity` stamps `meta.via` with `mcp:<slug>` on the field change, as for `set_task_status`.
 
+**Rules of `claim_task` (EA-6b, EA3-34).**
+
+- The agent calls it first, when it starts work on a task. The tool description says so.
+- The route is `POST /projects/tasks/{task_id}/claim` (`routes/projects/tasks.py`), with `If-Match` and no body. One transaction does every step. The caller is the member, `actor(user)`, never a body field.
+- The route is not agent-only. A member can call it too, and the route reads nothing of `UserContext.agent`.
+- The route reads the lane from the status set that the task's OWN project uses, `status_owner_id(task.project_id)`, and never from the root. A subproject can own its set. The lane is the lowest position of the category `in_progress` (`core.load_default_status`).
+
+| The task now | What the route does | Answer |
+|---|---|---|
+| `backlog` or `todo` | It adds the member and keeps every other assignee. Then it moves the task to the first `in_progress` lane through `apply_status_transition` | 200, `moved: true` |
+| `in_progress` | It adds the member. The status does not move | 200, `moved: false` |
+| `in_progress`, and the member already holds it | Nothing. No activity row | 200, `moved: false` |
+| Another person holds it | It adds the member too, and the other person stays (owner default) | 200 |
+| `done` or `cancelled` | Nothing | 422 `claim_closed` |
+| `triage` | Nothing | 422 `claim_triage` |
+| Archived | Nothing. `load_visible_task` does not filter it, so the route checks | 422 `claim_archived` |
+| The set has no `in_progress` lane | The route raises inside the transaction, so the assignee write rolls back | 422 `claim_no_started_status` |
+| A stale `If-Match` | Nothing | 412 |
+
+- The detail of a 422 is `{"error": <code>, "message": <text>}`. The edge maps each code of `tasks.CLAIM_REFUSALS` to a fixed text of `tools.CLAIM_TEXTS`, and a test pins the two sets equal. Any other 422 gets the bad-request text of §9.6.
+- The assignee half reuses the path of `set_assignees`: `assert_assignable_here`, `insert_assignees`, an `assignment` activity, `ensure_watchers`, `notify(kind="assigned")` and the `pm.task.assigned` event. `notify` drops the actor, so a self claim notifies nobody. The event names the member, so no internal agent run starts.
+- `record_activity` stamps `meta.via` with `mcp:<slug>` on the `assignment` row and on the `status_change` row.
+- After the POST, the edge reads the task again and returns that version, as `update_task` does. A failed re-read gives the POST answer, because the write happened.
+- `expected_version` goes out as `If-Match`. A stale version gets "The task changed. Read it again."
+
 **The gateway narrows an agent write (EA-6d).** This closes the follow-up of §17. For a request with `UserContext.agent` set, `routes/projects/tasks.py` answers 422 to each of these:
 
 - A body key of `POST /projects/tasks` outside `AGENT_CREATE_FIELDS`. The set is `project_id`, `title`, `description`, `parent_task_id`, `type_id`, `status_id`, `tags` and `due_at`.
 - A body key of `PATCH /projects/tasks/{task_id}` outside `AGENT_PATCH_FIELDS`, the union of the two PATCH tools. The set is `status_id`, `title`, `description`, `tags`, `due_at` and `custom_fields`.
 - The query `include_subtasks=true` on that PATCH.
-- A stated status in `done` or `cancelled` on a create, and a move into one of them on a PATCH. The PATCH refusal comes inside the transaction, so it rolls back the whole PATCH.
+- A stated status in `done` or `cancelled` on a create (`AGENT_CREATE_REFUSED`, the detail "A new task cannot start in a done or cancelled status.").
+- A move into `cancelled` on a PATCH (`AGENT_MOVE_REFUSED`, the detail "Cancelling a task stays a human step."). EA-6f allows a move into `done`. The PATCH refusal comes inside the transaction, so it rolls back the whole PATCH.
 - A parent of another project on a create.
 - A `type_id` outside the vocabulary of the project on a create (fix round 1).
 
 A member's request is not narrowed. The narrowing lives in the route, not in branch 0, so the digest of §10.1 does not change.
 
-**Annotations of a write tool.** `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. `set_task_status`, `add_task_reference` and `update_task` are idempotent: a second call with the same input changes nothing more. A second `update_task` with the same `expected_version` gets 412. **`create_task` has `idempotentHint: false`** (EA-6d). The hint is one value for every call, and a call with no `idempotency_key` makes a new task each time.
+**Annotations of a write tool.** `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. `set_task_status`, `add_task_reference`, `update_task` and `claim_task` are idempotent: a second call with the same input changes nothing more. A second `update_task` with the same `expected_version` gets 412. **`create_task` has `idempotentHint: false`** (EA-6d). The hint is one value for every call, and a call with no `idempotency_key` makes a new task each time.
 
 ⚠️ **A write can reach an outside site through a workflow (fix round 1).** The tool call itself calls no outside site, and that is all `openWorldHint: false` says. But `patch_task` emits `pm.task.updated` and `pm.task.status_changed`. Through `workflows.triggers.dispatch_event`, such an event can start a published workflow of the organization, and that workflow can send mail or call a webhook. This is the same as for a member's own change in the app. A member who connects an agent with `projects:write` lets it start those workflows.
 
@@ -572,12 +614,13 @@ A member's request is not narrowed. The narrowing lives in the route, not in bra
 
 | Slice | Tool | Class | Input | Note |
 |---|---|---|---|---|
-| EA-6b | `claim_task` | B | `task_id`, `expected_version` | Assigns the member and moves the task to the first "in progress" status. It needs a new add-only route `POST /projects/tasks/{task_id}/assignees/self`, because the PUT of the assignees replaces the set |
 | EA-6c | `add_comment` | B | `task_id`, `body`, `parent_id?`, `idempotency_key` | Adds a comment. The author stays the member. `meta.via` names the client. The tool needs the key. The slot of `agent_edge/idempotency.py` (EA-6d) can serve it |
 
 EA-6d moved `create_task` and `update_task` into the table above. The spec named the inputs `type?` and `status?`, and the build names them `type_id` and `status_id`, as the route does.
 
-The first version has **no class C tool**. A move across projects, an archive, an unassign of another person and a bulk change are not exposed. When one is added, it needs a human confirmation step. The MCP spec supports this with a multi-round input request (elicitation), and a client that lacks it must get a refusal that says so.
+The first version has **no class C tool**. A move across projects, an archive, an unassign of another person and a bulk change are not exposed. When one is added, it needs a human confirmation step.
+
+**The archive (EA3-33, EA-6g, not built).** An agent may archive a task only after the member of the connection approves it on the task in Metorite. The approval goes through an agent run of EA-12 (§12.1), not through MCP elicitation. EA3-2 keeps `/mcp` stateless, and Claude Code declines a form elicitation in the terminal and in VS Code. The agent never deletes a task, and an archive does not cascade to the subtasks.
 
 ### 9.3 Resources
 

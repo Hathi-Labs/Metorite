@@ -43,7 +43,7 @@ name. ``E`` is ``apps/services/agent_edge/agent_edge``, ``G`` is
 * M9. The update body carries ``task_id``. ``test_it_patches_the_named_fields_only_with_if_match``.
 * M10. The edge lets a closing status through on create. ``test_a_closing_status_is_refused_before_the_write``.
 * M11. The gateway does not narrow an agent body. ``test_a_create_with_another_key_is_422`` and ``test_a_patch_with_another_key_or_the_cascade_is_422``.
-* M12. The gateway lets an agent close a task. ``test_a_create_into_a_closing_status_is_422`` and ``test_a_patch_into_a_closing_status_rolls_back_all_of_it``.
+* M12. The gateway lets an agent close a task. ``test_a_create_into_a_closing_status_is_422`` and ``test_a_patch_into_cancelled_rolls_back_all_of_it`` (EA-6f narrowed the PATCH half to cancel).
 * M13. The gateway lets a parent of another project through. ``test_a_create_under_a_parent_of_another_project_is_422``.
 * M14. The edge lets a parent of another project through. ``test_a_parent_in_another_project_is_refused``.
 * M15. The update sends no ``If-Match``. ``test_it_patches_the_named_fields_only_with_if_match`` and the R8 update test.
@@ -377,7 +377,7 @@ class TestCreateTask:
     @pytest.mark.parametrize("status", [S_DONE, S_CANCELLED])
     async def test_a_closing_status_is_refused_before_the_write(self, edge, status):
         assert _text(await _tool("create_task", _create_args(status_id=status))) == (
-            "Moving a task to done or cancelled stays a human step.")
+            "A new task cannot start in a done or cancelled status.")
         assert edge.gateway.writes() == []
 
     async def test_a_status_outside_the_set_is_a_bad_request(self, edge):
@@ -504,7 +504,7 @@ class TestTheIdempotencyKey:
     async def test_a_refusal_before_the_post_frees_the_key(self, edge):
         refused = await _tool("create_task", _create_args(
             idempotency_key=IDEM, status_id=S_DONE))
-        assert _text(refused) == "Moving a task to done or cancelled stays a human step."
+        assert _text(refused) == "A new task cannot start in a done or cancelled status."
         assert edge.redis.slots() == {}
 
     @pytest.mark.parametrize("status", [500, 503])
@@ -1145,11 +1145,12 @@ class TestTheGatewayNarrowsAnAgentWrite:
         assert r.status_code == 422, r.text
         assert _row(live, task).title == "patch narrow"
 
-    @pytest.mark.parametrize("status", ["done", "cancelled"])
-    async def test_a_patch_into_a_closing_status_rolls_back_all_of_it(self, live, status):
+    async def test_a_patch_into_cancelled_rolls_back_all_of_it(self, live):
+        """EA-6f (EA3-32): only a cancel is refused now. ``test_mcp_edge_claim``
+        holds the PATCH into done."""
         task = live.task(live.team, live.s.todo, "keep me")
         r = await _send(live, "PATCH", f"/projects/tasks/{task}", body={
-            "title": "changed", "status_id": getattr(live.s, status)})
+            "title": "changed", "status_id": live.s.cancelled})
         assert r.status_code == 422, r.text
         row = _row(live, task)
         assert (row.title, str(row.status_id), row.completed_at) == (

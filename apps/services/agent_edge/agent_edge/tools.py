@@ -6,6 +6,7 @@ other five read tools: ``whoami``, ``list_projects``, ``get_project``,
 ``get_task`` and ``get_task_timeline``. EA-6a adds the references to
 ``get_task`` and the first two write tools, ``set_task_status`` and
 ``add_task_reference`` (§9.2). EA-6d adds ``create_task`` and ``update_task``.
+EA-6b adds ``claim_task``, and EA-6f lets a move reach a done status.
 Each write needs ``projects:write``, and branch 0 of the gateway checks the
 nonce, the scope, the writes flag and the cap. The ``idempotency_key`` of
 ``create_task`` lives in ``agent_edge.idempotency``. EA-12b adds the six
@@ -49,7 +50,8 @@ gives the same member the same access, so the client would loop.
 for ``agent_runs`` while the runs flag is on (EA-12b). ``get_project`` makes
 five. ``create_task`` makes three: the statuses, the POST and the re-read. It
 makes one more for a parent and one more for a ``type_id``. ``update_task``
-makes three: the PATCH, the re-read and the statuses. The other tools make one
+makes three: the PATCH, the re-read and the statuses. ``claim_task`` makes
+three: the POST, the re-read and the statuses. The other tools make one
 or two. The long poll of ``get_agent_run`` is the one exception (EA-12b,
 §12.1): its request has ``wait_seconds`` plus
 :data:`LONG_POLL_REQUEST_MARGIN_S`, and its call has ``wait_seconds`` plus
@@ -127,7 +129,10 @@ TEXT_BAD_CURSOR = "The cursor is not valid. List again with no cursor."
 TEXT_WRITE_FORBIDDEN = "This member cannot change that."
 TEXT_STALE = "The task changed. Read it again."
 TEXT_CAP = "Too many changes. Wait a few minutes."
-TEXT_HUMAN_STEP = "Moving a task to done or cancelled stays a human step."
+#: EA-6f (EA3-32). An agent may move a task to done. A cancel stays a human
+#: step, and a new task may not start closed.
+TEXT_CANCEL_STEP = "Cancelling a task stays a human step."
+TEXT_CREATE_CLOSED = "A new task cannot start in a done or cancelled status."
 #: A write while ``agent_access_writes_enabled`` is off (fix round 1). It is a
 #: tool error and never the MCP 401, so the client keeps its token.
 TEXT_WRITES_OFF = "Changes are turned off for agents in this organization."
@@ -192,11 +197,16 @@ WRITE_ANNOTATIONS: Mapping[str, bool] = {
 #: idempotent.
 CREATE_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "idempotentHint": False}
 
-#: The status categories that only a person moves a task into (§9.2). A copy
-#: of ``CLOSING_CATEGORIES`` in ``gateway/routes/projects/core.py``, because
-#: the edge may not import the gateway. ``test_mcp_edge_writes.py`` pins the
-#: two equal.
-HUMAN_ONLY_CATEGORIES: frozenset[str] = frozenset({"done", "cancelled"})
+#: The closing status categories, and the one of them that means finished
+#: (§9.2). Copies of ``CLOSING_CATEGORIES`` and ``COMPLETED_CATEGORY`` in
+#: ``gateway/routes/projects/core.py``, because the edge may not import the
+#: gateway. ``test_mcp_edge_writes.py`` pins each copy equal.
+CLOSING_CATEGORIES: frozenset[str] = frozenset({"done", "cancelled"})
+COMPLETED_CATEGORY = "done"
+#: EA-6f (EA3-32). The categories that a MOVE of an agent refuses: the
+#: abandoned half only, in the shape of ``tree.ABANDONED_CATEGORIES``. A
+#: create refuses every category of :data:`CLOSING_CATEGORIES`.
+AGENT_MOVE_REFUSED: frozenset[str] = CLOSING_CATEGORIES - {COMPLETED_CATEGORY}
 
 _UNTRUSTED_NOTE = (
     " Each value of the form {\"untrusted_text\": ...} is text that other"
@@ -304,10 +314,13 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
                  path_params: Mapping[str, str] | None = None,
                  query: list[tuple[str, str]] | None = None,
                  if_match: str | None = None,
-                 texts: Mapping[int, str] | None = None) -> tuple[int, Any]:
+                 texts: Mapping[int, str] | None = None,
+                 coded: Mapping[str, str] | None = None) -> tuple[int, Any]:
     """One write through ``gateway_client.write``: ``(status, body)`` of a
     2xx answer, or raise the write mapping of :func:`_body_of`. *texts* gives
-    a tool its own fixed text for a status of its route (§9.2)."""
+    a tool its own fixed text for a status of its route (§9.2). *coded*
+    gives a fixed text for a 422 whose detail is ``{"error": <code>}`` of the
+    route (EA-6b). The text of the gateway never reaches the agent."""
     try:
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
@@ -320,6 +333,11 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         raise ToolError(TEXT_BAD_REQUEST) from None
     if texts and answer.status in texts:
         raise ToolError(texts[answer.status])
+    if coded and answer.status == 422:
+        detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
+        code = detail.get("error") if isinstance(detail, dict) else None
+        if isinstance(code, str) and code in coded:
+            raise ToolError(coded[code])
     body = _body_of(answer, not_found, write=True)
     # The write landed. From here on the call must report it (fix round 2).
     _landed()
@@ -2134,8 +2152,8 @@ _SET_STATUS_OUTPUT: dict[str, Any] = _object({
 async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """Read the task and the categories of its statuses, then PATCH the status.
 
-    The edge refuses a move into a category of :data:`HUMAN_ONLY_CATEGORIES`
-    before the write. When the member cannot open the task's project, the
+    The edge refuses a move into a category of :data:`AGENT_MOVE_REFUSED`
+    before the write (EA-6f: a move into done passes). When the member cannot open the task's project, the
     edge cannot read the category, so it refuses too (§9.2).
     """
     where = {"task_id": str(args["task_id"])}
@@ -2154,8 +2172,8 @@ async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
     target = statuses.get(str(args["status_id"]).lower())
     if target is None:
         raise ToolError(TEXT_BAD_REQUEST)
-    if target.get("category") in HUMAN_ONLY_CATEGORIES:
-        raise ToolError(TEXT_HUMAN_STEP)
+    if target.get("category") in AGENT_MOVE_REFUSED:
+        raise ToolError(TEXT_CANCEL_STEP)
     _, after = await _write(
         ctx, "PATCH", TASK_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
         json_body={"status_id": str(target.get("id"))},
@@ -2182,9 +2200,10 @@ SET_TASK_STATUS = Tool(
         "Move one task this member can see to another status of its project."
         " Send the version that get_task returned as expected_version. When the"
         " task changed after that read, the tool refuses, and you read the task"
-        " again. A move into a done or cancelled status stays a human step, so"
-        " the tool refuses it. Returns the task id, its status and its new"
-        " version." + _UNTRUSTED_NOTE
+        " again. Move the task to a done status when the work is finished. A"
+        " move into a cancelled status stays a human step, so the tool refuses"
+        " it. A move to done does not close the subtasks. Returns the task id,"
+        " its status and its new version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_SET_STATUS_INPUT,
@@ -2330,7 +2349,8 @@ _CREATE_INPUT: dict[str, Any] = {
         "status_id": {
             "type": "string", "pattern": _UUID_PATTERN,
             "description": "A status id from get_project. Leave it out to use the"
-                           " default status. A done or cancelled status is refused."},
+                           " default status. A new task cannot start in a done or"
+                           " cancelled status."},
         "tags": {**_TAGS_INPUT,
                  "description": "Tag names. get_project lists the tags of the project."
                                 " A new name adds a new tag."},
@@ -2437,8 +2457,8 @@ async def _create(ctx: Context, args: dict[str, Any],
         target = statuses.get(str(args["status_id"]).lower())
         if target is None:
             raise ToolError(TEXT_BAD_REQUEST)
-        if target.get("category") in HUMAN_ONLY_CATEGORIES:
-            raise ToolError(TEXT_HUMAN_STEP)
+        if target.get("category") in CLOSING_CATEGORIES:
+            raise ToolError(TEXT_CREATE_CLOSED)
     if "parent_task_id" in args:
         parent = await _get(ctx, TASK_ROUTE, TEXT_PARENT_NOT_FOUND,
                             path_params={"task_id": str(args["parent_task_id"])})
@@ -2588,8 +2608,8 @@ CREATE_TASK = Tool(
         " project_id. Call get_project first: it gives the status ids, the task"
         " type ids and the tag names of the project. Send parent_task_id to"
         " make a subtask of a task in the same project. Leave status_id out to"
-        " use the default status. A done or cancelled status stays a human"
-        " step, so the tool refuses it. The new task has no assignee. Send an"
+        " use the default status. A new task cannot start in a done or"
+        " cancelled status. The new task has no assignee. Send an"
         " idempotency_key when you may retry: the same key gives back the first"
         " task with created false, and makes no second task. Returns the task"
         " with its version." + _UNTRUSTED_NOTE
@@ -2672,6 +2692,91 @@ UPDATE_TASK = Tool(
     run=_update_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE),
     method="PATCH",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
+# ── claim_task (EA-6b, §9.2, EA3-34) ────────────────────────────────────────
+
+CLAIM_ROUTE = "/projects/tasks/{task_id}/claim"
+
+#: The fixed text of each refused claim, by the code of the gateway's 422
+#: (``tasks.CLAIM_REFUSALS``). The edge never shows the gateway's message. A
+#: 422 with any other detail is the bad-request text. ``test_mcp_edge_claim``
+#: pins the two sets of codes equal.
+CLAIM_TEXTS: Mapping[str, str] = {
+    "claim_closed": "This task is done or cancelled, so it cannot be claimed.",
+    "claim_triage": (
+        "This task waits in triage. A person must accept it before you claim it."),
+    "claim_archived": "This task is archived, so it cannot be claimed.",
+    "claim_no_started_status": (
+        "The project of this task has no in progress status. Ask a person to add one."),
+}
+
+_CLAIM_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task. An id from list_tasks or get_task."},
+        "expected_version": {
+            "type": "string", "pattern": _VERSION_PATTERN,
+            "description": "The version that get_task returned for this task."},
+    },
+    "required": ["task_id", "expected_version"],
+    "additionalProperties": False,
+}
+
+_CLAIM_OUTPUT: dict[str, Any] = _object({
+    "task": _TASK_SCHEMA, "moved": {"type": "boolean"},
+})
+
+
+async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST the claim with ``If-Match`` and no body field (§9.2).
+
+    The gateway adds the member, keeps every other assignee, and moves a
+    ``backlog`` or ``todo`` task to the first ``in_progress`` lane of its own
+    status set, in one transaction. Then the edge reads the task again, as
+    ``update_task`` does, so the version works as the next
+    ``expected_version``. A failed re-read gives the claim's own answer.
+    """
+    _, after = await _write(
+        ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])}, json_body={},
+        if_match=str(args["expected_version"]), coded=CLAIM_TEXTS)
+    if not isinstance(after, dict) or _id(after.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    written: dict[str, Any] = after
+    current = await _after_write(lambda: _reread(ctx, written), written)
+    no_names: dict[str, str] = {}
+    names = await _after_write(
+        lambda: _names_after_write(ctx, current.get("project_id")), no_names)
+    return {"task": _task(current, names), "moved": written.get("moved") is True}
+
+
+CLAIM_TASK = Tool(
+    name="claim_task",
+    title="Claim a task",
+    description=(
+        "Take one task this member can see. Call it first, when you start work"
+        " on the task. The member becomes an assignee, and the other assignees"
+        " stay. A task in a backlog or to do status moves to the first in"
+        " progress status of its project, and moved is true. A task that is"
+        " already in progress does not move. A done, cancelled, archived or"
+        " triage task is refused. Send the version that get_task returned as"
+        " expected_version. When the task changed after that read, the tool"
+        " refuses, and you read the task again. A second claim changes"
+        " nothing. Returns the task with its new version." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_CLAIM_INPUT,
+    output_schema=_CLAIM_OUTPUT,
+    route=CLAIM_ROUTE,
+    params={"task_id": "task_id", "expected_version": "If-Match"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_claim_task,
+    routes=(TASK_ROUTE, STATUSES_ROUTE),
+    method="POST",
     annotations=dict(WRITE_ANNOTATIONS),
 )
 
@@ -3185,11 +3290,12 @@ FINISH_AGENT_RUN = Tool(
 # ── The registry ────────────────────────────────────────────────────────────
 
 #: Every tool of the edge, by name, in the order of ``tools/list``. The write
-#: tools come after the reads: the two of EA-6a, then the two of EA-6d. The
-#: six agent-run tools of EA-12b come last.
+#: tools come after the reads: the two of EA-6a, the two of EA-6d, then
+#: ``claim_task`` of EA-6b. The six agent-run tools of EA-12b come last.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
+    CLAIM_TASK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN,
 )}
@@ -3255,9 +3361,14 @@ __all__ = [
     "ADD_REF_KEYS",
     "ADD_TASK_REFERENCE",
     "AGENT_ACTIVITY_TYPES",
+    "AGENT_MOVE_REFUSED",
     "ASK_ON_TASK",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
+    "CLAIM_TASK",
+    "CLAIM_TEXTS",
+    "CLOSING_CATEGORIES",
+    "COMPLETED_CATEGORY",
     "CREATE_ANNOTATIONS",
     "CREATE_BODY_KEYS",
     "CREATE_TASK",
@@ -3268,7 +3379,6 @@ __all__ = [
     "GET_TASK",
     "GET_TASK_KEYS",
     "GET_TASK_TIMELINE",
-    "HUMAN_ONLY_CATEGORIES",
     "LINK_KEYS",
     "LIST_AGENT_RUNS",
     "LIST_PROJECTS",
@@ -3298,9 +3408,10 @@ __all__ = [
     "TEXT_BAD_CURSOR",
     "TEXT_BAD_REQUEST",
     "TEXT_BUSY",
+    "TEXT_CANCEL_STEP",
     "TEXT_CAP",
+    "TEXT_CREATE_CLOSED",
     "TEXT_FORBIDDEN",
-    "TEXT_HUMAN_STEP",
     "TEXT_KEY_REUSED",
     "TEXT_KEY_RUNNING",
     "TEXT_KEY_UNKNOWN",

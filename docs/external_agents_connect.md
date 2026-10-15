@@ -45,21 +45,22 @@ Seven tools read:
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |
 
-Four tools make or change a task:
+Five tools make or change a task:
 
 | Tool | What it does |
 |---|---|
 | `create_task` | It makes a task in a project or a sub-project that you can see, and it can make a subtask. In Projects, the task shows the source "AI agent". With the same `idempotency_key`, a second call gives back the first task and makes no second task |
 | `update_task` | It changes the title, the description, the tags, the due date or the custom fields of a task |
-| `set_task_status` | It moves a task to another status. It never moves a task to a done or cancelled status. A person does that step |
+| `claim_task` | It makes you an assignee of a task, and the other assignees stay. A task in a backlog or to do status moves to the first in progress status. The agent calls it when it starts the work |
+| `set_task_status` | It moves a task to another status. It can move a task to a done status when the work is finished. It never moves a task to a cancelled status. A person does that step |
 | `add_task_reference` | It links a pull request, a commit or a branch to a task |
 
 Each change shows in the task history, with the agent as `mcp:<host>`. A connection makes at most 120 changes in 10 minutes.
 
 ## What the agent cannot do
 
-- It cannot close or cancel a task, and it cannot make a task in a done or cancelled status.
-- It cannot assign a task, move a task to another project, or archive or delete a task.
+- It cannot cancel a task, and it cannot make a task in a done or cancelled status. A move to done does not close the subtasks.
+- It cannot assign a task to another person, move a task to another project, or archive or delete a task. It can claim a task for you only.
 - It cannot see what you cannot see. If an admin removes your access to a project, the agent loses it on the next call.
 - It cannot act after you revoke it.
 
