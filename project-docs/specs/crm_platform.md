@@ -2022,11 +2022,11 @@ An "on its own" run also reads each unheld parent of its keys, incrementally.
 So a child of a new parent keeps its link.
 
 **Round three (2026-10-15).** A re-read of the children bounded to the hold
-lost records in two cases: a child whose import never ran, and a child made
-between the parent's last read and the hold. So the re-read of a held
-parent's children is a FULL read, on purpose. An "on its own" run reads an
-unheld parent for its changes only: no walk, no first import, no re-read, no
-deleted list and no deal roles.
+lost records in two cases. One is a child whose import never ran. The other
+is a child made between the parent's last read and the hold. So the re-read
+of a held parent's children is a FULL read, on purpose. An "on its own" run
+reads an unheld parent for its changes only. It does no walk, no first
+import, no re-read, no deleted list and no deal roles for that parent.
 
 Two items stay open in `HANDOFF.md`. H-320 is the edge of the shared
 checkbox. H-321 is a generic module held past the 60 days of the deleted list.
