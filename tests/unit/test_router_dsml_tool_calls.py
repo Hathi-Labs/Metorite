@@ -973,8 +973,9 @@ _REPLIES: dict[str, tuple[str, DsmlPolicy | frozenset[str]]] = {
     "first_tag_97_chars": (
         "Linking. " + invoke(_LONG_TOOL + "s", param("task_id", "t1")) + "\n",
         DsmlPolicy(declared=TASK_TOOLS | {_LONG_TOOL + "s"})),
-    # A closing tag of 33 characters, the longest that the 32-character
-    # lookback finds at every cut. It fences ``dsml._CLOSE_LOOKBACK``.
+    # A closing tag of 33 characters, longer than ``dsml._CLOSE_LOOKBACK``.
+    # The stream finds it at every cut through ``_Region.waiting``. Until
+    # this PR it was the longest such tag that the old lookback of 32 found.
     "closer_33_chars": (
         "Two. " + tag("function_calls") + " " + invoke("create_task", param("title", "t"))
         + " " + _LONG_CLOSER + "\n", TASK_TOOLS),
@@ -1055,8 +1056,10 @@ class TestTheChunkingNeverChangesTheAnswer:
         on both sides stays green. This test pins the answer at each limit.
 
         ``dsml._HEAD`` below 96 turns the 96-character tag into text, and the
-        call never runs. ``dsml._CLOSE_LOOKBACK`` below 32 fails the cuts of
-        ``closer_33_chars`` above."""
+        call never runs. ``dsml._CLOSE_LOOKBACK`` below 21 cannot hold a
+        ``function_calls`` closing tag whose name a cut split, and 22 tests
+        of ``TestALongClosingTagIsFoundAtEveryCut`` fail. Without
+        ``_Region.waiting``, the cuts of ``closer_33_chars`` fail."""
         text, policy = _REPLIES["first_tag_96_chars"]
         shown, calls, found, drops = _events(policy, [text])
         assert (shown, calls, found, drops) == (
