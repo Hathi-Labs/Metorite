@@ -30,7 +30,7 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
 
-from tests.unit.test_crm_hidden_module_r8 import _hide
+from tests.unit.test_crm_hidden_module_r8 import NO_PERMISSION, _hide
 from tests.unit.test_crm_module_records_r8 import (  # noqa: F401
     _add_member,
     _connect_all,
@@ -559,3 +559,40 @@ async def test_a_hold_with_no_settings_row_is_a_409(ns, zoho) -> None:
     )
     assert put.status_code == 409, put.text
     assert put.json()["detail"] == "no_settings"
+
+
+async def test_a_refused_deleted_list_gets_one_compare_not_one_every_run(ns, zoho) -> None:
+    """Round 2, P1. The changed list reads and only the deleted list is
+    refused, so that cursor never moves. The gap earns one compare. The
+    completed compare then answers for 50 days, not every run."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    real = a.handle
+
+    def handle(request):
+        if request.url.path == "/crm/v2/Contacts/deleted":
+            a.requests.append(request)
+            return httpx.Response(NO_PERMISSION[0], json=NO_PERMISSION[1])
+        return real(request)
+
+    a.handle = handle
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET last_pulled_at = now() - interval '61 days' "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:contact:deleted'"),
+            {"o": ns.org_a})
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET last_reconciled_at = now() - interval '61 days' "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:contact'"),
+            {"o": ns.org_a})
+
+    second = await engine.run_org(ns.org_a)
+    assert (second.status, second.kind) == ("ok", "reconcile")
+    third = await engine.run_org(ns.org_a)
+    assert (third.status, third.kind) == ("ok", "incremental"), "one compare, then quiet"
+    assert _count(ns, "crm_contacts", ns.org_a) == 2
+
