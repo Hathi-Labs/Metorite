@@ -98,7 +98,8 @@ Six tools work with these runs:
 ## What the agent cannot do
 
 - It cannot cancel a task, and it cannot make a task in a done or cancelled status. A move to done does not close the subtasks.
-- It cannot assign a task to another person, move a task to another project, or archive or delete a task. It can claim a task for you only.
+- It cannot assign a task to another person, move a task to another project, or delete a task. It can claim a task for you only.
+- It cannot archive a task by itself. With `request_task_archive` it asks you on the task in Metorite. Only you can approve or decline, and an approve does not archive the subtasks.
 - It cannot see what you cannot see. If an admin removes your access to a project, the agent loses it on the next call.
 - It cannot act after you revoke it.
 

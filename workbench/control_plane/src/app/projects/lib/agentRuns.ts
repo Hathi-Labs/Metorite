@@ -19,6 +19,11 @@
  * through it drops the cached Projects reads, so the board re-reads the task
  * and its pill.
  *
+ * **The archive request (EA-6g, EA3-40).** An agent may ask to archive a
+ * task. The server types that question (`content_metadata.request`), and only
+ * the run's member answers it, through the archive approval route. The rules
+ * of that card are at the end of this file.
+ *
  * Fence: `agentRuns.test.ts`.
  */
 
@@ -103,7 +108,14 @@ export interface AgentActivity {
     /** An `action`: the tool name. */
     action?: string | null;
     parameters?: Record<string, string> | null;
+    /** EA-6g: the member's answer to an archive request archived the task. */
+    archived?: boolean | null;
   };
+  /**
+   * The server's own facts. EA-6g: an archive request carries `request`.
+   * No body of an agent can write it, so only the server types a request.
+   */
+  content_metadata?: { request?: ArchiveRequest | null } | null;
   signal?: AgentSignal | null;
   signal_metadata?: {
     options?: AgentOption[];
@@ -579,3 +591,107 @@ export const WAITING_ON_ME_EMPTY = "Nothing waits on you";
 
 /** The hint under the list's empty state while the filter is on. */
 export const WAITING_ON_ME_HINT = "No agent waits for your answer on a task in this view.";
+
+/* ── The archive request (EA-6g, EA3-33 and EA3-40) ──────────────────────── */
+
+/** The `kind` of a typed archive request, as the gateway writes it. */
+export const ARCHIVE_REQUEST_KIND = "archive_task";
+
+/** `content_metadata.request` of an archive request. */
+export interface ArchiveRequest {
+  kind: string;
+  /** The server stamps it 24 hours after the request. */
+  expires_at?: string | null;
+}
+
+/** The two answers of the run's member. They are the option ids too. */
+export type ArchiveDecision = "approve" | "decline";
+
+/** The body of `POST /projects/agent-runs/{run_id}/archive-approval`. */
+export interface ArchiveApprovalBody {
+  decision: ArchiveDecision;
+  idempotency_key: string;
+}
+
+/** The answer of the approval route. `archived` is true after an approve. */
+export interface ArchiveApprovalResult {
+  activity?: AgentActivity | null;
+  run?: AgentRun | null;
+  created?: boolean;
+  archived: boolean;
+  /** The archived task row after an approve, else null. */
+  task?: { archived_at?: string | null } | null;
+}
+
+/** The title of the member's card, in place of "Question". */
+export const ARCHIVE_CARD_TITLE = "Archive request";
+
+/** The line beside the member's Submit. */
+export const ARCHIVE_HINT = "Approve archives this task. Its subtasks stay where they are.";
+
+/**
+ * What every member reads after the request expired. The run does not stay
+ * stuck: the member may decline it, and any member may reply (fix round 1).
+ */
+export const ARCHIVE_EXPIRED_TEXT = "This archive request expired. Nothing was archived.";
+
+/** The line under the expired text, for the run's member. */
+export const ARCHIVE_EXPIRED_HINT = "Decline it to close it, or reply to the agent below.";
+
+/** The typed archive request of an elicitation, or null for any other one. */
+export function archiveRequestOf(activity?: AgentActivity | null): ArchiveRequest | null {
+  if (!activity || activity.type !== "elicitation") return null;
+  const request = activity.content_metadata?.request;
+  return request && request.kind === ARCHIVE_REQUEST_KIND ? request : null;
+}
+
+/**
+ * True when the request is past its `expires_at`. A stamp that does not
+ * parse reads as expired, as the gateway reads it, so no button shows.
+ */
+export function archiveExpired(request: ArchiveRequest, now: number = Date.now()): boolean {
+  const at = Date.parse(request.expires_at ?? "");
+  return Number.isNaN(at) || now >= at;
+}
+
+/** Is *me* the run's member? Only that member answers an archive request. */
+export function isRunMember(run: Pick<AgentRun, "member_email">, me?: string | null): boolean {
+  const who = (me ?? "").trim().toLowerCase();
+  return Boolean(who) && run.member_email.trim().toLowerCase() === who;
+}
+
+/**
+ * The archive request as the question card reads it: the server's two
+ * options and no free text, because the approval takes a decision only.
+ */
+export function archiveCardQuestion(elicitation: AgentActivity): ElicitationQuestion {
+  return { ...cardQuestion(elicitation), allowFreeformInput: false, multiSelect: false };
+}
+
+/** The card's answer → the decision, by the label of the picked option. */
+export function archiveDecisionOf(
+  elicitation: AgentActivity,
+  answers: ElicitationAnswers,
+): ArchiveDecision | null {
+  const picked = answers.Question ?? Object.values(answers)[0] ?? {};
+  const label = (picked.selected ?? [])[0];
+  const id = (elicitation.signal_metadata?.options ?? []).find((o) => o.label === label)?.id;
+  return id === "approve" || id === "decline" ? id : null;
+}
+
+/** The approval body, with a fresh key. */
+export function archiveApprovalPayload(
+  decision: ArchiveDecision,
+  idempotencyKey: string = newIdempotencyKey(),
+): ArchiveApprovalBody {
+  return { decision, idempotency_key: idempotencyKey };
+}
+
+/** What every other member reads while the request waits: "Waiting for Priya". */
+export function archiveWaitingText(
+  run: Pick<AgentRun, "member_email">,
+  labels?: ReadonlyMap<string, string>,
+): string {
+  const who = firstName(run.member_email, labels);
+  return who ? `Waiting for ${who}` : "Waiting for the member of this run";
+}
