@@ -730,7 +730,9 @@ class TestTheRequestJobsWriteTheirOwnTenant:
         assert (job["total"], job["remaining"]) == (1, 1), (
             f"the backlog count read {job} — the count block ran unbound"
         )
-        classify.assert_awaited_once_with(acc)
+        # EM-G11c2 fix round 1: the member started it, so Auto-run does not
+        # gate it.
+        classify.assert_awaited_once_with(acc, obey_auto_run=False)
         left = _rows(p.admin_engine,
                      "SELECT thread_id, status FROM email_thread_status "
                      f"{_BY_ACCOUNT}", {"a": acc})
