@@ -169,12 +169,18 @@ export function liveKeys(keys: KeyRow[]): KeyRow[] {
  * row and two assigned seats; the seat counts are `seatsTotals`' — the
  * Console's own `seat_counts` — and presenting this tally as them would be
  * quietly wrong exactly where it matters.
+ *
+ * ⚠️ A REMOVED person is not counted. They are on the roster so an operator
+ * can delete them, but they are not one of the organization's people, and
+ * "3 of 6 seated" with two of the six gone reads as three people waiting
+ * for a seat.
  */
 export function memberTally(
   members: MemberRow[],
 ): { total: number; seated: number; unassigned: number } {
-  const seated = members.filter(isSeated).length;
-  return { total: members.length, seated, unassigned: members.length - seated };
+  const current = members.filter((m) => m.status !== "removed");
+  const seated = current.filter(isSeated).length;
+  return { total: current.length, seated, unassigned: current.length - seated };
 }
 
 

@@ -491,6 +491,42 @@ button.linklike.danger:hover:not(:disabled) {
   background: var(--danger-soft);
 }
 
+/* The member roster's row actions (owner request, 2026-10-15). Each button
+   keeps its words on one line, and the group wraps as a whole. The base
+   `button` rule adds a top margin for forms. In a row it pushes each button
+   down by a different amount, so the group sets it to zero. */
+.rowactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.rowactions button {
+  margin: 0;
+  white-space: nowrap;
+}
+
+/* The confirm step of a member remove or delete, on its own row under the
+   person. The block sticks to the left edge of the scrolled table and is no
+   wider than the window, so its warning wraps and is never cut off at 390px.
+   A long address breaks anywhere, because it has no space to break at. */
+.confirmrow td {
+  background: var(--panel-2);
+}
+.confirmblock {
+  position: sticky;
+  left: 0;
+  width: min(560px, calc(100vw - 96px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.confirmblock label {
+  margin: 0;
+}
+
 /* ── Page head ───────────────────────────────────────────────────────── */
 .pagehead {
   display: flex;

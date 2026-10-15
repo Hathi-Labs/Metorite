@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  isSoleOwner,
   mayRemove,
+  ownerCandidates,
+  ownerHandover,
   readRemoveRequest,
   refusedBy,
   registryFailure,
@@ -99,6 +102,12 @@ describe("refusedBy", () => {
     ).toBe("The tenant plane");
   });
 
+  it("names the operator console for the BFF's own refusals", () => {
+    expect(
+      refusedBy(JSON.stringify({ error: "x", refused_by: "operator-console" })),
+    ).toBe("The operator console");
+  });
+
   it("keeps the Console's words for every other answer", () => {
     for (const text of [
       JSON.stringify({ detail: "seat cap reached" }),
@@ -116,13 +125,23 @@ describe("refusedBy", () => {
 describe("registryFailure", () => {
   const E = "ana@acme.test";
 
-  it("a fault on the way is a 502 with the retry", () => {
-    for (const status of [null, 500, 502, 503]) {
+  it("no answer is a 502 with the retry (console_resolve.py's line)", () => {
+    // 401 is our own credential, never a fact about the member. 408 and 429
+    // produced no answer.
+    for (const status of [null, 500, 502, 503, 401, 408, 429]) {
       const f = registryFailure(E, status, "boom");
       expect(f.status).toBe(502);
       expect(f.retry).toBe(true);
       expect(f.error).toContain("A retry is safe");
     }
+  });
+
+  it("a 404 says the registry has no such organization, with no retry", () => {
+    const f = registryFailure(E, 404, { detail: "Not Found" }, "acme");
+    expect(f.status).toBe(404);
+    expect(f.retry).toBe(false);
+    expect(f.error).toContain('has no organization "acme"');
+    expect(f.error).not.toContain("A retry is safe");
   });
 
   it("a 4xx verdict keeps its status and gives no retry advice", () => {
@@ -137,7 +156,58 @@ describe("registryFailure", () => {
 
   it("a verdict with no usable detail still says so", () => {
     expect(registryFailure(E, 403, null).error).toContain("no detail");
-    expect(registryFailure(E, 404, "Not Found").error).toContain("Not Found");
+    expect(registryFailure(E, 400, "bad owner").error).toContain("bad owner");
+  });
+});
+
+describe("the owner hand-over", () => {
+  const row = (email: string, role: string, status: string) => ({
+    email,
+    role,
+    status,
+    seats: [],
+  });
+  const ROSTER = [
+    row("owner@acme.test", "owner", "active"),
+    row("ana@acme.test", "member", "active"),
+    row("ivy@acme.test", "member", "invited"),
+    row("old@acme.test", "owner", "removed"),
+  ];
+
+  it("finds the only active owner, ignoring case and a removed owner", () => {
+    expect(isSoleOwner(ROSTER, "OWNER@acme.test")).toBe(true);
+    expect(isSoleOwner(ROSTER, "ana@acme.test")).toBe(false);
+    const two = [...ROSTER, row("co@acme.test", "owner", "active")];
+    expect(isSoleOwner(two, "owner@acme.test")).toBe(false);
+  });
+
+  it("offers only the other ACTIVE members as candidates", () => {
+    expect(ownerCandidates(ROSTER, "owner@acme.test")).toEqual(["ana@acme.test"]);
+  });
+
+  it("requires a new owner for the only owner, and checks one that is given", () => {
+    expect(ownerHandover(ROSTER, "owner@acme.test", undefined).ok).toBe(false);
+    expect(ownerHandover(ROSTER, "owner@acme.test", "ana@acme.test").ok).toBe(true);
+    expect(ownerHandover(ROSTER, "owner@acme.test", "Ana@Acme.test").ok).toBe(true);
+    for (const bad of ["owner@acme.test", "ivy@acme.test", "old@acme.test", "x@y.z"]) {
+      expect(ownerHandover(ROSTER, "owner@acme.test", bad).ok).toBe(false);
+    }
+    // A non-owner needs none, but a bad one that is given is still refused.
+    expect(ownerHandover(ROSTER, "ana@acme.test", undefined).ok).toBe(true);
+    expect(ownerHandover(ROSTER, "ana@acme.test", "x@y.z").ok).toBe(false);
+  });
+
+  it("reads new_owner_email off the body, and drops an empty one", () => {
+    const base = {
+      org_slug: "acme",
+      email: "owner@acme.test",
+      mode: "remove",
+      confirm: "owner@acme.test",
+    };
+    const withOwner = readRemoveRequest({ ...base, new_owner_email: " ana@acme.test " });
+    expect(withOwner.ok && withOwner.req.newOwner).toBe("ana@acme.test");
+    const empty = readRemoveRequest({ ...base, new_owner_email: "" });
+    expect(empty.ok && empty.req.newOwner).toBeUndefined();
   });
 });
 

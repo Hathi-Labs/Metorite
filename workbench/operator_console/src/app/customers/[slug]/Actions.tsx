@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { formatInr, type Price } from "@/lib/money";
 import {
   canActivate,
@@ -18,6 +18,8 @@ import {
   type SeatRow,
 } from "@/lib/format";
 import {
+  isSoleOwner,
+  ownerCandidates,
   refusedBy,
   removeLabel,
   type MemberRemoveMode,
@@ -176,7 +178,8 @@ export function AccessActions({
  * permanently". Both go to `/api/operator/members/remove`, which takes access
  * away on the tenant plane first and then updates the registry. A removed row
  * keeps only "Delete permanently". The delete arms only when the operator
- * types the address, the same protocol as the purge's typed slug.
+ * types the address, the same protocol as the purge's typed slug. On the row
+ * of the only active owner, both confirm steps also need a new billing owner.
  */
 function MembersPanel({
   slug,
@@ -201,6 +204,8 @@ function MembersPanel({
     mode: MemberRemoveMode;
   } | null>(null);
   const [typed, setTyped] = useState("");
+  // The new billing owner, when the person removed is the only active owner.
+  const [newOwner, setNewOwner] = useState("");
 
   async function act(email: string, path: string) {
     setBusy(email);
@@ -217,17 +222,20 @@ function MembersPanel({
       email,
       mode,
       confirm: email,
+      ...(newOwner ? { new_owner_email: newOwner } : {}),
     });
     setResult(r);
     setBusy("");
     setConfirming(null);
     setTyped("");
+    setNewOwner("");
     if (r?.ok) reload();
   }
 
   function ask(email: string, mode: MemberRemoveMode) {
     setResult(null);
     setTyped("");
+    setNewOwner("");
     setConfirming({ email, mode });
   }
 
@@ -257,85 +265,80 @@ function MembersPanel({
               <tbody>
                 {members.map((m) => {
                   const seated = isSeated(m);
+                  const seat = seatControl(m);
+                  const label = removeLabel(m.status);
+                  const open = confirming?.email === m.email ? confirming : null;
                   return (
-                    <tr key={m.email}>
-                      <td>
-                        {m.email}
-                        {m.status !== "active" ? ` (${m.status})` : ""}
-                      </td>
-                      <td>{m.role}</td>
-                      <td>
-                        <strong>{seated ? "Seated" : "Unassigned"}</strong>
-                        {seated && m.seats.length > 1
-                          ? ` · ${m.seats.join(", ")}`
-                          : ""}
-                      </td>
-                      <td>
-                        {seatControl(m) !== null && (
-                        <button
-                          type="button"
-                          className={seated ? "secondary" : undefined}
-                          title={
-                            busy === m.email
-                              ? "Working on this person now."
-                              : seated
-                                ? "Take this person's seat back. They keep " +
-                                  "their account and lose the paid plan."
-                                : "Give this person a seat from the " +
-                                  "purchased pool."
-                          }
-                          disabled={busy === m.email}
-                          onClick={() =>
-                            act(
-                              m.email,
-                              seated
-                                ? "/api/operator/seats/release"
-                                : "/api/operator/seats",
-                            )
-                          }
-                        >
-                          {busy === m.email
-                            ? "…"
-                            : seated
-                              ? "Release"
-                              : "Assign seat"}
-                        </button>
-                        )}
-                      </td>
-                      <td>
-                        {confirming?.email === m.email ? (
-                          <ConfirmRemove
-                            email={m.email}
-                            mode={confirming.mode}
-                            label={removeLabel(m.status) ?? "Remove"}
-                            typed={typed}
-                            setTyped={setTyped}
-                            busy={busy === m.email}
-                            onConfirm={() =>
-                              removeMember(m.email, confirming.mode)
-                            }
-                            onCancel={() => setConfirming(null)}
-                          />
-                        ) : (
-                          <>
-                            {removeLabel(m.status) !== null && (
-                              <>
-                                <button
-                                  type="button"
-                                  className="linklike"
-                                  title={
-                                    m.status === "invited"
-                                      ? "Cancel this invitation. The person " +
-                                        "cannot accept it after this."
-                                      : "Take this person's access away at " +
-                                        "once. Their work stays."
-                                  }
-                                  disabled={busy !== ""}
-                                  onClick={() => ask(m.email, "remove")}
-                                >
-                                  {removeLabel(m.status)}
-                                </button>{" "}
-                              </>
+                    <Fragment key={m.email}>
+                      <tr>
+                        <td>
+                          {m.email}
+                          {m.status !== "active" ? ` (${m.status})` : ""}
+                        </td>
+                        <td>{m.role}</td>
+                        <td>
+                          <strong>{seated ? "Seated" : "Unassigned"}</strong>
+                          {seated && m.seats.length > 1
+                            ? ` · ${m.seats.join(", ")}`
+                            : ""}
+                        </td>
+                        <td>
+                          {/* Buttons keep their words on one line, and each
+                              group wraps as a whole (round 3). The seat
+                              button is full size and the remove pair is
+                              `.linklike`, so they are two groups: one row of
+                              mixed sizes is what `actionrow.test.ts` refuses. */}
+                          <div className="rowactions">
+                            {seat !== null && (
+                              <button
+                                type="button"
+                                className={seated ? "secondary" : undefined}
+                                title={
+                                  busy === m.email
+                                    ? "Working on this person now."
+                                    : seated
+                                      ? "Take this person's seat back. They " +
+                                        "keep their account and lose the paid plan."
+                                      : "Give this person a seat from the " +
+                                        "purchased pool."
+                                }
+                                disabled={busy === m.email}
+                                onClick={() =>
+                                  act(
+                                    m.email,
+                                    seated
+                                      ? "/api/operator/seats/release"
+                                      : "/api/operator/seats",
+                                  )
+                                }
+                              >
+                                {busy === m.email
+                                  ? "…"
+                                  : seated
+                                    ? "Release"
+                                    : "Assign seat"}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="rowactions">
+                            {label !== null && (
+                              <button
+                                type="button"
+                                className="linklike"
+                                title={
+                                  m.status === "invited"
+                                    ? "Cancel this invitation. The person " +
+                                      "cannot accept it after this."
+                                    : "Take this person's access away at " +
+                                      "once. Their work stays."
+                                }
+                                disabled={busy !== "" || open !== null}
+                                onClick={() => ask(m.email, "remove")}
+                              >
+                                {label}
+                              </button>
                             )}
                             <button
                               type="button"
@@ -344,15 +347,41 @@ function MembersPanel({
                                 "Remove this person and delete their own " +
                                 "data. This cannot be undone."
                               }
-                              disabled={busy !== ""}
+                              disabled={busy !== "" || open !== null}
                               onClick={() => ask(m.email, "purge")}
                             >
                               Delete permanently
                             </button>
-                          </>
-                        )}
-                      </td>
-                    </tr>
+                          </div>
+                        </td>
+                      </tr>
+                      {open && (
+                        // The confirm step gets a row of its own under the
+                        // person, so its warning has the full width to wrap
+                        // in (round 3, the cut-off text at 390px).
+                        <tr className="confirmrow">
+                          <td colSpan={5}>
+                            <ConfirmRemove
+                              email={m.email}
+                              mode={open.mode}
+                              label={label ?? "Remove"}
+                              typed={typed}
+                              setTyped={setTyped}
+                              candidates={
+                                isSoleOwner(members, m.email)
+                                  ? ownerCandidates(members, m.email)
+                                  : null
+                              }
+                              newOwner={newOwner}
+                              setNewOwner={setNewOwner}
+                              busy={busy === m.email}
+                              onConfirm={() => removeMember(m.email, open.mode)}
+                              onCancel={() => setConfirming(null)}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -360,8 +389,9 @@ function MembersPanel({
           </div>
         </>
       )}
-      {/* A seat answer never carries the tenant marker, so it keeps "The
-          Console refused". A gateway refusal of a remove names the tenant. */}
+      {/* `refusedBy` reads the BFF's mark: the tenant plane, the operator
+          console itself, or else the Console. A seat answer carries no mark,
+          so it keeps "The Console refused". */}
       <ResultLine
         result={result}
         who={result ? refusedBy(result.text) : undefined}
@@ -375,6 +405,12 @@ function MembersPanel({
  * delete arms only when the operator types the address, because it destroys
  * the person's data and nothing brings it back. The BFF and the gateway door
  * check the same address again.
+ *
+ * **The only active owner** (owner decision, 2026-10-15: "the acting admin
+ * inherits"). `candidates` is non-null for that row. The operator must pick
+ * the new billing owner from the other active members before the button
+ * arms. With nobody to pick, the block says why and offers only Cancel. The
+ * BFF checks the same rule on the registry roster before any write.
  */
 function ConfirmRemove({
   email,
@@ -382,6 +418,9 @@ function ConfirmRemove({
   label,
   typed,
   setTyped,
+  candidates,
+  newOwner,
+  setNewOwner,
   busy,
   onConfirm,
   onCancel,
@@ -391,6 +430,10 @@ function ConfirmRemove({
   label: string;
   typed: string;
   setTyped: (v: string) => void;
+  /** Who may take over billing, or null when this is not the only owner. */
+  candidates: string[] | null;
+  newOwner: string;
+  setNewOwner: (v: string) => void;
   busy: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -400,48 +443,84 @@ function ConfirmRemove({
       Cancel
     </button>
   );
-  if (mode === "remove") {
+  if (candidates !== null && candidates.length === 0) {
     return (
-      <>
+      <div className="confirmblock">
+        <div className="field-hint warn">
+          {email} is the only active owner, and no other active member can
+          take over billing. Activate or invite another member first.
+        </div>
+        <div className="rowactions">{cancel}</div>
+      </div>
+    );
+  }
+  const ownerPicked = candidates === null || newOwner !== "";
+  const typedOk = mode === "remove" || typed === email;
+  return (
+    <div className="confirmblock">
+      {candidates !== null && (
+        <>
+          <label htmlFor={`new-owner-${email}`}>New billing owner</label>
+          <select
+            id={`new-owner-${email}`}
+            required
+            value={newOwner}
+            onChange={(e) => setNewOwner(e.target.value)}
+          >
+            <option value="">Choose an active member…</option>
+            {candidates.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <div className="field-hint">
+            {email} is the only active owner. The person you choose becomes
+            the billing owner.
+          </div>
+        </>
+      )}
+      {mode === "purge" && (
+        <>
+          <div className="field-hint">
+            This deletes {email} and their own data. There is no undo. Type the
+            address to arm the button.
+          </div>
+          <input
+            value={typed}
+            placeholder={email}
+            aria-label={`Type ${email} to confirm`}
+            onChange={(e) => setTyped(e.target.value)}
+          />
+        </>
+      )}
+      <div className="rowactions">
         <button
           type="button"
           className="danger"
-          disabled={busy}
+          disabled={busy || !ownerPicked || !typedOk}
+          title={
+            !ownerPicked
+              ? "Choose the new billing owner first."
+              : !typedOk
+                ? "Type the exact address above to unlock this."
+                : mode === "purge"
+                  ? "Delete this person permanently."
+                  : undefined
+          }
           onClick={onConfirm}
         >
-          {busy ? "…" : `${label} now`}
-        </button>{" "}
+          {busy
+            ? mode === "purge"
+              ? "Deleting…"
+              : "…"
+            : mode === "purge"
+              ? "Delete for good"
+              : `${label} now`}
+        </button>
         {cancel}
-      </>
-    );
-  }
-  return (
-    <>
-      <div className="field-hint">
-        This deletes {email} and their own data. There is no undo. Type the
-        address to arm the button.
       </div>
-      <input
-        value={typed}
-        placeholder={email}
-        aria-label={`Type ${email} to confirm`}
-        onChange={(e) => setTyped(e.target.value)}
-      />{" "}
-      <button
-        type="button"
-        className="danger"
-        disabled={busy || typed !== email}
-        title={
-          typed !== email
-            ? "Type the exact address above to unlock this."
-            : "Delete this person permanently."
-        }
-        onClick={onConfirm}
-      >
-        {busy ? "Deleting…" : "Delete for good"}
-      </button>{" "}
-      {cancel}
-    </>
+    </div>
   );
 }
 

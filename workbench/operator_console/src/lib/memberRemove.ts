@@ -6,6 +6,7 @@
 // BFF route `api/operator/members/remove` and the roster in `Actions.tsx` both
 // read it, so the two cannot disagree on a label or a rule.
 
+import type { MemberRow } from "./format";
 import type { Whoami } from "./whoami";
 
 /** `remove` takes access away and keeps the person's work. `purge` also
@@ -16,6 +17,8 @@ export type RemoveRequest = {
   slug: string;
   email: string;
   mode: MemberRemoveMode;
+  /** Who becomes the billing owner when the target is the only one. */
+  newOwner?: string;
 };
 
 /** Read and check the BFF body. The confirmation must equal the address
@@ -43,7 +46,11 @@ export function readRemoveRequest(
       error: "confirm must equal the member's email address, verbatim",
     };
   }
-  return { ok: true, req: { slug, email, mode: b.mode } };
+  const newOwner = str(b.new_owner_email);
+  return {
+    ok: true,
+    req: { slug, email, mode: b.mode, ...(newOwner ? { newOwner } : {}) },
+  };
 }
 
 // The Console's own ranks (`operator_roles._RANK`). An unknown role ranks
@@ -104,18 +111,104 @@ export function removeLabel(status: string): string | null {
   return "Remove";
 }
 
+/** The mark the BFF puts on a refusal that is its own: a bad body, the rank
+ *  check, the owner hand-over, a door that is not configured. */
+export const OWN_REFUSAL = "operator-console";
+
 /** Who refused a remove or delete, as the result line names it. The BFF
- *  route marks a gateway refusal with `refused_by: "tenant"`. Every other
- *  refusal (a Console answer, the rank check, a bad body) keeps the words the
- *  other panels use. A body that is not JSON keeps them too. */
-export function refusedBy(text: string): "The tenant plane" | "The Console" {
+ *  route marks a gateway refusal with `refused_by: "tenant"`, and its own
+ *  refusals with `refused_by: OWN_REFUSAL`. Every other answer (a Console
+ *  answer, a body that is not JSON) keeps the words the other panels use. */
+export function refusedBy(
+  text: string,
+): "The tenant plane" | "The operator console" | "The Console" {
   try {
     const body = JSON.parse(text) as { refused_by?: unknown } | null;
     if (body !== null && body.refused_by === "tenant") return "The tenant plane";
+    if (body !== null && body.refused_by === OWN_REFUSAL) {
+      return "The operator console";
+    }
   } catch {
     // Not JSON, so not our marker.
   }
   return "The Console";
+}
+
+const same = (a: string, b: string) =>
+  a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** The active owners on the registry roster. The registry email is CITEXT,
+ *  so every comparison here ignores case. */
+function activeOwners(roster: MemberRow[]): MemberRow[] {
+  return roster.filter((m) => m.status === "active" && m.role === "owner");
+}
+
+/** Is this person the ONLY active owner? Then removing them leaves the org
+ *  with no billing owner, unless somebody takes over. */
+export function isSoleOwner(roster: MemberRow[], email: string): boolean {
+  const owners = activeOwners(roster);
+  return owners.length === 1 && same(owners[0].email, email);
+}
+
+/** Who may take over billing from `email`: every other ACTIVE member. */
+export function ownerCandidates(roster: MemberRow[], email: string): string[] {
+  return roster
+    .filter((m) => m.status === "active" && !same(m.email, email))
+    .map((m) => m.email);
+}
+
+/**
+ * The owner hand-over rule (owner decision, 2026-10-15: "the acting admin
+ * inherits"). The BFF runs it on the registry roster BEFORE the tenant act.
+ *
+ * ⚠️ The Console refuses the same cases, but only AFTER the tenant plane
+ * took access away. Checking here first is what keeps a refusal from leaving
+ * a half-done removal.
+ *
+ * - The target is the only active owner: `newOwner` is required.
+ * - A `newOwner` that is given must be an active member and not the target,
+ *   whether or not it is required.
+ */
+export function ownerHandover(
+  roster: MemberRow[],
+  email: string,
+  newOwner: string | undefined,
+): { ok: true } | { ok: false; error: string } {
+  if (newOwner === undefined) {
+    if (isSoleOwner(roster, email)) {
+      return {
+        ok: false,
+        error:
+          `${email} is the only active owner. Choose a new billing owner ` +
+          `(new_owner_email) from the active members first.`,
+      };
+    }
+    return { ok: true };
+  }
+  if (same(newOwner, email)) {
+    return { ok: false, error: "the new owner must not be the person removed" };
+  }
+  if (!ownerCandidates(roster, email).some((c) => same(c, newOwner))) {
+    return {
+      ok: false,
+      error: `${newOwner} is not an active member of this organization`,
+    };
+  }
+  return { ok: true };
+}
+
+/** Statuses that prove the Console gave no ANSWER. The same line as
+ *  `console_resolve.py` draws: a 5xx, 401 (our own credential is wrong, never
+ *  a fact about the member), 408 and 429 (no answer produced). */
+function noAnswer(status: number | null): boolean {
+  return (
+    status === null ||
+    status >= 500 ||
+    status < 400 ||
+    status === 401 ||
+    status === 408 ||
+    status === 429
+  );
 }
 
 /**
@@ -123,9 +216,10 @@ export function refusedBy(text: string): "The tenant plane" | "The Console" {
  *
  * ⚠️ **Two kinds of failure, and only one is worth a retry.**
  *
- * - No answer (`status` null) or a 5xx is a fault on the way. The Console
- *   call is idempotent, so the same action again finishes the job. 502.
- * - A 4xx (403, 404, 409) is the Console's VERDICT. The same request gets the
+ * - No answer (`status` null, a 5xx, 401, 408 or 429) is a fault on the way.
+ *   The Console call is idempotent, so the same action again finishes the
+ *   job. 502.
+ * - Any other 4xx (400, 403, 404, 409) is the Console's VERDICT. The same request gets the
  *   same verdict, so "run it again" would only teach the operator to click
  *   until it stops. The Console's own status is relayed, because it is the
  *   truth of what happened. The text says the tenant half is done and that
@@ -137,9 +231,10 @@ export function registryFailure(
   email: string,
   status: number | null,
   detail: unknown,
+  slug = "",
 ): { status: number; retry: boolean; error: string } {
   const done = `the tenant half succeeded (${email} has no access now)`;
-  if (status === null || status >= 500 || status < 400) {
+  if (status === null || noAnswer(status)) {
     const what = status === null ? "did not answer" : `answered ${status}`;
     return {
       status: 502,
@@ -147,6 +242,18 @@ export function registryFailure(
       error:
         `${done}, but the Console ${what}. Run this action again to finish ` +
         `the registry half. A retry is safe.`,
+    };
+  }
+  if (status === 404) {
+    // The member door answers {found: false} for an absent member, so a 404
+    // means the registry has no such ORGANIZATION.
+    return {
+      status,
+      retry: false,
+      error:
+        `${done}, but the registry has no organization` +
+        `${slug ? ` "${slug}"` : ""}. Do not retry. Check which registry ` +
+        `this console reads, and where the organization is recorded.`,
     };
   }
   const said =

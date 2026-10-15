@@ -2,9 +2,11 @@
  * The member-remove route's ORDER is the contract (owner request, 2026-10-15),
  * and this suite is its fence: (0) an unconfigured tenant door stops the route
  * before ANY upstream call; (1) the caller's rank is read before the tenant
- * act, because the gateway door trusts this console's token; (2) the tenant
- * plane goes first, because it is what takes access away; (3) the Console
- * runs only after the tenant half answered 200.
+ * act, because the gateway door trusts this console's token; (2) the
+ * registry roster is read, and the owner hand-over is checked, before the
+ * tenant act; (3) the tenant plane goes first of the two writes, because it
+ * is what takes access away; (4) the Console write runs only after the
+ * tenant half answered 200.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +14,7 @@ const calls: string[] = [];
 
 const readOperatorSession = vi.fn();
 const readElevation = vi.fn();
+const billingSummary = vi.fn();
 const removeRegistryMember = vi.fn();
 const removeTenantMember = vi.fn();
 const tenantDoorConfigured = vi.fn();
@@ -25,6 +28,10 @@ vi.mock("@/lib/console", () => ({
   readElevation: (...a: unknown[]) => {
     calls.push("elevation");
     return readElevation(...a);
+  },
+  billingSummary: (...a: unknown[]) => {
+    calls.push("roster");
+    return billingSummary(...a);
   },
   removeRegistryMember: (...a: unknown[]) => {
     calls.push("registry");
@@ -56,6 +63,8 @@ vi.mock("@/lib/route", async (importOriginal) => {
 import { POST } from "./route";
 
 const EMAIL = "ana@acme.test";
+const OWNER = "owner@acme.test";
+const BEN = "ben@acme.test";
 
 function req(body: unknown): Request {
   return new Request("http://operator.test/api/operator/members/remove", {
@@ -72,7 +81,31 @@ const good = (mode: "remove" | "purge" = "remove") => ({
   confirm: EMAIL,
 });
 
+// The only active owner as the target.
+const ownerBody = (extra: Record<string, unknown> = {}) => ({
+  org_slug: "acme",
+  email: OWNER,
+  mode: "remove",
+  confirm: OWNER,
+  ...extra,
+});
+
 const ok = (body: unknown) => ({ status: 200, body: JSON.stringify(body) });
+
+const member = (email: string, role: string, status: string) => ({
+  email,
+  role,
+  status,
+  seats: [],
+});
+
+const ROSTER = [
+  member(OWNER, "owner", "active"),
+  member(EMAIL, "member", "active"),
+  member(BEN, "member", "active"),
+  member("ivy@acme.test", "member", "invited"),
+  member("old@acme.test", "member", "removed"),
+];
 
 function sessionAs(role: string) {
   readOperatorSession.mockResolvedValue(
@@ -87,6 +120,7 @@ beforeEach(() => {
   tenantDoorConfigured.mockReturnValue(true);
   sessionAs("admin");
   readElevation.mockResolvedValue(ok({ elevated: false, required: false }));
+  billingSummary.mockResolvedValue(ok({ members: ROSTER }));
   removeTenantMember.mockResolvedValue(
     ok({ status: "removed", email: EMAIL, tree_projects: 1 }),
   );
@@ -96,10 +130,10 @@ beforeEach(() => {
 });
 
 describe("the order", () => {
-  it("rank, then tenant, then registry — exactly once each", async () => {
+  it("rank, roster, then tenant, then registry — exactly once each", async () => {
     const res = await POST(req(good()));
     expect(res.status).toBe(200);
-    expect(calls).toEqual(["session", "tenant", "registry"]);
+    expect(calls).toEqual(["session", "roster", "tenant", "registry"]);
     const body = (await res.json()) as {
       tenant: { status: string };
       registry: { released: string[] };
@@ -112,6 +146,9 @@ describe("the order", () => {
   it("passes slug, email and mode to the door, and the session to the Console", async () => {
     await POST(req(good("purge")));
     expect(removeTenantMember).toHaveBeenCalledWith("acme", EMAIL, "purge");
+    expect(billingSummary).toHaveBeenCalledWith("acme", {
+      authToken: "cc_sess_test_token",
+    });
     expect(removeRegistryMember).toHaveBeenCalledWith(
       { org_slug: "acme", member_email: EMAIL },
       { authToken: "cc_sess_test_token" },
@@ -127,7 +164,63 @@ describe("the order", () => {
     );
     const res = await POST(req(good()));
     expect(res.status).toBe(200);
-    expect(calls).toEqual(["session", "tenant", "registry"]);
+    expect(calls).toEqual(["session", "roster", "tenant", "registry"]);
+  });
+});
+
+describe("the owner hand-over (owner decision: the acting admin inherits)", () => {
+  it("the only active owner with no new owner is a 400 before ANY write", async () => {
+    const res = await POST(req(ownerBody()));
+    expect(res.status).toBe(400);
+    expect(calls).toEqual(["session", "roster"]);
+    const body = (await res.json()) as {
+      error: string;
+      refused_by: string;
+      needs_new_owner: boolean;
+    };
+    expect(body.error).toContain("only active owner");
+    expect(body.refused_by).toBe("operator-console");
+    expect(body.needs_new_owner).toBe(true);
+  });
+
+  for (const [label, newOwner] of [
+    ["the target", OWNER],
+    ["the target in other case", "Owner@Acme.Test"],
+    ["an invited person", "ivy@acme.test"],
+    ["a removed person", "old@acme.test"],
+    ["a stranger", "nobody@else.test"],
+  ] as const) {
+    it(`a new owner who is ${label} is a 400 before ANY write`, async () => {
+      const res = await POST(req(ownerBody({ new_owner_email: newOwner })));
+      expect(res.status).toBe(400);
+      expect(calls).toEqual(["session", "roster"]);
+    });
+  }
+
+  it("a valid new owner goes through, and reaches the Console write", async () => {
+    const res = await POST(req(ownerBody({ new_owner_email: BEN })));
+    expect(res.status).toBe(200);
+    expect(calls).toEqual(["session", "roster", "tenant", "registry"]);
+    expect(removeRegistryMember).toHaveBeenCalledWith(
+      { org_slug: "acme", member_email: OWNER, new_owner_email: BEN },
+      { authToken: "cc_sess_test_token" },
+    );
+  });
+
+  it("with two active owners, neither needs a new owner", async () => {
+    billingSummary.mockResolvedValue(
+      ok({ members: [...ROSTER, member("co@acme.test", "owner", "active")] }),
+    );
+    const res = await POST(req(ownerBody()));
+    expect(res.status).toBe(200);
+  });
+
+  it("a new owner given for a non-owner is still checked", async () => {
+    const res = await POST(
+      req({ ...good(), new_owner_email: "nobody@else.test" }),
+    );
+    expect(res.status).toBe(400);
+    expect(calls).not.toContain("tenant");
   });
 });
 
@@ -137,8 +230,10 @@ describe("fail closed", () => {
     const res = await POST(req(good()));
     expect(res.status).toBe(503);
     expect(calls).toEqual([]);
-    const body = (await res.json()) as { error: string };
+    const body = (await res.json()) as { error: string; refused_by: string };
     expect(body.error).toContain("not configured");
+    // This refusal is the operator console's own, not the Console's.
+    expect(body.refused_by).toBe("operator-console");
   });
 
   it("a door that throws Unconfigured late still never calls the Console write", async () => {
@@ -147,6 +242,31 @@ describe("fail closed", () => {
     const res = await POST(req(good()));
     expect(res.status).toBe(503);
     expect(calls).not.toContain("registry");
+  });
+
+  for (const status of [401, 403, 404, 500]) {
+    it(`a roster read that answers ${status} stops before the tenant act`, async () => {
+      billingSummary.mockResolvedValue({ status, body: '{"detail":"no"}' });
+      const res = await POST(req(good()));
+      expect(res.status).toBe(status >= 500 ? 502 : status);
+      expect(calls).toEqual(["session", "roster"]);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain("Nothing was changed");
+    });
+  }
+
+  it("a roster read that does not answer stops before the tenant act", async () => {
+    billingSummary.mockRejectedValue(new TypeError("fetch failed"));
+    const res = await POST(req(good()));
+    expect(res.status).toBe(502);
+    expect(calls).toEqual(["session", "roster"]);
+  });
+
+  it("a roster with no member list stops before the tenant act", async () => {
+    billingSummary.mockResolvedValue(ok({ seats: [] }));
+    const res = await POST(req(good()));
+    expect(res.status).toBe(502);
+    expect(calls).toEqual(["session", "roster"]);
   });
 });
 
@@ -159,7 +279,7 @@ describe("a tenant refusal is relayed, and stops the Console", () => {
       });
       const res = await POST(req(good()));
       expect(res.status).toBe(status);
-      expect(calls).toEqual(["session", "tenant"]);
+      expect(calls).toEqual(["session", "roster", "tenant"]);
       const body = (await res.json()) as {
         tenant: { detail: string };
         refused_by: string;
@@ -172,21 +292,23 @@ describe("a tenant refusal is relayed, and stops the Console", () => {
 });
 
 describe("a Console failure after the tenant half", () => {
-  it("is a 502 that says the tenant half succeeded and names the retry", async () => {
-    removeRegistryMember.mockResolvedValue({ status: 500, body: "boom" });
-    const res = await POST(req(good()));
-    expect(res.status).toBe(502);
-    const body = (await res.json()) as {
-      error: string;
-      registry: unknown;
-      refused_by?: string;
-    };
-    expect(body.error).toContain("tenant half succeeded");
-    // The Console refused here, so the tenant marker must be absent.
-    expect(body.refused_by).toBeUndefined();
-    expect(body.error).toContain("Run this action again");
-    expect(body.registry).toBe("boom");
-  });
+  // No ANSWER (console_resolve.py's line): 5xx, 401, 408, 429, or a throw.
+  for (const status of [500, 503, 401, 408, 429]) {
+    it(`a Console ${status} is a 502 that names the retry`, async () => {
+      removeRegistryMember.mockResolvedValue({ status, body: "boom" });
+      const res = await POST(req(good()));
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as {
+        error: string;
+        retry: boolean;
+        refused_by?: string;
+      };
+      expect(body.error).toContain("tenant half succeeded");
+      expect(body.error).toContain("Run this action again");
+      expect(body.retry).toBe(true);
+      expect(body.refused_by).toBeUndefined();
+    });
+  }
 
   it("a Console that does not answer is a 502 with the retry, and says the tenant half is done", async () => {
     removeRegistryMember.mockRejectedValue(new TypeError("fetch failed"));
@@ -198,9 +320,8 @@ describe("a Console failure after the tenant half", () => {
     expect(body.retry).toBe(true);
   });
 
-  // Review round 1: a 4xx is the Console's VERDICT. The same request gets the
-  // same answer, so advice to retry would be false.
-  for (const status of [403, 404, 409]) {
+  // Review round 1: a 4xx verdict gets no advice to retry.
+  for (const status of [400, 403, 409]) {
     it(`a Console ${status} is relayed with no retry advice`, async () => {
       removeRegistryMember.mockResolvedValue({
         status,
@@ -224,6 +345,19 @@ describe("a Console failure after the tenant half", () => {
       expect(body.refused_by).toBeUndefined();
     });
   }
+
+  it("a Console 404 says the registry has no such organization", async () => {
+    removeRegistryMember.mockResolvedValue({
+      status: 404,
+      body: '{"detail":"Not Found"}',
+    });
+    const res = await POST(req(good()));
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string; retry: boolean };
+    expect(body.error).toContain('no organization "acme"');
+    expect(body.retry).toBe(false);
+    expect(body.error).not.toContain("A retry is safe");
+  });
 });
 
 describe("the confirmation protocol", () => {
@@ -237,6 +371,8 @@ describe("the confirmation protocol", () => {
     ]) {
       const res = await POST(req(body));
       expect(res.status).toBe(400);
+      const answer = (await res.json()) as { refused_by: string };
+      expect(answer.refused_by).toBe("operator-console");
     }
     expect(calls).toEqual([]);
   });
@@ -255,11 +391,13 @@ describe("auth", () => {
     expect(calls).toEqual([]);
   });
 
-  it("a viewer is refused BEFORE the tenant act", async () => {
+  it("a viewer is refused BEFORE the roster read and the tenant act", async () => {
     sessionAs("viewer");
     const res = await POST(req(good()));
     expect(res.status).toBe(403);
     expect(calls).toEqual(["session"]);
+    const body = (await res.json()) as { refused_by: string };
+    expect(body.refused_by).toBe("operator-console");
   });
 
   it("an editor may remove, and may NOT purge", async () => {
@@ -281,7 +419,13 @@ describe("auth", () => {
     readElevation.mockResolvedValue(ok({ elevated: true, required: true }));
     const done = await POST(req(good("purge")));
     expect(done.status).toBe(200);
-    expect(calls).toEqual(["session", "elevation", "tenant", "registry"]);
+    expect(calls).toEqual([
+      "session",
+      "elevation",
+      "roster",
+      "tenant",
+      "registry",
+    ]);
   });
 
   it("break-glass is admitted, as the Console admits it", async () => {
@@ -290,7 +434,7 @@ describe("auth", () => {
     );
     const res = await POST(req(good("purge")));
     expect(res.status).toBe(200);
-    expect(calls).toEqual(["session", "tenant", "registry"]);
+    expect(calls).toEqual(["session", "roster", "tenant", "registry"]);
   });
 
   it("a refused session read is relayed and stops everything", async () => {
