@@ -1138,7 +1138,6 @@ class TestTheGatewayClientSpeaksTheRemoveWire:
         import asyncio
 
         import httpx
-
         from acb_auth import console_resolve as cr
 
         org = _new_org(client)

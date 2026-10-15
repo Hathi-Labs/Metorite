@@ -36,8 +36,8 @@ from customer_console.credits import (
 
 __all__ = [
     "activate_subscription",
-    "active_plans",
     "active_owner_count",
+    "active_plans",
     "add_credit",
     "apply_discount_to_order",
     "capture_provider_refs",

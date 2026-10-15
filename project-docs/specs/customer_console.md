@@ -16,6 +16,11 @@ CP-13h, Jev through the AI/ML API reseller, is BUILT on branch `cp13-aimlapi`
 background model call names its feature on the usage report, as
 `email.rule_match`. It has no flag, because it changes metadata only.
 
+🆕 **Member removal by an operator or an admin: backend BUILT on branch
+`member-remove` (2026-10-15, owner request).** The amendment under CP-2g's
+non-goals holds the wire contract. The operator console surface is a separate
+slice.
+
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
 2026-08-26 (D57)** — the SERVING HOP, the first-caller ticket §6 (d) has waited for
@@ -6172,10 +6177,42 @@ depth rather than the only wall.
 
 **Non-goals.** No customer-side self-delete (an org admin cannot destroy the
 org from inside the product) · no export bundle (the window keeps sign-in
-alive; a one-click export is future work) · no per-member operator delete —
+alive. A one-click export is future work) · ~~no per-member operator delete —
 member offboarding/purge stays the customer admin's door
-(`colleague_onboarding.md` N8), deliberately · no backup/restore integration:
+(`colleague_onboarding.md` N8), deliberately~~ · no backup/restore integration:
 a purge is forward-only, like every act on this platform (R6).
+
+**Amended 2026-10-15 (owner request in chat).** The owner asked: "give
+ability for operator (backend) and admins to remove/delete a person who's
+invited/logged in". That request overrides the per-member non-goal above.
+**Backend BUILT on branch `member-remove` (2026-10-15).** The operator console
+surface is a separate slice.
+
+- The gateway door is `DELETE /internal/operator/organizations/{slug}/members/{email}`.
+  It takes `?mode=remove|purge&confirm=<email>`, and `remove` is the default.
+  It uses the two tokens of the org purge. `confirm` must equal the email
+  verbatim, or the door answers 400. An unknown mode is 400, and an unknown
+  slug is 404.
+- An absent member gets 200 `{"already_absent": true, "email": ...}`. The
+  last owner gets 409. Remove answers
+  `{"status": "removed", "email", "tree_projects"}`, and purge answers the
+  admin purge shape.
+- The door runs the same in-transaction body as the admin routes:
+  `members.remove_member_rows` and `members.purge_member_rows`. It does not
+  call the Console. The operator BFF calls the Console itself.
+- The Console door is `POST /registry/members/remove`. It uses the
+  `member_admin` capability and both arms of `_admin_scheme_context`. It sets
+  the membership to `removed` and releases every live seat. It never mints an
+  identity: an unknown person gets 200 `{"found": false}`.
+- The Console door refuses a self-removal on the deployment arm (409) and the
+  last active registry owner (409). A `deleted` org gets 403. The operator
+  matrix row is EDITOR.
+- The admin Remove and Purge routes now mirror onto the Console door after the
+  commit, as best-effort. The deployment resolve writes no seat for a
+  `removed` or `suspended` membership.
+- Fences: `test_operator_door.py`, `test_admin_member_offboarding.py` and
+  `test_admin_member_purge.py`. Also `test_customer_console_member_write.py`
+  (R8) and `test_operator_role_matrix_source.py`.
 
 **CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
 SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23
