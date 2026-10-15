@@ -114,7 +114,9 @@ _RUN_INSTRUCTIONS = (
     " post_agent_activity at least once a minute. To ask the member, call"
     " ask_on_task, then call get_agent_run with wait_seconds 20 until the"
     " answer arrives. When a run reads stopping, stop the work at once and"
-    " call finish_agent_run."
+    " call finish_agent_run. To archive a task, call request_task_archive."
+    " Only the member can approve it, in Metorite. Read the answer with"
+    " get_agent_run. An archive never takes the subtasks."
 )
 
 
