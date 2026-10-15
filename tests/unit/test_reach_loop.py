@@ -1110,8 +1110,8 @@ class TestTheReviewFixes:
         await self._past_baseline(world)
         long = "x" * 200
         world.cards = [card("email:a:t1")]
-        world.asks = [ask("w1", source="workflow", title=long, body=long),
-                      ask("w2", source="workflow", title=long, body=long)]
+        world.asks = [ask(f"w{i}", source="workflow", title=long, body=long)
+                      for i in range(3)]
         got = await loop.member_pass(ORG, ME)
         assert got.endswith("sent")
         assert next(v for k, v in world.outbox.log_rows.items()
