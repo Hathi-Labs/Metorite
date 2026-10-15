@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import types
@@ -1280,6 +1281,58 @@ async def test_the_process_cache_is_bounded_and_a_miss_reads_redis(
         assert len(small) == 3
     finally:
         release_tenant(token)
+
+
+_REDIS_URL = os.environ.get("AGENT_WRITES_REDIS_URL", "").strip()
+
+
+@pytest.mark.skipif(
+    not _REDIS_URL,
+    reason=(
+        "AGENT_WRITES_REDIS_URL unset. This test runs the session mark on a "
+        "REAL Redis. CI has no Redis service, so it skips there. A skip is not "
+        "a pass."
+    ),
+)
+async def test_the_session_mark_on_a_real_redis(monkeypatch) -> None:
+    """Round 4: the mark, the read, the TTL and the tenant prefix on a real
+    server, through the real wrapper. This bypasses the autouse fake."""
+    import redis.asyncio as aioredis
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_common.tenant_redis import TenantRedis
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    client = aioredis.from_url(_REDIS_URL, decode_responses=True)
+    monkeypatch.setattr(eg, "get_tenant_redis", lambda: TenantRedis(client))
+    session = f"chat-real-{new_thread()}"
+    raw = f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:{session}"
+    token = bind_tenant(ORG_B)
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r1", session_id=session, member="a@example.com")
+            assert await eg.session_is_marked() is False
+            assert await eg.mark_untrusted_answer() is True
+        assert await client.exists(raw) == 1, raw
+        assert eg.MARK_TTL_S - 5 <= await client.ttl(raw) <= eg.MARK_TTL_S
+        eg._MARKED_SESSIONS.clear()  # a second process
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r2", session_id=session, member="b@example.com")
+            assert await eg.session_is_marked() is True
+            bind_artifact_context(run_id="r3", session_id=f"{session}-other",
+                                  member="b@example.com")
+            assert await eg.session_is_marked() is False
+    finally:
+        release_tenant(token)
+    token = bind_tenant(ORG_A)
+    try:
+        eg._MARKED_SESSIONS.clear()
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r4", session_id=session, member="a@example.com")
+            assert await eg.session_is_marked() is False  # another org
+    finally:
+        release_tenant(token)
+        await client.delete(raw)
+        await client.aclose()
 
 
 async def test_a_batch_session_never_asks_redis(mark_store) -> None:
