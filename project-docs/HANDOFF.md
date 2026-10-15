@@ -5522,6 +5522,21 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-15 · WS-53 CRM-Q16 review
 
 
+### H-322 · Three calls on the CRM mapping design · [OWNER]
+- **Check:** read `crm_platform.md` §18.9.1, "Open, with a recommendation".
+  If it still lists three open calls, this entry is open.
+- **Why.** The v4 design (§18.9) needs three owner answers before CRM-Q20
+  ships its rules. The design page "Source Mapping Studio" v4 shows each one.
+- **Do this:** answer each call in chat.
+  1. May a choice that changes only the view apply with no approval?
+     Recommended: yes, with Undo.
+  2. May Metorite ask for the Zoho scope that reads list views? Each
+     connected org must reconnect once. Recommended: new connections only.
+  3. May one org's approved choices help another org? Recommended: no.
+- **Authority:** `crm_platform.md` §18.9.1
+- **Added:** 2026-10-16 · WS-53 §18.9 spec
+
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

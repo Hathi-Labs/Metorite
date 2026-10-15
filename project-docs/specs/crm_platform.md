@@ -29,6 +29,8 @@
 >
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). CRM-Q8, filters and saved views (2026-10-12, migration 250). The Deals board stages fix (2026-10-12, §18.5). CRM-Q10, a reconnect never freezes the mirror (2026-10-13, §18, a production hotfix). CRM-Q15, a Zoho module that the account turned off no longer stops the sync (2026-10-15, §18, a production hotfix). CRM-Q16, hold a module and sync one module on its own (2026-10-15, §18.8, migration 269).
 >
+> **Specified, not built:** CRM-Q17a to CRM-Q22, a custom CRM that reads well, and a mapping that the admin only approves (2026-10-16, §18.9).
+>
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
 > **Built later:** CRM-Q6a, the generic record store (2026-10-12, migration 251). See §18.7.
@@ -1230,6 +1232,13 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
 | **CRM-Q15** | ✅ built 2026-10-15 (hotfix). A Zoho account can turn off a core module, such as Accounts or Deals, and keep its data in custom modules. Zoho then answers each record read of that module with HTTP 400 `INVALID_MODULE` (v2) or `NO_PERMISSION` (v8). Measured on a live tenant on 2026-10-15. Before this fix, the run read Accounts first, failed, and mirrored nothing. Now the client raises `SourceModuleUnavailable` for those two codes. The engine skips ANY module that raises it, core or optional, and records the reason `hidden` in the cursor. The run is `ok`, the other modules and the generic modules land, and the connection stays `connected`. The count key of the module gets `unavailable` and `hidden`. The Sync health card then says "Turned off in your Zoho", and not "Connect Zoho again". A skip deletes nothing, and no reconcile runs for the module while it is off. The engine asks again after `UNAVAILABLE_RETRY`, so a module turned on again heals. When a core module comes back, each entity in `DEPENDENTS` is read in full once, through the re-read list of the field rules, so a child that landed with no parent gets its link. That read stamps nothing and deletes nothing. While Deals is off, the contact roles step reads nothing and keeps its queue. A refused deleted list is counted as `hidden`. The cursor keeps `failed`, `retry_from` and `converted_both` while the module is off. Any other failure of a core module still fails the run. Fence: `tests/unit/test_crm_hidden_module_r8.py` (R8) and two client tests in `test_crm_sources_zoho.py` | P0 |
 | **CRM-Q16** | ✅ built 2026-10-15. Hold a module, and sync one module on its own. The first import holds a module above 5,000 records and suggests a sync of it on its own. §18.8 | P0 |
+| **CRM-Q17a** | Lists and records by fill rank: default columns, empty columns hidden, owner names, Overview and Fields, Zoho labels in Mirror mode. No AI. §18.9 | P0 |
+| **CRM-Q17b** | Getting around: the rail group, the first screen, filters, the Columns picker, phone cards, and "Needs you" in Sync health. No AI. §18.9 | P0 |
+| **CRM-Q18** | One plan: a kind, a version and an approval state on the field rules. §18.9 | P1 |
+| **CRM-Q19** | The executor and the 200-record preview. §18.9 | P1 |
+| **CRM-Q20** | The mapping pipeline on the decide tier, the suggestion in an empty slot, the panel and Undo. Replaces the CRM-Q7b proposer. §18.9 | P1 |
+| **CRM-Q21** | Promote a module into a core entity. §18.9 | P1 |
+| **CRM-Q22** | Source changes as suggestions, then a CSV source, then HubSpot. §18.9 | P2 |
 
 **Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
 
@@ -2033,6 +2042,291 @@ refusal mark is left to the next normal run. So no relink is lost.
 
 Two items stay open in `HANDOFF.md`. H-320 is the edge of the shared
 checkbox. H-321 is a generic module held past the 60 days of the deleted list.
+
+### 18.9 A custom CRM that reads well, and a mapping that the admin only approves (CRM-Q17 to CRM-Q22, 2026-10-16)
+
+**Status (2026-10-16).** Specified, not built. Verified against code at
+`origin/main` `00fd30230`, after CRM-Q16 merged (#1053).
+
+**Design record.** The owner's design page is "Source Mapping Studio" v4.
+Its link is https://claude.ai/artifact/QcBY3s2ATxo3Kb9QCpR3Zr. This section
+is the build contract, and it wins where the two differ.
+
+v4 replaces v3 of the same page. Three reviews made v4, at the owner's request. They checked
+the token cost of the engine and the admin's path. They also rendered the
+CRM app with DEWiN's data shape.
+They used the repo skills `impeccable`, `apple-design` and `visual-review`.
+
+#### 18.9.1 Owner decisions (2026-10-15 and 2026-10-16, in chat)
+
+| Question | Answer |
+|---|---|
+| Who maps a source into Metorite? | AI does all the mapping work. The admin gives only the final approval |
+| Which AI? | The decide tier, as far as possible (`tier-decide`, `acb_llm.decide()`) |
+| May CRM data go to the decide tier? | Yes. D100 (2026-10-13) covers every app. The owner confirmed it for the CRM on 2026-10-16 |
+| Who pays? | The customer, in AI credits (D100 item 3) |
+| What arrives before a mapping exists? | Everything. Each module and each custom field lands from the first sync |
+| Labels in Mirror mode? | The org's own source labels. This amends D95.2 for Mirror mode only. A Native CRM keeps "Companies" |
+| How far does a custom module stand in for a core one? | Overlay first (CRM-Q20), promote later (CRM-Q21) |
+
+**Open, with a recommendation (design page, "Your calls").**
+
+1. May a choice that changes only the view apply with no approval? It moves
+   no record, and it has Undo. Recommended: yes. Until the owner answers,
+   CRM-Q17 applies view choices as display defaults, as today. CRM-Q20 asks
+   for every other choice.
+2. May Metorite read Zoho's own list views? It needs the scope
+   `ZohoCRM.settings.custom_views.READ`, so each connected org must
+   reconnect once. Recommended: ask for it on new connections only.
+3. May one org's approved choices help another org? Recommended: no.
+
+**Superseded.** CRM-Q7b keeps `tier-fast` because "residency is open (D75)".
+D100 closed that question. CRM-Q20 replaces the CRM-Q7b proposer.
+
+#### 18.9.2 What the reviews found
+
+**The app (visual-review, DEWiN's shape, invented values).** The CRM renders
+a custom Zoho with no error. But each screen is laid out for a standard Zoho
+org. Title, Email and Phone are empty on all 805 contacts, and they are the
+default columns. 43 of 81 contact fields are under 20% filled.
+
+A record page shows 76 rows (an Invoice shows 236), mostly empty. Leads draws
+22 filter controls. The CRM opens on the Deals board, which DEWiN turned off
+in Zoho. A keyboard cannot open a record from any list (P0, all orgs). PR
+#1066 fixes that P0, outside this section.
+
+**The engine (token review).** v3 asked about each field of each module.
+For DEWiN, that is about 1,650 decide questions and 560k input tokens. v3
+also used a larger model for new options. The admin then approved about 1,847 decisions as one
+plan. Most of those questions decide nothing:
+
+- A module that stays its own module needs no mapping. The generic store
+  (CRM-Q6a) already shows each of its fields. For DEWiN that is 18 of 22
+  modules and about 1,300 fields.
+- Only an empty core slot needs a role. DEWiN has two: Companies and Deals.
+- A target needs one question ("which field fills Email?"), not one question
+  for each field. The store already allows one approved rule for each
+  target column (`routes/crm/field_rules.py`).
+- Code answers most targets: fill rate, value patterns, a unique type, the
+  Zoho display field, and the lookup target.
+- No choice needs a larger text model. A parameter, such as the first month
+  of a fiscal year, is a choice question.
+
+**The admin's path (impeccable, apple-design).** The admin must see useful
+records at once, and approve a result, not a table of rules. A suggestion
+shows where the gap is. No confidence number and no engine word reaches the
+screen ("value_map", "plan v1", "0.68").
+
+#### 18.9.3 The fill rank
+
+The fill rank is the one input of CRM-Q17. It needs no AI.
+
+1. After a run changes an entity or a module, the sync computes two numbers
+   for each field. They are the share of records with a value, and the
+   distinct count.
+   One SQL statement per entity does it. A field that the run did not touch
+   keeps its last numbers.
+2. The standard columns of the four core entities get the same numbers.
+3. Only the sync writes them, in the tenant session of the run (R5).
+4. `GET /crm/fields/{entity}` and `GET /crm/modules` serve them. No request
+   computes them.
+5. A Native CRM gets them too, so a Native list with empty columns gets the
+   same help.
+
+#### 18.9.4 The engine of the mapping: a fixed pipeline
+
+The mapping is one pass with no loop and no planning. It is a pipeline that
+calls the decide tier, not an agent. A scripted fake of `decide` tests each
+branch.
+
+| Step | What | Tokens |
+|---|---|---|
+| 1. Shape | The fill rank, plus a pattern class for each field (for example "94% look like an email") | 0 |
+| 2. Slots | Find each empty core slot. A slot is empty when Zoho turned the module off, or it holds no records | 0 |
+| 3. Code | Answer what code can. A module named like the slot fills it. One field over 90% email-shaped fills `email`. One currency field fills `amount`. The Zoho display field is the name. A lookup names its parent. "Won" and "Lost" are known stage names. A field with 0% fill is never offered | 0 |
+| 4. Decide | One request for each entity with an open target. The state holds the candidate fields as named objects. Each question asks which field fills one target, or `none` | about 5 requests |
+| 5. Re-ask | A question under 0.75, or with its top two within 0.15, goes again with 5 sample values | about 2 requests |
+| 6. Draft | The draft runs on 200 sampled records in memory, for the preview. Nothing changes until the admin approves | 0 |
+
+**Rules for token use.**
+
+1. At most 16 questions share one `state`. One entity fits in one request.
+2. The state names each field by path (`` `fields.f7` ``). A question never
+   copies a value.
+3. A value that looks like a person's email, phone or name sends its pattern
+   class only, also in step 5.
+4. Confidence comes from the answer's `probabilities` (`acb_llm/decide.py`).
+   No question asks for certainty.
+5. Each module keeps a hash of its schema. An unchanged schema makes no
+   decide call.
+6. A run has a token cap. Past it, the run stops, keeps a draft, and the sync
+   keeps the last approved plan.
+7. A result that stays unsure makes no suggestion. The admin can still pick a
+   module by hand.
+
+**The estimate for DEWiN.** About 35 to 45 questions in 5 to 7 requests,
+about 25k input tokens, about USD 0.001. The decide client does not return
+`usage` today, so the run logs its request ids, and a join to `usage_event`
+gives the measured count. One probe sends the same state with 1 question and
+with 16 questions, to learn whether the vendor bills the state once.
+
+**What applies with no approval, and what waits.**
+
+| Kind of choice | Example | Rule |
+|---|---|---|
+| Changes only the view | Columns, hidden empty fields, folded modules, labels | Applies, with Undo (owner call 1) |
+| Changes nothing | A new field on a module that stays its own module | Applies. It shows with its module |
+| Changes what records mean | Commercials plays Deals. A new picklist value is a Lost stage | Waits for the admin, always |
+| Moves records | Promote Commercials into the core tables | Waits for the admin, after a download |
+
+#### 18.9.5 Seams
+
+- **The decide call** goes through `gateway/decide_features.py` (`ask`), and
+  never calls `acb_llm.decide` directly. The mapping adds three features:
+  `crm.map_role`, `crm.map_target` and `crm.map_stage`. Each starts `off`.
+  Each must join `FEATURES`, `REGISTERED` and `ON_FEATURES`, or `on` reads
+  as `off`.
+- **One `ask()` for each entity**, not one for the run. One failed request
+  voids each request of the same call. A 402 starts the cool-down of the
+  whole org, so the pipeline checks `cooling()` first and resumes later.
+- **Rollout** is `off`, then `shadow`, then `on`, for each feature (D100
+  item 2). In `shadow` the pipeline asks "which field fills Email?" on orgs
+  where the standard Email is filled. That field is the answer key, and the
+  log line holds the agreement count only, never a field name.
+- **No text model.** CRM-Q20 has no L3 rung.
+- **The source seam** stays `crm_sources/registry.py` (D95.4).
+- **Tenancy (R5).** A new table carries `organization_id` with FORCE RLS. The
+  organization comes from the server, never from a request.
+- **The screens** use the shared parts only. The design page names the part
+  of each screen.
+
+#### 18.9.6 Tickets
+
+| Ticket | Slice | Gate | Size | Waits for |
+|---|---|---|---|---|
+| CRM-Q17a | Lists and records by fill rank. No AI | AGENT-SAFE | M | — |
+| CRM-Q17b | Getting around: rail, first screen, filters, Columns, phone, Sync health. No AI | AGENT-SAFE | M | CRM-Q17a |
+| CRM-Q18 | One plan: a kind, a version and an approval state | AGENT-SAFE | M | — |
+| CRM-Q19 | The executor and the 200-record preview | AGENT-SAFE | M | CRM-Q18 |
+| CRM-Q20 | The pipeline, the suggestion, the panel, Undo, and Settings → Suggestions | AGENT-SAFE | M + M | CRM-Q19 |
+| CRM-Q21 | Promote a module into a core entity | AGENT-SAFE | L | CRM-Q20 |
+| CRM-Q22 | Zoho changes as suggestions, then a CSV source, then HubSpot | AGENT-SAFE. The HubSpot app is OWNER-GATE | M + M | CRM-Q20 |
+
+A flag flip to `shadow` or `on` for an org is gate `enforcement-flip`.
+
+**CRM-Q17a · Lists and records by fill rank.** Done when:
+
+1. The sync writes the fill rank of §18.9.3, and the two routes serve it.
+2. The list hides a standard column with no value on any record of the
+   org. The CSV export of that list hides it too.
+3. With no saved choice, the list shows the custom fields with the highest
+   fill, up to the column limit. A saved view or a member's choice wins.
+4. A list cell does not wrap. Long text ends in an ellipsis, and the full
+   text is in its title.
+5. A record whose owner is not a member shows `custom._owner_name`, with
+   "Zoho only". The key `_owner_name` leaves the Fields tab.
+6. Overview shows the filled fields first, by fill rank. The Fields tab keeps
+   the Zoho sections and has a filter box. It folds the empty fields behind
+   "Show n empty fields".
+7. Zoho system keys (such as `Layout`, `Record_Image`, `Tag`) leave the
+   record page.
+8. In Mirror mode a core entity shows the source's plural label, for
+   example Contacts as "Existing Sites". The rail, the list and the record
+   show it. A Native CRM shows "Companies" as before.
+
+Files: `crm_sync/engine.py` (or a module beside it), `routes/crm/fields.py`,
+`routes/crm/modules.py`, `src/app/crm/lib/columns.ts`, `lib/fields.ts`,
+`RecordList.tsx`, `FieldsPanel.tsx` and `ModuleRecordSheet.tsx`.
+
+**CRM-Q17b · Getting around.** Done when:
+
+1. The custom modules fold into one rail group, with the modules that hold
+   records first. Reports and CRM settings stay in view at 1440 × 900.
+2. A core row that Zoho turned off and that holds no records leaves the rail.
+3. `/crm` opens on the first row that holds records.
+4. An entity with no records says why: "Deals is turned off in your Zoho", or
+   "No records yet". "Nothing matches this view" shows only with a filter.
+5. The filter bar shows Owner and the 3 fullest picklist filters. The rest
+   sit behind "Filters (n)".
+6. The Columns picker has a search box, shows the chosen fields first, and
+   shows "% filled" beside each field. A disabled box looks disabled.
+7. At phone width, each list row is a two-line card.
+8. Sync health opens with a "Needs you" block: held, large and turned-off
+   modules, each with one action. The Sync switch of a turned-off module is
+   disabled. The detail table folds.
+
+Each item is checked with the `visual-review` skill in light mode, compact
+density, a changed accent and 375 px.
+
+**CRM-Q18 · One plan.** Done when:
+
+1. A migration (next free number at build time) adds `kind`, `plan_version`
+   and an approval state to `crm_field_rules`. It is expand-only (R6).
+2. Each existing row reads as `kind = 'field'` in the approved version.
+3. The sync reads the approved version only. A draft changes nothing.
+4. An admin can approve a version, and go back to the one before.
+5. A fixed column also opens to a rule when its standard field is on a
+   layout and 0% filled. Today it opens only when the field is off every
+   layout (`crm_sources/zoho/mapping.py`).
+
+**CRM-Q19 · Executor.** Done when:
+
+1. Each transform (`copy`, `cast`, `value_map`, `normalize`, `coalesce`,
+   `link`, `owner`) is a pure function with its own unit test.
+2. The sync applies the approved plan through the executor, and no other
+   path maps a value.
+3. `POST /crm/mapping/preview` applies a draft to up to 200 sampled records
+   in memory. It returns the records as the board would draw them, and the
+   count of values that did not map. It writes nothing.
+4. A value that no rule maps is counted on the Sync health card.
+
+**CRM-Q20 · The pipeline and the suggestion.** Done when:
+
+1. The pipeline runs the six steps of §18.9.4. A scripted fake of `decide`
+   tests each step.
+2. An unchanged schema makes no decide call. A run stops at its token cap and
+   keeps a draft.
+3. In `shadow`, the agreement count is logged, with no tenant text.
+4. `evals/crm_mapping/` holds synthetic CRM schemas with expected answers,
+   and passes in `--scripted` mode in CI.
+5. An empty core slot with a sure candidate shows the suggestion to an
+   admin, in its empty state. An example is "Preview Commercials as Deals". A
+   member sees why the slot is empty, and no suggestion.
+6. The panel shows three facts and the preview of CRM-Q19 on the real board
+   card. It also shows at most 3 checks, and "What changes". One action
+   approves it.
+7. An approved overlay has Undo in a toast and in Settings → Suggestions.
+   Undo is exact, because no record moved.
+8. No confidence number and no engine word shows on a screen.
+9. The CRM-Q7b route and its proposer are removed.
+
+**CRM-Q21 · Promote.** Done when:
+
+1. An approved overlay can move that module's rows from `crm_module_records`
+   into the core table, through the executor.
+2. It runs one module at a time, under a CRM-Q16 hold.
+3. A download comes first. A promote is undone only by a start-over of that
+   module.
+
+**CRM-Q22 · Changes and a second source.** Done when:
+
+1. A new field, a new picklist value or a failing rule makes a suggestion
+   under the rules of §18.9.4.
+2. A record with a new stage value that waits shows in a "Not sorted" lane.
+3. A CSV source adapter maps a file through the same plan and pipeline.
+4. A HubSpot adapter follows. Its OAuth app is OWNER-GATE.
+
+#### 18.9.7 Verification
+
+- Backend: `uv run pytest tests/unit/test_crm_map_*.py tests/unit/test_crm_fill_rank*.py -q`,
+  with the R8 database (`bash scripts/dev_db.sh`), and confirm that no test
+  is skipped.
+- Registry: `uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_feed_decide.py -q`.
+  The email and My Day features must behave as before.
+- Evals: `uv run python -m evals.crm_mapping --scripted`.
+- Frontend: `npx tsc --noEmit && npx vitest run src/app/crm` in
+  `workbench/control_plane`.
+- Screens: the `visual-review` skill on each changed surface.
 
 ---
 
