@@ -6457,7 +6457,28 @@ async def _run_with_maf_agent(
         response = await _with_tier_policy(agent, tier_policy).run(run_input)
 
     text: str = getattr(response, "text", "") or ""
-    return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text}
+    return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text,
+            "steps": _step_texts(response)}
+
+
+def _step_texts(response: Any) -> list[str]:
+    """The text of each assistant message that has any, in order.
+
+    MAF's ``AgentResponse.text`` joins every message's text with no
+    separator. One step that writes a line and calls a tool, then a step
+    that writes the answer, joins as "…NagarTwo blocks…" (WS-47, 2026-10-15).
+    ``bot_run`` builds its one WhatsApp text from these steps. Every other
+    caller keeps ``result``, unchanged.
+    """
+    steps: list[str] = []
+    for message in list(getattr(response, "messages", None) or []):
+        role = getattr(message, "role", "")
+        if str(getattr(role, "value", role) or "") != "assistant":
+            continue
+        text = str(getattr(message, "text", "") or "").strip()
+        if text:
+            steps.append(text)
+    return steps
 
 
 def _compose_maf_run_input(

@@ -447,6 +447,13 @@ _SAMPLE: dict[str, Any] = {
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
 #: The whole call, where the base call takes another branch of the tool.
 _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
+    # WS-47 WAC-4b: a capture's block needs its start, as the Calendar reads
+    # a block by its start.
+    ("POST", "/projects/my/tasks", "scheduled_end"): {
+        "title": "Call Sharath",
+        "block_start": "2026-10-07 14:00",
+        "block_end": "2026-10-07 15:00",
+    },
     ("POST", "/projects/tasks/{task_id}/move", "parent_task_id"): {
         "task_ids": UUID,
         "parent_task_id": OTHER,

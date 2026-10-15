@@ -105,6 +105,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
@@ -190,6 +191,8 @@ SCOPE_RULE_NATIVE = (
     "kind \"react\"): 👍 noted, ✅ done, 🎉 good news, 🙏 thanks, 👀 looking into "
     "it, 😕 bad news. Do it in the same step as your first other tool call. A "
     "message that needs no answer gets the reaction and no text.\n"
+    "Say each thing once. The text that you write before a tool call reaches "
+    "the member too, so after the call add only what is new.\n"
     "When a job takes more than about 15 seconds (an image, a calculation, "
     "code, a page, a long search), FIRST call whatsapp_ui kind \"working\" with "
     "one line: what you are doing and about how long it takes. Then do the job."
@@ -200,18 +203,26 @@ _NO_CHANGE = (
     "You cannot change data from WhatsApp. When the member asks for a change, "
     "tell them to make it in the Metorite web app, and add a link button.\n"
 )
-#: The scope rule of a run with writes on (WAC-4, §14). Adding a task is the
-#: one change allowed. Every other change, class C and class X among them,
-#: still goes to the web app with a link. Advisory, like ``SCOPE_RULE``: the
-#: card gate, not this text, is what keeps every other write out.
+#: The scope rule of a run with writes on (WAC-4, §14; WAC-4b). Adding a task
+#: and blocking time on the member's calendar are the changes allowed. Every
+#: other change, class C and class X among them, still goes to the web app
+#: with a link. Advisory, like ``SCOPE_RULE``: the card gate, not this text,
+#: is what keeps every other write out.
 SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
-    "You can add a task from WhatsApp, and make no other change. To add one, "
-    "ask the Projects assistant to create it. Nothing is written until the "
-    "member taps Confirm: Metorite sends them the summary and the Confirm and "
-    "Cancel buttons itself. So say in one line that the task is ready for "
-    "their Confirm, add no buttons, and never say that it is done. For any "
-    "other change, tell the member to make it in the Metorite web app, and "
-    "add a link button.\n"
+    "You can make two kinds of change from WhatsApp: add a task, and block "
+    "time on the member's calendar. A calendar block is the scheduled time of "
+    "a task. To block time for something new (a meeting, a call, a visit), "
+    "ask the Projects assistant to create a private task with block_start and "
+    "block_end (create_personal_task). To block time for a task that exists, "
+    "ask it to set block_start and block_end on that task (set_my_overlay). "
+    "Times are YYYY-MM-DD HH:MM in the member's own zone. Nothing is written "
+    "until the member taps Confirm: Metorite sends them the summary and the "
+    "Confirm and Cancel buttons itself. So say in one line that it is ready "
+    "for their Confirm, add no buttons, and never say that it is done. One "
+    "change waits at a time. When the member asks for several, prepare the "
+    "first, and say that you do the next one when they ask after their "
+    "Confirm. For any other change, tell the member to make it in the "
+    "Metorite web app, and add a link button.\n"
 ))
 
 # ── The limits ──────────────────────────────────────────────────────────────
@@ -1375,9 +1386,7 @@ async def _model_answer(req: RunRequest, message: str,
                         kind="failed", attempt=attempt)
         return None
 
-    from gateway.routes.projects.agent_dispatch import reply_text
-
-    reply = reply_text(result).strip()
+    reply = final_text(result).strip()
     ui: list[Any] = []
     if wa_run is not None:
         reply, ui = await _native_parts(req, wa_run, reply)
@@ -1435,6 +1444,74 @@ async def _offer_act(req: RunRequest, act: Any) -> list[Any] | str:
     # Confirm.
     return [*(OutMessage("text", part) for part in split_reply(summary(act))),
             confirm_buttons(act_id)]
+
+
+def final_text(result: Any) -> str:
+    """The one WhatsApp text of a run, from its model steps (WAC-4b).
+
+    The agent framework's ``response.text`` joins the text of EVERY model
+    step with no separator. A model that wrote a line, called a tool (a
+    link button) and then wrote its answer again gave the member both texts
+    glued together ("Sahakar NagarTwo blocks…", 2026-10-15). The web chat
+    streams each step as its own part, so only a channel that sends one
+    text needs this.
+
+    Each step goes, in order, a blank line apart, except a step that says
+    again what another step says (:func:`_said_elsewhere`). A step goes
+    out when another step that is at least as long holds most of its
+    words. So the fuller of two copies stays, and a step that adds
+    something is never lost:
+
+    * The owner's incident: the answer, a link button, then the same answer
+      said again (0.83 of its words). One copy goes.
+    * A text card, a link button, then "Open it with the button below." The
+      line is too short to be a copy, so both go.
+
+    A result with no ``steps`` (``executor._step_texts``), from another
+    path, falls back to the joined text.
+    """
+    from gateway.routes.projects.agent_dispatch import reply_text
+
+    steps = result.get("steps") if isinstance(result, dict) else None
+    if not isinstance(steps, list):
+        return reply_text(result)
+    texts = [str(t).strip() for t in steps if str(t or "").strip()]
+    if not texts:
+        return reply_text(result)
+    kept = [t for i, t in enumerate(texts) if not _said_elsewhere(i, texts)]
+    return "\n\n".join(kept)
+
+
+#: The share of a step's words that another step holds, at or above which
+#: the step is the same text said again.
+_RESTATED = 0.6
+#: A step with fewer words than this is a short line, never a copy.
+_RESTATED_MIN_WORDS = 6
+_WORD = re.compile("[\\w:\u2013'-]+")  # \u2013: the en dash of "8:30\u201310:30"
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in _WORD.findall(text.lower()) if len(w) >= 3}
+
+
+def _said_elsewhere(i: int, texts: list[str]) -> bool:
+    """True when another step holds most words of step *i* (:func:`final_text`).
+
+    That other step has at least as many words, so the fuller copy stays.
+    Of two copies with as many words, the later one stays.
+    """
+    mine = _words(texts[i])
+    if len(mine) < _RESTATED_MIN_WORDS:
+        return False
+    for j, other in enumerate(texts):
+        if j == i:
+            continue
+        theirs = _words(other)
+        if len(theirs) < len(mine) or (len(theirs) == len(mine) and j < i):
+            continue
+        if len(mine & theirs) / len(mine) >= _RESTATED:
+            return True
+    return False
 
 
 def _resend_text(stored: str | None) -> str | None:
