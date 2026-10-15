@@ -8,6 +8,7 @@
  * to match — are provable without a browser.
  */
 
+import { clientName } from "./agentRuns";
 import type { NotificationRow } from "./api";
 
 /** Above this the badge stops counting and starts gesturing. */
@@ -72,6 +73,8 @@ const VERB: Record<string, string> = {
   assigned: "assigned you",
   mention: "mentioned you on",
   comment: "commented on",
+  // WS-55 EA-12c — an outside agent asks the member on a task (§12.1).
+  agent_question: "asked you about",
 };
 
 /**
@@ -94,6 +97,9 @@ export function actorLabel(actor: string | null | undefined): string {
   // An agent keeps its full handle: `agent:builder` reads as a name already,
   // and splitting it at the colon would render every agent as "agent".
   if (raw.startsWith("agent:")) return raw.slice("agent:".length) || raw;
+  // WS-55 EA-12c — an outside agent's stamp, `mcp:claude-code`, reads
+  // "Claude Code" (EA12-8 sets it as the actor of `agent_question`).
+  if (raw.startsWith("mcp:")) return clientName(raw);
   return raw.split("@")[0] || raw;
 }
 

@@ -419,3 +419,49 @@ export function projectStateAccent(value?: string | null): StatusAccent {
   const state = projectState(value);
   return ACCENTS[state ? state.hue : "gray"];
 }
+
+/* ── Agent run state (WS-55 EA-12c, `external_agent_access.md` §12.1) ──────
+ *
+ * The pill on a task that an outside agent works on. A third axis, beside a
+ * task's status and a project's run state, and this is still the one module
+ * it becomes a colour in (rule 4). It is a CLOSED lookup, like
+ * `PROJECT_STATES`, and never goes through `resolveHue`: `keywordHue` reads
+ * "working" as blue, and the spec says neutral.
+ *
+ * The spec names five tones. They map onto this palette as follows:
+ * attention is amber, info is blue, error is red. Neutral is the gray CHIP.
+ * Muted is the gray `soft` fill with the gray `text`, the faintest pair this
+ * palette has. Each state also carries a glyph, so the pill never depends on
+ * colour alone.
+ */
+
+export interface AgentStateVisual {
+  hue: AccentHue;
+  /** Draw the gray `soft`+`text` pair, not the chip. Only gray uses it. */
+  muted?: boolean;
+  /** Lucide name for `<Icon name=… />`. */
+  icon: string;
+}
+
+export const AGENT_STATES: Record<string, AgentStateVisual> = {
+  awaiting: { hue: "amber", icon: "MessageCircleQuestion" },
+  answered: { hue: "blue", icon: "CircleCheck" },
+  working: { hue: "gray", icon: "Bot" },
+  queued: { hue: "gray", icon: "CircleDashed" },
+  stale: { hue: "gray", muted: true, icon: "CirclePause" },
+  stopping: { hue: "gray", muted: true, icon: "CircleStop" },
+  failed: { hue: "red", icon: "CircleAlert" },
+};
+
+/** How an agent state draws, or `null` when the value is not one. */
+export function agentStateVisual(value?: string | null): AgentStateVisual | null {
+  const key = value?.trim().toLowerCase();
+  return (key && AGENT_STATES[key]) || null;
+}
+
+/** The pill's class pair (fill and ink) for an agent state. Unknown is gray. */
+export function agentStateChip(value?: string | null): string {
+  const visual = agentStateVisual(value);
+  const accent = ACCENTS[visual ? visual.hue : "gray"];
+  return visual?.muted ? `${accent.soft} ${accent.text}` : accent.chip;
+}

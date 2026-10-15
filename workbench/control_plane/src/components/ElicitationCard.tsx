@@ -82,6 +82,11 @@ interface ElicitationCardProps {
   answered?: string;
   /** The roll-up's id: stable for the card's life (its request id). */
   id?: string;
+  /**
+   * The line beside Submit. The chat's default names "the assistant". The
+   * agent run panel of a task (EA-12c) names the outside agent.
+   */
+  hint?: string;
 }
 
 export default function ElicitationCard({
@@ -90,6 +95,7 @@ export default function ElicitationCard({
   disabled = false,
   answered,
   id,
+  hint = SUBMIT_HINT,
 }: ElicitationCardProps) {
   const [answers, setAnswers] = useState<ElicitationAnswers>({});
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
@@ -227,7 +233,7 @@ export default function ElicitationCard({
               >
                 Submit
               </Button>
-              <span className="text-[10px] text-muted-foreground">{SUBMIT_HINT}</span>
+              <span className="text-[10px] text-muted-foreground">{hint}</span>
             </div>
           )}
         </RollupBody>

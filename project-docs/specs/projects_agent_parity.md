@@ -225,8 +225,9 @@ the chat does part of it, or does it in a way that fails in practice.
 | G20 | A repeat rule in a plan, an intake capture or a private capture | Not in one step | `PUT …/recurrence` after the create | None | **Missing** | P8 |
 | G21 | **Attach a file to a task** | `TaskBody.tsx:455` | `POST /projects/tasks/{id}/attachments` (multipart) | Class X, "The chat has no file input". That reason is false since H-229 | **Missing** | P10 |
 | G22 | Filter the board from the chat | The filter bar | Browser state | `set_filter` is not built (`projects_ai_chat.md` §4.2) | **Missing** | Not now (Q4) |
+| G23 | Agent runs on a task: the three reads, the start, an activity and the finish | The task detail (EA-12c) | `routes/projects/agent_runs.py` (`external_agent_access.md` §12.1) | The four tools are in `PLANNED`. An outside agent reaches the routes over MCP | **Missing** | EA-12e |
 
-**Count: 22 gaps.** The counts below are the measure of 2026-10-05. P1, P2
+**Count: 23 gaps.** WS-55 EA-12a added G23 on 2026-10-14. The counts below are the measure of 2026-10-05. P1, P2
 and P6 have closed G1 to G9 since then, and P7 has closed G12 to G18.
 
 - 6 missing: G6, G7, G17, G20, G21 and G22.

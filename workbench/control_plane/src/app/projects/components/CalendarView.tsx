@@ -28,6 +28,7 @@
  */
 
 import { ParentCrumb, TaskMeta } from "@/components/TaskMeta";
+import { AgentPill } from "./AgentPill";
 import Button from "@/components/ui/Button";
 import { useMemo, useState } from "react";
 
@@ -302,6 +303,12 @@ export function CalendarView({
                       </span>
                       {/* D-PM-38 — a subtask chip names its parent. */}
                       <ParentCrumb parent={task.parent} />
+                      {/* WS-55 EA-12c — the agent run's state. */}
+                      <AgentPill
+                        state={task.agent_state}
+                        clientVia={task.agent_client_via}
+                        memberEmail={task.agent_member_email}
+                      />
                       <TaskMeta
                         chips={visibleChips(
                           task,

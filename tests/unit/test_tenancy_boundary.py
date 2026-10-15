@@ -150,6 +150,8 @@ EXPECTED_SCOPED = {
     "crm_convert_mappings",
     # WS-57 TR-1 (2026-10-13): the URL references of a task.
     "pm_task_refs",
+    # WS-55 EA-12a (2026-10-14): agent runs on a task and their activities.
+    "pm_agent_runs", "pm_agent_run_activities",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`
