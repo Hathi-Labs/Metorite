@@ -32,7 +32,20 @@ const WORKFLOW = readFileSync(
   HERE("../../../../.github/workflows/pr-check.yml"),
   "utf8"
 );
+/** The workflow with LF endings, so a Windows checkout reads it as CI does. */
+const LF = WORKFLOW.replace(/\r\n/g, "\n");
 const SPECS = readdirSync(HERE("../../e2e")).filter((f) => f.endsWith(".spec.ts"));
+
+/** Each job of `pr-check.yml`, keyed by its id, as the raw text of its block. */
+function jobs(): Record<string, string> {
+  const body = LF.slice(LF.indexOf("\njobs:\n"));
+  const out: Record<string, string> = {};
+  const heads = [...body.matchAll(/^ {2}([a-z0-9-]+):$/gm)];
+  heads.forEach((m, i) => {
+    out[m[1]] = body.slice(m.index, heads[i + 1]?.index ?? body.length);
+  });
+  return out;
+}
 
 /** The `testIgnore` entries declared on the `ci` project, as bare filenames. */
 function quarantined(): string[] {
@@ -57,6 +70,35 @@ describe("the browser gate CI runs", () => {
     const step = job.slice(0, job.indexOf("secret-scan:"));
     expect(step).toContain("npx playwright test --project=ci");
     expect(step).not.toMatch(/continue-on-error:\s*true/);
+  });
+
+  it("skips only its push copy, and still runs on every pull_request", () => {
+    // The push copy duplicates the PR run and adds no fence at the merge
+    // button, because a conflicted PR cannot merge. `!= 'push'` and not
+    // `== 'pull_request'`, so a trigger added later still runs the suite.
+    expect(jobs().e2e).toMatch(/^ {4}if: github\.event_name != 'push'$/m);
+  });
+
+  it("is the ONLY job that skips a push", () => {
+    // 🔴 The push trigger exists so a CONFLICTED PR still runs the R1
+    // migration-prefix guard, which is a unit test in the `test` job. A
+    // job-level `if:` anywhere else could switch that guard off on the one
+    // run that watches a conflicted PR.
+    expect(LF).toMatch(/^ {2}push:$/m);
+    const all = jobs();
+    expect(Object.keys(all)).toContain("test");
+    for (const [name, body] of Object.entries(all)) {
+      if (name === "e2e") continue;
+      expect(body, `job "${name}" has a job-level if:`).not.toMatch(/^ {4}if:/m);
+    }
+  });
+
+  it("has a cap above the measured run", () => {
+    // 🔴 The cap of 20 was the fault: the job takes about 20 minutes, so the
+    // cap cancelled green runs (measured 2026-10-15). Lower it again only with
+    // a new measured duration.
+    const cap = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(jobs().e2e)?.[1]);
+    expect(cap).toBeGreaterThanOrEqual(30);
   });
 
   it("keeps the report when it goes red", () => {

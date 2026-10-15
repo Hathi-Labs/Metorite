@@ -70,6 +70,7 @@ from __future__ import annotations
 import copy
 import functools
 import inspect
+import json
 import os
 import shlex
 import time
@@ -77,6 +78,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger
+from acb_common.paging import page_line, paged
 from agent_framework import (
     DEFAULT_FILE_ACCESS_INSTRUCTIONS,
     ContextProvider,
@@ -716,6 +718,169 @@ def _steered(item: Any) -> Any:
     return clone
 
 
+# ── Paged reads of the sandbox files (agent reads page, part 2) ─────────────
+#
+# MAF's ``file_access_read`` and ``file_access_read_lines`` return a whole file
+# when no end line is given, and ``file_access_ls`` returns every entry, so one
+# call can flood the context. A read now shows one window, and a list one page,
+# and each says how to get the rest (``acb_common.paging``). The window holds
+# whole lines. A single line longer than the window is cut, and the answer
+# says so. Fence: ``tests/unit/test_read_tool_paging.py``.
+
+#: Lines in one window of a file read.
+FILE_READ_LINES = 400
+#: Characters in one window of a file read. A window ends on a line before it.
+FILE_READ_CHARS = 40_000
+#: Entries in one page of a directory list.
+LS_PAGE = 200
+
+_READ = "file_access_read"
+_READ_LINES = "file_access_read_lines"
+_LS = "file_access_ls"
+
+
+def _lines(content: str) -> list[str]:
+    """MAF's line rule: split on ``\\n`` only, each line keeps its terminator,
+    and a final newline leaves a final empty line."""
+    parts = content.split("\n")
+    return [p + "\n" for p in parts[:-1]] + [parts[-1]]
+
+
+def _window(lines: list[str], first: int, last: int) -> int:
+    """How many lines from 1-based *first* fit in one window, at most to *last*."""
+    count, used = 0, 0
+    for line in lines[first - 1:last]:
+        if count and (count >= FILE_READ_LINES or used + len(line) > FILE_READ_CHARS):
+            break
+        count += 1
+        used += len(line)
+    return max(1, count)
+
+
+def _long_line(text: str, number: int) -> str:
+    """*text*, cut to the window when one line is longer than it."""
+    if len(text) <= FILE_READ_CHARS:
+        return text
+    size = len(text)
+    return "\n".join((text[:FILE_READ_CHARS], (
+        f"Line {number} holds {size} characters, and this shows the first "
+        f"{FILE_READ_CHARS}. Use run_command to read the rest of it.")))
+
+
+def _is_file_text(result: Any, file_name: str) -> bool:
+    """False for MAF's own error and not-found answers."""
+    return isinstance(result, str) and not (
+        result.startswith("Could not read") or result == f"File '{file_name}' not found.")
+
+
+def _paged_read(read: Any) -> Any:
+    @functools.wraps(read)
+    async def file_access_read(file_name: str) -> str:
+        content = await read(file_name=file_name)
+        if not _is_file_text(content, file_name):
+            return content
+        lines = _lines(content)
+        shown = _window(lines, 1, len(lines))
+        if shown >= len(lines):
+            return _long_line(content, 1)
+        body = "".join(lines[k] for k in range(shown))
+        body = _long_line(body, 1) if shown == 1 else body
+        line = page_line(len(lines), 0, shown, param="start_line", base=1,
+                         noun="lines", tool=_READ_LINES)
+        return "\n".join((body.rstrip("\n"), line))
+
+    return file_access_read
+
+
+def _paged_read_lines(read_lines: Any, read: Any) -> Any:
+    @functools.wraps(read_lines)
+    async def file_access_read_lines(file_name: str, start_line: int,
+                                     end_line: int | None = None) -> str:
+        content = await read(file_name=file_name)
+        if not _is_file_text(content, file_name) or not isinstance(start_line, int) \
+                or start_line < 1:
+            return await read_lines(file_name=file_name, start_line=start_line,
+                                    end_line=end_line)
+        lines = _lines(content)
+        last = len(lines) if end_line is None else min(int(end_line), len(lines))
+        if start_line > len(lines) or last < start_line:
+            # MAF's own answer for a range that does not exist.
+            return await read_lines(file_name=file_name, start_line=start_line,
+                                    end_line=end_line)
+        shown = _window(lines, start_line, last)
+        result = await read_lines(file_name=file_name, start_line=start_line,
+                                  end_line=start_line + shown - 1)
+        result = _long_line(result, start_line) if shown == 1 else result
+        if start_line + shown - 1 >= last:
+            return result
+        line = page_line(len(lines), start_line - 1, shown, param="start_line",
+                         base=1, noun="lines")
+        return "\n".join((result.rstrip("\n"), line))
+
+    return file_access_read_lines
+
+
+def _paged_ls(ls_tool: Any) -> Any:
+    """``file_access_ls`` with an ``offset``, as a new tool of the same name."""
+    from pydantic import BaseModel, Field
+
+    ls = ls_tool.func
+
+    class _ListPage(BaseModel):
+        directory: str | None = Field(
+            default=None,
+            description="Relative directory to list; omit or pass empty to list the root.")
+        glob_pattern: str | None = Field(
+            default=None,
+            description='Optional glob (e.g. "*.md") matched against entry names.')
+        offset: int = Field(default=0, description="Where the page starts. 0 is the first.")
+
+    async def file_access_ls(directory: str | None = None, glob_pattern: str | None = None,
+                             offset: int = 0) -> Any:
+        listed = await ls(directory=directory, glob_pattern=glob_pattern)
+        if not isinstance(listed, list):
+            return listed
+        page = paged(listed, offset, LS_PAGE, default=LS_PAGE, maximum=LS_PAGE,
+                     noun="entries")
+        if not page.line:
+            return page.items
+        return "\n".join((json.dumps(page.items), page.line))
+
+    return tool(
+        name=_LS,
+        description=f"{ls_tool.description} {LS_PAGE} entries a page: offset reads the next.",
+        schema=_ListPage,
+        approval_mode=getattr(ls_tool, "approval_mode", None) or "never_require",
+    )(file_access_ls)
+
+
+def page_file_tools(tools: list[Any]) -> list[Any]:
+    """MAF's file tools with a window on each read and a page on each list.
+
+    Every other tool comes back unchanged. The read tools keep their name,
+    their description and their schema. The list tool gains ``offset``.
+    """
+    by_name = {_one_tool_name(t): t for t in tools}
+    read = getattr(by_name.get(_READ), "func", None)
+    out: list[Any] = []
+    for item in tools:
+        name = _one_tool_name(item)
+        func = getattr(item, "func", None)
+        if name == _READ and callable(func):
+            clone = copy.copy(item)
+            clone.func = _paged_read(func)
+            out.append(clone)
+        elif name == _READ_LINES and callable(func) and callable(read):
+            clone = copy.copy(item)
+            clone.func = _paged_read_lines(func, read)
+            out.append(clone)
+        elif name == _LS and callable(func):
+            out.append(_paged_ls(item))
+        else:
+            out.append(item)
+    return out
+
+
 def _layout(agent_name: str, agent: Any) -> tuple[Any, Any] | None:
     try:
         sb = _broker_module()
@@ -773,6 +938,8 @@ async def _add_tools(
         disable_run_skill_script_approval=True,
     )
     await skills.before_run(agent=agent, session=session, context=context, state=state)
+    # Agent reads page, part 2: a window on each file read, a page on each list.
+    context.tools[before:] = page_file_tools(context.tools[before:])
     # H-236: the provider tools ARE the platform's, so record each one by
     # identity under its tool name before the steer wrap copies it.
     for added in context.tools[before:]:

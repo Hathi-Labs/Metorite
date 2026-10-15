@@ -1547,7 +1547,7 @@ async def list_cold_senders(
         rows = (await db.execute(text(
             """SELECT from_email, status, reason, updated_at
                FROM email_cold_senders WHERE account_id = :aid
-               ORDER BY updated_at DESC LIMIT 500"""
+               ORDER BY updated_at DESC, id DESC LIMIT 500"""
         ), {"aid": account_id})).fetchall()
         return {
             "cold_senders": [
