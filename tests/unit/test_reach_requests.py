@@ -272,6 +272,46 @@ class TestTheEmailAction:
         assert got[0]["actions"][0]["type"] == "NOTIFY_ME"
 
 
+class TestProcessPastEmails:
+    """A backfill never tells the member on WhatsApp (RE-5 review, P1-3)."""
+
+    @staticmethod
+    def _match(*types):
+        return {"rule": {"name": "R", "actions": [{"type": t} for t in types]}}
+
+    @pytest.mark.parametrize("draft_replies", [False, True])
+    def test_notify_me_is_stripped_whatever_the_run_asked(self, draft_replies):
+        from gateway.routes.email.automation import runner
+
+        got, skipped = runner._backfill_matches(
+            [self._match("LABEL", "NOTIFY_ME", "REPLY")], draft_replies)
+        types = [a["type"] for a in got[0]["rule"]["actions"]]
+        assert "NOTIFY_ME" not in types and "LABEL" in types
+        assert ("REPLY" in types) is draft_replies
+        assert skipped == (0 if draft_replies else 1)
+
+    def test_the_backfill_job_uses_the_pre_pass_and_the_live_run_does_not(self):
+        import inspect
+
+        from gateway.routes.email.automation import runner
+
+        assert "_backfill_matches(" in inspect.getsource(runner._process_past_emails_job)
+        assert "_backfill_matches" not in inspect.getsource(runner._run_rules_job)
+
+
+@pytest.mark.parametrize(("stored", "address"), [
+    ("priya@vendor.test", "priya@vendor.test"),
+    ('{"name": "Priya", "email": "priya@vendor.test"}', "priya@vendor.test"),
+    ({"name": "Priya", "email": "priya@vendor.test"}, "priya@vendor.test"),
+    (None, ""), ("{not json", "{not json"),
+])
+def test_an_approved_execution_reads_the_sender_address(stored, address):
+    """RE-5 review, P3-2: the title never shows the raw stored object."""
+    from gateway.routes.email.automation.runner import _sender_email
+
+    assert _sender_email(stored) == address
+
+
 # ── The workflow step notify.whatsapp ───────────────────────────────────────
 
 
