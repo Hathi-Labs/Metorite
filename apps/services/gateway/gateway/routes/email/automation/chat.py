@@ -229,6 +229,8 @@ async def ai_chat(
         model=chat_tier,
         # `event_stream` below forwards no CUSTOM event, so no card can reach
         # the member. Each card answers "no" at once (review of PR #888, P2).
+        # No client calls this route. The chat pane of the Email app runs on
+        # `/agent/run/stream`, which shows each card (EM-G11c1b).
         shows_cards=False,
     )
 

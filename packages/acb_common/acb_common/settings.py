@@ -284,6 +284,24 @@ class Settings(BaseSettings):
     # A flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_my_day_loop.py.
     my_day_loop_enabled: bool = False
+
+    # ── Reach: Metorite messages a member first (WS-59 RE-1a, 2026-10-14) ───
+    #
+    # `reach_enabled` is the switch of the Reach loop and its two routes,
+    # default OFF. `reach_orgs` lists the organization ids that may reach,
+    # with a comma between ids. Empty allows none, and there is no `*`.
+    # `reach_members` lists the member emails of the demo allowlist. Empty
+    # allows nobody. `reach_daily_cap` is the most interrupts one member gets
+    # in one local day. `reach_brief_template` is an approved Meta template
+    # name for a brief outside the 24-hour window. Empty sends no template.
+    # The one reader is `gateway.reach.flags`. A flip on a box is gate
+    # `enforcement-flip`. Spec: project-docs/specs/proactive_reach.md.
+    # Fence: tests/unit/test_reach_loop.py.
+    reach_enabled: bool = False
+    reach_orgs: str = ""
+    reach_members: str = ""
+    reach_daily_cap: int = 3
+    reach_brief_template: str = ""
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 

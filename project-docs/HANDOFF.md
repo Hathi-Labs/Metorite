@@ -5314,6 +5314,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md` §12.3.13.9 · PR-G8 review
 - **Added:** 2026-10-14 · PR-G8 (`gmail-purge-durable`), fix round 2
 
+### H-309 · Create the WS-59 tasks in the Metorite project "Proactive Intelligence" · [AGENT]
+- **Check:** in a session with the Metorite MCP, run `search_tasks` with the
+  query `RE-1`. A hit in the project "Proactive Intelligence" means the tasks
+  exist, and this entry goes.
+- **Why.** The owner asked for one Metorite task for each WS-59 ticket, and
+  for the status to move as the work moves. The MCP had no `create_task` on
+  2026-10-14, because EA-6d was not built.
+- **Do this:** when `create_task` is live, create one task for each of RE-1
+  to RE-10 of `specs/proactive_reach.md` §16. Use the project id
+  `55c1755e-b867-43ce-afba-ae3b641a0451`, the tag "Feature", and the title
+  "WS-59 RE-n: <what>". Then link each PR to its task with
+  `add_task_reference`.
+- **Authority:** `specs/proactive_reach.md` §16 · owner directive 2026-10-14
+- **Added:** 2026-10-14 · WS-59 RE-0
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
