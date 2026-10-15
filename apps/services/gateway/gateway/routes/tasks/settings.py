@@ -187,8 +187,13 @@ async def calendar_prefs(db: Any, user_id: str) -> dict[str, Any]:
 
 
 async def _load(db: Any, user_id: str) -> UserSettingsModel:
+    # The row of the BOUND tenant (WS-58 MD-3c fix round 1). Since migration
+    # 239 a member has one row for each organization. The predicate is beside
+    # RLS, not instead of it: an owner role that bypasses RLS still reads the
+    # row of this organization, and never another's.
     row = (await db.execute(text(
-        "SELECT * FROM user_settings WHERE user_id = :uid"),
+        f"SELECT * FROM user_settings WHERE organization_id = {_BOUND_ORG}"
+        " AND user_id = :uid"),
         {"uid": user_id})).fetchone()
     if not row:
         # ── WS-28p / D-PC-16: the calendar SEEDS itself from the People
