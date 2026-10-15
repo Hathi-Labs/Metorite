@@ -11,7 +11,8 @@ The four rules of §9.5. EA-3a built rules 1 and 2, the gateway half. EA-3b-1
 adds rules 3 and 4, which read the edge's tool records
 (``agent_edge/tools.py``). EA-6a widens each rule for a listed write pair.
 EA-6d adds the task create pair, one non-idempotent write (``create_task``)
-and one edge input (its ``idempotency_key``).
+and one edge input (its ``idempotency_key``). EA-6c adds the comment pair and
+the sixth edge input, the ``idempotency_key`` of ``add_comment``.
 
 1. Each pair in ``MCP_ROUTES`` is a route the gateway serves. Its method is
    ``GET``, or ``PATCH`` or ``POST`` for a pair of ``MCP_WRITE_ROUTES``, which
@@ -80,11 +81,13 @@ def test_the_allowlist_is_not_empty_and_is_get_only_outside_the_write_pairs():
 def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     """A new write pair needs a spec amendment (§9.2, EA3-31). EA-6a listed
     the PATCH and the references POST. EA-6d adds the task create. EA-12a
-    adds the three POST pairs of the agent runs (§12.1, EA12-9)."""
+    adds the three POST pairs of the agent runs (§12.1, EA12-9). EA-6c adds
+    the comment POST (EA3-35)."""
     expected = {
         ("PATCH", "/projects/tasks/{task_id}"),
         ("POST", "/projects/tasks/{task_id}/refs"),
         ("POST", "/projects/tasks"),
+        ("POST", "/projects/tasks/{task_id}/comments"),
         ("POST", "/projects/tasks/{task_id}/agent-runs"),
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
@@ -234,6 +237,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # EA-6d. The edge keeps the key in its own slot (`agent_edge.idempotency`),
     # and the route takes no such field (spec §9.2 and §9.5 rule 4).
     ("create_task", "idempotency_key"),
+    # EA-6c (EA3-35). The same slot, keyed by the tool name too. The comment
+    # route takes no such field either.
+    ("add_comment", "idempotency_key"),
 })
 
 

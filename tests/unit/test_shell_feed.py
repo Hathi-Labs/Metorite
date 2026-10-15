@@ -343,7 +343,9 @@ def text_of(answer: dict) -> str:
 
 class TestOneRegistry:
     def test_each_source_registers_once(self):
-        assert list(shell.REGISTRY) == ["tasks", "projects", "email", "approvals", "calendar"]
+        # MD-3c adds the gated `tasks_followups`, after the Calendar.
+        assert list(shell.REGISTRY) == ["tasks", "projects", "email", "approvals", "calendar",
+                                        "tasks_followups"]
         again = shell.Provider("tasks", ("projects",), shell.REGISTRY["tasks"].run,
                                frozenset({"overdue"}))
         with pytest.raises(ValueError, match="registers twice"):
@@ -1151,7 +1153,8 @@ class TestTheCallsStayInStep:
             source = inspect.getsource(module)
             for clock in ("datetime.now(", "datetime.utcnow(", "date.today(", "time.time("):
                 assert clock not in source, (module.__name__, clock)
-        assert inspect.getsource(feed).count("needs._now()") == 2
+        # The Calendar provider, the read, and the task kinds of MD-3c.
+        assert inspect.getsource(feed).count("needs._now()") == 3
 
     def test_the_calendar_provider_opens_no_session_of_its_own(self):
         source = inspect.getsource(feed)
