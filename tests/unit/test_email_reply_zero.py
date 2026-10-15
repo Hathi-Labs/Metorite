@@ -303,6 +303,10 @@ async def test_resolve_keeps_original_when_no_rule_for_status() -> None:
 def _backfill_db(latest, existing):
     db = AsyncMock()
     db.execute.side_effect = [
+        # EM-G11c2: phase 0 reads Auto-run first (`rules.auto_run_on`). ON, so
+        # these tests see the labels of main.
+        _result(fetchone=SimpleNamespace(provider="microsoft", auto_run=True,
+                                         settings_row="acc-1")),
         _result(fetchall=latest),
         _result(fetchall=existing),
         _me(),                   # identity.resolve_self (EM-T8e-1)
@@ -363,7 +367,7 @@ async def test_backfill_handles_outbound_reply_and_engine_for_inbound() -> None:
 
     # Sent-last thread → outbound-reply handling (AI status + label swap), the
     # SAME path as a CC reply — this is what gives native-client replies parity.
-    mark.assert_awaited_once_with("acc-1", "t1")
+    mark.assert_awaited_once_with("acc-1", "t1", labels=True)
     # Inbound thread → engine match → NEEDS_REPLY.
     assert dict(recorded)["t2"] == "NEEDS_REPLY"
 
@@ -407,7 +411,7 @@ async def test_backfill_reprocesses_provisional_auto_thread() -> None:
             patch.object(_rz, "_upsert_thread_status", AsyncMock()), \
             _asked(AsyncMock(return_value=[])):
         await m._maybe_classify_threads("acc-1")
-    mark.assert_awaited_once_with("acc-1", "t5")
+    mark.assert_awaited_once_with("acc-1", "t5", labels=True)
 
 
 # ── Determiner hardening: tail-clip, confident-flag, outbound detection ───────

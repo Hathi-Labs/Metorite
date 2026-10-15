@@ -896,6 +896,9 @@ async def test_a_failed_filed_write_does_not_skip_the_sent_threads(monkeypatch):
 
     db = AsyncMock()
     db.execute.side_effect = [
+        # EM-G11c2: the Auto-run read of phase 0 (`rules.auto_run_on`), ON.
+        _res(one=SimpleNamespace(provider="microsoft", auto_run=True,
+                                 settings_row="acc-1")),
         _res(many=[_row("t-filed", "archive"), _row("t-sent", "sent")]),
         _res(many=[]),
         _res(one=SimpleNamespace(email_address="me@x.test")),
@@ -911,7 +914,7 @@ async def test_a_failed_filed_write_does_not_skip_the_sent_threads(monkeypatch):
                         AsyncMock(side_effect=RuntimeError("db blip")))
     monkeypatch.setattr(replyzero_mod, "_mark_thread_replied", mark)
     await replyzero_mod._maybe_classify_threads("acc-1")
-    mark.assert_awaited_once_with("acc-1", "t-sent")
+    mark.assert_awaited_once_with("acc-1", "t-sent", labels=True)
 
 
 async def test_the_session_double_rolls_back_a_block_that_raised():
