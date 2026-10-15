@@ -986,6 +986,25 @@ class TestTellMeRoute:
         assert got.status_code == 200 and got.json()["state"] == "limit"
         assert "20 WhatsApp messages" in got.json()["answer"]
 
+    @pytest.mark.parametrize(("email", "org", "ready", "wa_id", "want"), [
+        (ME, ORG, True, "919800000001", {"available": True, "linked": True}),
+        (ME, ORG, True, None, {"available": True, "linked": False}),
+        (ME, ORG, False, "919800000001", {"available": False, "linked": False}),
+        ("other@reach.test", ORG, True, "919800000001", {"available": False, "linked": False}),
+        (ME, OTHER, True, "919800000001", {"available": False, "linked": False}),
+    ])
+    def test_the_status_is_always_200(self, world, monkeypatch, email, org, ready, wa_id,
+                                      want):
+        # RE-5 review, P1-4: the Rules UI reads it to offer the action.
+        async def linked(o, m):
+            assert (o, m) == (ORG, ME)
+            return wa_id
+
+        monkeypatch.setattr(channel, "channel_ready", lambda o: ready)
+        monkeypatch.setattr(channel, "linked_phone", linked)
+        got = TestTheRoutes._client(None, email, org).get("/reach/status")
+        assert got.status_code == 200 and got.json() == want
+
     def test_a_bad_title_is_422(self, world, monkeypatch):
         monkeypatch.setattr(channel, "channel_ready", lambda org: True)
         assert self._post(ME, ORG, {"title": "   "}).status_code == 422

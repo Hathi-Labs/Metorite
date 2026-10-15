@@ -616,13 +616,44 @@ _GEN_ACTION_TYPES = {
 }
 
 
-async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
+#: The words of the generator prompt about NOTIFY_ME. They go in only when
+#: "Tell me on WhatsApp" is available to the member (review of RE-5, P1-4).
+_GEN_NOTIFY_ME_TEXT = (
+    "NOTIFY_ME tells the mailbox owner about the email on WhatsApp. Its "
+    'label is "urgent" when the user says urgent, else "normal". It '
+    "never messages anyone else. 'tell me on WhatsApp' → NOTIFY_ME.\n"
+)
+
+
+async def _notify_me_available(user: Any) -> bool:
+    """True when "Tell me on WhatsApp" is available to *user* (RE-5)."""
+    from gateway.reach import requests as reach_requests
+
+    try:
+        available, _ = await reach_requests.reach_status(
+            str(getattr(user, "organization_id", None) or ""), user.email)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("email.generate_rules_reach_status_failed",
+                     error=type(exc).__name__)
+        return False
+    return available
+
+
+async def _llm_generate_rules(prompt: str, *,
+                              notify_me: bool = False) -> list[dict[str, Any]]:
     """Turn a natural-language rule description (one or several, often a bullet
     list) into structured rule specs — inbox-zero's plain-text → rules flow.
 
     Returns a list of dicts shaped like RuleModel (minus account_id). Best
-    effort: returns [] if the LLM is unavailable or nothing parses."""
+    effort: returns [] if the LLM is unavailable or nothing parses.
+
+    *notify_me* offers NOTIFY_ME to the model. The caller passes True only
+    when "Tell me on WhatsApp" is available to the member (RE-5). Else the
+    prompt does not name it, and an answer that holds it drops it."""
     try:
+        action_names = ("ARCHIVE, LABEL, MARK_READ, STAR, MARK_SPAM, TRASH, "
+                        "MOVE_FOLDER, REPLY, FORWARD, DRAFT_EMAIL, CALL_WEBHOOK"
+                        + (", NOTIFY_ME" if notify_me else ""))
         sys_prompt = (
             "You convert a user's plain-English description of email rules into "
             "structured automation rules. The user may describe several rules "
@@ -636,16 +667,11 @@ async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
             'LABEL/MOVE_FOLDER>", "to_address": "<for FORWARD>", "subject": '
             '"<optional>", "content": "<optional draft text; leave empty to let '
             'the AI write it>", "url": "<for CALL_WEBHOOK>"}]}\n'
-            "ACTION must be one of: ARCHIVE, LABEL, MARK_READ, STAR, MARK_SPAM, "
-            "TRASH, MOVE_FOLDER, REPLY, FORWARD, DRAFT_EMAIL, CALL_WEBHOOK, "
-            "NOTIFY_ME.\n"
-            "NOTIFY_ME tells the mailbox owner about the email on WhatsApp. Its "
-            'label is "urgent" when the user says urgent, else "normal". It '
-            "never messages anyone else.\n"
-            "Rules of thumb: 'label X as Y' → LABEL with label Y; 'archive' → "
+            f"ACTION must be one of: {action_names}.\n"
+            + (_GEN_NOTIFY_ME_TEXT if notify_me else "")
+            + "Rules of thumb: 'label X as Y' → LABEL with label Y; 'archive' → "
             "ARCHIVE; 'forward to a@b.com' → FORWARD to_address a@b.com; 'draft a "
-            "reply' → DRAFT_EMAIL; 'reply with …' → REPLY content; 'tell me on "
-            "WhatsApp' → NOTIFY_ME. Prefer an AI "
+            "reply' → DRAFT_EMAIL; 'reply with …' → REPLY content. Prefer an AI "
             "`instructions` condition for fuzzy intent; use from_pattern/"
             "subject_pattern only for literal sender/subject text. Keep names "
             'short. Omit empty fields. Output {"rules": []} if nothing parses.'
@@ -660,10 +686,21 @@ async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
             feature="rules_generate",
         )
         rules = data.get("rules") if isinstance(data, dict) else data
-        return _normalize_generated_rules(rules)
+        got = _normalize_generated_rules(rules)
+        return got if notify_me else _without_notify_me(got)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.generate_rules_failed", error=str(exc)[:200])
         return []
+
+
+def _without_notify_me(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*specs* with no NOTIFY_ME action. A spec left with no action goes."""
+    out = []
+    for spec in specs:
+        actions = [a for a in spec.get("actions") or [] if a.get("type") != "NOTIFY_ME"]
+        if actions:
+            out.append({**spec, "actions": actions})
+    return out
 
 
 def _normalize_generated_rules(data: Any) -> list[dict[str, Any]]:
@@ -826,11 +863,13 @@ async def generate_rules(
 
     The text may describe several rules at once; each is turned into a
     structured rule and created. Returns the created rules."""
+    # Read before the session opens: the read opens a tenant session of its own.
+    notify_me = await _notify_me_available(user)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         if not (req.prompt or "").strip():
             return {"created": [], "error": "Describe at least one rule."}
-        specs = await _llm_generate_rules(req.prompt)
+        specs = await _llm_generate_rules(req.prompt, notify_me=notify_me)
         if not specs:
             return {"created": [],
                     "error": "Couldn't turn that into a rule — try rephrasing."}
@@ -856,7 +895,8 @@ async def preview_generated_rules(
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
     if not (req.prompt or "").strip():
         return {"specs": [], "error": "Describe at least one rule."}
-    specs = await _llm_generate_rules(req.prompt)
+    specs = await _llm_generate_rules(
+        req.prompt, notify_me=await _notify_me_available(user))
     if not specs:
         return {"specs": [],
                 "error": "Couldn't turn that into a rule — try rephrasing."}

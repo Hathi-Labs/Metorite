@@ -10,10 +10,13 @@
 * ``POST /reach/tell-me`` — "Tell me on WhatsApp" for the signed-in member
   (RE-5, §11.4 item 2). It records one request with ``source=chat`` and
   answers what Reach will do with it. The assistant's tool calls it.
+* ``GET /reach/status`` — ``{available, linked}`` for the signed-in member.
+  The Rules UI reads it to offer the action or not.
 
 The first two answer 404 when Reach is off for the member, so a closed
 feature looks like no feature. ``tell-me`` answers ``off`` instead and
-records nothing, because the assistant must tell the member why. The member and the org come from the session only (R5,
+records nothing, because the assistant must tell the member why.
+``status`` answers ``available: false``. The member and the org come from the session only (R5,
 R11). Gated on ``feature:chat``, as the WhatsApp channel's own router is,
 because Reach speaks through that channel.
 """
@@ -69,6 +72,16 @@ async def reach_preview(user: UserContext = Depends(get_current_user)) -> dict[s
         "window_open": is_open,
         "held": held,
     }
+
+
+@router.get("/status")
+async def reach_status(user: UserContext = Depends(get_current_user)) -> dict[str, bool]:
+    """``{available, linked}`` of "Tell me on WhatsApp" for the signed-in
+    member. Always 200: Reach off reads ``available: false``, so the Rules UI
+    can hide the action (review of RE-5, P1-4)."""
+    org = str(getattr(user, "organization_id", None) or "")
+    available, linked = await requests.reach_status(org, user.email)
+    return {"available": available, "linked": linked}
 
 
 @router.post("/brief")

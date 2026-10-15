@@ -25,6 +25,9 @@ import { useEmailStore } from "../../../lib/emailStore";
 import { moveFieldCopy, moveTargets } from "../../../lib/connect";
 import { guardedLoad, loadGuard } from "../../../lib/mailboxSettings";
 import { PROCESS_PAST_MAX_SPAN_DAYS } from "../../../lib/onboarding";
+import {
+  actionOptions, fetchReachStatus, REACH_OFF, type ReachStatus,
+} from "../../../lib/reachStatus";
 import { isPendingReview, PatternRow } from "./SettingsTab";
 import { LabeledToggle, Modal } from "../ui";
 import {
@@ -868,6 +871,19 @@ function RuleEditor({
   // free-type for new labels), mirroring inbox-zero's LabelCombobox.
   const availableLabels = useEmailStore((s) => s.availableLabels);
 
+  // "Tell me on WhatsApp" is offered only when Reach can deliver it (WS-59
+  // RE-5, P1-4). Until the read answers, the action is not offered.
+  const [reach, setReach] = useState<ReachStatus>(REACH_OFF);
+  useEffect(() => {
+    let live = true;
+    void fetchReachStatus().then((r) => {
+      if (live) setReach(r);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
   // Conditions visible in the builder: any pre-filled field, plus ones the user
   // explicitly adds. A new rule starts with the AI Prompt row.
   const prefilled = COND_ORDER.filter(
@@ -1035,9 +1051,11 @@ function RuleEditor({
                 title={ACTION_META[a.type].description}
                 className={`${INPUT_BASE} w-40 flex-shrink-0`}
               >
-                {ACTION_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {ACTION_META[t].label}
+                {actionOptions(ACTION_TYPES, reach, a.type).map((o) => (
+                  <option key={o.type} value={o.type} disabled={o.disabled}>
+                    {o.hint
+                      ? `${ACTION_META[o.type].label} (${o.hint})`
+                      : ACTION_META[o.type].label}
                   </option>
                 ))}
               </select>

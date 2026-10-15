@@ -244,6 +244,24 @@ async def tell_me(org: str, member: str, *, source: str, title: str,
     return None if row is None else str(row[0])
 
 
+async def reach_status(org: str | None, member: str | None) -> tuple[bool, bool]:
+    """``(available, linked)`` of "Tell me on WhatsApp" for *member* in *org*.
+
+    *available* is True when Reach may deliver to the member: the switch, the
+    org list, the member allowlist and the WhatsApp channel. *linked* is True
+    when the member also has a current WhatsApp link. The link is read only
+    when Reach is available. The Rules UI, the AI rule generator and the
+    email action read this one answer (review of RE-5, P1-4)."""
+    from gateway.reach import flags
+    from gateway.reach import whatsapp as channel
+
+    email = str(member or "").strip().lower()
+    if not org or not email or not flags.member_allowed(org, email) \
+            or not channel.channel_ready(org):
+        return False, False
+    return True, await channel.linked_phone(org, email) is not None
+
+
 async def undelivered(org: str, member: str) -> list[Request]:
     """The member's requests that no log row closed, oldest first, expired or
     not. :func:`split` parts them."""

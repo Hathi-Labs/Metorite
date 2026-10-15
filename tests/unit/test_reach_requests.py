@@ -247,7 +247,10 @@ class _NoDb:
 def told(monkeypatch):
     from acb_common.db import bind_tenant, release_tenant
 
-    got: list[dict] = []
+    class _Told(list):
+        status: list
+
+    got: _Told = _Told()
     keys: set[str] = set()
 
     async def tell_me(org, member, **kw):
@@ -258,7 +261,15 @@ def told(monkeypatch):
         return "r"
 
     monkeypatch.setattr(requests, "tell_me", tell_me)
+    #: What reach_status answers: (available, linked). Tests may change it.
+    got_status = [(True, True)]
+
+    async def reach_status(org, member):
+        return got_status[0]
+
+    monkeypatch.setattr(requests, "reach_status", reach_status)
     token = bind_tenant(ORG)
+    got.status = got_status  # type: ignore[attr-defined]
     yield got
     release_tenant(token)
 
@@ -294,9 +305,63 @@ class TestTheEmailAction:
         await self._run({"type": "NOTIFY_ME"})
         assert told[0]["key"] == told[1]["key"]
 
+    @pytest.mark.parametrize(("status", "reason"), [
+        ((False, False), "Tell me on WhatsApp is not on for this mailbox owner yet"),
+        ((True, False), "Link WhatsApp in My Profile first"),
+    ])
+    async def test_reach_that_cannot_deliver_is_an_action_issue(self, told, status, reason):
+        # RE-5 review, P1-4: History shows why, never a silent success.
+        told.status[0] = status
+        done, errors = await self._run({"type": "NOTIFY_ME"})
+        assert done == [] and told == []
+        assert errors == [{"type": "NOTIFY_ME", "error": reason}]
+
     async def test_no_rule_id_is_an_action_issue_and_records_nothing(self, told):
         done, errors = await self._run({"type": "NOTIFY_ME"}, rule_id="")
         assert done == [] and errors[0]["type"] == "NOTIFY_ME" and told == []
+
+    async def test_the_generator_offers_it_only_when_reach_is_available(self, monkeypatch):
+        # RE-5 review, P1-4 (c).
+        from gateway.routes.email.automation import rules
+
+        seen: list[str] = []
+
+        async def llm_json(tier, messages, **kw):
+            seen.append(messages[0]["content"])
+            return ({"rules": [
+                {"name": "Bank", "actions": [{"type": "NOTIFY_ME"}]},
+                {"name": "Both", "actions": [{"type": "NOTIFY_ME"}, {"type": "STAR"}]},
+            ]}, "", None)
+
+        monkeypatch.setattr(rules, "_llm_json", llm_json)
+        off = await rules._llm_generate_rules("tell me on WhatsApp about the bank")
+        assert "NOTIFY_ME" not in seen[0]
+        assert [(r["name"], [a["type"] for a in r["actions"]]) for r in off] == [
+            ("Both", ["STAR"])]
+        on = await rules._llm_generate_rules("x", notify_me=True)
+        assert "NOTIFY_ME" in seen[1] and len(on) == 2
+
+    async def test_the_generator_reads_the_members_status(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from gateway.routes.email.automation import rules
+
+        calls: list = []
+
+        async def reach_status(org, member):
+            calls.append((org, member))
+            return True, False
+
+        monkeypatch.setattr(requests, "reach_status", reach_status)
+        user = SimpleNamespace(organization_id=ORG, email="me@org.test")
+        assert await rules._notify_me_available(user) is True
+        assert calls == [(ORG, "me@org.test")]
+
+        async def boom(org, member):
+            raise RuntimeError("down")
+
+        monkeypatch.setattr(requests, "reach_status", boom)
+        assert await rules._notify_me_available(user) is False
 
     def test_the_rule_generator_knows_it_and_a_retry_skips_it(self):
         from gateway.routes.email.automation.rules import (

@@ -462,6 +462,13 @@ async def _notify_me(
         "SELECT NULLIF(current_setting('app.tenant_id', true), '')"))).scalar()
     if not org or not user_email or not rule_id or not account_id:
         raise RuntimeError("tell me on WhatsApp needs the mailbox owner and the rule")
+    # A request that Reach cannot deliver is not a silent success. History
+    # shows the reason (review of RE-5, P1-4).
+    available, linked = await reach_requests.reach_status(str(org), user_email)
+    if not available:
+        raise RuntimeError("Tell me on WhatsApp is not on for this mailbox owner yet")
+    if not linked:
+        raise RuntimeError("Link WhatsApp in My Profile first")
     sender = (email.get("from") or "").strip() or "an unknown sender"
     subject = (email.get("subject") or "").strip() or "(no subject)"
     urgency = "urgent" if str(action.get("label") or "").strip().lower() == "urgent" \
