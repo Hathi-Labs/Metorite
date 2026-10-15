@@ -445,6 +445,15 @@ def test_the_compose_stream_task_keeps_the_organization_of_its_request(
 class _JobProvider(_FakeProvider):
     """The EM-T1b-2 fake, plus the calls of the request jobs."""
 
+    async def get_message_body(self, pmid):
+        """The body the provider holds now (``live_bodies``). The draft
+        cleanup reads it before it trashes (WS-17 EM-G11c2 fix round 1)."""
+        from types import SimpleNamespace
+
+        self.calls.append(f"body:{pmid}")
+        live = getattr(self, "live_bodies", {})
+        return SimpleNamespace(body_text=live.get(pmid, ""), body_html=None)
+
     async def trash_message(self, pmid):
         self.calls.append(f"trash:{pmid}")
 
@@ -802,6 +811,10 @@ class TestTheRequestJobsWriteTheirOwnTenant:
                                 "topic": ""}]))
         monkeypatch.setattr(acb_memory, "add_memories_background", AsyncMock())
         provider = _JobProvider()
+        draft_pmid = _scalar(p.admin_engine,
+                             "SELECT provider_message_id FROM email_messages "
+                             "WHERE id = CAST(:m AS uuid)", {"m": draft_mid})
+        provider.live_bodies = {draft_pmid: "The draft the assistant wrote."}
         _patch_providers(monkeypatch, provider)
         async with tenant_engine_scope(_app_dsn(p)):
             with _bound(p.org_b):

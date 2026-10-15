@@ -563,17 +563,33 @@ def test_a_manual_conversation_rule_writes_no_label() -> None:
 # ── G7: the draft cleanup after a send ──────────────────────────────────────
 
 AI_TEXT = "Thanks, I will send the deck on Monday."
+TEMPLATE_TEXT = "Thank you for your order. We ship within two days."
 
 
-def _drafts_rig(monkeypatch, ai_text: str | None, drafts: list[Any]):
+def _drafts_rig(monkeypatch, records: list[str], drafts: list[Any],
+                live: dict[str, Any] | None = None):
+    """``records`` are the texts Metorite wrote (``email_ai_drafts``).
+    ``live`` maps a draft id to what the provider holds now: a text, a
+    ``(text, html)`` pair, or an exception. With no entry, a draft still holds
+    its stored body."""
     db = _FakeDb([
-        ("FROM email_ai_drafts", [SimpleNamespace(draft_text=ai_text)] if ai_text else []),
+        ("FROM email_ai_drafts", [SimpleNamespace(draft_text=t) for t in records]),
         ("FROM email_messages", drafts),
         ("FROM email_assistant_settings", [SimpleNamespace(signature="")]),
     ])
+    stored = {d.provider_message_id: d.body_text for d in drafts}
+    live = live or {}
     trashed: list[str] = []
 
     class _Prov:
+        async def get_message_body(self, pmid: str) -> Any:
+            got = live.get(pmid, stored.get(pmid))
+            if isinstance(got, Exception):
+                raise got
+            if isinstance(got, tuple):
+                return SimpleNamespace(body_text=got[0], body_html=got[1])
+            return SimpleNamespace(body_text=got, body_html=None)
+
         async def trash_message(self, pmid: str) -> None:
             trashed.append(pmid)
 
@@ -593,7 +609,7 @@ def _draft(pmid: str, body: str) -> Any:
 async def test_draft_cleanup_keeps_a_member_draft(monkeypatch) -> None:
     """Acceptance: a send keeps a draft that the member wrote in Gmail in the
     same thread. Only the unchanged AI draft goes."""
-    db, trashed = _drafts_rig(monkeypatch, AI_TEXT, [
+    db, trashed = _drafts_rig(monkeypatch, [AI_TEXT], [
         _draft("p-ai", "  Thanks, I will send the deck   on Monday.\n"),
         _draft("p-own", "My own notes for the reply, not done yet."),
     ])
@@ -603,16 +619,70 @@ async def test_draft_cleanup_keeps_a_member_draft(monkeypatch) -> None:
 
 
 async def test_no_stored_ai_draft_trashes_nothing(monkeypatch) -> None:
-    db, trashed = _drafts_rig(monkeypatch, None, [_draft("p-own", "Mine.")])
+    db, trashed = _drafts_rig(monkeypatch, [], [_draft("p-own", "Mine.")])
     await drafting._cleanup_thread_drafts(ACC, "t-1")
     assert trashed == [] and db.ran("DELETE FROM email_messages") == []
 
 
 async def test_an_edited_ai_draft_stays(monkeypatch) -> None:
-    _db, trashed = _drafts_rig(monkeypatch, AI_TEXT, [
+    _db, trashed = _drafts_rig(monkeypatch, [AI_TEXT], [
         _draft("p-ai", AI_TEXT + " Also, the budget is attached.")])
     await drafting._cleanup_thread_drafts(ACC, "t-1")
     assert trashed == []
+
+
+async def test_an_outlook_draft_the_member_edited_stays(monkeypatch) -> None:
+    """Fix round 1 (P2). Outlook sends an HTML body, and a text made from
+    HTML never replaces the stored text. So our mirror still holds Metorite's
+    words after the member edited the draft in Outlook. The live body decides."""
+    db, trashed = _drafts_rig(monkeypatch, [AI_TEXT], [_draft("p-ai", AI_TEXT)], live={
+        "p-ai": ("", "<p>Thanks, I will send the deck on Monday.</p>"
+                     "<p>PS: I moved it to Tuesday.</p>")})
+    await drafting._cleanup_thread_drafts(ACC, "t-1")
+    assert trashed == [], "the cleanup trashed an Outlook draft the member edited"
+    assert db.ran("DELETE FROM email_messages") == []
+
+
+async def test_an_unchanged_outlook_draft_with_an_html_body_goes(monkeypatch) -> None:
+    _db, trashed = _drafts_rig(monkeypatch, [AI_TEXT], [_draft("p-ai", AI_TEXT)], live={
+        "p-ai": ("", "<p>Thanks, I will send the deck on Monday.</p>")})
+    await drafting._cleanup_thread_drafts(ACC, "t-1")
+    assert trashed == ["p-ai"]
+
+
+async def test_a_failed_live_read_keeps_the_draft(monkeypatch) -> None:
+    _db, trashed = _drafts_rig(monkeypatch, [AI_TEXT], [_draft("p-ai", AI_TEXT)],
+                               live={"p-ai": RuntimeError("404")})
+    await drafting._cleanup_thread_drafts(ACC, "t-1")
+    assert trashed == []
+
+
+async def test_a_template_draft_is_trashed_again(monkeypatch) -> None:
+    """Fix round 1 (P2). A template DRAFT_EMAIL draft records its text under
+    ``template:<thread>``, so the cleanup trashes it, as on main, and drops
+    the record."""
+    db, trashed = _drafts_rig(monkeypatch, [TEMPLATE_TEXT], [
+        _draft("p-tpl", TEMPLATE_TEXT), _draft("p-own", "Mine.")])
+    await drafting._cleanup_thread_drafts(ACC, "t-1")
+    assert trashed == ["p-tpl"]
+    [read] = db.ran("SELECT draft_text FROM email_ai_drafts")
+    assert read["tmpl"] == "template:t-1" and read["tid"] == "t-1"
+    [dropped] = db.ran("DELETE FROM email_ai_drafts")
+    assert dropped["tmpl"] == "template:t-1"
+
+
+def test_a_template_draft_records_its_text_under_its_own_key() -> None:
+    """The DRAFT_EMAIL action records a template under ``template_draft_key``.
+    The readers that learn from edits read the bare thread id only."""
+    from gateway.routes.email.automation import actions
+
+    src = inspect.getsource(actions._apply_rule_actions)
+    assert "template=bool(tmpl)" in src
+    assert "template_draft_key(thread_id) if template" in inspect.getsource(
+        drafting._record_rule_draft)
+    assert drafting.template_draft_key("t-9") == "template:t-9"
+    for fn in (drafting._learn_from_sent, drafting._resolve_existing_thread_draft):
+        assert "template_draft_key" not in inspect.getsource(fn), fn.__name__
 
 
 def test_both_send_routes_clean_before_learning() -> None:
@@ -917,6 +987,8 @@ class TestTheDraftCleanupUnderForceRLS:
     async def test_a_send_keeps_the_members_own_draft(
         self, promoted, app_engine, monkeypatch,  # noqa: F811
     ):
+        """The real SQL: the member's Gmail draft and an AI draft edited in
+        Outlook stay. The unchanged AI draft and the template draft go."""
         _assert_non_priv(app_engine)
         p = promoted
         owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
@@ -924,17 +996,32 @@ class TestTheDraftCleanupUnderForceRLS:
         _seed_message(p.admin_engine, org=p.org_b, account_id=acc, thread="t-d")
         ai_id, ai_pmid = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
                                        thread="t-d", folder="drafts", body=AI_TEXT)
+        tpl_id, tpl_pmid = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
+                                         thread="t-d", folder="drafts",
+                                         body=TEMPLATE_TEXT)
         own_id, _own_pmid = _seed_message(
             p.admin_engine, org=p.org_b, account_id=acc, thread="t-d",
             folder="drafts", body="My own words, written in Gmail.")
+        # A second thread: the mirror holds the AI text, the live draft does not.
+        edited_id, edited_pmid = _seed_message(
+            p.admin_engine, org=p.org_b, account_id=acc, thread="t-e",
+            folder="drafts", body=AI_TEXT)
         with p.admin_engine.begin() as c:
-            c.execute(text(
-                "INSERT INTO email_ai_drafts (account_id, thread_id, draft_text, "
-                "organization_id) VALUES (CAST(:a AS uuid), 't-d', :t, "
-                "CAST(:o AS uuid))"), {"a": acc, "t": AI_TEXT, "o": p.org_b})
+            for tid, txt in (("t-d", AI_TEXT), ("template:t-d", TEMPLATE_TEXT),
+                             ("t-e", AI_TEXT)):
+                c.execute(text(
+                    "INSERT INTO email_ai_drafts (account_id, thread_id, draft_text, "
+                    "organization_id) VALUES (CAST(:a AS uuid), :tid, :t, "
+                    "CAST(:o AS uuid))"),
+                    {"a": acc, "tid": tid, "t": txt, "o": p.org_b})
         trashed: list[str] = []
+        live = {ai_pmid: AI_TEXT, tpl_pmid: TEMPLATE_TEXT,
+                edited_pmid: AI_TEXT + " PS: edited in Outlook."}
 
         class _Prov:
+            async def get_message_body(self, pid: str) -> Any:
+                return SimpleNamespace(body_text=live.get(pid, ""), body_html=None)
+
             async def trash_message(self, pid: str) -> None:
                 trashed.append(pid)
 
@@ -946,12 +1033,17 @@ class TestTheDraftCleanupUnderForceRLS:
         try:
             async with _as_tenant(p):
                 await drafting._cleanup_thread_drafts(acc, "t-d")
-            assert trashed == [ai_pmid]
+                await drafting._cleanup_thread_drafts(acc, "t-e")
+            assert sorted(trashed) == sorted([ai_pmid, tpl_pmid])
             left = {str(r[0]) for r in _admin_read(
                 p.admin_engine, "SELECT id FROM email_messages WHERE "
                 "account_id = CAST(:a AS uuid) AND folder = 'drafts'", a=acc)}
-            assert left == {own_id}, "the member's own draft was removed"
-            assert ai_id not in left
+            assert left == {own_id, edited_id}, "a member's draft was removed"
+            assert ai_id not in left and tpl_id not in left
+            records = {r[0] for r in _admin_read(
+                p.admin_engine, "SELECT thread_id FROM email_ai_drafts "
+                "WHERE account_id = CAST(:a AS uuid)", a=acc)}
+            assert records == {"t-d", "t-e"}, "the template record was not dropped"
         finally:
             _drop_owner(p.admin_engine, owner)
 
