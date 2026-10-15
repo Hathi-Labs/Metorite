@@ -56,6 +56,14 @@ export const HTML_EXTS: readonly string[] = ["html", "htm"];
  * A report the agent made (`make_report`, owner directive 2026-10-16). It is
  * JSON, so the code list below would take it. It is tested first, by its
  * whole ending, and every viewer draws it with `ReportView`.
+ *
+ * ⚠️ Only a workspace OUTPUT is a report (`isArtifactPath`, under
+ * `outputs/`). An email attachment's path is its bare file name, which the
+ * sender chose, and an upload sits under `inputs/`. Either stays "code", so
+ * an outside file never draws as a Metorite report (review of #1065). A
+ * file under `outputs/` that is not a Metorite report (a Lighthouse
+ * `site.report.json`) fails `parseReportFile`, and the viewers show it as
+ * JSON, which a member can still edit.
  */
 export const REPORT_SUFFIX = ".report.json";
 
@@ -86,7 +94,7 @@ export function classifyArtifact(
   mimeType = "",
 ): ArtifactKind {
   const ext = extOf(name);
-  if (name.toLowerCase().endsWith(REPORT_SUFFIX)) return "report";
+  if (name.toLowerCase().endsWith(REPORT_SUFFIX) && isArtifactPath(path)) return "report";
   if (MARKDOWN_EXTS.includes(ext)) return "markdown";
   if (HTML_EXTS.includes(ext)) return "html";
   if ((ext === "jsx" || ext === "tsx") && isArtifactPath(path)) return "react";

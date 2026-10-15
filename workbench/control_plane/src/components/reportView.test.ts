@@ -311,3 +311,77 @@ describe("a report file", () => {
     expect(modal).toContain("siblingFileUrl(externalDownloadUrl, report.pdf)");
   });
 });
+
+// ── Review of #1065: no silent cut, no undercount ───────────────────────────
+describe("the view says what it left out", () => {
+  const big = {
+    title: "T",
+    kpis: Array.from({ length: 10 }, (_, i) => ({ label: `k${i}`, value: i })),
+    sections: [
+      { heading: "Board", bullets: Array.from({ length: 18 }, (_, i) => `b${i}`),
+        visual: { kind: "board", columns: [{ name: "Doing", cards: Array.from({ length: 9 }, (_, i) => ({ title: `c${i}` })) }] } },
+      { visual: { kind: "table", columns: ["a"], rows: Array.from({ length: 25 }, () => [1]) } },
+      ...Array.from({ length: 31 }, (_, i) => ({ heading: `h${i}` })),
+    ],
+    sources: Array.from({ length: 33 }, (_, i) => `src${i}`),
+  };
+
+  it("the full view draws each cut as a note, and the board's count is the true total", () => {
+    const html = full(big);
+    for (const note of ["+2 more KPIs", "+2 more", "+5 more rows", "+3 more sections", "+3 more sources"]) {
+      expect(html, note).toContain(note);
+    }
+    // The board column says 9, not the 6 it draws, and how many it left out.
+    expect(html).toMatch(/<span>Doing<\/span><span>9<\/span>/);
+    expect(html).toContain("+3 more");
+    expect(html.match(/data-report-more=""/g)?.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("the card lists a section with no heading, and never undercounts", () => {
+    const html = renderToStaticMarkup(TEMPLATE_REGISTRY.report({ ...big, sections: [{ heading: "One" }, { text: "no heading" }, { heading: "Three" }] }));
+    expect(html).toContain(">Section 2<");
+    expect(html).toContain(">One<");
+    expect(html).toContain(">Three<");
+    const many = renderToStaticMarkup(TEMPLATE_REGISTRY.report(big));
+    expect(many).toContain("+3 more sections");
+  });
+});
+
+// ── Review of #1065, P2: report text has no image and no link, by the AST ──
+describe("report text drops every image and every link", () => {
+  const cases: Record<string, string> = {
+    "a nested-bracket image": "Look ![a[b]c](https://evil.test/x.png) here",
+    "a reference image": "See ![x][r]\n\n[r]: https://evil.test/x.png",
+    "a reference link": "Go [click][r] now\n\n[r]: https://evil.test",
+    "a bare URL": "Visit https://evil.test/page today",
+  };
+  for (const [name, text] of Object.entries(cases)) {
+    it(name, () => {
+      for (const html of [
+        full({ title: "T", summary: text, sections: [{ text, bullets: [text] }] }),
+        renderToStaticMarkup(TEMPLATE_REGISTRY.report({ title: "T", summary: text, sections: [{ text }] })),
+      ]) {
+        expect(html, name).not.toMatch(/<img|<a[\s>]|evil\.test\/x\.png" |href="https:\/\/evil/);
+        expect(html, name).not.toContain('href="https://evil');
+      }
+    });
+  }
+
+  it("keeps the words of a link and drops its target", () => {
+    const html = full({ title: "T", summary: "Go [click][r] now\n\n[r]: https://evil.test", sections: [{ text: "x" }] });
+    expect(html).toContain("click");
+  });
+});
+
+// ── Review of #1065, P2: a report file stays a JSON file a member can edit ──
+describe("a report file stays editable", () => {
+  const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+
+  it("the viewer and the side panel offer Edit on a report, and draw it again after a save", () => {
+    const modal = read("./ArtifactViewerModal.tsx");
+    expect(modal).toMatch(/kind === "code" \|\| kind === "text" \|\| kind === "report"\)/);
+    expect(modal).toMatch(/handleSave[\s\S]*kind === "report"[\s\S]*parseReportFile\(editContent, entry\.path\)/);
+    const pane = read("./DocumentPane.tsx");
+    expect(pane).toMatch(/kind === "code" \|\| kind === "text" \|\| kind === "report"/);
+  });
+});

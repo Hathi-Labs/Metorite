@@ -97,9 +97,10 @@ function date(v, what) {
 
 /**
  * @typedef {{ mode?: "dark" | "light", scale?: number, footer?: boolean,
- *   font?: string, interactive?: boolean, animate?: boolean }} Opts
+ *   font?: string, interactive?: boolean, animate?: boolean, maxHeight?: number }} Opts
  * `font` is the page's own font list (the web chat, where next/font renames
  * Geist). `interactive` adds the tooltip a live chart shows on hover.
+ * `maxHeight` is a card's height cap, in pixels (see {@link chartOption}).
  */
 
 const DAY = 86400000;
@@ -227,7 +228,8 @@ const BUILD = {
     }));
     if (ss.length > 1) { o.legend = legend(c); o.grid.bottom = c.u(110); }
     if (long) o.grid.right = c.u(110);
-    return { o, h: long ? Math.max(c.top + 410, c.top + 70 + ls.length * 64 + (ss.length > 1 ? 50 : 0)) : c.top + BODY };
+    // A long bar is a row per label, a fixed step apart: it grows by its rows.
+    return { o, h: long ? Math.max(c.top + 410, c.top + 70 + ls.length * 64 + (ss.length > 1 ? 50 : 0)) : c.top + BODY, grows: long };
   },
 
   line(spec, opts, c) {
@@ -276,7 +278,9 @@ const BUILD = {
     if (total <= 0) fail("a donut needs a total above zero");
     const tn = tones(c, spec, ls.length);
     const o = base(spec, opts, c);
-    const W = c.wu * c.k, H = (c.top + BODY) * c.k;
+    // H is the height DRAWN: under a card's cap the pie is that box's, and the
+    // total must sit over its hole, not where an uncapped pie would be.
+    const W = c.wu * c.k, H = Math.min((c.top + BODY) * c.k, opts.maxHeight ?? Infinity);
     o.series = [{
       type: "pie", radius: ["50%", "72%"], center: ["31%", "58%"], padAngle: 2.5,
       itemStyle: { borderRadius: c.u(10) }, label: { show: false },
@@ -606,10 +610,24 @@ function quartiles(xs) {
 }
 
 /**
+ * The kinds that grow by their rows. Each places a mark (a caption, a bar of
+ * a fixed height, a cell) a fixed step below the last, so a smaller box would
+ * move the marks off their rows. Under a cap such a chart keeps its height,
+ * and its box scrolls (`LiveChart`). Every other kind lays its plot out in
+ * the box, and draws at the capped height. A long bar grows too: its builder
+ * says so (`grows`).
+ */
+export const GROWS_BY_ROWS = new Set(["progress", "heatmap", "funnel", "calendar", "gantt"]);
+
+/**
  * A spec as a full ECharts option, and the drawing's size.
+ *
+ * `fits` is true when the chart lays out at any height: then a `maxHeight`
+ * caps it, and every graphic is placed from the height drawn. False for a
+ * chart that grows by its rows: it keeps its height, whatever the cap.
  * @param {any} spec  the AI's short spec, with a `type`
  * @param {Opts & { width?: number, animate?: boolean }} [opts]
- * @returns {{ option: any, width: number, height: number }}
+ * @returns {{ option: any, width: number, height: number, fits: boolean }}
  */
 export function chartOption(spec, opts = {}) {
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) fail("a chart is an object with a \"type\"");
@@ -620,7 +638,11 @@ export function chartOption(spec, opts = {}) {
   const width = opts.width ?? 1080;
   const scale = opts.scale ?? width / 1080;
   const c = ctx(spec, { ...opts, scale });
-  const { o, h } = build(spec, { ...opts, scale }, c);
+  const built = build(spec, { ...opts, scale }, c);
+  const { o, h } = built;
   if (opts.interactive) o.tooltip = tooltip(kind, c);
-  return { option: o, width, height: Math.round(h * scale) };
+  const fits = !(GROWS_BY_ROWS.has(kind) || built.grows);
+  const natural = Math.round(h * scale);
+  const height = fits && opts.maxHeight ? Math.min(natural, opts.maxHeight) : natural;
+  return { option: o, width, height, fits };
 }

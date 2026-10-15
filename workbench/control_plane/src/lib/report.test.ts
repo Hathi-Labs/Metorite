@@ -191,11 +191,24 @@ describe("the words", () => {
     for (const n of [2, 4, 5, 6, 7, 8]) expect(kpiGridClass(n), String(n)).toContain("@[13rem]:grid-cols-2");
   });
 
-  it("Markdown-lite keeps bold, lists and line breaks, and drops an image, a URL and HTML", () => {
+  it("Markdown-lite keeps a single line break, and leaves images and links to the parsed tree", () => {
     expect(liteMarkdown("one\ntwo")).toBe("one  \ntwo");
     expect(liteMarkdown("a\n- b\n- c")).toBe("a\n- b\n- c");
-    expect(liteMarkdown("**b** ![p](https://e.test/x.png) [w](https://e.test) <img src=x>"))
-      .toBe("**b** p w ");
+    // No regex strips media here any more: remarkTextOnly does, on the AST.
+    expect(liteMarkdown("**b** ![p](x.png)")).toBe("**b** ![p](x.png)");
+  });
+
+  it("the card's plain summary holds no image, no link target and no URL (review of #1065)", () => {
+    for (const t of [
+      "Look ![a[b]c](https://evil.test/x.png) here",
+      ["See ![x][r]", "", "[r]: https://evil.test/x.png"].join("\n"),
+      ["Go [click][r] now", "", "[r]: https://evil.test"].join("\n"),
+      "Visit https://evil.test/page today",
+    ]) {
+      const out = plainSummary(t);
+      expect(out, t).not.toMatch(/evil|https?:|!\[|\]\(|\]\[/);
+    }
+    expect(plainSummary(["Go [click][r] now", "", "[r]: https://evil.test"].join("\n"))).toBe("Go click now");
   });
 });
 
@@ -225,7 +238,7 @@ describe("mapVisual", () => {
 
   it("a chart keeps the chart language's spec, and a gantt is a gantt chart", () => {
     expect(mapVisual(v("chart", { type: "donut", labels: ["a"], values: [1], title: "T" }))).toEqual({
-      template: "chart", data: { type: "donut", labels: ["a"], values: [1], title: "T" },
+      template: "chart", data: { type: "donut", labels: ["a"], values: [1], title: "T" }, more: [],
     });
     expect(mapVisual(v("chart", { labels: ["a"], values: [1] }))?.data.type).toBe("bar");
     expect(mapVisual(v("gantt", { rows: [{ label: "x", start: "2026-10-01", end: "2026-10-09" }] }))?.data.type).toBe("gantt");
@@ -249,7 +262,7 @@ describe("mapVisual", () => {
     expect(mapVisual(v("stats", { tiles: [{ label: "A", value: 1, delta: "+2", good: "down" }] }))?.data.stats)
       .toEqual([{ label: "A", value: 1, unit: "", delta: "+2", good: "down" }]);
     expect(mapVisual(v("board", { columns: [{ name: "Doing", cards: [{ title: "X", meta: "Asha" }] }] }))?.data.columns)
-      .toEqual([{ name: "Doing", tasks: [{ title: "X", meta: "Asha" }] }]);
+      .toEqual([{ name: "Doing", total: 1, tasks: [{ title: "X", meta: "Asha" }] }]);
     expect(mapVisual(v("timeline", { events: [{ date: "2026-10-01", title: "Kickoff", state: "done" }] }))?.data.rows)
       .toEqual([{ at: "2026-10-01", type: "done", actor: "Kickoff", body: undefined }]);
     const agenda = mapVisual(v("agenda", { items: [{ start: "09:30", end: "10:00", title: "Standup" }] }));
@@ -264,5 +277,49 @@ describe("mapVisual", () => {
     expect(firstVisualSection(r)?.heading).toBe("B");
     expect(firstVisualSection(r)?.visual?.kind).toBe("table");
     expect(firstVisualSection(reportFrom({}))).toBeNull();
+  });
+});
+
+// ── Review of #1065, P1: a read says what it left out ───────────────────────
+describe("a cut always says how much it left out", () => {
+  const v = (kind: string, data: Record<string, unknown>) => ({ kind, title: "", data });
+
+  it("the caps are the WhatsApp cards' caps", () => {
+    expect(REPORT_LIMITS.boardColumns).toBe(4);
+    expect(REPORT_LIMITS.boardCards).toBe(6);
+    expect(REPORT_LIMITS.events).toBe(12);
+    expect(REPORT_LIMITS.agendaItems).toBe(16);
+    expect(REPORT_LIMITS.statsTiles).toBe(8);
+  });
+
+  it("a table names the rows and the columns it cut", () => {
+    const m = mapVisual(v("table", { columns: "abcdefgh".split(""), rows: Array.from({ length: 25 }, () => [1, 2, 3, 4, 5, 6, 7, 8]) }));
+    expect(m?.more).toEqual(["+5 more rows", "+2 more columns"]);
+    expect(mapVisual(v("table", { columns: ["a"], rows: [[1]] }))?.more).toEqual([]);
+  });
+
+  it("a board keeps each column's true count, and names the columns it cut", () => {
+    const col = (n: number) => ({ name: "Doing", cards: Array.from({ length: n }, (_, i) => ({ title: `c${i}` })) });
+    const m = mapVisual(v("board", { columns: [col(9), col(2), col(1), col(1), col(1), col(1)] }));
+    const cols = m?.data.columns as { tasks: unknown[]; total: number }[];
+    expect(cols[0].tasks).toHaveLength(6);
+    expect(cols[0].total).toBe(9);
+    expect(m?.more).toEqual(["+2 more columns"]);
+  });
+
+  it("a timeline, an agenda and a set of tiles name what they cut", () => {
+    expect(mapVisual(v("timeline", { events: Array.from({ length: 14 }, () => ({ title: "e" })) }))?.more).toEqual(["+2 more milestones"]);
+    expect(mapVisual(v("agenda", { items: Array.from({ length: 20 }, () => ({ title: "i" })) }))?.more).toEqual(["+4 more items"]);
+    expect(mapVisual(v("stats", { tiles: Array.from({ length: 10 }, (_, i) => ({ label: `t${i}`, value: i })) }))?.more).toEqual(["+2 more tiles"]);
+  });
+
+  it("the report counts the KPIs, sections, bullets and sources it cut", () => {
+    const r = reportFrom({
+      kpis: Array.from({ length: 10 }, (_, i) => ({ label: `k${i}`, value: i })),
+      sections: [{ heading: "s", bullets: Array.from({ length: 18 }, (_, i) => `b${i}`) }, ...Array.from({ length: 32 }, (_, i) => ({ heading: `h${i}` }))],
+      sources: Array.from({ length: 33 }, (_, i) => `src${i}`),
+    });
+    expect(r.more).toEqual({ kpis: 2, sections: 3, sources: 3 });
+    expect(r.sections[0].moreBullets).toBe(2);
   });
 });

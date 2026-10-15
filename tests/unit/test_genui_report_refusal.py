@@ -81,6 +81,13 @@ def test_an_oversize_report_is_refused_through_emit_generative_ui() -> None:
         ({"sections": [{"visual": {"kind": "table", "columns": ["a"], "rows": [["x"]] * 21}}]}, "at most 20 rows"),
         ({"sections": [{"visual": {"kind": "chart", "type": "bar"}}] * 13}, "at most 12 visuals"),
         ({"sections": ["not an object"]}, "a section is an object"),
+        # Review of #1065, P1: each cap the renderer has, the tool refuses.
+        ({"sections": [{"visual": {"kind": "stats", "tiles": [{"label": "t", "value": 1}] * 9}}]}, "at most 8 tiles"),
+        ({"sections": [{"visual": {"kind": "board", "columns": [{"name": "c", "cards": []}] * 5}}]}, "at most 4 columns"),
+        ({"sections": [{"visual": {"kind": "board", "columns": [{"name": "c", "cards": [{"title": "x"}] * 7}]}}]}, "at most 6 cards"),
+        ({"sections": [{"visual": {"kind": "timeline", "events": [{"date": "2026-10-01", "title": "e"}] * 13}}]}, "at most 12 events"),
+        ({"sections": [{"visual": {"kind": "agenda", "items": [{"start": "09:00", "title": "i"}] * 17}}]}, "at most 16 items"),
+        ({"sections": [{"visual": {"kind": "table", "columns": ["a"], "rows": [["1", "2", "3", "4", "5", "6", "7"]]}}]}, "at most 6 cells"),
     ],
 )
 def test_each_cap_is_refused_by_name(over: dict, words: str) -> None:
@@ -140,8 +147,22 @@ def test_the_renderer_caps_match() -> None:
     )
     block = ts.split("export const REPORT_LIMITS = {", 1)[1].split("} as const;", 1)[0]
     limits = {k: int(v) for k, v in re.findall(r"^\s*(\w+): (\d+),", block, re.M)}
-    assert limits["kpis"] == wa.GENUI_REPORT_MAX_KPIS
-    assert limits["sources"] == wa.GENUI_REPORT_MAX_SOURCES
-    assert limits["tableColumns"] == wa.GENUI_REPORT_MAX_TABLE_COLUMNS
-    assert limits["tableRows"] == wa.GENUI_REPORT_MAX_TABLE_ROWS
-    assert limits["sections"] == 30 and limits["bullets"] == 16
+    from acb_skills import documents, whatsapp_cards
+
+    # Every cap the view draws to is a cap the tool refuses past. A key the
+    # view adds and this map does not name fails here (review of #1065, P1).
+    server = {
+        "kpis": wa.GENUI_REPORT_MAX_KPIS,
+        "sections": documents.MAX_SECTIONS,
+        "bullets": documents.MAX_BULLETS * 2,
+        "sources": wa.GENUI_REPORT_MAX_SOURCES,
+        "tableColumns": wa.GENUI_REPORT_MAX_TABLE_COLUMNS,
+        "tableRows": wa.GENUI_REPORT_MAX_TABLE_ROWS,
+        "boardColumns": whatsapp_cards.MAX_BOARD_COLUMNS,
+        "boardCards": whatsapp_cards.MAX_CARDS,
+        "events": whatsapp_cards.MAX_EVENTS,
+        "agendaItems": whatsapp_cards.MAX_AGENDA_ITEMS,
+        "statsTiles": whatsapp_cards.MAX_TILES,
+    }
+    caps = {k: v for k, v in limits.items() if k != "cardSummary"}
+    assert caps == server

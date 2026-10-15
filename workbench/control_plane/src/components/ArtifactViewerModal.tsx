@@ -317,7 +317,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
   const editable =
     !readOnly &&
     (kind === "markdown" || kind === "html" || kind === "react" ||
-     kind === "code" || kind === "text");
+     kind === "code" || kind === "text" || kind === "report");
   const isMarkdown = kind === "markdown";
   /** Kinds that have a RENDERED view distinct from their source. */
   const renderable = isRenderable(kind);
@@ -477,7 +477,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
 
   const handleStartEdit = () => {
     // Grab raw content from current state.
-    if (state.status === "markdown" || state.status === "text") {
+    if (state.status === "markdown" || state.status === "text" || state.status === "report") {
       setEditContent(state.content);
     }
     setEditing(true);
@@ -511,6 +511,10 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
       const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
       if (kind === "markdown") {
         setState({ status: "markdown", content: editContent });
+      } else if (kind === "report") {
+        // A saved report draws again. If the edit broke it, the JSON shows.
+        const report = parseReportFile(editContent, entry.path);
+        setState(report ? { status: "report", report, content: editContent } : { status: "text", content: editContent, lang: "json" });
       } else if (kind === "html" || kind === "react") {
         setState({ status: "rendered", content: editContent, kind });
       } else if (kind === "code") {

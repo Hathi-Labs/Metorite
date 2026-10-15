@@ -59,6 +59,16 @@ describe("classifyArtifact", () => {
     expect(classifyArtifact("report.json", "outputs/report.json")).toBe("code");
   });
 
+  it("a report is a report only as a workspace output, never an email attachment (review of #1065)", () => {
+    // An email attachment's path is its bare file name, which the sender chose.
+    expect(classifyArtifact("Q3.report.json", "Q3.report.json")).toBe("code");
+    // A file the member uploaded.
+    expect(classifyArtifact("q3.report.json", "inputs/q3.report.json")).toBe("code");
+    expect(classifyArtifact("q3.report.json", "agent-data/q3.report.json")).toBe("code");
+    expect(classifyArtifact("q3.report.json", "outputs/q3.report.json")).toBe("report");
+    expect(classifyArtifact("q3.report.json", "/outputs/sub/q3.report.json")).toBe("report");
+  });
+
   it("is case-insensitive about extensions", () => {
     expect(classifyArtifact("R.HTML", "outputs/R.HTML")).toBe("html");
     expect(classifyArtifact("D.JSX", "outputs/D.JSX")).toBe("react");

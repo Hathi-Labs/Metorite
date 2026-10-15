@@ -1421,10 +1421,38 @@ def _report_section_refusal(section: object, at: str) -> str | None:
     kind = visual.get("kind") if isinstance(visual, dict) else None
     if kind not in doc.VISUAL_KINDS:
         return f'{at}.visual: "kind" must be one of: {", ".join(doc.VISUAL_KINDS)}.'
-    if kind == "table" and _report_over(visual.get("columns"), GENUI_REPORT_MAX_TABLE_COLUMNS):
-        return f"{at}.visual: a table has at most {GENUI_REPORT_MAX_TABLE_COLUMNS} columns."
-    if kind == "table" and _report_over(visual.get("rows"), GENUI_REPORT_MAX_TABLE_ROWS):
-        return f"{at}.visual: a table has at most {GENUI_REPORT_MAX_TABLE_ROWS} rows."
+    return _report_visual_refusal(visual, kind, at)
+
+
+def _report_visual_refusal(visual: dict, kind: str, at: str) -> str | None:
+    """Why one visual is over a cap that the view draws to, or ``None``.
+
+    The caps are the WhatsApp cards' (``whatsapp_cards.py``), which the PDF
+    path already enforces, and ``REPORT_LIMITS`` in ``lib/report.ts`` holds
+    the same numbers. A cap the view has and this does not refuse is a cut
+    the member never hears about (review of #1065).
+    """
+    from acb_skills import whatsapp_cards as cards
+
+    lists = {
+        "table": (("columns", GENUI_REPORT_MAX_TABLE_COLUMNS, "columns"), ("rows", GENUI_REPORT_MAX_TABLE_ROWS, "rows")),
+        "stats": (("tiles", cards.MAX_TILES, "tiles"),),
+        "board": (("columns", cards.MAX_BOARD_COLUMNS, "columns"),),
+        "timeline": (("events", cards.MAX_EVENTS, "events"),),
+        "agenda": (("items", cards.MAX_AGENDA_ITEMS, "items"),),
+    }
+    for key, most, words in lists.get(kind, ()):
+        if _report_over(visual.get(key), most):
+            return f"{at}.visual: a {kind} visual has at most {most} {words}."
+    if kind == "board":
+        for i, column in enumerate(visual.get("columns") or []):
+            if isinstance(column, dict) and _report_over(column.get("cards"), cards.MAX_CARDS):
+                return f"{at}.visual.columns[{i}]: a board column has at most {cards.MAX_CARDS} cards."
+    if kind == "table":
+        for i, row in enumerate(visual.get("rows") or []):
+            cells = row.get("cells") if isinstance(row, dict) else row
+            if isinstance(cells, list) and len(cells) > GENUI_REPORT_MAX_TABLE_COLUMNS:
+                return f"{at}.visual.rows[{i}]: a row has at most {GENUI_REPORT_MAX_TABLE_COLUMNS} cells."
     return None
 
 

@@ -59,8 +59,11 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
   // Collapse what this pane cannot render into one "download it" state.
   const kind: ArtifactKind | "binary" = UNDISPLAYABLE.has(raw) ? "binary" : raw;
   const editable =
-    kind === "markdown" || isRenderable(kind) || kind === "code" || kind === "text";
+    kind === "markdown" || isRenderable(kind) || kind === "code" || kind === "text" || kind === "report";
   const previewable = kind === "markdown" || isRenderable(kind);
+  // A report has a drawn view, and its source is JSON: Edit shows the JSON,
+  // with no live preview (the preview pane draws Markdown, HTML or React).
+  const hasView = previewable || kind === "report";
 
 
   const fileUrl = workspaceFileUrl(sessionId, path);
@@ -167,7 +170,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
       lastLoadedRef.current = draft;
       setContent(draft);
       setDirty(false);
-      if (previewable) setMode("preview");
+      if (hasView) setMode("preview");
     } catch (e) {
       alert(`Failed to save: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -187,7 +190,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
       )}
       {dirty && <span className="text-[10px] text-accent">● unsaved</span>}
       <div className="ml-auto flex items-center gap-1">
-        {previewable && mode === "edit" && (
+        {hasView && mode === "edit" && (
           <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setMode("preview")} title="Rendered preview" className="gap-1 rounded px-2 py-1 text-[11px]">
             <Icon name="Eye" size={12} /> Preview
           </Button>

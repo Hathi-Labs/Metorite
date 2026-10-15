@@ -33,9 +33,13 @@ export const REPORT_VISUAL_KINDS = [
 export type ReportVisualKind = (typeof REPORT_VISUAL_KINDS)[number];
 
 /**
- * The most of each list that the view draws. The server refuses more
- * (`genui_refusal` in `write_artifact.py`), so these only stop a bad file
- * from costing the page.
+ * The most of each list that the view draws. `genui_report_refusal` in
+ * `write_artifact.py` refuses a report over any of them, and the visual caps
+ * are the WhatsApp cards' (`whatsapp_cards.py`), which the PDF path already
+ * enforces. `test_genui_report_refusal.py` holds the two lists equal, key for
+ * key. A report from another path (a file edited by hand) can still hold
+ * more. The view then draws the first ones and says how many it left out:
+ * every read says what it left out (owner rule).
  */
 export const REPORT_LIMITS = {
   kpis: 8,
@@ -44,10 +48,11 @@ export const REPORT_LIMITS = {
   sources: 30,
   tableColumns: 6,
   tableRows: 20,
-  boardColumns: 6,
-  boardCards: 12,
-  events: 24,
-  agendaItems: 24,
+  boardColumns: 4,
+  boardCards: 6,
+  events: 12,
+  agendaItems: 16,
+  statsTiles: 8,
   /** The characters of the summary that the chat card shows. */
   cardSummary: 240,
 } as const;
@@ -73,6 +78,8 @@ export interface ReportSection {
   heading: string;
   text: string;
   bullets: string[];
+  /** The bullets past the cap, which the view names as "+N more". */
+  moreBullets: number;
   visual: ReportVisual | null;
 }
 
@@ -90,6 +97,8 @@ export interface Report {
   pdf: string | null;
   /** The report file, a safe `outputs/…report.json` path, or null. */
   path: string | null;
+  /** How many of each list the view leaves out, past its cap. */
+  more: { kpis: number; sections: number; sources: number };
 }
 
 type Data = Record<string, unknown>;
@@ -98,6 +107,18 @@ const obj = (v: unknown): Data | null =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Data) : null;
 
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+/** How many of `count` a cap of `cap` leaves out. */
+const past = (count: number, cap: number): number => Math.max(0, count - cap);
+
+/**
+ * The note of a cut: "+5 more rows", or nothing when nothing was cut. Every
+ * cut the view makes draws one, so a reader never takes a part for the whole.
+ */
+export function moreNote(count: number, one: string, many: string): string {
+  if (count <= 0) return "";
+  return `+${count} more ${count === 1 ? one : many}`;
+}
 
 /**
  * A field as text. A number or a boolean is its words. An object or a list
@@ -188,10 +209,12 @@ function visualOf(raw: unknown): ReportVisual | null {
 function sectionOf(raw: unknown): ReportSection | null {
   const s = obj(raw);
   if (!s) return null;
+  const bullets = list(s.bullets).map(text).filter(Boolean);
   const section: ReportSection = {
     heading: text(s.heading),
     text: text(s.text),
-    bullets: list(s.bullets).map(text).filter(Boolean).slice(0, REPORT_LIMITS.bullets),
+    bullets: bullets.slice(0, REPORT_LIMITS.bullets),
+    moreBullets: past(bullets.length, REPORT_LIMITS.bullets),
     visual: visualOf(s.visual),
   };
   const empty = !section.heading && !section.text && !section.bullets.length && !section.visual;
@@ -207,6 +230,9 @@ export function reportFrom(raw: unknown, path?: string): Report {
   const d = obj(raw) ?? {};
   const file = safeReportPath(d.path) ?? safeReportPath(path);
   const pdf = safePdfPath(d.pdf) ?? (file ? companionPdfPath(file) : null);
+  const kpis = list(d.kpis).map(kpiOf).filter((k): k is ReportKpi => k !== null);
+  const sections = list(d.sections).map(sectionOf).filter((s): s is ReportSection => s !== null);
+  const sources = list(d.sources).map(text).filter(Boolean);
   return {
     title: text(d.title) || "Report",
     subtitle: text(d.subtitle),
@@ -214,14 +240,16 @@ export function reportFrom(raw: unknown, path?: string): Report {
     date: text(d.date),
     period: text(d.period),
     summary: text(d.summary),
-    kpis: list(d.kpis).map(kpiOf).filter((k): k is ReportKpi => k !== null).slice(0, REPORT_LIMITS.kpis),
-    sections: list(d.sections)
-      .map(sectionOf)
-      .filter((s): s is ReportSection => s !== null)
-      .slice(0, REPORT_LIMITS.sections),
-    sources: list(d.sources).map(text).filter(Boolean).slice(0, REPORT_LIMITS.sources),
+    kpis: kpis.slice(0, REPORT_LIMITS.kpis),
+    sections: sections.slice(0, REPORT_LIMITS.sections),
+    sources: sources.slice(0, REPORT_LIMITS.sources),
     pdf,
     path: file,
+    more: {
+      kpis: past(kpis.length, REPORT_LIMITS.kpis),
+      sections: past(sections.length, REPORT_LIMITS.sections),
+      sources: past(sources.length, REPORT_LIMITS.sources),
+    },
   };
 }
 
@@ -267,6 +295,15 @@ export function kpiGridClass(count: number): string {
   return "grid grid-cols-1 gap-1.5 @[13rem]:grid-cols-2 @[24rem]:grid-cols-3";
 }
 
+/**
+ * The name of each section for a list of contents: its heading, or
+ * "Section N" by its place. A section with no heading still counts, so the
+ * list never undercounts the report (review of #1065).
+ */
+export function sectionLabels(r: Report): string[] {
+  return r.sections.map((s, i) => s.heading || `Section ${i + 1}`);
+}
+
 /** The first section that holds a visual: the chat card draws it, under its heading. */
 export function firstVisualSection(r: Report): ReportSection | null {
   return r.sections.find((s) => s.visual !== null) ?? null;
@@ -277,33 +314,41 @@ export function firstVisualSection(r: Report): ReportSection | null {
  * go, and the lines join, so a cut never leaves a lone `**`. A line that
  * ends a sentence joins with a space. Any other line joins with a dot, so
  * two list items never read as one.
+ *
+ * This is plain text, and React draws it as text, so no image or link can
+ * draw from it. The rendered fields go through the parsed tree
+ * (`remarkTextOnly`). Here a reference definition, an image of either form,
+ * a link's target and a bare URL also go, because the contract holds no URL.
  */
 export function plainSummary(summary: string): string {
+  const BRACKETS = String.raw`\[(?:[^\[\]]|\[[^\]]*\])*\]`;
+  const TARGET = String.raw`(?:\([^)]*\)|\[[^\]]*\])`;
   const lines = summary
     .split(/\r?\n/)
+    .filter((line) => !/^\s{0,3}\[[^\]]+\]:\s*\S/.test(line))
     .map((line) => line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").trim())
     .filter(Boolean);
   return lines
     .map((line, i) => (i === 0 ? line : `${/[.!?:][*_`]*$/.test(lines[i - 1]) ? " " : " · "}${line}`))
     .join("")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(new RegExp(`!${BRACKETS}${TARGET}?`, "g"), "")
+    .replace(new RegExp(`(${BRACKETS})${TARGET}`, "g"), (_m, label: string) => label.slice(1, -1))
+    .replace(/\b(?:https?:\/\/|www\.)\S+/gi, "")
     .replace(/(\*\*|__|\*|_|`)/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 /**
- * The summary and a section's text as Markdown-lite: bold, italic, lists and
- * line breaks. An image goes, and a link keeps its words only, because the
- * contract holds no image and no URL. A single line break stays a break.
+ * The summary and a section's text as Markdown-lite: a single line break
+ * stays a break. Images, links and raw HTML go on the PARSED tree
+ * (`lib/remarkTextOnly.ts`, through `MarkdownBody`'s `textOnly`). A regex
+ * here missed a nested-bracket image, a reference image or link, and a bare
+ * URL (review of #1065).
  */
 export function liteMarkdown(source: string): string {
   return source
     .replace(/\r\n?/g, "\n")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/<[^>]*>/g, "")
     .replace(/([^\n])\n(?!\n|\s*(?:[-*+]|\d+[.)])\s)/g, "$1  \n");
 }
 
@@ -319,6 +364,8 @@ export type VisualTemplate = "chart" | "statDashboard" | "dataGrid" | "taskBoard
 export interface MappedVisual {
   template: VisualTemplate;
   data: Data;
+  /** What the cut left out, such as "+5 more rows". Empty when nothing. */
+  more: string[];
 }
 
 /**
@@ -334,36 +381,47 @@ export function bareChartSpec(spec: Data): Data {
 export function mapVisual(v: ReportVisual): MappedVisual | null {
   const d = v.data;
   const title = v.title || undefined;
+  const objs = (raw: unknown) => list(raw).map(obj).filter((x): x is Data => x !== null);
+  const notes = (...n: string[]) => n.filter(Boolean);
   switch (v.kind) {
     case "chart":
       // The chart language's own spec. The engine checks it, and a bad spec
-      // shows its reason in place of the chart (`LiveChart`).
-      return { template: "chart", data: { ...d, type: text(d.type) || "bar" } };
+      // (or one over the engine's own caps) shows its reason in place of the
+      // chart (`LiveChart`): it never cuts silently.
+      return { template: "chart", data: { ...d, type: text(d.type) || "bar" }, more: [] };
     case "gantt":
-      return { template: "chart", data: { ...d, type: "gantt" } };
-    case "stats":
+      return { template: "chart", data: { ...d, type: "gantt" }, more: [] };
+    case "stats": {
+      const tiles = list(d.tiles).map(kpiOf).filter((k): k is ReportKpi => k !== null);
       return {
         template: "statDashboard",
-        data: {
-          title,
-          stats: list(d.tiles)
-            .map(kpiOf)
-            .filter((k): k is ReportKpi => k !== null)
-            .slice(0, REPORT_LIMITS.kpis),
-        },
+        data: { title, stats: tiles.slice(0, REPORT_LIMITS.statsTiles) },
+        more: notes(moreNote(past(tiles.length, REPORT_LIMITS.statsTiles), "tile", "tiles")),
       };
+    }
     case "table": {
-      const columns = list(d.columns).map(text).slice(0, REPORT_LIMITS.tableColumns);
-      const rows = list(d.rows).slice(0, REPORT_LIMITS.tableRows).map((r) => {
+      const allColumns = list(d.columns).map(text);
+      const allRows = list(d.rows).map((r) => {
         const o = obj(r);
-        const cells = Array.isArray(r) ? r : o && Array.isArray(o.cells) ? o.cells : [r];
-        return { cells: cells.slice(0, REPORT_LIMITS.tableColumns).map(cell) };
+        return Array.isArray(r) ? r : o && Array.isArray(o.cells) ? o.cells : [r];
       });
+      const width = Math.max(allColumns.length, ...allRows.map((r) => r.length), 0);
+      const rows = allRows.slice(0, REPORT_LIMITS.tableRows).map((cells) => ({
+        cells: cells.slice(0, REPORT_LIMITS.tableColumns).map(cell),
+      }));
       // An empty base: a report row carries no id, so it links nowhere.
-      return { template: "dataGrid", data: { title, columns, rows, openBase: "" } };
+      return {
+        template: "dataGrid",
+        data: { title, columns: allColumns.slice(0, REPORT_LIMITS.tableColumns), rows, openBase: "" },
+        more: notes(
+          moreNote(past(allRows.length, REPORT_LIMITS.tableRows), "row", "rows"),
+          moreNote(past(width, REPORT_LIMITS.tableColumns), "column", "columns"),
+        ),
+      };
     }
     case "agenda": {
-      const items = list(d.items).map(obj).filter((i): i is Data => i !== null).slice(0, REPORT_LIMITS.agendaItems);
+      const all = objs(d.items);
+      const items = all.slice(0, REPORT_LIMITS.agendaItems);
       const detail = items.some((i) => text(i.detail) !== "");
       const rows = items.map((i) => {
         const when = [text(i.start), text(i.end)].filter(Boolean).join("–");
@@ -372,44 +430,50 @@ export function mapVisual(v: ReportVisual): MappedVisual | null {
         return { cells };
       });
       const columns = detail ? ["Time", "Title", "Details"] : ["Time", "Title"];
-      return { template: "dataGrid", data: { title, columns, rows, openBase: "" } };
+      return {
+        template: "dataGrid",
+        data: { title, columns, rows, openBase: "" },
+        more: notes(moreNote(past(all.length, REPORT_LIMITS.agendaItems), "item", "items")),
+      };
     }
-    case "board":
+    case "board": {
+      const all = objs(d.columns);
       return {
         template: "taskBoard",
         data: {
           title,
-          columns: list(d.columns)
-            .map(obj)
-            .filter((c): c is Data => c !== null)
-            .slice(0, REPORT_LIMITS.boardColumns)
-            .map((c) => ({
+          columns: all.slice(0, REPORT_LIMITS.boardColumns).map((c) => {
+            const cards = objs(c.cards);
+            // `total` is the column's true count: the board heads the column
+            // with it, and names the cards it does not draw.
+            return {
               name: text(c.name),
-              tasks: list(c.cards)
-                .map(obj)
-                .filter((k): k is Data => k !== null)
-                .slice(0, REPORT_LIMITS.boardCards)
-                .map((k) => ({ title: text(k.title), meta: text(k.meta) })),
-            })),
+              total: Math.max(cards.length, typeof c.total === "number" && Number.isFinite(c.total) ? c.total : 0),
+              tasks: cards.slice(0, REPORT_LIMITS.boardCards).map((k) => ({ title: text(k.title), meta: text(k.meta) })),
+            };
+          }),
         },
+        more: notes(moreNote(past(all.length, REPORT_LIMITS.boardColumns), "column", "columns")),
       };
-    case "timeline":
+    }
+    case "timeline": {
+      const all = objs(d.events);
       return {
         template: "timeline",
         data: {
           title,
-          rows: list(d.events)
-            .map(obj)
-            .filter((e): e is Data => e !== null)
-            .slice(0, REPORT_LIMITS.events)
-            .map((e) => ({
-              at: text(e.date),
-              type: text(e.state) || "upcoming",
-              actor: text(e.title),
-              body: text(e.detail) || undefined,
-            })),
+          // A report's detail is plain text: no Markdown, so no link.
+          plain: true,
+          rows: all.slice(0, REPORT_LIMITS.events).map((e) => ({
+            at: text(e.date),
+            type: text(e.state) || "upcoming",
+            actor: text(e.title),
+            body: text(e.detail) || undefined,
+          })),
         },
+        more: notes(moreNote(past(all.length, REPORT_LIMITS.events), "milestone", "milestones")),
       };
+    }
     default:
       return null;
   }

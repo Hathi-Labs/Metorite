@@ -21,6 +21,7 @@ import { barChartSpec, TEMPLATE_REGISTRY } from "./genUITemplates";
 import { KINDS, chartOption } from "@/lib/charts/kinds.mjs";
 
 const SRC = join(__dirname, "..");
+type Spec = Record<string, unknown>;
 
 describe("wac10g-one-chart", () => {
   it("the chat offers the chart template, and barChart draws through the engine", () => {
@@ -163,5 +164,89 @@ describe("a chart in a wide box keeps the chat's type size", () => {
     expect(html).toContain('data-chart-max-height="240"');
     expect(html).not.toMatch(/transform|scale\(/);
     expect(readFileSync(join(SRC, "components", "LiveChart.tsx"), "utf8")).not.toMatch(/transform\s*[:=]|scale\(/);
+  });
+});
+
+// ── Review of #1065, P1: a cap must never move a mark off its row ─────────
+//
+// A kind that lays its plot out inside the box (a grid, a pie, a radar) is
+// drawn at the capped height, and each graphic is placed from that height.
+// A kind that grows by its rows (progress, gantt, heatmap, funnel, calendar,
+// a long bar) places marks at fixed row steps, so it is never capped: it
+// keeps its own height, and the box scrolls.
+describe("every kind under a card's height cap", () => {
+  const UNDER: Record<string, Spec> = {
+    bar: { type: "bar", labels: ["A", "B"], values: [3, 1] },
+    "bar-long": { type: "bar", labels: Array.from({ length: 12 }, (_, i) => `A long project name ${i}`), values: Array.from({ length: 12 }, (_, i) => i + 1) },
+    line: { type: "line", labels: ["W1", "W2", "W3"], values: [1, 4, 2] },
+    area: { type: "area", labels: ["W1", "W2"], series: [{ name: "Done", values: [1, 2] }, { name: "To do", values: [4, 3] }] },
+    "donut-counts": { type: "donut", title: "Hours", labels: ["Build", "Meet", "Ops"], values: [18, 9, 4] },
+    "donut-shares": { type: "donut", labels: ["A", "B"], values: [60, 40], unit: "%" },
+    progress: { type: "progress", labels: ["Tasks"], values: [23], totals: [30] },
+    "progress-8": { type: "progress", labels: Array.from({ length: 8 }, (_, i) => `Team ${i}`), values: Array.from({ length: 8 }, (_, i) => i + 2), totals: Array.from({ length: 8 }, () => 10) },
+    scatter: { type: "scatter", groups: [{ name: "Ops", points: [[1, 2], [3, 5, 4]] }] },
+    heatmap: { type: "heatmap", x: ["9a", "10a"], y: ["Mon", "Tue"], values: [[1, 2], [3, 4]] },
+    radar: { type: "radar", axes: ["Price", "Speed", "Terms"], series: [{ name: "A", values: [8, 6, 9] }], max: 10 },
+    box: { type: "box", groups: [{ name: "Ops", values: [2, 3, 5, 8] }] },
+    waterfall: { type: "waterfall", steps: [{ label: "Open", value: 42 }, { label: "Sales", value: 31 }, { label: "Close", total: true }] },
+    funnel: { type: "funnel", labels: ["Leads", "Won"], values: [240, 12] },
+    calendar: { type: "calendar", days: [["2026-10-01", 3], ["2026-10-02", 0], ["2026-10-05", 7]] },
+    gantt: { type: "gantt", rows: [{ label: "Design", start: "2026-09-01", end: "2026-09-20" }] },
+    "gantt-15": { type: "gantt", rows: Array.from({ length: 15 }, (_, i) => ({ label: `Step ${i}`, start: "2026-09-01", end: `2026-09-${String(10 + i).padStart(2, "0")}` })) },
+  };
+  const GROWS = new Set(["bar-long", "progress", "progress-8", "heatmap", "funnel", "calendar", "gantt", "gantt-15"]);
+  type G = { top?: unknown; y?: unknown; type?: string; style?: { text?: string } };
+  const build = (spec: Spec, cap?: number) => {
+    const b = buildChart(spec, 700, "dark", undefined, cap);
+    if ("error" in b) throw new Error(b.error);
+    return b;
+  };
+
+  it("names every kind of the engine", () => {
+    const kinds = new Set(Object.values(UNDER).map((s) => String(s.type)));
+    expect([...kinds].sort()).toEqual(Object.keys(KINDS).sort());
+  });
+
+  for (const [name, spec] of Object.entries(UNDER)) {
+    it(`${name}: every mark lies inside the box drawn`, () => {
+      const capped = build(spec, 240);
+      const full = build(spec);
+      if (GROWS.has(name)) {
+        // It keeps its own layout and height: no row moves, and the box scrolls.
+        expect(capped.fits, name).toBe(false);
+        expect(capped.height).toBe(full.height);
+        expect(JSON.stringify(capped.option)).toBe(JSON.stringify(full.option));
+        return;
+      }
+      expect(capped.fits, name).toBe(true);
+      expect(capped.height).toBeLessThanOrEqual(240);
+      const graphics = ((capped.option as { graphic?: G[] }).graphic ?? []);
+      for (const g of graphics) {
+        const y = typeof g.top === "number" ? g.top : typeof g.y === "number" ? g.y : null;
+        if (y !== null) {
+          expect(y, `${name} ${g.style?.text}`).toBeGreaterThanOrEqual(0);
+          expect(y, `${name} ${g.style?.text}`).toBeLessThanOrEqual(capped.height);
+        }
+      }
+    });
+  }
+
+  it("a donut of counts puts its total over the hole of the capped pie", () => {
+    const capped = build(UNDER["donut-counts"], 240);
+    const total = ((capped.option as { graphic: G[] }).graphic).find((g) => g.style?.text === "31") as { y: number };
+    // The pie's centre is 58% down the box DRAWN, and the total sits 46 units
+    // above it. Placed from the uncapped height, it sat 35 px low, on the ring.
+    expect(total.y).toBeCloseTo(capped.height * 0.58 - 46 * WEB_MAX_SCALE, 0);
+  });
+
+  it("a progress of 8 rows and a gantt of 15 keep each caption beside its bar", () => {
+    for (const name of ["progress-8", "gantt-15"]) {
+      expect(build(UNDER[name], 240).fits, name).toBe(false);
+    }
+  });
+
+  it("the box scrolls a chart that keeps its own height, and never cuts it", () => {
+    const html = renderToStaticMarkup(createElement(LiveChart, { spec: UNDER["gantt-15"], maxHeight: 240 }));
+    expect(html).toMatch(/max-height:240px;overflow-y:auto/);
   });
 });

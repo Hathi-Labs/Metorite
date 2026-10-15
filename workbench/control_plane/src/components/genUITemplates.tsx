@@ -43,6 +43,8 @@ import {
   kpiGridClass,
   liteMarkdown,
   mapVisual,
+  moreNote,
+  sectionLabels,
   plainSummary,
   reportFrom,
   reportMeta,
@@ -1326,7 +1328,10 @@ function Timeline({ data }: { data: Data }) {
                 </span>
               </div>
               {r.body != null && str(r.body) !== "" && (
-                <div style={{ ...CELL, whiteSpace: "pre-wrap", marginTop: 2 }}><GenUiText text={str(r.body)} /></div>
+                <div style={{ ...CELL, whiteSpace: "pre-wrap", marginTop: 2 }}>
+                  {/* A report's detail is plain text: no Markdown, so no link and no image. */}
+                  {data.plain === true ? str(r.body) : <GenUiText text={str(r.body)} />}
+                </div>
               )}
               {r.field != null && (
                 <div style={{ ...CELL, marginTop: 2 }}>
@@ -1412,13 +1417,17 @@ function TaskBoard({ data }: { data: Data }) {
       <div ref={stripRef} style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
         {columns.map((c, i) => {
           const tasks = arr(c.tasks).map((t) => (t ?? {}) as Data);
+          // A column may say its true count (`total`), as a report's does.
+          // The header shows it, and the cards it does not draw are named.
+          const total = Math.max(tasks.length, num(c.total, tasks.length));
           return (
             <div key={str(c.id) || i} style={{ minWidth: 180, flex: "0 0 180px" }}>
               <div style={{ ...MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4,
                 marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
-                <span>{str(c.name)}</span><span>{tasks.length}</span>
+                <span>{str(c.name)}</span><span>{total}</span>
               </div>
               {tasks.map((t, k) => <TaskChip key={str(t.id) || k} t={t} />)}
+              {total > tasks.length && <div data-board-more="" style={MUTED}>+{total - tasks.length} more</div>}
             </div>
           );
         })}
@@ -1839,10 +1848,24 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
 /** The note in place of a visual that no template draws. */
 export const REPORT_VISUAL_MISSING = "This visual cannot show here.";
 
-/** One visual, by the template that draws its kind, or the note. */
 /** The tallest chart in a report card. The full view keeps the chart's own height. */
 export const REPORT_CARD_CHART_MAX = 240;
 
+/**
+ * The note of what a cut left out, such as "+5 more rows". Every cut draws
+ * one: a read says what it left out (owner rule, review of #1065).
+ */
+function MoreNote({ notes }: { notes: string[] }) {
+  const words = notes.filter(Boolean);
+  if (!words.length) return null;
+  return (
+    <p data-report-more="" className="text-muted-foreground" style={{ fontSize: TYPE.caption }}>
+      {words.join(" · ")}
+    </p>
+  );
+}
+
+/** One visual, by the template that draws its kind, or the note. */
 function ReportVisualBlock({ visual, minWidth, heading = "", card = false }: {
   visual: ReportVisual;
   minWidth?: string;
@@ -1889,12 +1912,20 @@ function ReportVisualBlock({ visual, minWidth, heading = "", card = false }: {
   // width it keeps a readable size, and the column scrolls it sideways.
   if (minWidth) {
     return (
-      <div data-report-visual={visual.kind} data-template={mapped.template} className="min-w-0 overflow-x-auto">
-        <div style={{ minWidth }}>{drawn}</div>
+      <div data-report-visual={visual.kind} data-template={mapped.template} className="min-w-0">
+        <div className="min-w-0 overflow-x-auto">
+          <div style={{ minWidth }}>{drawn}</div>
+        </div>
+        <MoreNote notes={mapped.more} />
       </div>
     );
   }
-  return <div data-report-visual={visual.kind} data-template={mapped.template} className="min-w-0">{drawn}</div>;
+  return (
+    <div data-report-visual={visual.kind} data-template={mapped.template} className="min-w-0">
+      {drawn}
+      <MoreNote notes={mapped.more} />
+    </div>
+  );
 }
 
 /** A refusal this button words itself, as against a network fault's words. */
@@ -1973,7 +2004,7 @@ function ReportCardActions({ onOpen, pdf, pdfName }: {
 function ReportText({ text }: { text: string }) {
   return (
     <div data-report-text="" className="min-w-0 leading-relaxed text-foreground" style={{ overflowWrap: "anywhere" }}>
-      <MarkdownBody content={liteMarkdown(text)} fences />
+      <MarkdownBody content={liteMarkdown(text)} fences textOnly />
     </div>
   );
 }
@@ -1985,9 +2016,12 @@ function ReportSectionBlock({ section }: { section: Report["sections"][number] }
       {section.text && <ReportText text={section.text} />}
       {section.bullets.length > 0 && (
         <ul className="ml-5 list-outside list-disc space-y-1 text-foreground marker:text-muted-foreground">
-          {section.bullets.map((b, i) => <li key={i} style={{ overflowWrap: "anywhere" }}><GenUiText text={b} /></li>)}
+          {section.bullets.map((b, i) => (
+            <li key={i} style={{ overflowWrap: "anywhere" }}><MarkdownBody content={b} inline fences textOnly /></li>
+          ))}
         </ul>
       )}
+      <MoreNote notes={[moreNote(section.moreBullets, "bullet", "bullets")]} />
       {section.visual && <ReportVisualBlock visual={section.visual} heading={section.heading} />}
     </section>
   );
@@ -2030,15 +2064,18 @@ export function ReportView({ report, pdfUrl = null, variant = "full" }: ReportVi
       <div className={kpiGridClass(report.kpis.length)}>
         {report.kpis.map((k, i) => <StatTile key={i} s={k as unknown as Data} dense={card} />)}
       </div>
+      <MoreNote notes={[moreNote(report.more.kpis, "KPI", "KPIs")]} />
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
+  const moreSections = <MoreNote notes={[moreNote(report.more.sections, "section", "sections")]} />;
 
   if (card) {
     const leadSection = firstVisualSection(report);
     const lead = leadSection?.visual ?? null;
     const summary = clipWords(plainSummary(report.summary), REPORT_LIMITS.cardSummary);
-    const heads = report.sections.map((s) => s.heading).filter(Boolean);
+    // Every section, by its heading or its place: never only the headed ones.
+    const heads = sectionLabels(report);
     return (
       <div data-report-view="card" className="flex min-w-0 flex-col gap-2 text-xs">
         {(report.subtitle || meta.length > 0) && (
@@ -2065,6 +2102,7 @@ export function ReportView({ report, pdfUrl = null, variant = "full" }: ReportVi
                 </li>
               ))}
             </ol>
+            {moreSections}
           </div>
         )}
       </div>
@@ -2094,12 +2132,14 @@ export function ReportView({ report, pdfUrl = null, variant = "full" }: ReportVi
         </section>
       )}
       {report.sections.map((s, i) => <ReportSectionBlock key={i} section={s} />)}
+      {moreSections}
       {report.sources.length > 0 && (
         <footer data-report-sources="" className="border-t border-border pt-3 text-xs text-muted-foreground">
           <h3 className="mb-1 font-semibold">Sources</h3>
           <ul className="flex flex-col gap-0.5">
             {report.sources.map((s, i) => <li key={i} style={{ overflowWrap: "anywhere" }}>{s}</li>)}
           </ul>
+          <MoreNote notes={[moreNote(report.more.sources, "source", "sources")]} />
         </footer>
       )}
     </article>

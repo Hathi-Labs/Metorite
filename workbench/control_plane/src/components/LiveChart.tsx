@@ -17,7 +17,7 @@ import { TYPE } from "@/lib/typeScale";
 import { ChartSpecError, chartOption } from "@/lib/charts/kinds.mjs";
 
 type Spec = Record<string, unknown>;
-type Built = { option: unknown; height: number } | { error: string };
+type Built = { option: unknown; height: number; fits: boolean } | { error: string };
 
 /** The font the page uses: next/font names Geist with its own family. */
 function pageFont(): string | undefined {
@@ -60,16 +60,18 @@ export function webScale(width: number): number {
 }
 
 /**
- * `maxHeight` caps the drawing's height, for a chart inside a card: the
- * engine lays its plot out from the height it gets, so a capped chart is
- * shorter, never cut.
+ * `maxHeight` caps a chart inside a card. The ENGINE applies it
+ * (`chartOption`): a chart that lays out in its box draws at the capped
+ * height, with every graphic placed from it. A chart that grows by its rows
+ * (`fits: false`) keeps its height, and its box scrolls. Nothing is cut, and
+ * no caption leaves its row.
  */
 export function buildChart(spec: Spec, width: number, mode: "dark" | "light", font?: string, maxHeight?: number): Built {
   try {
-    const { option, height } = chartOption(withHues(spec), {
-      width, scale: webScale(width), mode, font, footer: false, animate: true, interactive: true,
+    const { option, height, fits } = chartOption(withHues(spec), {
+      width, scale: webScale(width), mode, font, footer: false, animate: true, interactive: true, maxHeight,
     });
-    return { option, height: maxHeight ? Math.min(height, maxHeight) : height };
+    return { option, height, fits };
   } catch (err) {
     return { error: err instanceof ChartSpecError ? err.message : "This chart could not be drawn." };
   }
@@ -119,14 +121,17 @@ export default function LiveChart({ spec, bare = false, maxHeight }: { spec: Spe
     };
   }, [built, width]);
 
+  // Under a card's cap a chart that grows by its rows keeps its height, so
+  // the box scrolls it. A chart that fits is no taller than the cap anyway.
+  const scroll = maxHeight ? { maxHeight, overflowY: "auto" as const } : {};
   return (
     <div
       ref={box}
       data-chart-max-height={maxHeight}
       style={
         bare
-          ? { width: "100%", overflow: "hidden" }
-          : { width: "100%", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", background: "var(--card)" }
+          ? { width: "100%", overflow: "hidden", ...scroll }
+          : { width: "100%", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", background: "var(--card)", ...scroll }
       }
     >
       {built && "error" in built ? (

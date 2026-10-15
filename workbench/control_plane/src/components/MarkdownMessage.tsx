@@ -19,6 +19,8 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { Options as MarkdownOptions } from "react-markdown";
+import remarkTextOnly from "@/lib/remarkTextOnly";
 import ChatEntityPill from "@/components/ChatEntityPill";
 import ChatTaskRef from "@/components/ChatTaskRef";
 import { FencedName } from "@/components/FencedText";
@@ -374,6 +376,7 @@ export function MarkdownBody({
   plainEmails = false,
   taskRefResolver,
   projectPills = false,
+  textOnly = false,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -395,6 +398,9 @@ export function MarkdownBody({
   /** Draw a link to a project as the project pill. Off everywhere but the
    *  task card. */
   projectPills?: boolean;
+  /** No image and no link: each link draws as its words, on the parsed tree
+   *  (`lib/remarkTextOnly.ts`). A report's text sets it. */
+  textOnly?: boolean;
 }) {
   // DeepSeek's DSML tool-call text never shows (owner report, 2026-10-11).
   // The Router turns it into real tool calls. This catches a message stored
@@ -408,15 +414,16 @@ export function MarkdownBody({
   const live = !caret;
   return (
     <ReactMarkdown
-      remarkPlugins={
-        entityPills
+      remarkPlugins={[
+        ...(entityPills
           ? [remarkGfm, [remarkEntityPills, { taskRefs: refs }]]
           : fences
             ? [remarkGfm, [remarkEntityPills, { emails: false, taskRefs: refs }]]
             : refsOnly
               ? [remarkGfm, [remarkEntityPills, { names: false, emails: false, taskRefs: true }]]
-              : [remarkGfm]
-      }
+              : [remarkGfm]) as NonNullable<MarkdownOptions["remarkPlugins"]>,
+        ...(textOnly ? [remarkTextOnly] : []),
+      ]}
       rehypePlugins={caret ? [rehypeStreamCaret] : []}
       urlTransform={markdownUrlTransform}
       allowedElements={inline ? INLINE_ELEMENTS : undefined}
