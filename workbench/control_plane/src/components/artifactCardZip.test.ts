@@ -65,7 +65,9 @@ describe("the artifact card of a zip", () => {
   const html = card("files.zip", path, "application/zip");
 
   it("downloads the zip from the one workspace address", () => {
-    const href = workspaceFileUrl(SESSION, path).replace(/&/g, "&amp;");
+    // A Download button names `download` (2026-10-16), so the proxy never
+    // sends it the rendered page of a Markdown file.
+    const href = workspaceFileUrl(SESSION, path, { download: true }).replace(/&/g, "&amp;");
     expect(html).toContain(`href="${href}"`);
     expect(html).toContain('download="files.zip"');
     expect(html).toContain('aria-label="Download files.zip"');

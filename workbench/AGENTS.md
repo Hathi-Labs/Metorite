@@ -126,6 +126,7 @@ Control Plane (Next.js browser UI) and local development tools.
 - control_plane/src/components/ArtifactCard.tsx -- Inline file cards (images, MD, PDF, etc.)
 - control_plane/src/components/ArtifactSidebar.tsx -- Collapsible workspace file tree (supports fullWidth drawer mode on mobile)
 - control_plane/src/components/ArtifactViewerModal.tsx -- Full-fidelity file viewer modal
+- control_plane/src/components/ArtifactLink.tsx -- A workspace file link in a chat reply. A click opens the panel or the viewer, as the card does (2026-10-16)
 
 ## Conventions
 - Next.js App Router pattern
