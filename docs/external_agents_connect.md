@@ -59,6 +59,8 @@ Each change shows in the task history, with the agent as `mcp:<host>`. A connect
 
 **A comment notifies people.** Each comment that the agent writes notifies the watchers and the assignees of the task, as your own comment does. An `@` followed by the address of a member who can see the task notifies that member too. These notifications go to the bell and the inbox in Metorite. Metorite does not send them by email.
 
+**A comment can start a workflow.** Each comment, also one that the agent writes, sends the event `pm.task.comment_added`. If your organization has a published workflow that starts on that event, the workflow runs. That workflow can call an integration or a web address, as it does for your own comment.
+
 ## What the agent cannot do
 
 - It cannot close or cancel a task, and it cannot make a task in a done or cancelled status.
