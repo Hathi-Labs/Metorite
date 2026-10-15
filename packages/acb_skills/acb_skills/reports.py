@@ -437,13 +437,14 @@ async def _make_on_the_web(report: dict[str, Any], layout: dict[str, Any],
         return {"ok": True, "path": path, "pdf_path": pdf_path,
                 "note": "The member sees the report card. Say in one or two lines "
                         "what it shows. Do not paste a link."}
-    # No card (no live chat, or a chat that cannot draw it): the PDF is still
-    # there, so the member gets a link to it.
+    # No report card (no live chat, or a chat that cannot draw it): the PDF
+    # is still there, and write_artifact's own file card shows it (slice A:
+    # the reply names a file in words and pastes no link).
     return {"ok": True, "path": path, "pdf_path": pdf_path,
             "download_url": saved.get("download_url"),
-            "note": "The chat could not draw the report card. Link the "
-                    "download_url of the PDF, and say in one or two lines what "
-                    "it holds."}
+            "note": "The chat could not draw the report card. A file card shows "
+                    "the PDF. Name it in words, say in one or two lines what it "
+                    "holds, and paste no link."}
 
 
 __all__ = [

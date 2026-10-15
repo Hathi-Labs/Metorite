@@ -219,11 +219,12 @@ async def test_the_report_file_takes_the_stem_of_the_pdf_that_was_written(
     assert json.loads(chat["writes"][1]["content"])["pdf"] == out["pdf_path"]
 
 
-async def test_with_no_card_the_member_still_gets_the_pdf_link(
+async def test_with_no_card_the_member_still_gets_the_pdf(
     monkeypatch: pytest.MonkeyPatch, chat: dict[str, list[Any]],
 ) -> None:
     """No live chat, or a chat that has no report template: the files exist,
-    so the answer links the PDF."""
+    and the file card of the PDF shows. The reply names it and pastes no
+    link (slice A, #1063). The result keeps download_url."""
     wa = importlib.import_module("acb_skills.write_artifact")
 
     async def _no_stream(ui: str) -> dict:
@@ -233,7 +234,24 @@ async def test_with_no_card_the_member_still_gets_the_pdf_link(
     out = await reports.make_report(SPEC)
     assert out["ok"] is True
     assert out["download_url"].endswith("outputs/q3-pipeline-review.pdf")
-    assert "Link the download_url" in out["note"]
+    assert "paste no link" in out["note"] and "Link" not in out["note"]
+
+
+async def test_make_document_tells_the_model_to_name_the_file_not_link_it(
+    chat: dict[str, list[Any]],
+) -> None:
+    """Slice A (#1063): a card shows the file, and the reply names it in
+    words. make_document's docstring and note say the same. download_url
+    stays in the result."""
+    from acb_skills import documents
+    from acb_skills.skill_families import tool_json_schema
+
+    desc = " ".join(tool_json_schema(documents.make_document)["function"]["description"].split())
+    assert "paste no link" in desc and "download_url in your answer" not in desc
+    out = await documents.make_document({
+        "format": "report", "title": "T", "sections": [{"heading": "H", "text": "x"}]})
+    assert out["ok"] is True and out["download_url"]
+    assert "paste no link" in out["note"] and "Link the download_url" not in out["note"]
 
 
 async def test_a_pdf_that_could_not_be_saved_is_never_ok(

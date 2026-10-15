@@ -270,9 +270,8 @@ async def make_document(spec: dict[str, Any]) -> dict[str, Any]:
     idea a slide: a title that says the point, 3 to 5 short bullets or one
     visual with a lead line.
 
-    Returns {"ok": true, "path", "download_url"}: put the download_url in
-    your answer as a link. Or {"ok": false, "error"}: fix the spec and call
-    again.
+    Returns {"ok": true, "path"}: a card shows the file, so name it in words
+    and paste no link. Or {"ok": false, "error"}: fix the spec, call again.
     """
     import asyncio
     import json
@@ -306,8 +305,8 @@ async def make_document(spec: dict[str, Any]) -> dict[str, Any]:
                                       f"{written.get('error') or 'no file'}"}
     return {"ok": True, "path": written.get("path"),
             "download_url": written.get("download_url"),
-            "note": "Link the download_url in your answer, and say in one line "
-                    "what the file holds."}
+            "note": "A card in the chat shows the file. Name it in words, say in "
+                    "one line what it holds, and paste no link."}
 
 
 def _member() -> str:

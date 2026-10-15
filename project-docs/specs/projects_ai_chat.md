@@ -2264,8 +2264,10 @@ field changes between the spec and the file.
   that file had no PDF.
 - When the card draws, the tool tells the model to describe it in one or two
   lines and to paste no link.
-- When the card does not draw, the tool returns the `download_url` of the
-  PDF, and the model links it.
+- When the card does not draw, the file card of the PDF still shows. The
+  tool tells the model to name the PDF in words and to paste no link, as
+  slice A (#1063) does for every file. The result keeps `download_url`.
+- `make_document` says the same in its docstring and its note.
 
 #### 14.9.6 Reach and guidance
 
