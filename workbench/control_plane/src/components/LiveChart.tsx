@@ -43,10 +43,33 @@ export function withHues(spec: Spec): Spec {
   return out;
 }
 
-export function buildChart(spec: Spec, width: number, mode: "dark" | "light", font?: string): Built {
+/**
+ * The most the web chat scales the chart language's 1080-unit drawing. The
+ * engine sizes its type for a 1080-pixel image, so a scale that follows a
+ * 768-pixel chat column drew axis labels near 17 px and a 28 px title,
+ * twice the text beside them (report visual review, 2026-10-16). Past
+ * 1080 x WEB_MAX_SCALE pixels the drawing grows WIDER, at the same type
+ * size: axis labels near 11 px, a legend near 12 px. A narrower box still
+ * scales down, as before.
+ */
+export const WEB_MAX_SCALE = 0.45;
+
+/** The scale of a chart drawn `width` pixels wide in the web chat. */
+export function webScale(width: number): number {
+  return Math.min(width / 1080, WEB_MAX_SCALE);
+}
+
+/**
+ * `maxHeight` caps the drawing's height, for a chart inside a card: the
+ * engine lays its plot out from the height it gets, so a capped chart is
+ * shorter, never cut.
+ */
+export function buildChart(spec: Spec, width: number, mode: "dark" | "light", font?: string, maxHeight?: number): Built {
   try {
-    const { option, height } = chartOption(withHues(spec), { width, mode, font, footer: false, animate: true, interactive: true });
-    return { option, height };
+    const { option, height } = chartOption(withHues(spec), {
+      width, scale: webScale(width), mode, font, footer: false, animate: true, interactive: true,
+    });
+    return { option, height: maxHeight ? Math.min(height, maxHeight) : height };
   } catch (err) {
     return { error: err instanceof ChartSpecError ? err.message : "This chart could not be drawn." };
   }
@@ -57,7 +80,7 @@ export function buildChart(spec: Spec, width: number, mode: "dark" | "light", fo
  * the card's header (`ChartCard` in `genUITemplates.tsx`), and a second
  * border there drew a card in a card.
  */
-export default function LiveChart({ spec, bare = false }: { spec: Spec; bare?: boolean }) {
+export default function LiveChart({ spec, bare = false, maxHeight }: { spec: Spec; bare?: boolean; maxHeight?: number }) {
   const box = useRef<HTMLDivElement>(null);
   const mode = useMode();
   const [width, setWidth] = useState(0);
@@ -75,8 +98,8 @@ export default function LiveChart({ spec, bare = false }: { spec: Spec; bare?: b
   // identity redrew the chart from zero on every token (WAC-10g review).
   const specKey = JSON.stringify(spec);
   const built = useMemo(
-    () => (width > 0 ? buildChart(JSON.parse(specKey) as Spec, width, mode, pageFont()) : null),
-    [specKey, width, mode],
+    () => (width > 0 ? buildChart(JSON.parse(specKey) as Spec, width, mode, pageFont(), maxHeight) : null),
+    [specKey, width, mode, maxHeight],
   );
 
   useEffect(() => {
@@ -99,6 +122,7 @@ export default function LiveChart({ spec, bare = false }: { spec: Spec; bare?: b
   return (
     <div
       ref={box}
+      data-chart-max-height={maxHeight}
       style={
         bare
           ? { width: "100%", overflow: "hidden" }
@@ -110,7 +134,7 @@ export default function LiveChart({ spec, bare = false }: { spec: Spec; bare?: b
           {built.error}
         </div>
       ) : (
-        <div style={{ width: "100%", height: built ? built.height : 220 }} />
+        <div style={{ width: "100%", height: built ? built.height : Math.min(220, maxHeight ?? 220) }} />
       )}
     </div>
   );

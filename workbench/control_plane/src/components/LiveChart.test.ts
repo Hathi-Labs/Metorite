@@ -14,7 +14,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildChart, withHues } from "./LiveChart";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import LiveChart, { WEB_MAX_SCALE, buildChart, webScale, withHues } from "./LiveChart";
 import { barChartSpec, TEMPLATE_REGISTRY } from "./genUITemplates";
 import { KINDS, chartOption } from "@/lib/charts/kinds.mjs";
 
@@ -69,7 +71,9 @@ describe("wac10g-review", () => {
   const src = readFileSync(join(SRC, "components", "LiveChart.tsx"), "utf8");
   it("keys the drawn chart by the spec's content, so a streamed token never redraws it", () => {
     expect(src).toMatch(/const specKey = JSON\.stringify\(spec\)/);
-    expect(src).toMatch(/\[specKey, width, mode\]/);
+    // `maxHeight` is a number, so it keys by value too (report fix round 2).
+    expect(src).toMatch(/\[specKey, width, mode, maxHeight\]/);
+    expect(src).not.toMatch(/\[spec, /);
   });
   it("sets no px font size: the type scale follows the member's density", () => {
     expect(src).not.toMatch(/fontSize:\s*\d/);
@@ -106,4 +110,58 @@ describe("wac10g-every-kind-loads", () => {
     "MarkLineComponent", "GraphicComponent", "TooltipComponent", "LegendComponent", "SVGRenderer"]) {
     it(`registers ${comp}`, () => expect(reg).toMatch(new RegExp(`echarts\\.use\\(\\[[\\s\\S]*${comp}`)));
   }
+});
+
+// ── The report's visual review, 2026-10-16: a chart in a wide chat column ──
+//
+// The engine sizes its type for a 1080-pixel image, and the web chat scaled
+// that drawing with the column. At 768 pixels the axis labels drew near 17 px
+// and the title near 28 px, twice the card's text. The web scale is capped,
+// so a wide chart is a wider drawing at the same type size, and a card caps
+// the height. No CSS transform draws a chart: ECharts lays it out at the box.
+describe("a chart in a wide box keeps the chat's type size", () => {
+  const bar = { type: "bar", title: "Revenue", labels: ["Jul", "Aug"], values: [1, 2] };
+  const fontOf = (width: number) => {
+    const built = buildChart(bar, width, "dark");
+    if ("error" in built) throw new Error(built.error);
+    type Axis = { axisLabel?: { fontSize?: number } };
+    const o = built.option as { title: { textStyle: { fontSize: number } }; xAxis: Axis; yAxis: Axis };
+    return { title: o.title.textStyle.fontSize, axis: o.xAxis.axisLabel?.fontSize ?? o.yAxis.axisLabel?.fontSize, height: built.height };
+  };
+
+  it("caps the scale, and a narrow box still scales down", () => {
+    expect(webScale(1600)).toBe(WEB_MAX_SCALE);
+    expect(webScale(768)).toBe(WEB_MAX_SCALE);
+    expect(webScale(367)).toBeCloseTo(367 / 1080);
+    expect(WEB_MAX_SCALE).toBeLessThanOrEqual(0.5);
+  });
+
+  it("the type is the same at 768 and at 1600, and no bigger than the chat's text", () => {
+    const mid = fontOf(768), wide = fontOf(1600);
+    expect(mid.title).toBe(wide.title);
+    expect(mid.axis).toBe(wide.axis);
+    expect(mid.title).toBeLessThanOrEqual(18);
+    expect(mid.axis).toBeLessThanOrEqual(12);
+    expect(mid.height).toBe(wide.height);
+  });
+
+  it("a card caps the height, and the chart is shorter, not cut", () => {
+    const built = buildChart(bar, 768, "dark", undefined, 240);
+    if ("error" in built) throw new Error(built.error);
+    expect(built.height).toBe(240);
+  });
+
+  it("a donut's centre stays over its hole in a wide box", () => {
+    const built = buildChart({ type: "donut", labels: ["a", "b"], values: [3, 4] }, 1600, "dark");
+    if ("error" in built) throw new Error(built.error);
+    const texts = (built.option as { graphic: { x?: number; style?: { text?: string } }[] }).graphic.filter((g) => g.style?.text === "7");
+    expect(texts[0].x).toBeCloseTo(1600 * 0.31, 0);
+  });
+
+  it("the box names its height cap and draws no transform", () => {
+    const html = renderToStaticMarkup(createElement(LiveChart, { spec: bar, maxHeight: 240 }));
+    expect(html).toContain('data-chart-max-height="240"');
+    expect(html).not.toMatch(/transform|scale\(/);
+    expect(readFileSync(join(SRC, "components", "LiveChart.tsx"), "utf8")).not.toMatch(/transform\s*[:=]|scale\(/);
+  });
 });

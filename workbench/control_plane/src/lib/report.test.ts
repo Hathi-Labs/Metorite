@@ -18,8 +18,9 @@ import {
   REPORT_KIND,
   REPORT_LIMITS,
   REPORT_VISUAL_KINDS,
+  bareChartSpec,
   companionPdfPath,
-  firstVisual,
+  firstVisualSection,
   kpiGridClass,
   liteMarkdown,
   mapVisual,
@@ -211,6 +212,13 @@ describe("mapVisual", () => {
     expect([...seen].sort()).toEqual(["chart", "dataGrid", "statDashboard", "taskBoard", "timeline"]);
   });
 
+  it("a report chart draws no title of its own: the report's words carry it", () => {
+    const spec = bareChartSpec({ type: "bar", title: "Revenue", subtitle: "Q3", labels: ["a"], values: [1] });
+    expect(spec.title).toBeUndefined();
+    expect(spec.subtitle).toBeUndefined();
+    expect(spec.labels).toEqual(["a"]);
+  });
+
   it("an unknown kind maps to nothing", () => {
     for (const kind of ["map", "", "image", "constructor"]) expect(mapVisual(v(kind, {})), kind).toBeNull();
   });
@@ -253,7 +261,8 @@ describe("mapVisual", () => {
 
   it("the first visual is the first section's that has one", () => {
     const r = reportFrom({ sections: [{ heading: "A" }, { heading: "B", visual: { kind: "table" } }] });
-    expect(firstVisual(r)?.kind).toBe("table");
-    expect(firstVisual(reportFrom({}))).toBeNull();
+    expect(firstVisualSection(r)?.heading).toBe("B");
+    expect(firstVisualSection(r)?.visual?.kind).toBe("table");
+    expect(firstVisualSection(reportFrom({}))).toBeNull();
   });
 });

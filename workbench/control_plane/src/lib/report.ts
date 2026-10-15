@@ -267,9 +267,9 @@ export function kpiGridClass(count: number): string {
   return "grid grid-cols-1 gap-1.5 @[13rem]:grid-cols-2 @[24rem]:grid-cols-3";
 }
 
-/** The first section's visual, for the chat card. */
-export function firstVisual(r: Report): ReportVisual | null {
-  return r.sections.find((s) => s.visual !== null)?.visual ?? null;
+/** The first section that holds a visual: the chat card draws it, under its heading. */
+export function firstVisualSection(r: Report): ReportSection | null {
+  return r.sections.find((s) => s.visual !== null) ?? null;
 }
 
 /**
@@ -319,6 +319,15 @@ export type VisualTemplate = "chart" | "statDashboard" | "dataGrid" | "taskBoard
 export interface MappedVisual {
   template: VisualTemplate;
   data: Data;
+}
+
+/**
+ * A chart's spec with no title or subtitle. The report draws a chart's title
+ * as its own words, at the report's type size. Inside the picture the
+ * engine drew it larger than the section heading above it.
+ */
+export function bareChartSpec(spec: Data): Data {
+  return { ...spec, title: undefined, subtitle: undefined };
 }
 
 /** A visual as a template and its data, or null when no template draws it. */

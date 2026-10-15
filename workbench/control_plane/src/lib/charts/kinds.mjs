@@ -140,7 +140,11 @@ function ctx(spec, opts) {
   // A chart with no title (the chat's barChart template may omit it) starts
   // its grid near the top instead of under an empty heading.
   const top = spec.title ? (hasSub ? 190 : 150) : 56;
-  return { t, u, unit, label, axisText, top, k };
+  // The drawing's width in units. It is 1080 when the scale follows the
+  // width. The web chat caps the scale (`LiveChart`), so a wide chart is a
+  // wider drawing, not a bigger picture.
+  const wu = (opts.width ?? 1080) / k;
+  return { t, u, unit, label, axisText, top, k, wu };
 }
 
 function base(spec, opts, c) {
@@ -154,9 +158,9 @@ function base(spec, opts, c) {
       left: c.u(56), top: c.u(48), itemGap: c.u(14),
       // A long title ends in "…" before the brand mark, never off the edge.
       textStyle: { fontFamily: c.t.font, fontSize: c.u(40), fontWeight: 600, color: c.t.fg,
-        width: c.u(1080 - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
+        width: c.u(c.wu - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
       subtextStyle: { fontFamily: c.t.font, fontSize: c.u(25), color: c.t.muted,
-        width: c.u(1080 - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
+        width: c.u(c.wu - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
     },
     grid: { left: c.u(56), right: c.u(56), top: c.u(c.top), bottom: c.u(72), containLabel: true },
     // The brand mark sits top right, clear of a legend at the foot.
@@ -272,7 +276,7 @@ const BUILD = {
     if (total <= 0) fail("a donut needs a total above zero");
     const tn = tones(c, spec, ls.length);
     const o = base(spec, opts, c);
-    const W = 1080 * c.k, H = (c.top + BODY) * c.k;
+    const W = c.wu * c.k, H = (c.top + BODY) * c.k;
     o.series = [{
       type: "pie", radius: ["50%", "72%"], center: ["31%", "58%"], padAngle: 2.5,
       itemStyle: { borderRadius: c.u(10) }, label: { show: false },
@@ -509,7 +513,7 @@ const BUILD = {
     const max = Math.max(1, ...days.map((d) => d[1]));
     const o = base(spec, opts, c);
     const weeks = Math.ceil((Date.parse(sorted[sorted.length - 1]) - Date.parse(sorted[0])) / DAY / 7) + 2;
-    const cell = Math.max(10, Math.min(56, (1080 - 110 - 56) / weeks));
+    const cell = Math.max(10, Math.min(56, (c.wu - 110 - 56) / weeks));
     const gap = Math.max(2, cell * 0.12);
     o.calendar = { range: [sorted[0], sorted[sorted.length - 1]], top: c.u(c.top + 10), left: c.u(110),
       cellSize: [c.u(cell), c.u(cell)],

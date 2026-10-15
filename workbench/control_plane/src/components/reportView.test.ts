@@ -191,6 +191,28 @@ describe("the chat card", () => {
     expect(html).toMatch(/<span class="min-w-0 truncate text-foreground" title="Milestones">/);
   });
 
+  it("the card's chart is short, and its title is the card's words, not a picture (fix round 2)", () => {
+    const html = card({ sessionId: "s1", open: () => {} });
+    expect(html.match(/data-chart-max-height="240"/g)).toHaveLength(1);
+    expect(html).toMatch(/data-report-chart-title=""[^>]*class="mb-1 truncate text-xs font-medium text-foreground"[^>]*>Revenue</);
+  });
+
+  it("each report chart draws through bareChartSpec, so no title draws in the picture", () => {
+    const src = readFileSync(fileURLToPath(new URL("./genUITemplates.tsx", import.meta.url)), "utf8");
+    const block = src.slice(src.indexOf("function ReportVisualBlock("), src.indexOf("class PdfMissing"));
+    expect(block).toContain("<LiveChart spec={bareChartSpec(mapped.data)}");
+    expect(block.match(/<LiveChart /g)).toHaveLength(1);
+  });
+
+  it("the full report keeps its charts' own height, and draws a chart title only when it adds to the heading", () => {
+    const html = full(FULL);
+    expect(html).not.toContain("data-chart-max-height");
+    // "Revenue" differs from the heading "Revenue by month", so it draws.
+    expect(html).toMatch(/data-report-chart-title=""[^>]*>Revenue</);
+    const same = full({ title: "T", sections: [{ heading: "Mix", visual: { kind: "chart", type: "donut", title: "Mix", labels: ["a"], values: [1] } }] });
+    expect(same).not.toContain("data-report-chart-title");
+  });
+
   it("the full report keeps its wide tiles and its own Download PDF", () => {
     expect(full(FULL)).not.toContain('data-stat-tile="dense"');
     expect(full(FULL)).toContain("data-report-actions");

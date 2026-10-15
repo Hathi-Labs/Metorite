@@ -38,7 +38,8 @@ import {
   type ReportVisual,
   REPORT_LIMITS,
   baseName,
-  firstVisual,
+  bareChartSpec,
+  firstVisualSection,
   kpiGridClass,
   liteMarkdown,
   mapVisual,
@@ -1839,7 +1840,16 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
 export const REPORT_VISUAL_MISSING = "This visual cannot show here.";
 
 /** One visual, by the template that draws its kind, or the note. */
-function ReportVisualBlock({ visual, minWidth }: { visual: ReportVisual; minWidth?: string }) {
+/** The tallest chart in a report card. The full view keeps the chart's own height. */
+export const REPORT_CARD_CHART_MAX = 240;
+
+function ReportVisualBlock({ visual, minWidth, heading = "", card = false }: {
+  visual: ReportVisual;
+  minWidth?: string;
+  /** The section's heading. A chart title that only repeats it draws once. */
+  heading?: string;
+  card?: boolean;
+}) {
   const mapped = mapVisual(visual);
   if (!mapped) {
     return (
@@ -1851,8 +1861,20 @@ function ReportVisualBlock({ visual, minWidth }: { visual: ReportVisual; minWidt
   }
   const drawn = (() => {
     switch (mapped.template) {
-      case "chart":
-        return <LiveChart spec={mapped.data} />;
+      case "chart": {
+        // The chart's title draws as the report's own words, at the report's
+        // size, never inside the picture: there it drew larger than the
+        // heading above it. A title that repeats the heading draws once.
+        const title = visual.title.trim();
+        const caption = card ? title || heading.trim() : title !== heading.trim() ? title : "";
+        return (
+          <>
+            {caption && <div data-report-chart-title="" className="mb-1 truncate text-xs font-medium text-foreground" title={caption}>{caption}</div>}
+            <LiveChart spec={bareChartSpec(mapped.data)}
+              maxHeight={card ? REPORT_CARD_CHART_MAX : undefined} />
+          </>
+        );
+      }
       case "statDashboard":
         return <StatDashboard data={mapped.data} />;
       case "dataGrid":
@@ -1966,7 +1988,7 @@ function ReportSectionBlock({ section }: { section: Report["sections"][number] }
           {section.bullets.map((b, i) => <li key={i} style={{ overflowWrap: "anywhere" }}><GenUiText text={b} /></li>)}
         </ul>
       )}
-      {section.visual && <ReportVisualBlock visual={section.visual} />}
+      {section.visual && <ReportVisualBlock visual={section.visual} heading={section.heading} />}
     </section>
   );
 }
@@ -2013,7 +2035,8 @@ export function ReportView({ report, pdfUrl = null, variant = "full" }: ReportVi
   );
 
   if (card) {
-    const lead = firstVisual(report);
+    const leadSection = firstVisualSection(report);
+    const lead = leadSection?.visual ?? null;
     const summary = clipWords(plainSummary(report.summary), REPORT_LIMITS.cardSummary);
     const heads = report.sections.map((s) => s.heading).filter(Boolean);
     return (
@@ -2030,7 +2053,7 @@ export function ReportView({ report, pdfUrl = null, variant = "full" }: ReportVi
             {summary}
           </p>
         )}
-        {lead && <ReportVisualBlock visual={lead} minWidth="18rem" />}
+        {lead && <ReportVisualBlock visual={lead} minWidth="18rem" heading={leadSection?.heading ?? ""} card />}
         {heads.length > 0 && (
           <div data-report-contents="">
             <div className="mb-1 font-medium text-muted-foreground">In this report</div>
