@@ -1081,17 +1081,18 @@ async def test_a_failed_run_sends_one_fixed_reply_and_ends_failed(
     assert world.store.reply_writes == 0
 
 
-async def test_a_run_past_its_time_limit_says_metorite_is_updating(
+async def test_a_run_past_its_time_limit_fails_with_the_general_text(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """WAC-13: a run that met no answer from the AI path (2026-10-15, the
-    Router hung) tells the member that Metorite is updating."""
+    """A long job meets the run's own limit with every part of Metorite up,
+    so it is no "updating" (WAC-13 review round 1). ``test_wac_updating``
+    holds the other case: the Router failed during the run."""
     monkeypatch.setattr(bot_run, "RUN_TIMEOUT_S", 0.05)
     world.agent.gate = asyncio.Event()   # never set
     await _post_and_run(_message())
-    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING)]
+    assert world.sent == [(PHONE, FAILED_TEXT)]
     (row,) = world.store.inbound_rows()
-    assert row["state"] == "failed" and row["code"] == "updating"
+    assert row["state"] == "failed" and row["code"] == "timeout"
 
 
 async def test_an_empty_answer_is_a_failure(world: _World) -> None:
