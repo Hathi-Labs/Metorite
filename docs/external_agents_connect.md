@@ -31,7 +31,7 @@ When the connection can change tasks, Claude Code shows the command `/mcp__metor
 
 - Run `/mcp__metorite__work_on_task 42` with the task number or the task id. The agent reads the task, claims it, does the work, and links the branch and the pull request.
 - When the pull request opens, the agent moves the task to an "in progress" status whose name says review. It moves the task to done only after the merge.
-- Run the command with no number to continue the work that you gave the agent with **Ask an agent** in Metorite.
+- **Ask an agent** in Metorite gives work to the agent. To continue that work, run the command with no number.
 
 The description of the task is the brief of the agent. Metorite limits what the connection can reach. It cannot limit the tools of the agent on your computer, such as the shell and `git push`. Your Claude Code permission settings control those tools.
 

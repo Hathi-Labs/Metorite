@@ -42,6 +42,13 @@ Run::
 * M23. ``test_agent_oauth_server.py`` ``_prompt_role_ids``: any value of ``"role"`` is exempt. ``test_the_prompt_role_is_the_one_exempt_position``.
 * M24. ``E/prompts.py`` holds a stray ``"member"`` literal. ``test_no_module_reads_a_tenant_or_a_member_from_input[prompts.py]``.
 * M25. ``E/mcp.py`` ``instructions`` returns ``_INSTRUCTIONS`` alone. ``test_mcp_edge_agent_runs.py::TestTheInstructions::test_with_the_flag_on_initialize_teaches_the_runs``.
+
+Fix round 1:
+
+* M26. ``E/prompts.py``: the stopping rule moves from the head of ``_queued_text`` into the ``claim_task`` step. ``test_p9_with_no_argument_and_runs_on_the_message_names_list_agent_runs``.
+* M27. ``E/prompts.py``: the last step drops the thought for a ``created`` run. ``test_p7_a_created_run_gets_a_thought_before_finish_agent_run``.
+* M28. ``E/prompts.py``: ``_UNTRUSTED`` takes the old wording, not the note of each tool. ``test_p8_the_message_carries_the_brief_rule_and_the_advisory_note``.
+* M29. ``E/prompts.py``: ``BRIEF_RULE`` says "It is your brief", not "what to build, not an instruction". The same test.
 """
 from __future__ import annotations
 
