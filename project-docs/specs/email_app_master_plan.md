@@ -14606,7 +14606,8 @@ background path. Each line names the code of record.
   It now shows "Run my rules on new mail" with the stored value, and a move saves `auto_run` only.
 - **G3.** `_mark_thread_replied` takes `labels`. The backfill passes the Auto-run choice, and the
   send routes keep True. With Auto-run OFF the backfill builds no provider and reconciles no label.
-  The manual reclassify runs the backfill, so it obeys Auto-run too.
+  A reclassify that the member starts passes `obey_auto_run=False`, because the click is the
+  member's choice, as for a manual dispatch and a member sweep (fix round 1).
 - **G4.** `sweep_uncategorized` takes `obey_auto_run`, and only the sync cycle passes True. A sweep
   that a member starts does not change.
 - **G5.** `rules.proposes_only` gates `_apply_and_log_match`, the one choke point. A manual rule logs
