@@ -122,7 +122,7 @@ def _detail(resp: Any) -> str:
     if isinstance(body, dict):
         detail = body.get("detail")
         if isinstance(detail, str):
-            return detail[:200]
+            return detail
     return ""
 
 
@@ -213,9 +213,9 @@ async def search_company(query: str, apps: str | None = None) -> str:
             and whatsapp.
     """
     words = " ".join(str(query or "").split())
-    if len(words) < 2:
-        return "Give at least 2 characters to find."
-    body = await _get("/search/company", {"q": words[:300], "apps": apps or None})
+    if not 2 <= len(words) <= 300:
+        return "Give 2 to 300 characters to find."
+    body = await _get("/search/company", {"q": words, "apps": apps or None})
     return format_answer(body)
 
 

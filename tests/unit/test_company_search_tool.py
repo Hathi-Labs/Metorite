@@ -271,9 +271,10 @@ class TestTheMember:
         gateway.body = {"detail": "Forbidden"}
         assert asyncio.run(cst.search_company("acme")) == cst.CLOSED
 
-    def test_one_character_asks_nothing(self, gateway, monkeypatch):
+    @pytest.mark.parametrize("query", [" a ", "x" * 301])
+    def test_words_out_of_bounds_ask_nothing(self, gateway, monkeypatch, query):
         _as(monkeypatch, "rep@customer.example")
-        assert "2 characters" in asyncio.run(cst.search_company(" a "))
+        assert "2 to 300 characters" in asyncio.run(cst.search_company(query))
         assert gateway.requests == []
 
 
