@@ -12,6 +12,7 @@ invariants) and the feature modules import from it, never from each other.
 from gateway.routes.admin import access_requests as _access_requests  # noqa: F401
 from gateway.routes.admin import groups as _groups  # noqa: F401
 from gateway.routes.admin import members as _members  # noqa: F401
+from gateway.routes.admin import organization as _organization  # noqa: F401
 from gateway.routes.admin import roles as _roles  # noqa: F401
 from gateway.routes.admin._common import router
 from gateway.routes.admin.me import me_router
