@@ -51,6 +51,8 @@ Run::
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import uuid
@@ -62,6 +64,7 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
+from acb_auth import agent_signing, agent_tokens
 from acb_common import get_settings
 from agent_edge import gateway_client, tools
 from sqlalchemy import create_engine, text
@@ -228,6 +231,27 @@ class TestClaimTaskAtTheEdge:
 
 _APP_ROLE = "acb_app_mcpclaim"
 _APP_PW = "mcpclaim_scratch_pw"
+OTHER = "other@mcpwrites.test"
+
+
+def _connection(a, *, include_personal: bool) -> tuple[str, str]:
+    """``w._Seeder.connection`` with ``include_personal`` named (fix round 1)."""
+    cid = str(a.one(
+        "INSERT INTO agent_connection (organization_id, member_email, client_id,"
+        " client_name, client_origin, scopes, pinned_projects, include_personal,"
+        " expires_at) VALUES (CAST(:o AS uuid), :m, 'https://client.example/meta.json',"
+        " 'Client', :origin, CAST(:scopes AS text[]), CAST(:pins AS uuid[]), :ip,"
+        " now() + interval '1 day') RETURNING id",
+        o=a.org, m=MEMBER, origin=w.ORIGIN, scopes=list(w.WRITE_SCOPES), pins=[],
+        ip=include_personal))
+    raw = agent_tokens.new_token()
+    a.one("INSERT INTO agent_token (organization_id, connection_id, kind, token_hash,"
+          " expires_at, client_id, resource, scope) VALUES (CAST(:o AS uuid),"
+          " CAST(:c AS uuid), 'access', :h, now() + interval '1 hour',"
+          " 'https://client.example/meta.json', :r, :s) RETURNING id",
+          o=a.org, c=cid, h=agent_tokens.hash_token(raw), r=w.RESOURCE,
+          s=" ".join(w.WRITE_SCOPES))
+    return cid, raw
 
 
 @pytest.fixture(scope="module")
@@ -296,10 +320,42 @@ def world():
         bare_todo=a.status(bare, "To do", "todo", 0),
         bare_done=a.status(bare, "Done", "done", 1),
     )
+    # Fix round 1. Two personal projects: one of another person, granted to
+    # the member, and the member's own.
+    personal = SimpleNamespace(**{
+        name: str(a.one(
+            "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+            " timezone, owns_statuses, personal_owner) VALUES (:n, 'active', 'manual',"
+            " :o_, CAST(:o AS uuid), 'Asia/Kolkata', true, :o_) RETURNING id",
+            n=f"Personal {name}", o_=owner, o=org))
+        for name, owner in (("other", OTHER), ("mine", MEMBER))})
+    for project, by in ((personal.other, OTHER), (personal.mine, MEMBER)):
+        a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
+              " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"
+              " RETURNING project_id", p=project, s=MEMBER, a=by, o=org)
+    s.other_todo = a.status(personal.other, "To do", "todo", 0)
+    s.other_doing = a.status(personal.other, "Doing", "in_progress", 1)
+    s.mine_todo = a.status(personal.mine, "To do", "todo", 0)
+    s.mine_doing = a.status(personal.mine, "Doing", "in_progress", 1)
+    # A second organization, with one task in it.
+    org_b = str(uuid.uuid4())
+    with eng.begin() as c:
+        c.execute(text("INSERT INTO organization (id, slug, display_name) "
+                       "VALUES (:id, 'mcpclaimb', 'mcpclaimb')"), {"id": org_b})
+    b = w._Seeder(eng, org_b)
+    b.number = 300_000
+    b_project = b.project("B team")
+    b_todo = b.status(b_project, "To do", "todo", 0)
+    b.status(b_project, "Doing", "in_progress", 1)
     world_ = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, sub=sub, bare=bare,
-                             s=s, c={}, tok={})
+                             s=s, c={}, tok={}, personal=personal,
+                             org_b=SimpleNamespace(seeder=b, project=b_project, todo=b_todo))
     for name, scopes in (("write", w.WRITE_SCOPES),):
         world_.c[name], world_.tok[name] = a.connection(scopes=scopes)
+    world_.c["pinned"], world_.tok["pinned"] = a.connection(
+        scopes=w.WRITE_SCOPES, pins=(team,))
+    world_.c["no_personal"], world_.tok["no_personal"] = _connection(
+        a, include_personal=False)
     world_.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
@@ -593,4 +649,157 @@ class TestAnAgentMayMoveATaskToDone:
         assert r.status_code == 422, r.text
         assert r.json()["detail"] == CREATE_TEXT
         assert tw._count(live, "f5 closed") == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix round 1: the row lock, the personal-project guard and the reach
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _gateway_unscoped(world, method: str, path: str, *, body: dict[str, Any],
+                            signed: str | None = "write",
+                            if_match: str | None = None) -> httpx.Response:
+    """One request to the gateway app, as ``tw._send`` makes it. The caller
+    holds the engine scope, so two requests can run at the same time."""
+    from gateway.main import app as gateway_app
+
+    raw = json.dumps(body).encode()
+    sent: dict[str, str] = {"Content-Type": "application/json"}
+    if signed is not None:
+        sent.update(agent_signing.signed_headers(
+            KEY, organization_id=world.org, connection_id=world.c[signed], actor_via=VIA,
+            method=method, path=path, query="", body=raw))
+    else:
+        sent.update({"Authorization": f"Bearer {tw.INTERNAL}", "X-User-Email": MEMBER})
+    if if_match is not None:
+        sent["If-Match"] = if_match
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway_app),
+                                 base_url="http://gateway.test") as client:
+        return await client.request(method, path, headers=sent, content=raw)
+
+
+def _consistent(world, task: str) -> bool:
+    """A done row carries ``completed_at``, and an open row carries none."""
+    with world.admin.begin() as c:
+        row = c.execute(text(
+            "SELECT s.category, t.completed_at FROM pm_tasks t JOIN pm_task_statuses s"
+            " ON s.id = t.status_id WHERE t.id = CAST(:t AS uuid)"), {"t": task}).one()
+    closed = row.category in ("done", "cancelled")
+    return closed == (row.completed_at is not None)
+
+
+class TestTheClaimRace:
+    """Fix round 1 (P2 of the review, and the verifier's failure). Two
+    requests run at the same time, through the real gateway app."""
+
+    pytestmark = _DB_GATE
+
+    async def test_two_claims_with_one_version_give_one_200_and_one_412(
+            self, live, monkeypatch):
+        from gateway.routes.projects import tasks as gateway_tasks
+
+        task = _task(live, live.team, live.s.todo, "race two claims")
+        version = await _version(live, task)
+        # Each claim passes its visibility load, then waits for the other,
+        # so both reach the lock with the same version.
+        barrier = asyncio.Barrier(2)
+        real = gateway_tasks.load_visible_task
+        seen = {"n": 0}
+
+        async def held(db, vis, task_id):
+            row = await real(db, vis, task_id)
+            seen["n"] += 1
+            if seen["n"] <= 2:
+                await asyncio.wait_for(barrier.wait(), 15)
+            return row
+
+        monkeypatch.setattr(gateway_tasks, "load_visible_task", held)
+        path = f"/projects/tasks/{task}/claim"
+
+        async def both() -> list[httpx.Response]:
+            return list(await asyncio.gather(*(
+                _gateway_unscoped(live, "POST", path, body={}, if_match=version)
+                for _ in range(2))))
+
+        answers = await tw._in_scope(live, both)
+        assert sorted(r.status_code for r in answers) == [200, 412], [
+            r.text for r in answers]
+        assert len(_activities(live, task, "assignment")) == 1
+        assert len(_activities(live, task, "status_change")) == 1
+        assert _assignees(live, task) == [MEMBER]
+        assert str(_row(live, task).status_id) == live.s.doing
+
+    async def test_a_claim_racing_a_move_to_done_leaves_a_consistent_row(
+            self, live, monkeypatch):
+        from gateway.routes.projects import tasks as gateway_tasks
+
+        task = _task(live, live.team, live.s.todo, "race claim and done")
+        locked, patched = asyncio.Event(), asyncio.Event()
+        real = gateway_tasks._lock_task
+
+        async def held(db, task_id):
+            row = await real(db, task_id)
+            locked.set()
+            # Without the lock the member's PATCH lands here. With the lock
+            # it waits for this claim, so the wait ends at its limit.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(patched.wait(), 2)
+            return row
+
+        monkeypatch.setattr(gateway_tasks, "_lock_task", held)
+
+        async def race() -> tuple[httpx.Response, httpx.Response]:
+            claim = asyncio.ensure_future(_gateway_unscoped(
+                live, "POST", f"/projects/tasks/{task}/claim", body={}))
+            await asyncio.wait_for(locked.wait(), 15)
+            done = await _gateway_unscoped(
+                live, "PATCH", f"/projects/tasks/{task}", body={"status_id": live.s.done},
+                signed=None)
+            patched.set()
+            return await claim, done
+
+        claim, done = await tw._in_scope(live, race)
+        assert done.status_code == 200, done.text
+        assert claim.status_code in (200, 422), claim.text
+        assert _consistent(live, task), (claim.text, _row(live, task))
+        assert str(_row(live, task).status_id) in (live.s.done, live.s.doing)
+
+
+class TestTheClaimGuardsAndReach:
+    """Fix round 1: the personal-project guard (R7 gap V4) and the reach of
+    a connection."""
+
+    pytestmark = _DB_GATE
+
+    async def test_a_task_in_another_persons_personal_project_is_refused(self, live):
+        task = _task(live, live.personal.other, live.s.other_todo, "their own")
+        result = await _claim(live, task)
+        assert _text(result) == tools.TEXT_BAD_REQUEST
+        assert _assignees(live, task) == []
+        assert _activities(live, task) == []
+        assert str(_row(live, task).status_id) == live.s.other_todo
+
+    async def test_a_task_in_the_members_own_personal_project_is_claimed(self, live):
+        """The control: the owner may hold a task of their own project."""
+        task = _task(live, live.personal.mine, live.s.mine_todo, "my own")
+        result = await _claim(live, task)
+        assert result["isError"] is False, result
+        assert str(_row(live, task).status_id) == live.s.mine_doing
+
+    @pytest.mark.parametrize("case", ["outside_pins", "personal_off", "other_org"])
+    async def test_a_task_outside_the_reach_of_the_connection_is_not_found(
+            self, live, case):
+        if case == "outside_pins":
+            name, task = "pinned", _task(live, live.bare, live.s.bare_todo, "unpinned")
+        elif case == "personal_off":
+            name, task = "no_personal", _task(live, live.personal.mine,
+                                              live.s.mine_todo, "hidden personal")
+        else:
+            b = live.org_b
+            name, task = "write", b.seeder.task(b.project, b.todo, "other org")
+        result = await tw._mcp(live, name, "claim_task", {
+            "task_id": task, "expected_version": "2026-10-15T00:00:00+00:00"})
+        assert _text(result) == "Task not found."
+        assert _assignees(live, task) == []
+        assert _activities(live, task) == []
 

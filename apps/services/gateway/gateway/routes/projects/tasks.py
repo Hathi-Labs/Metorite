@@ -1407,6 +1407,27 @@ CLAIM_REFUSALS: frozenset[str] = frozenset({
 })
 
 
+#: The row lock of a claim (fix round 1). NO KEY, as the note on
+#: ``admin._LOCK_STATUS_SET_SQL`` explains: it does not conflict with the
+#: FOR KEY SHARE of a foreign key check, and it still queues a second claim.
+#: The order is the PATCH's: a PATCH takes the same task row lock at its
+#: UPDATE, then the status row's KEY SHARE. The claim takes the task row
+#: first too, so no new deadlock order exists. The caller has passed the
+#: visibility load, so the lock reads by id only.
+_LOCK_TASK_SQL = (
+    "SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid) FOR NO KEY UPDATE"
+)
+
+
+async def _lock_task(db: Any, task_id: str) -> Any:
+    """Lock one task row until the transaction ends, and return the row as
+    the lock read it. 404 when a delete crossed the visibility load."""
+    row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": task_id})).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return row
+
+
 def _refuse_claim(code: str, message: str) -> NoReturn:
     """Raise the 422 of a refused claim. Inside the transaction, so a
     refusal after a write rolls that write back."""
@@ -1445,8 +1466,15 @@ async def claim_task(
     me = actor(user).strip().lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        task = await load_visible_task(db, vis, task_id)
-        # After the visibility load and before any write, as the PATCH does.
+        # The visibility load answers 404 for a task the caller cannot see.
+        await load_visible_task(db, vis, task_id)
+        # Fix round 1. Lock the task row, and read it again from the lock.
+        # Two claims with one version, or a claim and a member's move to
+        # done, used to both pass the checks and both write. The second
+        # claim now waits here, then sees the new `updated_at` and gets 412,
+        # and `apply_status_transition` gets the row that the lock read.
+        task = await _lock_task(db, task_id)
+        # After the lock and before any write.
         require_precondition(task, if_match, row_to_dict(task, TaskModel))
         if getattr(task, "archived_at", None) is not None:
             _refuse_claim(CLAIM_ARCHIVED, "An archived task cannot be claimed.")
