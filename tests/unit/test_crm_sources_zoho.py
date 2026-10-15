@@ -44,7 +44,7 @@ from gateway.crm_sources import (
 )
 from gateway.crm_sources.registry import SOURCES, source_class
 from gateway.crm_sources.zoho import ZohoSource, auth
-from gateway.crm_sources.zoho.client import ZohoScopeError
+from gateway.crm_sources.zoho.client import ZohoModuleUnavailable, ZohoScopeError
 
 SECRET = "planted-client-secret-7f3a91"
 ACCESS = "planted-access-token-91c2e0"
@@ -937,6 +937,30 @@ async def test_a_scope_refusal_names_the_scope() -> None:
     with pytest.raises(ZohoScopeError) as caught:
         await fake.source().list_deal_layouts()
     assert caught.value.scope == "ZohoCRM.settings.layouts.READ"
+
+
+@pytest.mark.parametrize("code", ["INVALID_MODULE", "NO_PERMISSION"])
+async def test_a_module_the_account_refuses_is_a_module_refusal(code: str) -> None:
+    """CRM-Q15. Measured 2026-10-15: a module turned off in Zoho answers
+    INVALID_MODULE on v2 and NO_PERMISSION on v8, with HTTP 400."""
+    fake = Fake([ok({"code": code, "message": "x", "status": "error"}, status=400)])
+    with pytest.raises(ZohoModuleUnavailable) as caught:
+        await fake.source().list_changed("company")
+    assert (caught.value.module, caught.value.code) == ("Accounts", code)
+    fake = Fake([ok({"code": code, "message": "x", "status": "error"}, status=400)])
+    with pytest.raises(ZohoModuleUnavailable):
+        await fake.source().list_deleted("deal")
+
+
+async def test_another_400_and_a_401_are_not_a_module_refusal() -> None:
+    fake = Fake([ok({"code": "INVALID_DATA", "message": "x"}, status=400)])
+    with pytest.raises(SourceError) as caught:
+        await fake.source().list_changed("company")
+    assert not isinstance(caught.value, ZohoModuleUnavailable)
+    fake = Fake([ok({"code": "INVALID_MODULE", "message": "x"}, status=401)])
+    with pytest.raises(SourceError) as caught:
+        await fake.source().list_changed("company")
+    assert not isinstance(caught.value, ZohoModuleUnavailable)
 
 
 async def test_users_become_source_records() -> None:

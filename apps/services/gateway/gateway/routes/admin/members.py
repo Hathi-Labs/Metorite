@@ -35,6 +35,7 @@ from acb_auth.access import (
 from acb_auth.console_resolve import (
     ConsoleMemberWriteUnavailable,
     invite_member_on_console,
+    remove_member_on_console,
 )
 from acb_auth.permissions import matched_by
 from fastapi import Depends, HTTPException
@@ -262,6 +263,18 @@ async def invite_member(
                 "member_invite_console_refused",
                 email=email, status=cc_status, body=str(cc_body)[:200],
             )
+        elif (cc_body.get("created") is False
+              and cc_body.get("status") not in ("invited", "active")):
+            # The Console kept an existing row in a status that does not
+            # match the invite (`suspended`, or a status this gateway does
+            # not know). The planes now disagree: the tenant says `invited`
+            # and the registry does not, so the person's next sign-in takes
+            # no seat. Review round 1, P1-a: a silent 200 here is how that
+            # state went unseen.
+            _log.warning(
+                "member_invite_console_status_mismatch",
+                email=email, console_status=cc_body.get("status"),
+            )
     except ConsoleMemberWriteUnavailable as exc:
         # The box is unwired, or the Console gave no answer. Logged, never
         # raised: the tenant-plane invite stands.
@@ -430,27 +443,10 @@ async def remove_member(
         # used to hold its own copy of the comparison, which is precisely why
         # the other door never grew one.
         assert_not_self_lockout(admin, member, status="removed")
-        await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
-
-        await db.execute(
-            text("DELETE FROM user_role WHERE user_id = CAST(:uid AS uuid)"),
-            {"uid": member["id"]},
-        )
-        await db.execute(
-            text(
-                "UPDATE app_user SET status = 'removed', updated_at = now() "
-                " WHERE id = CAST(:uid AS uuid)"
-            ),
-            {"uid": member["id"]},
-        )
-        # D63 (H-49) — the SECOND door, and it reaches the same seal.
-        #
-        # ⚠️ This route's own docstring records why: it "used to hold its own
-        # copy of the comparison, which is precisely why the other door never
-        # grew one". The seal is written into both doors in the same change for
-        # that exact reason. A removal that left the tree open would be the
-        # whole defect, and it is the door an admin is most likely to use.
-        tree_projects = await seal_personal_tree(db, member["email"], org_id)
+        # Invariant 1, the writes and the seal all live in the shared body.
+        # The operator door (`routes/operator.py`) calls the same body, so the
+        # two doors cannot come to disagree about what a removal IS.
+        tree_projects = await remove_member_rows(db, org_id, member)
 
     # H6 slice 3a (WS-29, DARK, D48): propagate the off-boarding into the
     # RLS-EXEMPT shadow so `org_membership.status` is 'removed' too, or the H6
@@ -468,7 +464,100 @@ async def remove_member(
     record_admin_change(admin.email, "org.member_removed",
                         f"user:{member['email']}",
                         tree="sealed", tree_projects=tree_projects)
+    await _mirror_removal_to_console(
+        actor_email=admin.email or "", member_email=member["email"],
+    )
     return {"status": "removed", "email": member["email"]}
+
+
+async def remove_member_rows(
+    db: Any, org_id: str, member: dict[str, Any]
+) -> int:
+    """The in-transaction body of a removal. Returns the sealed project count.
+
+    ONE copy, two callers: ``DELETE /admin/members/{email}`` above and the
+    operator door ``DELETE /internal/operator/organizations/{slug}/members/
+    {email}`` (``routes/operator.py``). Each caller opens its own tenant
+    session and passes it in, so this function opens nothing and commits
+    nothing.
+
+    It holds invariant 1 (:func:`assert_owner_survives`), because both doors
+    need it. It does NOT hold invariant 4 (``assert_not_self_lockout``). Only
+    the admin door has a caller who is also a member, so that guard stays in
+    the admin route, where the door-enumeration test looks for it.
+
+    The row is kept and only its status changes, for the reason the admin
+    route's docstring gives. The role grants go, so nothing re-grants access
+    if somebody later sets the status back by hand.
+    """
+    await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
+
+    await db.execute(
+        text("DELETE FROM user_role WHERE user_id = CAST(:uid AS uuid)"),
+        {"uid": member["id"]},
+    )
+    await db.execute(
+        text(
+            "UPDATE app_user SET status = 'removed', updated_at = now() "
+            " WHERE id = CAST(:uid AS uuid)"
+        ),
+        {"uid": member["id"]},
+    )
+    # D63 (H-49) — the SECOND door, and it reaches the same seal.
+    #
+    # ⚠️ The remove route's own docstring records why: it "used to hold its
+    # own copy of the comparison, which is precisely why the other door never
+    # grew one". The seal is written into both doors in the same change for
+    # that exact reason. A removal that left the tree open would be the whole
+    # defect, and it is the door an admin is most likely to use.
+    return await seal_personal_tree(db, member["email"], org_id)
+
+
+async def _mirror_removal_to_console(*, actor_email: str, member_email: str) -> None:
+    """Tell the Customer Console about a committed removal. Never raises.
+
+    POST-COMMIT, best-effort, in its own HTTP hop: the invite mirror's posture
+    (``invite_member`` above), for the invite mirror's reason. The tenant-plane
+    write has already committed, so a Console outage or refusal must never
+    change the route's answer. Every outcome is a log line.
+
+    The Console sets the membership to ``removed`` and releases the person's
+    seats, so the seat cap stops counting them. Without it a removed person
+    holds a paid seat, and the org's admin cannot free it.
+
+    ⚠️ ``actor_email`` is the AUTHENTICATED ADMIN (R11). The Console derives
+    the org from placement and membership, so this names no organization.
+    """
+    try:
+        cc_status, cc_body = await remove_member_on_console(
+            actor_email=actor_email, member_email=member_email,
+        )
+        if cc_status >= 400:
+            # A verdict, not an outage: capability missing, the actor not an
+            # active registry member, or a self-removal. The planes now
+            # disagree, and this line is how anyone finds out.
+            _log.warning(
+                "member_remove_console_refused",
+                email=member_email, status=cc_status, body=str(cc_body)[:200],
+            )
+        elif cc_body.get("owner_transferred_to"):
+            # The removed person was the org's last active registry owner, so
+            # the Console made the acting admin the owner in the same
+            # transaction (P1-b, the owner's decision of 2026-10-15). A change
+            # of who owns the account is never a silent 200.
+            _log.warning(
+                "member_remove_console_owner_transferred",
+                email=member_email,
+                new_owner=cc_body.get("owner_transferred_to"),
+            )
+    except ConsoleMemberWriteUnavailable as exc:
+        _log.warning("member_remove_console_unavailable",
+                     email=member_email, error=str(exc)[:200])
+    except Exception as exc:
+        # Belt and braces, as at the invite mirror: an unforeseen exception
+        # type must not turn a committed removal into a 500.
+        _log.warning("member_remove_console_failed",
+                     email=member_email, error=str(exc)[:200])
 
 
 # ── Permanent deletion ──────────────────────────────────────────────────────
@@ -736,36 +825,13 @@ async def purge_member(
         # DELETES the row be covered by the sentence written for ones that
         # UPDATE it.
         assert_not_self_lockout(admin, member, status=PURGE_OUTCOME)
-        # Invariant 1. Unlike a removal this cannot be undone by re-inviting:
-        # the org would have no owner and no row to promote back.
-        await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
+        # Invariant 1, the counts, the deletes and the pre-commit audit entry
+        # all live in the shared body. The operator door calls the same body.
+        deleted, kept = await purge_member_rows(
+            db, org_id, member, actor_email=admin.email,
+        )
 
-        addr = (member["email"] or "").strip().lower()
-        uid = member["id"]
-
-        # Count everything BEFORE anything is deleted — including the kept
-        # side, which is the half that makes the report legible.
-        deleted: dict[str, int] = {}
-        for rows in _PURGE_DELETES:
-            result = await db.execute(
-                text(rows.count_sql), _purge_params(rows, uid=uid, email=addr)
-            )
-            deleted[rows.key] = int(result.scalar() or 0)
-        kept: dict[str, int] = {}
-        for rows in _PURGE_KEEPS:
-            result = await db.execute(
-                text(rows.count_sql), _purge_params(rows, uid=uid, email=addr)
-            )
-            kept[rows.key] = int(result.scalar() or 0)
-
-        for rows in _PURGE_DELETES:
-            await db.execute(
-                text(rows.delete_sql), _purge_params(rows, uid=uid, email=addr)
-            )
-
-        # Before the commit, on its own connection — see the docstring.
-        record_admin_change(admin.email, "org.member_purged", f"user:{addr}",
-                            deleted=deleted, kept=kept)
+    addr = (member["email"] or "").strip().lower()
 
     # H6 (WS-29, DARK, D48) orphan-closure: the authoritative purge above deletes
     # `app_user` but NOT the RLS-EXEMPT shadow, so without this a purged ACTIVE
@@ -782,7 +848,68 @@ async def purge_member(
     invalidate_for(member["email"])
     _log.info("member_purged", email=member["email"], by=admin.email,
               deleted=deleted, kept=kept)
+    # The registry has no hard delete. A purged person is a `removed`
+    # membership there, with every seat released, which is what the seat cap
+    # needs. Post-commit and best-effort, as at Remove.
+    await _mirror_removal_to_console(
+        actor_email=admin.email or "", member_email=member["email"],
+    )
     return PurgeResult(email=member["email"], deleted=deleted, kept=kept)
+
+
+async def purge_member_rows(
+    db: Any,
+    org_id: str,
+    member: dict[str, Any],
+    *,
+    actor_email: str | None,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """The in-transaction body of a purge. Returns ``(deleted, kept)``.
+
+    ONE copy, two callers: ``DELETE /admin/members/{email}/purge`` above and
+    the operator door with ``mode=purge`` (``routes/operator.py``). Each caller
+    opens its own tenant session and passes it in. This function opens
+    nothing and commits nothing, so the whole purge stays one transaction,
+    the caller's.
+
+    It holds invariant 1 (:func:`assert_owner_survives`). Unlike a removal,
+    a purge cannot be undone by re-inviting: the org would have no owner and
+    no row to promote back. Invariant 4 stays in the admin route, for the
+    reason :func:`remove_member_rows` gives.
+
+    ``actor_email`` names who did it on the audit entry, which this function
+    writes BEFORE the caller's commit (the admin route's docstring says why).
+    """
+    await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
+
+    addr = (member["email"] or "").strip().lower()
+    uid = member["id"]
+
+    # Count everything BEFORE anything is deleted — including the kept
+    # side, which is the half that makes the report legible.
+    deleted: dict[str, int] = {}
+    for rows in _PURGE_DELETES:
+        result = await db.execute(
+            text(rows.count_sql), _purge_params(rows, uid=uid, email=addr)
+        )
+        deleted[rows.key] = int(result.scalar() or 0)
+    kept: dict[str, int] = {}
+    for rows in _PURGE_KEEPS:
+        result = await db.execute(
+            text(rows.count_sql), _purge_params(rows, uid=uid, email=addr)
+        )
+        kept[rows.key] = int(result.scalar() or 0)
+
+    for rows in _PURGE_DELETES:
+        await db.execute(
+            text(rows.delete_sql), _purge_params(rows, uid=uid, email=addr)
+        )
+
+    # Before the commit, on its own connection — see the admin route's
+    # docstring.
+    record_admin_change(actor_email, "org.member_purged", f"user:{addr}",
+                        deleted=deleted, kept=kept)
+    return deleted, kept
 
 
 # ── Role assignment ─────────────────────────────────────────────────────────

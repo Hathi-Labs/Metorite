@@ -87,6 +87,7 @@ from gateway.crm_sources.base import (
     SourceCredential,
     SourceCursor,
     SourceError,
+    SourceModuleUnavailable,
     SourceRecord,
     SourceScopeError,
     UntrustedHost,
@@ -129,9 +130,28 @@ ENTITY_ORDER: tuple[str, ...] = (
 #: is not a dead token, so it never marks the connection ``needs_reconnect``.
 #: Each generic module (``module:<ApiName>``, CRM-Q6a) follows the same rule
 #: (:func:`_is_optional`).
+#:
+#: CRM-Q15 adds one case for EVERY module, core ones too. When the account
+#: refuses the whole module (``SourceModuleUnavailable``: the customer turned
+#: it off, or the user who connected cannot see it), the run skips it with the
+#: reason ``hidden`` and goes on. A reconnect does not cure that, so a core
+#: module that fails this way must not stop the other modules for ever.
 OPTIONAL_ENTITIES: frozenset[str] = frozenset({"task"})
 #: An unavailable module is asked again after this long.
 UNAVAILABLE_RETRY = timedelta(hours=1)
+
+#: The entities whose rows link to a core entity (CRM-Q15). A child that landed
+#: while its parent module was off has no link. When the parent comes back, each
+#: child is read in full once, through the re-read list of the field rules, so
+#: the link fills in. That read stamps nothing and deletes nothing. A lead is
+#: never a child here, because ``_relink_leads`` fills its links at the end of
+#: every run. A lead IS a parent of activities.
+DEPENDENTS: dict[str, tuple[str, ...]] = {
+    "company": ("contact", "deal", "note", "call", "meeting", "task"),
+    "contact": ("deal", "note", "call", "meeting", "task"),
+    "lead": ("note", "call", "meeting", "task"),
+    "deal": ("note", "call", "meeting", "task"),
+}
 
 #: The entities that have field definitions.
 FIELD_DEF_ENTITIES: tuple[str, ...] = ("company", "contact", "lead", "deal")
@@ -442,16 +462,29 @@ def _is_optional(entity: str) -> bool:
     return entity in OPTIONAL_ENTITIES or _module(entity) is not None
 
 
-def _skip_optional(entity: str, exc: BaseException) -> bool:
-    """True when an optional module's read failure means "not available here".
+def _skip_module(entity: str, exc: BaseException) -> bool:
+    """True when a module's read failure means "not available here".
+
+    Any module, core or optional, is skipped when the account refuses the
+    whole module (``SourceModuleUnavailable``, CRM-Q15). An optional module is
+    skipped for any other failure too, except the ones below.
 
     A plain HTTP 401 is a token that went stale mid-run, not a missing module,
     so it fails the run like any other module would. A 401 that names a scope
     arrives as ``SourceScopeError`` and is still skipped.
     """
-    if not _is_optional(entity) or _fatal(exc) or isinstance(exc, UntrustedHost):
+    if _fatal(exc) or isinstance(exc, UntrustedHost):
+        return False
+    if isinstance(exc, SourceModuleUnavailable):
+        return True
+    if not _is_optional(entity):
         return False
     return isinstance(exc, SourceScopeError) or "HTTP 401" not in str(exc)
+
+
+def _unavailable_reason(exc: BaseException) -> str:
+    """``hidden`` when the account refuses the module, else ``scope``."""
+    return "hidden" if isinstance(exc, SourceModuleUnavailable) else "scope"
 
 
 # ── The run ─────────────────────────────────────────────────────────────────
@@ -1353,6 +1386,13 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         return
     stamping = walking or row.initial_done_at is None
     resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
+    # The module was off and is asked again (CRM-Q15). When this read ENDS, its
+    # children are read in full once, so their links fill in. A read that runs
+    # over several runs carries the mark in its cursor, and queues only at its
+    # last page: a child read before that would clear its entry too early.
+    recovering = not generic and (
+        bool(saved.get("unavailable")) or (resumed and bool(saved.get("recovering")))
+    )
     # A full read for a rule starts fresh, or goes on with its own mark. A
     # read that was already under way when the rule changed does not count.
     rule_reread = (rule_wanted and not resumed) or (resumed and bool(saved.get("rule_reread")))
@@ -1376,7 +1416,15 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         str(k): list(v) for k, v in (saved.get("failed") or {}).items()
     }
     if not stamping and not resumed and failed_map:
-        failed_map = await _retry_page(ctx, entity, failed_map)
+        try:
+            failed_map = await _retry_page(ctx, entity, failed_map)
+        except SourceError as exc:
+            # The retry is the first read of this run, so it meets a module
+            # that was turned off first (CRM-Q15).
+            if not _skip_module(entity, exc):
+                raise
+            await _mark_unavailable(ctx, entity, row, _unavailable_reason(exc))
+            return
     if resumed:
         cursor = cursor_from(saved)
         newest = _parse(saved.get("max_modified"))
@@ -1400,6 +1448,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # The mark of a full read for a field rule (CRM-Q7a). It is kept only while
     # the read runs, so a stop resumes it as that read.
     progress_marks: dict[str, Any] = {**marks, "rule_reread": True} if rule_reread else marks
+    if recovering:
+        progress_marks = {**progress_marks, "recovering": True}
     table = MODULE_TABLE if generic else _table(entity)
     try:
         while True:
@@ -1412,10 +1462,11 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                 page = await ctx.call(lambda s, c=cursor: s.list_changed(entity, c))
             except (SourceScopeError, SourceError) as exc:
                 # An optional module that cannot be read for ANY reason that is
-                # not a dead token, a spent budget or a throttle is skipped.
-                if not _skip_optional(entity, exc):
+                # not a dead token, a spent budget or a throttle is skipped. So
+                # is any module that the account refuses (CRM-Q15).
+                if not _skip_module(entity, exc):
                     raise
-                await _mark_unavailable(ctx, entity, row)
+                await _mark_unavailable(ctx, entity, row, _unavailable_reason(exc))
                 return
             if page.records and ctx.owners is None:
                 await ctx.load_owners()
@@ -1497,6 +1548,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                 await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
                 if last_page and rule_reread:
                     await _rule_reread_done(ctx, db, entity)
+                if last_page and recovering:
+                    await _queue_dependents(ctx, db, entity)
             ctx.cursors[module] = row
             if last_page:
                 break
@@ -1546,34 +1599,63 @@ def _unavailable_now(ctx: _Ctx, entity: str) -> bool:
     checked = _parse(state.get("checked_at"))
     if checked is not None and ctx.started - checked >= UNAVAILABLE_RETRY:
         return False
-    _count_unavailable(ctx, entity)
+    _count_unavailable(ctx, entity, str(state.get("reason") or "scope"))
     return True
 
 
-def _count_unavailable(ctx: _Ctx, entity: str) -> None:
-    """Set ``unavailable`` under the step key of an optional module."""
+def _count_unavailable(ctx: _Ctx, entity: str, reason: str = "scope") -> None:
+    """Set ``unavailable`` under the count key of the module.
+
+    An optional module has a step key of its own. A core module reports under
+    its slug (CRM-Q15). ``hidden`` is set beside it when the account refuses
+    the module, so the health card can say "turned off in Zoho" and not
+    "connect again", which would not help.
+    """
     if entity == "task":
-        ctx.counts["tasks"]["unavailable"] = 1
+        key = "tasks"
     elif _module(entity):
         ctx.module_step(entity, "unavailable", 0)  # makes the key
-        ctx.counts[entity]["unavailable"] = 1
+        key = entity
+    else:
+        key = SLUGS[entity]
+    ctx.counts[key]["unavailable"] = 1
+    if reason == "hidden":
+        ctx.counts[key]["hidden"] = 1
 
 
-async def _mark_unavailable(ctx: _Ctx, entity: str, row: CursorRow) -> None:
+#: The cursor keys that a module keeps while it is unavailable (CRM-Q15).
+_KEPT_WHEN_UNAVAILABLE = frozenset({"failed", "retry_from", "converted_both"})
+
+
+async def _mark_unavailable(
+    ctx: _Ctx, entity: str, row: CursorRow, reason: str = "scope",
+) -> None:
     """Record that the connection cannot read ``entity``, and go on.
 
     The row is marked done, so a module that never reads does not hold the
-    plan at ``import`` for ever. The error text is not kept, only the fact.
+    plan at ``import`` for ever. The error text is not kept, only the fact and
+    its reason. It deletes nothing: the rows that a core module mirrored
+    before it was turned off stay, and no reconcile runs while it is off.
+
+    It keeps the records still to retry and the CRM-Q5 lead mark, so a module
+    that comes back loses neither. It drops the walk marks on purpose: with no
+    ``prev_walk_start``, the first walk after the module comes back cannot
+    delete a row.
     """
     now = _now()
-    _log.warning("crm.sync.module_unavailable entity=%s reason=scope", entity)
+    _log.warning("crm.sync.module_unavailable entity=%s reason=%s", entity, reason)
+    kept = {k: v for k, v in (row.state or {}).items() if k in _KEPT_WHEN_UNAVAILABLE}
     marked = CursorRow(
         changed_module(entity), row.last_pulled_at,
-        {"in_progress": False, "unavailable": True, "checked_at": _iso(now)},
+        {
+            **kept,
+            "in_progress": False, "unavailable": True, "reason": reason,
+            "checked_at": _iso(now),
+        },
         row.initial_done_at or now, row.last_reconciled_at,
     )
     async with ctx.page() as db:
-        _count_unavailable(ctx, entity)
+        _count_unavailable(ctx, entity, reason)
         await _save_cursor(ctx, db, marked, "unavailable")
     ctx.cursors[changed_module(entity)] = marked
 
@@ -1644,9 +1726,9 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
     module = deleted_module(entity)
     row = _row(ctx, module)
     saved = row.state
-    if _is_optional(entity) and (
-        (_row(ctx, changed_module(entity)).state or {}).get("unavailable")
-    ):
+    # A module the changed pass found unavailable has no deleted list to read.
+    # Since CRM-Q15 that can be a core module too.
+    if (_row(ctx, changed_module(entity)).state or {}).get("unavailable"):
         return
     generic = _module(entity)
     resumed = bool(saved and saved.get("in_progress"))
@@ -1669,8 +1751,12 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
         try:
             page = await ctx.call(lambda s, c=cursor: s.list_deleted(entity, c))
         except SourceError as exc:
-            if not _skip_optional(entity, exc):
+            if not _skip_module(entity, exc):
                 raise
+            if isinstance(exc, SourceModuleUnavailable):
+                # The changed list read, and the deleted list alone is refused.
+                # Say so on the card, so the missing deletes are not silent.
+                _count_unavailable(ctx, entity, "hidden")
             _log.warning("crm.sync.module_unavailable entity=%s reason=deleted", entity)
             return
         last_page = page.next_cursor is None
@@ -1998,7 +2084,12 @@ async def _deal_roles(ctx: _Ctx) -> None:
     counts the deals it left. A role that Zoho no longer lists is removed, and a
     contact that is not here is counted in ``unlinked``. A scope refusal or a
     failed read keeps the deal queued, and the third failure drops it.
+
+    While Deals is off in Zoho (CRM-Q15) the step reads nothing and keeps the
+    queue, so it neither spends credits on calls that fail nor drops a deal.
     """
+    if (_row(ctx, changed_module("deal")).state or {}).get("unavailable"):
+        return
     await _seed_roles(ctx)
     pending = list(ctx.roles_pending or [])
     if not pending:
@@ -2453,6 +2544,22 @@ async def _load_rules(ctx: _Ctx) -> None:
     ctx.rules = field_rules.by_entity(
         r for r in ctx.handled_rules if r.id not in ctx.stale_rule_ids
     )
+
+
+async def _queue_dependents(ctx: _Ctx, db: Any, entity: str) -> None:
+    """``entity`` came back on in Zoho (CRM-Q15). Queue one full read of each
+    entity that links to it, in the transaction of its last page. A child that
+    comes later in this run is read in full in this run."""
+    deps = set(DEPENDENTS.get(entity, ()))
+    if not deps:
+        return
+    state = _row(ctx, FIELD_RULES_ROW).state or {}
+    reread = {str(e) for e in state.get("reread") or ()} | deps
+    saved = _rules_row(ctx, field_rules.applied_of(state), reread)
+    await _save_cursor(ctx, db, saved, "ok")
+    ctx.cursors[FIELD_RULES_ROW] = saved
+    ctx.rule_rereads |= deps
+    _log.info("crm.sync.module_back entity=%s reread=%s", entity, ",".join(sorted(deps)))
 
 
 async def _rule_reread_done(ctx: _Ctx, db: Any, entity: str) -> None:
