@@ -18,7 +18,7 @@ background model call names its feature on the usage report, as
 
 🆕 **§6A.15 DSML is BUILT and live, with no flag (2026-10-15).** The Router
 turns DeepSeek's text tool calls into real tool calls. #851 added it, #1027
-made the stream linear, and #PRNUM found a long closing tag that a delta cut.
+made the stream linear, and #1047 found a long closing tag that a delta cut.
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
@@ -10464,7 +10464,7 @@ uv run ruff check packages/acb_llm/acb_llm/decide.py \
 | Everything else | ✅ G-6 and G-7 answered, and each is one column. **G-8 deferred with a named trigger**, which is a decision rather than an omission |
 | **CP-13a to CP-13d** (the `decide` task, §6A.14) | **No, for the build.** Use a test key. The residency answer (§9 item 8) blocks every real-tenant call, the chat tool included |
 
-### 6A.15 DSML — DeepSeek's text tool calls — BUILT, live, no flag (#851, #1027, #PRNUM)
+### 6A.15 DSML — DeepSeek's text tool calls — BUILT, live, no flag (#851, #1027, #1047)
 
 **What it is.** DeepSeek sometimes writes its own tool-call markup into
 `content`, where an OpenAI client expects `tool_calls`. The markup uses the
@@ -10516,7 +10516,7 @@ logs `router.dsml_chunk_unreadable` and sends a minimal copy of the chunk.
 - **#851** added the parser and its five rules (2026-10-11).
 - **#1027** (`d359553`) made `DsmlStream.feed` linear. A 400 KB call in
   one-character deltas went from 18.9 s to 0.96 s.
-- **#PRNUM** found a closing tag with a long run of whitespace that a delta
+- **#1047** found a closing tag with a long run of whitespace that a delta
   cut. Before it, the stream logged `unterminated_block` and ran nothing,
   where a whole feed ran the call.
 
