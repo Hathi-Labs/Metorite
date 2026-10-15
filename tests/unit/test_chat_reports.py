@@ -43,10 +43,7 @@ import pytest
 
 pymupdf = pytest.importorskip("pymupdf")
 
-from acb_skills import (
-    documents,  # noqa: E402
-    reports,  # noqa: E402
-)
+from acb_skills import documents, reports  # noqa: E402
 from acb_skills import whatsapp_ui as wui  # noqa: E402
 
 wa = importlib.import_module("acb_skills.write_artifact")
