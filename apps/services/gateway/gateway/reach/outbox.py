@@ -59,6 +59,15 @@ _SENT_SINCE_SQL = (
     "AND kind = 'interrupt' AND state = 'sent' AND created_at >= :since"
 )
 
+#: The urgent messages that went since a time (review of RE-5, P2-1). The
+#: loop gives such a message a key that starts ``urgent:``.
+_URGENT_SINCE_SQL = (
+    "SELECT count(*) FROM reach_outbox "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND kind = 'interrupt' AND state = 'sent' AND created_at >= :since "
+    "AND dedupe_key LIKE 'urgent:%'"
+)
+
 _BRIEF_SQL = (
     "SELECT EXISTS (SELECT 1 FROM reach_outbox "
     f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
@@ -129,6 +138,13 @@ async def interrupts_since(org: str, member: str, since: datetime) -> int:
     """How many interrupts went to *member* since *since* (the budget)."""
     async with tenant_session(org) as db:
         return int((await db.execute(text(_SENT_SINCE_SQL),
+                                     {"m": member, "since": since})).scalar() or 0)
+
+
+async def urgent_since(org: str, member: str, since: datetime) -> int:
+    """How many urgent messages went to *member* since *since*."""
+    async with tenant_session(org) as db:
+        return int((await db.execute(text(_URGENT_SINCE_SQL),
                                      {"m": member, "since": since})).scalar() or 0)
 
 

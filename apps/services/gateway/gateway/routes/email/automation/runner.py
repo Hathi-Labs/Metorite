@@ -427,8 +427,9 @@ async def message_timeline(
 # a reply to a stale conversation is neither, and doing it unattended as part of
 # a bulk repair is exactly the kind of outward-facing surprise the user cannot
 # undo. If a reply was genuinely wanted, it can be drafted from the message.
+# NOTIFY_ME too: a WhatsApp message about a mail of weeks ago is noise (RE-5).
 _RETRY_SKIPPED_ACTIONS = frozenset({"REPLY", "DRAFT_EMAIL", "FORWARD",
-                                    "SEND_EMAIL", "CALL_WEBHOOK"})
+                                    "SEND_EMAIL", "CALL_WEBHOOK", "NOTIFY_ME"})
 
 
 async def retry_failed_executions(
@@ -516,6 +517,7 @@ async def retry_failed_executions(
                 db, provider, str(r.message_id), r.provider_message_id,
                 actions, email, about, signature, owner,
                 account_id=account_id, errors_out=errors,
+                rule_id=str(r.rule_id),
             )
             status = "FAILED" if (errors and not taken) else "APPLIED"
             if status == "APPLIED":
@@ -556,6 +558,25 @@ async def retry_failed(
         user_email=user.email or "anonymous")
 
 
+def _sender_email(value: Any) -> str:
+    """The sender's address from ``email_executed_rules.from_address``.
+
+    The writers store the plain address. A JSON object (``{name, email}``),
+    as ``email_messages`` holds it, also reads, so a title of "Tell me on
+    WhatsApp" never shows the raw object (WS-59 RE-5)."""
+    if isinstance(value, dict):
+        return str(value.get("email") or "")
+    raw = str(value or "").strip()
+    if raw.startswith("{"):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return raw
+        if isinstance(parsed, dict):
+            return str(parsed.get("email") or "")
+    return raw
+
+
 @router.post("/rules/history/{exec_id}/approve")
 async def approve_execution(
     exec_id: str,
@@ -594,12 +615,12 @@ async def approve_execution(
             raise HTTPException(status_code=502, detail="Provider auth failed")
 
         about, signature = await _load_assistant_about(db, str(row.account_id))
-        email = {"subject": row.subject or "", "from": row.from_address or "",
+        email = {"subject": row.subject or "", "from": _sender_email(row.from_address),
                  "body": row.body_text or "", "thread_id": row.thread_id or ""}
         taken = await _apply_rule_actions(
             db, provider, str(row.message_id), row.provider_message_id,
             actions, email, about, signature, row.user_id,
-            account_id=str(row.account_id),
+            account_id=str(row.account_id), rule_id=str(row.rule_id),
         )
         await db.execute(text(
             "UPDATE email_executed_rules SET status='APPLIED', actions_taken=:acts "
@@ -828,6 +849,24 @@ def _past_job_finish(
 DRAFTING_ACTIONS = ("REPLY", "DRAFT_EMAIL", "FORWARD")
 
 
+#: Rule actions a backfill NEVER runs, whatever the run asked. A WhatsApp
+#: message about a mail of weeks ago is noise, and a 90-day backfill would
+#: send one for each matched mail (WS-59 RE-5).
+PAST_SKIPPED_ACTIONS = ("NOTIFY_ME",)
+
+
+def _without_actions(match: dict[str, Any],
+                     types: tuple[str, ...]) -> tuple[dict[str, Any], bool]:
+    """A copy of ``match`` with the actions of *types* removed. Returns
+    ``(match, stripped)``, and the same object when nothing was removed."""
+    rule = match.get("rule") or {}
+    actions = rule.get("actions") or []
+    kept = [a for a in actions if a.get("type") not in types]
+    if len(kept) == len(actions):
+        return match, False
+    return {**match, "rule": {**rule, "actions": kept}}, True
+
+
 def _without_drafting(match: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """A copy of ``match`` with its drafting actions removed.
 
@@ -835,12 +874,23 @@ def _without_drafting(match: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     folder, mark-read — still run, because filing old mail is the point of a
     backfill; writing replies to it is not.
     """
-    rule = match.get("rule") or {}
-    actions = rule.get("actions") or []
-    kept = [a for a in actions if a.get("type") not in DRAFTING_ACTIONS]
-    if len(kept) == len(actions):
-        return match, False
-    return {**match, "rule": {**rule, "actions": kept}}, True
+    return _without_actions(match, DRAFTING_ACTIONS)
+
+
+def _backfill_matches(matches: list[dict[str, Any]],
+                      draft_replies: bool) -> tuple[list[dict[str, Any]], int]:
+    """The matches of a backfill, and how many lost a drafting action.
+
+    :data:`PAST_SKIPPED_ACTIONS` go always. Drafting goes unless the run
+    asked for it."""
+    out, drafts_skipped = [], 0
+    for match in matches:
+        match, _ = _without_actions(match, PAST_SKIPPED_ACTIONS)
+        if not draft_replies:
+            match, stripped = _without_drafting(match)
+            drafts_skipped += 1 if stripped else 0
+        out.append(match)
+    return out, drafts_skipped
 
 
 class RuleProcessPastRequest(BaseModel):
@@ -1251,6 +1301,7 @@ async def _apply_and_log_match(
             db, provider, str(r.id), pmid,
             rule["actions"], email, about, signature, account_user,
             account_id=account_id, errors_out=action_errors,
+            rule_id=str(rule.get("id") or ""),
         )
         # A row that changed NOTHING must not claim it did. APPLIED is what the
         # auto-learn gate counts as evidence and what Analytics counts as work
@@ -1657,17 +1708,12 @@ async def _process_past_emails_job(
                 apply = (not dry_run) and provider is not None
                 # Strip drafting unless the run explicitly asked for it, so a
                 # 90-day backfill files old mail without spending a drafting
-                # call per message on threads that ended months ago. Done as a
-                # pre-pass so the apply loop itself is the shared
-                # _apply_matches.
-                if matches and not draft_replies:
-                    stripped_matches = []
-                    for match in matches:
-                        match, stripped = _without_drafting(match)
-                        if stripped:
-                            drafts_skipped += 1
-                        stripped_matches.append(match)
-                    matches = stripped_matches
+                # call per message on threads that ended months ago. Strip
+                # "Tell me on WhatsApp" always (RE-5). Done as a pre-pass so
+                # the apply loop itself is the shared _apply_matches.
+                if matches:
+                    matches, skipped_now = _backfill_matches(matches, draft_replies)
+                    drafts_skipped += skipped_now
                 await _apply_matches(
                     db, provider, r, frm, email, matches,
                     apply=apply, dry_run=dry_run, about=about,
