@@ -3119,7 +3119,10 @@ async def reply_zero(
                WHERE ts.account_id = :aid AND ts.status = :st
                  -- Hide trashed (all buckets) / archived (active buckets) threads.
                  AND LOWER(COALESCE(em.folder, '')) NOT IN ({excluded})
-               ORDER BY ts.last_message_at DESC NULLS LAST LIMIT :limit"""
+               -- The thread id breaks a tie, so a bigger LIMIT begins with
+               -- the smaller one and the chat's next page repeats nothing.
+               ORDER BY ts.last_message_at DESC NULLS LAST, ts.thread_id DESC
+               LIMIT :limit"""
         ), {"aid": account_id, "st": want, "limit": limit})).fetchall()
 
         # Cold start: nothing classified yet → schedule a one-off backfill so the

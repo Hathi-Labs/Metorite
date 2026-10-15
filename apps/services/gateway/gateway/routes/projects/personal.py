@@ -3273,7 +3273,8 @@ async def list_my_areas(
                 " WHERE p.parent_project_id = CAST(:root AS uuid) "
                 "   AND lower(p.personal_owner) = :who "
                 + clause +
-                " ORDER BY lower(p.name)"
+                # The id breaks a tie of the name: the chat pages this list.
+                " ORDER BY lower(p.name), p.id"
             ),
             {"root": str(root.id), "who": email},
         )).fetchall()
