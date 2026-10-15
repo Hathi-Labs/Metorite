@@ -143,11 +143,13 @@ UNAVAILABLE_RETRY = timedelta(hours=1)
 #: The entities whose rows link to a core entity (CRM-Q15). A child that landed
 #: while its parent module was off has no link. When the parent comes back, each
 #: child is read in full once, through the re-read list of the field rules, so
-#: the link fills in. That read stamps nothing and deletes nothing. Leads are
-#: not here, because ``_relink_leads`` runs at the end of every run.
+#: the link fills in. That read stamps nothing and deletes nothing. A lead is
+#: never a child here, because ``_relink_leads`` fills its links at the end of
+#: every run. A lead IS a parent of activities.
 DEPENDENTS: dict[str, tuple[str, ...]] = {
     "company": ("contact", "deal", "note", "call", "meeting", "task"),
     "contact": ("deal", "note", "call", "meeting", "task"),
+    "lead": ("note", "call", "meeting", "task"),
     "deal": ("note", "call", "meeting", "task"),
 }
 
@@ -1366,9 +1368,6 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     if _unavailable_now(ctx, entity):
         return
     generic = _module(entity) is not None
-    # The module was off and is asked again (CRM-Q15). When this read ends, its
-    # children are read in full once, so their links fill in.
-    recovering = bool(saved.get("unavailable")) and not generic
     # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
     # its deletes come from the deleted list only (CRM-Q6a).
     walking = entity in ctx.reconcile and not generic
@@ -1387,6 +1386,13 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         return
     stamping = walking or row.initial_done_at is None
     resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
+    # The module was off and is asked again (CRM-Q15). When this read ENDS, its
+    # children are read in full once, so their links fill in. A read that runs
+    # over several runs carries the mark in its cursor, and queues only at its
+    # last page: a child read before that would clear its entry too early.
+    recovering = not generic and (
+        bool(saved.get("unavailable")) or (resumed and bool(saved.get("recovering")))
+    )
     # A full read for a rule starts fresh, or goes on with its own mark. A
     # read that was already under way when the rule changed does not count.
     rule_reread = (rule_wanted and not resumed) or (resumed and bool(saved.get("rule_reread")))
@@ -1442,6 +1448,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # The mark of a full read for a field rule (CRM-Q7a). It is kept only while
     # the read runs, so a stop resumes it as that read.
     progress_marks: dict[str, Any] = {**marks, "rule_reread": True} if rule_reread else marks
+    if recovering:
+        progress_marks = {**progress_marks, "recovering": True}
     table = MODULE_TABLE if generic else _table(entity)
     try:
         while True:

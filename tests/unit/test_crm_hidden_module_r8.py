@@ -219,3 +219,64 @@ async def test_deal_roles_wait_while_deals_is_off(ns, zoho) -> None:
     back = await engine.run_org(ns.org_a)
     assert back.status == "ok"
     assert a.role_calls[-1] == "d1", "the kept queue is read once Deals is back"
+
+
+async def test_a_recovery_read_over_two_runs_still_relinks_the_children(ns, zoho) -> None:
+    """Re-review P1. Accounts comes back, and its read stops after one page.
+    The next run ends the read, and only then queues the children."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Accounts", "a2", 5, Account_Name="Second")
+    a.add("Accounts", "a3", 6, Account_Name="Third")  # the suite pages by 2
+    a.add("Contacts", "c3", 7, Last_Name="Three", Account_Name={"id": "a2"})
+    _hide(a, "Accounts")
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert _count(ns, "crm_contacts", ns.org_a, "company_id IS NULL") == 3
+
+    a.faults.pop("Accounts")
+    _age_checked_at(ns, ns.org_a, "zoho:company")
+    def reads() -> int:  # the record list only, not the count or the fields
+        return sum(1 for r in a.requests if r.url.path == "/crm/v2/Accounts")
+
+    start = reads()
+    stopped = await engine.run_org(
+        # Page 1 arrives, the owners load, page 1 is written. The next call,
+        # page 2, stops: its check is the first one after the owners call.
+        ns.org_a,
+        should_stop=lambda: reads() > start and a.requests[-1].url.path != "/crm/v2/Accounts",
+    )
+    assert stopped.status != "ok", "the read must stop after its first page"
+    assert _count(ns, "crm_companies", ns.org_a) == 2
+    assert _count(ns, "crm_contacts", ns.org_a, "company_id IS NULL") == 3
+
+    done = await engine.run_org(ns.org_a)
+    assert done.status == "ok"
+    assert _count(ns, "crm_companies", ns.org_a) == 3
+    assert _count(ns, "crm_contacts", ns.org_a, "company_id IS NULL") == 0
+
+
+async def test_a_note_on_a_lead_lands_when_leads_comes_back(ns, zoho) -> None:
+    """Re-review P1. A lead is a parent of activities too."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Leads", "l1", 4, Last_Name="Lead", Company="Acme", Lead_Status="Fresh")
+    a.add("Notes", "n1", 7, Note_Title="On the lead", Note_Content="Body",
+          Parent_Id={"id": "l1"}, **{"$se_module": "Leads"})
+    _hide(a, "Leads")
+    await _connect(ns, ns.org_a, a)
+    first = await engine.run_org(ns.org_a)
+    assert first.status == "ok"
+    assert first.counts["leads"]["hidden"] == 1
+    assert _count(ns, "crm_activities", ns.org_a, "ext_id = 'n1'") == 0
+
+    a.faults.pop("Leads")
+    _age_checked_at(ns, ns.org_a, "zoho:lead")
+    back = await engine.run_org(ns.org_a)
+    assert back.status == "ok"
+    assert _count(ns, "crm_leads", ns.org_a) == 1
+    assert _count(ns, "crm_activities", ns.org_a, "ext_id = 'n1' AND lead_id IS NOT NULL") == 1
