@@ -20,6 +20,7 @@ import {
   REPORT_VISUAL_KINDS,
   companionPdfPath,
   firstVisual,
+  kpiGridClass,
   liteMarkdown,
   mapVisual,
   parseReportFile,
@@ -170,8 +171,19 @@ describe("the words", () => {
   });
 
   it("the card's summary is plain words, so a cut leaves no lone mark", () => {
-    expect(plainSummary(FULL.summary)).toBe("Revenue grew. Pipeline is up Churn is down");
+    expect(plainSummary(FULL.summary)).toBe("Revenue grew. Pipeline is up · Churn is down");
     expect(plainSummary("![x](https://e.test/a.png) see [the site](https://e.test)")).toBe("see the site");
+  });
+
+  it("two list items never read as one, and a sentence keeps its own stop", () => {
+    expect(plainSummary(["Done.", "- a", "- b"].join("\n"))).toBe("Done. a · b");
+  });
+
+  it("the KPI grid never leaves one tile alone at the end of a row of four", () => {
+    expect(kpiGridClass(4)).toContain("@[36rem]:grid-cols-4");
+    expect(kpiGridClass(4)).not.toContain("grid-cols-3");
+    expect(kpiGridClass(3)).toContain("grid-cols-3");
+    expect(kpiGridClass(1)).toBe("grid grid-cols-1 gap-2");
   });
 
   it("Markdown-lite keeps bold, lists and line breaks, and drops an image, a URL and HTML", () => {

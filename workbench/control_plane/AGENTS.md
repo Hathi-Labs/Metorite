@@ -113,6 +113,12 @@ Ten rules on top of the three above. Each one exists because it was broken:
    icon map of the report sections. `app/projects/lib/sectionEmpty.ts` holds
    the one friendly line of a clear section, and the app, the email and the
    download read it. Fence: `app/projects/components/reportsRedesign.test.ts`.
+   **`ReportView` in `components/genUITemplates.tsx` is the one report
+   renderer** (owner directive, 2026-10-16). The chat card, the side panel,
+   the file viewer and `/artifacts` draw a report through it. A visual draws
+   through the template of its kind. Do not add a second chart or table for
+   a report. Fences: `src/components/reportView.test.ts` and
+   `src/lib/report.test.ts`.
    **`src/lib/autoOpenArtifact.ts` is the one rule** for a file a chat agent
    writes: `/chat` and the Projects rail both call it. Fence:
    `autoOpenArtifact.test.ts`.

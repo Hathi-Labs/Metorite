@@ -39,6 +39,7 @@ import {
   REPORT_LIMITS,
   baseName,
   firstVisual,
+  kpiGridClass,
   liteMarkdown,
   mapVisual,
   plainSummary,
@@ -1927,7 +1928,9 @@ export interface ReportViewProps {
  */
 export function ReportView({ report, pdfUrl = null, variant = "full", onOpen = null }: ReportViewProps) {
   const card = variant === "card";
-  const meta = reportMeta(report, { period: !card });
+  // The card's header carries the title alone: in a narrow chat column an
+  // aside there took the title's room. So the period is in the meta line.
+  const meta = reportMeta(report, { period: true });
   const pdfName = report.pdf ? baseName(report.pdf) : "report.pdf";
   const actions = (onOpen || pdfUrl) && (
     <div data-report-actions="" className="flex flex-wrap items-center gap-1.5">
@@ -1939,7 +1942,15 @@ export function ReportView({ report, pdfUrl = null, variant = "full", onOpen = n
       {pdfUrl && <ReportPdfButton url={pdfUrl} name={pdfName} />}
     </div>
   );
-  const tiles = report.kpis.length > 0 && <StatDashboard data={{ stats: report.kpis }} />;
+  // The KPI tiles are the stat template's tiles, in a grid by their count.
+  const tiles = report.kpis.length > 0 && (
+    <div data-report-kpis="" className="@container min-w-0">
+      <div className={kpiGridClass(report.kpis.length)}>
+        {report.kpis.map((k, i) => <StatTile key={i} s={k as unknown as Data} />)}
+      </div>
+      <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
+    </div>
+  );
 
   if (card) {
     const lead = firstVisual(report);
@@ -2020,8 +2031,7 @@ function ReportTemplate({ data }: { data: Data }) {
   const { open, pdfUrl } = reportCardActions(report, useContext(GenUiFileContext));
   return (
     <div data-report-card="" style={CARD_BOX}>
-      <TemplateHead icon="file-chart-column" gap={10} title={report.title}
-        aside={report.period || undefined} />
+      <TemplateHead icon="file-chart-column" gap={10} title={report.title} />
       <TemplateBody>
         <ReportView report={report} variant="card" pdfUrl={pdfUrl} onOpen={open} />
       </TemplateBody>

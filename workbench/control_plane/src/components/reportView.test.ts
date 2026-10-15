@@ -150,7 +150,7 @@ describe("the chat card", () => {
   it("draws the short form: tiles, a clipped summary, the first visual and the contents", () => {
     const html = card({ sessionId: "s1", open: () => {} });
     expect(html).toContain('data-report-view="card"');
-    expect(html).toContain("Revenue grew 12%. Delivery held. Pipeline is up Churn is down");
+    expect(html).toContain("Revenue grew 12%. Delivery held. Pipeline is up · Churn is down");
     expect(html.match(/data-report-visual=/g)).toHaveLength(1);
     expect(html).toContain('data-report-visual="chart"');
     expect(html).toContain("In this report");

@@ -251,6 +251,20 @@ export function reportMeta(r: Report, opts: { period?: boolean } = {}): string[]
   return out;
 }
 
+/**
+ * The grid of the KPI tiles, by their count, so a row never ends with one
+ * tile alone at full width. The box is its own size container: a narrow
+ * chat column stacks the tiles, and a wide pane sets them in one row.
+ */
+export function kpiGridClass(count: number): string {
+  if (count <= 1) return "grid grid-cols-1 gap-2";
+  if (count === 2) return "grid grid-cols-1 gap-2 @[16rem]:grid-cols-2";
+  if (count === 3) return "grid grid-cols-1 gap-2 @[22rem]:grid-cols-3";
+  if (count <= 4) return "grid grid-cols-1 gap-2 @[16rem]:grid-cols-2 @[36rem]:grid-cols-4";
+  if (count <= 6) return "grid grid-cols-1 gap-2 @[16rem]:grid-cols-2 @[30rem]:grid-cols-3";
+  return "grid grid-cols-1 gap-2 @[16rem]:grid-cols-2 @[36rem]:grid-cols-4";
+}
+
 /** The first section's visual, for the chat card. */
 export function firstVisual(r: Report): ReportVisual | null {
   return r.sections.find((s) => s.visual !== null)?.visual ?? null;
@@ -258,14 +272,18 @@ export function firstVisual(r: Report): ReportVisual | null {
 
 /**
  * The summary as plain words, for the chat card. The marks of Markdown-lite
- * go, and the lines join, so a cut never leaves a lone `**`.
+ * go, and the lines join, so a cut never leaves a lone `**`. A line that
+ * ends a sentence joins with a space. Any other line joins with a dot, so
+ * two list items never read as one.
  */
 export function plainSummary(summary: string): string {
-  return summary
+  const lines = summary
     .split(/\r?\n/)
     .map((line) => line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").trim())
-    .filter(Boolean)
-    .join(" ")
+    .filter(Boolean);
+  return lines
+    .map((line, i) => (i === 0 ? line : `${/[.!?:][*_`]*$/.test(lines[i - 1]) ? " " : " · "}${line}`))
+    .join("")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/(\*\*|__|\*|_|`)/g, "")
