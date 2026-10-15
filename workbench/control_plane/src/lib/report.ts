@@ -253,16 +253,18 @@ export function reportMeta(r: Report, opts: { period?: boolean } = {}): string[]
 
 /**
  * The grid of the KPI tiles, by their count, so a row never ends with one
- * tile alone at full width. The box is its own size container: a narrow
- * chat column stacks the tiles, and a wide pane sets them in one row.
+ * tile alone at full width. The tiles sit two to a row in a chat column
+ * (the assistant dock, a phone) and four to a row where the box is wide.
+ * The box is its own size container, so the card's width decides, not the
+ * window's. Below 13rem a tile would cut its value, so each tile takes a row.
+ * Only /chat with the Documents and Files panes open is that narrow.
  */
 export function kpiGridClass(count: number): string {
-  if (count <= 1) return "grid grid-cols-1 gap-2";
-  if (count === 2) return "grid grid-cols-1 gap-2 @[16rem]:grid-cols-2";
-  if (count === 3) return "grid grid-cols-1 gap-2 @[22rem]:grid-cols-3";
-  if (count <= 4) return "grid grid-cols-1 gap-2 @[16rem]:grid-cols-2 @[36rem]:grid-cols-4";
-  if (count <= 6) return "grid grid-cols-1 gap-2 @[16rem]:grid-cols-2 @[30rem]:grid-cols-3";
-  return "grid grid-cols-1 gap-2 @[16rem]:grid-cols-2 @[36rem]:grid-cols-4";
+  if (count <= 1) return "grid grid-cols-1 gap-1.5";
+  if (count === 2) return "grid grid-cols-1 gap-1.5 @[13rem]:grid-cols-2";
+  if (count === 3) return "grid grid-cols-1 gap-1.5 @[18rem]:grid-cols-3";
+  if (count <= 4 || count >= 7) return "grid grid-cols-1 gap-1.5 @[13rem]:grid-cols-2 @[30rem]:grid-cols-4";
+  return "grid grid-cols-1 gap-1.5 @[13rem]:grid-cols-2 @[24rem]:grid-cols-3";
 }
 
 /** The first section's visual, for the chat card. */

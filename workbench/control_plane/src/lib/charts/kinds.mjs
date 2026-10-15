@@ -117,6 +117,15 @@ export function fmt(v) {
   return out.replace("-", "\u2212"); // one minus sign, the typographic one
 }
 
+/**
+ * True when a donut's values are SHARES: its unit is a percent sign. Its
+ * total is then about 100 by its nature, so the hole draws no total.
+ * @param {string | undefined} unit
+ */
+export function isShare(unit) {
+  return String(unit ?? "").trim() === "%";
+}
+
 /** Rich-text braces and bars in a label would pick a style, not print. */
 const plain = (s) => String(s).replace(/[{}|]/g, " ");
 
@@ -269,13 +278,18 @@ const BUILD = {
       itemStyle: { borderRadius: c.u(10) }, label: { show: false },
       data: ls.map((name, i) => ({ name: plain(name), value: vs[i], itemStyle: tn?.[i] ? { color: tn[i] } : undefined })),
     }];
-    const center = text(spec.center ?? "total", "center", 16, false);
-    o.graphic.push(
-      { type: "text", x: W * 0.31, y: H * 0.58 - c.u(46),
-        style: { text: fmt(total), align: "center", fill: c.t.fg, fontWeight: 600, fontSize: c.u(64), fontFamily: c.t.font } },
-      { type: "text", x: W * 0.31, y: H * 0.58 + c.u(26),
-        style: { text: center, align: "center", fill: c.t.muted, fontSize: c.u(26), fontFamily: c.t.font } },
-    );
+    // A split in percent sums to about 100 by its nature, so "100 total" in
+    // the hole says nothing. A share has no centre. Any other donut shows
+    // its real total, with its unit (visual review of the report, 2026-10-16).
+    if (!isShare(c.unit)) {
+      const center = text(spec.center ?? "total", "center", 16, false);
+      o.graphic.push(
+        { type: "text", x: W * 0.31, y: H * 0.58 - c.u(46),
+          style: { text: c.label(total), align: "center", fill: c.t.fg, fontWeight: 600, fontSize: c.u(64), fontFamily: c.t.font } },
+        { type: "text", x: W * 0.31, y: H * 0.58 + c.u(26),
+          style: { text: center, align: "center", fill: c.t.muted, fontSize: c.u(26), fontFamily: c.t.font } },
+      );
+    }
     o.legend = {
       orient: "vertical", right: c.u(64), top: "middle", icon: "circle", itemWidth: c.u(20), itemHeight: c.u(20), itemGap: c.u(30),
       textStyle: { color: c.t.fg, fontFamily: c.t.font, fontSize: c.u(27), rich: {

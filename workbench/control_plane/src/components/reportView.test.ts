@@ -165,6 +165,36 @@ describe("the chat card", () => {
     expect(html).toContain('title="Download q3-review.pdf"');
   });
 
+  it("the acts sit in the header row as dense icon buttons, never as blocks in the body (fix round 1)", () => {
+    const html = card({ sessionId: "s1", open: () => {} });
+    const acts = html.indexOf("data-template-actions");
+    const body = html.indexOf('data-report-view="card"');
+    expect(acts).toBeGreaterThan(-1);
+    expect(acts).toBeLessThan(body);
+    const row = html.slice(acts, body);
+    expect(row).toContain('aria-label="Open report"');
+    expect(row).toContain('aria-label="Download PDF"');
+    // The word gives way in a narrow card, and the icon stays.
+    expect(row).toContain("hidden @[17rem]:inline");
+    expect(html.slice(body)).not.toContain("Open report");
+    expect(html).not.toContain("data-report-actions");
+  });
+
+  it("the card is dense: tiles two or four to a row, a 3-line summary, a chart of readable width", () => {
+    const html = card({ sessionId: "s1", open: () => {} });
+    expect(html).toContain('class="@container min-w-0"');
+    expect(html).toContain("@[13rem]:grid-cols-2 @[30rem]:grid-cols-4");
+    expect(html.match(/data-stat-tile="dense"/g)).toHaveLength(4);
+    expect(html).toMatch(/data-report-summary="" class="line-clamp-3/);
+    expect(html).toContain("min-width:18rem");
+    expect(html).toMatch(/<span class="min-w-0 truncate text-foreground" title="Milestones">/);
+  });
+
+  it("the full report keeps its wide tiles and its own Download PDF", () => {
+    expect(full(FULL)).not.toContain('data-stat-tile="dense"');
+    expect(full(FULL)).toContain("data-report-actions");
+  });
+
   it("with no host, the card still draws, with no act", () => {
     const html = card(null);
     expect(html).toContain("Q3 business review");

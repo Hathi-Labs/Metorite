@@ -180,10 +180,14 @@ describe("the words", () => {
   });
 
   it("the KPI grid never leaves one tile alone at the end of a row of four", () => {
-    expect(kpiGridClass(4)).toContain("@[36rem]:grid-cols-4");
-    expect(kpiGridClass(4)).not.toContain("grid-cols-3");
-    expect(kpiGridClass(3)).toContain("grid-cols-3");
-    expect(kpiGridClass(1)).toBe("grid grid-cols-1 gap-2");
+    // Two to a row in the narrowest column, four where it is wide.
+    expect(kpiGridClass(4)).toBe("grid grid-cols-1 gap-1.5 @[13rem]:grid-cols-2 @[30rem]:grid-cols-4");
+    expect(kpiGridClass(8)).toBe("grid grid-cols-1 gap-1.5 @[13rem]:grid-cols-2 @[30rem]:grid-cols-4");
+    expect(kpiGridClass(6)).toContain("@[24rem]:grid-cols-3");
+    expect(kpiGridClass(3)).toBe("grid grid-cols-1 gap-1.5 @[18rem]:grid-cols-3");
+    expect(kpiGridClass(1)).toBe("grid grid-cols-1 gap-1.5");
+    // From 13rem (the dock is 23rem), never one tile to a row once there are two.
+    for (const n of [2, 4, 5, 6, 7, 8]) expect(kpiGridClass(n), String(n)).toContain("@[13rem]:grid-cols-2");
   });
 
   it("Markdown-lite keeps bold, lists and line breaks, and drops an image, a URL and HTML", () => {

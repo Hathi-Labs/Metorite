@@ -475,22 +475,30 @@ export function tileNumber(value: unknown): number | null {
   return /^-?\d+(?:\.\d+)?$/.test(t) ? Number(t) : null;
 }
 
-function StatTile({ s }: { s: Data }) {
+/**
+ * One stat tile. `dense` is the report card's form: it sits two or four to a
+ * row in a chat column, so it takes no least width, a smaller value and a
+ * label cut to one line.
+ */
+function StatTile({ s, dense = false }: { s: Data; dense?: boolean }) {
   const delta = shownDelta(s);
   const target = tileNumber(s.value);
   const animated = useCountUp(target ?? 0);
   const decimals = target === null ? 0 : (String(target).split(".")[1]?.length ?? 0);
   return (
-    <div style={{
-      flex: 1, minWidth: 110, padding: 12, borderRadius: 12,
+    <div data-stat-tile={dense ? "dense" : ""} style={{
+      flex: 1, minWidth: dense ? 0 : 110, padding: dense ? "6px 8px" : 12, borderRadius: dense ? 8 : 12,
       border: "1px solid var(--border)", background: "var(--card)",
       animation: "ccFadeUp .4s ease both",
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: TYPE.caption, color: "var(--muted-foreground)", minWidth: 0 }}>
         <TIcon name={s.icon} size={13} />
-        <span>{str(s.label)}</span>
+        <span style={dense ? { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } : undefined}
+          title={dense ? str(s.label) : undefined}>{str(s.label)}</span>
       </div>
-      <div style={{ fontSize: TYPE["2xl"], fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
+      {/* A value never cuts: a number cut to "4..." is a wrong number. */}
+      <div style={{ fontSize: dense ? TYPE.base : TYPE["2xl"], fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums",
+        ...(dense ? { overflowWrap: "anywhere" as const } : {}) }}>
         {target !== null
           ? animated.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
           : str(s.value)}
@@ -1178,7 +1186,7 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
  * the row the template always drew. With no title, a chat card still gets
  * the toggle while it folds, and draws nothing while it is open.
  */
-function TemplateHead({ icon, title, href = null, rich = false, aside, end, foldOnly = false, gap = 8 }: {
+function TemplateHead({ icon, title, href = null, rich = false, aside, end, actions, foldOnly = false, gap = 8 }: {
   icon: string;
   /** The title's words, or null for a template with no title. */
   title: string | null;
@@ -1191,6 +1199,10 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, end, fold
   /** A mark at the row's end, such as a status badge. It draws BESIDE the
    *  toggle, never inside it, and it is never a control. */
   end?: React.ReactNode;
+  /** The card's own controls, such as "Open" and "PDF". They draw BESIDE the
+   *  toggle, never inside it, as the Email cards' `CardHead` draws them. The
+   *  title gives way first: it cuts to one line, with its words as a tip. */
+  actions?: React.ReactNode;
   /** Draw only inside a chat card. A template whose own body names it (the
    *  weather card's place) draws no title row anywhere else. */
   foldOnly?: boolean;
@@ -1215,6 +1227,7 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, end, fold
           />
         </div>
         {end != null && <div data-template-end="" className="flex shrink-0 items-center">{end}</div>}
+        {actions != null && <div data-template-actions="" className="flex shrink-0 items-center gap-1">{actions}</div>}
         {href && (
           <a href={href} data-template-open="" aria-label={`Open ${title === null ? "it" : plainTitle(title)}`}
             title="Open" className="cc-control flex shrink-0 rounded p-1 text-muted-foreground hover:text-foreground">
@@ -1230,14 +1243,16 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, end, fold
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: gap }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <TIcon name={icon} size={15} color="var(--primary)" />
-        <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
+        <span title={actions != null ? plainTitle(title) : undefined} style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)",
+          ...(actions != null ? { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const } : {}) }}>
           <TitleLink href={href}>{words}</TitleLink>
         </span>
       </div>
-      {(aside != null || end != null) && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {(aside != null || end != null || actions != null) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           {aside != null && <span style={MUTED}>{aside}</span>}
           {end}
+          {actions != null && <div data-template-actions="" className="flex items-center gap-1">{actions}</div>}
         </div>
       )}
     </div>
@@ -1824,7 +1839,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
 export const REPORT_VISUAL_MISSING = "This visual cannot show here.";
 
 /** One visual, by the template that draws its kind, or the note. */
-function ReportVisualBlock({ visual }: { visual: ReportVisual }) {
+function ReportVisualBlock({ visual, minWidth }: { visual: ReportVisual; minWidth?: string }) {
   const mapped = mapVisual(visual);
   if (!mapped) {
     return (
@@ -1848,6 +1863,15 @@ function ReportVisualBlock({ visual }: { visual: ReportVisual }) {
         return <Timeline data={mapped.data} />;
     }
   })();
+  // In a narrow chat column a chart drew as a thumbnail. With a least
+  // width it keeps a readable size, and the column scrolls it sideways.
+  if (minWidth) {
+    return (
+      <div data-report-visual={visual.kind} data-template={mapped.template} className="min-w-0 overflow-x-auto">
+        <div style={{ minWidth }}>{drawn}</div>
+      </div>
+    );
+  }
   return <div data-report-visual={visual.kind} data-template={mapped.template} className="min-w-0">{drawn}</div>;
 }
 
@@ -1857,12 +1881,14 @@ class PdfMissing extends Error {}
 /**
  * "Download PDF": the companion file, through the one save seam
  * (`lib/export.ts`). It fetches first, so a PDF that is not there says so in
- * words instead of a failed browser download.
+ * words instead of a failed browser download. A hook, so the chat card puts
+ * the button in its header row and the words of a failure in its body.
  */
-function ReportPdfButton({ url, name }: { url: string; name: string }) {
+function usePdfDownload(url: string | null, name: string) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function run() {
+    if (!url) return;
     setBusy(true);
     setError(null);
     try {
@@ -1877,12 +1903,46 @@ function ReportPdfButton({ url, name }: { url: string; name: string }) {
       setBusy(false);
     }
   }
+  return { busy, error, run };
+}
+
+/** The words of a failed PDF download. */
+function PdfError({ error }: { error: string | null }) {
+  if (!error) return null;
+  return <p role="alert" className="w-full text-destructive" style={{ fontSize: TYPE.caption }}>{error}</p>;
+}
+
+/** A small control in a dense card row: the Email cards' size (#945). */
+const DENSE_ACT = "gap-0.5 px-1.5 py-0.5 text-[10px]";
+
+/**
+ * The chat card's two acts, in its header row. Each is an icon and a short
+ * word. Where the card is narrow, the word gives way and the icon stays,
+ * named for a screen reader.
+ */
+function ReportCardActions({ onOpen, pdf, pdfName }: {
+  onOpen: (() => void) | null;
+  pdf: ReturnType<typeof usePdfDownload> | null;
+  pdfName: string;
+}) {
+  if (!onOpen && !pdf) return null;
   return (
     <>
-      <Button variant="secondary" size="sm" icon="FileDown" loading={busy} onClick={run} title={`Download ${name}`}>
-        Download PDF
-      </Button>
-      {error && <p role="alert" className="w-full text-destructive" style={{ fontSize: TYPE.caption }}>{error}</p>}
+      {onOpen && (
+        <Button variant="secondary" size="none" className={DENSE_ACT} onClick={onOpen}
+          aria-label="Open report" title="Open the report in full">
+          <Icon name="PanelRight" size={10} /><span className="hidden @[17rem]:inline">Open</span>
+        </Button>
+      )}
+      {pdf && (
+        // Below 12rem the title needs the room. The PDF is then in the side
+        // panel, which is what makes a chat column that narrow.
+        <Button variant="secondary" size="none" className={DENSE_ACT} onClick={pdf.run} loading={pdf.busy}
+          layout="hidden items-center justify-center @[12rem]:inline-flex"
+          aria-label="Download PDF" title={`Download ${pdfName}`}>
+          {!pdf.busy && <Icon name="FileDown" size={10} />}<span className="hidden @[17rem]:inline">PDF</span>
+        </Button>
+      )}
     </>
   );
 }
@@ -1918,35 +1978,35 @@ export interface ReportViewProps {
   /** `full` draws the whole report. `card` draws the chat card's short form,
    *  under the card's own header, which carries the title. */
   variant?: "full" | "card";
-  /** The card's "Open report". Null or absent: nothing here can open it. */
-  onOpen?: (() => void) | null;
 }
 
 /**
  * THE report renderer. The chat card, the side panel, the file viewer and
  * `/artifacts` all draw a report through it, so the four cannot disagree.
  */
-export function ReportView({ report, pdfUrl = null, variant = "full", onOpen = null }: ReportViewProps) {
+export function ReportView({ report, pdfUrl = null, variant = "full" }: ReportViewProps) {
   const card = variant === "card";
   // The card's header carries the title alone: in a narrow chat column an
   // aside there took the title's room. So the period is in the meta line.
   const meta = reportMeta(report, { period: true });
   const pdfName = report.pdf ? baseName(report.pdf) : "report.pdf";
-  const actions = (onOpen || pdfUrl) && (
+  const pdf = usePdfDownload(pdfUrl, pdfName);
+  // The full form's one act. The card's acts sit in its header row
+  // (`ReportTemplate`), so the card form draws none here.
+  const actions = !card && pdfUrl && (
     <div data-report-actions="" className="flex flex-wrap items-center gap-1.5">
-      {card && onOpen && (
-        <Button variant="secondary" size="sm" icon="PanelRight" onClick={onOpen} title={`Open ${report.title} in full`}>
-          Open report
-        </Button>
-      )}
-      {pdfUrl && <ReportPdfButton url={pdfUrl} name={pdfName} />}
+      <Button variant="secondary" size="sm" icon="FileDown" loading={pdf.busy} onClick={pdf.run} title={`Download ${pdfName}`}>
+        Download PDF
+      </Button>
+      <PdfError error={pdf.error} />
     </div>
   );
-  // The KPI tiles are the stat template's tiles, in a grid by their count.
+  // The KPI tiles are the stat template's tiles, in a grid by their count:
+  // two or four to a row, never one alone at the end of a row.
   const tiles = report.kpis.length > 0 && (
     <div data-report-kpis="" className="@container min-w-0">
       <div className={kpiGridClass(report.kpis.length)}>
-        {report.kpis.map((k, i) => <StatTile key={i} s={k as unknown as Data} />)}
+        {report.kpis.map((k, i) => <StatTile key={i} s={k as unknown as Data} dense={card} />)}
       </div>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
@@ -1957,17 +2017,20 @@ export function ReportView({ report, pdfUrl = null, variant = "full", onOpen = n
     const summary = clipWords(plainSummary(report.summary), REPORT_LIMITS.cardSummary);
     const heads = report.sections.map((s) => s.heading).filter(Boolean);
     return (
-      <div data-report-view="card" className="flex min-w-0 flex-col gap-2.5 text-xs">
+      <div data-report-view="card" className="flex min-w-0 flex-col gap-2 text-xs">
         {(report.subtitle || meta.length > 0) && (
-          <div className="text-muted-foreground">
-            {report.subtitle && <div className="text-foreground">{report.subtitle}</div>}
-            {meta.length > 0 && <div>{meta.join(" · ")}</div>}
+          <div className="min-w-0 text-muted-foreground">
+            {report.subtitle && <div className="truncate text-foreground" title={report.subtitle}>{report.subtitle}</div>}
+            {meta.length > 0 && <div className="truncate" title={meta.join(" · ")}>{meta.join(" · ")}</div>}
           </div>
         )}
-        {actions}
         {tiles}
-        {summary && <p data-report-summary="" className="text-foreground" style={{ overflowWrap: "anywhere" }}>{summary}</p>}
-        {lead && <ReportVisualBlock visual={lead} />}
+        {summary && (
+          <p data-report-summary="" className="line-clamp-3 text-foreground" title={summary} style={{ overflowWrap: "anywhere" }}>
+            {summary}
+          </p>
+        )}
+        {lead && <ReportVisualBlock visual={lead} minWidth="18rem" />}
         {heads.length > 0 && (
           <div data-report-contents="">
             <div className="mb-1 font-medium text-muted-foreground">In this report</div>
@@ -2029,11 +2092,17 @@ export function ReportView({ report, pdfUrl = null, variant = "full", onOpen = n
 function ReportTemplate({ data }: { data: Data }) {
   const report = reportFrom(data);
   const { open, pdfUrl } = reportCardActions(report, useContext(GenUiFileContext));
+  const pdfName = report.pdf ? baseName(report.pdf) : "report.pdf";
+  const pdf = usePdfDownload(pdfUrl, pdfName);
+  // The card is its own size container: its acts drop their words, and its
+  // tiles set their row, by the card's width and not the window's.
   return (
-    <div data-report-card="" style={CARD_BOX}>
-      <TemplateHead icon="file-chart-column" gap={10} title={report.title} />
+    <div data-report-card="" className="@container min-w-0" style={CARD_BOX}>
+      <TemplateHead icon="file-chart-column" gap={10} title={report.title}
+        actions={open || pdfUrl ? <ReportCardActions onOpen={open} pdf={pdfUrl ? pdf : null} pdfName={pdfName} /> : undefined} />
       <TemplateBody>
-        <ReportView report={report} variant="card" pdfUrl={pdfUrl} onOpen={open} />
+        <PdfError error={pdf.error} />
+        <ReportView report={report} variant="card" />
       </TemplateBody>
     </div>
   );

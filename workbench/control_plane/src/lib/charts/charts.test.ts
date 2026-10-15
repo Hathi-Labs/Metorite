@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 import { THEME } from "@/lib/theme/themes";
 import { CAT_HUES, SERIES_SLOTS, hsl, theme, tone } from "./theme.mjs";
-import { ChartSpecError, KINDS, chartOption, fmt } from "./kinds.mjs";
+import { ChartSpecError, KINDS, chartOption, fmt, isShare } from "./kinds.mjs";
 import { classify, handle, renderPng } from "./render.mjs";
 
 const PNG = [0x89, 0x50, 0x4e, 0x47];
@@ -165,5 +165,29 @@ describe("wac10f-spec-refusals", () => {
   it("hostile text stays text", () => {
     const png: Buffer = renderPng({ type: "bar", title: "<script>alert(1)</script>", labels: ["</text><x>"], values: [1] });
     expect([...png.subarray(0, 4)]).toEqual(PNG);
+  });
+});
+
+// The report's visual review, 2026-10-16: a split in percent drew "100 total"
+// in the hole of its donut. A share has no centre. Any other donut shows its
+// real total, with its unit.
+describe("the donut's centre", () => {
+  const centre = (spec: Record<string, unknown>) =>
+    (chartOption({ type: "donut", title: "Mix", labels: ["a", "b"], ...spec }).option.graphic as { style?: { text?: string } }[])
+      .map((g) => g.style?.text)
+      .filter((t) => t !== "Metorite");
+
+  it("draws no total for shares in percent", () => {
+    expect(isShare("%")).toBe(true);
+    expect(isShare(" % ")).toBe(true);
+    expect(centre({ values: [52, 48], unit: "%" })).toEqual([]);
+  });
+
+  it("draws the real total with its unit for anything else", () => {
+    expect(isShare("h")).toBe(false);
+    expect(isShare(undefined)).toBe(false);
+    expect(centre({ values: [18, 9], unit: "h" })).toEqual(["27h", "total"]);
+    expect(centre({ values: [18, 9] })).toEqual(["27", "total"]);
+    expect(centre({ values: [60, 40], center: "hours" })).toEqual(["100", "hours"]);
   });
 });
