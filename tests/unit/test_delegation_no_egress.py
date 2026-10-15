@@ -587,18 +587,20 @@ def _harness(monkeypatch, sandbox, models: dict[str, _Model]) -> list[str]:  # n
 
 def _run_top(
     agent: str, org: str, run_id: str | None = None, thread: str | None = None,
+    *, batch: bool = False, member: str = "member@example.com",
 ) -> list[dict[str, Any]]:
     """*agent* as a top-level chat run, through ``run_agent_stream``. A
-    *thread* makes this run a later turn of that chat session."""
+    *thread* makes this run a later turn of that chat session. *batch* sends
+    no thread, so the executor mints one and the run is a batch run."""
     from acb_common.db import bind_tenant, release_tenant
     from acb_skills.write_artifact import bind_artifact_context
 
     rid = run_id or f"run-h236-{new_thread()}"
-    tid = thread or new_thread()
+    tid = None if batch else (thread or new_thread())
 
     async def collect() -> list[str]:
         return [line async for line in executor.run_agent_stream(
-            agent, {"message": "chart it", "user_email": "member@example.com"},
+            agent, {"message": "chart it", "user_email": member},
             run_id=rid, thread_id=tid,
         )]
 
@@ -1205,6 +1207,46 @@ def test_redis_that_does_not_answer_reads_as_marked(
     fetch = _results(pa.bodies[1])[-1]
     assert "fetch_page did not run" in fetch, fetch
     assert sent == []
+
+
+def test_redis_down_leaves_an_unmarked_batch_run_its_egress(
+    sandbox, monkeypatch, mark_store,  # noqa: F811
+) -> None:
+    """Round 4 (P2): a batch run minted its own session, so no other process
+    can mark it. With Redis down, it reads only the process set, and its
+    egress tool still runs. A fault marks no session that never read an
+    untrusted answer."""
+    _register_every_annotation()
+    mark_store.down = True
+    pa = _Model([_call("fetch_page", {"url": _EVIL}), _say("done")])
+    sent = _harness(monkeypatch, sandbox, {PA: pa})
+    _run_top(PA, ORG_B, batch=True)
+    fetch = _results(pa.bodies[1])[-1]
+    assert "did not run" not in fetch, fetch
+    assert "off in this run" not in fetch, fetch
+
+
+async def test_a_batch_session_never_asks_redis(mark_store) -> None:  # noqa: F811
+    """The unit form of the rule above: a batch session reads the process
+    set, and Redis never sees the call."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    mark_store.down = True
+    token = bind_tenant(ORG_B)
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id="pa:r", batch_thread=True,
+                                  member="member@example.com")
+            assert await eg.session_is_marked() is False
+            assert await eg.mark_untrusted_answer() is True
+            assert await eg.session_is_marked() is True
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r2", session_id="chat-9",
+                                  member="member@example.com")
+            assert await eg.session_is_marked() is True  # a chat fails closed
+    finally:
+        release_tenant(token)
 
 
 async def test_a_run_with_no_member_refuses_at_once(monkeypatch) -> None:

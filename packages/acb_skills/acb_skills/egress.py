@@ -162,6 +162,36 @@ def _session_of(ctx: Mapping[str, Any] | None = None) -> tuple[str, str, str] | 
     return org, str((ctx or {}).get("member") or "-"), session
 
 
+def _bound_context() -> Mapping[str, Any]:
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        return artifact_context() or {}
+    except Exception:
+        return {}
+
+
+def _minted_session(ctx: Mapping[str, Any] | None) -> bool:
+    """True for a session that a BATCH run minted (H-227 ``batch_thread``).
+    The executor sets the flag, never a request. No other run shares that
+    session, so no other process can mark it, and Redis holds nothing."""
+    return bool((ctx or {}).get("batch_thread") is True)
+
+
+def _card_can_show(ctx: Mapping[str, Any] | None) -> bool:
+    """True when the run can show the member's card: a member, no batch run
+    and no WhatsApp run. Only such a run fails closed on a Redis fault."""
+    ctx = ctx or {}
+    if not ctx.get("member") or ctx.get("batch_thread") is True:
+        return False
+    try:
+        from acb_skills.whatsapp_ui import current_run
+
+        return current_run() is None
+    except Exception:
+        return True
+
+
 def get_tenant_redis() -> Any:
     """The tenant Redis client. A seam, so a test passes a fake client."""
     from acb_common.tenant_redis import get_tenant_redis as _client
@@ -180,6 +210,9 @@ async def mark_untrusted_answer() -> bool:
         return False
     with _MARKED_LOCK:
         _MARKED_SESSIONS.add(session)
+    if _minted_session(_bound_context()):
+        _log.info("egress.untrusted_answer_marked", store="process")
+        return True
     org, member, thread = session
     try:
         from acb_common.tenant_redis import key, organization_scope
@@ -206,6 +239,11 @@ async def session_is_marked(ctx: Mapping[str, Any] | None = None) -> bool:
     with _MARKED_LOCK:
         if session in _MARKED_SESSIONS:
             return True
+    if ctx is None:
+        ctx = _bound_context()
+    if _minted_session(ctx):
+        # A batch run minted this session, so only this process can mark it.
+        return False
     org, member, thread = session
     try:
         from acb_common.tenant_redis import key, organization_scope
@@ -217,8 +255,12 @@ async def session_is_marked(ctx: Mapping[str, Any] | None = None) -> bool:
                 return False
             await client.expire(mark, MARK_TTL_S)
     except Exception as exc:
-        _log.warning("egress.untrusted_answer_read_failed", error=type(exc).__name__)
-        return True
+        closed = _card_can_show(ctx)
+        _log.warning("egress.untrusted_answer_read_failed",
+                     error=type(exc).__name__, fail_closed=closed)
+        # Fail closed only where a card can show, so the member can still
+        # approve. A run with no card channel would lose each egress call.
+        return closed
     with _MARKED_LOCK:
         _MARKED_SESSIONS.add(session)
     return True
