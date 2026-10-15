@@ -31,9 +31,10 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 
 def test_settings_default_model_tiers() -> None:
     s = AssistantSettingsModel(account_id="acc-1")
-    # auto_run is the global "run rules automatically" switch; defaults ON so a
-    # fresh account auto-runs once it has rules (an explicit OFF stops it).
-    assert s.auto_run is True
+    # auto_run is the global "run rules automatically" switch. WS-17 EM-G11c2
+    # fix round 1: the model has no default choice. None makes the PUT store
+    # what `rules.auto_run_on` reads (test_email_background_writes.py).
+    assert s.auto_run is None
     assert s.cold_email_blocker == "OFF"
     # No member chooses a model or a tier. No rules model (D-EM-7, EM-T5b-2):
     # the rules run on `decide`. The other three fields stay for one release,

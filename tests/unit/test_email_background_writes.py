@@ -1135,3 +1135,38 @@ class TestTheWritingStyleKeepsAutoRun:
             assert stored is False
         finally:
             _drop_owner(p.admin_engine, owner)
+
+
+@_DB_GATE
+class TestThePutKeepsAutoRun:
+
+    @pytest.mark.parametrize(("provider", "sent", "expected"), [
+        ("microsoft", None, True),   # a body with no auto_run keeps Outlook ON
+        ("gmail", None, False),      # and keeps a new Gmail mailbox OFF
+        ("gmail", True, True),       # an explicit choice is stored as sent
+        ("microsoft", False, False),
+    ])
+    async def test_a_put_without_auto_run_stores_the_effective_choice(
+        self, promoted, app_engine, provider, sent, expected,  # noqa: F811
+    ):
+        """Fix round 1 (P2): ``AssistantSettingsModel.auto_run`` is
+        ``bool | None``. None stores what ``rules.auto_run_on`` reads."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-g11c2.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner, provider=provider)
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
+        body = {"account_id": acc, "about": "Sales."}
+        if sent is not None:
+            body["auto_run"] = sent
+        try:
+            async with _as_tenant(p):
+                got = await assistant.put_assistant_settings(
+                    assistant.AssistantSettingsModel(**body), user=user)
+            assert got["auto_run"] is expected
+            [(stored,)] = _admin_read(
+                p.admin_engine, "SELECT auto_run FROM email_assistant_settings "
+                "WHERE account_id = CAST(:a AS uuid)", a=acc)
+            assert stored is expected
+        finally:
+            _drop_owner(p.admin_engine, owner)
