@@ -34,6 +34,7 @@ Run (real Postgres)::
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import json
 import uuid
@@ -604,10 +605,31 @@ def _drafts_rig(monkeypatch, records: list[str], drafts: list[Any],
     stored = {d.provider_message_id: d.body_text for d in drafts}
     live = live or {}
     trashed: list[str] = []
+    # How many blocks were open at each provider call (round 2: always 0).
+    db.open_at_call = []
+    state = {"open": 0}
+
+    @asynccontextmanager
+    async def _session():
+        state["open"] += 1
+        try:
+            yield db
+        finally:
+            state["open"] -= 1
 
     class _Prov:
+        async def authenticate(self) -> bool:
+            db.open_at_call.append(state["open"])
+            return True
+
+        def credentials_dirty(self) -> bool:
+            return False
+
         async def get_message_body(self, pmid: str) -> Any:
+            db.open_at_call.append(state["open"])
             got = live.get(pmid, stored.get(pmid))
+            if got == "SLOW":
+                await asyncio.sleep(5)
             if isinstance(got, Exception):
                 raise got
             if isinstance(got, tuple):
@@ -615,14 +637,16 @@ def _drafts_rig(monkeypatch, records: list[str], drafts: list[Any],
             return SimpleNamespace(body_text=got, body_html=None)
 
         async def trash_message(self, pmid: str) -> None:
+            db.open_at_call.append(state["open"])
             trashed.append(pmid)
 
-    @asynccontextmanager
-    async def _session(*_a, **_kw):
-        yield SimpleNamespace(authed=True, provider=_Prov())
+    async def _load(_db, account_id):
+        return _Prov(), SimpleNamespace(), OWNER
 
-    monkeypatch.setattr(drafting, "_tenant_session", bind_db(db))
-    monkeypatch.setattr(drafting, "provider_session", _session)
+    import gateway.routes.email.core as email_core
+
+    monkeypatch.setattr(drafting, "_tenant_session", _session)
+    monkeypatch.setattr(email_core, "_provider_for_account_any", _load)
     return db, trashed
 
 
@@ -679,6 +703,28 @@ async def test_a_failed_live_read_keeps_the_draft(monkeypatch) -> None:
                                live={"p-ai": RuntimeError("404")})
     await drafting._cleanup_thread_drafts(ACC, "t-1")
     assert trashed == []
+
+
+async def test_no_provider_call_holds_a_transaction(monkeypatch) -> None:
+    """Round 2 (P2): authenticate, the live read and the trash each run with
+    NO database block open. A transaction held idle across a slow provider
+    is the lock-queue shape of 2026-08-06."""
+    db, trashed = _drafts_rig(monkeypatch, [AI_TEXT], [
+        _draft("p-ai", AI_TEXT), _draft("p-own", "Mine.")])
+    await drafting._cleanup_thread_drafts(ACC, "t-1")
+    assert trashed == ["p-ai"]
+    assert db.open_at_call and set(db.open_at_call) == {0}, db.open_at_call
+
+
+async def test_a_timed_out_live_read_keeps_the_draft(monkeypatch) -> None:
+    """A read slower than ``BODY_FETCH_TIMEOUT_S`` is cut, and the draft
+    stays. The other draft of the thread still goes."""
+    monkeypatch.setattr(drafting, "BODY_FETCH_TIMEOUT_S", 0.05)
+    db, trashed = _drafts_rig(monkeypatch, [AI_TEXT], [
+        _draft("p-slow", AI_TEXT), _draft("p-ai", AI_TEXT)], live={"p-slow": "SLOW"})
+    await asyncio.wait_for(drafting._cleanup_thread_drafts(ACC, "t-1"), 2)
+    assert trashed == ["p-ai"], "a timed-out read trashed the draft"
+    assert [p["id"] for p in db.ran("DELETE FROM email_messages")] == ["row-p-ai"]
 
 
 async def test_a_template_draft_is_trashed_again(monkeypatch) -> None:
@@ -1043,17 +1089,24 @@ class TestTheDraftCleanupUnderForceRLS:
                 edited_pmid: AI_TEXT + " PS: edited in Outlook."}
 
         class _Prov:
+            async def authenticate(self) -> bool:
+                return True
+
+            def credentials_dirty(self) -> bool:
+                return False
+
             async def get_message_body(self, pid: str) -> Any:
                 return SimpleNamespace(body_text=live.get(pid, ""), body_html=None)
 
             async def trash_message(self, pid: str) -> None:
                 trashed.append(pid)
 
-        @asynccontextmanager
-        async def _session(*_a, **_kw):
-            yield SimpleNamespace(authed=True, provider=_Prov())
+        async def _load(_db, account_id):
+            return _Prov(), SimpleNamespace(), owner
 
-        monkeypatch.setattr(drafting, "provider_session", _session)
+        import gateway.routes.email.core as email_core
+
+        monkeypatch.setattr(email_core, "_provider_for_account_any", _load)
         try:
             async with _as_tenant(p):
                 await drafting._cleanup_thread_drafts(acc, "t-d")

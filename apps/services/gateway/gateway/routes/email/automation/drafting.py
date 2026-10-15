@@ -432,14 +432,31 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
     ⚠️ Both send routes add this task BEFORE ``_learn_from_sent``, because
     that task deletes the AI record. Starlette runs the tasks in order.
 
+    🔴 No provider call runs inside a database block (round 2). Block R reads
+    and closes. Then each provider call (authenticate, the live read, the
+    trash) runs with NO block open, inside ``asyncio.wait_for`` of
+    ``BODY_FETCH_TIMEOUT_S``. A timeout or an error of the live read keeps the
+    draft. Block W then deletes the mirror rows and persists rotated
+    credentials. A transaction held idle across a slow provider is the
+    lock-queue shape of 2026-08-06.
+
     EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the send routes start this
     as a BackgroundTask. Starlette runs the task inside the tenant scope of its
     request, so ``_tenant_session()`` takes the organization of the request.
     With no tenant bound it raises ``TenantUnbound``, and the handler below
-    logs it. One block, and the seam commits on a clean exit."""
+    logs it. Two short blocks, and the seam commits each on a clean exit."""
     if not thread_id:
         return
+    from gateway.routes.email.core import (
+        _persist_rotated_creds,
+        _provider_for_account_any,
+    )
+
+    trashed: list[Any] = []
+    rows: list[Any] = []
     try:
+        # Block R: what Metorite wrote, the drafts of the thread, and the
+        # provider. It closes before any network call.
         async with _tenant_session() as db:
             records = (await db.execute(text(
                 "SELECT draft_text FROM email_ai_drafts "
@@ -463,36 +480,43 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
             candidates = [r for r in rows if _fold(r.body_text) in wrote]
             if not candidates:
                 return
-            trashed = 0
             # No request user to scope by. A missing account raises 404, and
             # the broad handler below catches it.
-            async with provider_session(
-                db, None, account_id=account_id, require_auth=False,
-            ) as sess:
-                if not sess.authed:
-                    return
-                for r in candidates:
-                    try:
-                        live = await sess.provider.get_message_body(
-                            r.provider_message_id)
-                    except Exception:
-                        continue  # the live body is unread: keep the draft
-                    if _fold(_live_draft_text(live)) not in wrote:
-                        continue  # the member edited it: keep it
-                    try:
-                        await sess.provider.trash_message(r.provider_message_id)
-                    except Exception:  # noqa: BLE001 — one stuck draft: no abort
-                        pass
-                    await db.execute(text(
-                        "DELETE FROM email_messages WHERE id = :id"), {"id": r.id})
-                    trashed += 1
-                if trashed:
-                    await db.execute(text(
-                        "DELETE FROM email_ai_drafts "
-                        "WHERE account_id = :aid AND thread_id = :tmpl"
-                    ), {"aid": account_id, "tmpl": template_draft_key(thread_id)})
+            provider, store, _owner = await _provider_for_account_any(
+                db, account_id)
+        # NO block is open from here to Block W.
+        if not await asyncio.wait_for(
+                provider.authenticate(), BODY_FETCH_TIMEOUT_S):
+            return
+        for r in candidates:
+            try:
+                live = await asyncio.wait_for(
+                    provider.get_message_body(r.provider_message_id),
+                    BODY_FETCH_TIMEOUT_S)
+            except Exception:
+                continue  # unread or too slow: keep the draft
+            if _fold(_live_draft_text(live)) not in wrote:
+                continue  # the member edited it: keep it
+            try:
+                await asyncio.wait_for(
+                    provider.trash_message(r.provider_message_id),
+                    BODY_FETCH_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 — one stuck draft: no abort
+                pass
+            trashed.append(r.id)
+        # Block W: the mirror rows, the template record, rotated credentials.
+        async with _tenant_session() as db:
+            for rid in trashed:
+                await db.execute(text(
+                    "DELETE FROM email_messages WHERE id = :id"), {"id": rid})
+            if trashed:
+                await db.execute(text(
+                    "DELETE FROM email_ai_drafts "
+                    "WHERE account_id = :aid AND thread_id = :tmpl"
+                ), {"aid": account_id, "tmpl": template_draft_key(thread_id)})
+            await _persist_rotated_creds(db, store, account_id, provider)
         _log.info("email.thread_drafts_cleaned", account_id=account_id,
-                  count=trashed, kept=len(rows) - trashed)
+                  count=len(trashed), kept=len(rows) - len(trashed))
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.cleanup_thread_drafts_failed", error=str(exc)[:160])
 
