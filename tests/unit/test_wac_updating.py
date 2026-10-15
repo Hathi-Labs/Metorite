@@ -53,7 +53,7 @@ def _fresh_outage(monkeypatch: pytest.MonkeyPatch) -> None:
     ConnectionRefusedError("router down"), TimeoutError("router hung"),
 ], ids=["502", "503", "504", "refused", "timeout"])
 async def test_a_failure_of_the_ai_path_says_metorite_is_updating(
-    world: _World, exc: BaseException,
+    world: _World, exc: BaseException,  # noqa: F811
 ) -> None:
     world.agent.exc = exc
     await _post_and_run(_message())
@@ -70,7 +70,7 @@ async def test_a_failure_of_the_ai_path_says_metorite_is_updating(
     (_status_error(429), FAILED_TEXT, "rate_limited"),
 ])
 async def test_every_other_failure_keeps_its_own_text(
-    world: _World, exc: BaseException, text: str, code: str,
+    world: _World, exc: BaseException, text: str, code: str,  # noqa: F811
 ) -> None:
     world.agent.exc = exc
     await _post_and_run(_message())
@@ -79,7 +79,7 @@ async def test_every_other_failure_keeps_its_own_text(
     assert bot_run._OUTAGE["failed"] == 0
 
 
-async def test_an_answer_marks_the_ai_path_as_answering(world: _World) -> None:
+async def test_an_answer_marks_the_ai_path_as_answering(world: _World) -> None:  # noqa: F811
     await _post_and_run(_message())
     assert bot_run._OUTAGE["answered"] > 0
 
@@ -124,7 +124,7 @@ def _owed(monkeypatch: pytest.MonkeyPatch, *phones: str, healthy: bool = True,
 
 
 async def test_each_phone_hears_back_online_once(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     other = "919990000777"
     _owed(monkeypatch, PHONE, other)
@@ -136,7 +136,7 @@ async def test_each_phone_hears_back_online_once(
 
 
 async def test_no_note_while_the_router_health_fails(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     owed = _owed(monkeypatch, PHONE, healthy=False)
     assert await bot_run.tell_back(ORG_A) == 0
@@ -144,7 +144,7 @@ async def test_no_note_while_the_router_health_fails(
 
 
 async def test_the_quiet_time_holds_until_an_answer_proves_the_ai_path(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     """With no success since the last failure, a row must be 5 minutes old.
     A success after it lifts the wait: the AI path answers again."""
@@ -157,7 +157,7 @@ async def test_the_quiet_time_holds_until_an_answer_proves_the_ai_path(
 
 
 async def test_a_phone_whose_link_changed_gets_no_note_and_its_rows_close(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     owed = _owed(monkeypatch, PHONE, linked=False)
     assert await bot_run.tell_back(ORG_A) == 0
@@ -165,7 +165,7 @@ async def test_a_phone_whose_link_changed_gets_no_note_and_its_rows_close(
 
 
 async def test_the_sweep_sends_the_notes_of_each_org(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     told: list[str] = []
 
@@ -186,7 +186,7 @@ async def test_the_sweep_sends_the_notes_of_each_org(
 
 
 async def test_a_restart_tells_the_member_whose_run_waits_on_the_model(
-    world: _World,
+    world: _World,  # noqa: F811
 ) -> None:
     world.agent.gate = asyncio.Event()   # the model never answers
     await _post(_message())
@@ -199,7 +199,7 @@ async def test_a_restart_tells_the_member_whose_run_waits_on_the_model(
 
 
 async def test_a_slow_meta_never_holds_the_shutdown(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+    world: _World, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     from whatsapp_ingestion.providers import factory
 
