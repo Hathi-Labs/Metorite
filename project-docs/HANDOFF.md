@@ -5404,19 +5404,39 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R7 (a fence that fails by the clock is not a fence)
 - **Added:** 2026-10-15 · branch `member-remove`
 
-### H-315 · The web chat cannot make a deck as a PDF, and WhatsApp can · [AGENT]
-- **Check:** `rg -n "\"document\"" apps/services/gateway/gateway/routes/workspace.py`.
-  No hit means this is open.
-- **Why.** WAC-12 (2026-10-15) gave the WhatsApp bot a deck and a report as a PDF,
-  through `pdf_render`'s source kind `document`. The web chat still makes a
-  document as Markdown or HTML, and its "Download PDF" drops every image and
-  colour. The owner rule says a channel changes delivery, never function.
-- **Do this:** give the web chat one tool that takes the same spec as
-  `whatsapp_ui` kind `document` (`acb_skills.documents.prepare`). It writes
-  the PDF with `write_artifact`, so the web shows it as a PDF artifact with a
-  download. Reuse `render_pdf("document", ...)`, and add no second renderer.
-- **Authority:** `specs/whatsapp_assistant_channel.md` §15.4
-- **Added:** 2026-10-15 · branch `wa-pdf-documents` (minted as H-312, renumbered twice at merge: main took H-312 and H-313 first)
+### H-315 · Submit the two Reach templates at Meta, then name them on the box · [OWNER]
+- **Check:** on the box, `grep -E "^REACH_(BRIEF|NEEDS_YOU)_TEMPLATE=" /opt/acb/app/.env`
+  shows `metorite_daily_brief` and `metorite_needs_you`. Then this entry goes.
+- **Why.** Free text reaches a member only within 24 hours of their last
+  message to the bot. On 2026-10-15 Reach dropped one brief and one interrupt
+  for that reason. A template can open the window. The auto-mode classifier
+  refused a template submission from the box, so the owner's PC does it.
+- **Where.** On the owner's PC, signed in to Meta as the owner. Use the
+  browser. The account is the test WhatsApp Business Account
+  `1151567084229350` in the portfolio Hathi Labs `1586671155804254`.
+- **Do this:**
+  1. Open `https://business.facebook.com/wa/manage/message-templates/?waba_id=1151567084229350`.
+  2. Select **Create template**. Choose **Utility**, then **Default**.
+  3. Make `metorite_daily_brief`, language English. Paste this body:
+     `Hi {{1}}, your Metorite brief for {{2}} is ready. {{3}} items need you today, starting with: {{4}}. Tap below to see the full brief.`
+  4. Give the variables the samples `Vijay`, `Thu 15 Oct`, `6` and
+     `Reply to Priya Shah about Q3 pricing`.
+  5. Add one **Quick reply** button with the text `Show my brief`. Submit.
+  6. Make `metorite_needs_you` the same way. Paste this body:
+     `Hi {{1}}, something in Metorite needs you now: {{2}}. Tap below to see it.`
+  7. Give the samples `Vijay` and `Approve the refund for Acme`. Add one
+     **Quick reply** button with the text `Show me`. Submit.
+  8. Wait until both show **Active** or **Approved**. A utility template
+     usually takes minutes. If Meta moves one to **Marketing**, do not use
+     it. Tell an agent, and it will change the words.
+  9. Ask an agent to set the names on the box, after the RE-2a code is live.
+     It adds two lines to `/opt/acb/app/.env` and restarts `acb-gateway`:
+     `REACH_BRIEF_TEMPLATE=metorite_daily_brief` and
+     `REACH_NEEDS_YOU_TEMPLATE=metorite_needs_you`.
+- **Do not** use `metorite_task_reminder` or `metorite_meeting_reminder`.
+  They are approved, but their words do not fit, and they have no button.
+- **Authority:** `specs/proactive_reach.md` §8.1 and §8.1a
+- **Added:** 2026-10-15 · WS-59 RE-2a
 
 # DONE — deleted, not archived
 
