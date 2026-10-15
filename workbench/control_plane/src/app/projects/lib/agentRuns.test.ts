@@ -30,6 +30,7 @@ import { AGENT_STATES, accentForHue, agentStateChip } from "@/lib/statusAccent";
 import { AgentPill } from "../components/AgentPill";
 import {
   AGENT_STATE_VALUES,
+  ARCHIVE_CARD_TITLE,
   ARCHIVE_HINT,
   type AgentActivity,
   type AgentRun,
@@ -382,6 +383,32 @@ describe("the archive request (EA-6g, EA3-40)", () => {
     expect(html.match(/data-elicitation-option/g)).toHaveLength(2);
     expect(html).not.toContain("Or type your own answer");
     expect(html).toContain(ARCHIVE_HINT);
+  });
+
+  it("titles the member's card Archive request, and an answer still reads Answered", () => {
+    const open = renderToStaticMarkup(
+      createElement(ElicitationCard, {
+        questions: [archiveCardQuestion(TYPED)],
+        onSubmit: () => {},
+        title: ARCHIVE_CARD_TITLE,
+      }),
+    );
+    expect(open).toContain('aria-label="Archive request"');
+    expect(open).not.toContain('aria-label="Question"');
+    const answered = renderToStaticMarkup(
+      createElement(ElicitationCard, {
+        questions: [archiveCardQuestion(TYPED)],
+        onSubmit: () => {},
+        title: ARCHIVE_CARD_TITLE,
+        answered: "Approve",
+      }),
+    );
+    expect(answered).toContain('aria-label="Answered"');
+    // A card with no title keeps "Question".
+    const plain = renderToStaticMarkup(
+      createElement(ElicitationCard, { questions: [cardQuestion(ELICIT)], onSubmit: () => {} }),
+    );
+    expect(plain).toContain('aria-label="Question"');
   });
 
   it("sends the decision, never a label", () => {

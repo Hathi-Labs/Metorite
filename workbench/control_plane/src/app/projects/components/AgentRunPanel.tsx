@@ -33,8 +33,10 @@
  * Only the run's member answers: the same question card, with the server's
  * two options and no free text, writes through the approval route. Every
  * other member reads the question and "Waiting for <name>", with no button.
- * A request past its expiry reads as expired for everyone. The reply box
- * stays away while the request waits, because the server refuses a reply.
+ * The reply box stays away while the request waits, because the server
+ * refuses a reply. A request past its expiry reads as expired, and it is no
+ * dead end (fix round 1): the member may Decline it, and the reply box comes
+ * back for everyone, because the server takes a reply then.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -49,6 +51,8 @@ import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 
 import { ProjectsApiError, type TaskRow, agentRunsApi } from "../lib/api";
 import {
+  ARCHIVE_CARD_TITLE,
+  ARCHIVE_EXPIRED_HINT,
   ARCHIVE_EXPIRED_TEXT,
   ARCHIVE_HINT,
   type AgentActivity,
@@ -288,8 +292,10 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   // EA-6g: a typed archive request. Only the run's member may answer it.
   const archiveRequest = cardOpen ? archiveRequestOf(elicitation) : null;
   const archiveMine = isRunMember(run, me);
+  // An expired request is stale: the server takes a reply, and a decline.
+  const archiveStale = archiveRequest !== null && archiveExpired(archiveRequest);
   const canStop = STOPPABLE.has(run.status);
-  const canReply = REPLYABLE.has(run.status) && !cardOpen;
+  const canReply = REPLYABLE.has(run.status) && (!cardOpen || archiveStale);
 
   /** One member write: `send` posts it. The panel guesses the state first. */
   async function write(
@@ -344,7 +350,11 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   async function submitArchive(answers: ElicitationAnswers) {
     if (!elicitation) return;
     const decision = archiveDecisionOf(elicitation, answers);
-    if (!decision) return;
+    if (decision) await sendDecision(decision);
+  }
+
+  async function sendDecision(decision: "approve" | "decline") {
+    if (!elicitation) return;
     const body = archiveApprovalPayload(decision);
     let archivedAt: string | null | undefined;
     const ok = await write(
@@ -466,14 +476,28 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       ) : null}
 
       {archiveRequest && elicitation ? (
-        archiveExpired(archiveRequest) ? (
-          <p
-            data-archive-request="expired"
-            className="flex items-start gap-1.5 text-xs text-muted-foreground"
-          >
-            <Icon name="Clock" size={12} className="mt-0.5 shrink-0" aria-hidden />
-            <span className="min-w-0 break-words">{ARCHIVE_EXPIRED_TEXT}</span>
-          </p>
+        archiveStale ? (
+          <div data-archive-request="expired" className="space-y-1.5 text-xs">
+            <p className="flex items-start gap-1.5 text-muted-foreground">
+              <Icon name="Clock" size={12} className="mt-0.5 shrink-0" aria-hidden />
+              <span className="min-w-0 break-words">{ARCHIVE_EXPIRED_TEXT}</span>
+            </p>
+            {archiveMine ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon="X"
+                  disabled={busy}
+                  data-archive-decline=""
+                  onClick={() => void sendDecision("decline")}
+                >
+                  Decline
+                </Button>
+                <span className="text-[10px] text-muted-foreground">{ARCHIVE_EXPIRED_HINT}</span>
+              </div>
+            ) : null}
+          </div>
         ) : archiveMine ? (
           <div data-archive-request="mine">
             <ElicitationCard
@@ -482,6 +506,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
               onSubmit={(answers) => void submitArchive(answers)}
               disabled={busy}
               hint={ARCHIVE_HINT}
+              title={ARCHIVE_CARD_TITLE}
             />
           </div>
         ) : (

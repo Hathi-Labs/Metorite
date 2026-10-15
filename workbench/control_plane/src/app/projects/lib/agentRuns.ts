@@ -623,11 +623,20 @@ export interface ArchiveApprovalResult {
   task?: { archived_at?: string | null } | null;
 }
 
+/** The title of the member's card, in place of "Question". */
+export const ARCHIVE_CARD_TITLE = "Archive request";
+
 /** The line beside the member's Submit. */
 export const ARCHIVE_HINT = "Approve archives this task. Its subtasks stay where they are.";
 
-/** What every member reads after the request expired. */
+/**
+ * What every member reads after the request expired. The run does not stay
+ * stuck: the member may decline it, and any member may reply (fix round 1).
+ */
 export const ARCHIVE_EXPIRED_TEXT = "This archive request expired. Nothing was archived.";
+
+/** The line under the expired text, for the run's member. */
+export const ARCHIVE_EXPIRED_HINT = "Decline it to close it, or reply to the agent below.";
 
 /** The typed archive request of an elicitation, or null for any other one. */
 export function archiveRequestOf(activity?: AgentActivity | null): ArchiveRequest | null {

@@ -21,7 +21,8 @@ import { openAllRows } from "./railOpen";
  *    agents view. A 409 shows the server's text.
  * 6. EA-6g, the archive request: only the run's member sees Approve and
  *    Decline, and the decision goes to the approval route. Every other
- *    member reads "Waiting for <name>". An expired request offers nothing.
+ *    member reads "Waiting for <name>". An expired request is no dead
+ *    end: its member may Decline it, and the reply box comes back.
  *    Mutations that turned these red: P1 `archiveMine = true` (the waiting
  *    test), P2 the panel answers through the generic route (the approve
  *    test), and P3 the generic card draws for a typed request (the waiting
@@ -534,6 +535,8 @@ test("the run's member approves an archive request", async ({ page }) => {
   const card = panel.locator('[data-archive-request="mine"]');
   await expect(card).toBeVisible();
   await expect(card.locator("[data-elicitation-option]")).toHaveCount(2);
+  await expect(card.getByText("Archive request", { exact: true })).toBeVisible();
+  await expect(card.getByText("Question", { exact: true })).toHaveCount(0);
   await expect(card.getByText("Approve archives this task. Its subtasks stay where they are.")).toBeVisible();
   // The approval takes a decision only: no free text, and no reply box.
   await expect(card.getByRole("textbox")).toHaveCount(0);
@@ -571,14 +574,33 @@ test("another member reads Waiting for the run's member, with no button", async 
   expect(posts).toHaveLength(0);
 });
 
-test("an expired archive request offers nothing", async ({ page }) => {
+test("the member declines an expired archive request, and may reply", async ({ page }) => {
   test.setTimeout(120_000);
   const { approvals } = await stub(page, "awaiting", { archive: { expired: true } });
   await openTask(page);
   const panel = page.locator("[data-agent-run-panel]");
-  await expect(panel.locator('[data-archive-request="expired"]')).toHaveText(
-    "This archive request expired. Nothing was archived.",
-  );
+  const expired = panel.locator('[data-archive-request="expired"]');
+  await expect(expired).toContainText("This archive request expired. Nothing was archived.");
+  // No approve after the expiry, but the run is no dead end.
   await expect(panel.locator("[data-elicitation-option]")).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: /Reply to/ })).toBeVisible();
+  await expired.locator("[data-archive-decline]").click();
+  await expect(panel.locator("[data-agent-answered]")).toHaveText(/Answered by you: Decline/i, {
+    timeout: 10_000,
+  });
+  expect(approvals).toHaveLength(1);
+  expect(approvals[0]).toMatchObject({ decision: "decline" });
+});
+
+test("another member reads an expired request, with no Decline", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { approvals } = await stub(page, "awaiting", {
+    archive: { member: "priya@example.com", expired: true },
+  });
+  await openTask(page);
+  const panel = page.locator("[data-agent-run-panel]");
+  await expect(panel.locator('[data-archive-request="expired"]')).toBeVisible();
+  await expect(panel.locator("[data-archive-decline]")).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: /Reply to/ })).toBeVisible();
   expect(approvals).toHaveLength(0);
 });
