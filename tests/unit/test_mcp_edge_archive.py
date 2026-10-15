@@ -745,8 +745,14 @@ class TestTheApproval:
 
     async def test_g13_organization_b_gets_404(self, runs):
         b = runs.org_b
-        r = await _answer(runs, b.run)
-        assert r.status_code == 404, r.text
+        for decision in ("decline", "approve"):
+            r = await _answer(runs, b.run, decision)
+            assert r.status_code == 404, (decision, r.text)
+        with runs.admin.begin() as c:
+            answers = c.execute(text("SELECT count(*) FROM pm_agent_run_activities WHERE"
+                                     " run_id = CAST(:r AS uuid) AND type = 'prompt'"),
+                                {"r": b.run}).scalar()
+        assert answers == 0
         result = await _agent(runs, "request_task_archive", task_id=b.task,
                               idempotency_key=_key())
         assert _text(result) == TASK_NOT_FOUND
