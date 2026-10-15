@@ -449,6 +449,25 @@ describe("one save at a time for both switches (EM-G11c2 fix round 1)", () => {
 });
 
 describe("the Auto-run switch draws (G2)", () => {
+  it("OFF: the title says the rules are ready, not on", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: false } });
+    expect(out).toContain(">Your AI rules are ready<");
+    expect(out).not.toContain(">Your AI rules are on<");
+    expect(out).toContain(RULES_STEP_COPY.autoRunOffBody.replace(/"/g, "&quot;"));
+  });
+
+  it("ON: the title says the rules are on", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: true } });
+    expect(out).toContain(">Your AI rules are on<");
+    expect(out).not.toContain(">Your AI rules are ready<");
+  });
+
+  it("while the value loads, or after a failed read, the title claims no ON", () => {
+    for (const autoRun of [{ state: "loading" }, { state: "failed" }] as const) {
+      expect(view({ phase: "ready", autoRun })).toContain(">Your AI rules are ready<");
+    }
+  });
+
   it("OFF: the switch reads OFF, and the body says the rules sort no new mail", () => {
     const out = view({ phase: "ready", autoRun: { state: "ready", on: false } });
     expect(out).toMatch(/<label[^>]*>[\s\S]*role="switch"[^>]*aria-checked="false"[\s\S]*Run my rules on new mail<\/label>/);

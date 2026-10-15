@@ -350,6 +350,9 @@ export const RULES_STEP_COPY = {
   skipForNow: "Skip for now",
   skipSetup: "Skip setup",
   readyTitle: "Your AI rules are on",
+  // WS-17 EM-G11c2: the title while "Run my rules on new mail" is not ON.
+  // "on" would tell the member that the rules sort new mail when they do not.
+  readyTitleAutoRunOff: "Your AI rules are ready",
   readyBody: "They sort each new message. To sort the mail you imported, run them over it once.",
   readyBodyNoImport: "They sort each new message as it arrives.",
   processPast: "Sort my imported mail",

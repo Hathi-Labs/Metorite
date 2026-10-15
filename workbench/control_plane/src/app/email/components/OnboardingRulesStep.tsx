@@ -158,6 +158,10 @@ export function RulesStepView(p: RulesStepViewProps) {
   const locked = p.busy !== null;
   // G2: with Auto-run OFF the rules sort no new mail, so the body says so.
   const autoRunOff = p.autoRun?.state === "ready" && !p.autoRun.on;
+  // The title says "on" only while the switch reads ON. With no switch (an
+  // older caller) it says "on", as before.
+  const autoRunOn = p.autoRun === undefined || (p.autoRun.state === "ready" && p.autoRun.on);
+  const readyTitle = autoRunOn ? COPY.readyTitle : COPY.readyTitleAutoRunOff;
   const readyBody = [
     installedLine(p.installed),
     autoRunOff ? COPY.autoRunOffBody : p.pastFrom ? COPY.readyBody : COPY.readyBodyNoImport,
@@ -177,7 +181,7 @@ export function RulesStepView(p: RulesStepViewProps) {
       </span>
       <div className="min-w-0 flex-1">
         <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs font-medium text-foreground">
-          <span>{ready ? COPY.readyTitle : COPY.title}</span>
+          <span>{ready ? readyTitle : COPY.title}</span>
           {p.mailbox ? (
             <>
               <span className="font-normal text-muted-foreground">for</span>
