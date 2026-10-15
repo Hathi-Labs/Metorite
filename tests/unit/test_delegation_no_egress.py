@@ -588,11 +588,12 @@ def _harness(monkeypatch, sandbox, models: dict[str, _Model]) -> list[str]:  # n
 
 def _run_top(
     agent: str, org: str, run_id: str | None = None, thread: str | None = None,
-    *, batch: bool = False, member: str = "member@example.com",
+    *, batch: bool = False, member: str = "member@example.com", cards: bool = False,
 ) -> list[dict[str, Any]]:
     """*agent* as a top-level chat run, through ``run_agent_stream``. A
     *thread* makes this run a later turn of that chat session. *batch* sends
-    no thread, so the executor mints one and the run is a batch run."""
+    no thread, so the executor mints one and the run is a batch run. *cards*
+    opens the card channel, as a chat of the app does."""
     from acb_common.db import bind_tenant, release_tenant
     from acb_skills.write_artifact import bind_artifact_context
 
@@ -602,7 +603,7 @@ def _run_top(
     async def collect() -> list[str]:
         return [line async for line in executor.run_agent_stream(
             agent, {"message": "chart it", "user_email": member},
-            run_id=rid, thread_id=tid,
+            run_id=rid, thread_id=tid, shows_cards=cards,
         )]
 
     token = bind_tenant(org)
@@ -1238,6 +1239,74 @@ def test_a_second_member_of_a_shared_thread_is_held_too(
     assert sent == []
 
 
+def _open_card_channel(monkeypatch) -> list[str]:
+    """A card channel that approves each card. Returns the card titles."""
+    import acb_skills.ask_tools as ask_tools
+
+    titles: list[str] = []
+
+    async def approve(title: str, *_a: Any, **_k: Any) -> bool:
+        titles.append(title)
+        return True
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", approve)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
+    return titles
+
+
+def test_redis_down_does_not_hold_a_delegated_send(
+    sandbox, monkeypatch, mark_store,  # noqa: F811
+) -> None:
+    """A Redis blip is an UNKNOWN state, not a mark. projects-assistant
+    delegates a send to the email assistant. The sub-run binds no
+    ``no_egress``, so it keeps ``send_email``. The send asks the member's
+    card, because the read failed closed for an egress tool, and after the
+    approval it runs. The delegation itself asks no card."""
+    _register_every_annotation()
+    mark_store.down = True
+    titles = _open_card_channel(monkeypatch)
+    pa = _Model([
+        _call("call_agent", {"agent_name": EMAIL, "message": "Send the note to Y"}),
+        _say("done"),
+    ])
+    email = _Model([
+        _call("send_email", {"to": ["y@example.com"], "subject": "note", "body": "hi"}),
+        _say("sent"),
+    ])
+    sent = _harness(monkeypatch, sandbox, {PA: pa, EMAIL: email})
+    _run_top(PA, ORG_B, cards=True)
+    assert email.bodies, "the delegation never ran"
+    assert "send_email" in _offered(email.bodies[0]), "the blip bound no_egress"
+    send = _results(email.bodies[1])[-1]
+    assert "off in this run" not in send and "did not run" not in send, send
+    assert any("send_email" in t for t in titles), (titles, send, sent)
+    assert not any("call_agent" in t for t in titles), titles
+    assert sent, "the send never reached the host"
+
+
+def test_a_known_mark_still_holds_the_delegated_send(
+    sandbox, monkeypatch, mark_store,  # noqa: F811
+) -> None:
+    """The control of a known mark stays: with the session marked in Redis,
+    the delegation binds ``no_egress`` and the sub-run cannot send."""
+    _register_every_annotation()
+    _open_card_channel(monkeypatch)
+    thread = f"chat-{new_thread()}"
+    mark_store.keys[f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:{thread}"] = "1"
+    pa = _Model([
+        _call("call_agent", {"agent_name": EMAIL, "message": "Send the note to Y"}),
+        _say("done"),
+    ])
+    email = _Model([
+        _call("send_email", {"to": ["y@example.com"], "subject": "note", "body": "hi"}),
+        _say("sent"),
+    ])
+    sent = _harness(monkeypatch, sandbox, {PA: pa, EMAIL: email})
+    _run_top(PA, ORG_B, thread=thread, cards=True)
+    assert email.bodies and "send_email" not in _offered(email.bodies[0])
+    assert sent == []
+
+
 def test_redis_down_leaves_an_unmarked_batch_run_its_egress(
     sandbox, monkeypatch, mark_store,  # noqa: F811
 ) -> None:
@@ -1335,6 +1404,59 @@ async def test_the_session_mark_on_a_real_redis(monkeypatch) -> None:
         release_tenant(token)
         await client.delete(raw)
         await client.aclose()
+
+
+async def test_redis_down_asks_no_card_for_a_specialist_delegation(
+    monkeypatch, mark_store,
+) -> None:
+    """The orchestrator's specialist tools (``email_assistant``,
+    ``whatsapp_assistant``) are open-world, so they pass the egress gate.
+    With Redis down, the state is unknown. A specialist tool is a
+    delegation, so it runs with no card. A plain egress tool asks the card,
+    and with no card channel it is refused. A KNOWN mark still asks the card
+    for the specialist tool too."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    async def whatsapp_assistant(task: str) -> str:
+        return f"delegated: {task}"
+
+    async def fetch_page(url: str) -> str:
+        return f"fetched: {url}"
+
+    risk = {"read_only": False, "destructive": False, "idempotent": False, "open_world": True}
+    whatsapp_assistant.__tool_risk__ = risk  # type: ignore[attr-defined]
+    whatsapp_assistant.__delegates_to__ = "whatsapp-assistant"  # type: ignore[attr-defined]
+    fetch_page.__tool_risk__ = dict(risk, read_only=True)  # type: ignore[attr-defined]
+    cards: list[str] = []
+
+    async def no_card(tool_name: str, _kwargs: Any) -> bool:
+        cards.append(tool_name)
+        return False
+
+    monkeypatch.setattr(ti, "_untrusted_answer_card", no_card)
+    specialist = ti._gate_injected_tool(whatsapp_assistant)
+    fetch = ti._gate_injected_tool(fetch_page)
+
+    async def call(tool: Any, **kwargs: Any) -> str:
+        return await asyncio.wait_for(tool(**kwargs), 10)
+
+    mark_store.down = True
+    token = bind_tenant(ORG_B)
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r", session_id="chat-blip", member="m@example.com")
+            assert await call(specialist, task="send hi to Y") == "delegated: send hi to Y"
+            assert "did not run" in await call(fetch, url=_EVIL)
+            assert cards == ["fetch_page"], cards
+        mark_store.down = False
+        mark_store.keys[f"cc:{ORG_B}:{eg.MARK_NAMESPACE}:chat-marked"] = "1"
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r2", session_id="chat-marked", member="m@example.com")
+            assert "did not run" in await call(specialist, task="send hi to Y")
+            assert cards == ["fetch_page", "whatsapp_assistant"], cards
+    finally:
+        release_tenant(token)
 
 
 async def test_a_batch_session_never_asks_redis(mark_store) -> None:

@@ -52,8 +52,11 @@ __all__ = [
     "DELEGATION_TOOLS",
     "EGRESS_WITHHELD_ANSWER",
     "MARK_CACHE_MAX",
+    "MARK_CLEAR",
+    "MARK_MARKED",
     "MARK_NAMESPACE",
     "MARK_TTL_S",
+    "MARK_UNKNOWN",
     "MCP_LOADER_KEY",
     "NO_EGRESS_KEY",
     "STORE_WRITES",
@@ -63,11 +66,14 @@ __all__ = [
     "WithholdEgressTools",
     "egress_tool_names",
     "has_explicit_open_world",
+    "is_delegation_tool",
     "is_egress_tool",
     "mark_untrusted_answer",
     "no_egress_for_this_run",
     "read_untrusted_answer",
+    "session_is_known_marked",
     "session_is_marked",
+    "session_mark_state",
     "tool_name",
 ]
 
@@ -267,23 +273,41 @@ async def mark_untrusted_answer() -> bool:
     return True
 
 
-async def session_is_marked(ctx: Mapping[str, Any] | None = None) -> bool:
-    """True when the chat session of the run on this frame is marked.
+#: The three answers of :func:`session_mark_state`.
+MARK_MARKED = "marked"
+MARK_CLEAR = "clear"
+MARK_UNKNOWN = "unknown"
 
-    It asks Redis, and it FAILS CLOSED: a Redis that does not answer reads as
-    marked. A frame with no tenant or no session has nothing to key, and
-    reads as not marked."""
+def is_delegation_tool(tool: Any) -> bool:
+    """True for a tool that starts another agent's run: one of
+    :data:`DELEGATION_TOOLS`, or a specialist tool of the orchestrator, which
+    carries ``__delegates_to__`` (``orchestrator.agents``). A delegation is
+    not an egress act by itself, because each egress tool of the run it
+    starts has its own gate. So an UNKNOWN mark asks no card for it."""
+    if getattr(tool, "__delegates_to__", None):
+        return True
+    return (tool if isinstance(tool, str) else tool_name(tool)) in DELEGATION_TOOLS
+
+
+async def session_mark_state(ctx: Mapping[str, Any] | None = None) -> str:
+    """The mark of the chat session of the run on this frame.
+
+    :data:`MARK_MARKED` when this process or Redis holds the mark,
+    :data:`MARK_CLEAR` when Redis answers that it does not, and
+    :data:`MARK_UNKNOWN` when Redis does not answer in a run that can show a
+    card. A run that cannot show a card reads its process cache on a fault.
+    A frame with no tenant or no session has nothing to key, and is clear."""
     session = _session_of(ctx)
     if session is None:
-        return False
+        return MARK_CLEAR
     with _MARKED_LOCK:
         if session in _MARKED_SESSIONS:
-            return True
+            return MARK_MARKED
     if ctx is None:
         ctx = _bound_context()
     if _minted_session(ctx):
         # A batch run minted this session, so only this process can mark it.
-        return False
+        return MARK_CLEAR
     org, thread = session
     try:
         from acb_common.tenant_redis import key, organization_scope
@@ -292,18 +316,33 @@ async def session_is_marked(ctx: Mapping[str, Any] | None = None) -> bool:
             client = get_tenant_redis()
             mark = key(MARK_NAMESPACE, thread)
             if not await client.exists(mark):
-                return False
+                return MARK_CLEAR
             await client.expire(mark, MARK_TTL_S)
     except Exception as exc:
-        closed = _card_can_show(ctx)
+        unknown = _card_can_show(ctx)
         _log.warning("egress.untrusted_answer_read_failed",
-                     error=type(exc).__name__, fail_closed=closed)
-        # Fail closed only where a card can show, so the member can still
+                     error=type(exc).__name__, fail_closed=unknown)
+        # Unknown only where a card can show, so the member can still
         # approve. A run with no card channel would lose each egress call.
-        return closed
+        return MARK_UNKNOWN if unknown else MARK_CLEAR
     with _MARKED_LOCK:
         _MARKED_SESSIONS.add(session)
-    return True
+    return MARK_MARKED
+
+
+async def session_is_marked(ctx: Mapping[str, Any] | None = None) -> bool:
+    """The reader of an EGRESS TOOL gate: True when the session is marked,
+    and also when the state is unknown. It FAILS CLOSED, so the call asks
+    the member's card. It never removes a tool."""
+    return await session_mark_state(ctx) != MARK_CLEAR
+
+
+async def session_is_known_marked(ctx: Mapping[str, Any] | None = None) -> bool:
+    """The reader of a DELEGATION: True only for a known mark. A Redis fault
+    never binds ``no_egress`` on the run that a delegation starts, so a
+    blip never holds a send. Each egress tool of that run still asks its
+    card through :func:`session_is_marked`."""
+    return await session_mark_state(ctx) == MARK_MARKED
 
 
 def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:

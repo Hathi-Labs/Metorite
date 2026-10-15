@@ -346,12 +346,24 @@ def _run_covered(agent_name: str, organization_id: str | None = None) -> bool:
 #: ``tests/unit/test_untrusted_frame.py``.
 try:
     from acb_skills.egress import (
+        MARK_CLEAR,
+        MARK_MARKED,
         UNTRUSTED_INPUT_AGENTS,
+        is_delegation_tool,
         read_untrusted_answer,
         session_is_marked,
+        session_mark_state,
     )
 except ImportError:  # pragma: no cover - acb_skills ships with the platform
     UNTRUSTED_INPUT_AGENTS = frozenset({"email-assistant"})
+    MARK_CLEAR, MARK_MARKED = "clear", "marked"
+
+    def is_delegation_tool(tool: Any) -> bool:
+        return False
+
+    async def session_mark_state(ctx: Any = None) -> str:
+        """Fail closed: with no reader, each session reads marked."""
+        return MARK_MARKED
 
     def read_untrusted_answer(ctx: Any = None) -> bool:
         """Fail closed (round 3): with no reader, each session reads marked."""
@@ -1014,9 +1026,14 @@ def _gate_injected_tool(fn: Any) -> Any:
         @functools.wraps(fn)
         async def _agated(*args: Any, **kwargs: Any) -> Any:
             # EM-G11d round 3: an egress call asks Redis whether this chat
-            # session read an untrusted agent's answer, on any turn. The read
-            # fails closed. A call that reaches nothing asks nothing.
-            marked = await session_is_marked() if _is_egress(fn) else False
+            # session read an untrusted agent's answer, on any turn. A call
+            # that reaches nothing asks nothing. An UNKNOWN state (a Redis
+            # fault) fails closed for an egress act, so it asks the card. A
+            # delegation is not one: each egress tool of the run that it
+            # starts asks its own card, so a blip never holds a send.
+            state = await session_mark_state() if _is_egress(fn) else MARK_CLEAR
+            marked = state == MARK_MARKED or (
+                state != MARK_CLEAR and not is_delegation_tool(fn))
             allowed, reason = _gate(kwargs, marked)
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"

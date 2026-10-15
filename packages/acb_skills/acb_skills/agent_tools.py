@@ -215,11 +215,13 @@ async def call_agent(agent_name: str, message: str) -> str:
 
 
 async def _session_marked() -> bool:
-    """True when the chat session of this run read an untrusted agent's
-    answer (``egress.session_is_marked``, which fails closed)."""
-    from acb_skills.egress import session_is_marked
+    """True when the chat session of this run is KNOWN to have read an
+    untrusted agent's answer (``egress.session_is_known_marked``). A Redis
+    fault binds no ``no_egress`` on the delegated run, so a blip never holds
+    a send. Each egress tool of that run still asks the member's card."""
+    from acb_skills.egress import session_is_known_marked
 
-    return await session_is_marked()
+    return await session_is_known_marked()
 
 
 @contextlib.contextmanager
