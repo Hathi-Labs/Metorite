@@ -15,7 +15,9 @@ first morning sent one brief and lost one brief and one interrupt to a closed
 window. **RE-2a is LIVE, 2026-10-15** (#1042, no migration). A message in a closed
 window waits for the member's next message. It goes as a template instead
 when `REACH_BRIEF_TEMPLATE` or `REACH_NEEDS_YOU_TEMPLATE` names an approved
-one (§8.1a, H-315). **RE-5 is BUILT, 2026-10-15** (branch `ws59-tell-me`,
+one (§8.1a, H-315).
+
+**RE-5 is BUILT, 2026-10-15** (branch `ws59-tell-me`,
 migration 269). `tell_me()`, `reach_requests`, the email rule action
 `NOTIFY_ME` and the workflow step `notify.whatsapp` are wired.
 `POST /reach/tell-me` is built. The assistant tool that calls it is RE-5b,
@@ -641,9 +643,9 @@ nothing for it in RE-5. My Day may show requests later (§17, W6).
 
 **RE-5b, the assistant tool.** `acb_skills/reach_tools.py` posts to
 `POST /reach/tell-me` with the run's identity. It needs an entry in
-`skill_families.py` and `tool_annotations.TOOL_ANNOTATIONS`, an injection
-line in `orchestrator/_tool_injection.py`, and the name in
-`whatsapp_ui.WITHHELD_TOOLS`, so a WhatsApp run does not carry it.
+`skill_families.py` and in `tool_annotations.TOOL_ANNOTATIONS`. It also
+needs an injection line in `orchestrator/_tool_injection.py`. Its name goes
+in `whatsapp_ui.WITHHELD_TOOLS`, so a WhatsApp run does not carry it.
 
 **Fence (RE-5).** `tests/unit/test_reach_requests.py`. No caller imports a
 channel adapter. A request for one member never reaches another. A request
