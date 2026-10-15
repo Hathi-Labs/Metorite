@@ -1554,7 +1554,8 @@ async def my_tasks_unschedule(item_id: str) -> str:
 
 
 @_annotate_risk(idempotent=True, open_world=False)
-async def my_tasks_list_schedule(from_iso: str, to_iso: str) -> str:
+async def my_tasks_list_schedule(from_iso: str, to_iso: str, offset: int = 0,
+                                 limit: int = 50) -> str:
     """List what's timeboxed on the calendar in a datetime window — so you can
     plan around existing blocks and never double-book. The window is
     half-open, [from, to). Done blocks are listed too, marked ✓: they still
@@ -1563,14 +1564,21 @@ async def my_tasks_list_schedule(from_iso: str, to_iso: str) -> str:
     Args:
         from_iso: ISO 8601 start of the window (inclusive).
         to_iso: ISO 8601 end of the window (exclusive).
+        offset: Where the page starts. 0 is the first block.
+        limit: Blocks per page, 50 by default and 100 at most.
     """
     items = _rows(await _request(
         "GET", _MY_CALENDAR,
         params={"start": from_iso, "end": to_iso, "include_done": "true"}))
     if not items:
         return "Nothing is scheduled in that window."
+    # The route sends the whole window, in order of the start and then the
+    # id, so a page cut here is the same on every call.
+    page = paged(items, offset, limit, default=50, noun="blocks")
+    if not page.items:
+        return page.line
     lines = []
-    for i in items:
+    for i in page.items:
         s = (i.get("scheduled_start") or i.get("due_at") or "")[:16].replace(
             "T", " ")
         en = (i.get("scheduled_end") or "")[11:16]
@@ -1583,6 +1591,8 @@ async def my_tasks_list_schedule(from_iso: str, to_iso: str) -> str:
         lines.append(
             f"• {s}{('-' + en) if en else ''}  {_data(i.get('title', '?'))}{mark} "
             f"(id: {i.get('id', '')})")
+    if page.line:
+        lines.append(page.line)
     return ("Scheduled (🔒 = fixed, never move it):\n" + "\n".join(lines))
 
 

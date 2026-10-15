@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import json as _json
 
+from acb_common.paging import bounds, page_line
+
 #: Hard ceilings. The model may ask for less, never more.
 _MAX_LIMIT = 20
 _CONTENT_CAP = 500
@@ -58,6 +60,11 @@ _CONTENT_CAP = 500
 #: key stays ``thread_id``, because the docstring promises it. Each optional
 #: criterion carries a CAST, because psycopg 3 sends a NULL with no type and
 #: Postgres cannot type a bare ``:x IS NULL``. The R8 suite found both faults.
+#:
+#: 2026-10-15 (agent reads page, part 2): the tool pages by ``offset``. The
+#: order ends on ``m.session_id, m.id``, the message key, because a message id
+#: is unique in its session only and one room's messages share an instant. The
+#: tool asks for one row more than the page, so it can say that more exist.
 #:
 #: H-201 fix round 1 (D12, chat is private by default). The search covers
 #: only the rooms the acting member may read. The rule is
@@ -93,8 +100,9 @@ _SEARCH_TAIL = """
               AND m.timestamp_ms < pj.join_message_ts
        )
    )
- ORDER BY m.created_at DESC
- LIMIT :limit
+ ORDER BY m.created_at DESC, m.session_id DESC, m.id DESC
+ LIMIT CAST(:limit AS int) + 1
+ OFFSET CAST(:offset AS int)
 """
 
 
@@ -127,6 +135,7 @@ async def query_history(
     agent_name: str | None = None,
     since_days: int | None = None,
     limit: int = 10,
+    offset: int = 0,
 ) -> str:
     """Recall past conversations — what was discussed, decided, or left pending.
 
@@ -141,10 +150,12 @@ async def query_history(
                 ``"orchestrator"``.
         since_days: Only messages from the last N days.
         limit: How many messages to return, newest first. Capped at 20.
+        offset: Where the page starts. 0 is the newest.
 
     Returns:
         A JSON array of ``{role, content, created_at, thread_id, agent_name,
-        title}`` objects, newest first. Long content is truncated.
+        title}`` objects, newest first, then a line when more exist. Long
+        content is truncated.
 
     Notes:
         This tool takes **search criteria, not SQL**. It reads conversation
@@ -154,6 +165,7 @@ async def query_history(
         lim = max(1, min(int(limit or 10), _MAX_LIMIT))
     except (TypeError, ValueError):
         lim = 10
+    start, _ = bounds(offset, lim, default=lim, maximum=_MAX_LIMIT)
 
     days: int | None = None
     if since_days is not None:
@@ -172,6 +184,7 @@ async def query_history(
         "search_like": f"%{term}%" if term else None,
         "since_days": days,
         "limit": lim,
+        "offset": start,
     }
 
     # H-201 (``projects_ai_chat.md`` §21.13). ``chat_message`` and
@@ -200,13 +213,18 @@ async def query_history(
         with _open() as s:
             result = s.execute(
                 text(_SEARCH_HEAD + SESSION_VISIBLE_SQL + _SEARCH_TAIL), params)
-            rows = result.fetchmany(lim)
+            rows = list(result.fetchmany(lim + 1))
             columns = list(result.keys())
     except Exception as exc:
         return f"query_history failed: {exc}"
 
+    # The extra row says that another page exists. It is never shown.
+    more = len(rows) > lim
+    if more:
+        rows.pop()
+    line = page_line(None, start, len(rows), more=more, noun="messages")
     if not rows:
-        return "[]"
+        return "\n".join(("[]", line)) if line else "[]"
 
     output: list[dict] = []
     for row in rows:
@@ -222,4 +240,5 @@ async def query_history(
             entry[col] = val
         output.append(entry)
 
-    return _json.dumps(output, indent=2, default=str)
+    text_out = _json.dumps(output, indent=2, default=str)
+    return "\n".join((text_out, line)) if line else text_out
