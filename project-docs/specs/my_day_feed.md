@@ -3172,24 +3172,23 @@ it. These are the parts:
   mute an MD-3 kind before its provider is listed. 20 kinds, which is
   `prefs.MAX_KINDS`, so the cap did not change.
 - `needs.py`: each provider run logs `elapsed_ms`. A run that ends well
-  writes the line `provider answered`, with its `outcome`.
+  writes the line `provider answered`, with its `outcome`. A run that the
+  ceiling cuts writes `provider passed the ceiling`, with its time from its
+  slot to the cut.
 - `personal.py`: `my_quiet_tasks`, `my_unblocked_since` and `my_due_ahead`.
-  `my_quiet_tasks` also gives the stored `day_start_hour`, so the provider
-  learns the member's day start with no fifth session.
-- `selfservice.py`: the self absence `POST` and `DELETE` call `bump_org`
-  after the commit.
+  `my_quiet_tasks` also gives the day start hour by the rule of
+  `state._hours` (`personal.member_day`), so the provider learns the
+  member's day start with no fifth session.
+- `selfservice.py`: the self absence `POST` and `DELETE` call
+  `cache.bump_org_safe` after the commit.
 - `feed.ts`: the field `source`, `noteOk` on `(c.source ?? c.app)`, `CLOSES`
   and the eleven labels.
 
 **What the build found, for the slices after it.**
 
-- The day start of `unblocked` comes from the stored `day_start_hour`. A
-  member with no settings row reads 7, the column default. The state join
-  of a member with the Calendar pane reads `get_user_settings`, which can
-  seed another hour from People for such a member (D-PC-16). The two agree
-  for each member with a row.
 - `unblocked` reads an "open task" as an actionable one
-  (`ACTIONABLE_CLAUSE`). So a Someday task never gets the card.
+  (`ACTIONABLE_CLAUSE`). So a Someday task never gets the card. A deferred
+  task stays out too (`DEFERRED_CLAUSE`).
 - An act link of a folded kind is often to the task. `_merge_acts` keeps one
   link for each place, so the "Nudge" link of a folded `waiting_quiet` does
   not show on an overdue card. MD-8 makes these acts taps.
@@ -3209,6 +3208,34 @@ it. These are the parts:
 9. A task kind carries `due_at`.
 10. `elapsed_ms` dropped from the line `provider answered`.
 11. The carry filter of `noteOk` uses the app, not the source.
+
+**Fix round 1, 2026-10-15.** The verifier and the reviewer found these, and
+each one is fixed:
+
+- **The log fields did not reach the journal.** The gateway prints
+  `%(message)s` alone (`acb_common/_log.py`), so a field in `extra` was
+  lost. Each provider line now holds `provider=`, `outcome=` and
+  `elapsed_ms=` in its text. A feed-only provider logs its answer at INFO,
+  and a needs provider at DEBUG, because the bell polls the needs view.
+- **Three reads of `user_settings` named no tenant.** Since migration 239 a
+  member has one row for each organization, and the owner role of
+  production bypasses RLS. `personal.stored_zone` and `tasks.settings._load`
+  now name the bound tenant (the GUC predicate of `prefs.py`). The day start
+  read is gone: `personal.member_day` calls `_load`.
+- **The day start uses the one rule.** A member with the Calendar pane
+  reads `_load`: a stored 0 reads 7, and a member with no row gets the
+  People seed. Any other member reads 7, as `state._hours` does.
+- **`my_due_ahead` asks the days away in SQL.** The read used one window,
+  from the first day away to the last. So 16 tasks of the work days between
+  filled the LIMIT, and a task due on the last day away was lost.
+- **The absence bump is guarded.** `cache.bump_org_safe` waits 0.5 seconds
+  at most and never raises. MD-3f reuses it.
+- **A fence under the owner role.** `test_feed_task_kinds_r8.py`
+  `TestTheTenantUnderTheOwnerRole` seeds a member in two organizations.
+  The mutations of round 1 that it kills: the org predicate dropped from the
+  quiet read, from `_load`, and from `stored_zone`. The fields moved back to
+  `extra`, the days of the due read back to the window, and the bump
+  unguarded fail their fences too.
 
 ### MD-3d · The mail kinds — AGENT-SAFE, after MD-3c merges (the A1 `source` field)
 

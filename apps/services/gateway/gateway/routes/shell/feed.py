@@ -501,19 +501,20 @@ async def _tasks_followups(user: UserContext) -> Found:
     zone = quiet.get("timezone")
     tz = state.zone_of(zone)
     today = now.astimezone(tz).date()
-    # "Since my day start": the member's day starts at `day_start_hour`, the
-    # rule of the state join and of Handled (`state.Day`). The quiet read
-    # gave the stored hour, so no session opens for it.
-    hour = quiet.get("day_start_hour")
-    day = state.Day(tz, DEFAULT_DAY_START_HOUR if hour is None else min(23, max(0, int(hour))))
-    unblocked = await my_unblocked_since(user, day.day_start(now), limit=size)
+    # "Since my day start": the member's day starts at `day_start_hour`, by
+    # the one rule of the state join and of Handled (`state._hours`, through
+    # `personal.member_day`). The quiet read gave the hour on its own
+    # session, so no session opens for it. None (no Calendar pane) reads as
+    # the column default, as `state._hours` does.
+    day = state.Day(tz, state._hour(quiet.get("day_start_hour"), state.DEFAULT_DAY_START, 23))
+    unblocked = await my_unblocked_since(user, day.day_start(now), limit=size, today=today)
     away = await _my_days_away(user, today)
     ahead: dict[str, Any] = {"rows": []}
     if away:
         ahead = await my_due_ahead(
             user, datetime.combine(min(away), time.min, tzinfo=tz),
             datetime.combine(max(away) + timedelta(days=1), time.min, tzinfo=tz),
-            limit=size)
+            limit=size, days=sorted(away), zone=tz.key)
 
     signals: list[Signal] = []
     signals += [s for s in (_quiet_signal(t, today, tz) for t in quiet.get("rows") or []) if s]
@@ -918,7 +919,7 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
     # The loop's pass takes one slot, so the loop alone cannot fill the pool.
     extra = await needs.run_providers(
         user, needs.feed_only_providers(), budget_s=FEED_BUDGET_S,
-        timeout_s=FEED_PROVIDER_TIMEOUT_S, event="shell.feed",
+        timeout_s=FEED_PROVIDER_TIMEOUT_S, event=needs.FEED_EVENT,
         slots=FEED_CONCURRENCY if read else FEED_PASS_CONCURRENCY,
         ceiling_s=FEED_TOTAL_S)
 

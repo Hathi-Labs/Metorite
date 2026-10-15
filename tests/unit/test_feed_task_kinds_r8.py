@@ -359,3 +359,201 @@ class TestTheKindsOnARealDatabase:
         assert "tasks_followups" not in dark["sources"]
         assert all("source" not in c for c in dark["cards"])
         assert not {c["kind"] for c in dark["cards"]} & set(feed.TASK_FOLLOWUP_KINDS)
+
+
+# ── Fix round 1: the tenant of each read, under the OWNER role ──────────────
+#
+# The owner role of production bypasses RLS. So each read must name the
+# tenant itself, or a member of two organizations reads the other one's rows.
+# The app role above cannot see this: FORCE RLS hides a missing predicate.
+
+TWO = f"kinds-two-{TAG}@md3c.test"
+THREE = f"kinds-three-{TAG}@md3c.test"
+D0 = f"kinds-d0-{TAG}@md3c.test"
+DSEED = f"kinds-dseed-{TAG}@md3c.test"
+DNOTASK = f"kinds-dnotask-{TAG}@md3c.test"
+LIM = f"kinds-lim-{TAG}@md3c.test"
+
+
+@contextlib.asynccontextmanager
+async def _as_owner(p, org: str):
+    """Bind ``org``, and point the shared engine at the SUPERUSER, which
+    bypasses RLS, as the owner role of production does."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    token = bind_tenant(org)
+    try:
+        async with tenant_engine_scope(p.admin_engine.url.render_as_string(hide_password=False)):
+            yield
+    finally:
+        release_tenant(token)
+
+
+def _settings(c, *, email: str, org: str, zone: str, hour: int) -> None:
+    c.execute(text(
+        "INSERT INTO user_settings (user_id, timezone, day_start_hour, day_end_hour, "
+        "organization_id) VALUES (:e, :z, :h, 23, CAST(:o AS uuid))"),
+        {"e": email, "z": zone, "h": hour, "o": org})
+
+
+@pytest.fixture(scope="module")
+def two_orgs(promoted, seeded):  # noqa: F811
+    """TWO is a member of org B with a settings row in org A too, inserted
+    first, and four tasks in org A that name TWO. THREE has a settings row in
+    org A only. The day-start members and LIM live in org B."""
+    p = promoted
+    a, b = p.org_a, p.org_b
+    ids: dict[str, str] = {}
+    old = NOW - timedelta(days=40)
+    with p.admin_engine.begin() as c:
+        for email in (TWO, THREE, D0, DSEED, DNOTASK, LIM):
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+                "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid))"), {"e": email, "o": b})
+        _settings(c, email=TWO, org=a, zone="Asia/Tokyo", hour=13)
+        _settings(c, email=TWO, org=b, zone="UTC", hour=2)
+        _settings(c, email=THREE, org=a, zone="Asia/Tokyo", hour=13)
+        _settings(c, email=D0, org=b, zone="UTC", hour=0)
+        _settings(c, email=DNOTASK, org=b, zone="UTC", hour=5)
+        _settings(c, email=LIM, org=b, zone="UTC", hour=0)
+        made = c.execute(text(
+            "UPDATE people SET working_hours = CAST(:wh AS jsonb) WHERE lower(email) = :e "
+            "AND organization_id = CAST(:o AS uuid)"),
+            {"e": DSEED, "o": b, "wh": json.dumps({"days": [1, 2, 3, 4, 5, 6, 7],
+                                                   "start": "10:00", "end": "18:00"})})
+        assert made.rowcount == 1, "no directory row for DSEED"
+
+        # Org A: one task of each read that names TWO.
+        proj, lane = _project(c, org=a, name=f"OrgA {TAG}", grant_org=True)
+        done = _lane(c, project=proj, name="Done", category="done", position=9)
+        n = iter(range(500, 600))
+
+        def task(title, *, due=None, assignee=TWO, lane_id=lane):
+            return _task(c, org=a, project=proj, lane=lane_id, title=title, due=due,
+                         assignee=assignee, number=next(n))
+
+        ids["a_stale"] = task("ORGA stale")
+        c.execute(text("UPDATE pm_tasks SET updated_at = :u WHERE id = CAST(:t AS uuid)"),
+                  {"u": old, "t": ids["a_stale"]})
+        ids["a_wait"] = task("ORGA wait", assignee=COLL)
+        c.execute(text(
+            "INSERT INTO pm_task_personal (task_id, member_email, disposition, delegated_at, "
+            "organization_id, updated_at) VALUES (CAST(:t AS uuid), :e, 'WAITING', :dl, "
+            "CAST(:o AS uuid), :u)"),
+            {"t": ids["a_wait"], "e": TWO, "dl": NOW - timedelta(days=8), "o": a, "u": old})
+        ids["a_free"] = task("ORGA free")
+        blocker = task("ORGA blocker", assignee=COLL, lane_id=done)
+        c.execute(text("UPDATE pm_tasks SET completed_at = :at WHERE id = CAST(:t AS uuid)"),
+                  {"at": DAY_START, "t": blocker})
+        c.execute(text(
+            "INSERT INTO pm_task_links (source_task_id, target_task_id, link_type, created_by, "
+            "organization_id) VALUES (CAST(:s AS uuid), CAST(:t AS uuid), 'blocks', :by, "
+            "CAST(:o AS uuid))"), {"s": blocker, "t": ids["a_free"], "by": TWO, "o": a})
+        ids["a_due"] = task("ORGA due", due=_at(3))
+
+        # LIM (org B): away on day 1 and day 10, and 17 tasks due on the work
+        # days between, more than the LIMIT of the due read.
+        bproj, blane = _project(c, org=b, name=f"Lim {TAG}", grant_org=True)
+        m = iter(range(700, 800))
+        for day in (1, 10):
+            c.execute(text(
+                "INSERT INTO people_absences (person_id, starts_on, ends_on, kind, "
+                "created_by, organization_id) SELECT id, :d, :d, 'away', :e, CAST(:o AS uuid) "
+                "FROM people WHERE lower(email) = :e AND organization_id = CAST(:o AS uuid)"),
+                {"d": TODAY + timedelta(days=day), "e": LIM, "o": b})
+        for k in range(17):
+            _task(c, org=b, project=bproj, lane=blane, title=f"Work day {k}",
+                  due=_at(2 + k % 8, hour=1 + k // 8), assignee=LIM, number=next(m))
+        ids["lim_far"] = _task(c, org=b, project=bproj, lane=blane, title="Far away task",
+                               due=_at(10), assignee=LIM, number=next(m))
+        # Non-vacuity: the org A rows exist, for the owner to leak.
+        assert c.execute(text(
+            "SELECT count(*) FROM pm_tasks WHERE organization_id = CAST(:o AS uuid) "
+            "AND title LIKE 'ORGA %'"), {"o": a}).scalar_one() == 5
+    return ids
+
+
+class TestTheTenantUnderTheOwnerRole:
+    async def test_the_lens_reads_return_nothing_of_another_org(
+        self, promoted, two_orgs, monkeypatch,  # noqa: F811
+    ):
+        from gateway.routes.projects import personal
+
+        user = _member(TWO)
+        async with _as_owner(promoted, promoted.org_b):
+            quiet = await personal.my_quiet_tasks(user, limit=50, now=NOW)
+            free = await personal.my_unblocked_since(user, DAY_START, limit=50)
+            ahead = await personal.my_due_ahead(
+                user, DAY_START, DAY_START + timedelta(days=15), limit=50,
+                days=[TODAY + timedelta(days=d) for d in range(15)], zone="UTC")
+        got = {r["id"] for r in quiet["rows"] + free["rows"] + ahead["rows"]}
+        assert not got & {two_orgs[k] for k in ("a_stale", "a_wait", "a_free", "a_due")}
+        assert "ORGA" not in json.dumps([quiet, free, ahead], default=str)
+
+    async def test_the_day_start_and_the_zone_are_this_orgs(
+        self, promoted, two_orgs, monkeypatch,  # noqa: F811
+    ):
+        """The org A row of TWO (Tokyo, 13:00) was inserted first. The org B
+        row (UTC, 02:00) is the one that counts."""
+        from gateway.routes.projects import personal
+
+        async with _as_owner(promoted, promoted.org_b):
+            quiet = await personal.my_quiet_tasks(_member(TWO), limit=50, now=NOW)
+        assert (quiet["timezone"], quiet["day_start_hour"]) == ("UTC", 2)
+
+    async def test_stored_zone_reads_only_this_orgs_row(
+        self, promoted, two_orgs, monkeypatch,  # noqa: F811
+    ):
+        from acb_common.db import tenant_session
+        from gateway.routes.projects.personal import stored_zone
+
+        async with _as_owner(promoted, promoted.org_b), tenant_session() as s:
+            assert await stored_zone(s, TWO) == "UTC"
+            assert await stored_zone(s, THREE) is None
+
+
+class TestTheDayStartRule:
+    """Fix round 1: the provider's day start is the one rule of
+    ``state._hours``, read inside the quiet read's own session."""
+
+    async def test_a_stored_0_reads_7(self, promoted, two_orgs, monkeypatch):  # noqa: F811
+        from gateway.routes.projects import personal
+
+        async with _as_member(promoted, promoted.org_b):
+            quiet = await personal.my_quiet_tasks(_member(D0), limit=5, now=NOW)
+        assert quiet["day_start_hour"] == 7
+
+    async def test_no_row_seeds_from_the_people_schedule(
+        self, promoted, two_orgs, monkeypatch,  # noqa: F811
+    ):
+        from gateway.routes.projects import personal
+
+        async with _as_member(promoted, promoted.org_b):
+            quiet = await personal.my_quiet_tasks(_member(DSEED), limit=5, now=NOW)
+        assert quiet["day_start_hour"] == 9  # start 10:00 less one hour (D-PC-16)
+
+    async def test_no_calendar_pane_reads_the_column_default(
+        self, promoted, two_orgs, monkeypatch,  # noqa: F811
+    ):
+        from gateway.routes.projects import personal
+
+        plain = UserContext(email=DNOTASK, role=UserRole.EMPLOYEE,
+                            access=EffectiveAccess(role_granted=frozenset({"feature:projects"})))
+        async with _as_member(promoted, promoted.org_b):
+            quiet = await personal.my_quiet_tasks(plain, limit=5, now=NOW)
+        # The stored 5 is not read: the state join reads 7 for this member.
+        assert (quiet["day_start_hour"], quiet["timezone"]) == (None, "UTC")
+
+
+class TestTheDueReadAsksTheDaysAway:
+    async def test_a_late_day_away_keeps_its_task_past_the_limit(
+        self, promoted, two_orgs, monkeypatch,  # noqa: F811
+    ):
+        """17 tasks due on the work days between two days away. The read
+        asks only the days away, so the LIMIT of 16 keeps the far task."""
+        async with _as_member(promoted, promoted.org_b):
+            found = await feed._tasks_followups(_member(LIM))
+        away = [s.signal_id for s in found.signals() if s.kind == "absent_on_due"]
+        assert away == [f"tasks:{two_orgs['lim_far']}"]

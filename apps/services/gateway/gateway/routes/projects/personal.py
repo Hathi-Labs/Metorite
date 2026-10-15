@@ -1497,9 +1497,18 @@ def local_date(tz_name: Any, at: datetime) -> date:
 async def stored_zone(db: Any, email: str) -> str | None:
     """`user_settings.timezone` for the member as stored, or ``None`` when the
     member has no settings row. The one read of the member's zone, which
-    :func:`member_today` and ``GET /projects/my/today`` share."""
+    :func:`member_today` and ``GET /projects/my/today`` share.
+
+    ⚠️ It reads the row of the BOUND tenant (WS-58 MD-3c fix round 1). A
+    member has one row for each organization since migration 239, and the
+    owner role of production bypasses RLS. So the predicate names the
+    session's tenant, as ``tasks.settings._load`` does. Each caller reads
+    inside a tenant session, and an unbound session reads no row (UTC)."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
     row = (await db.execute(
-        text("SELECT timezone FROM user_settings WHERE user_id = :uid"),
+        text(f"SELECT timezone FROM user_settings WHERE organization_id = {_BOUND_ORG}"
+             " AND user_id = :uid"),
         {"uid": email},
     )).fetchone()
     return None if row is None else getattr(row, "timezone", None)
@@ -1878,9 +1887,27 @@ _QUIET_SQL = (
     + f" coalesce(p.delegated_at, {_LAST_CHANGE}) ASC, t.id LIMIT :limit"
 )
 
-#: The day start hour as stored. NULL, or no row, reads as the column
-#: default in the caller (``77_gtd_calendar_prefs.sql``).
-_DAY_START_SQL = "SELECT day_start_hour FROM user_settings WHERE user_id = :uid"
+async def member_day(db: Any, user: UserContext) -> tuple[str, int | None]:
+    """The member's zone and day start hour, by the one rule of the shell's
+    state join (``shell.state._hours``), read on the caller's session.
+
+    * A member with the Calendar pane (``feature:tasks``) reads
+      ``tasks.settings._load``, the read of ``GET /tasks/settings``. It reads
+      the row of the bound tenant. A stored 0 reads 7, and a member with no
+      row gets the People schedule's seed (D-PC-16).
+    * Any other member reads the zone alone (:func:`stored_zone`), and the
+      hour is None: the caller takes the column default.
+
+    WS-58 MD-3c fix round 1. It opens no session, so the feed's provider
+    learns the day start inside the session it already holds.
+    """
+    if user.has_permission("feature:tasks"):
+        from gateway.routes.tasks.core import _uid
+        from gateway.routes.tasks.settings import _load
+
+        settings = await _load(db, _uid(user))
+        return zone_name(settings.timezone), settings.day_start_hour
+    return zone_name(await stored_zone(db, user.email or "")), None
 
 
 async def my_quiet_tasks(
@@ -1902,9 +1929,10 @@ async def my_quiet_tasks(
       ``analytics.STALE_DAYS`` days ago.
 
     Each row carries its effective ``disposition`` and ``last_change_at``.
-    The answer also gives the member's ``today``, ``timezone`` and stored
-    ``day_start_hour`` (None for no row), so the feed's provider opens no
-    second session to learn the member's day.
+    The answer also gives the member's ``today``, ``timezone`` and
+    ``day_start_hour`` by the rule of :func:`member_day` (None without the
+    Calendar pane), so the feed's provider opens no second session to learn
+    the member's day.
     """
     # Imported here: `item_lens` and `analytics` import this module.
     from gateway.routes.projects.analytics import STALE_DAYS
@@ -1916,8 +1944,7 @@ async def my_quiet_tasks(
     stale_before = at - timedelta(days=STALE_DAYS)
     items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
-        zone = zone_name(await stored_zone(db, email))
-        hour_row = (await db.execute(text(_DAY_START_SQL), {"uid": email})).fetchone()
+        zone, hour = await member_day(db, user)
         today = local_date(zone, at)
         params = await my_tasks_binds(
             db, email, archived=False, today=today, quiet_before=quiet_before,
@@ -1938,7 +1965,7 @@ async def my_quiet_tasks(
             task["last_change_at"] = changed.isoformat() if changed is not None else None
             items.append(task)
     return {"rows": items, "today": today.isoformat(), "timezone": zone,
-            "day_start_hour": getattr(hour_row, "day_start_hour", None)}
+            "day_start_hour": hour}
 
 
 #: My task's blocker may be read by me: ``core.task_visibility_clause`` on
@@ -1981,7 +2008,7 @@ _UNBLOCKED_BY = (
 #: too, so a task stays blocked by work that I cannot see.
 _UNBLOCKED_SQL = (
     _with_columns(_UNBLOCKED_BY)
-    + f" AND {ACTIONABLE_CLAUSE}"
+    + f" AND {DEFERRED_CLAUSE} AND {ACTIONABLE_CLAUSE}"
     + " AND EXISTS (SELECT 1" + _BLOCKERS_FROM + _CLOSED_SINCE + ")"
     + " AND NOT EXISTS (SELECT 1" + _BLOCKERS_FROM
     + f" AND (bs.category IS NULL OR bs.category NOT IN ({_CLOSED_LITERAL})))"
@@ -1990,7 +2017,7 @@ _UNBLOCKED_SQL = (
 
 
 async def my_unblocked_since(
-    user: UserContext, since: datetime, *, limit: int,
+    user: UserContext, since: datetime, *, limit: int, today: date | None = None,
 ) -> dict[str, Any]:
     """My open tasks whose last blocker closed at or after ``since``.
 
@@ -2000,12 +2027,17 @@ async def my_unblocked_since(
     carries ``unblocked_by``: ``{readable, id, title, closed_by,
     closed_at}`` of the newest blocker that closed since ``since``. The id,
     the title and ``closed_by`` are None for a blocker that I cannot read.
+
+    A deferred task stays out, as in the inbox (``DEFERRED_CLAUSE``).
+    ``today`` is the member's own date. The feed passes it, and a caller that
+    does not reads it from the member's zone (:func:`member_today`).
     """
     email = actor(user).lower()
     items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
         params = await my_tasks_binds(
             db, email, archived=False, since=since, limit=max(1, int(limit)),
+            today=today if today is not None else await member_today(db, email),
         )
         for row in (await db.execute(text(_UNBLOCKED_SQL), params)).fetchall():
             task, effective = _project_task(row)
@@ -2032,24 +2064,34 @@ _DUE_AHEAD_SQL = (
     + f" AND {ACTIONABLE_CLAUSE} AND t.completed_at IS NULL"
     " AND t.due_at >= CAST(:due_from AS timestamptz)"
     " AND t.due_at < CAST(:due_before AS timestamptz)"
+    # ⚠️ Only the asked days, in SQL (MD-3c fix round 1). A work day between
+    # two days away must not take a row of the LIMIT, or a task due on the
+    # later day away is lost.
+    " AND CAST(t.due_at AT TIME ZONE CAST(:due_zone AS text) AS date)"
+    " = ANY(CAST(:due_days AS date[]))"
     + _DUE_ORDER
 )
 
 
 async def my_due_ahead(
     user: UserContext, start: datetime, end: datetime, *, limit: int,
+    days: list[date], zone: str,
 ) -> dict[str, Any]:
-    """My actionable tasks due at or after ``start`` and before ``end``.
+    """My actionable tasks due at or after ``start`` and before ``end``,
+    whose local due date in ``zone`` is one of ``days``.
 
     For the feed's ``absent_on_due`` (``my_day_feed.md`` §5.9 item 11). The
-    feed calls it only when one of my absences falls in its window. One
-    bounded read of the lens, the soonest deadline first.
+    feed calls it only when one of my absences falls in its window, and
+    ``days`` are my days away. The window keeps the read on
+    ``idx_pm_tasks_due_at``, and the days keep the LIMIT for the days that
+    count. One bounded read of the lens, the soonest deadline first.
     """
     email = actor(user).lower()
     items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
         params = await my_tasks_binds(
             db, email, archived=False, due_from=start, due_before=end,
+            due_zone=zone_name(zone), due_days=sorted(set(days)),
             limit=max(1, int(limit)),
         )
         for row in (await db.execute(text(_DUE_AHEAD_SQL), params)).fetchall():

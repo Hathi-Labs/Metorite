@@ -33,6 +33,7 @@ ticket of ``my_day_feed.md`` §16.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -86,6 +87,8 @@ class TaskReads:
         self.day_start_hour: int | None = 7
         self.since: list[datetime] = []
         self.windows: list[tuple[datetime, datetime]] = []
+        self.days: list[tuple[list[date], str]] = []
+        self.todays: list[date | None] = []
         self.now = now
 
     async def my_quiet_tasks(self, user, *, limit, now=None):
@@ -94,16 +97,21 @@ class TaskReads:
                 "today": self.f._today().isoformat(), "timezone": self.f.zone,
                 "day_start_hour": self.day_start_hour}
 
-    async def my_unblocked_since(self, user, since, *, limit):
+    async def my_unblocked_since(self, user, since, *, limit, today=None):
         self.calls.append("my_unblocked_since")
         self.since.append(since)
+        self.todays.append(today)
         return {"rows": [dict(r) for r in self.unblocked.get(user.email, [])][:limit]}
 
-    async def my_due_ahead(self, user, start, end, *, limit):
+    async def my_due_ahead(self, user, start, end, *, limit, days, zone):
+        # The real contract: the window, then only the asked local days.
         self.calls.append("my_due_ahead")
         self.windows.append((start, end))
+        self.days.append((list(days), zone))
+        tz = ZoneInfo(zone)
         rows = [dict(r) for r in self.ahead.get(user.email, [])
-                if start <= datetime.fromisoformat(r["due_at"]) < end]
+                if start <= datetime.fromisoformat(r["due_at"]) < end
+                and datetime.fromisoformat(r["due_at"]).astimezone(tz).date() in days]
         return {"rows": rows[:limit]}
 
     async def my_absences(self, *, user):
@@ -362,6 +370,13 @@ class TestTheAbsences:
         assert reads.windows == [(datetime.combine(day, datetime.min.time(), tzinfo=tz),
                                   datetime.combine(day + timedelta(days=1),
                                                    datetime.min.time(), tzinfo=tz))]
+        # The days themselves go to the read, in the member's zone (fix round 1).
+        assert reads.days == [([day], reads.f.zone)]
+
+    def test_the_unblocked_read_gets_my_today(self, reads, monkeypatch):
+        _list(monkeypatch, "tasks_followups")
+        run_feed(member(*FULL))
+        assert reads.todays == [reads.now.astimezone(_tz(reads.f)).date()]
 
 
 class TestTheReads:
@@ -587,6 +602,48 @@ class TestTheAbsenceWritesBumpTheOrg:
         asyncio.run(selfservice.remove_my_absence("a-1", user=self._user()))
         assert bumps == []
 
+    def test_a_broken_bump_never_fails_the_write(self, bumps, monkeypatch):
+        """Fix round 1: the write committed, so a bump that raises is logged."""
+        from gateway.routes.people import selfservice
+        from gateway.routes.people.absences import AbsenceIn
+        from gateway.routes.shell import cache
+
+        async def _broken(org):
+            raise RuntimeError("redis down")
+
+        monkeypatch.setattr(cache, "bump_org", _broken)
+        body = AbsenceIn(starts_on="2026-10-20", ends_on="2026-10-21")
+        assert asyncio.run(selfservice.add_my_absence(body, user=self._user())) == {"id": "a-1"}
+        assert asyncio.run(selfservice.remove_my_absence("a-1", user=self._user())) == {
+            "deleted": "a-1"}
+
+    def test_a_stuck_bump_is_cut_and_the_write_answers(self, bumps, monkeypatch):
+        """The guard cuts a bump that never ends (``BUMP_SAFE_WAIT_S``). The
+        hang guard is a named bound, never a measure of the cut."""
+        from gateway.routes.people import selfservice
+        from gateway.routes.shell import cache
+
+        cut: list[str] = []
+
+        async def _stuck(org):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cut.append(org)
+                raise
+
+        monkeypatch.setattr(cache, "bump_org", _stuck)
+        done = asyncio.run(asyncio.wait_for(
+            selfservice.remove_my_absence("a-1", user=self._user()), HANG_GUARD_S))
+        assert done == {"deleted": "a-1"}
+        assert cut == ["org-mine"]
+        assert cache.BUMP_SAFE_WAIT_S == 0.5
+
+
+#: A hang guard for the stuck-bump case (#947): the case fails only if the
+#: write never answers. It measures nothing.
+HANG_GUARD_S = 30.0
+
 
 # ── one table for every kind (§5.9 items 2 to 6) ────────────────────────────
 
@@ -650,27 +707,72 @@ class TestOneTableForEveryKind:
 # ── §5.9 item 7: the elapsed time of each provider run ──────────────────────
 
 
+#: The handler of the gateway prints the message alone
+#: (``acb_common._log.configure_logging``), so a field must be in the text.
+_AS_PRINTED = logging.Formatter("%(message)s")
+_FIELDS = re.compile(r"^(?P<event>\S+) provider (?P<what>.+?) provider=(?P<provider>\S+)"
+                     r"(?P<rest>(?: \w+=\S+)*) elapsed_ms=(?P<ms>\d+)$")
+
+
+def _printed(caplog) -> list[dict]:
+    """Each provider line as the journal prints it, parsed back."""
+    out = []
+    for record in caplog.records:
+        found = _FIELDS.match(_AS_PRINTED.format(record))
+        if found:
+            fields = dict(f.split("=", 1) for f in found["rest"].split())
+            out.append({**found.groupdict(), **fields, "level": record.levelno})
+    return out
+
+
 class TestTheElapsedTime:
-    def test_each_run_logs_elapsed_ms(self, reads, monkeypatch, caplog):
-        import logging
-
+    def test_each_run_prints_its_fields_in_the_text(self, reads, monkeypatch, caplog):
         _list(monkeypatch, "tasks_followups")
-        with caplog.at_level(logging.INFO, logger=shell.logger.name):
+        with caplog.at_level(logging.DEBUG, logger=shell.logger.name):
             run_feed(member(*FULL))
-        lines = {r.provider: r for r in caplog.records
-                 if r.getMessage() == "shell.feed provider answered"}
+        lines = {x["provider"]: x for x in _printed(caplog)
+                 if x["event"] == "shell.feed" and x["what"] == "answered"}
         assert set(lines) >= {"calendar", "tasks_followups"}
-        for record in lines.values():
-            assert isinstance(record.elapsed_ms, int) and record.elapsed_ms >= 0
-            assert record.outcome == "ok"
+        for line in lines.values():
+            assert line["outcome"] == "ok" and int(line["ms"]) >= 0
+            assert line["level"] == logging.INFO
+        text = " ".join(_AS_PRINTED.format(r) for r in caplog.records)
+        assert "provider=tasks_followups" in text and "elapsed_ms=" in text
 
-    def test_a_failure_logs_it_too(self, reads, monkeypatch, caplog):
-        import logging
+    def test_the_needs_providers_answer_at_debug(self, reads, monkeypatch, caplog):
+        """Volume: the needs providers run on each poll of the bell."""
+        _list(monkeypatch, "")
+        with caplog.at_level(logging.DEBUG, logger=shell.logger.name):
+            run_feed(member(*FULL))
+        needs_lines = [x for x in _printed(caplog)
+                       if x["event"] == "shell.needs" and x["what"] == "answered"]
+        assert {x["provider"] for x in needs_lines} >= {"tasks", "projects", "email"}
+        assert {x["level"] for x in needs_lines} == {logging.DEBUG}
 
+    def test_a_failure_prints_it_too(self, reads, monkeypatch, caplog):
         _list(monkeypatch, "tasks_followups")
         reads.absence_error = RuntimeError("down")
         with caplog.at_level(logging.INFO, logger=shell.logger.name):
             run_feed(member(*FULL))
-        [line] = [r for r in caplog.records if r.getMessage() == "shell.feed provider failed"
-                  and r.provider == "tasks_followups"]
-        assert isinstance(line.elapsed_ms, int)
+        [line] = [x for x in _printed(caplog)
+                  if x["what"] == "failed" and x["provider"] == "tasks_followups"]
+        assert line["error"] == "RuntimeError" and int(line["ms"]) >= 0
+
+    def test_a_run_cut_at_the_ceiling_prints_its_time(self, fakes, monkeypatch, caplog):  # noqa: F811
+        """A cancel skips the handlers of `_attempt`, so the ceiling line
+        carries the measure. A provider that never got a slot ran 0 ms."""
+        from tests.unit.test_shell_feed import NO_CALENDAR, _feed_only, _recorder, _with
+
+        monkeypatch.setattr(feed, "FEED_TOTAL_S", 0.3)
+        ran: list[str] = []
+        _with(monkeypatch,
+              _feed_only("stuck_a", _recorder(ran, "stuck_a", sleep=5.0)),
+              _feed_only("stuck_b", _recorder(ran, "stuck_b", sleep=5.0)),
+              _feed_only("queued", _recorder(ran, "queued")))
+        with caplog.at_level(logging.INFO, logger=shell.logger.name):
+            answer = run_feed(member(*NO_CALENDAR))
+        assert {answer["sources"][k] for k in ("stuck_a", "stuck_b", "queued")} == {"failed"}
+        cut = {x["provider"]: x for x in _printed(caplog) if x["what"] == "passed the ceiling"}
+        assert set(cut) == {"stuck_a", "stuck_b", "queued"}
+        assert cut["stuck_a"]["started"] == "yes" and int(cut["stuck_a"]["ms"]) > 0
+        assert cut["queued"]["started"] == "no" and cut["queued"]["ms"] == "0"

@@ -303,11 +303,12 @@ async def _bump_my_day(user: Any) -> None:
     MD-3c, ``my_day_feed.md`` §5.9 item 11). The member's own cards change,
     and so does the ``colleague_out`` card of each colleague, so the ORG
     version moves. The org is the session's, never a request value. It does
-    nothing with ``MY_DAY_CACHE`` off, and it never raises. The import is
-    local, as ``personal.bump_my_day`` does it."""
+    nothing with ``MY_DAY_CACHE`` off. It waits 0.5 seconds at most and
+    never raises (``cache.bump_org_safe``), so the write that committed
+    stands. The import is local, as ``personal.bump_my_day`` does it."""
     from gateway.routes.shell import cache as feed_cache
 
-    await feed_cache.bump_org(getattr(user, "organization_id", None))
+    await feed_cache.bump_org_safe(getattr(user, "organization_id", None))
 
 
 @router.delete("/me/absences/{absence_id}")
