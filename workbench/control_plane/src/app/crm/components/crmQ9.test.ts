@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+  HIDDEN_SENTENCE,
   UNAVAILABLE_SENTENCE,
   agoLabel,
   creditsPercent,
@@ -123,6 +124,21 @@ describe("an unavailable module", () => {
     expect(html).toContain("Unavailable");
     expect(html).toContain("Tasks");
     expect(html).toContain("Connect Zoho again to allow this module");
+  });
+
+  it("says a core module is turned off in Zoho, and does not ask for a reconnect (CRM-Q15)", () => {
+    const html = draw(
+      healthy({
+        entities: [
+          entity("organizations", null, 0, { unavailable: 1, hidden: 1 }),
+          entity("contacts", 2, 2),
+        ],
+      }),
+    );
+    expect(html).toContain("Unavailable");
+    expect(html).toContain("Companies");
+    expect(html).toContain(HIDDEN_SENTENCE);
+    expect(html).not.toContain(UNAVAILABLE_SENTENCE);
   });
 
   it("names a key it does not know, from its words", () => {
