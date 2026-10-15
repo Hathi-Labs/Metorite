@@ -79,7 +79,7 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from acb_auth import agent_oauth
+from acb_auth import agent_oauth, agent_tokens
 from acb_common import get_settings
 from agent_edge import app as edge_app_module
 from agent_edge import tools
@@ -231,6 +231,52 @@ class TestTheToolAtTheEdge:
         assert r.headers["www-authenticate"] == w.CHALLENGE_403_WRITE
         assert edge.gateway.requests == []
 
+    async def test_the_approval_route_refuses_an_agent_past_branch_0(self, monkeypatch):
+        """Fix round 1 (4a). Branch 0 keeps a signed request out (G1). The
+        route refuses an agent caller too, before it opens a session."""
+        from fastapi import HTTPException
+        from gateway.routes.projects import agent_runs as gateway_runs
+
+        opened: list[bool] = []
+
+        def no_session() -> Any:
+            opened.append(True)
+            raise AssertionError("the route opened a session for an agent")
+
+        monkeypatch.setattr(gateway_runs, "_tenant_session", no_session)
+        agent = SimpleNamespace(actor_via=VIA, scopes=("projects:read", "projects:write"),
+                                connection_id=w.CONN)
+        user = SimpleNamespace(email=MEMBER, agent=agent)
+        with pytest.raises(HTTPException) as refused:
+            await gateway_runs.approve_task_archive(
+                RUN, gateway_runs.ArchiveApprovalIn(decision="approve",
+                                                    idempotency_key=_key()), user=user)
+        assert refused.value.status_code == 403
+        assert opened == []
+
+    def test_a_naive_expiry_stamp_reads_as_expired(self):
+        """Fix round 1 (4b). A stamp with no zone never approves."""
+        from gateway.routes.projects.agent_runs import _request_expired
+
+        now = datetime.now(UTC)
+        assert _request_expired({"expires_at": "2999-01-01T00:00:00"}, now) is True
+        assert _request_expired({"expires_at": "soon"}, now) is True
+        assert _request_expired({"expires_at": "2999-01-01T00:00:00+00:00"}, now) is False
+
+    def test_a_stopping_run_is_finished_with_no_activity_first(self):
+        """Fix round 1 (item 7). An activity on a stopping run ends the run,
+        and a finish after it gets 409. So the two descriptions say: call
+        finish_agent_run with a summary, and post no activity first."""
+        from gateway.routes.projects.agent_runs import transition
+
+        assert transition("stopping", "agent_finish") == "stopped"
+        assert transition("stopping", "agent_activity") == "stopped"
+        for tool in (tools.GET_AGENT_RUN, tools.LIST_AGENT_RUNS):
+            text_ = tool.description
+            assert "finish_agent_run with a summary" in text_, tool.name
+            assert "no activity before" in text_, tool.name
+            assert "post one response" not in text_, tool.name
+
     def test_the_activity_keys_carry_archived(self):
         assert tools.RUN_ACTIVITY_KEYS[-1] == "archived"
         row = {"id": "a", "type": "prompt", "content": {"selected": ["approve"],
@@ -254,6 +300,25 @@ def _grant(seeder: w._Seeder, project: str, who: str) -> None:
     seeder.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
                " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"
                " RETURNING project_id", p=project, s=who, a=w.OWNER, o=seeder.org)
+
+
+def _no_personal_connection(a: w._Seeder) -> tuple[str, str]:
+    """A write connection whose member opted out of the personal projects."""
+    cid = str(a.one(
+        "INSERT INTO agent_connection (organization_id, member_email, client_id,"
+        " client_name, client_origin, scopes, pinned_projects, include_personal,"
+        " expires_at) VALUES (CAST(:o AS uuid), :m, 'https://client.example/meta.json',"
+        " 'Client', :origin, CAST(:scopes AS text[]), CAST(:pins AS uuid[]), false,"
+        " now() + interval '1 day') RETURNING id",
+        o=a.org, m=MEMBER, origin=w.ORIGIN, scopes=list(w.WRITE_SCOPES), pins=[]))
+    raw = agent_tokens.new_token()
+    a.one("INSERT INTO agent_token (organization_id, connection_id, kind, token_hash,"
+          " expires_at, client_id, resource, scope) VALUES (CAST(:o AS uuid),"
+          " CAST(:c AS uuid), 'access', :h, now() + interval '1 hour',"
+          " 'https://client.example/meta.json', :r, :s) RETURNING id",
+          o=a.org, c=cid, h=agent_tokens.hash_token(raw), r=w.RESOURCE,
+          s=" ".join(w.WRITE_SCOPES))
+    return cid, raw
 
 
 @pytest.fixture(scope="module")
@@ -308,6 +373,20 @@ def world():
         done=a.status(team, "Done", "done", 2),
         lost_todo=a.status(lost, "To do", "todo", 0),
     )
+    # Fix round 1 (4c): a project with no grant to the member, and the
+    # member's own personal project.
+    private = str(a.one(
+        "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+        " timezone, owns_statuses) VALUES ('Private', 'active', 'manual', :a,"
+        " CAST(:o AS uuid), 'Asia/Kolkata', true) RETURNING id", a=w.OWNER, o=org))
+    mine = str(a.one(
+        "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+        " timezone, owns_statuses, personal_owner) VALUES ('Personal mine', 'active',"
+        " 'manual', :m, CAST(:o AS uuid), 'Asia/Kolkata', true, :m) RETURNING id",
+        m=MEMBER, o=org))
+    _grant(a, mine, MEMBER)
+    s.private_todo = a.status(private, "To do", "todo", 0)
+    s.mine_todo = a.status(mine, "To do", "todo", 0)
     # A second organization, with one task and one typed request in it.
     org_b = str(uuid.uuid4())
     with eng.begin() as c:
@@ -333,10 +412,13 @@ def world():
                                      {"id": "decline", "label": "Decline"}],
                          "allow_multiple": False}))
     world_ = SimpleNamespace(admin=eng, org=org, seeder=a, team=team, lost=lost, s=s,
-                             c={}, tok={}, task=a.task,
+                             private=private, mine=mine, c={}, tok={}, task=a.task,
                              org_b=SimpleNamespace(task=b_task, run=b_run))
     for name, scopes in (("write", w.WRITE_SCOPES), ("read", ("projects:read",))):
         world_.c[name], world_.tok[name] = a.connection(scopes=scopes)
+    world_.c["pinned"], world_.tok["pinned"] = a.connection(scopes=w.WRITE_SCOPES,
+                                                            pins=(team,))
+    world_.c["no_personal"], world_.tok["no_personal"] = _no_personal_connection(a)
     world_.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
@@ -459,6 +541,15 @@ def _subtask(world, parent: str, title: str) -> str:
         n=world.seeder.number, parent=parent))
 
 
+def _expire(world, question_id: str) -> None:
+    """Move the request's ``expires_at`` one second into the past."""
+    world.seeder.one(
+        "UPDATE pm_agent_run_activities SET content_metadata = jsonb_set("
+        " content_metadata, '{request,expires_at}', to_jsonb(CAST(:at AS text)))"
+        " WHERE id = CAST(:a AS uuid) RETURNING id",
+        at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(), a=question_id)
+
+
 async def _requested(world, title: str) -> tuple[str, str, dict[str, Any]]:
     """A new task in ``team`` and a typed request on it: ``(task, run, body)``."""
     task = world.task(world.team, world.s.doing, title)
@@ -542,6 +633,22 @@ class TestTheRequest:
                               idempotency_key=_key())
         assert _text(result) == tools.TEXT_ARCHIVE_CONFLICT
         assert _snapshot(runs, task, run_id) == before
+
+    @pytest.mark.parametrize("case", ["outside_pins", "personal_off", "private_project"])
+    async def test_a_task_out_of_reach_in_the_same_org_is_not_found(self, runs, case):
+        """Fix round 1 (4c). The agent scope of §7.3 and the grants hold the
+        request, not only the tenant: no run starts and nothing is asked."""
+        if case == "outside_pins":
+            name, task = "pinned", runs.task(runs.lost, runs.s.lost_todo, "unpinned")
+        elif case == "personal_off":
+            name, task = "no_personal", runs.task(runs.mine, runs.s.mine_todo, "personal")
+        else:
+            name, task = "write", runs.task(runs.private, runs.s.private_todo, "private")
+        result = await _agent(runs, "request_task_archive", name=name, task_id=task,
+                              idempotency_key=_key())
+        assert _text(result) == TASK_NOT_FOUND
+        assert _rows(runs, "SELECT id FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)",
+                     t=task) == []
 
     async def test_a_request_while_a_question_waits_is_refused(self, runs):
         task = runs.task(runs.team, runs.s.doing, "busy")
@@ -710,18 +817,50 @@ class TestTheApproval:
         assert answer.content["selected"] == ["decline"] and answer.content["archived"] is False
 
     async def test_g7_an_approve_after_the_expiry_gets_409(self, runs):
+        """EA3-40 rule 5: only an APPROVE is refused after the expiry."""
         task, run_id, body = await _requested(runs, "g7")
-        runs.seeder.one(
-            "UPDATE pm_agent_run_activities SET content_metadata = jsonb_set("
-            " content_metadata, '{request,expires_at}', to_jsonb(CAST(:at AS text)))"
-            " WHERE id = CAST(:a AS uuid) RETURNING id",
-            at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
-            a=body["activity"]["id"])
+        _expire(runs, body["activity"]["id"])
         before = _snapshot(runs, task, run_id)
-        for decision in ("approve", "decline"):
-            r = await _answer(runs, run_id, decision)
-            assert r.status_code == 409, r.text
+        r = await _answer(runs, run_id, "approve")
+        assert r.status_code == 409, r.text
         assert _snapshot(runs, task, run_id) == before
+
+    async def test_g7_a_decline_closes_an_expired_request(self, runs, events):
+        """Fix round 1. An expired request never jams the run: the member's
+        decline closes it, archives nothing, and the run leaves awaiting."""
+        task, run_id, body = await _requested(runs, "g7 decline")
+        _expire(runs, body["activity"]["id"])
+        r = await _answer(runs, run_id, "decline")
+        assert r.status_code == 200, r.text
+        assert r.json()["archived"] is False
+        assert _archived_at(runs, task) is None
+        assert _archived_events(events, task) == 0
+        assert _run_status(runs, run_id) == "in_progress"
+        answer = _run_activities(runs, run_id)[-1]
+        assert str(answer.in_reply_to) == body["activity"]["id"]
+        # The agent can ask again.
+        again = await _ask_archive(runs, task)
+        assert again["run"]["id"] == run_id and again["run"]["status"] == "awaiting"
+
+    async def test_g7_a_free_reply_moves_a_run_on_after_the_expiry(self, runs):
+        """Fix round 1. After the expiry the request is stale, so any member's
+        reply moves the run on, answers nothing and archives nothing."""
+        task, run_id, body = await _requested(runs, "g7 reply")
+        path = f"/projects/agent-runs/{run_id}/activities"
+        early = await _person(runs, OTHER, "POST", path, {
+            "type": "prompt", "body": "Not yet.", "idempotency_key": _key()})
+        assert early.status_code == 409, early.text
+        _expire(runs, body["activity"]["id"])
+        late = await _person(runs, OTHER, "POST", path, {
+            "type": "prompt", "body": "Keep it, please.", "idempotency_key": _key()})
+        assert late.status_code == 201, late.text
+        assert late.json()["activity"]["in_reply_to"] is None
+        assert _run_status(runs, run_id) == "in_progress"
+        assert _archived_at(runs, task) is None
+        # ``selected`` stays refused on a typed request, expired or not.
+        r = await _person(runs, MEMBER, "POST", path, {
+            "type": "prompt", "selected": ["approve"], "idempotency_key": _key()})
+        assert r.status_code == 422, r.text
 
     async def test_g7_an_approve_on_a_run_that_does_not_wait_gets_409(self, runs):
         task, run_id, _ = await _requested(runs, "g7 finished")
@@ -742,6 +881,9 @@ class TestTheApproval:
         assert again.status_code == 200, again.text
         assert again.json()["created"] is False
         assert again.json()["activity"]["id"] == first.json()["activity"]["id"]
+        # Fix round 1: a retried click shows the archive.
+        assert again.json()["task"]["id"] == task
+        assert again.json()["task"]["archived_at"] is not None
         other_key = await _answer(runs, run_id)
         assert other_key.status_code == 409, other_key.text
         assert _system_rows(runs, task) == 1

@@ -73,6 +73,7 @@ from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_fo
 from acb_common import get_logger
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.core import (
+    TaskModel,
     _tenant_session,
     actor,
     emit,
@@ -81,6 +82,7 @@ from gateway.routes.projects.core import (
     record_activity,
     resolve_visibility,
     router,
+    row_to_dict,
     task_visibility_clause,
     wire,
 )
@@ -88,6 +90,7 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
     agent_runs_enabled,
+    attach_agent_state,
 )
 from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
 from gateway.routes.projects.tasks import archive_task_in
@@ -675,7 +678,9 @@ async def _answer(
     (EA3-40 rule 4). While the run is ``awaiting`` (*status*), a generic
     prompt with a body only gets 409: it would close the request, and only
     the run's member may close it (rule 3). On a run that no longer waits,
-    the request is stale, and a reply answers nothing.
+    or after the request expired (fix round 1), the request is stale. A
+    reply then answers nothing and moves the run on, so an expired request
+    never holds a run in ``awaiting``.
     """
     question = await _newest_open_question(db, run_id)
     request = archive_request_of(question)
@@ -687,7 +692,7 @@ async def _answer(
                 status_code=422,
                 detail="Answer an archive request with Approve or Decline on the task.",
             )
-        if status == "awaiting":
+        if status == "awaiting" and not _request_expired(request, await _clock(db)):
             raise HTTPException(
                 status_code=409,
                 detail="This agent run waits for an archive approval. Only its member answers it.",
@@ -1414,15 +1419,18 @@ async def approve_task_archive(
 
     * Only ``run.member_email`` answers. Another member who sees the task
       gets 403, and nothing changes (rule 3). A hidden run is 404.
-    * A run that is not ``awaiting`` on an open typed request, or a request
-      past ``expires_at``, gets 409 and nothing changes (rule 5).
+    * A run that is not ``awaiting`` on an open typed request gets 409, and
+      nothing changes. An APPROVE past ``expires_at`` gets 409 too (rule 5).
+      A decline still closes an expired request (fix round 1): it archives
+      nothing and moves the run on, so the run never stays ``awaiting``.
     * An approve archives the task through ``tasks.archive_task_in``, with no
       cascade to the subtasks, and writes the answer through
       :func:`_write_activity`, in ONE transaction (rule 2). The answer's
       ``content`` carries ``archived``.
     * The same ``idempotency_key`` again returns the first answer with 200.
       A second answer with a new key finds no open request: 409. So a second
-      approve never archives twice.
+      approve never archives twice. Every answer, a replay too, returns the
+      task as it is now, so a retried click shows ``archived_at``.
     """
     run_id = _parse_uuid(run_id, "Agent run")
     if _agent_via(user) is not None:
@@ -1446,12 +1454,14 @@ async def approve_task_archive(
             out_run = (await _runs_out(db, [run]))[0]
             archived = bool((from_jsonb(replay.content) or {}).get("archived"))
             return {"activity": _activity_out(replay), "run": out_run, "created": False,
-                    "archived": archived, "task": None}
+                    "archived": archived, "task": await _task_now(db, user, str(run.task_id))}
         request = archive_request_of(await _newest_open_question(db, run_id))
         if run.status != "awaiting" or request is None:
             raise HTTPException(status_code=409, detail="This run waits for no archive request.")
-        if _request_expired(request, await _clock(db)):
-            raise HTTPException(status_code=409, detail="This archive request expired.")
+        if decision == ARCHIVE_APPROVE and _request_expired(request, await _clock(db)):
+            raise HTTPException(
+                status_code=409, detail="This archive request expired. Decline it to close it.",
+            )
         archived = False
         if decision == ARCHIVE_APPROVE:
             vis = await resolve_visibility(db, user)
@@ -1465,12 +1475,22 @@ async def approve_task_archive(
         )
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         out_activity = _activity_out(written.activity)
+        task_now = (outcome.row if outcome is not None
+                    else await _task_now(db, user, str(run.task_id)))
     if written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
     if outcome is not None and not outcome.was_archived:
         await emit("pm.task.archived", {"task_id": out_run["task_id"]})
     return {"activity": out_activity, "run": out_run, "created": written.created,
-            "archived": archived, "task": outcome.row if outcome is not None else None}
+            "archived": archived, "task": task_now}
+
+
+async def _task_now(db: Any, user: UserContext, task_id: str) -> dict[str, Any]:
+    """The task as the member sees it now, with its agent pill."""
+    vis = await resolve_visibility(db, user)
+    row = row_to_dict(await load_visible_task(db, vis, task_id), TaskModel)
+    await attach_agent_state(db, [row])
+    return row
 
 
 __all__ = [

@@ -3494,8 +3494,10 @@ GET_AGENT_RUN = Tool(
         " labels, and body holds any text the member wrote. The state is"
         " answered until your next activity, which tells the member that you"
         " have the answer. If the state is stopping, a person asked you to"
-        " stop. Stop the work at once, post one response that says what you did"
-        " and what is left, and do no more on the run." + _UNTRUSTED_NOTE
+        " stop. Stop the work at once. Call finish_agent_run with a summary of"
+        " what you did and what is left, and post no activity before it. An"
+        " activity on a stopping run ends the run, and the finish then fails."
+        + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_GET_RUN_INPUT,
@@ -3560,8 +3562,9 @@ LIST_AGENT_RUNS = Tool(
         " member queued for an agent (state queued), a run whose question a"
         " member answered (state answered), and a run that a member asked to"
         " stop (state stopping). For a queued or answered run, read it with"
-        " get_agent_run and go on with the work. For a stopping run, post one"
-        " response that says what you did, and stop. Filter by status or task."
+        " get_agent_run and go on with the work. For a stopping run, stop the"
+        " work and call finish_agent_run with a summary of what you did. Post no"
+        " activity before the finish. Filter by status or task."
         " Send nextCursor back as cursor to read the next page." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
