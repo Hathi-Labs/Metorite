@@ -1,5 +1,5 @@
 -- ============================================================================
--- 268_crm_sync_holds.sql — the modules that the mirror sync holds back.
+-- 269_crm_sync_holds.sql — the modules that the mirror sync holds back.
 --
 -- What: one new column, `crm_settings.sync_holds`. It is a JSONB map from a
 --       count key of `crm_sync_runs.counts` (`contacts`, `activities`,

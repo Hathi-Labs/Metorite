@@ -1949,7 +1949,7 @@ holds a lot of data.
 `organizations`, `contacts`, `leads`, `deals`, `activities` (notes, calls and
 meetings), `tasks`, or `module:<ApiName>`. The card already lists these keys.
 
-**The store.** Migration 268 adds `crm_settings.sync_holds`, a JSONB map from
+**The store.** Migration 269 adds `crm_settings.sync_holds`, a JSONB map from
 a key to `{"held": bool, "by": "auto" | "admin", "count": int | null, "at": iso}`.
 An empty map holds nothing. An entry with `held: false` records that an admin
 turned the module on, so the next import does not hold it again.

@@ -1,4 +1,4 @@
-"""The modules that the mirror sync holds back (WS-53 CRM-Q16, migration 268).
+"""The modules that the mirror sync holds back (WS-53 CRM-Q16, migration 269).
 
 Spec: ``project-docs/specs/crm_platform.md`` §18.8.
 
