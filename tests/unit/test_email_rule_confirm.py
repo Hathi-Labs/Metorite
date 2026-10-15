@@ -144,7 +144,7 @@ def test_an_outward_action_is_outward(action: dict[str, Any]) -> None:
 
 @pytest.mark.parametrize("a_type", [
     "ARCHIVE", "LABEL", "MARK_READ", "STAR", "MARK_SPAM", "TRASH",
-    "MOVE_FOLDER", "REPLY", "DRAFT_EMAIL",
+    "MOVE_FOLDER", "REPLY", "DRAFT_EMAIL", "NOTIFY_ME",
 ])
 def test_an_inward_action_is_inward(a_type: str) -> None:
     action = {"type": a_type, "label": "x", "subject": "s", "content": "c",

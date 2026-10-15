@@ -5,7 +5,8 @@ A class says how far a card may reach the member:
 * ``none`` — never leaves My Day.
 * ``brief`` — goes into the morning brief.
 * ``interrupt`` — may interrupt, inside the budget, and is in the brief too.
-* ``urgent`` — reserved for a later slice. It reaches like ``interrupt``.
+* ``urgent`` — reaches like ``interrupt``, and may use the urgent allowance.
+  Only a "Tell me on WhatsApp" request is ``urgent`` today (RE-5, §11.3).
 
 An unknown kind is ``none``, so a new provider reaches nobody until it adds
 its row here. ``tests/unit/test_reach_plan.py`` fails when a kind that a
@@ -47,6 +48,10 @@ REACH_CLASS: dict[str, str] = {
     "waiting_quiet": "brief",
     "stale_next": "brief",
     "absent_on_due": "brief",
+    # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
+    # interrupts. The member's own request, and a rule at ``urgent``, are
+    # ``urgent`` (below).
+    "notify_me": "interrupt",
 }
 
 #: The notification reasons that interrupt. A comment or a change does not.
@@ -60,6 +65,9 @@ RANK = ("none", "brief", "interrupt", "urgent")
 
 
 def _kind_class(kind: str, facts: dict[str, Any]) -> str:
+    if kind == "notify_me" and (facts.get("self") is True
+                                or facts.get("urgency") == "urgent"):
+        return "urgent"
     if (kind == "notification"
             and str(facts.get("notification") or "") in INTERRUPTING_NOTIFICATIONS):
         return "interrupt"

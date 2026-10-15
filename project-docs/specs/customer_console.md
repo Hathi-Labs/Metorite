@@ -16,6 +16,10 @@ CP-13h, Jev through the AI/ML API reseller, is BUILT on branch `cp13-aimlapi`
 background model call names its feature on the usage report, as
 `email.rule_match`. It has no flag, because it changes metadata only.
 
+🆕 **§6A.15 DSML is BUILT and live, with no flag (2026-10-15).** The Router
+turns DeepSeek's text tool calls into real tool calls. #851 added it, #1027
+made the stream linear, and #1047 found a long closing tag that a delta cut.
+
 🆕 **Member removal by an operator or an admin: BUILT on branch
 `member-remove` (2026-10-15, owner request).** The backend, the operator
 console surface and the control-plane roster change are all built. The
@@ -10568,6 +10572,90 @@ uv run ruff check packages/acb_llm/acb_llm/decide.py \
 | **The multimodal promise** (image / speak) | ~~Yes — G-1 and G-2~~ → ✅ **both answered by D61.1/D61.2.** It is now build work, not design work |
 | Everything else | ✅ G-6 and G-7 answered, and each is one column. **G-8 deferred with a named trigger**, which is a decision rather than an omission |
 | **CP-13a to CP-13d** (the `decide` task, §6A.14) | **No, for the build.** Use a test key. The residency answer (§9 item 8) blocks every real-tenant call, the chat tool included |
+
+### 6A.15 DSML — DeepSeek's text tool calls — BUILT, live, no flag (#851, #1027, #1047)
+
+**What it is.** DeepSeek sometimes writes its own tool-call markup into
+`content`, where an OpenAI client expects `tool_calls`. The markup uses the
+fullwidth bar U+FF5C, as in `<｜DSML｜invoke name="update_task">`.
+`customer_console/dsml.py` reads that markup on `/v1/chat/completions` and
+turns it into real tool calls. It reads the buffered path and the streamed
+path. The Router owns this, because every chat completion crosses it.
+
+**The parser's contract.**
+
+1. **A stream never runs a call that a whole feed does not run.** A stream
+   runs the same calls, shows the same text and logs the same drop lines as a
+   whole feed. The three `_TAG_HEAD_RE` cases below are the known exceptions.
+2. **The stream is linear in the reply length.** Each delta reads its own text
+   once. It reads at most 22 characters again for each delta.
+3. **A closing tag may hold any amount of whitespace before its `>`.** The
+   closer regexes read `\s*` with no cap, as the block regex does. The stream
+   keeps a closing tag that has its name and waits for its `>`
+   (`_Region.waiting`). The next delta continues from the end of the text.
+4. **A whole feed never shows markup outside a code fence to the member.** A
+   stream holds the same rule, except in the three cases below.
+
+**The known gap: a first tag cut before its `>` (H-323).** `_TAG_HEAD_RE`
+decides whether an open first tag can still become a tag. It refuses a `/`
+or a `'` before the `>`. When a delta ends there, `_not_a_tag` releases the
+region as text. A whole feed reads the complete tag, so it never takes that
+path. Three cases, measured on 2026-10-15:
+
+| Case | Deltas | Whole feed | Stream |
+|---|---|---|---|
+| A | `On it. </｜DSML｜invoke/`, then `>` | Shows `On it. `, logs `stray_tag` | Shows the raw tag to the member |
+| B | `<｜DSML｜invoke name='create_task'`, then `>` and the rest | Hides the tag, logs `malformed_invoke`, runs nothing | Shows the raw tag, logs `stray_tag`, runs nothing |
+| C | A good block, then `</｜DSML｜calls` and a newline and `/`, then `>` | Runs the call, logs `stray_tag` | Shows the raw tag, logs `not_trailing`, runs nothing |
+
+**The gap fails closed for calls.** In each case the stream runs the same
+calls or fewer, and never more. All three cases show raw markup to the member.
+
+**The drop rules.** A call runs only when all five rules hold:
+
+1. The request offered the tool.
+2. No input message holds DSML.
+3. The block is outside a code fence.
+4. The block is the trailing content.
+5. The block parses.
+
+Each block that does not run logs `router.dsml_dropped` with one `dsml_reason`.
+
+| `dsml_reason` | What happened |
+|---|---|
+| `undeclared_tool` | The request did not offer the tool |
+| `echoed_input` | An input message holds DSML, so the answer may echo it |
+| `fenced` | The block is in a code fence. It stays visible as a quote |
+| `not_trailing` | Prose comes after the block |
+| `unterminated_block` | The text ends before the closing tag |
+| `stray_tag`, `malformed_block`, `malformed_invoke`, `block_without_invoke` | The markup does not parse |
+| `block_holds_text_outside_invokes` | The block holds text between its invokes. The invokes still run |
+| `parallel_disabled` | `parallel_tool_calls=false` keeps only the first call |
+
+Two more log lines mark a failure that keeps the text. The buffered path logs
+`router.dsml_normalise_failed` and returns the response as it came. The stream
+logs `router.dsml_chunk_unreadable` and sends a minimal copy of the chunk.
+
+**The PRs.**
+
+- **#851** added the parser and its five rules (2026-10-11).
+- **#1027** (`d359553`) made `DsmlStream.feed` linear. A 400 KB call in
+  one-character deltas went from 18.9 s to 0.96 s.
+- **#1047** found a closing tag with a long run of whitespace that a delta
+  cut. Before it, the stream logged `unterminated_block` and ran nothing,
+  where a whole feed ran the call.
+
+**The fences.** All of them are in `tests/unit/test_router_dsml_tool_calls.py`.
+
+- `TestTheChunkingNeverChangesTheAnswer` feeds real-shaped replies whole, at
+  every cut, one character at a time, and in random chunks.
+- `test_the_LIMITS_give_the_same_answer_as_before` pins `_HEAD` and
+  `_CLOSE_LOOKBACK`. A lookback below 21 fails 22 tests.
+- `TestALongClosingTagIsFoundAtEveryCut` cuts closing tags with 0 to 200
+  whitespace characters at every position.
+- Five linear fences count the characters that the stream gives its regexes,
+  and they read no clock. Two of them hold a closing tag open with 200 KB of
+  whitespace.
 
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
 

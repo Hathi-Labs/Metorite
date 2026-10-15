@@ -7,6 +7,10 @@
 // into its `components/`, and run it there with `C4B_GOLDEN_OUT` set to the
 // fixture folder. Without `C4B_GOLDEN_OUT`, the file compares.
 //
+// One later edit by hand: `list.html` wraps the first cell in a button, so a
+// keyboard opens the record (2026-10-16, `crmRowKeyboard.test.ts`). The flag
+// changes nothing there, so both sides of the compare draw the button.
+//
 // The runner has no DOM. So `Modal` draws its children in a plain `div`, and
 // for the list one `useState(false)` starts true, which opens the Columns
 // chooser. Both sides of the compare run under the same two mocks.
