@@ -34,7 +34,8 @@ built and deployed on 2026-10-04 (PR #618). H-227 (§22.9) was built
 private to their thread. §24.9 (a card keeps its place in the stream, and
 a recommended option says so) was built 2026-10-09 on a branch, not
 merged. §21.18 (a NUL in a tool result fails no save) was built
-2026-10-09.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+2026-10-09. §14.9 B1 (`make_report`: a report as a chat card, a file and a
+PDF) was built 2026-10-16.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -2152,6 +2153,151 @@ so a new vector is a new case in the plugin and in its test.
 a new `react-markdown` renderer skips `MarkdownImage`, `markdownUrlTransform` or
 the raw-HTML gate. The app sends no CSP that limits `img-src`. H-238 holds that
 follow-up.
+
+### 14.9 Reports from the chat (B1, 2026-10-16)
+
+**Owner directive, 2026-10-16.** When a member asks an agent for a report,
+the agent must make "a proper report with proper imagery and graphs". The
+chat shows it as a card. The report must use the programmatic systems that
+exist, "instead of needing to generate everything using the AI". Before this
+slice, the agent wrote a `.md` file. Its link showed the member the raw text.
+
+**Status: B1 BUILT 2026-10-16.** B1 is the tool, the file, the PDF, the
+guidance and this section. B2 builds the card and the full view: the
+`report` template and the `.report.json` viewer. Until B2 merges, the chat
+cannot draw the card, so `make_report` returns a link to the PDF. B3 adds
+mappers that build a spec by code from `report_render` and `crm_report`.
+
+#### 14.9.1 The answer
+
+1. **One tool.** `acb_skills/reports.py` holds `make_report(spec)`. The
+   `documents` skill family holds it beside `make_document`, so the core
+   floor does not change.
+2. **One file.** The tool writes `outputs/<slug>.report.json`. Its visuals
+   stay data, so the web draws live charts from them.
+3. **One PDF.** The tool writes `outputs/<slug>.pdf` through the one PDF
+   seam, `gateway.pdf_render.render_pdf`, kind `document`.
+4. **One card.** The tool emits one `generative_ui` event through
+   `emit_generative_ui`. Its template is `report`, and its data is the file
+   plus its `path`.
+5. **WhatsApp.** The tool writes no file and draws no card. It queues the
+   same PDF as one element through `whatsapp_ui.queue_document`.
+
+#### 14.9.2 The seams it uses
+
+- `documents.py` checks the spec: the refused keys, the text limits, the
+  section rule and the visual kinds. `reports.py` keeps no copy of a check.
+  It adds the checks for the summary, the KPI tiles, the period and the
+  sources.
+- `documents.prepare` draws each visual by code, with the builders of
+  `whatsapp_ui` in print mode. With the chart engine off, a chart is our own
+  SVG, and the PDF places it as vector.
+- `write_artifact` saves both files. `emit_generative_ui` carries the card.
+- `whatsapp_ui` keeps the WhatsApp delivery. `queue_document` is the second
+  half of its kind `document`. B1 split it out, so a ready layout can use it.
+
+#### 14.9.3 The file contract
+
+The file is UTF-8 JSON. B2 builds against this shape. A change of the shape
+changes this section in the same pull request.
+
+```
+{
+  "kind": "metorite.report", "version": 1,
+  "title": str, "subtitle": str?, "for": str?, "date": str, "period": str?,
+  "summary": str?, "kpis": [{"label", "value", "unit"?, "delta"?, "good"?}]?,
+  "sections": [{"heading"?, "text"?, "bullets"?, "visual"?}],
+  "sources": [str]?,
+  "pdf": "outputs/<slug>.pdf"
+}
+```
+
+- `title` holds 120 characters. `subtitle` and `for` hold 200 each.
+  `period` holds 80, and `date` holds 40.
+- `date` is the date that the model gives, else today as "16 Oct 2026".
+- `summary` holds 2000 characters of markdown-lite: `**bold**`, `*italic*`,
+  lists and line breaks. The `text` of a section and each bullet are
+  markdown-lite too.
+- Markdown-lite holds no HTML tag, no image, no link and no URL. The tool
+  refuses each one and says what to fix.
+- `kpis` holds 1 to 8 tiles. A `value` and a `delta` are a number or text.
+  `good` is "up" or "down".
+- `sections` holds 1 to 30. Each one has a heading, a text, bullets or a
+  visual. A section holds 16 bullets of 240 characters.
+- A `visual` is `{"kind", "title", ...}`. The kind is chart, stats, table,
+  board, timeline, gantt or agenda. Its data fields are those of
+  `make_document`.
+- A report holds at most 12 visuals, and the kpis count as one.
+- `sources` holds 12 lines of 240 characters.
+- An optional field that is empty is not in the file.
+- The data of the card is the file plus `"path"`, the path of the
+  `.report.json` file.
+
+**The one shape change.** The file keeps each visual as the data that the
+model gave, with `kind` in lower case. The PDF draws the same data. No other
+field changes between the spec and the file.
+
+#### 14.9.4 The PDF
+
+- The summary and the KPI tiles come first, as one section with a `stats`
+  visual. The sources come last.
+- `layout_of` draws those two apart from the sections of the member, and
+  joins them after. So a report of 30 sections still fits the limit of
+  `prepare`.
+- The meta line under the title shows the period before the date.
+- A list item of the summary prints with a bullet, and italic prints as
+  plain words. `pdf_render` draws bold and line breaks.
+
+#### 14.9.5 Names, writes and the card
+
+- The PDF goes to `outputs/<slug>.pdf`. The slug comes from `filename`,
+  else from the title, in lower case with hyphens.
+- `write_artifact` gives a taken name a number, for example `x (1).pdf`. The
+  report file takes the stem of the PDF that the tool wrote. So its name
+  ends in `.report.json` again.
+- The report file replaces a file of that stem. The PDF name was free, so
+  that file had no PDF.
+- When the card draws, the tool tells the model to describe it in one or two
+  lines and to paste no link.
+- When the card does not draw, the tool returns the `download_url` of the
+  PDF, and the model links it.
+
+#### 14.9.6 Reach and guidance
+
+- Six chat assistants name `make_report` in `tool_scope`: orchestrator,
+  projects, crm, email-assistant, task-manager and whatsapp-assistant.
+- The schema of `make_report` measured 237 tokens on 2026-10-16. It is not a
+  floor tool, so `CORE_SCHEMA_TOTAL_CEILING` does not move.
+- The docstring is short. `make_report({})` returns the field guide, and
+  `load_design_system("report")` returns the same text. The name "report"
+  gave the `cc-report` HTML kit before. The name "blocks" still gives it.
+- `addendum.REPORT_RULE` tells each agent that holds the tool: "A report is
+  make_report. Never write a report as a .md file." An agent without the
+  tool does not read it.
+- `status_report` (W2) returns a `REPORT_SPEC` that code built from its own
+  reads. The Projects instructions tell the model to pass it to
+  `make_report` with no change.
+- WhatsApp does not withhold `make_report`. A channel changes the delivery,
+  never the function (owner rule, 2026-10-10).
+  `whatsapp_assistant_channel.md` §15 owns the kind `document`.
+
+#### 14.9.7 Fences (R7)
+
+- `tests/unit/test_chat_reports.py`: the checks, the file, the card, the
+  visuals in the PDF, WhatsApp and the reach.
+- `tests/unit/test_projects_agent.py`: `status_report` returns a spec that
+  `make_report` accepts, with the numbers of the routes.
+- `tests/unit/test_design_tools.py`: "report" returns the field guide.
+- `tests/unit/test_tool_schema_diet.py`: the call contract of `make_report`.
+
+#### 14.9.8 What B1 does not do
+
+- It draws no card. B2 owns the `report` template on both sides,
+  `GENUI_TEMPLATES` and the `.report.json` viewer.
+- It builds no mapper from `report_render` or `crm_report`. B3 owns them,
+  and they call `make_report` with a ready spec.
+- The chat also shows an `artifact_created` card for each of the two files,
+  beside the report card. B2 decides if the card of the report hides them.
 
 ---
 

@@ -333,6 +333,15 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    never offers a row with `is_system`, and it marks a retired field
    (WS-53 CRM-C4a). Fences:
    `tests/unit/test_crm_agent.py` and `tests/unit/test_skills_registry.py`.
+5m. reports.py -- `make_report`, the ONE report tool of the chat
+   (`project-docs/specs/projects_ai_chat.md` §14.9). It checks one spec with
+   the checks of `documents.py`, and it keeps no copy of them. It writes
+   `outputs/<slug>.report.json` and `outputs/<slug>.pdf` through
+   `write_artifact` and `gateway.pdf_render`, and draws one `report` card
+   through `emit_generative_ui`. In a WhatsApp run it queues the PDF through
+   `whatsapp_ui.queue_document`, with no file and no card. The `documents`
+   family holds it, so it is not a floor tool. Fence:
+   `tests/unit/test_chat_reports.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The
