@@ -17,6 +17,13 @@ is waiting in the approvals inbox — the agent cannot bypass the gate.
 
 Injected through ``_tool_injection``'s SAFE pipeline (same block as app
 tools) so every call passes the risk-aware permission gate.
+
+**The tenant (2026-10-15).** ``workflows`` and ``workflow_runs`` have FORCE
+RLS. Each tool takes the org of the agent run from the run binding
+(``executor._current_run_org()``) and passes it to the service, which reads
+inside ``tenant_session(org)``. No tool takes an org argument, so tool input
+never chooses the tenant (R5, R11). With no bound org, a tool refuses and
+reads nothing. Fence: ``tests/unit/test_workflows_tool_rls_r8.py``.
 """
 
 from __future__ import annotations
@@ -35,6 +42,29 @@ MAX_WAIT_SECONDS = 120
 _POLL_INTERVAL_SECONDS = 2.0
 _TERMINAL = {"succeeded", "failed", "cancelled", "paused"}
 
+#: What a tool says when the run has no org. It reads nothing first.
+NO_ORG = (
+    "Workflows are not available here: this run has no organization bound, "
+    "so no workflow can be listed or run."
+)
+
+
+def _run_org() -> str | None:
+    """The org of the agent run on this frame, from the run binding.
+
+    ``executor._current_run_org()`` is the one resolver. It reads the run's
+    ``_RUN_ORG`` entry, else the bound tenant, and never tool arguments. It
+    takes no argument on purpose. ``None`` when nothing resolves, and the
+    caller then refuses.
+    """
+    try:
+        from orchestrator.executor import _current_run_org
+
+        org = _current_run_org()
+    except Exception:
+        return None
+    return str(org).strip() if org else None
+
 
 async def list_workflows() -> str:
     """List the published workflows you can trigger, with descriptions.
@@ -43,7 +73,10 @@ async def list_workflows() -> str:
     """
     from gateway.routes.workflows.service import list_published_workflows
 
-    rows = await list_published_workflows()
+    org = _run_org()
+    if not org:
+        return NO_ORG
+    rows = await list_published_workflows(organization_id=org)
     if not rows:
         return "No published workflows exist yet."
     return json.dumps(rows, default=str)
@@ -60,6 +93,9 @@ async def run_workflow(workflow: str, payload_json: str = "{}", wait_seconds: in
     """
     from gateway.routes.workflows.service import run_published_workflow
 
+    org = _run_org()
+    if not org:
+        return NO_ORG
     try:
         payload = json.loads(payload_json or "{}")
         if not isinstance(payload, dict):
@@ -67,7 +103,9 @@ async def run_workflow(workflow: str, payload_json: str = "{}", wait_seconds: in
     except ValueError:
         return 'payload_json is not valid JSON — pass an object like {"body": "…"}'
 
-    started = await run_published_workflow(workflow, payload, started_by="agent-tool")
+    started = await run_published_workflow(
+        workflow, payload, started_by="agent-tool", organization_id=org,
+    )
     if started.get("error"):
         return f"Could not start workflow: {started['error']}"
     run_id = str(started["run_id"])
@@ -76,28 +114,31 @@ async def run_workflow(workflow: str, payload_json: str = "{}", wait_seconds: in
             f"Started workflow '{started['workflow_name']}' — run_id={run_id}. "
             "Check progress with get_workflow_run."
         )
-    return await _wait_and_report(run_id, min(int(wait_seconds), MAX_WAIT_SECONDS))
+    return await _wait_and_report(run_id, min(int(wait_seconds), MAX_WAIT_SECONDS), org)
 
 
 async def get_workflow_run(run_id: str) -> str:
     """Status and output of a workflow run started with run_workflow."""
     from gateway.routes.workflows.service import run_summary
 
-    return _describe(await run_summary(run_id))
+    org = _run_org()
+    if not org:
+        return NO_ORG
+    return _describe(await run_summary(run_id, organization_id=org))
 
 
-async def _wait_and_report(run_id: str, wait_seconds: int) -> str:
+async def _wait_and_report(run_id: str, wait_seconds: int, org: str) -> str:
     from gateway.routes.workflows.service import run_summary
 
     deadline = asyncio.get_running_loop().time() + wait_seconds
-    summary = await run_summary(run_id)
+    summary = await run_summary(run_id, organization_id=org)
     while (
         summary.get("status") not in _TERMINAL
         and not summary.get("error")
         and asyncio.get_running_loop().time() < deadline
     ):
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
-        summary = await run_summary(run_id)
+        summary = await run_summary(run_id, organization_id=org)
     return _describe(summary)
 
 

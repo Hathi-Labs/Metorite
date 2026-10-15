@@ -451,7 +451,13 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: 77 → 75: WS-53 CRM-T3 (2026-10-11). `routes/crm/auto_lead.py` and
 #: `routes/crm/broker_handlers.py` moved their one site each to
 #: `tenant_session(org)` (-2). `sync_zoho.py` keeps its site until CRM-Z5.
-H2_BASELINE_ELSEWHERE = 75
+#: 75 → 70: F13 agent tools (2026-10-15). In routes/workflows/service.py,
+#: `list_published_workflows`, `run_published_workflow` and `run_summary`
+#: moved to `_tenant_session(org)` with the org of the agent run (-3).
+#: `start_run`, `_finish_run` and `_hold_at_gate` share one `_run_session`,
+#: which keeps ONE unbound site for a run with no org (-2).
+#: `test_workflows_tool_rls_r8.py` fences the path under FORCE RLS.
+H2_BASELINE_ELSEWHERE = 70
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
