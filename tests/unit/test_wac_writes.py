@@ -160,9 +160,12 @@ class _ActAgent:
     the ``create_task`` arguments, or None for a plain answer.
     """
 
-    def __init__(self, *script: dict[str, Any] | None, reply: str = READY) -> None:
+    def __init__(self, *script: dict[str, Any] | None, reply: str = READY,
+                 tool: str = "create_task") -> None:
         self.script = list(script)
         self.reply = reply
+        #: The Projects tool that the run calls (WAC-4b adds two).
+        self.tool = tool
         self.seen: list[dict[str, Any]] = []
         self.outputs: list[str] = []
 
@@ -173,7 +176,7 @@ class _ActAgent:
         args = self.script.pop(0) if self.script else None
         if args is None:
             return {"result": "Two tasks are due today."}
-        tool = ti._gate_injected_tool(refusals_as_text(skill_projects.create_task))
+        tool = ti._gate_injected_tool(refusals_as_text(getattr(skill_projects, self.tool)))
         binding = _bind_memory_user_id(kw["session_user"])
         try:
             self.outputs.append(str(await tool(**args)))
@@ -248,6 +251,8 @@ def env(world: _World, monkeypatch: pytest.MonkeyPatch) -> _Env:  # noqa: F811
     def _gateway(call: dict) -> Any:
         if call["path"] == "/projects/tree":
             return {"rows": [dict(n) for n in tree]}
+        if call["path"] == "/projects/my/today":
+            return {"today": "2026-10-15", "timezone": "Asia/Kolkata", "stored": True}
         return responder(call)
 
     import skill_projects.client as client
@@ -499,7 +504,8 @@ async def test_every_class_c_tool_and_every_other_class_b_tool_stays_refused(
 
 
 async def test_the_allowed_acts_are_class_b_and_one_card_and_a_class_x_route_has_no_tool() -> None:
-    assert set(wacts.ALLOWED_ACTS) == {"create_task"}
+    assert set(wacts.ALLOWED_ACTS) == {"create_task", "create_personal_task",
+                                       "set_my_overlay"}
     assert all(manifest.tool_class(n) == "B" for n in wacts.ALLOWED_ACTS)
     assert not any(r.tool for r in manifest.MANIFEST if r.cls == "X")
 
@@ -585,6 +591,11 @@ def test_the_writes_rule_allows_adding_a_task_and_sends_every_other_change_away(
     assert "You cannot change data from WhatsApp" not in rule
     assert "add a task" in rule and "Confirm" in rule
     assert "web app, and add a link button" in rule
+    # WAC-4b: the owner's report of 2026-10-15. The rule said "make no other
+    # change", so the bot refused to block time on the calendar.
+    assert "make no other change" not in rule
+    assert "block time on the member's calendar" in rule
+    assert "create_personal_task" in rule and "set_my_overlay" in rule
 
 
 # ── W7: with the switch off, the run is the read-only run ───────────────────
@@ -806,3 +817,221 @@ async def test_a_confirm_after_another_project_took_the_name_writes_nothing(
     assert (env.acts.only()["state"], env.acts.only()["code"]) == ("void", "changed")
     assert _texts(env)[-1] == acts.REPLY_CHANGED
     assert UUID not in summary_before, "the member's summary changed shape"
+
+
+# ── WAC-4b (2026-10-15): a time block on the calendar, by button ───────────
+#
+# The owner asked the bot for two blocks, and it said "I can't write
+# calendar events". A block is the scheduled time of a task (D52-D54), and
+# the web chat already writes one with these two tools.
+
+BLOCK = {"title": "Sharath and Mr. Manoj", "block_start": "2026-10-16 08:30",
+         "block_end": "2026-10-16 10:30"}
+
+
+def _captures(env: _Env) -> list[dict]:
+    return [c for c in env.gateway
+            if c["method"] == "POST" and c["path"] == "/projects/my/tasks"]
+
+
+def _overlays(env: _Env) -> list[dict]:
+    return [c for c in env.gateway
+            if c["method"] == "PATCH" and c["path"].endswith("/personal")]
+
+
+async def test_a_new_time_block_parks_then_one_confirm_writes_it_once(env: _Env) -> None:
+    """A meeting is a private task with a block: one card, one Confirm."""
+    env.world.agent = _ActAgent(dict(BLOCK), tool="create_personal_task")
+    await _post_and_run(_message("Block 8:30 to 10:30 tomorrow, Sharath and Mr. Manoj"))
+
+    assert _captures(env) == [], "the ask wrote"
+    assert env.world.agent.outputs == [wacts.PARKED_TEXT]
+    row = env.acts.only()
+    assert row["tool_name"] == "create_personal_task" and row["state"] == "pending"
+    assert env.prov.buttons == [["Confirm", "Cancel"]]
+    summary = next(t for t in _texts(env) if t.startswith("*Capture this private task?*"))
+    assert "2026-10-16T08:30:00+05:30" in summary, "the summary shows the block"
+
+    await _post_and_run(_tap("Confirm", of=env.prov.button_wamids[-1]))
+    (created,) = _captures(env)
+    assert created["json"]["scheduled_start"] == "2026-10-16T08:30:00+05:30"
+    assert created["json"]["scheduled_end"] == "2026-10-16T10:30:00+05:30"
+    assert created["headers"]["X-User-Email"] == MEMBER
+    assert env.acts.only()["state"] == "done"
+    assert "on your calendar" in _texts(env)[-1]
+    assert len(env.world.agent.seen) == 1, "a model ran on Confirm"
+
+    await _post_and_run(_message("Confirm"))
+    assert len(_captures(env)) == 1, "a second Confirm wrote again"
+
+
+async def test_a_block_with_an_end_and_no_start_is_refused_before_any_card(
+    env: _Env,
+) -> None:
+    """The Calendar reads a block by its start (review round 1)."""
+    env.world.agent = _ActAgent({"title": "Call", "block_end": "2026-10-16 10:30"},
+                                tool="create_personal_task")
+    await _post_and_run(_message("Block until 10:30"))
+    assert env.world.agent.outputs[0].startswith("A block needs block_start")
+    assert env.acts.rows == {} and env.prov.buttons == []
+
+
+async def test_a_block_that_ends_before_it_starts_is_refused_before_any_card(
+    env: _Env,
+) -> None:
+    env.world.agent = _ActAgent({**BLOCK, "block_end": "2026-10-16 08:00"},
+                                tool="create_personal_task")
+    await _post_and_run(_message("Block 8:30 to 8:00"))
+    assert env.world.agent.outputs == ["block_end must be after block_start."]
+    assert env.acts.rows == {} and env.prov.buttons == []
+
+
+async def test_a_block_on_a_task_that_exists_parks_then_confirms(env: _Env) -> None:
+    args = {"task_id": UUID, "block_start": "2026-10-16 16:30",
+            "block_end": "2026-10-16 17:30"}
+    env.world.agent = _ActAgent(args, tool="set_my_overlay")
+    await _post_and_run(_message("Put the extruder fix on my calendar at 4:30"))
+
+    assert _overlays(env) == []
+    assert env.acts.only()["tool_name"] == "set_my_overlay"
+    assert UUID in env.acts.only()["card_text"], "the card binds the task id"
+
+    await _post_and_run(_tap("Confirm", of=env.prov.button_wamids[-1]))
+    (patched,) = _overlays(env)
+    assert patched["path"] == f"/projects/tasks/{UUID}/personal"
+    assert patched["json"]["scheduled_start"] == "2026-10-16T16:30:00+05:30"
+    assert env.acts.only()["state"] == "done"
+
+
+async def test_a_chase_with_no_since_when_still_confirms(
+    env: _Env, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tool stamps the since-when at the call. The card says "now", so
+    the card that Confirm builds again is the card the member saw."""
+    from datetime import datetime as real
+    from datetime import timedelta
+
+    import skill_projects.writes as writes
+
+    class _Clock(real):
+        ticks = 0
+
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:  # a minute later at each call
+            cls.ticks += 1
+            return real(2026, 10, 15, 9, 0, tzinfo=tz) + timedelta(minutes=cls.ticks)
+
+    monkeypatch.setattr(writes, "datetime", _Clock)
+    env.world.agent = _ActAgent({"task_id": UUID, "waiting_on": "priya@x.io"},
+                                tool="set_my_overlay")
+    await _post_and_run(_message("I am waiting on Priya for that one"))
+    assert "delegated_at: None → «now»" in env.acts.only()["card_text"]
+
+    await _post_and_run(_tap("Confirm", of=env.prov.button_wamids[-1]))
+    (patched,) = _overlays(env)
+    assert patched["json"]["waiting_on"]["email"] == "priya@x.io"
+    assert patched["json"]["delegated_at"], "the write still sends the instant"
+    assert env.acts.only()["state"] == "done"
+
+
+# ── WAC-4b (2026-10-15): one answer, one text ───────────────────────────────
+
+
+class _TwoStepAgent:
+    """A run whose model wrote one step, called a tool, then wrote another.
+
+    ``result`` is MAF's ``response.text``, which joins the steps with no
+    separator. ``steps`` is each step's text (``executor._step_texts``).
+    """
+
+    def __init__(self, *steps: str) -> None:
+        self.steps = list(steps)
+
+    async def __call__(self, agent: str, payload: dict[str, Any], **kw: Any) -> Any:
+        joined = "".join(self.steps)
+        return {"result": joined, "answer": joined, "steps": list(self.steps)}
+
+
+#: The owner's incident of 2026-10-15, word for word: the answer, a link
+#: button, then the same answer said again.
+SAID_TWICE = (
+    "I can add a task from here, but I can't write calendar events. Blocking "
+    "time is a change you'll need to make in the web app. Here's the two "
+    "blocks to drop in: - *8:30–10:30* — Sharath and Mr. Manoj - *4:30 PM* — "  # noqa: RUF001 (the owner's text)
+    "Manani, Sahakar Nagar",
+    "Two blocks to add in the web app: *8:30–10:30* with Sharath and Mr. "  # noqa: RUF001 (the owner's text)
+    "Manoj, and *4:30 PM* with Manani in Sahakar Nagar. I can't write "
+    "calendar events from here, so open the calendar to drop them in.",
+)
+#: The reverse order (review round 1): the text card first, then a short line
+#: after the link button. The card is the answer and must reach the phone.
+CARD_THEN_LINE = ("*Fix the extruder*\n🔥 Critical · ⏳ In progress · 📅 Fri 16 Oct\n"
+                  "The nozzle is on order, and Priya checks it on Friday.",
+                  "Open it with the button below.")
+
+
+async def test_the_member_gets_the_answer_once_and_never_two_texts_glued(
+    env: _Env,
+) -> None:
+    env.world.agent = _TwoStepAgent(*SAID_TWICE)
+    await _post_and_run(_message("What blocks do I add?"))
+    (answer,) = [t for t in _texts(env) if "Sahakar" in t]
+    assert "Sahakar NagarTwo" not in answer
+    assert answer.endswith(SAID_TWICE[0]), "the fuller copy stays"
+    assert SAID_TWICE[1] not in answer, "the same answer reached the phone twice"
+
+
+async def test_an_answer_written_before_the_tool_call_is_never_dropped(
+    env: _Env,
+) -> None:
+    env.world.agent = _TwoStepAgent(*CARD_THEN_LINE)
+    await _post_and_run(_message("How is the extruder fix?"))
+    (answer,) = [t for t in _texts(env) if "Fix the extruder" in t]
+    assert CARD_THEN_LINE[0] in answer and CARD_THEN_LINE[1] in answer
+    assert "Friday.Open" not in answer, "two steps glued together"
+
+
+def test_the_executor_carries_each_step_beside_the_joined_text() -> None:
+    from agent_framework._types import AgentResponse, Content, Message
+    from orchestrator.executor import _step_texts
+
+    response = AgentResponse(messages=[
+        Message("assistant", ["Here are the two blocks: A"]),
+        Message("tool", [Content.from_function_result(call_id="1", result="ok")]),
+        Message("assistant", ["Two blocks to add: A"]),
+        Message("assistant", [""]),
+    ])
+    assert response.text == "Here are the two blocks: ATwo blocks to add: A"
+    assert _step_texts(response) == ["Here are the two blocks: A", "Two blocks to add: A"]
+    assert _step_texts(AgentResponse(messages=[])) == []
+    assert bot_run.final_text({"result": "AB", "steps": []}) == "AB"
+    assert bot_run.final_text({"result": "AB"}) == "AB"
+    assert bot_run.final_text({"result": "", "steps": list(SAID_TWICE)}) == SAID_TWICE[0]
+    assert bot_run.final_text({"result": "", "steps": list(CARD_THEN_LINE)}) \
+        == "\n\n".join(CARD_THEN_LINE)
+    assert bot_run.final_text({"result": "", "steps": ["Only one."]}) == "Only one."
+
+
+#: Verifier round 1: the first overlap rule compared the last step with every
+#: earlier step joined, so a middle step that said something new was lost.
+LIST = ("Due today: the vendor call at 11, the extruder fix, and the invoice "
+        "for Acme Tools.")
+NEW_FACT = "Also, Priya's review of the nozzle order is overdue since Monday."
+DETAIL = ("*Fix the extruder*\nBlocked by the supplier quote from Manoj, which "
+          "was due on Tuesday. Priya owns the follow-up, and the nozzle is "
+          "still on order with the vendor.")
+SUMMARY = "The extruder fix is blocked by the supplier quote from Manoj."
+
+
+@pytest.mark.parametrize("steps,sent", [
+    ((LIST, NEW_FACT, "Due today: the vendor call at 11, the extruder fix and "
+      "the invoice for Acme Tools."), [NEW_FACT, "the invoice for Acme Tools."]),
+    ((DETAIL, SUMMARY), [DETAIL]),
+    ((SUMMARY, DETAIL), [DETAIL]),
+], ids=["a-new-fact-between-two-copies", "detail-then-summary", "summary-then-detail"])
+def test_a_step_that_adds_something_is_never_lost(steps: tuple[str, ...],
+                                                  sent: list[str]) -> None:
+    text = bot_run.final_text({"result": "".join(steps), "steps": list(steps)})
+    for part in sent:
+        assert part in text
+    assert text.count("vendor call") <= 1 and text.count("supplier quote") <= 1
