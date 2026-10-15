@@ -18,6 +18,7 @@ as ``orchestrator.executor.<name>``): ``_gate_injected_tool``, ``_tool_name``,
 """
 from __future__ import annotations
 
+import asyncio
 import functools
 import os
 from typing import Any
@@ -336,9 +337,23 @@ def _run_covered(agent_name: str, organization_id: str | None = None) -> bool:
 #: * it gets no registry MCP server (:func:`_inject_mcp_servers`).
 #:
 #: Its own ``web_search`` and ``fetch_page`` leave through ``config.json:
-#: floor_opt_out``. Fences: ``tests/unit/test_delegation_no_egress.py`` and
+#: floor_opt_out``. Round 2 holds its answer UP too: a run that read it
+#: (``acb_skills.egress.read_untrusted_answer``) asks a card for each egress
+#: call (``permission_policy.UNTRUSTED_ANSWER_CONFIRM``), and each run that it
+#: delegates to binds ``no_egress``. The set lives in ``acb_skills.egress``,
+#: because ``agent_tools`` reads it too. Fences:
+#: ``tests/unit/test_delegation_no_egress.py`` and
 #: ``tests/unit/test_untrusted_frame.py``.
-UNTRUSTED_INPUT_AGENTS: frozenset[str] = frozenset({"email-assistant"})
+try:
+    from acb_skills.egress import (  # noqa: E402
+        UNTRUSTED_INPUT_AGENTS,
+        read_untrusted_answer,
+    )
+except ImportError:  # pragma: no cover - acb_skills ships with the platform
+    UNTRUSTED_INPUT_AGENTS = frozenset({"email-assistant"})
+
+    def read_untrusted_answer(ctx: Any = None) -> bool:  # fail closed
+        return bool(ctx)
 
 
 def _delegated_no_egress(parent_ctx: Any, child: str | None = None) -> bool:
@@ -363,6 +378,9 @@ def _delegated_no_egress(parent_ctx: Any, child: str | None = None) -> bool:
         return True
     parent = str(parent_ctx.get("agent_name") or "")
     if parent in UNTRUSTED_INPUT_AGENTS and parent != (child or ""):
+        return True
+    # Round 2: a parent that read an untrusted agent's answer passes it on.
+    if read_untrusted_answer(parent_ctx):
         return True
     return _run_covered(parent)
 
@@ -924,6 +942,9 @@ def _permission_gate(
         request = build_tool_call_context(tool_name, call_kwargs or {})
         if facts:
             request.update(facts)
+        # WS-17 EM-G11d round 2: the run's own state, read at call time and
+        # set last, so neither a tool argument nor a caller fact writes it.
+        request["after_untrusted_answer"] = read_untrusted_answer()
         ok, code, _ = decide(request)
         mode = os.environ.get(
             "AGENT_PERMISSION_MODE", "enforce"
@@ -982,6 +1003,9 @@ def _gate_injected_tool(fn: Any) -> Any:
             allowed, reason = _gate(kwargs)
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
+            if _after_untrusted_answer(reason) and not await _untrusted_answer_card(
+                    tool_name, kwargs):
+                return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
             # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
             # outside a WhatsApp run with writes on.
             with _whatsapp_tool_call(fn, args, kwargs):
@@ -993,8 +1017,54 @@ def _gate_injected_tool(fn: Any) -> Any:
         allowed, reason = _gate(kwargs)
         if not allowed:
             return f"[blocked by permission policy: {reason}]"
+        if _after_untrusted_answer(reason):
+            # A sync tool cannot wait for a card, so it is refused.
+            return UNTRUSTED_ANSWER_REFUSED.format(tool=tool_name)
         return _with_steer(fn(*args, **kwargs))
     return _register_platform_wrapper(fn, _sgated)
+
+
+#: The answer of an egress call that the member did not approve, in a run
+#: that read an untrusted agent's answer (WS-17 EM-G11d round 2).
+UNTRUSTED_ANSWER_REFUSED = (
+    "{tool} did not run. This chat read an answer of an agent that reads "
+    "outside email, so a call that reaches outside needs the member's "
+    "approval, and the member did not approve it. Do not ask again for the "
+    "same call. Answer with what you have."
+)
+
+
+def _after_untrusted_answer(reason: str) -> bool:
+    """True when the decision was the untrusted-answer card. A gate fault in a
+    marked run counts too, so a bug never opens the control."""
+    try:
+        from acb_skills.permission_policy import UNTRUSTED_ANSWER_CONFIRM
+    except ImportError:  # pragma: no cover
+        return False
+    return reason == UNTRUSTED_ANSWER_CONFIRM or (
+        reason == "gate_error" and read_untrusted_answer())
+
+
+async def _untrusted_answer_card(tool_name: str, call_kwargs: dict[str, Any]) -> bool:
+    """The member's card for one egress call after an untrusted answer. True
+    only when the member approved it. No card channel, or a fault, is a no."""
+    import json  # noqa: PLC0415
+
+    try:
+        from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
+
+        shown = json.dumps(call_kwargs or {}, ensure_ascii=False, default=str)[:600]
+        answer = await request_confirmation(
+            f"Run {tool_name}? It reaches outside Metorite",
+            "This chat read an answer from the email assistant, which reads "
+            "outside email. A mail could ask for this call.",
+            f"{tool_name} {shown}",
+        )
+        return answer is True
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — a fault is a no
+        return False
 
 
 def _gate_own_maf_tools(tools: list[Any]) -> int:

