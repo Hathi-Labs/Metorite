@@ -14777,6 +14777,37 @@ design. Each P1 has a mutation that turns its fence red.
 - **The import stub.** When `acb_skills` does not import, the gate reads each session as marked.
 - **Prove.** The eval holds 34 attack mails and 14 paths, and it passes with zero failures.
 
+**Fix round 4 (2026-10-16).** The verifier passed round 3, and the reviewer approved it. Round 4
+makes six small changes. Each P2 has a mutation that turns its fence red.
+
+- **P2, a fault marks no batch session.** A batch run minted its own session, so only this
+  process can mark it. It reads the process cache and never asks Redis. A Redis fault fails
+  closed only where a card can show: a member, no batch run and no WhatsApp run. Elsewhere a
+  fault reads the process cache.
+- **P2, one mark for each session.** The key is now the org and the session, with no member. In
+  a shared room, member B's turn reads the URL that member A's turn relayed, so B is held too.
+- **Plain words in mode (b).** A lone `<` before a space or a digit reads "under". A lone `>`
+  after a space or before a digit reads "over". `<=` and `>=` read "at most" and "at least".
+  `->` and `<-` become arrows. Each other bracket still becomes `(` or `)`.
+- **A real Redis.** One test runs the mark on a real server when `AGENT_WRITES_REDIS_URL` names
+  one. CI has no Redis, so the test skips there with its reason.
+- **A bound.** The process cache keeps the 16384 most recent marks. An async reader that misses
+  asks Redis, so an eviction never reads as "unmarked" on that path.
+
+**Residual risks of the egress mark and mode (b).** Each one is known and accepted.
+
+- **The French quotes.** Mode (b) does not change `«` or `»`. They are quotation marks, and the
+  eval's own list leaves them out on purpose. A model does not read them as a tag.
+- **`<` with U+0338.** NFKC joins them into `≮` (U+226E), which is not in the bracket set. A
+  model could read it as half of a tag. No test shows that it does.
+- **The sync readers.** The Copilot guard and a sync tool read only the process cache. After a
+  restart, or an eviction, they miss a mark that only Redis holds. An async tool of the same
+  run still reads Redis.
+- **A thread loop of Copilot.** Its own event loop can make a read of the shared pool fail. The
+  read then fails closed, so the cost is availability, not safety.
+- **A no-member or WhatsApp run on a real thread.** It reads Redis. On a fault it reads only the
+  process cache, so it can miss a mark that another process made.
+
 **"Draft with AI" and forms.** "Draft with AI" in the composer still fills a form that the mail
 gives. It can fill the form with facts from the knowledge base. The member reviews the draft
 before any send, because a model draft is never sent by itself.

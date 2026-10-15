@@ -251,12 +251,14 @@ clone cache.
    Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
    WS-17 EM-G11d: `UNTRUSTED_INPUT_AGENTS` names the agents that read
    stranger text. `mark_untrusted_answer` marks the CHAT SESSION that read
-   the answer of one. The key is the bound tenant, the member and the
-   session id of the run context, never a request field. The mark lives in
-   tenant Redis (namespace `egress-mark`, a sliding TTL of 400 days).
-   `session_is_marked` is the async reader, and it FAILS CLOSED: a Redis
-   fault reads as marked. `read_untrusted_answer` is the sync reader of the
-   process set. Then `permission_policy.decide` answers
+   the answer of one. The key is the bound tenant and the session id of the
+   run context, never a request field and never the member (a shared room
+   is one session). The mark lives in tenant Redis (namespace `egress-mark`,
+   a sliding TTL of 400 days). `session_is_marked` is the async reader. It
+   reads a bounded LRU of positives, and on a miss it asks Redis. Where a
+   card can show, it FAILS CLOSED: a Redis fault reads as marked. A batch
+   session never asks Redis. `read_untrusted_answer` is the sync reader of
+   the LRU only. Then `permission_policy.decide` answers
    `untrusted_answer_confirm` for each egress call: the member's card first,
    and no call with no card channel.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`
