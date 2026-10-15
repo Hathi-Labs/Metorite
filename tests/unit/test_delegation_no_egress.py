@@ -1252,6 +1252,36 @@ def test_redis_down_leaves_an_unmarked_batch_run_its_egress(
     assert "off in this run" not in fetch, fetch
 
 
+async def test_the_process_cache_is_bounded_and_a_miss_reads_redis(
+    monkeypatch, mark_store,
+) -> None:
+    """Round 4: the process cache keeps at most its bound. An evicted mark
+    reads from Redis again, never as unmarked, and the hit refills it."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    small = eg._PositiveLRU(3)
+    monkeypatch.setattr(eg, "_MARKED_SESSIONS", small)
+    token = bind_tenant(ORG_B)
+    try:
+        for n in range(5):
+            with artifact_context_scope():
+                bind_artifact_context(run_id=f"r{n}", session_id=f"chat-{n}",
+                                      member="member@example.com")
+                assert await eg.mark_untrusted_answer() is True
+        assert len(small) == 3
+        assert (ORG_B, "chat-0") not in small
+        with artifact_context_scope():
+            bind_artifact_context(run_id="r9", session_id="chat-0",
+                                  member="member@example.com")
+            assert eg.read_untrusted_answer() is False  # the sync reader misses
+            assert await eg.session_is_marked() is True  # Redis still holds it
+            assert eg.read_untrusted_answer() is True  # and the hit refilled it
+        assert len(small) == 3
+    finally:
+        release_tenant(token)
+
+
 async def test_a_batch_session_never_asks_redis(mark_store) -> None:
     """The unit form of the rule above: a batch session reads the process
     set, and Redis never sees the call."""

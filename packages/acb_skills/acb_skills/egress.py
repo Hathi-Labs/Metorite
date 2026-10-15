@@ -37,6 +37,7 @@ import contextlib
 import sys
 import threading
 import weakref
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -50,6 +51,7 @@ _log = get_logger("acb_skills.egress")
 __all__ = [
     "DELEGATION_TOOLS",
     "EGRESS_WITHHELD_ANSWER",
+    "MARK_CACHE_MAX",
     "MARK_NAMESPACE",
     "MARK_TTL_S",
     "MCP_LOADER_KEY",
@@ -117,11 +119,13 @@ STORE_WRITES: frozenset[str] = frozenset({
 # session the code ``untrusted_answer_confirm`` (the member's card first, a
 # refusal with no card channel), and ``agent_tools`` delegates with
 # ``no_egress`` from a marked session. The async readers
-# (:func:`session_is_marked`) ask Redis, and they FAIL CLOSED: Redis that does
-# not answer reads as marked. The sync readers (:func:`read_untrusted_answer`:
-# the Copilot guard and a sync tool) read a process-local set of the sessions
-# that this process saw marked. The set holds positives only and has no bound,
-# so it never fails open by eviction. Fences:
+# (:func:`session_is_marked`) read a process cache, and on a miss they ask
+# Redis. They FAIL CLOSED where a card can show: Redis that does not answer
+# reads as marked. A batch session never asks Redis (round 4). The sync
+# readers (:func:`read_untrusted_answer`: the Copilot guard and a sync tool)
+# read only the process cache. The cache holds positives only, with a bound
+# (:data:`MARK_CACHE_MAX`). A sync reader misses a mark that this process
+# never saw or evicted, and §12.3.13.8 records that residual risk. Fences:
 # ``tests/unit/test_delegation_no_egress.py`` and ``test_untrusted_frame.py``.
 
 #: Agents whose context holds text that a stranger wrote. The orchestrator
@@ -135,9 +139,43 @@ MARK_NAMESPACE = "egress-mark"
 #: ``email_app_master_plan.md`` 12.3.13.8.
 MARK_TTL_S = 400 * 24 * 3600
 
-#: The sessions this process saw marked: ``(org, session)``. Positives
-#: only, never evicted, so a sync reader never fails open by eviction.
-_MARKED_SESSIONS: set[tuple[str, str]] = set()
+#: The bound of the process cache of marks (round 4).
+MARK_CACHE_MAX = 16384
+
+
+class _PositiveLRU:
+    """The sessions this process saw marked: ``(org, session)``. It holds
+    positives only, and it keeps the :data:`MARK_CACHE_MAX` most recent.
+
+    An eviction never reads as "unmarked" to an async reader: a miss there
+    asks Redis, and Redis keeps the mark. Each hit moves the session to the
+    end, so a session that a run uses now is the last one to go. Hold
+    ``_MARKED_LOCK`` around each call."""
+
+    def __init__(self, bound: int) -> None:
+        self._bound = bound
+        self._items: OrderedDict[tuple[str, str], None] = OrderedDict()
+
+    def add(self, session: tuple[str, str]) -> None:
+        self._items[session] = None
+        self._items.move_to_end(session)
+        while len(self._items) > self._bound:
+            self._items.popitem(last=False)
+
+    def __contains__(self, session: object) -> bool:
+        if session not in self._items:
+            return False
+        self._items.move_to_end(session)  # type: ignore[arg-type]
+        return True
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def clear(self) -> None:
+        self._items.clear()
+
+
+_MARKED_SESSIONS = _PositiveLRU(MARK_CACHE_MAX)
 _MARKED_LOCK = threading.Lock()
 
 
