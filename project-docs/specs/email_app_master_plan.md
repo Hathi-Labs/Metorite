@@ -14701,6 +14701,31 @@ Each item below has a fence, and each P1 has a mutation that turns it red.
   `read_thread` card reads its subject from the `Subject:` line again.
 - **Prove.** The eval holds 26 attack mails and 13 paths, and it passes with zero failures.
 
+**Fix round 2 (2026-10-15).** The verifier failed one item, and the reviewer asked for changes.
+Each P1 has a mutation that turns its fence red.
+
+- **P1, a live tag forge.** A tag may now span any white space, also line breaks. A name may
+  start with any word character, so `<1x>` and `<a.b>` lose their brackets. A nested pair loses
+  both pairs. The about block collapses white space BEFORE the neutraliser. A property test of
+  3000 random texts proves that no trusted tag survives in either order of the two steps.
+- **P1, egress up the chain.** `call_agent` frames the answer of the email assistant, and it
+  marks the calling run in `acb_skills.egress`. The marks are module state, read by run id, so
+  the agent loop sees them. After a mark, `permission_policy.decide` gives each egress call the
+  code `untrusted_answer_confirm`. The call then needs the member's card, and with no card
+  channel it is refused. A marked run also delegates with `no_egress`. A test in the real
+  harness shows Projects asking the email assistant and then refused a `fetch_page`.
+- **P2, reply memories.** They leave the frame, because the edit-learning loop must apply them.
+  Each one is collapsed and then neutralised, as a GLOBAL pattern is. The calendar stays framed.
+- **P2, an independent list.** The eval reads its own list of angle brackets from the Unicode
+  names. It found 14 brackets that the neutraliser did not break, and the neutraliser now
+  breaks them. The list leaves out about 100 math comparison signs and the French quotes.
+- **P2, Insights quotes.** A quote of the framed copy is stored as the span of the source.
+- **Prove.** The eval holds 30 attack mails and 14 paths, and it passes with zero failures.
+
+**"Draft with AI" and forms.** "Draft with AI" in the composer still fills a form that the mail
+gives. It can fill the form with facts from the knowledge base. The member reviews the draft
+before any send, because a model draft is never sent by itself.
+
 **Open gaps, ranked for the Google review.** The first gap is the most likely to matter.
 
 1. **The list tools.** `search_emails`, `query_inbox` and the other list tools still print the

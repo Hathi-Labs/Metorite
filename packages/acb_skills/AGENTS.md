@@ -249,6 +249,11 @@ clone cache.
    (`is_egress_request`). The orchestrator decides the flag
    (`_tool_injection._run_no_egress`), because this package cannot import it.
    Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
+   WS-17 EM-G11d round 2: `UNTRUSTED_INPUT_AGENTS` names the agents that
+   read stranger text. `mark_untrusted_answer` records, by run id, a run
+   that read the answer of one, and `read_untrusted_answer` reads it. Then
+   `permission_policy.decide` answers `untrusted_answer_confirm` for each
+   egress call: the member's card first, and no call with no card channel.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`
    (H-236). Every tool of every in-repo agent states it, and the WS43-F24
    fence reads the real registry to check. The risk block of the addendum is
