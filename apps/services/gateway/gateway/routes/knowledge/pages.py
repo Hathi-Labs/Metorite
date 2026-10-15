@@ -460,6 +460,8 @@ async def restore_page(
         row = await _update(
             db, user, str(page.id),
             "state = COALESCE(archived_from_state, 'draft'), archived_at = NULL, "
+            "review_at = CASE WHEN archived_from_state = 'published' "
+            "THEN now() + interval '180 days' ELSE review_at END, "
             "archived_from_state = NULL",
             {},
         )

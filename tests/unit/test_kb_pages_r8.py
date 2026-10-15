@@ -704,6 +704,40 @@ async def test_an_author_cannot_yank_a_published_page(ns, app_engine) -> None:  
 
 # ── One `me` space under concurrent first writes ────────────────────────────
 
+async def test_an_archived_draft_stays_its_authors(ns, app_engine) -> None:  # noqa: F811
+    """Review round 3. An archived draft opens to its author only. A space
+    manager or a holder of ``knowledge:manage`` never reads a draft that is
+    not their own (§5.2), also after an archive. A restore of a published
+    page sets a fresh review date."""
+    _assert_non_priv(app_engine)
+    admin = _principal(_address("admin"), ns.org_a, CAPABILITY)
+    author_email, lead_email = _address("author"), _address("lead")
+    author = _principal(author_email, ns.org_a)
+    lead = _principal(lead_email, ns.org_a)
+    space = await _space(ns, admin, "Drafts", [
+        {"subject": author_email, "level": "manage"},
+        {"subject": lead_email, "level": "manage"},
+    ])
+    draft = await _ok(ns, author, "POST", "/knowledge/pages",
+                      {"title": "Half-written", "space_id": space}, status=201)
+    await _ok(ns, author, "POST", f"/knowledge/pages/{draft['id']}/archive")
+    assert await _status(ns, author, draft["id"]) == 200
+    assert await _status(ns, lead, draft["id"]) == 404
+    assert await _status(ns, admin, draft["id"]) == 404
+
+    pid = await _published(ns, author, space, "Old runbook")
+    with ns.admin_engine.begin() as c:
+        c.execute(text("UPDATE kb_pages SET review_at = now() - interval '30 days' "
+                       "WHERE id = CAST(:p AS uuid)"), {"p": pid})
+    await _ok(ns, lead, "POST", f"/knowledge/pages/{pid}/archive")
+    await _ok(ns, lead, "POST", f"/knowledge/pages/{pid}/restore")
+    with ns.admin_engine.connect() as c:
+        fresh = c.execute(text(
+            "SELECT review_at > now() + interval '170 days' FROM kb_pages "
+            "WHERE id = CAST(:p AS uuid)"), {"p": pid}).scalar()
+    assert fresh is True
+
+
 async def test_concurrent_first_writes_make_one_me_space(ns, app_engine) -> None:  # noqa: F811
     _assert_non_priv(app_engine)
     email = _address("racer")

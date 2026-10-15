@@ -302,8 +302,10 @@ Every Knowledge table carries `organization_id` with FORCE RLS, bound at the
 `get_db()` seam (R5). Inside the tenant, one rule decides what a member sees:
 
 > A member sees a page when the page is `published` and the member holds a
-> `read` grant on its space. The author sees their own page in every state.
-> A named reviewer sees the draft.
+> `read` grant on its space. The author sees their own draft, also after it
+> is archived. A named reviewer sees the draft. The member sees every page
+> of their own `me` space. A manager of a space sees its archived pages,
+> except an archived draft of another author.
 
 One function holds it, `kb.core.visible_pages_clause(user)`. Every read calls
 it: the app, the chat tools, the search provider, the My Day provider and the
@@ -371,7 +373,7 @@ card. C is a hard-to-undo write with one card per act. X is not on chat.
 | `POST /knowledge/pages/{id}/publish` | B | Publish. Index in the same transaction |
 | `POST /knowledge/pages/{id}/move` | B | Change the space or the parent. Re-index when the space changes |
 | `POST /knowledge/pages/{id}/archive` | C | Archive. Leave the index. A manager of the space still sees the page |
-| `POST /knowledge/pages/{id}/restore` | C | Return an archived page to `draft`, with a `restore` version. A manager of the space only |
+| `POST /knowledge/pages/{id}/restore` | C | Return an archived page to the state it had before the archive, with a `restore` version. A restored published page gets a review date 180 days on. A manager of the space only |
 | `POST /knowledge/pages/{id}/revert` | B | A new version with an old body |
 | `POST /knowledge/pages/{id}/files` | B | Attach a file through `register_artifact` (§4.3) |
 | `GET /knowledge/files/{id}/{name}` | X | Serve one file. The MIME safelist and `nosniff` |
@@ -896,7 +898,7 @@ compact density, a changed accent, and four widths.
 |---|---|---|
 | `kb_spaces` | id, organization_id, slug, name, purpose, icon, kind (`company`, `team`, `me`, `agent`), owner_email, archived_at, created_at | grants in `kb_space_grants` |
 | `kb_space_grants` | §5.1 | — |
-| `kb_pages` | id, organization_id, space_id, parent_id, position, title, body_md, state, author_email, reviewers TEXT[], review_at, source_ref (document id or null), origin JSONB, published_at, archived_at, updated_at, created_at | inherits the space, plus the author and the reviewers of a draft |
+| `kb_pages` | id, organization_id, space_id, parent_id, position, title, body_md, state, author_email, reviewers TEXT[], review_at, history_from (§4.2), archived_from_state, source_ref (document id or null), origin JSONB, published_at, archived_at, updated_at, created_at | inherits the space, plus the author and the reviewers of a draft |
 | `kb_page_versions` | id, organization_id, page_id, version, body_md, title, author_email, reason, `via`, created_at | as the page |
 | `kb_page_files` | organization_id, page_id, artifact_id (→ `artifacts`), position, caption, created_by, created_at | as the page |
 | `kb_links` | §5.5 | as the page |
