@@ -190,6 +190,11 @@ class CaptureIn(BaseModel):
     #: and a capture route that silently dropped them would have lost the
     #: contents of every emailed-in task on the first page load after cutover.
     notes: str | None = None
+    #: A block on MY calendar, written into my overlay in the same
+    #: transaction (WS-47 WAC-4b). The Calendar is the scheduled time of a
+    #: task (D52-D54), so "block 8:30 to 10:30" is a capture with a block.
+    scheduled_start: str | None = None
+    scheduled_end: str | None = None
 
 
 #: How many captures one batch request may carry. The Tasks app's multi-line
@@ -632,16 +637,14 @@ async def capture(
     captured thought later be moved into a team project without being recreated.
     """
     title = _clean_title(payload)
+    _capture_overlay(payload)
 
     email = actor(user).lower()
     async with _tenant_session() as db:
         project = await ensure_personal_project(db, email)
         project_id = str(project.id)
         status = await load_default_status(db, project_id)
-        overlay = None
-        if payload.next_action or payload.context:
-            overlay = {"next_action": payload.next_action,
-                       "context": payload.context}
+        overlay = _capture_overlay(payload)
         task = await create_personal_task(
             db, email, project_id, project_id, str(status.id), {
                 "title": title,
@@ -717,6 +720,39 @@ async def create_personal_task(
     return task
 
 
+def _capture_overlay(payload: CaptureIn) -> dict[str, Any] | None:
+    """The overlay a capture states, or None. A 422 for a bad block.
+
+    Called once before the write, so a bad block refuses the capture before
+    any row exists, and once more to build the overlay. A block makes the
+    capture a scheduled task, not an inbox thought: it states NEXT, as a
+    member who drags a block onto a task has clarified it (WS-47 WAC-4b).
+    The order check is migration 187's CHECK, said as a 422 (the reason of
+    ``_reject_impossible_block``). A capture has no stored row to merge.
+    """
+    overlay: dict[str, Any] = {}
+    if payload.next_action or payload.context:
+        overlay = {"next_action": payload.next_action, "context": payload.context}
+    block = {k: v for k, v in (("scheduled_start", payload.scheduled_start),
+                               ("scheduled_end", payload.scheduled_end)) if v}
+    if block:
+        parsed = coerce_write_values(block)
+        start = _as_utc(parsed.get("scheduled_start"))
+        end = _as_utc(parsed.get("scheduled_end"))
+        if start is not None and end is not None and end <= start:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "scheduled_end must be after scheduled_start "
+                    f"(got start={start.isoformat()}, end={end.isoformat()})."
+                ),
+            )
+        overlay.update({k: _as_utc(v) for k, v in parsed.items()})
+        overlay["disposition"] = "NEXT"
+        overlay["clarified_at"] = now()
+    return overlay or None
+
+
 def _clean_title(payload: CaptureIn) -> str:
     """The title, or the 422 a blank one earns — BEFORE any write."""
     title = (payload.title or "").strip()
@@ -749,6 +785,7 @@ async def capture_batch(
         )
     for item in items:
         _clean_title(item)
+        _capture_overlay(item)
 
     email = actor(user).lower()
     async with _tenant_session() as db:
@@ -760,10 +797,7 @@ async def capture_batch(
         for item in items:
             # The ONE capture path: `create_personal_task` owns the row, the
             # assignee, the overlay and the `pm.task.created` event.
-            overlay = None
-            if item.next_action or item.context:
-                overlay = {"next_action": item.next_action,
-                           "context": item.context}
+            overlay = _capture_overlay(item)
             task = await create_personal_task(
                 db, email, project_id, project_id, str(status.id), {
                     "title": _clean_title(item),
