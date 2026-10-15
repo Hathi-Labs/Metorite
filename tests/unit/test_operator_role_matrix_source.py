@@ -125,3 +125,24 @@ def test_every_window_test_pins_the_flag():
         "these suites assert a window refusal but do not pin the flag, so they"
         " break silently when the D72 default changes: " + ", ".join(missing)
     )
+
+
+def test_the_member_remove_door_is_an_editor_act_with_no_window():
+    """The rank the operator BFF pre-checks, pinned here (2026-10-15).
+
+    The BFF checks EDITOR for a removal before it calls the tenant plane. A
+    row at a higher rank, or one that needs a window, would let the tenant
+    plane remove the person and then refuse the Console half with a 403. The
+    rank is the seat release's, because a removal releases seats and grows
+    nothing.
+    """
+    from customer_console import operator_roles
+    from customer_console.operators import EDITOR
+
+    rule = operator_roles.rule_for("POST", "/registry/members/remove")
+    assert rule is not None, "the member-remove door has no matrix row"
+    assert rule.min_role == EDITOR
+    assert not rule.elevated
+    release = operator_roles.rule_for("POST", "/billing/seats/release")
+    assert (rule.min_role, rule.elevated) == (
+        release.min_role, release.elevated)

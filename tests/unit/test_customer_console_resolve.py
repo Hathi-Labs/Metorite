@@ -148,6 +148,10 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     "/registry/seats/overview": "seat_admin",
     # WS-31 CP-2f, 2026-08-24 — the member-write door, on the FOURTH capability.
     "/registry/members": "member_admin",
+    # 2026-10-15 — the member-REMOVE door, the reverse of the add door and on
+    # the SAME capability. A key that may add a member to the registry may
+    # take one off it. A separate capability would let the two planes drift.
+    "/registry/members/remove": "member_admin",
     # 2026-09-15 — the inbound bootstrap's READ, on the SAME capability as
     # `/orgs/provision`. Deliberately not a fifth capability: this door exists
     # only to drive provisioning and answers exactly the set that door already

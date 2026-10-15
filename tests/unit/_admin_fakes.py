@@ -824,11 +824,16 @@ def bind_admin_db(monkeypatch: Any, fake: _FakeDB, modules: tuple[Any, ...]) -> 
     # suite on the network. No-oped explicitly instead. Its real behaviour is
     # proven in `tests/unit/test_invite_console_mirror.py` and, Console-side, in
     # `tests/unit/test_customer_console_member_write.py`.
+    #
+    # `remove_member_on_console` (2026-10-15) is the same HTTP hop for the
+    # Remove and Purge doors, no-oped for the same reason. A test that wants to
+    # see the call patches it again after this function runs.
     _shadow_seams = (
         "mirror_identity_membership",
         "mirror_membership_status",
         "purge_identity_shadow",
         "invite_member_on_console",
+        "remove_member_on_console",
     )
     for module in (_common_mod, *modules):
         for seam in _shadow_seams:

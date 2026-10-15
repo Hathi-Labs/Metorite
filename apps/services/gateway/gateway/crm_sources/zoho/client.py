@@ -39,6 +39,7 @@ from gateway.crm_sources.base import (
     SourceCredential,
     SourceCursor,
     SourceError,
+    SourceModuleUnavailable,
     SourcePage,
     SourceRecord,
     SourceScopeError,
@@ -159,6 +160,13 @@ DISCOVERED_MODULES: tuple[str, ...] = ("Leads", "Contacts", "Accounts", "Deals")
 #: endpoint" are different sentences to an owner.
 _SCOPE_ERROR_CODES = frozenset({"OAUTH_SCOPE_MISMATCH"})
 _VERSION_ERROR_CODES = frozenset({"INVALID_URL_PATTERN", "INVALID_MODULE"})
+#: A record read that Zoho refuses for the whole module (CRM-Q15). Measured on
+#: a live tenant on 2026-10-15: a module the customer turned off answers the v2
+#: record read with HTTP 400 ``INVALID_MODULE``. Its v8 count and field reads
+#: answer ``NO_PERMISSION``. A v2 record read answers ``NO_PERMISSION`` when the
+#: profile of the user who connected cannot see the module. The record reads
+#: use a fixed API name, so neither code can mean a typo of ours.
+_MODULE_REFUSAL_CODES = frozenset({"INVALID_MODULE", "NO_PERMISSION"})
 
 
 class ZohoScopeError(SourceScopeError):
@@ -168,6 +176,15 @@ class ZohoScopeError(SourceScopeError):
         super().__init__(f"Zoho refused the read: the token lacks {scope}")
         self.scope = scope
         self.detail = detail
+
+
+class ZohoModuleUnavailable(SourceModuleUnavailable):
+    """The account refuses the module: it is off, or hidden from this user."""
+
+    def __init__(self, module: str, code: str) -> None:
+        super().__init__(f"Zoho refused the module {module} ({code})")
+        self.module = module
+        self.code = code
 
 
 class ZohoApiVersionError(SourceError):
@@ -682,6 +699,9 @@ class ZohoSource:
             raise ZohoScopeError(
                 _read_scope(entity), str(_error_body(r).get("message") or "")[:200],
             )
+        code = str(_error_body(r).get("code") or "")
+        if r.status_code != 401 and not r.is_success and code in _MODULE_REFUSAL_CODES:
+            raise ZohoModuleUnavailable(_module(entity), code)
         self._raise_for_status(r, path)
         body = _error_body(r)
         rows = body.get("data") or []
@@ -1109,6 +1129,7 @@ __all__ = [
     "SETTINGS_API_VERSION",
     "ZOHO_MODULES",
     "ZohoApiVersionError",
+    "ZohoModuleUnavailable",
     "ZohoScopeError",
     "ZohoSource",
 ]
