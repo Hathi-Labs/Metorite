@@ -336,9 +336,10 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
 5m. reports.py -- `make_report`, the ONE report tool of the chat
    (`project-docs/specs/projects_ai_chat.md` §14.9). It checks one spec with
    the checks of `documents.py`, and it keeps no copy of them. It writes
-   `outputs/<slug>.report.json` and `outputs/<slug>.pdf` through
-   `write_artifact` and `gateway.pdf_render`, and draws one `report` card
-   through `emit_generative_ui`. In a WhatsApp run it queues the PDF through
+   `outputs/<slug>.report.json` and `outputs/<slug>.pdf`, and draws one
+   `report` card through `emit_generative_ui`. `documents.save_outputs` writes
+   the files of `make_report` and `make_document` with `safe_open`, under
+   `_chat_dir_guard`, so a planted link is never followed (H-236). In a WhatsApp run it queues the PDF through
    `whatsapp_ui.queue_document`, with no file and no card. The `documents`
    family holds it, so it is not a floor tool. Fence:
    `tests/unit/test_chat_reports.py`.

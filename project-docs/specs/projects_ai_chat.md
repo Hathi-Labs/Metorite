@@ -2192,7 +2192,11 @@ mappers that build a spec by code from `report_render` and `crm_report`.
 - `documents.prepare` draws each visual by code, with the builders of
   `whatsapp_ui` in print mode. With the chart engine off, a chart is our own
   SVG, and the PDF places it as vector.
-- `write_artifact` saves both files. `emit_generative_ui` carries the card.
+- `documents.save_outputs` saves both files, and `make_document` uses it
+  too. It writes each file as a NEW file with `safe_open.publish_bytes`,
+  under the dir lock of the broker (`_chat_dir_guard`). Then it mirrors the
+  file to the blob store, as `package_artifacts` does. `emit_generative_ui`
+  carries the card.
 - `write_artifact.genui_report_refusal` (B2) is the ONE validator of the
   card. `make_report` calls it through `reports.card_refusal`, on the data
   of the card, before it writes a file. So the tool and the card refuse the
@@ -2257,16 +2261,23 @@ field changes between the spec and the file.
 
 - The PDF goes to `outputs/<slug>.pdf`. The slug comes from `filename`,
   else from the title, in lower case with hyphens.
-- `write_artifact` gives a taken name a number, for example `x (1).pdf`. The
-  report file takes the stem of the PDF that the tool wrote. So its name
-  ends in `.report.json` again.
-- The report file replaces a file of that stem. The PDF name was free, so
-  that file had no PDF.
-- When the card draws, the tool tells the model to describe it in one or two
-  lines and to paste no link.
-- When the card does not draw, the file card of the PDF still shows. The
-  tool tells the model to name the PDF in words and to paste no link, as
-  slice A (#1063) does for every file. The result keeps `download_url`.
+- The PDF and the report file take ONE free stem. When either name is
+  taken, both move to `x (1)`. So the report file always ends in
+  `.report.json` and names its own PDF. A batch run also skips a stem that
+  the history holds.
+- **A link is never followed (H-236, review of #1064).** A sandbox
+  container mounts `outputs/` of the chat, so a command in it can plant a
+  link. A link at a file name counts as a taken name. A link at a parent
+  folder refuses the write. The file that the link names does not change.
+  `write_artifact` resolved its path with plain path calls, so the tool no
+  longer writes through it.
+- When the report card draws, its two files register the workspace and get
+  no file card (`write_artifact._notify` with `announce=False`). The tool
+  tells the model to describe the card in one or two lines, and to paste no
+  link.
+- When the report card does not draw, the PDF gets its file card. The tool
+  tells the model to name the PDF in words and to paste no link, as slice A
+  (#1063) does for every file. The result keeps `download_url`.
 - `make_document` says the same in its docstring and its note.
 
 #### 14.9.6 Reach and guidance
@@ -2281,9 +2292,16 @@ field changes between the spec and the file.
 - `addendum.REPORT_RULE` tells each agent that holds the tool: "A report is
   make_report. Never write a report as a .md file." An agent without the
   tool does not read it.
-- `status_report` (W2) returns a `REPORT_SPEC` that code built from its own
-  reads. The Projects instructions tell the model to pass it to
-  `make_report` with no change.
+- `status_report(make_report=true)` (W2) builds the spec by code from its
+  own reads, and calls `make_report` itself. The model copies no number, so
+  it cannot drop or change one. Without the flag, the tool says how to ask
+  for the report, and it gives no spec to copy.
+- A task title or a name goes only into a table cell of that spec. Both
+  renderers draw a cell as text, and the markdown-lite check reads the text
+  fields only. So a title with a URL or a tag cannot refuse the report.
+- `REPORT_RULE` says that WhatsApp gets the PDF. The examples of the file
+  rules name no report. The field guide tells an agent with no
+  `make_report`, for example app-builder, to use "blocks".
 - WhatsApp does not withhold `make_report`. A channel changes the delivery,
   never the function (owner rule, 2026-10-10).
   `whatsapp_assistant_channel.md` §15 owns the kind `document`.
