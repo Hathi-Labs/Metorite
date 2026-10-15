@@ -486,7 +486,9 @@ class TestTheRequest:
         assert request["kind"] == "archive_task"
         expires = datetime.fromisoformat(request["expires_at"])
         left = expires - datetime.now(UTC)
-        assert timedelta(hours=23, minutes=55) < left <= timedelta(hours=24)
+        # The stamp comes from the database clock, and a container clock can
+        # run a little ahead of the host. One minute of skew is allowed.
+        assert timedelta(hours=23, minutes=55) < left <= timedelta(hours=24, minutes=1)
         assert _archived_at(runs, task) is None
         assert _run_status(runs, run_id) == "awaiting"
 
