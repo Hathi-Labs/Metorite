@@ -137,11 +137,10 @@ REPLY_CREDITS = (
     "Settings, Billing."
 )
 REPLY_FAILED = "Metorite could not answer just now. Try again in a few minutes."
-#: WAC-13 (§16.4): Metorite itself did not answer (a restart, an outage).
-REPLY_UPDATING = ("Metorite is updating right now, so it could not answer. I will "
-                  "message you here when it is back online.")
-#: WAC-13: sent once to each phone that got :data:`REPLY_UPDATING`, when back.
-REPLY_BACK = "Metorite is back online. Send your message again, and I will answer it."
+#: WAC-13 (§16.4): Metorite itself did not answer (a restart, an outage). The
+#: message waits, and the sweep answers it when the AI path is back.
+REPLY_UPDATING = ("Metorite is updating right now. I have your message, and I will "
+                  "answer it here when Metorite is back online.")
 #: WAC-13: a restart cancels a run that waits on the model. The sweep runs the
 #: message again after the restart, so the answer still comes.
 REPLY_UPDATING_HOLD = ("Metorite is updating right now. Your answer comes here in "
@@ -266,16 +265,16 @@ WORKING_AFTER_S = 20
 
 #: WAC-13: the run error codes that mean Metorite itself did not answer.
 UNAVAILABLE_CODES = frozenset({"timeout", "connection"})
-#: The row codes of WAC-13: a "back online" note is owed, then it went. An
-#: org that the sweep does not visit owes none (``updating_plain``).
+#: The row codes of WAC-13. ``updating``: the message waits for the AI path.
+#: ``superseded``: a later message of its thread got an answer first, so it is
+#: closed with no reply. ``updating_plain``: an org that the sweep does not
+#: visit, so nothing waits, and the member sends the message again.
 UPDATING_CODE = "updating"
-TOLD_CODE = "updating_told"
+SUPERSEDED_CODE = "superseded"
 PLAIN_CODE = "updating_plain"
 #: With no success since, the AI path counts as back only after this long
 #: with no new failure of :data:`UNAVAILABLE_CODES`.
 OUTAGE_QUIET_S = 5 * 60
-#: A note goes only to a message this recent: inside WhatsApp's 24-hour window.
-BACK_WINDOW_S = 23 * 3600
 #: The bound on the shutdown notes, and on one health read of the Router.
 HOLD_TIMEOUT_S = 3.0
 HEALTH_TIMEOUT_S = 5.0
@@ -502,6 +501,7 @@ SELECT id::text AS id, organization_id::text AS organization_id,
    AND direction = 'in'
    AND state = 'received'
    AND tries < :max
+   AND (error_code IS DISTINCT FROM 'updating' OR :back)
    AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
  ORDER BY received_at, id
  LIMIT :n
@@ -594,6 +594,7 @@ SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
          AND state IN ('received', 'running')
          AND tries < :max
          AND chat_session_id IS NOT NULL
+         AND (error_code IS DISTINCT FROM 'updating' OR :back)
          AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
        ORDER BY chat_session_id, received_at, id
   ) oldest
@@ -603,42 +604,35 @@ SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
 """
 
 
-#: WAC-13: the newest owed row of each phone in the bound org, inside the
-#: reply window. Nothing at all while any owed row of the org failed less than
-#: ``:quiet`` ago: the AI path is not proved back (review round 1). A phone that
-#: got an answer since its failure is flagged, and its note is closed unsent.
-_OWED_SQL = """
-SELECT DISTINCT ON (o.wa_id)
-       o.id::text AS id, o.organization_id::text AS organization_id,
-       o.member_email, o.wa_id, o.wamid, o.chat_session_id,
-       EXISTS (
-           SELECT 1 FROM whatsapp_bot_messages a
-            WHERE a.wa_id = o.wa_id AND a.direction = 'in'
-              AND a.state = 'replied' AND a.received_at > o.received_at
-       ) AS answered_since
-  FROM whatsapp_bot_messages o
- WHERE o.direction = 'in'
-   AND o.state = 'failed'
-   AND o.error_code = :owed
-   AND o.chat_session_id IS NOT NULL
-   AND o.received_at >= now() - make_interval(secs => CAST(:window AS double precision))
-   AND NOT EXISTS (
-       SELECT 1 FROM whatsapp_bot_messages f
-        WHERE f.direction = 'in' AND f.state = 'failed' AND f.error_code = :owed
-          AND f.updated_at >= now() - make_interval(secs => CAST(:quiet AS double precision))
-   )
- ORDER BY o.wa_id, o.received_at DESC
+#: WAC-13: the message waits for the AI path. The outage takes back its try,
+#: so an outage never uses up a message. ``before`` is the code it had: the
+#: member hears :data:`REPLY_UPDATING` only on its first hold.
+_HOLD_SQL = """
+WITH prev AS (
+    SELECT error_code FROM whatsapp_bot_messages WHERE id = CAST(:id AS uuid)
+)
+UPDATE whatsapp_bot_messages
+   SET state = 'received', error_code = :code, tries = GREATEST(tries - 1, 0),
+       updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND state = 'running'
+RETURNING (SELECT error_code FROM prev) AS before
 """
 
-#: The claim of one phone's note: only the UPDATE that changes the code sends.
-_TOLD_SQL = """
-UPDATE whatsapp_bot_messages
-   SET error_code = :told, updated_at = now()
- WHERE direction = 'in'
-   AND state = 'failed'
-   AND error_code = :owed
-   AND wa_id = :wa
-RETURNING id
+#: WAC-13: a held message whose thread got an answer to a LATER message is
+#: closed with no reply. That answer's run read it in the thread's history.
+_SUPERSEDE_SQL = """
+UPDATE whatsapp_bot_messages o
+   SET state = 'failed', error_code = :superseded, updated_at = now()
+ WHERE o.direction = 'in'
+   AND o.state = 'received'
+   AND o.error_code = :held
+   AND EXISTS (
+       SELECT 1 FROM whatsapp_bot_messages a
+        WHERE a.chat_session_id = o.chat_session_id AND a.direction = 'in'
+          AND a.state = 'replied' AND a.received_at > o.received_at
+   )
+RETURNING o.id::text AS id
 """
 
 
@@ -821,11 +815,12 @@ async def _retry(message_id: str, code: str) -> bool:
 
 
 async def _waiting(session_id: str) -> list[RunRequest]:
-    """The waiting rows of one thread, oldest first."""
+    """The waiting rows of one thread, oldest first. A message that waits for
+    the AI path (WAC-13) counts only once this process proves it back."""
     async with tenant_session() as db:
         rows = (await db.execute(text(_NEXT_SQL), {
             "sid": session_id, "max": MAX_TRIES, "expire": EXPIRE_S,
-            "n": SWEEP_BATCH,
+            "n": SWEEP_BATCH, "back": _quiet_now(),
         })).mappings().all()
     return [_request(r) for r in rows]
 
@@ -1018,16 +1013,11 @@ async def _router_healthy() -> bool:
         return False
 
 
-def _quiet_s() -> float:
-    """How long the org must have had no new failure: 0 once a model run
-    succeeded after the last failure, else :data:`OUTAGE_QUIET_S`."""
-    return 0.0 if _OUTAGE["answered"] > _OUTAGE["failed"] else float(OUTAGE_QUIET_S)
-
-
 def _quiet_now() -> bool:
-    """True when this process proves the AI path back: a model run answered
-    after the last failure, or no failure for :data:`OUTAGE_QUIET_S`. A new
-    failure on ANY phone holds every note (review round 1)."""
+    """True when this process counts the AI path as back: a model run
+    answered after the last failure, or no failure for :data:`OUTAGE_QUIET_S`.
+    A new failure on ANY phone holds every waiting message (review round 1).
+    The sweep also asks the Router's health (:func:`_back`)."""
     if _OUTAGE["answered"] > _OUTAGE["failed"]:
         return True
     return time.time() - _OUTAGE["failed"] >= OUTAGE_QUIET_S
@@ -1035,7 +1025,7 @@ def _quiet_now() -> bool:
 
 def _swept(org: str) -> bool:
     """True when the sweep visits *org*: it is named in the allowlist. An org
-    that only ``*`` admits gets no re-run and no note."""
+    that only ``*`` admits gets no re-run, so none of its messages waits."""
     return org.lower() in {o.strip().lower() for o in flags.assistant_orgs()}
 
 
@@ -1069,68 +1059,28 @@ async def _send_bound(req: RunRequest, text_: str, *, kind: str) -> int:
         release_tenant(token)
 
 
-async def _phone_still_linked(req: RunRequest) -> bool:
-    """The phone's current link still names this member in this org."""
-    from gateway.routes.whatsapp_channel import inbound
+async def _hold(message_id: str) -> str | None:
+    """Put a running message back to wait for the AI path (:data:`_HOLD_SQL`).
 
-    link = current_link(await inbound._active_links_for_phone(req.wa_id))
-    return (link is not None and str(link["organization_id"]) == req.organization_id
-            and str(link["member_email"]).strip().lower() == req.member_email)
-
-
-async def _owed_notes(quiet: float) -> list[tuple[RunRequest, bool]]:
-    """The newest owed row of each phone in the bound org, and whether the
-    phone got an answer since (:data:`_OWED_SQL`)."""
-    async with tenant_session() as db:
-        rows = (await db.execute(text(_OWED_SQL), {
-            "owed": UPDATING_CODE, "window": BACK_WINDOW_S, "quiet": quiet,
-        })).mappings().all()
-    return [(_request(r), bool(r["answered_since"])) for r in rows]
-
-
-async def _claim_note(wa_id: str) -> bool:
-    """Close every owed row of *wa_id*. True for the ONE call that closed any."""
-    async with tenant_session() as db:
-        return (await db.execute(text(_TOLD_SQL), {
-            "owed": UPDATING_CODE, "told": TOLD_CODE, "wa": wa_id,
-        })).first() is not None
-
-
-async def tell_back(org: str,
-                    healthy: Callable[[], Awaitable[bool]] | None = None) -> int:
-    """Send :data:`REPLY_BACK` once to each phone of *org* that is owed one.
-
-    The caller binds nothing: this binds *org*. Returns the notes sent. A
-    phone whose link changed, an org that left the allowlist, or a phone that
-    got an answer since, gets no note, and its rows are closed all the same.
-    *healthy* is the sweep's one read of the Router's health.
+    Returns the code that it had, or None when it was not ``running``. Only
+    a message that was not held before gets :data:`REPLY_UPDATING`.
     """
-    if not _quiet_now():
-        return 0
-    token = bind_tenant(org)
-    try:
-        owed = await _owed_notes(_quiet_s())
-        if not owed or not await (healthy or _router_healthy)():
-            return 0
-        sent = 0
-        for req, answered_since in owed:
-            if not await _claim_note(req.wa_id):
-                continue
-            if answered_since:
-                _log.info("whatsapp_channel.back.answered_since", organization_id=org,
-                          phone_hint=req.wa_id[-4:])
-                continue
-            if not flags.org_allowed(org) or not await _phone_still_linked(req):
-                _log.info("whatsapp_channel.back.skipped", organization_id=org,
-                          phone_hint=req.wa_id[-4:])
-                continue
-            if await _send(req, [REPLY_BACK], kind="back_online"):
-                sent += 1
-        if sent:
-            _log.info("whatsapp_channel.back.sent", organization_id=org, phones=sent)
-        return sent
-    finally:
-        release_tenant(token)
+    async with tenant_session() as db:
+        row = (await db.execute(text(_HOLD_SQL), {
+            "id": message_id, "code": UPDATING_CODE,
+        })).first()
+    if row is None:
+        return None
+    return str(row[0]) if row[0] is not None else ""
+
+
+async def _supersede() -> int:
+    """Close the held messages of the bound org that a later answer covered."""
+    async with tenant_session() as db:
+        rows = (await db.execute(text(_SUPERSEDE_SQL), {
+            "held": UPDATING_CODE, "superseded": SUPERSEDED_CODE,
+        })).fetchall()
+    return len(rows)
 
 
 async def wait_for_runs() -> None:
@@ -1604,14 +1554,19 @@ async def _model_answer(req: RunRequest, message: str,
                      message_id=req.message_id, code=code,
                      error_type=type(exc).__name__)
         if _ai_path_down(code, exc, run_started):
-            # WAC-13: Metorite itself did not answer. The member hears so,
-            # and the row owes a "back online" note (`tell_back`) when the
-            # sweep visits the org. Else the text promises nothing.
+            # WAC-13: Metorite itself did not answer. In an org that the
+            # sweep visits, the message waits, and the sweep answers it when
+            # the AI path is back. The member hears so once. Elsewhere no
+            # sweep would keep that promise, so the text makes none.
             _OUTAGE["failed"] = time.time()
-            swept = _swept(req.organization_id)
-            if await _end(req.message_id, "failed", UPDATING_CODE if swept else PLAIN_CODE):
-                await _send(req, [REPLY_UPDATING if swept else REPLY_UPDATING_PLAIN],
-                            kind="updating", attempt=attempt)
+            if _swept(req.organization_id):
+                before = await _hold(req.message_id)
+                if before is not None and before != UPDATING_CODE:
+                    await _send(req, [REPLY_UPDATING], kind="updating", attempt=attempt)
+                _log.info("whatsapp_channel.run.held", message_id=req.message_id,
+                          first=before != UPDATING_CODE)
+            elif await _end(req.message_id, "failed", PLAIN_CODE):
+                await _send(req, [REPLY_UPDATING_PLAIN], kind="updating", attempt=attempt)
             return None
         if await _end(req.message_id, "failed", code):
             await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
@@ -2091,7 +2046,7 @@ def _uuid_or_none(value: str) -> str | None:
         return None
 
 
-async def _sweep_org(org: str) -> list[RunRequest]:
+async def _sweep_org(org: str, *, back: bool = True) -> list[RunRequest]:
     """Expire, close and collect the waiting rows of ONE org. Bound.
 
     A row that used its tries gets its last word once, here: the UPDATE
@@ -2099,6 +2054,12 @@ async def _sweep_org(org: str) -> list[RunRequest]:
     """
     token = bind_tenant(org)
     try:
+        if back:
+            # WAC-13: a held message that a later answer covered closes first.
+            superseded = await _supersede()
+            if superseded:
+                _log.info("whatsapp_channel.sweep.superseded", organization_id=org,
+                          rows=superseded)
         async with tenant_session() as db:
             expired = (await db.execute(
                 text(_EXPIRE_SQL), {"expire": EXPIRE_S},
@@ -2114,7 +2075,7 @@ async def _sweep_org(org: str) -> list[RunRequest]:
             )).fetchall()
             rows = (await db.execute(text(_STALE_SQL), {
                 "max": MAX_TRIES, "stale": STALE_S, "expire": EXPIRE_S,
-                "n": SWEEP_BATCH,
+                "n": SWEEP_BATCH, "back": back,
             })).mappings().all()
         for row in exhausted:
             if row["chat_session_id"] is None:
@@ -2143,13 +2104,9 @@ async def sweep_once() -> int:
     if not flags.assistant_enabled():
         return 0
     started = 0
-    health: dict[str, bool] = {}
-
-    async def _healthy() -> bool:  # one Router read a sweep, and only if needed
-        if "ok" not in health:
-            health["ok"] = await _router_healthy()
-        return health["ok"]
-
+    # WAC-13: a waiting message runs again only when the AI path is back:
+    # this process proves it, and the Router's health answers. One read.
+    back = _quiet_now() and await _router_healthy()
     for raw in sorted(flags.assistant_orgs()):
         if raw == "*":
             continue  # admits every org at the door; the sweep needs named ids
@@ -2158,16 +2115,11 @@ async def sweep_once() -> int:
             _log.warning("whatsapp_channel.sweep.bad_org_id", length=len(raw))
             continue
         try:
-            for req in await _sweep_org(org):
+            for req in await _sweep_org(org, back=back):
                 start(req, stale=True)
                 started += 1
         except Exception as exc:
             _log.warning("whatsapp_channel.sweep.org_failed",
-                         organization_id=org, error_type=type(exc).__name__)
-        try:
-            await tell_back(org, _healthy)  # WAC-13: "back online", once a phone
-        except Exception as exc:
-            _log.warning("whatsapp_channel.back.failed",
                          organization_id=org, error_type=type(exc).__name__)
     return started
 
