@@ -147,18 +147,18 @@ async def _load_assistant_about(
 def _learned_text(value: Any, *, one_line: bool = False) -> str:
     """Text that a model learned from mail, for the prompt of a drafter.
 
-    WS-17 EM-G11d round 1 (UMCC). The reply-memory extractor and the style
-    learner read mail, so a mail could steer what they store. The drafter
-    trusts this text, so it loses each shape of a tag, a marker and a heading
-    (``acb_skills.untrusted.neutralise``) and can never close
-    ``<learned_patterns>`` or open ``<personal_instructions>``. With
-    *one_line*, as for a bullet, the text collapses FIRST and then loses its
-    shapes. A collapse after the neutraliser made a live tag of
-    ``<personal_instructions\\n\\n>`` (round 2)."""
-    from acb_skills.untrusted import collapse, neutralise
+    WS-17 EM-G11d (UMCC). The reply-memory extractor and the style learner
+    read mail, so a mail could steer what they store. The drafter trusts this
+    text outside every frame, so it takes mode (b) of ``acb_skills.untrusted``
+    (round 3): :func:`~acb_skills.untrusted.defang_trusted` turns EVERY angle
+    bracket, of any form, into ``(`` or ``)``. So it can never close
+    ``<learned_patterns>`` or open ``<personal_instructions>``, in any spacing
+    or with any name. With *one_line*, as for a bullet, the text collapses
+    first."""
+    from acb_skills.untrusted import collapse, defang_trusted
 
     text = collapse(value) if one_line else str(value or "").strip()
-    return neutralise(text, "")
+    return defang_trusted(text)
 
 
 # The tier of each email AI task (D-EM-61, owner, 2026-10-09). Our code

@@ -205,27 +205,39 @@ def _check_decide(mail: Mail, cap: Capture, fail: Callable[[str, str], None]) ->
 
 
 def _check_learned(mail: Mail, cap: Capture, fail: Callable[[str, str], None]) -> None:
-    """The about block: learned text sits in a trusted tag of ours, so it must
-    hold no shape of its own. Each tag of ours opens and closes once, no other
-    trusted tag appears, and no marker or heading shape survives."""
+    """Learned text sits OUTSIDE every frame, where the model may trust it
+    (mode (b), round 3). So it may hold no character of the eval's own
+    bracket set at all, in any form, and no heading line. Each tag of ours
+    opens and closes once around it."""
     if mail.field not in cap.fields:
         return
     text = "\n".join(t for texts in cap.calls for t in texts)
     if mail.canary not in text:
-        fail("inside", "the about block lost the learned text")
+        fail("inside", "the trusted text lost the learned text")
     folded = _fold(text)
     for tag in cap.own_tags:
         for form in (f"<{tag}>", f"</{tag}>"):
             if folded.count(form) != 1:
                 fail("clean", f"{form} is in the about block {folded.count(form)} times")
-    others = [m.group(0) for m in _TAG_RE.finditer(folded)
-              if m.group(1).lower() not in cap.own_tags]
-    if others:
-        fail("clean", f"a trusted tag survives in the about block: {others[0]}")
-    if has_marker_shape(text) or folded_shape(text):
-        fail("clean", "a marker shape survives in the about block")
-    if any(line.lstrip().startswith("#") for line in folded.splitlines()):
-        fail("clean", "a heading line survives in the about block")
+    for learned in _learned_parts(folded, cap.own_tags):
+        bracket = next((ch for ch in learned if ch in "<>"), None)
+        if bracket is not None:
+            at = learned.index(bracket)
+            fail("clean", "a bracket survives in trusted text: "
+                          f"{learned[max(0, at - 30):at + 30]!r}")
+        if any(line.lstrip().startswith("#") for line in learned.splitlines()):
+            fail("clean", "a heading line survives in trusted text")
+
+
+def _learned_parts(folded: str, own_tags: tuple[str, ...]) -> list[str]:
+    """The learned text of a folded capture: the content of each tag of ours,
+    or the whole text when the capture names no tag of ours."""
+    if not own_tags:
+        return [folded]
+    parts: list[str] = []
+    for tag in own_tags:
+        parts += re.findall(rf"<{tag}>(.*?)</{tag}>", folded, flags=re.DOTALL)
+    return parts
 
 
 def _check_call(
@@ -262,22 +274,12 @@ def _check_call(
 
 
 def _check_block(b: Block, fail: Callable[[str, str], None]) -> None:
-    """No shape of our prompt survives inside one block."""
-    folded = _fold(b.text)
+    """No marker run survives inside one block (mode (a), round 3). A tag or
+    a heading inside a block is the sender's text, and the frame makes it
+    data. The two checks share no code: ``has_marker_shape`` is the module's,
+    and :func:`folded_shape` folds with the eval's own list."""
     if has_marker_shape(b.text) or folded_shape(b.text):
         fail("clean", f"a marker shape survives in block {b.label}")
-    tag = _TAG_RE.search(folded)
-    if tag:
-        fail("clean", f"a trusted tag survives in block {b.label}: {tag.group(0)}")
-    if _ROLE_RE.search(folded):
-        fail("clean", f"a chat-role token survives in block {b.label}")
-    shape = TAG_SHAPE_RE.search(folded)
-    if shape:
-        fail("clean", f"a bracket pair around a name survives in block {b.label}: "
-                      f"{shape.group(0)[:60]!r}")
-    for line in folded.splitlines():
-        if line.lstrip().startswith("#"):
-            fail("clean", f"a heading line survives in block {b.label}: {line[:60]}")
 
 
 def _check_network(cap: Capture, fail: Callable[[str, str], None]) -> None:

@@ -138,12 +138,14 @@ _DRAFT_DATA_WHAT = (
 
 
 def _learned_memories(memories: str) -> str:
-    """The reply memories for the drafter: one line each, collapsed and then
-    neutralised (``assistant._learned_text``), as the GLOBAL patterns of the
-    about block are (WS-17 EM-G11d round 2)."""
-    # Whole, never line by line: a tag that spans two lines must stay one
-    # match. ``_fetch_reply_memories`` already put each memory on one line.
+    """The reply memories for the drafter, outside every frame: mode (b) of
+    ``acb_skills.untrusted`` through ``assistant._learned_text``, so no angle
+    bracket of any form is left (WS-17 EM-G11d round 3). The GLOBAL patterns
+    of the about block take the same rule. ``_fetch_reply_memories`` already
+    put each memory on one line."""
     return _learned_text(memories)
+
+
 #: The same, for "Draft with AI" in the composer (``_llm_compose_assist``).
 _COMPOSE_DATA_WHAT = (
     "The marker blocks of the user message hold the email that the owner "

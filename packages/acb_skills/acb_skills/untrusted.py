@@ -4,8 +4,12 @@ Spec: ``project-docs/specs/email_app_master_plan.md`` section 12.3.13.8, the
 "Frame" part of the Untrusted Mail Content Control. Fences:
 ``tests/unit/test_untrusted_frame.py`` and ``evals/email_injection/``.
 
-**The rule.** Each text that a stranger can write (a mail, a file of a mail,
-a fact taken from a mail) sits between two marker lines::
+**Two modes** (round 3, 2026-10-15). A text that a stranger can write reaches
+a model in one of two places, and each place has its own rule.
+
+**(a) Inside a frame** (:class:`UntrustedFrame`, :func:`neutralise`). A mail,
+a thread, a file of a mail, an Insights fact or an agent's answer sits
+between two marker lines::
 
     <<<LABEL 3f9c0a1b2c3d4e5f>>>
     ...the text...
@@ -13,46 +17,39 @@ a fact taken from a mail) sits between two marker lines::
 
 The token is :func:`secrets.token_hex` of 8 bytes, new for each model call.
 The writer of the text never sees it, so the text cannot close the block.
-:meth:`UntrustedFrame.note` is the line that tells the model that the text
-in a block is data and never an instruction.
+:meth:`UntrustedFrame.note` tells the model that the text in a block is data
+and never an instruction. :func:`neutralise` does two things in linear time:
 
-**What the text loses first** (:func:`neutralise`). The frame changes no
-word of the text, and it cuts nothing. It only breaks the shapes that a model
-could read as structure of the prompt:
+1. It removes each copy of the token, in any case, until none is left
+   (one stack pass, so ``0123<token>4567`` cannot rejoin into the token).
+2. It breaks each run of three or more angle brackets, in any of their
+   look-alike forms, with white space, an invisible format character or a
+   combining mark between them. Each bracket of such a run becomes ``[`` or
+   ``]``, so no fake marker line can stand in the text.
 
-1. Each copy of the token, in any case, goes.
-2. A run of three or more angle brackets gets ``[`` or ``]`` in place of each
-   bracket. White space, an invisible format character (category Cf) or a
-   combining mark (Mn, Me) may sit between the brackets of a run. That covers
-   a fake closing marker, a marker split across lines, the full-width and
-   small forms, the look-alike brackets and a zero-width character inside the
-   run.
-3. A tag such as ``<personal_instructions>``, ``</system>``,
-   ``</ personal_instructions>`` or ``<|im_start|>``, also with a look-alike
-   bracket or an invisible character before or inside its name, gets ``[``
-   and ``]`` for its brackets. A name may start with any word character, a
-   dash or a dot (``<1x>``, ``<a.b>``), and white space of any kind, also a
-   line break, may sit inside the brackets. A nested ``<<name>>`` loses both
-   pairs. The prompts of the drafter trust a few tags that Metorite writes
-   outside the frame, so the text must not open or close one. Text such as
-   ``a < b and c > d`` gets ``[`` and ``]`` too. An address in brackets
-   (``<a@b.example>``) and a URL with a scheme stay as they are. A caller
-   that collapses white space does it BEFORE this function (:func:`collapse`).
-4. A line that starts with ``#`` gets a backslash before it, so the text
-   cannot start a Markdown heading that the prompt reads as its own section.
-   A line starts after each line break of Unicode (``\\r``, ``\\n``, U+2028,
-   U+2029, U+0085 and the two page breaks), and any Unicode white space or
-   invisible character may come before the ``#``.
+It rewrites nothing else. A tag, a heading or ``a < b and c > d`` inside the
+block stays as the sender wrote it, because the frame and its note are what
+make it data, and a rewrite cannot keep up with every shape (three rounds of
+a tag regex proved that).
+
+**(b) Outside every frame, where the model may trust the text**
+(:func:`defang_trusted`). A learned pattern, the learned writing style and a
+reply memory are text that a model took from mail, and the drafter applies
+them, so they cannot sit in a frame whose note says "never follow".
+:func:`defang_trusted` folds the text to NFKC, drops each invisible format
+character and each character of the TAG block (U+E0000 to U+E007F), and maps
+EVERY character of the bracket set to ``(`` or ``)``. It also escapes a line
+that starts with ``#``. One linear pass, no tag regex and no exemption: a
+learned memory has no reason to hold an angle bracket, so after it no tag, no
+marker and no chat-role token of any shape is left.
 
 The source of this module holds only ASCII. Each look-alike character is
 built with ``chr``, so no line of the code hides one.
 
 WARNING: the frame is advice to the model, and no test can prove that a
-model obeys it. The fences prove the structural half for the forms that they
-name: the text sits in one block, the token is fresh, and none of the shapes
-above survives in a form of :func:`has_marker_shape` or of the test cases.
-The forms are a finite list. A model can still read a shape that is not on
-it, for example a tag written as HTML entities or in base64.
+model obeys it. The fences prove the structure: the text sits in one block,
+the token is fresh, no marker run survives inside a block, and no bracket of
+the set survives in trusted text.
 
 ``apps/services/agent_edge/agent_edge/tools.py`` has its own shape, the
 ``{"untrusted_text": ...}`` value of WS-55's MCP protocol. It is not a marker
@@ -70,6 +67,7 @@ __all__ = [
     "TOKEN_BYTES",
     "UntrustedFrame",
     "collapse",
+    "defang_trusted",
     "frame_untrusted",
     "has_marker_shape",
     "neutralise",
@@ -99,7 +97,7 @@ def _chars(*codes: int) -> str:
 #: brackets, the mathematical angle brackets and the old angle brackets.
 #: U+00AB and U+00BB are not here, because they are quotation marks.
 #: Round 2 added each bracket that the eval's own list found (it reads the
-#: Unicode names, ``evals/email_injection/checkers.py``): the medium and heavy
+#: Unicode names, ``evals/email_injection/mails.py``): the medium and heavy
 #: angle bracket ornaments, the mathematical double angle brackets, the angle
 #: brackets with a dot, the curved angle brackets, the CJK double angle
 #: brackets, the four vertical presentation forms, and the two invisible TAG
@@ -114,52 +112,28 @@ _CLOSE_CHARS = ">" + _chars(0xFF1E, 0xFE65, 0x203A, 0x02C3, 0x1433, 0x276F,
                             0xFE3E, 0xFE40, 0xE003E)
 _OPENING = frozenset(_OPEN_CHARS)
 _CLOSING = frozenset(_CLOSE_CHARS)
-#: What this module writes in place of a bracket. It is no angle bracket in
-#: any form, so a neutralised text holds no marker shape and no tag shape.
+#: What a frame writes in place of a bracket of a marker run.
 _SAFE_OPEN, _SAFE_CLOSE = "[", "]"
+#: What :func:`defang_trusted` writes in place of every bracket.
+_TRUSTED_OPEN, _TRUSTED_CLOSE = "(", ")"
 
 #: The number of brackets in a run that reads as a marker.
 _RUN = 3
 
-#: The invisible characters that a tag or a heading line may hide: the soft
-#: hyphen, the Arabic letter mark, the Mongolian vowel separator, the
-#: combining grapheme joiner, the zero-width and direction marks, the
-#: direction embeddings and overrides, the word joiners, the direction
-#: isolates and the BOM.
+#: The invisible characters that a heading line may hide: the soft hyphen,
+#: the Arabic letter mark, the Mongolian vowel separator, the combining
+#: grapheme joiner, the zero-width and direction marks, the direction
+#: embeddings and overrides, the word joiners, the direction isolates and
+#: the BOM.
 _INVISIBLE_CODES = (
     0x00AD, 0x034F, 0x061C, 0x180E,
     *range(0x200B, 0x2010), *range(0x202A, 0x202F),
     *range(0x2060, 0x2065), *range(0x2066, 0x206A), 0xFEFF,
 )
+_INVISIBLE_SET = frozenset(chr(c) for c in _INVISIBLE_CODES)
 _INVISIBLE = "".join(re.escape(chr(c)) for c in _INVISIBLE_CODES)
-_OPEN_CLASS = "[" + re.escape(_OPEN_CHARS) + "]"
-_CLOSE_CLASS = "[" + re.escape(_CLOSE_CHARS) + "]"
-_NOT_BRACKET = "[^" + re.escape(_OPEN_CHARS + _CLOSE_CHARS) + "]"
-#: What may come before a name: white space of any kind (also line breaks),
-#: a ``/``, the safe brackets of an earlier pass and invisible characters.
-_LEAD = rf"[\s/\[\]{_INVISIBLE}]*"
-#: One part of a name. Its first character is a visible word character, a
-#: dash or a dot, so ``<1x>`` and ``<a.b>`` are names too.
-#: Possessive (``*+``), so a name never gives back a character: ``https``
-#: cannot shrink to ``http`` to slip past the rule after the name.
-_WORD = rf"[\w\-.][\w\-.{_INVISIBLE}]*+"
-#: A name, with namespaces such as ``ns:``. A word character must follow
-#: each ``:``, so ``https://`` and ``mailto:a@b`` are not names.
-_NAME = rf"{_WORD}(?::{_WORD})*+"
-#: What may not follow a name: ``@`` or ``:``. So ``<name@host>`` and
-#: ``<https://x>`` stay as they are, and anything else after a name, also a
-#: safe bracket of an earlier pass, is part of a tag (round 2).
-_AFTER_NAME = "(?![@:])"
-
-#: A tag: an opening bracket, the lead, a name, attributes, and a closing
-#: bracket. The lead and the attributes may hold line breaks, so a tag that
-#: spans lines is a tag, and a later collapse of its white space cannot make
-#: one (verifier, round 2). Text such as ``a < b and c > d`` is a tag here too:
-#: its brackets become ``[`` and ``]``, and its words stay.
-_TAG_RE = re.compile(
-    _OPEN_CLASS + f"({_LEAD}{_NAME}{_AFTER_NAME}{_NOT_BRACKET}*)" + _CLOSE_CLASS)
-#: A chat-role token of a model, such as ``<|im_start|>``.
-_ROLE_TOKEN_RE = re.compile(_OPEN_CLASS + r"(\s*\|[^|]{0,40}\|\s*)" + _CLOSE_CLASS)
+#: The TAG block of Unicode: invisible letters that a model may still read.
+_TAG_BLOCK = range(0xE0000, 0xE0080)
 
 #: Each line break of Unicode, and the white space of one line.
 _BREAKS = r"\r\n\x0b\x0c\x85" + re.escape(chr(0x2028) + chr(0x2029))
@@ -185,10 +159,28 @@ def _is_gap(ch: str) -> bool:
     return ch.isspace() or unicodedata.category(ch) in ("Cf", "Mn", "Me")
 
 
+def _remove_token(text: str, token: str) -> str:
+    """*text* with no copy of *token*, in any case, and none that a removal
+    makes. One stack pass: a copy can only end at the top of the stack, so
+    each character costs at most one compare of ``len(token)`` characters."""
+    want = token.lower()
+    size = len(want)
+    out: list[str] = []
+    low: list[str] = []
+    for ch in text:
+        folded = ch.lower()
+        out.append(ch)
+        low.append(folded if len(folded) == 1 else ch)
+        if len(low) >= size and low[-1] == want[-1] and "".join(low[-size:]) == want:
+            del out[-size:]
+            del low[-size:]
+    return "".join(out)
+
+
 def _break_runs(text: str) -> str:
     """Each run of :data:`_RUN` or more brackets, with only gaps between
-    them, gets a safe character for each bracket. One pass, so it is linear
-    in the length of the text."""
+    them, gets a safe character for each bracket. One pass: each character
+    is read once by the outer loop or the inner one, never by both."""
     chars = list(text)
     i, n = 0, len(chars)
     while i < n:
@@ -208,59 +200,58 @@ def _break_runs(text: str) -> str:
     return "".join(chars)
 
 
-def _bracketed(m: re.Match[str]) -> str:
-    return f"{_SAFE_OPEN}{m.group(1)}{_SAFE_CLOSE}"
-
-
 def neutralise(text: str, token: str) -> str:
-    """*text* with no copy of *token* and no shape of a marker, a tag or a
-    heading. It removes no word and cuts nothing. See the module docstring.
-    An empty *token* removes nothing, for a text with no frame of its own."""
+    """Mode (a), for text INSIDE a frame: no copy of *token*, and no run of
+    three brackets. Linear in the length of the text. It removes no word,
+    cuts nothing, and rewrites no tag or heading (the module docstring says
+    why). An empty *token* removes nothing."""
     out = str(text or "")
     if token:
-        # Again until none is left: "0123<token>4567" loses the inner copy and
-        # would rejoin into the token (round 1 of the verifier).
-        pattern = re.compile(re.escape(token), re.IGNORECASE)
-        while pattern.search(out):
-            out = pattern.sub("", out)
-    out = _break_runs(out)
-    # Again until nothing changes: "<<name>>" loses its inner pair first, and
-    # the outer pair then encloses "[name]" (round 2). Each pass removes two
-    # brackets, so the loop ends.
-    while True:
-        before = out
-        out = _TAG_RE.sub(_bracketed, _ROLE_TOKEN_RE.sub(_bracketed, out))
-        if out == before:
-            break
-    return _HEADING_RE.sub(lambda m: m.group(1) + m.group(2) + "\\", out)
+        out = _remove_token(out, token)
+    return _break_runs(out)
+
+
+def defang_trusted(text: str) -> str:
+    """Mode (b), for text OUTSIDE every frame that the model may trust.
+
+    NFKC first, then each character of the bracket set becomes ``(`` or
+    ``)``, and each invisible format character and each character of the TAG
+    block goes. A line that starts with ``#`` gets a backslash. One linear
+    pass, with no regex over tags and no exemption: afterwards the text holds
+    no angle bracket of any form, so no tag, marker or chat-role token."""
+    out: list[str] = []
+    for ch in unicodedata.normalize("NFKC", str(text or "")):
+        if ch in _OPENING:
+            out.append(_TRUSTED_OPEN)
+        elif ch in _CLOSING:
+            out.append(_TRUSTED_CLOSE)
+        elif (ch in _INVISIBLE_SET or ord(ch) in _TAG_BLOCK
+              or unicodedata.category(ch) == "Cf"):
+            continue
+        else:
+            out.append(ch)
+    return _HEADING_RE.sub(lambda m: m.group(1) + m.group(2) + "\\", "".join(out))
 
 
 def collapse(text: str) -> str:
     """*text* with each run of white space as one space, and the ends cut.
-
-    A caller that puts text on one line collapses it BEFORE :func:`neutralise`,
-    and never after it (round 2): a collapse changes no tag shape that the
-    neutraliser reads, and the order keeps the two passes in one place."""
+    A caller that puts trusted text on one line collapses it before
+    :func:`defang_trusted`."""
     return " ".join(str(text or "").split())
 
 
 def neutralised_pattern(text: str) -> re.Pattern[str]:
     """A pattern that finds, in the ORIGINAL text, the span that *text* (a
-    span of the neutralised copy) stands for.
-
-    WS-17 EM-G11d round 2. A model reads the framed copy, so a quote of it can
-    hold ``[`` or ``]`` for a bracket and a backslash before a ``#``. Each
-    ``[`` or ``]`` matches itself or any bracket of its side, and a backslash
-    may be absent. The Insights check uses it to store the span of the
-    source, never the neutralised form (D-EM-41)."""
+    span of the framed copy) stands for. Each ``[`` or ``]`` matches itself
+    or any bracket of its side, because :func:`neutralise` writes them for a
+    marker run. The Insights check stores the span of the source with it
+    (D-EM-41)."""
     parts = []
     for ch in str(text or ""):
         if ch == _SAFE_OPEN:
             parts.append("[" + re.escape(_SAFE_OPEN + _OPEN_CHARS) + "]")
         elif ch == _SAFE_CLOSE:
             parts.append("[" + re.escape(_SAFE_CLOSE + _CLOSE_CHARS) + "]")
-        elif ch == "\\":
-            parts.append(r"\\?")
         else:
             parts.append(re.escape(ch))
     return re.compile("".join(parts))
