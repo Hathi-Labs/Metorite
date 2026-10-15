@@ -265,6 +265,7 @@ async def make_document(spec: dict[str, Any]) -> dict[str, Any]:
     - board: {"columns": [{"name", "cards": [{"title", "meta"}]}]}
     - timeline: {"events": [{"date", "title", "state"}]}
     - gantt: {"rows": [{"label", "start", "end"}]}
+    - agenda: {"items": [{"start": "09:30", "end", "title", "detail"}]}
     Text and numbers only: **bold** works, and no HTML, image or URL. One
     idea a slide: a title that says the point, 3 to 5 short bullets or one
     visual with a lead line.
@@ -298,6 +299,11 @@ async def make_document(spec: dict[str, Any]) -> dict[str, Any]:
     from acb_skills.write_artifact import write_artifact
 
     written = await write_artifact(f"outputs/{name}", pdf, encoding=None)
+    if "error" in written or not written.get("download_url"):
+        # A quota, no thread folder, no workspace: write_artifact refuses
+        # with a dict, and never raises. No file, so no "ok" (review).
+        return {"ok": False, "error": f"the PDF was made but not saved: "
+                                      f"{written.get('error') or 'no file'}"}
     return {"ok": True, "path": written.get("path"),
             "download_url": written.get("download_url"),
             "note": "Link the download_url in your answer, and say in one line "

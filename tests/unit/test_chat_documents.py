@@ -133,3 +133,20 @@ def test_the_chat_assistants_hold_it_and_whatsapp_withholds_it() -> None:
         assert "make_document" in scope["tool_scope"], agent
     assert SKILL_FAMILIES["documents"]["tools"] == ("make_document",)
     assert "make_document" in wui.WITHHELD_TOOLS
+
+
+async def test_a_pdf_that_could_not_be_saved_is_never_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review: write_artifact refuses with a dict (a quota, no workspace) and
+    never raises. The model must not claim a file that does not exist."""
+    import importlib
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+
+    async def _refuse(path: str, content: Any, **_kw: Any) -> dict:
+        return {"error": "This chat's folder is over its quota."}
+
+    monkeypatch.setattr(wa, "write_artifact", _refuse)
+    out = await documents.make_document(DECK)
+    assert out["ok"] is False and "over its quota" in out["error"]
