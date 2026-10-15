@@ -169,23 +169,18 @@ class _Store:
         if row["state"] != "running":
             return None
         before = row.get("code") or ""
+        first = before != bot_run.UPDATING_CODE   # only it gives the try back
         row.update(state="received", code=bot_run.UPDATING_CODE,
-                   tries=max(row.get("tries", 1) - 1, 0))
+                   tries=max(row["tries"] - 1, 0) if first else row["tries"])
         return before
 
     async def waiting(self, sid: str) -> list[bot_run.RunRequest]:
-        back = bot_run._quiet_now()   # `_NEXT_SQL`'s `:back` (WAC-13)
-
-        def _answered_after(r: dict[str, Any]) -> bool:
-            return any(o["sid"] == sid and o["direction"] == "in"
-                       and o["state"] == "replied" and o["order"] > r["order"]
-                       for o in self.rows.values())
-
+        # `_NEXT_SQL`: a message that waits for the AI path (WAC-13) is never
+        # one of them. Only the sweep runs it again.
         rows = sorted((r for r in self.rows.values()
                        if r["sid"] == sid and r["direction"] == "in"
                        and r["state"] == "received" and r["tries"] < 3
-                       and (r.get("code") != bot_run.UPDATING_CODE
-                            or (back and not _answered_after(r)))),
+                       and r.get("code") != bot_run.UPDATING_CODE),
                       key=lambda r: r["order"])
         return [bot_run.RunRequest(r["id"], r["org"], r["email"], r["wa_id"],
                                    r["wamid"], r["sid"]) for r in rows]

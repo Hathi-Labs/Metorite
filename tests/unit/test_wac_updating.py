@@ -10,12 +10,14 @@ R7 fences named here:
 
 * ``wac13-hold`` (U1, U2): only a failure of the AI path holds the message,
   the member hears so once, and every other failure keeps its own text.
-* ``wac13-wait-until-back`` (U3): a held message does not run while the AI
-  path is not proved back, and it runs first, in thread order, once it is.
+* ``wac13-sweep-only`` (U3): no drain runs a held message. Only the sweep,
+  which reads the Router's health, runs it again, and a later message never
+  closes it unanswered.
 * ``wac13-back`` (U4): the sweep counts the AI path as back only with the
   Router's health AND a success or 5 quiet minutes.
-* ``wac13-no-promise`` (U5): an org that the sweep skips gets no promise.
-* ``wac13-restart`` (U6): a restart tells each waiting member, within a bound.
+* ``wac13-capped`` (U5): only the first hold gives back the try.
+* ``wac13-no-promise`` (U6): an org that the sweep skips gets no promise.
+* ``wac13-restart`` (U7): a restart tells each waiting member, within a bound.
 """
 from __future__ import annotations
 
@@ -82,6 +84,9 @@ async def test_a_message_held_twice_is_told_once(world: _World) -> None:  # noqa
     await bot_run.wait_for_runs()
     assert world.sent == [(PHONE, bot_run.REPLY_UPDATING)]
     assert len(world.agent.calls) == 2
+    # U5: the second hold kept its try (verifier F2), so a message that fails
+    # each time ends after MAX_TRIES with the general text.
+    assert (_in_rows(world)[0]["state"], _in_rows(world)[0]["tries"]) == ("received", 1)
 
 
 @pytest.mark.parametrize(("exc", "text", "code"), [
@@ -124,36 +129,29 @@ async def test_the_run_limit_while_the_router_failed_holds_the_message(
 # ── U3: wait until back, then answer in order ───────────────────────────────
 
 
-async def test_a_held_message_waits_while_the_ai_path_is_not_back(
+async def test_no_drain_runs_a_held_message_and_a_later_answer_never_closes_it(
     world: _World,  # noqa: F811
 ) -> None:
-    """A new message during the outage runs by itself. The held one does
-    not run with it until the AI path is proved back."""
-    world.agent.exc = _status_error(503)
-    await _post_and_run(_message("First"))
-    world.agent.exc = None
-    bot_run._OUTAGE["failed"] = time.time()   # the outage is still fresh
-    await _post_and_run(_message("Second"))
-    asked = [c["payload"]["message"] for c in world.agent.calls]
-    assert asked == ["First", "Second"], "the held message ran again too early"
-    # The answer to "Second" proved the AI path back, and it read "First" in
-    # the thread's history. So "First" is covered, and never runs after it.
-    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING), (PHONE, ANSWER)]
-
-
-async def test_once_back_the_held_message_runs_first_in_thread_order(
-    world: _World,  # noqa: F811
-) -> None:
+    """A new message runs by itself, even when the AI path is back. The held
+    one waits for the sweep, which reads the Router's health (verifier F3).
+    The new answer never closes the held one: a code-only answer (a 👍 for
+    "thanks") never read it (verifier F1)."""
     world.agent.exc = _status_error(503)
     await _post_and_run(_message("First"))
     world.agent.exc = None
     bot_run._OUTAGE["failed"] = time.time() - bot_run.OUTAGE_QUIET_S - 1
     await _post_and_run(_message("Second"))
-    asked = [c["payload"]["message"] for c in world.agent.calls]
-    assert asked == ["First", "First", "Second"]
-    assert world.sent == [(PHONE, bot_run.REPLY_UPDATING), (PHONE, ANSWER),
-                          (PHONE, ANSWER)]
-    assert [r["state"] for r in _in_rows(world)] == ["replied", "replied"]
+    assert [c["payload"]["message"] for c in world.agent.calls] == ["First", "Second"]
+    held, second = _in_rows(world)
+    assert (held["state"], held["code"]) == ("received", bot_run.UPDATING_CODE)
+    assert second["state"] == "replied"
+    # The sweep's run (stale) answers it.
+    held["stale"] = True
+    await bot_run.run_message(bot_run.RunRequest(
+        held["id"], ORG_A, held["email"], PHONE, held["wamid"], held["sid"]), stale=True)
+    await bot_run.wait_for_runs()
+    assert [c["payload"]["message"] for c in world.agent.calls] == ["First", "Second", "First"]
+    assert _in_rows(world)[0]["state"] == "replied"
 
 
 # ── U4: what "back" means to the sweep ──────────────────────────────────────

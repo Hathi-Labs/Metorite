@@ -2,7 +2,9 @@
 
 **Status:** WAC-13 built (2026-10-15). When Metorite's AI path does not answer,
 the bot says that Metorite is updating and holds the message. It answers the
-message when Metorite is back (§16). WAC-4b built (2026-10-15): the bot also blocks time on the
+message when Metorite is back (§16).
+
+WAC-4b built (2026-10-15): the bot also blocks time on the
 member's calendar, with `create_personal_task` and `set_my_overlay`, and a
 reply sends each answer once (§14.9). `WHATSAPP_ASSISTANT_WRITES` is on for
 the beta orgs (read on the box, 2026-10-15). WAC-4 built (2026-10-11): a
@@ -1537,9 +1539,10 @@ member, a restart and an outage look the same.
    run: `v1_compat` stamps each `ConsoleRouterUnavailable`. A long job that
    meets the limit with the Router up keeps the general text.
 2. **Hold.** The message goes back to wait (`received`), with the code
-   `updating`. The outage gives back its try, so an outage never uses up a
-   message. The member hears `REPLY_UPDATING` once, on the first hold of that
-   message.
+   `updating`. Its first hold gives back its try, so one outage never uses up
+   a message. A later hold keeps the try. So a message that fails each time
+   ends after 3 tries with the general text, once. The member hears
+   `REPLY_UPDATING` once, on the first hold of that message.
 3. **Back.** The sweep runs a held message again only when the AI path is
    back. Both of these must be true:
    - The Router's `/health` answers. The sweep reads it once.
@@ -1551,13 +1554,12 @@ member, a restart and an outage look the same.
    thread's history, and it runs oldest first. It runs as the link's member,
    after the run's own checks (§5.5). The first part quotes the member's
    message (§13.7), so a late answer shows which message it answers. A thread's newer message
-   that arrives during the outage runs at once. A held message never runs
-   while the AI path is not back.
-5. **Covered.** Sometimes the thread gets an answer to a LATER message first.
-   Then the held message closes with the code `superseded`, and gets no
-   answer. That answer's run
-   read the held message in the thread's history. This also covers a member
-   who sent the message again.
+   runs at once, as before. Only the sweep runs a held message again, and
+   the sweep reads the Router's health first. No drain runs one.
+5. **Every held message gets its answer.** A later answer never closes a held
+   message. A code-only answer (a 👍 for "thanks", a view, a Confirm) did not
+   read it. And the bot promised to answer it. A member who asked again can
+   get two answers. Each one quotes its own message.
 6. **A restart in the middle of a run.** At shutdown, each run that still
    waits on the model sends `REPLY_UPDATING_HOLD` first, best effort, bounded,
    with its org bound. The sweep then runs that message again, as before.
@@ -1603,14 +1605,23 @@ each one:
 | A shutdown note had no org bound, so its record failed | `_send_bound` |
 | No test held the 24-hour window | An R8 test |
 
+**Review round 2 (the hold design).**
+
+| Found | Fix |
+|---|---|
+| A later code-only answer (a 👍 for "thanks") closed a held message unanswered | No later answer closes a held message |
+| Each hold gave back the try, so a message that failed each time ran for 24 hours | Only the first hold gives back the try |
+| A drain ran a held message with no health read | Only the sweep runs a held message |
+| A shutdown just after a hold sent both notes | The run leaves the shutdown list before the hold |
+
 ### 16.6 Acceptance (WAC-13)
 
 | # | Check | Fence |
 |---|---|---|
-| U1 | A run that fails with `connection`, or `timeout` from a call, holds the message, takes back its try, and sends `REPLY_UPDATING` once. A second hold sends nothing | `test_wac_updating.py`, R8 |
+| U1 | A run that fails with `connection`, or `timeout` from a call, holds the message and sends `REPLY_UPDATING` once. A second hold sends nothing | `test_wac_updating.py`, R8 |
 | U2 | A run that fails with any other code keeps its text. The run's own limit with the Router up keeps the general text | `test_wac_updating.py`, `test_wac_bot_run.py` |
-| U3 | A held message does not run while the AI path is not back. Once back, the sweep runs it, with the thread's next one after it, and both get answers | `test_wac_updating.py`, R8 |
+| U3 | No drain runs a held message. Once the AI path is back, the sweep runs each held message, oldest first, and each gets its answer | `test_wac_updating.py`, R8 |
 | U4 | "Back" needs the Router's health AND a success or 5 quiet minutes | `test_wac_updating.py` |
-| U5 | A held message whose thread got a later answer closes `superseded`, unanswered | R8 |
+| U5 | A later answer never closes a held message. Only the first hold gives back the try, so a message that fails each time ends after 3 tries with the general text once | `test_wac_updating.py`, R8 |
 | U6 | A held message past 24 hours expires with no send. An org that the sweep skips gets the plain text and no hold | R8, `test_wac_updating.py` |
 | U7 | At shutdown, a run that waits on the model sends `REPLY_UPDATING_HOLD` with its org bound, and the shutdown stays bounded | `test_wac_updating.py` |
