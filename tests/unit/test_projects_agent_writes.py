@@ -2021,7 +2021,10 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # The four agent-run tools wait for WS-55 EA-12e, the in-product chat
     # parity of the routes an outside agent already uses (EA12-9, §12.1).
     ea_12e = {"agent_runs", "start_agent_run", "post_agent_activity", "finish_agent_run"}
-    assert set(m.PLANNED) <= {"my_areas"} | ea_12e, m.PLANNED
+    # WS-55 EA-6b: the claim route serves an outside agent over MCP. The chat
+    # assigns through `assign` and moves through `update_task`.
+    ea_6b = {"claim_task"}
+    assert set(m.PLANNED) <= {"my_areas"} | ea_12e | ea_6b, m.PLANNED
 
 
 async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:

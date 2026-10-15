@@ -536,12 +536,14 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: EA-12a adds the three POST pairs of the agent runs (spec §12.1). They
 #: share the cap of EA3-30 (EA12-13).
 #: EA-6c adds the comment POST, the route of ``add_comment`` (EA3-35).
+#: EA-6b adds the claim, the route of ``claim_task`` (EA3-34).
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PATCH", "/projects/tasks/{task_id}"),
     ("POST", "/projects/tasks/{task_id}/refs"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),
+    ("POST", "/projects/tasks/{task_id}/claim"),
     ("POST", "/projects/tasks/{task_id}/agent-runs"),
     ("POST", "/projects/agent-runs/{run_id}/activities"),
     ("POST", "/projects/agent-runs/{run_id}/finish"),
