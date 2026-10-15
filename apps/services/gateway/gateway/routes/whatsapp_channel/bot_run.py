@@ -200,18 +200,26 @@ _NO_CHANGE = (
     "You cannot change data from WhatsApp. When the member asks for a change, "
     "tell them to make it in the Metorite web app, and add a link button.\n"
 )
-#: The scope rule of a run with writes on (WAC-4, §14). Adding a task is the
-#: one change allowed. Every other change, class C and class X among them,
-#: still goes to the web app with a link. Advisory, like ``SCOPE_RULE``: the
-#: card gate, not this text, is what keeps every other write out.
+#: The scope rule of a run with writes on (WAC-4, §14; WAC-4b). Adding a task
+#: and blocking time on the member's calendar are the changes allowed. Every
+#: other change, class C and class X among them, still goes to the web app
+#: with a link. Advisory, like ``SCOPE_RULE``: the card gate, not this text,
+#: is what keeps every other write out.
 SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
-    "You can add a task from WhatsApp, and make no other change. To add one, "
-    "ask the Projects assistant to create it. Nothing is written until the "
-    "member taps Confirm: Metorite sends them the summary and the Confirm and "
-    "Cancel buttons itself. So say in one line that the task is ready for "
-    "their Confirm, add no buttons, and never say that it is done. For any "
-    "other change, tell the member to make it in the Metorite web app, and "
-    "add a link button.\n"
+    "You can make two kinds of change from WhatsApp: add a task, and block "
+    "time on the member's calendar. A calendar block is the scheduled time of "
+    "a task. To block time for something new (a meeting, a call, a visit), "
+    "ask the Projects assistant to create a private task with block_start and "
+    "block_end (create_personal_task). To block time for a task that exists, "
+    "ask it to set block_start and block_end on that task (set_my_overlay). "
+    "Times are YYYY-MM-DD HH:MM in the member's own zone. Nothing is written "
+    "until the member taps Confirm: Metorite sends them the summary and the "
+    "Confirm and Cancel buttons itself. So say in one line that it is ready "
+    "for their Confirm, add no buttons, and never say that it is done. One "
+    "change waits at a time. When the member asks for several, prepare the "
+    "first, and say that you do the next one when they ask after their "
+    "Confirm. For any other change, tell the member to make it in the "
+    "Metorite web app, and add a link button.\n"
 ))
 
 # ── The limits ──────────────────────────────────────────────────────────────
@@ -1375,9 +1383,7 @@ async def _model_answer(req: RunRequest, message: str,
                         kind="failed", attempt=attempt)
         return None
 
-    from gateway.routes.projects.agent_dispatch import reply_text
-
-    reply = reply_text(result).strip()
+    reply = final_text(result).strip()
     ui: list[Any] = []
     if wa_run is not None:
         reply, ui = await _native_parts(req, wa_run, reply)
@@ -1435,6 +1441,27 @@ async def _offer_act(req: RunRequest, act: Any) -> list[Any] | str:
     # Confirm.
     return [*(OutMessage("text", part) for part in split_reply(summary(act))),
             confirm_buttons(act_id)]
+
+
+def final_text(result: Any) -> str:
+    """The text of the run's LAST model step, which is the answer (WAC-4b).
+
+    The agent framework's ``response.text`` joins the text of EVERY model
+    step with no separator. A model that writes a line, calls a tool (a
+    link button, a reaction) and then writes its answer gave the member
+    both texts glued together ("Sahakar NagarTwo blocks…", 2026-10-15).
+    The web chat streams each step as its own part, so only a channel that
+    sends one text needed the last step. The executor carries it as
+    ``final`` (``_run_with_maf_agent``). A result without it, from another
+    path, falls back to the joined text.
+    """
+    from gateway.routes.projects.agent_dispatch import reply_text
+
+    if isinstance(result, dict):
+        final = result.get("final")
+        if isinstance(final, str) and final.strip():
+            return final
+    return reply_text(result)
 
 
 def _resend_text(stored: str | None) -> str | None:

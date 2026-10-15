@@ -3538,12 +3538,18 @@ async def set_recurrence(
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def create_personal_task(
-    title: str, notes: str = "", due: str = "", context: str = "", next_action: str = ""
+    title: str, notes: str = "", due: str = "", context: str = "", next_action: str = "",
+    block_start: str = "", block_end: str = "",
 ) -> str:
     """Capture a PRIVATE task into the member's own personal project,
     assigned to them. Nobody else can see it. due is YYYY-MM-DD. context
     is a GTD context such as @office. To share it later, move_task it into
-    a team project. Archive is the undo."""
+    a team project. Archive is the undo.
+    block_start and block_end put it on the member's calendar as a time
+    block, YYYY-MM-DD HH:MM in their own zone: "block 8:30 to 10:30 for the
+    call with Sharath" is one call. A task with a block is scheduled, so it
+    lands as NEXT, not in the inbox. To block time for a task that exists,
+    use set_my_overlay."""
     label = str(title or "").strip()
     if not label:
         return "A task needs a title."
@@ -3558,14 +3564,27 @@ async def create_personal_task(
         payload["context"] = context.strip()
     if next_action.strip():
         payload["next_action"] = next_action.strip()
+    given = {"block_start": block_start, "block_end": block_end}
+    block: dict[str, Any] = {}
+    if any(str(v or "").strip() for v in given.values()):
+        await _overlay_times({k: str(v or "").strip() for k, v in given.items()}, block)
+        refusal = _block_refusal(block, {})
+        if refusal:
+            return refusal
+        payload.update(block)
     if not await _confirm(
         title="Capture this private task?",
         detail=data(label),
         context=_fields_block({**payload, "visible to": "you only"}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post("/projects/my/tasks", payload)
-    return "\n".join(["Captured (private, yours):", *_task_line(row)])
+    lines = ["Captured (private, yours):", *_task_line(row)]
+    if block:
+        lines.append("  on your calendar: " + " · ".join(
+            f"{word} {block[key]}" for word, key in
+            (("from", "scheduled_start"), ("to", "scheduled_end")) if key in block))
+    return "\n".join(lines)
 
 
 #: The dispositions that reopen a finished task on the board when stated
@@ -3857,12 +3876,20 @@ async def set_my_overlay(
         return "Nothing to change. Pass at least one field."
     before = {key: (mine or {}).get(key) for key in payload}
     card = _overlay_card(payload, task, unread)
+    if "delegated_at" in card and not waiting_since.strip():
+        # The since-when that the tool stamps is the moment of the call. The
+        # card says "now", so a WhatsApp Confirm rebuilds the same card
+        # (WS-47 WAC-4b). The write still sends the stamped instant.
+        card["delegated_at"] = "now"
+    # WS-47 WAC-4b: the card names the task by number and title. It binds
+    # the task's id, so a Confirm can never write to another task.
+    _bind_card_facts(task_id=tid)
     if not await _confirm(
         title="Update your triage of this task?",
         detail=_ref(task),
         context=_fields_block(card, before=None if unread else before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await patch(f"/projects/tasks/{tid}/personal", payload)
     facts = [f"{k} {data(row.get(k))}" for k in payload if row.get(k) not in (None, "", False)]
     return (

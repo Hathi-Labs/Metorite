@@ -6457,7 +6457,27 @@ async def _run_with_maf_agent(
         response = await _with_tier_policy(agent, tier_policy).run(run_input)
 
     text: str = getattr(response, "text", "") or ""
-    return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text}
+    return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text,
+            "final": _last_step_text(response)}
+
+
+def _last_step_text(response: Any) -> str:
+    """The text of the LAST response message that has any, or ``""``.
+
+    MAF's ``AgentResponse.text`` joins every message's text with no
+    separator. One step that writes a line and calls a tool, then a step
+    that writes the answer, joins as "…NagarTwo blocks…" (WS-47, 2026-10-15).
+    ``bot_run`` sends this text, because WhatsApp gets one text and the last
+    step is the answer. Every other caller keeps ``result``, unchanged.
+    """
+    for message in reversed(list(getattr(response, "messages", None) or [])):
+        role = getattr(message, "role", "")
+        if str(getattr(role, "value", role) or "") != "assistant":
+            continue
+        text = str(getattr(message, "text", "") or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _compose_maf_run_input(

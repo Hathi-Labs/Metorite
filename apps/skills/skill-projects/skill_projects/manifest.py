@@ -822,6 +822,9 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "context": "create_personal_task.context",
         "due_at": "create_personal_task.due",
         "notes": "create_personal_task.notes",
+        # WS-47 WAC-4b: a capture with a block on my calendar.
+        "scheduled_start": "create_personal_task.block_start",
+        "scheduled_end": "create_personal_task.block_end",
     },
     ("PATCH", "/projects/tasks/{task_id}/personal"): {
         "disposition": "set_my_overlay.disposition",
