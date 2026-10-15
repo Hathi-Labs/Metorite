@@ -54,31 +54,48 @@ export function emptyLine(filter: string): string {
 }
 
 /**
+ * A sentence in parts. A part with `em` names a control on the screen, and
+ * the dialog draws it with the `text-foreground` emphasis, so the admin sees
+ * the button the sentence means. The words stay here, and the dialog only
+ * draws them.
+ */
+export type CopyPart = { text: string; em?: true };
+
+/** The parts as one plain string, for a test or a title attribute. */
+export function plainText(parts: CopyPart[]): string {
+  return parts.map((p) => p.text).join("");
+}
+
+/**
  * The Delete dialog's last line: what the admin can do instead.
  *
- * ⚠️ A removed person has no Remove to fall back to. The row offers none, and
- * their access is gone already. So for them the line says what this step adds
- * to the removal, and it must not send the admin to a button that is absent.
+ * ⚠️ Each status points at a control its row really has. A removed person
+ * has no Remove to fall back to, because their access is gone already, so
+ * the line says what this step adds. An invited person's row says "Revoke
+ * invite", not "Remove", so the line names that.
  */
-export function purgeAlternative(member: Member): {
-  lead: string;
-  action: string | null;
-  tail: string;
-} {
+export function purgeAlternative(member: Member): CopyPart[] {
   if (member.status === "removed") {
-    return {
-      lead:
-        "This person is already removed and has no access. This step " +
-        "deletes their record and what it still holds.",
-      action: null,
-      tail: "",
-    };
+    return [
+      {
+        text:
+          "This person is already removed and has no access. This step " +
+          "deletes their record and what it still holds.",
+      },
+    ];
   }
-  return {
-    lead: "If you only want to end their access, use ",
-    action: "Remove",
-    tail: " — that one is recoverable.",
-  };
+  if (member.status === "invited") {
+    return [
+      { text: "If you only want to end the invitation, use " },
+      { text: "Revoke invite", em: true },
+      { text: " — that keeps their record." },
+    ];
+  }
+  return [
+    { text: "If you only want to end their access, use " },
+    { text: "Remove", em: true },
+    { text: " — that one is recoverable." },
+  ];
 }
 
 /** The words of the Remove dialog for one person. */
@@ -87,7 +104,7 @@ export type RemoveCopy = {
   /** What happens. The dialog draws the address first, then this text. */
   effect: string;
   /** How to come back from it, or what to use instead. */
-  after: string;
+  after: CopyPart[];
   confirm: string;
   /** Show the D63 seal preview? Only a person who signed in has a workspace. */
   showSeal: boolean;
@@ -106,9 +123,11 @@ export function removeCopy(member: Member): RemoveCopy {
       // ⚠️ No word about a seat. An invited person holds no Core seat yet,
       // so "their seat goes back to the pool" would be false (review round 1).
       effect: "cannot accept the invitation after this, and cannot sign in.",
-      after:
-        "To bring them in later, invite them again. Use Delete permanently " +
-        "if you also want their record gone.",
+      after: [
+        { text: "To bring them in later, invite them again. Use " },
+        { text: "Delete permanently", em: true },
+        { text: " if you also want their record gone." },
+      ],
       confirm: "Revoke invite",
       showSeal: false,
     };
@@ -119,10 +138,16 @@ export function removeCopy(member: Member): RemoveCopy {
       "loses access immediately and every role assignment they hold is " +
       "dropped. Their record is kept, because the rest of the system refers " +
       "to people by address.",
-    after:
-      "This is not a toggle — bringing them back means inviting them again " +
-      "and activating the invitation. If you only want to pause their " +
-      "access, use Suspend instead.",
+    after: [
+      {
+        text:
+          "This is not a toggle — bringing them back means inviting them " +
+          "again and activating the invitation. If you only want to pause " +
+          "their access, use ",
+      },
+      { text: "Suspend", em: true },
+      { text: " instead." },
+    ],
     confirm: "Remove",
     showSeal: true,
   };

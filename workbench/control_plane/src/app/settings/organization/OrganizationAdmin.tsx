@@ -55,6 +55,7 @@ import {
   removeCopy,
   rowsFor,
   splitRoster,
+  type CopyPart,
 } from "./lib/rosterView";
 // D63 / H-49 slice 2. The WORDING is the policy, so it lives in a pure module
 // with its own tests rather than inline in the dialog's JSX.
@@ -754,35 +755,38 @@ function MemberRow({
         </span>
       </div>
 
-      <div className="flex items-center gap-2">
+      {/* `flex-wrap` on the group and `whitespace-nowrap` on each control: at
+          390px the group wraps as a whole, and no label breaks inside its
+          own button (round 3). */}
+      <div className="flex flex-wrap items-center gap-2">
         <Link
           href={`/settings/members/${encodeURIComponent(member.email)}`}
-          className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+          className="whitespace-nowrap rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
         >
           Manage access
         </Link>
         {actions.isSelf && (
           <span
-            className="rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground"
+            className="whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground"
             title="You cannot suspend or remove your own access. Another owner or admin can."
           >
             This is you
           </span>
         )}
         {actions.canActivate && (
-          <Button variant="secondary" size="none" layout="" onClick={() => void setStatus(member.email, "active")} className="px-2.5 py-1.5 text-[11px]">
+          <Button variant="secondary" size="none" layout="" onClick={() => void setStatus(member.email, "active")} className="whitespace-nowrap px-2.5 py-1.5 text-[11px]">
             Activate
           </Button>
         )}
         {actions.canSuspend && (
-          <Button variant="destructive" size="none" layout="" onClick={() => void setStatus(member.email, "suspended")} className="px-2.5 py-1.5 text-[11px]">
+          <Button variant="destructive" size="none" layout="" onClick={() => void setStatus(member.email, "suspended")} className="whitespace-nowrap px-2.5 py-1.5 text-[11px]">
             Suspend
           </Button>
         )}
         {actions.canRemove && (
           <button
             onClick={() => onRemove(member)}
-            className="flex items-center gap-1 rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10"
           >
             <Icon name="UserMinus" size={12} />
             {actions.removeLabel}
@@ -795,7 +799,7 @@ function MemberRow({
           <button
             onClick={() => onPurge(member)}
             title="Delete this person and every credential and access grant they hold. Their work and the audit trail are kept."
-            className="flex items-center gap-1 rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90"
           >
             <Icon name="Trash2" size={12} />
             Delete permanently
@@ -803,6 +807,27 @@ function MemberRow({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * One sentence from `rosterView`, in parts. A part with `em` names a control
+ * on the screen, and it gets the `text-foreground` emphasis. The words stay
+ * in `rosterView`, and this only draws them.
+ */
+function CopyLine({ parts }: { parts: CopyPart[] }) {
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.em ? (
+          <span key={i} className="text-foreground">
+            {part.text}
+          </span>
+        ) : (
+          <span key={i}>{part.text}</span>
+        )
+      )}
+    </>
   );
 }
 
@@ -878,7 +903,9 @@ function RemoveDialog({
           <span className="font-mono text-foreground">{member.email}</span>{" "}
           {copy.effect}
         </p>
-        <p className="mt-2 text-xs text-muted-foreground">{copy.after}</p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          <CopyLine parts={copy.after} />
+        </p>
 
         {/*
           D63, stated where the decision is taken. `soft`+`text` rather than a
@@ -1007,14 +1034,10 @@ function PurgeDialog({
           </li>
         </ul>
 
-        {/* A removed person has no Remove to fall back to, so the line
-            changes for them (`rosterView.purgeAlternative`). */}
+        {/* The line names a control the row really has: Remove, Revoke
+            invite, or none for a removed person (`rosterView.purgeAlternative`). */}
         <p className="mt-3 text-xs text-muted-foreground">
-          {alternative.lead}
-          {alternative.action && (
-            <span className="text-foreground">{alternative.action}</span>
-          )}
-          {alternative.tail}
+          <CopyLine parts={alternative} />
         </p>
 
         <label className="mt-4 mb-1 block text-[11px] font-medium text-muted-foreground">

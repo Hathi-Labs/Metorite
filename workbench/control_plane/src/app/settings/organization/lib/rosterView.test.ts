@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ROSTER_URL,
   emptyLine,
+  plainText,
   purgeAlternative,
   removeCopy,
   rowsFor,
@@ -68,22 +69,28 @@ describe("rowsFor", () => {
 });
 
 describe("purgeAlternative", () => {
-  const line = (status: Member["status"]) => {
-    const a = purgeAlternative(member("x@acme.test", status));
-    return `${a.lead}${a.action ?? ""}${a.tail}`;
-  };
+  const line = (status: Member["status"]) =>
+    plainText(purgeAlternative(member("x@acme.test", status)));
+  const named = (status: Member["status"]) =>
+    purgeAlternative(member("x@acme.test", status))
+      .filter((p) => p.em)
+      .map((p) => p.text);
 
   it("a removed person is not sent to a Remove that their row lacks", () => {
-    const a = purgeAlternative(member("dee@acme.test", "removed"));
-    expect(a.action).toBeNull();
+    expect(named("removed")).toEqual([]);
     expect(line("removed")).not.toContain("Remove");
     expect(line("removed")).not.toContain("recoverable");
     expect(line("removed")).toContain("already removed");
   });
 
-  it("everybody else is still pointed at Remove", () => {
-    for (const s of ["active", "invited", "suspended"] as const) {
-      expect(purgeAlternative(member("x@acme.test", s)).action).toBe("Remove");
+  it("an invited person is pointed at Revoke invite, the button their row has", () => {
+    expect(named("invited")).toEqual(["Revoke invite"]);
+    expect(line("invited")).not.toContain("recoverable");
+  });
+
+  it("a signed-in person is still pointed at Remove", () => {
+    for (const s of ["active", "suspended"] as const) {
+      expect(named(s)).toEqual(["Remove"]);
       expect(line(s)).toContain("recoverable");
     }
   });
@@ -97,12 +104,21 @@ describe("removeCopy", () => {
     expect(c.showSeal).toBe(false);
     // Suspend is not offered on an invited row, so the dialog must not
     // send the admin to it.
-    expect(c.after).not.toContain("Suspend");
+    expect(plainText(c.after)).not.toContain("Suspend");
     // Review round 1: an invited person holds no Core seat yet, so the copy
     // must make no claim about a seat.
-    for (const text of [c.title, c.effect, c.after, c.confirm]) {
+    for (const text of [c.title, c.effect, plainText(c.after), c.confirm]) {
       expect(text.toLowerCase()).not.toContain("seat");
     }
+  });
+
+  it("each dialog emphasises the control it names (round 3)", () => {
+    const em = (status: Member["status"]) =>
+      removeCopy(member("x@acme.test", status))
+        .after.filter((p) => p.em)
+        .map((p) => p.text);
+    expect(em("invited")).toEqual(["Delete permanently"]);
+    expect(em("active")).toEqual(["Suspend"]);
   });
 
   it("a signed-in person is removed, with the seal preview", () => {
@@ -113,6 +129,6 @@ describe("removeCopy", () => {
     expect(c.title).toBe("Remove Ana?");
     expect(c.confirm).toBe("Remove");
     expect(c.showSeal).toBe(true);
-    expect(c.after).toContain("Suspend");
+    expect(plainText(c.after)).toContain("use Suspend instead");
   });
 });
