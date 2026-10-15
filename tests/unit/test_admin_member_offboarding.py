@@ -740,7 +740,14 @@ def test_removing_somebody_asks_first_and_names_them() -> None:
     assert "member.display_name || member.email" in dialog, (
         "the confirmation does not name the person it is about"
     )
-    assert "role assignment" in dialog, (
+    # The words live in `lib/rosterView.removeCopy` since 2026-10-15, because an
+    # invite and a member get different copy. The dialog must read them there.
+    assert "removeCopy(member)" in dialog, (
+        "the confirmation no longer reads its copy from rosterView.removeCopy"
+    )
+    copy = (ORG_DIR / "lib" / "rosterView.ts").read_text(encoding="utf-8")
+    copy = copy.split("export function removeCopy(", 1)[1]
+    assert "role assignment" in copy, (
         "the confirmation does not say that role grants are dropped"
     )
     # The DELETE is fired from the dialog's confirm, never straight from a row
