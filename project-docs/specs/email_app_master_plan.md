@@ -13587,10 +13587,9 @@ cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 builds it. ✅ **PR-G2 (EM-G11b) is merged** (#1001, 2026-10-14). ✅ **PR-G7 (EM-G11f1) is
 merged NARROWED** (#1006, 2026-10-14). §12.3.13.9 records what f1 covers. ✅ **PR-G3 (EM-G11c1)
 is merged** (#1019, 2026-10-14), and §12.3.13.6 records what it covers. The owner answered
-Q-GM-14 on 2026-10-14. 🔨 **PR-G3b (EM-G11c1b) is built, not merged** (2026-10-15, branch
-`gmail-g3b`, §12.3.13.6b): the browser proves the pane shows cards, and the PR closes two gaps. 🔨 **PR-G8 (EM-G11f2) is
-built NARROWED, not merged** (2026-10-14, branch `gmail-purge-durable`, migration 264). The other
-PRs are not built.
+Q-GM-14 on 2026-10-14. ✅ **PR-G3b (EM-G11c1b) is merged** (#1030, 2026-10-15, §12.3.13.6b): the
+browser proves the pane shows cards, and the PR closes two gaps. ✅ **PR-G8 (EM-G11f2) is merged
+NARROWED** (#1020, 2026-10-14, migration 264). The other PRs are not built.
 
 **Why.** The owner wants Google to verify the Gmail app, so that every member can connect Gmail.
 Owner instruction, 2026-10-14. Google verifies an app that asks for a restricted scope only when the
@@ -13864,12 +13863,12 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G1 | **EM-G11a** — the disclosure step and the Google button | 1, 8 | 🟢 AGENT-SAFE · security review · visual review. 🔴 The owner approves the disclosure text (Q-GM-7) | M, about 550 | §12.3.13.4 |
 | PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
-| PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). 🔨 Built, not merged (2026-10-15, branch `gmail-g3b`). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
+| PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). ✅ Merged #1030 (2026-10-15). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
 | PR-G4 | **EM-G11c2** — no background write without a member choice | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
-| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. 🔨 Built NARROWED 2026-10-14, branch `gmail-purge-durable`, migration 264, not merged | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
+| PR-G8 | **EM-G11f2** — a durable purge, and a fence on each child. ✅ Merged NARROWED #1020 (2026-10-14), migration 264 | 6 | 🟢 AGENT-SAFE · R8 · one migration | M, about 500 | §12.3.13.9 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
 | — | **EM-G11r** — the reviewer path, the video, the publish order and the scope text | 7, 9, 10, 11 | 🔴 OWNER-GATE (Google account, money, third party). Parts are agent acts, named in each step | Runbook | §12.3.13.11 to §12.3.13.14 |
@@ -14550,6 +14549,11 @@ card as after a manual save? This PR keeps it as after a manual save.
 3. **G3 and G4, Reply Zero and the cleanup sweep.** Both obey `auto_run`. With `auto_run` OFF, they
    write no label and move no mail. They can still compute a status for the UI. This applies to both
    providers, because a member who turned Auto-run off expects no write.
+   - **A missing row (audit 2026-10-15).** G2, G3 and G4 read `auto_run` through one helper. A
+     missing row reads OFF for Gmail and ON for Outlook.
+   - **The manual dispatch is out of scope (audit 2026-10-15).** `POST /notes/actions/{id}/dispatch`
+     does not change in this PR. A member who clicks dispatch makes the choice. G1 changes the
+     background path only, `auto_dispatch`.
 4. **G5, `automated=false`.** The runner applies a rule with `automated=false` as a dry run. It
    writes a PENDING row to the History, and the member approves it there (`runner.py:558`). This is
    the "propose for approval" that `create_rule` promises.
