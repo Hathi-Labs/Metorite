@@ -495,6 +495,23 @@ class TestTheRequest:
         assert _rows(runs, "SELECT id FROM pm_agent_runs WHERE task_id = CAST(:t AS uuid)",
                      t=task) == []
 
+    async def test_a_request_on_a_stopping_run_is_refused(self, runs):
+        """A Stop waits, so the agent must stop. The request writes nothing,
+        and no orphan request sits on a stopped run."""
+        task = runs.task(runs.team, runs.s.doing, "stopping")
+        started = _structured(await _agent(runs, "start_agent_run", task_id=task,
+                                           idempotency_key=_key()))
+        run_id = started["run"]["id"]
+        stop = await _person(runs, MEMBER, "POST", f"/projects/agent-runs/{run_id}/activities",
+                             {"type": "prompt", "signal": "stop", "body": "Stop.",
+                              "idempotency_key": _key()})
+        assert stop.status_code == 201, stop.text
+        before = _snapshot(runs, task, run_id)
+        result = await _agent(runs, "request_task_archive", task_id=task,
+                              idempotency_key=_key())
+        assert _text(result) == tools.TEXT_ARCHIVE_CONFLICT
+        assert _snapshot(runs, task, run_id) == before
+
     async def test_a_request_while_a_question_waits_is_refused(self, runs):
         task = runs.task(runs.team, runs.s.doing, "busy")
         await _agent(runs, "ask_on_task", task_id=task, question="Which?",
