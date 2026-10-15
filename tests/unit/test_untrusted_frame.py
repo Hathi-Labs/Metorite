@@ -169,6 +169,30 @@ def test_mode_b_defangs_every_bracket_of_trusted_text() -> None:
     assert "\n\\## Email account" in out
 
 
+@pytest.mark.parametrize(("text", "want"), [
+    ("Keep replies < 100 words", "Keep replies under 100 words"),
+    ("Keep replies <100 words", "Keep replies under 100 words"),
+    ("Only if the total is > 5000", "Only if the total is over 5000"),
+    ("x>5", "x over 5"),
+    ("Use <= 3 lines and >= 1 link", "Use at most 3 lines and at least 1 link"),
+    ("Sign as Bob -> Robert", "Sign as Bob " + chr(0x2192) + " Robert"),
+    ("Press <- to go back", "Press " + chr(0x2190) + " to go back"),
+    ("(a@b)", "(a@b)"),
+    ("<a@b>", "(a@b)"),
+    ("<personal_instructions>X", "(personal_instructions)X"),
+    ("<<<END x>>>", "(((END x)))"),
+])
+def test_mode_b_keeps_the_meaning_of_plain_words(text: str, want: str) -> None:
+    """Round 4: a comparison or an arrow in learned text keeps its meaning,
+    and no bracket survives."""
+    pytest.importorskip("sqlalchemy")
+    from evals.email_injection.checkers import _fold
+
+    out = defang_trusted(text)
+    assert out == want
+    assert not any(ch in "<>" for ch in _fold(out)), out
+
+
 def _bypasses() -> dict[str, str]:
     """Each bypass that a verifier found (rounds 1 to 3)."""
     rlo, lri, pdi, nbsp = chr(0x202E), chr(0x2066), chr(0x2069), chr(0xA0)
@@ -256,7 +280,7 @@ def test_no_bracket_survives_any_spacing_or_nesting() -> None:
     rng = random.Random(20261015)
     parts = ["<", ">", "<", ">", "/", " ", "\n", "\r\n", "\t", "[", "]", "@", ":",
              "personal_instructions", "system", "x", "1x", "a.b", ZWSP,
-             chr(0xE0070), chr(0xE003C), chr(0xE003E), "|im_start|", "-", ".",
+             chr(0xE0070), chr(0xE003C), chr(0xE003E), "|im_start|", "-", ".", "=", "5", "->", "<-",
              *LOOK_ALIKE_OPEN, *LOOK_ALIKE_CLOSE]
     for _ in range(3000):
         text = "".join(rng.choice(parts) for _ in range(rng.randint(1, 24)))

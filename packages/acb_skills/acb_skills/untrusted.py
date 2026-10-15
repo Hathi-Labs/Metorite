@@ -218,19 +218,79 @@ def defang_trusted(text: str) -> str:
     ``)``, and each invisible format character and each character of the TAG
     block goes. A line that starts with ``#`` gets a backslash. One linear
     pass, with no regex over tags and no exemption: afterwards the text holds
-    no angle bracket of any form, so no tag, marker or chat-role token."""
+    no angle bracket of any form, so no tag, marker or chat-role token.
+
+    Round 4 keeps the meaning of plain words. A lone ASCII ``<`` before a
+    space or a digit reads "under", and a lone ``>`` after a space or before a
+    digit reads "over". ``<=`` and ``>=`` read "at most" and "at least".
+    ``->`` and ``<-`` become the arrows U+2192 and U+2190. Every other bracket
+    becomes ``(`` or ``)``, so ``<a@b>`` reads ``(a@b)``. No output of this
+    function is a bracket."""
+    chars = [
+        ch for ch in unicodedata.normalize("NFKC", str(text or ""))
+        if not (ch in _INVISIBLE_SET or ord(ch) in _TAG_BLOCK
+                or unicodedata.category(ch) == "Cf")
+    ]
     out: list[str] = []
-    for ch in unicodedata.normalize("NFKC", str(text or "")):
+    size = len(chars)
+    i = 0
+    while i < size:
+        ch = chars[i]
+        prev = chars[i - 1] if i else ""
+        nxt = chars[i + 1] if i + 1 < size else ""
+        if ch == "-" and nxt == ">":
+            out.append(_ARROW_RIGHT)
+            i += 2
+            continue
+        if ch == "<" and nxt == "-":
+            out.append(_ARROW_LEFT)
+            i += 2
+            continue
+        if ch in "<>" and not _is_bracket(prev):
+            after = chars[i + 2] if i + 2 < size else ""
+            if nxt == "=" and not _is_bracket(after):
+                _append_word(out, "at most" if ch == "<" else "at least", after)
+                i += 2
+                continue
+            if not _is_bracket(nxt) and (
+                    _gap_or_digit(nxt) if ch == "<"
+                    else (_gap(prev) or nxt.isdigit())):
+                _append_word(out, "under" if ch == "<" else "over", nxt)
+                i += 1
+                continue
         if ch in _OPENING:
             out.append(_TRUSTED_OPEN)
         elif ch in _CLOSING:
             out.append(_TRUSTED_CLOSE)
-        elif (ch in _INVISIBLE_SET or ord(ch) in _TAG_BLOCK
-              or unicodedata.category(ch) == "Cf"):
-            continue
         else:
             out.append(ch)
+        i += 1
     return _HEADING_RE.sub(lambda m: m.group(1) + m.group(2) + "\\", "".join(out))
+
+
+_ARROW_RIGHT = chr(0x2192)
+_ARROW_LEFT = chr(0x2190)
+
+
+def _is_bracket(ch: str) -> bool:
+    return bool(ch) and (ch in _OPENING or ch in _CLOSING)
+
+
+def _gap(ch: str) -> bool:
+    return not ch or ch.isspace()
+
+
+def _gap_or_digit(ch: str) -> bool:
+    return not ch or ch.isspace() or ch.isdigit()
+
+
+def _append_word(out: list[str], word: str, nxt: str) -> None:
+    """Append *word* with one space on each side that has text."""
+    if out and not out[-1][-1:].isspace():
+        out.append(" ")
+    out.append(word)
+    if nxt and not nxt.isspace():
+        out.append(" ")
 
 
 def collapse(text: str) -> str:
