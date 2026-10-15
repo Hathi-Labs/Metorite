@@ -5501,9 +5501,11 @@ line — never reclaim a number by deleting the other entry.
   `project:<uuid>`. CLAUDE.md §4 names one subject-grammar validator as a
   seam. `knowledge_base.md` §5.1 (WS-61 KB-1) must use the shared one, so
   the spelling has to be decided before KB-1 and AM-3 both write grants.
-- **Do this:** pick one spelling, put the validator in
-  `acb_auth/permissions.py`, and make Projects, Artifacts and Knowledge call
-  it. A migration that widens the artifacts CHECK is expand-only (R6).
+- **Do this:** KB-1 settled the spelling on 2026-10-15: the bare email of
+  Projects, with the validator moved to `acb_auth/permissions.py`
+  (`knowledge_base.md` §5.1). AM-3 calls that validator, or records why
+  Artifacts keeps `user:`. A migration that widens the artifacts CHECK is
+  expand-only (R6).
 - **Authority:** CLAUDE.md §4 (respect the seams), `tenancy_and_visibility.md` §3
 - **Added:** 2026-10-15 · WS-61 KB-0 audit
 
@@ -5539,6 +5541,19 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `crm_platform.md` §18.7 (the generic store) and §18.8
 - **Added:** 2026-10-15 · WS-53 CRM-Q16 review
 
+
+### H-322 · An artifact on a Knowledge page must count as kept · [AGENT]
+- **Check:** `rg -n "kb_page_files" apps/services/gateway packages/acb_memory infra/postgres`.
+  No hit in the artifact sweep's `keep` rule means this is open.
+- **Why.** WS-61 KB-2a makes a page file an artifact, joined through
+  `kb_page_files` with no foreign key. The artifact sweep
+  (`artifact_management.md` §7.4) deletes a registry row that is not kept.
+  A file on a published page would then vanish from the page with no record.
+- **Do this:** in the WS-60 `keep` rule (§7.1), count an artifact as kept
+  while a `kb_page_files` row names it. Add a test beside the sweep's own.
+  It must land before KB-2a turns on for any org.
+- **Authority:** `specs/artifact_management.md` §7.1, `specs/knowledge_base.md` §4.3
+- **Added:** 2026-10-15 · WS-61 KB-1 audit
 
 ### H-325 · Three calls on the CRM mapping design · [OWNER]
 - **Check:** read `crm_platform.md` §18.9.1, "Open, with a recommendation".
