@@ -31,6 +31,7 @@ import {
   canDownloadPdf,
   classifyArtifact,
   extOf,
+  type FileOrigin,
   isArchive,
   isRenderable,
   pdfNameFor,
@@ -58,6 +59,13 @@ interface ArtifactViewerModalProps {
    *  aren't workspace-editable (e.g. inbound email attachments), which only
    *  have a download URL — there is nothing to PUT/DELETE. */
   readOnly?: boolean;
+  /**
+   * Where the file comes from, as the host says: "workspace" for a session
+   * workspace or the artifacts registry. Only then may a report draw as a
+   * report. Absent means "other", and `readOnly` forces it, so an email
+   * attachment never draws as a Metorite report (re-review of #1065).
+   */
+  origin?: FileOrigin;
 }
 
 type ViewerState =
@@ -304,7 +312,8 @@ function PdfViewer({ url }: { url: string }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelete, downloadUrl: externalDownloadUrl, saveUrl: externalSaveUrl, deleteUrl: externalDeleteUrl, readOnly = false }: ArtifactViewerModalProps) {
+export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelete, downloadUrl: externalDownloadUrl, saveUrl: externalSaveUrl, deleteUrl: externalDeleteUrl, readOnly = false, origin = "other" }: ArtifactViewerModalProps) {
+  const fileOrigin: FileOrigin = origin === "workspace" && !readOnly ? "workspace" : "other";
   const [state, setState] = useState<ViewerState>({ status: "loading" });
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -313,7 +322,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
   const blobUrlRef = useRef<string | null>(null);
 
   // Determine if this file type supports inline editing.
-  const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
+  const kind = classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin);
   const editable =
     !readOnly &&
     (kind === "markdown" || kind === "html" || kind === "react" ||
@@ -336,7 +345,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
     let cancelled = false;
     const fileUrl = externalDownloadUrl
       ?? `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(entry.path)}`;
-    const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
+    const kind = classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin);
 
     // Revoke any previous blob URL
     if (blobUrlRef.current) {
@@ -508,7 +517,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
         throw new Error(`HTTP ${res.status}: ${err}`);
       }
       // Refresh state with new content.
-      const kind = classifyArtifact(entry.name, entry.path, entry.mime_type);
+      const kind = classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin);
       if (kind === "markdown") {
         setState({ status: "markdown", content: editContent });
       } else if (kind === "report") {

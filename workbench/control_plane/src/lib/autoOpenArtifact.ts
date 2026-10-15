@@ -47,7 +47,7 @@ const DEFAULT_DEPS: AutoOpenDeps = {
 export function shouldAutoOpen(path: string, isMobile: boolean, panelFits = true): boolean {
   if (isMobile || !panelFits) return false;
   const name = path.split("/").pop() ?? path;
-  return opensRendered(classifyArtifact(name, path));
+  return opensRendered(classifyArtifact(name, path, "", "workspace"));
 }
 
 /**

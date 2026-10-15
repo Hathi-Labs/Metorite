@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import LiveChart, { WEB_MAX_SCALE, buildChart, webScale, withHues } from "./LiveChart";
+import LiveChart, { WEB_MAX_SCALE, buildChart, chartScrollProps, webScale, withHues } from "./LiveChart";
 import { barChartSpec, TEMPLATE_REGISTRY } from "./genUITemplates";
 import { KINDS, chartOption } from "@/lib/charts/kinds.mjs";
 
@@ -248,5 +248,26 @@ describe("every kind under a card's height cap", () => {
   it("the box scrolls a chart that keeps its own height, and never cuts it", () => {
     const html = renderToStaticMarkup(createElement(LiveChart, { spec: UNDER["gantt-15"], maxHeight: 240 }));
     expect(html).toMatch(/max-height:240px;overflow-y:auto/);
+  });
+});
+
+// ── Re-review of #1065, P3: a chart box that scrolls is reachable by keys ──
+// Safari does not put a scrolling box in the Tab order by itself, and a
+// macOS or iOS scrollbar hides until it scrolls. So a growing chart's box
+// takes the MarkdownBody table's pattern, and says that it scrolls.
+describe("a chart box that scrolls", () => {
+  it("is a labelled region in the Tab order, only when it scrolls", () => {
+    expect(chartScrollProps(false, 240, "Plan")).toEqual({ tabIndex: 0, role: "region", "aria-label": "Plan. Scroll for more rows." });
+    expect(chartScrollProps(false, 240, "")).toEqual({ tabIndex: 0, role: "region", "aria-label": "Chart. Scroll for more rows." });
+    // A chart that fits, or one with no cap, does not scroll: no Tab stop.
+    expect(chartScrollProps(true, 240, "Plan")).toBeNull();
+    expect(chartScrollProps(false, undefined, "Plan")).toBeNull();
+    expect(chartScrollProps(null, 240, "Plan")).toBeNull();
+  });
+
+  it("LiveChart spreads them on its box, and draws the hint under it", () => {
+    const src = readFileSync(join(SRC, "components", "LiveChart.tsx"), "utf8");
+    expect(src).toContain("{...(scrollProps ?? {})}");
+    expect(src).toContain("data-chart-scroll-hint");
   });
 });

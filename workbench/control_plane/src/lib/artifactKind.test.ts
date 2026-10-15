@@ -14,6 +14,9 @@ import {
   workspaceFileUrl,
 } from "./artifactKind";
 
+/** A source file, read relative to this test. */
+const readSrc = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+
 describe("classifyArtifact", () => {
   // The mobile bug this module exists to prevent: ArtifactViewerModal is the
   // ONLY artifact viewer on a phone (the side panel is desktop-only), and it had
@@ -53,20 +56,56 @@ describe("classifyArtifact", () => {
   });
 
   it("a report file is a report, tested before the code list that holds json", () => {
-    expect(classifyArtifact("q3.report.json", "outputs/q3.report.json")).toBe("report");
-    expect(classifyArtifact("Q3.REPORT.JSON", "outputs/Q3.REPORT.JSON")).toBe("report");
-    expect(classifyArtifact("q3.json", "outputs/q3.json")).toBe("code");
-    expect(classifyArtifact("report.json", "outputs/report.json")).toBe("code");
+    expect(classifyArtifact("q3.report.json", "outputs/q3.report.json", "", "workspace")).toBe("report");
+    expect(classifyArtifact("Q3.REPORT.JSON", "outputs/Q3.REPORT.JSON", "", "workspace")).toBe("report");
+    expect(classifyArtifact("q3.json", "outputs/q3.json", "", "workspace")).toBe("code");
+    expect(classifyArtifact("report.json", "outputs/report.json", "", "workspace")).toBe("code");
   });
 
   it("a report is a report only as a workspace output, never an email attachment (review of #1065)", () => {
     // An email attachment's path is its bare file name, which the sender chose.
     expect(classifyArtifact("Q3.report.json", "Q3.report.json")).toBe("code");
     // A file the member uploaded.
-    expect(classifyArtifact("q3.report.json", "inputs/q3.report.json")).toBe("code");
-    expect(classifyArtifact("q3.report.json", "agent-data/q3.report.json")).toBe("code");
-    expect(classifyArtifact("q3.report.json", "outputs/q3.report.json")).toBe("report");
-    expect(classifyArtifact("q3.report.json", "/outputs/sub/q3.report.json")).toBe("report");
+    expect(classifyArtifact("q3.report.json", "inputs/q3.report.json", "", "workspace")).toBe("code");
+    expect(classifyArtifact("q3.report.json", "agent-data/q3.report.json", "", "workspace")).toBe("code");
+    expect(classifyArtifact("q3.report.json", "outputs/q3.report.json", "", "workspace")).toBe("report");
+    expect(classifyArtifact("q3.report.json", "/outputs/sub/q3.report.json", "", "workspace")).toBe("report");
+  });
+
+  it("the CONTEXT decides a report, never the name (re-review of #1065)", () => {
+    // A sender may name an attachment `outputs/x.report.json`: the providers
+    // keep the raw file name. Its body may even claim kind metorite.report.
+    // With no workspace origin, it stays code, whatever its name or path.
+    expect(classifyArtifact("outputs/x.report.json", "outputs/x.report.json")).toBe("code");
+    expect(classifyArtifact("outputs/x.report.json", "outputs/x.report.json", "application/json", "other")).toBe("code");
+    expect(classifyArtifact("x.report.json", "outputs/x.report.json", "", "workspace")).toBe("report");
+  });
+
+  it("an email attachment opens the viewer with no workspace origin, and read-only forces it off", () => {
+    const list = readSrc("../app/email/components/AttachmentList.tsx");
+    const at = list.indexOf("<ArtifactViewerModal");
+    const modal = list.slice(at, list.indexOf("/>", at));
+    expect(modal).toContain("readOnly");
+    expect(modal).not.toContain("origin=");
+    const viewer = readSrc("../components/ArtifactViewerModal.tsx");
+    expect(viewer).toContain('const fileOrigin: FileOrigin = origin === "workspace" && !readOnly ? "workspace" : "other";');
+    expect(viewer.split("classifyArtifact(entry.name, entry.path, entry.mime_type, fileOrigin)")).toHaveLength(4);
+    expect(viewer).not.toContain("classifyArtifact(entry.name, entry.path, entry.mime_type)");
+  });
+
+  it("each workspace host says so, and only those", () => {
+    for (const host of ["../app/chat/page.tsx", "../components/AgentChat.tsx", "../lib/shell/AssistantDock.tsx"]) {
+      const src = readSrc(host);
+      const at = src.indexOf("<ArtifactViewerModal");
+      expect(src.slice(at, src.indexOf("/>", at)), host).toContain('origin="workspace"');
+    }
+    const artifacts = readSrc("../app/artifacts/page.tsx");
+    expect(artifacts.split('origin="workspace"')).toHaveLength(3);
+    for (const caller of ["../components/DocumentPane.tsx", "./autoOpenArtifact.ts", "../components/ArtifactCard.tsx"]) {
+      const calls = readSrc(caller).split("classifyArtifact(").slice(1).map((c) => c.slice(0, c.indexOf(")")));
+      expect(calls.length, caller).toBeGreaterThan(0);
+      for (const call of calls) expect(call, caller).toContain('"workspace"');
+    }
   });
 
   it("is case-insensitive about extensions", () => {

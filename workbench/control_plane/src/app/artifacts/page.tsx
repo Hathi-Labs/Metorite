@@ -187,7 +187,7 @@ function ChatFiles({ asked }: { asked: string | null }) {
         </>
       )}
       {viewer && chat ? (
-        <ArtifactViewerModal sessionId={chat.id} entry={viewer} onClose={() => setViewer(null)} />
+        <ArtifactViewerModal origin="workspace" sessionId={chat.id} entry={viewer} onClose={() => setViewer(null)} />
       ) : null}
     </div>
   );
@@ -781,6 +781,7 @@ function AgentWorkspaces() {
 
       {viewerEntry && (
         <ArtifactViewerModal
+          origin="workspace"
           sessionId="artifacts" entry={viewerEntry}
           downloadUrl={viewerUrl} saveUrl={viewerUrl}
           onClose={() => setViewerEntry(null)}

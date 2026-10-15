@@ -63,7 +63,7 @@ interface ArtifactCardProps {
  * button at all, because the hard-coded list here only knew about md/html.
  */
 function hasRenderedView(name: string, path: string): boolean {
-  return opensRendered(classifyArtifact(name, path));
+  return opensRendered(classifyArtifact(name, path, "", "workspace"));
 }
 
 /**
@@ -75,7 +75,7 @@ export function cardPdf(
   sessionId: string,
   artifact: Pick<ArtifactMeta, "name" | "path" | "mimeType">,
 ): { url: string; name: string } | null {
-  const kind = classifyArtifact(artifact.name, artifact.path, artifact.mimeType);
+  const kind = classifyArtifact(artifact.name, artifact.path, artifact.mimeType, "workspace");
   if (kind === "report") {
     const pdf = companionPdfPath(artifact.path);
     return pdf ? { url: workspaceFileUrl(sessionId, pdf), name: baseName(pdf) } : null;
@@ -126,7 +126,7 @@ function fileIcon(artifact: ArtifactMeta): React.ReactNode {
   const kind = (name: string, icon: string) => (
     <Icon name={icon} size={15} className={`shrink-0 ${categoricalAccent(name).text}`} />
   );
-  if (classifyArtifact(artifact.name, artifact.path, mime) === "report") return kind("report", "FileChartColumn");
+  if (classifyArtifact(artifact.name, artifact.path, mime, "workspace") === "report") return kind("report", "FileChartColumn");
   if (IMAGE_EXTS.has(ext) || mime.startsWith("image/")) return kind("image", "FileImage");
   if (CODE_EXTS.has(ext)) return kind("code", "FileCode");
   if (["md", "txt", "log", "rst", "csv"].includes(ext) || mime.startsWith("text/")) return kind("text", "FileText");

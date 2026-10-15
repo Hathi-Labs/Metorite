@@ -78,11 +78,33 @@ export function buildChart(spec: Spec, width: number, mode: "dark" | "light", fo
 }
 
 /**
+ * The keyboard half of a chart box that scrolls (re-review of #1065). Safari
+ * puts no scrolling box in the Tab order by itself, and a macOS or iOS
+ * scrollbar hides until it scrolls. So a box that scrolls takes the
+ * MarkdownBody table's pattern: a Tab stop, a region, and a label that says
+ * it scrolls. Null for a box that does not scroll: no idle Tab stop.
+ */
+export function chartScrollProps(
+  fits: boolean | null,
+  maxHeight: number | undefined,
+  title: string,
+): { tabIndex: 0; role: "region"; "aria-label": string } | null {
+  if (!maxHeight || fits !== false) return null;
+  return { tabIndex: 0, role: "region", "aria-label": `${title.trim() || "Chart"}. Scroll for more rows.` };
+}
+
+/**
  * `bare`: no frame of its own. The chart sits in a chat card's frame, under
  * the card's header (`ChartCard` in `genUITemplates.tsx`), and a second
  * border there drew a card in a card.
  */
-export default function LiveChart({ spec, bare = false, maxHeight }: { spec: Spec; bare?: boolean; maxHeight?: number }) {
+export default function LiveChart({ spec, bare = false, maxHeight, label }: {
+  spec: Spec;
+  bare?: boolean;
+  maxHeight?: number;
+  /** The chart's name for a screen reader, when its spec has no title. */
+  label?: string;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const mode = useMode();
   const [width, setWidth] = useState(0);
@@ -124,10 +146,14 @@ export default function LiveChart({ spec, bare = false, maxHeight }: { spec: Spe
   // Under a card's cap a chart that grows by its rows keeps its height, so
   // the box scrolls it. A chart that fits is no taller than the cap anyway.
   const scroll = maxHeight ? { maxHeight, overflowY: "auto" as const } : {};
+  const fits = built && !("error" in built) ? built.fits : null;
+  const scrollProps = chartScrollProps(fits, maxHeight, typeof spec.title === "string" && spec.title ? spec.title : (label ?? ""));
   return (
+    <>
     <div
       ref={box}
       data-chart-max-height={maxHeight}
+      {...(scrollProps ?? {})}
       style={
         bare
           ? { width: "100%", overflow: "hidden", ...scroll }
@@ -142,5 +168,12 @@ export default function LiveChart({ spec, bare = false, maxHeight }: { spec: Spe
         <div style={{ width: "100%", height: built ? built.height : Math.min(220, maxHeight ?? 220) }} />
       )}
     </div>
+    {/* A hidden scrollbar says nothing, so the words say it. */}
+    {scrollProps && (
+      <p data-chart-scroll-hint="" aria-hidden style={{ marginTop: 4, fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>
+        Scroll the chart for more rows.
+      </p>
+    )}
+    </>
   );
 }

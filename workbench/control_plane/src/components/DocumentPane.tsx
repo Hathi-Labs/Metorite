@@ -55,7 +55,8 @@ interface DocumentPaneProps {
 }
 
 export default function DocumentPane({ sessionId, path, name, live }: DocumentPaneProps) {
-  const raw = classifyArtifact(name, path);
+  // The side panel opens a session's workspace files only.
+  const raw = classifyArtifact(name, path, "", "workspace");
   // Collapse what this pane cannot render into one "download it" state.
   const kind: ArtifactKind | "binary" = UNDISPLAYABLE.has(raw) ? "binary" : raw;
   const editable =

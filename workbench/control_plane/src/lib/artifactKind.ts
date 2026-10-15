@@ -57,15 +57,26 @@ export const HTML_EXTS: readonly string[] = ["html", "htm"];
  * JSON, so the code list below would take it. It is tested first, by its
  * whole ending, and every viewer draws it with `ReportView`.
  *
- * ⚠️ Only a workspace OUTPUT is a report (`isArtifactPath`, under
- * `outputs/`). An email attachment's path is its bare file name, which the
- * sender chose, and an upload sits under `inputs/`. Either stays "code", so
- * an outside file never draws as a Metorite report (review of #1065). A
- * file under `outputs/` that is not a Metorite report (a Lighthouse
+ * ⚠️ Only a WORKSPACE output is a report: the host says `origin`
+ * "workspace", and the path is under `outputs/` (`isArtifactPath`). The
+ * name decides nothing on its own. A sender may name an email attachment
+ * `outputs/q3.report.json`, because the mail providers keep the raw file
+ * name, so an attachment with that name and a metorite.report body stays
+ * "code" (re-review of #1065). An upload under `inputs/` stays "code" too.
+ * A file under `outputs/` that is not a Metorite report (a Lighthouse
  * `site.report.json`) fails `parseReportFile`, and the viewers show it as
  * JSON, which a member can still edit.
  */
 export const REPORT_SUFFIX = ".report.json";
+
+/**
+ * Where a file comes from, as its HOST says, never as its name says. A
+ * "workspace" file is an agent's session workspace or the artifacts
+ * registry. Anything else ("other") is outside data: an email attachment, a
+ * read-only file behind an external URL. The default is "other", so a host
+ * that forgets to say draws no report (re-review of #1065).
+ */
+export type FileOrigin = "workspace" | "other";
 
 export function extOf(name: string): string {
   return (name.split(".").pop() ?? "").toLowerCase();
@@ -92,9 +103,10 @@ export function classifyArtifact(
   name: string,
   path: string,
   mimeType = "",
+  origin: FileOrigin = "other",
 ): ArtifactKind {
   const ext = extOf(name);
-  if (name.toLowerCase().endsWith(REPORT_SUFFIX) && isArtifactPath(path)) return "report";
+  if (origin === "workspace" && name.toLowerCase().endsWith(REPORT_SUFFIX) && isArtifactPath(path)) return "report";
   if (MARKDOWN_EXTS.includes(ext)) return "markdown";
   if (HTML_EXTS.includes(ext)) return "html";
   if ((ext === "jsx" || ext === "tsx") && isArtifactPath(path)) return "react";

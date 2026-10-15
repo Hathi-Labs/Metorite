@@ -1893,7 +1893,7 @@ function ReportVisualBlock({ visual, minWidth, heading = "", card = false }: {
         return (
           <>
             {caption && <div data-report-chart-title="" className="mb-1 truncate text-xs font-medium text-foreground" title={caption}>{caption}</div>}
-            <LiveChart spec={bareChartSpec(mapped.data)}
+            <LiveChart spec={bareChartSpec(mapped.data)} label={title || heading}
               maxHeight={card ? REPORT_CARD_CHART_MAX : undefined} />
           </>
         );
